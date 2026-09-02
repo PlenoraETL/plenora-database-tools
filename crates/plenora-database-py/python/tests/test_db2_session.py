@@ -44,6 +44,7 @@ def test_db2_sync_capabilities_catalog_transaction_and_portable_select() -> None
             .columns("ID", "LABEL")
             .where_eq("ID", 1)
             .one()
+            .as_dict()
             == {"ID": 1, "LABEL": "alpha"}
         )
     finally:
@@ -68,7 +69,11 @@ def test_db2_sync_spatial_capabilities_and_portable_predicate() -> None:
             .order_by("ID")
             .all()
         )
-        assert rows == [{"ID": 1}, {"ID": 2}, {"ID": 4}]
+        assert [row.as_dict() for row in rows] == [
+            {"ID": 1},
+            {"ID": 2},
+            {"ID": 4},
+        ]
     finally:
         session.close()
 

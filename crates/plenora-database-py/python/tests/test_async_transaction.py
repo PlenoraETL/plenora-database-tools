@@ -100,7 +100,7 @@ async def test_builders_work_inside_async_transaction(session) -> None:
         assert (await tx.execute(statement, {"identity": 10})).scalar_one() == 10
 
         row = await tx.select("_pyf7tx").columns("val").where_eq("id", 10).one()
-        assert row == {"val": "ten"}
+        assert row.as_dict() == {"val": "ten"}
 
         await tx.update("_pyf7tx").set(val="TEN").where_eq("id", 10).execute()
         val = await tx.select("_pyf7tx").columns("val").where_eq("id", 10).scalar()

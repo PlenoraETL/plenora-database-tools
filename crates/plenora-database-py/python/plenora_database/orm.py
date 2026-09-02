@@ -14,8 +14,8 @@ from decimal import Decimal
 from enum import Enum
 import re
 from inspect import isawaitable
-from types import TracebackType
-from typing import Any, Generic, TypeVar, overload
+from types import TracebackType, UnionType
+from typing import Any, Generic, TypeVar, Union, get_args, get_origin, overload
 
 from .expression import (
     BindType,
@@ -1378,8 +1378,72 @@ class AsyncMigrationRunner(MigrationRunner):
             raise
 
 
+_UNRESOLVED_MAPPED_TYPE = object()
+_MAPPED_ANNOTATION_TYPES = {
+    "bool": bool,
+    "bytes": bytes,
+    "date": date,
+    "datetime": datetime,
+    "Decimal": Decimal,
+    "float": float,
+    "int": int,
+    "str": str,
+    "time": time,
+}
+
+
+def _mapped_annotation_type(annotation: Any) -> Any:
+    """Estrae il tipo di ``Mapped[T]`` senza risolvere forward ref arbitrarie."""
+
+    if isinstance(annotation, str):
+        match = re.fullmatch(r"(?:[A-Za-z_]\w*\.)?Mapped\[(.+)\]", annotation.strip())
+        if match is None:
+            return _UNRESOLVED_MAPPED_TYPE
+        candidates = {
+            item.strip().removeprefix("builtins.")
+            for item in match.group(1).split("|")
+            if item.strip() not in {"None", "NoneType"}
+        }
+        if len(candidates) != 1:
+            return _UNRESOLVED_MAPPED_TYPE
+        return _MAPPED_ANNOTATION_TYPES.get(
+            candidates.pop(), _UNRESOLVED_MAPPED_TYPE
+        )
+
+    if get_origin(annotation) is not MappedColumn:
+        return _UNRESOLVED_MAPPED_TYPE
+    arguments = get_args(annotation)
+    if len(arguments) != 1:
+        return _UNRESOLVED_MAPPED_TYPE
+    candidate = arguments[0]
+    if get_origin(candidate) in {Union, UnionType}:
+        values = tuple(item for item in get_args(candidate) if item is not type(None))
+        if len(values) != 1:
+            return _UNRESOLVED_MAPPED_TYPE
+        candidate = values[0]
+    return (
+        candidate
+        if candidate in set(_MAPPED_ANNOTATION_TYPES.values())
+        else _UNRESOLVED_MAPPED_TYPE
+    )
+
+
+def _apply_annotation_types(namespace: Mapping[str, Any]) -> None:
+    annotations = namespace.get("__annotations__", {})
+    if not isinstance(annotations, Mapping):
+        return
+    for name, annotation in annotations.items():
+        attribute = namespace.get(name)
+        if not isinstance(attribute, MappedColumn) or attribute.type_ is not None:
+            continue
+        inferred = _mapped_annotation_type(annotation)
+        if inferred is not _UNRESOLVED_MAPPED_TYPE:
+            attribute.type_ = inferred
+
+
 class _DeclarativeMeta(type):
     def __new__(mcls, name: str, bases: tuple[type, ...], namespace: dict[str, Any]):
+        _apply_annotation_types(namespace)
         table_name = namespace.get("__tablename__")
         inherited_mappers = tuple(
             mapper

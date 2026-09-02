@@ -274,7 +274,7 @@ def test_copy_from_appends_rows(session) -> None:
 
 def test_ast_builders_select_insert_update_delete(session) -> None:
     rows = session.select(TABLE).columns("label").where_eq("id", 1).all()
-    assert rows == [{"label": "uno"}]
+    assert [row.as_dict() for row in rows] == [{"label": "uno"}]
 
     assert (
         session.insert(TABLE)
@@ -291,9 +291,10 @@ def test_ast_builders_select_insert_update_delete(session) -> None:
         .affected_rows
         == 1
     )
-    assert session.select(TABLE).columns("amount").where_eq("id", 5).one() == {
-        "amount": 51
-    }
+    assert (
+        session.select(TABLE).columns("amount").where_eq("id", 5).one().as_dict()
+        == {"amount": 51}
+    )
     assert session.delete(TABLE).where_eq("id", 5).execute().affected_rows == 1
 
 
@@ -411,4 +412,4 @@ async def test_acopy_from_appends_rows(async_session) -> None:
 @pytest.mark.asyncio
 async def test_async_ast_builders(async_session) -> None:
     rows = await async_session.select(TABLE).columns("label").where_eq("id", 2).all()
-    assert rows == [{"label": "due"}]
+    assert [row.as_dict() for row in rows] == [{"label": "due"}]

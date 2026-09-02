@@ -144,14 +144,17 @@ async def test_async_select_all(items_table) -> None:
         {"code": "B", "qty": 2},
     ]).execute()
     rows = await items_table.select("_pyf7_items").columns("code", "qty").order_by("code").all()
-    assert rows == [{"code": "A", "qty": 1}, {"code": "B", "qty": 2}]
+    assert [item.as_dict() for item in rows] == [
+        {"code": "A", "qty": 1},
+        {"code": "B", "qty": 2},
+    ]
 
 
 @pytest.mark.asyncio
 async def test_async_select_one_and_scalar(items_table) -> None:
     await items_table.insert("_pyf7_items").values(code="X", qty=42).execute()
     row = await items_table.select("_pyf7_items").columns("code").where_eq("code", "X").one()
-    assert row == {"code": "X"}
+    assert row.as_dict() == {"code": "X"}
     val = await items_table.select("_pyf7_items").columns("qty").where_eq("code", "X").scalar()
     assert val == 42
     # Missing

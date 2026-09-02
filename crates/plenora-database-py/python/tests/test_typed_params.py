@@ -49,7 +49,7 @@ def test_uuid_in_where_via_builder(session) -> None:
             .where_eq("uid", p.uuid(uid))
             .one()
         )
-        assert row == {"name": "target"}
+        assert row.as_dict() == {"name": "target"}
     finally:
         session.execute_sql("DROP TABLE IF EXISTS _pyf6b_uid")
 
@@ -126,7 +126,7 @@ def test_int64_small_value_bigint_crud_via_builders(session) -> None:
             .returning("row_version")
             .one()
         )
-        assert inserted == {"row_version": 1}
+        assert inserted.as_dict() == {"row_version": 1}
         updated = (
             session.update("_pyf6b_int64")
             .set(row_version=p.int64(2))
@@ -140,7 +140,7 @@ def test_int64_small_value_bigint_crud_via_builders(session) -> None:
             .where_eq("row_version", p.int64(2))
             .one()
         )
-        assert row == {"row_version": 2}
+        assert row.as_dict() == {"row_version": 2}
     finally:
         session.execute_sql("DROP TABLE IF EXISTS _pyf6b_int64")
 
@@ -220,7 +220,7 @@ def test_decimal_in_numeric_column_roundtrip(session) -> None:
             .where_eq("id", 1)
             .one()
         )
-        assert row == {"bal": "999.99"}
+        assert row.as_dict() == {"bal": "999.99"}
     finally:
         session.execute_sql("DROP TABLE IF EXISTS _pyf6b_dec")
 

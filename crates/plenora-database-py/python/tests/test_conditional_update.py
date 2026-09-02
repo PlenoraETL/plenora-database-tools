@@ -47,7 +47,7 @@ def test_conditional_update_matching_version_succeeds(session) -> None:
             expected_affected_rows=1,
         )
     row = session.select("_pyf42_opt").columns("value", "version").where_eq("id", 1).one()
-    assert row == {"value": "v1", "version": 2}
+    assert row.as_dict() == {"value": "v1", "version": 2}
 
 
 def test_conditional_update_stale_version_raises_conflict(session) -> None:

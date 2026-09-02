@@ -98,7 +98,7 @@ def test_query_sql_provides_rows(session) -> None:
     )
     rows = session.query_sql(
         "SELECT id, label FROM _v04_sdk_test WHERE amount >= ? ORDER BY id", [50]
-    )
+    ).all()
     assert len(rows) == 2
     assert rows[0]["id"] == 1
     assert rows[0]["label"] == "a"
@@ -144,7 +144,7 @@ def test_typed_params_uuid_and_decimal_roundtrip(session) -> None:
         assert n.affected_rows == 1
         rows = session.query_sql(
             "SELECT id, amount, event_date FROM _v04_typed"
-        )
+        ).all()
         assert len(rows) == 1
         assert rows[0]["id"] == "550e8400-e29b-41d4-a716-446655440000"
         # amount / event_date arrivano come stringhe (formato MySQL native)

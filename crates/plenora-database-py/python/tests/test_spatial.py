@@ -255,7 +255,7 @@ def test_spatial_predicate_chains_with_other_where(session) -> None:
             .all()
         )
         # Solo id=1 combina category='A' e dentro bbox.
-        assert rows == [{"id": 1, "category": "A"}]
+        assert [row.as_dict() for row in rows] == [{"id": 1, "category": "A"}]
     finally:
         session.execute_sql("DROP TABLE IF EXISTS _pyf6c_mixed")
 

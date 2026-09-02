@@ -739,6 +739,9 @@ def test_declarative_mapping_reuses_canonical_table_and_columns() -> None:
     assert Account.name is Account.__table__.c.name
     assert Account.__mapper__.primary_key.name == "id"
     assert Account.__mapper__.version.name == "version"
+    assert Account.__mapper__.attribute("id").type_ is int
+    assert Account.__mapper__.attribute("name").type_ is str
+    assert Account.__mapper__.attribute("version").type_ is int
     assert isinstance(Account.id == p.bind("identity", p.BindType.INTEGER), p.Predicate)
 
 

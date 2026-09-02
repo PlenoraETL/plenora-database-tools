@@ -98,7 +98,9 @@ async def test_e2e_pfm_building_lifecycle_async(clean_schema) -> None:
                 .where_spatial("location", "intersects", ref)
                 .all()
             )
-            assert found == [{"code": "TORRE-MI", "name": "Torre Milano"}]
+            assert [row.as_dict() for row in found] == [
+                {"code": "TORRE-MI", "name": "Torre Milano"}
+            ]
 
             # 5. Savepoint + rollback selettivo
             await tx.savepoint("bump_area")
@@ -160,7 +162,7 @@ def test_e2e_pfm_building_lifecycle_sync(clean_schema) -> None:
                 .returning("code", "area")
                 .one()
             )
-            assert row == {"code": "DUOMO-MI", "area": "11700.00"}
+            assert row.as_dict() == {"code": "DUOMO-MI", "area": "11700.00"}
 
             tx.execute_sql(
                 "UPDATE _pyf8_building "

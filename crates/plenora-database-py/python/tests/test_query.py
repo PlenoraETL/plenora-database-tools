@@ -45,19 +45,22 @@ def test_select_all_returns_list_of_dict(session) -> None:
         {"code": "B", "label": "beta", "qty": 2},
     ])
     rows = session.select("_pyf4_items").columns("code", "qty").order_by("code").all()
-    assert rows == [{"code": "A", "qty": 1}, {"code": "B", "qty": 2}]
+    assert [row.as_dict() for row in rows] == [
+        {"code": "A", "qty": 1},
+        {"code": "B", "qty": 2},
+    ]
 
 
 def test_select_where_eq_narrows_result(session) -> None:
     _seed(session, [{"code": "A", "label": "x", "qty": 1}, {"code": "B", "label": "y", "qty": 2}])
     rows = session.select("_pyf4_items").columns("code").where_eq("code", "A").all()
-    assert rows == [{"code": "A"}]
+    assert [row.as_dict() for row in rows] == [{"code": "A"}]
 
 
 def test_select_one_returns_first_row_or_none(session) -> None:
     _seed(session, [{"code": "A", "label": "x", "qty": 1}])
     row = session.select("_pyf4_items").columns("code").where_eq("code", "A").one()
-    assert row == {"code": "A"}
+    assert row.as_dict() == {"code": "A"}
     none_row = session.select("_pyf4_items").columns("code").where_eq("code", "MISSING").one()
     assert none_row is None
 
@@ -152,13 +155,16 @@ def test_insert_multi_row_all_returning(session) -> None:
         .returning("code", "qty")
         .all()
     )
-    assert rows == [{"code": "M1", "qty": 1}, {"code": "M2", "qty": 2}]
+    assert [row.as_dict() for row in rows] == [
+        {"code": "M1", "qty": 1},
+        {"code": "M2", "qty": 2},
+    ]
 
 
 def test_insert_execute_without_returning_ignores_returning(session) -> None:
     # Nessun .returning() → execute() ritorna il conteggio.
     count = session.insert("_pyf4_items").values(code="E1", label="e", qty=0).execute()
-    assert count == 1
+    assert count.affected_rows == 1
 
 
 # -------------------------- UPDATE --------------------------
@@ -181,7 +187,7 @@ def test_update_returning_yields_new_row(session) -> None:
         .returning("code", "qty")
         .one()
     )
-    assert row == {"code": "A", "qty": 100}
+    assert row.as_dict() == {"code": "A", "qty": 100}
 
 
 # -------------------------- DELETE --------------------------
@@ -198,7 +204,7 @@ def test_delete_where_execute_returns_affected(session) -> None:
 def test_delete_returning_returns_deleted_rows(session) -> None:
     _seed(session, [{"code": "K", "label": "k", "qty": 1}])
     row = session.delete("_pyf4_items").where_eq("code", "K").returning("code").one()
-    assert row == {"code": "K"}
+    assert row.as_dict() == {"code": "K"}
 
 
 # -------------------------- UPSERT --------------------------

@@ -226,7 +226,7 @@ def test_builders_work_inside_transaction(session) -> None:
         assert tx.execute(statement, {"identity": 10}).scalar_one() == 10
 
         row = tx.select("_pyf5_tx").columns("val").where_eq("id", 10).one()
-        assert row == {"val": "ten"}
+        assert row.as_dict() == {"val": "ten"}
 
         tx.update("_pyf5_tx").set(val="TEN").where_eq("id", 10).execute()
         assert tx.select("_pyf5_tx").columns("val").where_eq("id", 10).scalar() == "TEN"
