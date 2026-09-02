@@ -2108,7 +2108,9 @@ def _exercise_live_advanced_orm(provider: str, connector) -> None:
             roots = (
                 orm.query(LiveOrmLoaderRoot)
                 .options(
-                    p.selectinload(OrmLoaderRoot.middles, OrmLoaderMiddle.leaves)
+                    p.selectinload(
+                        LiveOrmLoaderRoot.middles, LiveOrmLoaderMiddle.leaves
+                    )
                 )
                 .all()
             )

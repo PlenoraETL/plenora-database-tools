@@ -6,8 +6,16 @@ import os
 import pytest
 
 import plenora_database
+from plenora_database.query import _provider
 
 from ._harness import connect_postgres, postgres_dsn_or_skip
+
+
+def test_builder_provider_accepts_the_transaction_contract() -> None:
+    class TransactionLike:
+        _provider = "mysql"
+
+    assert _provider(TransactionLike()) == "mysql"
 
 
 @pytest.fixture(name="session")

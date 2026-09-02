@@ -24,6 +24,7 @@ from .query import (
     Upsert,
     _exactly_one,
     _one_or_none,
+    _provider,
     _statement_json,
     _validate_returning,
 )
@@ -59,8 +60,9 @@ class _AsyncReturningMutation:
     async def execute(self) -> MutationResult:  # type: ignore[override]
         _validate_returning(self, required=False)
         affected = await self._session._execute_portable_count(_statement_json(self))
-        provider = str(self._session.capabilities["provider"])
-        return MutationResult(type(self).__name__.lower(), provider, affected)
+        return MutationResult(
+            type(self).__name__.lower(), _provider(self._session), affected
+        )
 
     async def all(self) -> list[Row]:  # type: ignore[override]
         _validate_returning(self, required=True)
