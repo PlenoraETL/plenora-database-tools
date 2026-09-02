@@ -185,6 +185,101 @@ class LivePortableGenerated(p.DeclarativeBase):
     )
 
 
+class LiveOrmEntity(p.DeclarativeBase):
+    __tablename__ = "_plenora_orm_entities"
+    __mapper_args__: ClassVar[dict[str, str]] = {
+        "polymorphic_on": "kind",
+        "polymorphic_identity": "entity",
+    }
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    kind: p.Mapped[str] = p.mapped_column(str, nullable=False)
+    name: p.Mapped[str] = p.mapped_column(str, nullable=False)
+
+
+class LiveOrmService(LiveOrmEntity):
+    __mapper_args__: ClassVar[dict[str, str]] = {"polymorphic_identity": "service"}
+
+    port: p.Mapped[int] = p.mapped_column(int)
+
+
+class LiveOrmDatabase(LiveOrmService):
+    __mapper_args__: ClassVar[dict[str, str]] = {"polymorphic_identity": "database"}
+
+    engine: p.Mapped[str] = p.mapped_column(str)
+
+
+class LiveOrmAsset(p.DeclarativeBase):
+    __tablename__ = "_plenora_orm_assets"
+    __mapper_args__: ClassVar[dict[str, str]] = {
+        "polymorphic_on": "kind",
+        "polymorphic_identity": "asset",
+    }
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    kind: p.Mapped[str] = p.mapped_column(str, nullable=False)
+    name: p.Mapped[str] = p.mapped_column(str, nullable=False)
+
+
+class LiveOrmMachine(LiveOrmAsset):
+    __tablename__ = "_plenora_orm_machines"
+    __mapper_args__: ClassVar[dict[str, str]] = {
+        "inheritance": "joined",
+        "polymorphic_identity": "machine",
+    }
+
+    cores: p.Mapped[int] = p.mapped_column(int, nullable=False)
+
+
+class LiveOrmRackMachine(LiveOrmMachine):
+    __tablename__ = "_plenora_orm_rack_machines"
+    __mapper_args__: ClassVar[dict[str, str]] = {
+        "inheritance": "joined",
+        "polymorphic_identity": "rack-machine",
+    }
+
+    rack_units: p.Mapped[int] = p.mapped_column(int, nullable=False)
+
+
+class LiveOrmBigRecord(p.DeclarativeBase):
+    __tablename__ = "_plenora_orm_big_records"
+
+    id: p.Mapped[int] = p.mapped_column(p.BIGINT, primary_key=True)
+    counter: p.Mapped[int] = p.mapped_column(p.BIGINT, nullable=False)
+
+
+class LiveOrmLoaderRoot(p.DeclarativeBase):
+    __tablename__ = "_plenora_orm_loader_roots"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    middles: p.Relationship[LiveOrmLoaderMiddle] = p.relationship(
+        "LiveOrmLoaderMiddle",
+        foreign_key="root_id",
+        uselist=True,
+        cascade="save-update, delete",
+    )
+
+
+class LiveOrmLoaderMiddle(p.DeclarativeBase):
+    __tablename__ = "_plenora_orm_loader_middles"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    root_id: p.Mapped[int] = p.mapped_column(int, nullable=False)
+    leaves: p.Relationship[LiveOrmLoaderLeaf] = p.relationship(
+        "LiveOrmLoaderLeaf",
+        foreign_key="middle_id",
+        uselist=True,
+        cascade="save-update, delete",
+    )
+
+
+class LiveOrmLoaderLeaf(p.DeclarativeBase):
+    __tablename__ = "_plenora_orm_loader_leaves"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    middle_id: p.Mapped[int] = p.mapped_column(int, nullable=False)
+
+
 class OrmChild(p.DeclarativeBase):
     __tablename__ = "orm_children"
 
@@ -393,6 +488,39 @@ class OrmProfileOwner(p.DeclarativeBase):
     )
 
 
+class OrmBigRecord(p.DeclarativeBase):
+    __tablename__ = "orm_big_records"
+
+    id: p.Mapped[int] = p.mapped_column(p.BIGINT, primary_key=True)
+    counter: p.Mapped[int] = p.mapped_column(p.BIGINT, nullable=False)
+
+
+class OrmLoaderRoot(p.DeclarativeBase):
+    __tablename__ = "orm_loader_roots"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    middles: p.Relationship[OrmLoaderMiddle] = p.relationship(
+        "OrmLoaderMiddle", foreign_key="root_id", uselist=True
+    )
+
+
+class OrmLoaderMiddle(p.DeclarativeBase):
+    __tablename__ = "orm_loader_middles"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    root_id: p.Mapped[int] = p.mapped_column(int, nullable=False)
+    leaves: p.Relationship[OrmLoaderLeaf] = p.relationship(
+        "OrmLoaderLeaf", foreign_key="middle_id", uselist=True
+    )
+
+
+class OrmLoaderLeaf(p.DeclarativeBase):
+    __tablename__ = "orm_loader_leaves"
+
+    id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+    middle_id: p.Mapped[int] = p.mapped_column(int, nullable=False)
+
+
 def _ewkb_point(x: float, y: float, srid: int = 4326) -> bytes:
     return (
         b"\x01"
@@ -504,6 +632,7 @@ class _FakeTransaction:
         self.rolled_back = False
         self.scalar = 1
         self.result_batches: list[list[dict]] = []
+        self.savepoint_calls: list[tuple[str, str]] = []
 
     def execute(self, statement, params=None):
         parameters = {} if params is None else dict(params)
@@ -527,6 +656,15 @@ class _FakeTransaction:
     def rollback(self) -> None:
         self.rolled_back = True
         self.is_active = False
+
+    def savepoint(self, name: str) -> None:
+        self.savepoint_calls.append(("savepoint", name))
+
+    def rollback_to_savepoint(self, name: str) -> None:
+        self.savepoint_calls.append(("rollback", name))
+
+    def release_savepoint(self, name: str) -> None:
+        self.savepoint_calls.append(("release", name))
 
 
 class _FakeSession:
@@ -555,6 +693,15 @@ class _AsyncFakeTransaction(_FakeTransaction):
     async def execute_scalar(self, statement, params=None):
         return super().execute_scalar(statement, params)
 
+    async def savepoint(self, name: str) -> None:
+        super().savepoint(name)
+
+    async def rollback_to_savepoint(self, name: str) -> None:
+        super().rollback_to_savepoint(name)
+
+    async def release_savepoint(self, name: str) -> None:
+        super().release_savepoint(name)
+
 
 class _AsyncFakeSession:
     def __init__(
@@ -577,6 +724,95 @@ def test_declarative_mapping_reuses_canonical_table_and_columns() -> None:
     assert Account.__mapper__.primary_key.name == "id"
     assert Account.__mapper__.version.name == "version"
     assert isinstance(Account.id == p.bind("identity"), p.Predicate)
+
+
+def test_big_integer_ddl_and_dml_keep_signed_64_bit_typing() -> None:
+    for provider in ("postgres", "mysql", "mariadb", "sqlserver", "db2"):
+        ddl = p.OrmMetadata(models=(OrmBigRecord,)).ddl(provider)
+        assert "BIGINT" in ddl[0]
+
+    transaction = _FakeTransaction()
+    orm = p.OrmSession(_FakeSession(transaction))
+    record = OrmBigRecord(id=2**40, counter=7)
+    orm.add(record)
+    orm.flush()
+
+    statement, parameters = transaction.executed[0]
+    ast = statement.to_ast()
+    assert all(item["kind"] == "typed_parameter" for item in ast["rows"][0])
+    assert all(value._plenora_typed_kind == "i64" for value in parameters.values())
+
+    with pytest.raises(ValueError, match="signed 64-bit"):
+        OrmBigRecord(id=2**63, counter=1)
+
+
+def test_query_count_exists_pagination_distinct_and_bulk_dml() -> None:
+    transaction = _FakeTransaction([{"count": 3}])
+    orm = p.OrmSession(_FakeSession(transaction))
+    query = orm.query(Account).where(Account.name == p.bind("wanted"))
+
+    shaped = (
+        query.offset(4)
+        .distinct()
+        .group_by(Account.name)
+        .having(p.func.count() > p.bind("minimum"))
+    )
+    assert shaped._statement.row_offset == 4
+    assert shaped._statement.is_distinct
+    assert shaped._statement.groupings == (Account.name,)
+    assert shaped._statement.having_predicate is not None
+    assert query.count({"wanted": "Ada"}) == 3
+
+    transaction.rows = [{"id": 1}]
+    assert query.exists({"wanted": "Ada"})
+
+    transaction.affected = [4]
+    assert query.update({"name": "Grace"}, {"wanted": "Ada"}) == 4
+    update_statement, update_parameters = transaction.executed[-1]
+    assert isinstance(update_statement, p.UpdateStatement)
+    assert update_parameters["wanted"] == "Ada"
+
+    transaction.affected = [2]
+    assert query.delete({"wanted": "Grace"}) == 2
+    assert isinstance(transaction.executed[-1][0], p.DeleteStatement)
+
+
+def test_orm_savepoint_restores_unit_of_work_state() -> None:
+    transaction = _FakeTransaction()
+    orm = p.OrmSession(_FakeSession(transaction))
+    account = Account(id=31, name="before")
+    orm.add(account)
+    orm.flush()
+    orm.savepoint("edit_account")
+
+    account.name = "after"
+    orm.flush()
+    orm.rollback_to_savepoint("edit_account")
+
+    assert account.name == "before"
+    assert p.inspect_instance(account).state is p.ObjectState.PERSISTENT
+    assert p.inspect_instance(account).dirty == ()
+    orm.release_savepoint("edit_account")
+    assert transaction.savepoint_calls == [
+        ("savepoint", "edit_account"),
+        ("rollback", "edit_account"),
+        ("release", "edit_account"),
+    ]
+
+
+def test_nested_selectinload_batches_each_level() -> None:
+    transaction = _FakeTransaction()
+    transaction.result_batches = [
+        [{"id": 1}],
+        [{"id": 10, "root_id": 1}],
+        [{"id": 100, "middle_id": 10}],
+    ]
+    orm = p.OrmSession(_FakeSession(transaction))
+
+    roots = orm.query(OrmLoaderRoot).options(p.selectinload("middles.leaves")).all()
+
+    assert len(transaction.executed) == 3
+    assert roots[0].middles[0].leaves[0].id == 100
 
 
 def test_add_flush_update_delete_tracks_state_and_version() -> None:
@@ -1135,9 +1371,7 @@ def test_composite_many_to_many_selectinload_groups_by_full_owner_identity() -> 
     orm = p.OrmSession(_FakeSession(transaction), autoflush=False)
 
     owners = (
-        orm.query(CompositeOwner)
-        .options(p.selectinload(CompositeOwner.tags))
-        .all()
+        orm.query(CompositeOwner).options(p.selectinload(CompositeOwner.tags)).all()
     )
 
     assert [(item.tenant_id, item.code) for item in owners[0].tags] == [(7, "etl")]
@@ -1696,8 +1930,123 @@ def _drop_db2_models_if_present(
     schema = session.execute_scalar("VALUES CURRENT SCHEMA")
     existing = {item.get("name", "").lower() for item in session.inspect.tables(schema)}
     for model in reversed(models):
-        if model.__table__.name.lower() in existing:
+        table_name = model.__table__.name.lower()
+        if table_name in existing:
             p.OrmMetadata(models=(model,)).drop_all(session, checkfirst=False)
+            existing.remove(table_name)
+
+
+_LIVE_ADVANCED_ORM_MODELS = (
+    LiveOrmEntity,
+    LiveOrmService,
+    LiveOrmDatabase,
+    LiveOrmAsset,
+    LiveOrmMachine,
+    LiveOrmRackMachine,
+    LiveOrmBigRecord,
+    LiveOrmLoaderRoot,
+    LiveOrmLoaderMiddle,
+    LiveOrmLoaderLeaf,
+)
+
+
+def _exercise_live_advanced_orm(provider: str, connector) -> None:
+    session = connector()
+    assert session.capabilities["provider"] == provider
+    metadata = p.OrmMetadata(models=_LIVE_ADVANCED_ORM_MODELS)
+    try:
+        if provider == "db2":
+            _drop_db2_models_if_present(session, *_LIVE_ADVANCED_ORM_MODELS)
+        else:
+            metadata.drop_all(session)
+        metadata.create_all(session)
+
+        with p.OrmSession(session) as orm:
+            orm.add(
+                LiveOrmDatabase(
+                    id=1,
+                    name="primary",
+                    port=5432,
+                    engine="postgres",
+                )
+            )
+            orm.add(
+                LiveOrmRackMachine(
+                    id=2,
+                    name="rack-01",
+                    cores=32,
+                    rack_units=2,
+                )
+            )
+            orm.add(LiveOrmBigRecord(id=2**40, counter=7))
+            orm.add(
+                LiveOrmLoaderRoot(
+                    id=3,
+                    middles=[
+                        LiveOrmLoaderMiddle(
+                            id=4,
+                            leaves=[LiveOrmLoaderLeaf(id=5)],
+                        )
+                    ],
+                )
+            )
+
+        with p.OrmSession(session) as orm:
+            entity = orm.query(LiveOrmEntity).one()
+            assert isinstance(entity, LiveOrmDatabase)
+            assert entity.engine == "postgres"
+            machine = orm.query(LiveOrmRackMachine).one()
+            assert machine.cores == 32 and machine.rack_units == 2
+            roots = (
+                orm.query(LiveOrmLoaderRoot)
+                .options(p.selectinload("middles.leaves"))
+                .all()
+            )
+            assert roots[0].middles[0].leaves[0].id == 5
+            assert orm.query(LiveOrmBigRecord).count() == 1
+            assert orm.query(LiveOrmBigRecord).exists()
+
+        with p.OrmSession(session) as orm:
+            record = orm.get(LiveOrmBigRecord, 2**40)
+            assert record is not None
+            try:
+                with orm.begin_nested("advanced_orm_edit"):
+                    record.counter = 99
+                    orm.flush()
+                    raise RuntimeError("rollback fixture")
+            except RuntimeError:
+                pass
+            assert record.counter == 7
+
+        with p.OrmSession(session) as orm:
+            assert orm.query(LiveOrmBigRecord).update({"counter": 8}) == 1
+        with p.OrmSession(session) as orm:
+            record = orm.get(LiveOrmBigRecord, 2**40)
+            assert record is not None and record.counter == 8
+            assert orm.query(LiveOrmBigRecord).delete() == 1
+    finally:
+        if provider == "db2":
+            _drop_db2_models_if_present(session, *_LIVE_ADVANCED_ORM_MODELS)
+        else:
+            metadata.drop_all(session)
+        session.close()
+
+
+@pytest.mark.parametrize(
+    ("provider", "connector"),
+    (
+        ("postgres", connect_postgres),
+        ("mysql", connect_mysql_reference),
+        ("mariadb", connect_mariadb_reference),
+        ("sqlserver", connect_sqlserver_reference),
+    ),
+)
+def test_live_advanced_orm_qualification(provider: str, connector) -> None:
+    _exercise_live_advanced_orm(provider, connector)
+
+
+def test_live_db2_advanced_orm_qualification() -> None:
+    _exercise_live_advanced_orm("db2", connect_db2_reference)
 
 
 @pytest.mark.parametrize(

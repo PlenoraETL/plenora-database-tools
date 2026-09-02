@@ -27,12 +27,7 @@ SPATIAL_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-db2" / "src" / "spatial_live_tests.rs"
 )
 PYTHON_LIVE_SOURCE = (
-    ROOT
-    / "crates"
-    / "plenora-database-py"
-    / "python"
-    / "tests"
-    / "test_db2_session.py"
+    ROOT / "crates" / "plenora-database-py" / "python" / "tests" / "test_db2_session.py"
 )
 WHEEL_NAMER = ROOT / "scripts" / "name_db2_wheel.py"
 RESULT = ROOT / "assurance-results" / "db2-reference.json"
@@ -97,7 +92,9 @@ def compose(arguments: list[str]) -> list[str]:
 
 
 def compose_exec(arguments: list[str], environment: dict[str, str]) -> str:
-    env_args = [item for pair in environment.items() for item in ("-e", f"{pair[0]}={pair[1]}")]
+    env_args = [
+        item for pair in environment.items() for item in ("-e", f"{pair[0]}={pair[1]}")
+    ]
     return run(compose(["exec", "-T", *env_args, "db2", *arguments]))
 
 
@@ -179,7 +176,11 @@ def validate_build_contract() -> dict[str, str]:
         if required not in healthcheck:
             raise RuntimeError(f"contratto healthcheck Db2 assente: {required}")
     marker = "/run/plenora-fixture-ready"
-    if marker not in entrypoint or marker not in healthcheck or marker not in init_fixture:
+    if (
+        marker not in entrypoint
+        or marker not in healthcheck
+        or marker not in init_fixture
+    ):
         raise RuntimeError("sincronizzazione startup del fixture Db2 incompleta")
     return {"rust": images[0], "db2": images[1]}
 
@@ -189,7 +190,13 @@ def container_identity() -> dict[str, str]:
     if not container:
         raise RuntimeError("container Db2 Compose assente")
     state = run(
-        ["docker", "inspect", "--format", "{{.State.Status}}|{{.State.Health.Status}}", container]
+        [
+            "docker",
+            "inspect",
+            "--format",
+            "{{.State.Status}}|{{.State.Health.Status}}",
+            container,
+        ]
     ).strip()
     if state != "running|healthy":
         raise RuntimeError(f"container Db2 non healthy: {state}")
@@ -241,8 +248,9 @@ PYTHON_LIVE_TARGETS = (
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_generated_defaults_and_ddl",
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_geometry_orm_qualification",
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_migration_dag_is_idempotent_and_reversible",
+    "db2_sdk_gate_tests/test_orm.py::test_live_db2_advanced_orm_qualification",
 )
-PYTHON_LIVE_EXPECTED = 8
+PYTHON_LIVE_EXPECTED = 9
 
 
 def run_python_live() -> None:
@@ -268,18 +276,50 @@ def main() -> int:
         container = container_identity()
         steps.append("container_health")
         compose_exec(
-            ["cargo", "clippy", "--locked", "-p", "plenora-db-db2", "--all-targets", "--", "-D", "warnings"],
+            [
+                "cargo",
+                "clippy",
+                "--locked",
+                "-p",
+                "plenora-db-db2",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
             DB2_ENV,
         )
         steps.append("clippy_deny_warnings")
-        compose_exec(["cargo", "test", "--locked", "-p", "plenora-db-db2", "--lib"], DB2_ENV)
+        compose_exec(
+            ["cargo", "test", "--locked", "-p", "plenora-db-db2", "--lib"], DB2_ENV
+        )
         steps.append("offline_unit_tests")
         listing = compose_exec(
-            ["cargo", "test", "--locked", "-p", "plenora-db-db2", "live_", "--", "--list", "--ignored"],
+            [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "plenora-db-db2",
+                "live_",
+                "--",
+                "--list",
+                "--ignored",
+            ],
             DB2_ENV,
         )
         live = compose_exec(
-            ["cargo", "test", "--locked", "-p", "plenora-db-db2", "live_", "--", "--ignored", "--test-threads=1"],
+            [
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "plenora-db-db2",
+                "live_",
+                "--",
+                "--ignored",
+                "--test-threads=1",
+            ],
             DB2_ENV,
         )
         executed = validate_live_run(listing, live)
@@ -317,7 +357,10 @@ def main() -> int:
         },
     }
     RESULT.parent.mkdir(parents=True, exist_ok=True)
-    RESULT.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    RESULT.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     return 0
 

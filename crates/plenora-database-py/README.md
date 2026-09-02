@@ -217,17 +217,28 @@ attributi modificati e una colonna `version=True` aggiunge il controllo di
 concorrenza ottimistica a update e delete. `inspect_instance` espone stato,
 identita e nomi dirty senza esporre valori applicativi.
 `mapped_column(int)` corrisponde a SQL `INTEGER` e rifiuta valori fuori dal suo
-intervallo prima dell'I/O; una futura superficie `BIGINT` richiedera un tipo
-ORM distinto, cosi il binding non deve indovinare la larghezza dal valore.
+intervallo prima dell'I/O. `mapped_column(p.BIGINT)` dichiara invece SQL
+`BIGINT`, verifica l'intervallo signed a 64 bit e usa un bind `int64` esplicito,
+cosi il binding non deve indovinare la larghezza dal valore.
 
 Le query di entita partono da `orm.query(Account)` e compongono gli stessi
 predicati dell'expression language. Oltre a ordinamento e paginazione espongono
 join tramite relationship, proiezioni, tuple di entita e caricamento eager con
 `selectinload` o `joinedload`. `joinedload` accetta anche collezioni e
 deduplica le entita root mentre accumula i figli nell'identity map. I valori
-restano bind separati. `refresh`, `expire`, `expunge` e
-`merge` completano il lifecycle; l'autoflush e attivo per default e si puo
-disabilitare nel costruttore della sessione.
+restano bind separati. I loader accettano percorsi annidati come
+`selectinload("orders.items")`; ogni livello successivo viene caricato in
+batch. La query espone anche `offset`, `distinct`, `group_by`, `having`,
+`count`, `exists` e bulk `update`/`delete`. Il bulk DML resta chiuso per
+joined-table e per query con join, grouping, ordering o paginazione, dove una
+mutazione portabile e atomica non e qualificata. `refresh`, `expire`,
+`expunge` e `merge` completano il lifecycle; l'autoflush e attivo per default
+e si puo disabilitare nel costruttore della sessione.
+
+`savepoint`, `rollback_to_savepoint`, `release_savepoint` e il context manager
+`begin_nested(name)` delegano ai savepoint della transazione Core e
+ripristinano insieme lo stato del database e quello dello Unit of Work. La
+superficie async mantiene lo stesso contratto con operazioni awaitable.
 
 Una chiave `generated=True` e una colonna `server_default=True` possono essere
 omesse dal costruttore. PostgreSQL, MariaDB e SQL Server le idratano dallo
@@ -260,10 +271,15 @@ fail-closed.
 
 `UniqueConstraint` e `ForeignKeyConstraint` descrivono anche vincoli compositi;
 mixin astratti e forma concrete esplicita conservano colonne, vincoli e
-relationship ereditati. `OrmMetadata` compila e applica create/drop table nei
-dialetti qualificati. `MigrationRunner` e la variante async ordinano un DAG di
-revisioni con branch e merge ed eseguono una revisione per transazione, mentre
-`OrmSession.listen` registra hook locali sul lifecycle del flush.
+relationship ereditati. Single-table supporta campi e relationship locali di
+sottotipo e gerarchie multilivello; i campi locali devono essere nullable o
+avere un server default per non invalidare le righe degli altri sottotipi.
+Joined-table supporta gerarchie multilivello e applica insert, update e delete
+a tutti i frammenti della lineage. `OrmMetadata` compila e applica create/drop
+table nei dialetti qualificati. `MigrationRunner` e la variante async ordinano
+un DAG di revisioni con branch e merge ed eseguono una revisione per
+transazione, mentre `OrmSession.listen` registra hook locali sul lifecycle del
+flush.
 
 `AsyncOrmSession` espone lo stesso mapping, identity map, planner del flush e
 regole di concorrenza. Le operazioni che fanno I/O sono coroutine; `add`,
@@ -618,8 +634,8 @@ engine = p.engine_from_url(
 immutabile con fingerprint e rischio per operazione. `apply()` pre-valida
 l'intero piano prima di eseguire DDL; `migration()` lo inserisce nel runner
 esistente. Le strategie ORM `single` e `joined` si dichiarano in
-`__mapper_args__`; la gerarchia qualificata in 1.2 e intenzionalmente limitata
-a un livello.
+`__mapper_args__`. La linea corrente qualifica gerarchie multilivello, campi
+locali single-table e lifecycle joined-table su ogni frammento.
 
 Per AGE, `graph_query()` costruisce MATCH, predicati e RETURN con parametri
 separati, mentre `GraphSchema` / `compare_graph_schema()` gestiscono creazione
@@ -761,11 +777,10 @@ versioni Python ≥ 3.10.
   colonna `geometry(*, 4326)` la distanza è in gradi, non metri.
   Usare `spatial.geography(...)` per unità metriche geodetiche.
 - **ORM-like** — non c'e lazy loading implicito. Le relationship verso chiavi
-  composite richiedono un mapping FK esplicito. L'ereditarieta mappata resta
-  concrete (con mixin astratti); single-table e joined-table inheritance non
-  sono pubblicate. Geometry ORM e qualificata sui cinque provider nei limiti
-  dichiarati sopra; tipi, dimensioni o semantiche fuori da quella matrice
-  restano chiusi.
+  composite richiedono un mapping FK esplicito. Il bulk DML non attraversa
+  tabelle joined e non accetta join, grouping, ordering o paginazione.
+  Geometry ORM e qualificata sui cinque provider nei limiti dichiarati sopra;
+  tipi, dimensioni o semantiche fuori da quella matrice restano chiusi.
 
 ## Sviluppo
 

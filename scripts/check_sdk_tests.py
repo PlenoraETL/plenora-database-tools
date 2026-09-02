@@ -127,9 +127,15 @@ CLI_BINARY_NAME = "plenora-database"
 CLI_FEATURES = ("postgres", "mysql", "sqlserver")
 CLI_BUILD_COMMAND = " ".join(
     [
-        "cargo", "build", "--release", "--locked",
-        "-p", CLI_PACKAGE,
-        "--no-default-features", "--features", ",".join(CLI_FEATURES),
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "-p",
+        CLI_PACKAGE,
+        "--no-default-features",
+        "--features",
+        ",".join(CLI_FEATURES),
     ]
 )
 
@@ -183,8 +189,7 @@ SQLSERVER_SKIP = (
     "e/o PLENORA_TEST_SQLSERVER_PASSWORD"
 )
 DB2_SKIP = (
-    "live test Db2: mancano env PLENORA_TEST_DB2_HOST "
-    "e/o PLENORA_TEST_DB2_PASSWORD"
+    "live test Db2: mancano env PLENORA_TEST_DB2_HOST e/o PLENORA_TEST_DB2_PASSWORD"
 )
 AGE_SKIP = "live test AGE: manca env PLENORA_TEST_AGE_DSN"
 BENCH_SKIP = (
@@ -199,22 +204,22 @@ SCOPE_CONTRACTS = {
     # Il gate SDK multipiattaforma qualifica il wheel standard, che non
     # incorpora ODBC. I test Db2 appartengono al gate live DB2 dedicato e qui
     # devono restare skip espliciti, non essere assorbiti dal totale.
-    "live": ScopeContract(passed=400, deselected=0, skips={DB2_SKIP: 8}),
+    "live": ScopeContract(passed=411, deselected=0, skips={DB2_SKIP: 9}),
     "offline": ScopeContract(
-        passed=135,
+        passed=142,
         deselected=0,
         skips={
-            POSTGRES_SKIP: 212,
-            MYSQL_SKIP: 34,
-            MARIADB_SKIP: 7,
-            SQLSERVER_SKIP: 7,
-            DB2_SKIP: 8,
+            POSTGRES_SKIP: 213,
+            MYSQL_SKIP: 35,
+            MARIADB_SKIP: 8,
+            SQLSERVER_SKIP: 8,
+            DB2_SKIP: 9,
             AGE_SKIP: 3,
             BENCH_SKIP: 2,
         },
     ),
     "stabilization": ScopeContract(passed=30, deselected=0, skips={}),
-    "benchmark": ScopeContract(passed=2, deselected=406, skips={}),
+    "benchmark": ScopeContract(passed=2, deselected=418, skips={}),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende
@@ -349,7 +354,7 @@ def maturin_bounds(pyproject: str) -> tuple[str, str]:
         remainder = line.split(marker, 1)[1]
         minimum, _, rest = remainder.partition(",")
         upper = rest.split("<", 1)[1] if "<" in rest else ""
-        return minimum.strip(), upper.strip(' "\']')
+        return minimum.strip(), upper.strip(" \"']")
     raise RuntimeError("pyproject.toml non dichiara un vincolo su maturin")
 
 
@@ -534,7 +539,8 @@ def porcelain_entries() -> list[str]:
     """
 
     return [
-        line for line in git(["status", "--porcelain", "-uall"]).splitlines()
+        line
+        for line in git(["status", "--porcelain", "-uall"]).splitlines()
         if line.strip()
     ]
 
@@ -621,8 +627,11 @@ def image_identity(reference: str) -> dict[str, object]:
 
     raw = run(
         [
-            "docker", "image", "inspect",
-            "--format", "{{.Id}} {{json .RepoDigests}}",
+            "docker",
+            "image",
+            "inspect",
+            "--format",
+            "{{.Id}} {{json .RepoDigests}}",
             reference,
         ],
         capture=True,
@@ -686,15 +695,27 @@ def build_artifacts(destination: Path) -> dict[str, object]:
     )
     output = run(
         [
-            "docker", "run", "--rm",
-            "-v", f"{ROOT}:/workspace",
-            "-v", f"{destination}:{ARTIFACT_MOUNT}",
-            "-v", "plenora_cargo_registry:/usr/local/cargo/registry",
-            "-v", "plenora_cargo_git:/usr/local/cargo/git",
-            "-v", "pln_target_docker:/workspace/target-docker",
-            "-w", "/workspace",
-            "-e", "CARGO_TARGET_DIR=/workspace/target-docker",
-            RUST_IMAGE, "sh", "-c", script,
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{ROOT}:/workspace",
+            "-v",
+            f"{destination}:{ARTIFACT_MOUNT}",
+            "-v",
+            "plenora_cargo_registry:/usr/local/cargo/registry",
+            "-v",
+            "plenora_cargo_git:/usr/local/cargo/git",
+            "-v",
+            "pln_target_docker:/workspace/target-docker",
+            "-w",
+            "/workspace",
+            "-e",
+            "CARGO_TARGET_DIR=/workspace/target-docker",
+            RUST_IMAGE,
+            "sh",
+            "-c",
+            script,
         ],
         capture=True,
     )
@@ -759,7 +780,9 @@ def live_environment(*, cli: str) -> list[str]:
     postgres_user = container_variable(POSTGRES_CONTAINER, "POSTGRES_USER")
     postgres_password = container_variable(POSTGRES_CONTAINER, "POSTGRES_PASSWORD")
     postgres_database = container_variable(POSTGRES_CONTAINER, "POSTGRES_DB")
-    sqlserver_database = container_variable(SQLSERVER_CONTAINER, "PLENORA_TEST_DATABASE")
+    sqlserver_database = container_variable(
+        SQLSERVER_CONTAINER, "PLENORA_TEST_DATABASE"
+    )
     sqlserver_user = container_variable(SQLSERVER_CONTAINER, "PLENORA_TEST_USER")
     sqlserver_password = container_variable(SQLSERVER_CONTAINER, "MSSQL_SA_PASSWORD")
     dsn = (
@@ -773,20 +796,24 @@ def live_environment(*, cli: str) -> list[str]:
         f"dbname={container_variable(AGE_CONTAINER, 'POSTGRES_DB')}"
     )
     return [
-        "-e", f"PLENORA_TEST_POSTGRES_DSN={dsn}",
-        "-e", f"PLENORA_TEST_AGE_DSN={age_dsn}",
-        "-e", f"PLENORA_TEST_MYSQL_HOST={MYSQL_CONTAINER}",
+        "-e",
+        f"PLENORA_TEST_POSTGRES_DSN={dsn}",
+        "-e",
+        f"PLENORA_TEST_AGE_DSN={age_dsn}",
+        "-e",
+        f"PLENORA_TEST_MYSQL_HOST={MYSQL_CONTAINER}",
         "-e",
         f"PLENORA_TEST_MYSQL_DATABASE="
         f"{container_variable(MYSQL_CONTAINER, 'MYSQL_DATABASE')}",
         "-e",
-        f"PLENORA_TEST_MYSQL_USER="
-        f"{container_variable(MYSQL_CONTAINER, 'MYSQL_USER')}",
+        f"PLENORA_TEST_MYSQL_USER={container_variable(MYSQL_CONTAINER, 'MYSQL_USER')}",
         "-e",
         f"PLENORA_TEST_MYSQL_PASSWORD="
         f"{container_variable(MYSQL_CONTAINER, 'MYSQL_PASSWORD')}",
-        "-e", "PLENORA_TEST_MYSQL_CA=/mysql-tls/ca.pem",
-        "-e", f"PLENORA_TEST_MARIADB_HOST={MARIADB_CONTAINER}",
+        "-e",
+        "PLENORA_TEST_MYSQL_CA=/mysql-tls/ca.pem",
+        "-e",
+        f"PLENORA_TEST_MARIADB_HOST={MARIADB_CONTAINER}",
         "-e",
         f"PLENORA_TEST_MARIADB_DATABASE="
         f"{container_variable(MARIADB_CONTAINER, 'MARIADB_DATABASE')}",
@@ -796,15 +823,22 @@ def live_environment(*, cli: str) -> list[str]:
         "-e",
         f"PLENORA_TEST_MARIADB_PASSWORD="
         f"{container_variable(MARIADB_CONTAINER, 'MARIADB_PASSWORD')}",
-        "-e", "PLENORA_TEST_MARIADB_CA=/mariadb-tls/ca.pem",
-        "-e", f"PLENORA_TEST_SQLSERVER_HOST={SQLSERVER_TLS_HOST}",
-        "-e", f"PLENORA_TEST_SQLSERVER_DATABASE={sqlserver_database}",
-        "-e", f"PLENORA_TEST_SQLSERVER_USER={sqlserver_user}",
+        "-e",
+        "PLENORA_TEST_MARIADB_CA=/mariadb-tls/ca.pem",
+        "-e",
+        f"PLENORA_TEST_SQLSERVER_HOST={SQLSERVER_TLS_HOST}",
+        "-e",
+        f"PLENORA_TEST_SQLSERVER_DATABASE={sqlserver_database}",
+        "-e",
+        f"PLENORA_TEST_SQLSERVER_USER={sqlserver_user}",
         "-e",
         f"PLENORA_TEST_SQLSERVER_PASSWORD={sqlserver_password}",
-        "-e", "PLENORA_TEST_SQLSERVER_CA=/sqlserver-tls/ca.pem",
-        "-e", "PLENORA_BENCH_PARITY=1",
-        "-e", f"PLENORA_CLI_BIN={cli}",
+        "-e",
+        "PLENORA_TEST_SQLSERVER_CA=/sqlserver-tls/ca.pem",
+        "-e",
+        "PLENORA_BENCH_PARITY=1",
+        "-e",
+        f"PLENORA_CLI_BIN={cli}",
     ]
 
 
@@ -905,9 +939,12 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
         mariadb_tls = compose_volume(MARIADB_CONTAINER, "/etc/mysql/tls")
         sqlserver_tls = compose_volume(SQLSERVER_CONTAINER, "/var/opt/mssql/tls")
         command += [
-            "-v", f"{mysql_tls}:/mysql-tls:ro",
-            "-v", f"{mariadb_tls}:/mariadb-tls:ro",
-            "-v", f"{sqlserver_tls}:/sqlserver-tls:ro",
+            "-v",
+            f"{mysql_tls}:/mysql-tls:ro",
+            "-v",
+            f"{mariadb_tls}:/mariadb-tls:ro",
+            "-v",
+            f"{sqlserver_tls}:/sqlserver-tls:ro",
         ]
         environment = live_environment(cli=cli_binary_path())
     if scope == "benchmark":
@@ -922,17 +959,23 @@ def pytest_command(*, scope: str, artifacts: Path, wheel: str) -> list[str]:
         f"pip install -q --no-deps {ARTIFACT_MOUNT}/{wheel}; "
         f"cp -r {suite} {SUITE_DIRECTORY}/tests; "
         f"rm -rf {SUITE_DIRECTORY}/tests/__pycache__; "
-        f'echo "{PYTHON_MARKER}$(python -V 2>&1 | cut -d\' \' -f2)"; '
-        f'echo "{PACKAGES_MARKER}$(pip freeze | tr \'\\n\' \' \')"; '
+        f"echo \"{PYTHON_MARKER}$(python -V 2>&1 | cut -d' ' -f2)\"; "
+        f"echo \"{PACKAGES_MARKER}$(pip freeze | tr '\\n' ' ')\"; "
         f"python {REPOSITORY_MOUNT}/scripts/{PROBE.name}; "
         f"python -m pytest {' '.join(selection)} -q -rs"
     )
     command += [
-        "-v", f"{ROOT}:{REPOSITORY_MOUNT}:ro",
-        "-v", f"{artifacts}:{ARTIFACT_MOUNT}:ro",
-        "-w", SUITE_DIRECTORY,
+        "-v",
+        f"{ROOT}:{REPOSITORY_MOUNT}:ro",
+        "-v",
+        f"{artifacts}:{ARTIFACT_MOUNT}:ro",
+        "-w",
+        SUITE_DIRECTORY,
         *environment,
-        PYTHON_IMAGE, "sh", "-c", script,
+        PYTHON_IMAGE,
+        "sh",
+        "-c",
+        script,
     ]
     return command
 
