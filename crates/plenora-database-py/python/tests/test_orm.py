@@ -762,6 +762,7 @@ def test_query_count_exists_pagination_distinct_and_bulk_dml() -> None:
     assert shaped._statement.groupings == (Account.name,)
     assert shaped._statement.having_predicate is not None
     assert query.count({"wanted": "Ada"}) == 3
+    assert transaction.executed[-1][0].source is Account.__table__
 
     transaction.rows = [{"id": 1}]
     assert query.exists({"wanted": "Ada"})

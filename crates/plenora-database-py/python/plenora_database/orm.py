@@ -1715,9 +1715,13 @@ class OrmQuery(Generic[T]):
         return None if not rows else rows[0]
 
     def count(self, parameters: Mapping[str, Any] | None = None) -> int:
+        source = self._statement._resolved_source()
+        if source is None:
+            raise OrmMappingError("COUNT ORM privo di source relazionale")
         statement = replace(
             self._statement,
             projections=(func.count(),),
+            source=source,
             orderings=(),
             row_limit=None,
             row_offset=None,
@@ -1890,9 +1894,13 @@ class AsyncOrmQuery(Generic[T]):
         return None if not rows else rows[0]
 
     async def count(self, parameters: Mapping[str, Any] | None = None) -> int:
+        source = self._statement._resolved_source()
+        if source is None:
+            raise OrmMappingError("COUNT ORM privo di source relazionale")
         statement = replace(
             self._statement,
             projections=(func.count(),),
+            source=source,
             orderings=(),
             row_limit=None,
             row_offset=None,
