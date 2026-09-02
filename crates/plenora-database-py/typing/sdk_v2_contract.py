@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, assert_type
+from typing import Any
+
+from typing_extensions import assert_type
 
 import plenora_database as p
 
