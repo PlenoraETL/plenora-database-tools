@@ -806,8 +806,8 @@ class PythonWheelWorkflowTests(unittest.TestCase):
             "una verifica inline e una seconda definizione di verificato",
         )
 
-    def test_pypi_publish_is_oidc_release_only_and_environment_protected(self) -> None:
-        """PyPI non riceve token statici ne wheel Db2 non standard."""
+    def test_github_release_is_the_only_distribution_surface(self) -> None:
+        """I wheel restano asset attestati e non vanno a package index."""
 
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         self.assertNotIn(
@@ -815,16 +815,13 @@ class PythonWheelWorkflowTests(unittest.TestCase):
             workflow,
             "nessun passo del workflow deve avere bisogno di un secret",
         )
-        job = parsed_jobs(workflow)["publish-pypi"]
-        self.assertEqual(job["if"], "github.event_name == 'release'")
-        self.assertEqual(job["environment"]["name"], "pypi")
-        self.assertEqual(job["permissions"], {"id-token": "write"})
-        block = job_text(workflow, "publish-pypi")
-        self.assertIn("pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33", block)
-        self.assertIn("wheel-linux-x86_64", block)
-        self.assertIn("wheel-windows-x86_64", block)
-        self.assertNotIn("wheel-db2", block)
-        self.assertNotIn("twine", block)
+        self.assertNotIn("publish-pypi", parsed_jobs(workflow))
+        self.assertNotIn("pypi", workflow.lower())
+        self.assertNotIn("gh-action-pypi-publish", workflow)
+        self.assertNotIn("twine", workflow)
+        release = parsed_jobs(workflow)["attach-to-release"]
+        self.assertEqual(release["if"], "github.event_name == 'release'")
+        self.assertIn("softprops/action-gh-release@", job_text(workflow, "attach-to-release"))
 
     def test_release_wheels_have_sbom_and_attestations(self) -> None:
         workflow = self.WORKFLOW.read_text(encoding="utf-8")

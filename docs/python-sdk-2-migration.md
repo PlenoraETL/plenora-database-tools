@@ -66,6 +66,6 @@ verifica operativa esterna.
 ## Distribuzione
 
 La matrice Python supportata viene verificata staticamente in CI. Ogni wheel di
-release e accompagnato da SBOM e attestazione di provenienza; la pubblicazione
-su PyPI avviene solo dall'environment GitHub protetto del workflow di release.
-La matrice dichiarata e provata copre CPython 3.10–3.14.
+release e accompagnato da SBOM e attestazione di provenienza ed e distribuito
+esclusivamente come asset della GitHub Release. Non e prevista pubblicazione su
+package index esterni. La matrice dichiarata e provata copre CPython 3.10–3.14.

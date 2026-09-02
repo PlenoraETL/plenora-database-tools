@@ -5,6 +5,14 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [2.0.2] — 2026-09-02
+
+### Modificato
+
+- GitHub Releases e l'unica superficie di distribuzione dello SDK: il workflow
+  allega wheel qualificati, SBOM e attestazioni, senza pubblicare su PyPI o su
+  altri package index.
+
 ## [2.0.1] — 2026-09-02
 
 ### Corretto
