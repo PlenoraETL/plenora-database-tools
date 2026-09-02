@@ -820,7 +820,7 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         self.assertEqual(job["environment"]["name"], "pypi")
         self.assertEqual(job["permissions"], {"id-token": "write"})
         block = job_text(workflow, "publish-pypi")
-        self.assertIn("pypa/gh-action-pypi-publish@", block)
+        self.assertIn("pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33", block)
         self.assertIn("wheel-linux-x86_64", block)
         self.assertIn("wheel-windows-x86_64", block)
         self.assertNotIn("wheel-db2", block)

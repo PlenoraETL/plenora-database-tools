@@ -5,6 +5,14 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [2.0.1] — 2026-09-02
+
+### Corretto
+
+- Il workflow di distribuzione usa il commit verificato della release PyPA
+  `gh-action-pypi-publish` 1.14.2. Il pin precedente non esisteva nel
+  repository ufficiale e falliva prima dell'autenticazione OIDC.
+
 ## [2.0.0] — 2026-09-02
 
 ### Breaking
