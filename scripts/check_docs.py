@@ -8,6 +8,7 @@ contraddizioni cross-file gia emerse durante l'audit.
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
 try:
@@ -28,6 +29,27 @@ HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 PYTHON_COMMAND = re.compile(
     r"\bpython(?:3)?\s+((?:scripts[\\/])[A-Za-z0-9_.\\/-]+\.py)"
 )
+PYTHON_FENCE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL)
+
+
+def method_call_blocks(text: str, method: str) -> list[str]:
+    """Estrae chiamate Markdown multilinea con parentesi annidate."""
+
+    marker = f".{method}("
+    blocks: list[str] = []
+    cursor = 0
+    while (start := text.find(marker, cursor)) >= 0:
+        depth = 1
+        index = start + len(marker)
+        while index < len(text) and depth:
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+            index += 1
+        blocks.append(text[start:index])
+        cursor = index
+    return blocks
 
 
 @dataclass(frozen=True)
@@ -93,6 +115,30 @@ def validate_commands(root: Path, documents: list[Path]) -> list[Violation]:
             if not (root / normalized).is_file():
                 violations.append(
                     Violation(path, f"comando Python punta a un file assente: {command_path}")
+                )
+    return violations
+
+
+def validate_python_examples(documents: list[Path]) -> list[Violation]:
+    """Ogni esempio Python deve essere almeno sintatticamente eseguibile."""
+
+    violations: list[Violation] = []
+    for path in documents:
+        text = path.read_text(encoding="utf-8")
+        for position, source in enumerate(PYTHON_FENCE.findall(text), start=1):
+            try:
+                compile(
+                    source,
+                    f"{path}#python-{position}",
+                    "exec",
+                    flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
+                )
+            except SyntaxError as exc:
+                violations.append(
+                    Violation(
+                        path,
+                        f"esempio Python {position} non valido: riga {exc.lineno}",
+                    )
                 )
     return violations
 
@@ -194,7 +240,39 @@ def validate_semantics(root: Path) -> list[Violation]:
     if "*(s.execute_scalar" in sdk_text:
         violations.append(Violation(sdk, "l'esempio async condivide una Session fra task"))
 
-    root_readme = (root / "README.md").read_text(encoding="utf-8")
+    root_readme_path = root / "README.md"
+    root_readme = root_readme_path.read_text(encoding="utf-8")
+    current_guides = {
+        root_readme_path: root_readme,
+        sdk: sdk_text,
+        migration: migration_text,
+        root / "docs/python-sdk-2-migration.md": (
+            root / "docs/python-sdk-2-migration.md"
+        ).read_text(encoding="utf-8"),
+    }
+    stale_sdk_forms = (
+        "p.create_engine(",
+        "p.create_async_engine(",
+        "pip install plenora-database",
+        'selectinload("',
+        'joinedload("',
+        "Mapping policy: `compatible` (default)",
+    )
+    for path, text in current_guides.items():
+        for stale in stale_sdk_forms:
+            if stale in text:
+                violations.append(Violation(path, f"forma SDK 1.x ancora documentata: {stale}"))
+        for method in ("copy_from", "acopy_from"):
+            for call in method_call_blocks(text, method):
+                if "mapping_policy=" not in call:
+                    violations.append(
+                        Violation(path, f"{method} senza mapping_policy esplicita")
+                    )
+    for path in (root_readme_path, sdk, migration):
+        text = current_guides[path]
+        if "github.com/PlenoraETL/plenora-database-tools/releases" not in text:
+            violations.append(Violation(path, "distribuzione GitHub Releases non documentata"))
+
     for command in (
         "scripts\\sweep.py",
         "scripts\\check_docs.py",
@@ -247,6 +325,7 @@ def scan(root: Path = ROOT) -> tuple[int, list[Violation]]:
             violations.append(Violation(path, "code fence non bilanciato"))
     violations += validate_links(root, documents)
     violations += validate_commands(root, documents)
+    violations += validate_python_examples(documents)
     if root == ROOT:
         violations += validate_generated(root)
         violations += validate_license(root)

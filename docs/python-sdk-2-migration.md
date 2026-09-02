@@ -69,3 +69,10 @@ La matrice Python supportata viene verificata staticamente in CI. Ogni wheel di
 release e accompagnato da SBOM e attestazione di provenienza ed e distribuito
 esclusivamente come asset della GitHub Release. Non e prevista pubblicazione su
 package index esterni. La matrice dichiarata e provata copre CPython 3.10–3.14.
+
+L'installazione parte quindi da un asset scaricato dalla
+[pagina delle release](https://github.com/PlenoraETL/plenora-database-tools/releases):
+
+```bash
+python -m pip install ./plenora_database-<version>-cp310-abi3-<platform>.whl
+```

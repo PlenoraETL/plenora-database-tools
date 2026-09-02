@@ -22,6 +22,10 @@ copre 3.10 / 3.11 / 3.12 / 3.13 / 3.14 per la stessa piattaforma.
 
 ### Da wheel pre-costruito (produzione)
 
+Scaricare l'asset appropriato dalla
+[pagina delle release](https://github.com/PlenoraETL/plenora-database-tools/releases),
+quindi installare il file locale:
+
 ```bash
 pip install ./plenora_database-<version>-cp310-abi3-<platform>.whl
 ```
@@ -56,7 +60,7 @@ python -c "import plenora_database as p; print(p.version())"
 
 Per un server applicativo, il confine consigliato e un `Engine` longevo e una
 sessione per request. PostgreSQL, MySQL, MariaDB, SQL Server e Db2 espongono lo
-lo stesso lifecycle provider-neutral.
+stesso lifecycle provider-neutral.
 
 ```python
 engine = p.engine_from_url(
@@ -237,9 +241,10 @@ predicati dell'expression language. Oltre a ordinamento e paginazione espongono
 join tramite relationship, proiezioni, tuple di entita e caricamento eager con
 `selectinload` o `joinedload`. `joinedload` accetta anche collezioni e
 deduplica le entita root mentre accumula i figli nell'identity map. I valori
-restano bind separati. I loader accettano percorsi annidati come
-`selectinload("orders.items")`; ogni livello successivo viene caricato in
-batch. La query espone anche `offset`, `distinct`, `group_by`, `having`,
+restano bind separati. I loader accettano percorsi annidati tipizzati, per
+esempio `selectinload(Customer.orders, Order.items)`; ogni livello successivo
+viene caricato in batch. La query espone anche `offset`, `distinct`,
+`group_by`, `having`,
 `count`, `exists` e bulk `update`/`delete`. Il bulk DML resta chiuso per
 joined-table e per query con join, grouping, ordering o paginazione, dove una
 mutazione portabile e atomica non e qualificata. `refresh`, `expire`,
@@ -337,7 +342,10 @@ records = ingress.records(
 # volta. Il generatore produce batch bounded senza caricare il file intero.
 with open("accounts.jsonl", encoding="utf-8") as lines:
     outcome = session.copy_from(
-        "app", "accounts", ingress.batches(lines, batch_size=1_024)
+        "app",
+        "accounts",
+        ingress.batches(lines, batch_size=1_024),
+        mapping_policy="compatible",
     )
 ```
 
@@ -361,7 +369,9 @@ iterazione, sono disponibili `arecords`, `aobjects` e `abatches`:
 
 ```python
 async for batch in ingress.abatches(async_lines, batch_size=1_024):
-    await session.acopy_from("app", "accounts", batch)
+    await session.acopy_from(
+        "app", "accounts", batch, mapping_policy="compatible"
+    )
 ```
 
 In questa forma ogni `acopy_from` ha il proprio esito; non viene promessa una
@@ -605,14 +615,22 @@ tbl = pa.table({
 })
 
 # Append in target esistente
-outcome = s.copy_from("public", "measurements", tbl, mode="append")
+outcome = s.copy_from(
+    "public", "measurements", tbl,
+    mode="append", mapping_policy="compatible",
+)
 # {"status": "committed", "rows": {"received": 100000, "confirmed": 100000, ...}}
 
 # ETL scratch — crea tabella dallo schema Arrow (nessun DDL preventivo)
-outcome = s.copy_from("public", "measurements_new", tbl, mode="create")
+outcome = s.copy_from(
+    "public", "measurements_new", tbl,
+    mode="create", mapping_policy="compatible",
+)
 
 # Async equivalente
-outcome = await s.acopy_from("public", "measurements", tbl)
+outcome = await s.acopy_from(
+    "public", "measurements", tbl, mapping_policy="compatible"
+)
 ```
 
 `source` accetta `pyarrow.Table`, `pyarrow.RecordBatch`, iterable di batch
@@ -628,7 +646,7 @@ Mode:
   accettano `update_columns`
 Transaction profile: `single_transaction` (default) / `chunk_committed` /
 `staged_swap` / `best_effort_ddl`.
-Mapping policy: `compatible` (default) / `strict` / `lossy` / `native`.
+Mapping policy obbligatoria: `compatible` / `strict` / `lossy` / `native`.
 `strict` boccia ogni loss anche minore (es. Arrow nullable → PG NOT NULL);
 `compatible` tollera le loss non-DataLoss — scelta consigliata per input
 pyarrow tipici (dove i campi sono nullable per default).
@@ -636,7 +654,7 @@ pyarrow tipici (dove i campi sono nullable per default).
 L'outcome è un dict con struttura `WriteOutcome` del core (status,
 rows.confirmed / .inserted / .failed / .skipped, recovery).
 
-## Application extensions 1.2
+## Integrazione applicativa
 
 La configurazione provider-neutral conserva comunque una scelta esplicita del
 prodotto nel protocollo URL:
@@ -738,28 +756,23 @@ except p.PlenoraError:
     ...
 ```
 
-Le 19 sottoclassi corrispondono 1:1 al `ErrorCategory` del core Rust:
-
-`PlenoraInvalidPlanError`, `PlenoraInvalidConfigurationError`,
-`PlenoraSchemaError`, `PlenoraDataMappingError`, `PlenoraCrsError`,
-`PlenoraUnsupportedError`, `PlenoraNotFoundError`, `PlenoraConflictError`,
-`PlenoraConcurrentModificationError`, `PlenoraAuthenticationError`,
-`PlenoraAuthorizationError`, `PlenoraTimeoutError`, `PlenoraCancelledError`,
-`PlenoraResourceLimitError`, `PlenoraIoError`, `PlenoraProtocolError`,
-`PlenoraTransientError`, `PlenoraExecutionError`, `PlenoraInternalError`.
+Le sottoclassi pubbliche corrispondono alle categorie del core Rust. L'elenco
+autorevole è esportato da
+[`errors.py`](python/plenora_database/errors.py) e descritto dagli stub PEP 561;
+la documentazione non ne mantiene una seconda copia.
 
 ## Optimistic conflict pattern
 
 ```python
 # UPDATE ottimistico con expected_version
-n = (
+outcome = (
     s.update("orders")
      .set(status="paid", version=current + 1)
      .where_eq("id", order_id)
      .where_eq("version", current)    # stale-check
      .execute()
 )
-if n == 0:
+if outcome.affected_rows == 0:
     # version cambiato sotto — refresh e riprova
     fresh = s.select("orders").columns("version").where_eq("id", order_id).scalar()
     ...
@@ -772,24 +785,19 @@ runner, una sessione SDK riusata con il subprocess CLI. E opt-in con
 `PLENORA_BENCH_PARITY=1`: il risultato appartiene alla singola corsa e viene
 registrato dal runner, non copiato qui come se valesse per ogni macchina.
 
-## Compatibility
+## Compatibilità
 
-| superficie | dichiarata | verificata dai workflow |
-|---|---|---|
-| Python ABI | 3.10+ | import e suite wheel su Python 3.12; assurance SDK su 3.13 |
-| Rust | 1.98 | 1.98 |
-| piattaforme wheel standard | Linux x86_64, Windows x86_64 | una suite offline per ciascun artefatto; DB2 fail-closed |
-| artefatto DB2 | Linux x86_64 live; Windows x86_64 build-only | wheel Linux `1db2` pubblicato solo dopo il gate live; build e import Windows senza distribuzione runtime |
-
-Wheel: `abi3-py310` → un solo wheel per platform copre tutte le
-versioni Python ≥ 3.10.
+Versioni, crate e capability dichiarate sono generati in
+[`docs/STATO.md`](../../docs/STATO.md). Le piattaforme realmente distribuite si
+leggono dagli asset della release e dal
+[`python-wheel.yml`](../../.github/workflows/python-wheel.yml) che li costruisce
+e li verifica; un artefatto assente non è supporto implicito.
 
 ## Limitazioni
 
-- **Selezione del prodotto** — PostgreSQL, MySQL, MariaDB, SQL Server e Db2 hanno
-  factory distinte; non esiste selezione automatica dal server raggiunto.
-- **macOS** — non fa parte della matrice di distribuzione ufficiale dalla
-  major 1.0; Db2 non dispone inoltre di una matrice client IBM qualificata.
+- **Selezione del prodotto** — il prodotto è dichiarato nell'URL o in
+  `EngineConfig` e verificato dalla probe; non viene inferito dal server
+  raggiunto.
 - **Cursore server-side riapribile** — non viene pubblicata un'identita di
   cursore lato server. La ripresa supportata e keyset e usa `ReadCheckpoint`;
   e qualificata live sui cinque provider.
@@ -919,36 +927,6 @@ eseguire da solo, sempre con i riferimenti live accesi:
 
 ```bash
 python scripts/check_sdk_tests.py --stabilization-only
-```
-
-### Struttura
-
-```
-crates/plenora-database-py/
-├── Cargo.toml           # cdylib + pyo3 abi3-py310 + pyo3-async-runtimes
-├── pyproject.toml       # maturin backend, python-source=python/
-├── src/                 # bindings PyO3
-│   ├── lib.rs           # #[pymodule] + init runtime
-│   ├── session.rs       # Session sync
-│   ├── transaction.rs   # Transaction sync
-│   ├── async_session.rs # AsyncSession
-│   ├── async_transaction.rs # AsyncTransaction
-│   ├── py_convert.rs    # Python ↔ ParameterValue conversion
-│   └── errors.rs        # PlenoraError gerarchia
-└── python/
-    ├── plenora_database/
-    │   ├── __init__.py           # entry point
-    │   ├── _session.py           # wrapper Session
-    │   ├── _transaction.py       # wrapper Transaction
-    │   ├── _async_session.py     # wrapper AsyncSession
-    │   ├── _async_transaction.py # wrapper AsyncTransaction
-    │   ├── query.py              # builder Select/Insert/Update/Delete/Upsert
-    │   ├── async_query.py        # subclass async dei builder
-    │   ├── spatial.py            # SpatialReference + helpers
-    │   ├── types.py              # TypedValue + p.uuid/date/decimal/...
-    │   ├── errors.py             # reexport PlenoraError classi
-    │   └── _ast.py               # helper serializzazione AST
-    └── tests/                    # pytest (sync + async)
 ```
 
 ## License

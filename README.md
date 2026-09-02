@@ -25,7 +25,7 @@ La matrice corrente dei provider, delle capability, dei crate e dei test è in
 | Data plane | lettura streaming e scritture bulk basate su Arrow |
 | Spatial | metadati GeoArrow, geometrie WKB/EWKB, validazione CRS e operazioni spatial qualificate per provider |
 | Graph | Cypher parametrizzato, mapping tipizzato, bulk e indici/vincoli per Apache AGE su PostgreSQL |
-| SDK Python | API applicativa, engine/session lifecycle, factory per provider, stub PEP 561 e binding PyO3 |
+| SDK Python | API applicativa, lifecycle engine/session provider-neutral, stub PEP 561 e binding PyO3 |
 | CLI | inspect, probe, read, write e diagnostica sugli stessi contratti del core |
 | Assurance | contratti JSON Schema, golden test, fixture reali, matrici live, benchmark e fuzzing |
 
@@ -70,7 +70,12 @@ ingress = p.JsonInput(
 )
 
 with open("places.jsonl", encoding="utf-8") as lines:
-    session.copy_from("app", "places", ingress.batches(lines))
+    session.copy_from(
+        "app",
+        "places",
+        ingress.batches(lines),
+        mapping_policy="compatible",
+    )
 ```
 
 Il file JSON Lines viene letto incrementalmente; ogni geometria GeoJSON viene
@@ -80,11 +85,16 @@ La forma async, la conversione verso modelli e i limiti operativi sono nel
 
 ## Installazione Python
 
-Da wheel:
+Scaricare il wheel adatto dalla
+[GitHub Release](https://github.com/PlenoraETL/plenora-database-tools/releases)
+e installare il file locale:
 
 ```bash
-pip install plenora-database
+python -m pip install ./plenora_database-<version>-cp310-abi3-<platform>.whl
 ```
+
+Gli asset ufficiali sono distribuiti soltanto tramite GitHub Releases. Il
+workflow allega anche SBOM e attestazioni; non pubblica su package index.
 
 Da sorgenti, per lo sviluppo:
 
@@ -115,7 +125,7 @@ statement = (
     .where(accounts.c.id == p.bind("account_id", p.BindType.INTEGER))
 )
 
-engine = p.create_engine(os.environ["PLENORA_DATABASE_DSN"])
+engine = p.engine_from_url(os.environ["PLENORA_DATABASE_DSN"])
 try:
     with engine.session() as session:
         account = session.execute(
@@ -175,7 +185,7 @@ class Account(p.DeclarativeBase):
     version: p.Mapped[int] = p.mapped_column(version=True)
 
 
-with p.create_engine(os.environ["PLENORA_DATABASE_DSN"]) as engine:
+with p.engine_from_url(os.environ["PLENORA_DATABASE_DSN"]) as engine:
     with engine.session() as core_session:
         with p.OrmSession(core_session) as orm:
             account = orm.get(Account, 7)
@@ -250,9 +260,7 @@ particolare, l'I/O delle relazioni non è mai implicito: il caricamento avviene
 con una richiesta esplicita o con un loader dichiarato nella query.
 
 I limiti precisi e aggiornati vivono accanto all'implementazione e agli stub
-nel [`README dello SDK`](crates/plenora-database-py/README.md#limitazioni). La
-direzione di evoluzione, che non rappresenta lo stato corrente, è descritta in
-[`database-core-v3-roadmap.md`](docs/database-core-v3-roadmap.md).
+nel [`README dello SDK`](crates/plenora-database-py/README.md#limitazioni).
 
 ## Orientarsi nel repository
 

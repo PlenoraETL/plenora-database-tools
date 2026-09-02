@@ -1,437 +1,214 @@
-# Migrazione subprocess CLI → SDK in-process
+# Migrazione dal CLI allo SDK Python 2.x
 
-Guida operativa per il team PFM. Mappa ogni sotto-comando `plenora-database`
-oggi invocato via `subprocess` al chiamante Python nativo equivalente.
+Questa guida sostituisce gradualmente chiamate `subprocess` al CLI
+`plenora-database` con lo SDK in-process. Il CLI resta appropriato per
+diagnostica, benchmark e operazioni manuali; lo SDK evita invece un nuovo
+processo e una nuova connessione per ogni operazione applicativa.
 
-## TL;DR
+Il contratto 2.x non mantiene le factory Python 1.x. Gli unici ingressi
+pubblici per il lifecycle sono `engine_from_url`, `async_engine_from_url` ed
+`EngineConfig`.
 
-- **Vantaggio atteso**: un `Engine` longevo riusa pool e stato del provider,
-  evitando startup del processo e riconnessione a ogni operazione. Il benchmark opt-in misura il rapporto
-  sulla macchina e sul commit della singola corsa; vedi `README.md#performance`.
-- **Cambio operativo**: pattern `subprocess.run([...], check=True) + json.loads(stdout)` diventa una chiamata diretta di metodo che ritorna già l'oggetto Python tipizzato.
-- **Retro-compat**: nessuna. Da fare endpoint-by-endpoint (runbook sotto).
-- **Rollout consigliato**: hot path per primo (endpoint OLTP con QPS alto). Cold path (job batch giornalieri) può restare CLI se non c'è urgenza.
+## Installazione
 
-## Setup una volta
+Scaricare il wheel adatto dalla
+[pagina delle release](https://github.com/PlenoraETL/plenora-database-tools/releases)
+e installare il file locale:
 
-Prima di ogni consumer, sostituire l'apertura connessione:
+```bash
+python -m pip install ./plenora_database-<version>-cp310-abi3-<platform>.whl
+```
+
+Gli asset ufficiali sono distribuiti tramite GitHub Releases, insieme a SBOM e
+attestazioni. Non esiste una pubblicazione su package index.
+
+## Lifecycle
+
+Un processo applicativo mantiene un `Engine` longevo.
+Ogni request/task apre invece la propria `Session`; una sessione non viene
+condivisa fra operazioni concorrenti.
 
 ```python
-# Prima (CLI):
-os.environ["PFM_POSTGRES_DSN"] = dsn
-# ogni call rifà connect + probe
+import os
 
-# Dopo (SDK): un Engine condiviso, una Session per unità di lavoro.
 import plenora_database as p
-engine = p.create_engine(dsn)   # global module-level
 
-def load_user(user_id: int):
+engine = p.engine_from_url(os.environ["DATABASE_URL"])
+
+
+def load_user(user_id: int) -> p.Row | None:
+    users = p.table("users", "id", "email")
+    statement = p.select(users.c.id, users.c.email).where(
+        users.c.id == p.bind("user_id", p.BindType.INTEGER)
+    )
     with engine.session() as session:
-        return session.select("users").where_eq("id", user_id).one_or_none()
+        return session.execute(statement, {"user_id": user_id}).one_or_none()
 
-# allo shutdown dell'applicazione
+
+# allo shutdown del processo
 engine.dispose()
 ```
 
-Per FastAPI:
-```python
-# app startup: l'Engine è condiviso, le Session no
-app.state.pg = await p.create_async_engine(dsn)
-
-# dentro una request/task
-async with app.state.pg.session() as session:
-    user = await session.select("users").where_eq("id", user_id).one_or_none()
-
-# app shutdown
-app.state.pg.dispose()
-```
-
-## Mappa 1:1 dei sub-comandi
-
-Legenda:
-- `DSN_ENV` = nome della variabile che contiene la DSN (nel CLI è argument)
-- `SQL` = stringa SQL
-- Le equivalenze SDK assumono `import plenora_database as p` e una `Session` `s`
-  ottenuta con `engine.session()` per la singola unità di lavoro.
-
-### `execute-scalar`
-
-```bash
-plenora-database execute-scalar PFM_DSN "SELECT $1::int + $2::int" \
-    --type=i32 --param 10:i32 --param 20:i32
-# → {"status":"ok","value":30}
-```
+La variante async usa lo stesso confine:
 
 ```python
-value = s.execute_scalar(
-    "SELECT $1::int + $2::int",
-    [10, 20],
-)  # → 30 (int Python nativo, no dict wrapping)
+engine = await p.async_engine_from_url(os.environ["DATABASE_URL"])
+
+async with engine.session() as session:
+    row = await session.execute(statement, {"user_id": user_id})
+
+engine.dispose()
 ```
 
-Note:
-- Nel SDK il tipo di ritorno è inferito dal server (no `--type` esplicito). Se serve un cast preciso, usarlo in SQL (`SELECT ...::uuid::text`).
-- I typed params (`--param VALUE:TYPE`) diventano `p.uuid()`, `p.decimal()`, ecc.: vedi `types.py`.
+## Equivalenze operative
 
-### `execute-sql`
+### SQL nativo
 
-```bash
-plenora-database execute-sql PFM_DSN "UPDATE t SET x=$1 WHERE id=$2" \
-    --param abc:text --param 5:i32
-# → {"status":"ok","affected_rows":1}
-```
+Il confine fra query e mutazioni è esplicito. Una query produce `Result`; DDL e
+DML producono `MutationResult`.
 
 ```python
-n = s.execute("UPDATE t SET x=$1 WHERE id=$2", ["abc", 5])   # → 1
-```
+row = session.query_sql(
+    "SELECT id, email FROM users WHERE id = $1",
+    [user_id],
+).one_or_none()
 
-### `execute-ddl`
-
-```bash
-plenora-database execute-ddl PFM_DSN "CREATE INDEX idx_users_email ON users(email)"
-```
-
-```python
-s.execute("CREATE INDEX idx_users_email ON users(email)")
-```
-
-Il SDK non distingue DDL da DML (una singola `execute` copre entrambi).
-
-### `postgres-query` / `portable-execute`
-
-```bash
-plenora-database portable-execute PFM_DSN '{"type":"select",...}'
-```
-
-```python
-# Preferisci il builder (produce l'AST per te):
-rows = s.select("users").columns("id","email").where_eq("id", 1).all()
-
-# Per forme non esposte dal builder, mantenere temporaneamente il comando CLI:
-# il wrapper non pubblica il proprio oggetto `_native` come API stabile.
-```
-
-### `postgres-read-summary` / `postgres-read-ipc`
-
-```bash
-plenora-database postgres-read-summary PFM_DSN public users
-# → {"provider":"postgres","rows":N,"batches":M,"fields":[...]}
-
-plenora-database postgres-read-ipc PFM_DSN public large_table out.arrow
-# → scrive Arrow IPC file
-```
-
-**Sync**:
-```python
-import io, pyarrow.ipc as ipc
-
-# In-memory (dataset piccolo, ≤ 100k righe)
-rows = s.execute_returning_rows("SELECT * FROM public.users")
-
-# Streaming Arrow incrementale
-for chunk in s.read("public", "large_table"):
-    batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
-    process(batch)     # pyarrow.Table con 1 record batch
-
-# Se serve scrivere su file .arrow come il CLI:
-with pa.OSFile("out.arrow", "wb") as sink:
-    reader = s.read("public", "large_table")
-    schema_chunk = reader.schema_bytes()
-    schema = ipc.open_stream(io.BytesIO(schema_chunk)).schema
-    with ipc.new_file(sink, schema) as writer:
-        for chunk in reader:
-            batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
-            for b in batch.to_batches():
-                writer.write(b)
-```
-
-**Async**:
-```python
-reader = await s.aread("public", "large_table")
-async for chunk in reader:
-    ...
-```
-
-Il reader legge batch-by-batch con backpressure e non materializza l'intero
-risultato nel client. Questo non implica un cursore riapribile: la capability
-`server_cursor` resta `false` per tutti i provider.
-
-### `bulk-write`
-
-```bash
-plenora-database bulk-write PFM_DSN append public.events data.arrow ...
-```
-
-L'equivalente SDK e `copy_from` (`acopy_from` nella sessione async):
-
-```python
-outcome = s.copy_from("public", "events", arrow_table, mode="append")
-# async: outcome = await s.acopy_from("public", "events", arrow_table)
-```
-
-Accetta `pyarrow.Table`, `RecordBatch`, iterable di batch, `list[dict]`,
-`pandas.DataFrame` e stream Arrow IPC in `bytes`. Modalita, chiavi e policy di
-mapping sono documentate nel README del package.
-
-### `inspect-database` / `inspect-schemas` / `inspect-tables`
-
-```bash
-plenora-database inspect-schemas PFM_DSN
-# → {"schemas":[{"name":"public"},...]}
-```
-
-```python
-# Namespace nativo:
-schemas = s.inspect.schemas()          # ['public', ...]  (system esclusi)
-catalogs = s.inspect.catalogs()        # ['app_prod', ...]
-tables = s.inspect.tables("public")    # [{'name': 't1', 'kind': 'table', 'is_partition': False}, ...]
-desc = s.inspect.describe("public", "users")
-# → {'schema': ..., 'columns': [...], 'schema_token': ...}
-```
-
-### `doctor` / `diagnose` / `profile-check`
-
-Servono per operations (verifica salute + conformance profile PFM).
-Restano tipicamente CLI-only perché sono orchestrazione, non hot-path.
-Se serve integrarli in un job Python, il pattern è:
-
-```python
-# Doctor equivalente minimale
-def doctor(s: p.Session) -> dict:
-    return {
-        "server_version": s.server_version,
-        "postgis_version": s.postgis_version,
-        "current_database": s.execute_scalar("SELECT current_database()"),
-        "current_user": s.execute_scalar("SELECT current_user"),
-        "connections_active": s.execute_scalar(
-            "SELECT COUNT(*)::BIGINT FROM pg_stat_activity WHERE state='active'"
-        ),
-    }
-```
-
-I probe `probe_pfm_core_v1` / `probe_pfm_gis_v1` sono in Rust ma non
-esposti al SDK: se il PFM ha bisogno di lanciarli programmaticamente,
-va aggiunto un binding (roadmap).
-
-### `benchmark-oltp` / `benchmark-read` / `benchmark-write` / `benchmark-spatial`
-
-CLI-only. Non hanno equivalente SDK — sono strumenti di
-misurazione infrastrutturale, non pattern applicativi. Restano invariati.
-
-### `conditional-update`
-
-```bash
-plenora-database conditional-update PFM_DSN t "id=1 AND version=5" \
-    "status='done', version=6"
-```
-
-```python
-# Pattern optimistic-conflict via builder:
-n = (
-    s.update("t")
-     .set(status="done", version=6)
-     .where_eq("id", 1)
-     .where_eq("version", 5)
-     .execute()
+outcome = session.execute_sql(
+    "UPDATE users SET email = $1 WHERE id = $2",
+    [email, user_id],
 )
-if n == 0:
-    # conflict — refresh e retry
-    current = s.select("t").columns("version").where_eq("id", 1).scalar()
-    ...
+updated = outcome.affected_rows
+
+value = session.execute_scalar("SELECT COUNT(*)::BIGINT FROM users")
 ```
 
-Il metodo `execute_conditional_update` del trait Rust
-(con distinzione `NotFound` vs `ConcurrentModification`)
-non è ancora esposto al SDK — roadmap.
+`session.execute(...)` è riservato agli statement portabili. Non riceve SQL
+testuale.
 
-### `pool-status` / `explain`
-
-`pool-status` è debug tooling → resta CLI.
-`explain`: usa SQL diretto per ora:
+### Statement portabili
 
 ```python
-plan = s.execute_returning_rows("EXPLAIN (FORMAT JSON) SELECT ...")
+users = p.table("users", "id", "email")
+statement = (
+    p.select(users.c.id, users.c.email)
+    .select_from(users)
+    .where(users.c.id == p.bind("user_id", p.BindType.INTEGER))
+)
+row = session.execute(statement, {"user_id": user_id}).one_or_none()
 ```
 
-## Runbook migrazione (endpoint-per-endpoint)
+Ogni bind dichiara il proprio `BindType`; i valori restano separati dallo
+statement e dai messaggi di errore.
 
-Consigliato: **una PR per endpoint** invece di un big-bang.
+### Letture Arrow
 
-### Passo 1 — Identifica il pattern subprocess
-
-```bash
-grep -rn "subprocess.*plenora-database" src/pfm/
-```
-
-Categorizzali per hot-path vs cold-path:
-
-- **Hot path** (per-request): candidati per switch immediato; il beneficio va
-  misurato nel consumer con il benchmark e la telemetria applicativa.
-- **Cold path** (job cron, migrations, one-off): switch opzionale.
-  Beneficio marginale.
-
-### Passo 2 — Boot dell'Engine all'avvio dell'app
-
-Prima della prima PR, aggiungi al bootstrap dell'app:
+`read` sostituisce i comandi CLI di lettura tabellare e conserva la
+backpressure del consumer:
 
 ```python
-# pfm/db.py
-import plenora_database as p
-
-_pg: p.Engine | None = None
-
-def get_pg_engine() -> p.Engine:
-    global _pg
-    if _pg is None:
-        _pg = p.create_engine(os.environ["PFM_POSTGRES_DSN"])
-    return _pg
-
-def close_pg() -> None:
-    global _pg
-    if _pg is not None:
-        _pg.dispose()
-        _pg = None
+reader = session.read(
+    "public",
+    "events",
+    projection=["tenant_id", "event_id", "payload"],
+    order_by=[("tenant_id", "asc"), ("event_id", "asc")],
+    limit=10_000,
+)
+for chunk in reader:
+    process(chunk)
 ```
 
-Per FastAPI + asyncio:
+Lo streaming non implica un cursore server-side riapribile: la capability
+`server_cursor` resta `false`. Una ripresa persistente usa invece
+`ReadCheckpoint` e un ordinamento keyset qualificato.
+
+### Scritture Arrow
+
+`copy_from` e `acopy_from` sostituiscono `bulk-write`. La `mapping_policy` è
+obbligatoria: il chiamante deve scegliere esplicitamente il trattamento delle
+conversioni.
+
 ```python
-from contextlib import asynccontextmanager
+outcome = session.copy_from(
+    "public",
+    "events",
+    arrow_table,
+    mode="append",
+    mapping_policy="compatible",
+)
 
-@asynccontextmanager
-async def lifespan(app):
-    app.state.pg = await p.create_async_engine(os.environ["PFM_POSTGRES_DSN"])
-    try:
-        yield
-    finally:
-        app.state.pg.dispose()
-
-app = FastAPI(lifespan=lifespan)
+outcome = await session.acopy_from(
+    "public",
+    "events",
+    arrow_table,
+    mode="append",
+    mapping_policy="compatible",
+)
 ```
 
-### Passo 3 — Sostituisci un endpoint alla volta
+Usare `strict` quando anche una conversione compatibile deve essere rifiutata.
+Le mode distruttive o dipendenti da chiavi richiedono inoltre le opzioni
+esplicite documentate nel [README dello SDK](../README.md#bulk-write-arrow).
 
-Per ogni endpoint hot:
+### Introspezione, probe ed explain
 
-1. Trova il subprocess: `result = subprocess.run(["plenora-database", ...], capture_output=True, check=True)`
-2. Trova la `json.loads(result.stdout)` corrispondente
-3. Sostituisci con la chiamata SDK dalla tabella sopra
-4. Rimuovi il pattern `os.environ["PFM_DSN"] = dsn` (non serve più — il SDK ha la DSN già bindata all'Engine)
-5. Adatta l'error handling: `subprocess.CalledProcessError` → `p.PlenoraError` (gerarchia specifica per branching)
-6. Test unit + integration
-7. Deploy dietro feature flag se preferisci graduale
+```python
+schemas = session.inspect.schemas()
+tables = session.inspect.tables("public")
+description = session.inspect.describe("public", "users")
 
-### Passo 4 — Gestione errori tipizzata
+health = p.probe_engine(engine)
+plan = p.explain(
+    session,
+    "SELECT id FROM users WHERE id = $1",
+    [user_id],
+)
+```
 
-Prima:
+Le capability osservate sono disponibili su `session.capabilities`. Un campo
+assente o non misurato non autorizza una feature.
+
+## Runbook incrementale
+
+Per ogni chiamata applicativa al CLI:
+
+1. classificare l'operazione come query, mutazione, lettura Arrow, scrittura
+   Arrow oppure tooling operativo;
+2. creare l'engine nel bootstrap dell'applicazione, non dentro l'endpoint;
+3. aprire una nuova sessione nello scope della singola request o unità di
+   lavoro;
+4. sostituire `subprocess.run` e il parsing JSON con il metodo tipizzato
+   corrispondente;
+5. adattare il risultato a `Row`, `Result` o `MutationResult` senza affidarsi a
+   dizionari impliciti;
+6. sostituire `CalledProcessError` con le sottoclassi di `PlenoraError` e
+   decidere retry/recovery dagli attributi strutturati;
+7. eseguire test di integrazione sul provider realmente usato;
+8. rimuovere il percorso CLI soltanto dopo il rollout del singolo consumer.
+
+Benchmark, campagne di assurance e diagnostica amministrativa possono restare
+CLI: sono strumenti operativi, non hot path applicativi.
+
+## Errori e osservabilità
+
 ```python
 try:
-    result = subprocess.run([...], check=True, ...)
-except subprocess.CalledProcessError as e:
-    # e.stderr contiene JSON envelope error del CLI, va parsato
-    envelope = json.loads(e.stderr)
-    category = envelope["error"]["category"]
-    if category == "not_found":
-        ...
+    outcome = session.execute_sql(sql, params)
+except p.PlenoraTimeoutError as error:
+    handle_timeout(error.retry)
+except p.PlenoraError as error:
+    logger.error(
+        "database operation failed",
+        extra={
+            "category": error.category,
+            "phase": error.phase,
+            "retry": error.retry,
+            "remote_effect": error.remote_effect,
+            "provider": error.provider,
+        },
+    )
+    raise
 ```
 
-Dopo:
-```python
-try:
-    row = s.select("t").where_eq("id", id).one()
-except p.PlenoraNotFoundError:
-    # gerarchia già tipizzata
-    ...
-except p.PlenoraTimeoutError:
-    ...
-except p.PlenoraError as e:
-    # catch-all — attributi ispezionabili
-    log.error("db error", extra={
-        "category": e.category,
-        "phase": e.phase,
-        "retry": e.retry,
-        "remote_effect": e.remote_effect,
-        "provider": e.provider,
-    })
-```
-
-### Passo 5 — Osservabilità
-
-Il SDK espone i contatori interni del provider:
-
-```python
-snap = s.metrics()
-# → dict con ~25 chiavi u64
-for name, value in snap.items():
-    metrics_client.gauge(f"pfm.db.{name}", value)
-```
-
-Chiavi principali per l'oncall:
-- `pool_checkouts` / `pool_reuses` / `pool_timeouts` / `pool_new_connections`
-- `schema_cache_hits` / `schema_cache_misses` / `schema_cache_evictions` /
-  `schema_cache_invalidations` (cold cache detection)
-- `catalog_introspections` (introspezione al server)
-- `read_batches` / `read_rows` / `read_bytes`
-- `writes_committed` / `writes_outcome_unknown` (> 0 = commit ambiguo,
-  verificare out-of-band)
-- `cancellations` / `invalidated_sessions`
-
-Per instrumentation puntuale per-operazione (latency histograms),
-wrappa le chiamate hot in un decorator che misura:
-
-```python
-import time
-
-def measured(op: str):
-    def deco(fn):
-        def wrapped(*a, **kw):
-            t0 = time.perf_counter()
-            try:
-                return fn(*a, **kw)
-            finally:
-                elapsed = time.perf_counter() - t0
-                metrics.histogram("pfm.db.op.duration", elapsed, tags={"op": op})
-        return wrapped
-    return deco
-
-@measured("get_user_by_id")
-def get_user_by_id(uid):
-    with get_pg_engine().session() as session:
-        return session.select("users").where_eq("id", uid).one()
-```
-
-## FAQ
-
-**Q**: Il SDK gestisce pool di connessioni?
-**A**: Sì. L'`Engine` possiede il pool e può essere condiviso fra task e thread.
-   Ogni request/task apre invece la propria `Session`, che non va condivisa con
-   un'altra unità concorrente e viene chiusa al termine del relativo scope.
-
-**Q**: Cosa succede se la connessione si rompe (network partition)?
-**A**: `PlenoraIoError` o `PlenoraTransientError` (in base al fase).
-   L'attributo `retry` dice `Safe` per read idempotenti,
-   `RequiresRecovery` per commit ambigui. Lo scope chiude la `Session`; una
-   richiesta successiva ne ottiene una nuova dall'`Engine`. Un outcome di commit
-   ignoto richiede recovery esplicita e non viene ritentato automaticamente.
-
-**Q**: Il SDK funziona su Windows?
-**A**: Sì — il wheel abi3 è costruito per Linux e Windows via CI. Il
-   PFM in dev su Windows non ha problemi.
-
-**Q**: Posso mescolare sync e async nello stesso processo?
-**A**: Sì — hanno oggetti separati (`Session` vs `AsyncSession`).
-   Condividono lo stesso tokio runtime sotto il cofano. Puoi avere
-   un'app FastAPI async che chiama un job sync in un ThreadPool
-   senza contention di runtime.
-
-**Q**: Cosa devo fare al team platform per il rollout?
-**A**:
-   1. Aggiungi `plenora-database` a `requirements.txt` (pin la versione)
-   2. Il wheel abi3 non ha dipendenze runtime Python extra (solo
-      Postgres server accessibile via DSN)
-   3. Il container base dell'app deve avere glibc >= 2.34 (o musl
-      compatibile) — è manylinux_2_34
-   4. Nessuna variabile ambiente nuova richiesta
-
-**Q**: Serve installare Rust in produzione?
-**A**: No. Il wheel contiene la libreria nativa già compilata (`.so` /
-   `.dylib` / `.pyd`). Solo `pip install` in prod.
+Non inserire SQL, parametri o DSN nei log applicativi. Gli hook
+`instrument_engine` seguono lo stesso confine e registrano soltanto contesto
+operativo privo di payload.

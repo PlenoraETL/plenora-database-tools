@@ -6,21 +6,21 @@ Pochi documenti, ciascuno con un ruolo esplicito.
 | --- | --- |
 | [`STATO.md`](STATO.md) | generato dal codice: crate, capability, sub-comandi, inventario dei test |
 | [`operativo.md`](operativo.md) | cio che i file Compose non dicono da soli |
-| [`database-core-v3-roadmap.md`](database-core-v3-roadmap.md) | piano di evoluzione additivo verso Core, unit of work e migrazioni |
+| [`python-sdk-2-migration.md`](python-sdk-2-migration.md) | passaggio incompatibile dalla superficie Python 1.x alla 2.x |
+| [`MIGRATION_FROM_CLI.md`](../crates/plenora-database-py/docs/MIGRATION_FROM_CLI.md) | sostituzione incrementale dei subprocess CLI con lo SDK 2.x |
 | [`mariadb/EVIDENCE.md`](mariadb/EVIDENCE.md) | inventario generato delle prove che sostengono MariaDB |
 | [`mariadb/SESSION-MATRIX.md`](mariadb/SESSION-MATRIX.md) | esito live generato della semantica di sessione |
 | [`mariadb/ADR-0014-evidence-first.md`](mariadb/ADR-0014-evidence-first.md) | decisione ancora citata dal codice, ridotta al suo vincolo attuale |
-| [`sdk/VM-EVIDENCE.md`](sdk/VM-EVIDENCE.md) | ultimo verdetto SDK autorevole eseguito nella VM |
 
 ## Perche cosi poco
 
-Qui c'erano venticinque documenti che descrivevano lo stato corrente in prosa:
+Qui c'erano molti documenti che descrivevano lo stato corrente in prosa:
 quali write mode fossero aperte, quante funzioni spatial fossero verificate,
 quanti test avesse ciascuna famiglia, quali sub-comandi esponesse il CLI. Ogni
 fatto viveva in due posti — il codice e la frase — e i due divergevano.
 
-La difesa erano diciotto guardie che rileggevano il Markdown cercando frasi e
-numeri. Presidiavano la prosa, quindi ne presidiavano anche la forma:
+La difesa erano guardie che rileggevano il Markdown cercando frasi e numeri.
+Presidiavano la prosa, quindi ne presidiavano anche la forma:
 riscrivere una frase in modo equivalente faceva rosso, e un documento nuovo
 apriva un buco che nessuno vedeva.
 
