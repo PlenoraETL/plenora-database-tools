@@ -61,6 +61,9 @@ NODE24_ACTIONS = {
     "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
     "softprops/action-gh-release": "efb35369e0ad2afab669f228072c1b0d510eae64",
+    "actions/attest-build-provenance": "a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32",
+    "actions/attest-sbom": "4651f806c01d8637787e274ac3bdf724ef169f34",
+    "anchore/sbom-action": "e22c389904149dbc22b58101806040fa8d37a610",
 }
 
 
@@ -799,54 +802,36 @@ class PythonWheelWorkflowTests(unittest.TestCase):
             "una verifica inline e una seconda definizione di verificato",
         )
 
-    def test_the_workflow_has_no_path_to_publish_anywhere(self) -> None:
-        """La distribuzione dei wheel e manuale, e qui non c'e come farla.
-
-        Il job `publish-pypi` era opt-in e disattivato per default, il che
-        sembra sicuro finche non lo si guarda dal lato dell'errore: un
-        percorso di pubblicazione che nessuno usa resta un percorso, basta un
-        input spuntato per sbaglio, e da PyPI una versione non si ritira —
-        si puo solo yankare, lasciandola visibile per sempre.
-
-        Restano i due trigger che servono: `workflow_dispatch` per il
-        preflight, `release` per costruire e allegare. Nessun secret, perche
-        nessun passo ne ha piu bisogno.
-        """
+    def test_pypi_publish_is_oidc_release_only_and_environment_protected(self) -> None:
+        """PyPI non riceve token statici ne wheel Db2 non standard."""
 
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
-        for forbidden in (
-            "publish_pypi",
-            "publish-pypi",
-            "PYPI_TOKEN",
-            "MATURIN_PYPI_TOKEN",
-            "environment: pypi",
-            "command: upload",
-            "twine",
-            "gh-action-pypi-publish",
-        ):
-            self.assertNotIn(
-                forbidden,
-                workflow,
-                f"'{forbidden}' rimette in piedi un percorso di pubblicazione",
-            )
         self.assertNotIn(
             "secrets.",
             workflow,
             "nessun passo del workflow deve avere bisogno di un secret",
         )
-        self.assertIn("  workflow_dispatch:\n", workflow, "preflight rimosso")
-        self.assertIn(
-            "  release:\n    types: [published]\n",
-            workflow,
-            "il workflow non costruisce piu sulla release",
-        )
-        # E la consegna che resta e una sola: gli asset della release.
-        # Il ref non viene fissato qui: le action sono pinnate per SHA e il
-        # commento accanto ne ricorda il tag, quindi asserire la stringa
-        # `@v2` avrebbe fatto fallire questa guardia al primo pinning senza
-        # che nulla del percorso di pubblicazione fosse cambiato. Cio che
-        # conta e *quale* action consegna, non a quale commit.
-        self.assertIn("softprops/action-gh-release@", workflow)
+        job = parsed_jobs(workflow)["publish-pypi"]
+        self.assertEqual(job["if"], "github.event_name == 'release'")
+        self.assertEqual(job["environment"]["name"], "pypi")
+        self.assertEqual(job["permissions"], {"id-token": "write"})
+        block = job_text(workflow, "publish-pypi")
+        self.assertIn("pypa/gh-action-pypi-publish@", block)
+        self.assertIn("wheel-linux-x86_64", block)
+        self.assertIn("wheel-windows-x86_64", block)
+        self.assertNotIn("wheel-db2", block)
+        self.assertNotIn("twine", block)
+
+    def test_release_wheels_have_sbom_and_attestations(self) -> None:
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        job = parsed_jobs(workflow)["attach-to-release"]
+        self.assertEqual(job["permissions"]["id-token"], "write")
+        self.assertEqual(job["permissions"]["attestations"], "write")
+        block = job_text(workflow, "attach-to-release")
+        self.assertIn("anchore/sbom-action@", block)
+        self.assertIn("actions/attest-build-provenance@", block)
+        self.assertIn("actions/attest-sbom@", block)
+        self.assertIn("cyclonedx-json", block)
 
     def test_macos_is_not_part_of_the_distribution_matrix(self) -> None:
         """La major successiva non deve continuare a produrre asset macOS."""

@@ -22,15 +22,15 @@ pyarrow_ipc = pytest.importorskip("pyarrow.ipc")
 def _session():
     dsn = postgres_dsn_or_skip()
     s = connect_postgres(dsn)
-    s.execute("DROP TABLE IF EXISTS _pyf43_rows")
-    s.execute(
+    s.execute_sql("DROP TABLE IF EXISTS _pyf43_rows")
+    s.execute_sql(
         "CREATE TABLE _pyf43_rows ("
         " id BIGSERIAL PRIMARY KEY, "
         " label TEXT NOT NULL, "
         " amount INT NOT NULL)"
     )
     # Seed 500 righe
-    s.execute(
+    s.execute_sql(
         "INSERT INTO _pyf43_rows (label, amount) "
         "SELECT 'row-' || gs::TEXT, gs * 10 "
         "FROM generate_series(1, 500) gs"
@@ -39,7 +39,7 @@ def _session():
         yield s
     finally:
         try:
-            s.execute("DROP TABLE IF EXISTS _pyf43_rows")
+            s.execute_sql("DROP TABLE IF EXISTS _pyf43_rows")
         finally:
             s.close()
 
@@ -75,14 +75,14 @@ def test_read_schema_bytes_returns_arrow_ipc(session) -> None:
 
 
 def test_read_empty_table_returns_no_batches(session) -> None:
-    session.execute("DROP TABLE IF EXISTS _pyf43_empty")
-    session.execute("CREATE TABLE _pyf43_empty (id INT PRIMARY KEY)")
+    session.execute_sql("DROP TABLE IF EXISTS _pyf43_empty")
+    session.execute_sql("CREATE TABLE _pyf43_empty (id INT PRIMARY KEY)")
     try:
         reader = session.read("public", "_pyf43_empty")
         chunks = list(reader)
         assert chunks == []
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyf43_empty")
+        session.execute_sql("DROP TABLE IF EXISTS _pyf43_empty")
 
 
 def test_read_preserves_row_values_and_order(session) -> None:
@@ -108,12 +108,12 @@ def test_read_error_on_missing_table_raises(session) -> None:
 async def _asession():
     dsn = postgres_dsn_or_skip()
     s = await aconnect_postgres(dsn)
-    await s.execute("DROP TABLE IF EXISTS _pyf43_arows")
-    await s.execute(
+    await s.execute_sql("DROP TABLE IF EXISTS _pyf43_arows")
+    await s.execute_sql(
         "CREATE TABLE _pyf43_arows ("
         " id BIGSERIAL PRIMARY KEY, label TEXT NOT NULL)"
     )
-    await s.execute(
+    await s.execute_sql(
         "INSERT INTO _pyf43_arows (label) "
         "SELECT 'a-' || gs::TEXT FROM generate_series(1, 300) gs"
     )
@@ -121,7 +121,7 @@ async def _asession():
         yield s
     finally:
         try:
-            await s.execute("DROP TABLE IF EXISTS _pyf43_arows")
+            await s.execute_sql("DROP TABLE IF EXISTS _pyf43_arows")
         finally:
             s.close()
 

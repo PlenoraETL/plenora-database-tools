@@ -5,7 +5,7 @@ Aggiunge sopra al nativo `_native.AsyncSession`:
     `upsert` che ritornano subclass AsyncSelect/etc. con terminali
     (`.all()` / `.one()` / `.scalar()` / `.execute()`) come coroutine.
   - Delega trasparente delle properties e dei metodi async
-    (`execute`, `execute_scalar`, `execute_returning_rows`).
+    (`execute`, `execute_sql`, `execute_scalar`, `query_sql`).
   - Async context manager Python (`__aenter__` / `__aexit__`).
 
 Uso:
@@ -98,33 +98,28 @@ class AsyncSession(_AsyncBuilderFactory):
 
     # ---------------------------- SQL raw -------------------------------
 
-    @overload
-    async def execute(self, sql: str, params: list | None = None) -> int: ...
-
-    @overload
     async def execute(
         self,
-        sql: ExecutableStatement,
+        statement: ExecutableStatement,
         params: Mapping[str, Any] | None = None,
-    ) -> Result | int | MutationResult: ...
+    ) -> Result | MutationResult:
+        if not isinstance(statement, ExecutableStatement):
+            raise TypeError("execute richiede uno statement relazionale")
+        return await _execute_statement_async(
+            self._native, statement, params, self.capabilities["provider"]
+        )
 
-    async def execute(self, sql, params=None):
-        if isinstance(sql, ExecutableStatement):
-            return await _execute_statement_async(
-                self._native,
-                sql,
-                params,
-                self.capabilities["provider"],
-            )
-        return await self._native.execute(sql, params)
+    async def execute_sql(
+        self, sql: str, params: list | None = None
+    ) -> MutationResult:
+        affected = await self._native.execute(sql, params)
+        return MutationResult("sql", self.capabilities["provider"], affected)
+
+    async def query_sql(self, sql: str, params: list | None = None) -> Result:
+        return Result(await self._native.execute_returning_rows(sql, params))
 
     async def execute_scalar(self, sql: str, params: list | None = None) -> Any:
         return await self._native.execute_scalar(sql, params)
-
-    async def execute_returning_rows(
-        self, sql: str, params: list | None = None
-    ) -> list[dict]:
-        return await self._native.execute_returning_rows(sql, params)
 
     async def cypher(
         self,
@@ -186,7 +181,7 @@ class AsyncSession(_AsyncBuilderFactory):
         *,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
-        mapping_policy: str = "compatible",
+        mapping_policy: str,
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> dict:

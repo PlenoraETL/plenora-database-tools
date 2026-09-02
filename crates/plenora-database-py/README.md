@@ -5,25 +5,20 @@ Rust del progetto. Espone PostgreSQL/PostGIS, MySQL, MariaDB, SQL Server e IBM
 Db2 LUW con API sync + async Pythonic, portable AST builder, error hierarchy tipizzata, spatial
 predicates e context manager per transazioni.
 
-- **Postgres**: OLTP + PostGIS coperti
-- **MySQL e MariaDB**: esposti sync e async con factory distinte
-  (`connect_mysql` / `aconnect_mysql`, `connect_mariadb` /
-  `aconnect_mariadb`)
-  con la stessa superficie di Postgres — execute*, `begin` con
-  `SessionContext`, `read`/`aread` streaming Arrow, `copy_from`/`acopy_from`
-  bulk e builder AST portabili. `TruncateInsert` resta fail-closed
-- **SQL Server**: esposto sync e async (`connect_sqlserver` /
-  `aconnect_sqlserver`)
-- **IBM Db2 LUW**: esposto sync e async (`connect_db2` / `aconnect_db2`) negli
-  artefatti costruiti con la feature `db2`; i wheel standard mantengono la
-  stessa API ma rifiutano l'uso con `PlenoraUnsupportedError`
+- **Provider**: PostgreSQL/PostGIS/AGE, MySQL, MariaDB, SQL Server e IBM Db2
+  LUW condividono `EngineConfig` e lo stesso lifecycle sync/async
+- **Sessioni**: nascono sempre dall'engine; SQL portabile e SQL raw hanno
+  metodi e risultati distinti
+- **Bulk**: mapping policy obbligatoria e capability fail-closed per provider
+- **IBM Db2 LUW**: disponibile negli artefatti costruiti con feature `db2`;
+  il wheel standard rifiuta l'uso con `PlenoraUnsupportedError`
 - **Async**: `asyncio` bridge sopra al runtime tokio condiviso
 - **Performance**: benchmark di parita SDK/CLI disponibile come test opt-in
 
 ## Install
 
 Richiede Python **3.10+**. Il wheel è `abi3-py310` → un unico wheel
-copre 3.10 / 3.11 / 3.12 / 3.13 per la stessa piattaforma.
+copre 3.10 / 3.11 / 3.12 / 3.13 / 3.14 per la stessa piattaforma.
 
 ### Da wheel pre-costruito (produzione)
 
@@ -61,28 +56,48 @@ python -c "import plenora_database as p; print(p.version())"
 
 Per un server applicativo, il confine consigliato e un `Engine` longevo e una
 sessione per request. PostgreSQL, MySQL, MariaDB, SQL Server e Db2 espongono lo
-stesso lifecycle; le factory `connect*` restano adapter compatibili sopra di
-esso.
+lo stesso lifecycle provider-neutral.
 
 ```python
-engine = p.create_engine(dsn)
+engine = p.engine_from_url(
+    p.EngineConfig.from_url(
+        "postgresql://user:password@database/application"
+        "?max_connections=8&acquire_timeout_ms=5000"
+    )
+)
 
 def handle_request(user_id: int):
     with engine.session() as session:
         with session.begin(native_query_policy="deny") as tx:
-            return tx.select("users").where_eq("id", user_id).one_or_none()
+            users = p.table("users", "id", "name")
+            statement = p.select(users.c.id, users.c.name).where(
+                users.c.id == p.bind("identity", p.BindType.INTEGER)
+            )
+            return tx.execute(statement, {"identity": user_id}).one_or_none()
 
 # allo shutdown dell'applicazione
 engine.dispose()
 ```
 
-La variante asyncio si crea con `await p.create_async_engine(dsn)` e usa
+La variante asyncio si crea con `await p.async_engine_from_url(config)` e usa
 `async with engine.session()`; l'esempio completo sync/async e in
 [`examples/core_v3_repository.py`](examples/core_v3_repository.py).
-Gli altri provider usano factory esplicite, per esempio
-`p.create_mysql_engine(host, database, user, password)` e
-`await p.create_async_sqlserver_engine(...)`: la classe restituita resta
-`Engine`/`AsyncEngine`, mentre la factory dichiara senza ambiguita il prodotto.
+Gli ingressi pubblici sono `engine_from_url` e `async_engine_from_url`; le
+factory per singolo provider non fanno parte del contratto 2.0.
+Il prodotto è dichiarato nello schema URL (`mysql`, `mariadb`, `sqlserver`,
+`db2`, `postgresql` o `age`) e viene verificato dalla probe prima che l'engine
+sia restituito.
+
+La stessa configurazione si puo costruire senza URL. `PoolConfig` rende
+espliciti limite e timeout di acquisizione; Db2 rifiuta questa opzione finche
+il provider ODBC non dispone di una qualifica equivalente:
+
+```python
+config = p.EngineConfig.from_postgres_dsn(
+    dsn,
+    pool=p.PoolConfig(max_connections=8, acquire_timeout_ms=5_000),
+)
+```
 
 ### Expression language Core v3
 
@@ -108,7 +123,7 @@ statement = (
     )
     .select_from(users)
     .join(teams, users.c.team_id == teams.c.id)
-    .where(users.c.id >= p.bind("minimum_id"))
+    .where(users.c.id >= p.bind("minimum_id", p.BindType.INTEGER))
     .order_by(users.c.id)
     .limit(50)
 )
@@ -121,21 +136,18 @@ engine.dispose()
 ```
 
 `Result` offre `all()`, `first()`, `one()`, `one_or_none()`, `scalar()` e le
-varianti di cardinalita stretta `scalar_one()`/`scalar_one_or_none()`. Il path
-SQL raw resta invariato: `session.execute(sql, valori_posizionali)` continua a
-restituire il numero di righe interessate.
+varianti di cardinalita stretta `scalar_one()`/`scalar_one_or_none()`. Tutti i
+terminali producono `Row`; SQL raw usa `query_sql` per un `Result` oppure
+`execute_sql` per un `MutationResult`.
 
 La superficie comprende inoltre `IN`/`BETWEEN`/`LIKE`/test di null, funzioni
 scalar e aggregate tramite `func`, `GROUP BY`/`HAVING`, finestre e frame,
 subquery scalari o derivate, `EXISTS`, CTE e `UNION`/`INTERSECT`/`EXCEPT`.
 Una CTE o subquery richiede label esplicite quando i nomi della proiezione non
-sono determinabili. `Result.rows()` e i terminali `row_*` restituiscono `Row`,
-accessibile per posizione, nome o descrittore `Column`; i terminali storici
-continuano a restituire dizionari per compatibilita.
+sono determinabili. `Row` è accessibile per posizione, nome o descrittore
+`Column`; `as_dict()` è la conversione esplicita verso un mapping.
 
-`bind()` resta non tipizzato per compatibilita quando il contesto della colonna
-basta al database. Per una proiezione senza sorgente, o quando il server non
-puo inferire il tipo, si usa un hint logico chiuso:
+`bind()` richiede sempre un tipo logico chiuso:
 
 ```python
 statement = p.select(
@@ -145,9 +157,8 @@ statement = p.select(
 
 `BindType` non accetta dichiarazioni SQL arbitrarie: il renderer traduce
 `BOOLEAN`, `INTEGER`, `BIG_INTEGER`, `FLOAT`, `STRING`, `BINARY`, `DATE` e
-`TIMESTAMP` per il dialect. In particolare Db2 rifiuta ancora in prepare una
-projection con bind non tipizzato, mentre la forma tipizzata viene resa con un
-`CAST` e `SYSIBM.SYSDUMMY1`.
+`TIMESTAMP` per il dialect. Db2 rende la forma tipizzata con un `CAST` e
+`SYSIBM.SYSDUMMY1`.
 
 ### Letture riprendibili
 
@@ -291,7 +302,7 @@ async with p.AsyncOrmSession(session) as orm:
 
 async with p.AsyncOrmSession(session) as orm:
     account = await orm.query(Account).where(
-        Account.name == p.bind("wanted")
+        Account.name == p.bind("wanted", p.BindType.STRING)
     ).one({"wanted": "Ada"})
 ```
 
@@ -395,21 +406,25 @@ valore rifiutato, la riga JSON o altri frammenti del payload.
 ```python
 import plenora_database as p
 
-with p.connect("host=localhost user=me dbname=app") as s:
-    caps = s.capabilities
-    schemas = s.inspect.schemas()
-    # SQL raw con parametri positional
-    n = s.execute("INSERT INTO users(name) VALUES ($1)", ["Ada"])
-    cnt = s.execute_scalar("SELECT COUNT(*)::BIGINT FROM users")
-    rows = s.execute_returning_rows(
-        "SELECT id, name FROM users WHERE id = $1", [1]
-    )
+with p.engine_from_url("postgresql://user:password@localhost/app") as engine:
+    with engine.session() as s:
+        caps = s.capabilities
+        schemas = s.inspect.schemas()
+        # SQL raw esplicito con parametri posizionali
+        outcome = s.execute_sql(
+            "INSERT INTO users(name) VALUES ($1)", ["Ada"]
+        )
+        assert outcome.affected_rows == 1
+        cnt = s.execute_scalar("SELECT COUNT(*)::BIGINT FROM users")
+        rows = s.query_sql(
+            "SELECT id, name FROM users WHERE id = $1", [1]
+        )
 
-    # Portable AST — provider-agnostic
-    row = s.select("users").columns("id", "name").where_eq("id", 1).one()
-    new = s.insert("users").values(name="Alan").returning("id").one()
-    s.update("users").set(name="Grace").where_eq("id", 1).execute()
-    s.delete("users").where_lt("last_seen", "2020-01-01").execute()
+        # Portable AST — provider-agnostic
+        row = s.select("users").columns("id", "name").where_eq("id", 1).one()
+        new = s.insert("users").values(name="Alan").returning("id").one()
+        s.update("users").set(name="Grace").where_eq("id", 1).execute()
+        s.delete("users").where_lt("last_seen", "2020-01-01").execute()
 ```
 
 ### Async
@@ -419,7 +434,9 @@ import asyncio
 import plenora_database as p
 
 async def main():
-    engine = await p.create_async_engine("host=localhost user=me dbname=app")
+    engine = await p.async_engine_from_url(
+        "postgresql://user:password@localhost/application"
+    )
 
     async def scalar(i: int):
         # Ogni task usa la propria sessione; l'Engine condiviso governa il pool.
@@ -441,7 +458,10 @@ installata e il documento separato sono leggibili da `age_version` e
 separato, `age_admin_capabilities`, cosi il contratto AGE v1 resta invariato.
 
 ```python
-with plenora_database.connect(dsn, tls_mode="insecure_local") as session:
+config = plenora_database.EngineConfig.from_postgres_dsn(
+    dsn, tls_mode="insecure_local"
+)
+with plenora_database.engine_from_url(config) as engine, engine.session() as session:
     if "people" not in session.list_graphs():
         session.create_graph("people")
     rows = session.cypher(
@@ -490,7 +510,7 @@ funzioni AGE aggiuntive, ma pubblica solo cio che il gate qualifica.
 
 ```python
 with s.begin(isolation="serializable", read_only=False) as tx:
-    tx.execute("INSERT INTO t(x) VALUES ($1)", [1])
+    tx.execute_sql("INSERT INTO t(x) VALUES ($1)", [1])
     row = tx.select("t").where_eq("x", 1).one()
     # commit auto su exit normale, rollback su eccezione
 
@@ -503,10 +523,10 @@ async with await s.begin(isolation="serializable") as tx:
 
 ```python
 with s.begin() as tx:
-    tx.execute("INSERT INTO t(x) VALUES ($1)", [1])
+    tx.execute_sql("INSERT INTO t(x) VALUES ($1)", [1])
     tx.savepoint("sp1")
     try:
-        tx.execute("... query rischiosa ...")
+        tx.execute_sql("... query rischiosa ...")
     except p.PlenoraError:
         tx.rollback_to_savepoint("sp1")
     tx.release_savepoint("sp1")
@@ -518,7 +538,7 @@ with s.begin() as tx:
 Python `str` è ambiguo (text? uuid? timestamp?). Helper esplicit:
 
 ```python
-s.execute(
+s.execute_sql(
     "INSERT INTO events(id, ts, amount) VALUES ($1, $2, $3)",
     [
         p.uuid("550e8400-e29b-41d4-a716-446655440000"),
@@ -528,7 +548,7 @@ s.execute(
 )
 
 # NULL con hint di tipo (quando il target non è inferibile)
-s.execute("INSERT INTO t(val) VALUES ($1)", [p.null("text")])
+s.execute_sql("INSERT INTO t(val) VALUES ($1)", [p.null("text")])
 ```
 
 Formati:
@@ -674,7 +694,7 @@ sono attributi sulle `PlenoraError`:
 
 ```python
 try:
-    s.execute(sql, params)
+    s.execute_sql(sql, params)
 except p.PlenoraError as e:
     logger.error(
         "db.error",

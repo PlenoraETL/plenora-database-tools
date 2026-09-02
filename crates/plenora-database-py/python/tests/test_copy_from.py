@@ -23,8 +23,8 @@ pyarrow = pytest.importorskip("pyarrow")
 def _session():
     dsn = postgres_dsn_or_skip()
     s = connect_postgres(dsn)
-    s.execute("DROP TABLE IF EXISTS _pyp3_copy")
-    s.execute(
+    s.execute_sql("DROP TABLE IF EXISTS _pyp3_copy")
+    s.execute_sql(
         "CREATE TABLE _pyp3_copy ("
         " id BIGINT PRIMARY KEY, "
         " label TEXT NOT NULL, "
@@ -34,7 +34,7 @@ def _session():
         yield s
     finally:
         try:
-            s.execute("DROP TABLE IF EXISTS _pyp3_copy")
+            s.execute_sql("DROP TABLE IF EXISTS _pyp3_copy")
         finally:
             s.close()
 
@@ -53,7 +53,9 @@ def _make_table(n: int) -> "pyarrow.Table":
 
 def test_copy_from_append_pyarrow_table_returns_committed_outcome(session) -> None:
     tbl = _make_table(500)
-    outcome = session.copy_from("public", "_pyp3_copy", tbl)
+    outcome = session.copy_from(
+        "public", "_pyp3_copy", tbl, mapping_policy="compatible"
+    )
     assert outcome["status"] == "committed"
     assert outcome["provider"] == "postgres"
     assert outcome["rows"]["received"] == 500
@@ -76,7 +78,9 @@ def test_copy_from_multiple_batches_all_land(session) -> None:
     # Suddivido in batches per verificare che multi-batch funziona.
     batches = tbl.to_batches(max_chunksize=250)
     assert len(batches) == 4
-    outcome = session.copy_from("public", "_pyp3_copy", batches)
+    outcome = session.copy_from(
+        "public", "_pyp3_copy", batches, mapping_policy="compatible"
+    )
     assert outcome["rows"]["confirmed"] == 1000
 
     count = session.execute_scalar("SELECT COUNT(*)::BIGINT FROM _pyp3_copy")
@@ -94,7 +98,9 @@ def test_copy_from_ipc_bytes_pass_through(session) -> None:
             writer.write_batch(b)
     ipc_bytes = buf.getvalue()
 
-    outcome = session.copy_from("public", "_pyp3_copy", ipc_bytes)
+    outcome = session.copy_from(
+        "public", "_pyp3_copy", ipc_bytes, mapping_policy="compatible"
+    )
     assert outcome["status"] == "committed"
     assert outcome["rows"]["confirmed"] == 100
 
@@ -106,7 +112,7 @@ def test_copy_from_mode_create_builds_table_from_arrow_schema(session) -> None:
     NON deve esistere già (o Conflict); il preflight `Create + !exists`
     procede, il write path esegue DDL + COPY in stessa transazione.
     """
-    session.execute("DROP TABLE IF EXISTS _pyv020_create")
+    session.execute_sql("DROP TABLE IF EXISTS _pyv020_create")
     try:
         tbl = pyarrow.table(
             {
@@ -117,12 +123,18 @@ def test_copy_from_mode_create_builds_table_from_arrow_schema(session) -> None:
                 ),
             }
         )
-        outcome = session.copy_from("public", "_pyv020_create", tbl, mode="create")
+        outcome = session.copy_from(
+            "public",
+            "_pyv020_create",
+            tbl,
+            mode="create",
+            mapping_policy="compatible",
+        )
         assert outcome["status"] == "committed"
         assert outcome["rows"]["confirmed"] == 5
 
         # Verifica DDL applicato
-        cols = session.execute_returning_rows(
+        cols = session.query_sql(
             "SELECT column_name, data_type FROM information_schema.columns "
             "WHERE table_schema='public' AND table_name='_pyv020_create' "
             "ORDER BY ordinal_position"
@@ -136,7 +148,7 @@ def test_copy_from_mode_create_builds_table_from_arrow_schema(session) -> None:
         )
         assert count == 5
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyv020_create")
+        session.execute_sql("DROP TABLE IF EXISTS _pyv020_create")
 
 
 def test_copy_from_mode_create_conflicts_if_target_exists(session) -> None:
@@ -144,13 +156,15 @@ def test_copy_from_mode_create_conflicts_if_target_exists(session) -> None:
     tbl = _make_table(3)
     # _pyp3_copy esiste (creata dalla fixture)
     with pytest.raises(p.PlenoraConflictError):
-        session.copy_from("public", "_pyp3_copy", tbl, mode="create")
+        session.copy_from(
+            "public", "_pyp3_copy", tbl, mode="create", mapping_policy="compatible"
+        )
 
 
 def test_copy_from_strict_policy_rejects_nullable_to_not_null(session) -> None:
     """Con mapping_policy='strict' il preflight boccia il pattern
     comune Arrow-nullable → PG NOT NULL (severity DataLoss).
-    Il default 'compatible' invece lo tollera."""
+    La policy 'compatible' invece lo tollera."""
     tbl = _make_table(3)  # pyarrow.Table con schema tutto nullable
     with pytest.raises(p.PlenoraDataMappingError):
         session.copy_from("public", "_pyp3_copy", tbl, mapping_policy="strict")
@@ -167,25 +181,44 @@ def test_copy_from_invalid_mapping_policy_raises_invalid_plan(session) -> None:
 def test_copy_from_invalid_mode_raises_invalid_plan(session) -> None:
     tbl = _make_table(5)
     with pytest.raises(p.PlenoraInvalidPlanError):
-        session.copy_from("public", "_pyp3_copy", tbl, mode="not_a_mode")
+        session.copy_from(
+            "public",
+            "_pyp3_copy",
+            tbl,
+            mode="not_a_mode",
+            mapping_policy="compatible",
+        )
 
 
 def test_copy_from_invalid_profile_raises_invalid_plan(session) -> None:
     tbl = _make_table(5)
     with pytest.raises(p.PlenoraInvalidPlanError):
         session.copy_from(
-            "public", "_pyp3_copy", tbl, transaction_profile="not_a_profile"
+            "public",
+            "_pyp3_copy",
+            tbl,
+            transaction_profile="not_a_profile",
+            mapping_policy="compatible",
         )
 
 
 def test_copy_from_wrong_type_raises_type_error(session) -> None:
     with pytest.raises(TypeError):
-        session.copy_from("public", "_pyp3_copy", 123)  # type: ignore[arg-type]
+        session.copy_from(
+            "public", "_pyp3_copy", 123, mapping_policy="compatible"
+        )  # type: ignore[arg-type]
 
 
 def test_copy_from_empty_iterable_raises_value_error(session) -> None:
     with pytest.raises(ValueError):
-        session.copy_from("public", "_pyp3_copy", [])
+        session.copy_from("public", "_pyp3_copy", [], mapping_policy="compatible")
+
+
+def test_copy_from_requires_an_explicit_mapping_policy(session) -> None:
+    with pytest.raises(TypeError):
+        session.copy_from(
+            "public", "_pyp3_copy", _make_table(1)
+        )  # type: ignore[call-arg]
 
 
 # ---------------- Async ----------------
@@ -195,8 +228,8 @@ def test_copy_from_empty_iterable_raises_value_error(session) -> None:
 async def _asession():
     dsn = postgres_dsn_or_skip()
     s = await aconnect_postgres(dsn)
-    await s.execute("DROP TABLE IF EXISTS _pyp3_acopy")
-    await s.execute(
+    await s.execute_sql("DROP TABLE IF EXISTS _pyp3_acopy")
+    await s.execute_sql(
         "CREATE TABLE _pyp3_acopy ("
         " id BIGINT PRIMARY KEY, "
         " label TEXT NOT NULL, "
@@ -206,7 +239,7 @@ async def _asession():
         yield s
     finally:
         try:
-            await s.execute("DROP TABLE IF EXISTS _pyp3_acopy")
+            await s.execute_sql("DROP TABLE IF EXISTS _pyp3_acopy")
         finally:
             s.close()
 
@@ -214,7 +247,9 @@ async def _asession():
 @pytest.mark.asyncio
 async def test_acopy_from_append_returns_awaitable_outcome(asession) -> None:
     tbl = _make_table(300)
-    outcome = await asession.acopy_from("public", "_pyp3_acopy", tbl)
+    outcome = await asession.acopy_from(
+        "public", "_pyp3_acopy", tbl, mapping_policy="compatible"
+    )
     assert outcome["status"] == "committed"
     assert outcome["rows"]["confirmed"] == 300
 

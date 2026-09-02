@@ -78,8 +78,8 @@ def test_inspect_schemas_excludes_system_schemas(session) -> None:
 
 
 def test_inspect_tables_returns_dicts_with_name_kind(session) -> None:
-    session.execute("DROP TABLE IF EXISTS _pyf41_tbl")
-    session.execute("CREATE TABLE _pyf41_tbl (id INT PRIMARY KEY, x TEXT)")
+    session.execute_sql("DROP TABLE IF EXISTS _pyf41_tbl")
+    session.execute_sql("CREATE TABLE _pyf41_tbl (id INT PRIMARY KEY, x TEXT)")
     try:
         tables = session.inspect.tables("public")
         assert isinstance(tables, list)
@@ -88,12 +88,12 @@ def test_inspect_tables_returns_dicts_with_name_kind(session) -> None:
         assert "kind" in found
         assert "is_partition" in found
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyf41_tbl")
+        session.execute_sql("DROP TABLE IF EXISTS _pyf41_tbl")
 
 
 def test_inspect_describe_returns_columns(session) -> None:
-    session.execute("DROP TABLE IF EXISTS _pyf41_desc")
-    session.execute(
+    session.execute_sql("DROP TABLE IF EXISTS _pyf41_desc")
+    session.execute_sql(
         "CREATE TABLE _pyf41_desc ("
         " id INT PRIMARY KEY, "
         " label TEXT NOT NULL, "
@@ -106,7 +106,7 @@ def test_inspect_describe_returns_columns(session) -> None:
         col_names = [c.get("name") for c in desc["columns"]]
         assert col_names == ["id", "label", "qty"]
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyf41_desc")
+        session.execute_sql("DROP TABLE IF EXISTS _pyf41_desc")
 
 
 def test_inspect_describe_on_missing_table_raises(session) -> None:

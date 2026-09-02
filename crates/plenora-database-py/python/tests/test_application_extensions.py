@@ -14,6 +14,7 @@ from .test_orm import (
     _FakeSession,
     _FakeTransaction,
     OrmBigRecord,
+    OrmLoaderMiddle,
     OrmLoaderRoot,
 )
 
@@ -235,9 +236,9 @@ def test_explain_and_probe_are_structured() -> None:
     class Session:
         capabilities: ClassVar[dict[str, str]] = {"provider": "postgres"}
 
-        def execute_returning_rows(self, statement: str, params: list | None):
+        def query_sql(self, statement: str, params: list | None):
             assert statement.startswith("EXPLAIN (FORMAT JSON")
-            return [{"Plan Rows": 42}]
+            return p.Result([{"Plan Rows": 42}])
 
     plan = p.explain(Session(), "SELECT * FROM users")
     assert plan.provider == "postgres"
@@ -276,8 +277,8 @@ def test_asgi_dependency_and_telemetry_do_not_capture_payload() -> None:
             yield Span()
 
     class Session:
-        def execute(self, statement: str, params: list[str]) -> int:
-            return 1
+        def execute_sql(self, statement: str, params: list[str]) -> p.MutationResult:
+            return p.MutationResult("sql", "postgres", 1)
 
     class Engine:
         provider_kind = "postgres"
@@ -287,7 +288,12 @@ def test_asgi_dependency_and_telemetry_do_not_capture_payload() -> None:
             return Session()
 
     wrapped = p.instrument_engine(Engine(), tracer=Tracer())
-    assert wrapped.session().execute("SELECT secret", ["payload-secret"]) == 1
+    assert (
+        wrapped.session()
+        .execute_sql("SELECT secret", ["payload-secret"])
+        .affected_rows
+        == 1
+    )
     rendered = repr(events)
     assert "SELECT secret" not in rendered
     assert "payload-secret" not in rendered
@@ -372,7 +378,7 @@ def test_async_advanced_orm_surfaces_match_sync_contract() -> None:
         loader_orm = p.AsyncOrmSession(_AsyncFakeSession(loader_transaction))
         roots = (
             await loader_orm.query(OrmLoaderRoot)
-            .options(p.selectinload("middles.leaves"))
+            .options(p.selectinload(OrmLoaderRoot.middles, OrmLoaderMiddle.leaves))
             .all()
         )
         assert roots[0].middles[0].leaves[0].id == 3

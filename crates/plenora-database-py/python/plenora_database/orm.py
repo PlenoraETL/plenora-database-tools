@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
+import re
 from inspect import isawaitable
 from types import TracebackType
 from typing import Any, Generic, TypeVar, overload
@@ -37,7 +38,8 @@ from .expression import (
     select,
     update,
 )
-from .result import MultipleResultsFound, NoResultFound, Result
+from .result import MultipleResultsFound, MutationResult, NoResultFound, Result
+from .errors import PlenoraError
 from .spatial import SpatialReference
 from .types import int64 as typed_int64
 from .types import null as typed_null
@@ -89,7 +91,7 @@ _QUALIFIED_ORM_GEOMETRY_TYPES = frozenset({"point", "linestring", "polygon"})
 _GEOMETRY_ORM_PROVIDERS = frozenset({"postgres", *_WKB_ORM_PROVIDERS})
 
 
-class OrmError(RuntimeError):
+class OrmError(PlenoraError):
     """Errore pubblico dello strato ORM; non include valori applicativi."""
 
 
@@ -189,7 +191,7 @@ class Geometry:
     def bind(self, name: str) -> Expression:
         """Bind EWKB tipizzato con frame spatial del mapping."""
 
-        return _spatial_value(bind(name), self.srid, self.semantics)
+        return _spatial_value(bind(name, BindType.BINARY), self.srid, self.semantics)
 
     def predicate(
         self,
@@ -1102,10 +1104,13 @@ class Migration:
     down_revision: str | tuple[str, ...] | None
     upgrade: Any
     downgrade: Any | None = None
+    checksum: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.revision, str) or not self.revision:
             raise ValueError("migration revision non valida")
+        if self.revision.startswith("__plenora_"):
+            raise ValueError("migration revision usa un namespace riservato")
         parents = _migration_parents(self.down_revision)
         if len(set(parents)) != len(parents) or self.revision in parents:
             raise ValueError("migration down_revision duplicata o autoriferita")
@@ -1113,6 +1118,8 @@ class Migration:
             self.downgrade is not None and not callable(self.downgrade)
         ):
             raise TypeError("migration richiede callback valide")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.checksum):
+            raise ValueError("migration checksum deve essere SHA-256 esadecimale")
 
 
 class MigrationRunner:
@@ -1124,24 +1131,34 @@ class MigrationRunner:
     def apply(self, session: Any) -> tuple[str, ...]:
         provider = _session_provider(session)
         _ensure_migration_table(session, provider)
-        rows = session.execute_returning_rows(_migration_history_select(provider))
-        applied = {row["revision"] for row in rows}
-        _validate_applied_migrations(self.migrations, applied)
+        _migration_history(
+            self.migrations, session.query_sql(_migration_history_select(provider))
+        )
         completed: list[str] = []
-        history = Table("_plenora_orm_migrations", ("revision", "applied_at"))
         for migration in self.migrations:
-            if migration.revision in applied:
-                continue
             transaction = session.begin()
             try:
-                migration.upgrade(transaction)
-                transaction.execute(
-                    insert(history).values(revision=bind("orm_revision")),
-                    {"orm_revision": migration.revision},
+                transaction.query_sql(_migration_lock_sql(provider))
+                history = _migration_history(
+                    self.migrations,
+                    transaction.query_sql(_migration_history_select(provider)),
                 )
+                if migration.revision in history:
+                    transaction.commit()
+                    continue
+                statement, parameters = _migration_insert_statement(
+                    migration, "running"
+                )
+                transaction.execute(statement, parameters)
+                migration.upgrade(transaction)
+                statement, parameters = _migration_state_statement(
+                    migration, "applied"
+                )
+                transaction.execute(statement, parameters)
                 transaction.commit()
             except BaseException:
                 transaction.rollback()
+                _record_migration_failure(session, provider, migration)
                 raise
             completed.append(migration.revision)
         return tuple(completed)
@@ -1150,11 +1167,10 @@ class MigrationRunner:
         if not isinstance(steps, int) or isinstance(steps, bool) or steps < 1:
             raise ValueError("migration rollback steps non valido")
         provider = _session_provider(session)
-        rows = session.execute_returning_rows(_migration_history_select(provider))
+        _ensure_migration_table(session, provider)
+        rows = session.query_sql(_migration_history_select(provider))
         by_revision = {item.revision: item for item in self.migrations}
-        applied = {row["revision"] for row in rows}
-        _validate_applied_migrations(self.migrations, applied)
-        history = Table("_plenora_orm_migrations", ("revision", "applied_at"))
+        applied = set(_migration_history(self.migrations, rows))
         completed: list[str] = []
         candidates = [
             item.revision
@@ -1173,11 +1189,19 @@ class MigrationRunner:
                 raise OrmStateError("migration applicata priva di downgrade registrato")
             transaction = session.begin()
             try:
-                migration.downgrade(transaction)
-                transaction.execute(
-                    delete(history).where(history.c.revision == bind("orm_revision")),
-                    {"orm_revision": migration.revision},
+                transaction.query_sql(_migration_lock_sql(provider))
+                current = set(
+                    _migration_history(
+                        self.migrations,
+                        transaction.query_sql(_migration_history_select(provider)),
+                    )
                 )
+                if revision not in current:
+                    transaction.commit()
+                    continue
+                migration.downgrade(transaction)
+                statement, parameters = _migration_delete_statement(migration)
+                transaction.execute(statement, parameters)
                 transaction.commit()
             except BaseException:
                 transaction.rollback()
@@ -1186,31 +1210,79 @@ class MigrationRunner:
             completed.append(migration.revision)
         return tuple(completed)
 
+    def recover(
+        self,
+        session: Any,
+        revision: str,
+        *,
+        assume_applied: bool = False,
+    ) -> None:
+        migration = next(
+            (item for item in self.migrations if item.revision == revision), None
+        )
+        if migration is None:
+            raise OrmStateError("recover richiede una revisione registrata")
+        provider = _session_provider(session)
+        _ensure_migration_table(session, provider)
+        transaction = session.begin()
+        try:
+            transaction.query_sql(_migration_lock_sql(provider))
+            rows = transaction.query_sql(_migration_history_select(provider))
+            target = next((row for row in rows if row["revision"] == revision), None)
+            if target is None:
+                raise OrmStateError("recover richiede una migrazione incompleta")
+            if target["checksum"] != migration.checksum:
+                raise OrmStateError("drift checksum nella storia migrazioni")
+            if target["state"] not in {"running", "failed"}:
+                raise OrmStateError("recover rifiuta una migrazione gia applicata")
+            if assume_applied:
+                statement, parameters = _migration_state_statement(
+                    migration, "applied"
+                )
+            else:
+                statement, parameters = _migration_delete_statement(migration)
+            transaction.execute(statement, parameters)
+            transaction.commit()
+        except BaseException:
+            transaction.rollback()
+            raise
+
 
 class AsyncMigrationRunner(MigrationRunner):
     async def apply(self, session: Any) -> tuple[str, ...]:  # type: ignore[override]
         provider = _session_provider(session)
         await _ensure_migration_table_async(session, provider)
-        rows = await session.execute_returning_rows(_migration_history_select(provider))
-        applied = {row["revision"] for row in rows}
-        _validate_applied_migrations(self.migrations, applied)
+        _migration_history(
+            self.migrations,
+            await session.query_sql(_migration_history_select(provider)),
+        )
         completed: list[str] = []
-        history = Table("_plenora_orm_migrations", ("revision", "applied_at"))
         for migration in self.migrations:
-            if migration.revision in applied:
-                continue
             transaction = await session.begin()
             try:
+                await transaction.query_sql(_migration_lock_sql(provider))
+                history = _migration_history(
+                    self.migrations,
+                    await transaction.query_sql(_migration_history_select(provider)),
+                )
+                if migration.revision in history:
+                    await transaction.commit()
+                    continue
+                statement, parameters = _migration_insert_statement(
+                    migration, "running"
+                )
+                await transaction.execute(statement, parameters)
                 outcome = migration.upgrade(transaction)
                 if isawaitable(outcome):
                     await outcome
-                await transaction.execute(
-                    insert(history).values(revision=bind("orm_revision")),
-                    {"orm_revision": migration.revision},
+                statement, parameters = _migration_state_statement(
+                    migration, "applied"
                 )
+                await transaction.execute(statement, parameters)
                 await transaction.commit()
             except BaseException:
                 await transaction.rollback()
+                await _record_migration_failure_async(session, provider, migration)
                 raise
             completed.append(migration.revision)
         return tuple(completed)
@@ -1221,11 +1293,10 @@ class AsyncMigrationRunner(MigrationRunner):
         if not isinstance(steps, int) or isinstance(steps, bool) or steps < 1:
             raise ValueError("migration rollback steps non valido")
         provider = _session_provider(session)
-        rows = await session.execute_returning_rows(_migration_history_select(provider))
+        await _ensure_migration_table_async(session, provider)
+        rows = await session.query_sql(_migration_history_select(provider))
         by_revision = {item.revision: item for item in self.migrations}
-        applied = {row["revision"] for row in rows}
-        _validate_applied_migrations(self.migrations, applied)
-        history = Table("_plenora_orm_migrations", ("revision", "applied_at"))
+        applied = set(_migration_history(self.migrations, rows))
         completed: list[str] = []
         candidates = [
             item.revision
@@ -1244,13 +1315,23 @@ class AsyncMigrationRunner(MigrationRunner):
                 raise OrmStateError("migration applicata priva di downgrade registrato")
             transaction = await session.begin()
             try:
+                await transaction.query_sql(_migration_lock_sql(provider))
+                current = set(
+                    _migration_history(
+                        self.migrations,
+                        await transaction.query_sql(
+                            _migration_history_select(provider)
+                        ),
+                    )
+                )
+                if revision not in current:
+                    await transaction.commit()
+                    continue
                 outcome = migration.downgrade(transaction)
                 if isawaitable(outcome):
                     await outcome
-                await transaction.execute(
-                    delete(history).where(history.c.revision == bind("orm_revision")),
-                    {"orm_revision": migration.revision},
-                )
+                statement, parameters = _migration_delete_statement(migration)
+                await transaction.execute(statement, parameters)
                 await transaction.commit()
             except BaseException:
                 await transaction.rollback()
@@ -1258,6 +1339,43 @@ class AsyncMigrationRunner(MigrationRunner):
             applied.remove(migration.revision)
             completed.append(migration.revision)
         return tuple(completed)
+
+    async def recover(  # type: ignore[override]
+        self,
+        session: Any,
+        revision: str,
+        *,
+        assume_applied: bool = False,
+    ) -> None:
+        migration = next(
+            (item for item in self.migrations if item.revision == revision), None
+        )
+        if migration is None:
+            raise OrmStateError("recover richiede una revisione registrata")
+        provider = _session_provider(session)
+        await _ensure_migration_table_async(session, provider)
+        transaction = await session.begin()
+        try:
+            await transaction.query_sql(_migration_lock_sql(provider))
+            rows = await transaction.query_sql(_migration_history_select(provider))
+            target = next((row for row in rows if row["revision"] == revision), None)
+            if target is None:
+                raise OrmStateError("recover richiede una migrazione incompleta")
+            if target["checksum"] != migration.checksum:
+                raise OrmStateError("drift checksum nella storia migrazioni")
+            if target["state"] not in {"running", "failed"}:
+                raise OrmStateError("recover rifiuta una migrazione gia applicata")
+            if assume_applied:
+                statement, parameters = _migration_state_statement(
+                    migration, "applied"
+                )
+            else:
+                statement, parameters = _migration_delete_statement(migration)
+            await transaction.execute(statement, parameters)
+            await transaction.commit()
+        except BaseException:
+            await transaction.rollback()
+            raise
 
 
 class _DeclarativeMeta(type):
@@ -1575,22 +1693,31 @@ class DeclarativeBase(metaclass=_DeclarativeMeta):
 
 @dataclass(frozen=True, slots=True)
 class LoaderOption:
-    relationship: str | Relationship[Any]
+    relationship: Relationship[Any] | tuple[Relationship[Any], ...]
     strategy: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.relationship, (str, Relationship)):
+        if not (
+            isinstance(self.relationship, Relationship)
+            or (
+                isinstance(self.relationship, tuple)
+                and self.relationship
+                and all(isinstance(item, Relationship) for item in self.relationship)
+            )
+        ):
             raise TypeError("loader option richiede una relationship")
         if self.strategy not in {"selectin", "joined"}:
             raise ValueError("strategia eager non valida")
 
 
-def selectinload(relation: str | Relationship[Any]) -> LoaderOption:
-    return LoaderOption(relation, "selectin")
+def selectinload(
+    relation: Relationship[Any], *path: Relationship[Any]
+) -> LoaderOption:
+    return LoaderOption((relation, *path), "selectin")
 
 
-def joinedload(relation: str | Relationship[Any]) -> LoaderOption:
-    return LoaderOption(relation, "joined")
+def joinedload(relation: Relationship[Any], *path: Relationship[Any]) -> LoaderOption:
+    return LoaderOption((relation, *path), "joined")
 
 
 @dataclass(frozen=True, slots=True)
@@ -3123,7 +3250,9 @@ class OrmSession:
         if column is None:
             raise OrmMappingError("selectinload privo di colonna")
         parameters = {f"orm_eager_{index}": value for index, value in enumerate(values)}
-        predicate = column.in_(*(bind(name) for name in parameters))
+        predicate = column.in_(
+            *(bind(name, _bind_type_for_value(value)) for name, value in parameters.items())
+        )
         statement = select(*_orm_projections(mapper, provider=self._provider)).where(
             predicate
         )
@@ -3491,7 +3620,7 @@ class OrmSession:
                     or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
                 ):
                     assignments[name] = _spatial_value(
-                        bind(bind_name),
+                        bind(bind_name, BindType.BINARY),
                         attribute.type_.srid,
                         attribute.type_.semantics,
                     )
@@ -3595,7 +3724,7 @@ class OrmSession:
                     or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
                 ):
                     assignments[name] = _spatial_value(
-                        bind(bind_name),
+                        bind(bind_name, BindType.BINARY),
                         attribute.type_.srid,
                         attribute.type_.semantics,
                     )
@@ -3754,7 +3883,7 @@ class OrmSession:
                 value is not None or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
             ):
                 assignments[name] = _spatial_value(
-                    bind(bind_name),
+                    bind(bind_name, BindType.BINARY),
                     attribute.type_.srid,
                     attribute.type_.semantics,
                 )
@@ -3771,12 +3900,14 @@ class OrmSession:
             current = state.original.get(version_name)
             if not isinstance(current, int) or isinstance(current, bool) or current < 1:
                 raise OrmStateError("versione ottimistica non valida")
-            assignments[version_name] = bind("orm_version_next")
+            assignments[version_name] = bind("orm_version_next", BindType.BIG_INTEGER)
             parameters["orm_version_next"] = current + 1
             version_column = mapper.version.column
             if version_column is None:
                 raise OrmMappingError("colonna versione non associata")
-            predicate = predicate & (version_column == bind("orm_version_current"))
+            predicate = predicate & (
+                version_column == bind("orm_version_current", BindType.BIG_INTEGER)
+            )
             parameters["orm_version_current"] = current
         affected = self._transaction.execute(
             update(mapper.table).values(**assignments).where(predicate), parameters
@@ -3831,10 +3962,13 @@ class OrmSession:
                     raise OrmStateError("versione ottimistica non valida")
                 if version_name is None:
                     raise OrmMappingError("colonna versione senza nome")
-                assignments[version_name] = bind("orm_version_next")
+                assignments[version_name] = bind(
+                    "orm_version_next", BindType.BIG_INTEGER
+                )
                 parameters["orm_version_next"] = current + 1
                 predicate = predicate & (
-                    root.table.c[version_name] == bind("orm_version_current")
+                    root.table.c[version_name]
+                    == bind("orm_version_current", BindType.BIG_INTEGER)
                 )
                 parameters["orm_version_current"] = current
             _require_one_row(
@@ -3870,7 +4004,9 @@ class OrmSession:
                 value is not None or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
             ):
                 assignments[name] = _spatial_value(
-                    bind(bind_name), attribute.type_.srid, attribute.type_.semantics
+                    bind(bind_name, BindType.BINARY),
+                    attribute.type_.srid,
+                    attribute.type_.semantics,
                 )
                 parameters[bind_name] = _geometry_parameter_value(value, self._provider)
             else:
@@ -3896,7 +4032,9 @@ class OrmSession:
                 or isinstance(current, bool)
             ):
                 raise OrmStateError("versione ottimistica non valida")
-            predicate = predicate & (column == bind("orm_version_current"))
+            predicate = predicate & (
+                column == bind("orm_version_current", BindType.BIG_INTEGER)
+            )
             parameters["orm_version_current"] = current
         affected = self._transaction.execute(
             delete(mapper.table).where(predicate), parameters
@@ -3931,7 +4069,8 @@ class OrmSession:
                 ):
                     raise OrmStateError("versione ottimistica non valida")
                 predicate = predicate & (
-                    root.table.c[name] == bind("orm_version_current")
+                    root.table.c[name]
+                    == bind("orm_version_current", BindType.BIG_INTEGER)
                 )
                 parameters["orm_version_current"] = current
             _require_one_row(
@@ -4553,7 +4692,12 @@ class AsyncOrmSession(OrmSession):
             raise OrmMappingError("selectinload privo di colonna")
         parameters = {f"orm_eager_{index}": value for index, value in enumerate(values)}
         statement = select(*_orm_projections(mapper, provider=self._provider)).where(
-            column.in_(*(bind(name) for name in parameters))
+            column.in_(
+                *(
+                    bind(name, _bind_type_for_value(value))
+                    for name, value in parameters.items()
+                )
+            )
         )
         return await self._execute_entities_async(mapper, statement, parameters)
 
@@ -4758,7 +4902,7 @@ class AsyncOrmSession(OrmSession):
                     or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
                 ):
                     assignments[name] = _spatial_value(
-                        bind(bind_name),
+                        bind(bind_name, BindType.BINARY),
                         attribute.type_.srid,
                         attribute.type_.semantics,
                     )
@@ -4866,7 +5010,7 @@ class AsyncOrmSession(OrmSession):
                     or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
                 ):
                     assignments[name] = _spatial_value(
-                        bind(bind_name),
+                        bind(bind_name, BindType.BINARY),
                         attribute.type_.srid,
                         attribute.type_.semantics,
                     )
@@ -5086,7 +5230,7 @@ class AsyncOrmSession(OrmSession):
                 value is not None or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
             ):
                 assignments[name] = _spatial_value(
-                    bind(bind_name),
+                    bind(bind_name, BindType.BINARY),
                     attribute.type_.srid,
                     attribute.type_.semantics,
                 )
@@ -5103,12 +5247,14 @@ class AsyncOrmSession(OrmSession):
             current = state.original.get(version_name)
             if not isinstance(current, int) or isinstance(current, bool) or current < 1:
                 raise OrmStateError("versione ottimistica non valida")
-            assignments[version_name] = bind("orm_version_next")
+            assignments[version_name] = bind("orm_version_next", BindType.BIG_INTEGER)
             parameters["orm_version_next"] = current + 1
             version_column = mapper.version.column
             if version_column is None:
                 raise OrmMappingError("colonna versione non associata")
-            predicate = predicate & (version_column == bind("orm_version_current"))
+            predicate = predicate & (
+                version_column == bind("orm_version_current", BindType.BIG_INTEGER)
+            )
             parameters["orm_version_current"] = current
         affected = await self._transaction.execute(
             update(mapper.table).values(**assignments).where(predicate), parameters
@@ -5161,10 +5307,11 @@ class AsyncOrmSession(OrmSession):
                     or name is None
                 ):
                     raise OrmStateError("versione ottimistica non valida")
-                assignments[name] = bind("orm_version_next")
+                assignments[name] = bind("orm_version_next", BindType.BIG_INTEGER)
                 parameters["orm_version_next"] = current + 1
                 predicate = predicate & (
-                    root.table.c[name] == bind("orm_version_current")
+                    root.table.c[name]
+                    == bind("orm_version_current", BindType.BIG_INTEGER)
                 )
                 parameters["orm_version_current"] = current
             _require_one_row(
@@ -5201,7 +5348,9 @@ class AsyncOrmSession(OrmSession):
                 or isinstance(current, bool)
             ):
                 raise OrmStateError("versione ottimistica non valida")
-            predicate = predicate & (column == bind("orm_version_current"))
+            predicate = predicate & (
+                column == bind("orm_version_current", BindType.BIG_INTEGER)
+            )
             parameters["orm_version_current"] = current
         affected = await self._transaction.execute(
             delete(mapper.table).where(predicate), parameters
@@ -5238,7 +5387,8 @@ class AsyncOrmSession(OrmSession):
                 ):
                     raise OrmStateError("versione ottimistica non valida")
                 predicate = predicate & (
-                    root.table.c[name] == bind("orm_version_current")
+                    root.table.c[name]
+                    == bind("orm_version_current", BindType.BIG_INTEGER)
                 )
                 parameters["orm_version_current"] = current
             _require_one_row(
@@ -5418,7 +5568,9 @@ def _entity_select(
         if column is None:
             raise OrmMappingError("discriminatore privo di colonna")
         parameter = "orm_polymorphic_identity"
-        statement = statement.where(column == bind(parameter))
+        statement = statement.where(
+            column == bind(parameter, _bind_type_for_value(mapper.polymorphic_identity))
+        )
         parameters = {parameter: mapper.polymorphic_identity}
     return statement, parameters
 
@@ -5472,7 +5624,9 @@ def _bulk_update_statement(
         ):
             _require_geometry_mapping(attribute.type_, provider)
             assignments[name] = _spatial_value(
-                bind(bind_name), attribute.type_.srid, attribute.type_.semantics
+                bind(bind_name, BindType.BINARY),
+                attribute.type_.srid,
+                attribute.type_.semantics,
             )
             parameters[bind_name] = _geometry_parameter_value(coerced, provider)
         else:
@@ -5493,6 +5647,8 @@ def _bulk_delete_statement(mapper: Mapper, query: SelectStatement) -> Any:
 
 
 def _affected_rows(value: Any) -> int:
+    if isinstance(value, MutationResult):
+        value = value.affected_rows
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise OrmStateError("bulk DML ORM non ha restituito un row count valido")
     return value
@@ -5508,19 +5664,18 @@ def _query_relationship(
 
 
 def _query_loader_path(
-    mapper: Mapper, value: str | Relationship[Any]
+    mapper: Mapper,
+    value: Relationship[Any] | tuple[Relationship[Any], ...],
 ) -> tuple[Relationship[Any], ...]:
-    if isinstance(value, Relationship):
-        return (_query_relationship(mapper, value),)
-    if not isinstance(value, str):
-        raise TypeError("loader ORM richiede una relationship o un percorso")
-    names = tuple(value.split("."))
-    if not names or any(not name for name in names):
-        raise OrmMappingError("percorso loader ORM non valido")
+    values = (value,) if isinstance(value, Relationship) else value
+    if not isinstance(values, tuple) or not values:
+        raise TypeError("loader ORM richiede un percorso di relationship")
     path: list[Relationship[Any]] = []
     current = mapper
-    for name in names:
-        relation = current.relationship(name)
+    for relation in values:
+        if not isinstance(relation, Relationship):
+            raise TypeError("loader ORM richiede un percorso di relationship")
+        relation = _query_relationship(current, relation)
         relation._validate_configuration()
         path.append(relation)
         current = _mapper(relation.target)
@@ -5706,7 +5861,7 @@ def _identity_disjunction(
         ):
             name = f"{prefix}_{row_index}_{column_index}"
             parameters[name] = value
-            terms.append(column == bind(name))
+            terms.append(column == bind(name, _bind_type_for_value(value)))
         alternatives.append(terms[0] if len(terms) == 1 else and_(*terms))
     return (
         alternatives[0] if len(alternatives) == 1 else or_(*alternatives),
@@ -5872,7 +6027,7 @@ def _association_values(
             raise OrmMappingError("identita many-to-many con arita incoerente")
         for index, (key, value) in enumerate(zip(keys, identity, strict=True)):
             name = f"orm_link_{role}_{index}"
-            assignments[key] = bind(name)
+            assignments[key] = bind(name, _bind_type_for_value(value))
             parameters[name] = value
     return assignments, parameters
 
@@ -5906,15 +6061,48 @@ def _association_owner_predicate(
     for index, (key, value) in enumerate(zip(keys, owner_identity, strict=True)):
         name = f"orm_link_owner_{index}"
         parameters[name] = value
-        terms.append(secondary.c[key] == bind(name))
+        terms.append(
+            secondary.c[key] == bind(name, _bind_type_for_value(value))
+        )
     return (terms[0] if len(terms) == 1 else and_(*terms), parameters)
 
 
 def _attribute_bind(attribute: MappedColumn[Any], name: str) -> Expression:
-    return bind(
-        name,
-        BindType.BIG_INTEGER if isinstance(attribute.type_, BigInteger) else None,
-    )
+    return bind(name, _bind_type_for_mapping(attribute.type_))
+
+
+def _bind_type_for_mapping(type_: Any) -> BindType:
+    if isinstance(type_, BigInteger):
+        return BindType.BIG_INTEGER
+    if isinstance(type_, Geometry) or type_ is bytes:
+        return BindType.BINARY
+    if type_ is bool:
+        return BindType.BOOLEAN
+    if type_ is int:
+        return BindType.INTEGER
+    if type_ is float:
+        return BindType.FLOAT
+    if type_ is date:
+        return BindType.DATE
+    if type_ is datetime:
+        return BindType.TIMESTAMP
+    return BindType.STRING
+
+
+def _bind_type_for_value(value: Any) -> BindType:
+    if isinstance(value, bool):
+        return BindType.BOOLEAN
+    if isinstance(value, int):
+        return BindType.BIG_INTEGER if not -(2**31) <= value < 2**31 else BindType.INTEGER
+    if isinstance(value, float):
+        return BindType.FLOAT
+    if isinstance(value, (bytes, bytearray, SpatialReference)):
+        return BindType.BINARY
+    if isinstance(value, datetime):
+        return BindType.TIMESTAMP
+    if isinstance(value, date):
+        return BindType.DATE
+    return BindType.STRING
 
 
 def _attribute_parameter(attribute: MappedColumn[Any], value: Any) -> Any:
@@ -6427,11 +6615,128 @@ def _validate_applied_migrations(
             raise OrmStateError("storia migrazioni non chiusa sugli antenati")
 
 
+def _migration_history(
+    migrations: tuple[Migration, ...], rows: Iterable[Any]
+) -> dict[str, tuple[str, str]]:
+    registered = {item.revision: item for item in migrations}
+    history: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        try:
+            revision = row["revision"]
+            checksum = row["checksum"]
+            state = row["state"]
+        except (KeyError, TypeError) as error:
+            raise OrmStateError("storia migrazioni priva di campi 2.0") from error
+        if not all(isinstance(value, str) for value in (revision, checksum, state)):
+            raise OrmStateError("storia migrazioni con campi non validi")
+        if revision in history:
+            raise OrmStateError("storia migrazioni con revisione duplicata")
+        migration = registered.get(revision)
+        if migration is None:
+            raise OrmStateError("storia migrazioni contiene revisioni non registrate")
+        if checksum != migration.checksum:
+            raise OrmStateError("drift checksum nella storia migrazioni")
+        if state not in {"applied", "running", "failed"}:
+            raise OrmStateError("storia migrazioni con stato non valido")
+        if state != "applied":
+            raise OrmStateError("migrazione incompleta: richiede recover esplicito")
+        history[revision] = (checksum, state)
+    _validate_applied_migrations(migrations, set(history))
+    return history
+
+
+def _migration_history_table() -> Table:
+    return Table(
+        "_plenora_orm_migrations",
+        ("revision", "checksum", "state", "applied_at"),
+    )
+
+
+def _migration_insert_statement(migration: Migration, state: str) -> tuple[Any, dict[str, str]]:
+    history = _migration_history_table()
+    statement = insert(history).values(
+        revision=bind("orm_revision", BindType.STRING),
+        checksum=bind("orm_checksum", BindType.STRING),
+        state=bind("orm_state", BindType.STRING),
+    )
+    return statement, {
+        "orm_revision": migration.revision,
+        "orm_checksum": migration.checksum,
+        "orm_state": state,
+    }
+
+
+def _migration_state_statement(
+    migration: Migration, state: str
+) -> tuple[Any, dict[str, str]]:
+    history = _migration_history_table()
+    statement = update(history).values(
+        state=bind("orm_state", BindType.STRING)
+    ).where(history.c.revision == bind("orm_revision", BindType.STRING))
+    return statement, {"orm_revision": migration.revision, "orm_state": state}
+
+
+def _migration_delete_statement(migration: Migration) -> tuple[Any, dict[str, str]]:
+    history = _migration_history_table()
+    statement = delete(history).where(
+        history.c.revision == bind("orm_revision", BindType.STRING)
+    )
+    return statement, {"orm_revision": migration.revision}
+
+
+def _record_migration_failure(
+    session: Any, provider: str, migration: Migration
+) -> None:
+    transaction = session.begin()
+    try:
+        transaction.query_sql(_migration_lock_sql(provider))
+        rows = transaction.query_sql(_migration_history_select(provider))
+        target = next(
+            (row for row in rows if row["revision"] == migration.revision), None
+        )
+        if target is not None and target["checksum"] != migration.checksum:
+            raise OrmStateError("drift checksum nella storia migrazioni")
+        if target is None:
+            statement, parameters = _migration_insert_statement(migration, "failed")
+        else:
+            statement, parameters = _migration_state_statement(migration, "failed")
+        transaction.execute(statement, parameters)
+        transaction.commit()
+    except BaseException:
+        transaction.rollback()
+        raise
+
+
+async def _record_migration_failure_async(
+    session: Any, provider: str, migration: Migration
+) -> None:
+    transaction = await session.begin()
+    try:
+        await transaction.query_sql(_migration_lock_sql(provider))
+        rows = await transaction.query_sql(_migration_history_select(provider))
+        target = next(
+            (row for row in rows if row["revision"] == migration.revision), None
+        )
+        if target is not None and target["checksum"] != migration.checksum:
+            raise OrmStateError("drift checksum nella storia migrazioni")
+        if target is None:
+            statement, parameters = _migration_insert_statement(migration, "failed")
+        else:
+            statement, parameters = _migration_state_statement(migration, "failed")
+        await transaction.execute(statement, parameters)
+        await transaction.commit()
+    except BaseException:
+        await transaction.rollback()
+        raise
+
+
 def _migration_table_ddl(provider: str) -> str:
     if provider == "db2":
         return (
             'CREATE TABLE "_plenora_orm_migrations" ('
             '"revision" VARCHAR(255) NOT NULL PRIMARY KEY, '
+            '"checksum" CHAR(64) NOT NULL, '
+            '"state" VARCHAR(16) NOT NULL, '
             '"applied_at" TIMESTAMP NOT NULL DEFAULT CURRENT TIMESTAMP)'
         )
     if provider == "sqlserver":
@@ -6439,20 +6744,74 @@ def _migration_table_ddl(provider: str) -> str:
             "IF OBJECT_ID(N'_plenora_orm_migrations', N'U') IS NULL "
             "CREATE TABLE [_plenora_orm_migrations] ("
             "[revision] NVARCHAR(255) PRIMARY KEY, "
+            "[checksum] CHAR(64) NOT NULL, "
+            "[state] NVARCHAR(16) NOT NULL, "
             "[applied_at] DATETIME2 NOT NULL DEFAULT CURRENT_TIMESTAMP)"
         )
     quote = "`" if provider in {"mysql", "mariadb"} else '"'
     return (
         f"CREATE TABLE IF NOT EXISTS {quote}_plenora_orm_migrations{quote} ("
         f"{quote}revision{quote} VARCHAR(255) PRIMARY KEY, "
+        f"{quote}checksum{quote} CHAR(64) NOT NULL, "
+        f"{quote}state{quote} VARCHAR(16) NOT NULL, "
         f"{quote}applied_at{quote} TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
     )
 
 
 def _migration_history_select(provider: str) -> str:
     if provider == "db2":
-        return 'SELECT "revision" AS "revision" FROM "_plenora_orm_migrations"'
-    return "SELECT revision FROM _plenora_orm_migrations"
+        return (
+            'SELECT "revision" AS "revision", "checksum" AS "checksum", '
+            '"state" AS "state" FROM "_plenora_orm_migrations" '
+            "WHERE \"revision\" <> '__plenora_lock__'"
+        )
+    return (
+        "SELECT revision, checksum, state FROM _plenora_orm_migrations "
+        "WHERE revision <> '__plenora_lock__'"
+    )
+
+
+def _migration_lock_seed_sql(provider: str) -> str:
+    values = "'__plenora_lock__', '0000000000000000000000000000000000000000000000000000000000000000', 'lock'"
+    if provider == "postgres":
+        return (
+            "INSERT INTO _plenora_orm_migrations (revision, checksum, state) "
+            f"VALUES ({values}) ON CONFLICT (revision) DO NOTHING"
+        )
+    if provider in {"mysql", "mariadb"}:
+        return (
+            "INSERT IGNORE INTO _plenora_orm_migrations (revision, checksum, state) "
+            f"VALUES ({values})"
+        )
+    if provider == "sqlserver":
+        return (
+            "IF NOT EXISTS (SELECT 1 FROM _plenora_orm_migrations WHERE revision = '__plenora_lock__') "
+            "INSERT INTO _plenora_orm_migrations (revision, checksum, state) "
+            f"VALUES ({values})"
+        )
+    return (
+        'MERGE INTO "_plenora_orm_migrations" AS target '
+        "USING (VALUES ('__plenora_lock__', "
+        "'0000000000000000000000000000000000000000000000000000000000000000', 'lock')) "
+        'AS source ("revision", "checksum", "state") '
+        'ON target."revision" = source."revision" '
+        'WHEN NOT MATCHED THEN INSERT ("revision", "checksum", "state") '
+        'VALUES (source."revision", source."checksum", source."state")'
+    )
+
+
+def _migration_lock_sql(provider: str) -> str:
+    if provider == "sqlserver":
+        return (
+            "SELECT revision FROM _plenora_orm_migrations WITH (UPDLOCK, HOLDLOCK) "
+            "WHERE revision = '__plenora_lock__'"
+        )
+    suffix = " FOR UPDATE WITH RS" if provider == "db2" else " FOR UPDATE"
+    quote = '"' if provider in {"postgres", "db2"} else "`"
+    return (
+        f"SELECT {quote}revision{quote} FROM {quote}_plenora_orm_migrations{quote} "
+        f"WHERE {quote}revision{quote} = '__plenora_lock__'{suffix}"
+    )
 
 
 def _db2_migration_table_exists(session: Any) -> bool:
@@ -6475,8 +6834,10 @@ def _db2_migration_table_exists(session: Any) -> bool:
 def _ensure_migration_table(session: Any, provider: str) -> None:
     if provider != "db2":
         _execute_ddl(session, _migration_table_ddl(provider))
+        _execute_migration_sql(session, _migration_lock_seed_sql(provider))
         return
     if _db2_migration_table_exists(session):
+        _execute_migration_sql(session, _migration_lock_seed_sql(provider))
         return
     try:
         _execute_ddl(session, _migration_table_ddl(provider))
@@ -6486,11 +6847,15 @@ def _ensure_migration_table(session: Any, provider: str) -> None:
         # esattamente la tabella attesa; ogni altro errore resta pubblico.
         if not _db2_migration_table_exists(session):
             raise
+    _execute_migration_sql(session, _migration_lock_seed_sql(provider))
 
 
 async def _ensure_migration_table_async(session: Any, provider: str) -> None:
     if provider != "db2":
         await _execute_ddl_async(session, _migration_table_ddl(provider))
+        await _execute_migration_sql_async(
+            session, _migration_lock_seed_sql(provider)
+        )
         return
     scalar = getattr(session, "execute_scalar", None)
     if not callable(scalar):
@@ -6511,15 +6876,37 @@ async def _ensure_migration_table_async(session: Any, provider: str) -> None:
             ) from error
 
     if await exists():
+        await _execute_migration_sql_async(
+            session, _migration_lock_seed_sql(provider)
+        )
         return
     try:
         await _execute_ddl_async(session, _migration_table_ddl(provider))
     except Exception:
         if not await exists():
             raise
+    await _execute_migration_sql_async(session, _migration_lock_seed_sql(provider))
+
+
+def _execute_migration_sql(session: Any, statement: str) -> None:
+    execute = getattr(session, "execute_sql", None)
+    if not callable(execute):
+        raise TypeError("sessione priva di execute_sql per le migrazioni")
+    execute(statement)
+
+
+async def _execute_migration_sql_async(session: Any, statement: str) -> None:
+    execute = getattr(session, "execute_sql", None)
+    if not callable(execute):
+        raise TypeError("sessione priva di execute_sql per le migrazioni")
+    outcome = execute(statement)
+    if isawaitable(outcome):
+        await outcome
 
 
 def _require_one_row(affected: Any) -> None:
+    if isinstance(affected, MutationResult):
+        affected = affected.affected_rows
     if not isinstance(affected, int) or isinstance(affected, bool) or affected != 1:
         raise StaleObjectError(
             "la mutazione ORM non ha interessato esattamente una riga"

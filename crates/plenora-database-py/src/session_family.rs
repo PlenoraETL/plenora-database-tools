@@ -71,6 +71,7 @@ use pyo3::types::{PyDict, PyList};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use crate::budget::session_budget as default_budget;
 
@@ -626,6 +627,8 @@ pub(crate) struct Endpoint {
     #[cfg_attr(not(feature = "db2"), allow(dead_code))]
     pub tls_ca_path: Option<PathBuf>,
     pub tls_mode: String,
+    pub max_connections: usize,
+    pub acquire_timeout_ms: u64,
 }
 
 /// Come si costruisce il provider di un prodotto dai suoi parametri.
@@ -644,8 +647,15 @@ pub(crate) fn mysql_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provider>> 
         endpoint.port,
         endpoint.tls_ca_pem,
         &endpoint.tls_mode,
-    )?;
-    Ok(Arc::new(MysqlProvider::new(config, 4).map_err(to_py_err)?))
+    )?
+    .with_timeouts(
+        Duration::from_secs(10),
+        Duration::from_secs(30),
+        Duration::from_millis(endpoint.acquire_timeout_ms),
+    );
+    Ok(Arc::new(
+        MysqlProvider::new(config, endpoint.max_connections).map_err(to_py_err)?,
+    ))
 }
 
 /// Il provider `MariaDB`.
@@ -658,9 +668,14 @@ pub(crate) fn mariadb_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provider>
         endpoint.port,
         endpoint.tls_ca_pem,
         &endpoint.tls_mode,
-    )?;
+    )?
+    .with_timeouts(
+        Duration::from_secs(10),
+        Duration::from_secs(30),
+        Duration::from_millis(endpoint.acquire_timeout_ms),
+    );
     Ok(Arc::new(
-        MariadbProvider::new(config, 4).map_err(to_py_err)?,
+        MariadbProvider::new(config, endpoint.max_connections).map_err(to_py_err)?,
     ))
 }
 
@@ -703,10 +718,15 @@ pub(crate) fn sqlserver_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provide
                 "tls_mode non riconosciuto. Valori: 'require' (default) | 'insecure_trust_server'",
             )),
         };
+    config = config.with_timeouts(
+        Duration::from_secs(10),
+        Duration::from_secs(30),
+        Duration::from_millis(endpoint.acquire_timeout_ms),
+    );
     // Batch e pool: gli stessi valori del percorso MySQL, per la stessa
     // ragione — sono il profilo del SDK, non una caratteristica del prodotto.
     Ok(Arc::new(
-        SqlServerProvider::new(config, 1024, 4).map_err(to_py_err)?,
+        SqlServerProvider::new(config, 1024, endpoint.max_connections).map_err(to_py_err)?,
     ))
 }
 
@@ -782,6 +802,8 @@ pub fn connect_mysql(
         tls_ca_pem,
         tls_ca_path: None,
         tls_mode: tls_mode.to_owned(),
+        max_connections: 4,
+        acquire_timeout_ms: 10_000,
     })?;
     open_family_session(provider, secret, "MySQL", "connect_mysql")
 }
@@ -867,6 +889,8 @@ pub fn connect_mariadb(
         tls_ca_pem,
         tls_ca_path: None,
         tls_mode: tls_mode.to_owned(),
+        max_connections: 4,
+        acquire_timeout_ms: 10_000,
     })?;
     open_family_session(provider, secret, "MariaDB", "connect_mariadb")
 }
@@ -938,6 +962,8 @@ pub fn connect_sqlserver(
         tls_ca_pem,
         tls_ca_path: None,
         tls_mode: tls_mode.to_owned(),
+        max_connections: 4,
+        acquire_timeout_ms: 10_000,
     })?;
     open_family_session(provider, secret, "SQL Server", "connect_sqlserver")
 }
@@ -974,6 +1000,8 @@ pub fn connect_db2(
         tls_ca_pem: None,
         tls_ca_path,
         tls_mode: tls_mode.to_owned(),
+        max_connections: 1,
+        acquire_timeout_ms: 10_000,
     })?;
     open_family_session(provider, secret, "IBM Db2 LUW", "connect_db2")
 }

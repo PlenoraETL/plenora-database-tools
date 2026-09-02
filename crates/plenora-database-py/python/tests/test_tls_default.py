@@ -24,7 +24,7 @@ def test_the_default_refuses_a_plaintext_reference() -> None:
 
     dsn = postgres_dsn_or_skip()
     with pytest.raises(p.PlenoraError) as raised:
-        p.connect(dsn)
+        p.engine_from_url(p.EngineConfig.from_postgres_dsn(dsn))
     # Il fallimento e nella negoziazione, non nell'autenticazione: la
     # distinzione conta, perche un errore di auth suggerirebbe credenziali
     # sbagliate invece di un canale rifiutato.
@@ -37,7 +37,7 @@ async def test_the_async_default_refuses_a_plaintext_reference() -> None:
 
     dsn = postgres_dsn_or_skip()
     with pytest.raises(p.PlenoraError) as raised:
-        await p.aconnect(dsn)
+        await p.async_engine_from_url(p.EngineConfig.from_postgres_dsn(dsn))
     assert raised.value.phase in {"connect", "probe"}, raised.value.phase
 
 
@@ -51,7 +51,9 @@ def test_the_insecure_switch_has_to_be_named() -> None:
 
     dsn = postgres_dsn_or_skip()
     with pytest.raises(Exception) as raised:
-        p.connect(dsn, "insecure")
+        p.engine_from_url(
+            p.EngineConfig.from_postgres_dsn(dsn, tls_mode="insecure")
+        )
     # Il messaggio elenca i valori ammessi: e cio che rende il rifiuto
     # correggibile invece che solo bloccante.
     message = str(raised.value)

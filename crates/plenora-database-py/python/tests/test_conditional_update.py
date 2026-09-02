@@ -15,8 +15,8 @@ from ._harness import aconnect_postgres, connect_postgres, postgres_dsn_or_skip
 def _session():
     dsn = postgres_dsn_or_skip()
     s = connect_postgres(dsn)
-    s.execute("DROP TABLE IF EXISTS _pyf42_opt")
-    s.execute(
+    s.execute_sql("DROP TABLE IF EXISTS _pyf42_opt")
+    s.execute_sql(
         "CREATE TABLE _pyf42_opt ("
         " id INT PRIMARY KEY, "
         " value TEXT NOT NULL, "
@@ -26,7 +26,7 @@ def _session():
         yield s
     finally:
         try:
-            s.execute("DROP TABLE IF EXISTS _pyf42_opt")
+            s.execute_sql("DROP TABLE IF EXISTS _pyf42_opt")
         finally:
             s.close()
 
@@ -121,8 +121,8 @@ def test_conditional_update_key_exists_but_stale_with_probe_raises_conflict(
 async def _asession():
     dsn = postgres_dsn_or_skip()
     s = await aconnect_postgres(dsn)
-    await s.execute("DROP TABLE IF EXISTS _pyf42_opt_async")
-    await s.execute(
+    await s.execute_sql("DROP TABLE IF EXISTS _pyf42_opt_async")
+    await s.execute_sql(
         "CREATE TABLE _pyf42_opt_async ("
         " id INT PRIMARY KEY, value TEXT NOT NULL, version INT NOT NULL DEFAULT 1)"
     )
@@ -130,7 +130,7 @@ async def _asession():
         yield s
     finally:
         try:
-            await s.execute("DROP TABLE IF EXISTS _pyf42_opt_async")
+            await s.execute_sql("DROP TABLE IF EXISTS _pyf42_opt_async")
         finally:
             s.close()
 

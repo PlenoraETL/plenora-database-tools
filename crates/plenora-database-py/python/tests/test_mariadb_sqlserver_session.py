@@ -26,29 +26,31 @@ def test_mariadb_sync_capabilities_inspect_ddl_and_transaction() -> None:
         session.execute_ddl(
             f"CREATE TABLE {table} (id BIGINT PRIMARY KEY, label VARCHAR(32) NOT NULL)"
         )
-        assert session.execute(
+        inserted = session.execute_sql(
             f"INSERT INTO {table} (id, label) VALUES (?, ?)", [1, "maria"]
-        ) == 1
+        )
+        assert inserted.affected_rows == 1
         assert session.execute_scalar(f"SELECT label FROM {table} WHERE id = ?", [1]) == "maria"
         target = p.table(table, "id", "label")
         returned = session.execute(
             p.insert(target)
-            .values(id=p.bind("id"), label=p.bind("label"))
+            .values(id=p.bind("id", p.BindType.INTEGER), label=p.bind("label", p.BindType.STRING))
             .returning(target.c.id),
             {"id": 2, "label": "core-v3"},
         )
         assert returned.scalar_one() == 2
         upserted = session.execute(
             p.upsert(target)
-            .values(id=p.bind("id"), label=p.bind("insert_label"))
+            .values(id=p.bind("id", p.BindType.INTEGER), label=p.bind("insert_label", p.BindType.STRING))
             .on_conflict(target.c.id)
-            .set(label=p.bind("update_label")),
+            .set(label=p.bind("update_label", p.BindType.STRING)),
             {"id": 2, "insert_label": "ignored", "update_label": "UPSERTED"},
         )
         assert upserted.affected_rows is not None and upserted.affected_rows >= 1
-        assert session.execute(
-            p.delete(target).where(target.c.id == p.bind("id")), {"id": 2}
-        ) == 1
+        deleted = session.execute(
+            p.delete(target).where(target.c.id == p.bind("id", p.BindType.INTEGER)), {"id": 2}
+        )
+        assert deleted.affected_rows == 1
         assert session.inspect.describe("dataflow_test", table)["columns"]
     finally:
         try:
@@ -88,26 +90,27 @@ def test_sqlserver_sync_capabilities_inspect_ddl_and_transaction() -> None:
             f"CREATE TABLE {qualified} ([id] bigint NOT NULL PRIMARY KEY, "
             "[label] nvarchar(32) NOT NULL)"
         )
-        assert session.execute(
+        inserted = session.execute_sql(
             f"INSERT INTO {qualified} ([id], [label]) VALUES (@P1, @P2)",
             [1, "tds"],
-        ) == 1
+        )
+        assert inserted.affected_rows == 1
         assert session.execute_scalar(
             f"SELECT [label] FROM {qualified} WHERE [id] = @P1", [1]
         ) == "tds"
         target = p.table(table, "id", "label", schema="plenora_test")
         returned = session.execute(
             p.insert(target)
-            .values(id=p.bind("id"), label=p.bind("label"))
+            .values(id=p.bind("id", p.BindType.INTEGER), label=p.bind("label", p.BindType.STRING))
             .returning(target.c.id),
             {"id": 2, "label": "core-v3"},
         )
         assert returned.scalar_one() == 2
         upserted = session.execute(
             p.upsert(target)
-            .values(id=p.bind("id"), label=p.bind("insert_label"))
+            .values(id=p.bind("id", p.BindType.INTEGER), label=p.bind("insert_label", p.BindType.STRING))
             .on_conflict(target.c.id)
-            .set(label=p.bind("update_label")),
+            .set(label=p.bind("update_label", p.BindType.STRING)),
             {"id": 2, "insert_label": "ignored", "update_label": "UPSERTED"},
         )
         assert upserted.affected_rows is None
@@ -116,7 +119,7 @@ def test_sqlserver_sync_capabilities_inspect_ddl_and_transaction() -> None:
         ) == "UPSERTED"
         deleted = session.execute(
             p.delete(target)
-            .where(target.c.id == p.bind("id"))
+            .where(target.c.id == p.bind("id", p.BindType.INTEGER))
             .returning(target.c.id),
             {"id": 2},
         )

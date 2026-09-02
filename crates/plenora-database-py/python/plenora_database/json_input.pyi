@@ -4,11 +4,12 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Generic, TypeVar
 
+from .errors import PlenoraDataMappingError
 from .orm import DeclarativeBase, Geometry
 
 T = TypeVar("T", bound=DeclarativeBase)
 
-class JsonInputError(ValueError):
+class JsonInputError(PlenoraDataMappingError):
     code: str
     record_index: int | None
     field: str | None

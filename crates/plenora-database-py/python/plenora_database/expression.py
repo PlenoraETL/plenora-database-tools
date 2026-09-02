@@ -142,21 +142,19 @@ class Column(Expression):
 @dataclass(frozen=True, slots=True, eq=False)
 class BindParameter(Expression):
     name: str
-    type_: BindType | None = None
+    type_: BindType
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _identifier(self.name))
-        if self.type_ is not None and not isinstance(self.type_, BindType):
+        if not isinstance(self.type_, BindType):
             raise TypeError("type_ richiede un membro di BindType")
 
     def _ast(self) -> dict[str, Any]:
-        if self.type_ is not None:
-            return {
-                "kind": "typed_parameter",
-                "name": self.name,
-                "parameter_type": self.type_.value,
-            }
-        return {"kind": "parameter", "name": self.name}
+        return {
+            "kind": "typed_parameter",
+            "name": self.name,
+            "parameter_type": self.type_.value,
+        }
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -1034,7 +1032,7 @@ def table(
     return Table(name, columns, schema=schema, catalog=catalog)
 
 
-def bind(name: str, type_: BindType | None = None) -> BindParameter:
+def bind(name: str, type_: BindType) -> BindParameter:
     return BindParameter(name, type_)
 
 
@@ -1258,7 +1256,7 @@ def _execute_statement(
     statement: ExecutableStatement,
     parameters: Mapping[str, Any] | None,
     provider: str,
-) -> Result | int | MutationResult:
+) -> Result | MutationResult:
     from .result import MutationResult, Result
 
     if isinstance(statement, SelectStatement):
@@ -1270,11 +1268,9 @@ def _execute_statement(
     if returns_rows:
         return Result(native.execute_returning_rows(sql, values))
     affected = native.execute(sql, values)
-    if isinstance(statement, UpsertStatement):
-        return MutationResult(
-            "upsert", provider, None if provider == "sqlserver" else affected
-        )
-    return affected
+    operation = type(statement).__name__.removesuffix("Statement").lower()
+    known_count = None if isinstance(statement, UpsertStatement) and provider == "sqlserver" else affected
+    return MutationResult(operation, provider, known_count)
 
 
 async def _execute_statement_async(
@@ -1282,7 +1278,7 @@ async def _execute_statement_async(
     statement: ExecutableStatement,
     parameters: Mapping[str, Any] | None,
     provider: str,
-) -> Result | int | MutationResult:
+) -> Result | MutationResult:
     from .result import MutationResult, Result
 
     if isinstance(statement, SelectStatement):
@@ -1294,8 +1290,6 @@ async def _execute_statement_async(
     if returns_rows:
         return Result(await native.execute_returning_rows(sql, values))
     affected = await native.execute(sql, values)
-    if isinstance(statement, UpsertStatement):
-        return MutationResult(
-            "upsert", provider, None if provider == "sqlserver" else affected
-        )
-    return affected
+    operation = type(statement).__name__.removesuffix("Statement").lower()
+    known_count = None if isinstance(statement, UpsertStatement) and provider == "sqlserver" else affected
+    return MutationResult(operation, provider, known_count)

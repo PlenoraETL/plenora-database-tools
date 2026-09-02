@@ -1139,16 +1139,18 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         chi legge la documentazione, che parla di "stessa superficie".
         """
 
-        native = (
+        config = (
             ROOT
             / "crates"
             / "plenora-database-py"
             / "python"
             / "plenora_database"
-            / "__init__.py"
+            / "config.py"
         ).read_text(encoding="utf-8")
-        self.assertIn("def connect_mysql(", native)
-        self.assertIn("async def aconnect_mysql(", native)
+        self.assertIn("def engine_from_url(", config)
+        self.assertIn("async def async_engine_from_url(", config)
+        self.assertIn("_create_mysql_engine(", config)
+        self.assertIn("_create_async_mysql_engine(", config)
 
         tests = (
             ROOT
@@ -1216,17 +1218,17 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         le note: se promette un motore che non c'e, qualcuno installa e scopre
         il vuoto; se ne tace uno che c'e, qualcuno non prova nemmeno.
 
-        La corrispondenza è bidirezionale: nessun motore promesso senza factory
-        e nessuna factory pubblica taciuta dalla descrizione.
+        La corrispondenza è bidirezionale: nessun motore promesso senza un
+        dispatch provider-neutral e nessun dispatch taciuto dalla descrizione.
         """
 
-        native = (
+        config = (
             ROOT
             / "crates"
             / "plenora-database-py"
             / "python"
             / "plenora_database"
-            / "__init__.py"
+            / "config.py"
         ).read_text(encoding="utf-8")
         pyproject = (ROOT / "crates" / "plenora-database-py" / "pyproject.toml").read_text(
             encoding="utf-8"
@@ -1235,16 +1237,17 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             line for line in pyproject.splitlines() if line.startswith("description =")
         )
 
-        #: motore -> (come si chiama la factory, come si scrive nella descrizione)
+        #: motore -> (factory privata del dispatch, testo pubblicato)
         engines = {
-            "postgres": ("def connect(", "Postgres"),
-            "mysql": ("def connect_mysql(", "MySQL"),
-            "mariadb": ("def connect_mariadb(", "MariaDB"),
-            "sqlserver": ("def connect_sqlserver(", "SQL Server"),
+            "postgres": ("_create_postgres_engine(", "Postgres"),
+            "mysql": ("_create_mysql_engine(", "MySQL"),
+            "mariadb": ("_create_mariadb_engine(", "MariaDB"),
+            "sqlserver": ("_create_sqlserver_engine(", "SQL Server"),
+            "db2": ("_create_db2_engine(", "IBM Db2 LUW"),
         }
 
         for engine, (factory, advertised) in engines.items():
-            has_binding = factory in native
+            has_binding = factory in config
             is_advertised = advertised in description
             self.assertEqual(
                 has_binding,
@@ -1254,11 +1257,12 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
                 f"{description}",
             )
 
-        # Almeno una factory deve esserci, o il confronto sarebbe vero a vuoto
-        # su un pacchetto senza binding e senza descrizione.
+        self.assertIn("def engine_from_url(", config)
+        self.assertIn("async def async_engine_from_url(", config)
+        # Almeno un dispatch deve esserci, o il confronto sarebbe vero a vuoto.
         self.assertTrue(
-            any(factory in native for factory, _ in engines.values()),
-            "nessuna factory riconosciuta: la guardia non sta guardando nulla",
+            any(factory in config for factory, _ in engines.values()),
+            "nessun dispatch riconosciuto: la guardia non sta guardando nulla",
         )
 
     def test_the_mysql_tls_default_is_documented_as_verifying(self) -> None:

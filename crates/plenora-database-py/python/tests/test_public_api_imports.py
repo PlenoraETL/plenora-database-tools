@@ -89,6 +89,38 @@ def test_init_and_errors_are_consistent() -> None:
     )
 
 
+def test_v2_has_one_public_engine_entrypoint() -> None:
+    """La major 2 non deve riaprire factory e sessioni per-provider."""
+    init_all = _module_all(PACKAGE_DIR / "__init__.py")
+    required = {"Engine", "AsyncEngine", "EngineConfig", "engine_from_url", "async_engine_from_url"}
+    removed = {
+        "connect",
+        "aconnect",
+        "connect_mysql",
+        "aconnect_mysql",
+        "connect_mariadb",
+        "aconnect_mariadb",
+        "connect_sqlserver",
+        "aconnect_sqlserver",
+        "connect_db2",
+        "aconnect_db2",
+        "create_engine",
+        "create_async_engine",
+        "create_mysql_engine",
+        "create_async_mysql_engine",
+        "create_mariadb_engine",
+        "create_async_mariadb_engine",
+        "create_sqlserver_engine",
+        "create_async_sqlserver_engine",
+        "create_db2_engine",
+        "create_async_db2_engine",
+        "MysqlSession",
+        "AsyncMysqlSession",
+    }
+    assert required <= init_all
+    assert not (removed & init_all), f"simboli 1.x ancora pubblici: {sorted(removed & init_all)}"
+
+
 def test_native_stub_matches_the_common_sync_and_async_session_surface() -> None:
     """La parita pubblica non deve dipendere dal motore o dalla forma async."""
     stub = PACKAGE_DIR / "_native.pyi"

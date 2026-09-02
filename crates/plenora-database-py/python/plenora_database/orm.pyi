@@ -5,11 +5,12 @@ from types import TracebackType
 from typing import Any, Generic, TypeVar, overload
 
 from .expression import Column, Expression, Ordering, Predicate, Table
+from .errors import PlenoraError
 from .spatial import SpatialReference
 
 T = TypeVar("T")  # noqa: PYI001
 
-class OrmError(RuntimeError): ...
+class OrmError(PlenoraError): ...
 class OrmMappingError(OrmError): ...
 class OrmStateError(OrmError): ...
 class StaleObjectError(OrmError): ...
@@ -228,6 +229,7 @@ class Migration:
     down_revision: str | tuple[str, ...] | None
     upgrade: Any
     downgrade: Any | None = None
+    checksum: str = ""
     def __post_init__(self) -> None: ...
 
 class MigrationRunner:
@@ -235,12 +237,18 @@ class MigrationRunner:
     def __init__(self, migrations: Iterable[Migration]) -> None: ...
     def apply(self, session: Any) -> tuple[str, ...]: ...
     def rollback(self, session: Any, *, steps: int = 1) -> tuple[str, ...]: ...
+    def recover(
+        self, session: Any, revision: str, *, assume_applied: bool = False
+    ) -> None: ...
 
 class AsyncMigrationRunner(MigrationRunner):
     async def apply(self, session: Any) -> tuple[str, ...]: ...  # type: ignore[override]
     async def rollback(  # type: ignore[override]
         self, session: Any, *, steps: int = 1
     ) -> tuple[str, ...]: ...
+    async def recover(  # type: ignore[override]
+        self, session: Any, revision: str, *, assume_applied: bool = False
+    ) -> None: ...
 
 class DeclarativeBase:
     __registry__: Registry
@@ -250,12 +258,16 @@ class DeclarativeBase:
 
 @dataclass(frozen=True, slots=True)
 class LoaderOption:
-    relationship: str | Relationship[Any]
+    relationship: Relationship[Any] | tuple[Relationship[Any], ...]
     strategy: str
     def __post_init__(self) -> None: ...
 
-def selectinload(relation: str | Relationship[Any]) -> LoaderOption: ...
-def joinedload(relation: str | Relationship[Any]) -> LoaderOption: ...
+def selectinload(
+    relation: Relationship[Any], *path: Relationship[Any]
+) -> LoaderOption: ...
+def joinedload(
+    relation: Relationship[Any], *path: Relationship[Any]
+) -> LoaderOption: ...
 
 class OrmQuery(Generic[T]):
     def where(self, predicate: Predicate) -> OrmQuery[T]: ...

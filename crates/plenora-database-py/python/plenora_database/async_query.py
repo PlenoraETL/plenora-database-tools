@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .result import MutationResult, Result, Row
+
 from .query import (
     Delete,
     Insert,
@@ -30,17 +32,21 @@ from .query import (
 class AsyncSelect(Select):
     """SELECT builder async. Terminali coroutines."""
 
-    async def all(self) -> list[dict]:  # type: ignore[override]
-        return await self._session._execute_portable_rows(_statement_json(self))
+    async def all(self) -> list[Row]:  # type: ignore[override]
+        rows = await self._session._execute_portable_rows(_statement_json(self))
+        return Result(rows).all()
 
-    async def one(self) -> dict | None:  # type: ignore[override]
-        return _one_or_none(await self.limit(2).all(), type(self).__name__)
+    async def one(self) -> Row | None:  # type: ignore[override]
+        rows = await self.limit(2).all()
+        return _one_or_none(
+            Result([row.as_dict() for row in rows]), type(self).__name__
+        )
 
     async def scalar(self) -> Any:  # type: ignore[override]
         row = await self.one()
         if row is None:
             return None
-        return next(iter(row.values()))
+        return row[0]
 
 
 class _AsyncReturningMutation:
@@ -50,16 +56,22 @@ class _AsyncReturningMutation:
     _session: Any
     _execute_hint = ".all() / .one()"
 
-    async def execute(self) -> int:  # type: ignore[override]
+    async def execute(self) -> MutationResult:  # type: ignore[override]
         _validate_returning(self, required=False)
-        return await self._session._execute_portable_count(_statement_json(self))
+        affected = await self._session._execute_portable_count(_statement_json(self))
+        provider = str(self._session.capabilities["provider"])
+        return MutationResult(type(self).__name__.lower(), provider, affected)
 
-    async def all(self) -> list[dict]:  # type: ignore[override]
+    async def all(self) -> list[Row]:  # type: ignore[override]
         _validate_returning(self, required=True)
-        return await self._session._execute_portable_rows(_statement_json(self))
+        rows = await self._session._execute_portable_rows(_statement_json(self))
+        return Result(rows).all()
 
-    async def one(self) -> dict:  # type: ignore[override]
-        return _exactly_one(await self.all(), type(self).__name__)
+    async def one(self) -> Row:  # type: ignore[override]
+        rows = await self.all()
+        return _exactly_one(
+            Result([row.as_dict() for row in rows]), type(self).__name__
+        )
 
 
 class AsyncInsert(_AsyncReturningMutation, Insert):

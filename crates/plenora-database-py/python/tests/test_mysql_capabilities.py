@@ -54,7 +54,7 @@ def _create(session) -> None:
         " label VARCHAR(64) NOT NULL,"
         " amount BIGINT NOT NULL) ENGINE=InnoDB"
     )
-    session.execute(
+    session.execute_sql(
         f"INSERT INTO {TABLE} (id, label, amount) VALUES (1, ?, 10), (2, ?, 20)",
         ["uno", "due"],
     )
@@ -89,12 +89,12 @@ async def _async_session():
 
 def test_begin_commits_and_rolls_back(session) -> None:
     with session.begin() as tx:
-        tx.execute(f"UPDATE {TABLE} SET amount = 99 WHERE id = 1")
+        tx.execute_sql(f"UPDATE {TABLE} SET amount = 99 WHERE id = 1")
     assert session.execute_scalar(f"SELECT amount FROM {TABLE} WHERE id = 1") == 99
 
     with pytest.raises(RuntimeError, match="rollback voluto"):
         with session.begin() as tx:
-            tx.execute(f"UPDATE {TABLE} SET amount = 1 WHERE id = 1")
+            tx.execute_sql(f"UPDATE {TABLE} SET amount = 1 WHERE id = 1")
             raise RuntimeError("rollback voluto")
     assert session.execute_scalar(f"SELECT amount FROM {TABLE} WHERE id = 1") == 99
 
@@ -160,17 +160,17 @@ def test_native_query_policy_deny_refuses_a_forbidden_statement(session) -> None
 
         # DDL: fuori dall'allowlist OLTP.
         with pytest.raises(p.PlenoraError) as raised:
-            tx.execute(f"CREATE TABLE {TABLE}_vietata (id BIGINT)")
+            tx.execute_sql(f"CREATE TABLE {TABLE}_vietata (id BIGINT)")
         assert "deny" in str(raised.value).lower(), str(raised.value)
 
         # Multi-statement: rifiutato anche se ogni pezzo sarebbe ammesso.
         with pytest.raises(p.PlenoraError):
-            tx.execute(f"SELECT 1; SELECT 2 FROM {TABLE}")
+            tx.execute_sql(f"SELECT 1; SELECT 2 FROM {TABLE}")
 
     # Con la policy di default lo stesso DDL passa: e la policy a fare la
     # differenza, non lo statement.
     with session.begin() as tx:
-        tx.execute(f"CREATE TABLE {TABLE}_ammessa (id BIGINT)")
+        tx.execute_sql(f"CREATE TABLE {TABLE}_ammessa (id BIGINT)")
     session.execute_ddl(f"DROP TABLE IF EXISTS {TABLE}_ammessa")
 
 
@@ -189,7 +189,7 @@ def test_repeatable_read_does_not_see_a_concurrent_commit(session) -> None:
             first = tx.execute_scalar(f"SELECT amount FROM {TABLE} WHERE id = 1")
             assert first == 10
 
-            other.execute(f"UPDATE {TABLE} SET amount = 777 WHERE id = 1")
+            other.execute_sql(f"UPDATE {TABLE} SET amount = 777 WHERE id = 1")
             assert (
                 other.execute_scalar(f"SELECT amount FROM {TABLE} WHERE id = 1") == 777
             ), "l'altra connessione non ha committato: il test non proverebbe nulla"
@@ -208,16 +208,16 @@ def test_savepoint_rolls_back_only_what_follows_it(session) -> None:
     """Savepoint con effetti verificabili riga per riga."""
 
     with session.begin() as tx:
-        tx.execute(f"INSERT INTO {TABLE} (id, label, amount) VALUES (10, 'dieci', 100)")
+        tx.execute_sql(f"INSERT INTO {TABLE} (id, label, amount) VALUES (10, 'dieci', 100)")
         tx.savepoint("sp1")
-        tx.execute(f"INSERT INTO {TABLE} (id, label, amount) VALUES (11, 'undici', 110)")
+        tx.execute_sql(f"INSERT INTO {TABLE} (id, label, amount) VALUES (11, 'undici', 110)")
         assert tx.execute_scalar(f"SELECT COUNT(*) FROM {TABLE} WHERE id >= 10") == 2
         tx.rollback_to_savepoint("sp1")
         assert tx.execute_scalar(f"SELECT COUNT(*) FROM {TABLE} WHERE id >= 10") == 1
         tx.release_savepoint("sp1")
 
     # Dopo il commit sopravvive solo cio che precedeva il savepoint.
-    rows = session.execute_returning_rows(
+    rows = session.query_sql(
         f"SELECT id FROM {TABLE} WHERE id >= 10 ORDER BY id"
     )
     assert [row["id"] for row in rows] == [10]
@@ -258,7 +258,11 @@ def _schema() -> str:
 
 def test_copy_from_appends_rows(session) -> None:
     outcome = session.copy_from(
-        _schema(), TABLE, _rows([3, 4], ["tre", "quattro"], [30, 40]), mode="append"
+        _schema(),
+        TABLE,
+        _rows([3, 4], ["tre", "quattro"], [30, 40]),
+        mode="append",
+        mapping_policy="strict",
     )
     assert outcome["status"] == "committed"
     assert outcome["rows"]["confirmed"] == 2
@@ -272,12 +276,25 @@ def test_ast_builders_select_insert_update_delete(session) -> None:
     rows = session.select(TABLE).columns("label").where_eq("id", 1).all()
     assert rows == [{"label": "uno"}]
 
-    assert session.insert(TABLE).values(id=5, label="cinque", amount=50).execute() == 1
-    assert session.update(TABLE).set(amount=51).where_eq("id", 5).execute() == 1
+    assert (
+        session.insert(TABLE)
+        .values(id=5, label="cinque", amount=50)
+        .execute()
+        .affected_rows
+        == 1
+    )
+    assert (
+        session.update(TABLE)
+        .set(amount=51)
+        .where_eq("id", 5)
+        .execute()
+        .affected_rows
+        == 1
+    )
     assert session.select(TABLE).columns("amount").where_eq("id", 5).one() == {
         "amount": 51
     }
-    assert session.delete(TABLE).where_eq("id", 5).execute() == 1
+    assert session.delete(TABLE).where_eq("id", 5).execute().affected_rows == 1
 
 
 # ================================== async ====================================
@@ -301,7 +318,7 @@ async def test_async_begin_with_context_and_policy(async_session) -> None:
         assert await tx.execute_scalar("SELECT @`plenora_ctx_app.request`") == "42"
 
         with pytest.raises(p.PlenoraError) as raised:
-            await tx.execute(f"CREATE TABLE {TABLE}_vietata_async (id BIGINT)")
+            await tx.execute_sql(f"CREATE TABLE {TABLE}_vietata_async (id BIGINT)")
         assert "deny" in str(raised.value).lower(), str(raised.value)
 
 
@@ -324,7 +341,7 @@ async def test_async_repeatable_read_does_not_see_a_concurrent_commit(
             )
             assert first == 10
 
-            other.execute(f"UPDATE {TABLE} SET amount = 888 WHERE id = 1")
+            other.execute_sql(f"UPDATE {TABLE} SET amount = 888 WHERE id = 1")
             assert (
                 other.execute_scalar(f"SELECT amount FROM {TABLE} WHERE id = 1") == 888
             ), "l'altra connessione non ha committato: il test non proverebbe nulla"
@@ -347,17 +364,17 @@ async def test_async_repeatable_read_does_not_see_a_concurrent_commit(
 @pytest.mark.asyncio
 async def test_async_savepoint_rolls_back_only_what_follows_it(async_session) -> None:
     async with await async_session.begin() as tx:
-        await tx.execute(
+        await tx.execute_sql(
             f"INSERT INTO {TABLE} (id, label, amount) VALUES (20, 'venti', 200)"
         )
         await tx.savepoint("sp_async")
-        await tx.execute(
+        await tx.execute_sql(
             f"INSERT INTO {TABLE} (id, label, amount) VALUES (21, 'ventuno', 210)"
         )
         await tx.rollback_to_savepoint("sp_async")
         assert await tx.execute_scalar(f"SELECT COUNT(*) FROM {TABLE} WHERE id >= 20") == 1
 
-    rows = await async_session.execute_returning_rows(
+    rows = await async_session.query_sql(
         f"SELECT id FROM {TABLE} WHERE id >= 20 ORDER BY id"
     )
     assert [row["id"] for row in rows] == [20]
@@ -381,7 +398,11 @@ async def test_aread_streams_arrow_ipc(async_session) -> None:
 @pytest.mark.asyncio
 async def test_acopy_from_appends_rows(async_session) -> None:
     outcome = await async_session.acopy_from(
-        _schema(), TABLE, _rows([6], ["sei"], [60]), mode="append"
+        _schema(),
+        TABLE,
+        _rows([6], ["sei"], [60]),
+        mode="append",
+        mapping_policy="strict",
     )
     assert outcome["status"] == "committed"
     assert outcome["rows"]["confirmed"] == 1

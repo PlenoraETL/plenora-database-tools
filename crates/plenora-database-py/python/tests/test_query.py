@@ -15,8 +15,8 @@ def _session():
     dsn = postgres_dsn_or_skip()
     s = connect_postgres(dsn)
     # Setup tabella condivisa: rimossa in teardown.
-    s.execute("DROP TABLE IF EXISTS _pyf4_items")
-    s.execute(
+    s.execute_sql("DROP TABLE IF EXISTS _pyf4_items")
+    s.execute_sql(
         "CREATE TABLE _pyf4_items ("
         " id BIGSERIAL PRIMARY KEY,"
         " code TEXT UNIQUE NOT NULL,"
@@ -27,7 +27,7 @@ def _session():
         yield s
     finally:
         try:
-            s.execute("DROP TABLE IF EXISTS _pyf4_items")
+            s.execute_sql("DROP TABLE IF EXISTS _pyf4_items")
         finally:
             s.close()
 
@@ -167,7 +167,7 @@ def test_insert_execute_without_returning_ignores_returning(session) -> None:
 def test_update_set_where_execute_returns_affected(session) -> None:
     _seed(session, [{"code": "A", "label": "x", "qty": 0}])
     n = session.update("_pyf4_items").set(qty=42).where_eq("code", "A").execute()
-    assert n == 1
+    assert n.affected_rows == 1
     new_qty = session.select("_pyf4_items").columns("qty").where_eq("code", "A").scalar()
     assert new_qty == 42
 
@@ -190,7 +190,7 @@ def test_update_returning_yields_new_row(session) -> None:
 def test_delete_where_execute_returns_affected(session) -> None:
     _seed(session, [{"code": f"D{i}", "label": "d", "qty": i} for i in range(5)])
     n = session.delete("_pyf4_items").where_gte("qty", 3).execute()
-    assert n == 2
+    assert n.affected_rows == 2
     remaining = session.select("_pyf4_items").columns("code").order_by("code").all()
     assert [r["code"] for r in remaining] == ["D0", "D1", "D2"]
 

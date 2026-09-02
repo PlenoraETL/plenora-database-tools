@@ -345,9 +345,16 @@ impl PyAsyncEngine {
 
 /// Crea un Engine PostgreSQL e misura le capability prima di pubblicarlo.
 #[pyfunction]
-#[pyo3(signature = (dsn, tls_mode="require"))]
-pub fn create_engine(py: Python<'_>, dsn: &str, tls_mode: &str) -> PyResult<PyEngine> {
-    let provider = Arc::new(build_provider(tls_mode)?);
+#[pyo3(signature = (dsn, tls_mode="require", max_connections=4, acquire_timeout_ms=10_000))]
+pub fn create_engine(
+    py: Python<'_>,
+    dsn: &str,
+    tls_mode: &str,
+    max_connections: usize,
+    acquire_timeout_ms: u64,
+) -> PyResult<PyEngine> {
+    let provider =
+        Arc::new(build_provider(tls_mode)?.with_pool_size(max_connections, acquire_timeout_ms));
     let secret = SecretString::new(dsn.to_owned());
     let provider_for_core: Arc<dyn Provider> = Arc::clone(&provider) as Arc<dyn Provider>;
     let core = CoreEngine::new(provider_for_core, secret.clone());
@@ -372,13 +379,16 @@ pub fn create_engine(py: Python<'_>, dsn: &str, tls_mode: &str) -> PyResult<PyEn
 
 /// Crea in modo asincrono un Engine PostgreSQL gia qualificato dalla probe.
 #[pyfunction]
-#[pyo3(signature = (dsn, tls_mode="require"))]
+#[pyo3(signature = (dsn, tls_mode="require", max_connections=4, acquire_timeout_ms=10_000))]
 pub fn create_async_engine<'py>(
     py: Python<'py>,
     dsn: &str,
     tls_mode: &str,
+    max_connections: usize,
+    acquire_timeout_ms: u64,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let provider = Arc::new(build_provider(tls_mode)?);
+    let provider =
+        Arc::new(build_provider(tls_mode)?.with_pool_size(max_connections, acquire_timeout_ms));
     let secret = SecretString::new(dsn.to_owned());
     let provider_for_core: Arc<dyn Provider> = Arc::clone(&provider) as Arc<dyn Provider>;
     let core = CoreEngine::new(provider_for_core, secret.clone());
@@ -448,6 +458,8 @@ fn family_endpoint(
     tls_ca_pem: Option<Vec<u8>>,
     tls_ca_path: Option<PathBuf>,
     tls_mode: &str,
+    max_connections: usize,
+    acquire_timeout_ms: u64,
 ) -> Endpoint {
     Endpoint {
         host: host.to_owned(),
@@ -458,13 +470,15 @@ fn family_endpoint(
         tls_ca_pem,
         tls_ca_path,
         tls_mode: tls_mode.to_owned(),
+        max_connections,
+        acquire_timeout_ms,
     }
 }
 
 macro_rules! family_engine_factories {
     ($sync_name:ident, $async_name:ident, $builder:path, $product:literal) => {
         #[pyfunction]
-        #[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
+        #[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require", max_connections=4, acquire_timeout_ms=10_000))]
         #[allow(clippy::too_many_arguments)]
         pub fn $sync_name(
             py: Python<'_>,
@@ -475,9 +489,20 @@ macro_rules! family_engine_factories {
             port: Option<u16>,
             tls_ca_pem: Option<Vec<u8>>,
             tls_mode: &str,
+            max_connections: usize,
+            acquire_timeout_ms: u64,
         ) -> PyResult<PyEngine> {
             let endpoint = family_endpoint(
-                host, database, user, password, port, tls_ca_pem, None, tls_mode,
+                host,
+                database,
+                user,
+                password,
+                port,
+                tls_ca_pem,
+                None,
+                tls_mode,
+                max_connections,
+                acquire_timeout_ms,
             );
             let binding = py.detach(|| {
                 runtime().block_on(qualify_family_engine(
@@ -491,7 +516,7 @@ macro_rules! family_engine_factories {
         }
 
         #[pyfunction]
-        #[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
+        #[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require", max_connections=4, acquire_timeout_ms=10_000))]
         #[allow(clippy::too_many_arguments)]
         pub fn $async_name<'py>(
             py: Python<'py>,
@@ -502,9 +527,20 @@ macro_rules! family_engine_factories {
             port: Option<u16>,
             tls_ca_pem: Option<Vec<u8>>,
             tls_mode: &str,
+            max_connections: usize,
+            acquire_timeout_ms: u64,
         ) -> PyResult<Bound<'py, PyAny>> {
             let endpoint = family_endpoint(
-                host, database, user, password, port, tls_ca_pem, None, tls_mode,
+                host,
+                database,
+                user,
+                password,
+                port,
+                tls_ca_pem,
+                None,
+                tls_mode,
+                max_connections,
+                acquire_timeout_ms,
             );
             future_into_py(py, async move {
                 let binding = qualify_family_engine(
@@ -567,6 +603,8 @@ pub fn create_db2_engine(
         None,
         tls_ca_path,
         tls_mode,
+        1,
+        10_000,
     );
     let binding = py.detach(|| {
         runtime().block_on(qualify_family_engine(
@@ -602,6 +640,8 @@ pub fn create_async_db2_engine<'py>(
         None,
         tls_ca_path,
         tls_mode,
+        1,
+        10_000,
     );
     future_into_py(py, async move {
         let binding = qualify_family_engine(

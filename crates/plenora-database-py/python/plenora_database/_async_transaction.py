@@ -90,33 +90,29 @@ class AsyncTransaction(_AsyncBuilderFactory):
 
     # --------------------------- SQL raw --------------------------------
 
-    @overload
-    async def execute(self, sql: str, params: list | None = None) -> int: ...
-
-    @overload
     async def execute(
         self,
-        sql: ExecutableStatement,
+        statement: ExecutableStatement,
         params: Mapping[str, Any] | None = None,
-    ) -> Result | int | MutationResult: ...
+    ) -> Result | MutationResult:
+        if not isinstance(statement, ExecutableStatement):
+            raise TypeError("execute richiede uno statement relazionale")
+        return await _execute_statement_async(
+            self._native, statement, params, self._provider
+        )
 
-    async def execute(self, sql, params=None):
-        if isinstance(sql, ExecutableStatement):
-            return await _execute_statement_async(
-                self._native,
-                sql,
-                params,
-                self._provider,
-            )
-        return await self._native.execute(sql, params)
+    async def execute_sql(
+        self, sql: str, params: list | None = None
+    ) -> MutationResult:
+        affected = await self._native.execute(sql, params)
+        return MutationResult("sql", self._provider, affected)
+
+    async def query_sql(self, sql: str, params: list | None = None) -> Result:
+        rows = await self._native.execute_returning_rows(sql, params)
+        return Result(rows)
 
     async def execute_scalar(self, sql: str, params: list | None = None) -> Any:
         return await self._native.execute_scalar(sql, params)
-
-    async def execute_returning_rows(
-        self, sql: str, params: list | None = None
-    ) -> list[dict]:
-        return await self._native.execute_returning_rows(sql, params)
 
     async def cypher(
         self,

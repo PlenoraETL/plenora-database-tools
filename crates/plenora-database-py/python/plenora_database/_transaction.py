@@ -156,27 +156,26 @@ class Transaction(_BuilderFactory):
 
     # --------------------------- SQL raw --------------------------------
 
-    @overload
-    def execute(self, sql: str, params: list | None = None) -> int: ...
-
-    @overload
     def execute(
         self,
-        sql: ExecutableStatement,
+        statement: ExecutableStatement,
         params: Mapping[str, Any] | None = None,
-    ) -> Result | int | MutationResult: ...
-
-    def execute(self, sql, params=None):
+    ) -> Result | MutationResult:
         native = _require_native(self)
-        if isinstance(sql, ExecutableStatement):
-            return _execute_statement(native, sql, params, self._provider)
-        return native.execute(sql, params)
+        if not isinstance(statement, ExecutableStatement):
+            raise TypeError("execute richiede uno statement relazionale")
+        return _execute_statement(native, statement, params, self._provider)
+
+    def execute_sql(self, sql: str, params: list | None = None) -> MutationResult:
+        affected = _require_native(self).execute(sql, params)
+        return MutationResult("sql", self._provider, affected)
+
+    def query_sql(self, sql: str, params: list | None = None) -> Result:
+        rows = _require_native(self).execute_returning_rows(sql, params)
+        return Result(rows)
 
     def execute_scalar(self, sql: str, params: list | None = None) -> Any:
         return _require_native(self).execute_scalar(sql, params)
-
-    def execute_returning_rows(self, sql: str, params: list | None = None) -> list[dict]:
-        return _require_native(self).execute_returning_rows(sql, params)
 
     def cypher(
         self,
