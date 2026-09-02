@@ -33,7 +33,7 @@ PACKAGE = (
     / "plenora_database"
 )
 
-FACTORIES = ("connect_mysql", "aconnect_mysql")
+FACTORIES = ("_connect_mysql", "_aconnect_mysql")
 #: I due wrapper Python della sessione di famiglia.
 #:
 #: Il nome resta indipendente dal prodotto perché gli stessi wrapper servono
@@ -229,8 +229,8 @@ class SdkStubsTest(unittest.TestCase):
         self.runtime = parse(PACKAGE / "__init__.py")
         self.stub = parse(PACKAGE / "__init__.pyi")
 
-    def test_le_factory_mysql_dichiarano_il_tipo_che_restituiscono(self) -> None:
-        """Lo stub e il runtime concordano su cosa esce dalla factory."""
+    def test_le_factory_interne_mysql_dichiarano_il_wrapper_restituito(self) -> None:
+        """Lo stub e il runtime concordano sui due adapter interni."""
         runtime_functions = functions(self.runtime)
         stub_functions = functions(self.stub)
         for factory in FACTORIES:

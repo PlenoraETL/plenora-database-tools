@@ -185,7 +185,9 @@ Costruire oggetti immutabili e componibili, scollegati dalla sessione:
 ```python
 # Bozza illustrativa, non contratto pubblico.
 users = table("users", column("id"), column("tenant_id"), column("name"))
-statement = select(users.c.id, users.c.name).where(users.c.tenant_id == bind("tenant"))
+statement = select(users.c.id, users.c.name).where(
+    users.c.tenant_id == bind("tenant", BindType.INTEGER)
+)
 
 with engine.session() as session:
     rows = session.execute(statement, {"tenant": 42}).all()

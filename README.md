@@ -112,7 +112,7 @@ accounts = p.table("accounts", "id", "name", schema="app")
 statement = (
     p.select(accounts.c.id, accounts.c.name)
     .select_from(accounts)
-    .where(accounts.c.id == p.bind("account_id"))
+    .where(accounts.c.id == p.bind("account_id", p.BindType.INTEGER))
 )
 
 engine = p.create_engine(os.environ["PLENORA_DATABASE_DSN"])

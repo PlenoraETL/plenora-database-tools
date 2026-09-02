@@ -6,8 +6,16 @@ import os
 import pytest
 
 import plenora_database
+from plenora_database.query import _provider
 
 from ._harness import connect_postgres, postgres_dsn_or_skip
+
+
+def test_builder_provider_accepts_the_transaction_contract() -> None:
+    class TransactionLike:
+        _provider = "mysql"
+
+    assert _provider(TransactionLike()) == "mysql"
 
 
 @pytest.fixture(name="session")
@@ -15,8 +23,8 @@ def _session():
     dsn = postgres_dsn_or_skip()
     s = connect_postgres(dsn)
     # Setup tabella condivisa: rimossa in teardown.
-    s.execute("DROP TABLE IF EXISTS _pyf4_items")
-    s.execute(
+    s.execute_sql("DROP TABLE IF EXISTS _pyf4_items")
+    s.execute_sql(
         "CREATE TABLE _pyf4_items ("
         " id BIGSERIAL PRIMARY KEY,"
         " code TEXT UNIQUE NOT NULL,"
@@ -27,7 +35,7 @@ def _session():
         yield s
     finally:
         try:
-            s.execute("DROP TABLE IF EXISTS _pyf4_items")
+            s.execute_sql("DROP TABLE IF EXISTS _pyf4_items")
         finally:
             s.close()
 
@@ -45,19 +53,22 @@ def test_select_all_returns_list_of_dict(session) -> None:
         {"code": "B", "label": "beta", "qty": 2},
     ])
     rows = session.select("_pyf4_items").columns("code", "qty").order_by("code").all()
-    assert rows == [{"code": "A", "qty": 1}, {"code": "B", "qty": 2}]
+    assert [row.as_dict() for row in rows] == [
+        {"code": "A", "qty": 1},
+        {"code": "B", "qty": 2},
+    ]
 
 
 def test_select_where_eq_narrows_result(session) -> None:
     _seed(session, [{"code": "A", "label": "x", "qty": 1}, {"code": "B", "label": "y", "qty": 2}])
     rows = session.select("_pyf4_items").columns("code").where_eq("code", "A").all()
-    assert rows == [{"code": "A"}]
+    assert [row.as_dict() for row in rows] == [{"code": "A"}]
 
 
 def test_select_one_returns_first_row_or_none(session) -> None:
     _seed(session, [{"code": "A", "label": "x", "qty": 1}])
     row = session.select("_pyf4_items").columns("code").where_eq("code", "A").one()
-    assert row == {"code": "A"}
+    assert row.as_dict() == {"code": "A"}
     none_row = session.select("_pyf4_items").columns("code").where_eq("code", "MISSING").one()
     assert none_row is None
 
@@ -152,13 +163,16 @@ def test_insert_multi_row_all_returning(session) -> None:
         .returning("code", "qty")
         .all()
     )
-    assert rows == [{"code": "M1", "qty": 1}, {"code": "M2", "qty": 2}]
+    assert [row.as_dict() for row in rows] == [
+        {"code": "M1", "qty": 1},
+        {"code": "M2", "qty": 2},
+    ]
 
 
 def test_insert_execute_without_returning_ignores_returning(session) -> None:
     # Nessun .returning() → execute() ritorna il conteggio.
     count = session.insert("_pyf4_items").values(code="E1", label="e", qty=0).execute()
-    assert count == 1
+    assert count.affected_rows == 1
 
 
 # -------------------------- UPDATE --------------------------
@@ -167,7 +181,7 @@ def test_insert_execute_without_returning_ignores_returning(session) -> None:
 def test_update_set_where_execute_returns_affected(session) -> None:
     _seed(session, [{"code": "A", "label": "x", "qty": 0}])
     n = session.update("_pyf4_items").set(qty=42).where_eq("code", "A").execute()
-    assert n == 1
+    assert n.affected_rows == 1
     new_qty = session.select("_pyf4_items").columns("qty").where_eq("code", "A").scalar()
     assert new_qty == 42
 
@@ -181,7 +195,7 @@ def test_update_returning_yields_new_row(session) -> None:
         .returning("code", "qty")
         .one()
     )
-    assert row == {"code": "A", "qty": 100}
+    assert row.as_dict() == {"code": "A", "qty": 100}
 
 
 # -------------------------- DELETE --------------------------
@@ -190,7 +204,7 @@ def test_update_returning_yields_new_row(session) -> None:
 def test_delete_where_execute_returns_affected(session) -> None:
     _seed(session, [{"code": f"D{i}", "label": "d", "qty": i} for i in range(5)])
     n = session.delete("_pyf4_items").where_gte("qty", 3).execute()
-    assert n == 2
+    assert n.affected_rows == 2
     remaining = session.select("_pyf4_items").columns("code").order_by("code").all()
     assert [r["code"] for r in remaining] == ["D0", "D1", "D2"]
 
@@ -198,7 +212,7 @@ def test_delete_where_execute_returns_affected(session) -> None:
 def test_delete_returning_returns_deleted_rows(session) -> None:
     _seed(session, [{"code": "K", "label": "k", "qty": 1}])
     row = session.delete("_pyf4_items").where_eq("code", "K").returning("code").one()
-    assert row == {"code": "K"}
+    assert row.as_dict() == {"code": "K"}
 
 
 # -------------------------- UPSERT --------------------------

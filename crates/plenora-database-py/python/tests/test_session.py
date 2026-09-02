@@ -69,8 +69,10 @@ def test_invalid_dsn_raises_runtime_error_with_categorized_message() -> None:
     # con RuntimeError. Il messaggio deve avere il prefisso di categoria
     # dell'errore Rust (es. "Io:", "Connect:").
     with pytest.raises(RuntimeError) as exc_info:
-        plenora_database.connect(
-            "host=host-che-non-esiste.invalid user=x password=y dbname=z connect_timeout=2"
+        plenora_database.engine_from_url(
+            plenora_database.EngineConfig.from_postgres_dsn(
+                "host=host-che-non-esiste.invalid user=x password=y dbname=z connect_timeout=2"
+            )
         )
     msg = str(exc_info.value)
     # Il messaggio contiene almeno un ":" — il prefisso categoria.

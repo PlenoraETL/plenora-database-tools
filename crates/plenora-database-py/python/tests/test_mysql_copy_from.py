@@ -66,15 +66,15 @@ def _reset(session) -> None:
         f" UNIQUE KEY {TABLE}_label_uk (label)"
         ") ENGINE=InnoDB"
     )
-    session.execute(f"INSERT INTO {TABLE} (id, label) VALUES (1, 'prima'), (2, 'seconda')")
+    session.execute_sql(f"INSERT INTO {TABLE} (id, label) VALUES (1, 'prima'), (2, 'seconda')")
 
 
 def _rows(session):
-    return session.execute_returning_rows(f"SELECT id, label FROM {TABLE} ORDER BY id")
+    return session.query_sql(f"SELECT id, label FROM {TABLE} ORDER BY id")
 
 
 def _index_names(session):
-    rows = session.execute_returning_rows(
+    rows = session.query_sql(
         "SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS "
         f"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{TABLE}' "
         "ORDER BY INDEX_NAME"
@@ -104,6 +104,7 @@ def test_copy_from_replace_swaps_rows_and_keeps_the_indexes(session):
         table=TABLE,
         source=_table([10, 11], ["nuova-a", "nuova-b"]),
         mode="replace",
+        mapping_policy="strict",
     )
 
     assert outcome["status"] == "committed"
@@ -125,6 +126,7 @@ def test_copy_from_truncate_insert_raises_a_typed_unsupported_error(session):
             table=TABLE,
             source=_table([10], ["nuova-a"]),
             mode="truncate_insert",
+            mapping_policy="strict",
         )
 
     # Il messaggio deve indicare l'alternativa qualificata, non lasciare il
@@ -142,6 +144,7 @@ def test_copy_from_replace_on_a_missing_target_raises_not_found(session):
             table=TABLE,
             source=_table([10], ["nuova-a"]),
             mode="replace",
+            mapping_policy="strict",
         )
 
 
@@ -166,6 +169,7 @@ async def test_acopy_from_replace_swaps_rows(async_session):
         table=TABLE,
         source=_table([20, 21], ["async-a", "async-b"]),
         mode="replace",
+        mapping_policy="strict",
     )
     assert outcome["status"] == "committed"
     assert outcome["rows"]["confirmed"] == 2
@@ -179,4 +183,5 @@ async def test_acopy_from_truncate_insert_raises_a_typed_unsupported_error(async
             table=TABLE,
             source=_table([20], ["async-a"]),
             mode="truncate_insert",
+            mapping_policy="strict",
         )

@@ -37,6 +37,20 @@ def test_specific_errors_inherit_from_plenora_error() -> None:
         assert issubclass(cls, plenora_database.PlenoraError)
 
 
+def test_result_and_mapping_errors_join_the_public_taxonomy() -> None:
+    assert issubclass(
+        plenora_database.NoResultFound, plenora_database.PlenoraNotFoundError
+    )
+    assert issubclass(
+        plenora_database.MultipleResultsFound, plenora_database.PlenoraConflictError
+    )
+    assert issubclass(plenora_database.OrmError, plenora_database.PlenoraError)
+    assert issubclass(
+        plenora_database.JsonInputError,
+        plenora_database.PlenoraDataMappingError,
+    )
+
+
 def test_not_found_error_on_nonexistent_table(session) -> None:
     with pytest.raises(plenora_database.PlenoraError) as exc_info:
         session.execute_scalar("SELECT * FROM tabella_che_non_esiste_xyz")
@@ -54,7 +68,7 @@ def test_not_found_error_on_nonexistent_table(session) -> None:
 def test_cancelled_error_via_statement_timeout(session) -> None:
     with pytest.raises(plenora_database.PlenoraError) as exc_info:
         with session.begin(statement_timeout_ms=100) as tx:
-            tx.execute("SELECT pg_sleep(2)")
+            tx.execute_sql("SELECT pg_sleep(2)")
     exc = exc_info.value
     # statement_timeout Postgres → SQLSTATE 57014 → Cancelled.
     assert isinstance(exc, plenora_database.PlenoraCancelledError), \
@@ -73,8 +87,10 @@ def test_error_carries_diagnostics_none_if_absent(session) -> None:
 def test_invalid_dsn_raises_specific_category(session) -> None:
     # Connessione a host inesistente: Io/Connect o Timeout.
     with pytest.raises(plenora_database.PlenoraError) as exc_info:
-        plenora_database.connect(
-            "host=host-inesistente.invalid user=x password=y dbname=z connect_timeout=1"
+        plenora_database.engine_from_url(
+            plenora_database.EngineConfig.from_postgres_dsn(
+                "host=host-inesistente.invalid user=x password=y dbname=z connect_timeout=1"
+            )
         )
     exc = exc_info.value
     # Categoria attesa: Io / Timeout / Protocol / Transient / Cancelled.
@@ -96,13 +112,13 @@ def test_transaction_error_maps_correctly(session) -> None:
     # la sottoclasse esatta (qui: NotFound per tabella inesistente).
     with pytest.raises(plenora_database.PlenoraNotFoundError):
         with session.begin() as tx:
-            tx.execute("SELECT * FROM tabella_che_non_esiste_xyz_2")
+            tx.execute_sql("SELECT * FROM tabella_che_non_esiste_xyz_2")
 
 
 def test_read_only_transaction_violation_is_categorized(session) -> None:
     with pytest.raises(plenora_database.PlenoraError) as exc_info:
         with session.begin(read_only=True) as tx:
-            tx.execute("CREATE TABLE _pyf6_ro_test (id INT)")
+            tx.execute_sql("CREATE TABLE _pyf6_ro_test (id INT)")
     # Postgres: SQLSTATE 25006 (read_only_sql_transaction).
     # Il mapping puo' cadere in Conflict/Execution/Authorization — verifichiamo
     # solo che sia una PlenoraError specifica, NON Internal.

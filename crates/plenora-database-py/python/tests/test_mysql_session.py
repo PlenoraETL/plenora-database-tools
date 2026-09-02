@@ -1,8 +1,8 @@
 """Sessione MySQL sincrona del SDK: esecuzione SQL e ciclo di vita.
 
 Copre la parte relazionale della superficie:
-  - `connect_mysql(host, database, user, password[, port][, tls_ca_pem])`
-  - `execute` / `execute_scalar` / `execute_returning_rows` / `execute_ddl`
+  - factory provider-neutral tramite `EngineConfig`
+  - `execute_sql` / `execute_scalar` / `query_sql` / `execute_ddl`
   - parametri tipizzati (uuid, decimal, NULL)
   - context manager, e l'autocommit del DDL visibile subito
 
@@ -51,11 +51,11 @@ def test_connect_mysql_returns_session_with_server_version(session) -> None:
 
 
 def test_execute_ddl_insert_scalar_roundtrip(session) -> None:
-    n = session.execute(
+    n = session.execute_sql(
         "INSERT INTO _v04_sdk_test (id, label, amount) VALUES (?, ?, ?)",
         [1, "alfa", 10],
     )
-    assert n == 1
+    assert n.affected_rows == 1
 
     count = session.execute_scalar(
         "SELECT COUNT(*) FROM _v04_sdk_test WHERE id = ?", [1]
@@ -63,39 +63,42 @@ def test_execute_ddl_insert_scalar_roundtrip(session) -> None:
     assert count == 1
 
     target = p.table("_v04_sdk_test", "id", "label", "amount")
-    assert session.execute(
+    inserted = session.execute(
         p.insert(target).values(
-            id=p.bind("id"), label=p.bind("label"), amount=p.bind("amount")
+            id=p.bind("id", p.BindType.INTEGER), label=p.bind("label", p.BindType.STRING), amount=p.bind("amount", p.BindType.INTEGER)
         ),
         {"id": 2, "label": "beta", "amount": 20},
-    ) == 1
-    assert session.execute(
+    )
+    assert inserted.affected_rows == 1
+    updated = session.execute(
         p.update(target)
-        .values(label=p.bind("label"))
-        .where(target.c.id == p.bind("id")),
+        .values(label=p.bind("label", p.BindType.STRING))
+        .where(target.c.id == p.bind("id", p.BindType.INTEGER)),
         {"label": "BETA", "id": 2},
-    ) == 1
+    )
+    assert updated.affected_rows == 1
     upserted = session.execute(
         p.upsert(target)
-        .values(id=p.bind("id"), label=p.bind("insert_label"), amount=p.bind("amount"))
+        .values(id=p.bind("id", p.BindType.INTEGER), label=p.bind("insert_label", p.BindType.STRING), amount=p.bind("amount", p.BindType.INTEGER))
         .on_conflict(target.c.id)
-        .set(label=p.bind("update_label")),
+        .set(label=p.bind("update_label", p.BindType.STRING)),
         {"id": 2, "insert_label": "ignored", "amount": 20, "update_label": "UPSERTED"},
     )
     assert upserted.affected_rows is not None and upserted.affected_rows >= 1
-    assert session.execute(
-        p.delete(target).where(target.c.id == p.bind("id")), {"id": 2}
-    ) == 1
+    deleted = session.execute(
+        p.delete(target).where(target.c.id == p.bind("id", p.BindType.INTEGER)), {"id": 2}
+    )
+    assert deleted.affected_rows == 1
 
 
-def test_execute_returning_rows_provides_dicts(session) -> None:
-    session.execute(
+def test_query_sql_provides_rows(session) -> None:
+    session.execute_sql(
         "INSERT INTO _v04_sdk_test (id, label, amount) VALUES (?, ?, ?), (?, ?, ?)",
         [1, "a", 100, 2, "b", 200],
     )
-    rows = session.execute_returning_rows(
+    rows = session.query_sql(
         "SELECT id, label FROM _v04_sdk_test WHERE amount >= ? ORDER BY id", [50]
-    )
+    ).all()
     assert len(rows) == 2
     assert rows[0]["id"] == 1
     assert rows[0]["label"] == "a"
@@ -109,8 +112,8 @@ def test_execute_scalar_null_returns_none(session) -> None:
 
 
 def test_context_manager_closes_session() -> None:
-    host, database, user, password, ca_pem = mysql_config_or_skip()
-    with p.connect_mysql(host, database, user, password, tls_ca_pem=ca_pem) as s:
+    mysql_config_or_skip()
+    with connect_mysql_reference() as s:
         assert s.is_closed is False
         result = s.execute_scalar("SELECT 42")
         assert result == 42
@@ -130,7 +133,7 @@ def test_typed_params_uuid_and_decimal_roundtrip(session) -> None:
         ") ENGINE=InnoDB"
     )
     try:
-        n = session.execute(
+        n = session.execute_sql(
             "INSERT INTO _v04_typed (id, amount, event_date) VALUES (?, ?, ?)",
             [
                 p.uuid("550e8400-e29b-41d4-a716-446655440000"),
@@ -138,10 +141,10 @@ def test_typed_params_uuid_and_decimal_roundtrip(session) -> None:
                 p.date("2026-08-14"),
             ],
         )
-        assert n == 1
-        rows = session.execute_returning_rows(
+        assert n.affected_rows == 1
+        rows = session.query_sql(
             "SELECT id, amount, event_date FROM _v04_typed"
-        )
+        ).all()
         assert len(rows) == 1
         assert rows[0]["id"] == "550e8400-e29b-41d4-a716-446655440000"
         # amount / event_date arrivano come stringhe (formato MySQL native)
@@ -150,13 +153,13 @@ def test_typed_params_uuid_and_decimal_roundtrip(session) -> None:
 
 
 def test_null_typed_param(session) -> None:
-    session.execute("INSERT INTO _v04_sdk_test (id, label, amount) VALUES (?, ?, ?)",
+    session.execute_sql("INSERT INTO _v04_sdk_test (id, label, amount) VALUES (?, ?, ?)",
                     [1, "x", 10])
     # `<=>`, non `IS ?`: su MySQL `IS` accetta solo NULL/TRUE/FALSE/UNKNOWN e
     # un placeholder produce un errore di sintassi (1064). L'operatore
     # null-safe e quello che il test intende — confronto con un parametro che
     # puo essere NULL.
-    rows = session.execute_returning_rows(
+    rows = session.query_sql(
         "SELECT id FROM _v04_sdk_test WHERE label = ? OR label <=> ?",
         ["x", p.null("text")],
     )

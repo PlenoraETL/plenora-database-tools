@@ -51,13 +51,13 @@ def explain(
         raise ValueError("EXPLAIN richiede SQL non vuoto")
     provider = _provider(session)
     statement = _explain_sql(provider, sql, analyze)
-    execute = getattr(session, "execute_returning_rows", None)
+    execute = getattr(session, "query_sql", None)
     if not callable(execute):
         raise TypeError("sessione priva della superficie EXPLAIN")
     rows = execute(statement, params)
-    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+    if not hasattr(rows, "all"):
         raise RuntimeError("EXPLAIN non ha restituito righe strutturate")
-    return ExplainPlan(provider, tuple(dict(row) for row in rows), analyze)
+    return ExplainPlan(provider, tuple(row.as_dict() for row in rows), analyze)
 
 
 async def explain_async(
@@ -70,12 +70,12 @@ async def explain_async(
     if not isinstance(sql, str) or not sql.strip():
         raise ValueError("EXPLAIN richiede SQL non vuoto")
     provider = _provider(session)
-    rows = await session.execute_returning_rows(
+    rows = await session.query_sql(
         _explain_sql(provider, sql, analyze), params
     )
-    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+    if not hasattr(rows, "all"):
         raise RuntimeError("EXPLAIN non ha restituito righe strutturate")
-    return ExplainPlan(provider, tuple(dict(row) for row in rows), analyze)
+    return ExplainPlan(provider, tuple(row.as_dict() for row in rows), analyze)
 
 
 def probe_engine(engine: Any) -> ProbeReport:

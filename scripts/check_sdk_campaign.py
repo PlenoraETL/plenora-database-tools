@@ -10,10 +10,10 @@ Il ciclo di vita delle fixture sta in `scripts/fixture_campaign.py`, condiviso
 con le campagne di sessione e dell'evidenza MariaDB. Qui restano le due cose
 che riguardano questa misura: da dove deve partire, e cosa la fa fallire.
 
-La campagna accende un riferimento per ciascuna factory pubblica:
-PostgreSQL, Apache AGE, MySQL, MariaDB e SQL Server. MariaDB usa la riga principale del
-suo ciclo di evidenza; le righe di compatibilita restano responsabilita del
-gate del provider.
+La campagna accende un riferimento per ciascun provider del lifecycle
+provider-neutral: PostgreSQL, Apache AGE, MySQL, MariaDB e SQL Server. MariaDB
+usa la riga principale del suo ciclo di evidenza; le righe di compatibilita
+restano responsabilita del gate del provider.
 """
 
 from __future__ import annotations

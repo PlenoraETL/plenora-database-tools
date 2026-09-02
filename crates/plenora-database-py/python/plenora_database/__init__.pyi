@@ -36,7 +36,12 @@ from ._native import (
 from ._session import Session
 from ._transaction import Transaction
 from .asgi import DatabaseASGIMiddleware, session_dependency
-from .config import EngineConfig, async_engine_from_url, engine_from_url
+from .config import (
+    EngineConfig as EngineConfig,
+    PoolConfig as PoolConfig,
+    async_engine_from_url as async_engine_from_url,
+    engine_from_url as engine_from_url,
+)
 from .diagnostics import (
     ExplainPlan,
     ProbeReport,
@@ -48,7 +53,7 @@ from .diagnostics import (
 from .json_input import JsonField, JsonGeometry, JsonInput, JsonInputError, JsonSchema
 from .expression import (
     BindParameter,
-    BindType,
+    BindType as BindType,
     Column,
     CommonTable,
     DeleteStatement,
@@ -60,20 +65,20 @@ from .expression import (
     Ordering,
     Predicate,
     ScalarSubquery,
-    SelectStatement,
+    SelectStatement as SelectStatement,
     Table,
     UpdateStatement,
     UpsertStatement,
     WindowExpression,
     and_,
-    bind,
+    bind as bind,
     column,
     delete,
     func,
     insert,
     or_,
-    select,
-    table,
+    select as select,
+    table as table,
     update,
     upsert,
 )
@@ -85,7 +90,14 @@ from .async_query import (
     AsyncUpsert,
 )
 from .query import Delete, Insert, Select, Update, Upsert
-from .result import MultipleResultsFound, MutationResult, NoResultFound, Result, Row
+from .protocols import AsyncSessionProtocol, SessionProtocol
+from .result import (
+    MultipleResultsFound,
+    MutationResult,
+    NoResultFound,
+    Result as Result,
+    Row as Row,
+)
 from .graph import (
     CypherQuery,
     Edge,
@@ -186,7 +198,7 @@ from .types import (
 )
 
 class _DatabaseSessionWrapper:
-    """Cio che `connect_mysql` restituisce davvero.
+    """Wrapper interno usato dagli Engine della famiglia database.
 
     Non e `DatabaseSession`: e il wrapper Python che gli sta davanti, aggiunge la
     conversione automatica della sorgente in `copy_from` e delega tutto il
@@ -207,16 +219,12 @@ class _DatabaseSessionWrapper:
     def __enter__(self) -> _DatabaseSessionWrapper: ...
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> bool: ...
     def __repr__(self) -> str: ...
-    @overload
-    def execute(self, sql: str, params: list | None = None) -> int: ...
-    @overload
     def execute(
-        self, sql: ExecutableStatement, params: Mapping[str, Any] | None = None
-    ) -> Result | int | MutationResult: ...
+        self, statement: ExecutableStatement, params: Mapping[str, Any] | None = None
+    ) -> Result | MutationResult: ...
+    def execute_sql(self, sql: str, params: list | None = None) -> MutationResult: ...
+    def query_sql(self, sql: str, params: list | None = None) -> Result: ...
     def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
-    def execute_returning_rows(
-        self, sql: str, params: list | None = None
-    ) -> list[dict]: ...
     def execute_ddl(self, sql: str) -> None: ...
     @property
     def inspect(self) -> _DatabaseInspector: ...
@@ -252,7 +260,7 @@ class _DatabaseSessionWrapper:
         *,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
-        mapping_policy: str = "strict",
+        mapping_policy: str,
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> dict: ...
@@ -260,7 +268,7 @@ class _DatabaseSessionWrapper:
     def _execute_portable_count(self, ast_json: str) -> int: ...
 
 class _AsyncDatabaseSessionWrapper:
-    """Cio che `aconnect_mysql` restituisce davvero: vedi
+    """Wrapper async interno della famiglia database: vedi
     [`_DatabaseSessionWrapper`], con `aread` e `acopy_from` al posto di `read` e
     `copy_from`."""
 
@@ -278,16 +286,14 @@ class _AsyncDatabaseSessionWrapper:
         self, exc_type: Any, exc_value: Any, traceback: Any
     ) -> bool: ...
     def __repr__(self) -> str: ...
-    @overload
-    async def execute(self, sql: str, params: list | None = None) -> int: ...
-    @overload
     async def execute(
-        self, sql: ExecutableStatement, params: Mapping[str, Any] | None = None
-    ) -> Result | int | MutationResult: ...
-    async def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
-    async def execute_returning_rows(
+        self, statement: ExecutableStatement, params: Mapping[str, Any] | None = None
+    ) -> Result | MutationResult: ...
+    async def execute_sql(
         self, sql: str, params: list | None = None
-    ) -> list[dict]: ...
+    ) -> MutationResult: ...
+    async def query_sql(self, sql: str, params: list | None = None) -> Result: ...
+    async def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
     async def execute_ddl(self, sql: str) -> None: ...
     @property
     def inspect(self) -> _AsyncDatabaseInspector: ...
@@ -323,7 +329,7 @@ class _AsyncDatabaseSessionWrapper:
         *,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
-        mapping_policy: str = "strict",
+        mapping_policy: str,
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> dict: ...
@@ -345,12 +351,16 @@ class _AsyncDatabaseInspector:
     async def describe(self, schema: str, table: str) -> dict: ...
 
 def version() -> str: ...
-def create_engine(dsn: str, tls_mode: str = "require") -> Engine[Session]: ...
-async def create_async_engine(
-    dsn: str, tls_mode: str = "require"
+def _create_postgres_engine(
+    dsn: str, tls_mode: str = "require", *, max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
+) -> Engine[Session]: ...
+async def _create_async_postgres_engine(
+    dsn: str, tls_mode: str = "require", *, max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> AsyncEngine[AsyncSession]: ...
-def connect(dsn: str, tls_mode: str = "require") -> Session: ...
-async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession: ...
+def _connect_postgres(dsn: str, tls_mode: str = "require") -> Session: ...
+async def _aconnect_postgres(dsn: str, tls_mode: str = "require") -> AsyncSession: ...
 
 # La famiglia MySQL: sei write mode su sette per entrambi i prodotti, con
 # `truncate_insert` fail-closed — `TRUNCATE` e DDL con commit implicito, e
@@ -358,7 +368,7 @@ async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession: ...
 #
 # Due factory e non un parametro: il prodotto lo dichiara il consumatore, e la
 # probe verifica quella scelta invece di compierla (ADR 0014).
-def connect_mysql(
+def _connect_mysql(
     host: str,
     database: str,
     user: str,
@@ -367,7 +377,7 @@ def connect_mysql(
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
 ) -> _DatabaseSessionWrapper: ...
-async def aconnect_mysql(
+async def _aconnect_mysql(
     host: str,
     database: str,
     user: str,
@@ -376,7 +386,7 @@ async def aconnect_mysql(
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
 ) -> _AsyncDatabaseSessionWrapper: ...
-def connect_mariadb(
+def _connect_mariadb(
     host: str,
     database: str,
     user: str,
@@ -385,7 +395,7 @@ def connect_mariadb(
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
 ) -> _DatabaseSessionWrapper: ...
-async def aconnect_mariadb(
+async def _aconnect_mariadb(
     host: str,
     database: str,
     user: str,
@@ -394,7 +404,7 @@ async def aconnect_mariadb(
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
 ) -> _AsyncDatabaseSessionWrapper: ...
-def connect_sqlserver(
+def _connect_sqlserver(
     host: str,
     database: str,
     user: str,
@@ -403,7 +413,7 @@ def connect_sqlserver(
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
 ) -> _DatabaseSessionWrapper: ...
-async def aconnect_sqlserver(
+async def _aconnect_sqlserver(
     host: str,
     database: str,
     user: str,
@@ -412,7 +422,7 @@ async def aconnect_sqlserver(
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
 ) -> _AsyncDatabaseSessionWrapper: ...
-def connect_db2(
+def _connect_db2(
     host: str,
     database: str,
     user: str,
@@ -421,7 +431,7 @@ def connect_db2(
     tls_ca_path: str | None = ...,
     tls_mode: str = "require",
 ) -> _DatabaseSessionWrapper: ...
-async def aconnect_db2(
+async def _aconnect_db2(
     host: str,
     database: str,
     user: str,
@@ -430,7 +440,7 @@ async def aconnect_db2(
     tls_ca_path: str | None = ...,
     tls_mode: str = "require",
 ) -> _AsyncDatabaseSessionWrapper: ...
-def create_mysql_engine(
+def _create_mysql_engine(
     host: str,
     database: str,
     user: str,
@@ -438,8 +448,11 @@ def create_mysql_engine(
     port: int | None = ...,
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> Engine[_DatabaseSessionWrapper]: ...
-async def create_async_mysql_engine(
+async def _create_async_mysql_engine(
     host: str,
     database: str,
     user: str,
@@ -447,8 +460,11 @@ async def create_async_mysql_engine(
     port: int | None = ...,
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> AsyncEngine[_AsyncDatabaseSessionWrapper]: ...
-def create_mariadb_engine(
+def _create_mariadb_engine(
     host: str,
     database: str,
     user: str,
@@ -456,8 +472,11 @@ def create_mariadb_engine(
     port: int | None = ...,
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> Engine[_DatabaseSessionWrapper]: ...
-async def create_async_mariadb_engine(
+async def _create_async_mariadb_engine(
     host: str,
     database: str,
     user: str,
@@ -465,8 +484,11 @@ async def create_async_mariadb_engine(
     port: int | None = ...,
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> AsyncEngine[_AsyncDatabaseSessionWrapper]: ...
-def create_sqlserver_engine(
+def _create_sqlserver_engine(
     host: str,
     database: str,
     user: str,
@@ -474,8 +496,11 @@ def create_sqlserver_engine(
     port: int | None = ...,
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> Engine[_DatabaseSessionWrapper]: ...
-async def create_async_sqlserver_engine(
+async def _create_async_sqlserver_engine(
     host: str,
     database: str,
     user: str,
@@ -483,8 +508,11 @@ async def create_async_sqlserver_engine(
     port: int | None = ...,
     tls_ca_pem: bytes | None = ...,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> AsyncEngine[_AsyncDatabaseSessionWrapper]: ...
-def create_db2_engine(
+def _create_db2_engine(
     host: str,
     database: str,
     user: str,
@@ -493,7 +521,7 @@ def create_db2_engine(
     tls_ca_path: str | None = ...,
     tls_mode: str = "require",
 ) -> Engine[_DatabaseSessionWrapper]: ...
-async def create_async_db2_engine(
+async def _create_async_db2_engine(
     host: str,
     database: str,
     user: str,

@@ -21,20 +21,20 @@ pyarrow_ipc = pytest.importorskip("pyarrow.ipc")
 def _upsert_session():
     dsn = postgres_dsn_or_skip()
     s = connect_postgres(dsn)
-    s.execute("DROP TABLE IF EXISTS _v030_upsert")
-    s.execute(
+    s.execute_sql("DROP TABLE IF EXISTS _v030_upsert")
+    s.execute_sql(
         "CREATE TABLE _v030_upsert ("
         " id BIGINT PRIMARY KEY, "
         " label TEXT NOT NULL, "
         " amount INT NOT NULL)"
     )
-    s.execute("INSERT INTO _v030_upsert VALUES (1, 'existing-1', 100)")
-    s.execute("INSERT INTO _v030_upsert VALUES (2, 'existing-2', 200)")
+    s.execute_sql("INSERT INTO _v030_upsert VALUES (1, 'existing-1', 100)")
+    s.execute_sql("INSERT INTO _v030_upsert VALUES (2, 'existing-2', 200)")
     try:
         yield s
     finally:
         try:
-            s.execute("DROP TABLE IF EXISTS _v030_upsert")
+            s.execute_sql("DROP TABLE IF EXISTS _v030_upsert")
         finally:
             s.close()
 
@@ -49,12 +49,12 @@ def test_copy_from_upsert_updates_existing_and_inserts_new(upsert_session) -> No
     )
     outcome = upsert_session.copy_from(
         "public", "_v030_upsert", tbl,
-        mode="upsert", keys=["id"],
+        mode="upsert", mapping_policy="compatible", keys=["id"],
     )
     assert outcome["status"] == "committed"
 
     # Verifica: id=1 aggiornato, id=2 invariato, id=3 nuovo
-    rows = upsert_session.execute_returning_rows(
+    rows = upsert_session.query_sql(
         "SELECT id, label, amount FROM _v030_upsert ORDER BY id"
     )
     ids = [r["id"] for r in rows]
@@ -66,7 +66,10 @@ def test_copy_from_upsert_updates_existing_and_inserts_new(upsert_session) -> No
 def test_copy_from_upsert_without_keys_raises_invalid_plan(upsert_session) -> None:
     tbl = pyarrow.table({"id": [1], "label": ["x"], "amount": [1]})
     with pytest.raises(p.PlenoraInvalidPlanError) as exc:
-        upsert_session.copy_from("public", "_v030_upsert", tbl, mode="upsert")
+        upsert_session.copy_from(
+            "public", "_v030_upsert", tbl,
+            mode="upsert", mapping_policy="compatible",
+        )
     assert "richiede almeno una key" in str(exc.value)
 
 
@@ -75,7 +78,7 @@ def test_copy_from_delete_by_keys_removes_matching_rows(upsert_session) -> None:
     tbl = pyarrow.table({"id": pyarrow.array([1, 2], type=pyarrow.int64())})
     outcome = upsert_session.copy_from(
         "public", "_v030_upsert", tbl,
-        mode="delete_by_keys", keys=["id"],
+        mode="delete_by_keys", mapping_policy="compatible", keys=["id"],
     )
     assert outcome["status"] == "committed"
 
@@ -89,7 +92,8 @@ def test_copy_from_keys_rejected_for_append_mode(upsert_session) -> None:
     tbl = pyarrow.table({"id": [4], "label": ["z"], "amount": [1]})
     with pytest.raises(p.PlenoraInvalidPlanError) as exc:
         upsert_session.copy_from(
-            "public", "_v030_upsert", tbl, mode="append", keys=["id"],
+            "public", "_v030_upsert", tbl,
+            mode="append", mapping_policy="compatible", keys=["id"],
         )
     assert "keys" in str(exc.value).lower()
 
@@ -101,14 +105,14 @@ def test_copy_from_keys_rejected_for_append_mode(upsert_session) -> None:
 def _read_session():
     dsn = postgres_dsn_or_skip()
     s = connect_postgres(dsn)
-    s.execute("DROP TABLE IF EXISTS _v030_read")
-    s.execute(
+    s.execute_sql("DROP TABLE IF EXISTS _v030_read")
+    s.execute_sql(
         "CREATE TABLE _v030_read ("
         " id BIGINT PRIMARY KEY, "
         " label TEXT NOT NULL, "
         " amount INT NOT NULL)"
     )
-    s.execute(
+    s.execute_sql(
         "INSERT INTO _v030_read (id, label, amount) "
         "SELECT gs, 'row-' || gs::TEXT, gs * 10 "
         "FROM generate_series(1, 100) gs"
@@ -117,7 +121,7 @@ def _read_session():
         yield s
     finally:
         try:
-            s.execute("DROP TABLE IF EXISTS _v030_read")
+            s.execute_sql("DROP TABLE IF EXISTS _v030_read")
         finally:
             s.close()
 
@@ -179,8 +183,8 @@ def test_read_invalid_order_by_direction_raises(read_session) -> None:
 def _pandas_session():
     dsn = postgres_dsn_or_skip()
     s = connect_postgres(dsn)
-    s.execute("DROP TABLE IF EXISTS _v030_pandas")
-    s.execute(
+    s.execute_sql("DROP TABLE IF EXISTS _v030_pandas")
+    s.execute_sql(
         "CREATE TABLE _v030_pandas ("
         " id BIGINT PRIMARY KEY, "
         " label TEXT NOT NULL, "
@@ -190,7 +194,7 @@ def _pandas_session():
         yield s
     finally:
         try:
-            s.execute("DROP TABLE IF EXISTS _v030_pandas")
+            s.execute_sql("DROP TABLE IF EXISTS _v030_pandas")
         finally:
             s.close()
 
@@ -201,7 +205,9 @@ def test_copy_from_accepts_list_of_dict(pandas_session) -> None:
         {"id": 2, "label": "b", "amount": 20.5},
         {"id": 3, "label": "c", "amount": 30.5},
     ]
-    outcome = pandas_session.copy_from("public", "_v030_pandas", rows)
+    outcome = pandas_session.copy_from(
+        "public", "_v030_pandas", rows, mapping_policy="compatible"
+    )
     assert outcome["status"] == "committed"
     assert outcome["rows"]["confirmed"] == 3
 
@@ -215,7 +221,9 @@ def test_copy_from_accepts_pandas_dataframe(pandas_session) -> None:
             "amount": [10.5, 11.5, 12.5],
         }
     )
-    outcome = pandas_session.copy_from("public", "_v030_pandas", df)
+    outcome = pandas_session.copy_from(
+        "public", "_v030_pandas", df, mapping_policy="compatible"
+    )
     assert outcome["status"] == "committed"
     assert outcome["rows"]["confirmed"] == 3
 
@@ -227,9 +235,13 @@ def test_copy_from_accepts_pandas_dataframe(pandas_session) -> None:
 
 def test_copy_from_list_of_dict_empty_raises(pandas_session) -> None:
     with pytest.raises(ValueError):
-        pandas_session.copy_from("public", "_v030_pandas", [])
+        pandas_session.copy_from(
+            "public", "_v030_pandas", [], mapping_policy="compatible"
+        )
 
 
 def test_copy_from_list_of_int_raises_type_error(pandas_session) -> None:
     with pytest.raises(TypeError):
-        pandas_session.copy_from("public", "_v030_pandas", [1, 2, 3])
+        pandas_session.copy_from(
+            "public", "_v030_pandas", [1, 2, 3], mapping_policy="compatible"
+        )

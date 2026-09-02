@@ -19,6 +19,28 @@ _PROVIDERS = {
 
 
 @dataclass(frozen=True, slots=True)
+class PoolConfig:
+    """Limiti di backpressure applicati dal provider prima della probe."""
+
+    max_connections: int = 4
+    acquire_timeout_ms: int = 10_000
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.max_connections, int)
+            or isinstance(self.max_connections, bool)
+            or self.max_connections < 1
+        ):
+            raise ValueError("max_connections deve essere un intero positivo")
+        if (
+            not isinstance(self.acquire_timeout_ms, int)
+            or isinstance(self.acquire_timeout_ms, bool)
+            or self.acquire_timeout_ms < 1
+        ):
+            raise ValueError("acquire_timeout_ms deve essere un intero positivo")
+
+
+@dataclass(frozen=True, slots=True)
 class EngineConfig:
     provider: str
     host: str | None = None
@@ -28,13 +50,18 @@ class EngineConfig:
     port: int | None = None
     tls_mode: str = "require"
     tls_ca: str | None = None
+    pool: PoolConfig | None = None
     _raw_url: str | None = None
 
     def __post_init__(self) -> None:
         if self.provider not in set(_PROVIDERS.values()):
             raise ValueError("provider engine non supportato")
         if self.tls_mode not in {"require", "insecure_local"}:
-            raise ValueError("tls_mode engine non valido")
+            raise ValueError(
+                "tls_mode engine non valido; valori: require, insecure_local"
+            )
+        if self.provider == "db2" and self.pool is not None:
+            raise ValueError("pool configurabile non qualificato per Db2")
 
     def __repr__(self) -> str:
         return (
@@ -55,6 +82,20 @@ class EngineConfig:
         query = parse_qs(parsed.query, strict_parsing=False)
         tls_mode = query.get("tls_mode", ["require"])[-1]
         tls_ca = query.get("tls_ca", [None])[-1]
+        try:
+            has_pool = "max_connections" in query or "acquire_timeout_ms" in query
+            pool = (
+                PoolConfig(
+                    max_connections=int(query.get("max_connections", ["4"])[-1]),
+                    acquire_timeout_ms=int(
+                        query.get("acquire_timeout_ms", ["10000"])[-1]
+                    ),
+                )
+                if has_pool
+                else None
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("configurazione pool URL non valida") from error
         database = unquote(parsed.path.lstrip("/")) or None
         host = parsed.hostname
         user = None if parsed.username is None else unquote(parsed.username)
@@ -65,7 +106,13 @@ class EngineConfig:
             [
                 (name, item)
                 for name, item in parse_qsl(parsed.query, keep_blank_values=True)
-                if name not in {"tls_mode", "tls_ca"}
+                if name
+                not in {
+                    "tls_mode",
+                    "tls_ca",
+                    "max_connections",
+                    "acquire_timeout_ms",
+                }
             ]
         )
         postgres_scheme = (
@@ -89,7 +136,23 @@ class EngineConfig:
             port=parsed.port,
             tls_mode=tls_mode,
             tls_ca=tls_ca,
+            pool=pool,
             _raw_url=raw_url,
+        )
+
+    @classmethod
+    def from_postgres_dsn(
+        cls,
+        dsn: str,
+        *,
+        tls_mode: str = "require",
+        pool: PoolConfig | None = None,
+    ) -> EngineConfig:
+        """Adatta una DSN libpq senza ricomporla o mostrarla."""
+        if not isinstance(dsn, str) or not dsn:
+            raise ValueError("DSN PostgreSQL non valida")
+        return cls(
+            "postgres", tls_mode=tls_mode, pool=pool, _raw_url=dsn
         )
 
 
@@ -98,31 +161,54 @@ def engine_from_url(value: str | EngineConfig) -> Any:
 
     config = value if isinstance(value, EngineConfig) else EngineConfig.from_url(value)
     from . import (  # import lazy per evitare cicli nel package pubblico
-        create_db2_engine,
-        create_engine,
-        create_mariadb_engine,
-        create_mysql_engine,
-        create_sqlserver_engine,
+        _create_db2_engine,
+        _create_mariadb_engine,
+        _create_mysql_engine,
+        _create_postgres_engine,
+        _create_sqlserver_engine,
     )
 
     if config.provider == "postgres":
         if config._raw_url is None:
             raise ValueError("configurazione PostgreSQL priva di URL")
-        return create_engine(config._raw_url, config.tls_mode)
+        max_connections, acquire_timeout_ms = _pool_arguments(config)
+        return _create_postgres_engine(
+            config._raw_url,
+            config.tls_mode,
+            max_connections=max_connections,
+            acquire_timeout_ms=acquire_timeout_ms,
+        )
     args = _network_arguments(config)
+    max_connections, acquire_timeout_ms = _pool_arguments(config)
     if config.provider == "mysql":
-        return create_mysql_engine(
-            *args, tls_ca_pem=_ca_bytes(config), tls_mode=config.tls_mode
+        return _create_mysql_engine(
+            *args,
+            tls_ca_pem=_ca_bytes(config),
+            tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
+            max_connections=max_connections,
+            acquire_timeout_ms=acquire_timeout_ms,
         )
     if config.provider == "mariadb":
-        return create_mariadb_engine(
-            *args, tls_ca_pem=_ca_bytes(config), tls_mode=config.tls_mode
+        return _create_mariadb_engine(
+            *args,
+            tls_ca_pem=_ca_bytes(config),
+            tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
+            max_connections=max_connections,
+            acquire_timeout_ms=acquire_timeout_ms,
         )
     if config.provider == "sqlserver":
-        return create_sqlserver_engine(
-            *args, tls_ca_pem=_ca_bytes(config), tls_mode=config.tls_mode
+        return _create_sqlserver_engine(
+            *args,
+            tls_ca_pem=_ca_bytes(config),
+            tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
+            max_connections=max_connections,
+            acquire_timeout_ms=acquire_timeout_ms,
         )
-    return create_db2_engine(*args, tls_ca_path=config.tls_ca, tls_mode=config.tls_mode)
+    return _create_db2_engine(
+        *args,
+        tls_ca_path=config.tls_ca,
+        tls_mode="require" if config.tls_mode == "require" else "disable",
+    )
 
 
 async def async_engine_from_url(value: str | EngineConfig) -> Any:
@@ -130,32 +216,53 @@ async def async_engine_from_url(value: str | EngineConfig) -> Any:
 
     config = value if isinstance(value, EngineConfig) else EngineConfig.from_url(value)
     from . import (
-        create_async_db2_engine,
-        create_async_engine,
-        create_async_mariadb_engine,
-        create_async_mysql_engine,
-        create_async_sqlserver_engine,
+        _create_async_db2_engine,
+        _create_async_mariadb_engine,
+        _create_async_mysql_engine,
+        _create_async_postgres_engine,
+        _create_async_sqlserver_engine,
     )
 
     if config.provider == "postgres":
         if config._raw_url is None:
             raise ValueError("configurazione PostgreSQL priva di URL")
-        return await create_async_engine(config._raw_url, config.tls_mode)
+        max_connections, acquire_timeout_ms = _pool_arguments(config)
+        return await _create_async_postgres_engine(
+            config._raw_url,
+            config.tls_mode,
+            max_connections=max_connections,
+            acquire_timeout_ms=acquire_timeout_ms,
+        )
     args = _network_arguments(config)
+    max_connections, acquire_timeout_ms = _pool_arguments(config)
     if config.provider == "mysql":
-        return await create_async_mysql_engine(
-            *args, tls_ca_pem=_ca_bytes(config), tls_mode=config.tls_mode
+        return await _create_async_mysql_engine(
+            *args,
+            tls_ca_pem=_ca_bytes(config),
+            tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
+            max_connections=max_connections,
+            acquire_timeout_ms=acquire_timeout_ms,
         )
     if config.provider == "mariadb":
-        return await create_async_mariadb_engine(
-            *args, tls_ca_pem=_ca_bytes(config), tls_mode=config.tls_mode
+        return await _create_async_mariadb_engine(
+            *args,
+            tls_ca_pem=_ca_bytes(config),
+            tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
+            max_connections=max_connections,
+            acquire_timeout_ms=acquire_timeout_ms,
         )
     if config.provider == "sqlserver":
-        return await create_async_sqlserver_engine(
-            *args, tls_ca_pem=_ca_bytes(config), tls_mode=config.tls_mode
+        return await _create_async_sqlserver_engine(
+            *args,
+            tls_ca_pem=_ca_bytes(config),
+            tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
+            max_connections=max_connections,
+            acquire_timeout_ms=acquire_timeout_ms,
         )
-    return await create_async_db2_engine(
-        *args, tls_ca_path=config.tls_ca, tls_mode=config.tls_mode
+    return await _create_async_db2_engine(
+        *args,
+        tls_ca_path=config.tls_ca,
+        tls_mode="require" if config.tls_mode == "require" else "disable",
     )
 
 
@@ -175,4 +282,9 @@ def _ca_bytes(config: EngineConfig) -> bytes | None:
     return None if config.tls_ca is None else config.tls_ca.encode()
 
 
-__all__ = ["EngineConfig", "async_engine_from_url", "engine_from_url"]
+def _pool_arguments(config: EngineConfig) -> tuple[int, int]:
+    pool = config.pool or PoolConfig()
+    return pool.max_connections, pool.acquire_timeout_ms
+
+
+__all__ = ["EngineConfig", "PoolConfig", "async_engine_from_url", "engine_from_url"]

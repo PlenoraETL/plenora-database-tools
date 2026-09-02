@@ -31,8 +31,8 @@ from ._harness import aconnect_postgres, connect_postgres, postgres_dsn_or_skip
 async def _clean_schema():
     dsn = postgres_dsn_or_skip()
     async with await aconnect_postgres(dsn) as s:
-        await s.execute("DROP TABLE IF EXISTS _pyf8_building")
-        await s.execute(
+        await s.execute_sql("DROP TABLE IF EXISTS _pyf8_building")
+        await s.execute_sql(
             "CREATE TABLE _pyf8_building ("
             " id UUID PRIMARY KEY,"
             " code TEXT UNIQUE NOT NULL,"
@@ -44,7 +44,7 @@ async def _clean_schema():
         )
     yield
     async with await aconnect_postgres(dsn) as s:
-        await s.execute("DROP TABLE IF EXISTS _pyf8_building")
+        await s.execute_sql("DROP TABLE IF EXISTS _pyf8_building")
 
 
 @pytest.mark.asyncio
@@ -78,13 +78,13 @@ async def test_e2e_pfm_building_lifecycle_async(clean_schema) -> None:
             assert row["version"] == 1
 
             # 3. Update location via raw SQL (spatial construction)
-            n = await tx.execute(
+            n = await tx.execute_sql(
                 "UPDATE _pyf8_building "
                 "SET location = ST_SetSRID(ST_MakePoint($1, $2), 4326) "
                 "WHERE id = $3",
                 [9.19, 45.46, p.uuid(b_uuid)],
             )
-            assert n == 1
+            assert n.affected_rows == 1
 
             # 4. Spatial query via portable AST
             ref_ewkb = await tx.execute_scalar(
@@ -98,7 +98,9 @@ async def test_e2e_pfm_building_lifecycle_async(clean_schema) -> None:
                 .where_spatial("location", "intersects", ref)
                 .all()
             )
-            assert found == [{"code": "TORRE-MI", "name": "Torre Milano"}]
+            assert [row.as_dict() for row in found] == [
+                {"code": "TORRE-MI", "name": "Torre Milano"}
+            ]
 
             # 5. Savepoint + rollback selettivo
             await tx.savepoint("bump_area")
@@ -160,9 +162,9 @@ def test_e2e_pfm_building_lifecycle_sync(clean_schema) -> None:
                 .returning("code", "area")
                 .one()
             )
-            assert row == {"code": "DUOMO-MI", "area": "11700.00"}
+            assert row.as_dict() == {"code": "DUOMO-MI", "area": "11700.00"}
 
-            tx.execute(
+            tx.execute_sql(
                 "UPDATE _pyf8_building "
                 "SET location = ST_SetSRID(ST_MakePoint($1, $2), 4326) "
                 "WHERE id = $3",
@@ -201,8 +203,8 @@ def test_e2e_optimistic_conflict_pattern_sync() -> None:
     # Se il version è cambiato, riprova con la versione nuova.
     dsn = postgres_dsn_or_skip()
     with connect_postgres(dsn) as s:
-        s.execute("DROP TABLE IF EXISTS _pyf8_opt")
-        s.execute(
+        s.execute_sql("DROP TABLE IF EXISTS _pyf8_opt")
+        s.execute_sql(
             "CREATE TABLE _pyf8_opt ("
             " id INT PRIMARY KEY,"
             " value TEXT NOT NULL,"
@@ -219,7 +221,7 @@ def test_e2e_optimistic_conflict_pattern_sync() -> None:
                 .where_eq("version", 1)
                 .execute()
             )
-            assert n == 1, "il primo update deve applicarsi (version=1 matcha)"
+            assert n.affected_rows == 1, "il primo update deve applicarsi"
 
             # Retry con expected_version obsoleto: n == 0 → conflitto rilevato
             n2 = (
@@ -229,7 +231,7 @@ def test_e2e_optimistic_conflict_pattern_sync() -> None:
                 .where_eq("version", 1)   # stale
                 .execute()
             )
-            assert n2 == 0, "expected_version stale → nessun update applicato"
+            assert n2.affected_rows == 0, "expected_version stale"
 
             # Refresh e riprova
             current = s.select("_pyf8_opt").columns("version").where_eq("id", 1).scalar()
@@ -241,9 +243,9 @@ def test_e2e_optimistic_conflict_pattern_sync() -> None:
                 .where_eq("version", current)
                 .execute()
             )
-            assert n3 == 1
+            assert n3.affected_rows == 1
         finally:
-            s.execute("DROP TABLE IF EXISTS _pyf8_opt")
+            s.execute_sql("DROP TABLE IF EXISTS _pyf8_opt")
 
 
 def test_e2e_error_taxonomy_reaches_python_correctly() -> None:
@@ -258,7 +260,7 @@ def test_e2e_error_taxonomy_reaches_python_correctly() -> None:
         # Cancelled: statement_timeout
         with pytest.raises(p.PlenoraCancelledError):
             with s.begin(statement_timeout_ms=50) as tx:
-                tx.execute("SELECT pg_sleep(2)")
+                tx.execute_sql("SELECT pg_sleep(2)")
 
         # InvalidPlan: portable AST malformata (JSON invalido)
         # → passato JSON malformato al bridge

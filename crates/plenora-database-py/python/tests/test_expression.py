@@ -21,7 +21,10 @@ def _joined_statement() -> p.SelectStatement:
         p.select(users.c.id, users.c.name.label("user_name"), teams.c.name)
         .select_from(users)
         .join(teams, users.c.team_id == teams.c.id)
-        .where((users.c.id >= p.bind("minimum")) & (users.c.id != p.bind("excluded")))
+        .where(
+            (users.c.id >= p.bind("minimum", p.BindType.INTEGER))
+            & (users.c.id != p.bind("excluded", p.BindType.INTEGER))
+        )
         .order_by(users.c.id.desc())
         .limit(10)
     )
@@ -30,7 +33,7 @@ def _joined_statement() -> p.SelectStatement:
 def test_statement_is_immutable_and_keeps_values_out_of_the_ir() -> None:
     users = p.table("users", p.column("id"), p.column("name"))
     base = p.select(users.c.id)
-    filtered = base.where(users.c.name == p.bind("wanted"))
+    filtered = base.where(users.c.name == p.bind("wanted", p.BindType.STRING))
 
     assert base.to_ast()["filter"] is None
     assert filtered.to_ast()["source"]["object"]["object"] == "users"
@@ -76,7 +79,8 @@ def test_canonical_compiler_covers_every_public_provider(
 def test_repeated_bind_name_preserves_positional_order() -> None:
     users = p.table("users", "id", "owner_id")
     statement = p.select(users.c.id).where(
-        (users.c.id == p.bind("identity")) | (users.c.owner_id == p.bind("identity"))
+        (users.c.id == p.bind("identity", p.BindType.INTEGER))
+        | (users.c.owner_id == p.bind("identity", p.BindType.INTEGER))
     )
 
     sql, values = _compile_statement(statement, {"identity": 41}, "postgres")
@@ -85,7 +89,7 @@ def test_repeated_bind_name_preserves_positional_order() -> None:
 
 
 def test_bind_validation_is_exact_and_does_not_expose_values() -> None:
-    statement = p.select(p.bind("expected").label("value"))
+    statement = p.select(p.bind("expected", p.BindType.STRING).label("value"))
     secret = "private-value-9ca4"
 
     with pytest.raises(ValueError) as error:
@@ -94,8 +98,9 @@ def test_bind_validation_is_exact_and_does_not_expose_values() -> None:
     assert secret not in statement.to_json()
 
 
-def test_typed_bind_is_additive_and_keeps_the_untyped_ast_stable() -> None:
-    assert p.bind("legacy")._ast() == {"kind": "parameter", "name": "legacy"}
+def test_bind_type_is_mandatory_and_the_ast_is_explicit() -> None:
+    with pytest.raises(TypeError):
+        p.bind("missing")  # type: ignore[call-arg]
     typed = p.bind("answer", p.BindType.INTEGER)
     assert typed._ast() == {
         "kind": "typed_parameter",
@@ -118,13 +123,19 @@ def test_functions_grouping_having_and_predicates_use_the_canonical_ir(
     statement = (
         p.select(sales.c.category, total.label("total"))
         .where(
-            sales.c.name.ilike(p.bind("pattern"))
-            & sales.c.amount.between(p.bind("lower"), p.bind("upper"))
-            & sales.c.category.in_(p.bind("first"), p.bind("second"))
+            sales.c.name.ilike(p.bind("pattern", p.BindType.STRING))
+            & sales.c.amount.between(
+                p.bind("lower", p.BindType.INTEGER),
+                p.bind("upper", p.BindType.INTEGER),
+            )
+            & sales.c.category.in_(
+                p.bind("first", p.BindType.STRING),
+                p.bind("second", p.BindType.STRING),
+            )
             & sales.c.name.is_not_null()
         )
         .group_by(sales.c.category)
-        .having(total > p.bind("minimum"))
+        .having(total > p.bind("minimum", p.BindType.INTEGER))
     )
 
     sql, names = compile_relational_query(statement.to_json(), provider)
@@ -156,11 +167,11 @@ def test_windows_subqueries_ctes_and_set_operations_compile_for_every_provider(
     aggregate = (
         p.select(ranked.c.tenant.label("tenant"))
         .select_from(ranked)
-        .where(ranked.c.running_total > p.bind("minimum"))
+        .where(ranked.c.running_total > p.bind("minimum", p.BindType.INTEGER))
     )
     cte = aggregate.cte("qualified")
     alternative = p.select(events.c.tenant.label("tenant")).where(
-        events.c.sequence == p.bind("exact")
+        events.c.sequence == p.bind("exact", p.BindType.INTEGER)
     )
     statement = (
         p.select(cte.c.tenant)
@@ -192,15 +203,17 @@ def test_advanced_expression_validation_fails_before_native_compilation() -> Non
         p.select(p.func.count()).subquery("counts")
     with pytest.raises(ValueError):
         p.select(users.c.id, users.c.name).scalar_subquery()
-    invalid_window = p.select(p.func.lower(p.bind("value")).over())
+    invalid_window = p.select(
+        p.func.lower(p.bind("value", p.BindType.STRING)).over()
+    )
     with pytest.raises(p.PlenoraInvalidPlanError):
         compile_relational_query(invalid_window.to_json(), "postgres")
 
 
 def test_canonical_mutations_keep_values_outside_the_ir_and_lower_per_provider() -> None:
     users = p.table("users", "id", "name", schema="app")
-    update = p.update(users).values(name=p.bind("name")).where(
-        users.c.id == p.bind("identity")
+    update = p.update(users).values(name=p.bind("name", p.BindType.STRING)).where(
+        users.c.id == p.bind("identity", p.BindType.INTEGER)
     )
     secret = "private-name-54e2"
 
@@ -221,7 +234,8 @@ def test_canonical_mutations_keep_values_outside_the_ir_and_lower_per_provider()
     assert secret not in update.to_json()
 
     returning = p.insert(users).values(
-        id=p.bind("identity"), name=p.bind("name")
+        id=p.bind("identity", p.BindType.INTEGER),
+        name=p.bind("name", p.BindType.STRING),
     ).returning(users.c.id)
     for provider in ("postgres", "mariadb", "sqlserver"):
         _, names, returns_rows = compile_relational_mutation(
@@ -235,9 +249,12 @@ def test_canonical_mutations_keep_values_outside_the_ir_and_lower_per_provider()
 
     upsert = (
         p.upsert(users)
-        .values(id=p.bind("identity"), name=p.bind("insert_name"))
+        .values(
+            id=p.bind("identity", p.BindType.INTEGER),
+            name=p.bind("insert_name", p.BindType.STRING),
+        )
         .on_conflict(users.c.id)
-        .set(name=p.bind("updated_name"))
+        .set(name=p.bind("updated_name", p.BindType.STRING))
     )
     for provider in ("postgres", "mysql", "mariadb", "sqlserver", "db2"):
         sql, names, returns_rows = compile_relational_mutation(
@@ -250,28 +267,31 @@ def test_canonical_mutations_keep_values_outside_the_ir_and_lower_per_provider()
     with pytest.raises(p.PlenoraError):
         compile_relational_mutation(
             p.upsert(users)
-            .values(id=p.bind("identity"), name=p.bind("name"))
+            .values(
+                id=p.bind("identity", p.BindType.INTEGER),
+                name=p.bind("name", p.BindType.STRING),
+            )
             .to_json(),
             "postgres",
         )
 
 
-def test_result_cardinality_and_rows_are_defensive_copies() -> None:
+def test_result_cardinality_and_rows_are_immutable() -> None:
     users = p.table("users", "value")
     result = p.Result([{"value": 1}])
     first = result.one()
-    first["value"] = 99
+    with pytest.raises(TypeError):
+        first["value"] = 99  # type: ignore[index]
 
     assert result.keys() == ("value",)
     assert result.scalar_one() == 1
-    assert result.all() == [{"value": 1}]
-    row = result.row_one()
+    assert [row.as_dict() for row in result.all()] == [{"value": 1}]
+    row = result.one()
     assert row[0] == row["value"] == row[users.c.value] == 1
     assert tuple(row) == (1,)
     assert row.as_dict() == {"value": 1}
     assert result.tuples() == [(1,)]
     assert p.Result([]).one_or_none() is None
-    assert p.Result([]).row_one_or_none() is None
     with pytest.raises(p.NoResultFound):
         p.Result([]).one()
     with pytest.raises(p.MultipleResultsFound):
@@ -290,10 +310,10 @@ def test_sync_execution_uses_compiled_sql_and_ordered_binds() -> None:
             assert values == [7]
             return [{"answer": values[0]}]
 
-    statement = p.select(p.bind("answer").label("answer"))
-    assert _execute_statement(Native(), statement, {"answer": 7}, "postgres").one() == {
-        "answer": 7
-    }
+    statement = p.select(p.bind("answer", p.BindType.INTEGER).label("answer"))
+    assert _execute_statement(
+        Native(), statement, {"answer": 7}, "postgres"
+    ).one().as_dict() == {"answer": 7}
 
 
 @pytest.mark.asyncio
@@ -304,7 +324,7 @@ async def test_async_execution_uses_the_same_compiler_and_result() -> None:
             assert values == [8]
             return [{"answer": values[0]}]
 
-    statement = p.select(p.bind("answer").label("answer"))
+    statement = p.select(p.bind("answer", p.BindType.INTEGER).label("answer"))
     result = await _execute_statement_async(
         Native(), statement, {"answer": 8}, "sqlserver"
     )

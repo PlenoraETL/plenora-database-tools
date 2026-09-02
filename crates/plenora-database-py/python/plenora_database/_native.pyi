@@ -23,39 +23,51 @@ def compile_relational_mutation(
     ast_json: str, provider_name: str
 ) -> tuple[str, list[str], bool]: ...
 
-def create_engine(dsn: str, tls_mode: str = "require") -> Engine: ...
+def create_engine(
+    dsn: str, tls_mode: str = "require", max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
+) -> Engine: ...
 
-def create_async_engine(dsn: str, tls_mode: str = "require") -> Any: ...
+def create_async_engine(
+    dsn: str, tls_mode: str = "require", max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
+) -> Any: ...
 
 def create_mysql_engine(
     host: str, database: str, user: str, password: str,
     port: int | None = None, tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
+    max_connections: int = 4, acquire_timeout_ms: int = 10_000,
 ) -> Engine: ...
 def create_async_mysql_engine(
     host: str, database: str, user: str, password: str,
     port: int | None = None, tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
+    max_connections: int = 4, acquire_timeout_ms: int = 10_000,
 ) -> Any: ...
 def create_mariadb_engine(
     host: str, database: str, user: str, password: str,
     port: int | None = None, tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
+    max_connections: int = 4, acquire_timeout_ms: int = 10_000,
 ) -> Engine: ...
 def create_async_mariadb_engine(
     host: str, database: str, user: str, password: str,
     port: int | None = None, tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
+    max_connections: int = 4, acquire_timeout_ms: int = 10_000,
 ) -> Any: ...
 def create_sqlserver_engine(
     host: str, database: str, user: str, password: str,
     port: int | None = None, tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
+    max_connections: int = 4, acquire_timeout_ms: int = 10_000,
 ) -> Engine: ...
 def create_async_sqlserver_engine(
     host: str, database: str, user: str, password: str,
     port: int | None = None, tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
+    max_connections: int = 4, acquire_timeout_ms: int = 10_000,
 ) -> Any: ...
 def create_db2_engine(
     host: str, database: str, user: str, password: str,

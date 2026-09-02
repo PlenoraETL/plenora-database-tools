@@ -48,8 +48,10 @@ async def test_aconnect_returns_async_session() -> None:
 @pytest.mark.asyncio
 async def test_aconnect_invalid_dsn_raises_plenora_error() -> None:
     with pytest.raises(p.PlenoraError):
-        await p.aconnect(
-            "host=host-inesistente.invalid user=x password=y dbname=z connect_timeout=1"
+        await p.async_engine_from_url(
+            p.EngineConfig.from_postgres_dsn(
+                "host=host-inesistente.invalid user=x password=y dbname=z connect_timeout=1"
+            )
         )
 
 
@@ -80,11 +82,14 @@ async def test_execute_scalar_with_params(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_execute_returning_rows_shape(session) -> None:
-    rows = await session.execute_returning_rows(
+async def test_query_sql_shape(session) -> None:
+    rows = await session.query_sql(
         "SELECT id, name FROM (VALUES (1, 'a'), (2, 'b')) AS t(id, name) ORDER BY id"
     )
-    assert rows == [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
+    assert [row.as_dict() for row in rows] == [
+        {"id": 1, "name": "a"},
+        {"id": 2, "name": "b"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -92,11 +97,11 @@ async def test_execute_dml_returns_affected(session) -> None:
     await session.execute_ddl("DROP TABLE IF EXISTS _pyf7_dml")
     await session.execute_ddl("CREATE TABLE _pyf7_dml (id INT PRIMARY KEY, x TEXT)")
     try:
-        n = await session.execute(
+        n = await session.execute_sql(
             "INSERT INTO _pyf7_dml (id, x) VALUES ($1, $2), ($3, $4)",
             [1, "a", 2, "b"],
         )
-        assert n == 2
+        assert n.affected_rows == 2
     finally:
         await session.execute_ddl("DROP TABLE IF EXISTS _pyf7_dml")
 
@@ -119,8 +124,8 @@ async def test_close_then_execute_raises(session) -> None:
 
 @pytest_asyncio.fixture(name="items_table")
 async def _items_table(session):
-    await session.execute("DROP TABLE IF EXISTS _pyf7_items")
-    await session.execute(
+    await session.execute_sql("DROP TABLE IF EXISTS _pyf7_items")
+    await session.execute_sql(
         "CREATE TABLE _pyf7_items ("
         " id BIGSERIAL PRIMARY KEY,"
         " code TEXT UNIQUE NOT NULL,"
@@ -129,7 +134,7 @@ async def _items_table(session):
     try:
         yield session
     finally:
-        await session.execute("DROP TABLE IF EXISTS _pyf7_items")
+        await session.execute_sql("DROP TABLE IF EXISTS _pyf7_items")
 
 
 @pytest.mark.asyncio
@@ -139,14 +144,17 @@ async def test_async_select_all(items_table) -> None:
         {"code": "B", "qty": 2},
     ]).execute()
     rows = await items_table.select("_pyf7_items").columns("code", "qty").order_by("code").all()
-    assert rows == [{"code": "A", "qty": 1}, {"code": "B", "qty": 2}]
+    assert [item.as_dict() for item in rows] == [
+        {"code": "A", "qty": 1},
+        {"code": "B", "qty": 2},
+    ]
 
 
 @pytest.mark.asyncio
 async def test_async_select_one_and_scalar(items_table) -> None:
     await items_table.insert("_pyf7_items").values(code="X", qty=42).execute()
     row = await items_table.select("_pyf7_items").columns("code").where_eq("code", "X").one()
-    assert row == {"code": "X"}
+    assert row.as_dict() == {"code": "X"}
     val = await items_table.select("_pyf7_items").columns("qty").where_eq("code", "X").scalar()
     assert val == 42
     # Missing
@@ -176,11 +184,11 @@ async def test_async_update_and_delete(items_table) -> None:
         .where_eq("code", "U")
         .execute()
     )
-    assert n == 1
+    assert n.affected_rows == 1
     updated = await items_table.select("_pyf7_items").columns("qty").where_eq("code", "U").scalar()
     assert updated == 100
     d = await items_table.delete("_pyf7_items").where_eq("code", "U").execute()
-    assert d == 1
+    assert d.affected_rows == 1
 
 
 @pytest.mark.asyncio

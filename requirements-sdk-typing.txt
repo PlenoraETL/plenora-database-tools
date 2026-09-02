@@ -1,0 +1,2 @@
+# Gate PEP 561 del Python SDK. Il pin rende riproducibile il verdetto statico.
+mypy==1.18.2

@@ -122,11 +122,28 @@ class SchemaDiff:
                     raise OrmStateError("migrazione generata non reversibile")
                 _execute_ddl(transaction, operation.reverse_statement)
 
+        checksum = sha256(
+            json.dumps(
+                [
+                    {
+                        "kind": operation.kind,
+                        "risk": operation.risk.value,
+                        "statement": operation.statement,
+                        "reverse_statement": operation.reverse_statement,
+                    }
+                    for operation in self.operations
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
         return Migration(
             revision,
             down_revision,
             upgrade,
             downgrade if reversible else None,
+            checksum,
         )
 
 

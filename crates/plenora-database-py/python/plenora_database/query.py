@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from typing import Any, TYPE_CHECKING, TypeVar
 
+from .result import MutationResult, Result, Row
+
 from ._ast import and_predicates, column_expr, literal_expr, table_ref
 from .spatial import (
     SpatialReference,
@@ -146,20 +148,28 @@ def _validate_returning(builder: Any, *, required: bool) -> None:
         )
 
 
-def _one_or_none(rows: list[dict], name: str) -> dict | None:
+def _one_or_none(result: Result, name: str) -> Row | None:
     """Applica la cardinalita 0..1 senza dipendere dal bordo di esecuzione."""
-    if not rows:
+    if not result:
         return None
-    if len(rows) > 1:
-        raise RuntimeError(f"{name}.one() atteso 0 o 1 riga, trovate {len(rows)}")
-    return rows[0]
+    if len(result) > 1:
+        raise RuntimeError(f"{name}.one() atteso 0 o 1 riga, trovate {len(result)}")
+    return result.first()
 
 
-def _exactly_one(rows: list[dict], name: str) -> dict:
+def _exactly_one(result: Result, name: str) -> Row:
     """Applica la cardinalita esatta condivisa dai terminali mutation."""
-    if len(rows) != 1:
-        raise RuntimeError(f"{name}.one() atteso 1 riga, trovate {len(rows)}")
-    return rows[0]
+    if len(result) != 1:
+        raise RuntimeError(f"{name}.one() atteso 1 riga, trovate {len(result)}")
+    return result.one()
+
+
+def _provider(session: Any) -> str:
+    provider = getattr(session, "_provider", None)
+    if isinstance(provider, str):
+        return provider
+    capabilities = session.capabilities
+    return str(capabilities["provider"])
 
 
 class _ReturningMutation:
@@ -175,16 +185,17 @@ class _ReturningMutation:
         self._returning = list(cols)
         return self
 
-    def execute(self) -> int:
+    def execute(self) -> MutationResult:
         _validate_returning(self, required=False)
-        return self._session._execute_portable_count(_statement_json(self))
+        affected = self._session._execute_portable_count(_statement_json(self))
+        return MutationResult(type(self).__name__.lower(), _provider(self._session), affected)
 
-    def all(self) -> list[dict]:
+    def all(self) -> list[Row]:
         _validate_returning(self, required=True)
-        return self._session._execute_portable_rows(_statement_json(self))
+        return Result(self._session._execute_portable_rows(_statement_json(self))).all()
 
-    def one(self) -> dict:
-        return _exactly_one(self.all(), type(self).__name__)
+    def one(self) -> Row:
+        return _exactly_one(Result([row.as_dict() for row in self.all()]), type(self).__name__)
 
     def to_ast(self) -> dict:
         raise NotImplementedError
@@ -260,11 +271,14 @@ class Select(_WhereMixin):
             ast["limit"] = self._limit
         return ast
 
-    def all(self) -> list[dict]:
-        return self._session._execute_portable_rows(_statement_json(self))
+    def all(self) -> list[Row]:
+        return Result(self._session._execute_portable_rows(_statement_json(self))).all()
 
-    def one(self) -> dict | None:
-        return _one_or_none(self.limit(2).all(), type(self).__name__)
+    def one(self) -> Row | None:
+        return _one_or_none(
+            Result([row.as_dict() for row in self.limit(2).all()]),
+            type(self).__name__,
+        )
 
     def scalar(self) -> Any:
         row = self.one()
@@ -272,7 +286,7 @@ class Select(_WhereMixin):
             return None
         # Primo valore della prima riga; se projection è columns, prendo la
         # prima colonna; se è all, prendo il primo item in insertion order.
-        return next(iter(row.values()))
+        return row[0]
 
 
 class Insert(_ReturningMutation):

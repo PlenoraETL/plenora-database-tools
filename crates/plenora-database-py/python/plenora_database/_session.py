@@ -65,25 +65,23 @@ class Session(_BuilderFactory):
 
     # --------------------------- SQL raw --------------------------------
 
-    @overload
-    def execute(self, sql: str, params: list | None = None) -> int: ...
-
-    @overload
     def execute(
         self,
-        sql: ExecutableStatement,
+        statement: ExecutableStatement,
         params: Mapping[str, Any] | None = None,
-    ) -> Result | int | MutationResult: ...
+    ) -> Result | MutationResult:
+        if not isinstance(statement, ExecutableStatement):
+            raise TypeError("execute richiede uno statement relazionale")
+        return _execute_statement(
+            self._native, statement, params, self.capabilities["provider"]
+        )
 
-    def execute(self, sql, params=None):
-        if isinstance(sql, ExecutableStatement):
-            return _execute_statement(
-                self._native,
-                sql,
-                params,
-                self.capabilities["provider"],
-            )
-        return self._native.execute(sql, params)
+    def execute_sql(self, sql: str, params: list | None = None) -> MutationResult:
+        affected = self._native.execute(sql, params)
+        return MutationResult("sql", self.capabilities["provider"], affected)
+
+    def query_sql(self, sql: str, params: list | None = None) -> Result:
+        return Result(self._native.execute_returning_rows(sql, params))
 
     def execute_scalar(self, sql: str, params: list | None = None) -> Any:
         return self._native.execute_scalar(sql, params)
@@ -91,9 +89,6 @@ class Session(_BuilderFactory):
     def execute_ddl(self, sql: str) -> None:
         """Esegue DDL fuori transazione, in autocommit."""
         return self._native.execute_ddl(sql)
-
-    def execute_returning_rows(self, sql: str, params: list | None = None) -> list[dict]:
-        return self._native.execute_returning_rows(sql, params)
 
     @property
     def age_version(self) -> str | None:
@@ -196,7 +191,7 @@ class Session(_BuilderFactory):
         *,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
-        mapping_policy: str = "compatible",
+        mapping_policy: str,
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> dict:
@@ -221,8 +216,8 @@ class Session(_BuilderFactory):
             | "update" | "upsert" | "delete_by_keys" (default "append")
           - `transaction_profile`: "single_transaction" | "chunk_committed"
             | "staged_swap" | "best_effort_ddl" (default "single_transaction")
-          - `mapping_policy`: "strict" | "compatible" | "lossy" | "native"
-            (default "compatible"). "strict" boccia ogni loss anche minore
+          - `mapping_policy`: scelta obbligatoria fra "strict" | "compatible" |
+            "lossy" | "native". "strict" boccia ogni loss anche minore
             (e.g. Arrow nullable verso PG NOT NULL); "compatible" tollera
             loss non-DataLoss; scelta consigliata per input pyarrow tipici.
           - `keys`: lista di colonne key. Obbligatorio per

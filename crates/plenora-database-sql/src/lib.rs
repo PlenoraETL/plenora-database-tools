@@ -1194,11 +1194,13 @@ impl Renderer {
     const fn render_parameter_type(&self, parameter_type: QueryParameterType) -> &'static str {
         match parameter_type {
             QueryParameterType::Boolean => match self.dialect {
+                Dialect::Mysql => "SIGNED",
                 Dialect::SqlServer => "BIT",
                 Dialect::Oracle => "NUMBER(1)",
                 _ => "BOOLEAN",
             },
             QueryParameterType::Integer => match self.dialect {
+                Dialect::Mysql => "SIGNED",
                 Dialect::Oracle => "NUMBER(10)",
                 _ => "INTEGER",
             },

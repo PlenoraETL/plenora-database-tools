@@ -4,10 +4,8 @@ Il riferimento di sviluppo PostgreSQL è plaintext, mentre il default del SDK
 richiede TLS verificato. Gli helper rendono esplicita questa deroga in un solo
 punto.
 
-I test che verificano il **default** sicuro non passano da questi helper: usano
-`p.connect` / `p.aconnect` direttamente, perche il loro oggetto e proprio cio
-che gli helper aggirano. Vederli in `test_tls_default.py` accanto a questa
-nota e il modo in cui la deroga resta visibile.
+I test che verificano il **default** sicuro costruiscono invece un
+`EngineConfig` senza la deroga.
 """
 
 from __future__ import annotations
@@ -41,7 +39,10 @@ def connect_postgres(dsn: str | None = None):
     Salta il test se la DSN non e configurata.
     """
 
-    return p.connect(dsn or postgres_dsn_or_skip(), LOCAL_TLS_MODE)
+    config = p.EngineConfig.from_postgres_dsn(
+        dsn or postgres_dsn_or_skip(), tls_mode=LOCAL_TLS_MODE
+    )
+    return p.engine_from_url(config).session()
 
 
 async def aconnect_postgres(dsn: str | None = None):
@@ -50,7 +51,10 @@ async def aconnect_postgres(dsn: str | None = None):
     Salta il test se la DSN non e configurata.
     """
 
-    return await p.aconnect(dsn or postgres_dsn_or_skip(), LOCAL_TLS_MODE)
+    config = p.EngineConfig.from_postgres_dsn(
+        dsn or postgres_dsn_or_skip(), tls_mode=LOCAL_TLS_MODE
+    )
+    return (await p.async_engine_from_url(config)).session()
 
 
 def age_dsn_or_skip() -> str:
@@ -61,11 +65,27 @@ def age_dsn_or_skip() -> str:
 
 
 def connect_age():
-    return p.connect(age_dsn_or_skip(), LOCAL_TLS_MODE)
+    return connect_postgres(age_dsn_or_skip())
 
 
 async def aconnect_age():
-    return await p.aconnect(age_dsn_or_skip(), LOCAL_TLS_MODE)
+    return await aconnect_postgres(age_dsn_or_skip())
+
+
+def _network_config(
+    provider: str,
+    values: tuple,
+) -> p.EngineConfig:
+    host, database, user, password, ca_pem = values
+    tls_ca = None if ca_pem is None else ca_pem.decode("utf-8")
+    return p.EngineConfig(
+        provider,
+        host=host,
+        database=database,
+        user=user,
+        password=password,
+        tls_ca=tls_ca,
+    )
 
 
 # ================================== MySQL ===================================
@@ -111,15 +131,16 @@ def mysql_config_or_skip() -> tuple:
 def connect_mysql_reference():
     """Sessione `MySQL` sync verso il riferimento, con la CA privata."""
 
-    host, database, user, password, ca_pem = mysql_config_or_skip()
-    return p.connect_mysql(host, database, user, password, tls_ca_pem=ca_pem)
+    return p.engine_from_url(_network_config("mysql", mysql_config_or_skip())).session()
 
 
 async def aconnect_mysql_reference():
     """Sessione `MySQL` async verso il riferimento, con la CA privata."""
 
-    host, database, user, password, ca_pem = mysql_config_or_skip()
-    return await p.aconnect_mysql(host, database, user, password, tls_ca_pem=ca_pem)
+    engine = await p.async_engine_from_url(
+        _network_config("mysql", mysql_config_or_skip())
+    )
+    return engine.session()
 
 
 # ================================ MariaDB ==================================
@@ -153,13 +174,16 @@ def mariadb_config_or_skip() -> tuple:
 
 
 def connect_mariadb_reference():
-    host, database, user, password, ca_pem = mariadb_config_or_skip()
-    return p.connect_mariadb(host, database, user, password, tls_ca_pem=ca_pem)
+    return p.engine_from_url(
+        _network_config("mariadb", mariadb_config_or_skip())
+    ).session()
 
 
 async def aconnect_mariadb_reference():
-    host, database, user, password, ca_pem = mariadb_config_or_skip()
-    return await p.aconnect_mariadb(host, database, user, password, tls_ca_pem=ca_pem)
+    engine = await p.async_engine_from_url(
+        _network_config("mariadb", mariadb_config_or_skip())
+    )
+    return engine.session()
 
 
 # ============================== SQL Server ================================
@@ -194,13 +218,16 @@ def sqlserver_config_or_skip() -> tuple:
 
 
 def connect_sqlserver_reference():
-    host, database, user, password, ca_pem = sqlserver_config_or_skip()
-    return p.connect_sqlserver(host, database, user, password, tls_ca_pem=ca_pem)
+    return p.engine_from_url(
+        _network_config("sqlserver", sqlserver_config_or_skip())
+    ).session()
 
 
 async def aconnect_sqlserver_reference():
-    host, database, user, password, ca_pem = sqlserver_config_or_skip()
-    return await p.aconnect_sqlserver(host, database, user, password, tls_ca_pem=ca_pem)
+    engine = await p.async_engine_from_url(
+        _network_config("sqlserver", sqlserver_config_or_skip())
+    )
+    return engine.session()
 
 
 # ============================== IBM Db2 LUW ==============================
@@ -232,25 +259,15 @@ def db2_config_or_skip() -> tuple:
 
 def connect_db2_reference():
     host, database, user, password, port, ca_path, tls_mode = db2_config_or_skip()
-    return p.connect_db2(
-        host,
-        database,
-        user,
-        password,
-        port=port,
-        tls_ca_path=ca_path,
-        tls_mode=tls_mode,
+    config = p.EngineConfig(
+        "db2", host, database, user, password, port, tls_mode, ca_path
     )
+    return p.engine_from_url(config).session()
 
 
 async def aconnect_db2_reference():
     host, database, user, password, port, ca_path, tls_mode = db2_config_or_skip()
-    return await p.aconnect_db2(
-        host,
-        database,
-        user,
-        password,
-        port=port,
-        tls_ca_path=ca_path,
-        tls_mode=tls_mode,
+    config = p.EngineConfig(
+        "db2", host, database, user, password, port, tls_mode, ca_path
     )
+    return (await p.async_engine_from_url(config)).session()

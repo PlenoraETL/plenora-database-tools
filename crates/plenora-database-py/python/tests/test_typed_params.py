@@ -35,11 +35,11 @@ def test_uuid_typed_roundtrip_direct_cast(session) -> None:
 
 
 def test_uuid_in_where_via_builder(session) -> None:
-    session.execute("DROP TABLE IF EXISTS _pyf6b_uid")
-    session.execute("CREATE TABLE _pyf6b_uid (uid UUID PRIMARY KEY, name TEXT)")
+    session.execute_sql("DROP TABLE IF EXISTS _pyf6b_uid")
+    session.execute_sql("CREATE TABLE _pyf6b_uid (uid UUID PRIMARY KEY, name TEXT)")
     try:
         uid = "11111111-2222-3333-4444-555555555555"
-        session.execute(
+        session.execute_sql(
             "INSERT INTO _pyf6b_uid (uid, name) VALUES ($1, $2)",
             [p.uuid(uid), "target"],
         )
@@ -49,9 +49,9 @@ def test_uuid_in_where_via_builder(session) -> None:
             .where_eq("uid", p.uuid(uid))
             .one()
         )
-        assert row == {"name": "target"}
+        assert row.as_dict() == {"name": "target"}
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyf6b_uid")
+        session.execute_sql("DROP TABLE IF EXISTS _pyf6b_uid")
 
 
 # ------------------------------ Integer helpers ------------------------------
@@ -115,8 +115,8 @@ def test_incompatible_bind_reports_position_and_types_without_value(session) -> 
 
 
 def test_int64_small_value_bigint_crud_via_builders(session) -> None:
-    session.execute("DROP TABLE IF EXISTS _pyf6b_int64")
-    session.execute(
+    session.execute_sql("DROP TABLE IF EXISTS _pyf6b_int64")
+    session.execute_sql(
         "CREATE TABLE _pyf6b_int64 (id INT PRIMARY KEY, row_version BIGINT NOT NULL)"
     )
     try:
@@ -126,23 +126,23 @@ def test_int64_small_value_bigint_crud_via_builders(session) -> None:
             .returning("row_version")
             .one()
         )
-        assert inserted == {"row_version": 1}
+        assert inserted.as_dict() == {"row_version": 1}
         updated = (
             session.update("_pyf6b_int64")
             .set(row_version=p.int64(2))
             .where_eq("row_version", p.int64(1))
             .execute()
         )
-        assert updated == 1
+        assert updated.affected_rows == 1
         row = (
             session.select("_pyf6b_int64")
             .columns("row_version")
             .where_eq("row_version", p.int64(2))
             .one()
         )
-        assert row == {"row_version": 2}
+        assert row.as_dict() == {"row_version": 2}
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyf6b_int64")
+        session.execute_sql("DROP TABLE IF EXISTS _pyf6b_int64")
 
 
 # ------------------------------ Date/Timestamp ------------------------------
@@ -205,12 +205,12 @@ def test_decimal_in_numeric_column_roundtrip(session) -> None:
     # Bind Decimal su NUMERIC e read NUMERIC via
     # decoder OLTP entrambi funzionano nativamente. Nessun cast text
     # richiesto.
-    session.execute("DROP TABLE IF EXISTS _pyf6b_dec")
-    session.execute(
+    session.execute_sql("DROP TABLE IF EXISTS _pyf6b_dec")
+    session.execute_sql(
         "CREATE TABLE _pyf6b_dec (id INT PRIMARY KEY, bal NUMERIC(12,2))"
     )
     try:
-        session.execute(
+        session.execute_sql(
             "INSERT INTO _pyf6b_dec (id, bal) VALUES ($1, $2)",
             [1, p.decimal("999.99")],
         )
@@ -220,9 +220,9 @@ def test_decimal_in_numeric_column_roundtrip(session) -> None:
             .where_eq("id", 1)
             .one()
         )
-        assert row == {"bal": "999.99"}
+        assert row.as_dict() == {"bal": "999.99"}
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyf6b_dec")
+        session.execute_sql("DROP TABLE IF EXISTS _pyf6b_dec")
 
 
 def test_decimal_invalid_format_raises_unsupported(session) -> None:
@@ -272,8 +272,8 @@ def test_full_typed_returning_via_builder(session) -> None:
     # Insert UUID + Date + Timestamp + Decimal typed → RETURNING via builder.
     # Tutti i tipi sono supportati nativamente sia in bind
     # sia in read del decoder OLTP.
-    session.execute("DROP TABLE IF EXISTS _pyf6b_types")
-    session.execute(
+    session.execute_sql("DROP TABLE IF EXISTS _pyf6b_types")
+    session.execute_sql(
         "CREATE TABLE _pyf6b_types ("
         " id UUID PRIMARY KEY,"
         " created DATE,"
@@ -299,4 +299,4 @@ def test_full_typed_returning_via_builder(session) -> None:
         assert row["amount"] == "999.99"
         assert "2026-01-15" in row["ts"] and "09:00:00" in row["ts"]
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyf6b_types")
+        session.execute_sql("DROP TABLE IF EXISTS _pyf6b_types")

@@ -86,15 +86,15 @@ def _get_ref_ewkb(session, wkt: str, srid: int) -> bytes:
 
 
 def test_spatial_intersects_geometry_polygon(session) -> None:
-    session.execute("DROP TABLE IF EXISTS _pyf6c_poi")
-    session.execute(
+    session.execute_sql("DROP TABLE IF EXISTS _pyf6c_poi")
+    session.execute_sql(
         "CREATE TABLE _pyf6c_poi ("
         " id INT PRIMARY KEY,"
         " name TEXT NOT NULL,"
         " geom geometry(Point, 4326))"
     )
     try:
-        session.execute(
+        session.execute_sql(
             "INSERT INTO _pyf6c_poi (id, name, geom) VALUES "
             "(1, 'inside', ST_SetSRID(ST_MakePoint(5, 45), 4326)),"
             "(2, 'outside', ST_SetSRID(ST_MakePoint(100, 100), 4326))"
@@ -114,16 +114,16 @@ def test_spatial_intersects_geometry_polygon(session) -> None:
         )
         assert [r["name"] for r in rows] == ["inside"]
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyf6c_poi")
+        session.execute_sql("DROP TABLE IF EXISTS _pyf6c_poi")
 
 
 def test_spatial_bounding_box_uses_index_operator(session) -> None:
-    session.execute("DROP TABLE IF EXISTS _pyf6c_bb")
-    session.execute(
+    session.execute_sql("DROP TABLE IF EXISTS _pyf6c_bb")
+    session.execute_sql(
         "CREATE TABLE _pyf6c_bb (id INT PRIMARY KEY, geom geometry(Point, 4326))"
     )
     try:
-        session.execute(
+        session.execute_sql(
             "INSERT INTO _pyf6c_bb (id, geom) VALUES "
             "(1, ST_SetSRID(ST_MakePoint(5, 45), 4326)),"
             "(2, ST_SetSRID(ST_MakePoint(100, 100), 4326))"
@@ -138,20 +138,20 @@ def test_spatial_bounding_box_uses_index_operator(session) -> None:
         )
         assert [r["id"] for r in rows] == [1]
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyf6c_bb")
+        session.execute_sql("DROP TABLE IF EXISTS _pyf6c_bb")
 
 
 def test_spatial_contains_within_predicates(session) -> None:
     # Setup: 3 polygons con relazioni note al ref.
-    session.execute("DROP TABLE IF EXISTS _pyf6c_regions")
-    session.execute(
+    session.execute_sql("DROP TABLE IF EXISTS _pyf6c_regions")
+    session.execute_sql(
         "CREATE TABLE _pyf6c_regions ("
         " id INT PRIMARY KEY,"
         " name TEXT NOT NULL,"
         " geom geometry(Polygon, 4326))"
     )
     try:
-        session.execute(
+        session.execute_sql(
             "INSERT INTO _pyf6c_regions (id, name, geom) VALUES "
             "(1, 'R_big',   ST_SetSRID(ST_MakeEnvelope(0, 0, 10, 10), 4326)),"
             "(2, 'R_mid',   ST_SetSRID(ST_MakeEnvelope(2, 2, 4, 4), 4326)),"
@@ -182,20 +182,20 @@ def test_spatial_contains_within_predicates(session) -> None:
         )
         assert within == []
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyf6c_regions")
+        session.execute_sql("DROP TABLE IF EXISTS _pyf6c_regions")
 
 
 def test_spatial_dwithin_geography_uses_meters(session) -> None:
     # Colonna geography(Point,4326): DWithin usa metri (geodetico).
-    session.execute("DROP TABLE IF EXISTS _pyf6c_geog")
-    session.execute(
+    session.execute_sql("DROP TABLE IF EXISTS _pyf6c_geog")
+    session.execute_sql(
         "CREATE TABLE _pyf6c_geog ("
         " id INT PRIMARY KEY,"
         " name TEXT NOT NULL,"
         " g geography(Point, 4326))"
     )
     try:
-        session.execute(
+        session.execute_sql(
             "INSERT INTO _pyf6c_geog (id, name, g) VALUES "
             "(1, 'Duomo',  ST_SetSRID(ST_MakePoint(9.190, 45.464), 4326)::geography),"
             "(2, 'Sesto',  ST_SetSRID(ST_MakePoint(9.240, 45.530), 4326)::geography),"
@@ -226,19 +226,19 @@ def test_spatial_dwithin_geography_uses_meters(session) -> None:
         )
         assert [r["name"] for r in rows] == ["Duomo", "Sesto"]
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyf6c_geog")
+        session.execute_sql("DROP TABLE IF EXISTS _pyf6c_geog")
 
 
 def test_spatial_predicate_chains_with_other_where(session) -> None:
-    session.execute("DROP TABLE IF EXISTS _pyf6c_mixed")
-    session.execute(
+    session.execute_sql("DROP TABLE IF EXISTS _pyf6c_mixed")
+    session.execute_sql(
         "CREATE TABLE _pyf6c_mixed ("
         " id INT PRIMARY KEY,"
         " category TEXT NOT NULL,"
         " geom geometry(Point, 4326))"
     )
     try:
-        session.execute(
+        session.execute_sql(
             "INSERT INTO _pyf6c_mixed (id, category, geom) VALUES "
             "(1, 'A', ST_SetSRID(ST_MakePoint(5, 45), 4326)),"
             "(2, 'B', ST_SetSRID(ST_MakePoint(6, 46), 4326)),"
@@ -255,9 +255,9 @@ def test_spatial_predicate_chains_with_other_where(session) -> None:
             .all()
         )
         # Solo id=1 combina category='A' e dentro bbox.
-        assert rows == [{"id": 1, "category": "A"}]
+        assert [row.as_dict() for row in rows] == [{"id": 1, "category": "A"}]
     finally:
-        session.execute("DROP TABLE IF EXISTS _pyf6c_mixed")
+        session.execute_sql("DROP TABLE IF EXISTS _pyf6c_mixed")
 
 
 def test_spatial_reference_repr_hides_ewkb_bytes() -> None:

@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from enum import Enum
-from typing import Any, Iterable, Self
+from typing import Any, Iterable
+from typing_extensions import Self
 
 class Expression:
     def label(self, name: str) -> Label: ...
@@ -50,7 +51,7 @@ class Column(Expression):
 
 class BindParameter(Expression):
     name: str
-    type_: BindType | None
+    type_: BindType
     def __post_init__(self) -> None: ...
 
 class Wildcard(Expression):
@@ -222,7 +223,7 @@ def table(
     name: str, *columns: str | UnboundColumn,
     schema: str | None = ..., catalog: str | None = ...,
 ) -> Table: ...
-def bind(name: str, type_: BindType | None = ...) -> BindParameter: ...
+def bind(name: str, type_: BindType) -> BindParameter: ...
 def select(*expressions: Expression) -> SelectStatement: ...
 def insert(target: Table) -> InsertStatement: ...
 def update(target: Table) -> UpdateStatement: ...

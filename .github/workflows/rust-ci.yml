@@ -24,6 +24,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  sdk-typing:
+    name: Python SDK typing (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Installa il type checker fissato
+        run: python -m pip install -r requirements-sdk-typing.txt
+      - name: Contratto PEP 561 2.0
+        env:
+          MYPYPATH: crates/plenora-database-py/python
+        run: >-
+          python -m mypy
+          --config-file crates/plenora-database-py/typing/mypy.ini
+          crates/plenora-database-py/typing/sdk_v2_contract.py
+
   # Self-test statici: solo Python, nessuna toolchain, cache, container o
   # server. Una nuova guardia offline entra in questo job, che gira su ogni
   # push e pull request.

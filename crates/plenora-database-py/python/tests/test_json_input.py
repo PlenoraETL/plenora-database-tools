@@ -379,8 +379,8 @@ def test_json_geoarrow_batches_land_in_postgis() -> None:
     """Prova live del bordo completo GeoJSON -> GeoArrow/EWKB -> provider."""
 
     session = connect_postgres(postgres_dsn_or_skip())
-    session.execute("DROP TABLE IF EXISTS _plenora_json_places")
-    session.execute(
+    session.execute_sql("DROP TABLE IF EXISTS _plenora_json_places")
+    session.execute_sql(
         "CREATE TABLE _plenora_json_places ("
         "id BIGINT PRIMARY KEY, shape geometry(Point, 4326) NOT NULL)"
     )
@@ -413,6 +413,7 @@ def test_json_geoarrow_batches_land_in_postgis() -> None:
                 ],
                 batch_size=1,
             ),
+            mapping_policy="compatible",
         )
         assert outcome["status"] == "committed"
         matching = session.execute_scalar(
@@ -424,6 +425,6 @@ def test_json_geoarrow_batches_land_in_postgis() -> None:
         assert matching == 1
     finally:
         try:
-            session.execute("DROP TABLE IF EXISTS _plenora_json_places")
+            session.execute_sql("DROP TABLE IF EXISTS _plenora_json_places")
         finally:
             session.close()

@@ -1,26 +1,23 @@
 """Python SDK per plenora-database-tools.
 
-Motori raggiungibili: **PostgreSQL** con `connect`, **MySQL** con
-`connect_mysql`, **MariaDB** con `connect_mariadb`, **SQL Server** con
-`connect_sqlserver`, **IBM Db2 LUW** con `connect_db2`, e i rispettivi
-`aconnect_*` per la forma asincrona. Non c'e selezione automatica fra i prodotti: chi
+Motori raggiungibili: **PostgreSQL**, **MySQL**, **MariaDB**, **SQL Server** e
+**IBM Db2 LUW** tramite `EngineConfig`, `engine_from_url` e
+`async_engine_from_url`. Non c'e selezione automatica fra i prodotti: chi
 dichiara un motore e finisce sull'altro viene rifiutato alla probe.
 
 Uso base:
 
     import plenora_database
 
-    with plenora_database.connect(dsn="host=localhost user=me dbname=app") as s:
-        # SQL raw
-        cnt = s.execute_scalar("SELECT COUNT(*)::BIGINT FROM users")
-
-        # Portable AST (provider-agnostic)
-        row = s.select("users").where_eq("id", 1).one()
-        new = s.insert("users").values(name="Ada").returning("id").one()
-        n = s.update("users").set(name="Alan").where_eq("id", 1).execute()
+    config = plenora_database.EngineConfig.from_postgres_dsn(dsn)
+    with plenora_database.engine_from_url(config) as engine:
+        with engine.session() as s:
+            cnt = s.execute_scalar("SELECT COUNT(*)::BIGINT FROM users")
+            row = s.select("users").where_eq("id", 1).one()
+            new = s.insert("users").values(name="Ada").returning("id").one()
 
 Le API spatial, transazionali e asincrone sono esposte da `spatial`,
-`Transaction` / `AsyncTransaction` e dalle factory `aconnect*`.
+`Transaction` / `AsyncTransaction` e dagli Engine sync/async.
 """
 
 from . import spatial
@@ -97,7 +94,7 @@ from .async_query import (
     AsyncUpsert,
     _AsyncBuilderFactory,
 )
-from .config import EngineConfig, async_engine_from_url, engine_from_url
+from .config import EngineConfig, PoolConfig, async_engine_from_url, engine_from_url
 from .diagnostics import (
     ExplainPlan,
     ProbeReport,
@@ -252,6 +249,7 @@ from .orm import (
     selectinload,
 )
 from .query import Delete, Insert, Select, Update, Upsert, _BuilderFactory
+from .protocols import AsyncSessionProtocol, SessionProtocol
 from .result import MultipleResultsFound, MutationResult, NoResultFound, Result, Row
 from .schema import SchemaDiff, SchemaOperation, SchemaRisk, compare_schema
 from .spatial import SpatialReference
@@ -273,7 +271,7 @@ _DatabaseInspector = _Inspector
 _AsyncDatabaseInspector = _AsyncInspector
 
 
-def connect(dsn: str, tls_mode: str = "require") -> Session:
+def _connect_postgres(dsn: str, tls_mode: str = "require") -> Session:
     """Apre una nuova sessione Postgres (sync).
 
     La DSN è nel formato libpq (`host=... user=... password=... dbname=...`).
@@ -292,18 +290,36 @@ def connect(dsn: str, tls_mode: str = "require") -> Session:
     return Session(_native_connect(dsn, tls_mode))
 
 
-def create_engine(dsn: str, tls_mode: str = "require") -> Engine:
+def _create_postgres_engine(
+    dsn: str,
+    tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
+) -> Engine:
     """Crea un Engine PostgreSQL sync condivisibile fra richieste."""
-    return Engine(_native_create_engine(dsn, tls_mode))
+    return Engine(
+        _native_create_engine(
+            dsn, tls_mode, max_connections, acquire_timeout_ms
+        )
+    )
 
 
-async def create_async_engine(dsn: str, tls_mode: str = "require") -> AsyncEngine:
+async def _create_async_postgres_engine(
+    dsn: str,
+    tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
+) -> AsyncEngine:
     """Crea un Engine PostgreSQL asyncio condivisibile fra richieste."""
-    native = await _native_create_async_engine(dsn, tls_mode)
+    native = await _native_create_async_engine(
+        dsn, tls_mode, max_connections, acquire_timeout_ms
+    )
     return AsyncEngine(native)
 
 
-def connect_mysql(
+def _connect_mysql(
     host: str,
     database: str,
     user: str,
@@ -315,9 +331,10 @@ def connect_mysql(
     """Apre una nuova sessione MySQL (sync).
 
     API disponibili in DatabaseSession:
-    - `execute(sql, params) → int`
+    - `execute(statement, params) → Result | MutationResult`
+    - `execute_sql(sql, params) → MutationResult`
     - `execute_scalar(sql, params) → Any`
-    - `execute_returning_rows(sql, params) → list[dict]`
+    - `query_sql(sql, params) → Result`
     - `execute_ddl(sql) → None`
     - `begin(isolation, read_only, statement_timeout_ms, context,
       native_query_policy) → Transaction` — `context` accetta un
@@ -367,7 +384,7 @@ def connect_mysql(
     return _DatabaseSessionWrapper(native)
 
 
-def connect_mariadb(
+def _connect_mariadb(
     host: str,
     database: str,
     user: str,
@@ -425,7 +442,7 @@ def connect_mariadb(
     return _DatabaseSessionWrapper(native)
 
 
-def connect_sqlserver(
+def _connect_sqlserver(
     host: str,
     database: str,
     user: str,
@@ -437,7 +454,7 @@ def connect_sqlserver(
     """Apre una nuova sessione SQL Server (sync).
 
     Stessa superficie delle altre factory della famiglia — `execute`,
-    `execute_scalar`, `execute_returning_rows`, `read`, `begin` — perche la
+    `execute_sql`, `execute_scalar`, `query_sql`, `read`, `begin` — perche la
     sessione tiene il provider dietro l'astrazione comune e non sa quale
     motore le sia stato dato. Cio che cambia e il provider costruito, e con
     lui il protocollo: TDS invece del protocollo MySQL, porta **1433** di
@@ -468,7 +485,7 @@ def connect_sqlserver(
     return _DatabaseSessionWrapper(native)
 
 
-def connect_db2(
+def _connect_db2(
     host: str,
     database: str,
     user: str,
@@ -532,23 +549,24 @@ class _DatabaseSessionWrapper(_BuilderFactory):
     def __repr__(self) -> str:
         return repr(self._native)
 
-    def execute(self, sql, params=None):
-        if isinstance(sql, ExecutableStatement):
-            from .expression import _execute_statement
+    def execute(self, statement, params=None):
+        if not isinstance(statement, ExecutableStatement):
+            raise TypeError("execute richiede uno statement relazionale")
+        from .expression import _execute_statement
 
-            return _execute_statement(
-                self._native,
-                sql,
-                params,
-                self.capabilities["provider"],
-            )
-        return self._native.execute(sql, params)
+        return _execute_statement(
+            self._native, statement, params, self.capabilities["provider"]
+        )
+
+    def execute_sql(self, sql, params=None):
+        affected = self._native.execute(sql, params)
+        return MutationResult("sql", self.capabilities["provider"], affected)
+
+    def query_sql(self, sql, params=None):
+        return Result(self._native.execute_returning_rows(sql, params))
 
     def execute_scalar(self, sql, params=None):
         return self._native.execute_scalar(sql, params)
-
-    def execute_returning_rows(self, sql, params=None):
-        return self._native.execute_returning_rows(sql, params)
 
     def execute_ddl(self, sql):
         return self._native.execute_ddl(sql)
@@ -637,7 +655,7 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         *,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
-        mapping_policy: str = "strict",
+        mapping_policy: str,
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> dict:
@@ -694,7 +712,7 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         )
 
 
-async def aconnect_mysql(
+async def _aconnect_mysql(
     host: str,
     database: str,
     user: str,
@@ -705,14 +723,7 @@ async def aconnect_mysql(
 ) -> "_AsyncDatabaseSessionWrapper":
     """Apre una nuova sessione MySQL async.
 
-    Awaitable analogo di `connect_mysql` — vedi docstring per TLS,
-    WriteMode residui e API.
-
-    Uso:
-
-        async with await aconnect_mysql("localhost", "db", "u", "p") as s:
-            n = await s.execute("INSERT INTO t VALUES (?, ?)", [1, "x"])
-            v = await s.execute_scalar("SELECT COUNT(*) FROM t")
+    Funzione interna usata da `async_engine_from_url`.
     """
     native = await _native_aconnect_mysql(
         host, database, user, password, port, tls_ca_pem, tls_mode
@@ -720,7 +731,7 @@ async def aconnect_mysql(
     return _AsyncDatabaseSessionWrapper(native)
 
 
-async def aconnect_mariadb(
+async def _aconnect_mariadb(
     host: str,
     database: str,
     user: str,
@@ -731,13 +742,7 @@ async def aconnect_mariadb(
 ) -> "_AsyncDatabaseSessionWrapper":
     """Apre una nuova sessione MariaDB async.
 
-    Awaitable analogo di `connect_mariadb` — vedi la sua docstring per TLS,
-    write mode residui e per la ragione della factory separata.
-
-    Uso:
-
-        async with await aconnect_mariadb("localhost", "db", "u", "p") as s:
-            n = await s.execute("INSERT INTO t VALUES (?, ?)", [1, "x"])
+    Funzione interna usata da `async_engine_from_url`.
     """
     native = await _native_aconnect_mariadb(
         host, database, user, password, port, tls_ca_pem, tls_mode
@@ -745,7 +750,7 @@ async def aconnect_mariadb(
     return _AsyncDatabaseSessionWrapper(native)
 
 
-async def aconnect_sqlserver(
+async def _aconnect_sqlserver(
     host: str,
     database: str,
     user: str,
@@ -759,10 +764,8 @@ async def aconnect_sqlserver(
     Awaitable analogo di `connect_sqlserver` — vedi la sua docstring per TLS,
     placeholder, WriteMode e spatial.
 
-    Uso:
-
-        async with await aconnect_sqlserver("localhost", "db", "u", "p") as s:
-            rows = await s.execute_returning_rows("SELECT 1 AS n")
+    E una funzione interna usata da `async_engine_from_url`; la factory
+    provider-neutral e l'unico ingresso pubblico.
     """
     native = await _native_aconnect_sqlserver(
         host, database, user, password, port, tls_ca_pem, tls_mode
@@ -770,7 +773,7 @@ async def aconnect_sqlserver(
     return _AsyncDatabaseSessionWrapper(native)
 
 
-async def aconnect_db2(
+async def _aconnect_db2(
     host: str,
     database: str,
     user: str,
@@ -829,23 +832,24 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
         return repr(self._native)
 
     # --- delegazione async coroutines ---
-    async def execute(self, sql, params=None):
-        if isinstance(sql, ExecutableStatement):
-            from .expression import _execute_statement_async
+    async def execute(self, statement, params=None):
+        if not isinstance(statement, ExecutableStatement):
+            raise TypeError("execute richiede uno statement relazionale")
+        from .expression import _execute_statement_async
 
-            return await _execute_statement_async(
-                self._native,
-                sql,
-                params,
-                self.capabilities["provider"],
-            )
-        return await self._native.execute(sql, params)
+        return await _execute_statement_async(
+            self._native, statement, params, self.capabilities["provider"]
+        )
+
+    async def execute_sql(self, sql, params=None):
+        affected = await self._native.execute(sql, params)
+        return MutationResult("sql", self.capabilities["provider"], affected)
+
+    async def query_sql(self, sql, params=None):
+        return Result(await self._native.execute_returning_rows(sql, params))
 
     async def execute_scalar(self, sql, params=None):
         return await self._native.execute_scalar(sql, params)
-
-    async def execute_returning_rows(self, sql, params=None):
-        return await self._native.execute_returning_rows(sql, params)
 
     async def execute_ddl(self, sql):
         return await self._native.execute_ddl(sql)
@@ -902,7 +906,7 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
         *,
         mode: str = "append",
         transaction_profile: str = "single_transaction",
-        mapping_policy: str = "strict",
+        mapping_policy: str,
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> dict:
@@ -936,7 +940,7 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
         return await self._native.execute_portable_count(ast_json)
 
 
-def create_mysql_engine(
+def _create_mysql_engine(
     host: str,
     database: str,
     user: str,
@@ -944,15 +948,26 @@ def create_mysql_engine(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> Engine:
     """Crea un Engine MySQL con lo stesso lifecycle di PostgreSQL."""
     native = _native_create_mysql_engine(
-        host, database, user, password, port, tls_ca_pem, tls_mode
+        host,
+        database,
+        user,
+        password,
+        port,
+        tls_ca_pem,
+        tls_mode,
+        max_connections,
+        acquire_timeout_ms,
     )
     return Engine(native, _DatabaseSessionWrapper)
 
 
-async def create_async_mysql_engine(
+async def _create_async_mysql_engine(
     host: str,
     database: str,
     user: str,
@@ -960,15 +975,26 @@ async def create_async_mysql_engine(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> AsyncEngine:
     """Crea la variante asyncio dell'Engine MySQL."""
     native = await _native_create_async_mysql_engine(
-        host, database, user, password, port, tls_ca_pem, tls_mode
+        host,
+        database,
+        user,
+        password,
+        port,
+        tls_ca_pem,
+        tls_mode,
+        max_connections,
+        acquire_timeout_ms,
     )
     return AsyncEngine(native, _AsyncDatabaseSessionWrapper)
 
 
-def create_mariadb_engine(
+def _create_mariadb_engine(
     host: str,
     database: str,
     user: str,
@@ -976,15 +1002,26 @@ def create_mariadb_engine(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> Engine:
     """Crea un Engine MariaDB esplicito e qualificato dalla probe."""
     native = _native_create_mariadb_engine(
-        host, database, user, password, port, tls_ca_pem, tls_mode
+        host,
+        database,
+        user,
+        password,
+        port,
+        tls_ca_pem,
+        tls_mode,
+        max_connections,
+        acquire_timeout_ms,
     )
     return Engine(native, _DatabaseSessionWrapper)
 
 
-async def create_async_mariadb_engine(
+async def _create_async_mariadb_engine(
     host: str,
     database: str,
     user: str,
@@ -992,15 +1029,26 @@ async def create_async_mariadb_engine(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> AsyncEngine:
     """Crea la variante asyncio dell'Engine MariaDB."""
     native = await _native_create_async_mariadb_engine(
-        host, database, user, password, port, tls_ca_pem, tls_mode
+        host,
+        database,
+        user,
+        password,
+        port,
+        tls_ca_pem,
+        tls_mode,
+        max_connections,
+        acquire_timeout_ms,
     )
     return AsyncEngine(native, _AsyncDatabaseSessionWrapper)
 
 
-def create_sqlserver_engine(
+def _create_sqlserver_engine(
     host: str,
     database: str,
     user: str,
@@ -1008,15 +1056,26 @@ def create_sqlserver_engine(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> Engine:
     """Crea un Engine SQL Server con lifecycle Core v3."""
     native = _native_create_sqlserver_engine(
-        host, database, user, password, port, tls_ca_pem, tls_mode
+        host,
+        database,
+        user,
+        password,
+        port,
+        tls_ca_pem,
+        tls_mode,
+        max_connections,
+        acquire_timeout_ms,
     )
     return Engine(native, _DatabaseSessionWrapper)
 
 
-async def create_async_sqlserver_engine(
+async def _create_async_sqlserver_engine(
     host: str,
     database: str,
     user: str,
@@ -1024,15 +1083,26 @@ async def create_async_sqlserver_engine(
     port: int | None = None,
     tls_ca_pem: bytes | None = None,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> AsyncEngine:
     """Crea la variante asyncio dell'Engine SQL Server."""
     native = await _native_create_async_sqlserver_engine(
-        host, database, user, password, port, tls_ca_pem, tls_mode
+        host,
+        database,
+        user,
+        password,
+        port,
+        tls_ca_pem,
+        tls_mode,
+        max_connections,
+        acquire_timeout_ms,
     )
     return AsyncEngine(native, _AsyncDatabaseSessionWrapper)
 
 
-def create_db2_engine(
+def _create_db2_engine(
     host: str,
     database: str,
     user: str,
@@ -1043,12 +1113,18 @@ def create_db2_engine(
 ) -> Engine:
     """Crea un Engine Db2; richiede il wheel costruito con feature Db2."""
     native = _native_create_db2_engine(
-        host, database, user, password, port, tls_ca_path, tls_mode
+        host,
+        database,
+        user,
+        password,
+        port,
+        tls_ca_path,
+        tls_mode,
     )
     return Engine(native, _DatabaseSessionWrapper)
 
 
-async def create_async_db2_engine(
+async def _create_async_db2_engine(
     host: str,
     database: str,
     user: str,
@@ -1059,12 +1135,18 @@ async def create_async_db2_engine(
 ) -> AsyncEngine:
     """Crea la variante asyncio dell'Engine Db2."""
     native = await _native_create_async_db2_engine(
-        host, database, user, password, port, tls_ca_path, tls_mode
+        host,
+        database,
+        user,
+        password,
+        port,
+        tls_ca_path,
+        tls_mode,
     )
     return AsyncEngine(native, _AsyncDatabaseSessionWrapper)
 
 
-async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession:
+async def _aconnect_postgres(dsn: str, tls_mode: str = "require") -> AsyncSession:
     """Apre una nuova sessione Postgres asincrona.
 
     Coroutine: `s = await aconnect(dsn)` oppure
@@ -1088,23 +1170,13 @@ async def aconnect(dsn: str, tls_mode: str = "require") -> AsyncSession:
 #: Gli alias restano perche il pacchetto e pubblicato: rimuoverli romperebbe un
 #: `isinstance` o un\'annotazione di tipo scritti prima di questo cambiamento,
 #: e il costo di tenerli e due righe.
-MysqlSession = DatabaseSession
-AsyncMysqlSession = AsyncDatabaseSession
-
 __all__ = [  # noqa: RUF022 - grouped by public API surface
-    "create_engine",
-    "create_async_engine",
-    "create_mysql_engine",
-    "create_async_mysql_engine",
-    "create_mariadb_engine",
-    "create_async_mariadb_engine",
-    "create_sqlserver_engine",
-    "create_async_sqlserver_engine",
-    "create_db2_engine",
-    "create_async_db2_engine",
     "Engine",
     "AsyncEngine",
+    "SessionProtocol",
+    "AsyncSessionProtocol",
     "EngineConfig",
+    "PoolConfig",
     "engine_from_url",
     "async_engine_from_url",
     "table",
@@ -1162,21 +1234,9 @@ __all__ = [  # noqa: RUF022 - grouped by public API surface
     "explain",
     "explain_async",
     "probe_engine",
-    "connect",
-    "aconnect",
-    "connect_mysql",
-    "aconnect_mysql",
-    "connect_mariadb",
-    "aconnect_mariadb",
-    "connect_sqlserver",
-    "aconnect_sqlserver",
-    "connect_db2",
-    "aconnect_db2",
     "DatabaseSession",
     "ReadCheckpoint",
     "AsyncDatabaseSession",
-    "MysqlSession",
-    "AsyncMysqlSession",
     "version",
     "Session",
     "AsyncSession",

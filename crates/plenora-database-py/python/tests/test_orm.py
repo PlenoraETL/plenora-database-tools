@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import struct
 from typing import ClassVar
 
@@ -17,6 +18,21 @@ from ._harness import (
     connect_postgres,
     connect_sqlserver_reference,
 )
+
+
+def _migration(
+    revision: str,
+    down_revision: str | tuple[str, ...] | None,
+    upgrade,
+    downgrade=None,
+) -> p.Migration:
+    return p.Migration(
+        revision,
+        down_revision,
+        upgrade,
+        downgrade,
+        hashlib.sha256(revision.encode("utf-8")).hexdigest(),
+    )
 
 
 class Account(p.DeclarativeBase):
@@ -723,7 +739,10 @@ def test_declarative_mapping_reuses_canonical_table_and_columns() -> None:
     assert Account.name is Account.__table__.c.name
     assert Account.__mapper__.primary_key.name == "id"
     assert Account.__mapper__.version.name == "version"
-    assert isinstance(Account.id == p.bind("identity"), p.Predicate)
+    assert Account.__mapper__.attribute("id").type_ is int
+    assert Account.__mapper__.attribute("name").type_ is str
+    assert Account.__mapper__.attribute("version").type_ is int
+    assert isinstance(Account.id == p.bind("identity", p.BindType.INTEGER), p.Predicate)
 
 
 def test_big_integer_ddl_and_dml_keep_signed_64_bit_typing() -> None:
@@ -749,13 +768,13 @@ def test_big_integer_ddl_and_dml_keep_signed_64_bit_typing() -> None:
 def test_query_count_exists_pagination_distinct_and_bulk_dml() -> None:
     transaction = _FakeTransaction([{"count": 3}])
     orm = p.OrmSession(_FakeSession(transaction))
-    query = orm.query(Account).where(Account.name == p.bind("wanted"))
+    query = orm.query(Account).where(Account.name == p.bind("wanted", p.BindType.STRING))
 
     shaped = (
         query.offset(4)
         .distinct()
         .group_by(Account.name)
-        .having(p.func.count() > p.bind("minimum"))
+        .having(p.func.count() > p.bind("minimum", p.BindType.INTEGER))
     )
     assert shaped._statement.row_offset == 4
     assert shaped._statement.is_distinct
@@ -810,7 +829,11 @@ def test_nested_selectinload_batches_each_level() -> None:
     ]
     orm = p.OrmSession(_FakeSession(transaction))
 
-    roots = orm.query(OrmLoaderRoot).options(p.selectinload("middles.leaves")).all()
+    roots = (
+        orm.query(OrmLoaderRoot)
+        .options(p.selectinload(OrmLoaderRoot.middles, OrmLoaderMiddle.leaves))
+        .all()
+    )
 
     assert len(transaction.executed) == 3
     assert roots[0].middles[0].leaves[0].id == 100
@@ -872,7 +895,7 @@ def test_entity_query_hydrates_models_and_reuses_identity_map() -> None:
 
     rows = (
         orm.query(Account)
-        .where(Account.name == p.bind("wanted"))
+        .where(Account.name == p.bind("wanted", p.BindType.STRING))
         .order_by(Account.id)
         .all({"wanted": "Lin"})
     )
@@ -1283,7 +1306,7 @@ def test_selectinload_batches_collection_and_sets_backref() -> None:
     ]
     orm = p.OrmSession(_FakeSession(transaction), autoflush=False)
 
-    parents = orm.query(OrmParent).options(p.selectinload("children")).all()
+    parents = orm.query(OrmParent).options(p.selectinload(OrmParent.children)).all()
 
     assert len(transaction.executed) == 2
     assert [item.label for item in parents[0].children] == ["child"]
@@ -1408,7 +1431,7 @@ def test_query_join_eager_projection_and_multiple_entities() -> None:
 
     transaction.rows = [{"label": "child"}]
     values = orm.query(OrmChild).project(OrmChild.label.label("label")).all()
-    assert values == [{"label": "child"}]
+    assert [row.as_dict() for row in values] == [{"label": "child"}]
 
     transaction.rows = [
         {
@@ -1651,13 +1674,13 @@ def test_ddl_constraints_defaults_and_migration_chain() -> None:
     metadata.drop_all(ddl_session)
     assert len(ddl_session.statements) == 4
     migrations = (
-        p.Migration("001", None, lambda tx: None, lambda tx: None),
-        p.Migration("002", "001", lambda tx: None, lambda tx: None),
+        _migration("001", None, lambda tx: None, lambda tx: None),
+        _migration("002", "001", lambda tx: None, lambda tx: None),
     )
     runner = p.MigrationRunner(migrations)
     assert [item.revision for item in runner.migrations] == ["001", "002"]
     with pytest.raises(p.OrmMappingError, match="genitore assente"):
-        p.MigrationRunner((p.Migration("002", "missing", lambda tx: None),))
+        p.MigrationRunner((_migration("002", "missing", lambda tx: None),))
 
 
 def test_migration_runner_orders_branches_and_merges_and_rejects_broken_history() -> (
@@ -1666,10 +1689,10 @@ def test_migration_runner_orders_branches_and_merges_and_rejects_broken_history(
     noop = lambda tx: None
     runner = p.MigrationRunner(
         (
-            p.Migration("merge", ("left", "right"), noop, noop),
-            p.Migration("root", None, noop, noop),
-            p.Migration("right", "root", noop, noop),
-            p.Migration("left", "root", noop, noop),
+            _migration("merge", ("left", "right"), noop, noop),
+            _migration("root", None, noop, noop),
+            _migration("right", "root", noop, noop),
+            _migration("left", "root", noop, noop),
         )
     )
     assert [item.revision for item in runner.migrations] == [
@@ -1685,8 +1708,19 @@ def test_migration_runner_orders_branches_and_merges_and_rejects_broken_history(
         def execute_ddl(self, statement: str) -> None:
             pass
 
-        def execute_returning_rows(self, statement: str) -> list[dict[str, str]]:
-            return [{"revision": "merge"}]
+        def execute_sql(self, statement: str) -> p.MutationResult:
+            return p.MutationResult("seed", "postgres", 0)
+
+        def query_sql(self, statement: str) -> p.Result:
+            return p.Result(
+                [
+                    {
+                        "revision": "merge",
+                        "checksum": hashlib.sha256(b"merge").hexdigest(),
+                        "state": "applied",
+                    }
+                ]
+            )
 
     with pytest.raises(p.OrmStateError, match="antenati"):
         runner.apply(BrokenHistory())
@@ -1694,8 +1728,8 @@ def test_migration_runner_orders_branches_and_merges_and_rejects_broken_history(
     with pytest.raises(p.OrmMappingError, match="ciclico"):
         p.MigrationRunner(
             (
-                p.Migration("a", "b", noop),
-                p.Migration("b", "a", noop),
+                _migration("a", "b", noop),
+                _migration("b", "a", noop),
             )
         )
 
@@ -1712,8 +1746,11 @@ def test_db2_migration_history_ddl_is_idempotent_and_uses_the_ddl_channel() -> N
             self.ddl.append(statement)
             self.exists = True
 
-        def execute_returning_rows(self, statement: str) -> list[dict[str, str]]:
-            return []
+        def execute_sql(self, statement: str) -> p.MutationResult:
+            return p.MutationResult("seed", "db2", 0)
+
+        def query_sql(self, statement: str) -> p.Result:
+            return p.Result([])
 
         def execute_scalar(self, statement: str) -> int:
             return int(self.exists)
@@ -1729,35 +1766,80 @@ def test_db2_migration_history_ddl_is_idempotent_and_uses_the_ddl_channel() -> N
 def test_migration_runner_applies_and_rolls_back_transactionally() -> None:
     calls: list[str] = []
 
+    class MigrationTransaction:
+        def __init__(self, session) -> None:
+            self.session = session
+            self.staged = [dict(row) for row in session.applied]
+            self.committed = False
+            self.rolled_back = False
+
+        def query_sql(self, statement: str) -> p.Result:
+            if "= '__plenora_lock__'" in statement:
+                self.session.lock_reads += 1
+                return p.Result([{"revision": "__plenora_lock__"}])
+            return p.Result(self.staged)
+
+        def execute(self, statement, params=None) -> p.MutationResult:
+            parameters = {} if params is None else dict(params)
+            revision = parameters.get("orm_revision")
+            if isinstance(statement, p.InsertStatement):
+                self.staged.append(
+                    {
+                        "revision": revision,
+                        "checksum": parameters["orm_checksum"],
+                        "state": parameters["orm_state"],
+                    }
+                )
+            elif isinstance(statement, p.UpdateStatement):
+                for row in self.staged:
+                    if row["revision"] == revision:
+                        row["state"] = parameters["orm_state"]
+            elif isinstance(statement, p.DeleteStatement):
+                self.staged = [
+                    row for row in self.staged if row["revision"] != revision
+                ]
+            return p.MutationResult("migration", "postgres", 1)
+
+        def commit(self) -> None:
+            self.session.applied = self.staged
+            self.committed = True
+
+        def rollback(self) -> None:
+            self.rolled_back = True
+
     class MigrationSession:
         capabilities: ClassVar[dict[str, str]] = {"provider": "postgres"}
 
         def __init__(self) -> None:
             self.applied: list[dict[str, str]] = []
             self.raw: list[str] = []
-            self.transactions: list[_FakeTransaction] = []
+            self.transactions: list[MigrationTransaction] = []
+            self.lock_reads = 0
 
-        def execute(self, statement: str) -> int:
+        def execute_sql(self, statement: str) -> p.MutationResult:
             self.raw.append(statement)
-            return 0
+            return p.MutationResult("seed", "postgres", 0)
 
-        def execute_returning_rows(self, statement: str) -> list[dict[str, str]]:
+        def execute_ddl(self, statement: str) -> None:
             self.raw.append(statement)
-            return list(self.applied)
 
-        def begin(self) -> _FakeTransaction:
-            transaction = _FakeTransaction()
+        def query_sql(self, statement: str) -> p.Result:
+            self.raw.append(statement)
+            return p.Result(self.applied)
+
+        def begin(self) -> MigrationTransaction:
+            transaction = MigrationTransaction(self)
             self.transactions.append(transaction)
             return transaction
 
     migrations = (
-        p.Migration(
+        _migration(
             "001",
             None,
             lambda tx: calls.append("up-001"),
             lambda tx: calls.append("down-001"),
         ),
-        p.Migration(
+        _migration(
             "002",
             "001",
             lambda tx: calls.append("up-002"),
@@ -1770,9 +1852,34 @@ def test_migration_runner_applies_and_rolls_back_transactionally() -> None:
     assert runner.apply(session) == ("001", "002")
     assert calls == ["up-001", "up-002"]
     assert all(transaction.committed for transaction in session.transactions)
-    session.applied = [{"revision": "002"}, {"revision": "001"}]
+    assert session.lock_reads == 2
+    session.applied = [
+        {
+            "revision": migration.revision,
+            "checksum": migration.checksum,
+            "state": "applied",
+        }
+        for migration in reversed(migrations)
+    ]
     assert runner.rollback(session) == ("002",)
     assert calls[-1] == "down-002"
+
+    session.applied.append(
+        {
+            "revision": migrations[1].revision,
+            "checksum": migrations[1].checksum,
+            "state": "failed",
+        }
+    )
+    with pytest.raises(p.OrmStateError, match="incompleta"):
+        runner.apply(session)
+    runner.recover(session, "002")
+    assert [row["revision"] for row in session.applied] == ["001"]
+    assert runner.apply(session) == ("002",)
+
+    session.applied[0]["checksum"] = "f" * 64
+    with pytest.raises(p.OrmStateError, match="drift checksum"):
+        runner.apply(session)
 
 
 def test_geometry_type_and_spatial_query_nodes() -> None:
@@ -1894,18 +2001,18 @@ def test_live_db2_migration_dag_is_idempotent_and_reversible() -> None:
                 session.execute_ddl(f'DROP TABLE "{table_name}"')
 
     migrations = (
-        p.Migration(
+        _migration(
             "root",
             None,
-            lambda tx: tx.execute(
+            lambda tx: tx.execute_sql(
                 'CREATE TABLE "_plenora_migration_probe" '
                 '("id" INTEGER NOT NULL PRIMARY KEY)'
             ),
-            lambda tx: tx.execute('DROP TABLE "_plenora_migration_probe"'),
+            lambda tx: tx.execute_sql('DROP TABLE "_plenora_migration_probe"'),
         ),
-        p.Migration("left", "root", lambda tx: None, lambda tx: None),
-        p.Migration("right", "root", lambda tx: None, lambda tx: None),
-        p.Migration("merge", ("left", "right"), lambda tx: None, lambda tx: None),
+        _migration("left", "root", lambda tx: None, lambda tx: None),
+        _migration("right", "root", lambda tx: None, lambda tx: None),
+        _migration("merge", ("left", "right"), lambda tx: None, lambda tx: None),
     )
     runner = p.MigrationRunner(migrations)
     try:
@@ -2000,7 +2107,11 @@ def _exercise_live_advanced_orm(provider: str, connector) -> None:
             assert machine.cores == 32 and machine.rack_units == 2
             roots = (
                 orm.query(LiveOrmLoaderRoot)
-                .options(p.selectinload("middles.leaves"))
+                .options(
+                    p.selectinload(
+                        LiveOrmLoaderRoot.middles, LiveOrmLoaderMiddle.leaves
+                    )
+                )
                 .all()
             )
             assert roots[0].middles[0].leaves[0].id == 5
@@ -2289,8 +2400,8 @@ def test_live_db2_geometry_orm_qualification() -> None:
 @pytest.mark.asyncio
 async def test_live_postgres_async_orm_geometry_lifecycle() -> None:
     setup = await aconnect_postgres()
-    await setup.execute("DROP TABLE IF EXISTS _plenora_async_orm_places")
-    await setup.execute(
+    await setup.execute_sql("DROP TABLE IF EXISTS _plenora_async_orm_places")
+    await setup.execute_sql(
         "CREATE TABLE _plenora_async_orm_places ("
         "id INT PRIMARY KEY, shape geometry(Point, 4326) NOT NULL)"
     )
@@ -2314,31 +2425,31 @@ async def test_live_postgres_async_orm_geometry_lifecycle() -> None:
             == 0
         )
     finally:
-        await setup.execute("DROP TABLE IF EXISTS _plenora_async_orm_places")
+        await setup.execute_sql("DROP TABLE IF EXISTS _plenora_async_orm_places")
         setup.close()
 
 
 def test_live_postgres_orm_lifecycle_and_optimistic_conflict() -> None:
     setup = connect_postgres()
-    setup.execute("DROP TABLE IF EXISTS _plenora_orm_accounts")
-    setup.execute("DROP TABLE IF EXISTS _plenora_orm_audit_entries")
-    setup.execute("DROP TABLE IF EXISTS _plenora_orm_generated_accounts")
-    setup.execute("DROP TABLE IF EXISTS _plenora_orm_places")
-    setup.execute(
+    setup.execute_sql("DROP TABLE IF EXISTS _plenora_orm_accounts")
+    setup.execute_sql("DROP TABLE IF EXISTS _plenora_orm_audit_entries")
+    setup.execute_sql("DROP TABLE IF EXISTS _plenora_orm_generated_accounts")
+    setup.execute_sql("DROP TABLE IF EXISTS _plenora_orm_places")
+    setup.execute_sql(
         "CREATE TABLE _plenora_orm_accounts ("
         "id INT PRIMARY KEY, name TEXT NOT NULL, version INT NOT NULL)"
     )
-    setup.execute(
+    setup.execute_sql(
         "CREATE TABLE _plenora_orm_generated_accounts ("
         "id INT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, "
         "name TEXT NOT NULL, created_by TEXT NOT NULL DEFAULT 'database')"
     )
-    setup.execute(
+    setup.execute_sql(
         "CREATE TABLE _plenora_orm_audit_entries ("
         "id INT PRIMARY KEY, account_id INT NOT NULL REFERENCES "
         "_plenora_orm_generated_accounts(id), message TEXT NOT NULL)"
     )
-    setup.execute(
+    setup.execute_sql(
         "CREATE TABLE _plenora_orm_places ("
         "id INT PRIMARY KEY, shape geometry(Point, 4326) NOT NULL)"
     )
@@ -2391,7 +2502,7 @@ def test_live_postgres_orm_lifecycle_and_optimistic_conflict() -> None:
             assert current.version == 2
             queried = (
                 orm.query(LiveAccount)
-                .where(LiveAccount.name == p.bind("wanted"))
+                .where(LiveAccount.name == p.bind("wanted", p.BindType.STRING))
                 .one({"wanted": "Grace"})
             )
             assert queried is current
@@ -2401,8 +2512,8 @@ def test_live_postgres_orm_lifecycle_and_optimistic_conflict() -> None:
             == 0
         )
     finally:
-        setup.execute("DROP TABLE IF EXISTS _plenora_orm_accounts")
-        setup.execute("DROP TABLE IF EXISTS _plenora_orm_audit_entries")
-        setup.execute("DROP TABLE IF EXISTS _plenora_orm_generated_accounts")
-        setup.execute("DROP TABLE IF EXISTS _plenora_orm_places")
+        setup.execute_sql("DROP TABLE IF EXISTS _plenora_orm_accounts")
+        setup.execute_sql("DROP TABLE IF EXISTS _plenora_orm_audit_entries")
+        setup.execute_sql("DROP TABLE IF EXISTS _plenora_orm_generated_accounts")
+        setup.execute_sql("DROP TABLE IF EXISTS _plenora_orm_places")
         setup.close()

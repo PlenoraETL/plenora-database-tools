@@ -16,32 +16,76 @@ from ._harness import (
 
 
 FAMILY_ENGINES = (
-    ("mysql", p.create_mysql_engine, p.create_async_mysql_engine, mysql_config_or_skip),
-    (
-        "mariadb",
-        p.create_mariadb_engine,
-        p.create_async_mariadb_engine,
-        mariadb_config_or_skip,
-    ),
-    (
-        "sqlserver",
-        p.create_sqlserver_engine,
-        p.create_async_sqlserver_engine,
-        sqlserver_config_or_skip,
-    ),
+    ("mysql", mysql_config_or_skip),
+    ("mariadb", mariadb_config_or_skip),
+    ("sqlserver", sqlserver_config_or_skip),
 )
 
 
-def _family_engine(factory, config):
+def test_pool_config_is_explicit_validated_and_forwarded(monkeypatch) -> None:
+    pool = p.PoolConfig(max_connections=9, acquire_timeout_ms=2_500)
+    config = p.EngineConfig.from_postgres_dsn("dbname=app", pool=pool)
+    captured: dict[str, object] = {}
+
+    def factory(dsn, tls_mode, *, max_connections, acquire_timeout_ms):
+        captured.update(
+            dsn=dsn,
+            tls_mode=tls_mode,
+            max_connections=max_connections,
+            acquire_timeout_ms=acquire_timeout_ms,
+        )
+        return "engine"
+
+    monkeypatch.setattr(p, "_create_postgres_engine", factory)
+    assert p.engine_from_url(config) == "engine"
+    assert captured == {
+        "dsn": "dbname=app",
+        "tls_mode": "require",
+        "max_connections": 9,
+        "acquire_timeout_ms": 2_500,
+    }
+
+    for invalid in (0, -1, True):
+        with pytest.raises(ValueError):
+            p.PoolConfig(max_connections=invalid)
+        with pytest.raises(ValueError):
+            p.PoolConfig(acquire_timeout_ms=invalid)
+    with pytest.raises(ValueError, match="Db2"):
+        p.EngineConfig("db2", pool=pool)
+    monkeypatch.setattr(p, "_create_db2_engine", lambda *args, **kwargs: kwargs)
+    config = p.EngineConfig("db2", "host", "db", "user", "password", tls_mode="insecure_local")
+    assert p.engine_from_url(config)["tls_mode"] == "disable"
+
+
+def test_pool_url_options_are_control_fields_not_provider_dsn_content() -> None:
+    config = p.EngineConfig.from_url(
+        "postgresql://user:secret@db/app?application_name=sdk"
+        "&max_connections=7&acquire_timeout_ms=3210"
+    )
+    assert config.pool == p.PoolConfig(7, 3_210)
+    assert config._raw_url is not None
+    assert "application_name=sdk" in config._raw_url
+    assert "max_connections" not in config._raw_url
+    assert "acquire_timeout_ms" not in config._raw_url
+
+
+def _family_config(provider, config):
     host, database, user, password, ca_pem = config()
-    return factory(host, database, user, password, tls_ca_pem=ca_pem)
+    return p.EngineConfig(
+        provider,
+        host=host,
+        database=database,
+        user=user,
+        password=password,
+        tls_ca=None if ca_pem is None else ca_pem.decode("utf-8"),
+    )
 
 
 def _postgres_expression_statement():
     tables = p.table("tables", "table_name", schema="information_schema")
     return (
         p.select(tables.c.table_name)
-        .where(tables.c.table_name >= p.bind("minimum"))
+        .where(tables.c.table_name >= p.bind("minimum", p.BindType.STRING))
         .order_by(tables.c.table_name)
         .limit(1)
     )
@@ -70,7 +114,11 @@ def _window_cte_statement():
 
 
 def test_engine_reuses_one_pool_across_request_sessions() -> None:
-    engine = p.create_engine(postgres_dsn_or_skip(), LOCAL_TLS_MODE)
+    engine = p.engine_from_url(
+        p.EngineConfig.from_postgres_dsn(
+            postgres_dsn_or_skip(), tls_mode=LOCAL_TLS_MODE
+        )
+    )
     assert engine.provider_kind == "postgres"
     with engine.session() as session:
         assert session.execute_scalar("SELECT 1::BIGINT") == 1
@@ -91,7 +139,11 @@ def test_engine_reuses_one_pool_across_request_sessions() -> None:
 
 
 def test_engine_owned_transaction_closes_its_request_session() -> None:
-    with p.create_engine(postgres_dsn_or_skip(), LOCAL_TLS_MODE) as engine:
+    with p.engine_from_url(
+        p.EngineConfig.from_postgres_dsn(
+            postgres_dsn_or_skip(), tls_mode=LOCAL_TLS_MODE
+        )
+    ) as engine:
         with engine.session() as session:
             with session.begin(native_query_policy="allow") as transaction:
                 assert transaction.execute_scalar("SELECT 2::BIGINT") == 2
@@ -99,7 +151,11 @@ def test_engine_owned_transaction_closes_its_request_session() -> None:
 
 
 def test_engine_session_is_exclusive_during_transaction_and_reusable_after() -> None:
-    with p.create_engine(postgres_dsn_or_skip(), LOCAL_TLS_MODE) as engine:
+    with p.engine_from_url(
+        p.EngineConfig.from_postgres_dsn(
+            postgres_dsn_or_skip(), tls_mode=LOCAL_TLS_MODE
+        )
+    ) as engine:
         with engine.session() as session:
             transaction = session.begin(native_query_policy="allow")
             with pytest.raises(RuntimeError, match="transazione esplicita"):
@@ -110,7 +166,11 @@ def test_engine_session_is_exclusive_during_transaction_and_reusable_after() -> 
 
 @pytest.mark.asyncio
 async def test_async_engine_reuses_one_pool_across_request_sessions() -> None:
-    engine = await p.create_async_engine(postgres_dsn_or_skip(), LOCAL_TLS_MODE)
+    engine = await p.async_engine_from_url(
+        p.EngineConfig.from_postgres_dsn(
+            postgres_dsn_or_skip(), tls_mode=LOCAL_TLS_MODE
+        )
+    )
     assert engine.provider_kind == "postgres"
     async with engine.session() as session:
         assert await session.execute_scalar("SELECT 3::BIGINT") == 3
@@ -129,8 +189,10 @@ async def test_async_engine_reuses_one_pool_across_request_sessions() -> None:
 
 @pytest.mark.asyncio
 async def test_async_engine_owned_transaction_closes_its_request_session() -> None:
-    async with await p.create_async_engine(
-        postgres_dsn_or_skip(), LOCAL_TLS_MODE
+    async with await p.async_engine_from_url(
+        p.EngineConfig.from_postgres_dsn(
+            postgres_dsn_or_skip(), tls_mode=LOCAL_TLS_MODE
+        )
     ) as engine:
         async with engine.session() as session:
             async with await session.begin(
@@ -142,8 +204,10 @@ async def test_async_engine_owned_transaction_closes_its_request_session() -> No
 
 @pytest.mark.asyncio
 async def test_async_engine_session_is_exclusive_and_reusable() -> None:
-    async with await p.create_async_engine(
-        postgres_dsn_or_skip(), LOCAL_TLS_MODE
+    async with await p.async_engine_from_url(
+        p.EngineConfig.from_postgres_dsn(
+            postgres_dsn_or_skip(), tls_mode=LOCAL_TLS_MODE
+        )
     ) as engine:
         async with engine.session() as session:
             transaction = await session.begin(native_query_policy="allow")
@@ -154,18 +218,16 @@ async def test_async_engine_session_is_exclusive_and_reusable() -> None:
 
 
 @pytest.mark.parametrize(
-    ("provider_kind", "factory", "_async_factory", "config"),
+    ("provider_kind", "config"),
     FAMILY_ENGINES,
     ids=[entry[0] for entry in FAMILY_ENGINES],
 )
-def test_family_engine_uses_the_core_lifecycle(
-    provider_kind, factory, _async_factory, config
-) -> None:
-    engine = _family_engine(factory, config)
+def test_family_engine_uses_the_core_lifecycle(provider_kind, config) -> None:
+    engine = p.engine_from_url(_family_config(provider_kind, config))
     assert engine.provider_kind == provider_kind
     with engine.session() as session:
         assert session.execute_scalar("SELECT 5") == 5
-        statement = p.select(p.bind("answer").label("answer"))
+        statement = p.select(p.bind("answer", p.BindType.INTEGER).label("answer"))
         assert session.execute(statement, {"answer": 15}).scalar_one() == 15
         aggregate = session.execute(_catalog_aggregate_statement())
         assert aggregate.scalar_one() >= 1
@@ -180,18 +242,18 @@ def test_family_engine_uses_the_core_lifecycle(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("provider_kind", "_factory", "async_factory", "config"),
+    ("provider_kind", "config"),
     FAMILY_ENGINES,
     ids=[entry[0] for entry in FAMILY_ENGINES],
 )
 async def test_async_family_engine_uses_the_core_lifecycle(
-    provider_kind, _factory, async_factory, config
+    provider_kind, config
 ) -> None:
-    engine = await _family_engine(async_factory, config)
+    engine = await p.async_engine_from_url(_family_config(provider_kind, config))
     assert engine.provider_kind == provider_kind
     async with engine.session() as session:
         assert await session.execute_scalar("SELECT 6") == 6
-        statement = p.select(p.bind("answer").label("answer"))
+        statement = p.select(p.bind("answer", p.BindType.INTEGER).label("answer"))
         assert (await session.execute(statement, {"answer": 16})).scalar_one() == 16
     assert engine.statistics()["active_sessions"] == 0
     engine.dispose()

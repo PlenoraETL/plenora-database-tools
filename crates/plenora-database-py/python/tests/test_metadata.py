@@ -100,7 +100,11 @@ def test_typed_metadata_is_immutable_and_reuses_expression_objects() -> None:
 
 def test_engine_reflection_cache_refresh_and_invalidation_are_observable() -> None:
     name = "_sdk_typed_metadata"
-    with p.create_engine(postgres_dsn_or_skip(), LOCAL_TLS_MODE) as engine:
+    with p.engine_from_url(
+        p.EngineConfig.from_postgres_dsn(
+            postgres_dsn_or_skip(), tls_mode=LOCAL_TLS_MODE
+        )
+    ) as engine:
         with engine.session() as session:
             session.execute_ddl(f'DROP TABLE IF EXISTS "{name}"')
             session.execute_ddl(f'CREATE TABLE "{name}" (id BIGINT PRIMARY KEY)')

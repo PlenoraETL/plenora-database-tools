@@ -5,6 +5,38 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-09-02
+
+### Breaking
+
+- Il lifecycle pubblico passa esclusivamente da `EngineConfig` e
+  `engine_from_url` / `async_engine_from_url`; le factory `connect*`,
+  `aconnect*`, `create_*_engine` e gli alias `MysqlSession` sono rimossi.
+- `Result` restituisce e itera soltanto `Row`; la conversione a mapping usa
+  `Row.as_dict()`. Ogni mutazione restituisce `MutationResult`.
+- `execute` accetta soltanto statement portabili. SQL raw usa `execute_sql` o
+  `query_sql`, con tipi di ritorno non ambigui.
+- Ogni `bind` richiede un `BindType` e ogni bulk write richiede una
+  `mapping_policy` esplicita.
+- I loader ORM annidati sono percorsi di attributi tipizzati, per esempio
+  `selectinload(Parent.children, Child.items)`; i percorsi stringa sono
+  rimossi.
+
+### Aggiunto
+
+- `PoolConfig` espone dimensione e timeout di acquisizione con backpressure
+  effettiva su PostgreSQL, MySQL, MariaDB e SQL Server. Db2 resta fail-closed
+  perché il provider ODBC non qualifica questi controlli.
+- Le migrazioni richiedono checksum SHA-256, rilevano drift, serializzano i
+  runner con un lock transazionale, persistono gli stati incompleti e
+  richiedono `recover` esplicito.
+- Protocolli sync/async PEP 544 e gate `mypy --strict` su Python 3.10–3.14.
+- SBOM CycloneDX e attestazioni Sigstore per i wheel; PyPI usa Trusted
+  Publishing OIDC attraverso l'environment GitHub protetto `pypi`.
+
+La procedura completa per gli applicativi è in
+[`../../docs/python-sdk-2-migration.md`](../../docs/python-sdk-2-migration.md).
+
 ## [1.3.0] — 2026-09-02
 
 ### Aggiunto

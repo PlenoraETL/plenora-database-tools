@@ -14,13 +14,18 @@ from ._harness import (
 )
 
 
-def _db2_engine_args() -> tuple[tuple, dict]:
+def _db2_engine_config() -> p.EngineConfig:
     host, database, user, password, port, ca_path, tls_mode = db2_config_or_skip()
-    return (host, database, user, password), {
-        "port": port,
-        "tls_ca_path": ca_path,
-        "tls_mode": tls_mode,
-    }
+    return p.EngineConfig(
+        "db2",
+        host=host,
+        database=database,
+        user=user,
+        password=password,
+        port=port,
+        tls_ca=ca_path,
+        tls_mode=tls_mode,
+    )
 
 
 def test_db2_sync_capabilities_catalog_transaction_and_portable_select() -> None:
@@ -39,6 +44,7 @@ def test_db2_sync_capabilities_catalog_transaction_and_portable_select() -> None
             .columns("ID", "LABEL")
             .where_eq("ID", 1)
             .one()
+            .as_dict()
             == {"ID": 1, "LABEL": "alpha"}
         )
     finally:
@@ -63,7 +69,11 @@ def test_db2_sync_spatial_capabilities_and_portable_predicate() -> None:
             .order_by("ID")
             .all()
         )
-        assert rows == [{"ID": 1}, {"ID": 2}, {"ID": 4}]
+        assert [row.as_dict() for row in rows] == [
+            {"ID": 1},
+            {"ID": 2},
+            {"ID": 4},
+        ]
     finally:
         session.close()
 
@@ -83,8 +93,7 @@ async def test_db2_async_capabilities_inspect_and_scalar_query() -> None:
 
 
 def test_db2_engine_uses_the_core_lifecycle() -> None:
-    args, kwargs = _db2_engine_args()
-    with p.create_db2_engine(*args, **kwargs) as engine:
+    with p.engine_from_url(_db2_engine_config()) as engine:
         assert engine.provider_kind == "db2"
         with engine.session() as session:
             assert session.execute_scalar(
@@ -101,7 +110,7 @@ def test_db2_engine_uses_the_core_lifecycle() -> None:
             )
             statement = (
                 p.select(tables.c.LABEL)
-                .where(tables.c.ID == p.bind("identity"))
+                .where(tables.c.ID == p.bind("identity", p.BindType.INTEGER))
                 .limit(1)
             )
             assert session.execute(statement, {"identity": 1}).scalar_one() == "alpha"
@@ -125,23 +134,25 @@ def test_db2_engine_uses_the_core_lifecycle() -> None:
             target = p.table("READ_PROBE", "ID", "LABEL", schema="PLENORA_TEST")
             transaction = session.begin()
             try:
-                assert transaction.execute(
+                inserted = transaction.execute(
                     p.insert(target).values(
-                        ID=p.bind("identity"), LABEL=p.bind("label")
+                        ID=p.bind("identity", p.BindType.INTEGER), LABEL=p.bind("label", p.BindType.STRING)
                     ),
                     {"identity": 90, "label": "core-v3"},
-                ) == 1
-                assert transaction.execute(
+                )
+                assert inserted.affected_rows == 1
+                updated = transaction.execute(
                     p.update(target)
-                    .values(LABEL=p.bind("label"))
-                    .where(target.c.ID == p.bind("identity")),
+                    .values(LABEL=p.bind("label", p.BindType.STRING))
+                    .where(target.c.ID == p.bind("identity", p.BindType.INTEGER)),
                     {"label": "CORE-V3", "identity": 90},
-                ) == 1
+                )
+                assert updated.affected_rows == 1
                 upserted = transaction.execute(
                     p.upsert(target)
-                    .values(ID=p.bind("identity"), LABEL=p.bind("insert_label"))
+                    .values(ID=p.bind("identity", p.BindType.INTEGER), LABEL=p.bind("insert_label", p.BindType.STRING))
                     .on_conflict(target.c.ID)
-                    .set(LABEL=p.bind("update_label")),
+                    .set(LABEL=p.bind("update_label", p.BindType.STRING)),
                     {
                         "identity": 90,
                         "insert_label": "ignored",
@@ -152,10 +163,11 @@ def test_db2_engine_uses_the_core_lifecycle() -> None:
                     upserted.affected_rows is not None
                     and upserted.affected_rows >= 1
                 )
-                assert transaction.execute(
-                    p.delete(target).where(target.c.ID == p.bind("identity")),
+                deleted = transaction.execute(
+                    p.delete(target).where(target.c.ID == p.bind("identity", p.BindType.INTEGER)),
                     {"identity": 90},
-                ) == 1
+                )
+                assert deleted.affected_rows == 1
             finally:
                 transaction.rollback()
         assert engine.statistics()["active_sessions"] == 0
@@ -163,8 +175,7 @@ def test_db2_engine_uses_the_core_lifecycle() -> None:
 
 @pytest.mark.asyncio
 async def test_async_db2_engine_uses_the_core_lifecycle() -> None:
-    args, kwargs = _db2_engine_args()
-    async with await p.create_async_db2_engine(*args, **kwargs) as engine:
+    async with await p.async_engine_from_url(_db2_engine_config()) as engine:
         assert engine.provider_kind == "db2"
         async with engine.session() as session:
             assert await session.execute_scalar(
@@ -175,7 +186,7 @@ async def test_async_db2_engine_uses_the_core_lifecycle() -> None:
             ).alias("r")
             statement = (
                 p.select(tables.c.LABEL)
-                .where(tables.c.ID == p.bind("identity"))
+                .where(tables.c.ID == p.bind("identity", p.BindType.INTEGER))
                 .limit(1)
             )
             assert (
