@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from enum import Enum
-from typing import Any, Iterable, Self
+from typing import Any, Iterable
+from typing_extensions import Self
 
 class Expression:
     def label(self, name: str) -> Label: ...

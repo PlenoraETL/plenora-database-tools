@@ -1,5 +1,6 @@
 """Type stubs per i builder portable AST (sync)."""
-from typing import Any, Protocol, Self
+from typing import Any, Protocol
+from typing_extensions import Self
 from .result import MutationResult, Row
 
 
