@@ -11,9 +11,9 @@ name: python-wheel
 # lo ha compilato. Le verifiche standard stanno in
 # `.github/scripts/verify_wheel.py`, una sola volta.
 #
-# Sull'evento `release` allega wheel, SBOM e attestazioni alla release GitHub,
-# poi pubblica i soli wheel standard su PyPI tramite OIDC e environment
-# protetto. Non esistono token PyPI statici.
+# Sull'evento `release` allega wheel, SBOM e attestazioni alla release GitHub.
+# GitHub Releases e l'unica superficie di distribuzione: il workflow non
+# pubblica su package index esterni e non richiede token di pubblicazione.
 #
 # Triggers:
 #   - `workflow_dispatch` (manuale): preflight. Produce artifact scaricabili
@@ -220,29 +220,3 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*
-
-  # Il trusted publisher PyPI e separato dai build e protetto dall'environment
-  # `pypi`: niente token statici, soltanto OIDC su una release pubblicata.
-  publish-pypi:
-    name: publish standard wheels to PyPI
-    needs: [linux, windows, smoke-test, attach-to-release]
-    if: github.event_name == 'release'
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/project/plenora-database/
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: wheel-linux-x86_64
-          path: dist
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: wheel-windows-x86_64
-          path: dist
-      - name: Trusted Publishing
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-        with:
-          packages-dir: dist/

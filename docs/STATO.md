@@ -17,7 +17,7 @@ python scripts\render_state.py
 | `plenora-database-cli` | 2.0.0 |
 | `plenora-database-core` | 2.0.0 |
 | `plenora-database-engine` | 2.0.0 |
-| `plenora-database-py` | 2.0.1 |
+| `plenora-database-py` | 2.0.2 |
 | `plenora-database-sql` | 2.0.0 |
 | `plenora-database-testkit` | 2.0.0 |
 | `plenora-db-db2` | 2.0.0 |
