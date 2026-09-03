@@ -103,7 +103,11 @@ impl OraclePool {
         Ok(PooledOracleConnection {
             connection: Some(connection),
             pool: Arc::clone(self),
-            reusable: true,
+            // Una connessione entra nell'idle pool solo dopo che il chiamante
+            // ha osservato il completamento dell'intera operazione. Un errore
+            // del protocollo, un timeout o una cancellazione la scartano senza
+            // dover ricordare un `quarantine()` su ogni ramo anticipato.
+            reusable: false,
             _permit: permit,
         })
     }

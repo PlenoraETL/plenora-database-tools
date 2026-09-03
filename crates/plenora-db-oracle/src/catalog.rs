@@ -85,7 +85,7 @@ pub async fn inspect(
     cancellation: &CancellationToken,
 ) -> Result<Inspection> {
     validate_operation(config, operation)?;
-    let connection = pool.checkout(cancellation).await?;
+    let mut connection = pool.checkout(cancellation).await?;
     let raw = connection.connection()?;
     let result = match operation {
         Operation::DatabaseListCatalogs => {
@@ -144,6 +144,9 @@ pub async fn inspect(
             "operazione di introspezione Oracle non supportata",
         )),
     };
+    if result.is_ok() {
+        connection.allow_reuse();
+    }
     drop(connection);
     result
 }
@@ -238,7 +241,7 @@ pub async fn probe_spatial(
     pool: &Arc<OraclePool>,
     cancellation: &CancellationToken,
 ) -> Result<bool> {
-    let connection = pool.checkout(cancellation).await?;
+    let mut connection = pool.checkout(cancellation).await?;
     let rows = query(
         config,
         connection.connection()?,
@@ -253,6 +256,7 @@ pub async fn probe_spatial(
         ));
     };
     let available = required_u64(row, 0, "esito sonda Spatial Oracle non rappresentabile")? == 1;
+    connection.allow_reuse();
     drop(connection);
     Ok(available)
 }

@@ -428,7 +428,7 @@ pub async fn prepare_write(
             losses: Vec::new(),
         }
     } else {
-        let connection = pool.checkout(cancellation).await?;
+        let mut connection = pool.checkout(cancellation).await?;
         let target = describe_object(
             config,
             connection.connection()?,
@@ -437,6 +437,7 @@ pub async fn prepare_write(
             cancellation,
         )
         .await?;
+        connection.allow_reuse();
         drop(connection);
         plan.preflight(&target)?
     };
@@ -547,7 +548,7 @@ async fn setup_created_target(
     plan: &OracleWritePlan,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let connection = pool.checkout(cancellation).await?;
+    let mut connection = pool.checkout(cancellation).await?;
     let raw = connection.connection()?;
     let create_sql = plan
         .create_sql
@@ -609,6 +610,7 @@ async fn setup_created_target(
     raw.commit()
         .await
         .map_err(|error| crate::error::driver_error(ErrorPhase::Commit, &error))?;
+    connection.allow_reuse();
     drop(connection);
     Ok(())
 }

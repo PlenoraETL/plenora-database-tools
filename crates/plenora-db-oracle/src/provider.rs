@@ -120,8 +120,9 @@ impl Provider for OracleProvider {
     ) -> ProviderFuture<'a, ConnectionInfo> {
         Box::pin(async move {
             let pool = self.pool_for(secret)?;
-            let connection = pool.checkout(cancellation).await?;
+            let mut connection = pool.checkout(cancellation).await?;
             let info = connection.connection()?.server_info().await;
+            connection.allow_reuse();
             drop(connection);
             Ok(ConnectionInfo {
                 provider: ProviderKind::Oracle,

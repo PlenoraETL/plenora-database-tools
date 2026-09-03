@@ -616,7 +616,7 @@ pub async fn execute_ddl(
     sql: &str,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let connection = pool.checkout(cancellation).await?;
+    let mut connection = pool.checkout(cancellation).await?;
     with_timeout(
         config,
         ErrorPhase::Write,
@@ -624,6 +624,7 @@ pub async fn execute_ddl(
         connection.connection()?.execute(sql, &[]),
     )
     .await?;
+    connection.allow_reuse();
     drop(connection);
     Ok(())
 }

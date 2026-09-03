@@ -1200,6 +1200,18 @@ async fn live_configurable_pool_bounds_waiters_and_reuses_after_rollback() {
         .test_connection(&secret, &cancellation)
         .await
         .expect("connessione riusata dopo rollback");
+    provider
+        .execute_ddl(
+            &secret,
+            "DROP TABLE PLENORA_ORACLE_POOL_MISSING PURGE",
+            &cancellation,
+        )
+        .await
+        .expect_err("DDL fallita per provare la quarantena del canale");
+    provider
+        .test_connection(&secret, &cancellation)
+        .await
+        .expect("nuova connessione dopo quarantena del canale fallito");
 }
 
 #[tokio::test]

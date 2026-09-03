@@ -25,5 +25,12 @@ DEDICATED_THROUGH_BROKER_LISTENER=ON
 DIAG_ADR_ENABLED=off
 EOF
 
+# Il listener termina il primo handshake, ma anche il processo server che
+# riceve la sessione TCPS deve poter aprire lo stesso wallet auto-login.
+cat >> "${network_admin}/sqlnet.ora" <<EOF
+WALLET_LOCATION=(SOURCE=(METHOD=FILE)(METHOD_DATA=(DIRECTORY=${wallet_dir})))
+TLS_CLIENT_AUTHENTICATION=FALSE
+EOF
+
 lsnrctl stop
 lsnrctl start
