@@ -54,6 +54,44 @@ fn insert_uses_named_layout_without_carrying_values() {
 }
 
 #[test]
+fn oracle_timestamptz_mutations_keep_the_required_conversion_wrapper() {
+    let timestamp = QueryExpression::TypedParameter {
+        name: "observed_at".to_owned(),
+        parameter_type: crate::relational::QueryParameterType::TimestampTz,
+    };
+    let insert = MutationOperation::Insert(InsertOperation {
+        target: target(),
+        columns: vec!["observed_at".to_owned()],
+        rows: vec![vec![timestamp.clone()]],
+        returning: Vec::new(),
+    });
+    let insert = compile_relational_mutation(ProviderKind::Oracle, &insert)
+        .expect("INSERT TIMESTAMP WITH TIME ZONE Oracle");
+    assert_eq!(insert.bind_names, ["observed_at"]);
+    assert!(insert
+        .sql
+        .contains("TO_TIMESTAMP_TZ(:1, 'YYYY-MM-DD\"T\"HH24:MI:SS.FFTZH:TZM')"));
+
+    let update = MutationOperation::Update(UpdateOperation {
+        target: target(),
+        assignments: vec![MutationAssignment {
+            column: "observed_at".to_owned(),
+            value: timestamp.clone(),
+        }],
+        filter: Some(QueryExpression::Compare {
+            left: Box::new(column("observed_at")),
+            operator: ComparisonOperator::Eq,
+            right: Box::new(timestamp),
+        }),
+        returning: Vec::new(),
+    });
+    let update = compile_relational_mutation(ProviderKind::Oracle, &update)
+        .expect("UPDATE TIMESTAMP WITH TIME ZONE Oracle");
+    assert_eq!(update.bind_names, ["observed_at", "observed_at"]);
+    assert_eq!(update.sql.matches("TO_TIMESTAMP_TZ").count(), 2);
+}
+
+#[test]
 fn qualified_spatial_values_keep_payloads_in_named_binds() {
     let operation = MutationOperation::Insert(InsertOperation {
         target: target(),
