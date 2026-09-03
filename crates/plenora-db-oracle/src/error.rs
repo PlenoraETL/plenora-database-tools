@@ -53,16 +53,23 @@ const fn classify_driver_error(error: &Error) -> (ErrorCategory, &'static str) {
         | Error::ConnectionNotReady
         | Error::CursorClosed
         | Error::InvalidCursor(_) => (ErrorCategory::Protocol, "protocollo Oracle non completato"),
-        Error::ConnectionRefused { .. }
-        | Error::ConnectionRedirected { .. }
+        Error::ConnectionRefused { .. } => (
+            ErrorCategory::Io,
+            "listener Oracle non ha accettato la connessione",
+        ),
+        Error::ConnectionRedirected { .. }
         | Error::ConnectionRedirect(_)
-        | Error::ConnectionClosed
-        | Error::ConnectionClosedByServer(_)
-        | Error::ConnectionTimeout(_)
         | Error::InvalidConnectionString(_)
         | Error::InvalidServiceName { .. }
-        | Error::InvalidSid { .. }
-        | Error::Io(_) => (ErrorCategory::Io, "connessione Oracle non completata"),
+        | Error::InvalidSid { .. } => (
+            ErrorCategory::Io,
+            "instradamento connessione Oracle non completato",
+        ),
+        Error::ConnectionClosed | Error::ConnectionClosedByServer(_) => {
+            (ErrorCategory::Io, "connessione Oracle chiusa dal peer")
+        }
+        Error::ConnectionTimeout(_) => (ErrorCategory::Timeout, "connessione Oracle in timeout"),
+        Error::Io(_) => (ErrorCategory::Io, "trasporto Oracle non completato"),
         Error::AuthenticationFailed(_)
         | Error::InvalidCredentials
         | Error::UnsupportedVerifierType(_) => (
