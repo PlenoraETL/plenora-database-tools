@@ -4,6 +4,18 @@
 name: plenora-oracle
 
 services:
+  oracle-certgen:
+    image: mysql@sha256:257388edf9c84dbc04c763625446d5f3fa6ed60d1b0873bc552c614ba0a7ab4e
+    container_name: plenora-oracle-certgen
+    user: "0:0"
+    volumes:
+      - oracle_tcps_ca_private:/ca
+      - oracle_tcps_certificates:/tls
+      - ./docker/oracle/generate-tcps.sh:/fixture/generate-tcps.sh:ro
+    entrypoint: ["/bin/bash", "/fixture/generate-tcps.sh"]
+    command: ["/ca", "/tls", "PlenoraPkcs122026"]
+    restart: "no"
+
   oracle:
     image: ghcr.io/gvenzl/oracle-free@sha256:7b15d75e6c834980805a5224aa711e6ffc7cd0973d62f2d946448810f6bb2cd2
     platform: linux/amd64
@@ -23,8 +35,14 @@ services:
       start_period: 180s
     volumes:
       - oracle_data:/opt/oracle/oradata
+      - oracle_tcps_certificates:/opt/oracle/tcps-certificates:ro
       - ./docker/oracle/configure-tcps.sh:/container-entrypoint-startdb.d/90-configure-tcps.sh:ro
+    depends_on:
+      oracle-certgen:
+        condition: service_completed_successfully
     restart: "no"
 
 volumes:
   oracle_data:
+  oracle_tcps_ca_private:
+  oracle_tcps_certificates:

@@ -340,7 +340,7 @@ def main() -> int:
             [
                 "docker",
                 "cp",
-                f"{container['container_id']}:/opt/oracle/oradata/plenora-tcps-certificates/ca.pem",
+                f"{container['container_id']}:/opt/oracle/tcps-certificates/ca.pem",
                 str(tcps_ca),
             ]
         )
