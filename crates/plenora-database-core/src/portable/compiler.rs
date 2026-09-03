@@ -237,7 +237,10 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                 DialectKind::Db2 if *semantics == SpatialSemantics::Geometry => {
                     Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW({value})), {srid})"))
                 }
-                DialectKind::Oracle if *semantics == SpatialSemantics::Geometry => Ok(format!(
+                // Oracle conserva entrambe le semantiche nel tipo
+                // `SDO_GEOMETRY`; geography e resa esplicita da SRID e policy
+                // delle operazioni, non da un costruttore distinto.
+                DialectKind::Oracle => Ok(format!(
                     "MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(TO_BLOB({value}), {srid})"
                 )),
                 _ => Err(DatabaseError::unsupported(
