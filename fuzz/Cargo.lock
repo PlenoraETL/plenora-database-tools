@@ -1131,7 +1131,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "plenora-database-core"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1143,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-engine"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "chrono",
  "plenora-database-core",
@@ -1155,7 +1155,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-sql"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "plenora-database-core",
  "serde",
@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-mysql"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "chrono",
  "futures-util",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-postgres"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1218,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-sqlserver"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "chrono",
  "futures-util",

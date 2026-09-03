@@ -5,6 +5,24 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [3.1.0] — 2026-09-03
+
+### Aggiunto
+
+- Provider Oracle thin con query e DML portabili, transazioni, catalogo,
+  reflection, letture e scritture Arrow, CLI e sessioni ORM sync/async.
+- Supporto Oracle Spatial per geometrie WKB, metadati
+  `USER_SDO_GEOM_METADATA`, indici spatial e predicati qualificati. Il DDL
+  rifiuta prima dell'I/O i nomi non canonici richiesti dal catalogo Spatial.
+- Gestione Oracle di BLOB e CLOB grandi tramite LOB temporanei, mantenendo i
+  payload fuori dai messaggi d'errore pubblici.
+
+### Prove
+
+- Il gate Oracle dedicato costruisce e verifica Rust, CLI e wheel Python
+  contro Oracle Database Free full, incluse transazioni, Arrow, ORM, LOB e
+  Spatial. Le capability non coperte dalla prova restano chiuse.
+
 ## [3.0.0] — 2026-09-03
 
 ### Breaking
