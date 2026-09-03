@@ -2062,6 +2062,27 @@ def test_ddl_constraints_defaults_and_migration_chain() -> None:
         p.MigrationRunner((_migration("002", "missing", lambda tx: None),))
 
 
+def test_oracle_ddl_places_default_before_not_null() -> None:
+    registry = p.Registry()
+
+    class OracleBase(p.DeclarativeBase):
+        __registry__ = registry
+
+    class OracleGenerated(OracleBase):
+        __tablename__ = "ORACLE_GENERATED"
+
+        ID: p.Mapped[int] = p.mapped_column(primary_key=True, generated=True)
+        CREATED_BY: p.Mapped[str] = p.mapped_column(
+            p.String(32),
+            nullable=False,
+            server_default=p.ServerDefault.literal("database"),
+        )
+
+    [statement] = p.OrmMetadata(registry).ddl("oracle", checkfirst=False)
+
+    assert '"CREATED_BY" VARCHAR2(32) DEFAULT \'database\' NOT NULL' in statement
+
+
 def test_migration_runner_orders_branches_and_merges_and_rejects_broken_history() -> (
     None
 ):

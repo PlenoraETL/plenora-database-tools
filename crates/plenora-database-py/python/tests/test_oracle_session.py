@@ -218,7 +218,7 @@ def test_oracle_configurable_pool_is_accepted_by_the_live_engine() -> None:
     )
     session = p.engine_from_url(pooled).session()
     try:
-        assert session.execute_scalar("SELECT 1 FROM DUAL") == 1
+        assert session.execute_scalar("SELECT CAST(1 AS NUMBER(10)) FROM DUAL") == 1
     finally:
         session.close()
 
