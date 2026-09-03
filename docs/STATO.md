@@ -14,16 +14,16 @@ python scripts\render_state.py
 
 | crate | versione |
 | --- | --- |
-| `plenora-database-cli` | 2.0.0 |
-| `plenora-database-core` | 2.0.0 |
-| `plenora-database-engine` | 2.0.0 |
-| `plenora-database-py` | 2.0.2 |
-| `plenora-database-sql` | 2.0.0 |
-| `plenora-database-testkit` | 2.0.0 |
-| `plenora-db-db2` | 2.0.0 |
-| `plenora-db-mysql` | 2.0.0 |
-| `plenora-db-postgres` | 2.0.0 |
-| `plenora-db-sqlserver` | 2.0.0 |
+| `plenora-database-cli` | 3.0.0 |
+| `plenora-database-core` | 3.0.0 |
+| `plenora-database-engine` | 3.0.0 |
+| `plenora-database-py` | 3.0.0 |
+| `plenora-database-sql` | 3.0.0 |
+| `plenora-database-testkit` | 3.0.0 |
+| `plenora-db-db2` | 3.0.0 |
+| `plenora-db-mysql` | 3.0.0 |
+| `plenora-db-postgres` | 3.0.0 |
+| `plenora-db-sqlserver` | 3.0.0 |
 
 ## Contratto attivo
 

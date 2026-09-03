@@ -5,6 +5,31 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [3.0.0] — 2026-09-03
+
+### Breaking
+
+- L'IR relazionale Rust espone nuovi tipi di parametro ed espressioni per
+  timestamp con fuso, decimal, UUID, JSON, aritmetica, cast, `CASE` e ordine
+  esplicito dei null. I consumer che usano `match` esaustivi sugli enum
+  pubblici devono gestire le nuove varianti.
+
+### Aggiunto
+
+- L'ORM Python aggiunge tipi `String`, `Numeric`, `Uuid`, `Json` e `DateTime`,
+  batch e bulk write, partizioni e streaming sync/async, transazioni
+  configurabili, `no_autoflush`, locking, `DISTINCT ON` e join laterali.
+- Metadati e schema diff coprono check constraint, indici, default e azioni
+  `ON UPDATE`; le cancellazioni passive restano fail-closed senza una foreign
+  key mappata con `ON DELETE CASCADE`.
+- Le sessioni create dagli engine dichiarano e rispettano la proprieta del
+  lifecycle, inclusi i percorsi di errore in costruzione.
+
+### Prove
+
+- La campagna SDK live qualifica PostgreSQL, Apache AGE 1.7, MySQL, MariaDB e
+  SQL Server; il gate Db2 dedicato qualifica separatamente Rust e Python.
+
 ## [2.0.2] — 2026-09-02
 
 ### Modificato
