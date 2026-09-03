@@ -41,6 +41,7 @@ pub struct OracleConfig {
     private_ca_certificate: Option<PathBuf>,
     connect_timeout: Duration,
     operation_timeout: Duration,
+    acquire_timeout: Duration,
     statement_cache_size: usize,
 }
 
@@ -56,6 +57,7 @@ impl std::fmt::Debug for OracleConfig {
             .field("private_ca_certificate", &self.private_ca_certificate)
             .field("connect_timeout", &self.connect_timeout)
             .field("operation_timeout", &self.operation_timeout)
+            .field("acquire_timeout", &self.acquire_timeout)
             .field("statement_cache_size", &self.statement_cache_size)
             .finish()
     }
@@ -78,6 +80,7 @@ impl OracleConfig {
             private_ca_certificate: None,
             connect_timeout: Duration::from_secs(10),
             operation_timeout: Duration::from_secs(30),
+            acquire_timeout: Duration::from_secs(10),
             statement_cache_size: 20,
         }
     }
@@ -104,6 +107,13 @@ impl OracleConfig {
     pub const fn with_timeouts(mut self, connect: Duration, operation: Duration) -> Self {
         self.connect_timeout = connect;
         self.operation_timeout = operation;
+        self
+    }
+
+    /// Imposta il timeout distinto per l'acquisizione di un lease dal pool.
+    #[must_use]
+    pub const fn with_acquire_timeout(mut self, acquire: Duration) -> Self {
+        self.acquire_timeout = acquire;
         self
     }
 
@@ -148,6 +158,11 @@ impl OracleConfig {
         self.operation_timeout
     }
 
+    #[must_use]
+    pub const fn acquire_timeout(&self) -> Duration {
+        self.acquire_timeout
+    }
+
     /// Valida tutto ciò che è verificabile senza aprire una connessione.
     ///
     /// # Errors
@@ -172,7 +187,10 @@ impl OracleConfig {
                 "configurazione Oracle con porta zero",
             ));
         }
-        if self.connect_timeout.is_zero() || self.operation_timeout.is_zero() {
+        if self.connect_timeout.is_zero()
+            || self.operation_timeout.is_zero()
+            || self.acquire_timeout.is_zero()
+        {
             return Err(invalid_configuration(
                 "configurazione Oracle con timeout nullo",
             ));

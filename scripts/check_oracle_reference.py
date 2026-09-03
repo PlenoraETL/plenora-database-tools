@@ -34,9 +34,11 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_arrow_spatial_write_covers_create_append_update_upsert_replace_and_index",
         "live_large_wkb_temporary_blob_bind_is_lossless",
         "live_arrow_scalar_create_and_read_preserves_supported_types",
+        "live_configurable_pool_bounds_waiters_and_reuses_after_rollback",
+        "live_tcps_verifies_private_ca_and_rejects_untrusted_server",
     }
 )
-PYTHON_LIVE_EXPECTED = 5
+PYTHON_LIVE_EXPECTED = 6
 SERVER_VERSION_SQL = (
     "SELECT VERSION FROM PRODUCT_COMPONENT_VERSION "
     "WHERE PRODUCT LIKE 'Oracle%Database%' FETCH FIRST 1 ROW ONLY"
@@ -159,6 +161,10 @@ def test_environments(
         "PLENORA_ORACLE_SERVICE": reference["service"],
         "PLENORA_ORACLE_USER": user,
         "PLENORA_ORACLE_PASSWORD": password,
+        "PLENORA_ORACLE_TCPS_PORT": "2484",
+        "PLENORA_ORACLE_TCPS_CA": str(
+            (ROOT / "target" / "oracle-tcps-ca.pem").resolve()
+        ),
     }
     python = {
         "PLENORA_TEST_ORACLE_HOST": rust["PLENORA_ORACLE_HOST"],
@@ -253,7 +259,7 @@ def run_cli_probe(environment: dict[str, str]) -> dict[str, object]:
                 "spatial_index",
                 "mixed_geometry_types",
             )
-        ) or spatial.get("geography") is not False:
+        ) or spatial.get("geography") is not True:
             raise RuntimeError("capability Spatial Oracle non coerenti con le prove live")
         return document
     raise RuntimeError("probe CLI Oracle senza documento JSON")
@@ -328,6 +334,19 @@ def main() -> int:
         steps.append("immutable_amd64_reference")
         container = container_identity(reference)
         steps.append("container_health_and_identity")
+        tcps_ca = ROOT / "target" / "oracle-tcps-ca.pem"
+        tcps_ca.parent.mkdir(parents=True, exist_ok=True)
+        run(
+            [
+                "docker",
+                "cp",
+                f"{container['container_id']}:/opt/oracle/oradata/plenora-tcps-certificates/ca.pem",
+                str(tcps_ca),
+            ]
+        )
+        if "BEGIN CERTIFICATE" not in tcps_ca.read_text(encoding="ascii"):
+            raise RuntimeError("CA TCPS Oracle esportata non valida")
+        steps.append("tcps_private_ca_exported")
         rust_environment, python_environment = test_environments(
             reference, container["container_id"]
         )

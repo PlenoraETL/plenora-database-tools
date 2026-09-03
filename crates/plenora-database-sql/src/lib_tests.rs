@@ -334,6 +334,31 @@ fn oracle_converts_numeric_wire_booleans_explicitly() {
 }
 
 #[test]
+fn oracle_converts_timestamptz_without_session_nls_settings() {
+    let mut query = simple_query();
+    query.source = None;
+    query.projection = vec![QueryProjection {
+        expression: QueryExpression::TypedParameter {
+            name: "observed_at".to_owned(),
+            parameter_type: QueryParameterType::TimestampTz,
+        },
+        alias: None,
+    }];
+    let rendered = Renderer::new(
+        Dialect::Oracle,
+        DialectCapabilities {
+            spatial_intersects: false,
+        },
+    )
+    .render_query(&query)
+    .expect("Oracle converte timestamptz esplicitamente");
+    assert_eq!(
+        rendered.sql,
+        "SELECT TO_TIMESTAMP_TZ(:1, 'YYYY-MM-DD\"T\"HH24:MI:SS.FFTZH:TZM') FROM DUAL"
+    );
+}
+
+#[test]
 fn db2_correlates_an_unaliased_schema_qualified_table() {
     let mut query = simple_query();
     query.source = Some(QuerySource {

@@ -1,6 +1,6 @@
 # Fixture Oracle Free AMD64 fissata per digest. Il listener di test usa TCP
-# esplicito; le prove TCPS hanno una fixture separata e non possono essere
-# inferite da questo servizio.
+# esplicito; lo stesso riferimento espone anche un endpoint TCPS configurato
+# dallo startup script e verificato con una CA effimera dedicata al gate.
 name: plenora-oracle
 
 services:
@@ -14,6 +14,7 @@ services:
       APP_USER_PASSWORD: Plenora_Test_2026
     ports:
       - "127.0.0.1:1521:1521"
+      - "127.0.0.1:2484:2484"
     healthcheck:
       test: ["CMD", "healthcheck.sh"]
       interval: 10s
@@ -22,6 +23,7 @@ services:
       start_period: 180s
     volumes:
       - oracle_data:/opt/oracle/oradata
+      - ./docker/oracle/configure-tcps.sh:/container-entrypoint-startdb.d/90-configure-tcps.sh:ro
     restart: "no"
 
 volumes:

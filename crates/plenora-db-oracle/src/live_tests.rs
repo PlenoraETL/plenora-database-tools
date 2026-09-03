@@ -26,6 +26,14 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 fn fixture() -> (OracleProvider, SecretString) {
+    let (config, secret) = fixture_config();
+    (
+        OracleProvider::new(config).expect("config fixture Oracle"),
+        secret,
+    )
+}
+
+fn fixture_config() -> (OracleConfig, SecretString) {
     let host = std::env::var("PLENORA_ORACLE_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
     let port = std::env::var("PLENORA_ORACLE_PORT")
         .ok()
@@ -38,10 +46,7 @@ fn fixture() -> (OracleProvider, SecretString) {
     let config = OracleConfig::new(host, service, user)
         .with_port(port)
         .with_tls_mode(OracleTlsMode::Disable);
-    (
-        OracleProvider::new(config).expect("config fixture Oracle"),
-        SecretString::new(password),
-    )
+    (config, SecretString::new(password))
 }
 
 fn point_xy(x: f64, y: f64) -> Vec<u8> {
@@ -123,6 +128,7 @@ fn spatial_write_batch(ids: Vec<i32>, points: Vec<Vec<u8>>) -> RecordBatch {
         kind: crate::types::OracleColumnKind::Geometry,
         spatial_srid: Some(4326),
         spatial_dimensions: Some(2),
+        spatial_semantics: Some(plenora_database_core::geometry::SpatialSemantics::Geometry),
     }
     .arrow_field();
     let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false), geometry]);
@@ -400,7 +406,7 @@ async fn live_large_wkb_temporary_blob_bind_is_lossless() {
                 bytes,
                 srid: Some(4326),
                 dimensions: Dimensions::Xy,
-                semantics: SpatialSemantics::Geometry,
+                semantics: SpatialSemantics::Geography,
             }]),
             &cancellation,
         )
@@ -600,6 +606,7 @@ async fn live_spatial_catalog_portable_predicates_and_arrow_wkb() {
         .await
         .expect("capability Spatial Oracle");
     assert!(capabilities.spatial.geometry);
+    assert!(capabilities.spatial.geography);
     assert!(capabilities.spatial.read_wkb);
     assert!(capabilities.spatial.write_wkb);
     assert!(capabilities.spatial.spatial_index);
@@ -668,7 +675,7 @@ async fn live_spatial_catalog_portable_predicates_and_arrow_wkb() {
             Expression::SpatialValue {
                 expression: Box::new(Expression::literal(ParameterValue::Bytes(point.clone()))),
                 srid: 4326,
-                semantics: SpatialSemantics::Geometry,
+                semantics: SpatialSemantics::Geography,
             },
         ]],
         returning: Vec::new(),
@@ -715,6 +722,7 @@ async fn live_spatial_catalog_portable_predicates_and_arrow_wkb() {
         .expect("colonna SHAPE");
     assert_eq!(shape.spatial_srid, Some(4326));
     assert_eq!(shape.spatial_dimensions, Some(2));
+    assert_eq!(shape.spatial_semantics, Some(SpatialSemantics::Geography));
     assert!(description.indexes.iter().any(|index| index.spatial));
 
     let predicate = plenora_database_core::portable::select("PLENORA_ORACLE_SPATIAL", vec!["ID"])
@@ -725,7 +733,7 @@ async fn live_spatial_catalog_portable_predicates_and_arrow_wkb() {
                 ewkb: point.clone(),
                 srid: 4326,
                 dimensions: plenora_database_core::geometry::Dimensions::Xy,
-                semantics: SpatialSemantics::Geometry,
+                semantics: SpatialSemantics::Geography,
             },
         ))
         .into_statement();
@@ -780,7 +788,7 @@ async fn live_spatial_catalog_portable_predicates_and_arrow_wkb() {
             bytes: point.clone(),
             srid: Some(4326),
             dimensions: plenora_database_core::geometry::Dimensions::Xy,
-            semantics: SpatialSemantics::Geometry,
+            semantics: SpatialSemantics::Geography,
         },
     )]));
     let mut stream = provider
@@ -1110,8 +1118,7 @@ async fn live_type_fidelity_includes_utc_timestamptz_and_lobs() {
             &Statement::new(
                 "SELECT CAST(:1 AS NUMBER(38,10)) AS N, CAST(:2 AS DATE) AS D, \
                  CAST(:3 AS TIMESTAMP) AS TS, \
-                 TO_TIMESTAMP_TZ('2026-03-19 10:11:12.123456 +00:00', \
-                   'YYYY-MM-DD HH24:MI:SS.FF6 TZH:TZM') AS TZ, \
+                 TO_TIMESTAMP_TZ(:4, 'YYYY-MM-DD\"T\"HH24:MI:SS.FFTZH:TZM') AS TZ, \
                  CAST(NULL AS TIMESTAMP WITH TIME ZONE) AS NULL_TZ, \
                  TO_CLOB(RPAD('x', 4000, 'x')) || RPAD('x', 4000, 'x') || \
                    RPAD('x', 4000, 'x') || RPAD('x', 4000, 'x') || \
@@ -1122,6 +1129,7 @@ async fn live_type_fidelity_includes_utc_timestamptz_and_lobs() {
                 ParameterValue::Decimal("12345678901234567890.1234567890".to_owned()),
                 ParameterValue::Date("2026-03-19".to_owned()),
                 ParameterValue::Timestamp("2026-03-19T10:11:12.123456".to_owned()),
+                ParameterValue::TimestampTz("2026-03-19T10:11:12.123456+02:30".to_owned()),
             ]),
             &cancellation,
         )
@@ -1141,7 +1149,7 @@ async fn live_type_fidelity_includes_utc_timestamptz_and_lobs() {
     assert_eq!(
         row.get("TZ"),
         Some(&ParameterValue::TimestampTz(
-            "2026-03-19T10:11:12.123456+00:00".to_owned()
+            "2026-03-19T10:11:12.123456+02:30".to_owned()
         ))
     );
     assert!(
@@ -1154,4 +1162,74 @@ async fn live_type_fidelity_includes_utc_timestamptz_and_lobs() {
         matches!(row.get("BINARY_LOB"), Some(ParameterValue::Bytes(value)) if value == &[0, 1, 255])
     );
     transaction.rollback(&cancellation).await.expect("rollback");
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_configurable_pool_bounds_waiters_and_reuses_after_rollback() {
+    let (config, secret) = fixture_config();
+    let provider = OracleProvider::new_with_pool(
+        config.with_acquire_timeout(std::time::Duration::from_millis(100)),
+        1,
+    )
+    .expect("pool Oracle bounded");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget pool Oracle");
+    let transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("primo lease Oracle");
+    let error = provider
+        .test_connection(&secret, &cancellation)
+        .await
+        .expect_err("secondo lease oltre capacita");
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::Timeout
+    );
+    transaction
+        .rollback(&cancellation)
+        .await
+        .expect("rollback libera lease Oracle");
+    provider
+        .test_connection(&secret, &cancellation)
+        .await
+        .expect("connessione riusata dopo rollback");
+}
+
+#[tokio::test]
+#[ignore = "richiede listener Oracle TCPS e CA del gate"]
+async fn live_tcps_verifies_private_ca_and_rejects_untrusted_server() {
+    let (plain, secret) = fixture_config();
+    let port = std::env::var("PLENORA_ORACLE_TCPS_PORT")
+        .expect("porta TCPS del gate")
+        .parse::<u16>()
+        .expect("porta TCPS numerica");
+    let ca = std::env::var("PLENORA_ORACLE_TCPS_CA").expect("CA TCPS del gate");
+    let trusted = OracleProvider::new(
+        OracleConfig::new(plain.host(), plain.service_name(), plain.username())
+            .with_port(port)
+            .with_private_ca_certificate(ca),
+    )
+    .expect("config TCPS trusted");
+    let cancellation = CancellationToken::new();
+    trusted
+        .test_connection(&secret, &cancellation)
+        .await
+        .expect("TCPS con CA privata verificata");
+
+    let untrusted = OracleProvider::new(
+        OracleConfig::new(plain.host(), plain.service_name(), plain.username()).with_port(port),
+    )
+    .expect("config TCPS senza CA privata");
+    let error = untrusted
+        .test_connection(&secret, &cancellation)
+        .await
+        .expect_err("certificato fixture non deve essere pubblicamente trusted");
+    assert!(!error.message.contains(secret.expose()));
 }

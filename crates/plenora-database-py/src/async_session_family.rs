@@ -651,7 +651,7 @@ pub fn aconnect_db2<'py>(
 /// Come [`aconnect_mysql`], con CA persistente e plaintext solo tramite
 /// `tls_mode="disable"` esplicito.
 #[pyfunction]
-#[pyo3(signature = (host, service, user, password, port=None, tls_ca_path=None, tls_mode="require"))]
+#[pyo3(signature = (host, service, user, password, port=None, tls_ca_path=None, tls_mode="require", max_connections=4, acquire_timeout_ms=10_000))]
 #[allow(clippy::too_many_arguments)]
 pub fn aconnect_oracle<'py>(
     py: Python<'py>,
@@ -662,6 +662,8 @@ pub fn aconnect_oracle<'py>(
     port: Option<u16>,
     tls_ca_path: Option<std::path::PathBuf>,
     tls_mode: &str,
+    max_connections: usize,
+    acquire_timeout_ms: u64,
 ) -> PyResult<Bound<'py, PyAny>> {
     let secret = SecretString::new(password.to_owned());
     open_async_endpoint(
@@ -675,8 +677,8 @@ pub fn aconnect_oracle<'py>(
             tls_ca_pem: None,
             tls_ca_path,
             tls_mode: tls_mode.to_owned(),
-            max_connections: 1,
-            acquire_timeout_ms: 10_000,
+            max_connections,
+            acquire_timeout_ms,
         },
         crate::session_family::oracle_provider,
         "Oracle",

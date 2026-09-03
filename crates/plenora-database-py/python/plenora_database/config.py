@@ -61,9 +61,8 @@ class EngineConfig:
             raise ValueError(
                 "tls_mode engine non valido; valori: require, insecure_local"
             )
-        if self.provider in {"oracle", "db2"} and self.pool is not None:
-            provider_name = "Db2" if self.provider == "db2" else "Oracle"
-            raise ValueError(f"pool configurabile non qualificato per {provider_name}")
+        if self.provider == "db2" and self.pool is not None:
+            raise ValueError("pool configurabile non qualificato per Db2")
 
     def __repr__(self) -> str:
         return (
@@ -212,6 +211,8 @@ def engine_from_url(value: str | EngineConfig) -> Any:
             *args,
             tls_ca_path=config.tls_ca,
             tls_mode="require" if config.tls_mode == "require" else "disable",
+            max_connections=max_connections,
+            acquire_timeout_ms=acquire_timeout_ms,
         )
     return _create_db2_engine(
         *args,
@@ -274,6 +275,8 @@ async def async_engine_from_url(value: str | EngineConfig) -> Any:
             *args,
             tls_ca_path=config.tls_ca,
             tls_mode="require" if config.tls_mode == "require" else "disable",
+            max_connections=max_connections,
+            acquire_timeout_ms=acquire_timeout_ms,
         )
     return await _create_async_db2_engine(
         *args,

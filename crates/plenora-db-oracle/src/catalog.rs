@@ -1,13 +1,16 @@
 use crate::config::OracleConfig;
-use crate::connection::{connect, with_timeout};
+use crate::connection::with_timeout;
 use crate::decode::rows_from_result;
 use crate::parameter::bind_parameters;
+use crate::OraclePool;
+use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind};
-use plenora_database_core::provider::{Inspection, ParameterValue, SecretString};
+use plenora_database_core::provider::{Inspection, ParameterValue};
 use plenora_database_core::row::Row;
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::Arc;
 
 const LIST_CATALOGS_SQL: &str =
     "SELECT SYS_CONTEXT('USERENV', 'DB_NAME') AS CATALOG_NAME FROM DUAL";
@@ -48,6 +51,8 @@ pub struct OracleColumn {
     pub spatial_srid: Option<u32>,
     #[serde(default)]
     pub spatial_dimensions: Option<u8>,
+    #[serde(default)]
+    pub spatial_semantics: Option<SpatialSemantics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,15 +80,16 @@ pub struct OracleObjectDescription {
 
 pub async fn inspect(
     config: &OracleConfig,
-    secret: &SecretString,
+    pool: &Arc<OraclePool>,
     operation: &Operation,
     cancellation: &CancellationToken,
 ) -> Result<Inspection> {
     validate_operation(config, operation)?;
-    let connection = connect(config, secret, cancellation).await?;
-    match operation {
+    let connection = pool.checkout(cancellation).await?;
+    let raw = connection.connection()?;
+    let result = match operation {
         Operation::DatabaseListCatalogs => {
-            let rows = query(config, &connection, LIST_CATALOGS_SQL, &[], cancellation).await?;
+            let rows = query(config, raw, LIST_CATALOGS_SQL, &[], cancellation).await?;
             let catalogs = rows
                 .iter()
                 .map(|row| required_string(row, 0, "catalogo Oracle privo di nome"))
@@ -94,7 +100,7 @@ pub async fn inspect(
             })
         }
         Operation::DatabaseListSchemas { .. } => {
-            let rows = query(config, &connection, LIST_SCHEMAS_SQL, &[], cancellation).await?;
+            let rows = query(config, raw, LIST_SCHEMAS_SQL, &[], cancellation).await?;
             let schemas = rows
                 .iter()
                 .map(|row| required_string(row, 0, "schema Oracle privo di nome"))
@@ -108,7 +114,7 @@ pub async fn inspect(
             let schema = source_schema(config, source.as_ref());
             let rows = query(
                 config,
-                &connection,
+                raw,
                 LIST_OBJECTS_SQL,
                 &[ParameterValue::String(schema.clone())],
                 cancellation,
@@ -126,7 +132,7 @@ pub async fn inspect(
         Operation::DatabaseDescribeObject { source } => {
             let schema = source_schema(config, Some(source));
             let description =
-                describe_object(config, &connection, &schema, &source.object, cancellation).await?;
+                describe_object(config, raw, &schema, &source.object, cancellation).await?;
             Ok(Inspection {
                 operation: "database.describe_object".to_owned(),
                 document: json!(description),
@@ -137,7 +143,9 @@ pub async fn inspect(
             ErrorPhase::Probe,
             "operazione di introspezione Oracle non supportata",
         )),
-    }
+    };
+    drop(connection);
+    result
 }
 
 pub async fn describe_object(
@@ -227,13 +235,13 @@ pub async fn describe_object(
 
 pub async fn probe_spatial(
     config: &OracleConfig,
-    secret: &SecretString,
+    pool: &Arc<OraclePool>,
     cancellation: &CancellationToken,
 ) -> Result<bool> {
-    let connection = connect(config, secret, cancellation).await?;
+    let connection = pool.checkout(cancellation).await?;
     let rows = query(
         config,
-        &connection,
+        connection.connection()?,
         "SELECT COUNT(*) FROM ALL_TYPES WHERE OWNER = 'MDSYS' AND TYPE_NAME = 'SDO_GEOMETRY'",
         &[],
         cancellation,
@@ -244,7 +252,9 @@ pub async fn probe_spatial(
             "sonda Spatial Oracle con cardinalita inattesa",
         ));
     };
-    Ok(required_u64(row, 0, "esito sonda Spatial Oracle non rappresentabile")? == 1)
+    let available = required_u64(row, 0, "esito sonda Spatial Oracle non rappresentabile")? == 1;
+    drop(connection);
+    Ok(available)
 }
 
 async fn query(
@@ -307,6 +317,7 @@ fn column_description(row: &Row) -> Result<OracleColumn> {
         char_length: required_u64(row, 10, "char length Oracle non rappresentabile")?,
         spatial_srid: None,
         spatial_dimensions: None,
+        spatial_semantics: None,
     })
 }
 
@@ -318,9 +329,15 @@ fn apply_spatial_metadata(columns: &mut [OracleColumn], rows: &[Row]) -> Result<
             .find(|column| column.name == name)
             .ok_or_else(|| mapping_error("metadato spatial Oracle su colonna non trovata"))?;
         let srid = required_u64(row, 1, "SRID spatial Oracle assente o non rappresentabile")?;
-        column.spatial_srid = Some(
-            u32::try_from(srid)
-                .map_err(|_| mapping_error("SRID spatial Oracle oltre il contratto u32"))?,
+        let srid = u32::try_from(srid)
+            .map_err(|_| mapping_error("SRID spatial Oracle oltre il contratto u32"))?;
+        column.spatial_srid = Some(srid);
+        column.spatial_semantics = Some(
+            if plenora_database_core::spatial_policy::is_geographic_srid(srid) {
+                SpatialSemantics::Geography
+            } else {
+                SpatialSemantics::Geometry
+            },
         );
         let dimensions = required_u64(
             row,
@@ -336,7 +353,10 @@ fn apply_spatial_metadata(columns: &mut [OracleColumn], rows: &[Row]) -> Result<
         .iter()
         .filter(|column| column.data_type.eq_ignore_ascii_case("SDO_GEOMETRY"))
     {
-        if column.spatial_srid.is_none() || column.spatial_dimensions.is_none() {
+        if column.spatial_srid.is_none()
+            || column.spatial_dimensions.is_none()
+            || column.spatial_semantics.is_none()
+        {
             return Err(DatabaseError::new(
                 ErrorCategory::Crs,
                 ErrorPhase::Probe,

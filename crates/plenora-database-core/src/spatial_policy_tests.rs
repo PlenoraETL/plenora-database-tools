@@ -215,14 +215,20 @@ fn oracle_accepts_geometry_predicates_and_bounds_metric_distance() {
         .category,
         crate::ErrorCategory::Unsupported
     );
+    validate_predicate(
+        ProviderKind::Oracle,
+        &SpatialPredicate::Intersects,
+        &ref_with(4326, SpatialSemantics::Geography),
+    )
+    .expect("geography Oracle qualificata");
     assert_eq!(
         validate_predicate(
             ProviderKind::Oracle,
             &SpatialPredicate::Intersects,
-            &ref_with(4326, SpatialSemantics::Geography),
+            &ref_with(3857, SpatialSemantics::Geography),
         )
-        .expect_err("geography Oracle")
+        .expect_err("geography Oracle con CRS proiettato")
         .category,
-        crate::ErrorCategory::Unsupported
+        crate::ErrorCategory::InvalidPlan
     );
 }

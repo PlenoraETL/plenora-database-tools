@@ -134,8 +134,10 @@ impl CompileContext {
     /// Registra un parametro e ritorna il placeholder dialect-specifico
     /// (`$N` per `Postgres` 1-based, `?` per `MySQL`).
     fn bind(&mut self, value: ParameterValue) -> String {
+        let oracle_timestamp_tz =
+            self.dialect == DialectKind::Oracle && matches!(&value, ParameterValue::TimestampTz(_));
         self.params.push(value);
-        match self.dialect {
+        let placeholder = match self.dialect {
             DialectKind::Postgres => format!("${}", self.params.len()),
             // Il segnaposto e il primo punto in cui MariaDB e MySQL: la lista
             // di cio che i due condividono e lunga, e ogni riga di questo file
@@ -146,6 +148,14 @@ impl CompileContext {
             // ordine e si aspetta `@P1`, `@P2`. Il numero e lo stesso di
             // PostgreSQL, la sintassi no.
             DialectKind::SqlServer => format!("@P{}", self.params.len()),
+        };
+        if oracle_timestamp_tz {
+            format!(
+                "TO_TIMESTAMP_TZ({placeholder}, '{}')",
+                crate::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
+            )
+        } else {
+            placeholder
         }
     }
 }

@@ -1129,14 +1129,22 @@ impl Renderer {
         binds: &mut Vec<BindParameter>,
     ) -> String {
         let value = self.bind(name, binds);
-        if self.dialect == Dialect::Oracle && parameter_type == QueryParameterType::Boolean {
-            format!("TO_BOOLEAN({value})")
-        } else {
-            format!(
-                "CAST({value} AS {})",
-                self.render_parameter_type(parameter_type)
-            )
+        if self.dialect == Dialect::Oracle {
+            match parameter_type {
+                QueryParameterType::Boolean => return format!("TO_BOOLEAN({value})"),
+                QueryParameterType::TimestampTz => {
+                    return format!(
+                        "TO_TIMESTAMP_TZ({value}, '{}')",
+                        plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
+                    )
+                }
+                _ => {}
+            }
         }
+        format!(
+            "CAST({value} AS {})",
+            self.render_parameter_type(parameter_type)
+        )
     }
 
     fn render_arithmetic(
@@ -1164,14 +1172,22 @@ impl Renderer {
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
         let value = self.render_query_expression(expression, binds)?;
-        if self.dialect == Dialect::Oracle && target_type == QueryParameterType::Boolean {
-            Ok(format!("TO_BOOLEAN({value})"))
-        } else {
-            Ok(format!(
-                "CAST({value} AS {})",
-                self.render_parameter_type(target_type)
-            ))
+        if self.dialect == Dialect::Oracle {
+            match target_type {
+                QueryParameterType::Boolean => return Ok(format!("TO_BOOLEAN({value})")),
+                QueryParameterType::TimestampTz => {
+                    return Ok(format!(
+                        "TO_TIMESTAMP_TZ({value}, '{}')",
+                        plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
+                    ))
+                }
+                _ => {}
+            }
         }
+        Ok(format!(
+            "CAST({value} AS {})",
+            self.render_parameter_type(target_type)
+        ))
     }
 
     fn render_case(
@@ -1218,7 +1234,7 @@ impl Renderer {
                 // driver CLI lo converte nella rappresentazione esadecimale.
                 Ok(format!("ST_ASBINARY({value})"))
             }
-            (Dialect::Oracle, SpatialSemantics::Geometry) => {
+            (Dialect::Oracle, SpatialSemantics::Geometry | SpatialSemantics::Geography) => {
                 Ok(format!("MDSYS.SDO_UTIL.TO_WKBGEOMETRY({value})"))
             }
             _ => Err(DatabaseError::unsupported(
@@ -1256,7 +1272,7 @@ impl Renderer {
             (Dialect::Db2, SpatialSemantics::Geometry) => {
                 Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW({value})), {srid})"))
             }
-            (Dialect::Oracle, SpatialSemantics::Geometry) => {
+            (Dialect::Oracle, SpatialSemantics::Geometry | SpatialSemantics::Geography) => {
                 Ok(format!("MDSYS.SDO_UTIL.FROM_WKBGEOMETRY({value}, {srid})"))
             }
             _ => Err(DatabaseError::unsupported(

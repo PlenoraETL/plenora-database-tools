@@ -192,14 +192,16 @@ fn bind_parameter(value: &ParameterValue) -> Result<Value> {
         }
         ParameterValue::Date(value) => parse_date(value).map(Value::Date),
         ParameterValue::Timestamp(value) => parse_timestamp(value).map(Value::Timestamp),
-        ParameterValue::TimestampTz(_) => Err(DatabaseError::unsupported(
-            ProviderKind::Oracle,
-            ErrorPhase::Prepare,
-            "bind TIMESTAMP WITH TIME ZONE Oracle non qualificato dal driver thin",
-        )),
+        ParameterValue::TimestampTz(value) => parse_timestamp_tz(value).map(Value::String),
         ParameterValue::Null { .. } => Ok(Value::Null),
         ParameterValue::Wkb { bytes, .. } => Ok(Value::Bytes(bytes.clone())),
     }
+}
+
+fn parse_timestamp_tz(value: &str) -> Result<String> {
+    let timestamp = chrono::DateTime::parse_from_rfc3339(value)
+        .map_err(|_| mapping_error("parametro timestamptz Oracle non valido"))?;
+    Ok(timestamp.format("%Y-%m-%dT%H:%M:%S%.6f%:z").to_string())
 }
 
 fn validate_decimal(value: &str) -> Result<()> {

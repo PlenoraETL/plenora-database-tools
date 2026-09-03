@@ -1,7 +1,8 @@
 use crate::catalog::{describe_object, OracleObjectDescription};
 use crate::config::OracleConfig;
-use crate::connection::{connect, with_timeout};
+use crate::connection::with_timeout;
 use crate::transaction::OracleTransaction;
+use crate::OraclePool;
 use plenora_database_core::arrow::array::Array;
 use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit};
 use plenora_database_core::arrow::RecordBatch;
@@ -12,7 +13,7 @@ use plenora_database_core::plan::{
     ProviderKind, SridPolicy, TransactionProfile, WriteMode, WriteOperation,
 };
 use plenora_database_core::primary_key::validate_create_primary_key;
-use plenora_database_core::provider::{BatchStream, ParameterValue, PreparedWrite, SecretString};
+use plenora_database_core::provider::{BatchStream, ParameterValue, PreparedWrite};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
 use plenora_database_core::transaction::{CommitOutcome, Statement, TransactionScope};
 use plenora_database_core::{
@@ -26,6 +27,7 @@ use plenora_database_engine::{
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 static EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -55,6 +57,7 @@ struct WriteColumn {
 struct SpatialWriteColumn {
     srid: u32,
     dimensions: &'static str,
+    semantics: plenora_database_core::geometry::SpatialSemantics,
     exact_geometry_type: Option<String>,
 }
 
@@ -177,6 +180,15 @@ impl OracleWritePlan {
                 if server.spatial_srid != Some(spatial.srid)
                     || server.spatial_dimensions
                         != Some(if spatial.dimensions == "xyz" { 3 } else { 2 })
+                    || !matches!(
+                        (server.spatial_semantics, spatial.semantics),
+                        (Some(server), requested)
+                            if server == requested
+                                || (server
+                                    == plenora_database_core::geometry::SpatialSemantics::Geography
+                                    && requested
+                                        == plenora_database_core::geometry::SpatialSemantics::Geometry)
+                    )
                 {
                     return Err(prepare_error(
                         ErrorCategory::Crs,
@@ -364,6 +376,11 @@ impl WriteColumn {
             || {
                 if self.data_type == DataType::Boolean {
                     format!("TO_BOOLEAN(:{position})")
+                } else if matches!(self.data_type, DataType::Timestamp(_, Some(_))) {
+                    format!(
+                        "TO_TIMESTAMP_TZ(:{position}, '{}')",
+                        plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
+                    )
                 } else {
                     format!(":{position}")
                 }
@@ -388,7 +405,7 @@ impl WriteColumn {
 
 pub async fn prepare_write(
     config: &OracleConfig,
-    secret: &SecretString,
+    pool: &Arc<OraclePool>,
     operation: &WriteOperation,
     input_schema: SchemaRef,
     budget: &ResourceBudget,
@@ -411,15 +428,16 @@ pub async fn prepare_write(
             losses: Vec::new(),
         }
     } else {
-        let connection = connect(config, secret, cancellation).await?;
+        let connection = pool.checkout(cancellation).await?;
         let target = describe_object(
             config,
-            &connection,
+            connection.connection()?,
             &plan.schema_name,
             &plan.object_name,
             cancellation,
         )
         .await?;
+        drop(connection);
         plan.preflight(&target)?
     };
     loss_report.validate()?;
@@ -434,9 +452,10 @@ pub async fn prepare_write(
     .with_driver_state(plan))
 }
 
+#[allow(clippy::significant_drop_tightening)]
 pub async fn execute_write(
     config: &OracleConfig,
-    secret: &SecretString,
+    pool: &Arc<OraclePool>,
     mut prepared: PreparedWrite,
     mut input: Box<dyn BatchStream>,
     budget: &ResourceBudget,
@@ -468,13 +487,13 @@ pub async fn execute_write(
         .ok_or_else(|| write_error(ErrorCategory::InvalidPlan, "piano preparato Oracle assente"))?;
     let created = plan.create_sql.is_some();
     if created {
-        setup_created_target(config, secret, &plan, cancellation)
+        setup_created_target(config, pool, &plan, cancellation)
             .await
             .map_err(shape_create_setup_error)?;
     }
     let mut transaction = OracleTransaction::begin(
         config,
-        secret,
+        pool,
         &plenora_database_core::transaction::TransactionOptions::default(),
         cancellation,
     )
@@ -524,11 +543,12 @@ pub async fn execute_write(
 
 async fn setup_created_target(
     config: &OracleConfig,
-    secret: &SecretString,
+    pool: &Arc<OraclePool>,
     plan: &OracleWritePlan,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let connection = connect(config, secret, cancellation).await?;
+    let connection = pool.checkout(cancellation).await?;
+    let raw = connection.connection()?;
     let create_sql = plan
         .create_sql
         .as_ref()
@@ -537,7 +557,7 @@ async fn setup_created_target(
         config,
         ErrorPhase::Write,
         cancellation,
-        connection.execute(create_sql, &[]),
+        raw.execute(create_sql, &[]),
     )
     .await?;
     for column in plan
@@ -567,7 +587,7 @@ async fn setup_created_target(
             config,
             ErrorPhase::Write,
             cancellation,
-            connection.execute(&sql, &params),
+            raw.execute(&sql, &params),
         )
         .await?;
         if plan.create_spatial_index {
@@ -581,15 +601,15 @@ async fn setup_created_target(
                 config,
                 ErrorPhase::Write,
                 cancellation,
-                connection.execute(&sql, &[]),
+                raw.execute(&sql, &[]),
             )
             .await?;
         }
     }
-    connection
-        .commit()
+    raw.commit()
         .await
         .map_err(|error| crate::error::driver_error(ErrorPhase::Commit, &error))?;
+    drop(connection);
     Ok(())
 }
 
@@ -921,10 +941,10 @@ fn validate_write_spatial_policy(schema: &SchemaRef, policy: Option<SridPolicy>)
 fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
     let contract = FieldContract::parse(field)?;
     let spatial = if contract.spatial {
-        if contract.is_geography() || contract.encoding != Some("wkb") {
+        if contract.encoding != Some("wkb") {
             return Err(prepare_error(
                 ErrorCategory::Unsupported,
-                "write spatial Oracle richiede geometry WKB pura",
+                "write spatial Oracle richiede WKB puro",
             ));
         }
         let dimensions = match contract.dimensions {
@@ -949,6 +969,17 @@ fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
                 "SRID spatial Oracle fuori intervallo",
             ));
         }
+        let semantics = if contract.is_geography() {
+            if !plenora_database_core::spatial_policy::is_geographic_srid(srid) {
+                return Err(prepare_error(
+                    ErrorCategory::Crs,
+                    "geography Oracle richiede un SRID geografico qualificato",
+                ));
+            }
+            plenora_database_core::geometry::SpatialSemantics::Geography
+        } else {
+            plenora_database_core::geometry::SpatialSemantics::Geometry
+        };
         if !matches!(field.data_type(), DataType::Binary | DataType::LargeBinary) {
             return Err(prepare_error(
                 ErrorCategory::DataMapping,
@@ -982,6 +1013,7 @@ fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
         Some(SpatialWriteColumn {
             srid,
             dimensions,
+            semantics,
             exact_geometry_type,
         })
     } else {
@@ -1058,6 +1090,9 @@ fn native_type(data_type: &DataType) -> Result<String> {
         DataType::Binary | DataType::LargeBinary => Ok("BLOB".to_owned()),
         DataType::Date32 => Ok("DATE".to_owned()),
         DataType::Timestamp(TimeUnit::Microsecond, None) => Ok("TIMESTAMP(6)".to_owned()),
+        DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => {
+            Ok("TIMESTAMP(6) WITH TIME ZONE".to_owned())
+        }
         _ => Err(prepare_error(
             ErrorCategory::Unsupported,
             "tipo Arrow non qualificato per write Oracle",
@@ -1092,6 +1127,9 @@ fn native_type_matches(column: &WriteColumn, server: &crate::OracleColumn) -> bo
         DataType::Date32 => native == "DATE",
         DataType::Timestamp(TimeUnit::Microsecond, None) => {
             native.starts_with("TIMESTAMP") && !native.contains("TIME ZONE")
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => {
+            native.starts_with("TIMESTAMP") && native.contains("TIME ZONE")
         }
         _ => false,
     }

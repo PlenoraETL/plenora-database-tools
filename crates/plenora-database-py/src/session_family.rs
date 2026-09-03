@@ -739,7 +739,10 @@ pub(crate) fn oracle_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provider>>
         }
     };
     config = config.with_timeouts(Duration::from_secs(10), Duration::from_secs(30));
-    Ok(Arc::new(OracleProvider::new(config).map_err(to_py_err)?))
+    config = config.with_acquire_timeout(Duration::from_millis(endpoint.acquire_timeout_ms));
+    Ok(Arc::new(
+        OracleProvider::new_with_pool(config, endpoint.max_connections).map_err(to_py_err)?,
+    ))
 }
 
 /// Apre una connessione MySQL e produce una `DatabaseSession`.
@@ -991,7 +994,7 @@ pub fn connect_db2(
 ///
 /// `PlenoraError` se configurazione, TCPS, autenticazione o probe falliscono.
 #[pyfunction]
-#[pyo3(signature = (host, service, user, password, port=None, tls_ca_path=None, tls_mode="require"))]
+#[pyo3(signature = (host, service, user, password, port=None, tls_ca_path=None, tls_mode="require", max_connections=4, acquire_timeout_ms=10_000))]
 #[allow(clippy::too_many_arguments)]
 pub fn connect_oracle(
     host: &str,
@@ -1001,6 +1004,8 @@ pub fn connect_oracle(
     port: Option<u16>,
     tls_ca_path: Option<PathBuf>,
     tls_mode: &str,
+    max_connections: usize,
+    acquire_timeout_ms: u64,
 ) -> PyResult<DatabaseSession> {
     let secret = SecretString::new(password.to_owned());
     let provider = oracle_provider(Endpoint {
@@ -1012,8 +1017,8 @@ pub fn connect_oracle(
         tls_ca_pem: None,
         tls_ca_path,
         tls_mode: tls_mode.to_owned(),
-        max_connections: 1,
-        acquire_timeout_ms: 10_000,
+        max_connections,
+        acquire_timeout_ms,
     })?;
     open_family_session(provider, secret, "Oracle", "connect_oracle")
 }

@@ -1,4 +1,6 @@
 use crate::{OracleColumn, OracleColumnKind, OracleColumnSpec};
+use plenora_database_core::geometry::SpatialSemantics;
+use plenora_database_core::protocol::GEOMETRY_SPATIAL_SEMANTICS;
 
 fn column(data_type: &str) -> OracleColumn {
     OracleColumn {
@@ -15,7 +17,23 @@ fn column(data_type: &str) -> OracleColumn {
         virtual_column: false,
         spatial_srid: None,
         spatial_dimensions: None,
+        spatial_semantics: None,
     }
+}
+
+#[test]
+fn geography_catalog_semantics_reaches_the_arrow_contract() {
+    let mut spatial = column("SDO_GEOMETRY");
+    spatial.spatial_srid = Some(4326);
+    spatial.spatial_dimensions = Some(2);
+    spatial.spatial_semantics = Some(SpatialSemantics::Geography);
+    let field = OracleColumnSpec::from_catalog(&spatial)
+        .expect("geography Oracle catalogata")
+        .arrow_field();
+    assert_eq!(
+        field.metadata().get(GEOMETRY_SPATIAL_SEMANTICS),
+        Some(&"geography".to_owned())
+    );
 }
 
 #[test]

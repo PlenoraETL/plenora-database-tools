@@ -102,7 +102,7 @@ _SPATIAL_NULL_WRAPPER_PROVIDERS = (
 )
 _FRAMED_ORM_PROVIDERS = _WKB_ORM_PROVIDERS
 _GEOMETRY_ONLY_ORM_PROVIDERS = (
-    _MYSQL_ORM_PROVIDERS | _DB2_ORM_PROVIDERS | _ORACLE_ORM_PROVIDERS
+    _MYSQL_ORM_PROVIDERS | _DB2_ORM_PROVIDERS
 )
 _XY_XYZ_ORM_PROVIDERS = (
     _SQLSERVER_ORM_PROVIDERS | _DB2_ORM_PROVIDERS | _ORACLE_ORM_PROVIDERS
@@ -4071,7 +4071,7 @@ class OrmSession:
                 state.status is ObjectState.PENDING
                 and server_fed
                 and self._provider
-                not in {"postgres", "mariadb", "sqlserver", "mysql", "db2"}
+                not in {"postgres", "mariadb", "sqlserver", "mysql", "db2", "oracle"}
             ):
                 raise OrmUnsupportedError(
                     "generated key e server default ORM non qualificati per il provider"
@@ -4369,12 +4369,9 @@ class OrmSession:
                 raise OrmUnsupportedError(
                     "il provider richiede execute_scalar per leggere l'identita generated"
                 )
-            if self._provider == "mysql":
-                value = scalar("SELECT LAST_INSERT_ID()")
-            elif self._provider == "db2":
-                value = scalar("VALUES CAST(IDENTITY_VAL_LOCAL() AS INTEGER)")
-            else:
-                raise OrmUnsupportedError("identita generated non qualificata")
+            value = _read_generated_identity(
+                self._transaction, self._provider, table, generated[0]
+            )
             generated[0].__set__(instance, value)
         identity = _identity(mapper, instance)
         predicate, parameters = _table_identity_predicate(mapper, table, identity)
@@ -4410,16 +4407,9 @@ class OrmSession:
                 raise OrmUnsupportedError(
                     "il provider richiede execute_scalar per leggere l'identita generated"
                 )
-            if self._provider == "mysql":
-                value = scalar("SELECT LAST_INSERT_ID()")
-            elif self._provider == "db2":
-                # Db2 espone IDENTITY_VAL_LOCAL come DECIMAL e il bordo ODBC
-                # conserva i DECIMAL come testo. La colonna ORM `int` genera
-                # INTEGER, quindi il cast mantiene il tipo senza rendere
-                # `_coerce` permissivo verso stringhe numeriche applicative.
-                value = scalar("VALUES CAST(IDENTITY_VAL_LOCAL() AS INTEGER)")
-            else:
-                raise OrmUnsupportedError("identita generated non qualificata")
+            value = _read_generated_identity(
+                self._transaction, self._provider, mapper.table, generated[0]
+            )
             generated[0].__set__(instance, value)
         identity = _identity(mapper, instance)
         predicate, parameters = _identity_values_predicate(mapper, identity)
@@ -5786,12 +5776,9 @@ class AsyncOrmSession(OrmSession):
                 raise OrmUnsupportedError(
                     "il provider richiede execute_scalar per leggere l'identita generated"
                 )
-            if self._provider == "mysql":
-                value = await scalar("SELECT LAST_INSERT_ID()")
-            elif self._provider == "db2":
-                value = await scalar("VALUES CAST(IDENTITY_VAL_LOCAL() AS INTEGER)")
-            else:
-                raise OrmUnsupportedError("identita generated non qualificata")
+            value = await _read_generated_identity_async(
+                self._transaction, self._provider, table, generated[0]
+            )
             generated[0].__set__(instance, value)
         identity = _identity(mapper, instance)
         predicate, parameters = _table_identity_predicate(mapper, table, identity)
@@ -5827,12 +5814,9 @@ class AsyncOrmSession(OrmSession):
                 raise OrmUnsupportedError(
                     "il provider richiede execute_scalar per leggere l'identita generated"
                 )
-            if self._provider == "mysql":
-                value = await scalar("SELECT LAST_INSERT_ID()")
-            elif self._provider == "db2":
-                value = await scalar("VALUES CAST(IDENTITY_VAL_LOCAL() AS INTEGER)")
-            else:
-                raise OrmUnsupportedError("identita generated non qualificata")
+            value = await _read_generated_identity_async(
+                self._transaction, self._provider, mapper.table, generated[0]
+            )
             generated[0].__set__(instance, value)
         identity = _identity(mapper, instance)
         predicate, parameters = _identity_values_predicate(mapper, identity)
@@ -7258,6 +7242,74 @@ async def _execute_ddl_async(session: Any, statement: str) -> None:
         await outcome
 
 
+def _oracle_identity_lookup(
+    table: Table, attribute: MappedColumn[Any]
+) -> tuple[str, list[str], str | None]:
+    if attribute.name is None:
+        raise OrmMappingError("identity Oracle senza nome colonna")
+    if table.catalog is not None:
+        raise OrmUnsupportedError("identity Oracle cross-catalog non supportata")
+    if table.schema is None:
+        return (
+            "SELECT SEQUENCE_NAME FROM USER_TAB_IDENTITY_COLS "
+            "WHERE TABLE_NAME = :1 AND COLUMN_NAME = :2",
+            [table.name, attribute.name],
+            None,
+        )
+    return (
+        "SELECT SEQUENCE_NAME FROM ALL_TAB_IDENTITY_COLS "
+        "WHERE OWNER = :1 AND TABLE_NAME = :2 AND COLUMN_NAME = :3",
+        [table.schema, table.name, attribute.name],
+        table.schema,
+    )
+
+
+def _oracle_identity_currval(sequence: Any, owner: str | None) -> str:
+    if not isinstance(sequence, str) or not sequence:
+        raise OrmStateError("catalogo identity Oracle privo di sequence")
+    qualified = _quote_identifier(sequence, "oracle")
+    if owner is not None:
+        qualified = f'{_quote_identifier(owner, "oracle")}.{qualified}'
+    return f"SELECT {qualified}.CURRVAL FROM DUAL"
+
+
+def _read_generated_identity(
+    transaction: Any,
+    provider: str,
+    table: Table,
+    attribute: MappedColumn[Any],
+) -> Any:
+    scalar = transaction.execute_scalar
+    if provider == "mysql":
+        return scalar("SELECT LAST_INSERT_ID()")
+    if provider == "db2":
+        # Il cast mantiene il tipo intero attraverso il bordo ODBC.
+        return scalar("VALUES CAST(IDENTITY_VAL_LOCAL() AS INTEGER)")
+    if provider == "oracle":
+        lookup, params, owner = _oracle_identity_lookup(table, attribute)
+        sequence = scalar(lookup, params)
+        return scalar(_oracle_identity_currval(sequence, owner))
+    raise OrmUnsupportedError("identita generated non qualificata")
+
+
+async def _read_generated_identity_async(
+    transaction: Any,
+    provider: str,
+    table: Table,
+    attribute: MappedColumn[Any],
+) -> Any:
+    scalar = transaction.execute_scalar
+    if provider == "mysql":
+        return await scalar("SELECT LAST_INSERT_ID()")
+    if provider == "db2":
+        return await scalar("VALUES CAST(IDENTITY_VAL_LOCAL() AS INTEGER)")
+    if provider == "oracle":
+        lookup, params, owner = _oracle_identity_lookup(table, attribute)
+        sequence = await scalar(lookup, params)
+        return await scalar(_oracle_identity_currval(sequence, owner))
+    raise OrmUnsupportedError("identita generated non qualificata")
+
+
 def _quote_identifier(value: str, provider: str) -> str:
     if not isinstance(value, str) or not value or "\x00" in value:
         raise OrmMappingError("identificatore DDL non valido")
@@ -7329,6 +7381,8 @@ def _ddl_type(attribute: MappedColumn[Any], provider: str) -> str:
             return "TIMESTAMPTZ"
         if provider == "sqlserver":
             return "DATETIMEOFFSET"
+        if provider == "oracle":
+            return "TIMESTAMP WITH TIME ZONE"
         raise OrmUnsupportedError(
             "DateTime timezone ORM non qualificato per il provider"
         )
@@ -7481,16 +7535,13 @@ def _create_table_ddl(
             raise OrmMappingError("colonna DDL senza nome")
         declaration = f"{_quote_identifier(attribute.name, provider)} {_ddl_type(attribute, provider)}"
         if attribute.generated and mapper.inheritance != "joined":
-            if provider == "oracle":
-                raise OrmUnsupportedError(
-                    "identity generated Oracle non qualificata dalla superficie ORM"
-                )
             declaration += {
                 "postgres": " GENERATED BY DEFAULT AS IDENTITY",
                 "mysql": " AUTO_INCREMENT",
                 "mariadb": " AUTO_INCREMENT",
                 "sqlserver": " IDENTITY(1,1)",
                 "db2": " GENERATED BY DEFAULT AS IDENTITY",
+                "oracle": " GENERATED BY DEFAULT AS IDENTITY",
             }[provider]
         if not attribute.nullable:
             declaration += " NOT NULL"

@@ -13,6 +13,7 @@ fn spatial_schema() -> SchemaRef {
             kind: OracleColumnKind::Geometry,
             spatial_srid: Some(4326),
             spatial_dimensions: Some(2),
+            spatial_semantics: Some(plenora_database_core::geometry::SpatialSemantics::Geometry),
         }
         .arrow_field(),
     ])

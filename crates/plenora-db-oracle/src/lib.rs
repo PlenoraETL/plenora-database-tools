@@ -9,6 +9,7 @@ mod connection;
 mod decode;
 mod error;
 mod parameter;
+mod pool;
 mod provider;
 mod read;
 mod transaction;
@@ -17,6 +18,7 @@ mod write;
 
 pub use catalog::{OracleColumn, OracleIndex, OracleObjectDescription, OracleObjectSummary};
 pub use config::{OracleConfig, OracleTlsMode};
+pub use pool::{OraclePool, PooledOracleConnection};
 pub use provider::OracleProvider;
 pub use types::{OracleColumnKind, OracleColumnSpec, OracleReadPlan};
 
