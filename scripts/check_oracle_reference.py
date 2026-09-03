@@ -37,6 +37,10 @@ REQUIRED_LIVE_TESTS = frozenset(
     }
 )
 PYTHON_LIVE_EXPECTED = 5
+SERVER_VERSION_SQL = (
+    "SELECT VERSION FROM PRODUCT_COMPONENT_VERSION "
+    "WHERE PRODUCT LIKE 'Oracle%Database%' FETCH FIRST 1 ROW ONLY"
+)
 
 
 def run(command: list[str], *, environment: dict[str, str] | None = None) -> str:
@@ -308,7 +312,7 @@ def build_and_run_python_live(environment: dict[str, str]) -> str:
         "port=int(os.environ['PLENORA_TEST_ORACLE_PORT']),"
         "tls_mode=os.environ['PLENORA_TEST_ORACLE_TLS_MODE']); "
         "s=p.engine_from_url(c).session(); "
-        "print(s.execute_scalar('SELECT VERSION_FULL FROM V$INSTANCE')); s.close()"
+        f"print(s.execute_scalar({SERVER_VERSION_SQL!r})); s.close()"
     )
     return (
         run([sys.executable, "-c", script], environment=environment)

@@ -17,6 +17,8 @@ def main() -> int:
     reference = gate.reference_contract()
     assert reference["server_major"] == "23"
     assert reference["platform"] == "linux/amd64"
+    assert "PRODUCT_COMPONENT_VERSION" in gate.SERVER_VERSION_SQL
+    assert "V$" not in gate.SERVER_VERSION_SQL
     assert gate.REQUIRED_LIVE_TESTS <= gate.live_source_inventory()
     workflow = (ROOT / ".github/workflows/oracle-assurance.yml").read_text(
         encoding="utf-8"
