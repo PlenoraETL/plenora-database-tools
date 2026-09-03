@@ -741,7 +741,8 @@ impl<'a> ExecuteMessage<'a> {
             }
             Value::Collection(_) => {
                 // Collection (VARRAY, Nested Table) - bound as Object type
-                // TODO: Full implementation requires type descriptor with OID
+                // Full encoding remains unavailable without a type descriptor
+                // carrying the Oracle object identifier.
                 (OracleType::Object, 0, 0, 0)
             }
         }

@@ -58,6 +58,7 @@ docker rm -f dataflow-mariadb \
              dataflow-sqlserver \
              dataflow-sqlserver-certgen \
              dataflow-sqlserver-init \
+             plenora-oracle-certgen \
              plenora-oracle
 ```
 

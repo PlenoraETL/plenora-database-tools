@@ -278,8 +278,8 @@ impl Config {
     ///     .with_drcp("my_app", "self");
     /// ```
     pub fn with_drcp(self, _connection_class: &str, _purity: &str) -> Self {
-        // TODO: Implement DRCP configuration storage
-        // For now, DRCP is handled at connection time via the connect descriptor
+        // DRCP configuration storage is not implemented by this API; connection
+        // descriptors remain the only supported configuration path.
         self
     }
 

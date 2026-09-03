@@ -21,6 +21,7 @@ from scripts.compose_network import container_variable
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILE = ROOT / "docker-compose.oracle.yml"
 REFERENCE_FILE = ROOT / "docker" / "oracle" / "references.json"
+MYSQL_REFERENCE_FILE = ROOT / "docker" / "mysql" / "references.json"
 LIVE_SOURCE = ROOT / "crates" / "plenora-db-oracle" / "src" / "live_tests.rs"
 PYTHON_TESTS = ROOT / "crates" / "plenora-database-py" / "python" / "tests"
 RESULT = ROOT / "assurance-results" / "oracle-reference.json"
@@ -93,6 +94,22 @@ def reference_contract() -> dict[str, str]:
         raise RuntimeError("Compose Oracle diverge dal digest di riferimento")
     if f"platform: {reference['platform']}" not in compose_source:
         raise RuntimeError("Compose Oracle diverge dalla piattaforma qualificata")
+    mysql_document = json.loads(MYSQL_REFERENCE_FILE.read_text(encoding="utf-8"))
+    mysql_baseline = next(
+        (
+            item
+            for item in mysql_document.get("references", ())
+            if item.get("role") == "baseline"
+        ),
+        None,
+    )
+    if not isinstance(mysql_baseline, dict) or not re.fullmatch(
+        r"sha256:[0-9a-f]{64}", str(mysql_baseline.get("digest", ""))
+    ):
+        raise RuntimeError("riferimento MySQL baseline per cert-generator non valido")
+    certgen_image = f"mysql@{mysql_baseline['digest']}"
+    if certgen_image not in compose_source:
+        raise RuntimeError("cert-generator Oracle diverge dal riferimento MySQL baseline")
     return reference
 
 
