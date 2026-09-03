@@ -1,32 +1,11 @@
-//! `DatabaseSession` — sessione `MySQL` sincrona del SDK Python.
+//! Sessione sincrona provider-neutral esposta dal binding Python.
 //!
-//! Non e piu uno scaffold: la superficie e quella di `Session` su Postgres,
-//! meno spatial.
-//!
-//! * `connect_mysql(host, database, user, password, port=None,
-//!   tls_ca_pem=None, tls_mode="require")`
-//! * `execute(sql, params)` -> `affected_rows`
-//! * `execute_scalar(sql, params)` -> valore
-//! * `execute_returning_rows(sql, params)` -> `list[dict]`
-//! * `execute_ddl(sql)` -> `None`
-//! * `begin(isolation, read_only, statement_timeout_ms, context,
-//!   native_query_policy)` -> `Transaction` con savepoint. `context` accetta
-//!   un `SessionContext`; `native_query_policy` vale `allow` o `deny`
-//! * `read(schema, object, projection, order_by, limit)` -> `BatchReader`,
-//!   streaming Arrow IPC bounded
-//! * `copy_from(...)` -> bulk write, sei `WriteMode` su sette:
-//!   `TruncateInsert` resta fail-closed perche `TRUNCATE` e DDL con commit
-//!   implicito
-//! * `execute_portable_rows` / `execute_portable_count`, su cui girano i
-//!   builder AST del wrapper Python
-//! * `close()`, `__enter__`/`__exit__`, `__repr__`
-//!
-//! Non esposto: spatial predicates e `SpatialReference`.
+//! `MySQL`, `MariaDB`, `SQL Server` e `Db2` condividono questa superficie;
+//! il provider resta dietro `dyn Provider`. SQL nativo, capability e dettagli
+//! transazionali rimangono specifici del prodotto, mentre i builder portabili
+//! attraversano il contratto comune.
 //!
 //! L'equivalente async e [`crate::async_session_family`].
-//!
-//! Placeholder `MySQL`: `?` (non `$1` come Postgres). Il consumer deve
-//! fornire SQL provider-compatibile.
 
 #![allow(
     clippy::doc_markdown,
@@ -75,17 +54,11 @@ use std::time::Duration;
 
 use crate::budget::session_budget as default_budget;
 
-/// Sessione della famiglia `MySQL`: `MySQL` o `MariaDB`.
+/// Sessione comune dei provider non PostgreSQL del binding.
 ///
-/// Il provider e dietro `dyn Provider` perche i due prodotti hanno due tipi
-/// distinti — ADR 0014 vieta che sia il server a decidere quale — e questa
-/// sessione non ne conosce nessuno dei due: usa il contratto. Cio che sa e
-/// **quale** ha in mano, e lo dice ovunque nomini un prodotto: il `repr`, il
-/// messaggio della sessione chiusa. Una sessione `MariaDB` che si dichiarasse
-/// `MySQL` mentirebbe proprio a chi sta cercando di capire cosa ha aperto.
-///
-/// Prodotta da `plenora_database.connect_mysql(...)`. Context-manager
-/// friendly (`with connect_mysql(...) as s:`).
+/// Il prodotto resta esplicito: serve a diagnostica e messaggi pubblici, ma
+/// non viene dedotto dalla versione del server. La probe verifica che il
+/// provider scelto corrisponda al prodotto raggiunto.
 #[pyclass(module = "plenora_database._native")]
 pub struct DatabaseSession {
     provider: Arc<dyn Provider>,
@@ -307,19 +280,14 @@ impl DatabaseSession {
         rows_to_pylist(py, rows)
     }
 
-    /// Apre una nuova transazione user-managed su MySQL.
+    /// Apre una nuova transazione gestita dal chiamante.
     ///
     /// Uso: `with s.begin() as tx: tx.execute(...); tx.commit()`.
     /// `Transaction` è provider-agnostic (wrapper sopra `dyn TransactionScope`)
     /// e supporta savepoints, conditional_update, execute_returning_rows.
     ///
-    /// Opzioni:
-    /// - `isolation`: "read_uncommitted" / "read_committed" /
-    ///   "repeatable_read" / "serializable" (None = default MySQL)
-    /// - `read_only`: True/False (default: False)
-    /// - `statement_timeout_ms`: MAX_EXECUTION_TIME session-scoped
-    ///
-    /// Nota: MySQL non ha `deferrable` — parametro non esposto qui.
+    /// Isolamento, read-only, timeout, context e policy delle query native
+    /// vengono validati dal provider prima di aprire la transazione.
     #[pyo3(signature = (
         isolation=None,
         read_only=None,
@@ -327,7 +295,7 @@ impl DatabaseSession {
         context=None,
         native_query_policy=None,
     ))]
-    #[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con Postgres
+    #[allow(clippy::too_many_arguments)] // Firma Python a keyword della sessione comune.
     fn begin(
         &mut self,
         py: Python<'_>,
@@ -400,7 +368,7 @@ impl DatabaseSession {
     }
 
     /// Esegue un PortableStatement (JSON) senza RETURNING e ritorna
-    /// affected_rows. Per Insert/Update/Delete/Upsert MySQL (no RETURNING).
+    /// affected_rows per uno statement che non restituisce righe.
     fn execute_portable_count(&self, py: Python<'_>, ast_json: &str) -> PyResult<u64> {
         self.ensure_open()?;
         let ast = portable_from_json(ast_json)?;
@@ -409,7 +377,7 @@ impl DatabaseSession {
         })
     }
 
-    /// Apre uno stream Arrow IPC su una tabella/vista MySQL.
+    /// Apre uno stream Arrow IPC su una tabella o vista.
     ///
     /// Ritorna un `BatchReader` che implementa il Python iterator protocol;
     /// ogni `next(reader)` produce `bytes` Arrow IPC stream self-contained
@@ -428,8 +396,7 @@ impl DatabaseSession {
     ///     batch = ipc.open_stream(io.BytesIO(chunk)).read_all()
     /// ```
     ///
-    /// La size dei batch è decisa dal provider (MySQL: bounded dal
-    /// buffer del cursor `mysql_async`).
+    /// La dimensione dei batch e decisa dal provider e resta limitata.
     #[pyo3(signature = (
         schema,
         object,
@@ -475,33 +442,13 @@ impl DatabaseSession {
         .map_err(to_py_err)
     }
 
-    /// Bulk write MySQL via `prepare_write` + `write` del provider.
+    /// Bulk write attraverso `prepare_write` + `write` del provider.
     /// Il consumer Python passa un buffer Arrow IPC stream (schema + N
     /// record batches + EOS).
     ///
-    /// **WriteMode supportati** (6 su 7):
-    /// - `append` (default)
-    /// - `create` (CREATE TABLE + INSERT). `keys` e opzionale e diventa la
-    ///   PRIMARY KEY della tabella creata: le colonne indicate devono
-    ///   esistere nello schema Arrow, essere **non-nullable** e non
-    ///   ripetersi, altrimenti il piano viene rifiutato prima di toccare il
-    ///   server
-    /// - `replace` (DELETE FROM + INSERT nella stessa transazione: il
-    ///   target deve gia esistere e non viene ricreato, quindi schema,
-    ///   indici, FK, trigger, check, default, grant e `AUTO_INCREMENT`
-    ///   restano quelli di prima)
-    /// - `upsert` (INSERT ... ON DUPLICATE KEY UPDATE)
-    /// - `update` (UPDATE JOIN staging)
-    /// - `delete_by_keys` (DELETE WHERE keys IN staging)
-    ///
-    /// **Fail-closed** (`PlenoraUnsupportedError`):
-    /// - `truncate_insert` — TRUNCATE e DDL con commit implicito, quindi
-    ///   non rollback-safe, e non viene emulato con DELETE perche avrebbe
-    ///   semantica diversa. Usare `replace`.
-    ///
-    /// `mapping_policy` deve essere `"strict"` (il provider rifiuta
-    /// `"compatible"` con `Unsupported` finché loss preflight non è
-    /// qualificato).
+    /// Mode e mapping policy non qualificate dal provider falliscono in modo
+    /// conservativo. Le capability sondate della sessione sono la fonte per
+    /// decidere quali combinazioni invocare.
     ///
     /// Ritorna dict con struttura `WriteOutcome`:
     /// `{ "status": "committed", "rows": {"received": N, "confirmed": N, ...}, ...}`
@@ -549,7 +496,6 @@ impl DatabaseSession {
         crate::write::wrap_outcome(py, result)
     }
 
-    /// DDL raw (CREATE/DROP/ALTER). MySQL fa autocommit implicito.
     /// Ritorna l'elenco dei catalog (database) accessibili.
     fn inspect_catalogs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         self.ensure_open()?;
@@ -593,6 +539,7 @@ impl DatabaseSession {
         crate::session::json_value_to_pydict(py, &doc)
     }
 
+    /// Esegue DDL raw (CREATE/DROP/ALTER) con la semantica del provider.
     fn execute_ddl(&self, py: Python<'_>, sql: &str) -> PyResult<()> {
         self.ensure_open()?;
         let provider = Arc::clone(&self.provider);
@@ -869,7 +816,7 @@ pub(crate) fn family_config(
 /// `MariaDB`.
 #[pyfunction]
 #[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
-#[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con connect_mysql
+#[allow(clippy::too_many_arguments)] // Firma comune alle factory sincrone.
 pub fn connect_mariadb(
     host: &str,
     database: &str,
@@ -942,7 +889,7 @@ fn open_family_session(
 /// la probe delle capability restituisce errore.
 #[pyfunction]
 #[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
-#[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con connect_mysql
+#[allow(clippy::too_many_arguments)] // Firma comune alle factory sincrone.
 pub fn connect_sqlserver(
     host: &str,
     database: &str,

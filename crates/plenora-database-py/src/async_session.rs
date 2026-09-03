@@ -1,4 +1,4 @@
-//! AsyncSession + aconnect (F3-7).
+//! Sessione PostgreSQL asincrona esposta a Python.
 //!
 //! Bridge asyncio ↔ tokio via `pyo3-async-runtimes`. Le API espongono
 //! metodi che ritornano awaitable Python: `await s.execute_scalar(...)`.

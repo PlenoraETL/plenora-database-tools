@@ -466,23 +466,12 @@ class MariadbDriverEvidenceTests(unittest.TestCase):
         self.assertIn("| provider |", document)
 
     def test_the_ambiguous_commit_is_measured_and_verified_from_outside(self) -> None:
-        """La sonda del commit ignoto verifica **due** cose, non una.
+        """La sonda del commit ignoto verifica classificazione ed effetto.
 
-        Questa guardia diceva un'altra cosa, ed e stata riscritta il giorno in
-        cui ha smesso di valere — che era il suo scopo. Diceva: senza fault
-        injection deterministica non si conclude niente, ed era vero finche
-        l'unico modo immaginato era uccidere la connessione a meta commit, che
-        e una corsa. La forma deterministica c'era gia nel provider SQL Server
-        di questo repository: far atterrare il commit e **poi** trattenere la
-        risposta.
-
-        Cio che va presidiato ora e piu stretto della misura stessa. Che il
-        provider dichiari `OutcomeUnknown` e meta della prova; l'altra meta e
-        che quella dichiarazione sia onesta, e si vede solo rileggendo il
-        server da un'altra connessione. Una sonda che si fermasse alla prima
-        meta chiamerebbe prova un'alzata di spalle, e `Unknown` verrebbe
-        accettato anche dove il commit non e mai atterrato — cioe dove la
-        misura riguarda un altro caso.
+        Il fault deterministico lascia atterrare il commit e trattiene la
+        risposta. La prova richiede sia `OutcomeUnknown` sia la rilettura del
+        dato da una connessione distinta; la sola classificazione non dimostra
+        che l'effetto remoto sia davvero ambiguo.
         """
 
         evidence = self.EVIDENCE.read_text(encoding="utf-8")

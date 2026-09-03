@@ -1,4 +1,4 @@
-"""Spatial helpers per il portable AST (F3-6c).
+"""Helper spatial per l'AST portabile.
 
 Il consumer costruisce un `SpatialReference` (geometria di
 riferimento) e lo passa a `where_spatial(...)` di Select/Update/Delete

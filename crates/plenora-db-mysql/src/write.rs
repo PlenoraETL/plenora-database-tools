@@ -1635,12 +1635,8 @@ fn mysql_column_ddl(
         MysqlColumnKind::Decimal { precision, scale } => {
             format!("DECIMAL({precision},{scale})")
         }
-        // Il tipo **esatto** quando il contratto lo dichiara. La DDL emetteva
-        // `GEOMETRY` anche per un contratto `exact`, cioe creava una colonna
-        // che accetta qualunque geometria per dati che ne contengono una sola:
-        // il contratto diceva una cosa piu forte di quella che la tabella
-        // faceva rispettare, e il primo a scriverci un poligono dentro non
-        // avrebbe trovato nessuno a fermarlo.
+        // Un contratto `exact` deve produrre una colonna geometrica tipata:
+        // usare `GEOMETRY` accetterebbe forme che il piano dichiara vietate.
         //
         // `raw.exact_geometry_column` ha misurato che entrambi i prodotti
         // reggono la colonna tipata e **rifiutano** il tipo sbagliato — 1366 su
@@ -1760,10 +1756,7 @@ pub(crate) fn build_create_table_sql(
 /// struttura dello schema Arrow.
 ///
 /// Serve a `WriteMode::Update`, che accumula le righe in staging e poi
-/// esegue un UPDATE JOIN. Il commento diceva anche `Replace`, con RENAME
-/// atomico: non e piu vero da quando Replace usa DELETE + INSERT nella
-/// stessa transazione, e una descrizione che nomina un meccanismo
-/// inesistente e peggio di nessuna descrizione.
+/// esegue un `UPDATE JOIN`.
 ///
 /// # Errors
 ///

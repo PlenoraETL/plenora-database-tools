@@ -198,13 +198,9 @@ fn compile_rejects_unqualified_operation_shapes_before_the_network() {
     }
 }
 
-/// Le mode senza semantica di chiave rifiutano keys e update_columns, e
-/// il messaggio nomina la mode vera: prima diceva sempre "Append" anche
-/// per Create e Replace.
-/// `Create` accetta keys opzionali e le rende PRIMARY KEY, come su
-/// PostgreSQL. Prima le rifiutava, il che rendeva irraggiungibile il ramo
-/// `PRIMARY KEY` di `build_create_table_sql`: codice che non poteva
-/// essere eseguito da nessun piano valido.
+/// Le mode senza semantica di chiave rifiutano `keys` e `update_columns`, e
+/// il messaggio nomina la mode effettiva. `Create` accetta chiavi opzionali e
+/// le rende `PRIMARY KEY`, attraversando il relativo ramo del compilatore.
 /// L'indice spaziale entra nella `CREATE TABLE`, e solo li.
 ///
 /// Tre cose insieme, perche separate direbbero meno. La clausola compare

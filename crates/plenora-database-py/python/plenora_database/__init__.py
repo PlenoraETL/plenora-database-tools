@@ -330,47 +330,19 @@ def _connect_mysql(
 ) -> "_DatabaseSessionWrapper":
     """Apre una nuova sessione MySQL (sync).
 
-    API disponibili in DatabaseSession:
-    - `execute(statement, params) → Result | MutationResult`
-    - `execute_sql(sql, params) → MutationResult`
-    - `execute_scalar(sql, params) → Any`
-    - `query_sql(sql, params) → Result`
-    - `execute_ddl(sql) → None`
-    - `begin(isolation, read_only, statement_timeout_ms, context,
-      native_query_policy) → Transaction` — `context` accetta un
-      `SessionContext`, `native_query_policy` vale `"allow"` o `"deny"`.
-      Le chiavi del context sono `namespace.name` e su MySQL non possono
-      superare **52 caratteri**: diventano variabili utente con prefisso
-      `plenora_ctx_`, e il server ne ammette 64 in tutto. Oltre quella
-      soglia il piano fallisce `InvalidPlan` prima di aprire la
-      transazione
-    - `read(schema, object, projection, order_by, limit) → BatchReader`
-      — streaming Arrow IPC bounded
-    - `copy_from(schema, table, source, mode, transaction_profile,
-      mapping_policy, keys, update_columns) → dict`
-    - builder AST portabili: `select/insert/update/delete/upsert`, con gli
-      stessi terminali di Postgres
-    - `close()`, `__enter__/__exit__`, `is_closed`, `server_version`
+    La sessione usa la superficie comune provider-neutral. Le query native
+    usano il segnaposto `?`; i builder portabili scelgono il rendering.
 
-    L'equivalente async e `aconnect_mysql`: stessa superficie, con
-    `aread` e `acopy_from` al posto di `read` e `copy_from`.
-
-    Placeholder MySQL: `?` (non `$1` come Postgres).
-
-    TLS (parity con Postgres 0.9.0):
+    TLS:
     - `tls_mode="require"` (default): TLS + verifica certificato server
       via WebPKI trust store pubblico. Se `tls_ca_pem` è passato viene
       usata come CA privata invece di WebPKI.
     - `tls_mode="insecure_trust_server"`: TLS attivo ma senza verifica
       del certificato. **Solo test/dev locali** (vulnerabile a MITM).
 
-    ⚠️ WriteMode: 6 disponibili su 7.
-    - `TruncateInsert` è **fail-closed Unsupported** su MySQL: `TRUNCATE`
-      è DDL con commit implicito, quindi non rollback-safe, e non viene
-      emulato con `DELETE` perché avrebbe semantica diversa
-      (`AUTO_INCREMENT` non azzerato, trigger e log riga per riga attivi).
-      Usare `Replace`, che è `DELETE FROM` + insert nella stessa
-      transazione.
+    `TruncateInsert` resta fail-closed: `TRUNCATE` causa un commit implicito
+    e non puo rispettare il rollback promesso dal contratto. Le capability
+    effettive sono disponibili su `session.capabilities`.
 
     Parametri:
       - host, database, user, password: obbligatori
@@ -395,46 +367,18 @@ def _connect_mariadb(
 ) -> "_DatabaseSessionWrapper":
     """Apre una nuova sessione MariaDB (sync).
 
-    Stessa superficie di `connect_mysql` — stesso protocollo, stessi
-    placeholder `?`, stesse opzioni TLS — ma un **provider diverso**, e la
-    differenza non e cosmetica: il profilo di prodotto decide le query di
-    catalogo, l'istruzione di timeout (`max_statement_time` in secondi, non
-    `MAX_EXECUTION_TIME` in millisecondi), i metadata pubblicati nel
-    namespace `plenora.mariadb.*` e la classificazione dei codici server.
+    MariaDB condivide il protocollo e il segnaposto `?` con MySQL, ma usa un
+    profilo distinto per catalogo, timeout, metadata ed error mapping. Il
+    prodotto dichiarato viene verificato dalla probe: non c'e selezione
+    automatica fra MySQL e MariaDB.
 
-    Non c'e selezione automatica, ed e una decisione (ADR 0014): questa
-    factory puntata su un server MySQL viene **rifiutata** alla probe, e
-    `connect_mysql` puntata su MariaDB pure. Chi dichiara un prodotto e
-    finisce sull'altro ha un problema di configurazione, non una comodita
-    da assecondare.
+    MariaDB non vincola l'SRID nella DDL. Per operazioni spatial il chiamante
+    dichiara quindi il CRS nel piano e il provider lo verifica sui valori; una
+    divergenza fallisce senza accettare metadata ambigui. `geography` non e un
+    tipo del prodotto. Le capability effettive sono disponibili su
+    `session.capabilities`.
 
-    WriteMode: le stesse 6 su 7 di MySQL, `TruncateInsert` esclusa per la
-    stessa ragione permanente.
-
-    **Spatial: aperto**, in lettura e in scrittura. Questa docstring diceva il
-    contrario — «lo spatial resta chiuso, `information_schema.columns.SRS_ID`
-    non esiste» — e la ragione era vera quando e stata scritta: senza quella
-    colonna il catalogo non sa dire l'SRID, e una geometria senza CRS non e
-    descrivibile.
-
-    Cio che e cambiato non e il prodotto: nessuna DDL di MariaDB puo ancora
-    vincolare una colonna a un SRID, e il registro OGC risponde sempre zero. E'
-    cambiato il percorso. Il CRS lo **dichiara il chiamante**, nel piano, e il
-    provider lo verifica valore per valore mentre le righe passano: una
-    dichiarazione che i valori smentiscono fa fallire la lettura alla riga che
-    la smentisce, invece di essere creduta sulla parola.
-
-    Da li discendono le bandiere aperte: lettura e scrittura WKB, tipi
-    geometrici misti nella stessa colonna, indice spaziale, e ventuno funzioni
-    spatial verificate — le **sue**, non quelle di MySQL, perche l'insieme dei
-    due prodotti non coincide.
-
-    Resta chiusa `geography`: non esiste su questo prodotto, e non e una lacuna
-    di misura. Le dimensioni sono XY soltanto.
-
-    L'equivalente async e `aconnect_mariadb`.
-
-    Parametri: identici a `connect_mysql`.
+    Parametri e policy TLS coincidono con la factory MySQL.
     """
     native = _native_connect_mariadb(
         host, database, user, password, port, tls_ca_pem, tls_mode
@@ -453,31 +397,12 @@ def _connect_sqlserver(
 ) -> "_DatabaseSessionWrapper":
     """Apre una nuova sessione SQL Server (sync).
 
-    Stessa superficie delle altre factory della famiglia — `execute`,
-    `execute_sql`, `execute_scalar`, `query_sql`, `read`, `begin` — perche la
-    sessione tiene il provider dietro l'astrazione comune e non sa quale
-    motore le sia stato dato. Cio che cambia e il provider costruito, e con
-    lui il protocollo: TDS invece del protocollo MySQL, porta **1433** di
-    default.
+    Usa il protocollo TDS e la porta predefinita 1433. Le query native usano
+    segnaposto `@P1`, `@P2`, ...; i builder portabili scelgono il rendering.
+    La probe rifiuta server di un prodotto diverso e pubblica le capability
+    effettive su `session.capabilities`.
 
-    Non c'e selezione automatica, come per gli altri: questa factory puntata
-    su un server che non e SQL Server viene rifiutata alla probe.
-
-    **Placeholder**: SQL Server usa `@P1`, `@P2`, ... nelle query native, non
-    `?`. Chi passa dal builder portabile — `s.select(...)`, `s.insert(...)` —
-    non se ne accorge, perche il rendering lo fa il provider.
-
-    **WriteMode**: tutte e sette, `truncate_insert` compresa, che su
-    MySQL e MariaDB resta chiusa per una ragione permanente.
-
-    **Spatial**: aperto su entrambe le semantiche, `geometry` e `geography`,
-    con curve, dimensioni XY/XYZ/XYM/XYZM, indice spaziale e ventiquattro
-    funzioni verificate. L'SRID viaggia dentro il valore, quindi non serve
-    dichiararlo nel piano come su MariaDB.
-
-    Parametri: come `connect_mysql`, salvo la porta di default.
-
-    L'equivalente async e `aconnect_sqlserver`.
+    Parametri e policy TLS seguono la factory MySQL, salvo la porta.
     """
     native = _native_connect_sqlserver(
         host, database, user, password, port, tls_ca_pem, tls_mode
@@ -496,9 +421,8 @@ def _connect_db2(
 ) -> "_DatabaseSessionWrapper":
     """Apre una sessione IBM Db2 LUW sincrona.
 
-    Riusa la superficie provider-agnostic di MySQL/MariaDB/SQL Server:
-    transazioni, savepoint, introspezione, Arrow, write e AST portabili.
-    I placeholder SQL nativi sono ``?``.
+    Usa la superficie provider-neutral e segnaposto SQL nativi ``?``. La
+    probe pubblica le capability effettive su `session.capabilities`.
 
     TLS e fail-closed: ``require`` e il default; ``disable`` abilita
     plaintext soltanto quando richiesto esplicitamente. Una CA privata si
@@ -583,13 +507,11 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         context: "SessionContext | None" = None,
         native_query_policy: str | None = None,
     ):
-        """Apre una tx MySQL user-managed.
+        """Apre una transazione gestita dal chiamante.
 
-        Options aggiuntive (PFM, parity con Postgres SDK 0.9.0):
-        - `context` (CHG-002): `SessionContext` applicato via
-          `SET @plenora_ctx_*` MySQL (session-scoped).
-        - `native_query_policy` (CHG-003): "allow" (default) o "deny"
-          — restringe agli statement CRUD OLTP.
+        `context` applica un `SessionContext` con la strategia del provider;
+        `native_query_policy` puo limitare le query native agli statement
+        ammessi dalla policy selezionata.
         """
         native = self._native.begin(
             isolation,
@@ -611,7 +533,7 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         catalog: str | None = None,
         checkpoint: ReadCheckpoint | None = None,
     ):
-        """Apre uno stream Arrow IPC su una tabella/vista MySQL.
+        """Apre uno stream Arrow IPC su una tabella o vista.
 
         Ritorna un `BatchReader` che implementa il Python iterator
         protocol; ogni `next(reader)` produce `bytes` Arrow IPC stream
@@ -628,8 +550,8 @@ class _DatabaseSessionWrapper(_BuilderFactory):
           - `order_by`: lista di `(colonna, "asc"|"desc")` per ORDER BY
           - `limit`: numero massimo di righe (default: nessun limite)
 
-        Non carica l'intero dataset in memoria — legge batch-by-batch
-        dal cursor `mysql_async`.
+        Non carica l'intero dataset in memoria: il provider legge dal proprio
+        cursore in batch limitati.
         """
         return self._native.read(
             schema,
@@ -659,31 +581,11 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> dict:
-        """Bulk write MySQL via `prepare_write` + `write` del provider.
+        """Esegue un bulk write tramite il provider della sessione.
 
-        **WriteMode supportati** (6 su 7):
-        - `append` (default)
-        - `create` (CREATE TABLE + INSERT). `keys` e opzionale e diventa la
-          PRIMARY KEY della tabella creata: le colonne indicate devono
-          esistere nello schema Arrow, essere **non-nullable** e non
-          ripetersi, altrimenti il piano viene rifiutato prima di toccare il
-          server
-        - `replace` (DELETE FROM + INSERT nella stessa transazione:
-          il target deve già esistere e non viene ricreato, quindi
-          schema, indici, FK, trigger, check, default, grant e
-          AUTO_INCREMENT restano quelli di prima)
-        - `upsert` (INSERT ... ON DUPLICATE KEY UPDATE)
-        - `update` (UPDATE JOIN staging)
-        - `delete_by_keys` (DELETE WHERE keys IN staging)
-
-        **Fail-closed** (`PlenoraUnsupportedError`):
-        - `truncate_insert` — TRUNCATE è DDL con commit implicito, quindi
-          non rollback-safe, e non viene emulato con DELETE perché avrebbe
-          semantica diversa (AUTO_INCREMENT non azzerato, trigger e log
-          riga per riga attivi). Usare `replace`.
-
-        `mapping_policy` **deve essere** `"strict"` su MySQL. Il loss
-        preflight non e qualificato e resta fail-closed.
+        `mapping_policy` e obbligatoria. Mode e policy non qualificate dal
+        provider falliscono in modo conservativo; la matrice effettiva e
+        disponibile su `session.capabilities`.
 
         `source` accetta:
           - `pyarrow.Table` / `RecordBatch` / iterabile di RecordBatch
@@ -691,11 +593,7 @@ class _DatabaseSessionWrapper(_BuilderFactory):
           - `pandas.DataFrame` (converted via pa.Table.from_pandas)
           - `bytes` (Arrow IPC stream self-contained)
 
-        Placeholder MySQL: `?` (non `$1` come Postgres). Ritorna dict
-        con struttura `WriteOutcome` del core (status, rows.confirmed
-        / .inserted / .updated / .deleted / .failed / .skipped, ecc.).
-
-        Vedi Session.copy_from docstring per parametri completi.
+        Ritorna la rappresentazione Python del `WriteOutcome` del core.
         """
         from ._arrow_io import _to_ipc_bytes
 
@@ -761,11 +659,8 @@ async def _aconnect_sqlserver(
 ) -> "_AsyncDatabaseSessionWrapper":
     """Apre una nuova sessione SQL Server async.
 
-    Awaitable analogo di `connect_sqlserver` — vedi la sua docstring per TLS,
-    placeholder, WriteMode e spatial.
-
-    E una funzione interna usata da `async_engine_from_url`; la factory
-    provider-neutral e l'unico ingresso pubblico.
+    Funzione interna usata da `async_engine_from_url`; la factory
+    provider-neutral e l'ingresso pubblico.
     """
     native = await _native_aconnect_sqlserver(
         host, database, user, password, port, tls_ca_pem, tls_mode
@@ -784,8 +679,8 @@ async def _aconnect_db2(
 ) -> "_AsyncDatabaseSessionWrapper":
     """Apre una sessione IBM Db2 LUW asincrona.
 
-    E l'equivalente async di :func:`connect_db2`; default TLS, percorso CA e
-    opt-out plaintext hanno lo stesso contratto.
+    Default TLS, percorso CA e opt-out plaintext seguono il contratto della
+    variante sincrona interna.
     """
     native = await _native_aconnect_db2(
         host, database, user, password, port, tls_ca_path, tls_mode
@@ -910,12 +805,11 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
         keys: list[str] | None = None,
         update_columns: list[str] | None = None,
     ) -> dict:
-        """Bulk write async MySQL.
+        """Esegue un bulk write asincrono tramite il provider della sessione.
 
-        Come `_DatabaseSessionWrapper.copy_from` sync — vedi quella docstring
-        per i 6 WriteMode disponibili su 7 (`truncate_insert` resta
-        fail-closed) e per `mapping_policy` obbligatorio `"strict"` su
-        MySQL.
+        `mapping_policy` e obbligatoria; mode e policy non qualificate dal
+        provider falliscono in modo conservativo. Le capability effettive
+        sono disponibili su `session.capabilities`.
 
         `source` accetta pyarrow/pandas/list-of-dict/bytes.
         """
@@ -952,7 +846,7 @@ def _create_mysql_engine(
     max_connections: int = 4,
     acquire_timeout_ms: int = 10_000,
 ) -> Engine:
-    """Crea un Engine MySQL con lo stesso lifecycle di PostgreSQL."""
+    """Crea un Engine MySQL con il lifecycle provider-neutral."""
     native = _native_create_mysql_engine(
         host,
         database,
@@ -1162,14 +1056,10 @@ async def _aconnect_postgres(dsn: str, tls_mode: str = "require") -> AsyncSessio
     return AsyncSession(native)
 
 
-#: I nomi storici delle due sessioni di famiglia.
+#: Alias compatibili delle due sessioni di famiglia.
 #:
-#: La superficie è indipendente dal prodotto; il nome storico resta solo come
-#: alias compatibile per i client pubblicati.
-#:
-#: Gli alias restano perche il pacchetto e pubblicato: rimuoverli romperebbe un
-#: `isinstance` o un\'annotazione di tipo scritti prima di questo cambiamento,
-#: e il costo di tenerli e due righe.
+#: La superficie e indipendente dal prodotto. Gli alias restano esportati
+#: perche rimuoverli romperebbe `isinstance` e annotazioni di tipo esistenti.
 __all__ = [  # noqa: RUF022 - grouped by public API surface
     "Engine",
     "AsyncEngine",

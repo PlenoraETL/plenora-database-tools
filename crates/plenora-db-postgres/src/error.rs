@@ -447,7 +447,7 @@ mod tests;
 
 /// Test di integrazione live: forzano ciascun SQLSTATE reale contro un
 /// `PostgreSQL` raggiungibile all'hostname `dataflow-postgres`, poi verificano
-/// che `classify_error` produca la mappatura attesa. Chiudono il milestone A2.
+/// che `classify_error` produca la mappatura attesa.
 #[cfg(test)]
 #[path = "error_live.rs"]
 mod live;

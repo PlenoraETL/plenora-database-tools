@@ -1,4 +1,4 @@
-"""F3-3 — Test integrazione live per execute / execute_scalar / query_sql.
+"""Test di integrazione live per execute, execute_scalar e query_sql.
 
 Skippa gracefully se `PLENORA_TEST_POSTGRES_DSN` non è settato.
 """

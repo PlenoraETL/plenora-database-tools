@@ -19,7 +19,7 @@ use plenora_database_core::CancellationToken;
 use serde_json::{json, Value};
 
 // ============================================================================
-//  F5.9 — execute-scalar DSN_ENV SQL --type=TYPE [--param VALUE:TYPE ...]
+//  execute-scalar DSN_ENV SQL --type=TYPE [--param VALUE:TYPE ...]
 // ============================================================================
 
 pub(crate) async fn execute_scalar(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -91,7 +91,7 @@ pub(crate) async fn execute_scalar(args: &mut impl Iterator<Item = String>) -> C
 }
 
 // ============================================================================
-//  F5.10 — conditional-update DSN_ENV UPDATE_SQL PROBE_SQL EXPECTED [--param ...]
+//  conditional-update DSN_ENV UPDATE_SQL PROBE_SQL EXPECTED [--param ...]
 // ============================================================================
 
 pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -181,7 +181,7 @@ pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) 
 }
 
 // ============================================================================
-//  F5.11 — pool-status DSN_ENV
+//  pool-status DSN_ENV
 // ============================================================================
 
 pub(crate) async fn pool_status(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -220,7 +220,7 @@ pub(crate) async fn pool_status(args: &mut impl Iterator<Item = String>) -> CliR
 }
 
 // ============================================================================
-//  F5.12 — explain DSN_ENV SQL [--analyze] [--verbose] [--format=json|text]
+//  explain DSN_ENV SQL [--analyze] [--verbose] [--format=json|text]
 // ============================================================================
 
 pub(crate) async fn explain(args: &mut impl Iterator<Item = String>) -> CliResult<()> {

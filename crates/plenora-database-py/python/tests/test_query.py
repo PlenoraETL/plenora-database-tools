@@ -1,4 +1,4 @@
-"""F3-4 — Test integrazione live per portable AST builder."""
+"""Test di integrazione live per i builder dell'AST portabile."""
 from __future__ import annotations
 
 import os

@@ -1,4 +1,4 @@
-//! Arrow batch reader (F4-3).
+//! Lettore streaming di batch Arrow esposto a Python.
 //!
 //! Espone `Provider::read` come iterator Python (sync + async) che
 //! ritorna record batch serializzati in formato Arrow IPC stream.

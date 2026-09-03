@@ -1,4 +1,4 @@
-"""F4-2 — Test live per conditional_update (sync + async)."""
+"""Test live per conditional_update sincrono e asincrono."""
 from __future__ import annotations
 
 import os

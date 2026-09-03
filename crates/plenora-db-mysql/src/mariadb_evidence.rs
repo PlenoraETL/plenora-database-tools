@@ -6040,13 +6040,11 @@ async fn exact_and_dimension_probe(recorder: &mut Recorder, connection: &mut mys
 /// potrebbe essere confermato da nulla, e la superficie resterebbe chiusa per
 /// assenza di una prova del CRS.
 ///
-/// # Cosa questa sonda non ha chiesto
+/// # Ambito
 ///
-/// Due sistemi di riferimento: 4326, geografico, e 0, l'indefinito OGC. In
-/// mezzo ce n'e una terza categoria — i sistemi **proiettati**, 3857 e 3003 fra
-/// gli altri — e non e una sfumatura: su `MySQL` e esattamente li che queste
-/// funzioni esistono. `crs_rule_probe`, qui sotto, e la sonda che l'ha chiesto,
-/// e ha trovato una superficie che questa aveva concluso assente.
+/// Questa sonda copre 4326, geografico, e 0, l'indefinito OGC. I sistemi
+/// proiettati sono esercitati separatamente da `crs_rule_probe`, perche su
+/// MySQL la disponibilita di queste funzioni dipende dalla categoria del CRS.
 async fn geometry_result_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
     let table = "plenora_driver_evidence_geometry_result";
     for statement in [
@@ -6120,17 +6118,14 @@ async fn geometry_result_probe(recorder: &mut Recorder, connection: &mut mysql_a
 
 /// La regola di CRS dichiarata dal catalogo, messa alla prova.
 ///
-/// Il catalogo dichiara `preserves` per ventiquattro funzioni: una geometria
-/// entra, e cio che esce sta nello stesso sistema di riferimento. E' una
-/// affermazione geometrica, e questa sonda la attacca da tre lati.
+/// Il catalogo dichiara `preserves` per le funzioni qualificate: una geometria
+/// entra, e cio che esce sta nello stesso sistema di riferimento. La sonda
+/// verifica disponibilita, SRID e posizione del risultato.
 ///
-/// **La funzione esiste su questo sistema?** `geometry_result_probe` aveva
-/// provato 4326 e 0, e aveva concluso che su `MySQL` queste funzioni non ci
-/// sono. La conclusione era tratta da un campione che non conteneva il caso in
-/// cui esistono: 3857 e 3003 sono sistemi **proiettati**, e li `MySQL` le
-/// esegue tutte e tre. Il 3618 non dice «non implementata», dice «non
-/// implementata per i sistemi geografici», ed e una condizione sul sistema di
-/// riferimento e non sul prodotto.
+/// **La funzione esiste su questo sistema?** La disponibilita puo dipendere
+/// dal CRS, quindi la probe include sistemi geografici e proiettati. Su MySQL
+/// il codice 3618 indica una limitazione del sistema di riferimento, non
+/// l'assenza generale della funzione dal prodotto.
 ///
 /// **L'etichetta sopravvive?** A volte no, e non e un problema: su `MariaDB`
 /// `ST_Buffer` rende SRID 0. Cio che il provider pubblica non e quell'etichetta

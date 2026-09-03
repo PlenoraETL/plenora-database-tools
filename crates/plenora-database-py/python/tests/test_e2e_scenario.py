@@ -1,4 +1,4 @@
-"""F3-8 — Scenario end-to-end che esercita l'intera superficie API del SDK.
+"""Scenario end-to-end che esercita l'intera superficie API dell'SDK.
 
 Simula un flusso PFM realistico:
   1. connect + probe capabilities
@@ -74,7 +74,7 @@ async def test_e2e_pfm_building_lifecycle_async(clean_schema) -> None:
             )
             assert row["code"] == "TORRE-MI"
             assert row["name"] == "Torre Milano"
-            assert row["area"] == "15000.50"   # NUMERIC decoded (P0.8)
+            assert row["area"] == "15000.50"  # NUMERIC preservato senza perdita
             assert row["version"] == 1
 
             # 3. Update location via raw SQL (spatial construction)

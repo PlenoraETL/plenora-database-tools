@@ -1,4 +1,4 @@
-//! Transaction esposta a Python (F3-5).
+//! Transazione PostgreSQL sincrona esposta a Python.
 //!
 //! Il consumer usa:
 //!

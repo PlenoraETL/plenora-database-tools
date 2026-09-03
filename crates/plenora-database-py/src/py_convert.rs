@@ -25,9 +25,8 @@
 //! | `Json`                                                                | `dict` / `list` / scalar |
 //! | `Null`                                                                | `None`  |
 //!
-//! Il mapping ricco di date/timestamp/uuid/Decimal a tipi Python nativi
-//! (`datetime.date`, `uuid.UUID`, `decimal.Decimal`) è deferito a una
-//! milestone successiva (probabilmente F3-6 insieme all'error mapping).
+//! `Date`, `Timestamp`, `TimestampTz`, `Decimal` e `Uuid` restano stringhe
+//! nel binding: la tabella sopra descrive il contratto di conversione corrente.
 
 #![allow(clippy::doc_markdown)]
 

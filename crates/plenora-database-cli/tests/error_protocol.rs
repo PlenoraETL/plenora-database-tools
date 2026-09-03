@@ -421,8 +421,8 @@ fn public_usage_documents_the_provider_neutral_probe_boundary() {
     let message = envelope["error"]["message"]
         .as_str()
         .expect("usage message");
-    // Post-F5.14: la usage() è ristrutturata per gruppi. Verifica che i
-    // token essenziali per il contratto database-probe siano documentati.
+    // La usage() e strutturata per gruppi. I token essenziali del contratto
+    // database-probe devono essere documentati nel relativo gruppo.
     assert!(message.contains("database-probe"));
 
     // I provider elencati sono quelli **compilati**. La riga si legge intera, non per

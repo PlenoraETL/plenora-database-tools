@@ -1,4 +1,4 @@
-//! Gerarchia di eccezioni Python (F3-6a).
+//! Gerarchia delle eccezioni Python pubbliche.
 //!
 //! Mappa `DatabaseError.category` a una classe di eccezione Python
 //! dedicata. Tutte ereditano da `PlenoraError`, che a sua volta eredita

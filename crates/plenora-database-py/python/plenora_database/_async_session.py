@@ -1,4 +1,4 @@
-"""Wrapper Python di AsyncSession (F3-7).
+"""Wrapper Python di alto livello attorno alla AsyncSession nativa.
 
 Aggiunge sopra al nativo `_native.AsyncSession`:
   - Factory methods `select` / `insert` / `update` / `delete` /

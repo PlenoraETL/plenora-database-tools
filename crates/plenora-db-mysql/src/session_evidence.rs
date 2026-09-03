@@ -337,24 +337,11 @@ async fn isolation_probe(level: IsolationLevel, expected: &str) -> Probe {
     let session = pool.checkout(&cancel).await?;
     let mut transaction =
         crate::transaction::MysqlTransaction::begin(session, &options, &cancel).await?;
-    // Il nome della variabile non e lo stesso su tutti i server della matrice,
-    // e non c'e un nome che vada bene per tutti: `transaction_isolation` non
-    // esiste su MariaDB prima della 11.1, `tx_isolation` e stata rimossa in
-    // MySQL 8.0. Chiedendo `@@transaction_isolation` questa sonda moriva con
-    // 1193 su 10.11, e la matrice si rifiutava — giustamente — di pubblicare
-    // un confronto che coincide su un fallimento.
-    //
-    // Il profilo possiede gia quel nome, ma qui non si puo chiedere a lui:
-    // questa matrice misura di proposito **un solo** profilo su tutti i
-    // server, ed e cosi che dimostra che lo stesso percorso di codice rende la
-    // stessa semantica. Sceglierne uno per prodotto cambierebbe cio che la
-    // matrice afferma, e aggiungerebbe un secondo punto di selezione del
-    // profilo dove una guardia ne pretende uno solo.
-    //
-    // La via che non ha bisogno di sapere il prodotto e chiedere al server
-    // **quale dei due nomi possiede**: `SHOW VARIABLES` con un `IN` non e un
-    // errore su un nome assente, e' un insieme vuoto, quindi ogni server
-    // risponde. Le MariaDB dalla 11.1 in su ne rendono due, con lo stesso
+    // Il nome della variabile di isolamento cambia fra prodotti e versioni.
+    // Questa matrice deve attraversare un solo profilo su tutti i server,
+    // quindi non puo selezionarlo in base al prodotto. `SHOW VARIABLES` con
+    // un `IN` scopre il nome disponibile senza fallire su quello assente; se
+    // il server espone entrambi, i valori devono coincidere.
     // valore.
     let rows = transaction
         .query(

@@ -147,9 +147,8 @@ impl CompileContext {
 
 // ---- Helpers ----------------------------------------------------------------
 
-/// Delega a `plenora-database-core::identifier` (Fase A2). Prima
-/// duplicava le stesse regole di `plenora-database-sql::Renderer::quote`
-/// con rischio di divergenza.
+/// Applica la policy canonica di quoting degli identificatori condivisa dai
+/// renderer, evitando regole locali che possano divergere.
 fn quote_identifier(name: &str, dialect: DialectKind) -> Result<String> {
     identifier::quote_identifier(dialect.into(), name)
 }
@@ -586,25 +585,9 @@ fn compile_order_by(order_by: &[OrderBy], dialect: DialectKind) -> Result<String
 
 /// La clausola `RETURNING`, dove il prodotto e la forma la ammettono.
 ///
-/// # Cosa dicevano le due righe di prima
-///
-/// «`MySQL` non ha `RETURNING` universale (solo 8.0.20+ per `INSERT`)». La
-/// prima meta era vera, la seconda no: `MySQL` non ha `RETURNING` a nessuna
-/// versione, e la 8.0.20 citata li non c'entra. Interrogato con le cinque
-/// forme, `MySQL 9.7` risponde `1064` a tutte — `INSERT`, `REPLACE`, `UPDATE`,
-/// `DELETE` e l'upsert.
-///
-/// A confondere le acque e che `MariaDB` ce l'ha, e i due prodotti
-/// condividevano un solo dialetto. `MariaDB 11` e `MariaDB 12`, misurate dalla
-/// stessa sonda, rendono le righe su `INSERT`, `REPLACE`, `DELETE` e su
-/// **entrambi** i rami dell'upsert — quello che inserisce e quello che
-/// aggiorna — e rispondono `1064` al solo `UPDATE`. Le due major danno la
-/// stessa riga di esiti.
-///
-/// Il rifiuto era quindi giusto per un prodotto e troppo largo per l'altro. La
-/// tabella qui sotto e quella misurata, non quella documentata: sull'upsert la
-/// documentazione di `MariaDB` dice il contrario di quello che il server fa, e
-/// questo file segue il server.
+/// Il supporto dipende dalla coppia provider/forma DML. Le combinazioni non
+/// qualificate vengono rifiutate senza emulazioni che alterino le righe
+/// restituite; i test live dei provider sostengono i rami aperti qui sotto.
 fn compile_returning(
     returning: &[String],
     dialect: DialectKind,

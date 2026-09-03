@@ -1,8 +1,8 @@
-"""F3-8 — Benchmark parity: SDK in-process vs subprocess CLI.
+"""Confronto prestazionale fra SDK in-process e CLI subprocess.
 
 Il PFM può scegliere se consumare la libreria via:
   A) subprocess `plenora-database` CLI (già usato in produzione)
-  B) SDK Python native (F3.x, questo package)
+  B) SDK Python nativo (questo package)
 
 Il test misura per lo stesso workload il tempo speso in ognuna delle
 due modalità. Il vantaggio del SDK è evitare fork+startup+JSON per

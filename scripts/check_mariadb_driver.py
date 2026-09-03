@@ -233,22 +233,12 @@ OBSERVATION_ONLY_PROBES: dict[str, str] = {
     # disegno: se `ST_Envelope` di una geometria 4326 rendesse zero, non ci
     # sarebbe niente da verificare valore per valore.
     "raw.geometry_result_forms": "cosa esce da una funzione che restituisce geometria",
-    # La sonda qui sopra aveva provato due sistemi di riferimento — 4326,
-    # geografico, e 0, l'indefinito OGC — e ne aveva concluso che su MySQL le
-    # funzioni che rendono geometria non ci sono. Fra i due c'e una terza
-    # categoria, i sistemi proiettati, ed e esattamente li che esistono: il
-    # 3618 e una condizione sul sistema di riferimento, non sul prodotto.
-    #
-    # Questa chiede la terza categoria, e chiede in piu la cosa che falsifica
-    # davvero la regola dichiarata dal catalogo: se le coordinate del risultato
-    # siano ancora dove erano quelle dell'ingresso.
+    # La disponibilita delle funzioni puo dipendere dalla categoria del CRS:
+    # oltre a 4326 e 0 va misurato un sistema proiettato. Il controllo verifica
+    # anche che le coordinate del risultato restino nel frame dell'ingresso.
     "raw.crs_rule_check": "se il risultato di una funzione geometrica resta dov'era l'ingresso",
-    # Trentuno funzioni del contratto rendono geometria. Tre sono state aperte
-    # dalla sonda qui sopra; le altre ventotto erano chiuse perche nessuno le
-    # aveva mai chieste — non perche qualcuno avesse guardato e non le avesse
-    # trovate. Finche il mapper rifiutava ogni geometria la domanda non aveva
-    # conseguenze; da quando non le rifiuta, l'assenza di risposta e una
-    # promessa che il prodotto forse mantiene gia.
+    # Ogni funzione geometrica del contratto richiede una misura esplicita:
+    # l'assenza di una sonda non vale come prova di incompatibilita.
     "raw.geometry_function_forms": "quali funzioni che rendono geometria il server possiede",
     # Le due superfici spatial rimaste, e sono chiuse per ragioni diverse.
     #

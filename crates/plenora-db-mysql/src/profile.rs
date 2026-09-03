@@ -567,13 +567,9 @@ impl ProductProfile for MysqlProfile {
             writes: WriteCapabilities {
                 create: true,
                 append: true,
-                // `TruncateInsert` e chiusa, e ora puo dirlo. Su MySQL
-                // `TRUNCATE TABLE` e DDL con commit implicito: le righe
-                // sparirebbero prima dell'INSERT e nessun rollback le
-                // riporterebbe indietro. Il provider la rifiuta in prepare da
-                // sempre; fino alla separazione di questa bandiera il
-                // contratto diceva il contrario, perche `append` valeva per
-                // tutt'e due.
+                // `TruncateInsert` resta chiusa: su MySQL `TRUNCATE TABLE` e
+                // DDL con commit implicito, quindi nessun rollback puo
+                // ripristinare le righe se l'INSERT successivo fallisce.
                 truncate_insert: false,
                 update: true,
                 upsert: true,

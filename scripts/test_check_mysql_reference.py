@@ -2124,11 +2124,10 @@ class PythonSdkRunnerTests(unittest.TestCase):
     def test_the_benchmarks_have_an_option_instead_of_an_impossible_filter(
         self,
     ) -> None:
-        """Il runner non inoltra argomenti: il filtro deve essere suo.
+        """Il runner espone un'opzione propria per selezionare i benchmark.
 
-        La documentazione diceva di "usare il runner e filtrare con
-        `-k benchmark`", che non era eseguibile: il runner accetta le sue
-        opzioni e nient'altro.
+        Non inoltra argomenti pytest arbitrari, quindi deve costruire
+        direttamente il filtro `-k benchmark`.
         """
 
         with (

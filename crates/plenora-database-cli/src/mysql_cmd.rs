@@ -289,9 +289,8 @@ pub async fn mysql_inspect_tables(args: &mut impl Iterator<Item = String>) -> Cl
 /// transazione applicativa dedicata (BEGIN/COMMIT via `begin_transaction`)
 /// per garantire outcome deterministico.
 ///
-/// PFM CHG-003: default `native_query_policy: Deny` — solo SELECT/INSERT/
-/// UPDATE/DELETE/WITH/VALUES/TABLE/MERGE. Per DDL o session commands
-/// serve `--allow-raw` esplicito (parity con `execute-sql` Postgres).
+/// La policy nativa predefinita e `Deny`: ammette solo gli statement OLTP
+/// elencati dal contratto. DDL e comandi di sessione richiedono `--allow-raw`.
 pub async fn mysql_execute_sql(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let (provider, secret, mut remaining) = mysql_provider_from_args(args)?;
     let allow_raw = remaining

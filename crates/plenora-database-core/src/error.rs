@@ -225,10 +225,9 @@ impl DatabaseError {
     /// Solo `Safe` e `After` lo sono. `RequiresRecovery` e
     /// `RequiresIdempotencyKey` descrivono un esito che un tentativo cieco
     /// duplicherebbe: il chiamante deve prima verificare l'effetto remoto o
-    /// procurarsi una chiave di idempotenza. Il metodo diceva il contrario di
-    /// [`crate::Result`]-consumer come `retry_with_policy`, che quelle due
-    /// disposizioni le propaga invece di ritentarle — un consumer che si
-    /// fidava di questa risposta poteva duplicare una scrittura.
+    /// procurarsi una chiave di idempotenza. Consumer come `retry_with_policy`
+    /// propagano queste disposizioni al chiamante senza trasformarle in retry
+    /// automatici, per evitare di duplicare una scrittura.
     ///
     /// Chi deve distinguere «non ritentabile mai» da «ritentabile dopo
     /// recovery» usa [`Self::requires_manual_recovery`].
