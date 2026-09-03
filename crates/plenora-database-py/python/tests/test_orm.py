@@ -11,6 +11,7 @@ from uuid import UUID
 
 import plenora_database as p
 import pytest
+from plenora_database._native import compile_relational_query
 from plenora_database.result import Result
 
 from ._harness import (
@@ -1022,6 +1023,12 @@ def test_query_count_exists_pagination_distinct_and_bulk_dml() -> None:
     assert transaction.executed[-1][0].source is Account.__table__
     assert query.distinct().count({"wanted": "Ada"}) == 3
     assert transaction.executed[-1][0].source.qualifier == "_plenora_orm_count"
+    distinct_on = query.distinct_on(Account.id).order_by(Account.id)
+    assert distinct_on.count({"wanted": "Ada"}) == 3
+    count_statement = transaction.executed[-1][0]
+    sql, names = compile_relational_query(count_statement.to_json(), "postgres")
+    assert "DISTINCT ON" in sql and "ORDER BY" in sql
+    assert names == ["wanted"]
 
     transaction.rows = [{"id": 1}]
     assert query.exists({"wanted": "Ada"})

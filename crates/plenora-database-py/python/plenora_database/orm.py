@@ -6371,7 +6371,7 @@ def _count_statement(query: SelectStatement) -> SelectStatement:
     shaped = replace(
         query,
         source=source,
-        orderings=(),
+        orderings=query.orderings if query.distinct_expressions else (),
         row_limit=None,
         row_offset=None,
     )
