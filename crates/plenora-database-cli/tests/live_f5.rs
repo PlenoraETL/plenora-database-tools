@@ -1,10 +1,9 @@
 //! Live test end-to-end dei sottocomandi avanzati invocati come binario.
 //!
-//! Coprono bind parameters, session-context globale,
-//! inspect-catalogs/objects (F5.3), postgres-read-ipc projection/filter/limit
-//! (F5.4), postgres-query (F5.5), portable-compile/execute (F5.6),
-//! bulk-write + postgres-write-ipc (F5.7/8), execute-scalar (F5.9),
-//! conditional-update (F5.10), pool-status (F5.11), explain (F5.12).
+//! Coprono bind parameters, session-context globale, inspect-catalogs/objects,
+//! postgres-read-ipc con projection/filter/limit, postgres-query,
+//! portable-compile/execute, bulk-write, postgres-write-ipc, execute-scalar,
+//! conditional-update, pool-status ed explain.
 //!
 //! `#[ignore]` per default; esegui con:
 //!
@@ -88,7 +87,7 @@ fn run_json_err(args: &[&str]) -> Value {
 }
 
 // ============================================================================
-//  F5.1 — bind parameters
+//  Bind parameters
 // ============================================================================
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
@@ -126,7 +125,7 @@ fn f5_1_execute_sql_bind_string_and_null() {
 }
 
 // ============================================================================
-//  F5.2 — --session-context globale
+//  --session-context globale
 // ============================================================================
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
@@ -144,7 +143,7 @@ fn f5_2_session_context_is_injected_into_execute_sql() {
 }
 
 // ============================================================================
-//  F5.3 — inspect-catalogs + inspect-objects
+//  inspect-catalogs + inspect-objects
 // ============================================================================
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
@@ -173,7 +172,7 @@ fn f5_3_inspect_objects_lists_objects_of_schema() {
 }
 
 // ============================================================================
-//  F5.4 — postgres-read-ipc projection/limit
+//  postgres-read-ipc projection/limit
 // ============================================================================
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
@@ -199,7 +198,7 @@ fn f5_4_read_ipc_with_projection_and_limit_returns_reduced_output() {
 }
 
 // ============================================================================
-//  F5.5 — postgres-query (Provider::query AST)
+//  postgres-query (Provider::query AST)
 // ============================================================================
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
@@ -255,7 +254,7 @@ fn f5_5_postgres_query_returns_schema_and_row_count() {
 }
 
 // ============================================================================
-//  F5.6 — portable-compile
+//  portable-compile
 // ============================================================================
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
@@ -286,7 +285,7 @@ fn f5_6_portable_compile_produces_sql_and_param_count() {
 }
 
 // ============================================================================
-//  F5.9 — execute-scalar
+//  execute-scalar
 // ============================================================================
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
@@ -326,7 +325,7 @@ fn f5_9_execute_scalar_bool_and_string_and_json() {
 }
 
 // ============================================================================
-//  F5.10 — conditional-update
+//  conditional-update
 // ============================================================================
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
@@ -385,7 +384,7 @@ fn f5_10_conditional_update_ok_and_not_found() {
 }
 
 // ============================================================================
-//  F5.11 — pool-status
+//  pool-status
 // ============================================================================
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
@@ -398,7 +397,7 @@ fn f5_11_pool_status_reports_acquire_ms() {
 }
 
 // ============================================================================
-//  F5.12 — explain
+//  explain
 // ============================================================================
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
@@ -428,7 +427,7 @@ fn f5_12_explain_analyze_json_returns_json_plan() {
 }
 
 // ============================================================================
-//  F5.13 — dry-run bulk-write
+//  dry-run bulk-write
 // ============================================================================
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
@@ -483,7 +482,7 @@ fn f5_13_bulk_write_dry_run_does_not_touch_db() {
 }
 
 // ============================================================================
-//  F5.15 — contratto Replace attraverso la CLI
+//  Contratto Replace attraverso la CLI
 // ============================================================================
 
 /// Prepara una directory di lavoro con uno snapshot Arrow IPC di N righe.
@@ -636,7 +635,7 @@ fn f5_15_cli_replace_with_keys_exits_non_zero_as_invalid_plan() {
 }
 
 // ============================================================================
-//  F5.14 — usage estesa contiene i gruppi + i flag globali
+//  La usage estesa contiene i gruppi e i flag globali
 // ============================================================================
 
 #[test]

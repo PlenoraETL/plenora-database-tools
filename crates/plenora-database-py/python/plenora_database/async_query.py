@@ -1,4 +1,4 @@
-"""Builder async per il portable AST (F3-7).
+"""Builder asincroni per l'AST portabile.
 
 Estende i builder sync `Select`/`Insert`/`Update`/`Delete`/`Upsert`
 ereditando la chain di predicati + `.to_ast()` e overriddando SOLO i

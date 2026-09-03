@@ -40,6 +40,31 @@ const B: &str = r#"/* FIXME non e un commento */"#;
         self.assertEqual(len(violations), 1)
         self.assertEqual(violations[0].rule, "cronaca obsoleta")
 
+    def test_roadmap_labels_are_process_history(self) -> None:
+        source = """// F3-7 - vecchia fase
+// === A4: session context ===
+// P1.2 - read filters
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "history.rs"
+            path.write_text(source, encoding="utf-8")
+            violations = check_comments.check_file(path, root)
+        self.assertEqual(len(violations), 3)
+        self.assertTrue(all(item.rule == "cronaca obsoleta" for item in violations))
+
+    def test_protocol_names_are_not_roadmap_labels(self) -> None:
+        source = """// ParameterValue::F64 e un tipo del protocollo.
+// SQL Server usa @P1; un errore puo avvenire in fase Commit.
+// Il risultato dipende da cosa c'era gia nella tabella.
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "contract.rs"
+            path.write_text(source, encoding="utf-8")
+            violations = check_comments.check_file(path, root)
+        self.assertEqual(violations, [])
+
     def test_debt_markers_are_case_sensitive_to_avoid_italian_todo(self) -> None:
         source = "# tutto a posto, non TODO\n"
         violations = [

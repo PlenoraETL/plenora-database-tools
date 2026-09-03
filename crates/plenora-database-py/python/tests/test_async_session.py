@@ -1,4 +1,4 @@
-"""F3-7 — Test integrazione live per AsyncSession + builder async.
+"""Test di integrazione live per AsyncSession e builder asincroni.
 
 Richiede pytest-asyncio.
 """

@@ -1,4 +1,4 @@
-"""F3-6a — Test integrazione live per PlenoraError gerarchia."""
+"""Test di integrazione live per la gerarchia PlenoraError."""
 from __future__ import annotations
 
 import os

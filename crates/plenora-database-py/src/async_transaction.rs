@@ -1,4 +1,4 @@
-//! AsyncTransaction (F3-7).
+//! Transazione PostgreSQL asincrona esposta a Python.
 //!
 //! Il pattern è identico a `Transaction` sync ma i metodi ritornano
 //! awaitable Python. La tx è wrappata in `Arc<tokio::Mutex<Option<...>>>`

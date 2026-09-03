@@ -1,4 +1,4 @@
-"""Typed params helpers (F3-6b).
+"""Helper per parametri tipizzati.
 
 Python `int`, `float`, `str` sono ambigui rispetto al tipo Postgres di
 destinazione (str → text? uuid? timestamp?). Questi helper wrappano

@@ -14,7 +14,7 @@ pyarrow = pytest.importorskip("pyarrow")
 pyarrow_ipc = pytest.importorskip("pyarrow.ipc")
 
 
-# ============================ P1.1 — upsert / update / delete_by_keys ==================
+# ============================ upsert / update / delete_by_keys =========================
 
 
 @pytest.fixture(name="upsert_session")
@@ -98,7 +98,7 @@ def test_copy_from_keys_rejected_for_append_mode(upsert_session) -> None:
     assert "keys" in str(exc.value).lower()
 
 
-# ============================ P1.2 — read filters ==================================
+# ============================ read filters =========================================
 
 
 @pytest.fixture(name="read_session")
@@ -176,7 +176,7 @@ def test_read_invalid_order_by_direction_raises(read_session) -> None:
         ))
 
 
-# ============================ P1.3 — pandas + list[dict] ==========================
+# ============================ pandas + list[dict] ==================================
 
 
 @pytest.fixture(name="pandas_session")

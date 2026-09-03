@@ -1,4 +1,4 @@
-"""F3-2 — Test integrazione live per Session + connect().
+"""Test di integrazione live per Session e connect().
 
 Skippa gracefully se `PLENORA_TEST_POSTGRES_DSN` non è settato.
 

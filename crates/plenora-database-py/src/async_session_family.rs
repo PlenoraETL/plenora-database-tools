@@ -1,23 +1,9 @@
-//! `AsyncDatabaseSession` + `aconnect_mysql`.
+//! Sessione asincrona provider-neutral esposta dal binding Python.
 //!
-//! Bridge asyncio <-> tokio per `MySQL`: i metodi ritornano awaitable Python.
-//! Ogni operazione fuori da `begin` apre una transazione in autocommit.
-//!
-//! La superficie e quella di [`crate::session_family`], con `aread` e
-//! `acopy_from` al posto di `read` e `copy_from`:
-//!
-//! * `aconnect_mysql(host, database, user, password, port, tls_ca_pem,
-//!   tls_mode)`
-//! * `execute` / `execute_scalar` / `execute_returning_rows` / `execute_ddl`
-//! * `begin(...)` -> `AsyncTransaction`, con `SessionContext` e
-//!   `native_query_policy`
-//! * `aread(...)` -> `AsyncBatchReader`
-//! * `acopy_from(...)` -> bulk write
-//! * `execute_portable_rows` / `execute_portable_count`, su cui girano i
-//!   builder AST del wrapper async
-//! * `__aenter__`/`__aexit__`/`close`/`is_closed`/`server_version`
-//!
-//! Non esposto: spatial predicates e `SpatialReference`.
+//! E il bridge asyncio <-> tokio della superficie sincrona in
+//! [`crate::session_family`]. Ogni operazione fuori da `begin` usa una
+//! transazione dedicata; provider e capability sono determinati dalla probe
+//! della sessione.
 
 #![allow(
     clippy::doc_markdown,
@@ -53,7 +39,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Sessione MySQL asincrona. Ottenuta da `await aconnect_mysql(...)`.
+/// Sessione asincrona comune dei provider non PostgreSQL del binding.
 #[pyclass(module = "plenora_database._native")]
 #[allow(dead_code)]
 pub struct AsyncDatabaseSession {
@@ -290,8 +276,7 @@ impl AsyncDatabaseSession {
         )
     }
 
-    /// Apre una tx async. Ritorna awaitable → `AsyncTransaction`
-    /// (provider-agnostic, riusato dal path Postgres).
+    /// Apre una transazione asincrona gestita dal chiamante.
     #[pyo3(signature = (
         isolation=None,
         read_only=None,
@@ -299,7 +284,7 @@ impl AsyncDatabaseSession {
         context=None,
         native_query_policy=None,
     ))]
-    #[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con Postgres
+    #[allow(clippy::too_many_arguments)] // Firma Python a keyword della sessione comune.
     fn begin<'py>(
         &mut self,
         py: Python<'py>,
@@ -515,7 +500,7 @@ impl AsyncDatabaseSession {
 /// `PlenoraError` se la configurazione è invalida o la connessione fallisce.
 #[pyfunction]
 #[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
-#[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con connect_mysql sync
+#[allow(clippy::too_many_arguments)] // Firma allineata alla factory sincrona.
 pub fn aconnect_mysql<'py>(
     py: Python<'py>,
     host: &str,
@@ -553,7 +538,7 @@ pub fn aconnect_mysql<'py>(
 /// `MariaDB`.
 #[pyfunction]
 #[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
-#[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con aconnect_mysql
+#[allow(clippy::too_many_arguments)] // Firma comune alle factory asincrone.
 pub fn aconnect_mariadb<'py>(
     py: Python<'py>,
     host: &str,
@@ -592,7 +577,7 @@ pub fn aconnect_mariadb<'py>(
 /// `SQL Server`.
 #[pyfunction]
 #[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
-#[allow(clippy::too_many_arguments)] // API PyO3 keyword — parity con aconnect_mysql
+#[allow(clippy::too_many_arguments)] // Firma comune alle factory asincrone.
 pub fn aconnect_sqlserver<'py>(
     py: Python<'py>,
     host: &str,

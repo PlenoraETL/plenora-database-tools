@@ -1,4 +1,4 @@
-"""Wrapper Python di AsyncTransaction (F3-7).
+"""Wrapper Python di alto livello attorno alla AsyncTransaction nativa.
 
 Come `_transaction.Transaction` sync ma metodi coroutine. Include
 factory methods `select/insert/update/delete/upsert` che ritornano

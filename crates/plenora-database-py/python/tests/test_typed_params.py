@@ -1,4 +1,4 @@
-"""F3-6b — Test integrazione live per typed params helpers."""
+"""Test di integrazione live per gli helper dei parametri tipizzati."""
 from __future__ import annotations
 
 import os

@@ -82,8 +82,8 @@ fn phase_of_detects_write_head() {
     assert_eq!(phase_of("CREATE TABLE t (x INT)"), ErrorPhase::Write);
 }
 
-/// Test integrazione live per A1: multi-statement, savepoint, cancellation,
-/// `statement_timeout`. Chiudono il milestone A1 verso Postgres reale.
+/// Test di integrazione live per multi-statement, savepoint, cancellation e
+/// `statement_timeout` contro PostgreSQL reale.
 #[cfg(test)]
 mod live {
     use super::*;
@@ -621,7 +621,7 @@ mod live {
         tx.rollback(&cancel).await.expect("rollback ignora cancel");
     }
 
-    // === B1: Spatial profile portabile ===
+    // === Profilo spatial portabile ===
 
     use crate::spatial::build_spatial_select;
     use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
@@ -866,7 +866,7 @@ mod live {
         drop_table("b1_srid").await;
     }
 
-    // === P2a+P2b: Tipi Postgres extra (tsvector/tsquery/xml/net/money) ===
+    // === Tipi PostgreSQL extra (tsvector/tsquery/xml/net/money) ===
 
     #[tokio::test]
     async fn live_read_tsvector_as_string() {
@@ -975,7 +975,7 @@ mod live {
         tx.rollback(&cancel).await.expect("rollback");
     }
 
-    // === P1a: Enum + Domain type safety ===
+    // === Type safety di enum e domain ===
 
     async fn setup_enum_domain_scratch(name: &str) {
         use tokio_postgres::NoTls;
@@ -1354,7 +1354,7 @@ mod live {
         drop_table(name).await;
     }
 
-    // === F1e: Spatial predicate nell'AST portable ===
+    // === Predicati spatial nell'AST portabile ===
 
     #[tokio::test]
     async fn live_portable_spatial_intersects_end_to_end() {
@@ -1462,7 +1462,7 @@ mod live {
         drop_table("f1e_dwithin").await;
     }
 
-    // === F1d: RETURNING canonico via facade portable ===
+    // === RETURNING canonico attraverso la facade portabile ===
 
     #[tokio::test]
     async fn live_execute_portable_returning_produces_generated_id() {
@@ -1591,7 +1591,7 @@ mod live {
         drop_table("f1d_upd_ret").await;
     }
 
-    // === F1c: PortableStatement AST end-to-end ===
+    // === PortableStatement AST end-to-end ===
 
     use plenora_database_core::plan::ProviderKind;
     use plenora_database_core::portable::{
@@ -1726,7 +1726,7 @@ mod live {
         drop_table("f1c_upsert").await;
     }
 
-    // === F1b: Facade scalar completa ===
+    // === Facade scalare completa ===
 
     use plenora_database_core::facade::{
         execute_scalar_bytes, execute_scalar_date, execute_scalar_decimal, execute_scalar_json,
@@ -1858,7 +1858,7 @@ mod live {
         tx.rollback(&cancel).await.expect("rollback");
     }
 
-    // === B3: Native-query governance ===
+    // === Governance delle query native ===
 
     use plenora_database_core::native_query_policy::NativeQueryPolicy;
 
@@ -2032,7 +2032,7 @@ mod live {
         tx.rollback(&cancel).await.expect("rollback");
     }
 
-    // === B4: Server-side streaming (cursor) ===
+    // === Streaming server-side tramite cursore ===
 
     #[tokio::test]
     async fn live_query_stream_paginates_result_in_batches() {
@@ -2232,7 +2232,7 @@ mod live {
         tx2.commit(&cancel).await.expect("commit 2");
     }
 
-    // === Opz 3: DDL fuori transazione ===
+    // === DDL fuori transazione ===
 
     #[tokio::test]
     async fn live_execute_ddl_creates_index_concurrently() {
@@ -2279,7 +2279,7 @@ mod live {
         );
     }
 
-    // === A6: Conformance profile ===
+    // === Profilo di conformita ===
 
     use plenora_database_core::conformance::{
         check_profile, probe_application_oltp_v1, EvidenceKind, ProfileStatus, APPLICATION_OLTP_V1,
@@ -2358,7 +2358,7 @@ mod live {
         assert!(report.failed.is_empty());
     }
 
-    // === A5: Facade OLTP (query, query_one, scalar) ===
+    // === Facade OLTP (query, query_one, scalar) ===
 
     use plenora_database_core::facade::{
         execute_scalar_bool, execute_scalar_i64, execute_scalar_string, query_one, query_optional,
@@ -2632,7 +2632,7 @@ mod live {
         tx.commit(&cancel).await.expect("commit");
     }
 
-    // === A4: Session context ===
+    // === Session context ===
 
     use plenora_database_core::session_context::{SessionContext, SessionEntry, SessionValue};
 
@@ -2837,7 +2837,7 @@ mod live {
         assert!(tx.commit(&cancel).await.expect("commit").is_committed());
     }
 
-    // === A3: Optimistic concurrency ===
+    // === Concorrenza ottimistica ===
 
     async fn versioned_scratch(name: &str) {
         use tokio_postgres::NoTls;
@@ -3153,8 +3153,8 @@ mod live {
     #[tokio::test]
     async fn live_execute_after_constraint_violation_still_reports_25p02() {
         // Pattern classico: un errore in transazione mette Postgres in
-        // "in_failed_sql_transaction" — verifichiamo che il mapping A2 sia
-        // ancora corretto quando invocato via il transaction scope.
+        // "in_failed_sql_transaction": verifichiamo che l'error mapping
+        // resti corretto anche quando e invocato nel transaction scope.
         scratch_table("a1_fail").await;
         let provider = provider();
         let budget = budget();

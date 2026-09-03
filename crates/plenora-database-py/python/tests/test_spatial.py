@@ -1,4 +1,4 @@
-"""F3-6c — Test integrazione live per spatial builder (where_spatial)."""
+"""Test di integrazione live per il builder spatial where_spatial."""
 from __future__ import annotations
 
 import os

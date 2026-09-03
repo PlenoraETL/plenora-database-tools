@@ -2518,10 +2518,8 @@ fn unknown_command(command: &str) -> CliError {
 
 /// I provider che `database-probe` puo davvero istanziare qui.
 ///
-/// Il contratto ne enumera nove; questo binario ne porta quelli compilati. La
-/// riga di aiuto diceva "mysql/sqlserver richiedono --features full", falso in
-/// due modi: `--features mysql` basta, e in un binario senza `PostgreSQL`
-/// nemmeno `postgres` e disponibile.
+/// Il contratto ne enumera nove; questo binario deve pubblicizzare soltanto
+/// quelli abilitati dalle feature con cui e stato compilato.
 fn compiled_providers() -> Vec<&'static str> {
     let mut names = Vec::new();
     if cfg!(feature = "postgres") {

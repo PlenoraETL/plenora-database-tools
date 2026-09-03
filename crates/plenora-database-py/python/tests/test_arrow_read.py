@@ -1,4 +1,4 @@
-"""F4-3 — Test live per Arrow batch reader (sync + async).
+"""Test live per Arrow batch reader sincrono e asincrono.
 
 Richiede pyarrow installato per la parte di parsing consumer-side.
 """

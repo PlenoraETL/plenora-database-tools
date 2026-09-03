@@ -1,4 +1,4 @@
-"""F4-1 — Test live per metrics snapshot + inspect helpers."""
+"""Test live per snapshot delle metriche e helper di introspezione."""
 from __future__ import annotations
 
 import os

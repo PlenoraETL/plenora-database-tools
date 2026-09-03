@@ -1,4 +1,4 @@
-"""F3-7 — Test integrazione live per AsyncTransaction."""
+"""Test di integrazione live per AsyncTransaction."""
 from __future__ import annotations
 
 import os

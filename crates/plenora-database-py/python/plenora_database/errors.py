@@ -1,4 +1,4 @@
-"""Gerarchia di eccezioni esposte dal SDK (F3-6a).
+"""Gerarchia di eccezioni pubbliche esposte dall'SDK.
 
 Tutte discendono da `PlenoraError` che a sua volta discende da
 `RuntimeError`. Consumer che filtravano su `RuntimeError` continuano

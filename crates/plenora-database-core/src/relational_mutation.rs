@@ -1,4 +1,4 @@
-//! Adapter temporaneo dal DML relazionale canonico al lowering `portable`.
+//! Adapter dal DML relazionale canonico al lowering `portable`.
 
 use crate::plan::{ComparisonOperator, ProviderKind};
 use crate::portable::{
@@ -20,7 +20,7 @@ pub struct LoweredMutation {
     pub returns_rows: bool,
 }
 
-/// Compila il DML canonico riusando temporaneamente il lowering qualificato.
+/// Compila il DML canonico attraverso il lowering `portable` qualificato.
 ///
 /// I `ParameterValue` costruiti qui sono sentinelle che servono soltanto a far
 /// emettere i placeholder. Non provengono dal chiamante e vengono scartati;

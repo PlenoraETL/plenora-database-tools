@@ -1,4 +1,4 @@
-"""F3-5 — Test integrazione live per Transaction context + savepoints."""
+"""Test di integrazione live per context manager Transaction e savepoint."""
 from __future__ import annotations
 
 import gc

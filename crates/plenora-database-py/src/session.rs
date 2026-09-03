@@ -18,8 +18,8 @@
 //!
 //! Ogni chiamata `execute*` apre una transazione dedicata, esegue lo
 //! statement e committa; questo dà semantica auto-commit stile psycopg
-//! `autocommit=True`. Le transazioni esplicite gestite dall'utente
-//! (`with s.begin() as tx:`) sono milestone F3-5.
+//! `autocommit=True`. Le transazioni esplicite gestite dall'utente usano il
+//! context manager restituito da `s.begin()`.
 
 // Suppressioni per idiomi PyO3:
 // - doc_markdown: firma dei pymethod cita nomi Python (close, __enter__)

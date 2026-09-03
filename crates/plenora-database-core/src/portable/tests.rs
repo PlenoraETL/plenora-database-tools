@@ -891,8 +891,8 @@ fn mysql_refuses_returning_on_every_form() {
     let error = compile_portable(ProviderKind::Mysql, &mariadb_insert(vec!["id".into()]))
         .expect_err("MySQL non ha RETURNING");
     assert_eq!(error.category, crate::ErrorCategory::Unsupported);
-    // Il messaggio diceva «solo 8.0.20+ per INSERT», che e falso: interrogato
-    // con le cinque forme, MySQL 9.7 risponde 1064 a tutte.
+    // Nessuna forma MySQL qualificata dipende dalla versione 8.0.20: il
+    // messaggio non deve suggerire una soglia inesistente.
     assert!(
         !error.message.contains("8.0.20"),
         "il messaggio cita una versione che non c'entra: {}",
