@@ -7628,6 +7628,16 @@ def _create_index_ddl(
 def _oracle_spatial_metadata_ddl(mapper: Mapper) -> tuple[str, ...]:
     """Registra nel catalogo Oracle il CRS dichiarato dal mapping ORM."""
 
+    attributes = (
+        (*mapper.primary_keys, *mapper.local_attributes)
+        if mapper.inheritance == "joined"
+        else _single_table_attributes(_inheritance_root(mapper))
+    )
+    spatial_attributes = tuple(
+        attribute for attribute in attributes if isinstance(attribute.type_, Geometry)
+    )
+    if not spatial_attributes:
+        return ()
     if mapper.table.catalog is not None:
         raise OrmUnsupportedError(
             "metadata Spatial Oracle cross-database non qualificati"
@@ -7641,15 +7651,9 @@ def _oracle_spatial_metadata_ddl(mapper: Mapper) -> tuple[str, ...]:
         )
     table_name = mapper.table.name.replace("'", "''")
     statements: list[str] = []
-    attributes = (
-        (*mapper.primary_keys, *mapper.local_attributes)
-        if mapper.inheritance == "joined"
-        else _single_table_attributes(_inheritance_root(mapper))
-    )
-    for attribute in attributes:
+    for attribute in spatial_attributes:
         geometry = attribute.type_
-        if not isinstance(geometry, Geometry):
-            continue
+        assert isinstance(geometry, Geometry)
         _require_geometry_mapping(geometry, "oracle")
         if attribute.name is None:
             raise OrmMappingError("colonna Geometry Oracle senza nome")

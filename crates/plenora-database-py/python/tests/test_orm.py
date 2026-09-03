@@ -1010,7 +1010,7 @@ def test_oracle_23_ddl_is_explicit_and_unqualified_features_fail_closed() -> Non
 
 
 def test_oracle_spatial_ddl_registers_metadata_before_spatial_index() -> None:
-    class OracleSpatialRecord(p.DeclarativeBase):
+    class OracleSpatialDdlRecord(p.DeclarativeBase):
         __tablename__ = "ORM_ORACLE_SPATIAL"
         __table_args__ = (p.OrmIndex("SHAPE", name="IX_ORM_ORACLE_SPATIAL"),)
 
@@ -1019,7 +1019,7 @@ def test_oracle_spatial_ddl_registers_metadata_before_spatial_index() -> None:
             p.Geometry(srid=4326, geometry_type="point"), nullable=False
         )
 
-    ddl = p.OrmMetadata(models=(OracleSpatialRecord,)).ddl("oracle")
+    ddl = p.OrmMetadata(models=(OracleSpatialDdlRecord,)).ddl("oracle")
     assert len(ddl) == 3
     assert '"SHAPE" MDSYS.SDO_GEOMETRY NOT NULL' in ddl[0]
     assert "USER_SDO_GEOM_METADATA" in ddl[1]
