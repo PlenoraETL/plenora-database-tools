@@ -989,12 +989,6 @@ impl Connection {
             match packet_type {
                 2 => {
                     // ACCEPT - parse the accept message to get protocol version and capabilities
-                    // This driver does not emit Oracle's special service SNI,
-                    // so every TCPS connection uses the traditional listener
-                    // flow and requires the second verified handshake after
-                    // ACCEPT. Some listener builds omit the header flag even
-                    // though the database process is already awaiting TLS.
-                    let requires_tls_renegotiation = self.config.is_tls_enabled();
                     let packet = Packet::from_bytes(response)?;
                     let accept = AcceptMessage::parse(&packet)?;
 
@@ -1005,22 +999,6 @@ impl Connection {
                     inner.server_info.protocol_version = accept.protocol_version;
                     inner.server_info.supports_oob = accept.supports_oob;
                     inner.sdu_size = accept.sdu.min(65535) as u16;
-
-                    // A traditional TCPS listener terminates the first TLS
-                    // session, reads CONNECT and hands the same TCP socket to
-                    // the database process. Oracle marks ACCEPT with
-                    // `TLS_RENEG`; the client must discard the listener TLS
-                    // state and establish a fresh verified session with that
-                    // process before protocol negotiation continues.
-                    if requires_tls_renegotiation {
-                        let tls_config = self.config.tls_config.as_ref().ok_or_else(|| {
-                            Error::ProtocolError(
-                                "TLS renegotiation requested without TLS configuration".to_string(),
-                            )
-                        })?;
-                        inner.renegotiate_tls(&self.config.host, tls_config).await?;
-                        inner.server_info.supports_oob = false;
-                    }
 
                     inner.state = ConnectionState::Connected;
                     return Ok(());
@@ -1043,12 +1021,24 @@ impl Connection {
                     ));
                 }
                 11 => {
-                    // RESEND - server requests retransmission of the connect packet
+                    // In the traditional TCPS flow the listener answers with
+                    // RESEND + TLS_RENEG, hands the socket to the database
+                    // process and expects a fresh, independently verified TLS
+                    // session before CONNECT is sent again.
                     resend_count += 1;
                     if resend_count > MAX_RESENDS {
                         return Err(Error::ProtocolError(
                             "Server requested too many resends during connect".to_string(),
                         ));
+                    }
+                    if response[5] & crate::constants::packet_flags::TLS_RENEG != 0 {
+                        let tls_config = self.config.tls_config.as_ref().ok_or_else(|| {
+                            Error::ProtocolError(
+                                "TLS renegotiation requested without TLS configuration".to_string(),
+                            )
+                        })?;
+                        inner.renegotiate_tls(&self.config.host, tls_config).await?;
+                        inner.server_info.supports_oob = false;
                     }
                     inner.send(&connect_packet).await?;
                     if let Some(ref data_packet) = continuation {
