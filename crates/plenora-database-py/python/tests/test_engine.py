@@ -22,6 +22,39 @@ FAMILY_ENGINES = (
 )
 
 
+def test_engine_orm_factory_closes_session_when_construction_fails() -> None:
+    class NativeEngine:
+        def session(self):
+            return object()
+
+    class CoreSession:
+        capabilities = {"provider": "postgres"}
+
+        def __init__(self, *, fail_begin: bool) -> None:
+            self.fail_begin = fail_begin
+            self.closed = False
+
+        def begin(self):
+            if self.fail_begin:
+                raise RuntimeError("begin failure")
+            return object()
+
+        def close(self) -> None:
+            self.closed = True
+
+    sync_session = CoreSession(fail_begin=True)
+    engine = p.Engine(NativeEngine(), lambda _: sync_session)
+    with pytest.raises(RuntimeError, match="begin failure"):
+        engine.orm_session()
+    assert sync_session.closed
+
+    async_session = CoreSession(fail_begin=False)
+    async_engine = p.AsyncEngine(NativeEngine(), lambda _: async_session)
+    with pytest.raises(ValueError, match="insert_batch_size"):
+        async_engine.orm_session(insert_batch_size=0)
+    assert async_session.closed
+
+
 def test_pool_config_is_explicit_validated_and_forwarded(monkeypatch) -> None:
     pool = p.PoolConfig(max_connections=9, acquire_timeout_ms=2_500)
     config = p.EngineConfig.from_postgres_dsn("dbname=app", pool=pool)

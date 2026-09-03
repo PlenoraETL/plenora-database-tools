@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import struct
+from datetime import datetime, timezone
+from decimal import Decimal
 from typing import ClassVar
+from uuid import UUID
 
 import plenora_database as p
 import pytest
+from plenora_database._native import compile_relational_query
 from plenora_database.result import Result
 
 from ._harness import (
@@ -745,6 +749,191 @@ def test_declarative_mapping_reuses_canonical_table_and_columns() -> None:
     assert isinstance(Account.id == p.bind("identity", p.BindType.INTEGER), p.Predicate)
 
 
+def test_flush_batches_compatible_pending_instances() -> None:
+    transaction = _FakeTransaction()
+    transaction.affected = [2]
+    orm = p.OrmSession(_FakeSession(transaction))
+    first = Account(id=101, name="first")
+    second = Account(id=102, name="second")
+
+    orm.add_all((first, second))
+    orm.flush()
+
+    assert len(transaction.executed) == 1
+    statement, parameters = transaction.executed[0]
+    assert isinstance(statement, p.InsertStatement)
+    assert len(statement.rows) == 2
+    assert len(parameters) == 6
+    assert p.inspect_instance(first).state is p.ObjectState.PERSISTENT
+    assert p.inspect_instance(second).state is p.ObjectState.PERSISTENT
+
+    hooked_transaction = _FakeTransaction()
+    hooked_transaction.affected = [1, 1]
+    hooked = p.OrmSession(_FakeSession(hooked_transaction))
+    hooked.listen("before_insert", lambda _session, instance: None)
+    hooked.add_all(
+        (Account(id=111, name="first"), Account(id=112, name="second"))
+    )
+    hooked.flush()
+    assert len(hooked_transaction.executed) == 2
+
+
+def test_bulk_mapping_insert_and_upsert_are_single_round_trips() -> None:
+    transaction = _FakeTransaction()
+    transaction.affected = [2, 2]
+    orm = p.OrmSession(_FakeSession(transaction))
+    rows = ({"id": 301, "name": "one"}, {"id": 302, "name": "two"})
+
+    assert orm.bulk_insert(Account, rows) == 2
+    assert orm.bulk_upsert(
+        Account,
+        rows,
+        conflict_columns=("id",),
+        update_values={"name": "updated"},
+    ) == 2
+
+    insert_statement, insert_parameters = transaction.executed[0]
+    upsert_statement, upsert_parameters = transaction.executed[1]
+    assert isinstance(insert_statement, p.InsertStatement)
+    assert len(insert_statement.rows) == 2
+    assert isinstance(upsert_statement, p.UpsertStatement)
+    assert len(upsert_statement.rows) == 2
+    assert upsert_statement.conflict_names == ("id",)
+    assert len(insert_parameters) == 6
+    assert len(upsert_parameters) == 7
+
+    sqlserver = p.OrmSession(_FakeSession(_FakeTransaction(), "sqlserver"))
+    with pytest.raises(p.OrmUnsupportedError, match="una riga alla volta"):
+        sqlserver.bulk_upsert(Account, rows, conflict_columns=("id",))
+
+
+def test_passive_delete_requires_and_uses_declared_database_cascade() -> None:
+    registry = p.Registry()
+
+    class Base(p.DeclarativeBase):
+        __registry__ = registry
+
+    class PassiveParent(Base):
+        __tablename__ = "passive_parents"
+
+        id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+        children: p.Relationship["PassiveChild"] = p.relationship(
+            "PassiveChild",
+            foreign_key="parent_id",
+            uselist=True,
+            cascade="delete",
+            passive_deletes=True,
+        )
+
+    class PassiveChild(Base):
+        __tablename__ = "passive_children"
+        __table_args__ = (
+            p.ForeignKeyConstraint(
+                ("parent_id",),
+                "PassiveParent",
+                ("id",),
+                on_delete="CASCADE",
+            ),
+        )
+
+        id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+        parent_id: p.Mapped[int] = p.mapped_column(int, nullable=False)
+
+    transaction = _FakeTransaction([{"id": 401}])
+    orm = p.OrmSession(_FakeSession(transaction))
+    parent = orm.get(PassiveParent, 401)
+    assert parent is not None
+
+    orm.delete(parent)
+    orm.flush()
+
+    assert isinstance(transaction.executed[-1][0], p.DeleteStatement)
+
+
+def test_session_options_no_autoflush_and_bounded_partitions() -> None:
+    transaction = _FakeTransaction()
+
+    class ConfigurableSession(_FakeSession):
+        def __init__(self) -> None:
+            super().__init__(transaction)
+            self.options: dict[str, object] = {}
+
+        def begin(self, **options):
+            self.options = options
+            return self.transaction
+
+    session = ConfigurableSession()
+    orm = p.OrmSession(
+        session,
+        isolation="serializable",
+        read_only=False,
+        statement_timeout_ms=500,
+        insert_batch_size=2,
+    )
+    assert session.options == {
+        "isolation": "serializable",
+        "read_only": False,
+        "statement_timeout_ms": 500,
+    }
+    pending = Account(id=103, name="pending")
+    orm.add(pending)
+    with orm.no_autoflush():
+        assert orm.query(Account).all() == []
+    assert len(transaction.executed) == 1
+
+    transaction.result_batches = [
+        [
+            {"id": 201, "name": "one", "version": 1},
+            {"id": 202, "name": "two", "version": 1},
+        ],
+        [{"id": 203, "name": "three", "version": 1}],
+    ]
+    batches = list(
+        orm.query(Account)
+        .order_by(Account.id)
+        .partitions(2, detach=True)
+    )
+    assert [len(batch) for batch in batches] == [2, 1]
+    assert all(
+        p.inspect_instance(instance).state is p.ObjectState.DETACHED
+        for batch in batches
+        for instance in batch
+    )
+    selects = [
+        statement
+        for statement, _ in transaction.executed
+        if isinstance(statement, p.SelectStatement)
+    ]
+    assert [(item.row_limit, item.row_offset) for item in selects[-2:]] == [
+        (2, 0),
+        (2, 2),
+    ]
+    with pytest.raises(p.OrmStateError, match="chiavi primarie"):
+        list(orm.query(Account).order_by(Account.name).partitions(2))
+
+
+def test_owned_core_session_is_closed_and_defaults_reject_nonfinite_values() -> None:
+    transaction = _FakeTransaction()
+
+    class ClosableSession(_FakeSession):
+        def __init__(self) -> None:
+            super().__init__(transaction)
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    session = ClosableSession()
+    orm = p.OrmSession(session, close_session=True)
+    orm.rollback()
+    assert session.closed
+
+    with pytest.raises(ValueError, match="non finito"):
+        p.ServerDefault.literal(float("nan"))
+    with pytest.raises(p.OrmMappingError, match="non finito"):
+        p.CheckConstraint("score", ">", float("inf"), name="ck_finite")
+
+
 def test_big_integer_ddl_and_dml_keep_signed_64_bit_typing() -> None:
     for provider in ("postgres", "mysql", "mariadb", "sqlserver", "db2"):
         ddl = p.OrmMetadata(models=(OrmBigRecord,)).ddl(provider)
@@ -765,6 +954,56 @@ def test_big_integer_ddl_and_dml_keep_signed_64_bit_typing() -> None:
         OrmBigRecord(id=2**63, counter=1)
 
 
+def test_portable_scalar_types_validate_and_render_without_guessing() -> None:
+    class PortableScalarRecord(p.DeclarativeBase):
+        __tablename__ = "orm_portable_scalars"
+
+        id: p.Mapped[int] = p.mapped_column(primary_key=True)
+        label: p.Mapped[str] = p.mapped_column(p.String(32), nullable=False)
+        amount: p.Mapped[Decimal] = p.mapped_column(p.Numeric(12, 2), nullable=False)
+        token: p.Mapped[str] = p.mapped_column(p.UUID, nullable=False, unique=True)
+        payload: p.Mapped[dict] = p.mapped_column(p.JSON, nullable=False)
+        observed_at: p.Mapped[datetime] = p.mapped_column(
+            p.DateTime(timezone=True), nullable=False
+        )
+
+    token = "12345678-1234-5678-1234-567812345678"
+    observed = datetime(2026, 9, 3, 12, 30, tzinfo=timezone.utc)
+    record = PortableScalarRecord(
+        id=1,
+        label="measured",
+        amount=Decimal("12.30"),
+        token=UUID(token),
+        payload={"status": "ok"},
+        observed_at=observed,
+    )
+    assert record.token == token
+    assert record.amount == Decimal("12.30")
+
+    ddl = p.OrmMetadata(models=(PortableScalarRecord,)).ddl("postgres")[0]
+    assert "VARCHAR(32)" in ddl
+    assert "DECIMAL(12, 2)" in ddl
+    assert "UUID" in ddl
+    assert "JSONB" in ddl
+    assert "TIMESTAMPTZ" in ddl
+
+    with pytest.raises(ValueError):
+        record.label = "x" * 33
+    with pytest.raises(ValueError):
+        record.amount = Decimal("12345678901.23")
+    with pytest.raises(p.OrmUnsupportedError):
+        p.OrmMetadata(models=(PortableScalarRecord,)).ddl("mysql")
+
+    class NaiveDateTimeRecord(p.DeclarativeBase):
+        __tablename__ = "orm_naive_datetimes"
+
+        id: p.Mapped[int] = p.mapped_column(primary_key=True)
+        observed_at: p.Mapped[datetime] = p.mapped_column(nullable=False)
+
+    with pytest.raises(ValueError, match=r"DateTime\(timezone=True\)"):
+        NaiveDateTimeRecord(id=1, observed_at=observed)
+
+
 def test_query_count_exists_pagination_distinct_and_bulk_dml() -> None:
     transaction = _FakeTransaction([{"count": 3}])
     orm = p.OrmSession(_FakeSession(transaction))
@@ -782,6 +1021,14 @@ def test_query_count_exists_pagination_distinct_and_bulk_dml() -> None:
     assert shaped._statement.having_predicate is not None
     assert query.count({"wanted": "Ada"}) == 3
     assert transaction.executed[-1][0].source is Account.__table__
+    assert query.distinct().count({"wanted": "Ada"}) == 3
+    assert transaction.executed[-1][0].source.qualifier == "_plenora_orm_count"
+    distinct_on = query.distinct_on(Account.id).order_by(Account.id)
+    assert distinct_on.count({"wanted": "Ada"}) == 3
+    count_statement = transaction.executed[-1][0]
+    sql, names = compile_relational_query(count_statement.to_json(), "postgres")
+    assert "DISTINCT ON" in sql and "ORDER BY" in sql
+    assert names == ["wanted"]
 
     transaction.rows = [{"id": 1}]
     assert query.exists({"wanted": "Ada"})
@@ -1631,11 +1878,14 @@ def test_ddl_constraints_defaults_and_migration_chain() -> None:
         __tablename__ = "ddl_child"
         __table_args__ = (
             p.UniqueConstraint("tenant", "label", name="uq_child_label"),
+            p.CheckConstraint("tenant", ">", 0, name="ck_child_tenant"),
+            p.OrmIndex("parent_code", name="ix_child_parent_code"),
             p.ForeignKeyConstraint(
                 ("tenant", "parent_code"),
                 DdlParent,
                 ("tenant", "code"),
                 on_delete="CASCADE",
+                on_update="CASCADE",
             ),
         )
 
@@ -1649,12 +1899,18 @@ def test_ddl_constraints_defaults_and_migration_chain() -> None:
 
     ddl = p.OrmMetadata(registry).ddl("postgres", checkfirst=True)
 
-    assert len(ddl) == 2
+    assert len(ddl) == 3
     assert "CREATE TABLE IF NOT EXISTS" in ddl[0]
     assert '"tenant" INTEGER' in ddl[0]
     assert "FOREIGN KEY" in ddl[1]
     assert "UNIQUE" in ddl[1]
+    assert 'CHECK ("tenant" > 0)' in ddl[1]
+    assert "ON UPDATE CASCADE" in ddl[1]
     assert "DEFAULT CURRENT_TIMESTAMP" in ddl[1]
+    assert ddl[2] == (
+        'CREATE INDEX IF NOT EXISTS "ix_child_parent_code" '
+        'ON "ddl_child" ("parent_code")'
+    )
 
     class DdlSession:
         capabilities: ClassVar[dict[str, str]] = {"provider": "postgres"}
@@ -1672,7 +1928,7 @@ def test_ddl_constraints_defaults_and_migration_chain() -> None:
     metadata = p.OrmMetadata(registry)
     metadata.create_all(ddl_session)
     metadata.drop_all(ddl_session)
-    assert len(ddl_session.statements) == 4
+    assert len(ddl_session.statements) == 5
     migrations = (
         _migration("001", None, lambda tx: None, lambda tx: None),
         _migration("002", "001", lambda tx: None, lambda tx: None),
@@ -2086,7 +2342,12 @@ def _exercise_live_advanced_orm(provider: str, connector) -> None:
                     rack_units=2,
                 )
             )
-            orm.add(LiveOrmBigRecord(id=2**40, counter=7))
+            orm.add_all(
+                (
+                    LiveOrmBigRecord(id=2**40, counter=7),
+                    LiveOrmBigRecord(id=2**40 + 1, counter=9),
+                )
+            )
             orm.add(
                 LiveOrmLoaderRoot(
                     id=3,
@@ -2115,8 +2376,34 @@ def _exercise_live_advanced_orm(provider: str, connector) -> None:
                 .all()
             )
             assert roots[0].middles[0].leaves[0].id == 5
-            assert orm.query(LiveOrmBigRecord).count() == 1
+            assert orm.query(LiveOrmBigRecord).count() == 2
             assert orm.query(LiveOrmBigRecord).exists()
+            partitions = list(
+                orm.query(LiveOrmBigRecord)
+                .order_by(LiveOrmBigRecord.id.asc().nulls_last())
+                .partitions(1, detach=True)
+            )
+            assert [len(partition) for partition in partitions] == [1, 1]
+
+        if provider == "postgres":
+            with p.OrmSession(session) as orm:
+                locked = (
+                    orm.query(LiveOrmBigRecord)
+                    .where(
+                        LiveOrmBigRecord.id
+                        == p.bind("locked_id", p.BindType.BIG_INTEGER)
+                    )
+                    .with_for_update(nowait=True)
+                    .one({"locked_id": 2**40})
+                )
+                assert locked.counter == 7
+                assert (
+                    orm.query(LiveOrmBigRecord)
+                    .distinct_on(LiveOrmBigRecord.id)
+                    .order_by(LiveOrmBigRecord.id)
+                    .count()
+                    == 2
+                )
 
         with p.OrmSession(session) as orm:
             record = orm.get(LiveOrmBigRecord, 2**40)
@@ -2131,11 +2418,22 @@ def _exercise_live_advanced_orm(provider: str, connector) -> None:
             assert record.counter == 7
 
         with p.OrmSession(session) as orm:
-            assert orm.query(LiveOrmBigRecord).update({"counter": 8}) == 1
+            selected = orm.query(LiveOrmBigRecord).where(
+                LiveOrmBigRecord.id == p.bind("record_id", p.BindType.BIG_INTEGER)
+            )
+            assert selected.update({"counter": 8}, {"record_id": 2**40}) == 1
         with p.OrmSession(session) as orm:
             record = orm.get(LiveOrmBigRecord, 2**40)
             assert record is not None and record.counter == 8
-            assert orm.query(LiveOrmBigRecord).delete() == 1
+            assert (
+                orm.query(LiveOrmBigRecord)
+                .where(
+                    LiveOrmBigRecord.id
+                    == p.bind("record_id", p.BindType.BIG_INTEGER)
+                )
+                .delete({"record_id": 2**40})
+                == 1
+            )
     finally:
         if provider == "db2":
             _drop_db2_models_if_present(session, *_LIVE_ADVANCED_ORM_MODELS)

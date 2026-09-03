@@ -535,6 +535,22 @@ impl SpatialFunction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArithmeticOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryCaseBranch {
+    pub when: QueryExpression,
+    pub then: QueryExpression,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QueryExpression {
@@ -550,6 +566,24 @@ pub enum QueryExpression {
     TypedParameter {
         name: String,
         parameter_type: QueryParameterType,
+    },
+    Arithmetic {
+        left: Box<Self>,
+        operator: ArithmeticOperator,
+        right: Box<Self>,
+    },
+    Cast {
+        expression: Box<Self>,
+        target_type: QueryParameterType,
+    },
+    NullsOrder {
+        expression: Box<Self>,
+        position: QueryNullsOrder,
+    },
+    Case {
+        branches: Vec<QueryCaseBranch>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        else_expression: Option<Box<Self>>,
     },
     Scalar {
         function: ScalarFunction,
@@ -668,6 +702,10 @@ pub enum QueryParameterType {
     Binary,
     Date,
     Timestamp,
+    TimestampTz,
+    Decimal,
+    Uuid,
+    Json,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -737,6 +775,13 @@ pub struct QueryJoin {
 pub struct QueryOrdering {
     pub expression: QueryExpression,
     pub direction: SortDirection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryNullsOrder {
+    First,
+    Last,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1070,7 +1115,8 @@ fn push_expression_children<'a>(
         | QueryExpression::Or { arguments } => {
             stack.extend(arguments.iter().rev().map(QueryWalkNode::Expression));
         }
-        QueryExpression::SpatialOperator { left, right, .. }
+        QueryExpression::Arithmetic { left, right, .. }
+        | QueryExpression::SpatialOperator { left, right, .. }
         | QueryExpression::Compare { left, right, .. } => {
             stack.push(QueryWalkNode::Expression(right));
             stack.push(QueryWalkNode::Expression(left));
@@ -1129,11 +1175,27 @@ fn push_expression_children<'a>(
             stack.push(QueryWalkNode::Operation(query));
             stack.push(QueryWalkNode::Expression(expression));
         }
-        QueryExpression::SpatialOutput { expression, .. }
+        QueryExpression::Cast { expression, .. }
+        | QueryExpression::NullsOrder { expression, .. }
+        | QueryExpression::SpatialOutput { expression, .. }
         | QueryExpression::SpatialValue { expression, .. }
         | QueryExpression::IsNull { expression, .. }
         | QueryExpression::Not { expression } => {
             stack.push(QueryWalkNode::Expression(expression));
+        }
+        QueryExpression::Case {
+            branches,
+            else_expression,
+        } => {
+            stack.extend(
+                else_expression
+                    .iter()
+                    .map(|value| QueryWalkNode::Expression(value)),
+            );
+            for branch in branches.iter().rev() {
+                stack.push(QueryWalkNode::Expression(&branch.then));
+                stack.push(QueryWalkNode::Expression(&branch.when));
+            }
         }
         QueryExpression::Wildcard { .. }
         | QueryExpression::Column { .. }
@@ -1645,7 +1707,8 @@ pub fn validate_query_operation(
                             position,
                         ));
                     }
-                    QueryExpression::SpatialOperator { left, right, .. }
+                    QueryExpression::Arithmetic { left, right, .. }
+                    | QueryExpression::SpatialOperator { left, right, .. }
                     | QueryExpression::Compare { left, right, .. } => {
                         stack.push(Node::Expression(left, depth.saturating_add(1), position));
                         stack.push(Node::Expression(right, depth.saturating_add(1), position));
@@ -1682,6 +1745,46 @@ pub fn validate_query_operation(
                     } => {
                         for child in [expression, pattern] {
                             stack.push(Node::Expression(child, depth.saturating_add(1), position));
+                        }
+                    }
+                    QueryExpression::Cast { expression, .. }
+                    | QueryExpression::NullsOrder { expression, .. }
+                    | QueryExpression::IsNull { expression, .. }
+                    | QueryExpression::Not { expression } => {
+                        stack.push(Node::Expression(
+                            expression,
+                            depth.saturating_add(1),
+                            position,
+                        ));
+                    }
+                    QueryExpression::Case {
+                        branches,
+                        else_expression,
+                    } => {
+                        if branches.is_empty() {
+                            return Err(crate::DatabaseError::invalid_plan(
+                                "CASE richiede almeno un ramo",
+                            ));
+                        }
+                        if let Some(expression) = else_expression {
+                            stack.push(Node::Expression(
+                                expression,
+                                depth.saturating_add(1),
+                                position,
+                            ));
+                        }
+                        for branch in branches {
+                            predicate(&branch.when)?;
+                            stack.push(Node::Expression(
+                                &branch.when,
+                                depth.saturating_add(1),
+                                position,
+                            ));
+                            stack.push(Node::Expression(
+                                &branch.then,
+                                depth.saturating_add(1),
+                                position,
+                            ));
                         }
                     }
                     QueryExpression::Window {
@@ -1767,14 +1870,6 @@ pub fn validate_query_operation(
                                 position,
                             ));
                         }
-                    }
-                    QueryExpression::IsNull { expression, .. }
-                    | QueryExpression::Not { expression } => {
-                        stack.push(Node::Expression(
-                            expression,
-                            depth.saturating_add(1),
-                            position,
-                        ));
                     }
                 }
                 depth

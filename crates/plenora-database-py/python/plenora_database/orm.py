@@ -7,12 +7,14 @@ qualificate per un provider falliscono prima di inviare lo statement.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, MutableSequence
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, MutableSequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
+from math import isfinite
 import re
+from uuid import UUID as UUIDValue
 from inspect import isawaitable
 from types import TracebackType, UnionType
 from typing import Any, Generic, TypeVar, Union, get_args, get_origin, overload
@@ -37,12 +39,18 @@ from .expression import (
     or_,
     select,
     update,
+    upsert,
 )
 from .result import MultipleResultsFound, MutationResult, NoResultFound, Result
 from .errors import PlenoraError
 from .spatial import SpatialReference
 from .types import int64 as typed_int64
+from .types import date as typed_date
+from .types import decimal as typed_decimal
 from .types import null as typed_null
+from .types import timestamp as typed_timestamp
+from .types import timestamptz as typed_timestamptz
+from .types import uuid as typed_uuid
 
 T = TypeVar("T")
 
@@ -258,6 +266,62 @@ class BigInteger:
 BIGINT = BigInteger()
 
 
+@dataclass(frozen=True, slots=True)
+class String:
+    """Testo portabile con lunghezza massima DDL opzionale."""
+
+    length: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.length is not None and (
+            not isinstance(self.length, int)
+            or isinstance(self.length, bool)
+            or self.length <= 0
+            or self.length > 32_672
+        ):
+            raise ValueError("String.length non valida")
+
+
+@dataclass(frozen=True, slots=True)
+class Numeric:
+    """Decimal portabile nel dominio comune Decimal128 dei provider."""
+
+    precision: int = 38
+    scale: int = 10
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.precision, int)
+            or isinstance(self.precision, bool)
+            or not 1 <= self.precision <= 38
+            or not isinstance(self.scale, int)
+            or isinstance(self.scale, bool)
+            or not 0 <= self.scale <= self.precision
+        ):
+            raise ValueError("Numeric precision/scale non validi")
+
+
+@dataclass(frozen=True, slots=True)
+class Uuid:
+    """UUID portabile; il valore Python pubblico resta una stringa canonica."""
+
+
+@dataclass(frozen=True, slots=True)
+class Json:
+    """Documento JSON portabile rappresentato da dict o list Python."""
+
+
+@dataclass(frozen=True, slots=True)
+class DateTime:
+    """Timestamp ORM con semantica timezone esplicita."""
+
+    timezone: bool = False
+
+
+UUID = Uuid()
+JSON = Json()
+
+
 class _InstanceState:
     __slots__ = (
         "dirty",
@@ -402,6 +466,71 @@ class MappedColumn(Generic[T]):
             if not -(2**63) <= value < 2**63:
                 raise ValueError("la colonna BIGINT richiede un intero signed 64-bit")
             return value
+        if isinstance(self.type_, String):
+            if not isinstance(value, str):
+                raise TypeError("la colonna String richiede str")
+            if self.type_.length is not None and len(value) > self.type_.length:
+                raise ValueError("la colonna String supera la lunghezza dichiarata")
+            return value
+        if isinstance(self.type_, Numeric) or self.type_ is Decimal:
+            if isinstance(value, str):
+                try:
+                    value = Decimal(value)
+                except Exception as error:
+                    raise ValueError("valore Decimal non valido") from error
+            if not isinstance(value, Decimal):
+                raise TypeError("la colonna Numeric richiede Decimal")
+            if not value.is_finite():
+                raise ValueError("la colonna Numeric richiede un Decimal finito")
+            if isinstance(self.type_, Numeric):
+                sign, digits, exponent = value.as_tuple()
+                del sign
+                fractional = max(0, -exponent)
+                integer = max(0, len(digits) + exponent)
+                if fractional > self.type_.scale or integer + fractional > self.type_.precision:
+                    raise ValueError("Decimal fuori da precision/scale dichiarati")
+            return value
+        if isinstance(self.type_, Uuid):
+            try:
+                return str(UUIDValue(str(value)))
+            except (AttributeError, TypeError, ValueError) as error:
+                raise ValueError("valore UUID non valido") from error
+        if isinstance(self.type_, Json):
+            if not isinstance(value, (dict, list)):
+                raise TypeError("la colonna Json richiede dict o list")
+            return value
+        if isinstance(self.type_, DateTime):
+            if isinstance(value, str):
+                try:
+                    value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError as error:
+                    raise ValueError("timestamp ORM non valido") from error
+            if not isinstance(value, datetime):
+                raise TypeError("la colonna DateTime richiede datetime")
+            aware = value.tzinfo is not None and value.utcoffset() is not None
+            if aware != self.type_.timezone:
+                raise ValueError("timezone datetime incompatibile con il mapping")
+            return value
+        if self.type_ is datetime and isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError as error:
+                raise ValueError("timestamp ORM non valido") from error
+        if self.type_ is datetime and isinstance(value, datetime):
+            if value.tzinfo is not None and value.utcoffset() is not None:
+                raise ValueError(
+                    "datetime con timezone richiede DateTime(timezone=True)"
+                )
+        if self.type_ is date and isinstance(value, str):
+            try:
+                value = date.fromisoformat(value)
+            except ValueError as error:
+                raise ValueError("date ORM non valida") from error
+        if self.type_ is Decimal and isinstance(value, str):
+            try:
+                value = Decimal(value)
+            except Exception as error:
+                raise ValueError("decimal ORM non valido") from error
         if isinstance(self.type_, type):
             if self.type_ is int and isinstance(value, bool):
                 raise TypeError("la colonna int non accetta bool")
@@ -442,9 +571,11 @@ class ServerDefault:
     value: Any = None
 
     @classmethod
-    def literal(cls, value: str | float | bool) -> ServerDefault:
+    def literal(cls, value: str | int | float | bool) -> ServerDefault:
         if not isinstance(value, (str, int, float, bool)):
             raise TypeError("server default literal non supportato")
+        if isinstance(value, float) and not isfinite(value):
+            raise ValueError("server default numerico non finito")
         return cls("literal", value)
 
     @classmethod
@@ -471,12 +602,61 @@ class UniqueConstraint:
 
 
 @dataclass(frozen=True, slots=True)
+class CheckConstraint:
+    """CHECK strutturale a una colonna, senza accettare frammenti SQL raw."""
+
+    column: str
+    operator: str
+    value: str | int | float | bool
+    name: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.column, str) or not self.column:
+            raise OrmMappingError("CheckConstraint richiede una colonna valida")
+        if self.operator not in {"=", "!=", "<>", "<", "<=", ">", ">="}:
+            raise OrmMappingError("CheckConstraint operator non valido")
+        if not isinstance(self.value, (str, int, float, bool)):
+            raise OrmMappingError("CheckConstraint valore non supportato")
+        if isinstance(self.value, float) and not isfinite(self.value):
+            raise OrmMappingError("CheckConstraint valore numerico non finito")
+        if not isinstance(self.name, str) or not self.name:
+            raise OrmMappingError("CheckConstraint richiede un nome stabile")
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        return (self.column,)
+
+
+@dataclass(frozen=True, slots=True)
+class OrmIndex:
+    """Indice ORM nominato; il nome rende reflection e diff deterministici."""
+
+    columns: tuple[str, ...]
+    name: str
+    unique: bool = False
+
+    def __init__(self, *columns: str, name: str, unique: bool = False) -> None:
+        if not columns or any(
+            not isinstance(column, str) or not column for column in columns
+        ):
+            raise OrmMappingError("OrmIndex richiede colonne valide")
+        if not isinstance(name, str) or not name:
+            raise OrmMappingError("OrmIndex richiede un nome stabile")
+        if not isinstance(unique, bool):
+            raise OrmMappingError("OrmIndex unique deve essere booleano")
+        object.__setattr__(self, "columns", tuple(columns))
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "unique", unique)
+
+
+@dataclass(frozen=True, slots=True)
 class ForeignKeyConstraint:
     columns: tuple[str, ...]
     target: type[DeclarativeBase] | str
     target_columns: tuple[str, ...]
     name: str | None = None
     on_delete: str | None = None
+    on_update: str | None = None
 
     def __init__(
         self,
@@ -486,6 +666,7 @@ class ForeignKeyConstraint:
         *,
         name: str | None = None,
         on_delete: str | None = None,
+        on_update: str | None = None,
     ) -> None:
         local = tuple(columns)
         remote = tuple(target_columns)
@@ -502,11 +683,15 @@ class ForeignKeyConstraint:
         normalized_delete = None if on_delete is None else on_delete.upper()
         if normalized_delete not in {None, "CASCADE", "RESTRICT", "SET NULL"}:
             raise OrmMappingError("ForeignKeyConstraint on_delete non valido")
+        normalized_update = None if on_update is None else on_update.upper()
+        if normalized_update not in {None, "CASCADE", "RESTRICT", "SET NULL"}:
+            raise OrmMappingError("ForeignKeyConstraint on_update non valido")
         object.__setattr__(self, "columns", local)
         object.__setattr__(self, "target", target)
         object.__setattr__(self, "target_columns", remote)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "on_delete", normalized_delete)
+        object.__setattr__(self, "on_update", normalized_update)
 
 
 _CASCADE_VALUES = frozenset({"save-update", "delete", "delete-orphan"})
@@ -601,6 +786,7 @@ class Relationship(Generic[T]):
         secondary: Table | None = None,
         secondary_local_key: str | tuple[str, ...] | None = None,
         secondary_remote_key: str | tuple[str, ...] | None = None,
+        passive_deletes: bool = False,
     ) -> None:
         if (
             not isinstance(target, (type, str))
@@ -635,6 +821,10 @@ class Relationship(Generic[T]):
             )
         if "delete-orphan" in cascades and (not uselist or "delete" not in cascades):
             raise OrmMappingError("delete-orphan richiede uselist e cascade delete")
+        if not isinstance(passive_deletes, bool):
+            raise TypeError("passive_deletes deve essere booleano")
+        if passive_deletes and "delete" not in cascades:
+            raise OrmMappingError("passive_deletes richiede cascade delete")
         if secondary is not None:
             if not isinstance(secondary, Table) or not uselist:
                 raise OrmMappingError("secondary richiede una relazione uselist")
@@ -664,6 +854,7 @@ class Relationship(Generic[T]):
         self.secondary = secondary
         self.secondary_local_key = secondary_local_key
         self.secondary_remote_key = secondary_remote_key
+        self.passive_deletes = passive_deletes
         self.name: str | None = None
         self.owner: type[DeclarativeBase] | None = None
 
@@ -730,6 +921,7 @@ class Relationship(Generic[T]):
             secondary=self.secondary,
             secondary_local_key=self.secondary_local_key,
             secondary_remote_key=self.secondary_remote_key,
+            passive_deletes=self.passive_deletes,
         )
 
     def _validate_configuration(self) -> None:
@@ -925,6 +1117,7 @@ def relationship(
     secondary: Table | None = None,
     secondary_local_key: str | tuple[str, ...] | None = None,
     secondary_remote_key: str | tuple[str, ...] | None = None,
+    passive_deletes: bool = False,
 ) -> Relationship[T]:
     return Relationship(
         target,
@@ -935,6 +1128,7 @@ def relationship(
         secondary=secondary,
         secondary_local_key=secondary_local_key,
         secondary_remote_key=secondary_remote_key,
+        passive_deletes=passive_deletes,
     )
 
 
@@ -947,7 +1141,9 @@ class Mapper:
     primary_keys: tuple[MappedColumn[Any], ...]
     version: MappedColumn[Any] | None
     relationships: tuple[Relationship[Any], ...]
-    constraints: tuple[UniqueConstraint | ForeignKeyConstraint, ...]
+    constraints: tuple[
+        UniqueConstraint | CheckConstraint | OrmIndex | ForeignKeyConstraint, ...
+    ]
     inherits: Mapper | None
     inheritance: str = "none"
     local_attributes: tuple[MappedColumn[Any], ...] = ()
@@ -1048,10 +1244,19 @@ class OrmMetadata:
             if id(mapper.table) not in seen:
                 seen.add(id(mapper.table))
                 unique.append(mapper)
-        return tuple(
-            _create_table_ddl(mapper, provider, self.registry, checkfirst=checkfirst)
-            for mapper in unique
-        )
+        statements: list[str] = []
+        for mapper in unique:
+            statements.append(
+                _create_table_ddl(
+                    mapper, provider, self.registry, checkfirst=checkfirst
+                )
+            )
+            statements.extend(
+                _create_index_ddl(mapper, index, provider, checkfirst=checkfirst)
+                for index in mapper.constraints
+                if isinstance(index, OrmIndex)
+            )
+        return tuple(statements)
 
     def create_all(self, session: Any, *, checkfirst: bool = False) -> None:
         provider = _session_provider(session)
@@ -1614,7 +1819,10 @@ class _DeclarativeMeta(type):
             relationships = declared_relationships
         declared_table_args = namespace.get("__table_args__", ())
         if not isinstance(declared_table_args, tuple) or not all(
-            isinstance(item, (UniqueConstraint, ForeignKeyConstraint))
+            isinstance(
+                item,
+                (UniqueConstraint, CheckConstraint, OrmIndex, ForeignKeyConstraint),
+            )
             for item in declared_table_args
         ):
             raise OrmMappingError("__table_args__ richiede una tupla di vincoli ORM")
@@ -1670,7 +1878,9 @@ class _DeclarativeMeta(type):
             *(attribute.name for attribute in constraint_attributes),
             *(attribute.name for attribute in primary_keys if strategy == "joined"),
         }
-        constraints: tuple[UniqueConstraint | ForeignKeyConstraint, ...] = (
+        constraints: tuple[
+            UniqueConstraint | CheckConstraint | OrmIndex | ForeignKeyConstraint, ...
+        ] = (
             *table_args,
             *(
                 UniqueConstraint(attribute.name or "")
@@ -1809,6 +2019,26 @@ class OrmQuery(Generic[T]):
     def distinct(self) -> OrmQuery[T]:
         return replace(self, _statement=self._statement.distinct())
 
+    def distinct_on(self, *expressions: Expression) -> OrmQuery[T]:
+        return replace(self, _statement=self._statement.distinct_on(*expressions))
+
+    def with_for_update(
+        self,
+        *relations: str | Table,
+        strength: str = "update",
+        nowait: bool = False,
+        skip_locked: bool = False,
+    ) -> OrmQuery[T]:
+        return replace(
+            self,
+            _statement=self._statement.with_for_update(
+                *relations,
+                strength=strength,
+                nowait=nowait,
+                skip_locked=skip_locked,
+            ),
+        )
+
     def group_by(self, *expressions: Expression) -> OrmQuery[T]:
         return replace(self, _statement=self._statement.group_by(*expressions))
 
@@ -1887,6 +2117,47 @@ class OrmQuery(Generic[T]):
             self._loaders,
         )
 
+    def partitions(
+        self,
+        batch_size: int,
+        parameters: Mapping[str, Any] | None = None,
+        *,
+        detach: bool = False,
+    ) -> Iterator[list[T]]:
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0:
+            raise ValueError("batch_size ORM deve essere positivo")
+        if not self._statement.orderings:
+            raise OrmStateError("lettura ORM a partizioni richiede order_by")
+        _require_stable_partition_order(self._mapper, self._statement.orderings)
+        offset = self._statement.row_offset or 0
+        remaining = self._statement.row_limit
+        while remaining is None or remaining > 0:
+            size = batch_size if remaining is None else min(batch_size, remaining)
+            statement = replace(self._statement, row_limit=size, row_offset=offset)
+            rows = replace(self, _statement=statement).all(parameters)
+            if not rows:
+                return
+            if detach:
+                for instance in rows:
+                    _expunge_loaded_graph(self._session, instance, set())
+            yield rows
+            count = len(rows)
+            offset += count
+            if remaining is not None:
+                remaining -= count
+            if count < size:
+                return
+
+    def stream(
+        self,
+        batch_size: int,
+        parameters: Mapping[str, Any] | None = None,
+        *,
+        detach: bool = False,
+    ) -> Iterator[T]:
+        for partition in self.partitions(batch_size, parameters, detach=detach):
+            yield from partition
+
     def first(self, parameters: Mapping[str, Any] | None = None) -> T | None:
         rows = self.limit(1).all(parameters)
         return None if not rows else rows[0]
@@ -1906,17 +2177,7 @@ class OrmQuery(Generic[T]):
         return None if not rows else rows[0]
 
     def count(self, parameters: Mapping[str, Any] | None = None) -> int:
-        source = self._statement._resolved_source()
-        if source is None:
-            raise OrmMappingError("COUNT ORM privo di source relazionale")
-        statement = replace(
-            self._statement,
-            projections=(func.count(),),
-            source=source,
-            orderings=(),
-            row_limit=None,
-            row_offset=None,
-        )
+        statement = _count_statement(self._statement)
         value = self._session._execute_scalar_query(
             statement,
             _merge_query_parameters(self._fixed_parameters, parameters),
@@ -1985,6 +2246,26 @@ class AsyncOrmQuery(Generic[T]):
 
     def distinct(self) -> AsyncOrmQuery[T]:
         return replace(self, _statement=self._statement.distinct())
+
+    def distinct_on(self, *expressions: Expression) -> AsyncOrmQuery[T]:
+        return replace(self, _statement=self._statement.distinct_on(*expressions))
+
+    def with_for_update(
+        self,
+        *relations: str | Table,
+        strength: str = "update",
+        nowait: bool = False,
+        skip_locked: bool = False,
+    ) -> AsyncOrmQuery[T]:
+        return replace(
+            self,
+            _statement=self._statement.with_for_update(
+                *relations,
+                strength=strength,
+                nowait=nowait,
+                skip_locked=skip_locked,
+            ),
+        )
 
     def group_by(self, *expressions: Expression) -> AsyncOrmQuery[T]:
         return replace(self, _statement=self._statement.group_by(*expressions))
@@ -2064,6 +2345,48 @@ class AsyncOrmQuery(Generic[T]):
             self._loaders,
         )
 
+    async def partitions(
+        self,
+        batch_size: int,
+        parameters: Mapping[str, Any] | None = None,
+        *,
+        detach: bool = False,
+    ) -> AsyncIterator[list[T]]:
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0:
+            raise ValueError("batch_size ORM deve essere positivo")
+        if not self._statement.orderings:
+            raise OrmStateError("lettura ORM a partizioni richiede order_by")
+        _require_stable_partition_order(self._mapper, self._statement.orderings)
+        offset = self._statement.row_offset or 0
+        remaining = self._statement.row_limit
+        while remaining is None or remaining > 0:
+            size = batch_size if remaining is None else min(batch_size, remaining)
+            statement = replace(self._statement, row_limit=size, row_offset=offset)
+            rows = await replace(self, _statement=statement).all(parameters)
+            if not rows:
+                return
+            if detach:
+                for instance in rows:
+                    _expunge_loaded_graph(self._session, instance, set())
+            yield rows
+            count = len(rows)
+            offset += count
+            if remaining is not None:
+                remaining -= count
+            if count < size:
+                return
+
+    async def stream(
+        self,
+        batch_size: int,
+        parameters: Mapping[str, Any] | None = None,
+        *,
+        detach: bool = False,
+    ) -> AsyncIterator[T]:
+        async for partition in self.partitions(batch_size, parameters, detach=detach):
+            for instance in partition:
+                yield instance
+
     async def first(self, parameters: Mapping[str, Any] | None = None) -> T | None:
         rows = await self.limit(1).all(parameters)
         return None if not rows else rows[0]
@@ -2085,17 +2408,7 @@ class AsyncOrmQuery(Generic[T]):
         return None if not rows else rows[0]
 
     async def count(self, parameters: Mapping[str, Any] | None = None) -> int:
-        source = self._statement._resolved_source()
-        if source is None:
-            raise OrmMappingError("COUNT ORM privo di source relazionale")
-        statement = replace(
-            self._statement,
-            projections=(func.count(),),
-            source=source,
-            orderings=(),
-            row_limit=None,
-            row_offset=None,
-        )
+        statement = _count_statement(self._statement)
         value = await self._session._execute_scalar_query_async(
             statement,
             _merge_query_parameters(self._fixed_parameters, parameters),
@@ -2540,7 +2853,19 @@ def inspect_instance(instance: DeclarativeBase) -> InstanceInspection:
 class OrmSession:
     """Unit of work sincrona che possiede una transazione Core."""
 
-    def __init__(self, session: Any, *, autoflush: bool = True) -> None:
+    def __init__(
+        self,
+        session: Any,
+        *,
+        autoflush: bool = True,
+        isolation: str | None = None,
+        read_only: bool | None = None,
+        statement_timeout_ms: int | None = None,
+        context: Any | None = None,
+        native_query_policy: str | None = None,
+        insert_batch_size: int = 100,
+        close_session: bool = False,
+    ) -> None:
         begin = getattr(session, "begin", None)
         if not callable(begin):
             raise TypeError("OrmSession richiede una Session Core sincrona")
@@ -2551,8 +2876,24 @@ class OrmSession:
         if not isinstance(provider, str):
             raise TypeError("Session Core senza provider dichiarato")
         self._provider = provider
+        if not isinstance(close_session, bool):
+            raise TypeError("close_session deve essere booleano")
+        self._session = session
+        self._close_session_on_end = close_session
+        self._core_session_closed = False
         self._spatial_functions = _session_spatial_functions(capabilities)
-        self._transaction = begin()
+        transaction_options = {
+            name: value
+            for name, value in (
+                ("isolation", isolation),
+                ("read_only", read_only),
+                ("statement_timeout_ms", statement_timeout_ms),
+                ("context", context),
+                ("native_query_policy", native_query_policy),
+            )
+            if value is not None
+        }
+        self._transaction = begin(**transaction_options) if transaction_options else begin()
         self._identity_map: dict[
             tuple[type[DeclarativeBase], tuple[Any, ...]], DeclarativeBase
         ] = {}
@@ -2562,6 +2903,13 @@ class OrmSession:
         self._deferred_foreign_keys: list[
             tuple[DeclarativeBase, DeclarativeBase, tuple[str, ...]]
         ] = []
+        if (
+            not isinstance(insert_batch_size, int)
+            or isinstance(insert_batch_size, bool)
+            or insert_batch_size < 1
+        ):
+            raise ValueError("insert_batch_size deve essere un intero positivo")
+        self._insert_batch_size = insert_batch_size
         self._autoflush_enabled = bool(autoflush)
         self._in_flush = False
         self._listeners: dict[str, list[Any]] = {}
@@ -2599,6 +2947,11 @@ class OrmSession:
             raise ValueError("hook ORM non valido")
         self._listeners.setdefault(event, []).append(callback)
 
+    def no_autoflush(self) -> _NoAutoflushContext:
+        """Disabilita temporaneamente l'autoflush, anche in contesti annidati."""
+
+        return _NoAutoflushContext(self)
+
     def _emit(self, event: str, instance: DeclarativeBase | None = None) -> None:
         for callback in self._listeners.get(event, ()):
             outcome = (
@@ -2609,6 +2962,11 @@ class OrmSession:
 
     def add(self, instance: DeclarativeBase) -> None:
         self._add(instance, set())
+
+    def add_all(self, instances: Iterable[DeclarativeBase]) -> None:
+        self._require_active()
+        for instance in instances:
+            self.add(instance)
 
     def _add(self, instance: DeclarativeBase, seen: set[int]) -> None:
         self._require_active()
@@ -2642,6 +3000,44 @@ class OrmSession:
         self._require_relational_load(mapper)
         statement, parameters = _entity_select(mapper, self._provider)
         return OrmQuery(self, mapper, statement, _fixed_parameters=parameters)
+
+    def bulk_insert(
+        self,
+        model: type[DeclarativeBase],
+        rows: Iterable[Mapping[str, Any]],
+    ) -> int:
+        self._require_active()
+        self._autoflush_now()
+        mapper = _mapper(model)
+        statement, parameters, count = _bulk_mapping_statement(
+            mapper, rows, self._provider
+        )
+        affected = _affected_rows(self._transaction.execute(statement, parameters))
+        if affected != count:
+            raise StaleObjectError(
+                "INSERT ORM batch non ha interessato il numero atteso di righe"
+            )
+        return affected
+
+    def bulk_upsert(
+        self,
+        model: type[DeclarativeBase],
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        conflict_columns: Iterable[str],
+        update_values: Mapping[str, Any] | None = None,
+    ) -> int:
+        self._require_active()
+        self._autoflush_now()
+        mapper = _mapper(model)
+        statement, parameters, _ = _bulk_mapping_statement(
+            mapper,
+            rows,
+            self._provider,
+            conflict_columns=conflict_columns,
+            update_values=update_values,
+        )
+        return _affected_rows(self._transaction.execute(statement, parameters))
 
     def get(self, model: type[T], identity: Any) -> T | None:
         self._require_active()
@@ -2925,6 +3321,9 @@ class OrmSession:
         for relation in mapper.relationships:
             if "delete" not in relation.cascade:
                 continue
+            if relation.passive_deletes:
+                _require_database_delete_cascade(mapper, relation)
+                continue
             if relation.name not in instance.__dict__:
                 raise OrmStateError("cascade delete richiede una relazione caricata")
             for related in _loaded_relationship_values(instance, relation):
@@ -2949,10 +3348,32 @@ class OrmSession:
             dirty = self._dirty_instances()
             pending = self._pending_insert_order()
             self._preflight((*self._pending, *dirty, *self._deleted))
-            for instance in pending:
+            position = 0
+            while position < len(pending):
+                instance = pending[position]
                 self._synchronize_relationships(instance)
                 self._preflight((instance,))
-                self._insert(instance)
+                signature = self._pending_batch_signature(instance)
+                batch = [instance]
+                batch_limit = _insert_batch_limit(
+                    signature, self._provider, self._insert_batch_size
+                )
+                if signature is not None:
+                    while (
+                        position + len(batch) < len(pending)
+                        and len(batch) < batch_limit
+                    ):
+                        candidate = pending[position + len(batch)]
+                        self._synchronize_relationships(candidate)
+                        self._preflight((candidate,))
+                        if self._pending_batch_signature(candidate) != signature:
+                            break
+                        batch.append(candidate)
+                if len(batch) > 1:
+                    self._insert_batch(batch)
+                else:
+                    self._insert(instance)
+                position += len(batch)
             for instance, related, foreign_keys in self._deferred_foreign_keys:
                 identity = _identity(_mapper(type(related)), related)
                 for foreign_key, value in zip(foreign_keys, identity, strict=True):
@@ -2989,10 +3410,17 @@ class OrmSession:
                 self._transaction.rollback()
             self._detach_all(restore=True)
             self._active = False
+            try:
+                self._close_owned_session()
+            except BaseException:  # la chiusura non maschera l'errore originale
+                pass
             raise
         self._detach_all(restore=False)
         self._active = False
-        self._emit("after_commit")
+        try:
+            self._emit("after_commit")
+        finally:
+            self._close_owned_session()
 
     def savepoint(self, name: str) -> None:
         self._require_active()
@@ -3042,11 +3470,25 @@ class OrmSession:
         finally:
             self._detach_all(restore=True)
             self._active = False
-            self._emit("after_rollback")
+            try:
+                self._emit("after_rollback")
+            finally:
+                self._close_owned_session()
 
     def close(self) -> None:
         if self._active:
             self.rollback()
+        else:
+            self._close_owned_session()
+
+    def _close_owned_session(self) -> None:
+        if not self._close_session_on_end or self._core_session_closed:
+            return
+        close = getattr(self._session, "close", None)
+        if not callable(close):
+            raise TypeError("sessione Core priva di close")
+        close()
+        self._core_session_closed = True
 
     def _autoflush_now(self, *, exclude: DeclarativeBase | None = None) -> None:
         if not self._autoflush_enabled or self._in_flush:
@@ -3723,6 +4165,79 @@ class OrmSession:
             _require_one_row(outcome)
             if returning:
                 self._hydrate_post_insert_defaults(mapper, instance, returning)
+        self._mark_inserted(instance, mapper)
+        self._emit("after_insert", instance)
+
+    def _pending_batch_signature(
+        self, instance: DeclarativeBase
+    ) -> tuple[type[DeclarativeBase], tuple[str, ...]] | None:
+        mapper = _mapper(type(instance))
+        if (
+            mapper.inheritance == "joined"
+            or mapper.relationships
+            or self._listeners.get("before_insert")
+        ):
+            return None
+        version = mapper.version
+        if version is not None and version.name not in instance.__dict__:
+            instance.__dict__[version.name] = 1
+        deferred = {
+            name
+            for owner, _, names in self._deferred_foreign_keys
+            if owner is instance
+            for name in names
+        }
+        names = tuple(
+            attribute.name
+            for attribute in mapper.attributes
+            if attribute.name is not None and attribute.name in instance.__dict__
+        )
+        if deferred.intersection(names) or any(
+            attribute.name not in instance.__dict__
+            for attribute in mapper.attributes
+            if attribute.generated or attribute.server_default
+        ):
+            return None
+        return mapper.model, names
+
+    def _insert_batch(self, instances: list[DeclarativeBase]) -> None:
+        mapper = _mapper(type(instances[0]))
+        statement = insert(mapper.table)
+        parameters: dict[str, Any] = {}
+        for instance in instances:
+            self._emit("before_insert", instance)
+        self._preflight(tuple(instances))
+        for row_index, instance in enumerate(instances):
+            assignments: dict[str, Any] = {}
+            for column_index, attribute in enumerate(mapper.attributes):
+                name = attribute.name
+                if name is None or name not in instance.__dict__:
+                    continue
+                bind_name = f"orm_insert_batch_{row_index}_{column_index}"
+                value = instance.__dict__[name]
+                if isinstance(attribute.type_, Geometry) and (
+                    value is not None
+                    or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
+                ):
+                    assignments[name] = _spatial_value(
+                        bind(bind_name, BindType.BINARY),
+                        attribute.type_.srid,
+                        attribute.type_.semantics,
+                    )
+                    parameters[bind_name] = _geometry_parameter_value(
+                        value, self._provider
+                    )
+                else:
+                    assignments[name] = _attribute_bind(attribute, bind_name)
+                    parameters[bind_name] = _attribute_parameter(attribute, value)
+            statement = statement.values(**assignments)
+        outcome = self._transaction.execute(statement, parameters)
+        _require_row_count(outcome, len(instances))
+        for instance in instances:
+            self._mark_inserted(instance, mapper)
+            self._emit("after_insert", instance)
+
+    def _mark_inserted(self, instance: DeclarativeBase, mapper: Mapper) -> None:
         state = _state(instance)
         state.status = ObjectState.PERSISTENT
         state.original = _snapshot(mapper, instance)
@@ -3734,7 +4249,6 @@ class OrmSession:
         self._identity_map[key] = instance
         self._pending.remove(instance)
         self._propagate_primary_key(instance)
-        self._emit("after_insert", instance)
 
     def _insert_joined(self, instance: DeclarativeBase, mapper: Mapper) -> None:
         lineage = _inheritance_lineage(mapper)
@@ -3752,17 +4266,7 @@ class OrmSession:
             self._insert_fragment(
                 mapper, fragment.table, attributes, instance, f"level_{index}"
             )
-        state = _state(instance)
-        state.status = ObjectState.PERSISTENT
-        state.original = _snapshot(mapper, instance)
-        state.dirty.clear()
-        key = (type(instance), _identity(mapper, instance))
-        existing = self._identity_map.get(key)
-        if existing is not None and existing is not instance:
-            raise OrmStateError("identity map contiene gia la chiave")
-        self._identity_map[key] = instance
-        self._pending.remove(instance)
-        self._propagate_primary_key(instance)
+        self._mark_inserted(instance, mapper)
         self._emit("after_insert", instance)
 
     def _insert_fragment(
@@ -4204,7 +4708,19 @@ class OrmSession:
 class AsyncOrmSession(OrmSession):
     """Unit of work async con gli stessi mapper e invarianti della sync."""
 
-    def __init__(self, session: Any, *, autoflush: bool = True) -> None:
+    def __init__(
+        self,
+        session: Any,
+        *,
+        autoflush: bool = True,
+        isolation: str | None = None,
+        read_only: bool | None = None,
+        statement_timeout_ms: int | None = None,
+        context: Any | None = None,
+        native_query_policy: str | None = None,
+        insert_batch_size: int = 100,
+        close_session: bool = False,
+    ) -> None:
         begin = getattr(session, "begin", None)
         if not callable(begin):
             raise TypeError("AsyncOrmSession richiede una AsyncSession Core")
@@ -4215,14 +4731,36 @@ class AsyncOrmSession(OrmSession):
         if not isinstance(provider, str):
             raise TypeError("AsyncSession Core senza provider dichiarato")
         self._provider = provider
+        if not isinstance(close_session, bool):
+            raise TypeError("close_session deve essere booleano")
         self._spatial_functions = _session_spatial_functions(capabilities)
         self._session = session
+        self._close_session_on_end = close_session
+        self._core_session_closed = False
+        self._transaction_options = {
+            name: value
+            for name, value in (
+                ("isolation", isolation),
+                ("read_only", read_only),
+                ("statement_timeout_ms", statement_timeout_ms),
+                ("context", context),
+                ("native_query_policy", native_query_policy),
+            )
+            if value is not None
+        }
         self._transaction: Any | None = None
         self._identity_map = {}
         self._pending = []
         self._deleted = []
         self._flushed_deleted = []
         self._deferred_foreign_keys = []
+        if (
+            not isinstance(insert_batch_size, int)
+            or isinstance(insert_batch_size, bool)
+            or insert_batch_size < 1
+        ):
+            raise ValueError("insert_batch_size deve essere un intero positivo")
+        self._insert_batch_size = insert_batch_size
         self._autoflush_enabled = bool(autoflush)
         self._in_flush = False
         self._listeners = {}
@@ -4272,7 +4810,7 @@ class AsyncOrmSession(OrmSession):
     async def _ensure_started(self) -> Any:
         self._require_active()
         if self._transaction is None:
-            self._transaction = await self._session.begin()
+            self._transaction = await self._session.begin(**self._transaction_options)
         return self._transaction
 
     def query(self, model: type[T]) -> AsyncOrmQuery[T]:
@@ -4281,6 +4819,46 @@ class AsyncOrmSession(OrmSession):
         self._require_relational_load(mapper)
         statement, parameters = _entity_select(mapper, self._provider)
         return AsyncOrmQuery(self, mapper, statement, _fixed_parameters=parameters)
+
+    async def bulk_insert(
+        self,
+        model: type[DeclarativeBase],
+        rows: Iterable[Mapping[str, Any]],
+    ) -> int:
+        self._require_active()
+        await self._autoflush_async()
+        mapper = _mapper(model)
+        statement, parameters, count = _bulk_mapping_statement(
+            mapper, rows, self._provider
+        )
+        transaction = await self._ensure_started()
+        affected = _affected_rows(await transaction.execute(statement, parameters))
+        if affected != count:
+            raise StaleObjectError(
+                "INSERT ORM batch non ha interessato il numero atteso di righe"
+            )
+        return affected
+
+    async def bulk_upsert(
+        self,
+        model: type[DeclarativeBase],
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        conflict_columns: Iterable[str],
+        update_values: Mapping[str, Any] | None = None,
+    ) -> int:
+        self._require_active()
+        await self._autoflush_async()
+        mapper = _mapper(model)
+        statement, parameters, _ = _bulk_mapping_statement(
+            mapper,
+            rows,
+            self._provider,
+            conflict_columns=conflict_columns,
+            update_values=update_values,
+        )
+        transaction = await self._ensure_started()
+        return _affected_rows(await transaction.execute(statement, parameters))
 
     async def get(self, model: type[T], identity: Any) -> T | None:
         self._require_active()
@@ -4832,10 +5410,32 @@ class AsyncOrmSession(OrmSession):
             dirty = self._dirty_instances()
             pending = self._pending_insert_order()
             self._preflight((*self._pending, *dirty, *self._deleted))
-            for instance in pending:
+            position = 0
+            while position < len(pending):
+                instance = pending[position]
                 self._synchronize_relationships(instance)
                 self._preflight((instance,))
-                await self._insert_async(instance)
+                signature = self._pending_batch_signature(instance)
+                batch = [instance]
+                batch_limit = _insert_batch_limit(
+                    signature, self._provider, self._insert_batch_size
+                )
+                if signature is not None:
+                    while (
+                        position + len(batch) < len(pending)
+                        and len(batch) < batch_limit
+                    ):
+                        candidate = pending[position + len(batch)]
+                        self._synchronize_relationships(candidate)
+                        self._preflight((candidate,))
+                        if self._pending_batch_signature(candidate) != signature:
+                            break
+                        batch.append(candidate)
+                if len(batch) > 1:
+                    await self._insert_batch_async(batch)
+                else:
+                    await self._insert_async(instance)
+                position += len(batch)
             for instance, related, foreign_keys in self._deferred_foreign_keys:
                 identity = _identity(_mapper(type(related)), related)
                 for foreign_key, value in zip(foreign_keys, identity, strict=True):
@@ -4876,10 +5476,17 @@ class AsyncOrmSession(OrmSession):
                     pass
             self._detach_all(restore=True)
             self._active = False
+            try:
+                self._close_owned_session()
+            except BaseException:  # la chiusura non maschera l'errore originale
+                pass
             raise
         self._detach_all(restore=False)
         self._active = False
-        await self._emit_async("after_commit")
+        try:
+            await self._emit_async("after_commit")
+        finally:
+            self._close_owned_session()
 
     async def savepoint(self, name: str) -> None:
         self._require_active()
@@ -4933,11 +5540,16 @@ class AsyncOrmSession(OrmSession):
         finally:
             self._detach_all(restore=True)
             self._active = False
-            await self._emit_async("after_rollback")
+            try:
+                await self._emit_async("after_rollback")
+            finally:
+                self._close_owned_session()
 
     async def close(self) -> None:
         if self._active:
             await self.rollback()
+        else:
+            self._close_owned_session()
 
     async def _insert_async(self, instance: DeclarativeBase) -> None:
         mapper = _mapper(type(instance))
@@ -5007,18 +5619,48 @@ class AsyncOrmSession(OrmSession):
                 await self._hydrate_post_insert_defaults_async(
                     mapper, instance, returning
                 )
-        state = _state(instance)
-        state.status = ObjectState.PERSISTENT
-        state.original = _snapshot(mapper, instance)
-        state.dirty.clear()
-        key = (type(instance), _identity(mapper, instance))
-        existing = self._identity_map.get(key)
-        if existing is not None and existing is not instance:
-            raise OrmStateError("identity map contiene gia la chiave")
-        self._identity_map[key] = instance
-        self._pending.remove(instance)
-        self._propagate_primary_key(instance)
+        self._mark_inserted(instance, mapper)
         await self._emit_async("after_insert", instance)
+
+    async def _insert_batch_async(
+        self, instances: list[DeclarativeBase]
+    ) -> None:
+        mapper = _mapper(type(instances[0]))
+        statement = insert(mapper.table)
+        parameters: dict[str, Any] = {}
+        for instance in instances:
+            await self._emit_async("before_insert", instance)
+        self._preflight(tuple(instances))
+        for row_index, instance in enumerate(instances):
+            assignments: dict[str, Any] = {}
+            for column_index, attribute in enumerate(mapper.attributes):
+                name = attribute.name
+                if name is None or name not in instance.__dict__:
+                    continue
+                bind_name = f"orm_insert_batch_{row_index}_{column_index}"
+                value = instance.__dict__[name]
+                if isinstance(attribute.type_, Geometry) and (
+                    value is not None
+                    or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
+                ):
+                    assignments[name] = _spatial_value(
+                        bind(bind_name, BindType.BINARY),
+                        attribute.type_.srid,
+                        attribute.type_.semantics,
+                    )
+                    parameters[bind_name] = _geometry_parameter_value(
+                        value, self._provider
+                    )
+                else:
+                    assignments[name] = _attribute_bind(attribute, bind_name)
+                    parameters[bind_name] = _attribute_parameter(attribute, value)
+            statement = statement.values(**assignments)
+        transaction = await self._ensure_started()
+        outcome = await transaction.execute(statement, parameters)
+        _require_row_count(outcome, len(instances))
+        for instance in instances:
+            self._mark_inserted(instance, mapper)
+            await self._emit_async("after_insert", instance)
 
     async def _insert_joined_async(
         self, instance: DeclarativeBase, mapper: Mapper
@@ -5038,17 +5680,7 @@ class AsyncOrmSession(OrmSession):
             await self._insert_fragment_async(
                 mapper, fragment.table, attributes, instance, f"level_{index}"
             )
-        state = _state(instance)
-        state.status = ObjectState.PERSISTENT
-        state.original = _snapshot(mapper, instance)
-        state.dirty.clear()
-        key = (type(instance), _identity(mapper, instance))
-        existing = self._identity_map.get(key)
-        if existing is not None and existing is not instance:
-            raise OrmStateError("identity map contiene gia la chiave")
-        self._identity_map[key] = instance
-        self._pending.remove(instance)
-        self._propagate_primary_key(instance)
+        self._mark_inserted(instance, mapper)
         await self._emit_async("after_insert", instance)
 
     async def _insert_fragment_async(
@@ -5467,6 +6099,28 @@ class AsyncOrmSession(OrmSession):
         await self._emit_async("after_delete", instance)
 
 
+class _NoAutoflushContext:
+    def __init__(self, session: OrmSession) -> None:
+        self._session = session
+        self._previous: bool | None = None
+
+    def __enter__(self) -> _NoAutoflushContext:  # noqa: PYI034
+        self._session._require_active()
+        self._previous = self._session._autoflush_enabled
+        self._session._autoflush_enabled = False
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> bool:
+        if self._previous is not None:
+            self._session._autoflush_enabled = self._previous
+        return False
+
+
 class _OrmNestedTransaction:
     def __init__(self, session: OrmSession, name: str) -> None:
         _validate_savepoint_name(name)
@@ -5710,6 +6364,120 @@ def _bulk_delete_statement(mapper: Mapper, query: SelectStatement) -> Any:
     return statement
 
 
+def _count_statement(query: SelectStatement) -> SelectStatement:
+    source = query._resolved_source()
+    if source is None:
+        raise OrmMappingError("COUNT ORM privo di source relazionale")
+    shaped = replace(
+        query,
+        source=source,
+        orderings=query.orderings if query.distinct_expressions else (),
+        row_limit=None,
+        row_offset=None,
+    )
+    if (
+        shaped.is_distinct
+        or shaped.distinct_expressions
+        or shaped.groupings
+        or shaped.having_predicate is not None
+        or shaped.set_operations
+    ):
+        derived = shaped.subquery("_plenora_orm_count")
+        return select(func.count()).select_from(derived)
+    return replace(shaped, projections=(func.count(),))
+
+
+def _bulk_mapping_statement(
+    mapper: Mapper,
+    rows: Iterable[Mapping[str, Any]],
+    provider: str,
+    *,
+    conflict_columns: Iterable[str] | None = None,
+    update_values: Mapping[str, Any] | None = None,
+) -> tuple[Any, dict[str, Any], int]:
+    if mapper.inheritance != "none":
+        raise OrmUnsupportedError("bulk mapping non qualificato con inheritance")
+    materialized = tuple(rows)
+    if not materialized or any(not isinstance(row, Mapping) for row in materialized):
+        raise OrmMappingError("bulk mapping richiede almeno una riga")
+    prepared = [dict(row) for row in materialized]
+    if mapper.version is not None and mapper.version.name is not None:
+        for row in prepared:
+            row.setdefault(mapper.version.name, 1)
+    keys = tuple(prepared[0])
+    if not keys or any(set(row) != set(keys) for row in prepared):
+        raise OrmMappingError("le righe bulk richiedono le stesse colonne")
+    attributes = {attribute.name: attribute for attribute in mapper.attributes}
+    if set(keys) - attributes.keys():
+        raise OrmMappingError("bulk mapping contiene una colonna non mappata")
+    for attribute in mapper.attributes:
+        if (
+            attribute.name not in keys
+            and not attribute.nullable
+            and not attribute.generated
+            and not attribute.server_default
+        ):
+            raise OrmStateError("bulk mapping omette una colonna non nullable")
+    conflicts = None if conflict_columns is None else tuple(conflict_columns)
+    if conflicts is not None:
+        if (
+            not conflicts
+            or len(set(conflicts)) != len(conflicts)
+            or not set(conflicts) <= set(keys)
+        ):
+            raise OrmMappingError("conflict_columns bulk non valide")
+        if provider == "sqlserver" and len(prepared) > 1:
+            raise OrmUnsupportedError(
+                "SQL Server qualifica l'upsert portabile per una riga alla volta"
+            )
+        statement = upsert(mapper.table)
+    else:
+        if update_values is not None:
+            raise OrmMappingError("update_values richiede bulk_upsert")
+        statement = insert(mapper.table)
+    parameters: dict[str, Any] = {}
+    for row_index, row in enumerate(prepared):
+        assignments: dict[str, Expression] = {}
+        for column_index, name in enumerate(keys):
+            attribute = attributes[name]
+            value = attribute._coerce(row[name])
+            bind_name = f"orm_bulk_row_{row_index}_{column_index}"
+            if isinstance(attribute.type_, Geometry) and (
+                value is not None or provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
+            ):
+                _require_geometry_mapping(attribute.type_, provider)
+                assignments[name] = _spatial_value(
+                    bind(bind_name, BindType.BINARY),
+                    attribute.type_.srid,
+                    attribute.type_.semantics,
+                )
+                parameters[bind_name] = _geometry_parameter_value(value, provider)
+            else:
+                assignments[name] = _attribute_bind(attribute, bind_name)
+                parameters[bind_name] = _attribute_parameter(attribute, value)
+        statement = statement.values(**assignments)
+    if conflicts is not None:
+        statement = statement.on_conflict(
+            *(mapper.table.c[name] for name in conflicts)
+        )
+        if update_values:
+            updates: dict[str, Expression] = {}
+            for index, (name, raw_value) in enumerate(update_values.items()):
+                attribute = attributes.get(name)
+                if attribute is None or attribute.primary_key:
+                    raise OrmMappingError("update_values bulk contiene una colonna non valida")
+                value = attribute._coerce(raw_value)
+                bind_name = f"orm_bulk_update_{index}"
+                updates[name] = _attribute_bind(attribute, bind_name)
+                parameters[bind_name] = _attribute_parameter(attribute, value)
+            statement = statement.set(**updates)
+    if provider == "sqlserver" and len(parameters) > 2_100:
+        raise OrmUnsupportedError(
+            "bulk mapping SQL Server oltre il limite qualificato di bind"
+        )
+    return statement, parameters, len(prepared)
+
+
 def _affected_rows(value: Any) -> int:
     if isinstance(value, MutationResult):
         value = value.affected_rows
@@ -5725,6 +6493,48 @@ def _query_relationship(
     if relation not in mapper.relationships:
         raise OrmMappingError("relationship appartenente a un altro mapper")
     return relation
+
+
+def _require_stable_partition_order(
+    mapper: Mapper, orderings: tuple[Ordering, ...]
+) -> None:
+    ordered_columns = {
+        ordering.expression.name
+        for ordering in orderings
+        if isinstance(ordering.expression, Column)
+        and ordering.expression.table is mapper.table
+    }
+    primary_names = {attribute.name for attribute in mapper.primary_keys}
+    if not primary_names <= ordered_columns:
+        raise OrmStateError(
+            "lettura ORM a partizioni richiede tutte le chiavi primarie in order_by"
+        )
+
+
+def _require_database_delete_cascade(
+    owner_mapper: Mapper, relation: Relationship[Any]
+) -> None:
+    relation._validate_configuration()
+    if relation.direction not in {"one-to-many", "one-to-one"}:
+        raise OrmUnsupportedError(
+            "passive_deletes richiede una foreign key del figlio con ON DELETE CASCADE"
+        )
+    target_mapper = _mapper(relation.target)
+    owner_keys = tuple(attribute.name or "" for attribute in owner_mapper.primary_keys)
+    for constraint in target_mapper.constraints:
+        if not isinstance(constraint, ForeignKeyConstraint):
+            continue
+        target = _constraint_target(constraint, target_mapper.model.__registry__)
+        if (
+            target.model is owner_mapper.model
+            and constraint.columns == relation.foreign_keys
+            and constraint.target_columns == owner_keys
+            and constraint.on_delete == "CASCADE"
+        ):
+            return
+    raise OrmUnsupportedError(
+        "passive_deletes privo di una foreign key dichiarata ON DELETE CASCADE"
+    )
 
 
 def _query_loader_path(
@@ -6140,6 +6950,16 @@ def _bind_type_for_mapping(type_: Any) -> BindType:
         return BindType.BIG_INTEGER
     if isinstance(type_, Geometry) or type_ is bytes:
         return BindType.BINARY
+    if isinstance(type_, Numeric) or type_ is Decimal:
+        return BindType.DECIMAL
+    if isinstance(type_, Uuid):
+        return BindType.UUID
+    if isinstance(type_, Json):
+        return BindType.JSON
+    if isinstance(type_, DateTime):
+        return BindType.TIMESTAMP_TZ if type_.timezone else BindType.TIMESTAMP
+    if isinstance(type_, String):
+        return BindType.STRING
     if type_ is bool:
         return BindType.BOOLEAN
     if type_ is int:
@@ -6160,10 +6980,20 @@ def _bind_type_for_value(value: Any) -> BindType:
         return BindType.BIG_INTEGER if not -(2**31) <= value < 2**31 else BindType.INTEGER
     if isinstance(value, float):
         return BindType.FLOAT
+    if isinstance(value, Decimal):
+        return BindType.DECIMAL
+    if isinstance(value, UUIDValue):
+        return BindType.UUID
+    if isinstance(value, (dict, list)):
+        return BindType.JSON
     if isinstance(value, (bytes, bytearray, SpatialReference)):
         return BindType.BINARY
     if isinstance(value, datetime):
-        return BindType.TIMESTAMP
+        return (
+            BindType.TIMESTAMP_TZ
+            if value.tzinfo is not None and value.utcoffset() is not None
+            else BindType.TIMESTAMP
+        )
     if isinstance(value, date):
         return BindType.DATE
     return BindType.STRING
@@ -6172,6 +7002,21 @@ def _bind_type_for_value(value: Any) -> BindType:
 def _attribute_parameter(attribute: MappedColumn[Any], value: Any) -> Any:
     if isinstance(attribute.type_, BigInteger) and value is not None:
         return typed_int64(value)
+    if (isinstance(attribute.type_, Numeric) or attribute.type_ is Decimal) and value is not None:
+        return typed_decimal(format(value, "f"))
+    if isinstance(attribute.type_, Uuid) and value is not None:
+        return typed_uuid(str(value))
+    if isinstance(attribute.type_, DateTime) and value is not None:
+        encoded = value.isoformat()
+        return (
+            typed_timestamptz(encoded)
+            if attribute.type_.timezone
+            else typed_timestamp(encoded)
+        )
+    if attribute.type_ is datetime and value is not None:
+        return typed_timestamp(value.isoformat())
+    if attribute.type_ is date and value is not None:
+        return typed_date(value.isoformat())
     return value
 
 
@@ -6206,6 +7051,22 @@ def _tracked_instances(session: OrmSession) -> tuple[DeclarativeBase, ...]:
         *session._flushed_deleted,
     )
     return tuple(dict.fromkeys(values))
+
+
+def _expunge_loaded_graph(
+    session: OrmSession, instance: DeclarativeBase, seen: set[int]
+) -> None:
+    if id(instance) in seen:
+        return
+    seen.add(id(instance))
+    mapper = _mapper(type(instance))
+    for relation in mapper.relationships:
+        if relation.name is None or relation.name not in instance.__dict__:
+            continue
+        for related in _loaded_relationship_values(instance, relation):
+            _expunge_loaded_graph(session, related, seen)
+    if _state(instance).session is session:
+        session.expunge(instance)
 
 
 def _capture_savepoint(session: OrmSession) -> _SavepointSnapshot:
@@ -6407,6 +7268,41 @@ def _ddl_type(attribute: MappedColumn[Any], provider: str) -> str:
     type_ = attribute.type_
     if isinstance(type_, BigInteger):
         return "BIGINT"
+    if isinstance(type_, String):
+        if type_.length is not None:
+            prefix = "NVARCHAR" if provider == "sqlserver" else "VARCHAR"
+            return f"{prefix}({type_.length})"
+        type_ = str
+    if isinstance(type_, Numeric):
+        return f"DECIMAL({type_.precision}, {type_.scale})"
+    if isinstance(type_, Uuid):
+        return (
+            "UUID"
+            if provider == "postgres"
+            else "UNIQUEIDENTIFIER"
+            if provider == "sqlserver"
+            else "CHAR(36)"
+        )
+    if isinstance(type_, Json):
+        return (
+            "JSONB"
+            if provider == "postgres"
+            else "JSON"
+            if provider in {"mysql", "mariadb"}
+            else "NVARCHAR(MAX)"
+            if provider == "sqlserver"
+            else "CLOB"
+        )
+    if isinstance(type_, DateTime):
+        if not type_.timezone:
+            return "TIMESTAMP" if provider != "sqlserver" else "DATETIME2"
+        if provider == "postgres":
+            return "TIMESTAMPTZ"
+        if provider == "sqlserver":
+            return "DATETIMEOFFSET"
+        raise OrmUnsupportedError(
+            "DateTime timezone ORM non qualificato per il provider"
+        )
     if isinstance(type_, Geometry):
         _require_geometry_mapping(type_, provider)
         base = type_.semantics
@@ -6593,6 +7489,18 @@ def _create_table_ddl(
         if isinstance(constraint, UniqueConstraint):
             columns.append(f"{name}UNIQUE ({local})")
             continue
+        if isinstance(constraint, CheckConstraint):
+            operator = "<>" if constraint.operator == "!=" else constraint.operator
+            literal = _render_server_default(
+                ServerDefault.literal(constraint.value), provider
+            )
+            columns.append(
+                f"{name}CHECK ({_quote_identifier(constraint.column, provider)} "
+                f"{operator} {literal})"
+            )
+            continue
+        if isinstance(constraint, OrmIndex):
+            continue
         target = _constraint_target(constraint, registry)
         remote = ", ".join(
             _quote_identifier(item, provider) for item in constraint.target_columns
@@ -6600,6 +7508,8 @@ def _create_table_ddl(
         suffix = (
             "" if constraint.on_delete is None else f" ON DELETE {constraint.on_delete}"
         )
+        if constraint.on_update is not None:
+            suffix += f" ON UPDATE {constraint.on_update}"
         columns.append(
             f"{name}FOREIGN KEY ({local}) REFERENCES "
             f"{_qualified_table(target.table, provider)} ({remote}){suffix}"
@@ -6613,6 +7523,36 @@ def _create_table_ddl(
     if checkfirst and provider == "db2":
         raise OrmUnsupportedError("Db2 non qualifica CREATE TABLE IF NOT EXISTS")
     return f"CREATE TABLE{clause} {target} ({body})"
+
+
+def _create_index_ddl(
+    mapper: Mapper,
+    index: OrmIndex,
+    provider: str,
+    *,
+    checkfirst: bool,
+) -> str:
+    target = _qualified_table(mapper.table, provider)
+    name = _quote_identifier(index.name, provider)
+    columns = ", ".join(
+        _quote_identifier(column, provider) for column in index.columns
+    )
+    unique = "UNIQUE " if index.unique else ""
+    statement = f"CREATE {unique}INDEX {name} ON {target} ({columns})"
+    if not checkfirst:
+        return statement
+    if provider == "postgres":
+        return f"CREATE {unique}INDEX IF NOT EXISTS {name} ON {target} ({columns})"
+    if provider == "sqlserver":
+        object_name = _object_name(mapper.table).replace("'", "''")
+        index_name = index.name.replace("'", "''")
+        return (
+            "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = "
+            f"OBJECT_ID(N'{object_name}') AND name = N'{index_name}') {statement}"
+        )
+    raise OrmUnsupportedError(
+        "il provider non qualifica CREATE INDEX idempotente"
+    )
 
 
 def _migration_parents(value: str | tuple[str, ...] | None) -> tuple[str, ...]:
@@ -6977,17 +7917,45 @@ def _require_one_row(affected: Any) -> None:
         )
 
 
+def _insert_batch_limit(
+    signature: tuple[type[DeclarativeBase], tuple[str, ...]] | None,
+    provider: str,
+    configured: int,
+) -> int:
+    if signature is None or provider != "sqlserver":
+        return configured
+    return min(configured, max(1, 2_100 // len(signature[1])))
+
+
+def _require_row_count(affected: Any, expected: int) -> None:
+    if isinstance(affected, MutationResult):
+        affected = affected.affected_rows
+    if (
+        not isinstance(affected, int)
+        or isinstance(affected, bool)
+        or affected != expected
+    ):
+        raise StaleObjectError(
+            "la mutazione ORM batch non ha interessato il numero atteso di righe"
+        )
+
+
 __all__ = [
     "BIGINT",
+    "JSON",
+    "UUID",
     "AsyncMigrationRunner",
     "AsyncOrmEntityTupleQuery",
     "AsyncOrmQuery",
     "AsyncOrmRowsQuery",
     "AsyncOrmSession",
     "BigInteger",
+    "CheckConstraint",
+    "DateTime",
     "DeclarativeBase",
     "ForeignKeyConstraint",
     "Geometry",
+    "Json",
     "InstanceInspection",
     "LoaderOption",
     "Mapped",
@@ -6995,9 +7963,11 @@ __all__ = [
     "Mapper",
     "Migration",
     "MigrationRunner",
+    "Numeric",
     "ObjectState",
     "OrmEntityTupleQuery",
     "OrmError",
+    "OrmIndex",
     "OrmMappingError",
     "OrmMetadata",
     "OrmQuery",
@@ -7008,8 +7978,10 @@ __all__ = [
     "Registry",
     "Relationship",
     "ServerDefault",
+    "String",
     "StaleObjectError",
     "UniqueConstraint",
+    "Uuid",
     "inspect_instance",
     "joinedload",
     "mapped_column",

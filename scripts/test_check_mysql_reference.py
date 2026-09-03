@@ -2396,8 +2396,8 @@ class PythonSdkRunnerTests(unittest.TestCase):
     def test_every_scope_declares_what_a_correct_run_looks_like(self) -> None:
         """I quattro contratti stanno in una struttura sola, e sono coerenti.
 
-        Un conteggio di soli `passed` non descrive una corsa: gli stessi 24
-        escono da una suite che ne salta 195 e da una che ne deseleziona 195.
+        Un conteggio di soli `passed` non descrive una corsa se non registra
+        anche quanti test vengono saltati o deselezionati.
         """
 
         self.assertEqual(
@@ -2409,9 +2409,9 @@ class PythonSdkRunnerTests(unittest.TestCase):
         stabilization = sdk.SCOPE_CONTRACTS["stabilization"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (417, 9, 0))
+        self.assertEqual((live.passed, live.skipped, live.deselected), (428, 9, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (147, 279, 0)
+            (offline.passed, offline.skipped, offline.deselected), (158, 279, 0)
         )
         self.assertEqual(
             (
@@ -2423,7 +2423,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 424),
+            (2, 0, 435),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
         # il wheel standard salta Db2 anche live, e nessuno deseleziona.
