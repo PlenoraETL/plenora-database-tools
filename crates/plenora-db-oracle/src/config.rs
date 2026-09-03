@@ -232,7 +232,13 @@ impl OracleConfig {
         .connect_timeout(self.connect_timeout)
         .with_statement_cache_size(self.statement_cache_size);
         if self.tls_mode == OracleTlsMode::Verify {
-            let mut tls = TlsConfig::new().with_server_name(self.host.clone());
+            // Oracle 23+ instrada il servizio nel ClientHello con questo SNI
+            // speciale. Evita la seconda negoziazione TLS richiesta dal
+            // listener tradizionale, che rustls deliberatamente non supporta.
+            // La verifica WebPKI resta attiva: il certificato deve includere
+            // questa identita di servizio fra i SAN.
+            let service_sni = format!("S{}.{}.V3.319", self.service_name.len(), self.service_name);
+            let mut tls = TlsConfig::new().with_server_name(service_sni);
             if let Some(path) = &self.private_ca_certificate {
                 tls = tls.with_ca_cert(path.to_string_lossy());
             }

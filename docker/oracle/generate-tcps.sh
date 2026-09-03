@@ -5,6 +5,8 @@ set -Eeuo pipefail
 ca_dir=${1:?directory CA privata obbligatoria}
 tls_dir=${2:?directory TLS obbligatoria}
 pkcs12_password=${3:?password PKCS12 obbligatoria}
+service_name=${4:?service name Oracle obbligatorio}
+service_sni="S${#service_name}.${service_name}.V3.319"
 
 mkdir -p "${ca_dir}" "${tls_dir}"
 work=$(mktemp -d "${tls_dir}/.certgen.XXXXXX")
@@ -22,7 +24,7 @@ openssl req -newkey rsa:2048 -sha256 -nodes \
   -subj '/CN=127.0.0.1' \
   -keyout "${work}/server.key" -out "${work}/server.csr"
 printf '%s\n' \
-  'subjectAltName=IP:127.0.0.1,DNS:localhost,DNS:oracle' \
+  "subjectAltName=IP:127.0.0.1,DNS:localhost,DNS:oracle,DNS:${service_sni}" \
   'extendedKeyUsage=serverAuth' > "${work}/server.ext"
 openssl x509 -req -sha256 -days 30 \
   -in "${work}/server.csr" \
@@ -35,6 +37,7 @@ openssl pkcs12 -export \
 
 openssl verify -CAfile "${work}/ca.pem" "${work}/server.pem"
 openssl x509 -in "${work}/server.pem" -noout -checkip 127.0.0.1
+openssl x509 -in "${work}/server.pem" -noout -checkhost "${service_sni}"
 install -m 0444 "${work}/ca.pem" "${tls_dir}/ca.pem"
 install -m 0444 "${work}/server.p12" "${tls_dir}/server.p12"
 chmod 0400 "${ca_dir}/ca.key"

@@ -13,7 +13,7 @@ services:
       - oracle_tcps_certificates:/tls
       - ./docker/oracle/generate-tcps.sh:/fixture/generate-tcps.sh:ro
     entrypoint: ["/bin/bash", "/fixture/generate-tcps.sh"]
-    command: ["/ca", "/tls", "PlenoraPkcs122026"]
+    command: ["/ca", "/tls", "PlenoraPkcs122026", "FREEPDB1"]
     restart: "no"
 
   oracle:
@@ -28,7 +28,14 @@ services:
       - "127.0.0.1:1521:1521"
       - "127.0.0.1:2484:2484"
     healthcheck:
-      test: ["CMD", "healthcheck.sh"]
+      # `healthcheck.sh` diventa verde prima che il listener riavviato dallo
+      # script TCPS conosca il servizio. La seconda condizione chiude quella
+      # finestra e impedisce al gate di misurare un database non raggiungibile.
+      test:
+        [
+          "CMD-SHELL",
+          "healthcheck.sh && lsnrctl status | grep -Fq 'Service \"freepdb1\"'",
+        ]
       interval: 10s
       timeout: 10s
       retries: 60
