@@ -109,6 +109,16 @@ fn classify_driver_error(error: &Error) -> (ErrorCategory, &'static str) {
 }
 
 fn invalid_tls_message(error: &std::io::Error) -> &'static str {
+    let source = error.to_string();
+    if source.contains("InvalidContentType") || source.contains("invalid content type") {
+        return "record TLS Oracle con content type non valido";
+    }
+    if source.contains("certificate") || source.contains("Certificate") {
+        return "certificato TLS Oracle non verificato";
+    }
+    if source.contains("alert") || source.contains("Alert") {
+        return "alert TLS ricevuto dal peer Oracle";
+    }
     match error
         .get_ref()
         .and_then(|source| source.downcast_ref::<rustls::Error>())
