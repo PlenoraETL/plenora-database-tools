@@ -139,7 +139,24 @@ fn invalid_tls_message(error: &std::io::Error) -> &'static str {
             | rustls::Error::PeerIncompatible(_)
             | rustls::Error::PeerMisbehaved(_),
         ) => "handshake TLS Oracle rifiutato dal peer",
-        Some(_) | None => "verifica TLS Oracle non completata",
+        Some(rustls::Error::HandshakeNotComplete) => "handshake TLS Oracle rimasto incompleto",
+        Some(rustls::Error::DecryptError | rustls::Error::EncryptError) => {
+            "cifratura TLS Oracle non completata"
+        }
+        Some(rustls::Error::PeerSentOversizedRecord) => "record TLS Oracle oltre il limite",
+        Some(rustls::Error::NoApplicationProtocol) => {
+            "protocollo applicativo TLS Oracle non negoziato"
+        }
+        Some(
+            rustls::Error::General(_)
+            | rustls::Error::Other(_)
+            | rustls::Error::FailedToGetCurrentTime
+            | rustls::Error::FailedToGetRandomBytes
+            | rustls::Error::BadMaxFragmentSize
+            | rustls::Error::InconsistentKeys(_)
+            | rustls::Error::InvalidEncryptedClientHello(_),
+        ) => "configurazione TLS Oracle non completata",
+        Some(_) | None => "errore TLS Oracle non classificato",
     }
 }
 
