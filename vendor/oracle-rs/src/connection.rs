@@ -333,7 +333,13 @@ impl ConnectionInner {
     async fn renegotiate_tls(&mut self, server_name: &str, config: &TlsConfig) -> Result<()> {
         let stream = self.stream.take().ok_or(Error::ConnectionClosed)?;
         let tls_stream = match stream {
-            OracleStream::Tls(stream) => stream.renegotiate(server_name, config).await?,
+            OracleStream::Tls(stream) => {
+                stream.renegotiate(server_name, config).await.map_err(|_| {
+                    Error::ProtocolError(
+                        "Oracle TCPS second handshake was not completed".to_string(),
+                    )
+                })?
+            }
             OracleStream::Plain(stream) => {
                 self.stream = Some(OracleStream::Plain(stream));
                 return Err(Error::ProtocolError(
