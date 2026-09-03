@@ -804,6 +804,29 @@ fn ensure_expression(
                 ensure_identifier(&column.field)?;
             }
             QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. } => {}
+            QueryExpression::Arithmetic { left, right, .. }
+            | QueryExpression::Compare { left, right, .. } => {
+                stack.push((left, scope));
+                stack.push((right, scope));
+            }
+            QueryExpression::Cast { expression, .. }
+            | QueryExpression::NullsOrder { expression, .. }
+            | QueryExpression::Not { expression }
+            | QueryExpression::IsNull { expression, .. } => {
+                stack.push((expression, scope));
+            }
+            QueryExpression::Case {
+                branches,
+                else_expression,
+            } => {
+                for branch in branches {
+                    stack.push((&branch.when, scope));
+                    stack.push((&branch.then, scope));
+                }
+                if let Some(expression) = else_expression {
+                    stack.push((expression, scope));
+                }
+            }
             QueryExpression::Scalar {
                 function,
                 arguments,
@@ -837,10 +860,6 @@ fn ensure_expression(
                     ));
                 }
             },
-            QueryExpression::Compare { left, right, .. } => {
-                stack.push((left, scope));
-                stack.push((right, scope));
-            }
             QueryExpression::InList {
                 expression, values, ..
             } => {
@@ -870,9 +889,6 @@ fn ensure_expression(
                 }
                 stack.push((expression, scope));
                 stack.push((pattern, scope));
-            }
-            QueryExpression::Not { expression } | QueryExpression::IsNull { expression, .. } => {
-                stack.push((expression, scope));
             }
             QueryExpression::And { arguments } | QueryExpression::Or { arguments } => {
                 stack.extend(arguments.iter().map(|argument| (argument, scope)));

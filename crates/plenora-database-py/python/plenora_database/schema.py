@@ -16,13 +16,17 @@ from typing import Any
 
 from .metadata import MetaData
 from .orm import (
+    CheckConstraint,
     ForeignKeyConstraint,
     Migration,
     OrmMappingError,
     OrmMetadata,
+    OrmIndex,
     OrmStateError,
+    ServerDefault,
     UniqueConstraint,
     _ddl_type,
+    _create_index_ddl,
     _execute_ddl,
     _qualified_table,
     _quote_identifier,
@@ -168,18 +172,37 @@ def compare_schema(desired: OrmMetadata, observed: MetaData) -> SchemaDiff:
 
     for key in sorted(desired_by_key.keys() - observed_by_key.keys()):
         mapper = desired_by_key[key]
-        statement = OrmMetadata(desired.registry, models=(mapper.model,)).ddl(provider)[
-            0
-        ]
+        statements = OrmMetadata(
+            desired.registry, models=(mapper.model,)
+        ).ddl(provider)
         operations.append(
             SchemaOperation(
                 "create-table",
                 _display_key(key),
                 SchemaRisk.SAFE,
-                statement,
+                statements[0],
                 _drop_table(mapper.table, provider),
             )
         )
+        for index, statement in zip(
+            (
+                constraint
+                for constraint in mapper.constraints
+                if isinstance(constraint, OrmIndex)
+            ),
+            statements[1:],
+            strict=True,
+        ):
+            operations.append(
+                SchemaOperation(
+                    "create-index",
+                    _display_key(key),
+                    SchemaRisk.REQUIRES_LOCK,
+                    statement,
+                    _drop_index(mapper, index, provider),
+                    reason="la costruzione dell'indice puo acquisire un lock",
+                )
+            )
 
     for key in sorted(observed_by_key.keys() - desired_by_key.keys()):
         table = observed_by_key[key]
@@ -288,8 +311,12 @@ def compare_schema(desired: OrmMetadata, observed: MetaData) -> SchemaDiff:
                         reason="cambio nullability richiede una migrazione esplicita",
                     )
                 )
+            operations.extend(
+                _default_diff(attribute, metadata, mapper, provider, key, name)
+            )
 
         operations.extend(_constraint_diff(mapper, table, provider, key))
+        operations.extend(_index_diff(mapper, table, provider, key))
 
     payload = [
         {
@@ -322,11 +349,18 @@ def _constraint_diff(
         if item.kind.lower() in {"unique", "unique_constraint"}
         and item.columns.measured
     }
+    observed_checks = {
+        item.name: item
+        for item in measured.values
+        if item.kind.lower() in {"check", "check_constraint"}
+    }
     observed_fk = {
         (
             tuple(item.columns.values),
             item.referenced_object,
             tuple(item.referenced_columns.values),
+            None if item.on_delete is None else item.on_delete.upper(),
+            None if item.on_update is None else item.on_update.upper(),
         )
         for item in foreign_keys.values
         if item.columns.measured and item.referenced_columns.measured
@@ -355,6 +389,44 @@ def _constraint_diff(
                     reason="la creazione del vincolo puo acquisire un lock",
                 )
             )
+        elif isinstance(constraint, CheckConstraint):
+            if not measured.measured:
+                continue
+            current = observed_checks.get(constraint.name)
+            operator = "<>" if constraint.operator == "!=" else constraint.operator
+            literal = _render_server_default(
+                ServerDefault.literal(constraint.value),
+                provider,
+            )
+            name = _quote_identifier(constraint.name, provider)
+            column = _quote_identifier(constraint.column, provider)
+            expected = f"CHECK ({column} {operator} {literal})"
+            if current is not None:
+                if current.definition is None:
+                    continue
+                if _normalized_check(current.definition) != _normalized_check(expected):
+                    operations.append(
+                        SchemaOperation(
+                            "alter-check",
+                            _display_key(key),
+                            SchemaRisk.UNSUPPORTED,
+                            None,
+                            reason="check omonimo diverso richiede una migrazione esplicita",
+                        )
+                    )
+                continue
+            operations.append(
+                SchemaOperation(
+                    "add-check",
+                    _display_key(key),
+                    SchemaRisk.REQUIRES_LOCK,
+                    f"ALTER TABLE {target} ADD CONSTRAINT {name} {expected}",
+                    f"ALTER TABLE {target} DROP CONSTRAINT {name}",
+                    reason="la validazione del check puo acquisire un lock",
+                )
+            )
+        elif isinstance(constraint, OrmIndex):
+            continue
         elif isinstance(constraint, ForeignKeyConstraint):
             if not foreign_keys.measured:
                 continue
@@ -367,6 +439,8 @@ def _constraint_diff(
                 constraint.columns,
                 target_model.table.name,
                 constraint.target_columns,
+                constraint.on_delete,
+                constraint.on_update,
             )
             if signature in observed_fk:
                 continue
@@ -387,14 +461,157 @@ def _constraint_diff(
                 if constraint.on_delete is None
                 else f" ON DELETE {constraint.on_delete}"
             )
+            update = (
+                ""
+                if constraint.on_update is None
+                else f" ON UPDATE {constraint.on_update}"
+            )
             operations.append(
                 SchemaOperation(
                     "add-foreign-key",
                     _display_key(key),
                     SchemaRisk.REQUIRES_LOCK,
                     f"ALTER TABLE {target} ADD {name}FOREIGN KEY ({local}) "
-                    f"REFERENCES {remote_table} ({remote}){delete}",
+                    f"REFERENCES {remote_table} ({remote}){delete}{update}",
                     reason="la validazione della foreign key puo acquisire un lock",
+                )
+            )
+    return tuple(operations)
+
+
+def _default_diff(
+    attribute: Any,
+    metadata: Any,
+    mapper: Any,
+    provider: str,
+    key: tuple[str, str, str],
+    column_name: str,
+) -> tuple[SchemaOperation, ...]:
+    expected_spec = attribute.server_default_spec
+    actual = metadata.default_expression
+    if (
+        attribute.generated
+        or metadata.identity is not False
+        or metadata.generated is not False
+        or attribute.server_default
+        and expected_spec is None
+    ):
+        return ()
+    if expected_spec is None and actual is None:
+        return ()
+    expected = (
+        None
+        if expected_spec is None
+        else _render_server_default(expected_spec, provider)
+    )
+    if expected is not None and actual is not None:
+        if _normalized_default(expected) == _normalized_default(actual):
+            return ()
+        return (
+            SchemaOperation(
+                "alter-column-default",
+                _display_key(key),
+                SchemaRisk.UNSUPPORTED,
+                None,
+                column=column_name,
+                reason="default diverso richiede una migrazione esplicita",
+            ),
+        )
+    target = _qualified_table(mapper.table, provider)
+    column = _quote_identifier(column_name, provider)
+    if expected is None:
+        if provider == "sqlserver":
+            return (
+                SchemaOperation(
+                    "drop-column-default",
+                    _display_key(key),
+                    SchemaRisk.UNSUPPORTED,
+                    None,
+                    column=column_name,
+                    reason="SQL Server richiede il nome riflesso del default constraint",
+                ),
+            )
+        return (
+            SchemaOperation(
+                "drop-column-default",
+                _display_key(key),
+                SchemaRisk.REQUIRES_LOCK,
+                f"ALTER TABLE {target} ALTER COLUMN {column} DROP DEFAULT",
+                column=column_name,
+            ),
+        )
+    if provider == "sqlserver":
+        statement = f"ALTER TABLE {target} ADD DEFAULT {expected} FOR {column}"
+    else:
+        statement = f"ALTER TABLE {target} ALTER COLUMN {column} SET DEFAULT {expected}"
+    return (
+        SchemaOperation(
+            "add-column-default",
+            _display_key(key),
+            SchemaRisk.REQUIRES_LOCK,
+            statement,
+            None,
+            column_name,
+            "l'aggiunta del default puo acquisire un lock",
+        ),
+    )
+
+
+def _index_diff(
+    mapper: Any, table: Any, provider: str, key: tuple[str, str, str]
+) -> tuple[SchemaOperation, ...]:
+    measured = table.metadata.indexes
+    if not measured.measured:
+        return ()
+    observed = {index.name: index for index in measured.values if index.name is not None}
+    operations: list[SchemaOperation] = []
+    for desired in (
+        constraint
+        for constraint in mapper.constraints
+        if isinstance(constraint, OrmIndex)
+    ):
+        current = observed.get(desired.name)
+        if current is None:
+            operations.append(
+                SchemaOperation(
+                    "create-index",
+                    _display_key(key),
+                    SchemaRisk.REQUIRES_LOCK,
+                    _create_index_ddl(mapper, desired, provider, checkfirst=False),
+                    _drop_index(mapper, desired, provider),
+                    reason="la costruzione dell'indice puo acquisire un lock",
+                )
+            )
+            continue
+        if (
+            current.primary is not False
+            or current.unique is None
+            or not current.elements.measured
+            or any(
+                element.included is None or element.descending is None
+                for element in current.elements.values
+            )
+        ):
+            continue
+        columns = tuple(
+            _normalized_index_element(element.expression)
+            for element in current.elements.values
+            if not element.included
+        )
+        unique = bool(current.unique)
+        descending = any(
+            element.descending is True
+            for element in current.elements.values
+            if not element.included
+        )
+        if columns != desired.columns or unique != desired.unique or descending:
+            operations.append(
+                SchemaOperation(
+                    "alter-index",
+                    _display_key(key),
+                    SchemaRisk.UNSUPPORTED,
+                    None,
+                    reason="indice omonimo diverso richiede una migrazione esplicita",
                 )
             )
     return tuple(operations)
@@ -424,6 +641,17 @@ def _drop_table(table: Any, provider: str) -> str:
     return f"DROP TABLE {_qualified_table(table, provider)}"
 
 
+def _drop_index(mapper: Any, index: OrmIndex, provider: str) -> str:
+    name = _quote_identifier(index.name, provider)
+    if provider in {"mysql", "mariadb", "sqlserver"}:
+        return f"DROP INDEX {name} ON {_qualified_table(mapper.table, provider)}"
+    if mapper.table.schema is not None:
+        name = (
+            f"{_quote_identifier(mapper.table.schema, provider)}.{name}"
+        )
+    return f"DROP INDEX {name}"
+
+
 def _normalized_type(value: str) -> str:
     aliases = {
         "int": "integer",
@@ -433,3 +661,29 @@ def _normalized_type(value: str) -> str:
     }
     normalized = " ".join(value.strip().lower().split())
     return aliases.get(normalized, normalized)
+
+
+def _normalized_default(value: str) -> str:
+    normalized = " ".join(value.strip().lower().split())
+    while normalized.startswith("(") and normalized.endswith(")"):
+        normalized = normalized[1:-1].strip()
+    return normalized
+
+
+def _normalized_check(value: str) -> str:
+    normalized = "".join(value.strip().lower().split())
+    if normalized.startswith("check"):
+        normalized = normalized[5:]
+    while normalized.startswith("(") and normalized.endswith(")"):
+        normalized = normalized[1:-1]
+    return normalized.translate(str.maketrans("", "", '"`[]'))
+
+
+def _normalized_index_element(value: str) -> str:
+    normalized = value.strip().split(".")[-1].strip()
+    if len(normalized) >= 2 and (
+        (normalized[0], normalized[-1]) in {(chr(34), chr(34)), ("`", "`")}
+        or (normalized[0], normalized[-1]) == ("[", "]")
+    ):
+        normalized = normalized[1:-1]
+    return normalized

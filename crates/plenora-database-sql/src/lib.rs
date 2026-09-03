@@ -7,10 +7,10 @@ use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::plan::{ComparisonOperator, SortDirection};
 use plenora_database_core::relational::SpatialFunction;
 use plenora_database_core::relational::{
-    validate_query_operation, JoinKind, QueryDerivedSource, QueryExpression, QueryLock,
-    QueryLockStrength, QueryLockWait, QueryOperation, QueryOrdering, QueryParameterType,
-    QueryProjection, QuerySetOperator, QuerySource, ScalarFunction, SpatialOperator, WindowFrame,
-    WindowFrameBound, WindowFrameUnits,
+    validate_query_operation, ArithmeticOperator, JoinKind, QueryDerivedSource, QueryExpression,
+    QueryLock, QueryLockStrength, QueryLockWait, QueryNullsOrder, QueryOperation, QueryOrdering,
+    QueryParameterType, QueryProjection, QuerySetOperator, QuerySource, ScalarFunction,
+    SpatialOperator, WindowFrame, WindowFrameBound, WindowFrameUnits,
 };
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use serde::de::Error as _;
@@ -753,14 +753,7 @@ impl Renderer {
             let ordering = query
                 .order_by
                 .iter()
-                .map(|order| {
-                    let expression = self.render_query_expression(&order.expression, binds)?;
-                    let direction = match order.direction {
-                        SortDirection::Asc => "ASC",
-                        SortDirection::Desc => "DESC",
-                    };
-                    Ok(format!("{expression} {direction}"))
-                })
+                .map(|order| self.render_query_ordering(order, binds))
                 .collect::<Result<Vec<_>>>()?;
             sql.push_str(&ordering.join(", "));
         }
@@ -1008,6 +1001,7 @@ impl Renderer {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)] // dispatch esaustivo dell'unico AST query canonico
     fn render_query_expression(
         &self,
         expression: &QueryExpression,
@@ -1040,6 +1034,22 @@ impl Renderer {
                 name,
                 parameter_type,
             } => Ok(self.render_typed_parameter(name, *parameter_type, binds)),
+            QueryExpression::Arithmetic {
+                left,
+                operator,
+                right,
+            } => self.render_arithmetic(left, *operator, right, binds),
+            QueryExpression::Cast {
+                expression,
+                target_type,
+            } => self.render_cast(expression, *target_type, binds),
+            QueryExpression::NullsOrder { .. } => Err(DatabaseError::invalid_plan(
+                "NULLS FIRST/LAST ammesso soltanto in ORDER BY",
+            )),
+            QueryExpression::Case {
+                branches,
+                else_expression,
+            } => self.render_case(branches, else_expression.as_deref(), binds),
             QueryExpression::Scalar {
                 function,
                 arguments,
@@ -1123,6 +1133,58 @@ impl Renderer {
             self.bind(name, binds),
             self.render_parameter_type(parameter_type)
         )
+    }
+
+    fn render_arithmetic(
+        &self,
+        left: &QueryExpression,
+        operator: ArithmeticOperator,
+        right: &QueryExpression,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        let left = self.render_query_expression(left, binds)?;
+        let right = self.render_query_expression(right, binds)?;
+        let operator = match operator {
+            ArithmeticOperator::Add => "+",
+            ArithmeticOperator::Subtract => "-",
+            ArithmeticOperator::Multiply => "*",
+            ArithmeticOperator::Divide => "/",
+        };
+        Ok(format!("({left} {operator} {right})"))
+    }
+
+    fn render_cast(
+        &self,
+        expression: &QueryExpression,
+        target_type: QueryParameterType,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        Ok(format!(
+            "CAST({} AS {})",
+            self.render_query_expression(expression, binds)?,
+            self.render_parameter_type(target_type)
+        ))
+    }
+
+    fn render_case(
+        &self,
+        branches: &[plenora_database_core::relational::QueryCaseBranch],
+        else_expression: Option<&QueryExpression>,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        let mut sql = String::from("CASE");
+        for branch in branches {
+            sql.push_str(" WHEN ");
+            sql.push_str(&self.render_query_expression(&branch.when, binds)?);
+            sql.push_str(" THEN ");
+            sql.push_str(&self.render_query_expression(&branch.then, binds)?);
+        }
+        if let Some(expression) = else_expression {
+            sql.push_str(" ELSE ");
+            sql.push_str(&self.render_query_expression(expression, binds)?);
+        }
+        sql.push_str(" END");
+        Ok(sql)
     }
 
     fn render_spatial_output(
@@ -1238,6 +1300,28 @@ impl Renderer {
                 Dialect::SqlServer => "DATETIME2",
                 Dialect::Sqlite => "TEXT",
                 _ => "TIMESTAMP",
+            },
+            QueryParameterType::TimestampTz => match self.dialect {
+                Dialect::Postgres | Dialect::Sqlite | Dialect::Duckdb => "TIMESTAMPTZ",
+                Dialect::SqlServer => "DATETIMEOFFSET",
+                Dialect::Oracle | Dialect::Db2 => "TIMESTAMP WITH TIME ZONE",
+                Dialect::Mysql => "DATETIME(6)",
+            },
+            QueryParameterType::Decimal => match self.dialect {
+                Dialect::Oracle => "NUMBER(38, 10)",
+                _ => "DECIMAL(38, 10)",
+            },
+            QueryParameterType::Uuid => match self.dialect {
+                Dialect::Postgres => "UUID",
+                Dialect::SqlServer => "UNIQUEIDENTIFIER",
+                Dialect::Oracle => "VARCHAR2(36)",
+                _ => "CHAR(36)",
+            },
+            QueryParameterType::Json => match self.dialect {
+                Dialect::Postgres => "JSONB",
+                Dialect::Mysql | Dialect::Sqlite | Dialect::Duckdb => "JSON",
+                Dialect::SqlServer => "NVARCHAR(MAX)",
+                Dialect::Oracle | Dialect::Db2 => "CLOB",
             },
         }
     }
@@ -1384,14 +1468,7 @@ impl Renderer {
         if !order_by.is_empty() {
             let ordering = order_by
                 .iter()
-                .map(|item| {
-                    let expression = self.render_query_expression(&item.expression, binds)?;
-                    let direction = match item.direction {
-                        SortDirection::Asc => "ASC",
-                        SortDirection::Desc => "DESC",
-                    };
-                    Ok(format!("{expression} {direction}"))
-                })
+                .map(|item| self.render_query_ordering(item, binds))
                 .collect::<Result<Vec<_>>>()?;
             clauses.push(format!("ORDER BY {}", ordering.join(", ")));
         }
@@ -1399,6 +1476,45 @@ impl Renderer {
             clauses.push(render_window_frame(frame));
         }
         Ok(format!("{call} OVER ({})", clauses.join(" ")))
+    }
+
+    fn render_query_ordering(
+        &self,
+        ordering: &QueryOrdering,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        let direction = match ordering.direction {
+            SortDirection::Asc => "ASC",
+            SortDirection::Desc => "DESC",
+        };
+        let QueryExpression::NullsOrder {
+            expression,
+            position,
+        } = &ordering.expression
+        else {
+            let expression = self.render_query_expression(&ordering.expression, binds)?;
+            return Ok(format!("{expression} {direction}"));
+        };
+        let expression = self.render_query_expression(expression, binds)?;
+        if matches!(self.dialect, Dialect::Mysql | Dialect::SqlServer) {
+            let null_direction = match position {
+                QueryNullsOrder::First => "DESC",
+                QueryNullsOrder::Last => "ASC",
+            };
+            let null_key = if self.dialect == Dialect::SqlServer {
+                format!("CASE WHEN {expression} IS NULL THEN 1 ELSE 0 END")
+            } else {
+                format!("({expression} IS NULL)")
+            };
+            return Ok(format!(
+                "{null_key} {null_direction}, {expression} {direction}"
+            ));
+        }
+        let nulls = match position {
+            QueryNullsOrder::First => "FIRST",
+            QueryNullsOrder::Last => "LAST",
+        };
+        Ok(format!("{expression} {direction} NULLS {nulls}"))
     }
 
     fn render_function(

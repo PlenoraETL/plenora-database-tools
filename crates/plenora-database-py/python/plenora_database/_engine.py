@@ -39,6 +39,20 @@ class Engine:
     def session(self) -> Any:
         return self._wrap_session(self._native.session())
 
+    def orm_session(self, **options: Any) -> Any:
+        from .orm import OrmSession
+
+        options.setdefault("close_session", True)
+        session = self.session()
+        try:
+            return OrmSession(session, **options)
+        except BaseException:
+            try:
+                session.close()
+            except BaseException:  # la chiusura non maschera l'errore originale
+                pass
+            raise
+
     def statistics(self) -> dict:
         return self._native.statistics()
 
@@ -106,6 +120,20 @@ class AsyncEngine:
 
     def session(self) -> Any:
         return self._wrap_session(self._native.session())
+
+    def orm_session(self, **options: Any) -> Any:
+        from .orm import AsyncOrmSession
+
+        options.setdefault("close_session", True)
+        session = self.session()
+        try:
+            return AsyncOrmSession(session, **options)
+        except BaseException:
+            try:
+                session.close()
+            except BaseException:  # la chiusura non maschera l'errore originale
+                pass
+            raise
 
     def statistics(self) -> dict:
         return self._native.statistics()

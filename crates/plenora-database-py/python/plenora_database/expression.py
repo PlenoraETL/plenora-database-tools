@@ -55,6 +55,28 @@ class Expression:
     def desc(self) -> Ordering:
         return Ordering(self, "desc")
 
+    def cast(self, type_: BindType) -> CastExpression:
+        if not isinstance(type_, BindType):
+            raise TypeError("cast richiede un BindType portabile")
+        return CastExpression(self, type_)
+
+    def _arithmetic(self, operator: str, other: Expression) -> ArithmeticExpression:
+        if not isinstance(other, Expression):
+            raise TypeError("l'aritmetica richiede un'altra espressione")
+        return ArithmeticExpression(self, operator, other)
+
+    def __add__(self, other: Expression) -> ArithmeticExpression:
+        return self._arithmetic("add", other)
+
+    def __sub__(self, other: Expression) -> ArithmeticExpression:
+        return self._arithmetic("subtract", other)
+
+    def __mul__(self, other: Expression) -> ArithmeticExpression:
+        return self._arithmetic("multiply", other)
+
+    def __truediv__(self, other: Expression) -> ArithmeticExpression:
+        return self._arithmetic("divide", other)
+
     def in_(self, *values: Expression) -> Predicate:
         return _list_predicate(self, values, negated=False)
 
@@ -110,6 +132,10 @@ class BindType(str, Enum):
     BINARY = "binary"
     DATE = "date"
     TIMESTAMP = "timestamp"
+    TIMESTAMP_TZ = "timestamp_tz"
+    DECIMAL = "decimal"
+    UUID = "uuid"
+    JSON = "json"
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -154,6 +180,50 @@ class BindParameter(Expression):
             "kind": "typed_parameter",
             "name": self.name,
             "parameter_type": self.type_.value,
+        }
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ArithmeticExpression(Expression):
+    left: Expression
+    operator: str
+    right: Expression
+
+    def _ast(self) -> dict[str, Any]:
+        return {
+            "kind": "arithmetic",
+            "left": self.left._ast(),
+            "operator": self.operator,
+            "right": self.right._ast(),
+        }
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class CastExpression(Expression):
+    expression: Expression
+    type_: BindType
+
+    def _ast(self) -> dict[str, Any]:
+        return {
+            "kind": "cast",
+            "expression": self.expression._ast(),
+            "target_type": self.type_.value,
+        }
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class CaseExpression(Expression):
+    branches: tuple[tuple[Predicate, Expression], ...]
+    else_: Expression | None
+
+    def _ast(self) -> dict[str, Any]:
+        return {
+            "kind": "case",
+            "branches": [
+                {"when": predicate._ast(), "then": result._ast()}
+                for predicate, result in self.branches
+            ],
+            "else_expression": None if self.else_ is None else self.else_._ast(),
         }
 
 
@@ -403,13 +473,32 @@ class Predicate(Expression):
 class Ordering:
     expression: Expression
     direction: str
+    nulls: str | None = None
 
     def __post_init__(self) -> None:
         if self.direction not in {"asc", "desc"}:
             raise ValueError("direzione relazionale non valida")
+        if self.nulls not in {None, "first", "last"}:
+            raise ValueError("ordine dei NULL non valido")
+
+    def nulls_first(self) -> Ordering:
+        return replace(self, nulls="first")
+
+    def nulls_last(self) -> Ordering:
+        return replace(self, nulls="last")
 
     def _ast(self) -> dict[str, Any]:
-        return {"expression": self.expression._ast(), "direction": self.direction}
+        expression = self.expression._ast()
+        if self.nulls is not None:
+            expression = {
+                "kind": "nulls_order",
+                "expression": expression,
+                "position": self.nulls,
+            }
+        return {
+            "expression": expression,
+            "direction": self.direction,
+        }
 
 
 class ColumnCollection:
@@ -598,6 +687,7 @@ class _Join:
     table: Relation
     on: Predicate | None
     kind: str
+    lateral: bool = False
 
     def __post_init__(self) -> None:
         if self.kind not in {"inner", "left", "right", "full", "cross"}:
@@ -608,6 +698,10 @@ class _Join:
             raise ValueError("cross join non accetta una condizione ON")
         if self.kind != "cross" and self.on is None:
             raise ValueError("join senza condizione ON")
+        if not isinstance(self.lateral, bool):
+            raise TypeError("lateral deve essere booleano")
+        if self.lateral and not isinstance(self.table, DerivedTable):
+            raise ValueError("lateral richiede una subquery derivata")
 
     def _ast(self) -> dict[str, Any]:
         source, derived_source = _relation_ast(self.table)
@@ -615,7 +709,7 @@ class _Join:
             "kind": self.kind,
             "source": source,
             "derived_source": derived_source,
-            "lateral": False,
+            "lateral": self.lateral,
             "on": None if self.on is None else self.on._ast(),
         }
 
@@ -690,6 +784,8 @@ class SelectStatement(ExecutableStatement):
     row_limit: int | None = None
     row_offset: int | None = None
     is_distinct: bool = False
+    distinct_expressions: tuple[Expression, ...] = ()
+    lock: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.projections:
@@ -708,10 +804,11 @@ class SelectStatement(ExecutableStatement):
         on: Predicate | None = None,
         *,
         kind: str = "inner",
+        lateral: bool = False,
     ) -> SelectStatement:
         if not isinstance(right, (Table, DerivedTable, CommonTable)):
             raise TypeError("join richiede una relazione")
-        return replace(self, joins=(*self.joins, _Join(right, on, kind)))
+        return replace(self, joins=(*self.joins, _Join(right, on, kind, lateral)))
 
     def where(self, predicate: Predicate) -> SelectStatement:
         if not isinstance(predicate, Predicate):
@@ -749,7 +846,45 @@ class SelectStatement(ExecutableStatement):
         return replace(self, row_offset=value)
 
     def distinct(self) -> SelectStatement:
-        return replace(self, is_distinct=True)
+        return replace(self, is_distinct=True, distinct_expressions=())
+
+    def distinct_on(self, *expressions: Expression) -> SelectStatement:
+        if not expressions or not all(isinstance(item, Expression) for item in expressions):
+            raise TypeError("distinct_on richiede espressioni relazionali")
+        return replace(
+            self,
+            is_distinct=False,
+            distinct_expressions=tuple(expressions),
+        )
+
+    def with_for_update(
+        self,
+        *relations: str | Relation,
+        strength: str = "update",
+        nowait: bool = False,
+        skip_locked: bool = False,
+    ) -> SelectStatement:
+        if strength not in {"update", "no_key_update", "share", "key_share"}:
+            raise ValueError("for update strength non valida")
+        if not isinstance(nowait, bool) or not isinstance(skip_locked, bool):
+            raise TypeError("nowait e skip_locked devono essere booleani")
+        if nowait and skip_locked:
+            raise ValueError("nowait e skip_locked sono mutuamente esclusivi")
+        names: list[str] = []
+        for relation in relations:
+            if isinstance(relation, str):
+                names.append(_identifier(relation))
+            elif isinstance(relation, (Table, DerivedTable, CommonTable)):
+                names.append(relation.qualifier)
+            else:
+                raise TypeError("for update accetta nomi o relazioni")
+        if len(set(names)) != len(names):
+            raise ValueError("for update contiene relazioni duplicate")
+        wait = "no_wait" if nowait else "skip_locked" if skip_locked else "wait"
+        return replace(
+            self,
+            lock={"strength": strength, "relations": names, "wait": wait},
+        )
 
     def subquery(self, name: str, *column_names: str) -> DerivedTable:
         names = _projection_names(self.projections, column_names)
@@ -828,11 +963,11 @@ class SelectStatement(ExecutableStatement):
             ),
             "order_by": [item._ast() for item in self.orderings],
             "distinct": self.is_distinct,
-            "distinct_on": [],
+            "distinct_on": [item._ast() for item in self.distinct_expressions],
             "set_operations": [operation._ast() for operation in self.set_operations],
             "row_limit": self.row_limit,
             "row_offset": self.row_offset,
-            "locking": None,
+            "locking": self.lock,
             "declared_crs": [],
         }
 
@@ -1034,6 +1169,25 @@ def table(
 
 def bind(name: str, type_: BindType) -> BindParameter:
     return BindParameter(name, type_)
+
+
+def case(
+    *branches: tuple[Predicate, Expression],
+    else_: Expression | None = None,
+) -> CaseExpression:
+    if not branches:
+        raise ValueError("case richiede almeno un ramo")
+    if any(
+        not isinstance(branch, tuple)
+        or len(branch) != 2
+        or not isinstance(branch[0], Predicate)
+        or not isinstance(branch[1], Expression)
+        for branch in branches
+    ):
+        raise TypeError("case richiede coppie (Predicate, Expression)")
+    if else_ is not None and not isinstance(else_, Expression):
+        raise TypeError("case else_ richiede un'Expression")
+    return CaseExpression(tuple(branches), else_)
 
 
 def select(*expressions: Expression) -> SelectStatement:

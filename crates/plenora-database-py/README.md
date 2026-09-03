@@ -147,6 +147,10 @@ terminali producono `Row`; SQL raw usa `query_sql` per un `Result` oppure
 La superficie comprende inoltre `IN`/`BETWEEN`/`LIKE`/test di null, funzioni
 scalar e aggregate tramite `func`, `GROUP BY`/`HAVING`, finestre e frame,
 subquery scalari o derivate, `EXISTS`, CTE e `UNION`/`INTERSECT`/`EXCEPT`.
+Espone anche aritmetica fra espressioni, `cast`, `case`, `NULLS FIRST/LAST`,
+`DISTINCT ON`, join laterali e locking pessimista. Le combinazioni che il
+contratto vieta, per esempio locking insieme a distinct o aggregazioni,
+falliscono durante la preparazione.
 Una CTE o subquery richiede label esplicite quando i nomi della proiezione non
 sono determinabili. `Row` è accessibile per posizione, nome o descrittore
 `Column`; `as_dict()` è la conversione esplicita verso un mapping.
@@ -160,9 +164,9 @@ statement = p.select(
 ```
 
 `BindType` non accetta dichiarazioni SQL arbitrarie: il renderer traduce
-`BOOLEAN`, `INTEGER`, `BIG_INTEGER`, `FLOAT`, `STRING`, `BINARY`, `DATE` e
-`TIMESTAMP` per il dialect. Db2 rende la forma tipizzata con un `CAST` e
-`SYSIBM.SYSDUMMY1`.
+`BOOLEAN`, `INTEGER`, `BIG_INTEGER`, `FLOAT`, `STRING`, `BINARY`, `DATE`,
+`TIMESTAMP`, `TIMESTAMP_TZ`, `DECIMAL`, `UUID` e `JSON` per il dialect. Db2
+rende la forma tipizzata con un `CAST` e `SYSIBM.SYSDUMMY1`.
 
 ### Letture riprendibili
 
@@ -235,6 +239,9 @@ identita e nomi dirty senza esporre valori applicativi.
 intervallo prima dell'I/O. `mapped_column(p.BIGINT)` dichiara invece SQL
 `BIGINT`, verifica l'intervallo signed a 64 bit e usa un bind `int64` esplicito,
 cosi il binding non deve indovinare la larghezza dal valore.
+`String(length)`, `Numeric(precision, scale)`, `UUID`, `JSON` e
+`DateTime(timezone=...)` completano i tipi dichiarativi. Le combinazioni non
+qualificate, come un timestamp timezone nel DDL MySQL o Db2, restano chiuse.
 
 Le query di entita partono da `orm.query(Account)` e compongono gli stessi
 predicati dell'expression language. Oltre a ordinamento e paginazione espongono
@@ -249,7 +256,16 @@ viene caricato in batch. La query espone anche `offset`, `distinct`,
 joined-table e per query con join, grouping, ordering o paginazione, dove una
 mutazione portabile e atomica non e qualificata. `refresh`, `expire`,
 `expunge` e `merge` completano il lifecycle; l'autoflush e attivo per default
-e si puo disabilitare nel costruttore della sessione.
+e si puo disabilitare nel costruttore o temporaneamente con `no_autoflush()`.
+`partitions(batch_size)` e `stream(batch_size)` iterano query ordinate in
+finestre limitate; `detach=True` mantiene limitata anche l'identity map. Non
+sono dichiarate come server cursor: ogni finestra e una query ordinata.
+
+Il flush raggruppa in un singolo insert multi-riga le istanze compatibili e
+senza default da reidratare; `insert_batch_size` ne limita la dimensione.
+`bulk_insert` e `bulk_upsert` lavorano direttamente su mapping omogenei quando
+non serve associare istanze allo Unit of Work. SQL Server mantiene l'upsert
+portabile a una riga per volta, come richiesto dal relativo lowering.
 
 `savepoint`, `rollback_to_savepoint`, `release_savepoint` e il context manager
 `begin_nested(name)` delegano ai savepoint della transazione Core e
@@ -285,7 +301,11 @@ stessi tipi e dimensioni con semantica `geometry`. Entrambi verificano il frame
 SRID a ogni idratazione. Le dimensioni M/XYZM e i tipi non nominati restano
 fail-closed.
 
-`UniqueConstraint` e `ForeignKeyConstraint` descrivono anche vincoli compositi;
+`UniqueConstraint`, `CheckConstraint`, `ForeignKeyConstraint` e `OrmIndex`
+descrivono vincoli e indici; i check usano una forma strutturale e non
+accettano SQL raw. Le foreign key includono `ON DELETE` e `ON UPDATE`, mentre
+`passive_deletes=True` si apre soltanto quando il mapping del figlio dichiara
+la corrispondente foreign key `ON DELETE CASCADE`.
 mixin astratti e forma concrete esplicita conservano colonne, vincoli e
 relationship ereditati. Single-table supporta campi e relationship locali di
 sottotipo e gerarchie multilivello; i campi locali devono essere nullable o

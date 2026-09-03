@@ -102,6 +102,77 @@ def _desired() -> p.OrmMetadata:
     return p.OrmMetadata(registry)
 
 
+def _advanced_shapes(
+    *,
+    constraints: list[dict] | None = None,
+    indexes: list[dict] | None = None,
+    identity: bool | None = False,
+    generated: bool | None = False,
+) -> tuple[p.OrmMetadata, p.MetaData]:
+    registry = p.Registry()
+
+    class Base(p.DeclarativeBase):
+        __registry__ = registry
+
+    class Score(Base):
+        __tablename__ = "schema_scores"
+        __table_args__ = (
+            p.CheckConstraint("score", ">=", 0, name="ck_score_nonnegative"),
+            p.OrmIndex("score", name="ix_schema_scores_score"),
+        )
+
+        id: p.Mapped[int] = p.mapped_column(int, primary_key=True)
+        score: p.Mapped[int] = p.mapped_column(
+            int,
+            nullable=False,
+            server_default=p.ServerDefault.literal(0),
+        )
+
+    columns = []
+    for ordinal, name in enumerate(("id", "score"), 1):
+        columns.append(
+            {
+                "name": name,
+                "ordinal": ordinal,
+                "native_type": "int4",
+                "native_declaration": "integer",
+                "nullable": False,
+                "default_expression": None,
+                "identity": identity,
+                "generated": generated,
+                "numeric_precision": 32,
+                "numeric_scale": 0,
+                "spatial": None,
+                "native": {"Postgres": {}},
+            }
+        )
+    observed = p.MetaData.from_document(
+        {
+            "provider": "postgres",
+            "tables": [
+                {
+                    "catalog": None,
+                    "schema": None,
+                    "name": "schema_scores",
+                    "kind": "table",
+                    "schema_token": {
+                        "Postgres": {
+                            "schema_version": 2,
+                            "structural_fingerprint": "sha256:advanced",
+                        }
+                    },
+                    "columns": columns,
+                    "indexes": {"Observed": indexes or []},
+                    "constraints": {"Observed": constraints or []},
+                    "foreign_keys": {"Observed": []},
+                    "native": {"Postgres": {}},
+                }
+            ],
+        }
+    )
+    return p.OrmMetadata(registry), observed
+
+
 def test_schema_diff_is_stable_and_generates_safe_add_column() -> None:
     first = p.compare_schema(_desired(), _observed())
     second = p.compare_schema(_desired(), _observed())
@@ -152,3 +223,61 @@ def test_schema_diff_is_empty_when_shapes_match() -> None:
     diff = p.compare_schema(_desired(), _observed(include_label=True))
     assert diff.is_empty
     assert diff.risks == frozenset()
+
+
+def test_schema_diff_covers_defaults_checks_and_indexes() -> None:
+    desired, observed = _advanced_shapes()
+    diff = p.compare_schema(desired, observed)
+
+    assert [operation.kind for operation in diff.operations] == [
+        "add-column-default",
+        "add-check",
+        "create-index",
+    ]
+    assert diff.operations[0].statement == (
+        'ALTER TABLE "schema_scores" ALTER COLUMN "score" SET DEFAULT 0'
+    )
+    assert 'CHECK ("score" >= 0)' in (diff.operations[1].statement or "")
+    assert diff.operations[2].reverse_statement == (
+        'DROP INDEX "ix_schema_scores_score"'
+    )
+
+
+def test_schema_diff_does_not_infer_unmeasured_index_or_column_capabilities() -> None:
+    desired, observed = _advanced_shapes(
+        constraints=[
+            {
+                "name": "ck_score_nonnegative",
+                "kind": "check",
+                "definition": "CHECK (score < 0)",
+                "columns": {"Observed": ["score"]},
+                "native": {"Postgres": {}},
+            }
+        ],
+        indexes=[
+            {
+                "name": "ix_schema_scores_score",
+                "unique": None,
+                "primary": False,
+                "elements": {
+                    "Observed": [
+                        {
+                            "expression": "score",
+                            "included": None,
+                            "descending": None,
+                            "native": {"Postgres": {}},
+                        }
+                    ]
+                },
+                "predicate": None,
+                "spatial": None,
+                "native": {"Postgres": {}},
+            }
+        ],
+        identity=None,
+        generated=None,
+    )
+    diff = p.compare_schema(desired, observed)
+
+    assert [operation.kind for operation in diff.operations] == ["alter-check"]
+    assert diff.operations[0].risk is p.SchemaRisk.UNSUPPORTED

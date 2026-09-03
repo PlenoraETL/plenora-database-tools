@@ -190,6 +190,78 @@ def test_windows_subqueries_ctes_and_set_operations_compile_for_every_provider(
     assert names == ["minimum", "exact", "exact"]
 
 
+def test_python_builder_exposes_distinct_on_lateral_and_locking() -> None:
+    events = p.table("events", "id").alias("e")
+    details = p.table("details", "event_id").alias("d")
+    latest = (
+        p.select(details.c.event_id)
+        .where(details.c.event_id == events.c.id)
+        .limit(1)
+        .subquery("latest")
+    )
+    distinct_statement = (
+        p.select(events.c.id)
+        .select_from(events)
+        .join(latest, kind="cross", lateral=True)
+        .distinct_on(events.c.id)
+        .order_by(events.c.id)
+    )
+    locking_statement = (
+        p.select(events.c.id)
+        .select_from(events)
+        .with_for_update(events, strength="share", skip_locked=True)
+    )
+
+    sql, names = compile_relational_query(distinct_statement.to_json(), "postgres")
+    assert "DISTINCT ON (\"e\".\"id\")" in sql
+    assert "CROSS JOIN LATERAL" in sql
+    assert names == []
+    locking_sql, locking_names = compile_relational_query(
+        locking_statement.to_json(), "postgres"
+    )
+    assert locking_sql.endswith("FOR SHARE OF \"e\" SKIP LOCKED")
+    assert locking_names == []
+
+    with pytest.raises(ValueError):
+        p.select(events.c.id).with_for_update(nowait=True, skip_locked=True)
+    with pytest.raises(ValueError):
+        p.select(events.c.id).join(events, kind="cross", lateral=True)
+
+
+def test_portable_arithmetic_cast_case_and_null_ordering() -> None:
+    invoices = p.table("invoices", "id", "amount", "discount")
+    total = (
+        (invoices.c.amount - invoices.c.discount)
+        * p.bind("multiplier", p.BindType.DECIMAL)
+    ).cast(p.BindType.DECIMAL)
+    band = p.case(
+        (
+            invoices.c.amount > p.bind("threshold", p.BindType.DECIMAL),
+            p.bind("high", p.BindType.STRING),
+        ),
+        else_=p.bind("low", p.BindType.STRING),
+    )
+    statement = (
+        p.select(total.label("total"), band.label("band"))
+        .select_from(invoices)
+        .order_by(invoices.c.discount.asc().nulls_last())
+    )
+
+    postgres, names = compile_relational_query(statement.to_json(), "postgres")
+    assert 'CAST((("invoices"."amount" - "invoices"."discount") * ' in postgres
+    assert "CASE WHEN" in postgres
+    assert '"invoices"."discount" ASC NULLS LAST' in postgres
+    assert names == ["multiplier", "threshold", "high", "low"]
+
+    sqlserver, _ = compile_relational_query(statement.to_json(), "sqlserver")
+    assert "CASE WHEN [invoices].[discount] IS NULL THEN 1 ELSE 0 END ASC" in sqlserver
+
+    with pytest.raises(TypeError):
+        _ = invoices.c.amount + 1
+    with pytest.raises(ValueError):
+        p.case()
+
+
 def test_advanced_expression_validation_fails_before_native_compilation() -> None:
     users = p.table("users", "id", "name")
 
