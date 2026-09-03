@@ -5,7 +5,7 @@ description = "Bindings Python (PyO3) di plenora-database-tools"
 # release proprio (SemVer) separato dal Rust workspace.
 # Deve coincidere con `pyproject.toml::version`: il nome della wheel e
 # `p.version()` derivano da fonti diverse.
-version = "2.0.2"
+version = "3.0.0"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
