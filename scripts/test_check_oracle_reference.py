@@ -20,6 +20,10 @@ def main() -> int:
     assert "PRODUCT_COMPONENT_VERSION" in gate.SERVER_VERSION_SQL
     assert "V$" not in gate.SERVER_VERSION_SQL
     assert gate.REQUIRED_LIVE_TESTS <= gate.live_source_inventory()
+    gate_source = (ROOT / "scripts/check_oracle_reference.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'TemporaryDirectory(prefix="plenora-oracle-wheel-")' in gate_source
     workflow = (ROOT / ".github/workflows/oracle-assurance.yml").read_text(
         encoding="utf-8"
     )

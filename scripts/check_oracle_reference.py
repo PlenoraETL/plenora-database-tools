@@ -283,34 +283,34 @@ def run_cli_probe(environment: dict[str, str]) -> dict[str, object]:
 
 
 def build_and_run_python_live(environment: dict[str, str]) -> str:
-    wheel_dir = ROOT / "target" / "oracle-wheel"
-    wheel_dir.mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            "maturin",
-            "build",
-            "--locked",
-            "--release",
-            "--out",
-            str(wheel_dir),
-            "--manifest-path",
-            str(ROOT / "crates" / "plenora-database-py" / "Cargo.toml"),
-        ]
-    )
-    wheels = list(wheel_dir.glob("*.whl"))
-    if len(wheels) != 1:
-        raise RuntimeError("build Oracle non ha prodotto esattamente un wheel")
-    run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--force-reinstall",
-            "--no-deps",
-            str(wheels[0]),
-        ]
-    )
+    with tempfile.TemporaryDirectory(prefix="plenora-oracle-wheel-") as temporary:
+        wheel_dir = Path(temporary)
+        run(
+            [
+                "maturin",
+                "build",
+                "--locked",
+                "--release",
+                "--out",
+                str(wheel_dir),
+                "--manifest-path",
+                str(ROOT / "crates" / "plenora-database-py" / "Cargo.toml"),
+            ]
+        )
+        wheels = list(wheel_dir.glob("*.whl"))
+        if len(wheels) != 1:
+            raise RuntimeError("build Oracle non ha prodotto esattamente un wheel")
+        run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--force-reinstall",
+                "--no-deps",
+                str(wheels[0]),
+            ]
+        )
     with tempfile.TemporaryDirectory(prefix="plenora-oracle-tests-") as temporary:
         target = Path(temporary) / "tests"
         shutil.copytree(PYTHON_TESTS, target)
