@@ -38,7 +38,7 @@ pub fn driver_error(phase: ErrorPhase, error: &Error) -> DatabaseError {
 
 /// Classifica la variante del driver senza copiarne i campi, che possono
 /// contenere SQL, nomi remoti o altri dati non adatti all'errore pubblico.
-const fn classify_driver_error(error: &Error) -> (ErrorCategory, &'static str) {
+fn classify_driver_error(error: &Error) -> (ErrorCategory, &'static str) {
     match error {
         Error::InvalidPacketType(_)
         | Error::InvalidMessageType(_)
@@ -69,7 +69,19 @@ const fn classify_driver_error(error: &Error) -> (ErrorCategory, &'static str) {
             (ErrorCategory::Io, "connessione Oracle chiusa dal peer")
         }
         Error::ConnectionTimeout(_) => (ErrorCategory::Timeout, "connessione Oracle in timeout"),
-        Error::Io(_) => (ErrorCategory::Io, "trasporto Oracle non completato"),
+        Error::Io(error) => match error.kind() {
+            std::io::ErrorKind::InvalidData => {
+                (ErrorCategory::Io, "verifica TLS Oracle non completata")
+            }
+            std::io::ErrorKind::UnexpectedEof => (
+                ErrorCategory::Io,
+                "trasporto Oracle terminato prematuramente",
+            ),
+            std::io::ErrorKind::ConnectionReset => {
+                (ErrorCategory::Io, "trasporto Oracle reimpostato dal peer")
+            }
+            _ => (ErrorCategory::Io, "trasporto Oracle non completato"),
+        },
         Error::AuthenticationFailed(_)
         | Error::InvalidCredentials
         | Error::UnsupportedVerifierType(_) => (
