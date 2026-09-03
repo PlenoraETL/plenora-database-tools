@@ -116,6 +116,81 @@ def test_pool_url_options_are_control_fields_not_provider_dsn_content() -> None:
     assert "acquire_timeout_ms" not in config._raw_url
 
 
+def test_oracle_wrapper_forwards_pool_controls_to_the_native_factory(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def native_factory(*args, **kwargs):
+        captured.update(args=args, kwargs=kwargs)
+        return object()
+
+    monkeypatch.setattr(p, "_native_create_oracle_engine", native_factory)
+    p._create_oracle_engine(
+        "host",
+        "service",
+        "user",
+        "password",
+        1521,
+        None,
+        "disable",
+        max_connections=9,
+        acquire_timeout_ms=2_500,
+    )
+
+    assert captured == {
+        "args": (
+            "host",
+            "service",
+            "user",
+            "password",
+            1521,
+            None,
+            "disable",
+            9,
+            2_500,
+        ),
+        "kwargs": {},
+    }
+
+
+@pytest.mark.asyncio
+async def test_async_oracle_wrapper_forwards_pool_controls_to_the_native_factory(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def native_factory(*args, **kwargs):
+        captured.update(args=args, kwargs=kwargs)
+        return object()
+
+    monkeypatch.setattr(p, "_native_create_async_oracle_engine", native_factory)
+    await p._create_async_oracle_engine(
+        "host",
+        "service",
+        "user",
+        "password",
+        1521,
+        None,
+        "disable",
+        max_connections=9,
+        acquire_timeout_ms=2_500,
+    )
+
+    assert captured == {
+        "args": (
+            "host",
+            "service",
+            "user",
+            "password",
+            1521,
+            None,
+            "disable",
+            9,
+            2_500,
+        ),
+        "kwargs": {},
+    }
+
+
 def _family_config(provider, config):
     host, database, user, password, ca_pem = config()
     return p.EngineConfig(
