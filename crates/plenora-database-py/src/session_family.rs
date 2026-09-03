@@ -1,6 +1,6 @@
 //! Sessione sincrona provider-neutral esposta dal binding Python.
 //!
-//! `MySQL`, `MariaDB`, `SQL Server` e `Db2` condividono questa superficie;
+//! `MySQL`, `MariaDB`, `SQL Server`, `Oracle` e `Db2` condividono questa superficie;
 //! il provider resta dietro `dyn Provider`. SQL nativo, capability e dettagli
 //! transazionali rimangono specifici del prodotto, mentre i builder portabili
 //! attraversano il contratto comune.
@@ -41,6 +41,7 @@ use plenora_database_engine::{Engine, Session as EngineSession};
 #[cfg(feature = "db2")]
 use plenora_db_db2::{Db2Config, Db2Provider, Db2TlsMode};
 use plenora_db_mysql::{MariadbProvider, MysqlCertificatePolicy, MysqlConfig, MysqlProvider};
+use plenora_db_oracle::{OracleConfig, OracleProvider, OracleTlsMode};
 use plenora_db_sqlserver::{
     CertificatePolicy as SqlServerCertificatePolicy, SqlServerConfig, SqlServerProvider,
 };
@@ -710,6 +711,37 @@ pub(crate) fn db2_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provider>> {
     Ok(Arc::new(Db2Provider::new(config).map_err(to_py_err)?))
 }
 
+/// Costruisce Oracle dal medesimo endpoint strutturato delle altre factory.
+/// La CA è un path perché il driver la legge quando costruisce la sessione
+/// TCPS; il payload PEM non viene duplicato nel binding.
+pub(crate) fn oracle_provider(endpoint: Endpoint) -> PyResult<Arc<dyn Provider>> {
+    if endpoint.tls_ca_pem.is_some() {
+        return Err(PyRuntimeError::new_err(
+            "Oracle richiede tls_ca_path, non bytes PEM",
+        ));
+    }
+    let mut config = OracleConfig::new(&endpoint.host, &endpoint.database, &endpoint.user);
+    if let Some(port) = endpoint.port {
+        config = config.with_port(port);
+    }
+    if let Some(path) = endpoint.tls_ca_path {
+        let absolute = std::fs::canonicalize(path)
+            .map_err(|_| PyRuntimeError::new_err("CA Oracle non leggibile"))?;
+        config = config.with_private_ca_certificate(absolute);
+    }
+    config = match endpoint.tls_mode.as_str() {
+        "require" => config,
+        "disable" => config.with_tls_mode(OracleTlsMode::Disable),
+        _ => {
+            return Err(PyRuntimeError::new_err(
+                "tls_mode Oracle non riconosciuto. Valori: 'require' (default) | 'disable'",
+            ))
+        }
+    };
+    config = config.with_timeouts(Duration::from_secs(10), Duration::from_secs(30));
+    Ok(Arc::new(OracleProvider::new(config).map_err(to_py_err)?))
+}
+
 /// Apre una connessione MySQL e produce una `DatabaseSession`.
 ///
 /// Parametri:
@@ -951,6 +983,39 @@ pub fn connect_db2(
         acquire_timeout_ms: 10_000,
     })?;
     open_family_session(provider, secret, "IBM Db2 LUW", "connect_db2")
+}
+
+/// Apre una sessione Oracle thin, senza dipendenze OCI native.
+///
+/// # Errors
+///
+/// `PlenoraError` se configurazione, TCPS, autenticazione o probe falliscono.
+#[pyfunction]
+#[pyo3(signature = (host, service, user, password, port=None, tls_ca_path=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)]
+pub fn connect_oracle(
+    host: &str,
+    service: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_path: Option<PathBuf>,
+    tls_mode: &str,
+) -> PyResult<DatabaseSession> {
+    let secret = SecretString::new(password.to_owned());
+    let provider = oracle_provider(Endpoint {
+        host: host.to_owned(),
+        database: service.to_owned(),
+        user: user.to_owned(),
+        secret: secret.clone(),
+        port,
+        tls_ca_pem: None,
+        tls_ca_path,
+        tls_mode: tls_mode.to_owned(),
+        max_connections: 1,
+        acquire_timeout_ms: 10_000,
+    })?;
+    open_family_session(provider, secret, "Oracle", "connect_oracle")
 }
 
 /// Stub fail-closed dei wheel standard, che non incorporano il runtime ODBC.

@@ -89,6 +89,16 @@ def test_pool_config_is_explicit_validated_and_forwarded(monkeypatch) -> None:
     config = p.EngineConfig("db2", "host", "db", "user", "password", tls_mode="insecure_local")
     assert p.engine_from_url(config)["tls_mode"] == "disable"
 
+    with pytest.raises(ValueError, match="Oracle"):
+        p.EngineConfig("oracle", pool=pool)
+    monkeypatch.setattr(p, "_create_oracle_engine", lambda *args, **kwargs: (args, kwargs))
+    oracle = p.EngineConfig.from_url(
+        "oracle://user:password@host:1521/FREEPDB1?tls_mode=insecure_local"
+    )
+    args, kwargs = p.engine_from_url(oracle)
+    assert args == ("host", "FREEPDB1", "user", "password", 1521)
+    assert kwargs == {"tls_ca_path": None, "tls_mode": "disable"}
+
 
 def test_pool_url_options_are_control_fields_not_provider_dsn_content() -> None:
     config = p.EngineConfig.from_url(

@@ -52,12 +52,14 @@
 //! lifecycle; le factory `connect*` restano adapter compatibili sopra lo
 //! stesso percorso.
 
+pub mod arrow_write;
 pub mod engine;
 pub mod metadata;
 pub mod result;
 pub mod retry;
 pub mod runtime;
 pub mod statement;
+pub use arrow_write::{arrow_binary_value, arrow_parameter_value};
 pub use engine::{
     Engine, EngineOptions, EngineStatistics, OwnedSessionTransaction, Session, SessionRowStream,
     SessionTransaction,
@@ -720,6 +722,10 @@ fn validate_write_capability(mode: WriteMode, capabilities: &ProviderCapabilitie
         ))
     }
 }
+
+#[cfg(test)]
+#[path = "arrow_write_tests.rs"]
+mod arrow_write_tests;
 
 #[cfg(test)]
 #[path = "lib_tests.rs"]

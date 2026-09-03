@@ -6,7 +6,6 @@ use plenora_database_core::provider::{Inspection, SecretString};
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
 const LIST_CATALOGS_SQL: &str = "SELECT CURRENT SERVER FROM SYSIBM.SYSDUMMY1";
 const LIST_SCHEMAS_SQL: &str = "SELECT TRIM(SCHEMANAME) \
@@ -272,21 +271,16 @@ pub fn schema_token(
     columns: &[Db2Column],
     indexes: &[Db2Index],
 ) -> Result<String> {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let canonical = serde_json::to_vec(&(summary, columns, indexes)).map_err(|_| {
-        DatabaseError::new(
-            ErrorCategory::Internal,
-            ErrorPhase::Probe,
-            Some(ProviderKind::Db2),
-            "token schema Db2 non serializzabile",
-        )
-    })?;
-    let digest = Sha256::digest(canonical);
-    let mut encoded = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
+    let encoded =
+        plenora_database_core::fingerprint::canonical_json_sha256(&(summary, columns, indexes))
+            .map_err(|_| {
+                DatabaseError::new(
+                    ErrorCategory::Internal,
+                    ErrorPhase::Probe,
+                    Some(ProviderKind::Db2),
+                    "token schema Db2 non serializzabile",
+                )
+            })?;
     Ok(format!("sha256:{encoded}"))
 }
 

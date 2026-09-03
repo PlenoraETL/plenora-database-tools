@@ -1,7 +1,7 @@
 """Python SDK per plenora-database-tools.
 
-Motori raggiungibili: **PostgreSQL**, **MySQL**, **MariaDB**, **SQL Server** e
-**IBM Db2 LUW** tramite `EngineConfig`, `engine_from_url` e
+Motori raggiungibili: **PostgreSQL**, **MySQL**, **MariaDB**, **SQL Server**,
+**Oracle** e **IBM Db2 LUW** tramite `EngineConfig`, `engine_from_url` e
 `async_engine_from_url`. Non c'e selezione automatica fra i prodotti: chi
 dichiara un motore e finisce sull'altro viene rifiutato alla probe.
 
@@ -41,6 +41,7 @@ from ._native import (
 from ._native import (
     aconnect_mysql as _native_aconnect_mysql,
 )
+from ._native import aconnect_oracle as _native_aconnect_oracle
 from ._native import (
     aconnect_sqlserver as _native_aconnect_sqlserver,
 )
@@ -54,6 +55,7 @@ from ._native import (
 from ._native import (
     connect_mysql as _native_connect_mysql,
 )
+from ._native import connect_oracle as _native_connect_oracle
 from ._native import (
     connect_sqlserver as _native_connect_sqlserver,
 )
@@ -67,6 +69,7 @@ from ._native import (
 from ._native import (
     create_async_mysql_engine as _native_create_async_mysql_engine,
 )
+from ._native import create_async_oracle_engine as _native_create_async_oracle_engine
 from ._native import (
     create_async_sqlserver_engine as _native_create_async_sqlserver_engine,
 )
@@ -80,6 +83,7 @@ from ._native import (
 from ._native import (
     create_mysql_engine as _native_create_mysql_engine,
 )
+from ._native import create_oracle_engine as _native_create_oracle_engine
 from ._native import (
     create_sqlserver_engine as _native_create_sqlserver_engine,
 )
@@ -448,6 +452,22 @@ def _connect_db2(
     return _DatabaseSessionWrapper(native)
 
 
+def _connect_oracle(
+    host: str,
+    service: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> "_DatabaseSessionWrapper":
+    """Apre una sessione Oracle thin sincrona."""
+    native = _native_connect_oracle(
+        host, service, user, password, port, tls_ca_path, tls_mode
+    )
+    return _DatabaseSessionWrapper(native)
+
+
 class _DatabaseSessionWrapper(_BuilderFactory):
     """Wrapper Python-side che aggiunge `copy_from` con conversione
     automatica dell'input (pyarrow.Table / RecordBatch / list[dict] /
@@ -697,6 +717,22 @@ async def _aconnect_db2(
     """
     native = await _native_aconnect_db2(
         host, database, user, password, port, tls_ca_path, tls_mode
+    )
+    return _AsyncDatabaseSessionWrapper(native)
+
+
+async def _aconnect_oracle(
+    host: str,
+    service: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> "_AsyncDatabaseSessionWrapper":
+    """Apre una sessione Oracle thin asincrona."""
+    native = await _native_aconnect_oracle(
+        host, service, user, password, port, tls_ca_path, tls_mode
     )
     return _AsyncDatabaseSessionWrapper(native)
 
@@ -1049,6 +1085,38 @@ async def _create_async_db2_engine(
         port,
         tls_ca_path,
         tls_mode,
+    )
+    return AsyncEngine(native, _AsyncDatabaseSessionWrapper)
+
+
+def _create_oracle_engine(
+    host: str,
+    service: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> Engine:
+    """Crea un Engine Oracle thin."""
+    native = _native_create_oracle_engine(
+        host, service, user, password, port, tls_ca_path, tls_mode
+    )
+    return Engine(native, _DatabaseSessionWrapper)
+
+
+async def _create_async_oracle_engine(
+    host: str,
+    service: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> AsyncEngine:
+    """Crea la variante asyncio dell'Engine Oracle thin."""
+    native = await _native_create_async_oracle_engine(
+        host, service, user, password, port, tls_ca_path, tls_mode
     )
     return AsyncEngine(native, _AsyncDatabaseSessionWrapper)
 

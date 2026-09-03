@@ -22,6 +22,7 @@ python scripts\render_state.py
 | `plenora-database-testkit` | 3.0.0 |
 | `plenora-db-db2` | 3.0.0 |
 | `plenora-db-mysql` | 3.0.0 |
+| `plenora-db-oracle` | 3.0.0 |
 | `plenora-db-postgres` | 3.0.0 |
 | `plenora-db-sqlserver` | 3.0.0 |
 
@@ -52,41 +53,41 @@ risolverla qui sarebbe un'affermazione che il codice non fa.
 
 ### `reads`
 
-| reads | PostgreSQL | MySQL | MariaDB | SQL Server | IBM Db2 LUW |
-| --- | --- | --- | --- | --- | --- |
-| `streaming` | `true` | `true` | `true` | `true` | `true` |
-| `server_cursor` | `false` | `false` | `false` | `false` | `false` |
-| `pagination` | `true` | `true` | `true` | `true` | `true` |
-| `projection` | `true` | `true` | `true` | `true` | `true` |
-| `filter` | `true` | `true` | `true` | `true` | `true` |
-| `ordering` | `true` | `true` | `true` | `true` | `true` |
-| `resumable` | `true` | `true` | `true` | `true` | `true` |
+| reads | PostgreSQL | MySQL | MariaDB | SQL Server | Oracle Database Free | IBM Db2 LUW |
+| --- | --- | --- | --- | --- | --- | --- |
+| `streaming` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `server_cursor` | `false` | `false` | `false` | `false` | `true` | `false` |
+| `pagination` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `projection` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `filter` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `ordering` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `resumable` | `true` | `true` | `true` | `true` | `false` | `true` |
 
 ### `writes`
 
-| writes | PostgreSQL | MySQL | MariaDB | SQL Server | IBM Db2 LUW |
-| --- | --- | --- | --- | --- | --- |
-| `create` | `true` | `true` | `true` | `true` | `true` |
-| `append` | `true` | `true` | `true` | `true` | `true` |
-| `truncate_insert` | `true` | `false` | `false` | `true` | `false` |
-| `update` | `true` | `true` | `true` | `true` | `true` |
-| `upsert` | `true` | `true` | `true` | `true` | `true` |
-| `replace` | `true` | `true` | `true` | `true` | `true` |
-| `delete_by_keys` | `true` | `true` | `true` | `true` | `true` |
-| `bulk` | `true` | `true` | `true` | `true` | `true` |
-| `array_binding` | `false` | `false` | `false` | `false` | `true` |
-| `returning` | `false` | `false` | `false` | `false` | `false` |
-| `rollback_on_failure` | `true` | `true` | `true` | `true` | `true` |
+| writes | PostgreSQL | MySQL | MariaDB | SQL Server | Oracle Database Free | IBM Db2 LUW |
+| --- | --- | --- | --- | --- | --- | --- |
+| `create` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `append` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `truncate_insert` | `true` | `false` | `false` | `true` | `false` | `false` |
+| `update` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `upsert` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `replace` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `delete_by_keys` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `bulk` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `array_binding` | `false` | `false` | `false` | `false` | `false` | `true` |
+| `returning` | `false` | `false` | `false` | `false` | `false` | `false` |
+| `rollback_on_failure` | `true` | `true` | `true` | `true` | `true` | `true` |
 
 ### `transactions`
 
-| transactions | PostgreSQL | MySQL | MariaDB | SQL Server | IBM Db2 LUW |
-| --- | --- | --- | --- | --- | --- |
-| `single_transaction` | `true` | `true` | `true` | `true` | `true` |
-| `savepoints` | `true` | `true` | `true` | `true` | `true` |
-| `transactional_ddl` | `true` | `false` | `false` | `true` | `true` |
-| `staged_swap` | `false` | `false` | `false` | `true` | `false` |
-| `scope` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` |
+| transactions | PostgreSQL | MySQL | MariaDB | SQL Server | Oracle Database Free | IBM Db2 LUW |
+| --- | --- | --- | --- | --- | --- | --- |
+| `single_transaction` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `savepoints` | `true` | `true` | `true` | `true` | `true` | `true` |
+| `transactional_ddl` | `true` | `false` | `false` | `true` | `false` | `true` |
+| `staged_swap` | `false` | `false` | `false` | `true` | `false` | `false` |
+| `scope` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` |
 
 ## Sub-comandi del CLI
 
@@ -166,6 +167,7 @@ MySQL e MariaDB condividono un crate e restano quindi una riga sola.
 | PostgreSQL | 302 |
 | MySQL + MariaDB | 299 |
 | SQL Server | 151 |
+| Oracle Database Free | 18 |
 | IBM Db2 LUW | 61 |
 
 ### Famiglie del gate MySQL

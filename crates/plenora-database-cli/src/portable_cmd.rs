@@ -23,6 +23,7 @@ const DIALECTS: &[(&str, ProviderKind)] = &[
     ("mysql", ProviderKind::Mysql),
     ("mariadb", ProviderKind::Mariadb),
     ("sqlserver", ProviderKind::Sqlserver),
+    ("oracle", ProviderKind::Oracle),
     ("db2", ProviderKind::Db2),
 ];
 

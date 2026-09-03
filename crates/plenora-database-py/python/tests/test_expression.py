@@ -60,6 +60,7 @@ def test_alias_and_join_are_serialized_in_the_canonical_ir_shape() -> None:
         ("mysql", "?", "`"),
         ("mariadb", "?", "`"),
         ("sqlserver", "@p1", "["),
+        ("oracle", ":1", '"'),
         ("db2", "?", '"'),
     ),
 )
@@ -114,7 +115,9 @@ def test_bind_type_is_mandatory_and_the_ast_is_explicit() -> None:
         p.bind("unsafe", "INTEGER")
 
 
-@pytest.mark.parametrize("provider", ("postgres", "mysql", "mariadb", "sqlserver", "db2"))
+@pytest.mark.parametrize(
+    "provider", ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2")
+)
 def test_functions_grouping_having_and_predicates_use_the_canonical_ir(
     provider: str,
 ) -> None:
@@ -149,7 +152,9 @@ def test_functions_grouping_having_and_predicates_use_the_canonical_ir(
     assert names == ["pattern", "lower", "upper", "first", "second", "minimum"]
 
 
-@pytest.mark.parametrize("provider", ("postgres", "mysql", "mariadb", "sqlserver", "db2"))
+@pytest.mark.parametrize(
+    "provider", ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2")
+)
 def test_windows_subqueries_ctes_and_set_operations_compile_for_every_provider(
     provider: str,
 ) -> None:
@@ -289,7 +294,7 @@ def test_canonical_mutations_keep_values_outside_the_ir_and_lower_per_provider()
     )
     secret = "private-name-54e2"
 
-    for provider in ("postgres", "mysql", "mariadb", "sqlserver", "db2"):
+    for provider in ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"):
         sql, names, returns_rows = compile_relational_mutation(
             update.to_json(), provider
         )
@@ -315,7 +320,7 @@ def test_canonical_mutations_keep_values_outside_the_ir_and_lower_per_provider()
         )
         assert names == ["identity", "name"]
         assert returns_rows is True
-    for provider in ("mysql", "db2"):
+    for provider in ("mysql", "oracle", "db2"):
         with pytest.raises(p.PlenoraError):
             compile_relational_mutation(returning.to_json(), provider)
 
@@ -328,7 +333,7 @@ def test_canonical_mutations_keep_values_outside_the_ir_and_lower_per_provider()
         .on_conflict(users.c.id)
         .set(name=p.bind("updated_name", p.BindType.STRING))
     )
-    for provider in ("postgres", "mysql", "mariadb", "sqlserver", "db2"):
+    for provider in ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"):
         sql, names, returns_rows = compile_relational_mutation(
             upsert.to_json(), provider
         )

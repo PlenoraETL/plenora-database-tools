@@ -1,5 +1,5 @@
 //! Compilatore SQL per il `PortableStatement`. Supporta `PostgreSQL`, `MySQL`,
-//! `MariaDB`, `SQL Server` e `Db2`; gli altri provider fail-closed.
+//! `MariaDB`, `SQL Server`, `Oracle` e `Db2`; gli altri provider fail-closed.
 //!
 //! Design: unico compile pass con `DialectKind` dispatch sui punti dove
 //! il dialect diverge (placeholder `$N` vs `?`, quoting `"` vs `` ` ``,
@@ -37,6 +37,7 @@ pub fn compile_portable(kind: ProviderKind, statement: &PortableStatement) -> Re
         ProviderKind::Mysql => DialectKind::Mysql,
         ProviderKind::Mariadb => DialectKind::Mariadb,
         ProviderKind::Sqlserver => DialectKind::SqlServer,
+        ProviderKind::Oracle => DialectKind::Oracle,
         ProviderKind::Db2 => DialectKind::Db2,
         other => {
             return Err(DatabaseError::unsupported(
@@ -84,6 +85,9 @@ enum DialectKind {
     /// Db2 LUW: identificatori SQL standard, marker posizionali `?`, limite
     /// espresso con `FETCH FIRST` e upsert tramite `MERGE`.
     Db2,
+    /// Oracle: identificatori SQL standard, marker nominati per posizione
+    /// `:N`, limite `FETCH FIRST` e upsert atomico tramite `MERGE`.
+    Oracle,
 }
 
 /// La forma di scrittura a cui la clausola `RETURNING` si attacca.
@@ -137,6 +141,7 @@ impl CompileContext {
             // di cio che i due condividono e lunga, e ogni riga di questo file
             // che li tratta insieme e una riga in cui si somigliano davvero.
             DialectKind::Mysql | DialectKind::Mariadb | DialectKind::Db2 => "?".to_owned(),
+            DialectKind::Oracle => format!(":{}", self.params.len()),
             // Posizionale come gli altri, e con un nome: `tiberius` lega per
             // ordine e si aspetta `@P1`, `@P2`. Il numero e lo stesso di
             // PostgreSQL, la sintassi no.
@@ -159,7 +164,7 @@ impl From<DialectKind> for IdentifierDialect {
             // Il quoting e ANSI come PostgreSQL. Il limite di 63 byte resta
             // intenzionalmente conservativo finche il contratto pubblico di
             // `IdentifierDialect` non potra aggiungere Db2 in una nuova major.
-            DialectKind::Postgres | DialectKind::Db2 => Self::Postgres,
+            DialectKind::Postgres | DialectKind::Oracle | DialectKind::Db2 => Self::Postgres,
             // Il quoting: backtick raddoppiato, identico sui due prodotti.
             DialectKind::Mysql | DialectKind::Mariadb => Self::Mysql,
             // Parentesi quadre, con la chiusa raddoppiata. La regola c'era
@@ -222,12 +227,16 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                 DialectKind::Db2 if *semantics == SpatialSemantics::Geometry => {
                     Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW({value})), {srid})"))
                 }
+                DialectKind::Oracle if *semantics == SpatialSemantics::Geometry => Ok(format!(
+                    "MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(TO_BLOB({value}), {srid})"
+                )),
                 _ => Err(DatabaseError::unsupported(
                     match ctx.dialect {
                         DialectKind::Mysql => ProviderKind::Mysql,
                         DialectKind::Mariadb => ProviderKind::Mariadb,
                         DialectKind::SqlServer => ProviderKind::Sqlserver,
                         DialectKind::Db2 => ProviderKind::Db2,
+                        DialectKind::Oracle => ProviderKind::Oracle,
                         DialectKind::Postgres => unreachable!(),
                     },
                     crate::ErrorPhase::Prepare,
@@ -351,6 +360,47 @@ fn compile_spatial(
         }
         DialectKind::SqlServer => compile_spatial_sqlserver(&col, predicate, reference, ctx),
         DialectKind::Db2 => compile_spatial_db2(&col, predicate, reference, ctx),
+        DialectKind::Oracle => compile_spatial_oracle(&col, predicate, reference, ctx),
+    }
+}
+
+fn compile_spatial_oracle(
+    col: &str,
+    predicate: &SpatialPredicate,
+    reference: &SpatialReference,
+    ctx: &mut CompileContext,
+) -> Result<String> {
+    reference.validate()?;
+    spatial_policy::validate_predicate(ProviderKind::Oracle, predicate, reference)?;
+    let geometry = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
+    let srid = i32::try_from(reference.srid).map_err(|_| {
+        DatabaseError::invalid_plan(format!(
+            "SRID {} eccede il range i32 supportato da Oracle Spatial (max {})",
+            reference.srid,
+            i32::MAX
+        ))
+    })?;
+    let srid = ctx.bind(ParameterValue::I32(srid));
+    let reference = format!("MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(TO_BLOB({geometry}), {srid})");
+    match predicate {
+        SpatialPredicate::Intersects => Ok(format!(
+            "(MDSYS.SDO_RELATE({col}, {reference}, 'mask=ANYINTERACT') = 'TRUE')"
+        )),
+        SpatialPredicate::Contains => Ok(format!(
+            "(MDSYS.SDO_RELATE({col}, {reference}, 'mask=CONTAINS') = 'TRUE')"
+        )),
+        SpatialPredicate::Within => Ok(format!(
+            "(MDSYS.SDO_RELATE({col}, {reference}, 'mask=INSIDE') = 'TRUE')"
+        )),
+        SpatialPredicate::BoundingBox => Ok(format!(
+            "(MDSYS.SDO_FILTER({col}, {reference}, 'querytype=WINDOW') = 'TRUE')"
+        )),
+        SpatialPredicate::DWithin { distance_meters } => {
+            let distance = ctx.bind(ParameterValue::F64(*distance_meters));
+            Ok(format!(
+                "(MDSYS.SDO_WITHIN_DISTANCE({col}, {reference}, 'distance=' || {distance} || ' unit=M') = 'TRUE')"
+            ))
+        }
     }
 }
 
@@ -568,7 +618,7 @@ fn compile_order_by(order_by: &[OrderBy], dialect: DialectKind) -> Result<String
             // "NULL first per ASC, last per DESC" — non emettiamo la
             // clausola per MySQL (semantic degradation esplicita).
             if let Some(nulls) = o.nulls {
-                if dialect == DialectKind::Postgres {
+                if matches!(dialect, DialectKind::Postgres | DialectKind::Oracle) {
                     clause.push_str(match nulls {
                         Nulls::First => " NULLS FIRST",
                         Nulls::Last => " NULLS LAST",
@@ -602,6 +652,13 @@ fn compile_returning(
             ProviderKind::Db2,
             format!(
                 "Db2 non espone RETURNING nella forma portable {}: usa una SELECT esplicita post-DML",
+                form.label()
+            ),
+        )),
+        DialectKind::Oracle => Some((
+            ProviderKind::Oracle,
+            format!(
+                "Oracle richiede bind OUT per RETURNING nella forma {}: usa una SELECT esplicita post-DML",
                 form.label()
             ),
         )),
@@ -739,7 +796,7 @@ fn compile_select(s: &SelectStatement, ctx: &mut CompileContext) -> Result<Strin
     if let Some(limit) = s.limit {
         match ctx.dialect {
             DialectKind::SqlServer => {}
-            DialectKind::Db2 => {
+            DialectKind::Db2 | DialectKind::Oracle => {
                 write!(sql, " FETCH FIRST {limit} ROWS ONLY").expect("write String");
             }
             _ => write!(sql, " LIMIT {limit}").expect("write String"),
@@ -959,14 +1016,84 @@ fn compile_upsert_db2(
     rows: &[Vec<String>],
     ctx: &mut CompileContext,
 ) -> Result<String> {
-    compile_returning(&s.returning, ctx.dialect, ReturningForm::Upsert)?;
-
     let source_columns = cols.join(", ");
     let source_rows = rows
         .iter()
         .map(|row| format!("({})", row.join(", ")))
         .collect::<Vec<_>>()
         .join(", ");
+    let source = format!("(VALUES {source_rows}) AS S ({source_columns})");
+    compile_upsert_merge(
+        s,
+        table,
+        cols,
+        &source,
+        MergeSyntax {
+            target_alias: " AS T",
+            predicate_parentheses: false,
+            provider: ProviderKind::Db2,
+        },
+        ctx,
+    )
+}
+
+/// Oracle usa lo stesso `MERGE` atomico di Db2, ma costruisce la source con
+/// `SELECT ... FROM DUAL` e non ammette `AS` sull'alias della tabella target.
+fn compile_upsert_oracle(
+    s: &UpsertStatement,
+    table: &str,
+    cols: &[String],
+    rows: &[Vec<String>],
+    ctx: &mut CompileContext,
+) -> Result<String> {
+    let source_rows = rows
+        .iter()
+        .map(|row| {
+            let projection = row
+                .iter()
+                .zip(cols)
+                .map(|(value, column)| format!("{value} AS {column}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("SELECT {projection} FROM DUAL")
+        })
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    let source = format!("({source_rows}) S");
+    compile_upsert_merge(
+        s,
+        table,
+        cols,
+        &source,
+        MergeSyntax {
+            target_alias: " T",
+            predicate_parentheses: true,
+            provider: ProviderKind::Oracle,
+        },
+        ctx,
+    )
+}
+
+/// Compone le clausole comuni del `MERGE` usato da Db2 e Oracle. La source e
+/// la presenza di `AS` restano parametri perché sono divergenze sintattiche;
+/// validazione del conflict target e semantica degli assignment restano una
+/// sola implementazione.
+#[derive(Clone, Copy)]
+struct MergeSyntax {
+    target_alias: &'static str,
+    predicate_parentheses: bool,
+    provider: ProviderKind,
+}
+
+fn compile_upsert_merge(
+    s: &UpsertStatement,
+    table: &str,
+    cols: &[String],
+    source: &str,
+    syntax: MergeSyntax,
+    ctx: &mut CompileContext,
+) -> Result<String> {
+    compile_returning(&s.returning, ctx.dialect, ReturningForm::Upsert)?;
     let source_column = |name: &str| -> Result<String> {
         if !s.columns.iter().any(|candidate| candidate == name) {
             return Err(DatabaseError::invalid_plan(format!(
@@ -988,9 +1115,15 @@ fn compile_upsert_db2(
         .map(|column| format!("S.{column}"))
         .collect::<Vec<_>>()
         .join(", ");
+    let predicate = predicates?.join(" AND ");
+    let predicate = if syntax.predicate_parentheses {
+        format!("({predicate})")
+    } else {
+        predicate
+    };
     let mut sql = format!(
-        "MERGE INTO {table} AS T USING (VALUES {source_rows}) AS S ({source_columns}) ON {}",
-        predicates?.join(" AND ")
+        "MERGE INTO {table}{} USING {source} ON {predicate}",
+        syntax.target_alias
     );
     if !s.update_on_conflict.is_empty() {
         let assignments: Result<Vec<_>> = s
@@ -1005,9 +1138,9 @@ fn compile_upsert_db2(
                     }
                     Expression::SpatialValue { .. } => {
                         return Err(DatabaseError::unsupported(
-                            ProviderKind::Db2,
+                            syntax.provider,
                             crate::ErrorPhase::Prepare,
-                            "bind spatial Db2 non qualificato nell'upsert",
+                            "bind spatial non qualificato nell'upsert MERGE",
                         ));
                     }
                 };
@@ -1023,7 +1156,8 @@ fn compile_upsert_db2(
     }
     write!(
         sql,
-        " WHEN NOT MATCHED THEN INSERT ({source_columns}) VALUES ({insert_values})"
+        " WHEN NOT MATCHED THEN INSERT ({}) VALUES ({insert_values})",
+        cols.join(", ")
     )
     .expect("write String");
     Ok(sql)
@@ -1075,6 +1209,9 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
     if ctx.dialect == DialectKind::Db2 {
         return compile_upsert_db2(s, &table, &cols, &rows, ctx);
     }
+    if ctx.dialect == DialectKind::Oracle {
+        return compile_upsert_oracle(s, &table, &cols, &rows, ctx);
+    }
     let mut sql = format!(
         "INSERT INTO {table} ({cols_sql}) VALUES {}",
         rows.iter()
@@ -1114,6 +1251,7 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
         // altro.
         DialectKind::SqlServer => unreachable!("l'upsert T-SQL esce prima di questo match"),
         DialectKind::Db2 => unreachable!("l'upsert Db2 esce prima di questo match"),
+        DialectKind::Oracle => unreachable!("l'upsert Oracle esce prima di questo match"),
         DialectKind::Mysql | DialectKind::Mariadb => {
             // MySQL: ON DUPLICATE KEY UPDATE. Il conflict_target NON è
             // esplicito in MySQL (usa la primary key / unique index

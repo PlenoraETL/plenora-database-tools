@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "plenora-database"
 version = "3.0.0"
-description = "Python SDK per plenora-database-tools (Postgres/PostGIS, MySQL, MariaDB, SQL Server, IBM Db2 LUW)"
+description = "Python SDK per plenora-database-tools (Postgres/PostGIS, MySQL, MariaDB, SQL Server, Oracle, IBM Db2 LUW)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Proprietary" }

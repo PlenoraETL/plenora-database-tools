@@ -187,3 +187,42 @@ fn db2_accepts_only_the_qualified_geometry_predicates() {
         crate::ErrorCategory::Unsupported
     );
 }
+
+#[test]
+fn oracle_accepts_geometry_predicates_and_bounds_metric_distance() {
+    let geographic = ref_with(4326, SpatialSemantics::Geometry);
+    for predicate in [
+        SpatialPredicate::Intersects,
+        SpatialPredicate::Contains,
+        SpatialPredicate::Within,
+        SpatialPredicate::BoundingBox,
+        SpatialPredicate::DWithin {
+            distance_meters: 10.0,
+        },
+    ] {
+        validate_predicate(ProviderKind::Oracle, &predicate, &geographic)
+            .expect("predicato Oracle qualificato");
+    }
+    assert_eq!(
+        validate_predicate(
+            ProviderKind::Oracle,
+            &SpatialPredicate::DWithin {
+                distance_meters: 10.0,
+            },
+            &ref_with(3857, SpatialSemantics::Geometry),
+        )
+        .expect_err("unita proiettata Oracle non dedotta")
+        .category,
+        crate::ErrorCategory::Unsupported
+    );
+    assert_eq!(
+        validate_predicate(
+            ProviderKind::Oracle,
+            &SpatialPredicate::Intersects,
+            &ref_with(4326, SpatialSemantics::Geography),
+        )
+        .expect_err("geography Oracle")
+        .category,
+        crate::ErrorCategory::Unsupported
+    );
+}

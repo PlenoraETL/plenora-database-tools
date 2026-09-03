@@ -644,6 +644,46 @@ pub fn aconnect_db2<'py>(
     )
 }
 
+/// Factory async Oracle thin.
+///
+/// # Errors
+///
+/// Come [`aconnect_mysql`], con CA persistente e plaintext solo tramite
+/// `tls_mode="disable"` esplicito.
+#[pyfunction]
+#[pyo3(signature = (host, service, user, password, port=None, tls_ca_path=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)]
+pub fn aconnect_oracle<'py>(
+    py: Python<'py>,
+    host: &str,
+    service: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_path: Option<std::path::PathBuf>,
+    tls_mode: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    let secret = SecretString::new(password.to_owned());
+    open_async_endpoint(
+        py,
+        crate::session_family::Endpoint {
+            host: host.to_owned(),
+            database: service.to_owned(),
+            user: user.to_owned(),
+            secret,
+            port,
+            tls_ca_pem: None,
+            tls_ca_path,
+            tls_mode: tls_mode.to_owned(),
+            max_connections: 1,
+            acquire_timeout_ms: 10_000,
+        },
+        crate::session_family::oracle_provider,
+        "Oracle",
+        "aconnect_oracle",
+    )
+}
+
 /// Stub async fail-closed dei wheel senza feature `db2`.
 #[pyfunction]
 #[pyo3(signature = (host, database, user, password, port=None, tls_ca_path=None, tls_mode="require"))]

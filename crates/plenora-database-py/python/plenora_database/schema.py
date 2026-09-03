@@ -157,7 +157,7 @@ def compare_schema(desired: OrmMetadata, observed: MetaData) -> SchemaDiff:
     if not isinstance(desired, OrmMetadata) or not isinstance(observed, MetaData):
         raise TypeError("compare_schema richiede OrmMetadata e MetaData")
     provider = observed.provider
-    if provider not in {"postgres", "mysql", "mariadb", "sqlserver", "db2"}:
+    if provider not in {"postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"}:
         raise OrmMappingError("provider schema non qualificato")
 
     desired_by_key = {

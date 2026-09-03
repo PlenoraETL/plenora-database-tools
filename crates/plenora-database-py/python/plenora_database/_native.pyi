@@ -79,6 +79,16 @@ def create_async_db2_engine(
     port: int | None = None, tls_ca_path: str | None = None,
     tls_mode: str = "require",
 ) -> Any: ...
+def create_oracle_engine(
+    host: str, service: str, user: str, password: str,
+    port: int | None = None, tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> Engine: ...
+def create_async_oracle_engine(
+    host: str, service: str, user: str, password: str,
+    port: int | None = None, tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> Any: ...
 
 # PFM CHG-002: SessionContext transaction-local.
 class SessionContext:
@@ -199,6 +209,26 @@ def connect_db2(
 def aconnect_db2(
     host: str,
     database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> Any: ...
+
+def connect_oracle(
+    host: str,
+    service: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tls_ca_path: str | None = None,
+    tls_mode: str = "require",
+) -> DatabaseSession: ...
+
+def aconnect_oracle(
+    host: str,
+    service: str,
     user: str,
     password: str,
     port: int | None = None,

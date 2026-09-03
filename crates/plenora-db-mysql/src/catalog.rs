@@ -3,8 +3,6 @@ use mysql_async::prelude::FromValue;
 use mysql_async::{Params, Row, Value};
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::fmt::Write;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -546,14 +544,10 @@ fn schema_token(
     // Indici inclusi nel token: una modifica agli indici (es. drop del PK,
     // aggiunta di un unique index) fra prepare ed esecuzione deve cambiare
     // il token e non passare inosservata al preflight Upsert.
-    let bytes = serde_json::to_vec(&(schema, name, kind, engine, columns, indexes))
-        .map_err(|_| mapping_error("serializzazione token schema fallita"))?;
-    let digest = Sha256::digest(bytes);
-    let mut encoded = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        write!(&mut encoded, "{byte:02x}")
-            .map_err(|_| mapping_error("codifica token schema fallita"))?;
-    }
+    let encoded = plenora_database_core::fingerprint::canonical_json_sha256(&(
+        schema, name, kind, engine, columns, indexes,
+    ))
+    .map_err(|_| mapping_error("serializzazione token schema fallita"))?;
     Ok(MysqlSchemaToken(encoded))
 }
 

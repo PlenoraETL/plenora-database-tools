@@ -238,7 +238,7 @@ SDK Python / CLI / API Rust
  lowering e bind del provider
             |
             v
- PostgreSQL / MySQL / MariaDB / SQL Server / Db2
+ PostgreSQL / MySQL / MariaDB / SQL Server / Oracle / Db2
 ```
 
 L'ORM-like è un layer applicativo sopra lo stesso IR; non introduce un secondo
@@ -307,6 +307,7 @@ python scripts\check_mysql_reference.py     # gate MySQL live
 python scripts\check_postgres_reference.py  # gate PostgreSQL live
 python scripts\check_age_reference.py       # gate AGE 1.7.0 / PostgreSQL 18 live
 python scripts\check_sqlserver_reference.py # gate SQL Server live
+python scripts\check_oracle_reference.py    # gate Oracle Database Free full live
 python scripts\check_db2_reference.py       # gate IBM Db2 LUW live
 python scripts\check_sdk_campaign.py        # wheel + fixture relazionali e AGE
 cargo test --workspace -- --skip live_      # unit, senza server

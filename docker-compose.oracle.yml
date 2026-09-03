@@ -1,0 +1,28 @@
+# Fixture Oracle Free AMD64 fissata per digest. Il listener di test usa TCP
+# esplicito; le prove TCPS hanno una fixture separata e non possono essere
+# inferite da questo servizio.
+name: plenora-oracle
+
+services:
+  oracle:
+    image: ghcr.io/gvenzl/oracle-free@sha256:7b15d75e6c834980805a5224aa711e6ffc7cd0973d62f2d946448810f6bb2cd2
+    platform: linux/amd64
+    container_name: plenora-oracle
+    environment:
+      ORACLE_PASSWORD: Oracle_Test_2026
+      APP_USER: plenora
+      APP_USER_PASSWORD: Plenora_Test_2026
+    ports:
+      - "127.0.0.1:1521:1521"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+      start_period: 180s
+    volumes:
+      - oracle_data:/opt/oracle/oradata
+    restart: "no"
+
+volumes:
+  oracle_data:

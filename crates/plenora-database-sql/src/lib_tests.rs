@@ -311,6 +311,29 @@ fn mysql_renders_integer_parameters_with_its_supported_cast_type() {
 }
 
 #[test]
+fn oracle_converts_numeric_wire_booleans_explicitly() {
+    let mut query = simple_query();
+    query.source = None;
+    query.projection = vec![QueryProjection {
+        expression: QueryExpression::TypedParameter {
+            name: "flag".to_owned(),
+            parameter_type: QueryParameterType::Boolean,
+        },
+        alias: None,
+    }];
+    let rendered = Renderer::new(
+        Dialect::Oracle,
+        DialectCapabilities {
+            spatial_intersects: false,
+        },
+    )
+    .render_query(&query)
+    .expect("Oracle converte il bind numerico in BOOLEAN");
+    assert_eq!(rendered.sql, "SELECT TO_BOOLEAN(:1) FROM DUAL");
+    assert_eq!(rendered.binds[0].name, "flag");
+}
+
+#[test]
 fn db2_correlates_an_unaliased_schema_qualified_table() {
     let mut query = simple_query();
     query.source = Some(QuerySource {
@@ -1134,7 +1157,8 @@ fn oracle_converts_wkb_and_db2_refuses_to_invent_an_srid() {
     .render_select(&select)
     .expect("Oracle spatial")
     .sql;
-    assert!(oracle.contains("SDO_UTIL.FROM_WKBGEOMETRY(:1)"));
+    assert!(oracle.contains("SDO_UTIL.FROM_WKBGEOMETRY(:1,"));
+    assert!(!oracle.contains("TO_BLOB"));
     let error = Renderer::new(
         Dialect::Db2,
         DialectCapabilities {

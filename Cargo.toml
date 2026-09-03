@@ -9,6 +9,7 @@ members = [
     "crates/plenora-db-sqlserver",
     "crates/plenora-db-mysql",
     "crates/plenora-db-db2",
+    "crates/plenora-db-oracle",
     "crates/plenora-database-cli",
     "crates/plenora-database-py",
 ]
@@ -65,6 +66,9 @@ mysql_common = { version = "=0.37.3", default-features = false }
 # DB2 usa il driver manager ODBC dinamico. Niente feature `prompt` (UI) e
 # niente unixODBC statico: il runtime IBM resta un prerequisito separato.
 odbc-api = { version = "=29.0.0", default-features = false, features = ["odbc_version_3_80"] }
+# Driver thin asincrono: parla TNS senza Oracle Instant Client, quindi il
+# supporto Oracle non introduce una seconda famiglia di wheel native.
+oracle-rs = "=0.1.7"
 rustls = { version = "=0.23.35", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "=2.2.0"
 tokio-postgres-rustls = { version = "=0.14.0", features = ["ring", "webpki-roots"] }
@@ -78,6 +82,7 @@ plenora-db-postgres = { path = "crates/plenora-db-postgres" }
 plenora-db-sqlserver = { path = "crates/plenora-db-sqlserver" }
 plenora-db-mysql = { path = "crates/plenora-db-mysql" }
 plenora-db-db2 = { path = "crates/plenora-db-db2" }
+plenora-db-oracle = { path = "crates/plenora-db-oracle" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -453,6 +453,24 @@ async def _aconnect_db2(
     tls_ca_path: str | None = ...,
     tls_mode: str = "require",
 ) -> _AsyncDatabaseSessionWrapper: ...
+def _connect_oracle(
+    host: str,
+    service: str,
+    user: str,
+    password: str,
+    port: int | None = ...,
+    tls_ca_path: str | None = ...,
+    tls_mode: str = "require",
+) -> _DatabaseSessionWrapper: ...
+async def _aconnect_oracle(
+    host: str,
+    service: str,
+    user: str,
+    password: str,
+    port: int | None = ...,
+    tls_ca_path: str | None = ...,
+    tls_mode: str = "require",
+) -> _AsyncDatabaseSessionWrapper: ...
 def _create_mysql_engine(
     host: str,
     database: str,
@@ -537,6 +555,24 @@ def _create_db2_engine(
 async def _create_async_db2_engine(
     host: str,
     database: str,
+    user: str,
+    password: str,
+    port: int | None = ...,
+    tls_ca_path: str | None = ...,
+    tls_mode: str = "require",
+) -> AsyncEngine[_AsyncDatabaseSessionWrapper]: ...
+def _create_oracle_engine(
+    host: str,
+    service: str,
+    user: str,
+    password: str,
+    port: int | None = ...,
+    tls_ca_path: str | None = ...,
+    tls_mode: str = "require",
+) -> Engine[_DatabaseSessionWrapper]: ...
+async def _create_async_oracle_engine(
+    host: str,
+    service: str,
     user: str,
     password: str,
     port: int | None = ...,

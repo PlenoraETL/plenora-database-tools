@@ -253,6 +253,7 @@ fn a_provider_without_a_dialect_is_refused_and_names_itself() {
                 | ProviderKind::Mysql
                 | ProviderKind::Mariadb
                 | ProviderKind::Sqlserver
+                | ProviderKind::Oracle
                 | ProviderKind::Db2
         );
         match compiled {
@@ -311,6 +312,52 @@ fn db2_uses_ansi_quoting_positional_markers_and_fetch_first() {
         "SELECT \"id\", \"status\" FROM \"app\".\"work_order\" WHERE \"tenant_id\" = ? ORDER BY \"id\" ASC FETCH FIRST 25 ROWS ONLY"
     );
     assert_eq!(compiled.params, vec![ParameterValue::I64(42)]);
+}
+
+#[test]
+fn oracle_uses_numbered_binds_ansi_quoting_and_fetch_first() {
+    let stmt = select("work_order", vec!["id", "status"])
+        .schema("app")
+        .where_(eq("tenant_id", ParameterValue::I64(42)))
+        .order_by("id", Direction::Asc)
+        .limit(25)
+        .into_statement();
+    let compiled = compile_portable(ProviderKind::Oracle, &stmt).expect("select Oracle");
+    assert_eq!(
+        compiled.sql,
+        "SELECT \"id\", \"status\" FROM \"app\".\"work_order\" WHERE \"tenant_id\" = :1 ORDER BY \"id\" ASC FETCH FIRST 25 ROWS ONLY"
+    );
+    assert_eq!(compiled.params, vec![ParameterValue::I64(42)]);
+}
+
+#[test]
+fn oracle_upsert_reuses_the_common_merge_contract() {
+    let stmt = PortableStatement::Upsert(UpsertStatement {
+        table: TableRef::qualified("app", "cache"),
+        columns: vec!["id".into(), "value".into()],
+        values: vec![vec![
+            Expression::literal(ParameterValue::I64(1)),
+            Expression::literal(ParameterValue::String("one".into())),
+        ]],
+        conflict_target: vec!["id".into()],
+        update_on_conflict: vec![("value".into(), Expression::Column("value".into()))],
+        returning: Vec::new(),
+    });
+    let compiled = compile_portable(ProviderKind::Oracle, &stmt).expect("merge Oracle");
+    assert_eq!(
+        compiled.sql,
+        "MERGE INTO \"app\".\"cache\" T USING (SELECT :1 AS \"id\", :2 AS \"value\" FROM DUAL) S ON (T.\"id\" = S.\"id\") WHEN MATCHED THEN UPDATE SET T.\"value\" = T.\"value\" WHEN NOT MATCHED THEN INSERT (\"id\", \"value\") VALUES (S.\"id\", S.\"value\")"
+    );
+    assert_eq!(compiled.params.len(), 2);
+
+    let PortableStatement::Upsert(mut returning) = stmt else {
+        unreachable!()
+    };
+    returning.returning = vec!["id".into()];
+    let error = compile_portable(ProviderKind::Oracle, &PortableStatement::Upsert(returning))
+        .expect_err("RETURNING Oracle richiede bind OUT");
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+    assert!(error.message.contains("bind OUT"), "{}", error.message);
 }
 
 #[test]
@@ -841,6 +888,33 @@ fn spatial_db2_uses_integrated_geometry_and_hex_binary_binding() {
     assert_eq!(
         compiled.sql,
         "SELECT \"id\" FROM \"features\" WHERE (ST_INTERSECTS(\"shape\", ST_GEOMETRY(BLOB(HEXTORAW(?)), ?)) = 1)"
+    );
+    assert_eq!(
+        compiled.params,
+        vec![ParameterValue::Bytes(bytes), ParameterValue::I32(4326)]
+    );
+}
+
+#[test]
+fn spatial_oracle_uses_sdo_geometry_with_bound_wkb_and_srid() {
+    use crate::geometry::{Dimensions, SpatialSemantics};
+    let bytes = ewkb_point_2d(4326);
+    let statement = select("features", vec!["id"])
+        .where_(spatial(
+            "shape",
+            SpatialPredicate::Intersects,
+            SpatialReference {
+                ewkb: bytes.clone(),
+                srid: 4326,
+                dimensions: Dimensions::Xy,
+                semantics: SpatialSemantics::Geometry,
+            },
+        ))
+        .into_statement();
+    let compiled = compile_portable(ProviderKind::Oracle, &statement).expect("spatial Oracle");
+    assert_eq!(
+        compiled.sql,
+        "SELECT \"id\" FROM \"features\" WHERE (MDSYS.SDO_RELATE(\"shape\", MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(TO_BLOB(:1), :2), 'mask=ANYINTERACT') = 'TRUE')"
     );
     assert_eq!(
         compiled.params,

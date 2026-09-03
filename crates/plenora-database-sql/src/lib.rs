@@ -1128,11 +1128,15 @@ impl Renderer {
         parameter_type: plenora_database_core::relational::QueryParameterType,
         binds: &mut Vec<BindParameter>,
     ) -> String {
-        format!(
-            "CAST({} AS {})",
-            self.bind(name, binds),
-            self.render_parameter_type(parameter_type)
-        )
+        let value = self.bind(name, binds);
+        if self.dialect == Dialect::Oracle && parameter_type == QueryParameterType::Boolean {
+            format!("TO_BOOLEAN({value})")
+        } else {
+            format!(
+                "CAST({value} AS {})",
+                self.render_parameter_type(parameter_type)
+            )
+        }
     }
 
     fn render_arithmetic(
@@ -1159,11 +1163,15 @@ impl Renderer {
         target_type: QueryParameterType,
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
-        Ok(format!(
-            "CAST({} AS {})",
-            self.render_query_expression(expression, binds)?,
-            self.render_parameter_type(target_type)
-        ))
+        let value = self.render_query_expression(expression, binds)?;
+        if self.dialect == Dialect::Oracle && target_type == QueryParameterType::Boolean {
+            Ok(format!("TO_BOOLEAN({value})"))
+        } else {
+            Ok(format!(
+                "CAST({value} AS {})",
+                self.render_parameter_type(target_type)
+            ))
+        }
     }
 
     fn render_case(
@@ -1210,6 +1218,9 @@ impl Renderer {
                 // driver CLI lo converte nella rappresentazione esadecimale.
                 Ok(format!("ST_ASBINARY({value})"))
             }
+            (Dialect::Oracle, SpatialSemantics::Geometry) => {
+                Ok(format!("MDSYS.SDO_UTIL.TO_WKBGEOMETRY({value})"))
+            }
             _ => Err(DatabaseError::unsupported(
                 self.provider_kind(),
                 ErrorPhase::Prepare,
@@ -1245,6 +1256,9 @@ impl Renderer {
             (Dialect::Db2, SpatialSemantics::Geometry) => {
                 Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW({value})), {srid})"))
             }
+            (Dialect::Oracle, SpatialSemantics::Geometry) => {
+                Ok(format!("MDSYS.SDO_UTIL.FROM_WKBGEOMETRY({value}, {srid})"))
+            }
             _ => Err(DatabaseError::unsupported(
                 self.provider_kind(),
                 ErrorPhase::Prepare,
@@ -1258,7 +1272,6 @@ impl Renderer {
             QueryParameterType::Boolean => match self.dialect {
                 Dialect::Mysql => "SIGNED",
                 Dialect::SqlServer => "BIT",
-                Dialect::Oracle => "NUMBER(1)",
                 _ => "BOOLEAN",
             },
             QueryParameterType::Integer => match self.dialect {
@@ -1543,7 +1556,9 @@ impl Renderer {
                 "AST spatial non abilitato per il dialect",
             ));
         }
-        if function == SpatialFunction::DWithin && self.dialect != Dialect::Postgres {
+        if function == SpatialFunction::DWithin
+            && !matches!(self.dialect, Dialect::Postgres | Dialect::Oracle)
+        {
             return Err(DatabaseError::unsupported(
                 self.provider_kind(),
                 ErrorPhase::Prepare,
@@ -1552,6 +1567,9 @@ impl Renderer {
         }
         if self.dialect == Dialect::SqlServer {
             return self.render_sql_server_spatial_function(function, arguments, binds);
+        }
+        if self.dialect == Dialect::Oracle {
+            return self.render_oracle_spatial_function(function, arguments, binds);
         }
         let rendered = arguments
             .iter()
@@ -1598,6 +1616,67 @@ impl Renderer {
             dialect_spatial_name(self.dialect, function),
             rendered.join(", ")
         ))
+    }
+
+    fn render_oracle_spatial_function(
+        &self,
+        function: SpatialFunction,
+        arguments: &[QueryExpression],
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        let argument = |index: usize, binds: &mut Vec<BindParameter>| -> Result<String> {
+            let value = arguments.get(index).ok_or_else(|| {
+                DatabaseError::invalid_plan("funzione spatial Oracle con arieta incompleta")
+            })?;
+            self.render_query_expression(value, binds)
+        };
+        let left = argument(0, binds)?;
+        let spatial_argument = |index: usize, binds: &mut Vec<BindParameter>| -> Result<String> {
+            let expression = arguments.get(index).ok_or_else(|| {
+                DatabaseError::invalid_plan("funzione spatial Oracle con arieta incompleta")
+            })?;
+            let rendered = self.render_query_expression(expression, binds)?;
+            if matches!(
+                expression,
+                QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. }
+            ) {
+                Ok(format!(
+                    "MDSYS.SDO_UTIL.FROM_WKBGEOMETRY({rendered}, ({left}).SDO_SRID)"
+                ))
+            } else {
+                Ok(rendered)
+            }
+        };
+        match function {
+            SpatialFunction::Srid => Ok(format!("CAST(({left}).SDO_SRID AS NUMBER(10))")),
+            SpatialFunction::Dimensions => {
+                Ok(format!("CAST(({left}).ST_CoordDim() AS NUMBER(10))"))
+            }
+            SpatialFunction::Intersects | SpatialFunction::Contains | SpatialFunction::Within => {
+                let right = spatial_argument(1, binds)?;
+                let mask = match function {
+                    SpatialFunction::Intersects => "ANYINTERACT",
+                    SpatialFunction::Contains => "CONTAINS",
+                    SpatialFunction::Within => "INSIDE",
+                    _ => unreachable!(),
+                };
+                Ok(format!(
+                    "(MDSYS.SDO_RELATE({left}, {right}, 'mask={mask}') = 'TRUE')"
+                ))
+            }
+            SpatialFunction::DWithin => {
+                let right = spatial_argument(1, binds)?;
+                let distance = argument(2, binds)?;
+                Ok(format!(
+                    "(MDSYS.SDO_WITHIN_DISTANCE({left}, {right}, 'distance=' || {distance} || ' unit=M') = 'TRUE')"
+                ))
+            }
+            _ => Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                "funzione spatial Oracle non qualificata",
+            )),
+        }
     }
 
     fn render_sql_server_spatial_function(

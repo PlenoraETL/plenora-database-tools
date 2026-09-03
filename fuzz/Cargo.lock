@@ -1145,6 +1145,7 @@ dependencies = [
 name = "plenora-database-engine"
 version = "3.0.0"
 dependencies = [
+ "chrono",
  "plenora-database-core",
  "serde",
  "serde_json",

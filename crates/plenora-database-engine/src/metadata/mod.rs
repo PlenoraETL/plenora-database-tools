@@ -50,6 +50,7 @@ pub enum SchemaToken {
         structural_fingerprint: String,
     },
     Db2(String),
+    Oracle(String),
 }
 
 /// Catalogo tipizzato prodotto da una o piu operazioni di reflection.
@@ -472,6 +473,7 @@ pub enum NativeTableMetadata {
     Mariadb(MysqlTableMetadata),
     SqlServer(SqlServerTableMetadata),
     Db2,
+    Oracle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -545,6 +547,7 @@ pub enum NativeColumnMetadata {
     Mariadb(MysqlColumnMetadata),
     SqlServer(SqlServerColumnMetadata),
     Db2(Db2ColumnMetadata),
+    Oracle(OracleColumnMetadata),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -590,6 +593,15 @@ pub struct Db2ColumnMetadata {
     pub length: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OracleColumnMetadata {
+    pub data_length: u64,
+    pub char_length: u64,
+    pub precision: Option<u64>,
+    pub scale: Option<i64>,
+    pub virtual_column: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[non_exhaustive]
 pub enum NativeIndexMetadata {
@@ -617,6 +629,7 @@ pub enum NativeIndexMetadata {
         spatial: Option<SqlServerSpatialIndexMetadata>,
     },
     Db2,
+    Oracle,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -642,6 +655,7 @@ pub enum NativeIndexElementMetadata {
     Mariadb,
     SqlServer,
     Db2,
+    Oracle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

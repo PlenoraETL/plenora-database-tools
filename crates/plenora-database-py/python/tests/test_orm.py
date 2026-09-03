@@ -954,6 +954,105 @@ def test_big_integer_ddl_and_dml_keep_signed_64_bit_typing() -> None:
         OrmBigRecord(id=2**63, counter=1)
 
 
+def test_oracle_23_ddl_is_explicit_and_unqualified_features_fail_closed() -> None:
+    class OracleRecord(p.DeclarativeBase):
+        __tablename__ = "orm_oracle_records"
+
+        id: p.Mapped[int] = p.mapped_column(primary_key=True)
+        large_id: p.Mapped[int] = p.mapped_column(p.BIGINT, nullable=False)
+        label: p.Mapped[str] = p.mapped_column(p.String(32), nullable=False)
+        description: p.Mapped[str] = p.mapped_column(str, nullable=False)
+        amount: p.Mapped[Decimal] = p.mapped_column(p.Numeric(12, 2), nullable=False)
+        token: p.Mapped[str] = p.mapped_column(p.UUID, nullable=False)
+        payload: p.Mapped[dict] = p.mapped_column(p.JSON, nullable=False)
+        active: p.Mapped[bool] = p.mapped_column(bool, nullable=False)
+        observed_at: p.Mapped[datetime] = p.mapped_column(datetime, nullable=False)
+        content: p.Mapped[bytes] = p.mapped_column(bytes, nullable=False)
+        ratio: p.Mapped[float] = p.mapped_column(float, nullable=False)
+
+    ddl = p.OrmMetadata(models=(OracleRecord,)).ddl("oracle")[0]
+    for declaration in (
+        '"id" NUMBER(10)',
+        '"large_id" NUMBER(19)',
+        '"label" VARCHAR2(32)',
+        '"description" VARCHAR2(4000)',
+        '"amount" NUMBER(12, 2)',
+        '"token" VARCHAR2(36)',
+        '"payload" JSON',
+        '"active" BOOLEAN',
+        '"observed_at" TIMESTAMP',
+        '"content" BLOB',
+        '"ratio" BINARY_DOUBLE',
+    ):
+        assert declaration in ddl
+
+    with pytest.raises(p.OrmUnsupportedError, match="IF NOT EXISTS"):
+        p.OrmMetadata(models=(OracleRecord,)).ddl("oracle", checkfirst=True)
+
+    class OracleGenerated(p.DeclarativeBase):
+        __tablename__ = "orm_oracle_generated"
+
+        id: p.Mapped[int] = p.mapped_column(primary_key=True, generated=True)
+
+    with pytest.raises(p.OrmUnsupportedError, match="identity generated"):
+        p.OrmMetadata(models=(OracleGenerated,)).ddl("oracle")
+
+    class OracleAwareTimestamp(p.DeclarativeBase):
+        __tablename__ = "orm_oracle_aware_timestamp"
+
+        id: p.Mapped[int] = p.mapped_column(primary_key=True)
+        observed_at: p.Mapped[datetime] = p.mapped_column(
+            p.DateTime(timezone=True), nullable=False
+        )
+
+    with pytest.raises(p.OrmUnsupportedError, match="timezone"):
+        p.OrmMetadata(models=(OracleAwareTimestamp,)).ddl("oracle")
+
+
+def test_oracle_spatial_ddl_registers_metadata_before_spatial_index() -> None:
+    class OracleSpatialRecord(p.DeclarativeBase):
+        __tablename__ = "ORM_ORACLE_SPATIAL"
+        __table_args__ = (p.OrmIndex("SHAPE", name="IX_ORM_ORACLE_SPATIAL"),)
+
+        ID: p.Mapped[int] = p.mapped_column(primary_key=True)
+        SHAPE: p.Mapped[p.SpatialReference] = p.mapped_column(
+            p.Geometry(srid=4326, geometry_type="point"), nullable=False
+        )
+
+    ddl = p.OrmMetadata(models=(OracleSpatialRecord,)).ddl("oracle")
+    assert len(ddl) == 3
+    assert '"SHAPE" MDSYS.SDO_GEOMETRY NOT NULL' in ddl[0]
+    assert "USER_SDO_GEOM_METADATA" in ddl[1]
+    assert "MDSYS.SDO_DIM_ELEMENT('LONGITUDE', -180, 180, 0.005)" in ddl[1]
+    assert "4326" in ddl[1]
+    assert ddl[2].endswith("INDEXTYPE IS MDSYS.SPATIAL_INDEX_V2")
+
+    class InvalidOracleSpatialIndex(p.DeclarativeBase):
+        __tablename__ = "ORM_ORACLE_INVALID_SPATIAL"
+        __table_args__ = (
+            p.OrmIndex("SHAPE", name="UQ_ORM_ORACLE_SPATIAL", unique=True),
+        )
+
+        ID: p.Mapped[int] = p.mapped_column(primary_key=True)
+        SHAPE: p.Mapped[p.SpatialReference] = p.mapped_column(
+            p.Geometry(srid=4326, geometry_type="point"), nullable=False
+        )
+
+    class LowercaseOracleSpatial(p.DeclarativeBase):
+        __tablename__ = "ORM_ORACLE_LOWERCASE_SPATIAL"
+
+        id: p.Mapped[int] = p.mapped_column(primary_key=True)
+        shape: p.Mapped[p.SpatialReference] = p.mapped_column(
+            p.Geometry(srid=4326, geometry_type="point"), nullable=False
+        )
+
+    with pytest.raises(p.OrmUnsupportedError, match="uppercase"):
+        p.OrmMetadata(models=(LowercaseOracleSpatial,)).ddl("oracle")
+
+    with pytest.raises(p.OrmUnsupportedError, match="non univoco"):
+        p.OrmMetadata(models=(InvalidOracleSpatialIndex,)).ddl("oracle")
+
+
 def test_portable_scalar_types_validate_and_render_without_guessing() -> None:
     class PortableScalarRecord(p.DeclarativeBase):
         __tablename__ = "orm_portable_scalars"
@@ -1289,7 +1388,7 @@ def test_geometry_mapping_uses_canonical_ewkb_and_unqualified_providers_fail_clo
     reader.rollback()
 
 
-@pytest.mark.parametrize("provider", ("sqlserver", "db2"))
+@pytest.mark.parametrize("provider", ("sqlserver", "db2", "oracle"))
 def test_portable_geometry_mapping_frames_sqlserver_and_db2(provider: str) -> None:
     point = _ewkb_point(9.19, 45.46)
     line = _ewkb_linestring(((9.18, 45.45), (9.20, 45.47)))
@@ -1363,7 +1462,7 @@ def test_portable_geometry_mapping_frames_sqlserver_and_db2(provider: str) -> No
         invalid_reader.rollback()
 
 
-@pytest.mark.parametrize("provider", ("sqlserver", "db2"))
+@pytest.mark.parametrize("provider", ("sqlserver", "db2", "oracle"))
 def test_portable_geometry_keeps_unqualified_types_closed(provider: str) -> None:
     transaction = _FakeTransaction()
     orm = p.OrmSession(_FakeSession(transaction, provider=provider))
@@ -2017,6 +2116,41 @@ def test_db2_migration_history_ddl_is_idempotent_and_uses_the_ddl_channel() -> N
     assert len(session.ddl) == 1
     assert session.ddl[0].startswith('CREATE TABLE "_plenora_orm_migrations"')
     assert "CURRENT TIMESTAMP" in session.ddl[0]
+
+
+def test_oracle_migration_history_uses_catalog_guard_and_native_merge() -> None:
+    class OracleSession:
+        capabilities: ClassVar[dict[str, str]] = {"provider": "oracle"}
+
+        def __init__(self) -> None:
+            self.ddl: list[str] = []
+            self.sql: list[str] = []
+            self.catalog_queries: list[str] = []
+            self.exists = False
+
+        def execute_ddl(self, statement: str) -> None:
+            self.ddl.append(statement)
+            self.exists = True
+
+        def execute_sql(self, statement: str) -> p.MutationResult:
+            self.sql.append(statement)
+            return p.MutationResult("seed", "oracle", 0)
+
+        def query_sql(self, statement: str) -> p.Result:
+            return p.Result([])
+
+        def execute_scalar(self, statement: str) -> int:
+            self.catalog_queries.append(statement)
+            return int(self.exists)
+
+    session = OracleSession()
+    assert p.MigrationRunner(()).apply(session) == ()
+    assert p.MigrationRunner(()).apply(session) == ()
+    assert len(session.ddl) == 1
+    assert session.ddl[0].startswith('CREATE TABLE "_plenora_orm_migrations"')
+    assert "VARCHAR2(255)" in session.ddl[0]
+    assert all("USER_TABLES" in statement for statement in session.catalog_queries)
+    assert all("MERGE INTO" in statement and "FROM DUAL" in statement for statement in session.sql)
 
 
 def test_migration_runner_applies_and_rolls_back_transactionally() -> None:

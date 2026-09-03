@@ -271,3 +271,41 @@ async def aconnect_db2_reference():
         "db2", host, database, user, password, port, tls_mode, ca_path
     )
     return (await p.async_engine_from_url(config)).session()
+
+
+# ================================ Oracle ==================================
+
+ORACLE_HOST_ENV = "PLENORA_TEST_ORACLE_HOST"
+ORACLE_SERVICE_ENV = "PLENORA_TEST_ORACLE_SERVICE"
+ORACLE_USER_ENV = "PLENORA_TEST_ORACLE_USER"
+ORACLE_PWD_ENV = "PLENORA_TEST_ORACLE_PASSWORD"
+ORACLE_PORT_ENV = "PLENORA_TEST_ORACLE_PORT"
+ORACLE_CA_ENV = "PLENORA_TEST_ORACLE_CA"
+ORACLE_TLS_MODE_ENV = "PLENORA_TEST_ORACLE_TLS_MODE"
+
+
+def oracle_config_or_skip() -> p.EngineConfig:
+    host = os.environ.get(ORACLE_HOST_ENV)
+    password = os.environ.get(ORACLE_PWD_ENV)
+    if not host or not password:
+        pytest.skip(
+            f"live test Oracle: mancano env {ORACLE_HOST_ENV} e/o {ORACLE_PWD_ENV}"
+        )
+    return p.EngineConfig(
+        "oracle",
+        host=host,
+        database=os.environ.get(ORACLE_SERVICE_ENV, "FREEPDB1"),
+        user=os.environ.get(ORACLE_USER_ENV, "plenora"),
+        password=password,
+        port=int(os.environ.get(ORACLE_PORT_ENV, "1521")),
+        tls_ca=os.environ.get(ORACLE_CA_ENV),
+        tls_mode=os.environ.get(ORACLE_TLS_MODE_ENV, "require"),
+    )
+
+
+def connect_oracle_reference():
+    return p.engine_from_url(oracle_config_or_skip()).session()
+
+
+async def aconnect_oracle_reference():
+    return (await p.async_engine_from_url(oracle_config_or_skip())).session()

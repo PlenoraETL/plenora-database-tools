@@ -111,6 +111,8 @@ fn usage_declares_only_the_providers_this_binary_can_build() {
         (cfg!(feature = "postgres"), "postgres"),
         (cfg!(feature = "mysql"), "mysql"),
         (cfg!(feature = "sqlserver"), "sqlserver"),
+        (cfg!(feature = "oracle"), "oracle"),
+        (cfg!(feature = "db2"), "db2"),
     ] {
         assert_eq!(
             line.contains(name),

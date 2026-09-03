@@ -78,6 +78,14 @@ CAPABILITY_SOURCES = (
         None,
     ),
     (
+        "Oracle Database Free",
+        "crates/plenora-db-oracle",
+        "crates/plenora-db-oracle/src/provider.rs",
+        None,
+        "OracleProvider",
+        None,
+    ),
+    (
         "IBM Db2 LUW",
         "crates/plenora-db-db2",
         "crates/plenora-db-db2/src/provider.rs",
@@ -112,6 +120,7 @@ PROVIDER_TEST_CRATES = (
     ("PostgreSQL", "plenora-db-postgres"),
     ("MySQL + MariaDB", "plenora-db-mysql"),
     ("SQL Server", "plenora-db-sqlserver"),
+    ("Oracle Database Free", "plenora-db-oracle"),
     ("IBM Db2 LUW", "plenora-db-db2"),
 )
 
@@ -348,7 +357,7 @@ def test_inventory() -> list[tuple[str, int]]:
 
 
 def provider_test_inventory() -> list[tuple[str, int]]:
-    """Test Rust annotati nei crate che implementano i cinque prodotti.
+    """Test Rust annotati nei crate dei provider pubblici.
 
     MySQL e MariaDB condividono intenzionalmente lo stesso crate e molte suite:
     separarli contando i nomi sarebbe un fatto inventato, quindi restano una

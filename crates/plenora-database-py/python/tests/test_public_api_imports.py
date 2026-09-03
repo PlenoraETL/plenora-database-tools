@@ -104,6 +104,8 @@ def test_v2_has_one_public_engine_entrypoint() -> None:
         "aconnect_sqlserver",
         "connect_db2",
         "aconnect_db2",
+        "connect_oracle",
+        "aconnect_oracle",
         "create_engine",
         "create_async_engine",
         "create_mysql_engine",
@@ -114,6 +116,8 @@ def test_v2_has_one_public_engine_entrypoint() -> None:
         "create_async_sqlserver_engine",
         "create_db2_engine",
         "create_async_db2_engine",
+        "create_oracle_engine",
+        "create_async_oracle_engine",
         "MysqlSession",
         "AsyncMysqlSession",
     }

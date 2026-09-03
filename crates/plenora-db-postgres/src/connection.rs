@@ -4,6 +4,7 @@ use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_postgres::config::SslMode;
 use tokio_postgres::{Client, Config, NoTls};
@@ -48,7 +49,7 @@ impl PostgresTlsConfig {
     pub fn webpki() -> Self {
         let mut roots = rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let client_config = rustls::ClientConfig::builder()
+        let client_config = client_config_builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
         let mut hasher = Sha256::new();
@@ -139,7 +140,7 @@ impl PostgresTlsConfig {
             ));
         }
 
-        let builder = rustls::ClientConfig::builder().with_root_certificates(roots);
+        let builder = client_config_builder().with_root_certificates(roots);
         let (client_config, client_certificates, private_key) =
             match (client_certificate_chain_pem, client_private_key_pem) {
                 (None, None) => (builder.with_no_client_auth(), Vec::new(), None),
@@ -186,6 +187,17 @@ impl PostgresTlsConfig {
     pub(crate) const fn connector(&self) -> &MakeRustlsConnect {
         &self.connector
     }
+}
+
+/// Seleziona esplicitamente il backend gia fissato dal workspace.
+///
+/// Un processo che collega anche il driver Oracle vede altrimenti sia `ring`
+/// sia `aws-lc-rs`; `ClientConfig::builder()` non puo indovinare e va in panic
+/// prima di qualsiasi I/O.
+fn client_config_builder() -> rustls::ConfigBuilder<rustls::ClientConfig, rustls::WantsVerifier> {
+    rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .expect("il provider ring supporta le versioni TLS sicure predefinite")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -477,6 +477,11 @@ fn provider_factories_resolve_private_ca_paths_from_environment() {
             ProviderKind::Sqlserver,
             vec!["db.example.test", "warehouse", "loader"],
         ));
+        #[cfg(feature = "oracle")]
+        m.push((
+            ProviderKind::Oracle,
+            vec!["db.example.test", "warehouse", "loader"],
+        ));
         #[cfg(feature = "db2")]
         m.push((
             ProviderKind::Db2,
@@ -526,6 +531,8 @@ fn implemented_provider_factories_are_offline_and_typed() {
         v.push(ProviderKind::Mysql);
         #[cfg(feature = "sqlserver")]
         v.push(ProviderKind::Sqlserver);
+        #[cfg(feature = "oracle")]
+        v.push(ProviderKind::Oracle);
         #[cfg(feature = "db2")]
         v.push(ProviderKind::Db2);
         v
@@ -541,6 +548,57 @@ fn implemented_provider_factories_are_offline_and_typed() {
             kind
         );
     }
+}
+
+#[cfg(feature = "oracle")]
+#[test]
+fn oracle_provider_arguments_preserve_defaults_and_explicit_plaintext() {
+    let mut default_args = ["db.example.test", "freepdb1", "loader"]
+        .into_iter()
+        .map(str::to_owned);
+    assert_eq!(
+        parse_provider_arguments(ProviderKind::Oracle, &mut default_args)
+            .expect("default Oracle arguments"),
+        ProviderArguments::Oracle {
+            host: "db.example.test".to_owned(),
+            service: "freepdb1".to_owned(),
+            username: "loader".to_owned(),
+            port: None,
+            tls: TlsPathEnvironments::default(),
+        }
+    );
+
+    let secret = SecretString::new("test-only-secret");
+    let mut plaintext_args = [
+        "db.example.test",
+        "freepdb1",
+        "loader",
+        "1521",
+        "--tls-mode",
+        "disable",
+    ]
+    .into_iter()
+    .map(str::to_owned);
+    assert_eq!(
+        build_provider(ProviderKind::Oracle, &secret, &mut plaintext_args)
+            .expect("Oracle provider with explicit plaintext")
+            .kind(),
+        ProviderKind::Oracle
+    );
+
+    let mut invalid_mode = [
+        "db.example.test",
+        "freepdb1",
+        "loader",
+        "--tls-mode",
+        "opportunistic",
+    ]
+    .into_iter()
+    .map(str::to_owned);
+    let error = build_provider(ProviderKind::Oracle, &secret, &mut invalid_mode)
+        .err()
+        .expect("unknown Oracle TLS mode");
+    assert_eq!(error.database_error().category, ErrorCategory::InvalidPlan);
 }
 
 #[cfg(feature = "db2")]
