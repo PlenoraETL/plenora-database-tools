@@ -16,11 +16,7 @@ pub fn driver_error(phase: ErrorPhase, error: &Error) -> DatabaseError {
     };
     code.map_or_else(
         || {
-            let category = if error.is_connection_error() {
-                ErrorCategory::Io
-            } else {
-                ErrorCategory::Execution
-            };
+            let (category, message) = classify_driver_error(error);
             DatabaseError {
                 category,
                 phase,
@@ -32,12 +28,67 @@ pub fn driver_error(phase: ErrorPhase, error: &Error) -> DatabaseError {
                 },
                 provider: Some(ProviderKind::Oracle),
                 execution_id: None,
-                message: "operazione Oracle non completata".to_owned(),
+                message: message.to_owned(),
                 diagnostics: None,
             }
         },
         |code| oracle_code_error(phase, code),
     )
+}
+
+/// Classifica la variante del driver senza copiarne i campi, che possono
+/// contenere SQL, nomi remoti o altri dati non adatti all'errore pubblico.
+const fn classify_driver_error(error: &Error) -> (ErrorCategory, &'static str) {
+    match error {
+        Error::InvalidPacketType(_)
+        | Error::InvalidMessageType(_)
+        | Error::PacketTooShort { .. }
+        | Error::UnexpectedPacketType { .. }
+        | Error::ProtocolVersionNotSupported(_, _)
+        | Error::Protocol(_)
+        | Error::ProtocolError(_)
+        | Error::BufferUnderflow { .. }
+        | Error::BufferOverflow { .. }
+        | Error::InvalidLengthIndicator(_)
+        | Error::ConnectionNotReady
+        | Error::CursorClosed
+        | Error::InvalidCursor(_) => (ErrorCategory::Protocol, "protocollo Oracle non completato"),
+        Error::ConnectionRefused { .. }
+        | Error::ConnectionRedirected { .. }
+        | Error::ConnectionRedirect(_)
+        | Error::ConnectionClosed
+        | Error::ConnectionClosedByServer(_)
+        | Error::ConnectionTimeout(_)
+        | Error::InvalidConnectionString(_)
+        | Error::InvalidServiceName { .. }
+        | Error::InvalidSid { .. }
+        | Error::Io(_) => (ErrorCategory::Io, "connessione Oracle non completata"),
+        Error::AuthenticationFailed(_)
+        | Error::InvalidCredentials
+        | Error::UnsupportedVerifierType(_) => (
+            ErrorCategory::Authentication,
+            "autenticazione Oracle non completata",
+        ),
+        Error::InvalidDataType(_)
+        | Error::InvalidOracleType(_)
+        | Error::DataConversionError(_)
+        | Error::UnexpectedNull => (
+            ErrorCategory::DataMapping,
+            "conversione dati Oracle non completata",
+        ),
+        Error::NoDataFound => (ErrorCategory::NotFound, "dato Oracle non trovato"),
+        Error::FeatureNotSupported(_) | Error::NativeNetworkEncryptionRequired => (
+            ErrorCategory::Unsupported,
+            "funzionalita Oracle non supportata",
+        ),
+        Error::Internal(_) => (
+            ErrorCategory::Internal,
+            "inizializzazione Oracle non completata",
+        ),
+        Error::SqlError(_) | Error::OracleError { .. } | Error::ServerError { .. } => {
+            (ErrorCategory::Execution, "operazione Oracle non completata")
+        }
+    }
 }
 
 pub fn oracle_code_error(phase: ErrorPhase, code: u32) -> DatabaseError {
