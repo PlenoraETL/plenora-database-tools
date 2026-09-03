@@ -36,18 +36,20 @@ mod write;
 use arrow_reader::{AsyncBatchReader, BatchReader};
 use async_session::{aconnect, init_async_runtime, AsyncSession};
 use async_session_family::{
-    aconnect_db2, aconnect_mariadb, aconnect_mysql, aconnect_sqlserver, AsyncDatabaseSession,
+    aconnect_db2, aconnect_mariadb, aconnect_mysql, aconnect_oracle, aconnect_sqlserver,
+    AsyncDatabaseSession,
 };
 use async_transaction::AsyncTransaction;
 use checkpoint::PyReadCheckpoint;
 use engine::{
     create_async_db2_engine, create_async_engine, create_async_mariadb_engine,
-    create_async_mysql_engine, create_async_sqlserver_engine, create_db2_engine, create_engine,
-    create_mariadb_engine, create_mysql_engine, create_sqlserver_engine, PyAsyncEngine, PyEngine,
+    create_async_mysql_engine, create_async_oracle_engine, create_async_sqlserver_engine,
+    create_db2_engine, create_engine, create_mariadb_engine, create_mysql_engine,
+    create_oracle_engine, create_sqlserver_engine, PyAsyncEngine, PyEngine,
 };
 use session::{connect, Session};
 use session_family::{
-    connect_db2, connect_mariadb, connect_mysql, connect_sqlserver, DatabaseSession,
+    connect_db2, connect_mariadb, connect_mysql, connect_oracle, connect_sqlserver, DatabaseSession,
 };
 use transaction::Transaction;
 
@@ -284,6 +286,10 @@ fn geometry_wkb_bytes(ewkb: &[u8], root_has_srid: bool) -> PyResult<Vec<u8>> {
 
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Il wheel collega adapter che abilitano backend rustls diversi. La
+    // selezione process-wide evita il panic di auto-selezione prima dell'I/O
+    // e mantiene il backend ring gia fissato dal workspace.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     // Inizializza il runtime condiviso con pyo3-async-runtimes per bridge
     // asyncio ↔ tokio. Chiamato una sola volta all'import del modulo.
     //
@@ -314,6 +320,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(create_async_mariadb_engine, m)?)?;
     m.add_function(wrap_pyfunction!(create_sqlserver_engine, m)?)?;
     m.add_function(wrap_pyfunction!(create_async_sqlserver_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(create_oracle_engine, m)?)?;
+    m.add_function(wrap_pyfunction!(create_async_oracle_engine, m)?)?;
     m.add_function(wrap_pyfunction!(create_db2_engine, m)?)?;
     m.add_function(wrap_pyfunction!(create_async_db2_engine, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect, m)?)?;
@@ -326,6 +334,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(aconnect_mariadb, m)?)?;
     m.add_function(wrap_pyfunction!(connect_sqlserver, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect_sqlserver, m)?)?;
+    m.add_function(wrap_pyfunction!(connect_oracle, m)?)?;
+    m.add_function(wrap_pyfunction!(aconnect_oracle, m)?)?;
     m.add_function(wrap_pyfunction!(connect_db2, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect_db2, m)?)?;
     m.add_class::<Session>()?;

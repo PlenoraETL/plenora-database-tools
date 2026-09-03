@@ -31,6 +31,7 @@ plenora-database-sql.workspace = true
 plenora-db-postgres.workspace = true
 plenora-db-mysql.workspace = true
 plenora-db-sqlserver.workspace = true
+plenora-db-oracle.workspace = true
 plenora-db-db2 = { workspace = true, optional = true }
 arrow-ipc.workspace = true
 arrow-schema.workspace = true
@@ -47,6 +48,7 @@ arrow-schema.workspace = true
 pyo3 = { version = "=0.29.2", features = ["extension-module", "abi3-py310", "serde"] }
 pyo3-async-runtimes = { version = "=0.29.0", features = ["tokio-runtime"] }
 serde_json.workspace = true
+rustls.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]

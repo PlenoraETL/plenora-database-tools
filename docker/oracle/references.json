@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "comment": "Fonte di verita del riferimento Oracle: immagine immutabile, architettura e major qualificata. Il gate verifica che Compose usi questo digest e interroga il server avviato prima di pubblicare il verdetto.",
+  "reference": {
+    "label": "Oracle AI Database 26ai Free 23.26.2 full",
+    "server_major": "23",
+    "image": "ghcr.io/gvenzl/oracle-free",
+    "digest": "sha256:7b15d75e6c834980805a5224aa711e6ffc7cd0973d62f2d946448810f6bb2cd2",
+    "platform": "linux/amd64",
+    "service": "FREEPDB1"
+  }
+}

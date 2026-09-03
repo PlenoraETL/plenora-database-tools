@@ -43,7 +43,7 @@ from .expression import (
 )
 from .result import MultipleResultsFound, MutationResult, NoResultFound, Result
 from .errors import PlenoraError
-from .spatial import SpatialReference
+from .spatial import SpatialReference, _require_geographic_srids
 from .types import int64 as typed_int64
 from .types import date as typed_date
 from .types import decimal as typed_decimal
@@ -88,13 +88,25 @@ _MYSQL_GEOMETRY_TYPES = frozenset(
 _MYSQL_ORM_PROVIDERS = frozenset({"mysql", "mariadb"})
 _SQLSERVER_ORM_PROVIDERS = frozenset({"sqlserver"})
 _DB2_ORM_PROVIDERS = frozenset({"db2"})
+_ORACLE_ORM_PROVIDERS = frozenset({"oracle"})
 _WKB_ORM_PROVIDERS = frozenset(
-    {*_MYSQL_ORM_PROVIDERS, *_SQLSERVER_ORM_PROVIDERS, *_DB2_ORM_PROVIDERS}
+    {
+        *_MYSQL_ORM_PROVIDERS,
+        *_SQLSERVER_ORM_PROVIDERS,
+        *_DB2_ORM_PROVIDERS,
+        *_ORACLE_ORM_PROVIDERS,
+    }
 )
-_SPATIAL_NULL_WRAPPER_PROVIDERS = _SQLSERVER_ORM_PROVIDERS | _DB2_ORM_PROVIDERS
+_SPATIAL_NULL_WRAPPER_PROVIDERS = (
+    _SQLSERVER_ORM_PROVIDERS | _DB2_ORM_PROVIDERS | _ORACLE_ORM_PROVIDERS
+)
 _FRAMED_ORM_PROVIDERS = _WKB_ORM_PROVIDERS
-_GEOMETRY_ONLY_ORM_PROVIDERS = _MYSQL_ORM_PROVIDERS | _DB2_ORM_PROVIDERS
-_XY_XYZ_ORM_PROVIDERS = _SQLSERVER_ORM_PROVIDERS | _DB2_ORM_PROVIDERS
+_GEOMETRY_ONLY_ORM_PROVIDERS = (
+    _MYSQL_ORM_PROVIDERS | _DB2_ORM_PROVIDERS | _ORACLE_ORM_PROVIDERS
+)
+_XY_XYZ_ORM_PROVIDERS = (
+    _SQLSERVER_ORM_PROVIDERS | _DB2_ORM_PROVIDERS | _ORACLE_ORM_PROVIDERS
+)
 _QUALIFIED_ORM_GEOMETRY_TYPES = frozenset({"point", "linestring", "polygon"})
 _GEOMETRY_ORM_PROVIDERS = frozenset({"postgres", *_WKB_ORM_PROVIDERS})
 
@@ -1251,6 +1263,8 @@ class OrmMetadata:
                     mapper, provider, self.registry, checkfirst=checkfirst
                 )
             )
+            if provider == "oracle":
+                statements.extend(_oracle_spatial_metadata_ddl(mapper))
             statements.extend(
                 _create_index_ddl(mapper, index, provider, checkfirst=checkfirst)
                 for index in mapper.constraints
@@ -1270,8 +1284,10 @@ class OrmMetadata:
 
     def drop_all(self, session: Any, *, checkfirst: bool = True) -> None:
         provider = _session_provider(session)
-        if checkfirst and provider == "db2":
-            raise OrmUnsupportedError("Db2 non qualifica DROP TABLE IF EXISTS")
+        if checkfirst and provider in {"oracle", "db2"}:
+            raise OrmUnsupportedError(
+                "il provider non qualifica DROP TABLE IF EXISTS"
+            )
         ordered = _unique_table_mappers(_ddl_mapper_order(self.mappers, self.registry))
         for mapper in reversed(ordered):
             target = _qualified_table(mapper.table, provider)
@@ -1287,8 +1303,10 @@ class OrmMetadata:
 
     async def drop_all_async(self, session: Any, *, checkfirst: bool = True) -> None:
         provider = _session_provider(session)
-        if checkfirst and provider == "db2":
-            raise OrmUnsupportedError("Db2 non qualifica DROP TABLE IF EXISTS")
+        if checkfirst and provider in {"oracle", "db2"}:
+            raise OrmUnsupportedError(
+                "il provider non qualifica DROP TABLE IF EXISTS"
+            )
         ordered = _unique_table_mappers(_ddl_mapper_order(self.mappers, self.registry))
         for mapper in reversed(ordered):
             target = _qualified_table(mapper.table, provider)
@@ -7215,7 +7233,7 @@ def _session_provider(session: Any) -> str:
     provider = (
         capabilities.get("provider") if isinstance(capabilities, Mapping) else None
     )
-    if provider not in {"postgres", "mysql", "mariadb", "sqlserver", "db2"}:
+    if provider not in {"postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"}:
         raise OrmUnsupportedError("provider DDL ORM non qualificato")
     return provider
 
@@ -7267,20 +7285,29 @@ def _qualified_table(table: Table, provider: str) -> str:
 def _ddl_type(attribute: MappedColumn[Any], provider: str) -> str:
     type_ = attribute.type_
     if isinstance(type_, BigInteger):
-        return "BIGINT"
+        return "NUMBER(19)" if provider == "oracle" else "BIGINT"
     if isinstance(type_, String):
         if type_.length is not None:
-            prefix = "NVARCHAR" if provider == "sqlserver" else "VARCHAR"
+            prefix = (
+                "NVARCHAR"
+                if provider == "sqlserver"
+                else "VARCHAR2"
+                if provider == "oracle"
+                else "VARCHAR"
+            )
             return f"{prefix}({type_.length})"
         type_ = str
     if isinstance(type_, Numeric):
-        return f"DECIMAL({type_.precision}, {type_.scale})"
+        numeric = "NUMBER" if provider == "oracle" else "DECIMAL"
+        return f"{numeric}({type_.precision}, {type_.scale})"
     if isinstance(type_, Uuid):
         return (
             "UUID"
             if provider == "postgres"
             else "UNIQUEIDENTIFIER"
             if provider == "sqlserver"
+            else "VARCHAR2(36)"
+            if provider == "oracle"
             else "CHAR(36)"
         )
     if isinstance(type_, Json):
@@ -7291,6 +7318,8 @@ def _ddl_type(attribute: MappedColumn[Any], provider: str) -> str:
             if provider in {"mysql", "mariadb"}
             else "NVARCHAR(MAX)"
             if provider == "sqlserver"
+            else "JSON"
+            if provider == "oracle"
             else "CLOB"
         )
     if isinstance(type_, DateTime):
@@ -7318,22 +7347,28 @@ def _ddl_type(attribute: MappedColumn[Any], provider: str) -> str:
             return base
         if provider == "db2":
             return "ST_GEOMETRY"
+        if provider == "oracle":
+            return "MDSYS.SDO_GEOMETRY"
         return f"{base}({geometry_type}, {type_.srid})"
     mapping = {
-        int: "INTEGER",
+        int: "NUMBER(10)" if provider == "oracle" else "INTEGER",
         str: (
             "VARCHAR(255)"
             if provider in {"mysql", "mariadb"}
             or attribute.primary_key
             or attribute.unique
+            else "VARCHAR2(4000)"
+            if provider == "oracle"
             else "TEXT"
             if provider == "postgres"
             else "VARCHAR(32672)"
             if provider == "db2"
             else "NVARCHAR(255)"
         ),
-        bool: "BOOLEAN" if provider not in {"sqlserver"} else "BIT",
-        float: "DOUBLE PRECISION"
+        bool: "BIT" if provider == "sqlserver" else "BOOLEAN",
+        float: "BINARY_DOUBLE"
+        if provider == "oracle"
+        else "DOUBLE PRECISION"
         if provider == "postgres"
         else "DOUBLE"
         if provider != "sqlserver"
@@ -7346,8 +7381,10 @@ def _ddl_type(attribute: MappedColumn[Any], provider: str) -> str:
         datetime: "TIMESTAMP" if provider != "sqlserver" else "DATETIME2",
         date: "DATE",
         time: "TIME",
-        Decimal: "DECIMAL(38, 10)",
+        Decimal: "NUMBER(38, 10)" if provider == "oracle" else "DECIMAL(38, 10)",
     }
+    if type_ is time and provider == "oracle":
+        raise OrmUnsupportedError("tipo TIME Oracle non qualificato")
     try:
         return mapping[type_]
     except KeyError as error:
@@ -7444,6 +7481,10 @@ def _create_table_ddl(
             raise OrmMappingError("colonna DDL senza nome")
         declaration = f"{_quote_identifier(attribute.name, provider)} {_ddl_type(attribute, provider)}"
         if attribute.generated and mapper.inheritance != "joined":
+            if provider == "oracle":
+                raise OrmUnsupportedError(
+                    "identity generated Oracle non qualificata dalla superficie ORM"
+                )
             declaration += {
                 "postgres": " GENERATED BY DEFAULT AS IDENTITY",
                 "mysql": " AUTO_INCREMENT",
@@ -7509,6 +7550,10 @@ def _create_table_ddl(
             "" if constraint.on_delete is None else f" ON DELETE {constraint.on_delete}"
         )
         if constraint.on_update is not None:
+            if provider == "oracle":
+                raise OrmUnsupportedError(
+                    "Oracle non supporta ON UPDATE nelle foreign key"
+                )
             suffix += f" ON UPDATE {constraint.on_update}"
         columns.append(
             f"{name}FOREIGN KEY ({local}) REFERENCES "
@@ -7520,8 +7565,10 @@ def _create_table_ddl(
         object_name = _object_name(mapper.table).replace("'", "''")
         return f"IF OBJECT_ID(N'{object_name}', N'U') IS NULL CREATE TABLE {target} ({body})"
     clause = " IF NOT EXISTS" if checkfirst else ""
-    if checkfirst and provider == "db2":
-        raise OrmUnsupportedError("Db2 non qualifica CREATE TABLE IF NOT EXISTS")
+    if checkfirst and provider in {"oracle", "db2"}:
+        raise OrmUnsupportedError(
+            "il provider non qualifica CREATE TABLE IF NOT EXISTS"
+        )
     return f"CREATE TABLE{clause} {target} ({body})"
 
 
@@ -7538,7 +7585,30 @@ def _create_index_ddl(
         _quote_identifier(column, provider) for column in index.columns
     )
     unique = "UNIQUE " if index.unique else ""
-    statement = f"CREATE {unique}INDEX {name} ON {target} ({columns})"
+    attributes = {
+        attribute.name: attribute
+        for attribute in _single_table_attributes(_inheritance_root(mapper))
+        if attribute.name is not None
+    }
+    spatial = [
+        attributes[column]
+        for column in index.columns
+        if column in attributes and isinstance(attributes[column].type_, Geometry)
+    ]
+    if spatial:
+        if provider != "oracle":
+            statement = f"CREATE {unique}INDEX {name} ON {target} ({columns})"
+        else:
+            if index.unique or len(index.columns) != 1 or len(spatial) != 1:
+                raise OrmUnsupportedError(
+                    "un indice Spatial Oracle deve essere non univoco e monocolonna"
+                )
+            statement = (
+                f"CREATE INDEX {name} ON {target} ({columns}) "
+                "INDEXTYPE IS MDSYS.SPATIAL_INDEX_V2"
+            )
+    else:
+        statement = f"CREATE {unique}INDEX {name} ON {target} ({columns})"
     if not checkfirst:
         return statement
     if provider == "postgres":
@@ -7553,6 +7623,74 @@ def _create_index_ddl(
     raise OrmUnsupportedError(
         "il provider non qualifica CREATE INDEX idempotente"
     )
+
+
+def _oracle_spatial_metadata_ddl(mapper: Mapper) -> tuple[str, ...]:
+    """Registra nel catalogo Oracle il CRS dichiarato dal mapping ORM."""
+
+    attributes = (
+        (*mapper.primary_keys, *mapper.local_attributes)
+        if mapper.inheritance == "joined"
+        else _single_table_attributes(_inheritance_root(mapper))
+    )
+    spatial_attributes = tuple(
+        attribute for attribute in attributes if isinstance(attribute.type_, Geometry)
+    )
+    if not spatial_attributes:
+        return ()
+    if mapper.table.catalog is not None:
+        raise OrmUnsupportedError(
+            "metadata Spatial Oracle cross-database non qualificati"
+        )
+    if mapper.table.name != mapper.table.name.upper() or (
+        mapper.table.schema is not None
+        and mapper.table.schema != mapper.table.schema.upper()
+    ):
+        raise OrmUnsupportedError(
+            "Oracle Spatial richiede nomi tabella e schema canonici uppercase"
+        )
+    table_name = mapper.table.name.replace("'", "''")
+    statements: list[str] = []
+    for attribute in spatial_attributes:
+        geometry = attribute.type_
+        assert isinstance(geometry, Geometry)
+        _require_geometry_mapping(geometry, "oracle")
+        if attribute.name is None:
+            raise OrmMappingError("colonna Geometry Oracle senza nome")
+        if attribute.name != attribute.name.upper():
+            raise OrmUnsupportedError(
+                "Oracle Spatial richiede nomi colonna canonici uppercase"
+            )
+        column_name = attribute.name.replace("'", "''")
+        geographic = geometry.srid in _require_geographic_srids()
+        if geographic:
+            xy = (
+                "MDSYS.SDO_DIM_ELEMENT('LONGITUDE', -180, 180, 0.005), "
+                "MDSYS.SDO_DIM_ELEMENT('LATITUDE', -90, 90, 0.005)"
+            )
+        else:
+            xy = (
+                "MDSYS.SDO_DIM_ELEMENT('X', -1000000000000000, "
+                "1000000000000000, 0.005), "
+                "MDSYS.SDO_DIM_ELEMENT('Y', -1000000000000000, "
+                "1000000000000000, 0.005)"
+            )
+        dimensions = (
+            f"MDSYS.SDO_DIM_ARRAY({xy}, MDSYS.SDO_DIM_ELEMENT('Z', "
+            "-1000000000000000, 1000000000000000, 0.005))"
+            if geometry.dimensions == "xyz"
+            else f"MDSYS.SDO_DIM_ARRAY({xy})"
+        )
+        statements.append(
+            "BEGIN "
+            "DELETE FROM USER_SDO_GEOM_METADATA "
+            f"WHERE TABLE_NAME = '{table_name}' AND COLUMN_NAME = '{column_name}'; "
+            "INSERT INTO USER_SDO_GEOM_METADATA "
+            "(TABLE_NAME, COLUMN_NAME, DIMINFO, SRID) VALUES "
+            f"('{table_name}', '{column_name}', {dimensions}, {geometry.srid}); "
+            "COMMIT; END;"
+        )
+    return tuple(statements)
 
 
 def _migration_parents(value: str | tuple[str, ...] | None) -> tuple[str, ...]:
@@ -7735,6 +7873,14 @@ async def _record_migration_failure_async(
 
 
 def _migration_table_ddl(provider: str) -> str:
+    if provider == "oracle":
+        return (
+            'CREATE TABLE "_plenora_orm_migrations" ('
+            '"revision" VARCHAR2(255) NOT NULL PRIMARY KEY, '
+            '"checksum" CHAR(64) NOT NULL, '
+            '"state" VARCHAR2(16) NOT NULL, '
+            '"applied_at" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)'
+        )
     if provider == "db2":
         return (
             'CREATE TABLE "_plenora_orm_migrations" ('
@@ -7763,7 +7909,7 @@ def _migration_table_ddl(provider: str) -> str:
 
 
 def _migration_history_select(provider: str) -> str:
-    if provider == "db2":
+    if provider in {"oracle", "db2"}:
         return (
             'SELECT "revision" AS "revision", "checksum" AS "checksum", '
             '"state" AS "state" FROM "_plenora_orm_migrations" '
@@ -7793,6 +7939,16 @@ def _migration_lock_seed_sql(provider: str) -> str:
             "INSERT INTO _plenora_orm_migrations (revision, checksum, state) "
             f"VALUES ({values})"
         )
+    if provider == "oracle":
+        return (
+            'MERGE INTO "_plenora_orm_migrations" target '
+            "USING (SELECT '__plenora_lock__' AS \"revision\", "
+            "'0000000000000000000000000000000000000000000000000000000000000000' "
+            "AS \"checksum\", 'lock' AS \"state\" FROM DUAL) source "
+            'ON (target."revision" = source."revision") '
+            'WHEN NOT MATCHED THEN INSERT ("revision", "checksum", "state") '
+            'VALUES (source."revision", source."checksum", source."state")'
+        )
     return (
         'MERGE INTO "_plenora_orm_migrations" AS target '
         "USING (VALUES ('__plenora_lock__', "
@@ -7811,36 +7967,45 @@ def _migration_lock_sql(provider: str) -> str:
             "WHERE revision = '__plenora_lock__'"
         )
     suffix = " FOR UPDATE WITH RS" if provider == "db2" else " FOR UPDATE"
-    quote = '"' if provider in {"postgres", "db2"} else "`"
+    quote = '"' if provider in {"postgres", "oracle", "db2"} else "`"
     return (
         f"SELECT {quote}revision{quote} FROM {quote}_plenora_orm_migrations{quote} "
         f"WHERE {quote}revision{quote} = '__plenora_lock__'{suffix}"
     )
 
 
-def _db2_migration_table_exists(session: Any) -> bool:
-    scalar = getattr(session, "execute_scalar", None)
-    if not callable(scalar):
-        raise TypeError("sessione Db2 priva di execute_scalar")
-    value = scalar(
+def _migration_table_exists_sql(provider: str) -> str:
+    if provider == "oracle":
+        return (
+            "SELECT COUNT(*) FROM USER_TABLES "
+            "WHERE TABLE_NAME = '_plenora_orm_migrations'"
+        )
+    return (
         "SELECT COUNT_BIG(*) FROM SYSCAT.TABLES "
         "WHERE TABSCHEMA = CURRENT SCHEMA "
         "AND TABNAME = '_plenora_orm_migrations'"
     )
+
+
+def _migration_table_exists(session: Any, provider: str) -> bool:
+    scalar = getattr(session, "execute_scalar", None)
+    if not callable(scalar):
+        raise TypeError("sessione priva di execute_scalar per il catalogo migrazioni")
+    value = scalar(_migration_table_exists_sql(provider))
     try:
         return int(value) > 0
     except (TypeError, ValueError) as error:
         raise OrmStateError(
-            "catalogo migrazioni Db2 con conteggio non valido"
+            "catalogo migrazioni con conteggio non valido"
         ) from error
 
 
 def _ensure_migration_table(session: Any, provider: str) -> None:
-    if provider != "db2":
+    if provider not in {"oracle", "db2"}:
         _execute_ddl(session, _migration_table_ddl(provider))
         _execute_migration_sql(session, _migration_lock_seed_sql(provider))
         return
-    if _db2_migration_table_exists(session):
+    if _migration_table_exists(session, provider):
         _execute_migration_sql(session, _migration_lock_seed_sql(provider))
         return
     try:
@@ -7849,13 +8014,13 @@ def _ensure_migration_table(session: Any, provider: str) -> None:
         # Due runner possono osservare insieme l'assenza. Il perdente accetta
         # soltanto il caso in cui il catalogo dimostri che l'altro ha creato
         # esattamente la tabella attesa; ogni altro errore resta pubblico.
-        if not _db2_migration_table_exists(session):
+        if not _migration_table_exists(session, provider):
             raise
     _execute_migration_sql(session, _migration_lock_seed_sql(provider))
 
 
 async def _ensure_migration_table_async(session: Any, provider: str) -> None:
-    if provider != "db2":
+    if provider not in {"oracle", "db2"}:
         await _execute_ddl_async(session, _migration_table_ddl(provider))
         await _execute_migration_sql_async(
             session, _migration_lock_seed_sql(provider)
@@ -7863,20 +8028,16 @@ async def _ensure_migration_table_async(session: Any, provider: str) -> None:
         return
     scalar = getattr(session, "execute_scalar", None)
     if not callable(scalar):
-        raise TypeError("sessione Db2 priva di execute_scalar")
+        raise TypeError("sessione priva di execute_scalar per il catalogo migrazioni")
 
     async def exists() -> bool:
-        outcome = scalar(
-            "SELECT COUNT_BIG(*) FROM SYSCAT.TABLES "
-            "WHERE TABSCHEMA = CURRENT SCHEMA "
-            "AND TABNAME = '_plenora_orm_migrations'"
-        )
+        outcome = scalar(_migration_table_exists_sql(provider))
         value = await outcome if isawaitable(outcome) else outcome
         try:
             return int(value) > 0
         except (TypeError, ValueError) as error:
             raise OrmStateError(
-                "catalogo migrazioni Db2 con conteggio non valido"
+                "catalogo migrazioni con conteggio non valido"
             ) from error
 
     if await exists():

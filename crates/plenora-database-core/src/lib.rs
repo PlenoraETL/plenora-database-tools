@@ -10,6 +10,9 @@ pub mod error;
 pub mod ewkb;
 pub mod facade;
 pub mod field_contract;
+pub mod fingerprint;
+#[cfg(test)]
+mod fingerprint_tests;
 pub mod geometry;
 pub mod graph;
 pub mod identifier;

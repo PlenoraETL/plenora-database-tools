@@ -14,6 +14,7 @@ _PROVIDERS = {
     "mariadb": "mariadb",
     "mssql": "sqlserver",
     "sqlserver": "sqlserver",
+    "oracle": "oracle",
     "db2": "db2",
 }
 
@@ -60,8 +61,9 @@ class EngineConfig:
             raise ValueError(
                 "tls_mode engine non valido; valori: require, insecure_local"
             )
-        if self.provider == "db2" and self.pool is not None:
-            raise ValueError("pool configurabile non qualificato per Db2")
+        if self.provider in {"oracle", "db2"} and self.pool is not None:
+            provider_name = "Db2" if self.provider == "db2" else "Oracle"
+            raise ValueError(f"pool configurabile non qualificato per {provider_name}")
 
     def __repr__(self) -> str:
         return (
@@ -164,6 +166,7 @@ def engine_from_url(value: str | EngineConfig) -> Any:
         _create_db2_engine,
         _create_mariadb_engine,
         _create_mysql_engine,
+        _create_oracle_engine,
         _create_postgres_engine,
         _create_sqlserver_engine,
     )
@@ -204,6 +207,12 @@ def engine_from_url(value: str | EngineConfig) -> Any:
             max_connections=max_connections,
             acquire_timeout_ms=acquire_timeout_ms,
         )
+    if config.provider == "oracle":
+        return _create_oracle_engine(
+            *args,
+            tls_ca_path=config.tls_ca,
+            tls_mode="require" if config.tls_mode == "require" else "disable",
+        )
     return _create_db2_engine(
         *args,
         tls_ca_path=config.tls_ca,
@@ -219,6 +228,7 @@ async def async_engine_from_url(value: str | EngineConfig) -> Any:
         _create_async_db2_engine,
         _create_async_mariadb_engine,
         _create_async_mysql_engine,
+        _create_async_oracle_engine,
         _create_async_postgres_engine,
         _create_async_sqlserver_engine,
     )
@@ -258,6 +268,12 @@ async def async_engine_from_url(value: str | EngineConfig) -> Any:
             tls_mode="require" if config.tls_mode == "require" else "insecure_trust_server",
             max_connections=max_connections,
             acquire_timeout_ms=acquire_timeout_ms,
+        )
+    if config.provider == "oracle":
+        return await _create_async_oracle_engine(
+            *args,
+            tls_ca_path=config.tls_ca,
+            tls_mode="require" if config.tls_mode == "require" else "disable",
         )
     return await _create_async_db2_engine(
         *args,

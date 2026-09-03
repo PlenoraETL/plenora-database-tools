@@ -1,0 +1,22 @@
+[package]
+name = "plenora-db-oracle"
+description = "Provider Oracle thin per plenora-database-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license-file.workspace = true
+
+[dependencies]
+plenora-database-core.workspace = true
+plenora-database-sql.workspace = true
+plenora-database-engine.workspace = true
+oracle-rs.workspace = true
+rustls.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

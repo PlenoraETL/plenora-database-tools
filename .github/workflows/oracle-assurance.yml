@@ -1,0 +1,85 @@
+name: oracle-assurance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - ".github/workflows/oracle-assurance.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/plenora-database-core/**"
+      - "crates/plenora-database-engine/**"
+      - "crates/plenora-database-cli/**"
+      - "crates/plenora-database-py/**"
+      - "crates/plenora-db-oracle/**"
+      - "docker-compose.oracle.yml"
+      - "docker/oracle/**"
+      - "scripts/check_oracle_reference.py"
+      - "scripts/test_check_oracle_reference.py"
+      - "scripts/live_inventory.py"
+      - "requirements-sdk-build.txt"
+      - "requirements-sdk-tests.txt"
+      - "requirements-self-tests.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-assurance-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  oracle-linux:
+    name: Oracle AI Database 26ai Free full Linux x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: 1.98.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: dipendenze dei gate e del wheel
+        run: |
+          python3 -m pip install -r requirements-self-tests.txt
+          python3 -m pip install -r requirements-sdk-build.txt -r requirements-sdk-tests.txt
+      - name: self-test del gate
+        run: python3 scripts/test_check_oracle_reference.py
+      - name: toolchain Rust pinned
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy
+      - name: avvia il riferimento
+        run: |
+          mkdir -p assurance-results
+          docker compose -f docker-compose.oracle.yml config --quiet
+          docker compose -f docker-compose.oracle.yml up -d --wait --wait-timeout 600
+      - name: gate Oracle
+        run: |
+          python3 scripts/check_oracle_reference.py 2>&1 \
+            | tee assurance-results/oracle-reference.log
+      - name: il candidato non e cambiato
+        run: test -z "$(git status --porcelain=v1 -uall)"
+      - name: diagnostica
+        if: failure()
+        run: |
+          docker ps -a > assurance-results/oracle-containers.txt
+          docker compose -f docker-compose.oracle.yml logs --no-color \
+            > assurance-results/oracle-compose.log 2>&1 || true
+      - name: verdetto
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oracle-assurance-${{ github.sha }}
+          path: assurance-results/
+          if-no-files-found: error
+          retention-days: 90
+      - name: ferma il riferimento
+        if: always()
+        run: docker compose -f docker-compose.oracle.yml down --volumes || true

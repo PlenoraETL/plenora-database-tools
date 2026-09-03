@@ -12,6 +12,26 @@ provider diversi non si toccano. `--remove-orphans` riguarda i servizi del
 progetto corrente che non sono piu dichiarati nel file Compose: non serve nei
 comandi ordinari di queste fixture.
 
+## Fixture Oracle
+
+Oracle viene qualificato soltanto su Linux AMD64. Il Compose fissa immagine e
+piattaforma; il gate confronta quei valori con `docker/oracle/references.json`,
+attende l'healthcheck e interroga la versione del server prima del verdetto.
+Il riferimento usa la variante `full`: la campagna deve provare anche Oracle
+Spatial e rifiuta un'immagine standard priva di quella componente.
+Il listener della fixture e plaintext per scelta esplicita di test: non prova
+TCPS e non autorizza ad aprire quella capability.
+
+```bash
+docker compose -f docker-compose.oracle.yml up -d --wait
+python scripts/check_oracle_reference.py
+docker compose -f docker-compose.oracle.yml down --volumes
+```
+
+Le credenziali non sono duplicate nel runner: vengono lette dal container
+avviato. `down --volumes` elimina i dati del solo progetto Oracle ed e usato
+dal workflow alla fine della campagna.
+
 ## Migrazione (una tantum)
 
 **Migrazione (una tantum).** A collidere sono soltanto i **container**: i
@@ -37,7 +57,8 @@ docker rm -f dataflow-mariadb \
              plenora-age \
              dataflow-sqlserver \
              dataflow-sqlserver-certgen \
-             dataflow-sqlserver-init
+             dataflow-sqlserver-init \
+             plenora-oracle
 ```
 
 **Non** cancellare i volumi del vecchio progetto: non e necessario e non e

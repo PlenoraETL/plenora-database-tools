@@ -3,11 +3,7 @@ use crate::connection::open_connection;
 use crate::error::{interruption_error, task_error};
 use crate::transaction::Db2Transaction;
 use crate::Db2Config;
-use chrono::{Duration, NaiveDate};
-use plenora_database_core::arrow::array::{
-    Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
-    Int16Array, Int32Array, Int64Array, LargeBinaryArray, StringArray, TimestampMicrosecondArray,
-};
+use plenora_database_core::arrow::array::Array;
 use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit};
 use plenora_database_core::arrow::RecordBatch;
 use plenora_database_core::field_contract::{validate_schema_contract, FieldContract};
@@ -26,7 +22,10 @@ use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
     RetryDisposition,
 };
-use plenora_database_engine::{validate_prepared_budget, ContractLeases, WriteResourceReservation};
+use plenora_database_engine::{
+    arrow_binary_value, arrow_parameter_value, validate_prepared_budget, ContractLeases,
+    WriteResourceReservation,
+};
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -225,7 +224,8 @@ impl Db2WritePlan {
                 if array.is_null(row) {
                     continue;
                 }
-                let bytes = binary_value(array.as_ref(), &column.data_type, row)?;
+                let bytes = arrow_binary_value(array.as_ref(), &column.data_type, row)
+                    .map_err(db2_write_error)?;
                 if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > budget.limits().cell_bytes {
                     return Err(DatabaseError::resource_limit(
                         "geometry Db2 oltre il limite cella",
@@ -898,153 +898,18 @@ pub fn batch_values(batch: &RecordBatch, plan: &Db2WritePlan) -> Result<Vec<Vec<
                 .columns()
                 .iter()
                 .zip(batch.schema().fields().iter().zip(&plan.columns))
-                .map(|(array, (field, column))| array_value(array.as_ref(), field, column, row))
+                .map(|(array, (field, _column))| {
+                    arrow_parameter_value(array.as_ref(), field, row, ' ').map_err(db2_write_error)
+                })
                 .collect()
         })
         .collect()
 }
 
-fn array_value(
-    array: &dyn Array,
-    field: &Field,
-    column: &WriteColumn,
-    row: usize,
-) -> Result<ParameterValue> {
-    if array.is_null(row) {
-        return Ok(ParameterValue::Null {
-            type_name: format!("{:?}", field.data_type()),
-        });
-    }
-    if column.spatial.is_some() {
-        return Ok(ParameterValue::Bytes(
-            binary_value(array, field.data_type(), row)?.to_vec(),
-        ));
-    }
-    let value = match field.data_type() {
-        DataType::Boolean => ParameterValue::Bool(downcast::<BooleanArray>(array)?.value(row)),
-        DataType::Int16 => {
-            ParameterValue::I32(i32::from(downcast::<Int16Array>(array)?.value(row)))
-        }
-        DataType::Int32 => ParameterValue::I32(downcast::<Int32Array>(array)?.value(row)),
-        DataType::Int64 => ParameterValue::I64(downcast::<Int64Array>(array)?.value(row)),
-        DataType::Float32 => {
-            let value = f64::from(downcast::<Float32Array>(array)?.value(row));
-            finite(value)?;
-            ParameterValue::F64(value)
-        }
-        DataType::Float64 => {
-            let value = downcast::<Float64Array>(array)?.value(row);
-            finite(value)?;
-            ParameterValue::F64(value)
-        }
-        DataType::Decimal128(_, scale) => ParameterValue::Decimal(decimal_text(
-            downcast::<Decimal128Array>(array)?.value(row),
-            *scale,
-        )?),
-        DataType::Utf8 => {
-            ParameterValue::String(downcast::<StringArray>(array)?.value(row).to_owned())
-        }
-        DataType::Date32 => {
-            ParameterValue::Date(date_text(downcast::<Date32Array>(array)?.value(row))?)
-        }
-        DataType::Timestamp(TimeUnit::Microsecond, None) => ParameterValue::Timestamp(
-            timestamp_text(downcast::<TimestampMicrosecondArray>(array)?.value(row))?,
-        ),
-        _ => {
-            return Err(prepare_error(
-                ErrorCategory::Unsupported,
-                "tipo Arrow non qualificato per write Db2",
-            ));
-        }
-    };
-    Ok(value)
-}
-
-fn binary_value<'a>(array: &'a dyn Array, data_type: &DataType, row: usize) -> Result<&'a [u8]> {
-    match data_type {
-        DataType::Binary => Ok(downcast::<BinaryArray>(array)?.value(row)),
-        DataType::LargeBinary => Ok(downcast::<LargeBinaryArray>(array)?.value(row)),
-        _ => Err(write_error(
-            ErrorCategory::DataMapping,
-            "campo spatial Db2 non binario",
-        )),
-    }
-}
-
-fn downcast<T: 'static>(array: &dyn Array) -> Result<&T> {
-    array.as_any().downcast_ref().ok_or_else(|| {
-        write_error(
-            ErrorCategory::DataMapping,
-            "array Arrow incoerente con il tipo dichiarato",
-        )
-    })
-}
-
-fn finite(value: f64) -> Result<()> {
-    if value.is_finite() {
-        Ok(())
-    } else {
-        Err(write_error(
-            ErrorCategory::DataMapping,
-            "float non finito non qualificato per write Db2",
-        ))
-    }
-}
-
-fn date_text(days: i32) -> Result<String> {
-    NaiveDate::from_ymd_opt(1970, 1, 1)
-        .and_then(|epoch| epoch.checked_add_signed(Duration::days(i64::from(days))))
-        .map(|value| value.format("%Y-%m-%d").to_string())
-        .ok_or_else(|| write_error(ErrorCategory::DataMapping, "data Arrow fuori range Db2"))
-}
-
-fn timestamp_text(micros: i64) -> Result<String> {
-    chrono::DateTime::from_timestamp_micros(micros)
-        .map(|value| {
-            value
-                .naive_utc()
-                .format("%Y-%m-%d %H:%M:%S%.6f")
-                .to_string()
-        })
-        .ok_or_else(|| {
-            write_error(
-                ErrorCategory::DataMapping,
-                "timestamp Arrow fuori range Db2",
-            )
-        })
-}
-
-fn decimal_text(value: i128, scale: i8) -> Result<String> {
-    if scale < 0 {
-        return Err(prepare_error(
-            ErrorCategory::Unsupported,
-            "scala DECIMAL negativa non qualificata per write Db2",
-        ));
-    }
-    let scale = u32::try_from(scale).map_err(|_| {
-        prepare_error(
-            ErrorCategory::DataMapping,
-            "scala DECIMAL Db2 non rappresentabile",
-        )
-    })?;
-    if scale == 0 {
-        return Ok(value.to_string());
-    }
-    let negative = value.is_negative();
-    let digits = value.unsigned_abs().to_string();
-    let scale = usize::try_from(scale).unwrap_or(usize::MAX);
-    let padded = if digits.len() <= scale {
-        format!("{}{}", "0".repeat(scale + 1 - digits.len()), digits)
-    } else {
-        digits
-    };
-    let split = padded.len() - scale;
-    Ok(format!(
-        "{}{}.{}",
-        if negative { "-" } else { "" },
-        &padded[..split],
-        &padded[split..]
-    ))
+const fn db2_write_error(mut error: DatabaseError) -> DatabaseError {
+    error.phase = ErrorPhase::Write;
+    error.provider = Some(ProviderKind::Db2);
+    error
 }
 
 fn validate_operation(

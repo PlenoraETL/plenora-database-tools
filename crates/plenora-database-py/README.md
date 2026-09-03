@@ -1,12 +1,13 @@
 # plenora-database
 
 Python SDK per `plenora-database-tools` — bindings PyO3 sopra al core
-Rust del progetto. Espone PostgreSQL/PostGIS, MySQL, MariaDB, SQL Server e IBM
-Db2 LUW con API sync + async Pythonic, portable AST builder, error hierarchy tipizzata, spatial
-predicates e context manager per transazioni.
+Rust del progetto. Espone PostgreSQL/PostGIS, MySQL, MariaDB, SQL Server,
+Oracle e IBM Db2 LUW con API sync + async Pythonic, portable AST builder,
+error hierarchy tipizzata, spatial predicates e context manager per
+transazioni.
 
-- **Provider**: PostgreSQL/PostGIS/AGE, MySQL, MariaDB, SQL Server e IBM Db2
-  LUW condividono `EngineConfig` e lo stesso lifecycle sync/async
+- **Provider**: PostgreSQL/PostGIS/AGE, MySQL, MariaDB, SQL Server, Oracle e
+  IBM Db2 LUW condividono `EngineConfig` e lo stesso lifecycle sync/async
 - **Sessioni**: nascono sempre dall'engine; SQL portabile e SQL raw hanno
   metodi e risultati distinti
 - **Bulk**: mapping policy obbligatoria e capability fail-closed per provider
@@ -59,8 +60,8 @@ python -c "import plenora_database as p; print(p.version())"
 ## Quickstart
 
 Per un server applicativo, il confine consigliato e un `Engine` longevo e una
-sessione per request. PostgreSQL, MySQL, MariaDB, SQL Server e Db2 espongono lo
-stesso lifecycle provider-neutral.
+sessione per request. PostgreSQL, MySQL, MariaDB, SQL Server, Oracle e Db2
+espongono lo stesso lifecycle provider-neutral.
 
 ```python
 engine = p.engine_from_url(
@@ -89,12 +90,13 @@ La variante asyncio si crea con `await p.async_engine_from_url(config)` e usa
 Gli ingressi pubblici sono `engine_from_url` e `async_engine_from_url`; le
 factory per singolo provider non fanno parte del contratto 2.0.
 Il prodotto è dichiarato nello schema URL (`mysql`, `mariadb`, `sqlserver`,
-`db2`, `postgresql` o `age`) e viene verificato dalla probe prima che l'engine
-sia restituito.
+`oracle`, `db2`, `postgresql` o `age`) e viene verificato dalla probe prima che
+l'engine sia restituito.
 
 La stessa configurazione si puo costruire senza URL. `PoolConfig` rende
-espliciti limite e timeout di acquisizione; Db2 rifiuta questa opzione finche
-il provider ODBC non dispone di una qualifica equivalente:
+espliciti limite e timeout di acquisizione; Oracle e Db2 rifiutano questa
+opzione finche i rispettivi provider non dispongono di una qualifica
+equivalente:
 
 ```python
 config = p.EngineConfig.from_postgres_dsn(
@@ -167,6 +169,10 @@ statement = p.select(
 `BOOLEAN`, `INTEGER`, `BIG_INTEGER`, `FLOAT`, `STRING`, `BINARY`, `DATE`,
 `TIMESTAMP`, `TIMESTAMP_TZ`, `DECIMAL`, `UUID` e `JSON` per il dialect. Db2
 rende la forma tipizzata con un `CAST` e `SYSIBM.SYSDUMMY1`.
+Oracle usa bind `:N`; il driver thin qualificato non conserva il tipo
+`TIMESTAMP WITH TIME ZONE` in scrittura, quindi quel bind resta fail-closed.
+La lettura dello stesso tipo, incluso l'offset UTC, e invece coperta dal gate
+live.
 
 ### Letture riprendibili
 
@@ -815,6 +821,13 @@ e li verifica; un artefatto assente non è supporto implicito.
 
 ## Limitazioni
 
+- **Oracle** - provider thin, Arrow e ORM Spatial sono qualificati sul
+  riferimento AMD64 fissato dal gate. I nomi di tabella, schema e colonna
+  Spatial creati dall'ORM devono essere canonici maiuscoli, coerentemente con
+  la normalizzazione di `USER_SDO_GEOM_METADATA`. Pool configurabile, identita
+  generate, geography, TCPS live e bind timestamp con timezone restano chiusi
+  e falliscono prima di promettere una semantica non provata. La matrice
+  esatta delle capability aperte e generata in `docs/STATO.md`.
 - **Selezione del prodotto** — il prodotto è dichiarato nell'URL o in
   `EngineConfig` e verificato dalla probe; non viene inferito dal server
   raggiunto.
@@ -827,7 +840,7 @@ e li verifica; un artefatto assente non è supporto implicito.
 - **ORM-like** — non c'e lazy loading implicito. Le relationship verso chiavi
   composite richiedono un mapping FK esplicito. Il bulk DML non attraversa
   tabelle joined e non accetta join, grouping, ordering o paginazione.
-  Geometry ORM e qualificata sui cinque provider nei limiti dichiarati sopra;
+  Geometry ORM e qualificata sui provider indicati dalla matrice generata;
   tipi, dimensioni o semantiche fuori da quella matrice restano chiusi.
 
 ## Sviluppo
@@ -841,6 +854,7 @@ python scripts/check_sdk_tests.py --benchmark-only # solo i bench di parita
 python scripts/check_sdk_tests.py --stabilization-only # 10 cicli runtime sensibili
 python scripts/check_sdk_tests.py --allow-dirty    # verdetto non autorevole
 python scripts/check_db2_reference.py              # wheel DB2 e provider live dedicati
+python scripts/check_oracle_reference.py           # Oracle thin, CLI e wheel live
 ```
 
 **Albero pulito.** Il runner rifiuta di partire se `git status --porcelain

@@ -13,6 +13,7 @@ fn provider(value: &str) -> Option<(Dialect, ProviderKind)> {
         "mariadb" => Some((Dialect::Mysql, ProviderKind::Mariadb)),
         "sqlserver" => Some((Dialect::SqlServer, ProviderKind::Sqlserver)),
         "db2" => Some((Dialect::Db2, ProviderKind::Db2)),
+        "oracle" => Some((Dialect::Oracle, ProviderKind::Oracle)),
         _ => None,
     }
 }
@@ -48,6 +49,7 @@ pub fn compile_relational_query(
                     | ProviderKind::Mariadb
                     | ProviderKind::Sqlserver
                     | ProviderKind::Db2
+                    | ProviderKind::Oracle
             ),
         },
     )

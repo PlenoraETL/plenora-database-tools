@@ -96,13 +96,13 @@ def probe_engine(engine: Any) -> ProbeReport:
 def _provider(session: Any) -> str:
     capabilities = getattr(session, "capabilities", None)
     provider = capabilities.get("provider") if isinstance(capabilities, dict) else None
-    if provider not in {"postgres", "mysql", "mariadb", "sqlserver", "db2"}:
+    if provider not in {"postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"}:
         raise ValueError("provider EXPLAIN non qualificato")
     return provider
 
 
 def _explain_sql(provider: str, sql: str, analyze: bool) -> str:
-    if provider in {"sqlserver", "db2"}:
+    if provider in {"sqlserver", "oracle", "db2"}:
         raise ValueError("EXPLAIN strutturato non qualificato per il provider")
     if provider == "postgres":
         return f"EXPLAIN (FORMAT JSON, ANALYZE {'TRUE' if analyze else 'FALSE'}) {sql}"

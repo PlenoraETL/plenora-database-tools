@@ -2,10 +2,10 @@ use super::{
     Column, Constraint, Db2ColumnMetadata, ForeignKey, Index, IndexElement, Inspection, MetaData,
     MysqlColumnMetadata, MysqlTableMetadata, NativeColumnMetadata, NativeConstraintMetadata,
     NativeIndexElementMetadata, NativeIndexMetadata, NativeTableMetadata, ObjectRef, Observation,
-    PostgresColumnMetadata, PostgresCompositeField, PostgresPartition, PostgresPolicy,
-    PostgresPrivilege, PostgresRelationRef, PostgresTableMetadata, ProviderKind, Result,
-    SchemaToken, SpatialColumnMetadata, SqlServerColumnMetadata, SqlServerSpatialBoundingBox,
-    SqlServerSpatialIndexMetadata, SqlServerTableMetadata, Table,
+    OracleColumnMetadata, PostgresColumnMetadata, PostgresCompositeField, PostgresPartition,
+    PostgresPolicy, PostgresPrivilege, PostgresRelationRef, PostgresTableMetadata, ProviderKind,
+    Result, SchemaToken, SpatialColumnMetadata, SqlServerColumnMetadata,
+    SqlServerSpatialBoundingBox, SqlServerSpatialIndexMetadata, SqlServerTableMetadata, Table,
 };
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase};
 use serde::de::DeserializeOwned;
@@ -36,6 +36,7 @@ pub(super) fn metadata_from_inspection(
         ProviderKind::Mariadb => mysql(true, parse(inspection)?),
         ProviderKind::Sqlserver => sqlserver(parse(inspection)?),
         ProviderKind::Db2 => db2(parse(inspection)?),
+        ProviderKind::Oracle => oracle(parse(inspection)?),
         unsupported => {
             return Err(DatabaseError::unsupported(
                 unsupported,
@@ -914,4 +915,107 @@ fn db2(document: Db2Document) -> Table {
 fn db2_spatial_type(value: &str) -> bool {
     let value = value.to_ascii_uppercase();
     value.starts_with("ST_") || value.contains("GEOMETRY") || value.contains("GEOGRAPHY")
+}
+
+#[derive(Deserialize)]
+struct OracleDocument {
+    schema: String,
+    name: String,
+    kind: String,
+    columns: Vec<OracleColumnWire>,
+    indexes: Vec<OracleIndexWire>,
+    schema_token: String,
+}
+
+#[derive(Deserialize)]
+struct OracleColumnWire {
+    name: String,
+    ordinal: u64,
+    data_type: String,
+    data_length: u64,
+    char_length: u64,
+    precision: Option<u64>,
+    scale: Option<i64>,
+    nullable: bool,
+    default_expression: Option<String>,
+    identity: bool,
+    virtual_column: bool,
+}
+
+#[derive(Deserialize)]
+struct OracleIndexWire {
+    name: String,
+    unique: bool,
+    primary: bool,
+    columns: Vec<String>,
+    descending: Vec<bool>,
+}
+
+fn oracle(document: OracleDocument) -> Table {
+    let columns = document
+        .columns
+        .into_iter()
+        .map(|column| Column {
+            name: column.name,
+            ordinal: Some(column.ordinal),
+            native_type: column.data_type.clone(),
+            native_declaration: Some(column.data_type),
+            nullable: Some(column.nullable),
+            default_expression: column.default_expression,
+            identity: Some(column.identity),
+            generated: Some(column.virtual_column),
+            numeric_precision: column.precision,
+            numeric_scale: column.scale,
+            spatial: None,
+            native: NativeColumnMetadata::Oracle(OracleColumnMetadata {
+                data_length: column.data_length,
+                char_length: column.char_length,
+                precision: column.precision,
+                scale: column.scale,
+                virtual_column: column.virtual_column,
+            }),
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let indexes = document
+        .indexes
+        .into_iter()
+        .map(|index| {
+            let descending = index.descending;
+            let elements = index
+                .columns
+                .into_iter()
+                .enumerate()
+                .map(|(position, column)| IndexElement {
+                    expression: column,
+                    included: Some(false),
+                    descending: descending.get(position).copied(),
+                    native: NativeIndexElementMetadata::Oracle,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            Index {
+                name: Some(index.name),
+                unique: Some(index.unique),
+                primary: Some(index.primary),
+                elements: Observation::Observed(elements),
+                predicate: None,
+                spatial: None,
+                native: NativeIndexMetadata::Oracle,
+            }
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    Table {
+        catalog: None,
+        schema: Some(document.schema),
+        name: document.name,
+        kind: document.kind,
+        schema_token: SchemaToken::Oracle(document.schema_token),
+        columns,
+        indexes: Observation::Observed(indexes),
+        constraints: Observation::NotMeasured,
+        foreign_keys: Observation::NotMeasured,
+        native: NativeTableMetadata::Oracle,
+    }
 }

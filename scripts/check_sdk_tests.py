@@ -191,6 +191,10 @@ SQLSERVER_SKIP = (
 DB2_SKIP = (
     "live test Db2: mancano env PLENORA_TEST_DB2_HOST e/o PLENORA_TEST_DB2_PASSWORD"
 )
+ORACLE_SKIP = (
+    "live test Oracle: mancano env PLENORA_TEST_ORACLE_HOST "
+    "e/o PLENORA_TEST_ORACLE_PASSWORD"
+)
 AGE_SKIP = "live test AGE: manca env PLENORA_TEST_AGE_DSN"
 BENCH_SKIP = (
     "bench opt-in: setta PLENORA_BENCH_PARITY=1 per lanciarlo "
@@ -202,11 +206,16 @@ BENCH_SKIP = (
 # "passed" da solo cresce senza dire di cosa.
 SCOPE_CONTRACTS = {
     # Il gate SDK multipiattaforma qualifica il wheel standard, che non
-    # incorpora ODBC. I test Db2 appartengono al gate live DB2 dedicato e qui
-    # devono restare skip espliciti, non essere assorbiti dal totale.
-    "live": ScopeContract(passed=428, deselected=0, skips={DB2_SKIP: 9}),
+    # incorpora ODBC. I test Db2 e Oracle appartengono ai rispettivi gate live
+    # dedicati e qui devono restare skip espliciti, non essere assorbiti dal
+    # totale.
+    "live": ScopeContract(
+        passed=436,
+        deselected=0,
+        skips={DB2_SKIP: 9, ORACLE_SKIP: 5},
+    ),
     "offline": ScopeContract(
-        passed=158,
+        passed=166,
         deselected=0,
         skips={
             POSTGRES_SKIP: 214,
@@ -214,12 +223,13 @@ SCOPE_CONTRACTS = {
             MARIADB_SKIP: 8,
             SQLSERVER_SKIP: 8,
             DB2_SKIP: 9,
+            ORACLE_SKIP: 5,
             AGE_SKIP: 3,
             BENCH_SKIP: 2,
         },
     ),
     "stabilization": ScopeContract(passed=30, deselected=0, skips={}),
-    "benchmark": ScopeContract(passed=2, deselected=435, skips={}),
+    "benchmark": ScopeContract(passed=2, deselected=448, skips={}),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende

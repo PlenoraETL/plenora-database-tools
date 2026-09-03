@@ -83,9 +83,32 @@ pub fn validate_predicate(
         ProviderKind::Mysql => validate_mysql(predicate),
         ProviderKind::Sqlserver => validate_sqlserver(predicate),
         ProviderKind::Db2 => validate_db2(predicate, reference),
+        ProviderKind::Oracle => validate_oracle(predicate, reference),
         // Gli altri provider sono rifiutati dal compilatore portable prima di
         // raggiungere questa validazione.
         _ => Ok(()),
+    }
+}
+
+fn validate_oracle(predicate: &SpatialPredicate, reference: &SpatialReference) -> Result<()> {
+    if reference.semantics != SpatialSemantics::Geometry {
+        return Err(DatabaseError::unsupported(
+            ProviderKind::Oracle,
+            crate::ErrorPhase::Prepare,
+            "Oracle SDO_GEOMETRY e qualificato soltanto con semantica geometry",
+        ));
+    }
+    match predicate {
+        SpatialPredicate::Intersects
+        | SpatialPredicate::Contains
+        | SpatialPredicate::Within
+        | SpatialPredicate::BoundingBox => Ok(()),
+        SpatialPredicate::DWithin { .. } if is_geographic_srid(reference.srid) => Ok(()),
+        SpatialPredicate::DWithin { .. } => Err(DatabaseError::unsupported(
+            ProviderKind::Oracle,
+            crate::ErrorPhase::Prepare,
+            "DWithin Oracle in metri e qualificato soltanto per un SRID geografico noto",
+        )),
     }
 }
 

@@ -567,6 +567,84 @@ family_engine_factories!(
     crate::session_family::mysql_provider,
     "MySQL"
 );
+
+#[pyfunction]
+#[pyo3(signature = (host, service, user, password, port=None, tls_ca_path=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)]
+pub fn create_oracle_engine(
+    py: Python<'_>,
+    host: &str,
+    service: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_path: Option<PathBuf>,
+    tls_mode: &str,
+) -> PyResult<PyEngine> {
+    let endpoint = family_endpoint(
+        host,
+        service,
+        user,
+        password,
+        port,
+        None,
+        tls_ca_path,
+        tls_mode,
+        1,
+        10_000,
+    );
+    let binding = py.detach(|| {
+        runtime().block_on(qualify_family_engine(
+            endpoint,
+            crate::session_family::oracle_provider,
+            "Oracle",
+            "create_oracle_engine",
+        ))
+    })?;
+    Ok(PyEngine::new(binding))
+}
+
+#[pyfunction]
+#[pyo3(signature = (host, service, user, password, port=None, tls_ca_path=None, tls_mode="require"))]
+#[allow(clippy::too_many_arguments)]
+pub fn create_async_oracle_engine<'py>(
+    py: Python<'py>,
+    host: &str,
+    service: &str,
+    user: &str,
+    password: &str,
+    port: Option<u16>,
+    tls_ca_path: Option<PathBuf>,
+    tls_mode: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    let endpoint = family_endpoint(
+        host,
+        service,
+        user,
+        password,
+        port,
+        None,
+        tls_ca_path,
+        tls_mode,
+        1,
+        10_000,
+    );
+    future_into_py(py, async move {
+        let binding = qualify_family_engine(
+            endpoint,
+            crate::session_family::oracle_provider,
+            "Oracle",
+            "create_async_oracle_engine",
+        )
+        .await?;
+        Python::attach(|py| {
+            Ok(Py::new(py, PyAsyncEngine::new(binding))?
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
+        })
+    })
+}
 family_engine_factories!(
     create_mariadb_engine,
     create_async_mariadb_engine,
