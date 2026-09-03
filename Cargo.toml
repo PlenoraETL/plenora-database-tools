@@ -13,6 +13,7 @@ members = [
     "crates/plenora-database-cli",
     "crates/plenora-database-py",
 ]
+exclude = ["vendor/oracle-rs"]
 
 # `default-members` mantiene leggero il percorso ordinario; adapter opzionali e
 # binding restano selezionabili esplicitamente. La scelta governa la build, non
@@ -83,6 +84,12 @@ plenora-db-sqlserver = { path = "crates/plenora-db-sqlserver" }
 plenora-db-mysql = { path = "crates/plenora-db-mysql" }
 plenora-db-db2 = { path = "crates/plenora-db-db2" }
 plenora-db-oracle = { path = "crates/plenora-db-oracle" }
+
+# `oracle-rs` 0.1.7 riconosce il flag TNS `TLS_RENEG` ma non esegue il
+# secondo handshake richiesto dai listener TCPS tradizionali. La patch locale
+# conserva l'API upstream e chiude esclusivamente quel gap di trasporto.
+[patch.crates-io]
+oracle-rs = { path = "vendor/oracle-rs" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
