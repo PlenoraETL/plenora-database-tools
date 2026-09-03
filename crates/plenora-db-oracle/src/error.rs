@@ -70,9 +70,7 @@ fn classify_driver_error(error: &Error) -> (ErrorCategory, &'static str) {
         }
         Error::ConnectionTimeout(_) => (ErrorCategory::Timeout, "connessione Oracle in timeout"),
         Error::Io(error) => match error.kind() {
-            std::io::ErrorKind::InvalidData => {
-                (ErrorCategory::Io, "verifica TLS Oracle non completata")
-            }
+            std::io::ErrorKind::InvalidData => (ErrorCategory::Io, invalid_tls_message(error)),
             std::io::ErrorKind::UnexpectedEof => (
                 ErrorCategory::Io,
                 "trasporto Oracle terminato prematuramente",
@@ -107,6 +105,31 @@ fn classify_driver_error(error: &Error) -> (ErrorCategory, &'static str) {
         Error::SqlError(_) | Error::OracleError { .. } | Error::ServerError { .. } => {
             (ErrorCategory::Execution, "operazione Oracle non completata")
         }
+    }
+}
+
+fn invalid_tls_message(error: &std::io::Error) -> &'static str {
+    match error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<rustls::Error>())
+    {
+        Some(
+            rustls::Error::InvalidCertificate(_)
+            | rustls::Error::InvalidCertRevocationList(_)
+            | rustls::Error::NoCertificatesPresented
+            | rustls::Error::UnsupportedNameType,
+        ) => "certificato TLS Oracle non verificato",
+        Some(
+            rustls::Error::InvalidMessage(_)
+            | rustls::Error::InappropriateMessage { .. }
+            | rustls::Error::InappropriateHandshakeMessage { .. },
+        ) => "record TLS Oracle non valido",
+        Some(
+            rustls::Error::AlertReceived(_)
+            | rustls::Error::PeerIncompatible(_)
+            | rustls::Error::PeerMisbehaved(_),
+        ) => "handshake TLS Oracle rifiutato dal peer",
+        Some(_) | None => "verifica TLS Oracle non completata",
     }
 }
 
