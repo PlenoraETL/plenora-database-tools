@@ -989,8 +989,12 @@ impl Connection {
             match packet_type {
                 2 => {
                     // ACCEPT - parse the accept message to get protocol version and capabilities
-                    let requires_tls_renegotiation =
-                        response[5] & crate::constants::packet_flags::TLS_RENEG != 0;
+                    // This driver does not emit Oracle's special service SNI,
+                    // so every TCPS connection uses the traditional listener
+                    // flow and requires the second verified handshake after
+                    // ACCEPT. Some listener builds omit the header flag even
+                    // though the database process is already awaiting TLS.
+                    let requires_tls_renegotiation = self.config.is_tls_enabled();
                     let packet = Packet::from_bytes(response)?;
                     let accept = AcceptMessage::parse(&packet)?;
 
