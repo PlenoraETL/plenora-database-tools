@@ -318,6 +318,22 @@ I singoli runner di riferimento presuppongono il proprio fixture già healthy;
 le campagne e i workflow gestiscono invece l'intero ciclo di vita Compose.
 Ogni provider usa un progetto e volumi dedicati.
 
+### Coverage
+
+Il workflow `.github/workflows/coverage.yml` misura due superfici indipendenti:
+il codice Rust di prodotto con la suite workspace non-live e il binding Python
+esercitato importando una wheel instrumentata. I report JSON, LCOV e HTML sono
+artefatti della run; `scripts/coverage_budget.json` contiene le soglie minime e
+`scripts/check_coverage.py` le applica in modo fail-closed.
+
+Il denominatore Rust esclude solo testkit, binding misurato a parte e specifici
+moduli `#[cfg(test)]`; il runtime dei provider e dei comandi CLI resta incluso.
+La branch coverage non
+fa parte del gate stabile: con la toolchain Rust 1.98 fissata dal repository
+richiederebbe nightly. I test live continuano a qualificare soltanto il
+provider nominato dal proprio workflow e non vengono attribuiti al report
+offline.
+
 ## Regole che non cambiano
 
 - una capability resta `false` finché non esiste una prova riproducibile che

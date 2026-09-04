@@ -121,6 +121,7 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
     ("phase0_validate.py", [sys.executable, "scripts/phase0_validate.py"]),
     ("check_docs.py", [sys.executable, "scripts/check_docs.py"]),
     ("check_comments.py", [sys.executable, "scripts/check_comments.py"]),
+    ("test_check_coverage.py", [sys.executable, "scripts/test_check_coverage.py"]),
     ("check_test_layout.py", [sys.executable, "scripts/check_test_layout.py"]),
     ("check_relational_ir.py", [sys.executable, "scripts/check_relational_ir.py"]),
     ("check_typed_metadata.py", [sys.executable, "scripts/check_typed_metadata.py"]),
