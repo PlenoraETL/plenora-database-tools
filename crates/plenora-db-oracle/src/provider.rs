@@ -1,7 +1,7 @@
 use crate::catalog;
 use crate::config::OracleConfig;
-use crate::connection::connect;
 use crate::transaction::{execute_ddl, OracleTransaction};
+use crate::OraclePool;
 use plenora_database_core::arrow::SchemaRef;
 use plenora_database_core::capabilities::{
     ProviderCapabilities, ProviderLimits, ReadCapabilities, SpatialCapabilities,
@@ -18,12 +18,34 @@ use plenora_database_core::relational::SpatialFunction;
 use plenora_database_core::resource::ResourceBudget;
 use plenora_database_core::transaction::{TransactionOptions, TransactionScope as Transaction};
 use plenora_database_core::{CancellationToken, Result};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+struct CachedPool {
+    secret_fingerprint: [u8; 32],
+    pool: Arc<OraclePool>,
+}
 
 /// Adapter Oracle. Non incorpora credenziali e non apre connessioni nel costruttore.
-#[derive(Debug)]
 pub struct OracleProvider {
     config: OracleConfig,
+    max_connections: usize,
+    cached_pool: Mutex<Option<CachedPool>>,
+}
+
+impl std::fmt::Debug for OracleProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OracleProvider")
+            .field("config", &self.config)
+            .field("max_connections", &self.max_connections)
+            .field(
+                "pool_initialized",
+                &lock_recover(&self.cached_pool).is_some(),
+            )
+            .finish()
+    }
 }
 
 impl OracleProvider {
@@ -33,14 +55,57 @@ impl OracleProvider {
     ///
     /// Propaga `InvalidConfiguration` senza contattare Oracle.
     pub fn new(config: OracleConfig) -> Result<Self> {
+        Self::new_with_pool(config, 4)
+    }
+
+    /// Costruisce il provider con un pool lazy bounded.
+    ///
+    /// # Errors
+    ///
+    /// Restituisce `InvalidConfiguration` se configurazione o capacita non
+    /// sono valide.
+    pub fn new_with_pool(config: OracleConfig, max_connections: usize) -> Result<Self> {
         config.validate()?;
-        Ok(Self { config })
+        if max_connections == 0 {
+            return Err(plenora_database_core::DatabaseError::new(
+                plenora_database_core::ErrorCategory::InvalidConfiguration,
+                plenora_database_core::ErrorPhase::Validate,
+                Some(ProviderKind::Oracle),
+                "provider Oracle con pool a capacita zero",
+            ));
+        }
+        Ok(Self {
+            config,
+            max_connections,
+            cached_pool: Mutex::new(None),
+        })
     }
 
     #[must_use]
     pub const fn config(&self) -> &OracleConfig {
         &self.config
     }
+
+    fn pool_for(&self, secret: &SecretString) -> Result<Arc<OraclePool>> {
+        let fingerprint: [u8; 32] = Sha256::digest(secret.expose().as_bytes()).into();
+        let mut cached = lock_recover(&self.cached_pool);
+        if let Some(candidate) = cached.as_ref() {
+            if candidate.secret_fingerprint == fingerprint {
+                return Ok(Arc::clone(&candidate.pool));
+            }
+        }
+        let pool = OraclePool::new(self.config.clone(), secret.clone(), self.max_connections)?;
+        *cached = Some(CachedPool {
+            secret_fingerprint: fingerprint,
+            pool: Arc::clone(&pool),
+        });
+        drop(cached);
+        Ok(pool)
+    }
+}
+
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Provider for OracleProvider {
@@ -54,8 +119,11 @@ impl Provider for OracleProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ConnectionInfo> {
         Box::pin(async move {
-            let connection = connect(&self.config, secret, cancellation).await?;
-            let info = connection.server_info().await;
+            let pool = self.pool_for(secret)?;
+            let mut connection = pool.checkout(cancellation).await?;
+            let info = connection.connection()?.server_info().await;
+            connection.allow_reuse();
+            drop(connection);
             Ok(ConnectionInfo {
                 provider: ProviderKind::Oracle,
                 server_version: if info.version.is_empty() {
@@ -75,7 +143,8 @@ impl Provider for OracleProvider {
     ) -> ProviderFuture<'a, ProviderCapabilities> {
         Box::pin(async move {
             let info = self.test_connection(secret, cancellation).await?;
-            let spatial = catalog::probe_spatial(&self.config, secret, cancellation).await?;
+            let pool = self.pool_for(secret)?;
+            let spatial = catalog::probe_spatial(&self.config, &pool, cancellation).await?;
             oracle_capabilities(info.server_version, spatial).published()
         })
     }
@@ -86,9 +155,10 @@ impl Provider for OracleProvider {
         operation: &'a Operation,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Inspection> {
-        Box::pin(
-            async move { catalog::inspect(&self.config, secret, operation, cancellation).await },
-        )
+        Box::pin(async move {
+            let pool = self.pool_for(secret)?;
+            catalog::inspect(&self.config, &pool, operation, cancellation).await
+        })
     }
 
     fn read<'a>(
@@ -100,9 +170,10 @@ impl Provider for OracleProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         Box::pin(async move {
+            let pool = self.pool_for(secret)?;
             crate::read::read_operation(
                 &self.config,
-                secret,
+                &pool,
                 operation,
                 parameters,
                 budget,
@@ -121,9 +192,10 @@ impl Provider for OracleProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite> {
         Box::pin(async move {
+            let pool = self.pool_for(secret)?;
             crate::write::prepare_write(
                 &self.config,
-                secret,
+                &pool,
                 operation,
                 input_schema,
                 budget,
@@ -142,7 +214,8 @@ impl Provider for OracleProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome> {
         Box::pin(async move {
-            crate::write::execute_write(&self.config, secret, prepared, input, budget, cancellation)
+            let pool = self.pool_for(secret)?;
+            crate::write::execute_write(&self.config, &pool, prepared, input, budget, cancellation)
                 .await
         })
     }
@@ -155,8 +228,9 @@ impl Provider for OracleProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn Transaction>> {
         Box::pin(async move {
+            let pool = self.pool_for(secret)?;
             let transaction =
-                OracleTransaction::begin(&self.config, secret, options, cancellation).await?;
+                OracleTransaction::begin(&self.config, &pool, options, cancellation).await?;
             Ok(Box::new(transaction) as Box<dyn Transaction>)
         })
     }
@@ -167,7 +241,10 @@ impl Provider for OracleProvider {
         sql: &'a str,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        Box::pin(async move { execute_ddl(&self.config, secret, sql, cancellation).await })
+        Box::pin(async move {
+            let pool = self.pool_for(secret)?;
+            execute_ddl(&self.config, &pool, sql, cancellation).await
+        })
     }
 }
 
@@ -177,18 +254,19 @@ pub fn oracle_capabilities(
     provider_version: String,
     spatial_available: bool,
 ) -> ProviderCapabilities {
+    let qualified_functions = vec![
+        SpatialFunction::Srid,
+        SpatialFunction::Dimensions,
+        SpatialFunction::Intersects,
+        SpatialFunction::Contains,
+        SpatialFunction::Within,
+        SpatialFunction::DWithin,
+    ];
     let functions_by_semantics = if spatial_available {
-        BTreeMap::from([(
-            SpatialSemantics::Geometry,
-            vec![
-                SpatialFunction::Srid,
-                SpatialFunction::Dimensions,
-                SpatialFunction::Intersects,
-                SpatialFunction::Contains,
-                SpatialFunction::Within,
-                SpatialFunction::DWithin,
-            ],
-        )])
+        BTreeMap::from([
+            (SpatialSemantics::Geometry, qualified_functions.clone()),
+            (SpatialSemantics::Geography, qualified_functions),
+        ])
     } else {
         BTreeMap::new()
     };
@@ -232,7 +310,7 @@ pub fn oracle_capabilities(
             read_wkb: spatial_available,
             write_wkb: spatial_available,
             geometry: spatial_available,
-            geography: false,
+            geography: spatial_available,
             spatial_index: spatial_available,
             mixed_geometry_types: spatial_available,
             dimensions: if spatial_available {
@@ -253,3 +331,7 @@ pub fn oracle_capabilities(
         },
     }
 }
+
+#[cfg(test)]
+#[path = "provider_tests.rs"]
+mod tests;

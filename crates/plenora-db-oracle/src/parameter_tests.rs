@@ -48,3 +48,15 @@ fn decimal_validation_is_exact_and_does_not_round_through_float() {
         assert!(!error.message.contains(invalid));
     }
 }
+
+#[test]
+fn timestamptz_is_validated_and_normalized_for_explicit_oracle_conversion() {
+    let values = bind_parameters(&[ParameterValue::TimestampTz(
+        "2026-09-03T10:11:12.123+02:30".to_owned(),
+    )])
+    .expect("timestamptz valido");
+    assert!(matches!(
+        &values[0],
+        Value::String(value) if value == "2026-09-03T10:11:12.123000+02:30"
+    ));
+}

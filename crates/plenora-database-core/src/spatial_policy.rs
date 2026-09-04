@@ -91,11 +91,9 @@ pub fn validate_predicate(
 }
 
 fn validate_oracle(predicate: &SpatialPredicate, reference: &SpatialReference) -> Result<()> {
-    if reference.semantics != SpatialSemantics::Geometry {
-        return Err(DatabaseError::unsupported(
-            ProviderKind::Oracle,
-            crate::ErrorPhase::Prepare,
-            "Oracle SDO_GEOMETRY e qualificato soltanto con semantica geometry",
+    if reference.semantics == SpatialSemantics::Geography && !is_geographic_srid(reference.srid) {
+        return Err(DatabaseError::invalid_plan(
+            "geography Oracle richiede un SRID geografico qualificato",
         ));
     }
     match predicate {

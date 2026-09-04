@@ -1,22 +1,23 @@
 use crate::catalog;
-use crate::connection::{connect, with_timeout_duration};
+use crate::connection::with_timeout_duration;
 use crate::decode::{decode_columns, row_from_driver};
 use crate::error::interruption_error;
 use crate::parameter::{bind_parameters_with_lobs, LobCache};
-use crate::{OracleColumnKind, OracleConfig, OracleObjectDescription, OracleReadPlan};
+use crate::{
+    OracleColumnKind, OracleConfig, OracleObjectDescription, OraclePool, OracleReadPlan,
+    PooledOracleConnection,
+};
 use chrono::{DateTime, NaiveDateTime};
-use oracle_rs::{ColumnInfo, Connection};
+use oracle_rs::ColumnInfo;
 use plenora_database_core::arrow::array::builder::{BinaryBuilder, StringBuilder};
 use plenora_database_core::arrow::array::{
     ArrayRef, BooleanArray, Decimal128Array, Float32Array, Float64Array, Int64Array,
     TimestampMicrosecondArray,
 };
 use plenora_database_core::arrow::{RecordBatch, SchemaRef};
-use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
+use plenora_database_core::geometry::Dimensions;
 use plenora_database_core::plan::{FilterExpression, Operation, ProviderKind, ReadOperation};
-use plenora_database_core::provider::{
-    BatchStream, ParameterBag, ParameterValue, ProviderFuture, SecretString,
-};
+use plenora_database_core::provider::{BatchStream, ParameterBag, ParameterValue, ProviderFuture};
 use plenora_database_core::relational::SpatialFunction;
 use plenora_database_core::resource::{ResourceBudget, ResourceLease};
 use plenora_database_core::row::Row;
@@ -29,9 +30,10 @@ use std::time::Duration;
 
 const BATCH_ROWS: usize = 512;
 
+#[allow(clippy::significant_drop_tightening)]
 pub async fn read_operation(
     config: &OracleConfig,
-    secret: &SecretString,
+    pool: &Arc<OraclePool>,
     operation: &ReadOperation,
     parameters: &ParameterBag,
     budget: &ResourceBudget,
@@ -43,7 +45,7 @@ pub async fn read_operation(
     budget.ensure_active()?;
     let inspection = catalog::inspect(
         config,
-        secret,
+        pool,
         &Operation::DatabaseDescribeObject {
             source: operation.source.clone(),
         },
@@ -67,10 +69,12 @@ pub async fn read_operation(
     let mut deadline = DeadlineGuard::new(cancellation, budget)?;
     let internal = deadline.token().clone();
     let deadline_task = deadline.take_deadline_task()?;
-    let connection = connect(config, secret, &internal).await?;
+    let mut connection = pool.checkout(&internal).await?;
+    connection.disallow_reuse();
+    let raw = connection.connection()?;
     let mut lob_cache = LobCache::default();
     let params = bind_parameters_with_lobs(
-        &connection,
+        raw,
         &parameter_values,
         false,
         &mut lob_cache,
@@ -79,14 +83,9 @@ pub async fn read_operation(
         &internal,
     )
     .await?;
-    let confirmed = catalog::describe_object(
-        config,
-        &connection,
-        &plan.schema_name,
-        &plan.object_name,
-        &internal,
-    )
-    .await?;
+    let confirmed =
+        catalog::describe_object(config, raw, &plan.schema_name, &plan.object_name, &internal)
+            .await?;
     if confirmed.schema_token != plan.schema_token {
         return Err(read_error(
             ErrorCategory::Schema,
@@ -97,7 +96,7 @@ pub async fn read_operation(
         config.operation_timeout(),
         ErrorPhase::Read,
         &internal,
-        connection.query(&plan.sql, &params),
+        raw.query(&plan.sql, &params),
     )
     .await?;
     let decoded_columns = decode_columns(&result.columns)?;
@@ -169,6 +168,12 @@ fn validate_spatial_filter(
                     ))
                 }
             };
+            let expected_semantics = column.spatial_semantics.ok_or_else(|| {
+                read_error(
+                    ErrorCategory::Crs,
+                    "colonna Spatial Oracle senza semantica catalogata",
+                )
+            })?;
             let value = parameters.get(geometry_parameter).ok_or_else(|| {
                 read_error(
                     ErrorCategory::InvalidPlan,
@@ -187,9 +192,13 @@ fn validate_spatial_filter(
                     "filtro Spatial Oracle richiede un parametro WKB tipizzato",
                 ));
             };
+            let semantics_compatible = *semantics == expected_semantics
+                || (*semantics == plenora_database_core::geometry::SpatialSemantics::Geometry
+                    && expected_semantics
+                        == plenora_database_core::geometry::SpatialSemantics::Geography);
             if *srid != Some(expected_srid)
                 || *dimensions != expected_dimensions
-                || *semantics != SpatialSemantics::Geometry
+                || !semantics_compatible
             {
                 return Err(read_error(
                     ErrorCategory::Crs,
@@ -200,7 +209,7 @@ fn validate_spatial_filter(
                 bytes.clone(),
                 expected_srid,
                 expected_dimensions,
-                SpatialSemantics::Geometry,
+                *semantics,
             )
             .map_err(oracle_read_error)?;
             let predicate = match function {
@@ -277,7 +286,7 @@ fn named_parameters(names: &[String], parameters: &ParameterBag) -> Result<Vec<P
 }
 
 struct OracleBatchStream {
-    connection: Connection,
+    connection: PooledOracleConnection,
     timeout: Duration,
     wire_columns: Vec<ColumnInfo>,
     decoded_columns: Arc<crate::decode::DecodeColumns>,
@@ -330,8 +339,11 @@ impl BatchStream for OracleBatchStream {
                     self.timeout,
                     ErrorPhase::Read,
                     &self.internal,
-                    self.connection
-                        .fetch_more(self.cursor_id, &self.wire_columns, fetch_rows),
+                    self.connection.connection()?.fetch_more(
+                        self.cursor_id,
+                        &self.wire_columns,
+                        fetch_rows,
+                    ),
                 )
                 .await?;
                 self.cursor_id = result.cursor_id;
@@ -343,6 +355,7 @@ impl BatchStream for OracleBatchStream {
             }
             if self.pending.is_empty() {
                 self.finished = true;
+                self.connection.allow_reuse();
                 return Ok(None);
             }
             let take = reservation.row_limit.min(self.pending.len());
@@ -353,7 +366,7 @@ impl BatchStream for OracleBatchStream {
                 })?;
                 rows.push(
                     row_from_driver(
-                        &self.connection,
+                        self.connection.connection()?,
                         Arc::clone(&self.decoded_columns),
                         driver_row,
                         self.timeout,
@@ -371,6 +384,10 @@ impl BatchStream for OracleBatchStream {
                 bytes,
                 components,
             )?;
+            if self.pending.is_empty() && !self.has_more {
+                self.finished = true;
+                self.connection.allow_reuse();
+            }
             Ok(Some(batch))
         })
     }

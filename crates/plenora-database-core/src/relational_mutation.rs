@@ -7,8 +7,8 @@ use crate::portable::{
 };
 use crate::provider::ParameterValue;
 use crate::relational::{
-    DeleteOperation, InsertOperation, MutationOperation, QueryExpression, UpdateOperation,
-    UpsertOperation,
+    DeleteOperation, InsertOperation, MutationOperation, QueryExpression, QueryParameterType,
+    UpdateOperation, UpsertOperation,
 };
 use crate::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 
@@ -197,10 +197,11 @@ fn column(expression: &QueryExpression, target: &crate::plan::ObjectRef) -> Resu
 
 fn insert_value(expression: &QueryExpression, bind_names: &mut Vec<String>) -> Result<Expression> {
     match expression {
-        QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. } => {
-            bind_names.push(name.clone());
-            Ok(Expression::Literal(ParameterValue::I64(0)))
-        }
+        QueryExpression::Parameter { name } => Ok(parameter(name, None, bind_names)),
+        QueryExpression::TypedParameter {
+            name,
+            parameter_type,
+        } => Ok(parameter(name, Some(*parameter_type), bind_names)),
         QueryExpression::SpatialValue {
             expression,
             srid,
@@ -216,10 +217,11 @@ fn value(
     bind_names: &mut Vec<String>,
 ) -> Result<Expression> {
     match expression {
-        QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. } => {
-            bind_names.push(name.clone());
-            Ok(Expression::Literal(ParameterValue::I64(0)))
-        }
+        QueryExpression::Parameter { name } => Ok(parameter(name, None, bind_names)),
+        QueryExpression::TypedParameter {
+            name,
+            parameter_type,
+        } => Ok(parameter(name, Some(*parameter_type), bind_names)),
         QueryExpression::Column { .. } => Ok(Expression::Column(column(expression, target)?)),
         QueryExpression::SpatialValue {
             expression,
@@ -230,6 +232,20 @@ fn value(
             "valore DML richiede bind() o Column",
         )),
     }
+}
+
+fn parameter(
+    name: &str,
+    parameter_type: Option<QueryParameterType>,
+    bind_names: &mut Vec<String>,
+) -> Expression {
+    bind_names.push(name.to_owned());
+    let sentinel = if parameter_type == Some(QueryParameterType::TimestampTz) {
+        ParameterValue::TimestampTz(String::new())
+    } else {
+        ParameterValue::I64(0)
+    };
+    Expression::Literal(sentinel)
 }
 
 fn spatial_value(

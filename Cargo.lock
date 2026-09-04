@@ -1272,8 +1272,6 @@ checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 [[package]]
 name = "oracle-rs"
 version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c9ca364b441f92b717658c62e85207158b30285deb01811ccd923017f61612e"
 dependencies = [
  "aes",
  "async-trait",
@@ -1410,7 +1408,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "plenora-database-cli"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "arrow-ipc",
  "base64 0.23.1",
@@ -1429,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-core"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1441,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-engine"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "chrono",
  "plenora-database-core",
@@ -1453,7 +1451,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-py"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "arrow-ipc",
  "arrow-schema",
@@ -1474,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-sql"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "plenora-database-core",
  "serde",
@@ -1484,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-testkit"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "plenora-database-core",
  "serde",
@@ -1493,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-db2"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "chrono",
  "odbc-api",
@@ -1508,7 +1506,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-mysql"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "chrono",
  "futures-util",
@@ -1526,7 +1524,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-oracle"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "chrono",
  "oracle-rs",
@@ -1536,12 +1534,13 @@ dependencies = [
  "rustls 0.23.35",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
 ]
 
 [[package]]
 name = "plenora-db-postgres"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1564,7 +1563,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-sqlserver"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "chrono",
  "futures-util",

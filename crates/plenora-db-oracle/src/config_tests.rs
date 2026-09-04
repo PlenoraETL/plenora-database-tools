@@ -1,5 +1,6 @@
 use crate::{OracleConfig, OracleTlsMode};
 use plenora_database_core::provider::SecretString;
+use std::time::Duration;
 
 #[test]
 fn debug_redacts_the_username_and_never_contains_a_secret() {
@@ -32,6 +33,10 @@ fn zero_port_and_control_characters_are_rejected() {
         .validate()
         .is_err());
     assert!(OracleConfig::new("host\nsecond", "service", "user")
+        .validate()
+        .is_err());
+    assert!(OracleConfig::new("host", "service", "user")
+        .with_acquire_timeout(Duration::ZERO)
         .validate()
         .is_err());
 }

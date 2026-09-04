@@ -17,6 +17,10 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
+/// Modello Oracle usato per convertire bind RFC 3339 in modo indipendente da
+/// `NLS_TIMESTAMP_TZ_FORMAT`.
+pub const ORACLE_TIMESTAMP_TZ_FORMAT_MODEL: &str = "YYYY-MM-DD\"T\"HH24:MI:SS.FFTZH:TZM";
+
 pub type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
 #[derive(Clone, PartialEq, Eq)]

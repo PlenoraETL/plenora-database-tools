@@ -569,6 +569,9 @@ def _create_oracle_engine(
     port: int | None = ...,
     tls_ca_path: str | None = ...,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> Engine[_DatabaseSessionWrapper]: ...
 async def _create_async_oracle_engine(
     host: str,
@@ -578,6 +581,9 @@ async def _create_async_oracle_engine(
     port: int | None = ...,
     tls_ca_path: str | None = ...,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> AsyncEngine[_AsyncDatabaseSessionWrapper]: ...
 
 __all__: list[str]

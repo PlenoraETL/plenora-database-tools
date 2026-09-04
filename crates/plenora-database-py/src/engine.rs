@@ -569,7 +569,7 @@ family_engine_factories!(
 );
 
 #[pyfunction]
-#[pyo3(signature = (host, service, user, password, port=None, tls_ca_path=None, tls_mode="require"))]
+#[pyo3(signature = (host, service, user, password, port=None, tls_ca_path=None, tls_mode="require", max_connections=4, acquire_timeout_ms=10_000))]
 #[allow(clippy::too_many_arguments)]
 pub fn create_oracle_engine(
     py: Python<'_>,
@@ -580,6 +580,8 @@ pub fn create_oracle_engine(
     port: Option<u16>,
     tls_ca_path: Option<PathBuf>,
     tls_mode: &str,
+    max_connections: usize,
+    acquire_timeout_ms: u64,
 ) -> PyResult<PyEngine> {
     let endpoint = family_endpoint(
         host,
@@ -590,8 +592,8 @@ pub fn create_oracle_engine(
         None,
         tls_ca_path,
         tls_mode,
-        1,
-        10_000,
+        max_connections,
+        acquire_timeout_ms,
     );
     let binding = py.detach(|| {
         runtime().block_on(qualify_family_engine(
@@ -605,7 +607,7 @@ pub fn create_oracle_engine(
 }
 
 #[pyfunction]
-#[pyo3(signature = (host, service, user, password, port=None, tls_ca_path=None, tls_mode="require"))]
+#[pyo3(signature = (host, service, user, password, port=None, tls_ca_path=None, tls_mode="require", max_connections=4, acquire_timeout_ms=10_000))]
 #[allow(clippy::too_many_arguments)]
 pub fn create_async_oracle_engine<'py>(
     py: Python<'py>,
@@ -616,6 +618,8 @@ pub fn create_async_oracle_engine<'py>(
     port: Option<u16>,
     tls_ca_path: Option<PathBuf>,
     tls_mode: &str,
+    max_connections: usize,
+    acquire_timeout_ms: u64,
 ) -> PyResult<Bound<'py, PyAny>> {
     let endpoint = family_endpoint(
         host,
@@ -626,8 +630,8 @@ pub fn create_async_oracle_engine<'py>(
         None,
         tls_ca_path,
         tls_mode,
-        1,
-        10_000,
+        max_connections,
+        acquire_timeout_ms,
     );
     future_into_py(py, async move {
         let binding = qualify_family_engine(

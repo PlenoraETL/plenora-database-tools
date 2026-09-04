@@ -1097,10 +1097,21 @@ def _create_oracle_engine(
     port: int | None = None,
     tls_ca_path: str | None = None,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> Engine:
     """Crea un Engine Oracle thin."""
     native = _native_create_oracle_engine(
-        host, service, user, password, port, tls_ca_path, tls_mode
+        host,
+        service,
+        user,
+        password,
+        port,
+        tls_ca_path,
+        tls_mode,
+        max_connections,
+        acquire_timeout_ms,
     )
     return Engine(native, _DatabaseSessionWrapper)
 
@@ -1113,10 +1124,21 @@ async def _create_async_oracle_engine(
     port: int | None = None,
     tls_ca_path: str | None = None,
     tls_mode: str = "require",
+    *,
+    max_connections: int = 4,
+    acquire_timeout_ms: int = 10_000,
 ) -> AsyncEngine:
     """Crea la variante asyncio dell'Engine Oracle thin."""
     native = await _native_create_async_oracle_engine(
-        host, service, user, password, port, tls_ca_path, tls_mode
+        host,
+        service,
+        user,
+        password,
+        port,
+        tls_ca_path,
+        tls_mode,
+        max_connections,
+        acquire_timeout_ms,
     )
     return AsyncEngine(native, _AsyncDatabaseSessionWrapper)
 

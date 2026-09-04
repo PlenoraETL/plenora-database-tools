@@ -1,5 +1,6 @@
 use crate::{OracleColumn, OracleObjectDescription};
 use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit};
+use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::plan::{ProviderKind, ReadOperation, SortDirection};
 use plenora_database_core::protocol::{self, contract_schema};
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
@@ -32,6 +33,7 @@ pub struct OracleColumnSpec {
     pub kind: OracleColumnKind,
     pub spatial_srid: Option<u32>,
     pub spatial_dimensions: Option<u8>,
+    pub spatial_semantics: Option<SpatialSemantics>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +78,7 @@ impl OracleColumnSpec {
             "SDO_GEOMETRY" => {
                 if column.spatial_srid.is_none()
                     || !matches!(column.spatial_dimensions, Some(2 | 3))
+                    || column.spatial_semantics.is_none()
                 {
                     return Err(prepare_error(
                         ErrorCategory::Crs,
@@ -99,6 +102,7 @@ impl OracleColumnSpec {
             kind,
             spatial_srid: column.spatial_srid,
             spatial_dimensions: column.spatial_dimensions,
+            spatial_semantics: column.spatial_semantics,
         })
     }
 
@@ -151,7 +155,11 @@ impl OracleColumnSpec {
                 ),
                 (
                     protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
-                    "geometry".to_owned(),
+                    match self.spatial_semantics {
+                        Some(SpatialSemantics::Geography) => "geography",
+                        _ => "geometry",
+                    }
+                    .to_owned(),
                 ),
                 (protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned()),
                 (

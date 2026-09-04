@@ -5,6 +5,32 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [3.2.0] — 2026-09-03
+
+### Aggiunto
+
+- Il provider Oracle espone un pool configurabile con backpressure, timeout di
+  acquisizione e riuso sicuro delle connessioni dopo stream e transazioni.
+- L'ORM Oracle qualifica identity generate, default server-side e bind
+  `TIMESTAMP WITH TIME ZONE` nelle sessioni sync e async.
+- Oracle Spatial distingue le semantiche geometry e geography nel catalogo,
+  nei predicati e nei percorsi Arrow, mantenendo un unico tipo fisico
+  `SDO_GEOMETRY`.
+- TCPS verifica la CA privata sia sul listener sia sul processo database e
+  rifiuta un server non attendibile.
+
+### Corretto
+
+- Il lowering DML conserva il tipo dei bind timezone richiesto dal renderer
+  Oracle e il DDL posiziona `DEFAULT` prima di `NOT NULL`.
+- I wrapper Python Oracle sync e async inoltrano dimensione e timeout del pool
+  al binding nativo.
+
+### Prove
+
+- Il gate Oracle su riferimento immutabile esegue 9 test Rust live e 6 test
+  Python live, includendo pool, identity, timezone, geography, Arrow e TCPS.
+
 ## [3.1.0] — 2026-09-03
 
 ### Aggiunto

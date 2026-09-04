@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from datetime import datetime, timedelta, timezone
 
 import plenora_database as p
 import pytest
@@ -136,7 +137,9 @@ def test_oracle_assigned_key_orm_crud() -> None:
 
 
 def test_oracle_spatial_orm_crud_index_and_predicates() -> None:
-    geometry = p.Geometry(srid=4326, geometry_type="point")
+    geometry = p.Geometry(
+        srid=4326, geometry_type="point", semantics="geography"
+    )
 
     class OracleSpatialRecord(p.DeclarativeBase):
         __tablename__ = "PLENORA_PY_ORACLE_SPATIAL_ORM"
@@ -157,6 +160,7 @@ def test_oracle_spatial_orm_crud_index_and_predicates() -> None:
         _drop_probe(session, OracleSpatialRecord.__tablename__)
         metadata.create_all(session)
         assert session.capabilities["spatial"]["geometry"] is True
+        assert session.capabilities["spatial"]["geography"] is True
         with p.OrmSession(session) as orm:
             orm.add(OracleSpatialRecord(ID=1, SHAPE=point))
         with p.OrmSession(session) as orm:
@@ -199,17 +203,59 @@ def test_oracle_spatial_orm_crud_index_and_predicates() -> None:
             session.close()
 
 
-def test_oracle_config_remains_single_connection_until_pool_is_qualified() -> None:
+def test_oracle_configurable_pool_is_accepted_by_the_live_engine() -> None:
     config = oracle_config_or_skip()
-    with pytest.raises(ValueError, match="Oracle"):
-        p.EngineConfig(
-            config.provider,
-            config.host,
-            config.database,
-            config.user,
-            config.password,
-            config.port,
-            config.tls_mode,
-            config.tls_ca,
-            p.PoolConfig(),
+    pooled = p.EngineConfig(
+        config.provider,
+        config.host,
+        config.database,
+        config.user,
+        config.password,
+        config.port,
+        config.tls_mode,
+        config.tls_ca,
+        p.PoolConfig(max_connections=2, acquire_timeout_ms=1_000),
+    )
+    session = p.engine_from_url(pooled).session()
+    try:
+        assert session.execute_scalar("SELECT CAST(1 AS NUMBER(10)) FROM DUAL") == 1
+    finally:
+        session.close()
+
+
+def test_oracle_generated_identity_defaults_and_timestamptz_bind() -> None:
+    class OracleGeneratedEvent(p.DeclarativeBase):
+        __tablename__ = "PLENORA_PY_ORACLE_GENERATED"
+
+        id: p.Mapped[int] = p.mapped_column(primary_key=True, generated=True)
+        observed_at: p.Mapped[datetime] = p.mapped_column(
+            p.DateTime(timezone=True), nullable=False
         )
+        created_by: p.Mapped[str] = p.mapped_column(
+            p.String(32),
+            nullable=False,
+            server_default=p.ServerDefault.literal("database"),
+        )
+
+    session = connect_oracle_reference()
+    metadata = p.OrmMetadata(models=(OracleGeneratedEvent,))
+    observed = datetime(
+        2026, 9, 3, 10, 11, 12, 123456, tzinfo=timezone(timedelta(hours=2, minutes=30))
+    )
+    try:
+        _drop_probe(session, OracleGeneratedEvent.__tablename__)
+        metadata.create_all(session)
+        with p.OrmSession(session) as orm:
+            event = OracleGeneratedEvent(observed_at=observed)
+            orm.add(event)
+        assert event.id is not None
+        assert event.created_by == "database"
+        with p.OrmSession(session) as orm:
+            loaded = orm.get(OracleGeneratedEvent, event.id)
+            assert loaded is not None
+            assert loaded.observed_at.utcoffset() == timedelta(hours=2, minutes=30)
+    finally:
+        try:
+            _drop_probe(session, OracleGeneratedEvent.__tablename__)
+        finally:
+            session.close()

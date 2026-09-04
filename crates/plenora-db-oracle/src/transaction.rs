@@ -1,8 +1,9 @@
 use crate::config::OracleConfig;
-use crate::connection::{connect, with_timeout, with_timeout_duration};
+use crate::connection::{with_timeout, with_timeout_duration};
 use crate::decode::{decode_columns, row_from_driver, rows_from_result};
 use crate::error::{driver_error, oracle_code_error};
 use crate::parameter::{bind_parameters_with_lobs, LobCache};
+use crate::{OraclePool, PooledOracleConnection};
 use oracle_rs::types::LobValue;
 use oracle_rs::{BindDirection, BindParam, ColumnInfo, Connection, QueryResult, Value};
 use plenora_database_core::native_query_policy::{enforce_policy, NativeQueryPolicy};
@@ -19,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub struct OracleTransaction {
-    connection: Connection,
+    connection: PooledOracleConnection,
     operation_timeout: Duration,
     open: bool,
     native_query_policy: NativeQueryPolicy,
@@ -29,18 +30,20 @@ pub struct OracleTransaction {
 impl OracleTransaction {
     pub async fn begin(
         config: &OracleConfig,
-        secret: &plenora_database_core::provider::SecretString,
+        pool: &Arc<OraclePool>,
         options: &TransactionOptions,
         cancellation: &CancellationToken,
     ) -> Result<Self> {
         validate_options(options)?;
-        let connection = connect(config, secret, cancellation).await?;
-        if let Some(sql) = begin_statement(options)? {
+        let mut connection = pool.checkout(cancellation).await?;
+        connection.disallow_reuse();
+        let begin = begin_statement(options)?;
+        if let Some(sql) = begin {
             with_timeout(
                 config,
                 ErrorPhase::Prepare,
                 cancellation,
-                connection.execute(sql, &[]),
+                connection.connection()?.execute(sql, &[]),
             )
             .await?;
         }
@@ -77,7 +80,7 @@ impl OracleTransaction {
     ) -> Result<u64> {
         enforce_policy(self.native_query_policy, &statement.sql)?;
         let params = bind_parameters_with_lobs(
-            &self.connection,
+            self.connection.connection()?,
             &statement.params,
             promote_binary_lobs,
             &mut self.lob_cache,
@@ -90,7 +93,9 @@ impl OracleTransaction {
             self.operation_timeout,
             ErrorPhase::Write,
             cancellation,
-            self.connection.execute(&statement.sql, &params),
+            self.connection
+                .connection()?
+                .execute(&statement.sql, &params),
         )
         .await
         .map_err(statement_execution_error)?;
@@ -104,7 +109,7 @@ impl OracleTransaction {
     ) -> Result<u64> {
         enforce_policy(self.native_query_policy, &statement.sql)?;
         let values = bind_parameters_with_lobs(
-            &self.connection,
+            self.connection.connection()?,
             &statement.params,
             true,
             &mut self.lob_cache,
@@ -150,7 +155,7 @@ impl OracleTransaction {
             self.operation_timeout,
             ErrorPhase::Write,
             cancellation,
-            self.connection.execute_plsql(&sql, &params),
+            self.connection.connection()?.execute_plsql(&sql, &params),
         )
         .await
         .map_err(statement_execution_error)?;
@@ -158,7 +163,7 @@ impl OracleTransaction {
             self.operation_timeout,
             ErrorPhase::Write,
             cancellation,
-            self.connection.query(
+            self.connection.connection()?.query(
                 "SELECT SYS_CONTEXT('USERENV', 'CLIENT_INFO') AS PLENORA_STATUS FROM DUAL",
                 &[],
             ),
@@ -187,7 +192,7 @@ impl OracleTransaction {
     ) -> Result<QueryResult> {
         enforce_policy(self.native_query_policy, &statement.sql)?;
         let params = bind_parameters_with_lobs(
-            &self.connection,
+            self.connection.connection()?,
             &statement.params,
             false,
             &mut self.lob_cache,
@@ -200,7 +205,7 @@ impl OracleTransaction {
             self.operation_timeout,
             ErrorPhase::Read,
             cancellation,
-            self.connection.query(&statement.sql, &params),
+            self.connection.connection()?.query(&statement.sql, &params),
         )
         .await
     }
@@ -254,8 +259,9 @@ fn statement_execution_error(mut error: DatabaseError) -> DatabaseError {
 
 impl Drop for OracleTransaction {
     fn drop(&mut self) {
-        // Una connessione con transazione aperta non viene mai riusata: il
-        // driver thin non usa un pool implicito e il drop chiude il canale.
+        // Il lease nasce non riusabile e viene riabilitato soltanto da un
+        // commit o rollback confermato. Il drop di una transazione aperta
+        // chiude quindi il canale invece di contaminare il prossimo checkout.
         self.open = false;
     }
 }
@@ -281,14 +287,14 @@ impl TransactionScope for OracleTransaction {
         Box::pin(async move {
             let result = self.query_inner(statement, cancellation).await?;
             let result = drain_result(
-                &self.connection,
+                self.connection.connection()?,
                 self.operation_timeout,
                 cancellation,
                 result,
             )
             .await?;
             rows_from_result(
-                &self.connection,
+                self.connection.connection()?,
                 self.operation_timeout,
                 ErrorPhase::Read,
                 cancellation,
@@ -311,8 +317,12 @@ impl TransactionScope for OracleTransaction {
                 ));
             }
             let result = self.query_inner(statement, cancellation).await?;
-            let stream =
-                OracleRowStream::new(&self.connection, self.operation_timeout, batch_size, result)?;
+            let stream = OracleRowStream::new(
+                self.connection.connection()?,
+                self.operation_timeout,
+                batch_size,
+                result,
+            )?;
             Ok(Box::new(stream) as Box<dyn RowStream + Send + 'a>)
         })
     }
@@ -328,7 +338,7 @@ impl TransactionScope for OracleTransaction {
                 self.operation_timeout,
                 ErrorPhase::Write,
                 cancellation,
-                self.connection.savepoint(name),
+                self.connection.connection()?.savepoint(name),
             )
             .await
         })
@@ -345,7 +355,7 @@ impl TransactionScope for OracleTransaction {
                 self.operation_timeout,
                 ErrorPhase::Rollback,
                 cancellation,
-                self.connection.rollback_to_savepoint(name),
+                self.connection.connection()?.rollback_to_savepoint(name),
             )
             .await
         })
@@ -396,11 +406,12 @@ impl TransactionScope for OracleTransaction {
         cancellation: &CancellationToken,
     ) -> ProviderFuture<'_, CommitOutcome> {
         Box::pin(async move {
-            let operation = self.connection.commit();
+            let operation = self.connection.connection()?.commit();
             tokio::select! {
                 result = tokio::time::timeout(self.operation_timeout, operation) => match result {
                     Ok(Ok(())) => {
                         self.open = false;
+                        self.connection.allow_reuse();
                         Ok(CommitOutcome::Committed)
                     }
                     Ok(Err(error)) if error.is_connection_error() => {
@@ -427,10 +438,13 @@ impl TransactionScope for OracleTransaction {
                 self.operation_timeout,
                 ErrorPhase::Rollback,
                 cancellation,
-                self.connection.rollback(),
+                self.connection.connection()?.rollback(),
             )
             .await;
             self.open = false;
+            if result.is_ok() {
+                self.connection.allow_reuse();
+            }
             result
         })
     }
@@ -598,17 +612,19 @@ fn begin_statement(options: &TransactionOptions) -> Result<Option<&'static str>>
 
 pub async fn execute_ddl(
     config: &OracleConfig,
-    secret: &plenora_database_core::provider::SecretString,
+    pool: &Arc<OraclePool>,
     sql: &str,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let connection = connect(config, secret, cancellation).await?;
+    let mut connection = pool.checkout(cancellation).await?;
     with_timeout(
         config,
         ErrorPhase::Write,
         cancellation,
-        connection.execute(sql, &[]),
+        connection.connection()?.execute(sql, &[]),
     )
     .await?;
+    connection.allow_reuse();
+    drop(connection);
     Ok(())
 }

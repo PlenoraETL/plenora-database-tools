@@ -51,6 +51,7 @@ class EveryDigestHasOneHome(unittest.TestCase):
     DECLARED_COPIES = {
         "docker-compose.mysql.yml": "il Compose avvia l'immagine e il gate verifica che coincida con references.json",
         "docker-compose.mariadb.yml": "stessa ragione del Compose MySQL",
+        "docker-compose.oracle.yml": "il cert-generator usa il baseline MySQL e il gate Oracle lo verifica da references.json",
         "docker-compose.sqlserver.yml": "SQL Server non ha un references.json: il Compose e la fonte, e il gate lo legge da li",
         "docker-compose.postgres.yml": "PostgreSQL non ha un references.json: il Compose e la fonte",
         "docker-compose.postgres-tls.yml": "stessa fixture del Compose PostgreSQL",

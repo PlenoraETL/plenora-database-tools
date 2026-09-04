@@ -923,6 +923,50 @@ fn spatial_oracle_uses_sdo_geometry_with_bound_wkb_and_srid() {
 }
 
 #[test]
+fn spatial_oracle_geography_value_uses_the_same_sdo_constructor() {
+    use crate::geometry::SpatialSemantics;
+    let bytes = ewkb_point_2d(4326);
+    let statement = PortableStatement::Insert(InsertStatement {
+        table: TableRef::new("features"),
+        columns: vec!["shape".to_owned()],
+        values: vec![vec![Expression::SpatialValue {
+            expression: Box::new(Expression::literal(ParameterValue::Bytes(bytes.clone()))),
+            srid: 4326,
+            semantics: SpatialSemantics::Geography,
+        }]],
+        returning: Vec::new(),
+    });
+    let compiled =
+        compile_portable(ProviderKind::Oracle, &statement).expect("valore geography Oracle");
+    assert_eq!(
+        compiled.sql,
+        "INSERT INTO \"features\" (\"shape\") VALUES (MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(TO_BLOB(:1), 4326))"
+    );
+    assert_eq!(compiled.params, vec![ParameterValue::Bytes(bytes)]);
+}
+
+#[test]
+fn oracle_timestamptz_bind_is_explicit_and_nls_independent() {
+    let statement = PortableStatement::Insert(InsertStatement {
+        table: TableRef::new("events"),
+        columns: vec!["observed_at".into()],
+        values: vec![vec![Expression::literal(ParameterValue::TimestampTz(
+            "2026-09-03T10:11:12.123456+02:00".into(),
+        ))]],
+        returning: Vec::new(),
+    });
+    let compiled = compile_portable(ProviderKind::Oracle, &statement).expect("timestamptz Oracle");
+    assert_eq!(
+        compiled.sql,
+        "INSERT INTO \"events\" (\"observed_at\") VALUES (TO_TIMESTAMP_TZ(:1, 'YYYY-MM-DD\"T\"HH24:MI:SS.FFTZH:TZM'))"
+    );
+    assert!(matches!(
+        compiled.params.as_slice(),
+        [ParameterValue::TimestampTz(_)]
+    ));
+}
+
+#[test]
 fn insert_arity_mismatch_is_rejected() {
     let stmt = PortableStatement::Insert(InsertStatement {
         table: TableRef::new("t"),

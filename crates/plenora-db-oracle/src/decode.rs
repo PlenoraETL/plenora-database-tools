@@ -1,4 +1,5 @@
 use crate::connection::with_timeout_duration;
+use chrono::{FixedOffset, NaiveDate, SecondsFormat, TimeZone};
 use oracle_rs::{ColumnInfo, Connection, LobData, LobValue, OracleType, QueryResult, Value};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::ParameterValue;
@@ -154,18 +155,7 @@ async fn value_from_driver(
             value.year, value.month, value.day, value.hour, value.minute, value.second
         ))),
         Value::Timestamp(value) if oracle_type == OracleType::TimestampTz => {
-            Ok(ParameterValue::TimestampTz(format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}{:+03}:{:02}",
-                value.year,
-                value.month,
-                value.day,
-                value.hour,
-                value.minute,
-                value.second,
-                value.microsecond,
-                value.tz_hour_offset,
-                value.tz_minute_offset.abs()
-            )))
+            decode_timestamp_tz(value, phase).map(ParameterValue::TimestampTz)
         }
         Value::Timestamp(_) if oracle_type == OracleType::TimestampLtz => {
             Err(DatabaseError::unsupported(
@@ -213,6 +203,31 @@ async fn value_from_driver(
             ))
         }
     }
+}
+
+fn decode_timestamp_tz(
+    value: oracle_rs::types::OracleTimestamp,
+    phase: ErrorPhase,
+) -> Result<String> {
+    // oracle-rs espone l'istante normalizzato a UTC insieme all'offset Oracle.
+    // Ricostruire un DateTime dall'UTC evita di sottrarre l'offset una seconda
+    // volta e gestisce correttamente anche i cambi di giorno.
+    let utc = NaiveDate::from_ymd_opt(value.year, u32::from(value.month), u32::from(value.day))
+        .and_then(|date| {
+            date.and_hms_micro_opt(
+                u32::from(value.hour),
+                u32::from(value.minute),
+                u32::from(value.second),
+                value.microsecond,
+            )
+        })
+        .ok_or_else(|| mapping_error(phase, "TIMESTAMP WITH TIME ZONE Oracle non valido"))?;
+    let seconds = i32::from(value.tz_hour_offset) * 3_600 + i32::from(value.tz_minute_offset) * 60;
+    let offset = FixedOffset::east_opt(seconds)
+        .ok_or_else(|| mapping_error(phase, "offset TIMESTAMP WITH TIME ZONE Oracle non valido"))?;
+    Ok(offset
+        .from_utc_datetime(&utc)
+        .to_rfc3339_opts(SecondsFormat::Micros, false))
 }
 
 fn decode_number(value: String, scale: i16) -> ParameterValue {
@@ -324,3 +339,7 @@ fn mapping_error(phase: ErrorPhase, message: &'static str) -> DatabaseError {
         diagnostics: None,
     }
 }
+
+#[cfg(test)]
+#[path = "decode_tests.rs"]
+mod tests;
