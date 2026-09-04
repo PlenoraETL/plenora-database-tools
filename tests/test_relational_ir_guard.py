@@ -19,9 +19,12 @@ use plenora_database_core::relational::QueryOperation;
 fn render_query() {}
 fn render_query_expression() {}
 fn simple_select_to_relational() {}
-fn simple_expression_to_relational() {}
+fn simple_expression_to_relational_with_relation() {}
 pub fn render_select() { render_query(simple_select_to_relational()); }
-pub fn render_filter() { render_query_expression(simple_expression_to_relational()); }
+pub fn render_filter() { render_filter_inner(); }
+fn render_filter_inner() {
+    render_query_expression(simple_expression_to_relational_with_relation());
+}
 """
 
 
@@ -60,6 +63,28 @@ class RelationalIrGuardTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertTrue(any("render_select" in item for item in violations(self.root)))
+
+    def test_rejects_a_filter_helper_that_bypasses_the_ir(self) -> None:
+        renderer = self.root / SQL_RENDERER
+        renderer.write_text(
+            RENDERER.replace(
+                "render_query_expression(simple_expression_to_relational_with_relation());",
+                "let sql = FILTER_FROM_COLUMNS;",
+            ),
+            encoding="utf-8",
+        )
+        self.assertTrue(any("render_filter" in item for item in violations(self.root)))
+
+    def test_does_not_follow_an_unreachable_filter_helper(self) -> None:
+        renderer = self.root / SQL_RENDERER
+        renderer.write_text(
+            RENDERER.replace(
+                "pub fn render_filter() { render_filter_inner(); }",
+                "pub fn render_filter() { let sql = FILTER_FROM_COLUMNS; }",
+            ),
+            encoding="utf-8",
+        )
+        self.assertTrue(any("render_filter" in item for item in violations(self.root)))
 
 
 if __name__ == "__main__":

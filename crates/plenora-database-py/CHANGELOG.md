@@ -5,6 +5,33 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [3.3.0] — 2026-09-04
+
+### Aggiunto
+
+- Oracle dichiara e verifica la ripresa keyset delle letture e usa array DML
+  bounded per i batch compatibili, mantenendo il percorso per riga per LOB e
+  geometrie.
+- Il catalogo spatial Oracle deriva le capability dalle forme realmente
+  renderizzabili e copre predicati, trasformazioni, misure, operazioni
+  geometriche e serializzazione GeoJSON qualificate dal gate live.
+- Il dialect Oracle applica il limite documentato di 128 byte agli
+  identificatori e qualifica le relazioni quando i tipi oggetto lo richiedono.
+
+### Corretto
+
+- La lettura Oracle normalizza le geometrie XYZ prive del flag dimensionale e
+  conserva il contratto WKB/EWKB verificato prima della consegna.
+- La guardia dell'IR relazionale riconosce il helper condiviso usato dai
+  filtri qualificati senza accettare percorsi che saltano il lowering
+  canonico.
+
+### Prove
+
+- Il gate Oracle esegue 15 test Rust live, 6 test Python live e le sonde CLI
+  contro Oracle Database Free full, includendo capability, spatial, ripresa,
+  array DML e redazione degli errori.
+
 ## [3.2.0] — 2026-09-03
 
 ### Aggiunto

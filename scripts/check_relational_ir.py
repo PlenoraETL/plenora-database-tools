@@ -49,6 +49,20 @@ def function_body(source: str, name: str) -> str | None:
     return None
 
 
+def called_tokens(source: str, entrypoint: str, helper: str) -> set[str] | None:
+    """Token dell'entrypoint e, solo se invocato, del suo helper comune."""
+
+    body = function_body(source, entrypoint)
+    if body is None:
+        return None
+    tokens = set(re.findall(r"\b[a-z_][a-z0-9_]*\b", body))
+    if helper in tokens:
+        helper_body = function_body(source, helper)
+        if helper_body is not None:
+            tokens.update(re.findall(r"\b[a-z_][a-z0-9_]*\b", helper_body))
+    return tokens
+
+
 def violations(root: Path) -> list[str]:
     """Restituisce tutte le violazioni, senza fermarsi alla prima."""
 
@@ -87,13 +101,17 @@ def violations(root: Path) -> list[str]:
         "render_query",
     } <= set(re.findall(r"\b[a-z_][a-z0-9_]*\b", select_body)):
         problems.append("render_select non abbassa Select verso l'IR canonico")
-    filter_body = function_body(sql, "render_filter")
-    if filter_body is None:
+    filter_tokens = called_tokens(sql, "render_filter", "render_filter_inner")
+    if filter_tokens is None:
         problems.append("database-sql non espone render_filter")
-    elif not {
-        "simple_expression_to_relational",
-        "render_query_expression",
-    } <= set(re.findall(r"\b[a-z_][a-z0-9_]*\b", filter_body)):
+    elif (
+        not {
+            "simple_expression_to_relational",
+            "simple_expression_to_relational_with_relation",
+        }
+        & filter_tokens
+        or "render_query_expression" not in filter_tokens
+    ):
         problems.append("render_filter non abbassa Expression verso l'IR canonico")
     return problems
 
