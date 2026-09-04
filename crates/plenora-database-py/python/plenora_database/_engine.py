@@ -82,6 +82,10 @@ class Engine:
     def dispose(self) -> None:
         self._native.dispose()
 
+    def close(self) -> None:
+        """Alias di lifecycle conforme al contratto SDK pubblico."""
+        self.dispose()
+
     def __enter__(self) -> Engine:
         return self
 
@@ -163,6 +167,10 @@ class AsyncEngine:
 
     def dispose(self) -> None:
         self._native.dispose()
+
+    async def aclose(self) -> None:
+        """Rilascia idempotentemente le risorse dell'engine."""
+        self.dispose()
 
     async def __aenter__(self) -> AsyncEngine:
         return self

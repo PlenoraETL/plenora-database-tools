@@ -187,6 +187,11 @@ impl DatabaseSession {
     }
 
     #[getter]
+    fn public_capabilities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        crate::session::public_capabilities_to_pydict(py, &self.capabilities)
+    }
+
+    #[getter]
     fn is_closed(&self) -> bool {
         self.closed
     }

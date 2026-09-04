@@ -67,10 +67,21 @@ fn snapshot_error_envelope_has_stable_shape() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let v: Value = serde_json::from_str(&stdout).expect("valid JSON");
     // Contract v1 envelope errore:
-    //   { "status": "error", "protocol_version": 1, "error": { ... } }
+    //   { "status": "error", "protocol_version": 2, ... "error": { ... } }
     assert_eq!(v["status"], "error");
-    assert_eq!(v["protocol_version"], 1);
-    assert_has_keys(&v, &["error", "protocol_version", "status"]);
+    assert_eq!(v["protocol_version"], 2);
+    assert_has_keys(
+        &v,
+        &[
+            "command",
+            "component",
+            "component_version",
+            "contract",
+            "error",
+            "protocol_version",
+            "status",
+        ],
+    );
     // error.* fields fissi
     assert_has_keys(
         &v["error"],

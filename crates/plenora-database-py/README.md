@@ -81,7 +81,7 @@ def handle_request(user_id: int):
             return tx.execute(statement, {"identity": user_id}).one_or_none()
 
 # allo shutdown dell'applicazione
-engine.dispose()
+engine.close()
 ```
 
 La variante asyncio si crea con `await p.async_engine_from_url(config)` e usa
@@ -138,7 +138,7 @@ with engine.session() as session:
     result = session.execute(statement, {"minimum_id": 100})
     rows = result.all()
 
-engine.dispose()
+engine.close()
 ```
 
 `Result` offre `all()`, `first()`, `one()`, `one_or_none()`, `scalar()` e le
@@ -480,10 +480,30 @@ async def main():
             return await session.execute_scalar("SELECT $1::int", [i])
 
     results = await asyncio.gather(*(scalar(i) for i in range(10)))
-    engine.dispose()
+    await engine.aclose()
 
 asyncio.run(main())
 ```
+
+## Migrazione a 4.0
+
+La 4.0 rende esplicito il confine fra contratto dell'artefatto e misure del
+database connesso:
+
+- `session.capabilities` e `AsyncSession.capabilities` restituiscono il
+  documento comune Capability Discovery 2.0;
+- `session.provider_capabilities` conserva il documento misurato sul provider;
+- `test_connection` e `atest_connection` sono gli ingressi dedicati per una
+  verifica redatta della connessione;
+- `Engine.close()` e `await AsyncEngine.aclose()` sono gli alias di lifecycle
+  canonici; `dispose()` resta disponibile per compatibilita;
+- `PlenoraError.retry` e ora il mapping tipizzato del contratto comune, non una
+  stringa. I dettagli strutturati sono in `PlenoraError.details`, con le
+  diagnostiche di riga sotto `details["row_diagnostics"]`.
+
+Il cambiamento di forma di `capabilities` e `retry` e incompatibile e motiva
+la nuova major. Le applicazioni che interrogavano supporto specifico del
+database devono passare a `provider_capabilities`.
 
 ## Graph con Apache AGE
 

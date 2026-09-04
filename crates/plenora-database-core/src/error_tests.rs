@@ -141,3 +141,55 @@ fn new_builds_the_safe_local_envelope() {
     assert!(error.execution_id.is_none());
     assert!(error.diagnostics.is_none());
 }
+
+#[test]
+fn public_projection_nests_diagnostics_and_bounds_the_message() {
+    let tracker = crate::row_diagnostics::WriteDiagnosticsTracker::new(
+        1,
+        crate::row_diagnostics::RowDiagnosticsPolicy {
+            key_field: None,
+            constraint_column: None,
+            examples_limit: 1,
+        },
+    )
+    .expect("tracker");
+    let report = tracker
+        .reject_row(
+            &crate::row_diagnostics::RejectedRow {
+                source_index: 0,
+                cause: crate::row_diagnostics::CAUSE_CONSTRAINT_VIOLATION.to_owned(),
+                column: None,
+            },
+            crate::row_diagnostics::RollbackEvidence::Confirmed,
+        )
+        .expect("report");
+    let mut error = DatabaseError::invalid_plan("x".repeat(PUBLIC_MESSAGE_MAX_CHARS + 5));
+    error.diagnostics = Some(Box::new(report));
+
+    let encoded = serde_json::to_value(error.public_projection()).expect("JSON");
+    assert!(encoded.get("diagnostics").is_none());
+    assert_eq!(
+        encoded["message"]
+            .as_str()
+            .expect("message")
+            .chars()
+            .count(),
+        PUBLIC_MESSAGE_MAX_CHARS
+    );
+    assert_eq!(
+        encoded["details"]["row_diagnostics"]["contract"],
+        "plenora-row-diagnostics-v1"
+    );
+}
+
+#[test]
+fn public_projection_never_serializes_automatic_retry_for_unknown_effect() {
+    let mut error = DatabaseError::invalid_plan("ambiguous");
+    error.remote_effect = RemoteEffect::Unknown;
+    error.retry = RetryDisposition::After(1);
+
+    assert_eq!(
+        error.public_projection().retry,
+        RetryDisposition::RequiresRecovery
+    );
+}

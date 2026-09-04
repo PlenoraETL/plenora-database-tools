@@ -37,6 +37,7 @@ PACKAGE = ROOT / "crates" / "plenora-database-py" / "python" / "plenora_database
 ASYNC_ALIASES = {
     "__aenter__": "__enter__",
     "__aexit__": "__exit__",
+    "aclose": "close",
     "aread": "read",
     "acopy_from": "copy_from",
 }

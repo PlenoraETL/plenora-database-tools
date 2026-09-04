@@ -92,7 +92,15 @@ def test_init_and_errors_are_consistent() -> None:
 def test_v2_has_one_public_engine_entrypoint() -> None:
     """La major 2 non deve riaprire factory e sessioni per-provider."""
     init_all = _module_all(PACKAGE_DIR / "__init__.py")
-    required = {"Engine", "AsyncEngine", "EngineConfig", "engine_from_url", "async_engine_from_url"}
+    required = {
+        "Engine",
+        "AsyncEngine",
+        "EngineConfig",
+        "engine_from_url",
+        "async_engine_from_url",
+        "test_connection",
+        "atest_connection",
+    }
     removed = {
         "connect",
         "aconnect",

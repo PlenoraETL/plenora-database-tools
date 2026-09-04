@@ -18,8 +18,8 @@ def test_mariadb_sync_capabilities_inspect_ddl_and_transaction() -> None:
     session = connect_mariadb_reference()
     table = "_sdk_mariadb_surface"
     try:
-        assert session.capabilities["provider"] == "mariadb"
-        assert session.capabilities["transactions"]["single_transaction"] is True
+        assert session.provider_capabilities["provider"] == "mariadb"
+        assert session.provider_capabilities["transactions"]["single_transaction"] is True
         assert isinstance(session.inspect.catalogs(), list)
         assert isinstance(session.inspect.schemas(), list)
         session.execute_ddl(f"DROP TABLE IF EXISTS {table}")
@@ -64,7 +64,7 @@ async def test_mariadb_async_capabilities_inspect_and_ddl() -> None:
     session = await aconnect_mariadb_reference()
     table = "_sdk_mariadb_async_surface"
     try:
-        assert session.capabilities["provider"] == "mariadb"
+        assert session.provider_capabilities["provider"] == "mariadb"
         assert isinstance(await session.inspect.catalogs(), list)
         await session.execute_ddl(f"DROP TABLE IF EXISTS {table}")
         await session.execute_ddl(f"CREATE TABLE {table} (id BIGINT PRIMARY KEY)")
@@ -81,8 +81,8 @@ def test_sqlserver_sync_capabilities_inspect_ddl_and_transaction() -> None:
     table = "sdk_sqlserver_surface"
     qualified = f"[plenora_test].[{table}]"
     try:
-        assert session.capabilities["provider"] == "sqlserver"
-        assert session.capabilities["transactions"]["single_transaction"] is True
+        assert session.provider_capabilities["provider"] == "sqlserver"
+        assert session.provider_capabilities["transactions"]["single_transaction"] is True
         assert isinstance(session.inspect.catalogs(), list)
         assert "plenora_test" in session.inspect.schemas()
         session.execute_ddl(f"DROP TABLE IF EXISTS {qualified}")
@@ -138,7 +138,7 @@ async def test_sqlserver_async_capabilities_inspect_and_ddl() -> None:
     table = "sdk_sqlserver_async_surface"
     qualified = f"[plenora_test].[{table}]"
     try:
-        assert session.capabilities["provider"] == "sqlserver"
+        assert session.provider_capabilities["provider"] == "sqlserver"
         assert isinstance(await session.inspect.catalogs(), list)
         await session.execute_ddl(f"DROP TABLE IF EXISTS {qualified}")
         await session.execute_ddl(f"CREATE TABLE {qualified} ([id] bigint NOT NULL PRIMARY KEY)")

@@ -7,13 +7,14 @@ a intercettare tutti gli errori del SDK.
 Ogni istanza porta attributi ispezionabili:
   - `category` (str, snake_case: "schema", "not_found", ...)
   - `phase` (str: "read", "write", "commit", ...)
-  - `retry` (str: "safe", "requires_recovery", "never", "quarantine",
-             "requires_idempotency_key", "after:<ms>")
+  - `retry` (dict con `kind` ed eventuale `delay_ms`)
   - `remote_effect` (str: "none", "rolled_back", "partial",
                      "committed", "unknown")
   - `provider` (str: "postgres" / "mysql" / "sqlserver" / None)
   - `execution_id` (str o None)
-  - `diagnostics` (dict/list se il core ha fornito diagnostiche, else None)
+  - `message` (str redatta e bounded)
+  - `details` (dict con eventuale `row_diagnostics`, oppure None)
+  - `diagnostics` (alias delle diagnostiche di riga, oppure None)
   - `parameter_index`, `portable_type`, `target_type` (diagnostica bind
     sanificata, oppure None)
 

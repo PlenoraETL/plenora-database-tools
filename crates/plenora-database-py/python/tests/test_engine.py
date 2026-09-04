@@ -22,6 +22,128 @@ FAMILY_ENGINES = (
 )
 
 
+def test_session_capabilities_separate_artifact_contract_from_provider_measurement() -> None:
+    public = {
+        "schema_version": 2,
+        "component": "plenora-database-tools",
+        "component_version": "4.0.0",
+        "interfaces": [{"kind": "python_sdk"}],
+        "operations": [{"id": "database.read"}],
+    }
+    provider = {"provider": "postgres", "reads": {"streaming": True}}
+
+    class NativeSession:
+        public_capabilities = public
+        capabilities = provider
+
+    assert p.Session(NativeSession()).capabilities == public
+    assert p.Session(NativeSession()).provider_capabilities == provider
+    assert p.AsyncSession(NativeSession()).capabilities == public
+    assert p.AsyncSession(NativeSession()).provider_capabilities == provider
+    sync_inspector = p.Session(NativeSession()).inspect
+    async_inspector = p.AsyncSession(NativeSession()).inspect
+    assert sync_inspector() is sync_inspector
+    assert async_inspector() is async_inspector
+
+
+def test_connection_returns_only_the_public_redacted_contract(monkeypatch) -> None:
+    capabilities = {
+        "schema_version": 2,
+        "component": "plenora-database-tools",
+        "component_version": "4.0.0",
+        "interfaces": [],
+        "operations": [],
+    }
+
+    class Session:
+        provider_capabilities = {"provider": "postgres", "secret": "not-public"}
+
+        @property
+        def capabilities(self):
+            return capabilities
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class Engine:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def session(self):
+            return Session()
+
+    monkeypatch.setattr(p, "engine_from_url", lambda _value: Engine())
+    result = p.test_connection("postgresql://protected")
+    assert result == {
+        "verified": True,
+        "provider": "postgres",
+        "capabilities": capabilities,
+    }
+    assert "secret" not in result
+
+
+@pytest.mark.asyncio
+async def test_async_connection_and_engine_have_deterministic_lifecycle(monkeypatch) -> None:
+    capabilities = {
+        "schema_version": 2,
+        "component": "plenora-database-tools",
+        "component_version": "4.0.0",
+        "interfaces": [],
+        "operations": [],
+    }
+
+    class Session:
+        provider_capabilities = {"provider": "postgres"}
+
+        @property
+        def capabilities(self):
+            return capabilities
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class Engine:
+        def session(self):
+            return Session()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    async def factory(_value):
+        return Engine()
+
+    monkeypatch.setattr(p, "async_engine_from_url", factory)
+    assert await p.atest_connection("postgresql://protected") == {
+        "verified": True,
+        "provider": "postgres",
+        "capabilities": capabilities,
+    }
+
+    class NativeEngine:
+        disposed = 0
+
+        def dispose(self):
+            self.disposed += 1
+
+    native = NativeEngine()
+    engine = p.AsyncEngine(native)
+    await engine.aclose()
+    await engine.aclose()
+    assert native.disposed == 2
+
+
 def test_engine_orm_factory_closes_session_when_construction_fails() -> None:
     class NativeEngine:
         def session(self):

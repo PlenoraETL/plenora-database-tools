@@ -5,6 +5,22 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [4.0.0] — 2026-09-04
+
+### Modificato
+
+- Adotta il profilo pubblico `plenora-database-tools-profile-v1` fissato alla
+  revisione immutabile dichiarata in `contracts/adoption-source.json`.
+- Pubblica Capability Discovery 2.0 per artefatto, lasciando le capability
+  misurate del provider in `provider_capabilities`.
+- Porta il CLI al protocollo 2 con envelope canonici, exit code tipizzati e
+  comandi condivisi per discovery, inspection, read, write, query ed execute.
+- Aggiunge `test_connection`, `atest_connection` e il lifecycle asincrono
+  deterministico `aclose`, con `close` come nome canonico sincrono.
+- Proietta row diagnostics in `details.row_diagnostics` e applica i limiti del
+  contratto comune agli errori serializzati; `retry` diventa il mapping
+  tipizzato del contratto invece di una stringa.
+
 ## [3.3.0] — 2026-09-04
 
 ### Aggiunto

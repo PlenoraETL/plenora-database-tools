@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "component": "plenora-database-tools",
+  "contracts_source": {
+    "repository": "https://github.com/PlenoraETL/plenora-contracts.git",
+    "revision": "5d151078142e7ed49d831659ee8be92a4975f80b"
+  },
+  "profile": "plenora-database-tools-profile-v1",
+  "contracts": [
+    "plenora-public-surfaces-v1",
+    "plenora-capabilities-v2",
+    "plenora-error-v1",
+    "plenora-public-security-v1",
+    "plenora-arrow-interchange-v1",
+    "plenora-row-diagnostics-v1",
+    "plenora-cli-v2",
+    "plenora-python-sdk-v1",
+    "plenora-surface-bindings-v1",
+    "plenora-composition-v1"
+  ],
+  "not_applicable": ["plenora-runtime-binding-v1"]
+}

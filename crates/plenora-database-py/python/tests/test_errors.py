@@ -62,7 +62,7 @@ def test_not_found_error_on_nonexistent_table(session) -> None:
     assert exc.category == "not_found"
     assert exc.phase in {"read", "prepare", "validate"}
     assert exc.provider == "postgres"
-    assert exc.retry in {"never", "requires_recovery"}
+    assert exc.retry["kind"] in {"never", "requires_recovery"}
 
 
 def test_cancelled_error_via_statement_timeout(session) -> None:

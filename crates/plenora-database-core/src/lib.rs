@@ -26,6 +26,7 @@ pub mod portable;
 pub mod primary_key;
 pub mod protocol;
 pub mod provider;
+pub mod public_contract;
 pub mod query;
 pub mod relational;
 pub mod relational_mutation;
@@ -46,8 +47,8 @@ pub use conformance::{
     APPLICATION_OLTP_V1, PFM_CORE_V1, PFM_GIS_V1,
 };
 pub use error::{
-    interruption_category, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
-    RetryDisposition,
+    interruption_category, DatabaseError, ErrorCategory, ErrorPhase, PublicDatabaseError,
+    PublicErrorDetails, RemoteEffect, Result, RetryDisposition,
 };
 pub use facade::{
     at_most_one_row, exactly_one_row, exactly_one_value, execute_portable,
@@ -70,6 +71,10 @@ pub use portable::{
     and, compile_portable, eq, or, select, select_all, spatial, DeleteStatement, Direction,
     Expression, InsertStatement, Nulls, OrderBy, PortableStatement, Predicate, Projection,
     SelectStatement, TableRef, UpdateStatement, UpsertStatement,
+};
+pub use public_contract::{
+    public_capabilities, rust_surface_bindings, PublicCapabilities, PublicInterface,
+    PublicOperation, PublicPayload, PublicSurface, RustSurfaceBinding, RustSurfaceBindings,
 };
 pub use relational_mutation::{compile_relational_mutation, LoweredMutation};
 pub use resource::{ResourceBudget, ResourceKind, ResourceLease, ResourceLimits};

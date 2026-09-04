@@ -37,7 +37,12 @@ class Session(_BuilderFactory):
 
     @property
     def capabilities(self) -> dict:
-        """Capability effettivamente sondate per questa connessione."""
+        """Catalogo dell'artefatto conforme a ``plenora-capabilities-v2``."""
+        return self._native.public_capabilities
+
+    @property
+    def provider_capabilities(self) -> dict:
+        """Capability effettivamente sondate per il database selezionato."""
         return self._native.capabilities
 
     @property
@@ -73,12 +78,12 @@ class Session(_BuilderFactory):
         if not isinstance(statement, ExecutableStatement):
             raise TypeError("execute richiede uno statement relazionale")
         return _execute_statement(
-            self._native, statement, params, self.capabilities["provider"]
+            self._native, statement, params, self.provider_capabilities["provider"]
         )
 
     def execute_sql(self, sql: str, params: list | None = None) -> MutationResult:
         affected = self._native.execute(sql, params)
-        return MutationResult("sql", self.capabilities["provider"], affected)
+        return MutationResult("sql", self.provider_capabilities["provider"], affected)
 
     def query_sql(self, sql: str, params: list | None = None) -> Result:
         return Result(self._native.execute_returning_rows(sql, params))
@@ -287,7 +292,7 @@ class Session(_BuilderFactory):
             context,
             native_query_policy,
         )
-        return Transaction(native_tx, self.capabilities["provider"])
+        return Transaction(native_tx, self.provider_capabilities["provider"])
 
     # --------------------- observability + inspect ----------------------
 
@@ -332,6 +337,10 @@ class _Inspector:
 
     def __init__(self, native: _NativeSession) -> None:
         self._native = native
+
+    def __call__(self) -> "_Inspector":
+        """Supporta anche la forma normativa ``session.inspect()``."""
+        return self
 
     def catalogs(self) -> list[str]:
         """Ritorna la lista dei catalog (database) accessibili all'utente."""

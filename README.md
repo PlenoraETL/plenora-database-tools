@@ -32,6 +32,26 @@ La matrice corrente dei provider, delle capability, dei crate e dei test è in
 Il dettaglio dell'API Python, inclusi esempi sync/async e limiti dichiarati, è
 nel [`README dello SDK`](crates/plenora-database-py/README.md).
 
+## Contratto pubblico
+
+La selezione normativa e il commit immutabile di `plenora-contracts` adottato
+dal componente sono in
+[`contracts/adoption-source.json`](contracts/adoption-source.json). Gli schemi
+delle operazioni possedute da questo repository sono nel
+[`bundle pubblico`](contracts/v2/public-operation-contracts.schema.json); il
+gate black-box li confronta con quel pin in CI.
+La mappa versionata della superficie Rust e prodotta dallo stesso catalogo in
+[`public_contract.rs`](crates/plenora-database-core/src/public_contract.rs) e
+viene compilata da un integration test che usa soltanto export pubblici.
+La release GitHub allega anche il sorgente immutabile del workspace: il crate
+core dipende dal catalogo spatial versionato nel repository e non viene
+pubblicato separatamente su un package index.
+
+Il CLI espone discovery con `--version --format json` e
+`capabilities --format json`. Nel SDK, `session.capabilities` descrive
+l'artefatto secondo Capability Discovery 2.0; le misure del database connesso
+sono disponibili separatamente in `session.provider_capabilities`.
+
 ## Come viaggiano i dati
 
 Plenora distingue il percorso applicativo dal percorso bulk:
@@ -133,7 +153,7 @@ try:
             {"account_id": 7},
         ).one_or_none()
 finally:
-    engine.dispose()
+    engine.close()
 ```
 
 Per un esempio completo con repository e lifecycle sync/async, vedere
@@ -249,8 +269,9 @@ Le capability dipendono anche dal server concreto, dalle estensioni installate
 e dalla piattaforma. Per questo la fonte non è una tabella copiata qui:
 
 - [`docs/STATO.md`](docs/STATO.md) espone lo stato generato dal codice;
-- `session.capabilities` e `database-probe` descrivono il target realmente
-  raggiunto a runtime.
+- `session.provider_capabilities` e `database-probe` descrivono il target
+  realmente raggiunto a runtime;
+- `session.capabilities` descrive la superficie pubblica dell'artefatto.
 
 ## Confini intenzionali
 

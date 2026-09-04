@@ -35,8 +35,8 @@ async def test_aconnect_returns_async_session() -> None:
         assert isinstance(s, p.AsyncSession)
         assert isinstance(s.server_version, str)
         assert any(c.isdigit() for c in s.server_version)
-        assert s.capabilities["provider"] == "postgres"
-        assert s.capabilities["reads"]["streaming"] is True
+        assert s.provider_capabilities["provider"] == "postgres"
+        assert s.provider_capabilities["reads"]["streaming"] is True
         assert isinstance(await s.inspect.catalogs(), list)
         assert "public" in await s.inspect.schemas()
         # PostGIS optional

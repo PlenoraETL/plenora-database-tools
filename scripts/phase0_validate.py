@@ -633,6 +633,74 @@ def validate_no_orphan_defs(schemas: Mapping[Path, Mapping[str, Any]]) -> int:
     return declared
 
 
+def validate_public_operation_contracts() -> int:
+    """Ogni contratto nominato dal catalogo Rust ha uno schema immutabile.
+
+    Il confronto legge le due superfici invece di mantenere una terza lista
+    nel gate: aggiungere un'operazione al codice senza pubblicarne la forma, o
+    lasciare uno schema che il codice non nomina piu, fallisce nello stesso
+    workflow offline.
+    """
+    bundle = load_json(ACTIVE_CONTRACT_ROOT / "public-operation-contracts.schema.json")
+    definitions = bundle.get("$defs")
+    if not isinstance(definitions, dict):
+        raise ValidationError("bundle dei contratti pubblici senza $defs")
+    declared: dict[str, str] = {}
+    for definition in definitions.values():
+        if not isinstance(definition, dict):
+            continue
+        contract = definition.get("x-plenora-contract")
+        if contract is None:
+            continue
+        schema_id = definition.get("$id")
+        if not isinstance(contract, str) or not re.fullmatch(
+            r"plenora-database-[a-z0-9-]+-v[1-9][0-9]*", contract
+        ):
+            raise ValidationError("identificatore di contratto pubblico non valido")
+        if not isinstance(schema_id, str) or contract not in schema_id:
+            raise ValidationError(f"$id non immutabile per {contract}")
+        if contract in declared:
+            raise ValidationError(f"contratto pubblico duplicato: {contract}")
+        declared[contract] = schema_id
+
+    source = (
+        REPO_ROOT / "crates" / "plenora-database-core" / "src" / "public_contract.rs"
+    ).read_text(encoding="utf-8")
+    catalog = set(
+        re.findall(r"plenora-database-[a-z0-9-]+-v[1-9][0-9]*", source)
+    )
+    if set(declared) != catalog:
+        missing = sorted(catalog - set(declared))
+        orphaned = sorted(set(declared) - catalog)
+        raise ValidationError(
+            f"schemi pubblici e catalogo divergenti: missing={missing}, orphaned={orphaned}"
+        )
+    return len(declared)
+
+
+def validate_adoption_source() -> int:
+    source = load_json(REPO_ROOT / "contracts" / "adoption-source.json")
+    if source.get("schema_version") != 1:
+        raise ValidationError("adoption source con schema_version non valida")
+    contracts_source = source.get("contracts_source")
+    if not isinstance(contracts_source, dict):
+        raise ValidationError("adoption source senza origine")
+    if contracts_source.get("repository") != (
+        "https://github.com/PlenoraETL/plenora-contracts.git"
+    ):
+        raise ValidationError("repository dei contratti non canonico")
+    revision = contracts_source.get("revision")
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValidationError("pin dei contratti non immutabile")
+    selected = source.get("contracts")
+    not_applicable = source.get("not_applicable")
+    if not isinstance(selected, list) or not isinstance(not_applicable, list):
+        raise ValidationError("adozione senza selezione dei contratti")
+    if set(selected) & set(not_applicable):
+        raise ValidationError("contratto insieme adottato e non applicabile")
+    return len(selected) + len(not_applicable)
+
+
 def run_gate() -> dict[str, Any]:
     schemas = discover_schemas(REPO_ROOT / "contracts")
     registry = build_registry(schemas.values())
@@ -642,6 +710,16 @@ def run_gate() -> dict[str, Any]:
             "id": "schema-definitions",
             "status": "passed",
             "count": validate_no_orphan_defs(schemas),
+        },
+        {
+            "id": "public-operation-contracts",
+            "status": "passed",
+            "count": validate_public_operation_contracts(),
+        },
+        {
+            "id": "public-contract-adoption",
+            "status": "passed",
+            "count": validate_adoption_source(),
         },
         {
             "id": "contract-examples",

@@ -2887,7 +2887,9 @@ class OrmSession:
         begin = getattr(session, "begin", None)
         if not callable(begin):
             raise TypeError("OrmSession richiede una Session Core sincrona")
-        capabilities = getattr(session, "capabilities", None)
+        capabilities = getattr(
+            session, "provider_capabilities", getattr(session, "capabilities", None)
+        )
         provider = (
             capabilities.get("provider") if isinstance(capabilities, Mapping) else None
         )
@@ -4732,7 +4734,9 @@ class AsyncOrmSession(OrmSession):
         begin = getattr(session, "begin", None)
         if not callable(begin):
             raise TypeError("AsyncOrmSession richiede una AsyncSession Core")
-        capabilities = getattr(session, "capabilities", None)
+        capabilities = getattr(
+            session, "provider_capabilities", getattr(session, "capabilities", None)
+        )
         provider = (
             capabilities.get("provider") if isinstance(capabilities, Mapping) else None
         )
@@ -7213,7 +7217,9 @@ def _table_identity_predicate(
 
 
 def _session_provider(session: Any) -> str:
-    capabilities = getattr(session, "capabilities", None)
+    capabilities = getattr(
+        session, "provider_capabilities", getattr(session, "capabilities", None)
+    )
     provider = (
         capabilities.get("provider") if isinstance(capabilities, Mapping) else None
     )

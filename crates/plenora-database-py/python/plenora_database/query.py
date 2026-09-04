@@ -168,7 +168,7 @@ def _provider(session: Any) -> str:
     provider = getattr(session, "_provider", None)
     if isinstance(provider, str):
         return provider
-    capabilities = session.capabilities
+    capabilities = getattr(session, "provider_capabilities", session.capabilities)
     return str(capabilities["provider"])
 
 
