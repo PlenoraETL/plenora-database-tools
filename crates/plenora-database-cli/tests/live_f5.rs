@@ -640,10 +640,8 @@ fn f5_15_cli_replace_with_keys_exits_non_zero_as_invalid_plan() {
 
 #[test]
 fn f5_14_usage_documents_all_groups_and_global_flags() {
-    let output = Command::new(BIN)
-        .args(["--help-never-existing-command"])
-        .output()
-        .expect("spawn");
+    let output = Command::new(BIN).arg("--help").output().expect("spawn");
+    assert!(output.status.success(), "--help deve riuscire");
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),

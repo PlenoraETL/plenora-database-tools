@@ -288,6 +288,30 @@ _DatabaseInspector = _Inspector
 _AsyncDatabaseInspector = _AsyncInspector
 
 
+def test_connection(value: str | EngineConfig) -> dict:
+    """Verifica una configurazione senza restituire DSN o credenziali."""
+    with engine_from_url(value) as engine:
+        with engine.session() as session:
+            provider = session.provider_capabilities["provider"]
+            return {
+                "verified": True,
+                "provider": provider,
+                "capabilities": session.capabilities,
+            }
+
+
+async def atest_connection(value: str | EngineConfig) -> dict:
+    """Equivalente asincrono di :func:`test_connection`."""
+    async with await async_engine_from_url(value) as engine:
+        async with engine.session() as session:
+            provider = session.provider_capabilities["provider"]
+            return {
+                "verified": True,
+                "provider": provider,
+                "capabilities": session.capabilities,
+            }
+
+
 def _connect_postgres(dsn: str, tls_mode: str = "require") -> Session:
     """Apre una nuova sessione Postgres (sync).
 
@@ -487,6 +511,10 @@ class _DatabaseSessionWrapper(_BuilderFactory):
 
     @property
     def capabilities(self) -> dict:
+        return self._native.public_capabilities
+
+    @property
+    def provider_capabilities(self) -> dict:
         return self._native.capabilities
 
     @property
@@ -512,12 +540,12 @@ class _DatabaseSessionWrapper(_BuilderFactory):
         from .expression import _execute_statement
 
         return _execute_statement(
-            self._native, statement, params, self.capabilities["provider"]
+            self._native, statement, params, self.provider_capabilities["provider"]
         )
 
     def execute_sql(self, sql, params=None):
         affected = self._native.execute(sql, params)
-        return MutationResult("sql", self.capabilities["provider"], affected)
+        return MutationResult("sql", self.provider_capabilities["provider"], affected)
 
     def query_sql(self, sql, params=None):
         return Result(self._native.execute_returning_rows(sql, params))
@@ -553,7 +581,7 @@ class _DatabaseSessionWrapper(_BuilderFactory):
             context,
             native_query_policy,
         )
-        return Transaction(native, self.capabilities["provider"])
+        return Transaction(native, self.provider_capabilities["provider"])
 
     def read(
         self,
@@ -756,6 +784,10 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
 
     @property
     def capabilities(self) -> dict:
+        return self._native.public_capabilities
+
+    @property
+    def provider_capabilities(self) -> dict:
         return self._native.capabilities
 
     @property
@@ -764,6 +796,10 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
 
     def close(self) -> None:
         self._native.close()
+
+    async def aclose(self) -> None:
+        """Chiude idempotentemente la sessione asincrona."""
+        self.close()
 
     async def __aenter__(self):
         await self._native.__aenter__()
@@ -782,12 +818,12 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
         from .expression import _execute_statement_async
 
         return await _execute_statement_async(
-            self._native, statement, params, self.capabilities["provider"]
+            self._native, statement, params, self.provider_capabilities["provider"]
         )
 
     async def execute_sql(self, sql, params=None):
         affected = await self._native.execute(sql, params)
-        return MutationResult("sql", self.capabilities["provider"], affected)
+        return MutationResult("sql", self.provider_capabilities["provider"], affected)
 
     async def query_sql(self, sql, params=None):
         return Result(await self._native.execute_returning_rows(sql, params))
@@ -819,7 +855,7 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
             context,
             native_query_policy,
         )
-        return AsyncTransaction(native, self.capabilities["provider"])
+        return AsyncTransaction(native, self.provider_capabilities["provider"])
 
     async def aread(
         self,
@@ -1172,6 +1208,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API surface
     "PoolConfig",
     "engine_from_url",
     "async_engine_from_url",
+    "test_connection",
+    "atest_connection",
     "table",
     "column",
     "bind",

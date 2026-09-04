@@ -8,11 +8,13 @@
 //! L'istanza dell'errore porta come attributi:
 //!   - `category` (str, snake_case della categoria: "schema", "not_found", ...)
 //!   - `phase` (str, snake_case della fase: "read", "write", "commit", ...)
-//!   - `retry` (str: "safe", "requires_recovery", "never", "quarantine")
+//!   - `retry` (dict conforme all'asse `retry` di `plenora-error-v1`)
 //!   - `remote_effect` (str: "committed", "rolled_back", "unknown", "none")
 //!   - `provider` (str, "postgres" / "mysql" / "sqlserver" / None)
 //!   - `execution_id` (str o None)
-//!   - `diagnostics` (dict decodificato dal Value serde) o None
+//!   - `message` (str redatta e bounded)
+//!   - `details` (dict con eventuale `row_diagnostics`) o None
+//!   - `diagnostics` (alias compatibile delle sole diagnostiche di riga) o None
 //!   - `parameter_index`, `portable_type`, `target_type` per un errore di bind
 //!     diagnosticato prima dell'esecuzione; altrimenti None
 //!
@@ -193,20 +195,22 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// generico. Il consumer può filtrare separatamente per retry/quarantine
 /// logic senza matching stringhe nel messaggio.
 pub fn to_py_err(err: DatabaseError) -> PyErr {
-    let bind_context = bind_error_context(&err.message);
-    let message = format!("{}: {}", category_name(err.category), err.message);
-    let is_commit_outcome_unknown = err.category == ErrorCategory::Internal
-        && err.phase == ErrorPhase::Commit
-        && err.remote_effect == RemoteEffect::Unknown
+    let public = err.public_projection();
+    drop(err);
+    let bind_context = bind_error_context(&public.message);
+    let message = format!("{}: {}", category_name(public.category), public.message);
+    let is_commit_outcome_unknown = public.category == ErrorCategory::Internal
+        && public.phase == ErrorPhase::Commit
+        && public.remote_effect == RemoteEffect::Unknown
         // La disposizione e `RequiresRecovery`: il commit non e perso, va
         // verificato fuori banda e poi eventualmente ripreso. Riconoscerlo su
         // `Never` faceva dire all'attributo Python `retry` il contrario di cio
         // che il messaggio chiedeva di fare.
-        && matches!(err.retry, RetryDisposition::RequiresRecovery);
+        && matches!(public.retry, RetryDisposition::RequiresRecovery);
     let pyerr = if is_commit_outcome_unknown {
         PlenoraCommitOutcomeUnknownError::new_err(message)
     } else {
-        match err.category {
+        match public.category {
             ErrorCategory::InvalidPlan => PlenoraInvalidPlanError::new_err(message),
             ErrorCategory::InvalidConfiguration => {
                 PlenoraInvalidConfigurationError::new_err(message)
@@ -236,28 +240,34 @@ pub fn to_py_err(err: DatabaseError) -> PyErr {
         let bound = pyerr.value(py);
         // Ignora errori di setattr: sono attributi di comodo, non essenziali
         // per la propagazione dell'errore stesso.
-        let _ = bound.setattr("category", category_name(err.category));
-        let _ = bound.setattr("phase", phase_name(err.phase));
-        let _ = bound.setattr("retry", retry_name(err.retry));
-        let _ = bound.setattr("remote_effect", remote_effect_name(err.remote_effect));
+        let _ = bound.setattr("category", category_name(public.category));
+        let _ = bound.setattr("phase", phase_name(public.phase));
+        let _ = bound.setattr("message", &public.message);
+        if let Ok(value) = serde_json::to_value(public.retry) {
+            if let Ok(value) = crate::py_convert::json_to_python(py, &value) {
+                let _ = bound.setattr("retry", value);
+            }
+        }
+        let _ = bound.setattr("remote_effect", remote_effect_name(public.remote_effect));
         let _ = bound.setattr(
             "provider",
-            err.provider.map(|p| format!("{p:?}").to_lowercase()),
+            public.provider.map(|p| format!("{p:?}").to_lowercase()),
         );
-        let _ = bound.setattr("execution_id", err.execution_id);
-        // Serializza diagnostics via serde_json → string → Python json.loads,
-        // così l'utente riceve un dict/list Python.
-        let diagnostics_py = err
-            .diagnostics
+        let _ = bound.setattr("execution_id", public.execution_id.as_deref());
+        // La forma pubblica annida la diagnostica di riga in `details`; il
+        // vecchio attributo `diagnostics` resta un alias strutturato.
+        let details_py = public
+            .details
             .as_ref()
-            .and_then(|v| serde_json::to_string(v).ok())
-            .and_then(|json_str| {
-                py.import("json")
-                    .and_then(|json_mod| json_mod.getattr("loads"))
-                    .and_then(|loads| loads.call1((json_str,)))
-                    .ok()
-            });
-        let _ = bound.setattr("diagnostics", diagnostics_py);
+            .and_then(|value| serde_json::to_value(value).ok())
+            .and_then(|value| crate::py_convert::json_to_python(py, &value).ok());
+        let _ = bound.setattr("details", details_py.as_ref());
+        let diagnostics_py = public.details.as_ref().and_then(|details| {
+            serde_json::to_value(&details.row_diagnostics)
+                .ok()
+                .and_then(|value| crate::py_convert::json_to_python(py, &value).ok())
+        });
+        let _ = bound.setattr("diagnostics", diagnostics_py.as_ref());
         let _ = bound.setattr(
             "parameter_index",
             bind_context.as_ref().map(|context| context.0),
@@ -330,17 +340,6 @@ const fn phase_name(p: ErrorPhase) -> &'static str {
         ErrorPhase::Finalize => "finalize",
         ErrorPhase::Rollback => "rollback",
         ErrorPhase::Cleanup => "cleanup",
-    }
-}
-
-fn retry_name(r: RetryDisposition) -> String {
-    match r {
-        RetryDisposition::Never => "never".to_owned(),
-        RetryDisposition::Quarantine => "quarantine".to_owned(),
-        RetryDisposition::Safe => "safe".to_owned(),
-        RetryDisposition::RequiresIdempotencyKey => "requires_idempotency_key".to_owned(),
-        RetryDisposition::RequiresRecovery => "requires_recovery".to_owned(),
-        RetryDisposition::After(ms) => format!("after:{ms}"),
     }
 }
 

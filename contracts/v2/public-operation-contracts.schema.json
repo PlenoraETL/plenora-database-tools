@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json",
+  "title": "Bundled public operation contracts for plenora-database-tools",
+  "type": "object",
+  "oneOf": [
+    {"$ref": "#/$defs/connectionTestInput"},
+    {"$ref": "#/$defs/connectionTestResult"},
+    {"$ref": "#/$defs/listCatalogsInput"},
+    {"$ref": "#/$defs/listCatalogsResult"},
+    {"$ref": "#/$defs/listSchemasInput"},
+    {"$ref": "#/$defs/listSchemasResult"},
+    {"$ref": "#/$defs/listObjectsInput"},
+    {"$ref": "#/$defs/listObjectsResult"},
+    {"$ref": "#/$defs/describeObjectInput"},
+    {"$ref": "#/$defs/describeObjectResult"},
+    {"$ref": "#/$defs/readInput"},
+    {"$ref": "#/$defs/readResult"},
+    {"$ref": "#/$defs/writeInput"},
+    {"$ref": "#/$defs/writeResult"},
+    {"$ref": "#/$defs/queryInput"},
+    {"$ref": "#/$defs/queryResult"},
+    {"$ref": "#/$defs/executeInput"},
+    {"$ref": "#/$defs/executeResult"},
+    {"$ref": "#/$defs/transactionBeginInput"},
+    {"$ref": "#/$defs/transactionHandle"},
+    {"$ref": "#/$defs/transactionOutcome"},
+    {"$ref": "#/$defs/savepointInput"},
+    {"$ref": "#/$defs/capabilityAttributes"}
+  ],
+  "$defs": {
+    "provider": {
+      "enum": ["postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"]
+    },
+    "target": {
+      "type": "object",
+      "required": ["provider", "secret_environment"],
+      "properties": {
+        "provider": {"$ref": "#/$defs/provider"},
+        "secret_environment": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"},
+        "provider_arguments": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {"type": "string", "maxLength": 4096}
+        }
+      }
+    },
+    "publicCapabilities": {
+      "type": "object",
+      "required": ["schema_version", "component", "component_version", "interfaces", "operations"],
+      "properties": {
+        "schema_version": {"const": 2},
+        "component": {"const": "plenora-database-tools"},
+        "component_version": {"type": "string", "minLength": 1},
+        "interfaces": {"type": "array", "minItems": 1},
+        "operations": {"type": "array", "minItems": 7}
+      },
+      "additionalProperties": false
+    },
+    "connectionTestInput": {
+      "$id": "https://schemas.plenora.dev/plenora-database-connection-test-input-v1.schema.json",
+      "x-plenora-contract": "plenora-database-connection-test-input-v1",
+      "allOf": [{"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/target"}],
+      "unevaluatedProperties": false
+    },
+    "connectionTestResult": {
+      "$id": "https://schemas.plenora.dev/plenora-database-connection-test-result-v1.schema.json",
+      "x-plenora-contract": "plenora-database-connection-test-result-v1",
+      "type": "object",
+      "required": ["verified", "provider", "capabilities"],
+      "properties": {
+        "verified": {"const": true},
+        "provider": {"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/provider"},
+        "capabilities": {"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/publicCapabilities"}
+      },
+      "additionalProperties": false
+    },
+    "listCatalogsInput": {
+      "$id": "https://schemas.plenora.dev/plenora-database-list-catalogs-input-v1.schema.json",
+      "x-plenora-contract": "plenora-database-list-catalogs-input-v1",
+      "allOf": [{"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/target"}],
+      "unevaluatedProperties": false
+    },
+    "listCatalogsResult": {
+      "$id": "https://schemas.plenora.dev/plenora-database-list-catalogs-result-v1.schema.json",
+      "x-plenora-contract": "plenora-database-list-catalogs-result-v1",
+      "type": "object",
+      "required": ["catalogs"],
+      "properties": {"catalogs": {"type": "array", "items": {"type": "string"}}},
+      "additionalProperties": true
+    },
+    "listSchemasInput": {
+      "$id": "https://schemas.plenora.dev/plenora-database-list-schemas-input-v1.schema.json",
+      "x-plenora-contract": "plenora-database-list-schemas-input-v1",
+      "allOf": [{"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/target"}],
+      "properties": {"catalog": {"type": ["string", "null"]}},
+      "unevaluatedProperties": false
+    },
+    "listSchemasResult": {
+      "$id": "https://schemas.plenora.dev/plenora-database-list-schemas-result-v1.schema.json",
+      "x-plenora-contract": "plenora-database-list-schemas-result-v1",
+      "type": "object",
+      "required": ["schemas"],
+      "properties": {"schemas": {"type": "array", "items": {"type": "string"}}},
+      "additionalProperties": true
+    },
+    "listObjectsInput": {
+      "$id": "https://schemas.plenora.dev/plenora-database-list-objects-input-v1.schema.json",
+      "x-plenora-contract": "plenora-database-list-objects-input-v1",
+      "allOf": [{"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/target"}],
+      "required": ["schema"],
+      "properties": {"catalog": {"type": ["string", "null"]}, "schema": {"type": "string", "minLength": 1}},
+      "unevaluatedProperties": false
+    },
+    "listObjectsResult": {
+      "$id": "https://schemas.plenora.dev/plenora-database-list-objects-result-v1.schema.json",
+      "x-plenora-contract": "plenora-database-list-objects-result-v1",
+      "type": "object",
+      "required": ["objects"],
+      "properties": {"objects": {"type": "array", "items": {"type": "object"}}},
+      "additionalProperties": true
+    },
+    "describeObjectInput": {
+      "$id": "https://schemas.plenora.dev/plenora-database-describe-object-input-v1.schema.json",
+      "x-plenora-contract": "plenora-database-describe-object-input-v1",
+      "allOf": [{"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/target"}],
+      "required": ["schema", "object"],
+      "properties": {
+        "catalog": {"type": ["string", "null"]},
+        "schema": {"type": "string", "minLength": 1},
+        "object": {"type": "string", "minLength": 1}
+      },
+      "unevaluatedProperties": false
+    },
+    "describeObjectResult": {
+      "$id": "https://schemas.plenora.dev/plenora-database-describe-object-result-v1.schema.json",
+      "x-plenora-contract": "plenora-database-describe-object-result-v1",
+      "type": "object",
+      "required": ["columns"],
+      "properties": {"columns": {"type": "array", "items": {"type": "object"}}},
+      "additionalProperties": true
+    },
+    "readInput": {
+      "$id": "https://schemas.plenora.dev/plenora-database-read-input-v1.schema.json",
+      "x-plenora-contract": "plenora-database-read-input-v1",
+      "allOf": [{"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/target"}],
+      "required": ["operation_path"],
+      "properties": {
+        "operation_path": {"type": "string", "minLength": 1},
+        "parameters_path": {"type": "string", "minLength": 1}
+      },
+      "unevaluatedProperties": false
+    },
+    "readResult": {
+      "$id": "https://schemas.plenora.dev/plenora-database-read-result-v1.schema.json",
+      "x-plenora-contract": "plenora-database-read-result-v1",
+      "type": "object",
+      "required": ["path", "batches", "rows"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "batches": {"type": "integer", "minimum": 0},
+        "rows": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "writeInput": {
+      "$id": "https://schemas.plenora.dev/plenora-database-write-input-v1.schema.json",
+      "x-plenora-contract": "plenora-database-write-input-v1",
+      "allOf": [{"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/target"}],
+      "required": ["operation_path"],
+      "properties": {"operation_path": {"type": "string", "minLength": 1}},
+      "unevaluatedProperties": false
+    },
+    "writeResult": {
+      "$id": "https://schemas.plenora.dev/plenora-database-write-result-v1.schema.json",
+      "x-plenora-contract": "plenora-database-write-result-v1",
+      "$ref": "https://plenora.local/database-tools/v2/write-outcome.schema.json"
+    },
+    "queryInput": {
+      "$id": "https://schemas.plenora.dev/plenora-database-query-input-v1.schema.json",
+      "x-plenora-contract": "plenora-database-query-input-v1",
+      "allOf": [{"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/target"}],
+      "required": ["operation_path"],
+      "properties": {
+        "operation_path": {"type": "string", "minLength": 1},
+        "parameters_path": {"type": "string", "minLength": 1}
+      },
+      "unevaluatedProperties": false
+    },
+    "queryResult": {
+      "$id": "https://schemas.plenora.dev/plenora-database-query-result-v1.schema.json",
+      "x-plenora-contract": "plenora-database-query-result-v1",
+      "type": "object",
+      "required": ["rows"],
+      "properties": {"rows": {"type": "integer", "minimum": 0}},
+      "additionalProperties": true
+    },
+    "executeInput": {
+      "$id": "https://schemas.plenora.dev/plenora-database-execute-input-v1.schema.json",
+      "x-plenora-contract": "plenora-database-execute-input-v1",
+      "allOf": [{"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/target"}],
+      "required": ["sql"],
+      "properties": {"sql": {"type": "string", "minLength": 1}, "allow_raw": {"type": "boolean"}},
+      "unevaluatedProperties": false
+    },
+    "executeResult": {
+      "$id": "https://schemas.plenora.dev/plenora-database-execute-result-v1.schema.json",
+      "x-plenora-contract": "plenora-database-execute-result-v1",
+      "type": "object",
+      "required": ["affected_rows", "commit"],
+      "properties": {"affected_rows": {"type": "integer", "minimum": 0}, "commit": {"type": "object"}},
+      "additionalProperties": true
+    },
+    "transactionBeginInput": {
+      "$id": "https://schemas.plenora.dev/plenora-database-transaction-begin-input-v1.schema.json",
+      "x-plenora-contract": "plenora-database-transaction-begin-input-v1",
+      "type": "object",
+      "properties": {
+        "isolation": {"enum": ["read_uncommitted", "read_committed", "repeatable_read", "serializable"]},
+        "read_only": {"type": "boolean"},
+        "statement_timeout_ms": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "transactionHandle": {
+      "$id": "https://schemas.plenora.dev/plenora-database-transaction-handle-v1.schema.json",
+      "x-plenora-contract": "plenora-database-transaction-handle-v1",
+      "type": "object",
+      "required": ["transaction_id"],
+      "properties": {"transaction_id": {"type": "string", "minLength": 1, "maxLength": 128}},
+      "additionalProperties": false
+    },
+    "transactionOutcome": {
+      "$id": "https://schemas.plenora.dev/plenora-database-transaction-outcome-v1.schema.json",
+      "x-plenora-contract": "plenora-database-transaction-outcome-v1",
+      "type": "object",
+      "required": ["status"],
+      "properties": {"status": {"enum": ["committed", "rolled_back", "outcome_unknown"]}},
+      "additionalProperties": true
+    },
+    "savepointInput": {
+      "$id": "https://schemas.plenora.dev/plenora-database-savepoint-input-v1.schema.json",
+      "x-plenora-contract": "plenora-database-savepoint-input-v1",
+      "type": "object",
+      "required": ["transaction_id", "action", "name"],
+      "properties": {
+        "transaction_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "action": {"enum": ["create", "release", "rollback_to"]},
+        "name": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}$"}
+      },
+      "additionalProperties": false
+    },
+    "capabilityAttributes": {
+      "$id": "https://schemas.plenora.dev/plenora-database-capability-attributes-v1.schema.json",
+      "x-plenora-contract": "plenora-database-capability-attributes-v1",
+      "type": "object",
+      "required": ["contract", "provider", "write_modes"],
+      "properties": {
+        "contract": {"const": "plenora-database-capability-attributes-v1"},
+        "provider": {"$ref": "https://plenora.local/database-tools/v2/public-operation-contracts.schema.json#/$defs/provider"},
+        "write_modes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["create", "append", "truncate_insert", "update", "upsert", "replace", "delete_by_keys"]}
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

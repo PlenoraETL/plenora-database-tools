@@ -199,6 +199,12 @@ impl Session {
         json_value_to_pydict(py, &value)
     }
 
+    /// Capability dell'artefatto Python secondo `plenora-capabilities-v2`.
+    #[getter]
+    fn public_capabilities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        public_capabilities_to_pydict(py, &self.capabilities)
+    }
+
     /// Versione dell'estensione PostGIS se installata sul target, altrimenti None.
     #[getter]
     fn postgis_version(&self) -> Option<&str> {
@@ -781,6 +787,20 @@ pub fn json_value_to_pydict<'py>(
         dict.set_item(k, py_v)?;
     }
     Ok(dict)
+}
+
+pub fn public_capabilities_to_pydict<'py>(
+    py: Python<'py>,
+    provider: &plenora_database_core::capabilities::ProviderCapabilities,
+) -> PyResult<Bound<'py, PyDict>> {
+    let document = plenora_database_core::public_capabilities(
+        plenora_database_core::PublicSurface::PythonSdk,
+        "plenora-database",
+        Some(provider),
+    );
+    let value = serde_json::to_value(document)
+        .map_err(|_| PyRuntimeError::new_err("capability pubbliche non serializzabili"))?;
+    json_value_to_pydict(py, &value)
 }
 
 /// Converte lo snapshot locale nella forma condivisa dai bordi sync e async.

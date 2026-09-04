@@ -120,7 +120,7 @@ fn cli_errors_are_canonical_json_on_stdout_with_nonzero_exit() {
     let output = run(&["unknown-command"]);
     let envelope = error_envelope(&output);
     assert_eq!(envelope["status"], "error");
-    assert_eq!(envelope["protocol_version"], 1);
+    assert_eq!(envelope["protocol_version"], 2);
     assert_eq!(envelope["error"]["category"], "invalid_plan");
     assert_eq!(envelope["error"]["phase"], "validate");
     assert_eq!(envelope["error"]["remote_effect"], "none");
@@ -151,7 +151,7 @@ fn postgres_routes_share_private_ca_environment_contract() {
         ],
     ] {
         let output = run_with_secret(&arguments, SECRET_SENTINEL);
-        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.status.code(), Some(2));
         assert_secret_absent(&output, SECRET_SENTINEL);
         let envelope = error_envelope(&output);
         assert_eq!(envelope["error"]["category"], "invalid_plan");
@@ -416,11 +416,13 @@ fn sqlserver_rejects_multi_certificate_ca_before_secret_resolution() {
 
 #[test]
 fn public_usage_documents_the_provider_neutral_probe_boundary() {
-    let output = run(&["unknown-command"]);
-    let envelope = error_envelope(&output);
-    let message = envelope["error"]["message"]
-        .as_str()
-        .expect("usage message");
+    let output = Command::new(env!("CARGO_BIN_EXE_plenora-database"))
+        .arg("--help")
+        .output()
+        .expect("run help");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let message = String::from_utf8(output.stdout).expect("UTF-8 help");
     // La usage() e strutturata per gruppi. I token essenziali del contratto
     // database-probe devono essere documentati nel relativo gruppo.
     assert!(message.contains("database-probe"));
@@ -494,7 +496,7 @@ fn every_provider_is_reachable_exactly_where_its_adapter_is_compiled() {
     ] {
         let output = run(&["database-probe", provider]);
         let envelope = error_envelope(&output);
-        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.status.code(), Some(if compiled { 2 } else { 3 }));
         if compiled {
             // Compilato: l'errore riguarda cio che manca sulla riga di
             // comando, non l'adapter.

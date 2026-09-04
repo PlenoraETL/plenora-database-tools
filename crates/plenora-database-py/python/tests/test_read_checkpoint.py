@@ -53,6 +53,10 @@ def test_read_checkpoint_public_errors_and_repr_do_not_expose_values() -> None:
             [secret],
         )
     assert secret not in str(error.value)
+    assert secret not in error.value.message
+    assert 0 < len(error.value.message) <= 2_048
+    assert error.value.retry == {"kind": "never"}
+    assert error.value.details is None
 
 
 def test_read_checkpoint_rejects_unknown_provider_and_null_key() -> None:

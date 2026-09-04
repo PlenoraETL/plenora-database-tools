@@ -21,6 +21,35 @@ use std::path::PathBuf;
 #[cfg(feature = "postgres")]
 use std::sync::Arc;
 
+#[test]
+fn canonical_requests_reject_fields_from_another_operation() {
+    let request = json!({
+        "provider": "postgres",
+        "secret_environment": "PLENORA_TEST_DSN",
+        "catalog": "warehouse"
+    });
+    assert!(serde_json::from_value::<CanonicalTarget>(request).is_err());
+
+    let request = json!({
+        "provider": "postgres",
+        "secret_environment": "PLENORA_TEST_DSN",
+        "operation_path": "read.json",
+        "sql": "SELECT 1"
+    });
+    assert!(serde_json::from_value::<CanonicalReadRequest>(request).is_err());
+}
+
+#[test]
+fn canonical_schema_inspection_preserves_the_optional_catalog() {
+    let request: CanonicalListSchemasRequest = serde_json::from_value(json!({
+        "provider": "postgres",
+        "secret_environment": "PLENORA_TEST_DSN",
+        "catalog": "warehouse"
+    }))
+    .expect("richiesta list_schemas pubblica");
+    assert_eq!(request.catalog.as_deref(), Some("warehouse"));
+}
+
 /// Le posizionali di `database-describe` si leggono nell'ordine scritto.
 ///
 /// L'inversione e il difetto che questo test esiste per escludere, e non
@@ -216,7 +245,7 @@ fn test_batch(schema: SchemaRef) -> RecordBatch {
 }
 
 #[test]
-fn crs_error_envelope_matches_protocol_v1() {
+fn crs_error_envelope_matches_protocol_v2() {
     let envelope = CliError::Fatal(DatabaseError {
         category: ErrorCategory::Crs,
         phase: ErrorPhase::Validate,
@@ -234,7 +263,11 @@ fn crs_error_envelope_matches_protocol_v1() {
         value,
         json!({
             "status": "error",
-            "protocol_version": 1,
+            "protocol_version": 2,
+            "component": "plenora-database-tools",
+            "component_version": env!("CARGO_PKG_VERSION"),
+            "contract": "plenora-error-v1",
+            "command": "output",
             "error": {
                 "category": "crs",
                 "phase": "validate",
@@ -272,7 +305,8 @@ fn serialization_fallback_is_a_canonical_error_envelope() {
     let value: serde_json::Value =
         serde_json::from_str(ERROR_SERIALIZATION_FALLBACK).expect("valid fallback JSON");
     assert_eq!(value["status"], "error");
-    assert_eq!(value["protocol_version"], 1);
+    assert_eq!(value["protocol_version"], 2);
+    assert_eq!(value["component"], "plenora-database-tools");
     assert_eq!(value["error"]["category"], "internal");
     assert_eq!(value["error"]["phase"], "finalize");
     assert_eq!(value["error"]["remote_effect"], "none");

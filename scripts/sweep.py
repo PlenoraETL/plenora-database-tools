@@ -74,6 +74,10 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
     ),
     ("cargo check", ["cargo", "check", "--workspace", "--all-targets"]),
     (
+        "cargo build CLI",
+        ["cargo", "build", "--locked", "-p", "plenora-database-cli"],
+    ),
+    (
         "cargo check fuzz",
         [
             "cargo",
@@ -119,6 +123,10 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
         [sys.executable, "scripts/test_check_sqlserver_reference.py"],
     ),
     ("phase0_validate.py", [sys.executable, "scripts/phase0_validate.py"]),
+    (
+        "test_render_adoption_manifest.py",
+        [sys.executable, "scripts/test_render_adoption_manifest.py"],
+    ),
     ("check_docs.py", [sys.executable, "scripts/check_docs.py"]),
     ("check_comments.py", [sys.executable, "scripts/check_comments.py"]),
     ("test_check_coverage.py", [sys.executable, "scripts/test_check_coverage.py"]),

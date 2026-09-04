@@ -553,7 +553,7 @@ class CiWorkflowTests(unittest.TestCase):
                     )
 
     def test_no_checkout_silently_moves_to_another_revision(self) -> None:
-        """Nessun `ref:` e nessun `repository:` sui checkout.
+        """Il codice dell'evento non cambia ref; le dipendenze esterne sono pinnate.
 
         Senza input, `actions/checkout` prende la revisione dell'evento: il
         commit su push, il merge commit su pull_request. E la policy corrente,
@@ -564,6 +564,11 @@ class CiWorkflowTests(unittest.TestCase):
         Il test fissa il comportamento effettivo della CI, non un ref parallelo.
         """
 
+        adoption = yaml.safe_load(
+            (ROOT / "contracts" / "adoption-source.json").read_text(encoding="utf-8")
+        )
+        contract_revision = adoption["contracts_source"]["revision"]
+
         for path in workflow_files():
             workflow = path.read_text(encoding="utf-8")
             steps = checkout_steps(workflow)
@@ -571,6 +576,10 @@ class CiWorkflowTests(unittest.TestCase):
                 self.assertTrue(steps, f"{path.name}: nessun checkout trovato")
                 for step in steps:
                     inputs = step.get("with") or {}
+                    if inputs.get("repository") == "PlenoraETL/plenora-contracts":
+                        self.assertEqual(inputs.get("ref"), contract_revision)
+                        self.assertEqual(inputs.get("path"), ".plenora-contracts")
+                        continue
                     for override in CHECKOUT_OVERRIDES:
                         self.assertNotIn(
                             override,
@@ -797,8 +806,8 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         self.assertEqual(
             workflow.count("python .github/scripts/verify_wheel.py"),
-            3,
-            "due build standard piu lo smoke test dell'artefatto scaricato",
+            4,
+            "due build, smoke post-download e matrice ABI3 runtime",
         )
         self.assertNotIn(
             "python -c",
@@ -833,6 +842,33 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         self.assertIn("actions/attest-build-provenance@", block)
         self.assertIn("actions/attest-sbom@", block)
         self.assertIn("cyclonedx-json", block)
+        self.assertGreaterEqual(block.count("dist/plenora-database-linux-x86_64"), 2)
+        self.assertGreaterEqual(block.count("dist/*-source.tar.gz"), 2)
+
+    def test_release_carries_every_claimed_surface_and_adoption_manifest(self) -> None:
+        """La dichiarazione v4 identifica Rust, CLI e wheel realmente allegati."""
+
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        linux = job_text(workflow, "linux")
+        windows = job_text(workflow, "windows")
+        release = job_text(workflow, "attach-to-release")
+
+        self.assertIn("git archive --format=tar.gz", linux)
+        self.assertIn("-source.tar.gz", linux)
+        self.assertIn("public_rust_surface_v1", linux)
+        self.assertIn("plenora-database-linux-x86_64", linux)
+        self.assertIn("plenora-database-windows-x86_64.exe", windows)
+        self.assertIn("scripts/render_adoption_manifest.py", release)
+        self.assertIn("|rust|", release)
+        self.assertIn("|cli|", release)
+        self.assertIn("|python_sdk|", release)
+        self.assertIn(".adoption-manifest.json", release)
+        self.assertIn("adoption-manifest-v4.schema.json", release)
+        self.assertLess(
+            release.index("scripts/check_public_contracts.py"),
+            release.index("scripts/render_adoption_manifest.py"),
+            "il manifest non puo precedere il black-box del CLI rilasciato",
+        )
 
     def test_macos_is_not_part_of_the_distribution_matrix(self) -> None:
         """La major successiva non deve continuare a produrre asset macOS."""
@@ -859,10 +895,29 @@ class PythonWheelWorkflowTests(unittest.TestCase):
             "il wheel Db2 viene caricato prima della qualifica live",
         )
 
+    def test_abi3_wheels_load_on_every_declared_python_and_platform(self) -> None:
+        """`abi3-py310` e una promessa runtime, non una proprieta del nome."""
+
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        job = parsed_jobs(workflow)["abi3-runtime"]
+        self.assertEqual(job["needs"], ["linux", "windows"])
+        matrix = job["strategy"]["matrix"]
+        self.assertEqual(
+            matrix["python"], ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        )
+        self.assertEqual(matrix["os"], ["ubuntu-latest", "windows-latest"])
+        block = job_text(workflow, "abi3-runtime")
+        self.assertIn("actions/download-artifact@", block)
+        self.assertIn("python -m pip install --no-deps dist/*.whl", block)
+        self.assertIn("python .github/scripts/verify_wheel.py", block)
+
     def test_release_waits_for_the_db2_wheel_and_not_for_macos(self) -> None:
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         needs = parsed_jobs(workflow)["attach-to-release"]["needs"]
-        self.assertEqual(needs, ["linux", "windows", "db2-linux", "smoke-test"])
+        self.assertEqual(
+            needs,
+            ["linux", "windows", "db2-linux", "smoke-test", "abi3-runtime"],
+        )
         self.assertNotIn("macos", needs)
 
 

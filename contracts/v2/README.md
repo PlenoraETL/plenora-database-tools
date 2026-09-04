@@ -9,9 +9,19 @@ in Git, che e dove sta la storia.
 - `age-capabilities.schema.json`: capability AGE v1, separate dal provider relazionale;
 - `age-admin-capabilities.schema.json`: capability amministrative AGE additive;
 - `loss-report.schema.json`: perdite di mapping esplicite;
+- `public-operation-contracts.schema.json`: bundle immutabile degli input,
+  output e attributi delle operazioni del profilo pubblico;
 - `write-outcome.schema.json`: committed, rolled back, partial e unknown;
 - `common.schema.json`: identificatori, provider, oggetti e policy;
 - `golden-manifest.schema.json`: casi di compatibilità semantica.
+
+La selezione del profilo comune e la revisione immutabile di
+`plenora-contracts` sono dichiarate una sola volta in
+[`../adoption-source.json`](../adoption-source.json).
+La mappa operazione/export della superficie Rust e invece emessa dal catalogo
+nel modulo pubblico
+[`public_contract`](../../crates/plenora-database-core/src/public_contract.rs),
+cosi non esiste una seconda lista da mantenere a mano.
 
 I `$id` usano il namespace non instradabile
 `https://plenora.local/database-tools/v2/`, e nessuno di essi referenzia

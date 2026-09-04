@@ -2495,7 +2495,7 @@ _LIVE_ADVANCED_ORM_MODELS = (
 
 def _exercise_live_advanced_orm(provider: str, connector) -> None:
     session = connector()
-    assert session.capabilities["provider"] == provider
+    assert session.provider_capabilities["provider"] == provider
     metadata = p.OrmMetadata(models=_LIVE_ADVANCED_ORM_MODELS)
     try:
         if provider == "db2":
@@ -2647,7 +2647,7 @@ def test_live_db2_advanced_orm_qualification() -> None:
 )
 def test_live_mysql_family_geometry_orm_qualification(provider: str, connector) -> None:
     session = connector()
-    assert session.capabilities["provider"] == provider
+    assert session.provider_capabilities["provider"] == provider
     metadata = p.OrmMetadata(models=(LiveMysqlGeometry,))
     point = _ewkb_point(9.19, 45.46)
     moved_point = _ewkb_point(9.20, 45.47)
@@ -2729,7 +2729,7 @@ def test_live_mysql_family_geometry_orm_qualification(provider: str, connector) 
 
 def _exercise_live_portable_geometry(provider: str, connector) -> None:
     session = connector()
-    assert session.capabilities["provider"] == provider
+    assert session.provider_capabilities["provider"] == provider
     metadata = p.OrmMetadata(models=(LivePortableGeometry, LivePortableGeometryXyz))
     point = _ewkb_point(9.19, 45.46)
     moved_point = _ewkb_point(9.20, 45.47)

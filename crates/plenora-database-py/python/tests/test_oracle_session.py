@@ -30,7 +30,7 @@ def test_oracle_sync_catalog_and_portable_crud() -> None:
     session = connect_oracle_reference()
     name = "PLENORA_PY_ORACLE_PROBE"
     try:
-        assert session.capabilities["provider"] == "oracle"
+        assert session.provider_capabilities["provider"] == "oracle"
         assert "PLENORA" in session.inspect.schemas()
         _drop_probe(session, name)
         session.execute_ddl(
@@ -91,7 +91,7 @@ def test_oracle_sync_catalog_and_portable_crud() -> None:
 async def test_oracle_async_engine_and_bound_scalar() -> None:
     session = await aconnect_oracle_reference()
     try:
-        assert session.capabilities["provider"] == "oracle"
+        assert session.provider_capabilities["provider"] == "oracle"
         assert await session.execute_scalar(
             "SELECT CAST(:1 AS NUMBER(10)) FROM DUAL", [42]
         ) == 42
@@ -159,8 +159,8 @@ def test_oracle_spatial_orm_crud_index_and_predicates() -> None:
     try:
         _drop_probe(session, OracleSpatialRecord.__tablename__)
         metadata.create_all(session)
-        assert session.capabilities["spatial"]["geometry"] is True
-        assert session.capabilities["spatial"]["geography"] is True
+        assert session.provider_capabilities["spatial"]["geometry"] is True
+        assert session.provider_capabilities["spatial"]["geography"] is True
         with p.OrmSession(session) as orm:
             orm.add(OracleSpatialRecord(ID=1, SHAPE=point))
         with p.OrmSession(session) as orm:

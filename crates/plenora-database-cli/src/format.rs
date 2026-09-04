@@ -24,7 +24,7 @@ pub(crate) fn set_active_command(name: &str) {
     }
 }
 
-fn active_command() -> String {
+pub(crate) fn active_command() -> String {
     command_store()
         .lock()
         .map_or_else(|_| "output".to_owned(), |g| g.clone())

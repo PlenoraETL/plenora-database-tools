@@ -14,17 +14,17 @@ python scripts\render_state.py
 
 | crate | versione |
 | --- | --- |
-| `plenora-database-cli` | 3.3.0 |
-| `plenora-database-core` | 3.3.0 |
-| `plenora-database-engine` | 3.3.0 |
-| `plenora-database-py` | 3.3.0 |
-| `plenora-database-sql` | 3.3.0 |
-| `plenora-database-testkit` | 3.3.0 |
-| `plenora-db-db2` | 3.3.0 |
-| `plenora-db-mysql` | 3.3.0 |
-| `plenora-db-oracle` | 3.3.0 |
-| `plenora-db-postgres` | 3.3.0 |
-| `plenora-db-sqlserver` | 3.3.0 |
+| `plenora-database-cli` | 4.0.0 |
+| `plenora-database-core` | 4.0.0 |
+| `plenora-database-engine` | 4.0.0 |
+| `plenora-database-py` | 4.0.0 |
+| `plenora-database-sql` | 4.0.0 |
+| `plenora-database-testkit` | 4.0.0 |
+| `plenora-db-db2` | 4.0.0 |
+| `plenora-db-mysql` | 4.0.0 |
+| `plenora-db-oracle` | 4.0.0 |
+| `plenora-db-postgres` | 4.0.0 |
+| `plenora-db-sqlserver` | 4.0.0 |
 
 ## Contratto attivo
 
@@ -37,6 +37,7 @@ La major attiva e `contracts/v2/`, e contiene:
 - `golden-manifest.schema.json`
 - `loss-report.schema.json`
 - `plan.schema.json`
+- `public-operation-contracts.schema.json`
 - `read-checkpoint.schema.json`
 - `write-outcome.schema.json`
 
@@ -113,6 +114,7 @@ l'aiuto.
 | `benchmark-spatial` | `postgres` |
 | `benchmark-write` | `postgres` |
 | `bulk-write` | `postgres` |
+| `capabilities` | `sempre` |
 | `conditional-update` | `postgres` |
 | `database-describe` | `sempre` |
 | `database-execute-ddl` | `sempre` |
@@ -127,8 +129,10 @@ l'aiuto.
 | `database-read-ipc` | `sempre` |
 | `database-read-summary` | `sempre` |
 | `database-write-ipc` | `sempre` |
+| `describe-object` | `sempre` |
 | `diagnose` | `postgres` |
 | `doctor` | `postgres` |
+| `execute` | `sempre` |
 | `execute-ddl` | `postgres` |
 | `execute-scalar` | `postgres` |
 | `execute-sql` | `postgres` |
@@ -139,6 +143,9 @@ l'aiuto.
 | `inspect-objects` | `postgres` |
 | `inspect-schemas` | `postgres` |
 | `inspect-tables` | `postgres` |
+| `list-catalogs` | `sempre` |
+| `list-objects` | `sempre` |
+| `list-schemas` | `sempre` |
 | `mysql-conditional-update` | `mysql` |
 | `mysql-describe` | `mysql` |
 | `mysql-execute-ddl` | `mysql` |
@@ -159,13 +166,17 @@ l'aiuto.
 | `postgres-write-ipc` | `postgres` |
 | `profile-check` | `postgres` |
 | `profile-list` | `postgres` |
+| `query` | `sempre` |
+| `read` | `sempre` |
 | `session-context-test` | `postgres` |
 | `test-cancellation` | `postgres` |
 | `test-concurrency` | `postgres` |
+| `test-connection` | `sempre` |
 | `test-spatial` | `postgres` |
 | `test-streaming` | `postgres` |
 | `transaction-test` | `postgres` |
 | `validate-plan` | `sempre` |
+| `write` | `sempre` |
 
 ## Inventario dei test dei provider
 

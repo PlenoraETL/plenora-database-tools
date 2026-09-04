@@ -47,7 +47,12 @@ class AsyncSession(_AsyncBuilderFactory):
 
     @property
     def capabilities(self) -> dict:
-        """Capability effettivamente sondate per questa connessione."""
+        """Catalogo dell'artefatto conforme a ``plenora-capabilities-v2``."""
+        return self._native.public_capabilities
+
+    @property
+    def provider_capabilities(self) -> dict:
+        """Capability effettivamente sondate per il database selezionato."""
         return self._native.capabilities
 
     @property
@@ -82,6 +87,10 @@ class AsyncSession(_AsyncBuilderFactory):
     def close(self) -> None:
         self._native.close()
 
+    async def aclose(self) -> None:
+        """Chiude idempotentemente senza bloccare il thread dell'event loop."""
+        self.close()
+
     def metrics(self) -> dict:
         """Snapshot locale dei contatori, senza I/O e senza `await`."""
         return self._native.metrics()
@@ -106,14 +115,14 @@ class AsyncSession(_AsyncBuilderFactory):
         if not isinstance(statement, ExecutableStatement):
             raise TypeError("execute richiede uno statement relazionale")
         return await _execute_statement_async(
-            self._native, statement, params, self.capabilities["provider"]
+            self._native, statement, params, self.provider_capabilities["provider"]
         )
 
     async def execute_sql(
         self, sql: str, params: list | None = None
     ) -> MutationResult:
         affected = await self._native.execute(sql, params)
-        return MutationResult("sql", self.capabilities["provider"], affected)
+        return MutationResult("sql", self.provider_capabilities["provider"], affected)
 
     async def query_sql(self, sql: str, params: list | None = None) -> Result:
         return Result(await self._native.execute_returning_rows(sql, params))
@@ -229,7 +238,7 @@ class AsyncSession(_AsyncBuilderFactory):
             context,
             native_query_policy,
         )
-        return AsyncTransaction(native_tx, self.capabilities["provider"])
+        return AsyncTransaction(native_tx, self.provider_capabilities["provider"])
 
     # ------- API interne consumate dai builder (via json AST) -----------
 
@@ -245,6 +254,10 @@ class _AsyncInspector:
 
     def __init__(self, native: "_NativeAsyncSession") -> None:
         self._native = native
+
+    def __call__(self) -> "_AsyncInspector":
+        """Supporta anche la forma normativa ``session.inspect()``."""
+        return self
 
     async def catalogs(self) -> list[str]:
         return await self._native.inspect_catalogs()

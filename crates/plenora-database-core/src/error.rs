@@ -10,6 +10,9 @@ use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, DatabaseError>;
 
+pub const PUBLIC_MESSAGE_MAX_CHARS: usize = 2_048;
+pub const PUBLIC_RETRY_DELAY_MAX_MS: u64 = 86_400_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCategory {
@@ -123,6 +126,31 @@ pub struct DatabaseError {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Box<RowDiagnostics>>,
+}
+
+/// Proiezione JSON conforme a `plenora-error-v1`.
+///
+/// Il tipo Rust conserva l'accessore nativo `row_diagnostics`; sul filo il
+/// documento completo vive in `details.row_diagnostics`, unico punto ammesso
+/// dallo schema comune.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicDatabaseError {
+    pub category: ErrorCategory,
+    pub phase: ErrorPhase,
+    pub remote_effect: RemoteEffect,
+    pub retry: RetryDisposition,
+    pub provider: Option<ProviderKind>,
+    pub execution_id: Option<String>,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<PublicErrorDetails>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicErrorDetails {
+    pub row_diagnostics: RowDiagnostics,
 }
 
 /// La categoria pubblica di un'interruzione, secondo la causa che l'ha
@@ -266,6 +294,50 @@ impl DatabaseError {
     #[must_use]
     pub fn row_diagnostics(&self) -> Option<&RowDiagnostics> {
         self.diagnostics.as_deref()
+    }
+
+    /// Crea la forma serializzabile comune applicando limiti e retry
+    /// conservativi anche ai valori costruiti direttamente dai consumer Rust.
+    #[must_use]
+    pub fn public_projection(&self) -> PublicDatabaseError {
+        let retry = match (self.remote_effect, self.retry) {
+            (
+                RemoteEffect::Unknown,
+                RetryDisposition::Safe
+                | RetryDisposition::After(_)
+                | RetryDisposition::RequiresIdempotencyKey,
+            ) => RetryDisposition::RequiresRecovery,
+            (_, RetryDisposition::After(delay)) if delay > PUBLIC_RETRY_DELAY_MAX_MS => {
+                RetryDisposition::Never
+            }
+            (_, retry) => retry,
+        };
+        PublicDatabaseError {
+            category: self.category,
+            phase: self.phase,
+            remote_effect: self.remote_effect,
+            retry,
+            provider: self.provider,
+            execution_id: self.execution_id.clone(),
+            message: bounded_message(&self.message),
+            details: self
+                .diagnostics
+                .as_deref()
+                .cloned()
+                .map(|row_diagnostics| PublicErrorDetails { row_diagnostics }),
+        }
+    }
+}
+
+fn bounded_message(message: &str) -> String {
+    let bounded = message
+        .chars()
+        .take(PUBLIC_MESSAGE_MAX_CHARS)
+        .collect::<String>();
+    if bounded.is_empty() {
+        "errore database".to_owned()
+    } else {
+        bounded
     }
 }
 

@@ -31,8 +31,8 @@ def _db2_engine_config() -> p.EngineConfig:
 def test_db2_sync_capabilities_catalog_transaction_and_portable_select() -> None:
     session = connect_db2_reference()
     try:
-        assert session.capabilities["provider"] == "db2"
-        assert session.capabilities["transactions"]["single_transaction"] is True
+        assert session.provider_capabilities["provider"] == "db2"
+        assert session.provider_capabilities["transactions"]["single_transaction"] is True
         assert "PLENORA" in session.inspect.catalogs()
         assert "PLENORA_TEST" in session.inspect.schemas()
         assert session.inspect.describe("PLENORA_TEST", "READ_PROBE")["columns"]
@@ -54,7 +54,7 @@ def test_db2_sync_capabilities_catalog_transaction_and_portable_select() -> None
 def test_db2_sync_spatial_capabilities_and_portable_predicate() -> None:
     session = connect_db2_reference()
     try:
-        spatial = session.capabilities["spatial"]
+        spatial = session.provider_capabilities["spatial"]
         assert spatial["geometry"] is True
         assert spatial["read_wkb"] is True
         assert spatial["write_wkb"] is True
@@ -82,8 +82,8 @@ def test_db2_sync_spatial_capabilities_and_portable_predicate() -> None:
 async def test_db2_async_capabilities_inspect_and_scalar_query() -> None:
     session = await aconnect_db2_reference()
     try:
-        assert session.capabilities["provider"] == "db2"
-        assert session.capabilities["spatial"]["geometry"] is True
+        assert session.provider_capabilities["provider"] == "db2"
+        assert session.provider_capabilities["spatial"]["geometry"] is True
         assert "PLENORA_TEST" in await session.inspect.schemas()
         assert await session.execute_scalar(
             "SELECT COUNT(*) FROM PLENORA_TEST.READ_PROBE"

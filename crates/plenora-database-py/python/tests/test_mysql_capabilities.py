@@ -305,7 +305,7 @@ def test_ast_builders_select_insert_update_delete(session) -> None:
 async def test_async_begin_with_context_and_policy(async_session) -> None:
     """Sul percorso async valgono le stesse prove, non le stesse promesse."""
 
-    assert async_session.capabilities["provider"] == "mysql"
+    assert async_session.provider_capabilities["provider"] == "mysql"
     assert isinstance(await async_session.inspect.catalogs(), list)
     assert isinstance(await async_session.inspect.schemas(), list)
 

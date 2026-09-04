@@ -45,6 +45,8 @@ use plenora_db_sqlserver::{SqlServerConfig, SqlServerProvider};
     feature = "db2"
 ))]
 use rustls::{pki_types::CertificateDer, RootCertStore};
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde_json::json;
 use std::env;
 use std::fs::OpenOptions;
@@ -62,6 +64,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
 use arrow_ipc::writer::FileWriter;
 
@@ -77,22 +80,77 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
         Err(CliError::Fatal(error)) => {
+            let exit = cli_exit_code(error.category);
             println!(
                 "{}",
                 CliError::Fatal(error)
                     .to_json()
                     .unwrap_or_else(|_| ERROR_SERIALIZATION_FALLBACK.to_owned())
             );
-            ExitCode::FAILURE
+            ExitCode::from(exit)
         }
     }
 }
 
 const ERROR_SERIALIZATION_FALLBACK: &str = concat!(
-    r#"{"status":"error","protocol_version":1,"error":{"category":"internal","#,
+    r#"{"status":"error","protocol_version":2,"component":"plenora-database-tools","#,
+    r#""component_version":""#,
+    env!("CARGO_PKG_VERSION"),
+    r#"","contract":"plenora-error-v1","command":"unknown","#,
+    r#""error":{"category":"internal","#,
     r#""phase":"finalize","remote_effect":"none","retry":{"kind":"never"},"#,
     r#""provider":null,"execution_id":null,"message":"errore non serializzabile"}}"#
 );
+
+const CLI_PROTOCOL_VERSION: u32 = 2;
+
+#[derive(Clone, Copy)]
+struct PublicCommand {
+    command: &'static str,
+    output_contract: &'static str,
+}
+
+static PUBLIC_COMMAND: OnceLock<Mutex<Option<PublicCommand>>> = OnceLock::new();
+
+fn public_command_store() -> &'static Mutex<Option<PublicCommand>> {
+    PUBLIC_COMMAND.get_or_init(|| Mutex::new(None))
+}
+
+fn set_public_command(command: &'static str, output_contract: &'static str) {
+    if let Ok(mut guard) = public_command_store().lock() {
+        *guard = Some(PublicCommand {
+            command,
+            output_contract,
+        });
+    }
+}
+
+fn active_public_command() -> Option<PublicCommand> {
+    public_command_store().lock().map_or(None, |guard| *guard)
+}
+
+const fn cli_exit_code(category: ErrorCategory) -> u8 {
+    match category {
+        ErrorCategory::InvalidPlan | ErrorCategory::InvalidConfiguration => 2,
+        ErrorCategory::Schema
+        | ErrorCategory::DataMapping
+        | ErrorCategory::Crs
+        | ErrorCategory::Unsupported => 3,
+        ErrorCategory::ResourceLimit => 4,
+        ErrorCategory::Io
+        | ErrorCategory::NotFound
+        | ErrorCategory::Conflict
+        | ErrorCategory::ConcurrentModification
+        | ErrorCategory::Protocol
+        | ErrorCategory::Authentication
+        | ErrorCategory::Authorization
+        | ErrorCategory::Timeout
+        | ErrorCategory::Transient => 5,
+        ErrorCategory::Execution => 6,
+        ErrorCategory::Internal => 70,
+        ErrorCategory::Cancelled => 130,
+    }
+}
 
 #[derive(Debug)]
 pub(crate) enum CliError {
@@ -247,10 +305,15 @@ impl CliError {
     fn to_json(&self) -> Result<String, serde_json::Error> {
         match self {
             Self::Fatal(db_err) => {
-                let error = serde_json::to_value(db_err)?;
+                let error = serde_json::to_value(db_err.public_projection())?;
+                let command = active_public_command();
                 serde_json::to_string(&json!({
                     "status": "error",
-                    "protocol_version": 1,
+                    "protocol_version": CLI_PROTOCOL_VERSION,
+                    "component": plenora_database_core::public_contract::COMPONENT,
+                    "component_version": env!("CARGO_PKG_VERSION"),
+                    "contract": command.map_or("plenora-error-v1", |value| value.output_contract),
+                    "command": command.map_or_else(format::active_command, |value| value.command.to_owned()),
                     "error": error,
                 }))
             }
@@ -293,6 +356,18 @@ async fn run() -> CliResult<()> {
     let command = args.next().ok_or_else(|| CliError::from(usage()))?;
     format::set_active_command(&command);
     match command.as_str() {
+        "--help" => print_help(&mut args),
+        "--version" => print_version(&mut args),
+        "capabilities" => print_capabilities(&mut args),
+        "test-connection" => canonical_test_connection(&mut args).await,
+        "list-catalogs" => canonical_inspect(&mut args, CanonicalInspection::Catalogs).await,
+        "list-schemas" => canonical_inspect(&mut args, CanonicalInspection::Schemas).await,
+        "list-objects" => canonical_inspect(&mut args, CanonicalInspection::Objects).await,
+        "describe-object" => canonical_inspect(&mut args, CanonicalInspection::Describe).await,
+        "read" => canonical_read(&mut args).await,
+        "write" => canonical_write(&mut args).await,
+        "query" => canonical_query(&mut args).await,
+        "execute" => canonical_execute(&mut args).await,
         "inspect-dataset" => inspect_dataset(&mut args),
         "validate-plan" => validate_plan(&mut args),
         "database-probe" => database_probe(&mut args).await,
@@ -396,6 +471,310 @@ async fn run() -> CliResult<()> {
         "mysql-conditional-update" => mysql_cmd::mysql_conditional_update(&mut args).await,
         _ => Err(unknown_command(&command)),
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalTarget {
+    provider: String,
+    secret_environment: String,
+    #[serde(default)]
+    provider_arguments: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalListSchemasRequest {
+    #[serde(flatten)]
+    target: CanonicalTarget,
+    #[serde(default)]
+    catalog: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalListObjectsRequest {
+    #[serde(flatten)]
+    target: CanonicalTarget,
+    #[serde(default)]
+    catalog: Option<String>,
+    schema: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalDescribeRequest {
+    #[serde(flatten)]
+    target: CanonicalTarget,
+    #[serde(default)]
+    catalog: Option<String>,
+    schema: String,
+    object: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalReadRequest {
+    #[serde(flatten)]
+    target: CanonicalTarget,
+    operation_path: String,
+    #[serde(default)]
+    parameters_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalWriteRequest {
+    #[serde(flatten)]
+    target: CanonicalTarget,
+    operation_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalExecuteRequest {
+    #[serde(flatten)]
+    target: CanonicalTarget,
+    sql: String,
+    #[serde(default)]
+    allow_raw: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CanonicalInspection {
+    Catalogs,
+    Schemas,
+    Objects,
+    Describe,
+}
+
+impl CanonicalInspection {
+    const fn command(self) -> &'static str {
+        match self {
+            Self::Catalogs => "list-catalogs",
+            Self::Schemas => "list-schemas",
+            Self::Objects => "list-objects",
+            Self::Describe => "describe-object",
+        }
+    }
+
+    const fn output_contract(self) -> &'static str {
+        match self {
+            Self::Catalogs => "plenora-database-list-catalogs-result-v1",
+            Self::Schemas => "plenora-database-list-schemas-result-v1",
+            Self::Objects => "plenora-database-list-objects-result-v1",
+            Self::Describe => "plenora-database-describe-object-result-v1",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalQueryRequest {
+    #[serde(flatten)]
+    target: CanonicalTarget,
+    operation_path: String,
+    #[serde(default)]
+    parameters_path: Option<String>,
+}
+
+fn no_extra_arguments(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    if args.next().is_some() {
+        return Err("argomenti posizionali inattesi".into());
+    }
+    Ok(())
+}
+
+fn print_help(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    no_extra_arguments(args)?;
+    println!("{}", usage());
+    Ok(())
+}
+
+fn print_version(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    no_extra_arguments(args)?;
+    set_public_command("version", "plenora-database-version-result-v1");
+    print_json(&json!({
+        "component_version": env!("CARGO_PKG_VERSION"),
+        "protocol_version": CLI_PROTOCOL_VERSION,
+    }))
+}
+
+fn print_capabilities(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    no_extra_arguments(args)?;
+    set_public_command("capabilities", "plenora-capabilities-v2");
+    let document = plenora_database_core::public_capabilities(
+        plenora_database_core::PublicSurface::Cli,
+        "plenora-database",
+        None,
+    );
+    let value = serde_json::to_value(document)
+        .map_err(|_| CliError::from("capability pubbliche non serializzabili"))?;
+    print_json(&value)
+}
+
+fn canonical_request<T: DeserializeOwned>(args: &mut impl Iterator<Item = String>) -> CliResult<T> {
+    if args.next().as_deref() != Some("--input") {
+        return Err("il comando richiede --input REQUEST.json".into());
+    }
+    let path = args
+        .next()
+        .ok_or_else(|| CliError::from("--input richiede un percorso"))?;
+    let input = fs::read(path).map_err(|_| CliError::from("REQUEST.json non leggibile"))?;
+    serde_json::from_slice(&input).map_err(|error| {
+        CliError::from(format!(
+            "REQUEST.json non parsabile a riga {}, colonna {}",
+            error.line(),
+            error.column()
+        ))
+    })
+}
+
+fn canonical_operation_arguments(
+    target: CanonicalTarget,
+    operation_arguments: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut arguments = vec![target.provider, target.secret_environment];
+    arguments.extend(operation_arguments);
+    arguments.extend(target.provider_arguments);
+    arguments
+}
+
+async fn canonical_test_connection(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let target: CanonicalTarget = canonical_request(args)?;
+    no_extra_arguments(args)?;
+    set_public_command(
+        "test-connection",
+        "plenora-database-connection-test-result-v1",
+    );
+    let (target, provider_arguments) = ProviderTarget::from_canonical(target)?;
+    let opened = target.open(&mut provider_arguments.into_iter())?;
+    let cancellation = CancellationToken::new();
+    opened.engine.health_check(&cancellation).await?;
+    let provider_capabilities = opened.engine.capabilities(false, &cancellation).await?;
+    let capabilities = plenora_database_core::public_capabilities(
+        plenora_database_core::PublicSurface::Cli,
+        "plenora-database",
+        Some(&provider_capabilities),
+    );
+    print_json(&json!({
+        "verified": true,
+        "provider": opened.provider.kind(),
+        "capabilities": capabilities,
+    }))
+}
+
+async fn canonical_inspect(
+    args: &mut impl Iterator<Item = String>,
+    inspection: CanonicalInspection,
+) -> CliResult<()> {
+    let (target, operation) = match inspection {
+        CanonicalInspection::Catalogs => {
+            let target: CanonicalTarget = canonical_request(args)?;
+            (target, Operation::DatabaseListCatalogs)
+        }
+        CanonicalInspection::Schemas => {
+            let request: CanonicalListSchemasRequest = canonical_request(args)?;
+            let source = request.catalog.map(|catalog| ObjectRef {
+                catalog: Some(catalog),
+                schema: None,
+                object: String::new(),
+            });
+            (request.target, Operation::DatabaseListSchemas { source })
+        }
+        CanonicalInspection::Objects => {
+            let request: CanonicalListObjectsRequest = canonical_request(args)?;
+            let schema = required_value(request.schema, "schema")?;
+            (
+                request.target,
+                Operation::DatabaseListObjects {
+                    source: Some(ObjectRef {
+                        catalog: request.catalog,
+                        schema: Some(schema),
+                        object: String::new(),
+                    }),
+                },
+            )
+        }
+        CanonicalInspection::Describe => {
+            let request: CanonicalDescribeRequest = canonical_request(args)?;
+            (
+                request.target,
+                Operation::DatabaseDescribeObject {
+                    source: ObjectRef {
+                        catalog: request.catalog,
+                        schema: Some(required_value(request.schema, "schema")?),
+                        object: required_value(request.object, "object")?,
+                    },
+                },
+            )
+        }
+    };
+    no_extra_arguments(args)?;
+    set_public_command(inspection.command(), inspection.output_contract());
+    let (target, provider_arguments) = ProviderTarget::from_canonical(target)?;
+    run_database_inspect(target, operation, &mut provider_arguments.into_iter()).await
+}
+
+fn required_value(value: String, label: &str) -> CliResult<String> {
+    if value.trim().is_empty() {
+        return Err(format!("{label} vuoto").into());
+    }
+    Ok(value)
+}
+
+async fn canonical_read(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let request: CanonicalReadRequest = canonical_request(args)?;
+    if args.next().as_deref() != Some("--output") {
+        return Err("read richiede --output OUTPUT.arrow".into());
+    }
+    let output = args
+        .next()
+        .ok_or_else(|| CliError::from("--output richiede un percorso"))?;
+    no_extra_arguments(args)?;
+    set_public_command("read", "plenora-database-read-result-v1");
+    let operation = required_value(request.operation_path, "operation_path")?;
+    let parameters = request.parameters_path.unwrap_or_else(|| "-".to_owned());
+    let forwarded = canonical_operation_arguments(request.target, [operation, parameters, output]);
+    database_read_ipc(&mut forwarded.into_iter()).await
+}
+
+async fn canonical_write(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let request: CanonicalWriteRequest = canonical_request(args)?;
+    if args.next().as_deref() != Some("--data") {
+        return Err("write richiede --data INPUT.arrow".into());
+    }
+    let data = args
+        .next()
+        .ok_or_else(|| CliError::from("--data richiede un percorso"))?;
+    no_extra_arguments(args)?;
+    set_public_command("write", "plenora-database-write-result-v1");
+    let operation = required_value(request.operation_path, "operation_path")?;
+    let forwarded = canonical_operation_arguments(request.target, [operation, data]);
+    database_write_ipc(&mut forwarded.into_iter()).await
+}
+
+async fn canonical_query(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let request: CanonicalQueryRequest = canonical_request(args)?;
+    no_extra_arguments(args)?;
+    set_public_command("query", "plenora-database-query-result-v1");
+    let operation = required_value(request.operation_path, "operation_path")?;
+    let parameters = request.parameters_path.unwrap_or_else(|| "-".to_owned());
+    let forwarded = canonical_operation_arguments(request.target, [operation, parameters]);
+    database_query_summary(&mut forwarded.into_iter()).await
+}
+
+async fn canonical_execute(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    let request: CanonicalExecuteRequest = canonical_request(args)?;
+    no_extra_arguments(args)?;
+    set_public_command("execute", "plenora-database-execute-result-v1");
+    let sql = required_value(request.sql, "statement")?;
+    let mut operation_arguments = vec![sql];
+    if request.allow_raw {
+        operation_arguments.push("--allow-raw".to_owned());
+    }
+    let forwarded = canonical_operation_arguments(request.target, operation_arguments);
+    database_execute_sql(&mut forwarded.into_iter()).await
 }
 
 fn inspect_dataset(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -544,6 +923,21 @@ struct OpenedProvider {
 }
 
 impl ProviderTarget {
+    fn from_canonical(target: CanonicalTarget) -> CliResult<(Self, Vec<String>)> {
+        let kind = parse_provider_kind(&target.provider)?;
+        ensure_adapter_available(kind)?;
+        if target.secret_environment.trim().is_empty() {
+            return Err("secret_environment vuoto".into());
+        }
+        Ok((
+            Self {
+                kind,
+                secret_environment: target.secret_environment,
+            },
+            target.provider_arguments,
+        ))
+    }
+
     fn parse(args: &mut impl Iterator<Item = String>) -> CliResult<Self> {
         let provider = args.next().ok_or_else(|| "manca il provider".to_owned())?;
         let kind = parse_provider_kind(&provider)?;
@@ -1076,7 +1470,15 @@ async fn database_inspect(
 ) -> CliResult<()> {
     let target = ProviderTarget::parse(args)?;
     let operation = source(args)?;
-    let opened = target.open(args)?;
+    run_database_inspect(target, operation, args).await
+}
+
+async fn run_database_inspect(
+    target: ProviderTarget,
+    operation: Operation,
+    provider_arguments: &mut impl Iterator<Item = String>,
+) -> CliResult<()> {
+    let opened = target.open(provider_arguments)?;
     let kind = opened.provider.kind();
     let session = opened.engine.session()?;
     let inspection = opened
@@ -2487,6 +2889,17 @@ pub(crate) fn ensure_end(args: &mut impl Iterator<Item = String>) -> CliResult<(
 }
 
 pub(crate) fn print_json(value: &serde_json::Value) -> CliResult<()> {
+    if let Some(command) = active_public_command() {
+        return format::print_active(&json!({
+            "status": "ok",
+            "protocol_version": CLI_PROTOCOL_VERSION,
+            "component": plenora_database_core::public_contract::COMPONENT,
+            "component_version": env!("CARGO_PKG_VERSION"),
+            "contract": command.output_contract,
+            "command": command.command,
+            "result": value,
+        }));
+    }
     format::print_active(value)
 }
 
@@ -2499,6 +2912,18 @@ pub(crate) fn print_json(value: &serde_json::Value) -> CliResult<()> {
 /// Il catalogo impedisce che dispatch, aiuto ed errori dichiarino insiemi
 /// diversi di comandi.
 const COMMAND_CATALOGUE: &[(&str, Option<&str>)] = &[
+    ("--help", None),
+    ("--version", None),
+    ("capabilities", None),
+    ("test-connection", None),
+    ("list-catalogs", None),
+    ("list-schemas", None),
+    ("list-objects", None),
+    ("describe-object", None),
+    ("read", None),
+    ("write", None),
+    ("query", None),
+    ("execute", None),
     ("database-describe", None),
     ("database-execute-ddl", None),
     ("database-execute-scalar", None),
@@ -2664,6 +3089,18 @@ fn common_usage() -> String {
         "uso: plenora-database [flag-globali] COMANDO [args...]".to_owned(),
         String::new(),
         "== sempre disponibili ==".to_owned(),
+        "  --help".to_owned(),
+        "  --version --format json".to_owned(),
+        "  capabilities --format json".to_owned(),
+        "  test-connection --input REQUEST.json --format json".to_owned(),
+        "  list-catalogs --input REQUEST.json --format json".to_owned(),
+        "  list-schemas --input REQUEST.json --format json".to_owned(),
+        "  list-objects --input REQUEST.json --format json".to_owned(),
+        "  describe-object --input REQUEST.json --format json".to_owned(),
+        "  read --input REQUEST.json --output OUTPUT.arrow --format json".to_owned(),
+        "  write --input REQUEST.json --data INPUT.arrow --format json".to_owned(),
+        "  query --input REQUEST.json --format json".to_owned(),
+        "  execute --input REQUEST.json --format json".to_owned(),
         "  database-probe <provider> <secret-env> [args provider]".to_owned(),
         format!("    provider compilati in questo binario: {compiled}"),
         "  database-execute-sql <provider> <secret-env> <sql> [--allow-raw] [args provider]"
