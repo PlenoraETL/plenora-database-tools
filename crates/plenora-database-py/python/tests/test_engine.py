@@ -137,18 +137,14 @@ def test_oracle_wrapper_forwards_pool_controls_to_the_native_factory(monkeypatch
     )
 
     assert captured == {
-        "args": (
-            "host",
-            "service",
-            "user",
-            "password",
-            1521,
-            None,
-            "disable",
-            9,
-            2_500,
-        ),
-        "kwargs": {},
+        "args": ("host", "service", "user", "password"),
+        "kwargs": {
+            "port": 1521,
+            "tls_ca_path": None,
+            "tls_mode": "disable",
+            "max_connections": 9,
+            "acquire_timeout_ms": 2_500,
+        },
     }
 
 
@@ -176,18 +172,14 @@ async def test_async_oracle_wrapper_forwards_pool_controls_to_the_native_factory
     )
 
     assert captured == {
-        "args": (
-            "host",
-            "service",
-            "user",
-            "password",
-            1521,
-            None,
-            "disable",
-            9,
-            2_500,
-        ),
-        "kwargs": {},
+        "args": ("host", "service", "user", "password"),
+        "kwargs": {
+            "port": 1521,
+            "tls_ca_path": None,
+            "tls_mode": "disable",
+            "max_connections": 9,
+            "acquire_timeout_ms": 2_500,
+        },
     }
 
 

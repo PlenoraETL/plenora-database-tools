@@ -320,17 +320,18 @@ Ogni provider usa un progetto e volumi dedicati.
 
 ### Coverage
 
-Il workflow `.github/workflows/coverage.yml` misura due superfici indipendenti:
-il codice Rust di prodotto con la suite workspace non-live e il binding Python
-esercitato importando una wheel instrumentata. I report JSON, LCOV e HTML sono
-artefatti della run; `scripts/coverage_budget.json` contiene le soglie minime e
+Il workflow `.github/workflows/coverage.yml` misura tre superfici indipendenti:
+il codice Rust di prodotto con la suite workspace non-live, il binding nativo
+PyO3 e l'SDK Python, entrambi esercitati importando la wheel costruita dal job.
+I report JSON e HTML, oltre a LCOV per Rust/PyO3 e XML per Python, sono artefatti
+della run; `scripts/coverage_budget.json` contiene le soglie minime e
 `scripts/check_coverage.py` le applica in modo fail-closed.
 
 Il denominatore Rust esclude solo testkit, binding misurato a parte e specifici
 moduli `#[cfg(test)]`; il runtime dei provider e dei comandi CLI resta incluso.
-La branch coverage non
-fa parte del gate stabile: con la toolchain Rust 1.98 fissata dal repository
-richiederebbe nightly. I test live continuano a qualificare soltanto il
+La branch coverage e vincolante per l'SDK Python. Non fa parte del gate Rust
+stabile: con la toolchain Rust 1.98 fissata dal repository richiederebbe
+nightly. I test live continuano a qualificare soltanto il
 provider nominato dal proprio workflow e non vengono attribuiti al report
 offline.
 

@@ -30,6 +30,7 @@ def budget(*, minimum: float = 34.0) -> dict:
         "schema_version": 1,
         "surfaces": {
             "unit": {
+                "report_format": "llvm",
                 "minimum_percent": {
                     metric: minimum for metric in check_coverage.METRICS
                 }
@@ -85,6 +86,61 @@ class CoverageGateTests(unittest.TestCase):
                 check_coverage.CoverageError
             ):
                 check_coverage.read_totals(value)
+
+    def test_python_lines_and_branches_are_checked(self) -> None:
+        python_report = {
+            "meta": {"format": 3, "branch_coverage": True},
+            "files": {"package/module.py": {}},
+            "totals": {
+                "covered_lines": 73,
+                "num_statements": 100,
+                "covered_branches": 41,
+                "num_branches": 50,
+            },
+        }
+        python_budget = {
+            "schema_version": 1,
+            "surfaces": {
+                "unit": {
+                    "report_format": "coverage.py",
+                    "minimum_percent": {"lines": 73.0, "branches": 82.0},
+                }
+            },
+        }
+        self.assertTrue(self.run_check(python_report, python_budget))
+        python_budget["surfaces"]["unit"]["minimum_percent"]["branches"] = 82.1
+        self.assertFalse(self.run_check(python_report, python_budget))
+
+    def test_python_report_is_fail_closed(self) -> None:
+        base = {
+            "meta": {"format": 3, "branch_coverage": True},
+            "files": {"package/module.py": {}},
+            "totals": {
+                "covered_lines": 1,
+                "num_statements": 2,
+                "covered_branches": 1,
+                "num_branches": 2,
+            },
+        }
+        invalid = []
+        for key, value in (
+            ("format", 2),
+            ("branch_coverage", False),
+        ):
+            candidate = json.loads(json.dumps(base))
+            candidate["meta"][key] = value
+            invalid.append(candidate)
+        no_files = json.loads(json.dumps(base))
+        no_files["files"] = {}
+        invalid.append(no_files)
+        no_branches = json.loads(json.dumps(base))
+        no_branches["totals"]["num_branches"] = 0
+        invalid.append(no_branches)
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(
+                check_coverage.CoverageError
+            ):
+                check_coverage.read_python_totals(value)
 
     def test_inconsistent_or_non_finite_numbers_are_rejected(self) -> None:
         inconsistent = report(percent=99.0)

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Verifica fail-closed dei budget di coverage prodotti da llvm-cov.
+"""Verifica fail-closed dei budget di coverage Rust e Python.
 
 Il report e il budget sono input non fidati: una chiave assente, un numero non
 finito o una percentuale incoerente non devono trasformarsi in un verde. Il
-gate misura separatamente prodotto Rust e binding Python, per evitare che una
-superficie grande nasconda la regressione dell'altra.
+gate misura separatamente prodotto Rust, binding nativo e SDK Python, per
+evitare che una superficie grande nasconda la regressione dell'altra.
 """
 
 from __future__ import annotations
@@ -18,7 +18,14 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BUDGET = ROOT / "scripts" / "coverage_budget.json"
-METRICS = ("functions", "lines", "regions")
+LLVM_METRICS = ("functions", "lines", "regions")
+PYTHON_METRICS = ("lines", "branches")
+REPORT_METRICS = {
+    "llvm": LLVM_METRICS,
+    "coverage.py": PYTHON_METRICS,
+}
+# Alias mantenuto per i consumatori del checker esistente.
+METRICS = LLVM_METRICS
 
 
 class CoverageError(ValueError):
@@ -57,7 +64,7 @@ def read_totals(report: dict[str, Any]) -> dict[str, tuple[int, int, float]]:
     totals = _object(_object(data[0], "report.data[0]").get("totals"), "report.totals")
 
     result: dict[str, tuple[int, int, float]] = {}
-    for metric in METRICS:
+    for metric in LLVM_METRICS:
         item = _object(totals.get(metric), f"report.totals.{metric}")
         count_number = _number(item.get("count"), f"report.{metric}.count")
         covered_number = _number(item.get("covered"), f"report.{metric}.covered")
@@ -75,31 +82,74 @@ def read_totals(report: dict[str, Any]) -> dict[str, tuple[int, int, float]]:
     return result
 
 
-def read_budget(budget: dict[str, Any], surface: str) -> dict[str, float]:
+def read_python_totals(report: dict[str, Any]) -> dict[str, tuple[int, int, float]]:
+    meta = _object(report.get("meta"), "report.meta")
+    if meta.get("format") != 3:
+        raise CoverageError("report: formato coverage.py assente o sconosciuto")
+    if meta.get("branch_coverage") is not True:
+        raise CoverageError("report: branch coverage Python non abilitata")
+    files = report.get("files")
+    if not isinstance(files, dict) or not files:
+        raise CoverageError("report: nessun file Python misurato")
+    totals = _object(report.get("totals"), "report.totals")
+    fields = {
+        "lines": ("covered_lines", "num_statements"),
+        "branches": ("covered_branches", "num_branches"),
+    }
+    result: dict[str, tuple[int, int, float]] = {}
+    for metric, (covered_key, count_key) in fields.items():
+        count_number = _number(totals.get(count_key), f"report.{metric}.{count_key}")
+        covered_number = _number(
+            totals.get(covered_key), f"report.{metric}.{covered_key}"
+        )
+        if not count_number.is_integer() or count_number <= 0:
+            raise CoverageError(f"report.{metric}.{count_key}: atteso un intero positivo")
+        if not covered_number.is_integer() or not 0 <= covered_number <= count_number:
+            raise CoverageError(f"report.{metric}.{covered_key}: conteggio non valido")
+        result[metric] = (
+            int(covered_number),
+            int(count_number),
+            100.0 * covered_number / count_number,
+        )
+    return result
+
+
+def read_budget(
+    budget: dict[str, Any], surface: str
+) -> tuple[str, dict[str, float]]:
     if budget.get("schema_version") != 1:
         raise CoverageError("budget: schema_version deve essere 1")
     surfaces = _object(budget.get("surfaces"), "budget.surfaces")
     selected = _object(surfaces.get(surface), f"budget.surfaces.{surface}")
+    report_format = selected.get("report_format")
+    if not isinstance(report_format, str) or report_format not in REPORT_METRICS:
+        raise CoverageError(f"budget.{surface}: report_format assente o sconosciuto")
+    metrics = REPORT_METRICS[report_format]
     minimum = _object(selected.get("minimum_percent"), f"budget.{surface}.minimum_percent")
-    if set(minimum) != set(METRICS):
+    if set(minimum) != set(metrics):
         raise CoverageError(
-            f"budget.{surface}: servono esattamente {', '.join(METRICS)}"
+            f"budget.{surface}: servono esattamente {', '.join(metrics)}"
         )
     result: dict[str, float] = {}
-    for metric in METRICS:
+    for metric in metrics:
         value = _number(minimum[metric], f"budget.{surface}.{metric}")
         if not 0 <= value <= 100:
             raise CoverageError(f"budget.{surface}.{metric}: fuori da 0..100")
         result[metric] = value
-    return result
+    return report_format, result
 
 
 def check(summary: Path, budget_path: Path, surface: str) -> bool:
-    totals = read_totals(load_json(summary, "report"))
-    minimum = read_budget(load_json(budget_path, "budget"), surface)
+    report_format, minimum = read_budget(load_json(budget_path, "budget"), surface)
+    report = load_json(summary, "report")
+    totals = (
+        read_totals(report)
+        if report_format == "llvm"
+        else read_python_totals(report)
+    )
     failures: list[str] = []
     print(f"coverage: {surface}")
-    for metric in METRICS:
+    for metric in REPORT_METRICS[report_format]:
         covered, count, actual = totals[metric]
         threshold = minimum[metric]
         status = "OK" if actual >= threshold else "FAIL"

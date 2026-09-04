@@ -77,7 +77,7 @@ jobs:
           retention-days: 14
 
   python-binding:
-    name: binding Python dalla wheel
+    name: SDK Python + binding nativo dalla wheel
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -99,34 +99,47 @@ jobs:
           workspaces: '. -> target'
       - name: Installa cargo-llvm-cov 0.8.7
         run: cargo install cargo-llvm-cov --version 0.8.7 --locked
-      - name: Costruisce la wheel instrumentata e misura il binding
+      - name: Costruisce la wheel instrumentata e misura SDK e binding
         shell: bash
         run: |
-          mkdir -p coverage/python/dist
+          mkdir -p coverage/python-binding/dist coverage/python-sdk
           source <(cargo llvm-cov show-env --sh)
           cargo llvm-cov clean --workspace
+          cargo test --locked -p plenora-database-py -- --skip live_
           maturin build --locked \
-            --out coverage/python/dist \
+            --out coverage/python-binding/dist \
             --manifest-path crates/plenora-database-py/Cargo.toml
-          python -m pip install --force-reinstall --no-deps coverage/python/dist/*.whl
+          python -m pip install --force-reinstall --no-deps coverage/python-binding/dist/*.whl
+          export COVERAGE_FILE="$GITHUB_WORKSPACE/coverage/python-sdk/.coverage"
+          export PYTEST_ADDOPTS="--cov=plenora_database --cov-branch --cov-report="
           bash .github/scripts/offline_suite.sh
+          python -m coverage json --pretty-print -o coverage/python-sdk/summary.json
+          python -m coverage xml -o coverage/python-sdk/coverage.xml
+          python -m coverage html -d coverage/python-sdk/html
           cargo llvm-cov report -p plenora-database-py \
             --json --summary-only \
-            --output-path coverage/python/summary.json
+            --output-path coverage/python-binding/summary.json
           cargo llvm-cov report -p plenora-database-py \
-            --lcov --output-path coverage/python/lcov.info
+            --lcov --output-path coverage/python-binding/lcov.info
           cargo llvm-cov report -p plenora-database-py \
-            --html --output-dir coverage/python/html
+            --html --output-dir coverage/python-binding/html
+      - name: Budget coverage SDK Python
+        run: >-
+          python3 scripts/check_coverage.py
+          --summary coverage/python-sdk/summary.json
+          --surface python_sdk
       - name: Budget coverage binding Python
         run: >-
           python3 scripts/check_coverage.py
-          --summary coverage/python/summary.json
+          --summary coverage/python-binding/summary.json
           --surface python_binding
-      - name: Report coverage binding Python
+      - name: Report coverage SDK e binding Python
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
         with:
-          name: coverage-python-binding
-          path: coverage/python
+          name: coverage-python
+          path: |
+            coverage/python-sdk
+            coverage/python-binding
           if-no-files-found: error
           retention-days: 14

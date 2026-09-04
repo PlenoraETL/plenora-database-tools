@@ -2,17 +2,26 @@
   "schema_version": 1,
   "surfaces": {
     "python_binding": {
+      "report_format": "llvm",
       "minimum_percent": {
-        "functions": 7.0,
-        "lines": 9.0,
-        "regions": 11.0
+        "functions": 15.0,
+        "lines": 20.0,
+        "regions": 19.0
       }
     },
     "rust_product": {
+      "report_format": "llvm",
       "minimum_percent": {
         "functions": 38.0,
         "lines": 39.0,
         "regions": 36.5
+      }
+    },
+    "python_sdk": {
+      "report_format": "coverage.py",
+      "minimum_percent": {
+        "lines": 69.0,
+        "branches": 55.0
       }
     }
   }
