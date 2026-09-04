@@ -806,8 +806,8 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         self.assertEqual(
             workflow.count("python .github/scripts/verify_wheel.py"),
-            3,
-            "due build standard piu lo smoke test dell'artefatto scaricato",
+            4,
+            "due build, smoke post-download e matrice ABI3 runtime",
         )
         self.assertNotIn(
             "python -c",
@@ -895,10 +895,29 @@ class PythonWheelWorkflowTests(unittest.TestCase):
             "il wheel Db2 viene caricato prima della qualifica live",
         )
 
+    def test_abi3_wheels_load_on_every_declared_python_and_platform(self) -> None:
+        """`abi3-py310` e una promessa runtime, non una proprieta del nome."""
+
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        job = parsed_jobs(workflow)["abi3-runtime"]
+        self.assertEqual(job["needs"], ["linux", "windows"])
+        matrix = job["strategy"]["matrix"]
+        self.assertEqual(
+            matrix["python"], ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        )
+        self.assertEqual(matrix["os"], ["ubuntu-latest", "windows-latest"])
+        block = job_text(workflow, "abi3-runtime")
+        self.assertIn("actions/download-artifact@", block)
+        self.assertIn("python -m pip install --no-deps dist/*.whl", block)
+        self.assertIn("python .github/scripts/verify_wheel.py", block)
+
     def test_release_waits_for_the_db2_wheel_and_not_for_macos(self) -> None:
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         needs = parsed_jobs(workflow)["attach-to-release"]["needs"]
-        self.assertEqual(needs, ["linux", "windows", "db2-linux", "smoke-test"])
+        self.assertEqual(
+            needs,
+            ["linux", "windows", "db2-linux", "smoke-test", "abi3-runtime"],
+        )
         self.assertNotIn("macos", needs)
 
 
