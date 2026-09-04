@@ -2,8 +2,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
+*.profraw
 .tmp-*/
 target/
+coverage/
 benchmarks/results/
 assurance-results/
 fuzz/artifacts/

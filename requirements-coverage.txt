@@ -1,0 +1,4 @@
+# Strumenti Python usati dal job che esercita il binding instrumentato.
+# cargo-llvm-cov e llvm-tools-preview sono fissati direttamente nel workflow.
+-r requirements-sdk-tests.txt
+maturin==1.14.1

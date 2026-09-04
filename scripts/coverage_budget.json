@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "surfaces": {
+    "python_binding": {
+      "minimum_percent": {
+        "functions": 7.0,
+        "lines": 9.0,
+        "regions": 11.0
+      }
+    },
+    "rust_product": {
+      "minimum_percent": {
+        "functions": 38.0,
+        "lines": 39.0,
+        "regions": 36.5
+      }
+    }
+  }
+}
