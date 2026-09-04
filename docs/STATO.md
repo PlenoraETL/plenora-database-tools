@@ -56,12 +56,12 @@ risolverla qui sarebbe un'affermazione che il codice non fa.
 | reads | PostgreSQL | MySQL | MariaDB | SQL Server | Oracle Database Free | IBM Db2 LUW |
 | --- | --- | --- | --- | --- | --- | --- |
 | `streaming` | `true` | `true` | `true` | `true` | `true` | `true` |
-| `server_cursor` | `false` | `false` | `false` | `false` | `true` | `false` |
+| `server_cursor` | `false` | `false` | `false` | `false` | `false` | `false` |
 | `pagination` | `true` | `true` | `true` | `true` | `true` | `true` |
 | `projection` | `true` | `true` | `true` | `true` | `true` | `true` |
 | `filter` | `true` | `true` | `true` | `true` | `true` | `true` |
 | `ordering` | `true` | `true` | `true` | `true` | `true` | `true` |
-| `resumable` | `true` | `true` | `true` | `true` | `false` | `true` |
+| `resumable` | `true` | `true` | `true` | `true` | `true` | `true` |
 
 ### `writes`
 
@@ -75,7 +75,7 @@ risolverla qui sarebbe un'affermazione che il codice non fa.
 | `replace` | `true` | `true` | `true` | `true` | `true` | `true` |
 | `delete_by_keys` | `true` | `true` | `true` | `true` | `true` | `true` |
 | `bulk` | `true` | `true` | `true` | `true` | `true` | `true` |
-| `array_binding` | `false` | `false` | `false` | `false` | `false` | `true` |
+| `array_binding` | `false` | `false` | `false` | `false` | `true` | `true` |
 | `returning` | `false` | `false` | `false` | `false` | `false` | `false` |
 | `rollback_on_failure` | `true` | `true` | `true` | `true` | `true` | `true` |
 
@@ -88,6 +88,16 @@ risolverla qui sarebbe un'affermazione che il codice non fa.
 | `transactional_ddl` | `true` | `false` | `false` | `true` | `false` | `true` |
 | `staged_swap` | `false` | `false` | `false` | `true` | `false` | `false` |
 | `scope` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` | `TransactionScope::Transaction` |
+
+### `limits`
+
+| limits | PostgreSQL | MySQL | MariaDB | SQL Server | Oracle Database Free | IBM Db2 LUW |
+| --- | --- | --- | --- | --- | --- | --- |
+| `max_identifier_bytes` | `Some(63)` | `None` | `None` | `None` | `Some(128)` | `None` |
+| `max_bind_parameters` | `Some(65_535)` | `Some(crate::MAX_BIND_PARAMETERS as u64)` | `Some(crate::MAX_BIND_PARAMETERS as u64)` | `Some(crate::MAX_BIND_PARAMETERS as u64)` | `None` | `None` |
+| `max_statement_bytes` | `None` | `None` | `None` | `None` | `None` | `None` |
+| `max_batch_rows` | `None` | `Some(crate::MAX_BATCH_ROWS as u64)` | `Some(crate::MAX_BATCH_ROWS as u64)` | `Some(MAX_CONFIGURED_BATCH_ROWS as u64)` | `None` | `None` |
+| `max_payload_bytes` | `None` | `None` | `None` | `None` | `None` | `None` |
 
 ## Sub-comandi del CLI
 
@@ -167,7 +177,7 @@ MySQL e MariaDB condividono un crate e restano quindi una riga sola.
 | PostgreSQL | 302 |
 | MySQL + MariaDB | 299 |
 | SQL Server | 151 |
-| Oracle Database Free | 26 |
+| Oracle Database Free | 32 |
 | IBM Db2 LUW | 61 |
 
 ### Famiglie del gate MySQL

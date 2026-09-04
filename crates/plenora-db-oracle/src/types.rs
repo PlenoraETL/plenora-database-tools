@@ -296,7 +296,8 @@ impl OracleReadPlan {
                 },
                 |name| Identifier::new(name.to_owned()),
             )?;
-            let filter_sql = renderer.render_filter(&lowered)?;
+            let filter_sql =
+                renderer.render_filter_for_relation(&lowered, &Identifier::new("T")?)?;
             sql.push_str(" WHERE ");
             sql.push_str(&filter_sql.sql);
             filter_sql.binds.into_iter().map(|bind| bind.name).collect()

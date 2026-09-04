@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate riproducibile del riferimento Oracle Database Free 23ai."""
+"""Gate riproducibile del riferimento Oracle AI Database 26ai Free full."""
 
 from __future__ import annotations
 
@@ -37,6 +37,12 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_arrow_scalar_create_and_read_preserves_supported_types",
         "live_configurable_pool_bounds_waiters_and_reuses_after_rollback",
         "live_tcps_verifies_private_ca_and_rejects_untrusted_server",
+        "live_keyset_checkpoint_resumes_after_the_last_delivered_row",
+        "live_array_dml_crosses_batches_and_rolls_back_atomically",
+        "live_identifier_limit_matches_oracle_at_128_bytes",
+        "live_closed_capabilities_fail_closed_and_match_ddl_semantics",
+        "live_xyz_wkb_roundtrip_matches_declared_dimension",
+        "live_every_declared_spatial_function_executes_on_geometry_and_geography",
     }
 )
 PYTHON_LIVE_EXPECTED = 6
@@ -240,13 +246,13 @@ def run_cli_probe(environment: dict[str, str]) -> dict[str, object]:
             reads.get(name) is True
             for name in (
                 "streaming",
-                "server_cursor",
                 "pagination",
                 "projection",
                 "filter",
                 "ordering",
+                "resumable",
             )
-        ) or reads.get("resumable") is not False:
+        ) or reads.get("server_cursor") is not False:
             raise RuntimeError("capability read Oracle non coerenti con le prove live")
         writes = capabilities.get("writes", {})
         if not all(
@@ -259,11 +265,12 @@ def run_cli_probe(environment: dict[str, str]) -> dict[str, object]:
                 "replace",
                 "delete_by_keys",
                 "bulk",
+                "array_binding",
                 "rollback_on_failure",
             )
         ) or any(
             writes.get(name) is not False
-            for name in ("truncate_insert", "array_binding", "returning")
+            for name in ("truncate_insert", "returning")
         ):
             raise RuntimeError("capability write Oracle non coerenti con le prove live")
         spatial = capabilities.get("spatial", {})
@@ -278,6 +285,17 @@ def run_cli_probe(environment: dict[str, str]) -> dict[str, object]:
             )
         ) or spatial.get("geography") is not True:
             raise RuntimeError("capability Spatial Oracle non coerenti con le prove live")
+        limits = capabilities.get("limits", {})
+        if limits.get("max_identifier_bytes") != 128 or any(
+            limits.get(name) is not None
+            for name in (
+                "max_bind_parameters",
+                "max_statement_bytes",
+                "max_batch_rows",
+                "max_payload_bytes",
+            )
+        ):
+            raise RuntimeError("limiti Oracle non coerenti con le prove disponibili")
         return document
     raise RuntimeError("probe CLI Oracle senza documento JSON")
 

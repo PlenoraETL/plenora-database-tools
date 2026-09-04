@@ -254,14 +254,11 @@ pub fn oracle_capabilities(
     provider_version: String,
     spatial_available: bool,
 ) -> ProviderCapabilities {
-    let qualified_functions = vec![
-        SpatialFunction::Srid,
-        SpatialFunction::Dimensions,
-        SpatialFunction::Intersects,
-        SpatialFunction::Contains,
-        SpatialFunction::Within,
-        SpatialFunction::DWithin,
-    ];
+    let qualified_functions = SpatialFunction::ALL
+        .iter()
+        .copied()
+        .filter(|function| plenora_database_sql::oracle_spatial_shape(*function).is_some())
+        .collect::<Vec<_>>();
     let functions_by_semantics = if spatial_available {
         BTreeMap::from([
             (SpatialSemantics::Geometry, qualified_functions.clone()),
@@ -279,12 +276,15 @@ pub fn oracle_capabilities(
         extension_versions: BTreeMap::new(),
         reads: ReadCapabilities {
             streaming: true,
-            server_cursor: true,
+            // Il driver mantiene uno stream sulla connessione, ma il
+            // contratto non espone un cursore Oracle nominato e riapribile da
+            // una seconda sessione.
+            server_cursor: false,
             pagination: true,
             projection: true,
             filter: true,
             ordering: true,
-            resumable: false,
+            resumable: true,
         },
         writes: WriteCapabilities {
             create: true,
@@ -295,7 +295,7 @@ pub fn oracle_capabilities(
             replace: true,
             delete_by_keys: true,
             bulk: true,
-            array_binding: false,
+            array_binding: true,
             returning: false,
             rollback_on_failure: true,
         },
@@ -323,7 +323,7 @@ pub fn oracle_capabilities(
             requires_declared_crs: false,
         },
         limits: ProviderLimits {
-            max_identifier_bytes: None,
+            max_identifier_bytes: Some(128),
             max_bind_parameters: None,
             max_statement_bytes: None,
             max_batch_rows: None,

@@ -6,19 +6,21 @@ use plenora_database_core::relational::SpatialFunction;
 #[test]
 fn spatial_probe_opens_geometry_and_geography_together() {
     let capabilities = oracle_capabilities("26.0".to_owned(), true);
+    assert!(!capabilities.reads.server_cursor);
+    assert!(capabilities.reads.resumable);
+    assert!(capabilities.writes.array_binding);
+    assert_eq!(capabilities.limits.max_identifier_bytes, Some(128));
+    let expected = SpatialFunction::ALL
+        .iter()
+        .copied()
+        .filter(|function| plenora_database_sql::oracle_spatial_shape(*function).is_some())
+        .collect::<Vec<_>>();
     assert!(capabilities.spatial.geometry);
     assert!(capabilities.spatial.geography);
     for semantics in [SpatialSemantics::Geometry, SpatialSemantics::Geography] {
         assert_eq!(
             capabilities.spatial.functions_by_semantics[&semantics],
-            vec![
-                SpatialFunction::Srid,
-                SpatialFunction::Dimensions,
-                SpatialFunction::Intersects,
-                SpatialFunction::Contains,
-                SpatialFunction::Within,
-                SpatialFunction::DWithin,
-            ]
+            expected
         );
     }
 }

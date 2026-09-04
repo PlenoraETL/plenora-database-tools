@@ -78,6 +78,19 @@ struct Frame {
     child_depth: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TypePatch {
+    offset: usize,
+    little_endian: bool,
+    type_word: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DimensionMode {
+    Strict,
+    ForceUnmarkedZ,
+}
+
 struct Scanner<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -89,6 +102,8 @@ struct Scanner<'a> {
     has_any_m: bool,
     has_any_embedded_srid: bool,
     embedded_srid_count: u64,
+    dimension_mode: DimensionMode,
+    type_patches: Vec<TypePatch>,
 }
 
 impl Scanner<'_> {
@@ -136,6 +151,7 @@ impl Scanner<'_> {
             1 => true,
             _ => return Err(mapping_error("byte order EWKB non valido")),
         };
+        let type_offset = self.offset;
         let type_word = self.u32(little_endian)?;
         if type_word & 0x1000_0000 != 0 {
             return Err(mapping_error("bounding box EWKB embedded non supportato"));
@@ -156,8 +172,16 @@ impl Scanner<'_> {
         } else {
             (false, false)
         };
-        let has_z = ewkb_z || iso_z;
+        let mut has_z = ewkb_z || iso_z;
         let has_m = ewkb_m || iso_m;
+        if self.dimension_mode == DimensionMode::ForceUnmarkedZ && !has_z {
+            has_z = true;
+            self.type_patches.push(TypePatch {
+                offset: type_offset,
+                little_endian,
+                type_word: type_word | 0x8000_0000,
+            });
+        }
         let srid = has_srid.then(|| self.u32(little_endian)).transpose()?;
         Ok(Header {
             base_type,
@@ -249,6 +273,46 @@ pub fn inspect_ewkb_detailed(
     max_components: u64,
     max_depth: u64,
 ) -> Result<EwkbInspection> {
+    scan_ewkb(bytes, max_components, max_depth, DimensionMode::Strict)
+        .map(|(inspection, _)| inspection)
+}
+
+/// Normalizza un WKB XYZ il cui produttore scrive la terza ordinata senza
+/// marcarla nel type word. La scansione valida prima l'intero payload e poi
+/// imposta il flag Z EWKB su ogni geometry annidata.
+///
+/// # Errors
+///
+/// Applica gli stessi limiti e gli stessi rifiuti di [`inspect_ewkb_detailed`].
+pub fn normalize_unmarked_xyz(
+    bytes: &[u8],
+    max_components: u64,
+    max_depth: u64,
+) -> Result<Vec<u8>> {
+    let (_, patches) = scan_ewkb(
+        bytes,
+        max_components,
+        max_depth,
+        DimensionMode::ForceUnmarkedZ,
+    )?;
+    let mut normalized = bytes.to_vec();
+    for patch in patches {
+        let encoded = if patch.little_endian {
+            patch.type_word.to_le_bytes()
+        } else {
+            patch.type_word.to_be_bytes()
+        };
+        normalized[patch.offset..patch.offset + encoded.len()].copy_from_slice(&encoded);
+    }
+    Ok(normalized)
+}
+
+fn scan_ewkb(
+    bytes: &[u8],
+    max_components: u64,
+    max_depth: u64,
+    dimension_mode: DimensionMode,
+) -> Result<(EwkbInspection, Vec<TypePatch>)> {
     if max_components == 0 || max_depth == 0 {
         return Err(resource_error("limiti EWKB devono essere maggiori di zero"));
     }
@@ -263,6 +327,8 @@ pub fn inspect_ewkb_detailed(
         has_any_m: false,
         has_any_embedded_srid: false,
         embedded_srid_count: 0,
+        dimension_mode,
+        type_patches: Vec::new(),
     };
     let mut depth = 1;
     let mut frames = Vec::<Frame>::new();
@@ -296,7 +362,7 @@ pub fn inspect_ewkb_detailed(
                 if scanner.offset != bytes.len() {
                     return Err(mapping_error("byte residui dopo la geometria EWKB"));
                 }
-                return Ok(EwkbInspection {
+                let inspection = EwkbInspection {
                     stats: EwkbStats {
                         components: scanner.components,
                         max_depth: scanner.observed_depth,
@@ -306,7 +372,8 @@ pub fn inspect_ewkb_detailed(
                     has_any_m: scanner.has_any_m,
                     has_any_embedded_srid: scanner.has_any_embedded_srid,
                     embedded_srid_count: scanner.embedded_srid_count,
-                });
+                };
+                return Ok((inspection, scanner.type_patches));
             };
             if frame.remaining == 0 {
                 frames.pop();

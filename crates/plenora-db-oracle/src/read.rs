@@ -51,7 +51,8 @@ pub async fn read_operation(
         },
         cancellation,
     )
-    .await?;
+    .await
+    .map_err(|error| read_context(error, "ispezione iniziale read Oracle non completata"))?;
     let description: OracleObjectDescription = serde_json::from_value(inspection.document)
         .map_err(|_| {
             read_error(
@@ -85,7 +86,8 @@ pub async fn read_operation(
     .await?;
     let confirmed =
         catalog::describe_object(config, raw, &plan.schema_name, &plan.object_name, &internal)
-            .await?;
+            .await
+            .map_err(|error| read_context(error, "conferma schema read Oracle non completata"))?;
     if confirmed.schema_token != plan.schema_token {
         return Err(read_error(
             ErrorCategory::Schema,
@@ -98,7 +100,8 @@ pub async fn read_operation(
         &internal,
         raw.query(&plan.sql, &params),
     )
-    .await?;
+    .await
+    .map_err(|error| read_context(error, "query read Oracle non completata"))?;
     let decoded_columns = decode_columns(&result.columns)?;
     Ok(Box::new(OracleBatchStream {
         connection,
@@ -625,12 +628,7 @@ fn rows_to_batch(
                 "result set Oracle con arieta inattesa",
             ));
         }
-        for (index, output) in values.iter_mut().enumerate() {
-            let value = row
-                .get_index(index)
-                .ok_or_else(|| mapping("riga Oracle incompleta"))?;
-            output.push(value)?;
-        }
+        let mut normalized_spatial = vec![None; plan.columns.len()];
         for (check, column_index) in plan.spatial_columns.iter().enumerate() {
             let geometry = row
                 .get_index(*column_index)
@@ -641,7 +639,7 @@ fn rows_to_batch(
             let dimensions = row
                 .get_index(plan.columns.len() + check * 2 + 1)
                 .ok_or_else(|| mapping("controllo dimensioni Oracle assente"))?;
-            validate_geometry(
+            normalized_spatial[*column_index] = validate_geometry(
                 geometry,
                 srid,
                 dimensions,
@@ -649,7 +647,15 @@ fn rows_to_batch(
                 budget,
                 component_limit,
                 &mut components,
-            )?;
+            )?
+            .map(ParameterValue::Bytes);
+        }
+        for (index, output) in values.iter_mut().enumerate() {
+            let value = normalized_spatial[index].as_ref().unwrap_or(
+                row.get_index(index)
+                    .ok_or_else(|| mapping("riga Oracle incompleta"))?,
+            );
+            output.push(value)?;
         }
     }
     let arrays = values
@@ -669,7 +675,7 @@ fn validate_geometry(
     budget: &ResourceBudget,
     component_limit: u64,
     components: &mut u64,
-) -> Result<()> {
+) -> Result<Option<Vec<u8>>> {
     if matches!(geometry, ParameterValue::Null { .. }) {
         if !matches!(srid, ParameterValue::Null { .. })
             || !matches!(dimensions, ParameterValue::Null { .. })
@@ -679,7 +685,7 @@ fn validate_geometry(
                 "controlli spatial Oracle non nulli per geometry nulla",
             ));
         }
-        return Ok(());
+        return Ok(None);
     }
     let ParameterValue::Bytes(bytes) = geometry else {
         return Err(mapping("projection WKB Oracle non binaria"));
@@ -701,8 +707,22 @@ fn validate_geometry(
         return Err(mapping("dimensioni geometry Oracle diverse dal catalogo"));
     }
     let remaining = component_limit.saturating_sub(*components);
+    let normalized = if column.spatial_dimensions == Some(3) {
+        plenora_database_core::ewkb::normalize_unmarked_xyz(
+            bytes,
+            remaining,
+            budget.limits().nesting_depth,
+        )
+        .map_err(|mut error| {
+            error.phase = ErrorPhase::Read;
+            error.provider = Some(ProviderKind::Oracle);
+            error
+        })?
+    } else {
+        bytes.clone()
+    };
     let inspected = plenora_database_core::ewkb::inspect_ewkb_detailed(
-        bytes,
+        &normalized,
         remaining,
         budget.limits().nesting_depth,
     )
@@ -719,7 +739,7 @@ fn validate_geometry(
     *components = components
         .checked_add(inspected.stats.components)
         .ok_or_else(|| DatabaseError::resource_limit("overflow componenti geometry Oracle"))?;
-    Ok(())
+    Ok(Some(normalized))
 }
 
 fn numeric_u32(value: &ParameterValue) -> Result<u32> {
@@ -732,6 +752,11 @@ fn numeric_u32(value: &ParameterValue) -> Result<u32> {
             .map_err(|_| mapping("numero spatial Oracle non rappresentabile")),
         _ => Err(mapping("numero spatial Oracle assente")),
     }
+}
+
+fn read_context(mut error: DatabaseError, message: &'static str) -> DatabaseError {
+    message.clone_into(&mut error.message);
+    error
 }
 
 fn parse_naive_timestamp(value: &str) -> Result<i64> {

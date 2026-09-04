@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 static EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const ORACLE_ARRAY_DML_ROWS: usize = 256;
 
 #[derive(Debug, Clone)]
 pub struct OracleWritePlan {
@@ -641,37 +642,29 @@ async fn execute_input(
         let components = plan.validate_spatial_batch(&batch, budget)?;
         let reservation =
             WriteResourceReservation::acquire(budget, rows, bytes, bytes, components)?;
-        for (row_index, row) in batch_values(&batch, plan)?.into_iter().enumerate() {
-            let statement = match plan.mode {
+        let values = batch_values(&batch, plan)?;
+        let statements = values
+            .iter()
+            .map(|row| match plan.mode {
                 WriteMode::Append | WriteMode::Create | WriteMode::Replace => {
-                    plan.insert_statement(&row)
+                    Ok(plan.insert_statement(row))
                 }
-                WriteMode::Update => plan.update_statement(&row),
-                WriteMode::Upsert => plan.upsert_statement(&row),
-                WriteMode::DeleteByKeys => plan.delete_statement(&row),
-                WriteMode::TruncateInsert => {
-                    return Err(write_error(
-                        ErrorCategory::Unsupported,
-                        "truncate_insert Oracle non qualificato",
-                    ))
-                }
-            };
-            let changed = if plan.mode != WriteMode::Replace && received == 0 && row_index == 0 {
-                transaction
-                    .execute_write_dml(&statement, cancellation)
-                    .await?
-            } else {
-                transaction
-                    .execute_atomic_dml(&statement, cancellation)
-                    .await?
-            };
-            affected = affected.checked_add(changed).ok_or_else(|| {
-                write_error(
-                    ErrorCategory::ResourceLimit,
-                    "conteggio DML Oracle in overflow",
-                )
-            })?;
-        }
+                WriteMode::Update => Ok(plan.update_statement(row)),
+                WriteMode::Upsert => Ok(plan.upsert_statement(row)),
+                WriteMode::DeleteByKeys => Ok(plan.delete_statement(row)),
+                WriteMode::TruncateInsert => Err(write_error(
+                    ErrorCategory::Unsupported,
+                    "truncate_insert Oracle non qualificato",
+                )),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let changed = execute_statements(transaction, &statements, cancellation).await?;
+        affected = affected.checked_add(changed).ok_or_else(|| {
+            write_error(
+                ErrorCategory::ResourceLimit,
+                "conteggio DML Oracle in overflow",
+            )
+        })?;
         received = received.checked_add(rows).ok_or_else(|| {
             write_error(
                 ErrorCategory::ResourceLimit,
@@ -687,6 +680,61 @@ async fn execute_input(
         ));
     }
     Ok((received, affected))
+}
+
+async fn execute_statements(
+    transaction: &mut OracleTransaction,
+    statements: &[Statement],
+    cancellation: &CancellationToken,
+) -> Result<u64> {
+    if statements.iter().all(array_dml_compatible) {
+        let sql = statements.first().map_or("", |statement| &statement.sql);
+        if statements.iter().any(|statement| statement.sql != sql) {
+            return Err(write_error(
+                ErrorCategory::Internal,
+                "array DML Oracle con statement non uniformi",
+            ));
+        }
+        let mut changed = 0_u64;
+        for chunk in statements.chunks(ORACLE_ARRAY_DML_ROWS) {
+            let chunk_changed = transaction
+                .execute_parameter_array(
+                    sql,
+                    chunk
+                        .iter()
+                        .map(|statement| statement.params.clone())
+                        .collect(),
+                    cancellation,
+                )
+                .await?;
+            changed = checked_dml_count(changed, chunk_changed)?;
+        }
+        return Ok(changed);
+    }
+    let mut changed = 0_u64;
+    for statement in statements {
+        let rows = transaction
+            .execute_atomic_dml(statement, cancellation)
+            .await?;
+        changed = checked_dml_count(changed, rows)?;
+    }
+    Ok(changed)
+}
+
+fn checked_dml_count(current: u64, increment: u64) -> Result<u64> {
+    current.checked_add(increment).ok_or_else(|| {
+        write_error(
+            ErrorCategory::ResourceLimit,
+            "conteggio DML Oracle in overflow",
+        )
+    })
+}
+
+fn array_dml_compatible(statement: &Statement) -> bool {
+    statement.params.iter().all(|value| {
+        !matches!(value, ParameterValue::Wkb { .. } | ParameterValue::Bytes(_))
+            && !matches!(value, ParameterValue::String(text) if text.len() > 4_000)
+    })
 }
 
 impl OracleWritePlan {

@@ -17,9 +17,11 @@ use crate::{DatabaseError, Result};
 /// double-quote SQL standard).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentifierDialect {
-    /// `PostgreSQL`, `Oracle`, `Db2`, `SQLite`, `DuckDB`: `"identificatore"`
+    /// `PostgreSQL`, `Db2`, `SQLite`, `DuckDB`: `"identificatore"`
     /// (double-quote, escape raddoppiato).
     Postgres,
+    /// `Oracle Database`: `"identificatore"`, con limite moderno di 128 byte.
+    Oracle,
     /// `MySQL` / `MariaDB`: `` `identificatore` `` (backtick, escape
     /// raddoppiato).
     Mysql,
@@ -39,6 +41,7 @@ pub enum IdentifierDialect {
 /// - `SQL Server` / `Sybase`: 128 caratteri Unicode (per compat con
 ///   `nvarchar(128)`), non byte.
 const MAX_IDENTIFIER_BYTES_POSTGRES: usize = 63;
+const MAX_IDENTIFIER_BYTES_ORACLE: usize = 128;
 const MAX_IDENTIFIER_CHARS_MYSQL: usize = 64;
 const MAX_IDENTIFIER_CHARS_SQL_SERVER: usize = 128;
 
@@ -72,6 +75,13 @@ pub fn validate_identifier(dialect: IdentifierDialect, name: &str) -> Result<()>
                 ));
             }
         }
+        IdentifierDialect::Oracle => {
+            if name.len() > MAX_IDENTIFIER_BYTES_ORACLE {
+                return Err(DatabaseError::invalid_plan(
+                    "identificatore Oracle eccede 128 byte",
+                ));
+            }
+        }
         IdentifierDialect::Mysql => {
             if name.chars().count() > MAX_IDENTIFIER_CHARS_MYSQL {
                 return Err(DatabaseError::invalid_plan(
@@ -99,7 +109,7 @@ pub fn validate_identifier(dialect: IdentifierDialect, name: &str) -> Result<()>
 pub fn quote_identifier(dialect: IdentifierDialect, name: &str) -> Result<String> {
     validate_identifier(dialect, name)?;
     match dialect {
-        IdentifierDialect::Postgres => {
+        IdentifierDialect::Postgres | IdentifierDialect::Oracle => {
             let escaped = name.replace('"', "\"\"");
             Ok(format!("\"{escaped}\""))
         }

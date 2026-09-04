@@ -892,6 +892,116 @@ fn sqlserver_renders_only_the_verified_native_scalar_spatial_subset() {
 }
 
 #[test]
+fn oracle_renderer_and_qualified_spatial_table_are_the_same_surface() {
+    let renderer = Renderer::new(
+        Dialect::Oracle,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    );
+    for function in SpatialFunction::ALL {
+        let Some(shape) = oracle_spatial_shape(*function) else {
+            continue;
+        };
+        let mut arguments = vec![query_column("e", "shape")];
+        match shape {
+            OracleSpatialShape::Relate(_)
+            | OracleSpatialShape::Disjoint
+            | OracleSpatialShape::BinaryGeometry(_)
+            | OracleSpatialShape::BinaryMeasure { .. } => {
+                arguments.push(QueryExpression::Parameter {
+                    name: "geometry".to_owned(),
+                });
+            }
+            OracleSpatialShape::DWithin => {
+                arguments.push(QueryExpression::Parameter {
+                    name: "geometry".to_owned(),
+                });
+                arguments.push(QueryExpression::Parameter {
+                    name: "distance".to_owned(),
+                });
+            }
+            OracleSpatialShape::Point(OraclePointPosition::Argument)
+            | OracleSpatialShape::SetSrid
+            | OracleSpatialShape::Transform
+            | OracleSpatialShape::Buffer => {
+                arguments.push(QueryExpression::Parameter {
+                    name: "value".to_owned(),
+                });
+            }
+            _ => {}
+        }
+        let mut query = simple_query();
+        query.projection[0] = QueryProjection {
+            expression: QueryExpression::Spatial {
+                function: *function,
+                arguments,
+            },
+            alias: Some("value".to_owned()),
+        };
+        let rendered_query = renderer
+            .render_query(&query)
+            .unwrap_or_else(|error| panic!("{function:?}: {error}"));
+        assert!(!rendered_query.sql.contains(" AS \"e\""));
+        if function.returns_geometry() {
+            assert!(
+                rendered_query.sql.contains("MDSYS.SDO_UTIL.TO_WKBGEOMETRY"),
+                "{function:?}"
+            );
+        }
+    }
+
+    let mut unsupported = simple_query();
+    unsupported.projection[0] = QueryProjection {
+        expression: QueryExpression::Spatial {
+            function: SpatialFunction::Reverse,
+            arguments: vec![query_column("e", "shape")],
+        },
+        alias: Some("value".to_owned()),
+    };
+    assert_eq!(
+        renderer
+            .render_query(&unsupported)
+            .expect_err("funzione Oracle non qualificata")
+            .category,
+        plenora_database_core::ErrorCategory::Unsupported
+    );
+}
+
+#[test]
+fn oracle_gives_unaliased_object_sources_a_usable_object_attribute_alias() {
+    let renderer = Renderer::new(
+        Dialect::Oracle,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    );
+    let mut query = simple_query();
+    query.source = Some(QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: Some("APP".to_owned()),
+            object: "PLACES".to_owned(),
+        },
+        alias: None,
+    });
+    query.projection[0] = QueryProjection {
+        expression: QueryExpression::Spatial {
+            function: SpatialFunction::Srid,
+            arguments: vec![query_column("PLACES", "SHAPE")],
+        },
+        alias: Some("shape_srid".to_owned()),
+    };
+    let rendered_query = renderer.render_query(&query).expect("query oggetto Oracle");
+    assert!(rendered_query
+        .sql
+        .contains("CAST(\"PLACES\".\"SHAPE\".SDO_SRID AS NUMBER(10)) AS \"shape_srid\""));
+    assert!(rendered_query
+        .sql
+        .contains("FROM \"APP\".\"PLACES\" \"PLACES\""));
+}
+
+#[test]
 fn sqlserver_renders_cross_apply_without_an_on_clause() {
     let lateral = QueryOperation {
         declared_crs: Vec::new(),
@@ -1055,6 +1165,31 @@ fn postgres_renders_typed_d_within_with_ewkb_binds() {
     );
     assert_eq!(rendered.binds[0].name, "probe");
     assert_eq!(rendered.binds[1].name, "radius");
+}
+
+#[test]
+fn oracle_filter_relation_qualifies_spatial_object_attributes() {
+    let rendered = Renderer::new(
+        Dialect::Oracle,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .render_filter_for_relation(
+        &Expression::SpatialPredicate {
+            function: SpatialFunction::Intersects,
+            field: identifier("shape"),
+            geometry_parameter: Some("probe".to_owned()),
+            distance_parameter: None,
+        },
+        &identifier("T"),
+    )
+    .expect("filtro spatial Oracle qualificato");
+    assert_eq!(
+        rendered.sql,
+        "(MDSYS.SDO_RELATE(\"T\".\"shape\", MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(:1, \"T\".\"shape\".SDO_SRID), 'mask=ANYINTERACT') = 'TRUE')"
+    );
+    assert_eq!(rendered.binds[0].name, "probe");
 }
 
 #[test]

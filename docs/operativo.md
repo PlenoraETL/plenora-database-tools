@@ -19,8 +19,11 @@ piattaforma; il gate confronta quei valori con `docker/oracle/references.json`,
 attende l'healthcheck e interroga la versione del server prima del verdetto.
 Il riferimento usa la variante `full`: la campagna deve provare anche Oracle
 Spatial e rifiuta un'immagine standard priva di quella componente.
-Il listener della fixture e plaintext per scelta esplicita di test: non prova
-TCPS e non autorizza ad aprire quella capability.
+Il data path funzionale usa il listener TCP locale. La stessa fixture configura
+anche un listener TCPS con certificato firmato da una CA privata effimera: il
+gate prova sia la connessione con quella CA sia il rifiuto dello stesso server
+senza trust. Questa e una prova di autenticazione del server; non dichiara una
+mutua autenticazione client, che il fixture non configura.
 
 ```bash
 docker compose -f docker-compose.oracle.yml up -d --wait

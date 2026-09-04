@@ -4,11 +4,26 @@ use super::*;
 fn empty_identifier_is_rejected_universally() {
     for d in [
         IdentifierDialect::Postgres,
+        IdentifierDialect::Oracle,
         IdentifierDialect::Mysql,
         IdentifierDialect::SqlServer,
     ] {
         assert!(quote_identifier(d, "").is_err());
     }
+}
+
+#[test]
+fn oracle_limit_is_128_bytes_and_uses_double_quotes() {
+    let ascii = "a".repeat(128);
+    assert_eq!(
+        quote_identifier(IdentifierDialect::Oracle, &ascii).unwrap(),
+        format!("\"{ascii}\"")
+    );
+    assert!(quote_identifier(IdentifierDialect::Oracle, &"a".repeat(129)).is_err());
+    let multibyte = "à".repeat(64);
+    assert_eq!(multibyte.len(), 128);
+    assert!(quote_identifier(IdentifierDialect::Oracle, &multibyte).is_ok());
+    assert!(quote_identifier(IdentifierDialect::Oracle, &format!("{multibyte}a")).is_err());
 }
 
 #[test]

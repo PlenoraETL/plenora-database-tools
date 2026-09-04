@@ -26,6 +26,12 @@ fn point_z_srid() -> Vec<u8> {
     bytes
 }
 
+fn unmarked_point_z() -> Vec<u8> {
+    let mut bytes = point();
+    bytes.extend_from_slice(&2_f64.to_le_bytes());
+    bytes
+}
+
 #[test]
 fn counts_components_without_recursive_calls() {
     let bytes = collection(&collection(&point()));
@@ -79,4 +85,15 @@ fn counts_embedded_srids_beyond_the_root() {
     assert_eq!(inspection.root.srid, None);
     assert!(inspection.has_any_embedded_srid);
     assert_eq!(inspection.embedded_srid_count, 1);
+}
+
+#[test]
+fn normalizes_unmarked_xyz_in_nested_geometries() {
+    let bytes = collection(&unmarked_point_z());
+    assert!(inspect_ewkb_detailed(&bytes, 10, 2).is_err());
+    let normalized = normalize_unmarked_xyz(&bytes, 10, 2).expect("normalizza XYZ senza flag");
+    let inspection = inspect_ewkb_detailed(&normalized, 10, 2).expect("EWKB XYZ normalizzata");
+    assert!(inspection.root.has_z);
+    assert!(inspection.has_any_z);
+    assert!(!inspection.has_any_m);
 }

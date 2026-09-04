@@ -5,10 +5,12 @@ use crate::error::{driver_error, oracle_code_error};
 use crate::parameter::{bind_parameters_with_lobs, LobCache};
 use crate::{OraclePool, PooledOracleConnection};
 use oracle_rs::types::LobValue;
-use oracle_rs::{BindDirection, BindParam, ColumnInfo, Connection, QueryResult, Value};
+use oracle_rs::{
+    BatchBuilder, BindDirection, BindParam, ColumnInfo, Connection, QueryResult, Value,
+};
 use plenora_database_core::native_query_policy::{enforce_policy, NativeQueryPolicy};
 use plenora_database_core::plan::ProviderKind;
-use plenora_database_core::provider::ProviderFuture;
+use plenora_database_core::provider::{ParameterValue, ProviderFuture};
 use plenora_database_core::row::Row;
 use plenora_database_core::transaction::{
     concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name,
@@ -62,14 +64,6 @@ impl OracleTransaction {
         cancellation: &CancellationToken,
     ) -> Result<u64> {
         self.execute_dml(statement, false, cancellation).await
-    }
-
-    pub(crate) async fn execute_write_dml(
-        &mut self,
-        statement: &Statement,
-        cancellation: &CancellationToken,
-    ) -> Result<u64> {
-        self.execute_dml(statement, true, cancellation).await
     }
 
     async fn execute_dml(
@@ -159,6 +153,84 @@ impl OracleTransaction {
         )
         .await
         .map_err(statement_execution_error)?;
+        let status = self.application_client_info(cancellation).await?;
+        parse_protected_dml_status(&status)
+    }
+
+    /// Esegue array DML Oracle in un solo round-trip per gruppo di righe.
+    ///
+    /// I valori LOB usano il percorso dedicato per riga: i locator temporanei
+    /// non sono condivisibili fra le iterazioni di una stessa array DML.
+    pub(crate) async fn execute_parameter_array(
+        &self,
+        sql: &str,
+        rows: Vec<Vec<ParameterValue>>,
+        cancellation: &CancellationToken,
+    ) -> Result<u64> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        enforce_policy(self.native_query_policy, sql)?;
+        timed(
+            self.operation_timeout,
+            ErrorPhase::Write,
+            cancellation,
+            self.connection.connection()?.execute_plsql(
+                "BEGIN DBMS_APPLICATION_INFO.SET_CLIENT_INFO('PLENORA_ARRAY_OK|0'); END;",
+                &[],
+            ),
+        )
+        .await
+        .map_err(statement_execution_error)?;
+        let values = rows
+            .iter()
+            .map(|row| crate::parameter::bind_parameters(row))
+            .collect::<Result<Vec<_>>>()?;
+        let protected_sql = format!(
+            "DECLARE
+               plenora_status VARCHAR2(64) := SYS_CONTEXT('USERENV', 'CLIENT_INFO');
+               plenora_value NUMBER := 0;
+             BEGIN
+               IF plenora_status LIKE 'PLENORA_ARRAY_OK|%' THEN
+                 BEGIN
+                   {sql};
+                   plenora_value := TO_NUMBER(SUBSTR(plenora_status, 18)) + SQL%ROWCOUNT;
+                   DBMS_APPLICATION_INFO.SET_CLIENT_INFO(
+                     'PLENORA_ARRAY_OK|' || TO_CHAR(plenora_value)
+                   );
+                 EXCEPTION WHEN OTHERS THEN
+                   plenora_value := SQLCODE;
+                   ROLLBACK;
+                   DBMS_APPLICATION_INFO.SET_CLIENT_INFO(
+                     'PLENORA_ARRAY_ERROR|' || TO_CHAR(plenora_value)
+                   );
+                 END;
+               END IF;
+             END;"
+        );
+        let batch = BatchBuilder::new(protected_sql).add_rows(values).build();
+        let expected = batch.row_count();
+        let result = timed(
+            self.operation_timeout,
+            ErrorPhase::Write,
+            cancellation,
+            self.connection.connection()?.execute_batch(&batch),
+        )
+        .await
+        .map_err(statement_execution_error)?;
+        if result.failure_count != 0 || result.success_count != expected {
+            return Err(DatabaseError::new(
+                ErrorCategory::Protocol,
+                ErrorPhase::Write,
+                Some(ProviderKind::Oracle),
+                "array DML Oracle con conteggi di esecuzione incoerenti",
+            ));
+        }
+        let status = self.application_client_info(cancellation).await?;
+        parse_protected_array_status(&status)
+    }
+
+    async fn application_client_info(&self, cancellation: &CancellationToken) -> Result<String> {
         let status = timed(
             self.operation_timeout,
             ErrorPhase::Write,
@@ -170,10 +242,11 @@ impl OracleTransaction {
         )
         .await
         .map_err(statement_execution_error)?;
-        let status = status
+        status
             .rows
             .first()
             .and_then(|row| row.get_string(0))
+            .map(str::to_owned)
             .ok_or_else(|| {
                 DatabaseError::new(
                     ErrorCategory::Protocol,
@@ -181,8 +254,7 @@ impl OracleTransaction {
                     Some(ProviderKind::Oracle),
                     "risultato DML protetto Oracle senza stato",
                 )
-            })?;
-        parse_protected_dml_status(status)
+            })
     }
 
     async fn query_inner(
@@ -248,6 +320,41 @@ fn parse_protected_dml_status(status: &str) -> Result<u64> {
             "conteggio DML Oracle non rappresentabile",
         )
     })
+}
+
+fn parse_protected_array_status(status: &str) -> Result<u64> {
+    if let Some(value) = status.strip_prefix("PLENORA_ARRAY_OK|") {
+        return value.parse().map_err(|_| {
+            DatabaseError::new(
+                ErrorCategory::Protocol,
+                ErrorPhase::Write,
+                Some(ProviderKind::Oracle),
+                "conteggio array DML Oracle non valido",
+            )
+        });
+    }
+    if let Some(value) = status.strip_prefix("PLENORA_ARRAY_ERROR|") {
+        let code = value.parse::<i64>().map_err(|_| {
+            DatabaseError::new(
+                ErrorCategory::Protocol,
+                ErrorPhase::Write,
+                Some(ProviderKind::Oracle),
+                "stato errore array DML Oracle non valido",
+            )
+        })?;
+        let mut error = oracle_code_error(
+            ErrorPhase::Write,
+            u32::try_from(code.unsigned_abs()).unwrap_or(u32::MAX),
+        );
+        error.remote_effect = plenora_database_core::RemoteEffect::RolledBack;
+        return Err(error);
+    }
+    Err(DatabaseError::new(
+        ErrorCategory::Protocol,
+        ErrorPhase::Write,
+        Some(ProviderKind::Oracle),
+        "stato array DML Oracle non riconosciuto",
+    ))
 }
 
 fn statement_execution_error(mut error: DatabaseError) -> DatabaseError {

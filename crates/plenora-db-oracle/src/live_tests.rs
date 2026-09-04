@@ -5,7 +5,9 @@ use plenora_database_core::arrow::array::{
 };
 use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef};
 use plenora_database_core::arrow::RecordBatch;
+use plenora_database_core::checkpoint::ReadCheckpoint;
 use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
+use plenora_database_core::identifier::{quote_identifier, validate_identifier, IdentifierDialect};
 use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::plan::{
     FilterExpression, ObjectRef, Operation, OrderBy, ProviderKind, ReadOperation, SortDirection,
@@ -19,9 +21,16 @@ use plenora_database_core::protocol::contract_schema;
 use plenora_database_core::provider::{
     BatchStream, ParameterBag, ParameterValue, Provider, ProviderFuture, SecretString,
 };
+use plenora_database_core::relational::{
+    ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource, SpatialFunction,
+};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, CommitOutcome, RemoteEffect};
+use plenora_database_sql::{
+    oracle_spatial_shape, Dialect, DialectCapabilities, OraclePointPosition, OracleSpatialShape,
+    Renderer,
+};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
@@ -57,6 +66,15 @@ fn point_xy(x: f64, y: f64) -> Vec<u8> {
     bytes
 }
 
+fn point_xyz(x: f64, y: f64, z: f64) -> Vec<u8> {
+    let mut bytes = vec![1];
+    bytes.extend_from_slice(&0x8000_0001_u32.to_le_bytes());
+    bytes.extend_from_slice(&x.to_le_bytes());
+    bytes.extend_from_slice(&y.to_le_bytes());
+    bytes.extend_from_slice(&z.to_le_bytes());
+    bytes
+}
+
 fn line_string_xy(points: usize) -> Vec<u8> {
     let mut bytes = vec![1];
     bytes.extend_from_slice(&2_u32.to_le_bytes());
@@ -71,6 +89,225 @@ fn line_string_xy(points: usize) -> Vec<u8> {
         bytes.extend_from_slice(&(41.0 + offset).to_le_bytes());
     }
     bytes
+}
+
+fn polygon_xy(min: f64, max: f64) -> Vec<u8> {
+    let coordinates = [(min, min), (max, min), (max, max), (min, max), (min, min)];
+    let mut bytes = vec![1];
+    bytes.extend_from_slice(&3_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.extend_from_slice(&5_u32.to_le_bytes());
+    for (x, y) in coordinates {
+        bytes.extend_from_slice(&x.to_le_bytes());
+        bytes.extend_from_slice(&y.to_le_bytes());
+    }
+    bytes
+}
+
+fn spatial_query(table: &str, expression: QueryExpression) -> QueryOperation {
+    QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("PLENORA".to_owned()),
+                object: table.to_owned(),
+            },
+            alias: Some("T".to_owned()),
+        }),
+        derived_source: None,
+        projection: vec![QueryProjection {
+            expression,
+            alias: Some("VALUE".to_owned()),
+        }],
+        joins: Vec::new(),
+        filter: Some(QueryExpression::Compare {
+            left: Box::new(QueryExpression::Column {
+                column: ColumnRef {
+                    relation: Some("T".to_owned()),
+                    field: "ID".to_owned(),
+                },
+            }),
+            operator: plenora_database_core::plan::ComparisonOperator::Eq,
+            right: Box::new(QueryExpression::TypedParameter {
+                name: "row_id".to_owned(),
+                parameter_type: plenora_database_core::relational::QueryParameterType::Integer,
+            }),
+        }),
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: Some(1),
+        row_offset: None,
+        locking: None,
+        declared_crs: Vec::new(),
+    }
+}
+
+fn spatial_column(field: &str) -> QueryExpression {
+    QueryExpression::Column {
+        column: ColumnRef {
+            relation: Some("T".to_owned()),
+            field: field.to_owned(),
+        },
+    }
+}
+
+fn spatial_parameter(bytes: Vec<u8>, srid: u32, semantics: SpatialSemantics) -> ParameterValue {
+    ParameterValue::Wkb {
+        bytes,
+        srid: Some(srid),
+        dimensions: Dimensions::Xy,
+        semantics,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn qualify_spatial_surface(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    table: &str,
+    srid: u32,
+    semantics: SpatialSemantics,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+) {
+    let renderer = Renderer::new(
+        Dialect::Oracle,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    );
+    let mut transaction = provider
+        .begin_transaction(secret, &TransactionOptions::default(), budget, cancellation)
+        .await
+        .expect("transazione censimento Spatial Oracle");
+    for function in SpatialFunction::ALL {
+        let Some(shape) = oracle_spatial_shape(*function) else {
+            continue;
+        };
+        let field = match function {
+            SpatialFunction::X | SpatialFunction::Y | SpatialFunction::Z => "POINT_SHAPE",
+            SpatialFunction::NPoints
+            | SpatialFunction::StartPoint
+            | SpatialFunction::EndPoint
+            | SpatialFunction::PointN
+            | SpatialFunction::Length => "LINE_SHAPE",
+            _ => "POLY_SHAPE",
+        };
+        let mut arguments = vec![spatial_column(field)];
+        let mut parameters = BTreeMap::from([("row_id".to_owned(), ParameterValue::I32(1))]);
+        match shape {
+            OracleSpatialShape::Relate(_) => {
+                let bytes = match function {
+                    SpatialFunction::Within | SpatialFunction::CoveredBy => polygon_xy(-1.0, 11.0),
+                    SpatialFunction::Touches => polygon_xy(10.0, 20.0),
+                    SpatialFunction::Overlaps => polygon_xy(5.0, 15.0),
+                    SpatialFunction::Equals => polygon_xy(0.0, 10.0),
+                    _ => point_xy(5.0, 5.0),
+                };
+                arguments.push(QueryExpression::Parameter {
+                    name: "geometry".to_owned(),
+                });
+                parameters.insert(
+                    "geometry".to_owned(),
+                    spatial_parameter(bytes, srid, semantics),
+                );
+            }
+            OracleSpatialShape::Disjoint => {
+                arguments.push(QueryExpression::Parameter {
+                    name: "geometry".to_owned(),
+                });
+                parameters.insert(
+                    "geometry".to_owned(),
+                    spatial_parameter(point_xy(30.0, 30.0), srid, semantics),
+                );
+            }
+            OracleSpatialShape::BinaryGeometry(_) | OracleSpatialShape::BinaryMeasure { .. } => {
+                arguments.push(QueryExpression::Parameter {
+                    name: "geometry".to_owned(),
+                });
+                parameters.insert(
+                    "geometry".to_owned(),
+                    spatial_parameter(polygon_xy(5.0, 15.0), srid, semantics),
+                );
+            }
+            OracleSpatialShape::DWithin => {
+                arguments.push(QueryExpression::Parameter {
+                    name: "geometry".to_owned(),
+                });
+                arguments.push(QueryExpression::Parameter {
+                    name: "distance".to_owned(),
+                });
+                parameters.insert(
+                    "geometry".to_owned(),
+                    spatial_parameter(point_xy(5.0, 5.0), srid, semantics),
+                );
+                parameters.insert("distance".to_owned(), ParameterValue::F64(10.0));
+            }
+            OracleSpatialShape::Point(OraclePointPosition::Argument) => {
+                arguments.push(QueryExpression::Parameter {
+                    name: "position".to_owned(),
+                });
+                parameters.insert("position".to_owned(), ParameterValue::I32(2));
+            }
+            OracleSpatialShape::SetSrid | OracleSpatialShape::Transform => {
+                arguments.push(QueryExpression::Parameter {
+                    name: "srid".to_owned(),
+                });
+                parameters.insert("srid".to_owned(), ParameterValue::I64(i64::from(srid)));
+            }
+            OracleSpatialShape::Buffer => {
+                arguments.push(QueryExpression::Parameter {
+                    name: "distance".to_owned(),
+                });
+                parameters.insert("distance".to_owned(), ParameterValue::F64(10.0));
+            }
+            _ => {}
+        }
+        let query = spatial_query(
+            table,
+            QueryExpression::Spatial {
+                function: *function,
+                arguments,
+            },
+        );
+        let rendered_query = renderer
+            .render_query(&query)
+            .unwrap_or_else(|error| panic!("render {function:?} Oracle: {error}"));
+        let values = rendered_query
+            .binds
+            .iter()
+            .map(|bind| {
+                parameters
+                    .get(&bind.name)
+                    .unwrap_or_else(|| panic!("bind {} per {function:?}", bind.name))
+                    .clone()
+            })
+            .collect();
+        let rows = transaction
+            .query(
+                &Statement::new(rendered_query.sql).with_params(values),
+                cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("esecuzione {function:?} Oracle: {error}"));
+        assert_eq!(rows.len(), 1, "{function:?}");
+        assert!(rows[0].get("VALUE").is_some(), "{function:?}");
+        if function.returns_geometry() {
+            assert!(
+                matches!(rows[0].get("VALUE"), Some(ParameterValue::Bytes(bytes)) if !bytes.is_empty()),
+                "{function:?}"
+            );
+        }
+    }
+    transaction
+        .rollback(cancellation)
+        .await
+        .expect("rollback censimento Spatial Oracle");
 }
 
 struct VecBatchStream {
@@ -140,6 +377,28 @@ fn spatial_write_batch(ids: Vec<i32>, points: Vec<Vec<u8>>) -> RecordBatch {
         ],
     )
     .expect("batch spatial Oracle")
+}
+
+fn spatial_xyz_write_batch(ids: Vec<i32>, points: Vec<Vec<u8>>) -> RecordBatch {
+    let geometry = crate::types::OracleColumnSpec {
+        name: "SHAPE".to_owned(),
+        native_type: "SDO_GEOMETRY".to_owned(),
+        nullable: false,
+        kind: crate::types::OracleColumnKind::Geometry,
+        spatial_srid: Some(3_857),
+        spatial_dimensions: Some(3),
+        spatial_semantics: Some(SpatialSemantics::Geometry),
+    }
+    .arrow_field();
+    let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false), geometry]);
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from(ids)),
+            Arc::new(BinaryArray::from_iter_values(points)),
+        ],
+    )
+    .expect("batch spatial XYZ Oracle")
 }
 
 fn spatial_write_operation(mode: WriteMode, create_index: bool) -> WriteOperation {
@@ -363,6 +622,322 @@ async fn live_arrow_scalar_create_and_read_preserves_supported_types() {
             .value(0)
     });
     assert_eq!(timestamps, [0, 1_234_567]);
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_array_dml_crosses_batches_and_rolls_back_atomically() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget array DML");
+    let table = "PLENORA_ORACLE_ARRAY_DML";
+    let _ = provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("CREATE TABLE {table} (ID NUMBER(10) PRIMARY KEY, LABEL VARCHAR2(40))"),
+            &cancellation,
+        )
+        .await
+        .expect("crea fixture array DML Oracle");
+    let schema = contract_schema(vec![
+        Field::new("ID", DataType::Int32, false),
+        Field::new("LABEL", DataType::Utf8, false),
+    ]);
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: table.to_owned(),
+        },
+        mode: WriteMode::Append,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: Vec::new(),
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    let make_batch = |ids: Vec<i32>| {
+        let labels = ids.iter().map(|id| format!("row-{id}")).collect::<Vec<_>>();
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(ids)),
+                Arc::new(StringArray::from(labels)),
+            ],
+        )
+        .expect("batch array DML Oracle")
+    };
+    let mut invalid_ids = (1..=300).collect::<Vec<_>>();
+    invalid_ids.push(1);
+    let invalid = make_batch(invalid_ids);
+    let prepared = provider
+        .prepare_write(
+            &secret,
+            &operation,
+            Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare array DML Oracle fallibile");
+    let error = provider
+        .write(
+            &secret,
+            prepared,
+            Box::new(VecBatchStream::new(vec![invalid])),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect_err("duplicato array DML deve fallire");
+    assert_eq!(error.remote_effect, RemoteEffect::RolledBack, "{error:?}");
+
+    let valid = make_batch((1..=600).collect());
+    let prepared = provider
+        .prepare_write(
+            &secret,
+            &operation,
+            Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare array DML Oracle");
+    let outcome = provider
+        .write(
+            &secret,
+            prepared,
+            Box::new(VecBatchStream::new(vec![valid])),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("array DML Oracle");
+    assert_eq!(outcome.rows.confirmed, 600);
+
+    let mut verify = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("verifica array DML");
+    let rows = verify
+        .query(
+            &Statement::new(format!("SELECT COUNT(*) AS N FROM {table}")),
+            &cancellation,
+        )
+        .await
+        .expect("conteggio array DML");
+    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(600)));
+    verify
+        .rollback(&cancellation)
+        .await
+        .expect("rollback verifica array DML");
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .expect("rimuove fixture array DML");
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_identifier_limit_matches_oracle_at_128_bytes() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let accepted = format!("T{}", "A".repeat(127));
+    validate_identifier(IdentifierDialect::Oracle, &accepted)
+        .expect("identificatore Oracle di 128 byte");
+    let accepted = quote_identifier(IdentifierDialect::Oracle, &accepted)
+        .expect("quoting identificatore Oracle di 128 byte");
+    let _ = provider
+        .execute_ddl(
+            &secret,
+            &format!("DROP TABLE {accepted} PURGE"),
+            &cancellation,
+        )
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("CREATE TABLE {accepted} (ID NUMBER(10))"),
+            &cancellation,
+        )
+        .await
+        .expect("Oracle accetta un identificatore di 128 byte");
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("DROP TABLE {accepted} PURGE"),
+            &cancellation,
+        )
+        .await
+        .expect("rimuove identificatore Oracle di 128 byte");
+
+    let rejected = format!("T{}", "B".repeat(128));
+    assert!(validate_identifier(IdentifierDialect::Oracle, &rejected).is_err());
+    let error = provider
+        .execute_ddl(
+            &secret,
+            &format!("CREATE TABLE \"{rejected}\" (ID NUMBER(10))"),
+            &cancellation,
+        )
+        .await
+        .expect_err("Oracle deve rifiutare un identificatore di 129 byte");
+    assert!(!error.message.contains(&rejected));
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_closed_capabilities_fail_closed_and_match_ddl_semantics() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget capability chiuse");
+    let capabilities = provider
+        .probe_capabilities(&secret, &cancellation)
+        .await
+        .expect("capability Oracle");
+    assert!(!capabilities.reads.server_cursor);
+    assert!(!capabilities.writes.truncate_insert);
+    assert!(!capabilities.writes.returning);
+    assert!(!capabilities.transactions.transactional_ddl);
+    assert!(!capabilities.transactions.staged_swap);
+
+    let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false)]);
+    for (mode, transaction_profile) in [
+        (
+            WriteMode::TruncateInsert,
+            TransactionProfile::SingleTransaction,
+        ),
+        (WriteMode::Append, TransactionProfile::StagedSwap),
+    ] {
+        let operation = WriteOperation {
+            target: ObjectRef {
+                catalog: None,
+                schema: Some("PLENORA".to_owned()),
+                object: "PLENORA_ORACLE_CLOSED_CAPABILITY".to_owned(),
+            },
+            mode,
+            mapping_policy: MappingPolicy::Strict,
+            transaction_profile,
+            keys: Vec::new(),
+            update_columns: Vec::new(),
+            srid_policy: None,
+            create_spatial_index: false,
+            allow_partial: false,
+        };
+        let error = provider
+            .prepare_write(
+                &secret,
+                &operation,
+                Arc::clone(&schema),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .err()
+            .expect("capability write Oracle chiusa");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::Unsupported
+        );
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+    }
+
+    let returning = PortableStatement::Insert(InsertStatement {
+        table: TableRef::new("PLENORA_ORACLE_CLOSED_CAPABILITY"),
+        columns: vec!["ID".to_owned()],
+        values: vec![vec![Expression::literal(ParameterValue::I32(1))]],
+        returning: vec!["ID".to_owned()],
+    });
+    assert!(compile_portable(ProviderKind::Oracle, &returning).is_err());
+
+    let anchor = "PLENORA_ORACLE_DDL_ANCHOR";
+    let side_effect = "PLENORA_ORACLE_DDL_SIDE_EFFECT";
+    for table in [side_effect, anchor] {
+        let _ = provider
+            .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+            .await;
+    }
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("CREATE TABLE {anchor} (ID NUMBER(10))"),
+            &cancellation,
+        )
+        .await
+        .expect("crea anchor DDL Oracle");
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione semantica DDL Oracle");
+    transaction
+        .execute(
+            &Statement::new(format!("INSERT INTO {anchor} VALUES (1)")),
+            &cancellation,
+        )
+        .await
+        .expect("DML prima del DDL Oracle");
+    transaction
+        .execute(
+            &Statement::new(format!("CREATE TABLE {side_effect} (ID NUMBER(10))")),
+            &cancellation,
+        )
+        .await
+        .expect("DDL Oracle con commit implicito");
+    transaction
+        .rollback(&cancellation)
+        .await
+        .expect("rollback dopo DDL Oracle");
+
+    let mut verify = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("verifica semantica DDL Oracle");
+    let rows = verify
+        .query(
+            &Statement::new(format!("SELECT COUNT(*) AS N FROM {anchor}")),
+            &cancellation,
+        )
+        .await
+        .expect("conteggio dopo DDL Oracle");
+    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    verify
+        .query(
+            &Statement::new(format!("SELECT COUNT(*) AS N FROM {side_effect}")),
+            &cancellation,
+        )
+        .await
+        .expect("tabella DDL Oracle sopravvive al rollback");
+    verify
+        .rollback(&cancellation)
+        .await
+        .expect("chiude verifica semantica DDL Oracle");
+    for table in [side_effect, anchor] {
+        provider
+            .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+            .await
+            .expect("rimuove fixture semantica DDL Oracle");
+    }
 }
 
 #[tokio::test]
@@ -597,6 +1172,118 @@ async fn live_arrow_spatial_write_covers_create_append_update_upsert_replace_and
 #[tokio::test]
 #[ignore = "richiede Oracle Spatial live esplicito"]
 #[allow(clippy::too_many_lines)]
+async fn live_xyz_wkb_roundtrip_matches_declared_dimension() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget XYZ Oracle");
+    let table = "PLENORA_ORACLE_ARROW_SPATIAL";
+    let _ = provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await;
+    let mut metadata = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("pulizia metadata XYZ Oracle");
+    metadata
+        .execute(
+            &Statement::new(format!(
+                "DELETE FROM USER_SDO_GEOM_METADATA WHERE TABLE_NAME = '{table}'"
+            )),
+            &cancellation,
+        )
+        .await
+        .expect("pulisce metadata XYZ Oracle");
+    metadata
+        .commit(&cancellation)
+        .await
+        .expect("commit pulizia metadata XYZ Oracle");
+
+    let point = point_xyz(12.0, 41.0, 250.5);
+    run_spatial_write(
+        &provider,
+        &secret,
+        &budget,
+        spatial_write_operation(WriteMode::Create, false),
+        spatial_xyz_write_batch(vec![1], vec![point]),
+        &cancellation,
+    )
+    .await
+    .expect("create XYZ Arrow Spatial Oracle");
+
+    let description = provider
+        .inspect(
+            &secret,
+            &Operation::DatabaseDescribeObject {
+                source: ObjectRef {
+                    catalog: None,
+                    schema: Some("PLENORA".to_owned()),
+                    object: table.to_owned(),
+                },
+            },
+            &cancellation,
+        )
+        .await
+        .expect("catalogo XYZ Oracle");
+    let description: crate::OracleObjectDescription =
+        serde_json::from_value(description.document).expect("documento catalogo XYZ Oracle");
+    assert_eq!(description.columns[1].spatial_dimensions, Some(3));
+
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: table.to_owned(),
+        },
+        projection: vec!["ID".to_owned(), "SHAPE".to_owned()],
+        filter: None,
+        order_by: vec![OrderBy {
+            field: "ID".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: Some(1),
+        row_offset: None,
+        declared_crs: Vec::new(),
+    };
+    let mut stream = provider
+        .read(
+            &secret,
+            &operation,
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("read XYZ Oracle");
+    let batch = stream
+        .next_batch(&cancellation)
+        .await
+        .expect("batch XYZ Oracle")
+        .expect("riga XYZ Oracle");
+    assert_eq!(
+        batch.schema().field(1).metadata()["plenora.geometry.dimensions"],
+        "xyz"
+    );
+    let shapes = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .expect("WKB XYZ Oracle");
+    assert_eq!(shapes.value(0).len(), 29);
+
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .expect("rimuove fixture XYZ Oracle");
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Spatial live esplicito"]
+#[allow(clippy::too_many_lines)]
 async fn live_spatial_catalog_portable_predicates_and_arrow_wkb() {
     let (provider, secret) = fixture();
     let cancellation = CancellationToken::new();
@@ -812,6 +1499,121 @@ async fn live_spatial_catalog_portable_predicates_and_arrow_wkb() {
         .await
         .expect("fine stream WKB Oracle")
         .is_none());
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Spatial live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_every_declared_spatial_function_executes_on_geometry_and_geography() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget censimento spatial");
+    for (table, srid, semantics) in [
+        (
+            "PLENORA_ORACLE_SPATIAL_GEOM",
+            3_857_u32,
+            SpatialSemantics::Geometry,
+        ),
+        (
+            "PLENORA_ORACLE_SPATIAL_GEOG",
+            4_326_u32,
+            SpatialSemantics::Geography,
+        ),
+    ] {
+        let _ = provider
+            .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+            .await;
+        let mut metadata = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .expect("transazione pulizia metadata censimento");
+        metadata
+            .execute(
+                &Statement::new(format!(
+                    "DELETE FROM USER_SDO_GEOM_METADATA WHERE TABLE_NAME = '{table}'"
+                )),
+                &cancellation,
+            )
+            .await
+            .expect("pulisce metadata censimento");
+        metadata
+            .commit(&cancellation)
+            .await
+            .expect("commit pulizia metadata censimento");
+        provider
+            .execute_ddl(
+                &secret,
+                &format!(
+                    "CREATE TABLE {table} (ID NUMBER(10) PRIMARY KEY, POINT_SHAPE MDSYS.SDO_GEOMETRY, LINE_SHAPE MDSYS.SDO_GEOMETRY, POLY_SHAPE MDSYS.SDO_GEOMETRY)"
+                ),
+                &cancellation,
+            )
+            .await
+            .expect("crea tabella censimento Spatial Oracle");
+        let mut setup = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .expect("transazione setup censimento");
+        for column in ["POINT_SHAPE", "LINE_SHAPE", "POLY_SHAPE"] {
+            setup
+                .execute(
+                    &Statement::new(format!(
+                        "INSERT INTO USER_SDO_GEOM_METADATA (TABLE_NAME, COLUMN_NAME, DIMINFO, SRID) VALUES ('{table}', '{column}', MDSYS.SDO_DIM_ARRAY(MDSYS.SDO_DIM_ELEMENT('X', -1000, 1000, 0.005), MDSYS.SDO_DIM_ELEMENT('Y', -1000, 1000, 0.005)), {srid})"
+                    )),
+                    &cancellation,
+                )
+                .await
+                .expect("registra metadata censimento");
+        }
+        setup
+            .execute(
+                &Statement::new(format!(
+                    "INSERT INTO {table} (ID, POINT_SHAPE, LINE_SHAPE, POLY_SHAPE) VALUES (1, MDSYS.SDO_GEOMETRY(2001, {srid}, MDSYS.SDO_POINT_TYPE(5, 5, NULL), NULL, NULL), MDSYS.SDO_GEOMETRY(2002, {srid}, NULL, MDSYS.SDO_ELEM_INFO_ARRAY(1, 2, 1), MDSYS.SDO_ORDINATE_ARRAY(0, 0, 5, 5, 10, 0)), MDSYS.SDO_GEOMETRY(2003, {srid}, NULL, MDSYS.SDO_ELEM_INFO_ARRAY(1, 1003, 1), MDSYS.SDO_ORDINATE_ARRAY(0, 0, 10, 0, 10, 10, 0, 10, 0, 0)))"
+                )),
+                &cancellation,
+            )
+            .await
+            .expect("inserisce geometrie censimento");
+        setup
+            .commit(&cancellation)
+            .await
+            .expect("commit setup censimento");
+        provider
+            .execute_ddl(
+                &secret,
+                &format!(
+                    "CREATE INDEX {table}_SX ON {table} (POLY_SHAPE) INDEXTYPE IS MDSYS.SPATIAL_INDEX_V2"
+                ),
+                &cancellation,
+            )
+            .await
+            .expect("crea indice censimento Spatial Oracle");
+
+        qualify_spatial_surface(
+            &provider,
+            &secret,
+            table,
+            srid,
+            semantics,
+            &budget,
+            &cancellation,
+        )
+        .await;
+        provider
+            .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+            .await
+            .expect("rimuove tabella censimento Spatial Oracle");
+    }
 }
 
 #[tokio::test]
@@ -1064,6 +1866,109 @@ async fn live_thin_driver_crud_merge_stream_and_rollback() {
         )
         .await
         .expect("drop probe");
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_keyset_checkpoint_resumes_after_the_last_delivered_row() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget checkpoint");
+    let table = "PLENORA_ORACLE_CHECKPOINT";
+    let _ = provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("CREATE TABLE {table} (ID NUMBER(18) PRIMARY KEY, VALUE VARCHAR2(20))"),
+            &cancellation,
+        )
+        .await
+        .expect("crea fixture checkpoint Oracle");
+    let mut setup = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione setup checkpoint");
+    setup
+        .execute(
+            &Statement::new(format!(
+                "INSERT ALL INTO {table} VALUES (1, 'one') INTO {table} VALUES (2, 'two') INTO {table} VALUES (3, 'three') SELECT 1 FROM DUAL"
+            )),
+            &cancellation,
+        )
+        .await
+        .expect("popola fixture checkpoint");
+    setup
+        .commit(&cancellation)
+        .await
+        .expect("commit fixture checkpoint");
+
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: table.to_owned(),
+        },
+        projection: vec!["ID".to_owned(), "VALUE".to_owned()],
+        filter: None,
+        order_by: vec![OrderBy {
+            field: "ID".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: Some(2),
+        row_offset: None,
+        declared_crs: Vec::new(),
+    };
+    let parameters = ParameterBag::default();
+    let checkpoint = ReadCheckpoint::new(
+        ProviderKind::Oracle,
+        &operation,
+        &parameters,
+        vec![ParameterValue::I64(2)],
+    )
+    .expect("checkpoint Oracle persistibile");
+    let encoded = checkpoint.to_json().expect("serializza checkpoint Oracle");
+    let restored = ReadCheckpoint::from_json(&encoded).expect("ripristina checkpoint Oracle");
+    let (resumed, resumed_parameters) = restored
+        .resume(ProviderKind::Oracle, &operation, &parameters)
+        .expect("applica checkpoint Oracle");
+    let mut stream = provider
+        .read(
+            &secret,
+            &resumed,
+            &resumed_parameters,
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("riapre read Oracle dal checkpoint");
+    let batch = stream
+        .next_batch(&cancellation)
+        .await
+        .expect("legge dopo checkpoint")
+        .expect("batch dopo checkpoint");
+    let ids = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("ID Oracle Int64");
+    assert_eq!(ids.values(), &[3]);
+    assert!(stream
+        .next_batch(&cancellation)
+        .await
+        .expect("fine read ripresa")
+        .is_none());
+
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .expect("rimuove fixture checkpoint");
 }
 
 #[tokio::test]

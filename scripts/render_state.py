@@ -98,6 +98,7 @@ CAPABILITY_GROUPS = (
     ("reads", "ReadCapabilities"),
     ("writes", "WriteCapabilities"),
     ("transactions", "TransactionCapabilities"),
+    ("limits", "ProviderLimits"),
 )
 PROFILE_STATIC = r'\b([A-Z][A-Z0-9_]*_PROFILE)\b'
 # Un tipo che implementa il trait dei provider.

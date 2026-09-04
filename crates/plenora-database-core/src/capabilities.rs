@@ -30,10 +30,10 @@ pub struct ReadCapabilities {
     ///
     /// Non e lo streaming: `streaming = true` dice che i batch arrivano a
     /// pezzi, questo direbbe che quei pezzi hanno un nome sul server e che
-    /// una seconda sessione puo riprenderli. Nessun provider lo offre — il
-    /// data path `PostgreSQL` usa `RowStream` con backpressure, che e la
-    /// prima cosa e non la seconda — e nessun piano lo chiede, quindi
-    /// l'engine non lo consulta.
+    /// una seconda sessione puo riprenderli. Uno stream lato server trattenuto
+    /// dalla connessione non basta: serve un'identita riapribile dal
+    /// contratto. Finche quella forma non esiste, i provider restano
+    /// fail-closed su questo campo.
     ///
     /// **Descrittivo.** Un valore `true` richiederebbe anche un'operazione del
     /// contratto capace di indirizzare e riaprire il cursore.
@@ -63,13 +63,10 @@ pub struct ReadCapabilities {
     pub ordering: bool,
     /// Una lettura interrotta puo riprendere da dove era arrivata.
     ///
-    /// Richiede un punto di ripresa che sopravviva alla sessione — un
-    /// cursore nominato, o una chiave di continuazione nel contratto — e non
-    /// esiste ne l'uno ne l'altra. Falso ovunque.
-    ///
-    /// **Descrittivo**, come [`Self::server_cursor`], e per la stessa
-    /// ragione: chi pianifica una lettura lunga deve saperlo prima di
-    /// cominciarla.
+    /// Richiede un punto di ripresa che sopravviva alla sessione. Il contratto
+    /// usa un checkpoint keyset serializzabile, indipendente dalla vita del
+    /// cursore e della connessione; i provider lo dichiarano solo dopo averne
+    /// provato la riapertura sul proprio dialetto.
     #[serde(default)]
     pub resumable: bool,
 }
@@ -112,8 +109,9 @@ pub struct WriteCapabilities {
     /// legati, non il numero di round-trip, e conta dove il tetto e sui
     /// parametri: SQL Server ne ammette 2100.
     ///
-    /// Nessun provider lo offre, e il contratto non ha una forma di piano che
-    /// lo chieda. **Descrittivo**, e falso ovunque.
+    /// Il contratto non ha una forma di piano che lo chieda. **Descrittivo**:
+    /// dichiara il data path realmente usato dal provider e va aperto solo con
+    /// una prova che attraversi il driver e il server.
     #[serde(default)]
     pub array_binding: bool,
     /// L'esito di una scrittura trasporta le **righe restituite** dal server.

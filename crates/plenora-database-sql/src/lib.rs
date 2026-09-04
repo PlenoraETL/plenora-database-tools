@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 
 const SQL_SERVER_MAX_IDENTIFIER_CHARS: usize = 128;
 const SQL_SERVER_MAX_BIND_PARAMETERS: usize = 2_100;
+const ORACLE_MAX_IDENTIFIER_BYTES: usize = 128;
 
 mod filter;
 pub use filter::{
@@ -106,7 +107,8 @@ impl Dialect {
     const fn to_identifier_dialect(self) -> plenora_database_core::identifier::IdentifierDialect {
         use plenora_database_core::identifier::IdentifierDialect as D;
         match self {
-            Self::Postgres | Self::Oracle | Self::Db2 | Self::Sqlite | Self::Duckdb => D::Postgres,
+            Self::Postgres | Self::Db2 | Self::Sqlite | Self::Duckdb => D::Postgres,
+            Self::Oracle => D::Oracle,
             Self::Mysql => D::Mysql,
             Self::SqlServer => D::SqlServer,
         }
@@ -170,16 +172,23 @@ pub struct Select {
     pub limit: Option<u64>,
 }
 
-fn simple_column(field: &Identifier) -> QueryExpression {
+fn simple_column(field: &Identifier, relation: Option<&Identifier>) -> QueryExpression {
     QueryExpression::Column {
         column: plenora_database_core::relational::ColumnRef {
-            relation: None,
+            relation: relation.map(|value| value.as_str().to_owned()),
             field: field.as_str().to_owned(),
         },
     }
 }
 
 fn simple_expression_to_relational(expression: &Expression) -> QueryExpression {
+    simple_expression_to_relational_with_relation(expression, None)
+}
+
+fn simple_expression_to_relational_with_relation(
+    expression: &Expression,
+    relation: Option<&Identifier>,
+) -> QueryExpression {
     let parameter = |name: &str| QueryExpression::Parameter {
         name: name.to_owned(),
     };
@@ -187,13 +196,13 @@ fn simple_expression_to_relational(expression: &Expression) -> QueryExpression {
         Expression::And(arguments) => QueryExpression::And {
             arguments: arguments
                 .iter()
-                .map(simple_expression_to_relational)
+                .map(|argument| simple_expression_to_relational_with_relation(argument, relation))
                 .collect(),
         },
         Expression::Or(arguments) => QueryExpression::Or {
             arguments: arguments
                 .iter()
-                .map(simple_expression_to_relational)
+                .map(|argument| simple_expression_to_relational_with_relation(argument, relation))
                 .collect(),
         },
         Expression::Compare {
@@ -201,16 +210,16 @@ fn simple_expression_to_relational(expression: &Expression) -> QueryExpression {
             operator,
             parameter: name,
         } => QueryExpression::Compare {
-            left: Box::new(simple_column(field)),
+            left: Box::new(simple_column(field, relation)),
             operator: *operator,
             right: Box::new(parameter(name)),
         },
         Expression::IsNull(field) | Expression::IsNotNull(field) => QueryExpression::IsNull {
-            expression: Box::new(simple_column(field)),
+            expression: Box::new(simple_column(field, relation)),
             negated: matches!(expression, Expression::IsNotNull(_)),
         },
         Expression::In { field, parameters } => QueryExpression::InList {
-            expression: Box::new(simple_column(field)),
+            expression: Box::new(simple_column(field, relation)),
             values: parameters.iter().map(|name| parameter(name)).collect(),
             negated: false,
         },
@@ -219,7 +228,7 @@ fn simple_expression_to_relational(expression: &Expression) -> QueryExpression {
             lower_parameter,
             upper_parameter,
         } => QueryExpression::Between {
-            expression: Box::new(simple_column(field)),
+            expression: Box::new(simple_column(field, relation)),
             lower: Box::new(parameter(lower_parameter)),
             upper: Box::new(parameter(upper_parameter)),
             negated: false,
@@ -229,7 +238,7 @@ fn simple_expression_to_relational(expression: &Expression) -> QueryExpression {
             parameter: name,
             case_insensitive,
         } => QueryExpression::Like {
-            expression: Box::new(simple_column(field)),
+            expression: Box::new(simple_column(field, relation)),
             pattern: Box::new(parameter(name)),
             case_insensitive: *case_insensitive,
             negated: false,
@@ -239,7 +248,7 @@ fn simple_expression_to_relational(expression: &Expression) -> QueryExpression {
             wkb_parameter,
         } => QueryExpression::Spatial {
             function: SpatialFunction::Intersects,
-            arguments: vec![simple_column(field), parameter(wkb_parameter)],
+            arguments: vec![simple_column(field, relation), parameter(wkb_parameter)],
         },
         Expression::SpatialPredicate {
             function,
@@ -247,7 +256,7 @@ fn simple_expression_to_relational(expression: &Expression) -> QueryExpression {
             geometry_parameter,
             distance_parameter,
         } => {
-            let mut arguments = vec![simple_column(field)];
+            let mut arguments = vec![simple_column(field, relation)];
             arguments.extend(geometry_parameter.iter().map(|name| parameter(name)));
             arguments.extend(distance_parameter.iter().map(|name| parameter(name)));
             QueryExpression::Spatial {
@@ -282,7 +291,7 @@ fn simple_select_to_relational(select: &Select) -> QueryOperation {
             .projection
             .iter()
             .map(|field| QueryProjection {
-                expression: simple_column(field),
+                expression: simple_column(field, None),
                 alias: None,
             })
             .collect(),
@@ -294,7 +303,7 @@ fn simple_select_to_relational(select: &Select) -> QueryOperation {
             .order_by
             .iter()
             .map(|order| QueryOrdering {
-                expression: simple_column(&order.field),
+                expression: simple_column(&order.field, None),
                 direction: order.direction,
             })
             .collect(),
@@ -461,6 +470,8 @@ impl Renderer {
         let mut limits = plenora_database_core::limits::Limits::default();
         if self.dialect == Dialect::SqlServer {
             limits.max_identifier_bytes = SQL_SERVER_MAX_IDENTIFIER_CHARS;
+        } else if self.dialect == Dialect::Oracle {
+            limits.max_identifier_bytes = ORACLE_MAX_IDENTIFIER_BYTES;
         }
         validate_query_operation(query, &limits)?;
 
@@ -518,6 +529,8 @@ impl Renderer {
             // È volutamente più conservativo del limite SQL Server espresso
             // in caratteri: il core limita anche i byte allocabili.
             limits.max_identifier_bytes = SQL_SERVER_MAX_IDENTIFIER_CHARS;
+        } else if self.dialect == Dialect::Oracle {
+            limits.max_identifier_bytes = ORACLE_MAX_IDENTIFIER_BYTES;
         }
         validate_query_operation(query, &limits)?;
         let mut binds = Vec::new();
@@ -644,6 +657,9 @@ impl Renderer {
                         // involucro il valore arriva come `MYSQL_TYPE_GEOMETRY`
                         // nel formato interno del prodotto, che non e WKB.
                         Dialect::Mysql => format!("ST_AsBinary({rendered})"),
+                        Dialect::Oracle => {
+                            format!("MDSYS.SDO_UTIL.TO_WKBGEOMETRY({rendered})")
+                        }
                         _ => rendered,
                     };
                 }
@@ -847,8 +863,19 @@ impl Renderer {
             object: Identifier::new(source.object.object.clone())?,
         })?;
         if let Some(alias) = &source.alias {
-            value.push_str(" AS ");
+            value.push_str(if self.dialect == Dialect::Oracle {
+                " "
+            } else {
+                " AS "
+            });
             value.push_str(&self.quote(&Identifier::new(alias.clone())?)?);
+        } else if self.dialect == Dialect::Oracle {
+            // Oracle richiede un alias di tabella per disambiguare gli
+            // attributi e i metodi dei tipi oggetto, inclusi SDO_GEOMETRY.
+            // Le Column dell'IR usano gia il nome oggetto come qualifier
+            // quando il chiamante non dichiara un alias.
+            value.push(' ');
+            value.push_str(&self.quote(&Identifier::new(source.object.object.clone())?)?);
         } else if self.dialect == Dialect::Db2 {
             value.push_str(" AS ");
             value.push_str(&self.quote(&Identifier::new(source.object.object.clone())?)?);
@@ -893,12 +920,17 @@ impl Renderer {
                 let body = self.render_query_inner(&derived.query, binds, false)?;
                 let alias = self.quote(&Identifier::new(derived.alias.clone())?)?;
                 Ok(format!(
-                    "{}({body}) AS {alias}",
+                    "{}({body}){}{alias}",
                     if lateral && self.dialect == Dialect::Postgres {
                         "LATERAL "
                     } else {
                         ""
-                    }
+                    },
+                    if self.dialect == Dialect::Oracle {
+                        " "
+                    } else {
+                        " AS "
+                    },
                 ))
             }
             _ => Err(DatabaseError::invalid_plan(
@@ -1640,58 +1672,131 @@ impl Renderer {
         arguments: &[QueryExpression],
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
-        let argument = |index: usize, binds: &mut Vec<BindParameter>| -> Result<String> {
-            let value = arguments.get(index).ok_or_else(|| {
-                DatabaseError::invalid_plan("funzione spatial Oracle con arieta incompleta")
-            })?;
-            self.render_query_expression(value, binds)
-        };
-        let left = argument(0, binds)?;
-        let spatial_argument = |index: usize, binds: &mut Vec<BindParameter>| -> Result<String> {
-            let expression = arguments.get(index).ok_or_else(|| {
-                DatabaseError::invalid_plan("funzione spatial Oracle con arieta incompleta")
-            })?;
-            let rendered = self.render_query_expression(expression, binds)?;
-            if matches!(
-                expression,
-                QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. }
-            ) {
-                Ok(format!(
-                    "MDSYS.SDO_UTIL.FROM_WKBGEOMETRY({rendered}, ({left}).SDO_SRID)"
-                ))
-            } else {
-                Ok(rendered)
+        let left = self.render_oracle_spatial_argument(arguments, 0, binds)?;
+        match oracle_spatial_shape(function) {
+            Some(OracleSpatialShape::GeometryType) => Ok(format!(
+                "CASE MOD({left}.SDO_GTYPE, 100) WHEN 1 THEN 'POINT' WHEN 2 THEN 'LINESTRING' WHEN 3 THEN 'POLYGON' WHEN 4 THEN 'GEOMETRYCOLLECTION' WHEN 5 THEN 'MULTIPOINT' WHEN 6 THEN 'MULTILINESTRING' WHEN 7 THEN 'MULTIPOLYGON' ELSE 'GEOMETRY' END"
+            )),
+            Some(OracleSpatialShape::Srid) => {
+                Ok(format!("CAST({left}.SDO_SRID AS NUMBER(10))"))
             }
-        };
-        match function {
-            SpatialFunction::Srid => Ok(format!("CAST(({left}).SDO_SRID AS NUMBER(10))")),
-            SpatialFunction::Dimensions => {
-                Ok(format!("CAST(({left}).ST_CoordDim() AS NUMBER(10))"))
+            Some(OracleSpatialShape::Dimensions) => {
+                Ok(format!("CAST({left}.ST_CoordDim() AS NUMBER(10))"))
             }
-            SpatialFunction::Intersects | SpatialFunction::Contains | SpatialFunction::Within => {
-                let right = spatial_argument(1, binds)?;
-                let mask = match function {
-                    SpatialFunction::Intersects => "ANYINTERACT",
-                    SpatialFunction::Contains => "CONTAINS",
-                    SpatialFunction::Within => "INSIDE",
-                    _ => unreachable!(),
+            Some(OracleSpatialShape::Coordinate(axis)) => Ok(format!(
+                "(SELECT V.{axis} FROM TABLE(MDSYS.SDO_UTIL.GETVERTICES({left})) V WHERE V.ID = 1)"
+            )),
+            Some(OracleSpatialShape::NPoints) => {
+                Ok(format!("MDSYS.SDO_UTIL.GETNUMVERTICES({left})"))
+            }
+            Some(OracleSpatialShape::Point(position)) => {
+                let position = match position {
+                    OraclePointPosition::First => "1".to_owned(),
+                    OraclePointPosition::Last => {
+                        format!("MDSYS.SDO_UTIL.GETNUMVERTICES({left})")
+                    }
+                    OraclePointPosition::Argument => {
+                        self.render_oracle_spatial_argument(arguments, 1, binds)?
+                    }
                 };
+                Ok(oracle_point_from_vertex(&left, &position))
+            }
+            Some(OracleSpatialShape::IsValid) => Ok(format!("({left}.ST_IsValid() = 1)")),
+            Some(OracleSpatialShape::Relate(mask)) => {
+                let right = self.render_oracle_spatial_operand(arguments, 1, &left, binds)?;
                 Ok(format!(
                     "(MDSYS.SDO_RELATE({left}, {right}, 'mask={mask}') = 'TRUE')"
                 ))
             }
-            SpatialFunction::DWithin => {
-                let right = spatial_argument(1, binds)?;
-                let distance = argument(2, binds)?;
+            Some(OracleSpatialShape::Disjoint) => {
+                let right = self.render_oracle_spatial_operand(arguments, 1, &left, binds)?;
+                Ok(format!(
+                    "(MDSYS.SDO_GEOM.RELATE({left}, 'DISJOINT', {right}, 0.005) = 'DISJOINT')"
+                ))
+            }
+            Some(OracleSpatialShape::DWithin) => {
+                let right = self.render_oracle_spatial_operand(arguments, 1, &left, binds)?;
+                let distance = self.render_oracle_spatial_argument(arguments, 2, binds)?;
                 Ok(format!(
                     "(MDSYS.SDO_WITHIN_DISTANCE({left}, {right}, 'distance=' || {distance} || ' unit=M') = 'TRUE')"
                 ))
             }
-            _ => Err(DatabaseError::unsupported(
+            Some(OracleSpatialShape::SetSrid) => {
+                let srid = self.render_oracle_spatial_argument(arguments, 1, binds)?;
+                Ok(format!(
+                    "MDSYS.SDO_GEOMETRY({left}.SDO_GTYPE, {srid}, {left}.SDO_POINT, {left}.SDO_ELEM_INFO, {left}.SDO_ORDINATES)"
+                ))
+            }
+            Some(OracleSpatialShape::Transform) => {
+                let srid = self.render_oracle_spatial_argument(arguments, 1, binds)?;
+                Ok(format!("MDSYS.SDO_CS.TRANSFORM({left}, {srid})"))
+            }
+            Some(OracleSpatialShape::Buffer) => {
+                let distance = self.render_oracle_spatial_argument(arguments, 1, binds)?;
+                Ok(format!(
+                    "MDSYS.SDO_GEOM.SDO_BUFFER({left}, {distance}, 0.005, 'unit=M')"
+                ))
+            }
+            Some(OracleSpatialShape::UnaryGeometry(name)) => {
+                Ok(format!("MDSYS.SDO_GEOM.{name}({left}, 0.005)"))
+            }
+            Some(OracleSpatialShape::UnaryGeometryNoTolerance(name)) => {
+                Ok(format!("MDSYS.SDO_GEOM.{name}({left})"))
+            }
+            Some(OracleSpatialShape::BinaryGeometry(name)) => {
+                let right = self.render_oracle_spatial_operand(arguments, 1, &left, binds)?;
+                Ok(format!("MDSYS.SDO_GEOM.{name}({left}, {right}, 0.005)"))
+            }
+            Some(OracleSpatialShape::UnaryMeasure { name, unit }) => Ok(format!(
+                "MDSYS.SDO_GEOM.{name}({left}, 0.005, 'unit={unit}')"
+            )),
+            Some(OracleSpatialShape::BinaryMeasure { name, unit }) => {
+                let right = self.render_oracle_spatial_operand(arguments, 1, &left, binds)?;
+                Ok(format!(
+                    "MDSYS.SDO_GEOM.{name}({left}, {right}, 0.005, 'unit={unit}')"
+                ))
+            }
+            Some(OracleSpatialShape::GeoJson) => Ok(format!("{left}.Get_GeoJson()")),
+            None => Err(DatabaseError::unsupported(
                 self.provider_kind(),
                 ErrorPhase::Prepare,
                 "funzione spatial Oracle non qualificata",
             )),
+        }
+    }
+
+    fn render_oracle_spatial_argument(
+        &self,
+        arguments: &[QueryExpression],
+        index: usize,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        let value = arguments.get(index).ok_or_else(|| {
+            DatabaseError::invalid_plan("funzione spatial Oracle con arieta incompleta")
+        })?;
+        self.render_query_expression(value, binds)
+    }
+
+    fn render_oracle_spatial_operand(
+        &self,
+        arguments: &[QueryExpression],
+        index: usize,
+        left: &str,
+        binds: &mut Vec<BindParameter>,
+    ) -> Result<String> {
+        let expression = arguments.get(index).ok_or_else(|| {
+            DatabaseError::invalid_plan("funzione spatial Oracle con arieta incompleta")
+        })?;
+        let rendered = self.render_query_expression(expression, binds)?;
+        if matches!(
+            expression,
+            QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. }
+        ) {
+            Ok(format!(
+                "MDSYS.SDO_UTIL.FROM_WKBGEOMETRY({rendered}, {left}.SDO_SRID)"
+            ))
+        } else {
+            Ok(rendered)
         }
     }
 
@@ -1837,9 +1942,31 @@ impl Renderer {
     /// Restituisce gli stessi errori capability/strutturali di
     /// [`Self::render_select`].
     pub fn render_filter(&self, expression: &Expression) -> Result<RenderedSql> {
+        self.render_filter_inner(expression, None)
+    }
+
+    /// Renderizza una condizione qualificando ogni colonna con la relazione.
+    ///
+    /// # Errors
+    ///
+    /// Restituisce gli stessi errori capability/strutturali di
+    /// [`Self::render_filter`].
+    pub fn render_filter_for_relation(
+        &self,
+        expression: &Expression,
+        relation: &Identifier,
+    ) -> Result<RenderedSql> {
+        self.render_filter_inner(expression, Some(relation))
+    }
+
+    fn render_filter_inner(
+        &self,
+        expression: &Expression,
+        relation: Option<&Identifier>,
+    ) -> Result<RenderedSql> {
         let mut binds = Vec::new();
-        let sql =
-            self.render_query_expression(&simple_expression_to_relational(expression), &mut binds)?;
+        let relational = simple_expression_to_relational_with_relation(expression, relation);
+        let sql = self.render_query_expression(&relational, &mut binds)?;
         self.validate_bind_count(&binds)?;
         Ok(RenderedSql { sql, binds })
     }
@@ -1921,6 +2048,106 @@ impl Renderer {
             Dialect::Duckdb => ProviderKind::Duckdb,
         }
     }
+}
+
+fn oracle_point_from_vertex(geometry: &str, position: &str) -> String {
+    format!(
+        "(SELECT MDSYS.SDO_GEOMETRY((TRUNC({geometry}.SDO_GTYPE / 1000) * 1000) + 1, {geometry}.SDO_SRID, MDSYS.SDO_POINT_TYPE(V.X, V.Y, V.Z), NULL, NULL) FROM TABLE(MDSYS.SDO_UTIL.GETVERTICES({geometry})) V WHERE V.ID = {position})"
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OraclePointPosition {
+    First,
+    Last,
+    Argument,
+}
+
+/// Forma SQL Oracle delle sole funzioni attraversate dalla matrice live.
+///
+/// Il provider deriva da questa tabella il documento capability: il renderer
+/// e la dichiarazione pubblica non possono quindi divergere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OracleSpatialShape {
+    GeometryType,
+    Srid,
+    Dimensions,
+    Coordinate(&'static str),
+    NPoints,
+    Point(OraclePointPosition),
+    IsValid,
+    Relate(&'static str),
+    Disjoint,
+    DWithin,
+    SetSrid,
+    Transform,
+    Buffer,
+    UnaryGeometry(&'static str),
+    UnaryGeometryNoTolerance(&'static str),
+    BinaryGeometry(&'static str),
+    UnaryMeasure {
+        name: &'static str,
+        unit: &'static str,
+    },
+    BinaryMeasure {
+        name: &'static str,
+        unit: &'static str,
+    },
+    GeoJson,
+}
+
+#[must_use]
+pub const fn oracle_spatial_shape(function: SpatialFunction) -> Option<OracleSpatialShape> {
+    Some(match function {
+        SpatialFunction::GeometryType => OracleSpatialShape::GeometryType,
+        SpatialFunction::Srid => OracleSpatialShape::Srid,
+        SpatialFunction::Dimensions => OracleSpatialShape::Dimensions,
+        SpatialFunction::X => OracleSpatialShape::Coordinate("X"),
+        SpatialFunction::Y => OracleSpatialShape::Coordinate("Y"),
+        SpatialFunction::Z => OracleSpatialShape::Coordinate("Z"),
+        SpatialFunction::NPoints => OracleSpatialShape::NPoints,
+        SpatialFunction::StartPoint => OracleSpatialShape::Point(OraclePointPosition::First),
+        SpatialFunction::EndPoint => OracleSpatialShape::Point(OraclePointPosition::Last),
+        SpatialFunction::PointN => OracleSpatialShape::Point(OraclePointPosition::Argument),
+        SpatialFunction::IsValid => OracleSpatialShape::IsValid,
+        SpatialFunction::Intersects => OracleSpatialShape::Relate("ANYINTERACT"),
+        SpatialFunction::Contains => OracleSpatialShape::Relate("CONTAINS"),
+        SpatialFunction::Within => OracleSpatialShape::Relate("INSIDE"),
+        SpatialFunction::Covers => OracleSpatialShape::Relate("COVERS"),
+        SpatialFunction::CoveredBy => OracleSpatialShape::Relate("COVEREDBY"),
+        SpatialFunction::Touches => OracleSpatialShape::Relate("TOUCH"),
+        SpatialFunction::Overlaps => {
+            OracleSpatialShape::Relate("OVERLAPBDYDISJOINT+OVERLAPBDYINTERSECT")
+        }
+        SpatialFunction::Equals => OracleSpatialShape::Relate("EQUAL"),
+        SpatialFunction::Disjoint => OracleSpatialShape::Disjoint,
+        SpatialFunction::DWithin => OracleSpatialShape::DWithin,
+        SpatialFunction::SetSrid => OracleSpatialShape::SetSrid,
+        SpatialFunction::Transform => OracleSpatialShape::Transform,
+        SpatialFunction::Buffer => OracleSpatialShape::Buffer,
+        SpatialFunction::Intersection => OracleSpatialShape::BinaryGeometry("SDO_INTERSECTION"),
+        SpatialFunction::Difference => OracleSpatialShape::BinaryGeometry("SDO_DIFFERENCE"),
+        SpatialFunction::SymDifference => OracleSpatialShape::BinaryGeometry("SDO_XOR"),
+        SpatialFunction::Union => OracleSpatialShape::BinaryGeometry("SDO_UNION"),
+        SpatialFunction::Centroid => OracleSpatialShape::UnaryGeometry("SDO_CENTROID"),
+        SpatialFunction::PointOnSurface => OracleSpatialShape::UnaryGeometry("SDO_POINTONSURFACE"),
+        SpatialFunction::Envelope => OracleSpatialShape::UnaryGeometryNoTolerance("SDO_MBR"),
+        SpatialFunction::ConvexHull => OracleSpatialShape::UnaryGeometry("SDO_CONVEXHULL"),
+        SpatialFunction::Distance => OracleSpatialShape::BinaryMeasure {
+            name: "SDO_DISTANCE",
+            unit: "M",
+        },
+        SpatialFunction::Area => OracleSpatialShape::UnaryMeasure {
+            name: "SDO_AREA",
+            unit: "SQ_M",
+        },
+        SpatialFunction::Length | SpatialFunction::Perimeter => OracleSpatialShape::UnaryMeasure {
+            name: "SDO_LENGTH",
+            unit: "M",
+        },
+        SpatialFunction::AsGeoJson => OracleSpatialShape::GeoJson,
+        _ => return None,
+    })
 }
 
 const fn comparison_symbol(operator: ComparisonOperator) -> &'static str {
