@@ -244,6 +244,8 @@ fn is_transaction_control(head: &str) -> bool {
         "BEGIN"
             | "START"
             | "COMMIT"
+            | "END"
+            | "ABORT"
             | "ROLLBACK"
             | "SAVEPOINT"
             | "RELEASE"

@@ -504,10 +504,7 @@ impl TransactionScope for SqlServerTransaction {
     ) -> ProviderFuture<'a, u64> {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Write)?;
-            plenora_database_core::native_query_policy::enforce_policy(
-                self.native_query_policy,
-                &statement.sql,
-            )?;
+            crate::native_query_policy::enforce_policy(self.native_query_policy, &statement.sql)?;
             let query = prepared(statement)?;
             self.session
                 .session_mut()?
@@ -555,10 +552,7 @@ impl TransactionScope for SqlServerTransaction {
     ) -> ProviderFuture<'a, Vec<Row>> {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Read)?;
-            plenora_database_core::native_query_policy::enforce_policy(
-                self.native_query_policy,
-                &statement.sql,
-            )?;
+            crate::native_query_policy::enforce_policy(self.native_query_policy, &statement.sql)?;
             let query = prepared(statement)?;
             let sets = self
                 .session
@@ -585,10 +579,7 @@ impl TransactionScope for SqlServerTransaction {
     ) -> ProviderFuture<'a, Box<dyn RowStream + Send + 'a>> {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Read)?;
-            plenora_database_core::native_query_policy::enforce_policy(
-                self.native_query_policy,
-                &statement.sql,
-            )?;
+            crate::native_query_policy::enforce_policy(self.native_query_policy, &statement.sql)?;
             if batch_size == 0 {
                 return Err(DatabaseError::invalid_plan(
                     "batch_size dello stream deve essere > 0",
@@ -680,15 +671,12 @@ impl TransactionScope for SqlServerTransaction {
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Write)?;
-            plenora_database_core::native_query_policy::enforce_policy(
+            crate::native_query_policy::enforce_policy(
                 self.native_query_policy,
                 &request.update.sql,
             )?;
             if let Some(probe) = request.key_probe {
-                plenora_database_core::native_query_policy::enforce_policy(
-                    self.native_query_policy,
-                    &probe.sql,
-                )?;
+                crate::native_query_policy::enforce_policy(self.native_query_policy, &probe.sql)?;
             }
             let affected = {
                 let query = prepared(request.update)?;

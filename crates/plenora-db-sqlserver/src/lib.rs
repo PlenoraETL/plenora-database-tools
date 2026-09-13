@@ -13,6 +13,7 @@ mod connection;
 pub(crate) mod error;
 #[cfg(test)]
 mod live_tests;
+mod native_query_policy;
 mod parameter;
 mod pool;
 mod provider;

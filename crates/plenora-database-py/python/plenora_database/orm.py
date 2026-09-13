@@ -1361,6 +1361,7 @@ class MigrationRunner:
         completed: list[str] = []
         for migration in self.migrations:
             transaction = session.begin()
+            started = False
             try:
                 transaction.query_sql(_migration_lock_sql(provider))
                 history = _migration_history(
@@ -1370,10 +1371,13 @@ class MigrationRunner:
                 if migration.revision in history:
                     transaction.commit()
                     continue
+                if not set(_migration_parents(migration.down_revision)) <= set(history):
+                    raise OrmStateError("dipendenze migrazione non applicate")
                 statement, parameters = _migration_insert_statement(
                     migration, "running"
                 )
                 transaction.execute(statement, parameters)
+                started = True
                 migration.upgrade(transaction)
                 statement, parameters = _migration_state_statement(
                     migration, "applied"
@@ -1384,7 +1388,8 @@ class MigrationRunner:
                 with suppress(BaseException):
                     transaction.rollback()
                 with suppress(BaseException):
-                    _record_migration_failure(session, provider, migration)
+                    if started:
+                        _record_migration_failure(session, provider, migration)
                 raise
             completed.append(migration.revision)
         return tuple(completed)
@@ -1425,6 +1430,12 @@ class MigrationRunner:
                 if revision not in current:
                     transaction.commit()
                     continue
+                if any(
+                    revision in _migration_parents(item.down_revision)
+                    and item.revision in current
+                    for item in self.migrations
+                ):
+                    raise OrmStateError("rollback migrazione non foglia del grafo")
                 migration.downgrade(transaction)
                 statement, parameters = _migration_delete_statement(migration)
                 transaction.execute(statement, parameters)
@@ -1462,6 +1473,10 @@ class MigrationRunner:
                 raise OrmStateError("drift checksum nella storia migrazioni")
             if target["state"] not in {"running", "failed"}:
                 raise OrmStateError("recover rifiuta una migrazione gia applicata")
+            applied = {row["revision"] for row in rows if row["state"] == "applied"}
+            if assume_applied:
+                applied.add(revision)
+            _validate_applied_migrations(self.migrations, applied)
             if assume_applied:
                 statement, parameters = _migration_state_statement(
                     migration, "applied"
@@ -1487,6 +1502,7 @@ class AsyncMigrationRunner(MigrationRunner):
         completed: list[str] = []
         for migration in self.migrations:
             transaction = await session.begin()
+            started = False
             try:
                 await transaction.query_sql(_migration_lock_sql(provider))
                 history = _migration_history(
@@ -1496,10 +1512,13 @@ class AsyncMigrationRunner(MigrationRunner):
                 if migration.revision in history:
                     await transaction.commit()
                     continue
+                if not set(_migration_parents(migration.down_revision)) <= set(history):
+                    raise OrmStateError("dipendenze migrazione non applicate")
                 statement, parameters = _migration_insert_statement(
                     migration, "running"
                 )
                 await transaction.execute(statement, parameters)
+                started = True
                 outcome = migration.upgrade(transaction)
                 if isawaitable(outcome):
                     await outcome
@@ -1512,7 +1531,8 @@ class AsyncMigrationRunner(MigrationRunner):
                 with suppress(BaseException):
                     await transaction.rollback()
                 with suppress(BaseException):
-                    await _record_migration_failure_async(session, provider, migration)
+                    if started:
+                        await _record_migration_failure_async(session, provider, migration)
                 raise
             completed.append(migration.revision)
         return tuple(completed)
@@ -1557,6 +1577,12 @@ class AsyncMigrationRunner(MigrationRunner):
                 if revision not in current:
                     await transaction.commit()
                     continue
+                if any(
+                    revision in _migration_parents(item.down_revision)
+                    and item.revision in current
+                    for item in self.migrations
+                ):
+                    raise OrmStateError("rollback migrazione non foglia del grafo")
                 outcome = migration.downgrade(transaction)
                 if isawaitable(outcome):
                     await outcome
@@ -1596,6 +1622,10 @@ class AsyncMigrationRunner(MigrationRunner):
                 raise OrmStateError("drift checksum nella storia migrazioni")
             if target["state"] not in {"running", "failed"}:
                 raise OrmStateError("recover rifiuta una migrazione gia applicata")
+            applied = {row["revision"] for row in rows if row["state"] == "applied"}
+            if assume_applied:
+                applied.add(revision)
+            _validate_applied_migrations(self.migrations, applied)
             if assume_applied:
                 statement, parameters = _migration_state_statement(
                     migration, "applied"
@@ -2972,6 +3002,11 @@ class OrmSession:
         if not self._active:
             raise OrmStateError("OrmSession non attiva")
 
+    def _require_transaction_boundary(self) -> None:
+        self._require_active()
+        if self._in_flush:
+            raise OrmStateError("operazione transazionale durante flush ORM")
+
     def listen(self, event: str, callback: Any) -> None:
         if event not in _ORM_EVENTS or not callable(callback):
             raise ValueError("hook ORM non valido")
@@ -3433,7 +3468,7 @@ class OrmSession:
             self._in_flush = False
 
     def commit(self) -> None:
-        self._require_active()
+        self._require_transaction_boundary()
         try:
             self.flush()
             self._transaction.commit()
@@ -3454,11 +3489,14 @@ class OrmSession:
         self._active = False
         try:
             self._emit("after_commit")
-        finally:
-            self._close_owned_session()
+        except BaseException:
+            with suppress(BaseException):
+                self._close_owned_session()
+            raise
+        self._close_owned_session()
 
     def savepoint(self, name: str) -> None:
-        self._require_active()
+        self._require_transaction_boundary()
         _validate_savepoint_name(name)
         if name in self._savepoints:
             raise OrmStateError("savepoint ORM gia attivo")
@@ -3470,7 +3508,7 @@ class OrmSession:
         self._savepoints[name] = _capture_savepoint(self)
 
     def rollback_to_savepoint(self, name: str) -> None:
-        self._require_active()
+        self._require_transaction_boundary()
         snapshot = self._savepoints.get(name)
         if snapshot is None:
             raise OrmStateError("savepoint ORM non attivo")
@@ -3485,7 +3523,7 @@ class OrmSession:
             self._savepoints.pop(nested, None)
 
     def release_savepoint(self, name: str) -> None:
-        self._require_active()
+        self._require_transaction_boundary()
         if name not in self._savepoints:
             raise OrmStateError("savepoint ORM non attivo")
         operation = getattr(self._transaction, "release_savepoint", None)
@@ -3495,20 +3533,29 @@ class OrmSession:
         self._savepoints.pop(name)
 
     def begin_nested(self, name: str) -> _OrmNestedTransaction:
-        self._require_active()
+        self._require_transaction_boundary()
         return _OrmNestedTransaction(self, name)
 
     def rollback(self) -> None:
-        self._require_active()
+        self._require_transaction_boundary()
         try:
             self._transaction.rollback()
-        finally:
+        except BaseException:
+            with suppress(BaseException):
+                self._finish_rollback()
+            raise
+        self._finish_rollback()
+
+    def _finish_rollback(self) -> None:
+        self._active = False
+        try:
             self._detach_all(restore=True)
-            self._active = False
-            try:
-                self._emit("after_rollback")
-            finally:
+            self._emit("after_rollback")
+        except BaseException:
+            with suppress(BaseException):
                 self._close_owned_session()
+            raise
+        self._close_owned_session()
 
     def close(self) -> None:
         if self._active:
@@ -5493,7 +5540,7 @@ class AsyncOrmSession(OrmSession):
             self._in_flush = False
 
     async def commit(self) -> None:
-        self._require_active()
+        self._require_transaction_boundary()
         try:
             await self.flush()
             await self._transaction.commit()
@@ -5515,11 +5562,14 @@ class AsyncOrmSession(OrmSession):
         self._active = False
         try:
             await self._emit_async("after_commit")
-        finally:
-            self._close_owned_session()
+        except BaseException:
+            with suppress(BaseException):
+                self._close_owned_session()
+            raise
+        self._close_owned_session()
 
     async def savepoint(self, name: str) -> None:
-        self._require_active()
+        self._require_transaction_boundary()
         _validate_savepoint_name(name)
         if name in self._savepoints:
             raise OrmStateError("savepoint ORM gia attivo")
@@ -5532,7 +5582,7 @@ class AsyncOrmSession(OrmSession):
         self._savepoints[name] = _capture_savepoint(self)
 
     async def rollback_to_savepoint(self, name: str) -> None:
-        self._require_active()
+        self._require_transaction_boundary()
         snapshot = self._savepoints.get(name)
         if snapshot is None:
             raise OrmStateError("savepoint ORM non attivo")
@@ -5548,7 +5598,7 @@ class AsyncOrmSession(OrmSession):
             self._savepoints.pop(nested, None)
 
     async def release_savepoint(self, name: str) -> None:
-        self._require_active()
+        self._require_transaction_boundary()
         if name not in self._savepoints:
             raise OrmStateError("savepoint ORM non attivo")
         transaction = await self._ensure_started()
@@ -5559,21 +5609,30 @@ class AsyncOrmSession(OrmSession):
         self._savepoints.pop(name)
 
     def begin_nested(self, name: str) -> _AsyncOrmNestedTransaction:
-        self._require_active()
+        self._require_transaction_boundary()
         return _AsyncOrmNestedTransaction(self, name)
 
     async def rollback(self) -> None:
-        self._require_active()
+        self._require_transaction_boundary()
         try:
             if self._transaction is not None:
                 await self._transaction.rollback()
-        finally:
+        except BaseException:
+            with suppress(BaseException):
+                await self._finish_rollback_async()
+            raise
+        await self._finish_rollback_async()
+
+    async def _finish_rollback_async(self) -> None:
+        self._active = False
+        try:
             self._detach_all(restore=True)
-            self._active = False
-            try:
-                await self._emit_async("after_rollback")
-            finally:
+            await self._emit_async("after_rollback")
+        except BaseException:
+            with suppress(BaseException):
                 self._close_owned_session()
+            raise
+        self._close_owned_session()
 
     async def close(self) -> None:
         if self._active:
@@ -6164,8 +6223,12 @@ class _OrmNestedTransaction:
         if exc_type is None:
             self._session.release_savepoint(self._name)
         else:
-            self._session.rollback_to_savepoint(self._name)
-            self._session.release_savepoint(self._name)
+            try:
+                self._session.rollback_to_savepoint(self._name)
+                self._session.release_savepoint(self._name)
+            except BaseException:
+                with suppress(BaseException):
+                    self._session.rollback()
         return False
 
 
@@ -6188,8 +6251,12 @@ class _AsyncOrmNestedTransaction:
         if exc_type is None:
             await self._session.release_savepoint(self._name)
         else:
-            await self._session.rollback_to_savepoint(self._name)
-            await self._session.release_savepoint(self._name)
+            try:
+                await self._session.rollback_to_savepoint(self._name)
+                await self._session.release_savepoint(self._name)
+            except BaseException:
+                with suppress(BaseException):
+                    await self._session.rollback()
         return False
 
 
@@ -7920,6 +7987,9 @@ def _record_migration_failure(
         )
         if target is not None and target["checksum"] != migration.checksum:
             raise OrmStateError("drift checksum nella storia migrazioni")
+        if target is not None and target["state"] == "applied":
+            transaction.commit()
+            return
         if target is None:
             statement, parameters = _migration_insert_statement(migration, "failed")
         else:
@@ -7944,6 +8014,9 @@ async def _record_migration_failure_async(
         )
         if target is not None and target["checksum"] != migration.checksum:
             raise OrmStateError("drift checksum nella storia migrazioni")
+        if target is not None and target["state"] == "applied":
+            await transaction.commit()
+            return
         if target is None:
             statement, parameters = _migration_insert_statement(migration, "failed")
         else:

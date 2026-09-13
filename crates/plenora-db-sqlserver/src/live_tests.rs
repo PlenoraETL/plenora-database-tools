@@ -722,6 +722,10 @@ async fn live_native_query_policy_guards_every_transaction_entrypoint() {
         "SELECT '--'; CREATE TABLE [plenora_test].[policy_must_not_run] ([id] int)",
         "SELECT '/*'; COMMIT",
         "; COMMIT",
+        "SELECT 1 COMMIT",
+        "SELECT 1 ROLLBACK",
+        "SELECT 1 CREATE TABLE [plenora_test].[policy_must_not_run] ([id] int)",
+        "SELECT 1 SELECT 2",
     ] {
         let error = transaction
             .execute(&Statement::new(sql), &cancellation)

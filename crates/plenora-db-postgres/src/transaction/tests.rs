@@ -2018,7 +2018,7 @@ mod live {
             .await
             .expect("begin");
 
-        for sql in ["COMMIT", "ROLLBACK", "SAVEPOINT sp"] {
+        for sql in ["COMMIT", "ROLLBACK", "END", "ABORT", "SAVEPOINT sp"] {
             let err = tx
                 .execute(&Statement::new(sql), &cancel)
                 .await

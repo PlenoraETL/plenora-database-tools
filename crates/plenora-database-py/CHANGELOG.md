@@ -5,6 +5,24 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [4.2.0] — 2026-09-13
+
+### Corretto
+
+- La governance SQL Server riconosce anche i batch senza punto e virgola;
+  il profilo Deny verifica uno statement CRUD completo nel dialetto T-SQL.
+  I comandi PostgreSQL END e ABORT restano riservati al transaction scope.
+- I callback di flush ORM non possono terminare la transazione o modificarne
+  i savepoint. Le varianti sincrone e asincrone applicano la stessa guardia.
+- Le migrazioni ricontrollano dipendenze e discendenti sotto lock prima di
+  applicare o annullare una revisione. Il recupero esplicito non puo produrre
+  una storia con antenati mancanti.
+- Una conferma di commit persa non sovrascrive lo stato applied gia persistito;
+  il chiamante continua a ricevere l'errore originale della connessione.
+- Gli errori di rollback, callback e contesti annidati conservano il primo
+  fallimento anche quando la chiusura fallisce. Un cleanup del savepoint
+  fallito termina lo scope ORM per impedirne il riuso incoerente.
+
 ## [4.1.0] — 2026-09-13
 
 ### Corretto
