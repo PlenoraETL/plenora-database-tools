@@ -169,6 +169,7 @@ PROVIDER_SOURCES = ROOT / "crates" / "plenora-db-postgres" / "src"
 # Dichiararli non qualificanti non li fa girare: li rende visibili. Toglierli
 # da questa lista significa aver aggiunto il fixture bare al gate.
 NON_QUALIFYING_LIVE_TESTS = {
+    "live_age_1_7_pg18_parameters_types_and_transactions": "richiede il fixture AGE e PLENORA_TEST_AGE_DSN: qualificato dal gate AGE dedicato",
     "preflight_pf2_capability_negative_reports_no_postgis": "richiede POSTGRES_URL_BARE: PostgreSQL senza PostGIS, non avviato da questo compose",
     "preflight_pf3_spatial_query_without_postgis_fails_cleanly": "richiede POSTGRES_URL_BARE: PostgreSQL senza PostGIS, non avviato da questo compose",
     "live_private_ca_mtls_and_cancellation_when_configured": "richiede le quattro variabili TLS di una CA privata: il compose di questo gate e plaintext, e il test ritorna subito riportando comunque `ok`",
@@ -400,7 +401,10 @@ def main() -> int:
         "database_connections_opened": True,
         "secrets_persisted": False,
         "steps": steps,
-        "executed_live_tests": executed_live_tests,
+        "executed_live_tests": [
+            name for name in executed_live_tests
+            if live_inventory.leaf(name) not in NON_QUALIFYING_LIVE_TESTS
+        ],
         # Non "eseguiti": *qualificanti*. I due test del ramo negativo girano
         # e riportano `ok`, ma senza il riferimento bare non asseriscono
         # niente, e un report che li contasse direbbe il falso.

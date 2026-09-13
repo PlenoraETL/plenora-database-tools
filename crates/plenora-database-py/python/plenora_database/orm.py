@@ -8,6 +8,7 @@ qualificate per un provider falliscono prima di inviare lo statement.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, MutableSequence
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -1380,8 +1381,10 @@ class MigrationRunner:
                 transaction.execute(statement, parameters)
                 transaction.commit()
             except BaseException:
-                transaction.rollback()
-                _record_migration_failure(session, provider, migration)
+                with suppress(BaseException):
+                    transaction.rollback()
+                with suppress(BaseException):
+                    _record_migration_failure(session, provider, migration)
                 raise
             completed.append(migration.revision)
         return tuple(completed)
@@ -1427,7 +1430,8 @@ class MigrationRunner:
                 transaction.execute(statement, parameters)
                 transaction.commit()
             except BaseException:
-                transaction.rollback()
+                with suppress(BaseException):
+                    transaction.rollback()
                 raise
             applied.remove(migration.revision)
             completed.append(migration.revision)
@@ -1467,7 +1471,8 @@ class MigrationRunner:
             transaction.execute(statement, parameters)
             transaction.commit()
         except BaseException:
-            transaction.rollback()
+            with suppress(BaseException):
+                transaction.rollback()
             raise
 
 
@@ -1504,8 +1509,10 @@ class AsyncMigrationRunner(MigrationRunner):
                 await transaction.execute(statement, parameters)
                 await transaction.commit()
             except BaseException:
-                await transaction.rollback()
-                await _record_migration_failure_async(session, provider, migration)
+                with suppress(BaseException):
+                    await transaction.rollback()
+                with suppress(BaseException):
+                    await _record_migration_failure_async(session, provider, migration)
                 raise
             completed.append(migration.revision)
         return tuple(completed)
@@ -1557,7 +1564,8 @@ class AsyncMigrationRunner(MigrationRunner):
                 await transaction.execute(statement, parameters)
                 await transaction.commit()
             except BaseException:
-                await transaction.rollback()
+                with suppress(BaseException):
+                    await transaction.rollback()
                 raise
             applied.remove(migration.revision)
             completed.append(migration.revision)
@@ -1597,7 +1605,8 @@ class AsyncMigrationRunner(MigrationRunner):
             await transaction.execute(statement, parameters)
             await transaction.commit()
         except BaseException:
-            await transaction.rollback()
+            with suppress(BaseException):
+                await transaction.rollback()
             raise
 
 
@@ -2955,7 +2964,8 @@ class OrmSession:
         if exc_type is None:
             self.commit()
         else:
-            self.rollback()
+            with suppress(BaseException):
+                self.rollback()
         return False
 
     def _require_active(self) -> None:
@@ -3409,13 +3419,15 @@ class OrmSession:
                 self._delete(instance)
             self._emit("after_flush")
         except BaseException:
-            try:
+            with suppress(BaseException):
                 if getattr(self._transaction, "is_active", True):
                     self._transaction.rollback()
-            finally:
-                self._detach_all(restore=True)
-                self._active = False
+            self._detach_all(restore=True)
+            self._active = False
+            with suppress(BaseException):
                 self._emit("after_rollback")
+            with suppress(BaseException):
+                self._close_owned_session()
             raise
         finally:
             self._in_flush = False
@@ -3426,8 +3438,11 @@ class OrmSession:
             self.flush()
             self._transaction.commit()
         except BaseException:
-            if getattr(self._transaction, "is_active", True):
-                self._transaction.rollback()
+            try:
+                if getattr(self._transaction, "is_active", True):
+                    self._transaction.rollback()
+            except BaseException:  # il cleanup conserva l'errore di commit
+                pass
             self._detach_all(restore=True)
             self._active = False
             try:
@@ -4816,7 +4831,8 @@ class AsyncOrmSession(OrmSession):
         if exc_type is None:
             await self.commit()
         else:
-            await self.rollback()
+            with suppress(BaseException):
+                await self.rollback()
         return False
 
     async def _ensure_started(self) -> Any:
@@ -5416,8 +5432,8 @@ class AsyncOrmSession(OrmSession):
         if self._in_flush:
             return
         self._in_flush = True
-        await self._ensure_started()
         try:
+            await self._ensure_started()
             await self._emit_async("before_flush")
             dirty = self._dirty_instances()
             pending = self._pending_insert_order()
@@ -5463,13 +5479,15 @@ class AsyncOrmSession(OrmSession):
                 await self._delete_async(instance)
             await self._emit_async("after_flush")
         except BaseException:
-            try:
+            with suppress(BaseException):
                 if self._transaction is not None:
                     await self._transaction.rollback()
-            finally:
-                self._detach_all(restore=True)
-                self._active = False
+            self._detach_all(restore=True)
+            self._active = False
+            with suppress(BaseException):
                 await self._emit_async("after_rollback")
+            with suppress(BaseException):
+                self._close_owned_session()
             raise
         finally:
             self._in_flush = False
@@ -7909,7 +7927,8 @@ def _record_migration_failure(
         transaction.execute(statement, parameters)
         transaction.commit()
     except BaseException:
-        transaction.rollback()
+        with suppress(BaseException):
+            transaction.rollback()
         raise
 
 
@@ -7932,7 +7951,8 @@ async def _record_migration_failure_async(
         await transaction.execute(statement, parameters)
         await transaction.commit()
     except BaseException:
-        await transaction.rollback()
+        with suppress(BaseException):
+            await transaction.rollback()
         raise
 
 

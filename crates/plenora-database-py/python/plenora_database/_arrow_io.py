@@ -191,7 +191,10 @@ def _to_ipc_bytes(source: Any) -> bytes:
     # pandas DataFrame — richiede pandas installato solo se usato
     if type(source).__name__ == "DataFrame" and hasattr(source, "to_dict"):
         # duck-type: pandas.DataFrame ha to_dict + iloc + columns
-        source = pa.Table.from_pandas(source, preserve_index=False)
+        try:
+            source = pa.Table.from_pandas(source, preserve_index=False)
+        except (pa.ArrowException, ValueError, TypeError, OverflowError):
+            raise ValueError("copy_from: conversione DataFrame Arrow non valida") from None
 
     if isinstance(source, pa.Table):
         schema = source.schema
@@ -209,7 +212,10 @@ def _to_ipc_bytes(source: Any) -> bytes:
             schema = first.schema
         elif isinstance(first, dict):
             # lista di dict — convertibile via pyarrow.Table.from_pylist
-            tbl = pa.Table.from_pylist(source)
+            try:
+                tbl = pa.Table.from_pylist(source)
+            except (pa.ArrowException, ValueError, TypeError, OverflowError):
+                raise ValueError("copy_from: conversione record Arrow non valida") from None
             schema = tbl.schema
             batches = tbl.to_batches()
         else:
@@ -236,13 +242,15 @@ def _to_ipc_bytes(source: Any) -> bytes:
             f"trovato {type(source).__name__}"
         )
 
-    source_schema = schema
-    schema, replacements = _narrowed_schema(source_schema, pa)
-
-    buf = io.BytesIO()
-    with ipc.new_stream(buf, schema) as writer:
-        for batch in batches:
-            writer.write_batch(
-                _narrowed_batch(batch, source_schema, schema, replacements, pa)
-            )
+    try:
+        source_schema = schema
+        schema, replacements = _narrowed_schema(source_schema, pa)
+        buf = io.BytesIO()
+        with ipc.new_stream(buf, schema) as writer:
+            for batch in batches:
+                writer.write_batch(
+                    _narrowed_batch(batch, source_schema, schema, replacements, pa)
+                )
+    except (pa.ArrowException, ValueError, TypeError, OverflowError):
+        raise ValueError("copy_from: serializzazione Arrow non valida") from None
     return buf.getvalue()
