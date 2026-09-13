@@ -85,9 +85,15 @@ fn dialect_ambiguity_cannot_hide_a_second_statement() {
         "SELECT 1 /* outer /* inner */; COMMIT; /* end */",
         "SELECT 1 /* outer /* inner */; DROP TABLE t; /* end */",
         "SELECT a_$tag$; COMMIT; SELECT b_$tag$",
+        "SELECT 1--1; COMMIT",
+        "SELECT 1--1; DROP TABLE t",
     ] {
         assert!(enforce_policy(NativeQueryPolicy::Deny, sql).is_err());
     }
+    for sql in ["SELECT 1--1; COMMIT", "# note\nCOMMIT"] {
+        assert!(enforce_policy(NativeQueryPolicy::Allow, sql).is_err());
+    }
+    assert!(enforce_policy(NativeQueryPolicy::Deny, "SELECT 1--1").is_ok());
 }
 
 #[test]

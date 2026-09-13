@@ -5,7 +5,7 @@
 //! qui: la validazione ha lo scopo di individuare pattern comuni di leak
 //! vendor-specific o comandi amministrativi passati per errore attraverso il
 //! transaction scope. Non è un parser SQL completo: usa un'analisi lessicale
-//! lessicale delle keyword iniziali e dei confini degli statement.
+//! delle keyword iniziali e dei confini degli statement.
 //!
 //! I comandi transazionali (`BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`,
 //! `RELEASE`, `DECLARE`, `FETCH`, `CLOSE`) sono gestiti dalla libreria; se
@@ -39,12 +39,17 @@ pub fn enforce_policy(policy: NativeQueryPolicy, sql: &str) -> crate::Result<()>
     let has_backslash = sql.contains('\\');
     let has_comments = sql.contains("/*");
     let mut valid = false;
-    for (backslash, nested_comments) in [(false, false), (false, true), (true, false), (true, true)]
-    {
-        if (backslash && !has_backslash) || (nested_comments && !has_comments) {
+    for mode in 0..8 {
+        let backslash = mode & 1 != 0;
+        let nested_comments = mode & 2 != 0;
+        let mysql_comments = mode & 4 != 0;
+        if (backslash && !has_backslash)
+            || (nested_comments && !has_comments)
+            || (mysql_comments && !sql.contains('#') && !sql.contains("--"))
+        {
             continue;
         }
-        let Ok(heads) = statement_heads(sql, backslash, nested_comments) else {
+        let Ok(heads) = statement_heads(sql, backslash, nested_comments, mysql_comments) else {
             continue;
         };
         valid = true;
@@ -72,7 +77,7 @@ pub fn enforce_policy(policy: NativeQueryPolicy, sql: &str) -> crate::Result<()>
 /// Un input lessicalmente incompleto non dichiara una keyword qualificata.
 #[must_use]
 pub fn statement_head(sql: &str) -> String {
-    statement_heads(sql, false, true)
+    statement_heads(sql, false, true, false)
         .ok()
         .and_then(|heads| heads.into_iter().next())
         .unwrap_or_default()
@@ -87,6 +92,7 @@ fn statement_heads(
     sql: &str,
     backslash: bool,
     nested_comments: bool,
+    mysql_comments: bool,
 ) -> crate::Result<Vec<String>> {
     let bytes = sql.as_bytes();
     let mut heads = Vec::new();
@@ -96,7 +102,13 @@ fn statement_heads(
         let rest = &bytes[position..];
         if rest[0].is_ascii_whitespace() {
             position += 1;
-        } else if rest.starts_with(b"--") {
+        } else if (mysql_comments && rest[0] == b'#')
+            || (rest.starts_with(b"--")
+                && (!mysql_comments
+                    || rest
+                        .get(2)
+                        .is_none_or(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())))
+        {
             position += rest
                 .iter()
                 .position(|byte| matches!(byte, b'\n' | b'\r'))

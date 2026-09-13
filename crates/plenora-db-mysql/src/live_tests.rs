@@ -6096,6 +6096,13 @@ async fn live_native_query_policy_deny_rejects_ddl() {
         )
         .await
         .expect("begin pfm_defaults");
+    for sql in ["SELECT 1--1; COMMIT", "SELECT '--'; COMMIT"] {
+        let error = tx
+            .execute(&Statement::new(sql), &cancellation)
+            .await
+            .expect_err("statement nascosto deve essere rifiutato prima dell'I/O");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    }
     let result = tx
         .execute(
             &Statement::new("CREATE TABLE _nqp_deny_ddl (x INT)"),
