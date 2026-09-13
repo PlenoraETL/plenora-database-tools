@@ -1,6 +1,102 @@
 use super::*;
 
 #[test]
+fn literals_cannot_hide_a_second_statement_or_transaction_control() {
+    for literal in [
+        "'--'",
+        "'/*'",
+        "'it''s; --'",
+        "\"--\"",
+        "`/*`",
+        "[--]",
+        "$$--;/*$$",
+        "$tag$'; COMMIT$tag$",
+        "q'[--;/*]'",
+        "q'!'; COMMIT!'",
+        "'é;界'",
+    ] {
+        let select = format!("SELECT {literal}");
+        assert!(
+            enforce_policy(NativeQueryPolicy::Deny, &select).is_ok(),
+            "{select}"
+        );
+        assert!(
+            enforce_policy(NativeQueryPolicy::Deny, &format!("{select}; DROP TABLE t")).is_err()
+        );
+        assert!(enforce_policy(NativeQueryPolicy::Allow, &format!("{select}; COMMIT")).is_err());
+    }
+}
+
+#[test]
+fn all_statement_heads_are_checked_after_empty_segments_and_nested_comments() {
+    for control in [
+        "BEGIN",
+        "START TRANSACTION",
+        "COMMIT",
+        "ROLLBACK",
+        "SAVEPOINT s",
+        "RELEASE SAVEPOINT s",
+        "DECLARE c CURSOR FOR SELECT 1",
+        "FETCH c",
+        "CLOSE c",
+    ] {
+        for prefix in [
+            ";",
+            ";;; /* outer /* nested */ rest */",
+            "SELECT 1;",
+            "SELECT 1; -- note\r\n;",
+        ] {
+            assert!(
+                enforce_policy(NativeQueryPolicy::Allow, &format!("{prefix}{control}")).is_err()
+            );
+        }
+    }
+    assert!(enforce_policy(NativeQueryPolicy::Allow, "SELECT 1; SELECT 2").is_ok());
+    assert_eq!(statement_head("/* comment */ SELECT/**/1"), "SELECT");
+}
+
+#[test]
+fn malformed_and_executable_comments_are_not_qualified() {
+    for sql in [
+        "SELECT 'unterminated",
+        "SELECT /* unfinished",
+        "SELECT $$unfinished",
+        "/*! COMMIT */",
+        "/*M! COMMIT */",
+    ] {
+        assert!(enforce_policy(NativeQueryPolicy::Allow, sql).is_err());
+        assert!(enforce_policy(NativeQueryPolicy::Deny, sql).is_err());
+    }
+    for sql in [
+        r"SELECT 'it\'s fine'",
+        r"SELECT E'it\'s fine'",
+        "SELECT /* outer /* inner */ end */ 1",
+    ] {
+        assert!(
+            enforce_policy(NativeQueryPolicy::Deny, sql).is_ok(),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn dialect_ambiguity_cannot_hide_a_second_statement() {
+    for sql in [
+        "SELECT 1 /* outer /* inner */; COMMIT; /* end */",
+        "SELECT 1 /* outer /* inner */; DROP TABLE t; /* end */",
+        "SELECT a_$tag$; COMMIT; SELECT b_$tag$",
+        "SELECT 1--1; COMMIT",
+        "SELECT 1--1; DROP TABLE t",
+    ] {
+        assert!(enforce_policy(NativeQueryPolicy::Deny, sql).is_err());
+    }
+    for sql in ["SELECT 1--1; COMMIT", "# note\nCOMMIT"] {
+        assert!(enforce_policy(NativeQueryPolicy::Allow, sql).is_err());
+    }
+    assert!(enforce_policy(NativeQueryPolicy::Deny, "SELECT 1--1").is_ok());
+}
+
+#[test]
 fn allow_permits_any_sql() {
     assert!(enforce_policy(NativeQueryPolicy::Allow, "SELECT 1").is_ok());
     assert!(enforce_policy(NativeQueryPolicy::Allow, "CREATE TABLE t (x INT)").is_ok());

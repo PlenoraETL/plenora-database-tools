@@ -5,6 +5,25 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [4.1.0] — 2026-09-13
+
+### Corretto
+
+- La governance delle query native distingue commenti e literal SQL, verifica
+  tutti gli statement e blocca i comandi transazionali anche dopo segmenti
+  vuoti. Le differenze fra dialetti su escape e commenti non possono
+  nascondere uno statement al controllo.
+- Gli errori di parsing degli URL e conversione Arrow non espongono valori
+  dell'input neppure nella catena pubblica delle eccezioni.
+- Il fallimento o la cancellazione di `begin` non lascia la sessione ORM
+  asincrona in un flush incompleto. Gli errori di rollback e cleanup non
+  sostituiscono il fallimento originale, anche nei percorsi di migrazione.
+- I nomi degli indici spatial Oracle rispettano i confini UTF-8 e distinguono
+  i nomi lunghi che condividono lo stesso prefisso.
+- Il rapporto PostgreSQL esclude dalle prove eseguite i test che richiedono
+  fixture aggiuntivi assenti. La CI verifica anche il CLI con la sola feature
+  Oracle.
+
 ## [4.0.0] — 2026-09-04
 
 ### Modificato

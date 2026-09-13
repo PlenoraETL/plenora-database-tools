@@ -76,7 +76,11 @@ class EngineConfig:
     def from_url(cls, value: str) -> EngineConfig:
         if not isinstance(value, str) or not value:
             raise ValueError("URL database non valido")
-        parsed = urlsplit(value)
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError:
+            raise ValueError("URL database non valido") from None
         provider = _PROVIDERS.get(parsed.scheme.lower())
         if provider is None:
             raise ValueError("schema URL database non supportato")
@@ -95,8 +99,8 @@ class EngineConfig:
                 if has_pool
                 else None
             )
-        except (TypeError, ValueError) as error:
-            raise ValueError("configurazione pool URL non valida") from error
+        except (TypeError, ValueError):
+            raise ValueError("configurazione pool URL non valida") from None
         database = unquote(parsed.path.lstrip("/")) or None
         host = parsed.hostname
         user = None if parsed.username is None else unquote(parsed.username)
@@ -134,7 +138,7 @@ class EngineConfig:
             database=database,
             user=user,
             password=password,
-            port=parsed.port,
+            port=port,
             tls_mode=tls_mode,
             tls_ca=tls_ca,
             pool=pool,

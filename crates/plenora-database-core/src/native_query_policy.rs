@@ -5,7 +5,7 @@
 //! qui: la validazione ha lo scopo di individuare pattern comuni di leak
 //! vendor-specific o comandi amministrativi passati per errore attraverso il
 //! transaction scope. Non è un parser SQL completo: usa un'analisi lessicale
-//! best-effort del solo primo keyword e del count di statement.
+//! delle keyword iniziali e dei confini degli statement.
 //!
 //! I comandi transazionali (`BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`,
 //! `RELEASE`, `DECLARE`, `FETCH`, `CLOSE`) sono gestiti dalla libreria; se
@@ -34,133 +34,201 @@ pub enum NativeQueryPolicy {
 /// Ritorna `InvalidPlan` se il policy è `Deny` e la SQL contiene un keyword
 /// non nella allowlist OLTP oppure più di uno statement.
 pub fn enforce_policy(policy: NativeQueryPolicy, sql: &str) -> crate::Result<()> {
-    let stripped = strip_comments(sql);
-    if is_forbidden_transaction_control(&stripped) {
-        return Err(crate::DatabaseError::invalid_plan(
-            "il transaction scope gestisce BEGIN/COMMIT/ROLLBACK/SAVEPOINT: non passarli come statement",
-        ));
+    // Senza dialetto o SQL mode non si puo assumere la semantica del backslash.
+    // Le letture compatibili devono rispettare la policy prima dell'I/O.
+    let has_backslash = sql.contains('\\');
+    let has_comments = sql.contains("/*");
+    let mut valid = false;
+    for mode in 0..8 {
+        let backslash = mode & 1 != 0;
+        let nested_comments = mode & 2 != 0;
+        let mysql_comments = mode & 4 != 0;
+        if (backslash && !has_backslash)
+            || (nested_comments && !has_comments)
+            || (mysql_comments && !sql.contains('#') && !sql.contains("--"))
+        {
+            continue;
+        }
+        let Ok(heads) = statement_heads(sql, backslash, nested_comments, mysql_comments) else {
+            continue;
+        };
+        valid = true;
+        if heads.iter().any(|head| is_transaction_control(head)) {
+            return Err(crate::DatabaseError::invalid_plan(
+                "il transaction scope gestisce BEGIN/COMMIT/ROLLBACK/SAVEPOINT: non passarli come statement",
+            ));
+        }
+        if policy == NativeQueryPolicy::Deny
+            && (heads.len() != 1 || !is_oltp_allowed_keyword(&heads[0]))
+        {
+            return Err(crate::DatabaseError::invalid_plan(
+                "profilo native_query=Deny: richiesto un singolo statement CRUD",
+            ));
+        }
     }
-    if policy == NativeQueryPolicy::Allow {
-        return Ok(());
+    if valid {
+        Ok(())
+    } else {
+        Err(lexical_error())
     }
-    let segments = split_statements(&stripped);
-    if segments.len() > 1 {
-        return Err(crate::DatabaseError::invalid_plan(
-            "profilo native_query=Deny: multi-statement non consentito",
-        ));
-    }
-    let first = segments
-        .first()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| crate::DatabaseError::invalid_plan("statement SQL vuoto"))?;
-    let head = extract_first_keyword(first);
-    if !is_oltp_allowed_keyword(&head) {
-        // La keyword viene da testo SQL libero, e sotto questo profilo il
-        // chiamante puo aver mandato uno statement che non doveva: ricopiarla
-        // significherebbe rimettere SQL nel messaggio.
-        return Err(crate::DatabaseError::invalid_plan(
-            "profilo native_query=Deny: lo statement non e fra le forme CRUD ammesse",
-        ));
-    }
-    Ok(())
 }
 
-/// Estrae la prima keyword SQL (uppercase ASCII) di uno statement,
-/// dopo aver stripped commenti `--`/`/**/` e whitespace iniziale.
-///
-/// Usato dai classifier (CLI `execute-sql`, policy check) per
-/// discriminare CRUD verbs da altri comandi.
-///
-/// **Limite noto**: `strip_comments` non è literal-aware — commenti
-/// dentro string literal SQL (`'-- non è commento'`) vengono comunque
-/// riconosciuti come commenti. Per la use case classifier (leggere la
-/// PRIMA keyword) è ininfluente: il primo commento eventuale è
-/// leading e i literal arrivano dopo. Non esporre `strip_comments`
-/// standalone per non incoraggiare usi in cui il bug conta.
+/// Estrae la keyword iniziale senza interpretare come commenti i literal SQL.
+/// Un input lessicalmente incompleto non dichiara una keyword qualificata.
 #[must_use]
 pub fn statement_head(sql: &str) -> String {
-    strip_comments(sql)
-        .trim_start()
-        .chars()
-        .take_while(char::is_ascii_alphabetic)
-        .collect::<String>()
-        .to_ascii_uppercase()
+    statement_heads(sql, false, true, false)
+        .ok()
+        .and_then(|heads| heads.into_iter().next())
+        .unwrap_or_default()
 }
 
-fn strip_comments(sql: &str) -> String {
-    let mut out = String::with_capacity(sql.len());
-    let mut chars = sql.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '-' if chars.peek() == Some(&'-') => {
-                // -- line comment
-                while let Some(&n) = chars.peek() {
-                    if n == '\n' {
-                        break;
-                    }
-                    chars.next();
-                }
+fn lexical_error() -> crate::DatabaseError {
+    crate::DatabaseError::invalid_plan("statement SQL con delimitatori non validi")
+}
+
+/// Legge solo le teste; il testo originale non viene modificato o eseguito.
+fn statement_heads(
+    sql: &str,
+    backslash: bool,
+    nested_comments: bool,
+    mysql_comments: bool,
+) -> crate::Result<Vec<String>> {
+    let bytes = sql.as_bytes();
+    let mut heads = Vec::new();
+    let mut head = None;
+    let mut position = 0;
+    while position < bytes.len() {
+        let rest = &bytes[position..];
+        if rest[0].is_ascii_whitespace() {
+            position += 1;
+        } else if (mysql_comments && rest[0] == b'#')
+            || (rest.starts_with(b"--")
+                && (!mysql_comments
+                    || rest
+                        .get(2)
+                        .is_none_or(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())))
+        {
+            position += rest
+                .iter()
+                .position(|byte| matches!(byte, b'\n' | b'\r'))
+                .unwrap_or(rest.len());
+        } else if rest.starts_with(b"/*") {
+            // I commenti eseguibili MySQL/MariaDB non sono commenti inerti.
+            if rest.starts_with(b"/*!") || rest.starts_with(b"/*M!") {
+                return Err(lexical_error());
             }
-            '/' if chars.peek() == Some(&'*') => {
-                // /* block comment */
-                chars.next(); // '*'
-                let mut prev = ' ';
-                for n in chars.by_ref() {
-                    if prev == '*' && n == '/' {
-                        break;
-                    }
-                    prev = n;
-                }
+            position = comment_end(bytes, position + 2, nested_comments)?;
+        } else if rest[0] == b';' {
+            if let Some(value) = head.take() {
+                heads.push(value);
             }
-            _ => out.push(c),
+            position += 1;
+        } else {
+            if head.is_none() {
+                let length = rest
+                    .iter()
+                    .take_while(|byte| byte.is_ascii_alphabetic())
+                    .count();
+                head = Some(sql[position..position + length].to_ascii_uppercase());
+            }
+            position = token_end(sql, position, backslash)?;
         }
     }
-    out
+    if let Some(value) = head {
+        heads.push(value);
+    }
+    Ok(heads)
 }
 
-fn split_statements(sql: &str) -> Vec<String> {
-    let mut segments = Vec::new();
-    let mut current = String::new();
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut chars = sql.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' if !in_double => {
-                current.push(c);
-                if in_single && chars.peek() == Some(&'\'') {
-                    // '' escape all'interno di stringa
-                    current.push(chars.next().expect("peek"));
-                } else {
-                    in_single = !in_single;
-                }
+fn comment_end(bytes: &[u8], mut position: usize, nested_comments: bool) -> crate::Result<usize> {
+    let mut depth = 1;
+    while position < bytes.len() {
+        if nested_comments && bytes[position..].starts_with(b"/*") {
+            depth += 1;
+            position += 2;
+        } else if bytes[position..].starts_with(b"*/") {
+            depth -= 1;
+            position += 2;
+            if depth == 0 {
+                return Ok(position);
             }
-            '"' if !in_single => {
-                current.push(c);
-                in_double = !in_double;
-            }
-            ';' if !in_single && !in_double => {
-                if !current.trim().is_empty() {
-                    segments.push(current.clone());
-                }
-                current.clear();
-            }
-            _ => current.push(c),
+        } else {
+            position += 1;
         }
     }
-    if !current.trim().is_empty() {
-        segments.push(current);
-    }
-    segments
+    Err(lexical_error())
 }
 
-fn extract_first_keyword(sql: &str) -> String {
-    sql.trim()
-        .chars()
-        .take_while(char::is_ascii_alphabetic)
-        .collect::<String>()
-        .to_ascii_uppercase()
+fn token_end(sql: &str, position: usize, backslash: bool) -> crate::Result<usize> {
+    let bytes = sql.as_bytes();
+    let rest = &bytes[position..];
+    match rest[0] {
+        b'\'' | b'"' | b'`' | b'[' => {
+            let closing = if rest[0] == b'[' { b']' } else { rest[0] };
+            quoted_end(bytes, position + 1, closing, backslash && rest[0] != b'[')
+        }
+        b'$' => {
+            let length = rest[1..]
+                .iter()
+                .take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_')
+                .count()
+                + 1;
+            if rest.get(length) == Some(&b'$')
+                && (length == 1 || !rest[1].is_ascii_digit())
+                && (position == 0
+                    || !(bytes[position - 1].is_ascii_alphanumeric()
+                        || matches!(bytes[position - 1], b'_' | b'$')))
+            {
+                let delimiter = &sql[position..=position + length];
+                let start = position + length + 1;
+                sql[start..]
+                    .find(delimiter)
+                    .map(|offset| start + offset + delimiter.len())
+                    .ok_or_else(lexical_error)
+            } else {
+                Ok(position + 1)
+            }
+        }
+        // Oracle alternative quoting: q'[literal]', q'!literal!'.
+        b'q' | b'Q' if rest.get(1) == Some(&b'\'') && rest.len() >= 4 => {
+            let close = match rest[2] {
+                b'[' => b']',
+                b'(' => b')',
+                b'{' => b'}',
+                b'<' => b'>',
+                other => other,
+            };
+            rest[3..]
+                .windows(2)
+                .position(|pair| pair == [close, b'\''])
+                .map(|offset| position + offset + 5)
+                .ok_or_else(lexical_error)
+        }
+        _ => Ok(position + 1),
+    }
+}
+
+fn quoted_end(
+    bytes: &[u8],
+    mut position: usize,
+    close: u8,
+    backslash: bool,
+) -> crate::Result<usize> {
+    while position < bytes.len() {
+        if backslash && bytes[position] == b'\\' {
+            position += 2;
+        } else if bytes[position] == close {
+            position += 1;
+            if bytes.get(position) != Some(&close) {
+                return Ok(position);
+            }
+            position += 1;
+        } else {
+            position += 1;
+        }
+    }
+    Err(lexical_error())
 }
 
 fn is_oltp_allowed_keyword(head: &str) -> bool {
@@ -170,27 +238,19 @@ fn is_oltp_allowed_keyword(head: &str) -> bool {
     )
 }
 
-fn is_forbidden_transaction_control(sql: &str) -> bool {
-    // Rilevo anche solo se una parola-chiave transazionale è la testa del
-    // primo statement (la governance della tx è della libreria, mai del
-    // consumer). Uso il primo segmento perché uno stray ";" successivo
-    // sarebbe già trattato dal policy Deny come multi-statement.
-    if let Some(first) = sql.split(';').next() {
-        let head = extract_first_keyword(first);
-        return matches!(
-            head.as_str(),
-            "BEGIN"
-                | "START"
-                | "COMMIT"
-                | "ROLLBACK"
-                | "SAVEPOINT"
-                | "RELEASE"
-                | "DECLARE"
-                | "FETCH"
-                | "CLOSE"
-        );
-    }
-    false
+fn is_transaction_control(head: &str) -> bool {
+    matches!(
+        head,
+        "BEGIN"
+            | "START"
+            | "COMMIT"
+            | "ROLLBACK"
+            | "SAVEPOINT"
+            | "RELEASE"
+            | "DECLARE"
+            | "FETCH"
+            | "CLOSE"
+    )
 }
 
 #[cfg(test)]

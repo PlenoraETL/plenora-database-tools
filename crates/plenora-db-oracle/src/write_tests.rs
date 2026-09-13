@@ -3,6 +3,28 @@ use crate::types::{OracleColumnKind, OracleColumnSpec};
 use plenora_database_core::plan::ObjectRef;
 use plenora_database_core::protocol::contract_schema;
 
+#[test]
+fn spatial_index_names_preserve_utf8_and_distinguish_long_identifiers() {
+    let table = format!("{}é", "A".repeat(113));
+    let name = spatial_index_name(&table, "SHAPE");
+    assert!(name.len() <= 118);
+    plenora_database_core::identifier::validate_identifier(
+        plenora_database_core::identifier::IdentifierDialect::Oracle,
+        &name,
+    )
+    .unwrap();
+    let table = "A".repeat(114);
+    assert_ne!(
+        spatial_index_name(&table, "SHAPE_A"),
+        spatial_index_name(&table, "SHAPE_B")
+    );
+    assert_eq!(spatial_index_name("PLACE", "SHAPE"), "PLN_PLACE_SHAPE_SIDX");
+    assert_eq!(
+        spatial_index_name(&table, "SHAPE_A"),
+        spatial_index_name(&table, "SHAPE_A")
+    );
+}
+
 fn spatial_schema() -> SchemaRef {
     contract_schema(vec![
         Field::new("ID", DataType::Int32, false),

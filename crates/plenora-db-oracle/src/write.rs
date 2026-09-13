@@ -1206,11 +1206,18 @@ fn target_has_unique_key(
 }
 
 fn spatial_index_name(table: &str, column: &str) -> String {
-    let mut base = format!("PLN_{table}_{column}_SIDX").to_ascii_uppercase();
-    if base.len() > 118 {
-        base.truncate(118);
+    use sha2::{Digest, Sha256};
+
+    let base = format!("PLN_{table}_{column}_SIDX").to_ascii_uppercase();
+    if base.len() <= 118 {
+        return base;
     }
-    base
+    // Il digest conserva l'identita dei suffissi eliminati. Il prefisso
+    // termina sempre su un confine UTF-8, anche per nomi Oracle validi.
+    let digest = Sha256::digest(base.as_bytes());
+    let suffix = u64::from_be_bytes(std::array::from_fn(|index| digest[index]));
+    let end = base.floor_char_boundary(101);
+    format!("{}_{suffix:016X}", &base[..end])
 }
 
 const fn shape_create_setup_error(mut error: DatabaseError) -> DatabaseError {

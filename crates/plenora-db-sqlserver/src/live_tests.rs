@@ -718,6 +718,18 @@ async fn live_native_query_policy_guards_every_transaction_entrypoint() {
         .expect_err("conditional update deve negare il DDL");
     assert_eq!(conditional_error.category, ErrorCategory::InvalidPlan);
 
+    for sql in [
+        "SELECT '--'; CREATE TABLE [plenora_test].[policy_must_not_run] ([id] int)",
+        "SELECT '/*'; COMMIT",
+        "; COMMIT",
+    ] {
+        let error = transaction
+            .execute(&Statement::new(sql), &cancellation)
+            .await
+            .expect_err("i literal non nascondono un secondo statement");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    }
+
     let rows = transaction
         .query(
             &Statement::new("SELECT CAST(1 AS int) AS [value]"),

@@ -213,7 +213,7 @@ jobs:
       - name: cargo clippy su ogni adapter isolato
         run: |
           status=0
-          for features in "--no-default-features --features postgres" "--no-default-features --features mysql" "--no-default-features --features sqlserver" "--no-default-features --features db2" "--all-features"; do
+          for features in "--no-default-features --features postgres" "--no-default-features --features mysql" "--no-default-features --features sqlserver" "--no-default-features --features db2" "--no-default-features --features oracle" "--all-features"; do
             echo "::group::clippy $features"
             # shellcheck disable=SC2086  # le feature sono argomenti multipli
             if cargo clippy --locked -p plenora-database-cli --all-targets $features -- -D warnings                && cargo test --locked -p plenora-database-cli $features -- --skip live_; then

@@ -372,13 +372,14 @@ class LiveInventory(unittest.TestCase):
                 "preflight_pf2_capability_negative_reports_no_postgis",
                 "preflight_pf3_spatial_query_without_postgis_fails_cleanly",
                 "live_private_ca_mtls_and_cancellation_when_configured",
+                "live_age_1_7_pg18_parameters_types_and_transactions",
             },
         )
         # Ogni voce deve dire **quale** fixture manca: una dichiarazione senza
         # motivo e una scusa.
         for reason in gate.NON_QUALIFYING_LIVE_TESTS.values():
             self.assertTrue(
-                "POSTGRES_URL_BARE" in reason or "TLS" in reason,
+                "POSTGRES_URL_BARE" in reason or "TLS" in reason or "PLENORA_TEST_AGE_DSN" in reason,
                 reason,
             )
 
