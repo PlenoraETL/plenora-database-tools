@@ -33,6 +33,8 @@ fn all_statement_heads_are_checked_after_empty_segments_and_nested_comments() {
         "BEGIN",
         "START TRANSACTION",
         "COMMIT",
+        "END",
+        "ABORT",
         "ROLLBACK",
         "SAVEPOINT s",
         "RELEASE SAVEPOINT s",
