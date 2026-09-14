@@ -5,7 +5,7 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
-## [4.2.0] — 2026-09-13
+## [4.2.0] — 2026-09-14
 
 ### Corretto
 
