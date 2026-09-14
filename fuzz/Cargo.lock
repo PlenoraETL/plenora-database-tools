@@ -1167,7 +1167,6 @@ name = "plenora-database-tools-fuzz"
 version = "0.0.0"
 dependencies = [
  "arrow-schema",
- "chrono",
  "libfuzzer-sys",
  "plenora-database-core",
  "plenora-database-engine",

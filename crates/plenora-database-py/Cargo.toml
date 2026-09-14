@@ -34,7 +34,6 @@ plenora-db-sqlserver.workspace = true
 plenora-db-oracle.workspace = true
 plenora-db-db2 = { workspace = true, optional = true }
 arrow-ipc.workspace = true
-arrow-schema.workspace = true
 # RUSTSEC-2025-0020: fino alla 0.24.0 `PyString::from_object` passava un
 # `&str` all'API C di Python senza garantire il NUL finale, e l'interprete
 # poteva leggere oltre la fine del buffer ed esporne il contenuto in

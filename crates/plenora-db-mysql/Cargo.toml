@@ -20,7 +20,6 @@ sha2.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-plenora-database-testkit.workspace = true
 mysql_common.workspace = true
 
 [lints]
