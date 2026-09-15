@@ -3409,50 +3409,55 @@ class OrmSession:
             return
         self._in_flush = True
         try:
-            self._emit("before_flush")
-            dirty = self._dirty_instances()
-            pending = self._pending_insert_order()
-            self._preflight((*self._pending, *dirty, *self._deleted))
-            position = 0
-            while position < len(pending):
-                instance = pending[position]
-                self._synchronize_relationships(instance)
-                self._preflight((instance,))
-                signature = self._pending_batch_signature(instance)
-                batch = [instance]
-                batch_limit = _insert_batch_limit(
-                    signature, self._provider, self._insert_batch_size
-                )
-                if signature is not None:
-                    while (
-                        position + len(batch) < len(pending)
-                        and len(batch) < batch_limit
-                    ):
-                        candidate = pending[position + len(batch)]
-                        self._synchronize_relationships(candidate)
-                        self._preflight((candidate,))
-                        if self._pending_batch_signature(candidate) != signature:
-                            break
-                        batch.append(candidate)
-                if len(batch) > 1:
-                    self._insert_batch(batch)
-                else:
-                    self._insert(instance)
-                position += len(batch)
-            for instance, related, foreign_keys in self._deferred_foreign_keys:
-                identity = _identity(_mapper(type(related)), related)
-                for foreign_key, value in zip(foreign_keys, identity, strict=True):
-                    instance.__dict__[foreign_key] = value
-                    _state(instance).dirty.add(foreign_key)
-                self._update(instance)
-            for instance in dirty:
-                if _state(instance).status is ObjectState.PERSISTENT:
+            # Gli hook possono aggiungere lavoro: il flush termina solo a regime.
+            for _ in range(100):
+                self._emit("before_flush")
+                dirty = self._dirty_instances()
+                pending = self._pending_insert_order()
+                self._preflight((*self._pending, *dirty, *self._deleted))
+                position = 0
+                while position < len(pending):
+                    instance = pending[position]
+                    self._synchronize_relationships(instance)
+                    self._preflight((instance,))
+                    signature = self._pending_batch_signature(instance)
+                    batch = [instance]
+                    batch_limit = _insert_batch_limit(
+                        signature, self._provider, self._insert_batch_size
+                    )
+                    if signature is not None:
+                        while (
+                            position + len(batch) < len(pending)
+                            and len(batch) < batch_limit
+                        ):
+                            candidate = pending[position + len(batch)]
+                            self._synchronize_relationships(candidate)
+                            self._preflight((candidate,))
+                            if self._pending_batch_signature(candidate) != signature:
+                                break
+                            batch.append(candidate)
+                    if len(batch) > 1:
+                        self._insert_batch(batch)
+                    else:
+                        self._insert(instance)
+                    position += len(batch)
+                for instance, related, foreign_keys in self._deferred_foreign_keys:
+                    identity = _identity(_mapper(type(related)), related)
+                    for foreign_key, value in zip(foreign_keys, identity, strict=True):
+                        instance.__dict__[foreign_key] = value
+                        _state(instance).dirty.add(foreign_key)
                     self._update(instance)
-            self._flush_many_to_many()
-            self._remove_deleted_associations()
-            for instance in tuple(self._deleted):
-                self._delete(instance)
-            self._emit("after_flush")
+                for instance in dirty:
+                    if _state(instance).status is ObjectState.PERSISTENT:
+                        self._update(instance)
+                self._flush_many_to_many()
+                self._remove_deleted_associations()
+                for instance in tuple(self._deleted):
+                    self._delete(instance)
+                self._emit("after_flush")
+                if not self._has_flush_work():
+                    return
+            raise OrmStateError("gli hook ORM non stabilizzano il flush")
         except BaseException:
             with suppress(BaseException):
                 if getattr(self._transaction, "is_active", True):
@@ -3923,6 +3928,19 @@ class OrmSession:
             self._emit("load", instance)
         return instance
 
+    def _has_flush_work(self) -> bool:
+        if self._pending or self._deleted or self._dirty_instances():
+            return True
+        for instance in self._identity_map.values():
+            state = _state(instance)
+            for relation in _mapper(type(instance)).relationships:
+                if relation.secondary is None or relation.name not in instance.__dict__:
+                    continue
+                current = set(_relationship_identities(instance, relation))
+                if current != set(state.relationship_original.get(relation.name or "", ())):
+                    return True
+        return False
+
     def _dirty_instances(self) -> tuple[DeclarativeBase, ...]:
         seen: set[int] = set()
         values: list[DeclarativeBase] = []
@@ -4033,10 +4051,7 @@ class OrmSession:
                 if relation.secondary is None or relation.name not in instance.__dict__:
                     continue
                 local_value = _identity(mapper, instance)
-                current = {
-                    _identity(_mapper(relation.target), related)
-                    for related in _loaded_relationship_values(instance, relation)
-                }
+                current = set(_relationship_identities(instance, relation))
                 original = set(state.relationship_original.get(relation.name or "", ()))
                 for remote_identity in current - original:
                     remote_value = remote_identity
@@ -4509,28 +4524,14 @@ class OrmSession:
             self._update_joined(instance, mapper)
             return
         state = _state(instance)
+        if not state.dirty:
+            return
+        self._emit("before_update", instance)
+        self._preflight((instance,))
         names = tuple(sorted(state.dirty))
         if not names:
             return
-        self._emit("before_update", instance)
-        assignments: dict[str, Any] = {}
-        parameters: dict[str, Any] = {}
-        for index, name in enumerate(names):
-            bind_name = f"orm_update_{index}"
-            attribute = mapper.attribute(name)
-            value = instance.__dict__[name]
-            if isinstance(attribute.type_, Geometry) and (
-                value is not None or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
-            ):
-                assignments[name] = _spatial_value(
-                    bind(bind_name, BindType.BINARY),
-                    attribute.type_.srid,
-                    attribute.type_.semantics,
-                )
-                parameters[bind_name] = _geometry_parameter_value(value, self._provider)
-            else:
-                assignments[name] = _attribute_bind(attribute, bind_name)
-                parameters[bind_name] = _attribute_parameter(attribute, value)
+        assignments, parameters = self._update_assignments(mapper, names, "", instance)
         predicate, identity_parameters = _identity_predicate(mapper, instance)
         parameters.update(identity_parameters)
         if mapper.version is not None:
@@ -4564,10 +4565,13 @@ class OrmSession:
         if len(lineage) < 2:
             raise OrmMappingError("mapper joined privo di base")
         state = _state(instance)
+        if not state.dirty:
+            return
+        self._emit("before_update", instance)
+        self._preflight((instance,))
         dirty = set(state.dirty)
         if not dirty:
             return
-        self._emit("before_update", instance)
         root = lineage[0]
         identity = _identity(mapper, instance)
         for index, fragment in enumerate(lineage):
@@ -4638,7 +4642,7 @@ class OrmSession:
         parameters: dict[str, Any] = {}
         for index, name in enumerate(names):
             attribute = mapper.attribute(name)
-            bind_name = f"orm_update_{role}_{index}"
+            bind_name = f"orm_update_{role}_{index}" if role else f"orm_update_{index}"
             value = instance.__dict__[name]
             if isinstance(attribute.type_, Geometry) and (
                 value is not None or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
@@ -5481,50 +5485,54 @@ class AsyncOrmSession(OrmSession):
         self._in_flush = True
         try:
             await self._ensure_started()
-            await self._emit_async("before_flush")
-            dirty = self._dirty_instances()
-            pending = self._pending_insert_order()
-            self._preflight((*self._pending, *dirty, *self._deleted))
-            position = 0
-            while position < len(pending):
-                instance = pending[position]
-                self._synchronize_relationships(instance)
-                self._preflight((instance,))
-                signature = self._pending_batch_signature(instance)
-                batch = [instance]
-                batch_limit = _insert_batch_limit(
-                    signature, self._provider, self._insert_batch_size
-                )
-                if signature is not None:
-                    while (
-                        position + len(batch) < len(pending)
-                        and len(batch) < batch_limit
-                    ):
-                        candidate = pending[position + len(batch)]
-                        self._synchronize_relationships(candidate)
-                        self._preflight((candidate,))
-                        if self._pending_batch_signature(candidate) != signature:
-                            break
-                        batch.append(candidate)
-                if len(batch) > 1:
-                    await self._insert_batch_async(batch)
-                else:
-                    await self._insert_async(instance)
-                position += len(batch)
-            for instance, related, foreign_keys in self._deferred_foreign_keys:
-                identity = _identity(_mapper(type(related)), related)
-                for foreign_key, value in zip(foreign_keys, identity, strict=True):
-                    instance.__dict__[foreign_key] = value
-                    _state(instance).dirty.add(foreign_key)
-                await self._update_async(instance)
-            for instance in dirty:
-                if _state(instance).status is ObjectState.PERSISTENT:
+            for _ in range(100):
+                await self._emit_async("before_flush")
+                dirty = self._dirty_instances()
+                pending = self._pending_insert_order()
+                self._preflight((*self._pending, *dirty, *self._deleted))
+                position = 0
+                while position < len(pending):
+                    instance = pending[position]
+                    self._synchronize_relationships(instance)
+                    self._preflight((instance,))
+                    signature = self._pending_batch_signature(instance)
+                    batch = [instance]
+                    batch_limit = _insert_batch_limit(
+                        signature, self._provider, self._insert_batch_size
+                    )
+                    if signature is not None:
+                        while (
+                            position + len(batch) < len(pending)
+                            and len(batch) < batch_limit
+                        ):
+                            candidate = pending[position + len(batch)]
+                            self._synchronize_relationships(candidate)
+                            self._preflight((candidate,))
+                            if self._pending_batch_signature(candidate) != signature:
+                                break
+                            batch.append(candidate)
+                    if len(batch) > 1:
+                        await self._insert_batch_async(batch)
+                    else:
+                        await self._insert_async(instance)
+                    position += len(batch)
+                for instance, related, foreign_keys in self._deferred_foreign_keys:
+                    identity = _identity(_mapper(type(related)), related)
+                    for foreign_key, value in zip(foreign_keys, identity, strict=True):
+                        instance.__dict__[foreign_key] = value
+                        _state(instance).dirty.add(foreign_key)
                     await self._update_async(instance)
-            await self._flush_many_to_many_async()
-            await self._remove_deleted_associations_async()
-            for instance in tuple(self._deleted):
-                await self._delete_async(instance)
-            await self._emit_async("after_flush")
+                for instance in dirty:
+                    if _state(instance).status is ObjectState.PERSISTENT:
+                        await self._update_async(instance)
+                await self._flush_many_to_many_async()
+                await self._remove_deleted_associations_async()
+                for instance in tuple(self._deleted):
+                    await self._delete_async(instance)
+                await self._emit_async("after_flush")
+                if not self._has_flush_work():
+                    return
+            raise OrmStateError("gli hook ORM non stabilizzano il flush")
         except BaseException:
             with suppress(BaseException):
                 if self._transaction is not None:
@@ -5924,10 +5932,7 @@ class AsyncOrmSession(OrmSession):
                 if relation.secondary is None or relation.name not in instance.__dict__:
                     continue
                 local_value = _identity(mapper, instance)
-                current = {
-                    _identity(_mapper(relation.target), related)
-                    for related in _loaded_relationship_values(instance, relation)
-                }
+                current = set(_relationship_identities(instance, relation))
                 original = set(state.relationship_original.get(relation.name or "", ()))
                 for remote_identity in current - original:
                     remote_value = remote_identity
@@ -5995,28 +6000,14 @@ class AsyncOrmSession(OrmSession):
             await self._update_joined_async(instance, mapper)
             return
         state = _state(instance)
+        if not state.dirty:
+            return
+        await self._emit_async("before_update", instance)
+        self._preflight((instance,))
         names = tuple(sorted(state.dirty))
         if not names:
             return
-        await self._emit_async("before_update", instance)
-        assignments: dict[str, Any] = {}
-        parameters: dict[str, Any] = {}
-        for index, name in enumerate(names):
-            bind_name = f"orm_update_{index}"
-            attribute = mapper.attribute(name)
-            value = instance.__dict__[name]
-            if isinstance(attribute.type_, Geometry) and (
-                value is not None or self._provider in _SPATIAL_NULL_WRAPPER_PROVIDERS
-            ):
-                assignments[name] = _spatial_value(
-                    bind(bind_name, BindType.BINARY),
-                    attribute.type_.srid,
-                    attribute.type_.semantics,
-                )
-                parameters[bind_name] = _geometry_parameter_value(value, self._provider)
-            else:
-                assignments[name] = _attribute_bind(attribute, bind_name)
-                parameters[bind_name] = _attribute_parameter(attribute, value)
+        assignments, parameters = self._update_assignments(mapper, names, "", instance)
         predicate, identity_parameters = _identity_predicate(mapper, instance)
         parameters.update(identity_parameters)
         if mapper.version is not None:
@@ -6052,10 +6043,13 @@ class AsyncOrmSession(OrmSession):
         if len(lineage) < 2:
             raise OrmMappingError("mapper joined privo di base")
         state = _state(instance)
+        if not state.dirty:
+            return
+        await self._emit_async("before_update", instance)
+        self._preflight((instance,))
         dirty = set(state.dirty)
         if not dirty:
             return
-        await self._emit_async("before_update", instance)
         root = lineage[0]
         identity = _identity(mapper, instance)
         for index, fragment in enumerate(lineage):
@@ -6960,7 +6954,13 @@ def _remember_relationship(
 ) -> None:
     if relation.name is None:
         raise OrmMappingError("relationship senza nome")
-    _state(instance).relationship_original[relation.name] = tuple(
+    _state(instance).relationship_original[relation.name] = _relationship_identities(instance, relation)
+
+
+def _relationship_identities(
+    instance: DeclarativeBase, relation: Relationship[Any]
+) -> tuple[tuple[Any, ...], ...]:
+    return tuple(
         _identity(_mapper(relation.target), related)
         for related in _loaded_relationship_values(instance, relation)
     )

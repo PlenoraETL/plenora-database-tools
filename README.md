@@ -31,6 +31,8 @@ La matrice corrente dei provider, delle capability, dei crate e dei test è in
 
 Il dettaglio dell'API Python, inclusi esempi sync/async e limiti dichiarati, è
 nel [`README dello SDK`](crates/plenora-database-py/README.md).
+L'impatto degli aggiornamenti e le correzioni non ancora rilasciate sono nel
+[`changelog dello SDK`](crates/plenora-database-py/CHANGELOG.md).
 
 ## Contratto pubblico
 
