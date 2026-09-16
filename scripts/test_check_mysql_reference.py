@@ -1445,7 +1445,7 @@ SDK_ARTIFACT = {
         "/usr/local/lib/python3.13/site-packages/plenora_database/_native.abi3.so"
     ),
     "maturin": "1.14.1",
-    "rustc": "1.98.0",
+    "rustc": "1.98.1",
 }
 SDK_VERSIONS = {
     "pandas": "3.0.5",
@@ -1716,7 +1716,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             },
         )
         self.assertEqual(recorded["versions"]["maturin"], "1.14.1")
-        self.assertEqual(recorded["versions"]["rustc"], "1.98.0")
+        self.assertEqual(recorded["versions"]["rustc"], "1.98.1")
 
         # Il bench confronta due artefatti, quindi il verdetto ne identifica
         # due: del CLI servono anche le feature — decidono quali provider

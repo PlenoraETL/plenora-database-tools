@@ -48,7 +48,7 @@ jobs:
             --out dist
             --manifest-path crates/plenora-database-py/Cargo.toml
           manylinux: 2_34
-          rust-toolchain: '1.98.0'
+          rust-toolchain: '1.98.1'
       - name: Build CLI and qualify the Rust mapping
         shell: bash
         run: |
@@ -99,7 +99,7 @@ jobs:
             --locked
             --out dist
             --manifest-path crates/plenora-database-py/Cargo.toml
-          rust-toolchain: '1.98.0'
+          rust-toolchain: '1.98.1'
       - name: Build CLI
         shell: pwsh
         run: |
