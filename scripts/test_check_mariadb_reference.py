@@ -29,9 +29,6 @@ from scripts.mariadb_references import (  # noqa: E402
     validate_compose_pins_the_references,
 )
 
-# La decisione corrente resta leggibile finche il codice la cita per nome; la
-# cronologia delle campagne, invece, vive in Git.
-ADR = ROOT / "docs" / "mariadb" / "ADR-0014-evidence-first.md"
 CATALOG = ROOT / "crates" / "plenora-db-mysql" / "src" / "catalog.rs"
 GENERATOR = ROOT / "docker" / "mysql" / "tls" / "generate.sh"
 SERVER_EXT = ROOT / "docker" / "mariadb" / "tls" / "server.ext"
@@ -77,26 +74,7 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
             self.assertEqual(reference.exact_version.count("."), 2)
 
     def test_the_previous_lts_is_kept_as_a_compatibility_row(self) -> None:
-        """L'evidenza gia raccolta non si butta quando esce una versione.
-
-        Per un fork il confronto fra due versioni **e** evidenza: dice se una
-        divergenza dal comportamento MySQL appartiene a MariaDB o a una sua
-        release. Toglierla lascerebbe una sola osservazione e nessun modo di
-        attribuirla.
-
-        Le righe di compatibilita sono piu d'una da quando 10.11 e entrata, e
-        questa guardia pretende **almeno** la LTS precedente invece di
-        esattamente una: l'ADR prevedeva il caso � "se il ciclo mostrera che
-        servono altre righe, si aggiungono al documento" � e una guardia che
-        contasse esattamente uno impedirebbe cio che l'ADR permette.
-
-        Cio che resta preteso per ognuna e la sostanza: che sia piu vecchia
-        della riga di evidenza, e che abbia il **proprio** volume TLS. Due
-        riferimenti che condividessero il volume condividerebbero il
-        certificato, e il certificato porta il nome host: il secondo server
-        risponderebbe con l'identita del primo, e la prova TLS misurerebbe
-        un'altra macchina.
-        """
+        """La matrice include almeno una LTS di compatibilita e assegna un volume TLS distinto a ogni riferimento."""
 
         self.assertGreaterEqual(len(COMPATIBILITY), 1)
         versions = {entry.exact_version for entry in COMPATIBILITY}
@@ -139,29 +117,8 @@ class MariadbEvidenceFixtureTests(unittest.TestCase):
         self.assertIn("version_comment.to_ascii_lowercase().contains(\"mariadb\")", profile)
         self.assertIn("foreign_product_rejection", catalog)
 
-        adr = ADR.read_text(encoding="utf-8")
-        self.assertIn("Il **fail-close resta**", adr)
-        self.assertIn("`MysqlProvider` rifiuta MariaDB", adr)
-        self.assertIn("`MariadbProvider` rifiuta MySQL", adr)
-
-    def test_the_decision_records_the_current_product_boundary(self) -> None:
-        """L'ADR descrive l'invariante attuale, non gli stati intermedi."""
-
-        adr = ADR.read_text(encoding="utf-8")
-        self.assertIn("Decisione architetturale", adr)
-        self.assertIn("Nessuna selezione automatica", adr)
-        self.assertIn("`MariadbProvider` rifiuta MySQL", adr)
-        self.assertNotIn("MariaDB **non e qualificata**", adr)
-
-        for evidence in ("1193", "1054", "native_type=json", "SRS_ID"):
-            self.assertIn(evidence, adr, f"riga del profilo senza misura: {evidence}")
-
     def test_no_surface_declares_mariadb_qualified(self) -> None:
-        """Nessun documento corrente puo dire che MariaDB e supportata.
-
-        La fixture rende MariaDB avviabile, ed e proprio quando una cosa
-        diventa avviabile che qualcuno la descrive come disponibile.
-        """
+        """Le guide rimandano alla qualifica delle singole capability."""
 
         documents = [ROOT / "README.md"]
         documents += sorted((ROOT / "docs").rglob("*.md"))
@@ -364,12 +321,7 @@ class MariadbDivergenceMatrixTests(unittest.TestCase):
 
 
 class MariadbDriverEvidenceTests(unittest.TestCase):
-    """Il bypass resta di solo test, e la misura resta una misura.
-
-    E la guardia che tiene separate due cose che si somigliano: attraversare
-    il rifiuto per **misurare** e attraversarlo per **supportare**. La prima
-    e cio che ADR 0014 chiede, la seconda e la decisione che l'ADR rimanda.
-    """
+    """Le prove differenziali possono aggirare il rifiuto del prodotto; il bypass non e accessibile in produzione."""
 
     CATALOG = ROOT / "crates" / "plenora-db-mysql" / "src" / "catalog.rs"
     EVIDENCE = ROOT / "crates" / "plenora-db-mysql" / "src" / "mariadb_evidence.rs"
@@ -854,10 +806,7 @@ class MariadbDriverRunnerTests(unittest.TestCase):
 
         from scripts.mysql_inventory import EXCLUDED_SOURCES, collect
 
-        # Le due misure, entrambe: quella su MariaDB di ADR 0014 e quella
-        # sulla semantica di sessione. Vale per tutt'e due la stessa ragione —
-        # due terzi delle loro corse avvengono su un motore che il gate non
-        # qualifica.
+        # Le prove devono attraversare entrambi i prodotti.
         measurements = {
             "mariadb_evidence.rs": "mariadb_driver_evidence",
             "session_evidence.rs": "session_semantics_evidence",
@@ -871,13 +820,7 @@ class MariadbDriverRunnerTests(unittest.TestCase):
             self.assertNotIn("async fn live_", text)
             self.assertIn("#[ignore", text)
 
-        # L'inventario non deve contenere i **punti d'ingresso** delle misure.
-        # La regola era scritta come "nessun nome che contenga `evidence`", ed
-        # e stata un'approssimazione utile finche quella parola compariva solo
-        # nei moduli di misura. Da quando i parser condivisi vivono in
-        # `evidence.rs` con i propri unit test offline, quella forma
-        # confondeva una misura con il test di una funzione pura: sono cose
-        # diverse, e la seconda appartiene all'inventario.
+        # La classificazione dipende dal ruolo del test, non da una sottostringa generica.
         inventory = collect()
         for family in inventory.values():
             self.assertFalse(
@@ -892,14 +835,7 @@ class MariadbDriverRunnerTests(unittest.TestCase):
 
 
 class MariadbEvidenceCampaignTests(unittest.TestCase):
-    """La campagna che porta le settantasei sonde su un runner pulito.
-
-    Il runner sa gia giudicare, ma pretende tre server accesi: finche quello e
-    stato l'unico modo di lanciarlo, le prove erano presidiate da chi si
-    ricordava di farlo. Queste guardie tengono ferme le tre cose che rendono
-    la campagna una garanzia invece di un comando: quando gira, cosa fa
-    fallire, e in quale ordine tocca le cose.
-    """
+    """La campagna governa trigger, preflight, avvio delle fixture, verdetto e pulizia."""
 
     WORKFLOW = ROOT / ".github" / "workflows" / "mariadb-evidence.yml"
 

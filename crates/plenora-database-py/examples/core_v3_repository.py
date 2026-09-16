@@ -12,7 +12,7 @@ class UserRepository:
     """Il repository riceve la transazione: non possiede connessioni globali."""
 
     @staticmethod
-    def find(transaction: db.Transaction, user_id: int) -> dict | None:
+    def find(transaction: db.Transaction, user_id: int) -> db.Row | None:
         return (
             transaction.select("users")
             .where_eq("id", user_id)
@@ -22,7 +22,7 @@ class UserRepository:
     @staticmethod
     async def find_async(
         transaction: db.AsyncTransaction, user_id: int
-    ) -> dict | None:
+    ) -> db.Row | None:
         return await (
             transaction.select("users")
             .where_eq("id", user_id)
@@ -30,7 +30,7 @@ class UserRepository:
         )
 
 
-def handle_request(engine: db.Engine, user_id: int) -> dict | None:
+def handle_request(engine: db.Engine, user_id: int) -> db.Row | None:
     """Ogni request apre una sessione e delimita una transazione."""
     with engine.session() as session:
         with session.begin(native_query_policy="deny") as transaction:
@@ -39,7 +39,7 @@ def handle_request(engine: db.Engine, user_id: int) -> dict | None:
 
 async def handle_async_request(
     engine: db.AsyncEngine, user_id: int
-) -> dict | None:
+) -> db.Row | None:
     """Stesso confine applicativo sulla superficie asyncio."""
     async with engine.session() as session:
         async with await session.begin(
@@ -50,14 +50,11 @@ async def handle_async_request(
 
 async def main() -> None:
     dsn = os.environ["PLENORA_DATABASE_DSN"]
-    engine = db.create_engine(dsn)
-    async_engine = await db.create_async_engine(dsn)
-    try:
-        print(handle_request(engine, 1))
-        print(await handle_async_request(async_engine, 1))
-    finally:
-        engine.dispose()
-        async_engine.dispose()
+    config = db.EngineConfig.from_postgres_dsn(dsn)
+    with db.engine_from_url(config) as engine:
+        async with await db.async_engine_from_url(config) as async_engine:
+            print(handle_request(engine, 1))
+            print(await handle_async_request(async_engine, 1))
 
 
 if __name__ == "__main__":

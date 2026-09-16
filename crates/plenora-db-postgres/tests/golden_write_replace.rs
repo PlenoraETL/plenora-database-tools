@@ -265,21 +265,8 @@ async fn audit_count() -> String {
     scalar_text(&format!("SELECT n::text FROM public.{AUDIT}")).await
 }
 
-/// I test di questo file condividono **le stesse tre tabelle**, e non per
-/// pigrizia: il contratto di `Replace` si prova su un target con una chiave
-/// esterna verso un padre e un trigger di audit, cioe su un oggetto che ha una
-/// storia. Ricrearlo per ogni test con nomi diversi non proverebbe la stessa
-/// cosa.
-///
-/// Cio che mancava era **dirlo**. `cargo test` esegue i test di un binario in
-/// parallelo, e otto di questi cominciano droppando e ricreando quelle
-/// tabelle: due che partono insieme si tolgono di mezzo il fixture a vicenda,
-/// e il secondo riceve «violazione vincolo di unicita» da una `CREATE TABLE` —
-/// che e la corsa di due sessioni sugli indici del catalogo, non un difetto
-/// del provider.
-///
-/// Il turno rende la condivisione del fixture una proprieta dichiarata invece
-/// di una coincidenza dello scheduler.
+/// Le prove che condividono il target si serializzano per evitare
+/// interferenze fra preparazione, sostituzione e verifica.
 static FIXTURE: Mutex<()> = Mutex::const_new(());
 
 /// Prende il turno sul fixture e lo riporta allo stato noto.

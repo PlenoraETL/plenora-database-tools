@@ -1,4 +1,4 @@
-"""Reflection tipizzata e immutabile del catalogo Core v3."""
+"""Reflection tipizzata e immutabile del catalogo Core relazionale."""
 
 from __future__ import annotations
 

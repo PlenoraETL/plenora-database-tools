@@ -419,9 +419,8 @@ def render() -> str:
     lines += [f"- `{name}`" for name in contract_messages()]
     lines += [
         "",
-        "E l'unica nel worktree: le major precedenti stanno in Git, e nessun",
-        "file qui dentro le referenzia. Il gate offline fallisce se una di esse",
-        "torna nell'albero di lavoro, o se un riferimento la nomina.",
+        "Il gate offline verifica che schemi ed esempi usino soltanto la major",
+        "attiva e rifiuta riferimenti a un'altra major nel worktree.",
         "",
         "## Capability dichiarate",
         "",

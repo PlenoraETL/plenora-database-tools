@@ -11,7 +11,7 @@ Uso tipico:
 
     import plenora_database as p
 
-    with p.connect(dsn) as s:
+    with p.engine_from_url(config) as engine, engine.session() as s:
         # 1. Estrai EWKB di riferimento (via query PostGIS o buffer WKB
         #    prodotto client-side)
         ref_ewkb = s.execute_scalar(

@@ -26,7 +26,7 @@ pub(crate) struct PostgresCommandContext {
 impl PostgresCommandContext {
     /// Contesto per comandi PFM: TLS `Require`, con radice di fiducia `WebPKI`
     /// oppure la CA privata indicata dalle variabili di
-    /// [`crate::pfm::postgres_provider_for_pfm`]. ADR-011.
+    /// [`crate::pfm::postgres_provider_for_pfm`]..
     ///
     /// Il provider arriva da quel factory e non da un `default()` locale:
     /// due sorgenti dello stesso provider divergono, e la divergenza si
@@ -48,13 +48,7 @@ impl PostgresCommandContext {
         })
     }
 
-    /// Contesto senza TLS per test/dev locali (`insecure_local()`).
-    /// ADR-011: nome esplicito per non nascondere il rischio dietro
-    /// un flag booleano opaco.
-    ///
-    /// # Errors
-    ///
-    /// Vedi `for_pfm`.
+    /// Opt-out TLS esplicito per connessioni a fixture locali.
     #[allow(dead_code)] // usato da consumer dev/test, non da tutti i sub-command
     pub(crate) fn for_pfm_insecure_local(dsn_env: &str) -> CliResult<Self> {
         Ok(Self {

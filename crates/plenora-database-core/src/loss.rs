@@ -113,11 +113,7 @@ impl LossReport {
     /// mai il contenuto: `reason` e i nomi di tipo derivano dallo schema
     /// sorgente, e il contratto vieta di rimetterli in un errore pubblico.
     pub fn validate(&self) -> crate::Result<()> {
-        // Il contratto fissa `schema_version` a 2 con un `const`, non con un
-        // minimo: un report che dichiara un'altra major non e un report piu
-        // recente da tollerare, e un documento di un contratto diverso. Il
-        // controllo mancava qui e mancava in `WriteOutcome`, che ha lo stesso
-        // vincolo; `ProviderCapabilities` era l'unico ad averlo.
+        // Il contratto richiede la major esatta, non una versione minima.
         if self.schema_version != 2 {
             return Err(crate::DatabaseError::invalid_plan(
                 "loss report con schema_version non supportata",

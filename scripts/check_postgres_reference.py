@@ -175,9 +175,7 @@ NON_QUALIFYING_LIVE_TESTS = {
     "live_private_ca_mtls_and_cancellation_when_configured": "richiede le quattro variabili TLS di una CA privata: il compose di questo gate e plaintext, e il test ritorna subito riportando comunque `ok`",
 }
 
-# L'inventario e condiviso con il gate SQL Server: vedi `scripts/live_inventory`.
-# Portarne due copie significava correggerne una sola, che e esattamente cio
-# che era successo.
+# Inventario condiviso con SQL Server tramite scripts/live_inventory.
 def live_test_inventory() -> set[str]:
     """I test live che i sorgenti del provider definiscono, ora.
 
@@ -289,38 +287,9 @@ def main() -> int:
             "-p", "plenora-database-sql",
         ]))
         steps.append("core_and_sql_unit_tests")
-        # `--include-ignored` allinea la corsa all'inventario del provider; un
-        # test non eseguito non può entrare nel report.
-        #
-        # Niente `--nocapture`, ed e il punto di questa invocazione.
-        #
-        # Di questa corsa si legge **solo** l'elenco delle righe
-        # `test <nome> ... ok`: le usano `validate_live_row_diagnostics` e
-        # `validate_live_inventory`, e nessuna delle due guarda cio che i test
-        # stampano. Con `--nocapture` quelle stampe finivano sullo stesso
-        # flusso delle righe di esito mentre i test giravano, e in parallelo le
-        # due cose si intrecciavano: una riga `test <nome> ... ok` che si
-        # ritrova dentro la stampa di un altro test smette di essere
-        # riconoscibile.
-        #
-        # Il gate e diventato rosso cosi, una corsa su due, su
-        # `live_postgres_concurrent_cancellation_recovers_pool`: dichiarato
-        # «nella suite ma non eseguito» mentre era stato eseguito e passato.
-        # Quel test non ha `#[ignore]` e non puo essere saltato — se il DSN
-        # manca ritorna subito, ma la riga di esito la stampa lo stesso — il
-        # che rendeva l'accusa impossibile e il verdetto una moneta.
-        #
-        # `--test-threads=1` sembrava la risposta e non lo era: serializzare
-        # rende la rottura **deterministica** invece di toglierla, perche
-        # l'harness stampa `test <nome> ... `, lascia scrivere il test, e solo
-        # dopo aggiunge `ok`. Con la serializzazione i due benchmark, che
-        # stampano, sparivano dall'inventario a ogni corsa. Meglio di un flake,
-        # ma sempre sbagliato.
-        #
-        # Con la cattura attiva l'harness bufferizza per test ed emette righe
-        # intere, anche in parallelo — e l'output di un test che fallisce lo
-        # stampa lo stesso, che era l'unica ragione per cui `--nocapture`
-        # poteva sembrare utile qui.
+        # La cattura dell'harness preserva righe complete test/nome/esito anche
+        # quando i test scrivono su stdout in parallelo. Il parser usa queste
+        # righe per verificare l'inventario eseguito; evitare --nocapture.
         provider_output = run(
             cargo(
                 [

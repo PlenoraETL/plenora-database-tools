@@ -393,7 +393,7 @@ pub fn parse_isolation(
     }
 }
 
-/// Traduce una stringa `native_query_policy` all'enum core (PFM CHG-003).
+/// Traduce una stringa `native_query_policy` all'enum core.
 pub fn parse_native_query_policy(
     value: &str,
 ) -> PyResult<plenora_database_core::native_query_policy::NativeQueryPolicy> {

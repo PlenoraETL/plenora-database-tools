@@ -95,7 +95,7 @@ create_exception!(
     PlenoraError
 );
 create_exception!(plenora_database._native, PlenoraInternalError, PlenoraError);
-// PFM CHG-004: eccezione dedicata per commit con esito incerto.
+// eccezione dedicata per commit con esito incerto.
 // Il consumer che vuole discriminare recovery/quarantine dalla generica
 // "internal" filtra qui direttamente.
 create_exception!(
@@ -188,7 +188,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Aggancia inoltre metadata (category, phase, retry, remote_effect,
 /// provider, execution_id, diagnostics) come attributi sull'istanza.
 ///
-/// PFM CHG-004: se il pattern coincide con "commit outcome unknown"
+/// se il pattern coincide con "commit outcome unknown"
 /// (`Internal` + `Commit` phase + `Unknown` remote_effect +
 /// `RequiresRecovery` retry), l'errore ottiene la classe dedicata
 /// `PlenoraCommitOutcomeUnknownError` invece di `PlenoraInternalError`
@@ -280,7 +280,7 @@ pub fn to_py_err(err: DatabaseError) -> PyErr {
             "target_type",
             bind_context.as_ref().map(|context| context.2.as_str()),
         );
-        // PFM CHG-004: attributi extra su commit-outcome-unknown per
+        // attributi extra su commit-outcome-unknown per
         // guidare il recovery lato consumer.
         if is_commit_outcome_unknown {
             let _ = bound.setattr("automatic_retry_allowed", false);

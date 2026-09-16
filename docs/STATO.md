@@ -41,9 +41,8 @@ La major attiva e `contracts/v2/`, e contiene:
 - `read-checkpoint.schema.json`
 - `write-outcome.schema.json`
 
-E l'unica nel worktree: le major precedenti stanno in Git, e nessun
-file qui dentro le referenzia. Il gate offline fallisce se una di esse
-torna nell'albero di lavoro, o se un riferimento la nomina.
+Il gate offline verifica che schemi ed esempi usino soltanto la major
+attiva e rifiuta riferimenti a un'altra major nel worktree.
 
 ## Capability dichiarate
 

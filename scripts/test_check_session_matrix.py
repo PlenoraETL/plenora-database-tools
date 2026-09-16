@@ -93,22 +93,7 @@ class SessionMatrixTests(unittest.TestCase):
         MATRIX.validate(built, results)
 
     def test_the_matrix_measures_every_declared_reference(self) -> None:
-        """La flotta segue `references.json`, che e la fonte unica.
-
-        Questa guardia elencava le tre chiavi a mano, ed e caduta il giorno in
-        cui MariaDB 10.11 e entrata nella matrice. Riscriverla aggiungendo una
-        quarta stringa avrebbe rimesso in piedi la stessa trappola: un elenco
-        copiato diverge dalla fonte alla prima modifica, e l'unico segnale che
-        da e un fallimento che si "aggiusta" allineando il numero senza
-        guardare cosa e cambiato.
-
-        Cio che va preteso non e **quali** riferimenti ci siano — lo decide
-        `docker/mariadb/references.json`, e l'ADR prevede esplicitamente che se
-        ne aggiungano — ma che la flotta li contenga tutti, che MySQL apra la
-        fila perche e il metro del confronto, e che ognuno sia fissato per
-        digest: un tag mutabile renderebbe la riga della matrice una promessa
-        invece di una prova.
-        """
+        """La flotta segue references.json: include ogni riferimento, apre con MySQL e fissa ogni immagine per digest."""
 
         keys = [server.key for server in self.fleet]
         self.assertEqual(keys[0], "mysql", "il metro del confronto apre la fila")
@@ -342,21 +327,10 @@ class SessionMatrixTests(unittest.TestCase):
         # osservata: senza questo, la campagna girerebbe e non direbbe nulla.
         self.assertIn("git diff --exit-code -- docs/mariadb/SESSION-MATRIX.md", workflow)
 
-        # Log e diagnostica **fuori** dal repository. Scritti dentro,
-        # sporcherebbero l'albero e il preflight della campagna rifiuterebbe
-        # proprio quel file: un gate che non puo passare per costruzione, ed e
-        # esattamente com'era scritto la prima volta.
-        #
-        # La guardia guardava tre forme — `mkdir`, `| tee`, `--diagnostics` —
-        # mentre prometteva "nessuna scrittura nell'albero": `touch`, `cp`,
-        # `echo >` sarebbero passati. Ora cerca **qualunque** forma che
-        # scrive, e pretende che la riga nomini `RUNNER_TEMP`.
+        # La campagna deve restare raggiungibile dal workflow.
         self.assertIn("$RUNNER_TEMP/session-matrix", workflow)
         self.assertIn("runner.temp", workflow)
-        # Il ciclo di vita delle fixture sta nello script, non qui. Questa
-        # asserzione era stata cancellata riscrivendo il blocco accanto: il
-        # workflow resta corretto, ma niente lo teneva tale, e `up`/`down`
-        # avrebbero potuto tornare nello YAML in silenzio.
+        # Il workflow confronta la matrice rigenerata con il riferimento tracciato.
         self.assertNotIn("docker compose", workflow)
         for line in workflow.splitlines():
             stripped = line.strip()
@@ -511,17 +485,7 @@ class SessionMatrixTests(unittest.TestCase):
             [file for file, action in calls if action == "up"],
             list(CAMPAIGN.COMPOSE_FILES),
         )
-        # Ogni riferimento viene spento due volte: una prima di accenderlo,
-        # per partire da uno stato noto — il compose genera il materiale TLS
-        # con un container one-shot, e un `up` su uno stack gia acceso lo
-        # rigenera sotto i server che lo usano — e una alla fine, nella
-        # pulizia.
-        #
-        # Cercare quei nomi "fra gli ultimi down" era un falso positivo:
-        # togliendo la pulizia finale, le asserzioni restavano soddisfatte dai
-        # down iniziali. Cio che va verificato e la **posizione**: per ogni
-        # riferimento deve esistere uno spegnimento dopo l'ultimo tentativo di
-        # accensione, di qualunque riferimento.
+        # Verifica l'ordine esatto delle chiamate di pulizia dei progetti avviati.
         last_up = max(
             index for index, (_, action) in enumerate(calls) if action == "up"
         )

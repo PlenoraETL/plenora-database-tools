@@ -71,12 +71,7 @@ fn the_execution_id_is_measured_in_code_points_at_its_boundaries() {
     outcome.execution_id = "x".to_owned();
     outcome.validate().expect("un carattere e dentro");
 
-    // Il caso che distingue davvero i due conteggi: 128 `e` accentate sono
-    // 128 code point e 256 byte, quindi ammesse dal contratto e sul filo
-    // di un controllo in byte. Il caso che c'era prima — 128 coppie
-    // base + combinante — non distingueva nulla: 256 code point sono fuori
-    // in entrambi i modi, e una regressione da `chars().count()` a `len()`
-    // sarebbe passata inosservata.
+    // Il limite conta caratteri Unicode, non byte UTF-8. Il caso distingue le due misure.
     outcome.execution_id = "\u{e9}".repeat(128);
     assert_eq!(outcome.execution_id.chars().count(), 128);
     assert_eq!(outcome.execution_id.len(), 256);

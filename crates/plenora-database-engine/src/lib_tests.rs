@@ -39,14 +39,8 @@ fn list_catalogs_ignores_a_source_the_contract_allows() {
     assert_eq!(plan.operation, Operation::DatabaseListCatalogs);
 }
 
-/// Un limite oltre `u64` e conforme allo schema v2 — `minimum` senza
-/// `maximum` — e illeggibile da questa implementazione.
-///
-/// E lo stesso confine gia fissato per il documento capability, e vale per
-/// ogni intero del contratto: dopo il ripristino del dominio storico della
-/// v2 non esiste piu alcun massimo dichiarato, quindi la divergenza fra
-/// cio che il contratto ammette e cio che `u64` rappresenta e permanente
-/// finche non arriva una major che la scriva.
+/// Lo schema ammette interi oltre u64; la deserializzazione Rust deve
+/// rifiutare quelli non rappresentabili senza restringere lo schema pubblico.
 #[test]
 fn a_plan_limit_beyond_u64_is_within_the_contract_and_outside_this_reader() {
     let bytes =

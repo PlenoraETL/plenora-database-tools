@@ -36,7 +36,7 @@ pub fn transaction_options(
     })
 }
 
-/// Variante governata da una sessione del Core v3 gia aperta dall'Engine.
+/// Variante governata da una sessione del Core relazionale gia aperta dall'Engine.
 pub async fn run_engine_transaction<R, F>(
     session: &mut EngineSession,
     cancellation: &CancellationToken,

@@ -289,7 +289,7 @@ fn write_operation(profile: Profile, target: String) -> WriteOperation {
 fn profiled_provider(batch_rows: usize, mode: PostgresInsertMode) -> PostgresProvider {
     // Esempio benchmark contro Docker senza TLS. In produzione:
     // rimuovere `insecure_local_with_batch_rows` e usare `new(N)` che
-    // ha TLS `Require` di default (ADR-011).
+    // ha TLS `Require` di default.
     match (batch_rows, mode) {
         (1_024, PostgresInsertMode::CopyText) => PostgresProvider::insecure_local(),
         (8_192, PostgresInsertMode::CopyBinary) => PostgresProvider::insecure_local()

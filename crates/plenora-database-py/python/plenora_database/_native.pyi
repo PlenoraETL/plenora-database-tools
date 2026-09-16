@@ -90,7 +90,7 @@ def create_async_oracle_engine(
     tls_mode: str = "require",
 ) -> Any: ...
 
-# PFM CHG-002: SessionContext transaction-local.
+# SessionContext transaction-local.
 class SessionContext:
     def __init__(self) -> None: ...
     def insert_public(self, name: str, value: str | int | bool) -> None: ...
@@ -266,8 +266,8 @@ class DatabaseSession:
         isolation: str | None = None,
         read_only: bool | None = None,
         statement_timeout_ms: int | None = None,
-        context: SessionContext | None = None,  # PFM CHG-002
-        native_query_policy: str | None = None,  # PFM CHG-003: "allow"|"deny"
+        context: SessionContext | None = None,
+        native_query_policy: str | None = None,  # "allow"|"deny"
     ) -> Transaction: ...
     def execute_portable_rows(self, ast_json: str) -> list[dict]: ...
     def execute_portable_count(self, ast_json: str) -> int: ...
@@ -326,8 +326,8 @@ class AsyncDatabaseSession:
         isolation: str | None = None,
         read_only: bool | None = None,
         statement_timeout_ms: int | None = None,
-        context: SessionContext | None = None,  # PFM CHG-002
-        native_query_policy: str | None = None,  # PFM CHG-003: "allow"|"deny"
+        context: SessionContext | None = None,
+        native_query_policy: str | None = None,  # "allow"|"deny"
     ) -> Any: ...  # awaitable → AsyncTransaction
     def aread(
         self,
@@ -407,8 +407,8 @@ class Session:
         read_only: bool | None = None,
         deferrable: bool | None = None,
         statement_timeout_ms: int | None = None,
-        context: SessionContext | None = None,  # PFM CHG-002
-        native_query_policy: str | None = None,  # PFM CHG-003: "allow"|"deny"
+        context: SessionContext | None = None,
+        native_query_policy: str | None = None,  # "allow"|"deny"
     ) -> Transaction: ...
     def read(
         self,
@@ -527,8 +527,8 @@ class AsyncSession:
         read_only: bool | None = None,
         deferrable: bool | None = None,
         statement_timeout_ms: int | None = None,
-        context: SessionContext | None = None,  # PFM CHG-002
-        native_query_policy: str | None = None,  # PFM CHG-003
+        context: SessionContext | None = None,
+        native_query_policy: str | None = None,
     ) -> Any: ...  # awaitable → AsyncTransaction
     def aread(
         self,
@@ -673,7 +673,7 @@ class PlenoraTransientError(PlenoraError): ...
 class PlenoraExecutionError(PlenoraError): ...
 class PlenoraInternalError(PlenoraError): ...
 
-# PFM CHG-004: commit con esito ignoto — sotto Internal ma con
+# commit con esito ignoto — sotto Internal ma con
 # attributi extra per guidare recovery. Consumer che vuole gestire
 # quarantine separatamente dalla generica "Internal" filtra qui.
 class PlenoraCommitOutcomeUnknownError(PlenoraInternalError):

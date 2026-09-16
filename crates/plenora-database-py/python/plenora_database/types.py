@@ -9,18 +9,18 @@ Esempi:
 
     import plenora_database as p
 
-    with p.connect(dsn) as s:
-        s.execute("INSERT INTO t(id) VALUES ($1)",
+    with p.engine_from_url(config) as engine, engine.session() as s:
+        s.execute_sql("INSERT INTO t(id) VALUES ($1)",
                   [p.uuid("550e8400-e29b-41d4-a716-446655440000")])
-        s.execute("INSERT INTO t(ts) VALUES ($1)",
+        s.execute_sql("INSERT INTO t(ts) VALUES ($1)",
                   [p.timestamptz("2026-01-01T00:00:00Z")])
-        s.execute("INSERT INTO t(bal) VALUES ($1)",
+        s.execute_sql("INSERT INTO t(bal) VALUES ($1)",
                   [p.decimal("1234.56")])
-        s.execute("INSERT INTO t(row_version) VALUES ($1)",
+        s.execute_sql("INSERT INTO t(row_version) VALUES ($1)",
                   [p.int64(1)])
-        s.execute("INSERT INTO t(retry_count) VALUES ($1)",
+        s.execute_sql("INSERT INTO t(retry_count) VALUES ($1)",
                   [p.int32(1)])
-        s.execute("INSERT INTO t(val) VALUES ($1)",
+        s.execute_sql("INSERT INTO t(val) VALUES ($1)",
                   [p.null("text")])   # NULL con hint tipo colonna
 
 Funzionano anche nei builder portable:

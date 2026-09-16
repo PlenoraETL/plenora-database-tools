@@ -13,38 +13,12 @@ from typing import Any
 
 
 def _narrowed_type(field_type: Any, pa: Any) -> Any:
-    """L'equivalente a offset 32 bit di un tipo a offset larghi, se esiste.
+    """Restituisce l'equivalente a offset 32 bit di un tipo Arrow, se esiste.
 
-    Ritorna `None` quando non c'e nulla da convertire.
-
-    I writer dei provider accettano `string`, `binary` e `list` di scalari;
-    `pandas` non lascia scegliere. Con pandas 3 e pyarrow 25
-    `Table.from_pandas` produce `large_string` per ogni colonna di testo, e
-    `copy_from` finiva su "tipo Arrow non supportato dal writer PostgreSQL"
-    per un DataFrame di tre righe — un limite dell'adapter presentato come
-    limite del provider.
-
-    **La conversione e ricorsiva sui tipi nested qualificati**, che sono due:
-
-    * `list` — `PostgreSQL` la scrive come array, con elementi boolean,
-      int32, int64, float32, float64 o testo;
-    * `struct` — e la forma dei `range` (`lower`/`upper` testuali piu i
-      flag di inclusione) e dei tipi `composite`, i cui campi portano nei
-      metadata la dichiarazione nativa che il writer rilegge.
-
-    Fermarsi al primo livello lasciava `large_list<large_string>` a
-    diventare `list<large_string>`, che il writer rifiuta esattamente come
-    prima: la conversione sembrava fatta e non lo era. Ogni campo figlio
-    conserva nome, nullability e metadata — per i `composite` il metadata
-    **e** il contratto, e ricostruire il campo con i default lo perderebbe
-    in silenzio, trasformando una colonna tipizzata in testo anonimo.
-
-    `map` resta intoccato: nessun provider lo scrive, quindi convertirlo
-    produrrebbe un tipo comunque rifiutato, con in piu una copia.
-
-    La conversione puo fallire: oltre 2 GiB di offset il cast solleva invece
-    di troncare. E il comportamento giusto — l'alternativa sarebbe scrivere
-    dati diversi da quelli passati.
+    Ritorna None se non occorre convertire. La conversione attraversa list
+    e struct conservando nomi, nullability e metadata dei campi. I writer
+    richiedono offset a 32 bit per i tipi qualificati; i cast successivi
+    verificano che gli offset siano rappresentabili.
     """
 
     if pa.types.is_large_string(field_type):

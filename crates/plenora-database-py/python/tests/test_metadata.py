@@ -1,4 +1,4 @@
-"""Metadata Core v3: identita tipizzata, cache e invalidazione."""
+"""Metadata Core relazionale: identita tipizzata, cache e invalidazione."""
 
 from __future__ import annotations
 

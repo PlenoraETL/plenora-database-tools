@@ -24,7 +24,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_plenora-database");
 /// Il default e il riferimento plaintext, lo stesso usato dalle fixture live
 /// di `plenora-db-postgres`. Il runner deve impostare
 /// `PLENORA_TLS_INSECURE_LOCAL=1`, l'interruttore dev/test che la CLI gia
-/// dichiara: e secure-by-default (ADR-011) e senza quella variabile rifiuta un
+/// dichiara: e secure-by-default e senza quella variabile rifiuta un
 /// server senza certificato verificabile.
 ///
 /// Per esercitare la CLI contro il riferimento TLS bastano `PG_DSN` e le
@@ -655,10 +655,8 @@ fn f5_14_usage_documents_all_groups_and_global_flags() {
         );
     }
 
-    // I gruppi dei provider esistono **solo** dove l'adapter e compilato.
-    // Questo test li pretendeva tutti: era vero finche l'aiuto elencava ogni
-    // comando a prescindere dalle feature, cioe finche un binario MySQL-only
-    // prometteva `postgres-read-ipc` e `benchmark-spatial`.
+    // L'help presenta le famiglie di comandi; il dispatch resta la fonte
+    // dell'inventario completo dei sottocomandi.
     for (compiled, token) in [
         (cfg!(feature = "postgres"), "PostgreSQL: inspection"),
         (cfg!(feature = "postgres"), "PostgreSQL: read"),

@@ -116,12 +116,7 @@ class PostgresHardeningGateTests(unittest.TestCase):
             )
 
     def test_the_report_publishes_the_steps_it_ran(self) -> None:
-        """Nessuna lista tematica scritta a mano nel verdetto.
-
-        Erano cinquantotto voci, nessuna legata al nome di un test: togliere il
-        test che ne sosteneva una non toglieva la voce e non faceva fallire
-        niente.
-        """
+        """Il verdetto deriva le superfici verificate dai test realmente eseguiti."""
 
         source = GATE.read_text(encoding="utf-8")
         self.assertIn('"steps": steps,', source)

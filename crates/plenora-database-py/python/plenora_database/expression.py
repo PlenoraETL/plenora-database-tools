@@ -118,7 +118,7 @@ class Expression:
 
 
 class ExecutableStatement:
-    """Marker comune degli statement eseguibili dal lifecycle Core v3."""
+    """Marker comune degli statement eseguibili dal lifecycle Core relazionale."""
 
 
 class BindType(str, Enum):

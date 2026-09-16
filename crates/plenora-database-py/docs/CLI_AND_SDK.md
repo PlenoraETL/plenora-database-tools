@@ -1,12 +1,11 @@
-# Migrazione dal CLI allo SDK Python 2.x
+# CLI e SDK Python nelle applicazioni
 
 Questa guida sostituisce gradualmente chiamate `subprocess` al CLI
 `plenora-database` con lo SDK in-process. Il CLI resta appropriato per
 diagnostica, benchmark e operazioni manuali; lo SDK evita invece un nuovo
 processo e una nuova connessione per ogni operazione applicativa.
 
-Il contratto 2.x non mantiene le factory Python 1.x. Gli unici ingressi
-pubblici per il lifecycle sono `engine_from_url`, `async_engine_from_url` ed
+Gli ingressi pubblici per il lifecycle sono `engine_from_url`, `async_engine_from_url` ed
 `EngineConfig`.
 
 ## Installazione
@@ -46,7 +45,7 @@ def load_user(user_id: int) -> p.Row | None:
 
 
 # allo shutdown del processo
-engine.dispose()
+engine.close()
 ```
 
 La variante async usa lo stesso confine:
@@ -55,9 +54,10 @@ La variante async usa lo stesso confine:
 engine = await p.async_engine_from_url(os.environ["DATABASE_URL"])
 
 async with engine.session() as session:
-    row = await session.execute(statement, {"user_id": user_id})
+    result = await session.execute(statement, {"user_id": user_id})
+    row = result.one_or_none()
 
-engine.dispose()
+await engine.aclose()
 ```
 
 ## Equivalenze operative
@@ -164,8 +164,9 @@ plan = p.explain(
 )
 ```
 
-Le capability osservate sono disponibili su `session.capabilities`. Un campo
-assente o non misurato non autorizza una feature.
+Le capability osservate sul database sono in `session.provider_capabilities`;
+`session.capabilities` descrive il contratto dell'artefatto. Un campo assente o
+non misurato non autorizza una feature.
 
 ## Runbook incrementale
 

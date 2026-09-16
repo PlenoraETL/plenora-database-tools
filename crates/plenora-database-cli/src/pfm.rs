@@ -44,7 +44,7 @@ pub(crate) const POSTGRES_INSECURE_LOCAL_ENV: &str = "PLENORA_TLS_INSECURE_LOCAL
 ///    contro quella CA invece dei root pubblici `WebPKI`. Con
 ///    `PLENORA_PG_CLIENT_CERT_PATH` e `PLENORA_PG_CLIENT_KEY_PATH` si aggiunge
 ///    l'identita client, per i server che richiedono `clientcert`.
-/// 3. niente — `default()`: TLS obbligatorio, root pubblici. ADR-011.
+/// 3. niente — `default()`: TLS obbligatorio, root pubblici..
 ///
 /// Il caso (2) non e un opt-out: la verifica resta piena, cambia la radice di
 /// fiducia. Un riferimento con certificato privato e la norma nei test e negli

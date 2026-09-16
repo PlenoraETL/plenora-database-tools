@@ -207,13 +207,7 @@ async fn requires_recovery_short_circuits() {
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
 
-/// `DatabaseError::is_retryable()` e questo executor devono dire la stessa
-/// cosa. Hanno divergiuto: il metodo pubblico rispondeva `true` per
-/// `RequiresRecovery` e `RequiresIdempotencyKey`, che qui non sono mai
-/// stati ritentati. Un consumer che si fidava della risposta e non
-/// dell'executor poteva duplicare una scrittura dall'esito ignoto.
-///
-/// La guardia non ispeziona il codice: conta i tentativi davvero eseguiti.
+/// Il predicato pubblico e la decisione del runner devono concordare sul retry.
 #[tokio::test]
 async fn is_retryable_agrees_with_the_executor() {
     for retry in [

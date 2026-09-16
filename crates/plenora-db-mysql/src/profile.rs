@@ -1,30 +1,14 @@
-//! Profilo di prodotto: dove il crate decide cosa dipende dal server.
+//! Profilo interno di prodotto, selezionato da `MysqlProvider` o `MariadbProvider`.
 //!
-//! ADR 0014 ha deciso un solo crate con `MysqlProvider` e (in seguito)
-//! `MariadbProvider` pubblici e distinti, sopra un profilo **interno**
-//! condiviso. Questo modulo e quel profilo. Non e API pubblica, e non deve
-//! diventarlo: cio che il consumatore sceglie e il provider, non il profilo.
+//! Il trait raccoglie riconoscimento, timeout, catalogo, metadata nativi,
+//! capability e regole spatial. I provider pubblici scelgono il profilo prima
+//! della connessione; il server viene verificato, non usato per selezionarlo.
 //!
-//! Il profilo raccoglie le decisioni che l'evidenza (`docs/mariadb/EVIDENCE.md`)
-//! ha misurato come divergenti fra i due prodotti — riconoscimento, timeout,
-//! catalogo, metadata nativi e spatial. Il trait mantiene queste scelte
-//! visibili in un solo punto per entrambi i prodotti.
-//!
-//! Due vincoli di forma, entrambi deliberati:
-//!
-//! * **`&'static dyn`, non un parametro generico.** `MysqlProvider<P>`
-//!   cambierebbe un tipo pubblico e si propagherebbe a CLI e SDK. Il profilo
-//!   e senza stato, quindi il costo e una chiamata indiretta non inlineabile.
-//!   Quasi tutte le decisioni si prendono una volta per statement, ma non
-//!   tutte: `geometry_output_is_unexpected` viene interrogato per **ogni
-//!   cella spatial** letta. Li la chiamata indiretta e comunque trascurabile
-//!   accanto all'ispezione EWKB che la precede, che percorre la geometria —
-//!   ed e la ragione per cui la forma resta questa, non il fatto che la
-//!   frequenza sia bassa.
-//! * **Il bypass `MariaDB` di test non si sposta.** Vive in `catalog.rs`,
-//!   accanto al punto in cui il rifiuto scatta, ed e li che va letto. Il
-//!   profilo dice *se* un prodotto e estraneo; resta al chiamante decidere
-//!   se in quel preciso test lo si attraversa.
+//! I profili sono senza stato e condivisi tramite `&'static dyn ProductProfile`.
+//! Il dispatch mantiene stabili i tipi pubblici e centralizza le differenze;
+//! per le celle spatial il controllo segue l'ispezione EWKB.
+//! Il bypass del rifiuto MariaDB vive solo nei test in `catalog.rs`.
+//! Le prove riproducibili sono elencate in `docs/mariadb/EVIDENCE.md`.
 
 // `pub(crate)` in un modulo privato e ridondante per il compilatore, non per
 // chi legge: dice che questi item sono condivisi dentro il crate e che non
@@ -133,27 +117,15 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// costante condivisa sarebbe valida per un solo prodotto.
     fn session_isolation_variable(&self) -> &'static str;
 
-    /// Lo statement che impone il timeout di statement sulla sessione.
+    /// SQL del timeout con conversione coerente delle unita.
     ///
-    /// Il contratto del core esprime il timeout in millisecondi; il server
-    /// no, necessariamente. Fra i due c'e una conversione, e il punto di
-    /// questo metodo e che la conversione stia dove sta anche il nome della
-    /// variabile: separarli e il modo in cui un timeout di cinque secondi
-    /// diventa uno di cinque millisecondi senza che nulla fallisca.
-    ///
-    /// ADR 0014 misura che `MAX_EXECUTION_TIME` non esiste su `MariaDB`
-    /// (errore 1193), dove la variabile analoga ha un nome e un'unita diversi.
-    /// Il profilo deve cambiare insieme entrambi gli aspetti.
+    /// `MySQL` usa millisecondi; `MariaDB` richiede secondi in `max_statement_time`.
     fn statement_timeout_statement(&self, timeout_ms: u64) -> String;
 
-    /// Le interrogazioni del catalogo.
+    /// Schemi visibili, esclusi quelli di sistema del prodotto.
     ///
-    /// Non sono qui per gusto di simmetria: ADR 0014 ha misurato che due
-    /// colonne che questo provider legge — `SRS_ID` in `columns`,
-    /// `EXPRESSION` in `statistics` — su `MariaDB` non esistono (errore 1054).
-    /// La query e la sola cosa che decide quali metadati arrivano, quindi e
-    /// la sola cosa che un secondo profilo deve poter cambiare.
-    /// Gli schemi visibili, esclusi quelli di sistema del prodotto.
+    /// Ogni query di catalogo espone gli alias attesi dal lettore, anche quando
+    /// una colonna nativa non esiste sul prodotto selezionato.
     fn schemas_query(&self) -> &'static str;
     /// Tabelle e viste di uno schema.
     fn objects_query(&self) -> &'static str;
@@ -173,26 +145,11 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// per cui la parte senza colonna ne espressione resta un errore.
     fn reports_functional_index_parts(&self) -> bool;
 
-    /// I metadati nativi di una colonna, letti dal wire.
-    ///
-    /// Il prepare descrive il tipo del protocollo, non la dichiarazione SQL:
-    /// e da qui che esce il `native_type` sul path query — sotto la chiave
-    /// che il profilo dichiara in [`ProductProfile::metadata_keys`], non
-    /// sotto una fissa — e qui che ADR
-    /// 0014 ha misurato la divergenza piu concreta — dalla stessa DDL
-    /// `document JSON` `MySQL` manda `MYSQL_TYPE_JSON` e `MariaDB`
-    /// `MYSQL_TYPE_BLOB`, quindi lo schema Arrow pubblicato porta
-    /// `native_type=json` sull'uno e `text` sull'altro.
-    ///
-    /// Il profilo possiede la **produzione** del valore: da quale tipo wire
-    /// nasce quale nome. Non possiede la **semantica** — se il campo debba
-    /// annotare il wire o la DDL — che e una domanda del contratto e va
-    /// decisa dove il campo e definito.
+    /// Metadata della colonna wire, con chiavi e attribuzione del prodotto.
     ///
     /// # Errors
     ///
-    /// Fallisce chiuso per colonne senza nome utilizzabile, decimal oltre
-    /// `Decimal128` e tipi wire non ancora qualificati.
+    /// Rifiuta nomi inutilizzabili, decimal oltre Decimal128 e tipi non qualificati.
     fn wire_column_spec(&self, column: &Column) -> Result<MysqlColumnSpec>;
 
     /// Il namespace dei metadata che il prodotto pubblica nello schema Arrow.
@@ -270,14 +227,8 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// controllo che valida l'output di una funzione che non conosce.
     fn geometry_output_is_unexpected(&self, srid: Option<u32>, dimensions: &str) -> bool;
 
-    /// Le capability e i limiti che il prodotto pubblica.
-    ///
-    /// E il contratto su cui il consumatore decide cosa puo chiedere. ADR 0010
-    /// e 0014 richiedono evidenza distinta per prodotto prima di aprire una
-    /// capability.
-    ///
-    /// `provider_version` arriva dalla probe: e l'unica parte che il profilo
-    /// non decide, perche la dice il server.
+    /// Capability e limiti sostenuti dalle prove del prodotto.
+    /// `provider_version` proviene dalla probe del server.
     fn capabilities(&self, provider_version: String) -> ProviderCapabilities;
 
     /// Se il prodotto qualifica la **scrittura** di geometrie.
@@ -296,13 +247,8 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// nomina il tipo generico non e esatta.
     fn writable_geometry_type(&self, name: &str) -> bool;
 
-    /// Cosa significa un codice di errore del server.
-    ///
-    /// I codici sono superficie di prodotto: ADR 0014 misura divergenze come
-    /// 1193 e 1054 su `MariaDB`. Ereditare questa tabella
-    /// significherebbe classificare come "colonna non valida" un errore che
-    /// sull'altro prodotto vuol dire altro — e la classificazione decide se
-    /// il chiamante puo ritentare.
+    /// Classificazione degli errori server specifica del prodotto.
+    /// I codici non qualificati mantengono una classificazione generica.
     fn classify_server_code(&self, code: u16) -> ServerCodeVerdict;
 
     /// Le cause di rifiuto per riga che il prodotto riconosce.
@@ -321,26 +267,9 @@ pub(crate) trait ProductProfile: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MysqlProfile;
 
-/// Gli alias che le interrogazioni del catalogo devono esporre.
-///
-/// Il profilo restituisce SQL libero, ma `catalog.rs` legge le righe **per
-/// nome**: una query che non esponesse `srs_id` compilerebbe e fallirebbe al
-/// primo oggetto descritto, a runtime, su un errore che parla di una colonna
-/// mancante invece che di un profilo incompleto. Il contratto appartiene
-/// percio al profilo, dove le query vivono.
-///
-/// Un prodotto che la colonna non ce l'ha — ADR 0014 ne ha misurati due,
-/// `SRS_ID` ed `EXPRESSION` su `MariaDB` — deve scrivere `NULL AS srs_id`, non
-/// ometterla. Non e una formalita: assente significherebbe "non misurato", e
-/// il lettore non avrebbe modo di distinguerlo da "nessun SRID dichiarato".
-/// Sono le due cose che l'evidenza tiene separate ovunque, e qui e il punto
-/// in cui si confonderebbero.
-///
-/// Le quattro liste esistono solo nei test, ed e una scelta: in produzione
-/// duplicherebbero le stringhe che le query gia contengono, e due copie della
-/// stessa verita divergono. A tenerle vere sono le guardie, che confrontano
-/// il contratto con le query da una parte e con cio che il catalogo legge
-/// dall'altra — le uniche due direzioni in cui puo rompersi.
+/// Alias richiesti dal lettore del catalogo, verificati soltanto nei test.
+/// Le query devono esporli anche quando manca la colonna nativa, usando
+/// per esempio `NULL AS srs_id` per un SRID non dichiarato.
 #[cfg(test)]
 pub(crate) const SCHEMA_ALIASES: &[&str] = &["schema_name"];
 
@@ -438,20 +367,8 @@ impl ProductProfile for MysqlProfile {
         product_version: &str,
         version_comment: &str,
     ) -> Option<DatabaseError> {
-        // MariaDB resta fail-closed quando il server non corrisponde al
-        // profilo. Le divergenze misurate stanno in `docs/mariadb/EVIDENCE.md`,
-        // con il server e il digest su cui sono
-        // state osservate.
-        //
-        // Cio che regge il rifiuto non e la lista: e che il provider non e
-        // qualificato per MariaDB, e una capability non qualificata si
-        // dichiara chiusa. Meglio un errore alla probe che divergenze
-        // silenziose in produzione — a maggior ragione ora che sappiamo
-        // quali sono, e che non sono quelle che si credeva.
-        //
-        // Il riconoscimento e per stringa perche e cio che il server
-        // espone: `VERSION()` e `@@version_comment`. ADR 0014 ha misurato
-        // che entrambe portano "mariadb" su tutti e tre i riferimenti.
+        // Il provider MySQL rifiuta MariaDB. Il riconoscimento controlla sia
+        // `VERSION()` sia `@@version_comment`; non cambia il profilo selezionato.
         if !looks_like_mariadb(product_version, version_comment) {
             return None;
         }
@@ -732,11 +649,8 @@ impl ProductProfile for MysqlProfile {
 
 /// Il profilo di `MariaDB`, costruito sulle sole divergenze misurate.
 ///
-/// Non esiste ancora un `MariadbProvider`: questo profilo non e raggiungibile
-/// da nessun percorso di produzione, e non lo sara finche le superfici che
-/// restano `not_measured` in `docs/mariadb/EVIDENCE.md` non saranno misurate.
-/// Esiste perche le divergenze provate abbiano un posto dove vivere, e perche
-/// i test differenziali possano confrontarle con quelle di `MysqlProfile`.
+/// `MariadbProvider` seleziona questo profilo e ammette soltanto versioni e
+/// capability qualificate dalle prove in `docs/mariadb/EVIDENCE.md`.
 ///
 /// Cio che diverge lo dice l'evidenza, non la simmetria: identita, unita e
 /// nome del timeout, due colonne di catalogo che non esistono, e le
@@ -765,16 +679,7 @@ impl ProductProfile for MariadbProfile {
         product_version: &str,
         version_comment: &str,
     ) -> Option<DatabaseError> {
-        // Speculare a quello di `MysqlProfile`, sulla stessa lettura: quel
-        // profilo rifiuta cio che dice "mariadb", questo rifiuta cio che non
-        // lo dice. Le due decisioni partizionano i server osservati, e una
-        // guardia lo verifica sulle stringhe che ADR 0014 ha misurato.
-        //
-        // Che il rifiuto esista anche qui non e una formalita: un profilo
-        // senza riconoscimento accetterebbe MySQL ed emetterebbe
-        // `max_statement_time`, che su MySQL e una variabile sconosciuta —
-        // cioe fallirebbe alla prima transazione con timeout invece che alla
-        // probe, dove l'errore dice ancora cosa e successo.
+        // Il provider MariaDB accetta soltanto un server riconosciuto come MariaDB.
         if looks_like_mariadb(product_version, version_comment) {
             return None;
         }
@@ -802,23 +707,13 @@ impl ProductProfile for MariadbProfile {
     }
 
     fn qualified_versions(&self) -> Option<&'static [(u32, u32)]> {
-        // Solo le versioni sostenute dall'evidenza di ADR 0014. Il rifiuto dice
-        // "non misurata", non "incompatibile", e deve avvenire prima di
-        // interrogare variabili di sessione che possono divergere per major.
+        // Ammette soltanto versioni sostenute dalle prove del profilo.
         Some(&[(10, 11), (11, 8), (12, 3)])
     }
 
     fn statement_timeout_statement(&self, timeout_ms: u64) -> String {
-        // `MAX_EXECUTION_TIME` non esiste su MariaDB: ADR 0014 l'ha vista
-        // rifiutare con 1193 su entrambi i riferimenti. L'equivalente e
-        // `max_statement_time`, che non e la stessa variabile con un altro
-        // nome — prende **secondi** dove il contratto parla in millisecondi.
-        //
-        // La conversione e esatta, in aritmetica intera: `max_statement_time`
-        // e numerico e accetta secondi frazionari, quindi non c'e nulla da
-        // arrotondare. Arrotondare per eccesso eviterebbe lo zero ma
-        // trasformerebbe 200 ms in un secondo, cioe allungherebbe da solo
-        // proprio il limite che qualcuno aveva chiesto di stringere.
+        // MariaDB usa `max_statement_time` in secondi, con frazioni di secondo.
+        // La conversione conserva la precisione dei millisecondi richiesti.
         format!(
             "SET SESSION max_statement_time = {}.{:03}",
             timeout_ms / 1_000,
@@ -887,20 +782,7 @@ impl ProductProfile for MariadbProfile {
     }
 
     fn wire_column_spec(&self, column: &Column) -> Result<MysqlColumnSpec> {
-        // Stesso mapper, e non per comodita: ADR 0014 ha confrontato lo schema
-        // Arrow colonna per colonna e i valori decodificati per intero, e
-        // coincidono. L'unico campo che diverge — `native_type` `json` contro
-        // `text` per la stessa DDL `document JSON` — diverge **prima** di qui,
-        // perche MariaDB manda `MYSQL_TYPE_BLOB` dove MySQL manda
-        // `MYSQL_TYPE_JSON`.
-        //
-        // Normalizzarlo a `json` e cio che questo profilo **non** puo fare: su
-        // MariaDB `JSON` e un alias di `LONGTEXT` e sul filo le due
-        // dichiarazioni sono indistinguibili, quindi la normalizzazione
-        // dovrebbe inventare la DDL da metadata che non la portano. Il
-        // contratto pubblicato resta percio quello del filo, ed e cio che
-        // `MARIADB_NATIVE_TYPE` dichiara — la chiave di questo prodotto, non
-        // quella dell'altro.
+        // Il mapper wire e condiviso; il profilo fornisce prodotto e attribuzione degli errori.
         wire_column_spec_for(self.product(), column)
     }
 
@@ -1224,14 +1106,8 @@ impl ProductProfile for MariadbProfile {
     }
 }
 
-/// Le tre interrogazioni di catalogo che i due prodotti condividono.
-///
-/// ADR 0014 ha misurato che `information_schema.schemata` e
-/// `information_schema.tables` rispondono le stesse righe, con le stesse
-/// colonne, sui tre riferimenti: non c'e divergenza da esprimere, e due copie
-/// della stessa `SELECT` divergerebbero alla prima modifica fatta da una parte
-/// sola. Le due query che **non** sono qui — colonne e indici — stanno nei
-/// profili proprio perche li la divergenza e stata misurata.
+/// Query di schemi e oggetti condivise fra MySQL e MariaDB.
+/// Le query di colonne e indici sono definite dai rispettivi profili.
 const SCHEMAS_QUERY: &str = "SELECT SCHEMA_NAME AS schema_name \
     FROM information_schema.schemata \
     WHERE SCHEMA_NAME NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') \
@@ -1291,17 +1167,8 @@ pub(crate) fn unqualified_version_rejection(
     ))
 }
 
-/// Se le stringhe che il server espone dicono `MariaDB`.
-///
-/// Una sola lettura per due decisioni opposte: `MysqlProfile` rifiuta quando e
-/// vera, `MariadbProfile` quando e falsa. Con due implementazioni un server
-/// potrebbe finire rifiutato da entrambi — o accettato da entrambi, che e
-/// peggio — e la partizione si romperebbe senza che nessuno la stia guardando.
-///
-/// Il riconoscimento e per stringa perche e cio che il server espone:
-/// `VERSION()` e `@@version_comment`. ADR 0014 ha misurato che su tutti e tre
-/// i riferimenti `MariaDB` entrambe portano "mariadb", e che su `MySQL` 9.7.2
-/// nessuna delle due lo porta.
+/// Riconosce MariaDB da `VERSION()` o `@@version_comment`.
+/// I due profili usano lo stesso predicato per decisioni opposte.
 fn looks_like_mariadb(product_version: &str, version_comment: &str) -> bool {
     product_version.to_ascii_lowercase().contains("mariadb")
         || version_comment.to_ascii_lowercase().contains("mariadb")
@@ -1456,19 +1323,10 @@ pub(crate) const MEASURED_SERVER_CODES: &[u16] = &[
     1_045, 1_048, 1_054, 1_062, 1_142, 1_146, 1_205, 1_213, 1_406, 1_451, 1_452,
 ];
 
-/// Il mapper dei metadata wire, condiviso fra i prodotti che parlano il
-/// protocollo `MySQL`.
+/// Mapper dei metadata wire condiviso dai prodotti che parlano MySQL.
 ///
-/// ADR 0014 lo ha misurato riga per riga sui tre riferimenti: dagli stessi
-/// metadata di `COM_STMT_PREPARE` escono lo stesso `kind` e lo stesso
-/// `native_type`, e i valori decodificati coincidono per intero. Cio che
-/// diverge non e questa funzione, e il suo **ingresso** — la stessa DDL
-/// `document JSON` arriva come `MYSQL_TYPE_JSON` da `MySQL` e come
-/// `MYSQL_TYPE_BLOB` da `MariaDB`, dove `JSON` e un alias di `LONGTEXT`.
-///
-/// Percio resta una sola: due copie divergerebbero senza che nessuna
-/// evidenza lo chieda. L'unica cosa che il prodotto porta con se e
-/// l'attribuzione dei rifiuti, che deve nominare chi ha rifiutato.
+/// I tipi nativi restano quelli ricevuti: JSON puo arrivare come JSON da
+/// MySQL e come BLOB testuale da MariaDB. I rifiuti nominano il prodotto.
 #[allow(clippy::too_many_lines)]
 fn wire_column_spec_for(product: &str, column: &Column) -> Result<MysqlColumnSpec> {
     let name = column.name_str().into_owned();
@@ -1698,23 +1556,11 @@ fn mysql_spatial_capabilities() -> SpatialCapabilities {
     }
 }
 
-/// Un secondo prodotto, esistente solo nei test.
+/// Profilo di test che rende osservabile il dispatch.
 ///
-/// Non e `MariadbProfile`: non decide nulla di `MariaDB` e non ne anticipa il
-/// comportamento. Serve a una cosa sola — rendere **osservabile** cio che
-/// altrimenti sarebbe indistinguibile, perche con un profilo solo ogni
-/// attribuzione e `Mysql` e nessun test puo dire se viene dal profilo o da
-/// un literal sopravvissuto. Delega tutto a `MYSQL_PROFILE` tranne
-/// l'identita, che e esattamente cio che si vuole vedere cambiare.
-///
-/// Resta necessario anche ora che `MARIADB_PROFILE` esiste, e per una ragione
-/// che i due profili reali non possono coprire: dove `MySQL` e `MariaDB`
-/// **coincidono** — la categoria di un codice di errore, per dirne una — un
-/// confronto fra loro non distingue una decisione presa dal profilo da una
-/// ereditata per caso. Questo profilo diverge li apposta, su una divergenza
-/// che nessun prodotto reale gli impone, ed e cio che rende visibile il
-/// dispatch. Un test differenziale fra i due profili veri prova che le
-/// divergenze misurate ci sono; questo prova che passano dal profilo.
+/// Delega a `MYSQL_PROFILE` tranne le decisioni che i test devono distinguere.
+/// Le differenze artificiali verificano il dispatch anche dove i prodotti
+/// reali concordano.
 #[cfg(test)]
 pub(crate) struct SecondProductProfile;
 
@@ -1748,17 +1594,8 @@ impl ProductProfile for SecondProductProfile {
     }
 
     fn statement_timeout_statement(&self, timeout_ms: u64) -> String {
-        // Diverge per nome **e** per unita, che e la forma della divergenza
-        // che ADR 0014 ha misurato su MariaDB. Se la conversione tornasse a
-        // vivere fuori dal profilo, questo profilo emetterebbe secondi con
-        // un valore in millisecondi e nessuno se ne accorgerebbe.
-        // Conversione **esatta**, in aritmetica intera. Arrotondare per
-        // eccesso evitava lo zero ma allentava il contratto: 200 ms
-        // diventavano un secondo, e un timeout che si allunga da solo e un
-        // timeout che non protegge piu da cio per cui era stato chiesto.
-        // `max_statement_time` e numerico e accetta secondi frazionari,
-        // quindi la conversione giusta non perde nulla — e non serve un
-        // float per farla.
+        // Il profilo di test usa secondi frazionari per verificare che il chiamante
+        // rispetti nome e unita della variabile scelti dal profilo.
         format!(
             "SET SESSION max_statement_time = {}.{:03}",
             timeout_ms / 1_000,

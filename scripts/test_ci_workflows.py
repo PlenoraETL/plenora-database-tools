@@ -795,13 +795,7 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         self.assertNotIn("package.connect_db2(", source)
 
     def test_the_verifier_is_the_only_definition_of_verified(self) -> None:
-        """Nessun job ricopia le verifiche invece di eseguirle.
-
-        Prima il solo smoke test Linux le aveva scritte inline, in tre
-        `python -c`. Ricopiarle su tre piattaforme avrebbe prodotto tre
-        definizioni di "wheel verificato", e sarebbero divergute alla prima
-        modifica di una sola.
-        """
+        """I job usano lo stesso probe per verificare l'origine del wheel installato."""
 
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         self.assertEqual(
@@ -922,20 +916,7 @@ class PythonWheelWorkflowTests(unittest.TestCase):
 
 
 class EveryGateIsExecutedBySomebody(unittest.TestCase):
-    """La regola 6 di AGENTS.md, resa verificabile.
-
-    «Un gate che nessuno esegue non e un gate.» Il gate del riferimento
-    PostgreSQL ci era gia caduto — esisteva, aveva il suo self-test in CI, e
-    nessun workflow lo lanciava — e un giro dopo si e scoperto che il gate
-    hardening, l'unico che prova TLS privato e mTLS, era nella stessa
-    condizione. Due volte lo stesso difetto significa che serve una guardia,
-    non una terza correzione.
-
-    Un gate puo legittimamente non girare in CI: campagne prestazionali,
-    fixture esterne che il progetto non possiede, wrapper di comodo. Ma allora
-    va **dichiarato**, con il motivo, qui: la dichiarazione e la differenza fra
-    una scelta e una dimenticanza.
-    """
+    """Ogni gate deve essere invocato da un workflow o dichiarare un motivo esplicito di esclusione."""
 
     #: Gate che nessun workflow esegue, e perche.
     DECLARED_WITHOUT_A_WORKFLOW = {
@@ -967,13 +948,8 @@ class EveryGateIsExecutedBySomebody(unittest.TestCase):
             "scripts.check_mariadb_driver",
             {"measure": "verdict"},
         ),
-        # Il gate del SDK non e nato con una campagna: costruiva gli
-        # artefatti, eseguiva la suite e confrontava i conteggi, ma pretendeva
-        # i due riferimenti gia accesi, quindi gli scope `live` e `benchmark`
-        # non li lanciava nessun workflow. Cio che girava in CI era la sola
-        # suite offline, che non tocca un database — e la conseguenza sta in
-        # `deny.toml`, dove la migrazione a pyo3 0.29 resta ferma per la
-        # copertura live che mancava.
+        # La guardia verifica l'invocazione del gate live, oltre a quella
+        # dei suoi self-test statici.
         "check_sdk_tests.py": (
             "scripts/check_sdk_campaign.py",
             "scripts.check_sdk_tests",

@@ -28,7 +28,7 @@ from ._native import (
     AsyncDatabaseSession,
     DatabaseSession,
     ReadCheckpoint,
-    SessionContext,  # PFM CHG-002
+    SessionContext,
     version,
 )
 from ._native import aconnect as _native_aconnect
@@ -313,20 +313,10 @@ async def atest_connection(value: str | EngineConfig) -> dict:
 
 
 def _connect_postgres(dsn: str, tls_mode: str = "require") -> Session:
-    """Apre una nuova sessione Postgres (sync).
+    """Factory interna PostgreSQL sincrona con probe e runtime condiviso.
 
-    La DSN è nel formato libpq (`host=... user=... password=... dbname=...`).
-    Il probe iniziale verifica connessione + PostGIS. Fallisce con
-    PlenoraError se la DSN è invalida, la rete non risponde o l'auth
-    fallisce.
-
-    TLS (ADR-011):
-    - `"require"` (default): TLS obbligatorio + WebPKI trust store pubblico.
-    - `"insecure_local"`: TLS disabilitato. **Solo per test/dev locali.**
-
-    Per CA privata / mTLS costruire il provider Rust in-process (via
-    Rust binding low-level); l'API pubblica `connect(dsn)` copre solo
-    i due preset di produzione più comuni.
+    L'API pubblica apre sessioni tramite EngineConfig ed engine.session().
+    Qui TLS require usa le CA pubbliche; insecure_local disabilita TLS.
     """
     return Session(_native_connect(dsn, tls_mode))
 
@@ -1039,7 +1029,7 @@ def _create_sqlserver_engine(
     max_connections: int = 4,
     acquire_timeout_ms: int = 10_000,
 ) -> Engine:
-    """Crea un Engine SQL Server con lifecycle Core v3."""
+    """Crea un Engine SQL Server con lifecycle Core relazionale."""
     native = _native_create_sqlserver_engine(
         host,
         database,
@@ -1180,16 +1170,10 @@ async def _create_async_oracle_engine(
 
 
 async def _aconnect_postgres(dsn: str, tls_mode: str = "require") -> AsyncSession:
-    """Apre una nuova sessione Postgres asincrona.
+    """Factory interna PostgreSQL asincrona con runtime tokio condiviso.
 
-    Coroutine: `s = await aconnect(dsn)` oppure
-    `async with await aconnect(dsn) as s: ...`.
-
-    Sotto il cofano il probe capabilities usa il runtime tokio condiviso
-    con il resto del SDK (nessuna nuova thread pool viene creata).
-
-    TLS: come `connect()` sync — default `"require"` + WebPKI.
-    Per test/dev locali passare `tls_mode="insecure_local"`.
+    Il lifecycle pubblico usa async_engine_from_url ed engine.session().
+    Il default TLS e require; insecure_local e l'opt-out per fixture locali.
     """
     native = await _native_aconnect(dsn, tls_mode)
     return AsyncSession(native)
@@ -1408,6 +1392,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API surface
     "PlenoraExecutionError",
     "PlenoraInternalError",
     "PlenoraCommitOutcomeUnknownError",
-    # PFM CHG-002
+
     "SessionContext",
 ]

@@ -194,9 +194,7 @@ def validate_examples(
     for root in CONTRACT_ROOTS:
         index_path = root / "examples" / "index.json"
         if not index_path.is_file():
-            # Saltarlo era un falso verde: una major senza indice non veniva
-            # validata, e il gate passava avendo controllato niente. Se una
-            # cartella di contratti esiste, i suoi esempi si validano.
+            # Ogni major deve fornire un indice degli esempi da validare.
             raise ValidationError(f"major senza indice degli esempi: {root.name}")
         index = load_json(index_path)
         entries = index.get("examples", [])

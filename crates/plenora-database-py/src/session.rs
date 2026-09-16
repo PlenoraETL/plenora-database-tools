@@ -4,11 +4,12 @@
 //!
 //! ```python
 //! import plenora_database
-//! with plenora_database.connect(dsn="host=localhost user=me dbname=app") as s:
+//! config = plenora_database.EngineConfig.from_postgres_dsn(dsn)
+//! with plenora_database.engine_from_url(config) as engine, engine.session() as s:
 //!     print(s.server_version, s.postgis_version)
-//!     affected = s.execute("INSERT INTO t(x) VALUES ($1)", [42])
+//!     affected = s.execute_sql("INSERT INTO t(x) VALUES ($1)", [42])
 //!     value = s.execute_scalar("SELECT COUNT(*)::BIGINT FROM t")
-//!     rows = s.execute_returning_rows("SELECT id, name FROM t WHERE id = $1", [1])
+//!     rows = s.query_sql("SELECT id, name FROM t WHERE id = $1", [1])
 //! ```
 //!
 //! Runtime tokio globale (`OnceLock`) condiviso da tutte le Session: evita
@@ -58,11 +59,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::budget::session_budget as default_budget;
 
-/// Mappa `tls_mode` (parametro Python) a `PostgresProvider` configurato.
-/// Solo due varianti supportate: `"require"` (default sicuro, WebPKI) e
-/// `"insecure_local"` (Disabled, per dev/test locali).
-///
-/// ADR-011: nomi espliciti, no default booleano che nasconde il rischio.
+/// Modalita TLS esplicite: require verifica il server, insecure_local
+/// disabilita TLS per fixture locali.
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) fn build_provider(tls_mode: &str) -> PyResult<PostgresProvider> {
     match tls_mode {
@@ -77,7 +75,7 @@ pub(crate) fn build_provider(tls_mode: &str) -> PyResult<PostgresProvider> {
 }
 
 /// Sessione Postgres. Wrapper thin sopra `PostgresProvider` + DSN + metadata
-/// scoperti in probe. È un context manager: `with connect(...) as s: ...`.
+/// scoperti in probe. È un context manager: `with engine.session() as s: ...`.
 #[pyclass(module = "plenora_database._native")]
 pub struct Session {
     provider: Arc<PostgresProvider>,
@@ -137,7 +135,7 @@ impl Session {
     fn ensure_open(&self) -> PyResult<()> {
         if self.closed {
             return Err(PyRuntimeError::new_err(
-                "sessione chiusa: aprine una nuova con plenora_database.connect(...)",
+                "sessione chiusa: aprine una nuova con engine.session()",
             ));
         }
         if self.transaction_active.load(Ordering::Acquire) {

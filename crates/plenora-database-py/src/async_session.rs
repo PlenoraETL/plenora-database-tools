@@ -32,7 +32,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Sessione Postgres asincrona. Ottenuta da `await aconnect(dsn)`.
+/// Sessione PostgreSQL nativa asincrona, incapsulata dal lifecycle Python Engine.
 ///
 /// I metodi ritornano awaitable Python; ogni operazione apre una
 /// transazione dedicata e la committa (auto-commit). Per transazioni
@@ -83,7 +83,7 @@ impl AsyncSession {
     fn ensure_open(&self) -> PyResult<()> {
         if self.closed {
             return Err(PyRuntimeError::new_err(
-                "sessione chiusa: aprine una nuova con plenora_database.aconnect(...)",
+                "sessione chiusa: aprine una nuova con engine.session()",
             ));
         }
         if self.transaction_active.load(Ordering::Acquire) {

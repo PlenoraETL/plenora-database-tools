@@ -55,17 +55,9 @@ FUNCTION = re.compile(
 )
 
 def nested_module_name(line: str) -> str | None:
-    """Il nome del `mod` dichiarato su questa riga, se ce n'e uno.
+    """Legge il nome di un modulo Rust senza backtracking regex.
 
-    Letto con operazioni su stringhe e non con una regex: la versione con i
-    gruppi opzionali e le classi negate faceva esplodere il backtracking del
-    motore fino a `internal error in regular expression engine`, e il
-    fallimento compariva o no a seconda di quanto stack aveva gia consumato il
-    chiamante. Un difetto che dipende dal chiamante non e un difetto che si
-    corregge stringendo la regex.
-
-    La visibilita fa parte della dichiarazione — `pub mod`, `pub(crate) mod` —
-    e il prefisso `r#` non appartiene al nome.
+    Accetta pub e pub(crate); il prefisso raw r# non appartiene al nome.
     """
 
     head = line.strip()

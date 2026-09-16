@@ -2,8 +2,8 @@
 """Controlla che le guide correnti restino risolvibili e semanticamente sane.
 
 Non valida lo stile della prosa. Protegge invece proprietà oggettive: link e
-anchor locali, comandi Python esistenti, documenti generati aggiornati e le
-contraddizioni cross-file gia emerse durante l'audit.
+anchor locali, comandi Python esistenti, documenti generati aggiornati e la
+coerenza fra le superfici documentate.
 """
 
 from __future__ import annotations
@@ -143,6 +143,54 @@ def validate_python_examples(documents: list[Path]) -> list[Violation]:
     return violations
 
 
+def validate_sdk_example_api(root: Path = ROOT) -> list[Violation]:
+    """Confronta i nomi SDK negli esempi con gli export, senza caricare Rust."""
+    package = root / "crates/plenora-database-py/python/plenora_database"
+    tree = ast.parse((package / "__init__.py").read_text(encoding="utf-8"))
+    exports = next(
+        set(ast.literal_eval(node.value))
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets)
+    )
+    sources = [
+        (path, source)
+        for path in markdown_documents(root)
+        if "vendor" not in path.relative_to(root).parts
+        for source in PYTHON_FENCE.findall(path.read_text(encoding="utf-8"))
+    ]
+    sources += [
+        (path, path.read_text(encoding="utf-8"))
+        for path in sorted((root / "crates/plenora-database-py/examples").glob("*.py"))
+    ]
+    violations: list[Violation] = []
+    for path, source in sources:
+        try:
+            example = ast.parse(source)
+        except SyntaxError:
+            continue  # La validazione sintattica produce il proprio errore.
+        aliases = {"p", "plenora_database"}
+        for node in ast.walk(example):
+            if isinstance(node, ast.Import):
+                aliases.update(
+                    item.asname or item.name
+                    for item in node.names if item.name == "plenora_database"
+                )
+            elif isinstance(node, ast.ImportFrom) and node.module == "plenora_database":
+                for item in node.names:
+                    if item.name != "*" and item.name not in exports:
+                        violations.append(Violation(path, f"import SDK non pubblico: {item.name}"))
+        for node in ast.walk(example):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in aliases
+                and node.attr not in exports
+            ):
+                violations.append(Violation(path, f"nome SDK non pubblico: {node.attr}"))
+    return violations
+
+
 def validate_generated(root: Path) -> list[Violation]:
     if root != ROOT:
         return []
@@ -199,7 +247,7 @@ def validate_semantics(root: Path) -> list[Violation]:
     violations: list[Violation] = []
 
     sdk = root / "crates/plenora-database-py/README.md"
-    migration = root / "crates/plenora-database-py/docs/MIGRATION_FROM_CLI.md"
+    migration = root / "crates/plenora-database-py/docs/CLI_AND_SDK.md"
     sdk_text = sdk.read_text(encoding="utf-8")
     migration_text = migration.read_text(encoding="utf-8")
     config_text = (root / "crates/plenora-database-py/python/plenora_database/config.py").read_text(
@@ -246,9 +294,6 @@ def validate_semantics(root: Path) -> list[Violation]:
         root_readme_path: root_readme,
         sdk: sdk_text,
         migration: migration_text,
-        root / "docs/python-sdk-2-migration.md": (
-            root / "docs/python-sdk-2-migration.md"
-        ).read_text(encoding="utf-8"),
     }
     stale_sdk_forms = (
         "p.create_engine(",
@@ -261,7 +306,7 @@ def validate_semantics(root: Path) -> list[Violation]:
     for path, text in current_guides.items():
         for stale in stale_sdk_forms:
             if stale in text:
-                violations.append(Violation(path, f"forma SDK 1.x ancora documentata: {stale}"))
+                violations.append(Violation(path, f"forma SDK non pubblica documentata: {stale}"))
         for method in ("copy_from", "acopy_from"):
             for call in method_call_blocks(text, method):
                 if "mapping_policy=" not in call:
@@ -304,11 +349,6 @@ def validate_semantics(root: Path) -> list[Violation]:
     if "non equivale a un gate live passato" not in evidence_text:
         violations.append(Violation(evidence, "inventario e verdetto live non sono distinti"))
 
-    changelog = root / "crates/plenora-database-py/CHANGELOG.md"
-    changelog_text = changelog.read_text(encoding="utf-8")
-    for stale in ("docs/adr/", "docs/reviews/"):
-        if stale in changelog_text:
-            violations.append(Violation(changelog, f"riferimento a documentazione rimossa: {stale}"))
     return violations
 
 
@@ -327,6 +367,7 @@ def scan(root: Path = ROOT) -> tuple[int, list[Violation]]:
     violations += validate_commands(root, documents)
     violations += validate_python_examples(documents)
     if root == ROOT:
+        violations += validate_sdk_example_api(root)
         violations += validate_generated(root)
         violations += validate_license(root)
         violations += validate_semantics(root)

@@ -134,9 +134,6 @@ def current_surfaces() -> list[Path]:
     oggi, non il solo documento che sembra il piu ovvio: una superficie
     lasciata fuori e esattamente il posto dove la deriva sopravvive.
 
-    Resta fuori una categoria sola: i `CHANGELOG.md`, che sono per
-    costruzione un elenco di stati passati — riscriverli per allinearli al
-    presente li distruggerebbe.
     """
 
     documents = [ROOT / "README.md"]
@@ -149,11 +146,7 @@ def current_surfaces() -> list[Path]:
     # pubblica e chi legge il crate le trova per prime, quindi appartengono
     # alla stessa guardia dei documenti Markdown.
     documents += sorted((ROOT / "crates").rglob("src/**/*.rs"))
-    return [
-        document
-        for document in documents
-        if document.name != "CHANGELOG.md"
-    ]
+    return documents
 
 
 class MysqlReferenceFixtureTests(unittest.TestCase):
@@ -325,12 +318,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "live_tests::live_verified_tls_rejects_a_hostname_mismatch",
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
         )
-        # Il numero e un fermo, non una misura: aggiungere un test live
-        # dev'essere un atto deliberato, e passare da qui e cio che lo rende
-        # tale. Sei righe sono le prove di `query_stream`; le due ultime sono
-        # lo stress concorrente, che questo provider non aveva — PostgreSQL
-        # ce l'ha da tempo, e la lacuna non era di contratto: nessuno aveva
-        # mai chiesto a MySQL di servire dodici lettori insieme.
+        # Le prove concorrenti verificano il recupero delle connessioni e del pool.
         self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 34)
 
     def test_gate_pins_the_query_operation_live_test_by_name(self) -> None:
@@ -1092,14 +1080,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
     )
 
     def test_the_mysql_sdk_capabilities_exist_and_are_tested(self) -> None:
-        """Per ogni capability: il binding esiste, e un test la esercita.
-
-        `begin`, `copy_from`, `read` e i builder AST sono stati elencati fra i
-        "non inclusi" mentre erano gia implementati, e `begin(context=...)` e
-        stato esposto pur essendo impossibile — il core impone un punto nella
-        chiave, MySQL lo vietava. Una capability senza copertura live e una
-        promessa che nessuno ha mai visto mantenere.
-        """
+        """Ogni capability SDK richiede un binding e una prova live che lo attraversi."""
 
         sync = (
             ROOT / "crates" / "plenora-database-py" / "src" / "session_family.rs"
@@ -1186,11 +1167,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             transaction,
             "MySQL non delega al core la validazione della chiave di context",
         )
-        # Il quoting resta, ma non e cio che ha sbloccato il caso: il
-        # server accetta `@plenora_ctx_app.tenant` anche senza backtick. A
-        # rifiutare le chiavi era la regola locale del provider, e la
-        # delega al core sopra e la riga che conta. I backtick rendono la
-        # resa indipendente da come la regola del core evolvera.
+        # Le chiavi di contesto rispettano la grammatica del core, punto incluso.
         self.assertIn("SET @`{CONTEXT_VARIABLE_PREFIX}{name}`", transaction)
         # E deve starci: 64 caratteri meno il prefisso. Il core ne ammette
         # 63, quindi la fascia 53..63 e valida per il core e impossibile per
@@ -1314,63 +1291,6 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             len(declared),
             f"progetti Compose non distinti: {declared}",
         )
-
-    def test_the_migration_note_lists_every_container_the_composes_declare(
-        self,
-    ) -> None:
-        """La procedura di migrazione non puo dimenticare un container.
-
-        A collidere sono i `container_name`, che sono fissi: se la procedura ne
-        omette uno — `dataflow-sqlserver-certgen` e `dataflow-sqlserver-init`
-        mancavano — chi la segue trova un conflitto al primo `up` del provider
-        dimenticato, molto dopo aver creduto la migrazione conclusa.
-
-        L'elenco si confronta con i Compose, non con la memoria di chi scrive.
-        """
-
-        declared = set()
-        for compose in sorted(ROOT.glob("docker-compose.*.yml")):
-            declared |= set(
-                re.findall(
-                    r"^\s*container_name:\s*(\S+)\s*$",
-                    compose.read_text(encoding="utf-8"),
-                    re.MULTILINE,
-                )
-            )
-        self.assertTrue(declared, "nessun container_name dichiarato nei Compose")
-
-        note = (ROOT / "docs" / "operativo.md").read_text(encoding="utf-8")
-        body = note.split("**Migrazione (una tantum).**", 1)[1].split("\n## ", 1)[0]
-        commands = body.split("```bash", 1)[1].split("```", 1)[0]
-        listed = {
-            token
-            for token in re.findall(r"(?:dataflow|plenora)-[a-z0-9-]+", commands)
-            if not token.endswith("-")
-        }
-        self.assertEqual(
-            listed,
-            declared,
-            f"procedura disallineata: mancanti={sorted(declared - listed)}, "
-            f"inattesi={sorted(listed - declared)}",
-        )
-
-    def test_the_migration_note_never_tells_anyone_to_delete_volumes(self) -> None:
-        """La migrazione dei progetti Compose non tocca i volumi.
-
-        A collidere sono i `container_name`, che sono fissi; i volumi sono
-        prefissati dal progetto e convivono. Una procedura che include
-        `docker volume rm` distrugge dati per un problema che non esiste, e
-        non e reversibile.
-        """
-
-        note = (ROOT / "docs" / "operativo.md").read_text(encoding="utf-8")
-        migration = note.split("**Migrazione (una tantum).**", 1)
-        self.assertEqual(len(migration), 2, "nota di migrazione assente")
-        body = migration[1].split("\n## ", 1)[0]
-        for line in body.splitlines():
-            if line.strip().startswith("docker volume rm"):
-                self.fail(f"la migrazione cancella volumi: {line.strip()}")
-        self.assertIn("Non** cancellare i volumi", body)
 
     def test_the_hardening_gate_reaches_both_postgres_references(self) -> None:
         """Il gate hardening interroga due riferimenti in progetti distinti.
@@ -1549,14 +1469,13 @@ SDK_IMAGES = {
 }
 
 
-# Le quattro fonti della versione, come le legge il runner. I test le
+# I metadati di build della versione, come le legge il runner. I test le
 # perturbano una alla volta: e il caso reale — un bump dimenticato tocca una
 # dichiarazione sola.
 SDK_VERSION_SOURCES = {
     "pyproject": sdk.PYPROJECT.read_text(encoding="utf-8"),
     "cargo_toml": sdk.CARGO_MANIFEST.read_text(encoding="utf-8"),
     "cargo_lock": sdk.CARGO_LOCK.read_text(encoding="utf-8"),
-    "changelog": sdk.CHANGELOG.read_text(encoding="utf-8"),
 }
 SDK_STALE_VERSION = "99.99.99"
 
@@ -1573,9 +1492,6 @@ def sdk_bumped_source(source: str, document: str) -> str:
     if source == "cargo_lock":
         target = f'name = "{sdk.CARGO_PACKAGE}"\nversion = "{SDK_VERSION}"'
         replacement = f'name = "{sdk.CARGO_PACKAGE}"\nversion = "{SDK_STALE_VERSION}"'
-    elif source == "changelog":
-        target = f"## [{SDK_VERSION}] —"
-        replacement = f"## [{SDK_STALE_VERSION}] —"
     else:
         target = f'version = "{SDK_VERSION}"'
         replacement = f'version = "{SDK_STALE_VERSION}"'
@@ -2157,16 +2073,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         )
 
     def test_the_parity_bench_runs_the_cli_this_build_produced(self) -> None:
-        """Il binario del bench nasce nella corsa, e il runner ne dice il path.
-
-        Il confronto SDK / CLI e un rapporto fra due tempi: finche il binario
-        arrivava da `target/release` del repository, quel rapporto metteva
-        insieme un wheel appena costruito e un eseguibile di provenienza
-        ignota — nel caso osservato di tre giorni prima, di un commit che
-        nessuno sapeva dire. E il percorso, scritto dentro il test, era il
-        punto di mount di allora: cambiato il mount, il bench non ha piu
-        trovato niente e si e saltato da solo.
-        """
+        """Il benchmark deve usare il CLI costruito insieme al wheel e il percorso passato dal runner."""
 
         bench = (
             ROOT
@@ -2281,15 +2188,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
             sdk.assert_artifacts_outside_repository(ROOT / "target" / "staging")
 
     def test_the_release_version_is_the_same_in_every_source(self) -> None:
-        """Quattro fonti, una versione — e ognuna decide una cosa diversa.
-
-        `pyproject.toml` compone il nome del wheel, il `Cargo.toml` del crate
-        decide cosa risponde `p.version()`, `Cargo.lock` e cio che le build
-        `--locked` pretendono di ritrovare, e il CHANGELOG e quello che legge
-        chi aggiorna. Due che divergono producono un artefatto che mente su se
-        stesso: per esempio un nome wheel diverso dalla versione restituita dal
-        modulo.
-        """
+        """Wheel, binding e lock devono dichiarare la stessa versione."""
 
         self.assertEqual(sdk.declared_version(), SDK_VERSION)
         sdk.validate_declared_versions(**SDK_VERSION_SOURCES)
@@ -2343,18 +2242,6 @@ class PythonSdkRunnerTests(unittest.TestCase):
             "1.2.3",
         )
 
-        # Una sezione `[Unreleased]` non e una release e viene saltata: e il
-        # modo normale di lavorare fra un rilascio e l'altro, e farla fallire
-        # costringerebbe a rilasciare per poter eseguire il gate.
-        self.assertEqual(
-            sdk.changelog_version(
-                "## [Unreleased] — 1.3.0\n\ntesto\n\n## [1.2.3] — 2026-08-17\n"
-            ),
-            "1.2.3",
-        )
-        with self.assertRaisesRegex(RuntimeError, "nessuna release"):
-            sdk.changelog_version("## [Unreleased] — 1.3.0\n")
-
     def test_the_version_is_checked_before_anything_is_built(self) -> None:
         """Un bump incoerente si scopre prima della build, non dopo.
 
@@ -2364,11 +2251,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         """
 
         source = SDK_RUNNER.read_text(encoding="utf-8")
-        # Le due verifiche stanno in `preconditions`, che chi costruisce
-        # chiama prima. Il test cercava le due righe adiacenti dentro `main`,
-        # dove stavano finche non e esistita una campagna: la forma e
-        # cambiata, la proprieta no, e a presidiarla sono ora due
-        # affermazioni invece di una posizione.
+        # Il preflight controlla versione e pin prima di costruire gli artefatti.
         head = source.index("def preconditions()")
         tail = source.index("\ndef ", head + 1)
         for check in ("declared_version()", "validate_maturin_pin("):

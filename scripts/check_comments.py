@@ -88,6 +88,8 @@ HISTORY_MARKERS: tuple[re.Pattern[str], ...] = tuple(
         r"\bpre-fix\b",
         r"\bfix review\b",
         r"\btranche\b",
+        r"\bADR[- ]+\d+\b",
+        r"\bprima di questo fix\b",
     )
 )
 

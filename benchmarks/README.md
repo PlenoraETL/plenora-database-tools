@@ -1,4 +1,4 @@
-# Benchmark Fase 0
+# Benchmark
 
 ## Indice
 
@@ -13,7 +13,7 @@ Questa cartella contiene tre famiglie di misure, con regole diverse.
 2. **Microbenchmark Rust offline**: girano senza database, misurano le
    superfici CPU-bound del workspace (rendering SQL, compilazione dei read
    plan, ispezione EWKB, contratto Arrow, pipeline dei piani e primitive
-   applicative Core v3). Documento e
+   applicative del Core). Documento e
    numeri misurati in [`offline-rust-microbench.md`](offline-rust-microbench.md),
    raw in `raw/offline-rust-microbench.jsonl`. **Non sono un gate**: i budget
    prestazionali di quelle superfici non sono stati fissati e il workflow
@@ -59,7 +59,7 @@ Ogni file è JSONL:
 python scripts\phase0_report.py `
   benchmarks\raw\phase0-postgres-smoke.jsonl `
   --json benchmarks\baseline\phase0-smoke-report.json `
-  --markdown benchmarks\baseline\phase0-smoke-report.md
+  --markdown target\phase0-smoke-report.md
 ```
 
 Il report calcola mediana, p95 nearest-rank, min/max, delta RSS e stabilità del
@@ -67,7 +67,7 @@ digest semantico. I raw iniziali hanno un solo campione e restano smoke di
 convalida; non vanno presentati come baseline statistica. La baseline
 definitiva richiede piu campioni di questi.
 
-## Raw iniziali
+## Dati smoke
 
 - `raw/phase0-postgres-smoke.jsonl`.
 
@@ -96,29 +96,12 @@ un milione di righe e il confronto 1.024/8.192/32.768 righe per batch.
 `postgres-performance-adaptive-bytes.json` confronta target da 1 MiB e 4 MiB
 su dati wide e spatial.
 
-La baseline
-`baseline/postgres16-postgis34-session-fast-path.json` congela 20 campioni
-read-only dopo l'ottimizzazione startup/reset e del protocollo one-shot. I raw
-includono i contatori `session_resets`, `catalog_introspections` e
-`read_typed_fast_paths`.
-
-Il manifest `postgres-performance-schema-cache.json` confronta nello stesso
-run capacità zero e capacità 256. La baseline
-`baseline/postgres16-postgis34-schema-cache.json` congela il costo di
-validazione strict e i contatori hit/miss/token/eviction.
-
-Il manifest `postgres-performance-parameterized-fast-path.json` confronta
-prepare e one-shot tipizzato sugli stessi filtri parametrizzati narrow, wide e
-spatial. La baseline
-`baseline/postgres16-postgis34-parameterized-fast-path.json` contiene 20
-campioni per variante e i contatori
-`read_parameterized_typed_fast_paths`/`read_prepared_fallbacks`.
-
-Il manifest `postgres-performance-query-fast-path.json` confronta
-`QueryOperation` prepared e one-shot su 50 campioni da 1.000 righe. La
-baseline `baseline/postgres16-postgis34-query-fast-path.json` congela acquire,
-totale, p95 e i contatori `query_typed_fast_paths`/
-`query_prepared_fallbacks`.
+I manifest `postgres-performance-schema-cache.json`,
+`postgres-performance-parameterized-fast-path.json` e
+`postgres-performance-query-fast-path.json` confrontano cache, preparazione
+e percorsi tipizzati. Le baseline JSON in `baseline/` contengono ambiente,
+campioni e contatori; sono riferimenti per il confronto, non misure delle
+prestazioni di ogni build corrente.
 
 La soglia e la forma del confronto vivono in `scripts/check_postgres_performance.py`,
 che e anche cio che le applica.

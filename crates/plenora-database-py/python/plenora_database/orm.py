@@ -1,7 +1,7 @@
-"""ORM dichiarativo sync/async sopra il lifecycle e l'IR Core v3.
+"""ORM dichiarativo sync/async sopra il lifecycle e l'IR relazionale.
 
 Il modulo concentra mapping, relazioni esplicite senza lazy I/O, identity map,
-unit of work, query di entita, DDL e migrazioni lineari. Le capability non
+unit of work, query di entita, DDL e migrazioni a DAG. Le capability non
 qualificate per un provider falliscono prima di inviare lo statement.
 """
 

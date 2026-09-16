@@ -122,7 +122,7 @@ jobs:
         run: python3 scripts/check_test_layout.py
       # Il modello query canonico e una proprieta architetturale: questa
       # guardia impedisce di reintrodurre AST paralleli nei provider o nel
-      # renderer SQL durante la migrazione compatibile verso Core v3.
+      # renderer SQL: il Core relazionale resta la rappresentazione condivisa.
       - name: scripts/check_relational_ir.py
         run: python3 scripts/check_relational_ir.py
       # La reflection v3 deve restare tipizzata, fail-closed e collegata al

@@ -46,24 +46,9 @@ impl MysqlTransactionCommand {
     fn sql(self) -> &'static str {
         match self {
             Self::Start => "START TRANSACTION",
-            // Il commit, e nei soli test il commit **la cui risposta tarda**.
-            //
-            // Il commit ambiguo era l'ultima superficie `not_measured` di
-            // questo documento, e la ragione era buona: uccidere la
-            // connessione a meta `COMMIT` da una seconda sessione e una corsa,
-            // non un esperimento, e un esito ottenuto cosi non distingue il
-            // comportamento del provider dal momento in cui e arrivato il
-            // colpo.
-            //
-            // Questa e la stessa forma che il provider SQL Server usa gia —
-            // `COMMIT TRANSACTION; WAITFOR DELAY` — e la rende deterministica:
-            // il commit **atterra**, poi la risposta tarda, e la finestra in
-            // cui cancellare e larga e sempre la stessa. Cio che si osserva
-            // dopo non e un caso fortunato: e il percorso di commit reale del
-            // provider, con la risposta trattenuta.
-            //
-            // Vale solo nei test — `#[cfg(test)]`, nessuna feature, nessuna
-            // variabile d'ambiente — e solo finche una guardia resta viva.
+            // Nei soli test, la risposta al commit puo essere trattenuta dopo che
+            // la transazione e conclusa sul server. La cancellazione in questa
+            // finestra verifica deterministicamente un esito di commit ambiguo.
             Self::Commit => commit_sql(),
             Self::Rollback => ROLLBACK_SQL,
         }

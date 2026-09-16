@@ -147,7 +147,7 @@ def render() -> str:
         "Il documento non mantiene una roadmap parallela al codice. Le capability",
         "correnti sono generate in `docs/STATO.md`; le forme spatial non pubblicate",
         "restano chiuse nelle dichiarazioni di profilo e nei relativi inventari di",
-        "prova. Il perche storico delle campagne precedenti resta in Git.",
+        "prova riproducibile.",
         "",
     ]
     return "\n".join(lines)

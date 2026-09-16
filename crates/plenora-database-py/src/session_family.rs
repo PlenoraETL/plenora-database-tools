@@ -65,10 +65,8 @@ pub struct DatabaseSession {
     provider: Arc<dyn Provider>,
     secret: SecretString,
     capabilities: plenora_database_core::capabilities::ProviderCapabilities,
-    /// Il prodotto che questa sessione serve, per le superfici che lo
-    /// nominano. Non si deduce da `server_version`: quella e una stringa del
-    /// server, e leggerla per decidere sarebbe la selezione automatica che
-    /// ADR 0014 esclude.
+    /// Il costruttore seleziona il prodotto prima della probe.
+    /// La probe verifica la scelta senza sostituire il provider.
     product: &'static str,
     /// Il nome della factory da citare quando la sessione e chiusa.
     factory: &'static str,
@@ -837,23 +835,12 @@ pub(crate) fn family_config(
     }
 }
 
-/// Apre una connessione `MariaDB` e produce una `DatabaseSession`.
-///
-/// Una factory sua, non un parametro di [`connect_mysql`], ed e la meta di
-/// ADR 0014 che riguarda il SDK: «nessuna selezione automatica». Il
-/// consumatore dichiara il prodotto, e la probe verifica quella scelta invece
-/// di compierla — `connect_mysql` puntata su `MariaDB` viene rifiutata, e
-/// questa puntata su `MySQL` pure.
-///
-/// Gli argomenti sono gli stessi perche i due prodotti parlano lo stesso
-/// protocollo. Cio che cambia e il provider costruito, e con lui il profilo
-/// che decide le query di catalogo, l'istruzione di timeout, i metadata
-/// pubblicati e la classificazione dei codici server.
+/// Factory nativa MariaDB sincrona con selezione esplicita del prodotto.
+/// Il lifecycle pubblico Python passa da EngineConfig ed Engine.
 ///
 /// # Errors
 ///
-/// Come [`connect_mysql`], piu il rifiuto della probe se il server non e
-/// `MariaDB`.
+/// Propaga errori di configurazione, connessione e probe del provider.
 #[pyfunction]
 #[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
 #[allow(clippy::too_many_arguments)] // Firma comune alle factory sincrone.
@@ -907,26 +894,11 @@ fn open_family_session(
         .map_err(to_py_err)
 }
 
-/// Apre una connessione `SQL Server` e produce una sessione della famiglia.
-///
-/// Una factory sua, come per `MariaDB`, e per la stessa meta di ADR 0014 che
-/// riguarda il SDK: nessuna selezione automatica. Il consumatore dichiara il
-/// prodotto, e la probe verifica quella scelta invece di compierla.
-///
-/// Parametri:
-/// - `host`, `database`, `user`, `password`
-/// - `port`: opzionale, default 1433
-/// - `tls_ca_pem`: opzionale, bytes del certificato CA privato PEM. Se
-///   `None`, la verifica usa il trust store pubblico
-/// - `tls_mode`: `require` (default) verifica catena e nome host;
-///   `insecure_trust_server` la disattiva ed e opt-in esplicito
-///
-/// Il default **verifica**, come sugli altri tre motori del SDK.
+/// Factory nativa SQL Server sincrona con selezione esplicita del prodotto.
 ///
 /// # Errors
 ///
-/// `PlenoraError` se la configurazione e invalida, la connessione fallisce, o
-/// la probe delle capability restituisce errore.
+/// Propaga errori di configurazione, connessione e probe del provider.
 #[pyfunction]
 #[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
 #[allow(clippy::too_many_arguments)] // Firma comune alle factory sincrone.

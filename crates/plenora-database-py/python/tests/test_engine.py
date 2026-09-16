@@ -1,4 +1,4 @@
-"""Lifecycle applicativo del vero Engine Core v3 esposto a Python."""
+"""Lifecycle applicativo del vero Engine Core relazionale esposto a Python."""
 
 from __future__ import annotations
 

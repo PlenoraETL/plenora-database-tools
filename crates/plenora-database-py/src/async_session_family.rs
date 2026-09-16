@@ -531,16 +531,11 @@ pub fn aconnect_mysql<'py>(
     )
 }
 
-/// Factory async di `MariaDB` — apre una `AsyncDatabaseSession` sul suo provider.
-///
-/// Una factory sua e non un parametro di [`aconnect_mysql`], per la stessa
-/// ragione del percorso sincrono: ADR 0014 vieta la selezione automatica, e il
-/// prodotto lo dichiara il consumatore.
+/// Factory nativa MariaDB asincrona con selezione esplicita del prodotto.
 ///
 /// # Errors
 ///
-/// Come [`aconnect_mysql`], piu il rifiuto della probe se il server non e
-/// `MariaDB`.
+/// Propaga errori di configurazione, connessione e probe del provider.
 #[pyfunction]
 #[pyo3(signature = (host, database, user, password, port=None, tls_ca_pem=None, tls_mode="require"))]
 #[allow(clippy::too_many_arguments)] // Firma comune alle factory asincrone.

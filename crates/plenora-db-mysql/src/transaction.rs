@@ -126,32 +126,10 @@ impl MysqlTransaction {
         };
         raw_exec(&mut session, start_sql, ErrorPhase::Prepare, cancellation).await?;
 
-        // 4. Session context (SET @`plenora_ctx_namespace.name` = value).
-        //    MySQL user variables sono session-scoped, resettati alla
-        //    disconnessione; non participano al rollback ma è OK: sono
-        //    context info, non state applicativo.
-        //
-        //    A rifiutare le chiavi con il punto eravamo noi, non il server:
-        //    `is_safe_context_name` teneva una regola locale che ammetteva
-        //    solo alfanumerici e `_`, mentre il core impone `namespace.name`.
-        //    Le due validazioni erano mutuamente esclusive, e
-        //    `begin(context=...)` non poteva riuscire con un context non
-        //    vuoto. A sbloccarlo e stata la delega al core, non il quoting.
-        //
-        //    I backtick restano perche un nome di variabile utente accetta
-        //    piu caratteri della grammatica del core (`$`, per dire).
-        //    Ma non rendono la resa indipendente da quella regola, ed e
-        //    l'affermazione da correggere: qui il backtick nel nome non
-        //    viene raddoppiato, quindi una chiave che ne contenesse uno
-        //    chiuderebbe la quotatura invece di finirci dentro. A impedirlo
-        //    e `validate_context_keys`, che delega al core: la grammatica
-        //    ammette `namespace.name` con soli `[a-z0-9_]`, e nessuna chiave
-        //    valida contiene un backtick. La sicurezza di questa `format!`
-        //    dipende da quella validazione: se il core allargasse la regola,
-        //    qui servirebbe il raddoppio.
-        //
-        //    Verificato che senza backtick il server accetta ugualmente
-        //    `@plenora_ctx_app.tenant`.
+        // 4. Session context: user variable di sessione, senza rollback.
+        //    `validate_context_keys` ammette `namespace.name` con `[a-z0-9_]`,
+        //    quindi esclude backtick. Il quoting qui dipende da quel vincolo.
+        //    La connessione viene invalidata per evitare contaminazioni nel pool.
         for (name, entry) in options.context.iter() {
             let value = entry.value.as_provider_string();
             let sql = format!(

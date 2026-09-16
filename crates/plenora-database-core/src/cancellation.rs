@@ -425,25 +425,11 @@ impl CancellationToken {
     }
 }
 
-/// Cancella un token e tutto il sottoalbero.
+/// Cancella il token e propaga la cancellazione a waiter e figli.
 ///
-/// # Perche ogni `wake()` e contenuto singolarmente
-///
-/// Il primo passo e un `compare_exchange` che marca il token: da quel momento
-/// la cancellazione **e avvenuta**, e nessun secondo tentativo puo rifarla —
-/// la CAS trova il token gia cancellato e salta. Tutto cio che segue va quindi
-/// portato a termine.
-///
-/// I waker sono codice di chiamanti arbitrari. Con un solo contenimento attorno
-/// all'intera funzione, un waker che panica interrompeva il ciclo: i waiter
-/// successivi non venivano svegliati e i figli non venivano nemmeno raccolti.
-/// Il token risultava cancellato, i suoi waiter restavano sospesi per sempre e
-/// i figli continuavano a vivere — uno stato peggiore di quello che il panic
-/// avrebbe prodotto lasciando morire il thread.
-///
-/// Contenendo ogni singola chiamata, un waker difettoso costa esattamente il
-/// proprio risveglio: gli altri waiter e l'intera propagazione ai figli
-/// avvengono comunque.
+/// La CAS rende la prima causa definitiva: il lavoro successivo deve
+/// completarsi. Ogni `wake()` e contenuto separatamente perche un panic
+/// di un waker non impedisca il risveglio degli altri o la propagazione.
 fn cancel_tree(root: Arc<Inner>, root_reason: CancellationReason) {
     let mut pending = vec![(root, root_reason)];
     while let Some((inner, reason)) = pending.pop() {
@@ -501,16 +487,9 @@ fn cancel_tree(root: Arc<Inner>, root_reason: CancellationReason) {
     }
 }
 
-/// Quante volte un singolo future insiste per armare il worker.
-///
-/// Il retry cooperativo — `wake_by_ref` prima di `Pending` — serve a non
-/// restare sospesi quando il worker non parte. Illimitato pero diventa
-/// un'attesa attiva: su un executor a thread singolo un future che si
-/// risveglia da solo a ogni giro puo affamare gli altri task, compresi quelli
-/// che libererebbero le risorse necessarie a creare il thread. Con un tetto
-/// il costo e limitato a pochi giri; dopo, la deadline degrada a cio che era
-/// prima che questo scheduler esistesse — osservata al prossimo poll — che
-/// non e una regressione ma lo stato precedente.
+/// Limita i retry cooperativi di avvio del worker per non affamare gli
+/// altri task. Esauriti i tentativi, la deadline viene osservata al poll
+/// successivo senza garantire un risveglio autonomo.
 const MAX_ARM_ATTEMPTS: u8 = 8;
 
 pub struct Cancelled<'a> {

@@ -65,17 +65,10 @@ pub async fn write(
              le altre mode scrivono in un target che ha gia i propri indici",
         ));
     }
-    // Le chiavi di `Create` diventano la PRIMARY KEY della tabella costruita.
-    // Le tre regole strutturali — presenza nello schema, non nullable, non
-    // ripetuta — stanno nel core: valgono su ogni provider, e scritte due
-    // volte avevano gia dato esiti diversi sul caso nullable. PostgreSQL
-    // accetterebbe una chiave nullable coercendo la colonna a NOT NULL,
-    // quindi creando una tabella che diverge in silenzio dallo schema
-    // dichiarato; MySQL la rifiuterebbe al server, tardi.
-    //
-    // PostgreSQL non aggiunge vincoli di tipo: ogni tipo che sa mappare puo
-    // stare in chiave. E la differenza con MySQL, che rifiuta TEXT, BLOB e
-    // geometry, e per questo i vincoli di tipo restano nei provider.
+    // Le chiavi di Create diventano PRIMARY KEY. Il core verifica presenza,
+    // assenza di duplicati e non-nullability prima della DDL, evitando che
+    // il server modifichi implicitamente lo schema dichiarato. I vincoli di
+    // tipo restano specifici del provider.
     if operation.mode == WriteMode::Create {
         if let Err(violation) = validate_create_primary_key(input_schema, &operation.keys) {
             return Err(public_error(

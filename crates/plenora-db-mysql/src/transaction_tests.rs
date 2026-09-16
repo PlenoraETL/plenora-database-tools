@@ -84,11 +84,7 @@ fn decode_one(column_type: ColumnType, character_set: u16, value: Value) -> Para
     row.values().first().expect("un valore").clone()
 }
 
-/// Il caso che il decoder sbagliava: un BLOB i cui byte sono ASCII.
-///
-/// Sono `Value::Bytes` come un TEXT, e formano UTF-8 valido: interpretarli
-/// come stringa era indistinguibile dal caso giusto finche non si
-/// guardava il character set.
+/// Il decoder conserva come binari i BLOB anche quando contengono UTF-8 valido.
 #[test]
 fn an_ascii_blob_stays_binary() {
     let value = decode_one(
