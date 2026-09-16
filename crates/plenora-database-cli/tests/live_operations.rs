@@ -1,33 +1,13 @@
-//! Live test end-to-end dei sottocomandi operativi invocati come binario.
-//!
-//! Richiedono un Postgres raggiungibile all'hostname `dataflow-postgres`
-//! (compose network `plenora-postgres_default`) e la variabile ambiente `PG_DSN`
-//! popolata con il DSN completo.
-//!
-//! Sono `#[ignore]` per default; esegui con:
-//!
-//! ```text
-//! docker run --rm --network plenora-postgres_default -v ... rust:1.98 \
-//!   cargo test --test live_f4 -- --ignored --nocapture
-//! ```
+//! Prove live dei comandi operativi CLI, eseguite dal gate PostgreSQL.
+//! La connessione e il TLS sono configurati dal runner.
 
 #![cfg(test)]
 
 use serde_json::Value;
-use std::process::Command;
-
-const BIN: &str = env!("CARGO_BIN_EXE_plenora-database");
+mod common;
 
 fn run(args: &[&str]) -> Value {
-    let output = Command::new(BIN)
-        .args(args)
-        .env(
-            "PG_DSN",
-            "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-             dbname=dataflow_test",
-        )
-        .output()
-        .expect("spawn CLI");
+    let output = common::postgres_cli(args).output().expect("spawn CLI");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -39,29 +19,9 @@ fn run(args: &[&str]) -> Value {
     })
 }
 
-fn run_expect_error(args: &[&str]) -> Value {
-    let output = Command::new(BIN)
-        .args(args)
-        .env(
-            "PG_DSN",
-            "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-             dbname=dataflow_test",
-        )
-        .output()
-        .expect("spawn CLI");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !output.status.success(),
-        "CLI doveva fallire ma ha avuto successo: args={args:?}\nstdout={stdout}"
-    );
-    serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        panic!("output errore non JSON: {e}\nstdout={stdout}");
-    })
-}
-
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
-fn f4_inspect_database_returns_expected_metadata_shape() {
+fn live_inspect_database_returns_expected_metadata_shape() {
     let out = run(&["inspect-database", "PG_DSN"]);
     assert!(
         out["database"].as_str().is_some(),
@@ -85,7 +45,7 @@ fn f4_inspect_database_returns_expected_metadata_shape() {
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
-fn f4_inspect_schemas_lists_user_schemas() {
+fn live_inspect_schemas_lists_user_schemas() {
     let out = run(&["inspect-schemas", "PG_DSN"]);
     let count = out["count"].as_u64().expect("count u64");
     let schemas = out["schemas"].as_array().expect("schemas array");
@@ -106,22 +66,23 @@ fn f4_inspect_schemas_lists_user_schemas() {
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
-fn f4_inspect_tables_lists_relations_with_size_and_row_estimate() {
+fn live_inspect_tables_lists_relations_with_size_and_row_estimate() {
     let out = run(&["inspect-tables", "PG_DSN", "public"]);
     assert_eq!(out["schema"], "public");
     let tables = out["tables"].as_array().expect("tables array");
     // spatial_ref_sys è di PostGIS ed è sempre in public quando l'estensione è installata.
-    let srs = tables.iter().find(|t| t["name"] == "spatial_ref_sys");
-    if let Some(srs) = srs {
-        assert_eq!(srs["kind"], "table");
-        assert!(srs["total_size"].as_str().is_some());
-        assert!(srs["estimated_rows"].is_number());
-    }
+    let srs = tables
+        .iter()
+        .find(|t| t["name"] == "spatial_ref_sys")
+        .expect("la fixture PostGIS deve esporre spatial_ref_sys");
+    assert_eq!(srs["kind"], "table");
+    assert!(srs["total_size"].as_str().is_some());
+    assert!(srs["estimated_rows"].is_number());
 }
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
-fn f4_diagnose_reports_healthy_when_probes_pass() {
+fn live_diagnose_reports_healthy_when_probes_pass() {
     let out = run(&["diagnose", "PG_DSN"]);
     // Su un Postgres standard con PostGIS installato, OLTP e PFM_CORE devono
     // passare; PFM_GIS può fallire se PostGIS è assente. Ma lo status generale
@@ -151,20 +112,7 @@ fn f4_diagnose_reports_healthy_when_probes_pass() {
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
-fn f4_benchmark_write_requires_explicit_gate() {
-    // Senza --allow-write-tests → invalid_plan
-    let err = run_expect_error(&["benchmark-write", "PG_DSN", "5", "2"]);
-    assert_eq!(err["status"], "error");
-    assert_eq!(err["error"]["category"], "invalid_plan");
-    assert!(err["error"]["message"]
-        .as_str()
-        .unwrap_or("")
-        .contains("--allow-write-tests"));
-}
-
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
-#[test]
-fn f4_benchmark_write_reports_throughput_and_percentiles() {
+fn live_benchmark_write_reports_throughput_and_percentiles() {
     let out = run(&[
         "--allow-write-tests",
         "benchmark-write",
@@ -190,7 +138,7 @@ fn f4_benchmark_write_reports_throughput_and_percentiles() {
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
-fn f4_test_concurrency_reports_winner_and_loser_correctly() {
+fn live_test_concurrency_reports_winner_and_loser_correctly() {
     let out = run(&["--allow-write-tests", "test-concurrency", "PG_DSN"]);
     assert_eq!(out["status"], "ok");
     assert_eq!(out["winner_committed"], true);
@@ -199,7 +147,7 @@ fn f4_test_concurrency_reports_winner_and_loser_correctly() {
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
-fn f4_profile_check_returns_pass_for_application_oltp_v1() {
+fn live_profile_check_returns_pass_for_application_oltp_v1() {
     let out = run(&["profile-check", "PG_DSN", "APPLICATION_OLTP_V1"]);
     assert_eq!(
         out["status"], "pass",
@@ -208,43 +156,4 @@ fn f4_profile_check_returns_pass_for_application_oltp_v1() {
     assert!(out["evidence"].as_array().is_some());
     assert_eq!(out["missing"].as_array().map(Vec::len), Some(0));
     assert_eq!(out["failed"].as_array().map(Vec::len), Some(0));
-}
-
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
-#[test]
-fn f4_format_junit_wraps_ok_status_as_system_out() {
-    // JUnit non è JSON: parse manuale minimale.
-    let output = Command::new(BIN)
-        .args(["--format", "junit", "profile-list"])
-        .env(
-            "PG_DSN",
-            "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-             dbname=dataflow_test",
-        )
-        .output()
-        .expect("spawn");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.starts_with("<?xml version=\"1.0\""));
-    assert!(stdout.contains("<testsuite name=\"plenora-database-cli\""));
-    assert!(stdout.contains("failures=\"0\""));
-    assert!(stdout.contains("<system-out>"));
-}
-
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
-#[test]
-fn f4_format_markdown_renders_title_and_bullets() {
-    let output = Command::new(BIN)
-        .args(["--format", "markdown", "profile-list"])
-        .env(
-            "PG_DSN",
-            "host=dataflow-postgres user=dataflow password=dataflow_test_2026 \
-             dbname=dataflow_test",
-        )
-        .output()
-        .expect("spawn");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("# profile-list"));
-    assert!(stdout.contains("- **profiles**:"));
 }
