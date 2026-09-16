@@ -48,12 +48,9 @@ ignore = [
     "RUSTSEC-2026-0104",
     # RUSTSEC-2025-0134 → rustls-pemfile 1.0.4 e 2.2.0 unmaintained.
     # Nessuna vulnerabilità nota, solo dichiarazione di manutenzione ferma.
-    # Il codice è stabile e limitato al parsing PEM. Path: sia tokio-rustls
-    # (opzionale via mysql/sqlserver) sia direttamente per la nostra
-    # gestione TLS. Rivalutare quando esiste una migrazione pulita.
-    #
-    # Revisione 2026-08-23: nessuna migrazione pulita disponibile.
-    # Prossima revisione: 2027-Q1.
+    # Rimane nelle dipendenze dei driver tiberius (1.0.4) e oracle-rs
+    # (2.2.0). Il CLI usa PemObject da rustls-pki-types tramite rustls.
+    # L'eccezione resta necessaria finche i driver non migrano il parser.
     "RUSTSEC-2025-0134",
 ]
 # ============================================================================
