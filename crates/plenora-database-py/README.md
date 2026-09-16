@@ -323,6 +323,16 @@ un DAG di revisioni con branch e merge ed eseguono una revisione per
 transazione, mentre `OrmSession.listen` registra hook locali sul lifecycle del
 flush.
 
+Per scrivere callback che modificano oggetti o relazioni, partire dai
+[casi eseguibili sul flush](python/tests/test_orm_flush_hooks.py): comprendono
+aggiunte durante i callback, modifiche in `before_update`, ereditarieta joined,
+savepoint e varianti async. Progettare i callback affinche raggiungano uno
+stato stabile: una nuova invocazione non dovrebbe generare altro lavoro senza
+fine. Gestire un errore del flush come un fallimento della transazione.
+Il controllo di commit, rollback e savepoint resta al chiamante esterno ai
+callback; i relativi esempi di errore sono nelle
+[prove dei confini transazionali](python/tests/test_transaction_boundaries.py).
+
 `AsyncOrmSession` espone lo stesso mapping, identity map, planner del flush e
 regole di concorrenza. Le operazioni che fanno I/O sono coroutine; `add`,
 `delete` e la composizione della query restano locali:

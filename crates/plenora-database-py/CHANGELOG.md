@@ -5,6 +5,26 @@ review restano in Git. Ogni modifica incompatibile richiede una nuova major.
 
 ## [Unreleased]
 
+## [4.2.1] — 2026-09-16
+
+### Corretto
+
+- Gli oggetti aggiunti dai callback durante il flush vengono salvati prima
+  che il commit riesca, invece di essere scartati alla chiusura della sessione.
+  La correzione comprende i percorsi sincroni e asincroni.
+- Le modifiche introdotte da `before_update` a ulteriori campi entrano
+  nell'aggiornamento, anche con ereditarieta joined su piu tabelle.
+- Il flush considera anche il lavoro residuo sulle relazioni molti-a-molti.
+  I callback che continuano a produrre modifiche senza stabilizzarsi causano
+  rollback, evitando sia un ciclo infinito sia un commit incompleto.
+
+### Sicurezza
+
+- Aggiornata la dipendenza Rustls per correggere
+  [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc).
+  I lock del workspace e del fuzzing adottano la correzione senza nuove
+  eccezioni alla policy degli advisory.
+
 ## [4.2.0] — 2026-09-14
 
 ### Corretto
