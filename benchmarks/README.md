@@ -103,6 +103,35 @@ prestazioni di ogni build corrente.
 La soglia e la forma del confronto vivono in `scripts/check_postgres_performance.py`,
 che e anche cio che le applica.
 
+## Benchmark CLI su PostgreSQL
+
+La suite [`cli_benchmarks.rs`](../crates/plenora-database-cli/tests/cli_benchmarks.rs)
+esegue OLTP, lettura, scrittura e spatial. Il gate PostgreSQL la esegue in CI
+per verificare conteggi, formato e ordinamento dei percentili. Il confronto
+dei tempi con una baseline e separato e si abilita indicando esplicitamente
+il file da usare in `PLENORA_CLI_BENCHMARK_BASELINE`.
+
+Con una fixture PostgreSQL/PostGIS raggiungibile, dalla radice del repository:
+
+```powershell
+$env:PLENORA_TEST_POSTGRES_DSN = "<dsn fixture>"
+# Solo per una fixture locale plaintext; per TLS configurare la CA.
+$env:PLENORA_TLS_INSECURE_LOCAL = "1"
+cargo test -p plenora-database-cli --test cli_benchmarks -- --ignored --test-threads=1 --nocapture
+```
+
+Per confrontare anche il p95, impostare prima della stessa invocazione:
+
+```powershell
+$env:PLENORA_CLI_BENCHMARK_BASELINE = "<percorso assoluto alla baseline compatibile>"
+```
+
+La forma del file e in
+[`benchmark_baseline.json`](../crates/plenora-database-cli/tests/fixtures/benchmark_baseline.json).
+I suoi tempi dipendono da macchina, database e profilo di compilazione:
+non costituiscono soglie portabili per i runner CI. Senza la variabile,
+la suite dichiara `baseline_comparison=not_requested`.
+
 ## SQL Server
 
 La campagna SQL Server usa il manifest

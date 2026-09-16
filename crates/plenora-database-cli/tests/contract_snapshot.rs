@@ -100,13 +100,12 @@ fn snapshot_error_envelope_has_stable_shape() {
 }
 
 // ============================================================================
-//  Live snapshot: profile-list
+//  Snapshot offline: profile-list
 // ============================================================================
 
-#[ignore = "live: richiede Postgres per far bootstrap del CLI"]
 #[test]
 fn snapshot_profile_list_shape() {
-    let v = run_json_env(&["profile-list"], &[("PG_DSN", DSN)]);
+    let v = run_json_env(&["profile-list"], &[]);
     assert_has_keys(&v, &["profiles"]);
     let profiles = v["profiles"].as_array().expect("profiles array");
     assert!(profiles.len() >= 3, "atteso ≥3 profili");
@@ -380,15 +379,14 @@ fn snapshot_bulk_write_dry_run_shape() {
 }
 
 // ============================================================================
-//  Live snapshot: format=junit envelope contract
+//  Snapshot offline: format=junit envelope contract
 // ============================================================================
 
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
 fn snapshot_junit_format_wraps_output() {
     let output = Command::new(BIN)
         .args(["--format", "junit", "profile-list"])
-        .env("PG_DSN", DSN)
+        .env_remove("PG_DSN")
         .output()
         .expect("spawn");
     let stdout = String::from_utf8_lossy(&output.stdout);

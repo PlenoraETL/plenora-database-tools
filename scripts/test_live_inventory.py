@@ -519,8 +519,7 @@ class CitedTests(unittest.TestCase):
                     # troncato a `live_query_stream_`.
                     tail = comment.split(name, 1)[1][:1]
                     # Un file che nomina **se stesso** non sta citando una
-                    # prova: `tests/live_f4.rs` parla di `live_f4` in testa,
-                    # ed e il proprio nome, non un identificatore.
+                    # prova: il nome del file non e un identificatore di test.
                     if (
                         tail == "*"
                         or name == source.stem

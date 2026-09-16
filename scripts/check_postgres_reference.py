@@ -23,6 +23,9 @@ from scripts.compose_network import compose_network  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "rust:1.98"
 CONTAINER = "dataflow-postgres"
+CLI_REFERENCE_SUITES = (
+    "live_operations", "live_f5", "contract_snapshot", "cli_benchmarks",
+)
 DEFAULT_DSN = (
     "host=dataflow-postgres port=5432 user=dataflow "
     "password=dataflow_test_2026 dbname=dataflow_test"
@@ -50,6 +53,7 @@ def run(command: list[str], *, capture: bool = False) -> str:
     )
     if completed.returncode:
         if capture:
+            sys.stderr.write(completed.stdout)
             sys.stderr.write(completed.stderr)
         raise RuntimeError(f"check fallito: {command[0]}")
     return completed.stdout if capture else ""
@@ -108,6 +112,17 @@ def cargo(
             "-e", "PLENORA_REQUIRE_LIVE_POSTGRES=1",
         ]
     return [*command, IMAGE, "cargo", *arguments]
+
+
+def validate_cli_suite(suite: str, output: str) -> list[str]:
+    """Ogni test della suite CLI selezionata deve risultare eseguito."""
+    path = ROOT / "crates/plenora-database-cli/tests" / f"{suite}.rs"
+    declared = live_inventory.source_inventory([path])
+    executed = live_inventory.executed_tests(output)
+    missing = sorted(declared - {live_inventory.leaf(name) for name in executed})
+    if missing:
+        raise RuntimeError(f"suite CLI {suite}: test non eseguiti: {missing}")
+    return sorted(executed)
 
 
 def check_ipc_materialization(dsn: str) -> dict[str, object]:
@@ -318,11 +333,10 @@ def main() -> int:
         )
         executed_live_tests = validate_live_inventory(provider_output, listing)
         steps.append("live_inventory_matches_sources_and_run")
-        # Le fixture live del CLI: `#[ignore]` per default, quindi invisibili
-        # a `cargo test`. Finche nessun gate le lanciava, una di esse poteva
-        # restare rotta per una campagna intera senza che niente lo dicesse.
-        for suite in ("live_f5", "contract_snapshot"):
-            run(
+        # Include anche i test ignorati e confronta l'esito con i sorgenti.
+        # I benchmark verificano risultati e percentili, senza soglie hardware.
+        for suite in CLI_REFERENCE_SUITES:
+            cli_output = run(
                 cargo(
                     [
                         "test",
@@ -336,8 +350,10 @@ def main() -> int:
                     ],
                     dsn,
                     insecure_local=True,
-                )
+                ),
+                capture=True,
             )
+            validate_cli_suite(suite, cli_output)
             steps.append(f"cli_live_fixture_{suite}")
         ipc_materialization = check_ipc_materialization(dsn)
         steps.append("postgres_read_ipc_materialization_and_readback")

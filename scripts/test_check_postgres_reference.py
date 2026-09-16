@@ -8,6 +8,7 @@ questi test fissano che non possa dichiararlo senza averli visti passare.
 
 from __future__ import annotations
 
+import io
 import re
 import unittest
 from pathlib import Path
@@ -140,26 +141,54 @@ class ComposeNetworkDiscovery(unittest.TestCase):
 class CliLiveFixtures(unittest.TestCase):
     """Le suite live del CLI devono restare nel gate, e restare eseguibili.
 
-    Sono marcate `#[ignore]`: senza `--include-ignored` `cargo test` le salta
-    e il gate resta verde avendo eseguito zero fixture. E la forma di falso
-    verde che le ha lasciate rotte per una campagna intera, con tre di esse
-    che costruivano un riferimento a un oggetto con un campo che il contratto
-    non ha piu.
+    Le prove `#[ignore]` richiedono `--include-ignored` e una connessione
+    esplicita; ogni test dichiarato deve comparire fra gli esiti passati.
     """
 
-    SUITES = ("live_f5", "contract_snapshot")
+    SUITES = ("live_operations", "live_f5", "contract_snapshot", "cli_benchmarks")
 
     def source(self) -> str:
         return (
             Path(gate.__file__).resolve().parent / "check_postgres_reference.py"
         ).read_text(encoding="utf-8")
 
-    def test_both_cli_suites_are_named_by_the_gate(self) -> None:
-        source = self.source()
-        for suite in self.SUITES:
-            self.assertIn(
-                f'"{suite}"', source, f"il gate non nomina la suite {suite}"
+    def test_cli_suites_are_selected_by_the_gate(self) -> None:
+        self.assertEqual(gate.CLI_REFERENCE_SUITES, self.SUITES)
+
+    def test_no_cli_suite_with_ignored_tests_is_unassigned(self) -> None:
+        root = gate.ROOT / "crates/plenora-database-cli/tests"
+        suites = {
+            path.stem for path in root.glob("*.rs")
+            if re.search(
+                r"#\[\s*ignore\b",
+                live_inventory.strip_noncode(path.read_text(encoding="utf-8")),
             )
+        }
+        # live_probe copre piu provider e il TLS: ha gate dedicati.
+        self.assertEqual(suites, set(gate.CLI_REFERENCE_SUITES) | {"live_probe"})
+
+    def test_cli_inventory_rejects_a_skipped_or_absent_test(self) -> None:
+        suite = "live_operations"
+        path = gate.ROOT / "crates/plenora-database-cli/tests" / f"{suite}.rs"
+        names = sorted(live_inventory.source_inventory([path]))
+        output = "\n".join(f"test {name} ... ok" for name in names)
+        self.assertEqual(gate.validate_cli_suite(suite, output), names)
+        with self.assertRaisesRegex(RuntimeError, "test non eseguiti"):
+            gate.validate_cli_suite(suite, output.replace(
+                f"test {names[0]} ... ok", f"test {names[0]} ... ignored",
+            ))
+        with self.assertRaisesRegex(RuntimeError, "test non eseguiti"):
+            gate.validate_cli_suite(suite, "running 0 tests\ntest result: ok")
+
+    def test_failed_captured_command_preserves_test_diagnostics(self) -> None:
+        completed = gate.subprocess.CompletedProcess(
+            ["cargo"], 1, "fixture assertion failed\n", "compiler summary\n",
+        )
+        with patch.object(gate.subprocess, "run", return_value=completed):
+            with patch.object(gate.sys, "stderr", new_callable=io.StringIO) as output:
+                with self.assertRaises(RuntimeError):
+                    gate.run(["cargo"], capture=True)
+        self.assertEqual(output.getvalue(), "fixture assertion failed\ncompiler summary\n")
 
     def test_the_ignored_fixtures_are_included(self) -> None:
         self.assertIn(
@@ -175,7 +204,7 @@ class CliLiveFixtures(unittest.TestCase):
         misurare niente, ed e di nuovo un verde che non significa nulla.
         """
         source = self.source()
-        start = source.index('for suite in ("live_f5"')
+        start = source.index("for suite in CLI_REFERENCE_SUITES:")
         block = source[start : source.index("ipc_materialization =", start)]
         self.assertIn("dsn,", block, "le suite CLI non ricevono il DSN")
         self.assertIn(
@@ -194,7 +223,7 @@ class CliLiveFixtures(unittest.TestCase):
         """
 
         source = self.source()
-        start = source.index('for suite in ("live_f5"')
+        start = source.index("for suite in CLI_REFERENCE_SUITES:")
         block = source[start : source.index("ipc_materialization =", start)]
         self.assertIn('steps.append(f"cli_live_fixture_{suite}")', block)
         self.assertLess(
@@ -202,6 +231,7 @@ class CliLiveFixtures(unittest.TestCase):
             block.index("steps.append"),
             "il passo e dichiarato prima di essere eseguito",
         )
+        self.assertLess(block.index("validate_cli_suite("), block.index("steps.append"))
 
     def test_the_report_publishes_the_steps_it_ran(self) -> None:
         """Nessuna lista tematica scritta a mano nel verdetto."""

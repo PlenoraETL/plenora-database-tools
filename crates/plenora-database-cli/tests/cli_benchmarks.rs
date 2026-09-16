@@ -1,38 +1,25 @@
-//! Gate CI su regressione performance: esegue i benchmark CLI, compara
-//! p95/p99 con la baseline in `tests/fixtures/benchmark_baseline.json`.
-//! Fallisce se la latenza attuale supera la baseline oltre la tolleranza
-//! (default 30%).
-//!
-//! Su hardware diverso, aggiornare la baseline con una fresh run. La
-//! tolerance è pensata per assorbire variazioni CI/dev machine senza
-//! nascondere regressioni grosse.
-//!
-//! `#[ignore]` per default: richiedono Postgres su `dataflow-postgres`.
-//! Sono anche relativamente lenti (~1-2s cadauno).
+//! Smoke live dei benchmark CLI: conteggi, risultati e percentili ordinati.
+//! Il confronto p95 e opt-in tramite `PLENORA_CLI_BENCHMARK_BASELINE`.
 
 #![cfg(test)]
 #![allow(clippy::doc_markdown, clippy::items_after_statements)]
 
 use serde_json::Value;
-use std::process::Command;
+use std::path::PathBuf;
 
-const BIN: &str = env!("CARGO_BIN_EXE_plenora-database");
-const DSN: &str =
-    "host=dataflow-postgres user=dataflow password=dataflow_test_2026 dbname=dataflow_test";
-const BASELINE_PATH: &str = "tests/fixtures/benchmark_baseline.json";
+mod common;
 
 fn load_baseline() -> Value {
-    let content = std::fs::read(BASELINE_PATH)
-        .unwrap_or_else(|_| panic!("baseline file mancante: {BASELINE_PATH}"));
+    let path = std::env::var_os("PLENORA_CLI_BENCHMARK_BASELINE").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/benchmark_baseline.json"),
+        PathBuf::from,
+    );
+    let content = std::fs::read(path).expect("configurazione benchmark assente");
     serde_json::from_slice(&content).expect("baseline JSON non parsabile")
 }
 
 fn run_json(args: &[&str]) -> Value {
-    let output = Command::new(BIN)
-        .args(args)
-        .env("PG_DSN", DSN)
-        .output()
-        .expect("spawn");
+    let output = common::postgres_cli(args).output().expect("spawn");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -55,7 +42,7 @@ fn assert_within_tolerance(
         actual_us <= allowed_us,
         "REGRESSIONE {name} {metric}: attuale {actual_us}µs > baseline {baseline_us}µs \
          + {tolerance_pct}% ({allowed_us}µs). Se questa è una nuova baseline attesa \
-         (upgrade Postgres, cambio hardware), rigenerare {BASELINE_PATH}."
+         (upgrade Postgres, cambio hardware), rigenerare la baseline nell'ambiente scelto."
     );
 }
 
@@ -63,6 +50,16 @@ fn compare_percentiles(name: &str, actual: &Value, baseline: &Value, tolerance_p
     let p95 = actual["latency_us"]["p95"]
         .as_u64()
         .expect("p95 atteso u64");
+    let percentiles: Vec<u64> = ["min", "p50", "p95", "p99", "max"]
+        .iter()
+        .map(|key| actual["latency_us"][key].as_u64().expect("percentile u64"))
+        .collect();
+    assert!(percentiles.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert_eq!(actual["iterations"], baseline["iterations"]);
+    if std::env::var_os("PLENORA_CLI_BENCHMARK_BASELINE").is_none() {
+        println!("{name}: p95={p95}us; baseline_comparison=not_requested");
+        return;
+    }
     let baseline_p95 = baseline["p95_us_max"]
         .as_u64()
         .unwrap_or_else(|| panic!("baseline p95_us_max mancante per {name}"));
@@ -77,7 +74,7 @@ fn compare_percentiles(name: &str, actual: &Value, baseline: &Value, tolerance_p
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
-fn baseline_benchmark_oltp() {
+fn live_benchmark_oltp() {
     let baseline = load_baseline();
     let tol = baseline["tolerance_pct"].as_u64().unwrap_or(30);
     let cfg = &baseline["benchmarks"]["benchmark-oltp"];
@@ -92,13 +89,14 @@ fn baseline_benchmark_oltp() {
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
-fn baseline_benchmark_read() {
+fn live_benchmark_read() {
     let baseline = load_baseline();
     let tol = baseline["tolerance_pct"].as_u64().unwrap_or(30);
     let cfg = &baseline["benchmarks"]["benchmark-read"];
     let iter = cfg["iterations"].as_u64().unwrap_or(50).to_string();
     let sql = cfg["sql"].as_str().unwrap_or("SELECT 1");
     let actual = run_json(&["benchmark-read", "PG_DSN", sql, &iter]);
+    assert_eq!(actual["total_rows"], cfg["iterations"]);
     compare_percentiles("benchmark-read", &actual, cfg, tol);
 }
 
@@ -108,7 +106,7 @@ fn baseline_benchmark_read() {
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
-fn baseline_benchmark_write() {
+fn live_benchmark_write() {
     let baseline = load_baseline();
     let tol = baseline["tolerance_pct"].as_u64().unwrap_or(30);
     let cfg = &baseline["benchmarks"]["benchmark-write"];
@@ -121,6 +119,14 @@ fn baseline_benchmark_write() {
         &iter,
         &batch,
     ]);
+    assert_eq!(actual["batch_size"], cfg["batch_size"]);
+    assert_eq!(
+        actual["total_rows"].as_u64(),
+        Some(
+            cfg["iterations"].as_u64().expect("iterations")
+                * cfg["batch_size"].as_u64().expect("batch_size")
+        )
+    );
     compare_percentiles("benchmark-write", &actual, cfg, tol);
 }
 
@@ -130,7 +136,7 @@ fn baseline_benchmark_write() {
 
 #[ignore = "live: richiede Postgres su dataflow-postgres"]
 #[test]
-fn baseline_benchmark_spatial() {
+fn live_benchmark_spatial() {
     let baseline = load_baseline();
     let tol = baseline["tolerance_pct"].as_u64().unwrap_or(30);
     let cfg = &baseline["benchmarks"]["benchmark-spatial"];
