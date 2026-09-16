@@ -38,14 +38,12 @@ Uso:
     python scripts/check_sdk_tests.py --stabilization-only # cicli runtime ripetuti
     python scripts/check_sdk_tests.py --allow-dirty    # verdetto non autorevole
 
-**Tracciato, non riproducibile.** `rust:1.98` e `python:3.13-slim` sono tag
-mutabili — la stessa riga puo risolvere due immagini diverse a distanza di un
-giorno — e l'`apt-get install` della build prende cio che il mirror pubblica
-oggi. Quel che il runner puo fare, e fa, e dire con cosa ha girato: id e
-digest delle due immagini, versione di rustc e di Python effettive, pin di
-pip confrontati con il `pip freeze` di chi li ha installati. Chiamarlo
-"riproducibile" prometterebbe che una seconda corsa ricostruisce lo stesso
-ambiente, che nessuna di queste misure garantisce.
+**Tracciato, non riproducibile.** Le immagini di build e test sono fissate
+per digest e le dipendenze Python hanno versioni vincolate. L'`apt-get install`
+della build usa pero il contenuto corrente del mirror: non garantisce una
+ricostruzione identica dell'ambiente. Il verdetto registra id e digest delle
+immagini, versioni effettive di rustc e Python e pin di pip confrontati con
+il `pip freeze` dell'ambiente installato.
 
 Reti, volumi e credenziali non sono scritti a mano: si chiedono a Docker con
 gli stessi helper dei gate di riferimento. Una password ricopiata qui
@@ -91,8 +89,8 @@ NATIVE = CRATE / "python" / "plenora_database" / "_native.abi3.so"
 PROBE = Path(__file__).resolve().parent / "sdk_wheel_probe.py"
 BUILD_REQUIREMENTS = ROOT / "requirements-sdk-build.txt"
 TEST_REQUIREMENTS = ROOT / "requirements-sdk-tests.txt"
-RUST_IMAGE = "rust:1.98"
-PYTHON_IMAGE = "python:3.13-slim"
+RUST_IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b9acbf"
+PYTHON_IMAGE = "python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285"
 
 # Il repository entra nel container dei test in sola lettura, e la suite gira
 # altrove: `python/tests` e un package, quindi pytest inserirebbe in
@@ -285,7 +283,10 @@ def git(arguments: list[str]) -> str:
 
 
 def pinned_versions(requirements: str) -> dict[str, str]:
-    """I pin `nome==versione` del file, per nome normalizzato.
+    """I requirement diretti `nome==versione`, per nome normalizzato.
+
+    Le direttive `-c` vincolano la risoluzione di pip senza richiedere nuovi
+    pacchetti: non appartengono all'inventario dei pacchetti installati.
 
     # Raises
 
@@ -299,6 +300,8 @@ def pinned_versions(requirements: str) -> dict[str, str]:
     for raw in requirements.splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
+            continue
+        if line.startswith("-c "):
             continue
         name, separator, version = line.partition("==")
         if not separator or not version.strip():
@@ -583,10 +586,9 @@ def assert_worktree_unchanged(before: dict[str, str], stage: str) -> None:
 def image_identity(reference: str) -> dict[str, object]:
     """Id e digest dell'immagine **locale** dietro un riferimento.
 
-    Un tag e mutabile: `rust:1.98` oggi e `rust:1.98` fra un mese possono
-    essere due immagini diverse, con due toolchain diverse, e il verdetto non
-    avrebbe modo di dire quale delle due ha eseguito. Si chiede a Docker dopo
-    la corsa, quando l'immagine e certamente presente.
+    Il digest fissato puo identificare un indice multipiattaforma: l'id
+    locale identifica l'immagine effettivamente eseguita. Si chiede a Docker
+    dopo la corsa, quando l'immagine e certamente presente.
     """
 
     raw = run(
@@ -1265,7 +1267,7 @@ def measure_scopes(
         artifact = build_artifacts(artifacts)
         assert_worktree_unchanged(before, "la build degli artefatti")
         # L'identita delle immagini si chiede **dopo** la prima corsa, ed e la
-        # condizione che [`image_identity`] dichiara: `python:3.13-slim`
+        # condizione che [`image_identity`] dichiara: l'immagine Python
         # arriva sul demone quando parte il container dei test, e su un runner
         # pulito chiederla prima significa chiederla di un'immagine che non
         # c'e ancora — `No such image`, e la campagna muore per una ragione

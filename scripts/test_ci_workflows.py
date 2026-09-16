@@ -61,8 +61,7 @@ NODE24_ACTIONS = {
     "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
     "softprops/action-gh-release": "efb35369e0ad2afab669f228072c1b0d510eae64",
-    "actions/attest-build-provenance": "4d101475d8b20a2381f78447822ac1eab6504dd8",
-    "actions/attest-sbom": "4651f806c01d8637787e274ac3bdf724ef169f34",
+    "actions/attest": "1e69f48acb82d1966a394da916b4c1698aa569d6",
     "anchore/sbom-action": "3ad7283483fc7af8ff2b4ea19663c2d5ca935e26",
 }
 
@@ -500,6 +499,50 @@ class CiWorkflowTests(unittest.TestCase):
                     )
         self.assertEqual(observed, set(NODE24_ACTIONS))
 
+    def test_build_and_test_container_images_are_immutable(self) -> None:
+        """Una nuova campagna non deve reintrodurre tag mobili degli strumenti."""
+
+        rust_images: set[str] = set()
+        python_images: set[str] = set()
+        for path in (ROOT / "scripts").glob("check_*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Assign) or not isinstance(
+                    node.value, ast.Constant
+                ):
+                    continue
+                value = node.value.value
+                if not isinstance(value, str) or not value.startswith(
+                    ("rust:", "rust@", "python:", "python@")
+                ):
+                    continue
+                with self.subTest(script=path.name, image=value):
+                    self.assertRegex(value, r"^(rust|python)@sha256:[0-9a-f]{64}$")
+                (rust_images if value.startswith("rust") else python_images).add(value)
+        self.assertEqual(len(rust_images), 1)
+        self.assertEqual(len(python_images), 1)
+        for name in ("cargo-deny", "db2-client"):
+            source = (ROOT / "docker" / name / "Dockerfile").read_text(encoding="utf-8")
+            self.assertIn(f"FROM {next(iter(rust_images))}", source)
+
+    def test_python_requirements_and_constraints_use_exact_versions(self) -> None:
+        """I file consumati da pip non possono aggiungere versioni mobili."""
+
+        for path in ROOT.glob("requirements-*.txt"):
+            for raw in path.read_text(encoding="utf-8").splitlines():
+                line = raw.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                if line.startswith(("-r ", "-c ")):
+                    self.assertTrue((path.parent / line[3:].strip()).is_file())
+                    continue
+                with self.subTest(requirements=path.name, requirement=line):
+                    self.assertRegex(
+                        line,
+                        r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?"
+                        r"==[0-9][A-Za-z0-9.+-]*(?:\s*;.+)?$",
+                    )
+
     def test_every_job_that_uses_the_sources_checks_them_out(self) -> None:
         """Chi legge i file versionati deve prenderli, non presumerli.
 
@@ -831,10 +874,21 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         job = parsed_jobs(workflow)["attach-to-release"]
         self.assertEqual(job["permissions"]["id-token"], "write")
         self.assertEqual(job["permissions"]["attestations"], "write")
+        self.assertEqual(job["permissions"]["artifact-metadata"], "write")
         block = job_text(workflow, "attach-to-release")
         self.assertIn("anchore/sbom-action@", block)
-        self.assertIn("actions/attest-build-provenance@", block)
-        self.assertIn("actions/attest-sbom@", block)
+        attestations = [
+            step
+            for step in job["steps"]
+            if str(step.get("uses", "")).startswith("actions/attest@")
+        ]
+        self.assertEqual(len(attestations), 2)
+        self.assertNotIn("sbom-path", attestations[0]["with"])
+        self.assertIn("sbom-path", attestations[1]["with"])
+        self.assertEqual(
+            attestations[0]["with"]["subject-path"],
+            attestations[1]["with"]["subject-path"],
+        )
         self.assertIn("cyclonedx-json", block)
         self.assertGreaterEqual(block.count("dist/plenora-database-linux-x86_64"), 2)
         self.assertGreaterEqual(block.count("dist/*-source.tar.gz"), 2)

@@ -38,7 +38,7 @@ from scripts.mysql_references import REFERENCES, MysqlReference  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 CHECKER_SOURCE = Path(__file__).resolve()
 NETWORK = "plenora-mysql-matrix"
-RUST_IMAGE = "rust:1.98"
+RUST_IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b9acbf"
 DATABASE = "dataflow_test"
 USER = "dataflow"
 TLS_FIXTURE = ROOT / "docker" / "mysql" / "tls"

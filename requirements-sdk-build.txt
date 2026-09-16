@@ -10,4 +10,5 @@
 # `crates/plenora-database-py/pyproject.toml`: il runner lo verifica prima di
 # avviare il container, perche una build con una maturin fuori dal vincolo
 # dichiarato non e la build che il pacchetto descrive.
+-c requirements-transitive.txt
 maturin==1.15.0

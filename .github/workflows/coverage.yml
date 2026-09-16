@@ -41,8 +41,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: '. -> target'
-      - name: Installa cargo-llvm-cov 0.8.7
-        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+      - name: Installa cargo-llvm-cov 0.9.1
+        run: cargo install cargo-llvm-cov --version 0.9.1 --locked
       - name: Misura e genera i report
         env:
           # Testkit, binding Python e moduli #[cfg(test)] hanno una propria
@@ -97,8 +97,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: '. -> target'
-      - name: Installa cargo-llvm-cov 0.8.7
-        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+      - name: Installa cargo-llvm-cov 0.9.1
+        run: cargo install cargo-llvm-cov --version 0.9.1 --locked
       - name: Costruisce la wheel instrumentata e misura SDK e binding
         shell: bash
         run: |

@@ -23,6 +23,7 @@ on:
   # file va provata dove viene scritta, non alla schedulazione successiva.
   pull_request:
     paths:
+      - "requirements-*.txt"
       - ".github/workflows/sqlserver-matrix.yml"
       - "scripts/check_sqlserver_matrix.py"
 

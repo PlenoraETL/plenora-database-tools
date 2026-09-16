@@ -8,8 +8,7 @@
 //! `#[ignore]` per default; esegui con:
 //!
 //! ```text
-//! docker run --rm --network plenora-postgres_default -v ... rust:1.98 \
-//!   cargo test --test live_f5 -- --ignored --test-threads=1 --nocapture
+//! python scripts/check_postgres_reference.py
 //! ```
 
 #![cfg(test)]

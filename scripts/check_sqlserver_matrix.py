@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 from scripts import live_inventory  # noqa: E402
 PASSWORD = "DataFlow_Test_2026!"
 NETWORK = "plenora-sqlserver-matrix"
-RUST_IMAGE = "rust:1.98"
+RUST_IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b9acbf"
 # I test che la matrice **non** esegue, ciascuno con la sua ragione.
 #
 # `live_private_ca_tls_validates_chain_and_hostname` pretende la CA privata che
