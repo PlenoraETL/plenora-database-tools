@@ -1457,12 +1457,12 @@ SDK_VERSIONS = {
 SDK_COUNTS = {"passed": 231, "skipped": 4, "deselected": 0}
 SDK_IMAGES = {
     "build": {
-        "reference": "rust:1.98",
+        "reference": sdk.RUST_IMAGE,
         "id": "sha256:f58923369ba2",
         "digests": ["rust@sha256:f58923369ba2"],
     },
     "test": {
-        "reference": "python:3.13-slim",
+        "reference": sdk.PYTHON_IMAGE,
         "id": "sha256:ffb752e139c0",
         "digests": ["python@sha256:ffb752e139c0"],
     },
@@ -1728,9 +1728,8 @@ class PythonSdkRunnerTests(unittest.TestCase):
         self.assertIn("--no-default-features", cli["build_command"])
         self.assertIn("--locked", cli["build_command"])
 
-        # Un tag e mutabile: senza id e digest il verdetto direbbe "rust:1.98"
-        # e non quale rust:1.98.
-        self.assertEqual(recorded["images"]["build"]["reference"], "rust:1.98")
+        # Il verdetto conserva il riferimento e l'identita locale effettiva.
+        self.assertEqual(recorded["images"]["build"]["reference"], sdk.RUST_IMAGE)
         self.assertTrue(recorded["images"]["build"]["id"].startswith("sha256:"))
         self.assertTrue(recorded["images"]["test"]["digests"])
 
@@ -2013,28 +2012,27 @@ class PythonSdkRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "non risulta installato"):
             sdk.installed_versions(without)
 
-    def test_the_images_are_tracked_because_a_tag_is_not_a_pin(self) -> None:
+    def test_image_identity_tracks_the_image_actually_executed(self) -> None:
         """La promessa e "tracciato", e il verdetto porta di cosa.
 
-        `rust:1.98` e un tag mutabile e l'`apt-get` della build non e fissato:
-        chiamare l'ambiente riproducibile prometterebbe che una seconda corsa
-        lo ricostruisce identico, che nessuna misura del runner garantisce.
+        Le immagini sono fissate, ma l'`apt-get` della build non lo e:
+        il verdetto identifica l'ambiente senza promettere build identiche.
         """
 
         source = SDK_RUNNER.read_text(encoding="utf-8")
         self.assertIn("Tracciato, non riproducibile", source)
 
         with patch.object(sdk, "run", return_value="sha256:abc []\n") as observed:
-            identity = sdk.image_identity("rust:1.98")
+            identity = sdk.image_identity(sdk.RUST_IMAGE)
         self.assertEqual(observed.call_args.args[0][:3], ["docker", "image", "inspect"])
-        self.assertEqual(identity["reference"], "rust:1.98")
+        self.assertEqual(identity["reference"], sdk.RUST_IMAGE)
         self.assertEqual(identity["id"], "sha256:abc")
 
         with patch.object(
             sdk, "run", return_value='sha256:abc ["rust@sha256:def"]\n'
         ):
             self.assertEqual(
-                sdk.image_identity("rust:1.98")["digests"], ["rust@sha256:def"]
+                sdk.image_identity(sdk.RUST_IMAGE)["digests"], ["rust@sha256:def"]
             )
 
     def test_the_benchmarks_have_an_option_instead_of_an_impossible_filter(

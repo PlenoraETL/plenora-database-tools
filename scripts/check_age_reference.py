@@ -14,7 +14,7 @@ from scripts.compose_network import compose_network, container_variable
 
 
 CONTAINER = "plenora-age"
-IMAGE = "rust:1.98"
+IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b9acbf"
 LIVE_TEST = "age::tests::live::live_age_1_7_pg18_parameters_types_and_transactions"
 
 

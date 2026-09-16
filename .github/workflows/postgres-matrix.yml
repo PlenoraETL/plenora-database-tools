@@ -22,6 +22,7 @@ on:
   # file va provata dove viene scritta, non alla schedulazione successiva.
   pull_request:
     paths:
+      - "requirements-*.txt"
       - ".github/workflows/postgres-matrix.yml"
       - "scripts/check_postgres_matrix.py"
 

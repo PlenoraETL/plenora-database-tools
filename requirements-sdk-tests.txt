@@ -10,6 +10,7 @@
 #
 # Aggiornamento: cambiare la versione qui, rieseguire il runner live e
 # offline, e registrare il nuovo verdetto.
+-c requirements-transitive.txt
 iniconfig==2.3.0
 numpy==2.5.3
 packaging==26.3

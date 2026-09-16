@@ -10,6 +10,7 @@ on:
       - main
   pull_request:
     paths:
+      - "requirements-*.txt"
       - ".github/workflows/postgres-assurance.yml"
       - "Cargo.toml"
       - "Cargo.lock"

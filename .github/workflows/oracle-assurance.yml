@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     paths:
+      - "requirements-*.txt"
       - ".github/workflows/oracle-assurance.yml"
       - "Cargo.toml"
       - "Cargo.lock"
