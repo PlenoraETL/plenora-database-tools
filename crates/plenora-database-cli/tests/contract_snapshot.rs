@@ -104,6 +104,7 @@ fn snapshot_error_envelope_has_stable_shape() {
 // ============================================================================
 
 #[test]
+#[cfg(feature = "postgres")]
 fn snapshot_profile_list_shape() {
     let v = run_json_env(&["profile-list"], &[]);
     assert_has_keys(&v, &["profiles"]);
@@ -383,6 +384,7 @@ fn snapshot_bulk_write_dry_run_shape() {
 // ============================================================================
 
 #[test]
+#[cfg(feature = "postgres")]
 fn snapshot_junit_format_wraps_output() {
     let output = Command::new(BIN)
         .args(["--format", "junit", "profile-list"])

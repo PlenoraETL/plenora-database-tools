@@ -1,5 +1,7 @@
 //! Contratti del CLI verificabili senza un database.
 
+#![cfg(feature = "postgres")]
+
 use serde_json::Value;
 use std::process::Command;
 
