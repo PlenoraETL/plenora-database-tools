@@ -44,7 +44,10 @@ use plenora_db_sqlserver::{SqlServerConfig, SqlServerProvider};
     feature = "oracle",
     feature = "db2"
 ))]
-use rustls::{pki_types::CertificateDer, RootCertStore};
+use rustls::{
+    pki_types::{pem::PemObject, CertificateDer},
+    RootCertStore,
+};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::json;
@@ -58,7 +61,7 @@ use std::fs::{self, File};
     feature = "oracle",
     feature = "db2"
 ))]
-use std::io::{Cursor, Read};
+use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -2726,7 +2729,7 @@ fn validate_and_normalize_private_ca_material(path: &Path, material: &[u8]) -> C
         .unwrap_or(material.len());
     let trimmed = &material[first_non_whitespace..];
     let certificates: Vec<CertificateDer<'static>> = if trimmed.starts_with(b"-----BEGIN") {
-        rustls_pemfile::certs(&mut Cursor::new(trimmed))
+        CertificateDer::pem_slice_iter(trimmed)
             .collect::<Result<_, _>>()
             .map_err(|_| CliError::from("materiale CA TLS non valido"))?
     } else {
@@ -2759,7 +2762,7 @@ fn validate_and_normalize_private_ca_material(path: &Path, material: &[u8]) -> C
 
 #[cfg(feature = "sqlserver")]
 fn validate_sqlserver_private_ca_material(pem: &[u8]) -> CliResult<()> {
-    let certificates = rustls_pemfile::certs(&mut Cursor::new(pem))
+    let certificates = CertificateDer::pem_slice_iter(pem)
         .take(2)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CliError::from("materiale CA TLS non valido"))?;
