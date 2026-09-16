@@ -43,6 +43,8 @@ gate black-box li confronta con quel pin in CI.
 La mappa versionata della superficie Rust e prodotta dallo stesso catalogo in
 [`public_contract.rs`](crates/plenora-database-core/src/public_contract.rs) e
 viene compilata da un integration test che usa soltanto export pubblici.
+Per allineare i consumer Rust ai tipi pubblici, vedere
+[`Tipi Arrow nell'API Rust`](docs/arrow-rust.md).
 La release GitHub allega anche il sorgente immutabile del workspace: il crate
 core dipende dal catalogo spatial versionato nel repository e non viene
 pubblicato separatamente su un package index.

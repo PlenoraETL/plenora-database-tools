@@ -414,7 +414,7 @@ fn divergent_canonical_and_legacy_metadata_is_rejected() {
             ("plenora.dimensions".to_owned(), "xyz".to_owned()),
         ]
         .into_iter()
-        .collect(),
+        .collect::<plenora_database_core::arrow::schema::Metadata>(),
     );
     let error = FieldContract::parse(&field).expect_err("metadata divergence");
     assert_eq!(error.category, ErrorCategory::DataMapping);
@@ -435,7 +435,7 @@ fn incoherent_crs_metadata_is_rejected_before_preflight() {
         (protocol::GEOMETRY_CRS_ID.to_owned(), "EPSG:4326".to_owned()),
     ]
     .into_iter()
-    .collect();
+    .collect::<plenora_database_core::arrow::schema::Metadata>();
     let resolved_without_id = Field::new("geom", DataType::Binary, false).with_metadata(base);
     assert!(FieldContract::parse(&resolved_without_id).is_err());
 
@@ -452,7 +452,7 @@ fn incoherent_crs_metadata_is_rejected_before_preflight() {
             (protocol::GEOMETRY_SRID.to_owned(), "4326".to_owned()),
         ]
         .into_iter()
-        .collect(),
+        .collect::<plenora_database_core::arrow::schema::Metadata>(),
     );
     assert!(FieldContract::parse(&missing_with_srid).is_err());
 }

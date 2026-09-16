@@ -112,6 +112,10 @@ pub(crate) fn parse_mapping_policy(s: &str) -> Result<MappingPolicy, DatabaseErr
 
 // ------------------------------ IPC decode -----------------------------
 
+#[cfg(test)]
+#[path = "write_ipc_tests.rs"]
+mod ipc_tests;
+
 pub(crate) fn decode_ipc_stream(
     ipc_bytes: &[u8],
 ) -> Result<(SchemaRef, VecDeque<RecordBatch>, u64), DatabaseError> {

@@ -9,6 +9,16 @@ from scripts import check_docs
 
 
 class DocumentationGateTests(unittest.TestCase):
+    def test_local_evidence_is_not_product_documentation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "assurance-results"
+            evidence.mkdir()
+            (evidence / "upstream.md").write_text("[external source](missing.md)", encoding="utf-8")
+            product = root / "README.md"
+            product.write_text("# Product", encoding="utf-8")
+            self.assertEqual(check_docs.markdown_documents(root), [product])
+
     def test_examples_reject_removed_factories_for_any_import_alias(self) -> None:
         with tempfile.TemporaryDirectory(dir=check_docs.ROOT) as directory:
             example = Path(directory) / "example.md"

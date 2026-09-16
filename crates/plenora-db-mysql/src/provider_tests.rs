@@ -431,7 +431,7 @@ fn append_input_schema() -> SchemaRef {
             plenora_database_core::protocol::CONTRACT_VERSION.to_owned(),
         )])
         .into_iter()
-        .collect(),
+        .collect::<plenora_database_core::arrow::schema::Metadata>(),
     ))
 }
 
@@ -612,7 +612,7 @@ async fn write_rejects_a_stream_schema_different_from_prepare() {
             plenora_database_core::protocol::CONTRACT_VERSION.to_owned(),
         )])
         .into_iter()
-        .collect(),
+        .collect::<plenora_database_core::arrow::schema::Metadata>(),
     ));
     let error = provider
         .write(
