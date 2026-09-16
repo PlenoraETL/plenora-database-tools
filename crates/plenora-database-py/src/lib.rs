@@ -327,9 +327,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(aconnect, m)?)?;
     m.add_function(wrap_pyfunction!(connect_mysql, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect_mysql, m)?)?;
-    // Le due superfici esplicite di `MariaDB`. ADR 0014: il consumatore
-    // dichiara il prodotto, la probe verifica quella scelta invece di
-    // compierla.
+    // Factory native MariaDB sincrona e asincrona, con prodotto esplicito.
     m.add_function(wrap_pyfunction!(connect_mariadb, m)?)?;
     m.add_function(wrap_pyfunction!(aconnect_mariadb, m)?)?;
     m.add_function(wrap_pyfunction!(connect_sqlserver, m)?)?;

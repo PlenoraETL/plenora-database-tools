@@ -31,8 +31,6 @@ La matrice corrente dei provider, delle capability, dei crate e dei test è in
 
 Il dettaglio dell'API Python, inclusi esempi sync/async e limiti dichiarati, è
 nel [`README dello SDK`](crates/plenora-database-py/README.md).
-L'impatto degli aggiornamenti e le correzioni non ancora rilasciate sono nel
-[`changelog dello SDK`](crates/plenora-database-py/CHANGELOG.md).
 
 ## Contratto pubblico
 
@@ -102,6 +100,8 @@ with open("places.jsonl", encoding="utf-8") as lines:
 
 Il file JSON Lines viene letto incrementalmente; ogni geometria GeoJSON viene
 convertita al bordo in WKB/EWKB e il batch porta i metadata GeoArrow canonici.
+La conversione produce batch incrementali; `copy_from` nel binding Python
+li raccoglie in un buffer IPC completo prima della scrittura.
 La forma async, la conversione verso modelli e i limiti operativi sono nel
 [`README dello SDK`](crates/plenora-database-py/README.md#ingresso-json-tipizzato).
 

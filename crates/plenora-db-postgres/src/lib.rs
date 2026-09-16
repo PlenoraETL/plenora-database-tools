@@ -361,11 +361,8 @@ impl PostgresProvider {
     /// Costruzione base condivisa da `default()`, `new()`,
     /// `for_profile()`, `insecure_local()`.
     ///
-    /// TLS secure-by-default (ADR-011): il baseline è `Require` +
+    /// TLS secure-by-default: il baseline è `Require` +
     /// `WebPKI`. `insecure_local()` esplicito sovrascrive dopo.
-    /// Prima di questo fix `build()` inizializzava `Disabled` e le
-    /// factory `new()`/`for_profile()` restavano plaintext anche dopo
-    /// il flip di `default()`.
     fn build(batch_rows: usize) -> Self {
         let metrics = Arc::new(PostgresMetrics::default());
         Self {
@@ -417,20 +414,15 @@ impl PostgresProvider {
     /// batch reader/writer contro Docker plaintext.
     ///
     /// **Solo per test/dev**. In produzione: `new(batch_rows)` con
-    /// TLS `Require` default (ADR-011).
+    /// TLS `Require` default.
     #[must_use]
     pub fn insecure_local_with_batch_rows(batch_rows: usize) -> Self {
         Self::new(batch_rows).with_tls_mode(PostgresTlsMode::Disabled)
     }
 
-    /// Alias storico di [`Self::default`] (pre-`1.2.0` era necessario
-    /// perché `default()` era Disabled). Mantenuto per non rompere
-    /// consumer intermedio che aveva già migrato al secure factory.
+    /// Alias deprecato di [`Self::default`], con TLS obbligatorio.
     #[must_use]
-    #[deprecated(
-        since = "1.2.0",
-        note = "usa Self::default() (ora secure-by-default) — ADR-011"
-    )]
+    #[deprecated(since = "1.2.0", note = "usa Self::default(), con TLS obbligatorio")]
     pub fn default_secure() -> Self {
         Self::default()
     }

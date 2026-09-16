@@ -1,4 +1,4 @@
-"""Engine applicativi provider-neutral sopra il lifecycle del Core v3."""
+"""Engine applicativi provider-neutral sopra il lifecycle del Core relazionale."""
 
 from __future__ import annotations
 

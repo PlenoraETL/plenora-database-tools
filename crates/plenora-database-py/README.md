@@ -64,6 +64,8 @@ sessione per request. PostgreSQL, MySQL, MariaDB, SQL Server, Oracle e Db2
 espongono lo stesso lifecycle provider-neutral.
 
 ```python
+import plenora_database as p
+
 engine = p.engine_from_url(
     p.EngineConfig.from_url(
         "postgresql://user:password@database/application"
@@ -87,8 +89,7 @@ engine.close()
 La variante asyncio si crea con `await p.async_engine_from_url(config)` e usa
 `async with engine.session()`; l'esempio completo sync/async e in
 [`examples/core_v3_repository.py`](examples/core_v3_repository.py).
-Gli ingressi pubblici sono `engine_from_url` e `async_engine_from_url`; le
-factory per singolo provider non fanno parte del contratto 2.0.
+Gli ingressi pubblici sono `engine_from_url` e `async_engine_from_url`.
 Il prodotto è dichiarato nello schema URL (`mysql`, `mariadb`, `sqlserver`,
 `oracle`, `db2`, `postgresql` o `age`) e viene verificato dalla probe prima che
 l'engine sia restituito.
@@ -105,9 +106,9 @@ config = p.EngineConfig.from_postgres_dsn(
 )
 ```
 
-### Expression language Core v3
+### Expression language
 
-Per query componibili, l'API nuova costruisce oggetti immutabili direttamente
+Per query componibili, l'API costruisce oggetti immutabili direttamente
 sull'IR relazionale canonico. Lo stesso statement viene compilato dal renderer
 Rust nel dialetto della sessione; i valori dei bind viaggiano separati e
 `execute` restituisce un `Result` uniforme.
@@ -142,8 +143,9 @@ engine.close()
 ```
 
 `Result` offre `all()`, `first()`, `one()`, `one_or_none()`, `scalar()` e le
-varianti di cardinalita stretta `scalar_one()`/`scalar_one_or_none()`. Tutti i
-terminali producono `Row`; SQL raw usa `query_sql` per un `Result` oppure
+varianti di cardinalita stretta `scalar_one()`/`scalar_one_or_none()`. I
+terminali di riga producono `Row` (o `None` dove ammesso); i terminali scalar
+restituiscono il valore della prima colonna. SQL raw usa `query_sql` per un `Result` oppure
 `execute_sql` per un `MutationResult`.
 
 La superficie comprende inoltre `IN`/`BETWEEN`/`LIKE`/test di null, funzioni
@@ -203,7 +205,7 @@ reader = session.read(
 ```
 
 Provider, catalogo, sorgente, proiezione e ordinamento appartengono allo scope
-firmato: un token riusato su una lettura diversa viene rifiutato prima
+del checkpoint: un token riusato su una lettura diversa viene rifiutato prima
 dell'I/O. `limit` puo cambiare fra le pagine. Il `repr` e gli errori pubblici
 non espongono i valori contenuti nel token. La forma async usa lo stesso
 oggetto con `await session.aread(...)`.
@@ -495,10 +497,10 @@ async def main():
 asyncio.run(main())
 ```
 
-## Migrazione a 4.0
+## Capability e lifecycle
 
-La 4.0 rende esplicito il confine fra contratto dell'artefatto e misure del
-database connesso:
+Il contratto distingue la superficie dell'artefatto dalle misure del database
+connesso:
 
 - `session.capabilities` e `AsyncSession.capabilities` restituiscono il
   documento comune Capability Discovery 2.0;
@@ -507,13 +509,10 @@ database connesso:
   verifica redatta della connessione;
 - `Engine.close()` e `await AsyncEngine.aclose()` sono gli alias di lifecycle
   canonici; `dispose()` resta disponibile per compatibilita;
-- `PlenoraError.retry` e ora il mapping tipizzato del contratto comune, non una
-  stringa. I dettagli strutturati sono in `PlenoraError.details`, con le
+- `PlenoraError.retry` e il mapping tipizzato del contratto comune. I dettagli strutturati sono in `PlenoraError.details`, con le
   diagnostiche di riga sotto `details["row_diagnostics"]`.
 
-Il cambiamento di forma di `capabilities` e `retry` e incompatibile e motiva
-la nuova major. Le applicazioni che interrogavano supporto specifico del
-database devono passare a `provider_capabilities`.
+Per verificare il supporto specifico del database usare `provider_capabilities`.
 
 ## Graph con Apache AGE
 
@@ -710,12 +709,20 @@ pyarrow tipici (dove i campi sono nullable per default).
 L'outcome è un dict con struttura `WriteOutcome` del core (status,
 rows.confirmed / .inserted / .failed / .skipped, recovery).
 
+Nel binding Python, `copy_from` e `acopy_from` serializzano l'intero input in
+un buffer Arrow IPC in memoria prima di inviarlo al Rust, anche quando la
+sorgente e un iterabile di batch. La dimensione dei batch non limita quindi
+la memoria totale della singola chiamata. Il percorso e implementato in
+[`_arrow_io.py`](python/plenora_database/_arrow_io.py).
+
 ## Integrazione applicativa
 
 La configurazione provider-neutral conserva comunque una scelta esplicita del
 prodotto nel protocollo URL:
 
 ```python
+import plenora_database as p
+
 engine = p.engine_from_url(
     "mysql://app:password@db.internal/app?tls_mode=require"
 )
@@ -787,7 +794,7 @@ except p.PlenoraError as e:
 ## Error hierarchy
 
 Tutti gli errori discendono da `PlenoraError` (che a sua volta
-discende da `RuntimeError` → retro-compat con `except RuntimeError`).
+discende da `RuntimeError`).
 
 ```python
 try:
@@ -797,7 +804,7 @@ except p.PlenoraNotFoundError as e:
     log.warn("target missing", extra={
         "category": e.category,        # "not_found"
         "phase": e.phase,              # "read" / "prepare" / ...
-        "retry": e.retry,              # "never" / "safe" / "requires_recovery" / ...
+        "retry": e.retry,              # mapping del contratto retry
         "remote_effect": e.remote_effect,  # "none" / "rolled_back" / ...
         "provider": e.provider,        # "postgres"
     })
@@ -855,15 +862,17 @@ e li verifica; un artefatto assente non è supporto implicito.
   riferimento AMD64 fissato dal gate. I nomi di tabella, schema e colonna
   Spatial creati dall'ORM devono essere canonici maiuscoli, coerentemente con
   la normalizzazione di `USER_SDO_GEOM_METADATA`. Pool configurabile, identita
-  generate, geography, TCPS live e bind timestamp con timezone restano chiusi
+  generate, geography e bind timestamp con timezone restano chiusi
   e falliscono prima di promettere una semantica non provata. La matrice
-  esatta delle capability aperte e generata in `docs/STATO.md`.
+  esatta delle capability aperte e generata in `docs/STATO.md`. TCPS e
+  qualificato con CA privata e rifiuto del server non attendibile; la fixture
+  non qualifica autenticazione mutua del client.
 - **Selezione del prodotto** — il prodotto è dichiarato nell'URL o in
   `EngineConfig` e verificato dalla probe; non viene inferito dal server
   raggiunto.
 - **Cursore server-side riapribile** — non viene pubblicata un'identita di
   cursore lato server. La ripresa supportata e keyset e usa `ReadCheckpoint`;
-  e qualificata live sui cinque provider.
+  il supporto dipende dalle capability del provider.
 - **Portable spatial DWithin unità SRS** — per predicato DWithin su
   colonna `geometry(*, 4326)` la distanza è in gradi, non metri.
   Usare `spatial.geography(...)` per unità metriche geodetiche.
@@ -887,93 +896,29 @@ python scripts/check_db2_reference.py              # wheel DB2 e provider live d
 python scripts/check_oracle_reference.py           # Oracle thin, CLI e wheel live
 ```
 
-**Albero pulito.** Il runner rifiuta di partire se `git status --porcelain
--uall` non e vuoto: modifiche staged, non staged e file mai tracciati sono
-tutti e tre un motivo di rifiuto. Il verdetto nomina un commit, e il wheel
-si costruisce dai file su disco: se i due non coincidono, quel nome descrive
-altro codice. `--allow-dirty` esiste per le corse esplorative e non fa
-finta di niente — il verdetto esce con `authoritative: false`,
-`worktree_dirty: true` e le righe di `git status` che lo hanno reso tale.
+Il runner richiede un albero pulito e verifica che build e test non lo
+modifichino. `--allow-dirty` produce un verdetto esplorativo con
+`authoritative: false`.
 
-Il runner costruisce **sempre** wheel e CLI prima di `pytest` — stesso
-container, stessa toolchain, stesso `Cargo.lock` — e li esporta in una
-directory temporanea fuori dal repository: nel source tree non installa
-niente, e un `.so` rimasto da una corsa precedente viene rimosso.
+Wheel e CLI vengono costruiti dalla stessa sorgente ed esportati fuori dal
+repository. I test importano il wheel installato in `site-packages`;
+`scripts/sdk_wheel_probe.py` rifiuta un import dal source tree. Un `pytest`
+diretto dopo modifiche Rust puo caricare un modulo nativo non ricostruito:
+usare il runner per verificare l'artefatto corrispondente ai sorgenti.
 
-Non lanciare `pytest` a mano: `_native.abi3.so` e gitignorato e nessuno lo
-rigenera. Dopo un cambio al Rust, un `pytest` diretto esegue il binario di
-prima e risponde su codice che non e quello scritto — rosso su codice
-corretto, o verde su codice rotto. E successo due volte in una sola
-sessione, e le due correzioni sembravano entrambe sbagliate.
-
-**La suite verifica il wheel, non i sorgenti accanto.** Il container di test
-installa l'artefatto con `pip install --no-deps`, monta il repository in sola
-lettura, copia `python/tests` fuori dal source tree e gira da li senza
-`PYTHONPATH` verso il package locale. Prima di pytest,
-`scripts/sdk_wheel_probe.py` chiede a `importlib` da dove verrebbero
-`plenora_database` e `_native`, e fallisce se la risposta non e
-`site-packages`: le tre strade che riportano alla copia sorgente —
-`PYTHONPATH`, `cwd`, e l'inserimento di `sys.path` che pytest fa risalire al
-padre di `tests/`, che e un package — non si vedono nel risultato, perche i
-test sono gli stessi e passano uguale.
-
-Reti Compose, volume della CA MySQL e **credenziali** dei riferimenti
-vengono chiesti a Docker dal runner, non scritti a mano: valgono anche in
-un worktree con un altro progetto Compose, e non esiste una seconda copia
-della password da tenere allineata al compose.
-
-I pin di pip sono fissati: `requirements-sdk-build.txt` per `maturin` —
-dentro il vincolo dichiarato da `pyproject.toml`, che il runner verifica — e
-`requirements-sdk-tests.txt` per la chiusura completa delle dipendenze di
-test. Il runner confronta i pin con il `pip freeze` del container e
-fallisce se divergono.
-
-**Tracciato, non riproducibile.** `rust:1.98` e `python:3.13-slim` sono tag
-mutabili e l'`apt-get` della build prende cio che il mirror pubblica oggi:
-una seconda corsa non ricostruisce necessariamente lo stesso ambiente. Cio
-che il runner garantisce e di dire con cosa ha girato — id e digest delle due
-immagini, versione di rustc e di Python effettive.
-
-**Ogni scope ha un contratto, e la corsa deve corrispondergli.** I conteggi
-sono letti da `SCOPE_CONTRACTS` nel runner, che e l'unica fonte: ricopiarli qui
-li farebbe diventare falsi al primo test aggiunto.
-
-Un conteggio di soli `passed` non descrive una corsa. Uno skip e un
-test che non ha risposto, e salta per motivi che somigliano a un errore di
-configurazione — un binario spostato, una variabile che nessuno passa piu —
-cioe resta verde proprio quando il gate ha smesso di misurare; una
-deselezione fa lo stesso da un'altra porta, perche un `-k` che non seleziona
-piu niente non e un errore per pytest.
-
-Per `offline` il contratto va oltre il totale e fissa **quali** skip, e
-quanti per motivo per i provider del wheel standard, DB2 escluso in modo
-tipizzato, e per i benchmark opt-in.
-Un totale coincidente e proprio cio che rende invisibile
-una sostituzione — uno skip nuovo al posto di uno atteso lascia il numero
-fermo. I valori stanno tutti in `SCOPE_CONTRACTS`, dentro il runner: quando
-la suite cambia si aggiornano li, ed e il punto, perche un test aggiunto
-diventa visibile invece di far crescere un numero senza dire di cosa.
-
-Il verdetto JSON identifica cio che ha girato: commit, SHA-256 del wheel e
-del modulo nativo **caricato da site-packages**, percorsi da cui e stato
-importato, SHA-256 del CLI con feature e comando di build, i tre conteggi
-verificati dal contratto, identita delle immagini e versioni effettive di
-Python, rustc, maturin, pyarrow, pandas e pytest. Il nome del wheel da solo non identifica un artefatto — e lo stesso a
-ogni build. Il runner verifica inoltre che ne' la build ne' i test abbiano
-cambiato l'albero di lavoro, untracked inclusi.
+Il runner scopre reti, CA e credenziali tramite Docker, applica i pin dei
+requirements e confronta passati, saltati e deselezionati con `SCOPE_CONTRACTS`
+in `scripts/check_sdk_tests.py`. Il verdetto registra commit, digest degli
+artefatti, origine degli import e versioni effettive degli strumenti. Le
+immagini e i pacchetti di sistema vengono registrati, ma una ricostruzione
+non garantisce identita binaria fra ambienti.
 
 ### Benchmark opt-in
 
-I benchmark di parita girano dentro il runner live (`PLENORA_BENCH_PARITY`
-e gia impostato). Il confronto SDK / CLI e un rapporto fra due tempi, quindi
-i due lati devono essere lo stesso codice: il CLI viene costruito dalla
-stessa corsa che costruisce il wheel — con le feature esplicite registrate nel
-verdetto — esportato
-accanto ad esso e montato in sola lettura, e il runner ne passa il percorso
-con `PLENORA_CLI_BIN`. Un binario preso da `target/release` del repository
-sopravvive alle sessioni e nessuno ne sa il commit: il rapporto misurava due
-codici diversi. Il verdetto ne porta digest, feature e comando di build, e
-una guardia rifiuta qualunque percorso che ricada dentro il repository.
+I benchmark di parita girano nel runner live con `PLENORA_BENCH_PARITY`
+abilitato. Il CLI costruito insieme al wheel viene passato tramite
+`PLENORA_CLI_BIN`; il runner ne registra digest, feature e comando di build
+e rifiuta un binario dentro il repository.
 
 Per lanciarli da soli, sempre su artefatti appena costruiti, c'e l'opzione
 dedicata:

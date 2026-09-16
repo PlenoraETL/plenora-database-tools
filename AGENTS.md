@@ -3,10 +3,6 @@
 Il documento che si legge per primo. Non descrive il repository — quello lo fa
 il repository — ma dice **cosa non e negoziabile** e **dove sta il resto**.
 
-Era assente: la prassi lo dava per esistente, le review lo cercavano e non lo
-trovavano, e i vincoli qui sotto vivevano sparsi fra `README.md` e la storia dei
-commit. Un vincolo che nessuno puo citare non e un vincolo.
-
 ## Le regole che non cambiano
 
 Sono policy, non fatti del codice: non si generano da nessuna parte, e questo e
@@ -31,8 +27,7 @@ l'unico posto in cui sono scritte.
    difetti di questo repository e stato unico: il valore sta nel chiuderli
    tutti, non nel chiudere quello segnalato.
 6. **Un gate che nessuno esegue non e un gate.** Una guardia nuova entra in un
-   workflow che gira, oppure non serve a niente — e proprio cosi che una suite
-   e rimasta rossa per mesi senza che nessuno lo vedesse.
+   workflow che gira.
 
 ## Dove sta il resto
 

@@ -1,4 +1,4 @@
-"""Il default TLS del SDK resta sicuro (ADR-011).
+"""Il default TLS del SDK resta sicuro.
 
 Gli altri moduli aprono la sessione con `tls_mode="insecure_local"` tramite
 `_harness`, perche il riferimento di sviluppo e plaintext. Quella deroga

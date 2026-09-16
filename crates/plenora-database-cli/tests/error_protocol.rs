@@ -709,14 +709,7 @@ fn secrets_are_redacted_from_transport_errors_for_every_public_probe_route() {
 //  Configurazione TLS dei sottocomandi: nessuna variabile ignorata
 // ============================================================================
 
-/// Senza alcuna variabile TLS il provider e quello sicuro di default e arriva
-/// a tentare la connessione.
-///
-/// La regressione che questo test avrebbe colto: leggere le variabili con
-/// l'helper di `database-probe`, che tratta "nome indicato ma variabile
-/// assente" come errore del chiamante, faceva fallire ogni sottocomando in
-/// fase `validate` con "variabile path TLS assente" — cioe la configurazione
-/// di produzione, quella senza CA privata, era l'unica che non funzionava.
+/// La configurazione TLS predefinita verifica il server con CA pubbliche.
 // `execute-scalar` e un comando `PostgreSQL`: senza quella feature il binario
 // non lo compila e risponde «non compilato in questo binario» in fase
 // `validate`, che e la risposta giusta a una domanda diversa da quella del

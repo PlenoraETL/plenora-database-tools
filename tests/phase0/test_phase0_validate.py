@@ -64,12 +64,7 @@ class Phase0ValidateTests(unittest.TestCase):
             )
 
     def test_plan_rejects_an_operation_outside_the_domain(self) -> None:
-        """Le operazioni non-database non sono piu una famiglia separata.
-
-        Nella v1 `arcgis.read` era un'operazione valida, e lo schema si
-        limitava a impedire di abbinarla a un provider database. Qui non e
-        valida affatto: l'`id` non esiste nel contratto.
-        """
+        """Un'operazione estranea al dominio database e rifiutata dal contratto attivo."""
         invalid = {
             "schema_version": 2,
             "connection_ref": "env:TEST_DSN",

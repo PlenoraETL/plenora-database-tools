@@ -1,4 +1,4 @@
-"""Expression language Core v3 e risultato uniforme, senza fixture live."""
+"""Expression language Core relazionale e risultato uniforme, senza fixture live."""
 
 from __future__ import annotations
 

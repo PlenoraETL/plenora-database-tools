@@ -77,9 +77,7 @@ fn spec_of(function: crate::query::SpatialFunction) -> &'static SpatialFunctionS
 
 #[test]
 fn geometry_returning_functions_match_the_versioned_catalog() {
-    // `returns_geometry` decide se una projection viene incapsulata prima
-    // di finire sul filo, e il catalogo dichiara la stessa cosa a chi legge
-    // il contratto. Erano due elenchi scritti a mano che nessuno incrociava.
+    // La copertura dei test deve corrispondere al catalogo spatial del contratto.
     let disagreeing = crate::query::SpatialFunction::ALL
         .iter()
         .filter(|function| {

@@ -29,14 +29,8 @@ pub struct MysqlProvider {
     config: MysqlConfig,
     max_connections: usize,
     cached_pool: Mutex<Option<CachedPool>>,
-    /// Il prodotto che questo provider serve.
-    ///
-    /// Non e configurabile e non si deduce dal server: lo fissa il
-    /// costruttore. Un provider che scoprisse il proprio prodotto
-    /// connettendosi sarebbe una selezione automatica, che ADR 0014 esclude
-    /// — il consumatore sceglie il provider, e il provider sa gia cosa
-    /// serve. Il riconoscimento alla probe verifica quella scelta, non la
-    /// compie.
+    /// La configurazione condivisa non seleziona il prodotto: lo sceglie il
+    /// tipo pubblico del provider prima di aprire la connessione.
     profile: &'static dyn ProductProfile,
 }
 
@@ -1128,36 +1122,10 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Il provider pubblico di `MariaDB`.
+/// Provider MariaDB con profilo di prodotto esplicito.
 ///
-/// Condivide l'implementazione interna con `MysqlProvider`, ma usa un profilo
-/// di prodotto distinto per identificazione, SQL, errori e capability. In tal
-/// modo le differenze misurate non si disperdono in rami nel codice comune e
-/// ciascun provider pubblica soltanto il proprio contratto verificato.
-/// dichiara le stesse sei write mode di `MySQL`, e ciascuna ha le proprie tre
-/// sonde su tre riferimenti fissati per digest.
-///
-/// # Non c'e selezione automatica
-///
-/// `MysqlProvider` continua a rifiutare `MariaDB` alla probe, e questo rifiuta
-/// `MySQL` con la stessa simmetria. Un provider che si adattasse al server che
-/// trova sceglierebbe per il consumatore, e lo farebbe nel punto in cui il
-/// consumatore non sta guardando: chi dichiara `mysql` e finisce su `MariaDB`
-/// ha un problema di configurazione, non una comodita da assecondare.
-///
-/// # Perche un newtype e non una feature del primo
-///
-/// Il prodotto e un fatto del **tipo**, non un parametro: e cio che permette a
-/// `PublishedProfile` di dire quale profilo un costruttore pubblico seleziona,
-/// e a una guardia di verificare che il provider costruito sia davvero quello.
-/// Un parametro avrebbe rimesso la scelta a runtime, cioe dove nessuno la
-/// verifica.
-///
-/// La configurazione resta `MysqlConfig`: i due prodotti parlano lo stesso
-/// protocollo e la stessa connessione, e un tipo gemello che differisse solo
-/// nel nome divergerebbe alla prima correzione applicata a uno solo. Cio che
-/// diverge e nel profilo, che e il posto in cui questa ADR ha deciso di
-/// tenerlo.
+/// Condivide `MysqlConfig` e il trasporto con MySQL; `PublishedProfile`
+/// seleziona il profilo MariaDB e la probe rifiuta un prodotto diverso.
 pub struct MariadbProvider(MysqlProvider);
 
 impl PublishedProfile for MariadbProvider {

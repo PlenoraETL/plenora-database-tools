@@ -46,23 +46,11 @@ pub const SQLSERVER_NATIVE_TYPE: &str = "plenora.sqlserver.native_type";
 pub const SQLSERVER_NATIVE_DECLARATION: &str = "plenora.sqlserver.native_declaration";
 pub const SQLSERVER_COLLATION: &str = "plenora.sqlserver.collation";
 
-/// Il tipo nativo della colonna, come il provider `MySQL` lo ha osservato.
+/// Tipo nativo osservato sul percorso di lettura.
 ///
-/// Annota **cio che il provider ha letto**, e le due strade da cui puo
-/// arrivare non dicono la stessa cosa:
-///
-/// * sul path catalogo il nome viene da `information_schema.columns`, cioe
-///   dalla dichiarazione;
-/// * sul path query viene dai metadata di `COM_STMT_PREPARE`, cioe dal
-///   **filo**, che e l'unica cosa che il protocollo porta.
-///
-/// La distinzione non e teorica: ADR 0014 l'ha misurata. Dalla stessa DDL
-/// `document JSON` esce `json` su `MySQL` e `text` su `MariaDB`, perche li `JSON`
-/// e un alias di `LONGTEXT` e sul filo le due dichiarazioni sono
-/// indistinguibili. Entrambe le annotazioni sono corrette, ed e per questo che
-/// il contratto le dichiara come cio che sono: il tipo osservato, non la DDL
-/// ricostruita. Un consumer che deve sapere se una colonna e davvero `JSON`
-/// legge il catalogo, non il risultato di una query.
+/// Il catalogo descrive la dichiarazione SQL; il risultato di una query
+/// descrive il tipo wire. JSON e LONGTEXT di MariaDB non sono distinguibili
+/// dai soli metadata wire: per la dichiarazione SQL occorre il catalogo.
 pub const MYSQL_NATIVE_TYPE: &str = "plenora.mysql.native_type";
 
 /// La dichiarazione SQL completa, quando il provider l'ha vista.

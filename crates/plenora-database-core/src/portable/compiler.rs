@@ -177,8 +177,7 @@ impl From<DialectKind> for IdentifierDialect {
             DialectKind::Postgres | DialectKind::Oracle | DialectKind::Db2 => Self::Postgres,
             // Il quoting: backtick raddoppiato, identico sui due prodotti.
             DialectKind::Mysql | DialectKind::Mariadb => Self::Mysql,
-            // Parentesi quadre, con la chiusa raddoppiata. La regola c'era
-            // gia: e lo stesso modulo che serve gli altri tre.
+            // SQL Server quota con parentesi quadre e raddoppia la parentesi di chiusura.
             DialectKind::SqlServer => Self::SqlServer,
         }
     }
@@ -746,14 +745,8 @@ fn compile_returning(
     )))
 }
 
-/// Dove il dialetto vuole le colonne che una scrittura restituisce.
-///
-/// Erano una stringa da appendere, e su tre dialetti su quattro lo sono
-/// ancora. T-SQL no: `OUTPUT` sta **prima** di `VALUES`, prima di `WHERE`, e
-/// subito dopo `DELETE FROM t`. Appenderlo in coda avrebbe prodotto SQL che il
-/// server rifiuta, e il posto in cui va non e una proprieta dello statement ma
-/// del dialetto — per questo la decisione torna a chi compone lo statement
-/// invece di restare dentro `compile_returning`.
+/// Rende le colonne restituite dalla mutazione nella posizione richiesta
+/// dal dialetto: SQL Server usa OUTPUT, gli altri dialetti qualificati RETURNING.
 enum ReturningClause {
     Nothing,
     /// ` RETURNING a, b` — in coda.

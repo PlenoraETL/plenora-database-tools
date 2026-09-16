@@ -1,4 +1,4 @@
-//! Microbenchmark offline delle primitive applicative Core v3.
+//! Microbenchmark offline delle primitive applicative Core relazionale.
 //!
 //! Misura soltanto l'overhead dello strato comune: compilazione dello
 //! statement, hit della cache metadata, lifecycle di una sessione e consumo

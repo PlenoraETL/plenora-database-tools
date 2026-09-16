@@ -1,12 +1,5 @@
-//! Il verdetto condiviso delle misure di evidenza.
-//!
-//! Due misure distinte lo producono — quella su `MariaDB` di ADR 0014 e
-//! quella sulla semantica di sessione — e i loro runner leggono lo stesso
-//! documento. Tenere una sola forma non e simmetria: un secondo `Recorder`
-//! con gli stessi campi diverge alla prima aggiunta, e i due runner
-//! comincerebbero a interpretare JSON diversi credendoli uguali.
-//!
-//! Esiste solo nei test: nessuna misura entra nel binario pubblico.
+//! Prove differenziali delle superfici MySQL e MariaDB.
+//! Le osservazioni vengono raccolte attraverso il percorso reale del provider.
 
 #![allow(clippy::redundant_pub_crate)]
 

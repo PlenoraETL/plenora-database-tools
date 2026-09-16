@@ -575,14 +575,12 @@ async fn durability_round(id: u8, durable: bool) -> Probe {
     ))
 }
 
-/// La misura della semantica di sessione sui riferimenti.
-///
-/// `#[ignore]` come per ADR 0014: pretende un server live esplicito, e il nome
-/// non porta il prefisso `live_` che i runner del gate filtrano.
+/// Misura la semantica di sessione su un riferimento live esplicito.
+/// Il test ignorato e invocato dalla campagna dedicata.
 ///
 /// # Panics
 ///
-/// Se l'harness non riesce a misurare. Sono guasti suoi, non divergenze.
+/// Fallisce se l'harness non riesce a completare la misura.
 #[tokio::test]
 #[ignore = "misura della semantica di sessione: richiede un riferimento live esplicito"]
 #[allow(clippy::too_many_lines)]

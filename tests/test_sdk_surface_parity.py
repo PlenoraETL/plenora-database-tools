@@ -205,7 +205,7 @@ class TheTwoSessionsAgree(unittest.TestCase):
 
 
 class SyncAndAsyncAreOneSurface(unittest.TestCase):
-    """La specifica Core v3 copre wrapper, transazioni e modulo nativo."""
+    """La specifica Core relazionale copre wrapper, transazioni e modulo nativo."""
 
     def test_native_implementations_have_the_same_surface(self) -> None:
         for sync_file, async_file in (

@@ -35,44 +35,17 @@ Le credenziali non sono duplicate nel runner: vengono lette dal container
 avviato. `down --volumes` elimina i dati del solo progetto Oracle ed e usato
 dal workflow alla fine della campagna.
 
-## Migrazione (una tantum)
+## Conflitti fra progetti locali
 
-**Migrazione (una tantum).** A collidere sono soltanto i **container**: i
-`container_name` sono fissi, quindi quelli del vecchio progetto `database-tools`
-occupano i nomi che i nuovi progetti vogliono usare. I volumi no — sono
-prefissati dal progetto, quindi `database-tools_mysql_data` e
-`plenora-mysql_mysql_data` convivono senza conflitto.
+I `container_name` espliciti sono unici sull'host, anche fra progetti Compose
+distinti. Se `up` segnala un nome occupato, identificare prima il progetto
+proprietario del container con `docker inspect` e la label
+`com.docker.compose.project`. Fermare o rimuovere soltanto la fixture non piu
+necessaria, usando il suo Compose e il suo nome di progetto.
 
-Rimuovere i soli container, prima del primo `up`:
-
-```bash
-docker rm -f dataflow-mariadb \
-             dataflow-mariadb-certgen \
-             dataflow-mariadb-11 \
-             dataflow-mariadb-11-certgen \
-             dataflow-mariadb-10 \
-             dataflow-mariadb-10-certgen \
-             dataflow-mysql \
-             dataflow-mysql-certgen \
-             dataflow-postgres \
-             dataflow-postgres-tls \
-             dataflow-postgres-tls-certgen \
-             plenora-age \
-             dataflow-sqlserver \
-             dataflow-sqlserver-certgen \
-             dataflow-sqlserver-init \
-             plenora-oracle-certgen \
-             plenora-oracle
-```
-
-**Non** cancellare i volumi del vecchio progetto: non e necessario e non e
-reversibile. Restano orfani e inerti; chi vuole recuperare lo spazio puo
-elencarli con `docker volume ls | grep database-tools` e rimuoverli quando ha
-verificato che i nuovi riferimenti funzionano — ma e una decisione sua, non un
-passo della migrazione.
-
-I nuovi progetti ripartono da volumi vuoti e le fixture nascono dagli script in
-`docker/*/init`, che il primo avvio riesegue.
+I volumi sono separati per progetto. Un conflitto di nome del container non
+richiede la cancellazione dei volumi; `down --volumes` si usa soltanto quando
+si vuole eliminare anche i dati della fixture selezionata.
 
 ## Reset del fixture Db2
 

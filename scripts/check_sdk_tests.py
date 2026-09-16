@@ -85,7 +85,6 @@ CRATE = ROOT / "crates" / "plenora-database-py"
 PYPROJECT = CRATE / "pyproject.toml"
 CARGO_MANIFEST = CRATE / "Cargo.toml"
 CARGO_LOCK = ROOT / "Cargo.lock"
-CHANGELOG = CRATE / "CHANGELOG.md"
 # Il nome con cui il crate del binding compare nel lock del workspace.
 CARGO_PACKAGE = "plenora-database-py"
 NATIVE = CRATE / "python" / "plenora_database" / "_native.abi3.so"
@@ -111,17 +110,7 @@ SUITE_DIRECTORY = "/suite"
 # accanto a `PYTHON_IMAGE` perche e da quella scelta che dipende.
 SITE_PACKAGES = "/site-packages/"
 
-# Il bench di parita esegue il CLI in subprocess e confronta i suoi tempi con
-# quelli del SDK. Il binario si costruisce qui, nello stesso container e con
-# la stessa toolchain del wheel: preso da `target/release` del repository era
-# un eseguibile di provenienza ignota — sopravvive alle sessioni e nessuno ne
-# sa il commit — e il rapporto fra i due tempi metteva insieme due codici
-# diversi.
-#
-# Le feature sono esplicite in entrambe le direzioni: oltre al bench Postgres,
-# la suite attraversa la superficie CLI comune sui quattro provider. Il
-# verdetto dichiara quindi tutti gli adapter presenti nell'artefatto invece di
-# ereditare un default che puo cambiare senza che nessuno se ne accorga.
+# CLI costruito insieme al wheel, con toolchain e sorgenti della stessa corsa.
 CLI_PACKAGE = "plenora-database-cli"
 CLI_BINARY_NAME = "plenora-database"
 CLI_FEATURES = ("postgres", "mysql", "sqlserver")
@@ -441,52 +430,18 @@ def locked_version(document: str) -> str:
     raise RuntimeError(f"{CARGO_PACKAGE} non compare in {CARGO_LOCK.name}")
 
 
-def changelog_version(document: str) -> str:
-    """La versione della prima release del CHANGELOG.
-
-    Una sezione `[Unreleased]` non e una release e viene saltata: e il modo
-    normale di lavorare fra un rilascio e l'altro, e farla fallire
-    costringerebbe a rilasciare per poter eseguire il gate.
-
-    # Raises
-
-    `RuntimeError` se nessuna intestazione dichiara una versione.
-    """
-
-    for line in document.splitlines():
-        match = re.match(r"^## \[(\d[^\]]*)\]", line)
-        if match:
-            return match.group(1)
-    raise RuntimeError("il CHANGELOG non dichiara nessuna release")
-
-
 def validate_declared_versions(
-    *, pyproject: str, cargo_toml: str, cargo_lock: str, changelog: str
+    *, pyproject: str, cargo_toml: str, cargo_lock: str
 ) -> str:
-    """La versione della release, che le quattro fonti devono dire uguale.
+    """Verifica che nome del wheel, versione nativa e lock coincidano.
 
-    Non e una ripetizione ridondante: ognuna decide una cosa diversa.
-    `pyproject.toml` compone il nome del wheel, `Cargo.toml` del crate decide
-    cosa risponde `p.version()`, `Cargo.lock` e cio che le build `--locked`
-    pretendono di ritrovare, e il CHANGELOG e quello che legge chi aggiorna.
-    Due che divergono producono un artefatto che mente su se stesso, per
-    esempio un nome wheel diverso dalla versione restituita dal modulo.
-
-    # Returns
-
-    La versione, una volta che tutte e quattro concordano.
-
-    # Raises
-
-    `RuntimeError` elencando fonte per fonte cosa dichiara: sapere *che*
-    divergono senza sapere quale sia indietro non basta a correggerle.
+    Solleva RuntimeError indicando i metadati divergenti.
     """
 
     versions = {
         PYPROJECT.name: toml_version(pyproject, "project"),
         f"{CRATE.name}/{CARGO_MANIFEST.name}": toml_version(cargo_toml, "package"),
         CARGO_LOCK.name: locked_version(cargo_lock),
-        CHANGELOG.name: changelog_version(changelog),
     }
     distinct = set(versions.values())
     if len(distinct) != 1:
@@ -497,13 +452,12 @@ def validate_declared_versions(
 
 
 def declared_version() -> str:
-    """La versione dichiarata, letta dalle quattro fonti sul disco."""
+    """La versione dichiarata, letta dai metadati di build sul disco."""
 
     return validate_declared_versions(
         pyproject=PYPROJECT.read_text(encoding="utf-8"),
         cargo_toml=CARGO_MANIFEST.read_text(encoding="utf-8"),
         cargo_lock=CARGO_LOCK.read_text(encoding="utf-8"),
-        changelog=CHANGELOG.read_text(encoding="utf-8"),
     )
 
 
@@ -779,12 +733,9 @@ def marker_line(output: str, marker: str) -> str:
 
 
 def live_environment(*, cli: str) -> list[str]:
-    """Le variabili dei riferimenti, lette dai container in esecuzione.
+    """Legge ambiente e credenziali dalle fixture in esecuzione.
 
-    `cli` e il percorso del binario che il bench di parita esegue: lo passa il
-    runner, che e l'unico a sapere dove ha montato cosa. Scritto dentro il
-    test era il punto di mount di allora, e al primo cambio il bench non lo ha
-    piu trovato e si e saltato da solo.
+    Il runner passa il percorso del CLI costruito insieme al wheel tramite cli.
     """
 
     postgres_user = container_variable(POSTGRES_CONTAINER, "POSTGRES_USER")

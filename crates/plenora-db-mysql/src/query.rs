@@ -222,10 +222,10 @@ pub(crate) struct MysqlRenderedQuery {
 /// porta il sistema di riferimento: `raw.geometry_result_forms` ha misurato
 /// SRID 0 per `ST_Buffer` su una colonna in 4326, su entrambi i prodotti.
 /// Pubblicare quello 0 come CRS direbbe una cosa che nessuno ha dichiarato, e
-/// per questo la superficie era chiusa.
+/// il renderer deve verificare il CRS dichiarato prima di pubblicarlo.
 ///
 /// Il frame pero e noto: e quello dell'ingresso, che il piano dichiara e che
-/// [`SpatialFunction::crs_rule`] dice se il risultato eredita. Restava solo da
+/// [`SpatialFunction::crs_rule`] dice se il risultato eredita. Il renderer deve
 /// **dimostrare** che l'ingresso stia davvero dove il piano dice.
 ///
 /// # Come lo dimostra

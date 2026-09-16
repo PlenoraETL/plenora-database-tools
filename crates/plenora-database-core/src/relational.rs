@@ -946,7 +946,7 @@ pub struct UpsertOperation {
     pub returning: Vec<String>,
 }
 
-/// Mutazioni del Core v3. `SELECT` resta [`QueryOperation`] per compatibilita
+/// Mutazioni del Core relazionale. `SELECT` resta [`QueryOperation`] per compatibilita
 /// seriale; questo enum e il nuovo confine DML additivo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -1829,9 +1829,7 @@ pub fn validate_query_operation(
                         order_by,
                         frame,
                     } => {
-                        // La stessa domanda, una risposta sola: prima la
-                        // lista era scritta a mano qui e la variante ordinaria
-                        // non ne sapeva niente.
+                        // Verifica classe window-only e arieta sulla funzione stessa.
                         if !function.is_window_only()
                             || !function.accepts_argument_count(arguments.len())
                         {

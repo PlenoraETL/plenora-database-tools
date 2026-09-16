@@ -382,12 +382,7 @@ async def _create_async_postgres_engine(
 def _connect_postgres(dsn: str, tls_mode: str = "require") -> Session: ...
 async def _aconnect_postgres(dsn: str, tls_mode: str = "require") -> AsyncSession: ...
 
-# La famiglia MySQL: sei write mode su sette per entrambi i prodotti, con
-# `truncate_insert` fail-closed — `TRUNCATE` e DDL con commit implicito, e
-# nessun rollback riporta indietro le righe.
-#
-# Due factory e non un parametro: il prodotto lo dichiara il consumatore, e la
-# probe verifica quella scelta invece di compierla (ADR 0014).
+# La probe verifica il prodotto selezionato dalla factory interna.
 def _connect_mysql(
     host: str,
     database: str,

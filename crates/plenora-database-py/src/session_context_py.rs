@@ -1,4 +1,4 @@
-//! `SessionContext` esposto a Python (PFM CHG-002).
+//! `SessionContext` esposto a Python.
 //!
 //! Wraps `plenora_database_core::session_context::SessionContext` con
 //! API Python idiomatica. Il consumer PFM può popolare il context
@@ -14,8 +14,9 @@
 //! ctx.insert_public("app.tenant_id", "42")
 //! ctx.insert_sensitive("app.actor_email", "alice@example.com")
 //!
-//! with p.connect(dsn).begin(context=ctx) as tx:
-//!     rows = tx.execute_returning_rows("...")
+//! with p.engine_from_url(config) as engine, engine.session() as session:
+//!     with session.begin(context=ctx) as tx:
+//!         rows = tx.query_sql("SELECT 1")
 //! ```
 
 #![allow(clippy::doc_markdown, clippy::needless_pass_by_value)]

@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use std::hint::black_box;
 use std::time::Instant;
 
-/// Piano di riferimento del contratto v1: la forma che la CLI vede piu' spesso.
+/// Piano di riferimento per misurare validazione e compilazione del contratto attivo.
 const CONTRACT_READ_PLAN: &[u8] =
     include_bytes!("../../../contracts/v2/examples/plan-postgres-read.json");
 

@@ -34,16 +34,8 @@ plenora-db-sqlserver.workspace = true
 plenora-db-oracle.workspace = true
 plenora-db-db2 = { workspace = true, optional = true }
 arrow-ipc.workspace = true
-# RUSTSEC-2025-0020: fino alla 0.24.0 `PyString::from_object` passava un
-# `&str` all'API C di Python senza garantire il NUL finale, e l'interprete
-# poteva leggere oltre la fine del buffer ed esporne il contenuto in
-# un'eccezione. Corretta nella 0.24.1: il minimo qui sta sopra quella riga, e
-# `"0.24"` non basterebbe perche ammetterebbe ancora la 0.24.0.
-#
-# Il workspace risolveva 0.23.5, cioe dentro l'intervallo vulnerabile. Il
-# codice non chiama quella funzione, ma la raggiungibilita non e una difesa
-# che si mantiene da sola: la prossima riga che la usasse non troverebbe
-# nessun gate a fermarla.
+# Binding PyO3 con ABI stabile dal minimo Python dichiarato nelle feature.
+# I pin del binding e del bridge asyncio sono verificati dal gate supply-chain.
 pyo3 = { version = "=0.29.2", features = ["extension-module", "abi3-py310", "serde"] }
 pyo3-async-runtimes = { version = "=0.29.0", features = ["tokio-runtime"] }
 serde_json.workspace = true

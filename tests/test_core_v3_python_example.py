@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""L'esempio Core v3 conserva il confine sessione/transazione per request."""
+"""L'esempio Core relazionale conserva il confine sessione/transazione per request."""
 
 from __future__ import annotations
 

@@ -65,6 +65,14 @@ const B: &str = r#"/* FIXME non e un commento */"#;
             violations = check_comments.check_file(path, root)
         self.assertEqual(violations, [])
 
+    def test_historical_decision_labels_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "history.rs"
+            path.write_text("// ADR 0014\n// Prima di questo fix\n", encoding="utf-8")
+            violations = check_comments.check_file(path, root)
+        self.assertEqual(len(violations), 2)
+
     def test_debt_markers_are_case_sensitive_to_avoid_italian_todo(self) -> None:
         source = "# tutto a posto, non TODO\n"
         violations = [

@@ -52,14 +52,7 @@ REQUIRED_LIVE_TESTS = frozenset(
 
 
 def live_test_inventory() -> set[str]:
-    """I test live che `live_tests.rs` definisce, ora.
-
-    Il gate contava soltanto **quanti** test erano passati — quarantacinque su
-    quarantacinque — e un totale non distingue un test da un altro: sostituirne
-    uno lasciava la matrice piena e il gate verde. E la stessa classe di
-    difetto corretta nel gate PostgreSQL, e la regola 5 di AGENTS.md dice di
-    cercarla altrove.
-    """
+    """Legge i nomi dei test live dai sorgenti per verificarne identita ed esito."""
 
     return live_inventory.source_inventory([LIVE_TEST_SOURCE])
 

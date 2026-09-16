@@ -34,7 +34,7 @@ from ._native import (
     PlenoraAuthenticationError,
     PlenoraAuthorizationError,
     PlenoraCancelledError,
-    PlenoraCommitOutcomeUnknownError,  # PFM CHG-004
+    PlenoraCommitOutcomeUnknownError,
     PlenoraConcurrentModificationError,
     PlenoraConflictError,
     PlenoraCrsError,

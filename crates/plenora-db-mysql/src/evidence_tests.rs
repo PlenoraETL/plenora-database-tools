@@ -22,10 +22,7 @@ fn the_expected_ddl_outcome_is_the_measured_one() {
         None
     );
 
-    // E ogni altro esito e una premessa che manca. Il caso che conta e il
-    // terzo: un errore diverso da quello misurato — un privilegio, un
-    // timeout — rendeva la sonda verde, perche "l'indice non c'e" era
-    // indistinguibile da "il server lo ha rifiutato come sappiamo".
+    // Un errore della sonda non equivale all'assenza di un indice spaziale.
     for (what, expectation, observed, expected) in [
         (
             "accettata ma rifiutata",

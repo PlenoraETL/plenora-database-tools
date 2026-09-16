@@ -417,31 +417,7 @@ class LiveInventory(unittest.TestCase):
 
 
 class LiveTestsMustMeasure(unittest.TestCase):
-    """Una prova live che salta in silenzio si dichiara passata.
-
-    Quindici prove di `test_suite.rs` cominciavano cosi:
-
-        let Ok(dsn) = std::env::var("PLENORA_TEST_POSTGRES_DSN") else {
-            return;
-        };
-
-    Senza DSN si concludevano subito, e `cargo test` le contava fra quelle
-    passate. Una prova che non ha toccato nessun server e indistinguibile, nel
-    resoconto, da una che lo ha attraversato — e il runner non puo vedere la
-    differenza, perche una prova che rientra subito stampa `... ok` come le
-    altre.
-
-    Il difetto non era attivo: i tre gate la DSN la impostano, quindi quelle
-    prove giravano. Era silenzioso, che e peggio. Il giorno in cui il nome
-    della variabile cambiasse, o la risoluzione del nome del container
-    saltasse, la matrice delle versioni direbbe «cinque major su cinque, tutto
-    passato» avendo misurato soltanto i test unitari, che non aprono una
-    connessione.
-
-    Queste due guardie tengono ferme le due meta del rimedio: che nessuna prova
-    torni alla forma silenziosa, e che i gate continuino a dichiarare di
-    pretendere la misura.
-    """
+    """I test live richiedono esplicitamente la configurazione del database. Una variabile assente non deve produrre un successo senza I/O."""
 
     ROOT = Path(__file__).resolve().parents[1]
     SUITE = ROOT / "crates" / "plenora-db-postgres" / "src" / "test_suite.rs"

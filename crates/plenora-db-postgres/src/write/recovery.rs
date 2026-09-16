@@ -47,9 +47,8 @@ pub(super) fn cancelled_write_error(
     )
 }
 
-/// La stessa domanda del resto del provider, e la stessa risposta: la copia
-/// che stava qui e in `crate::error` divergeva gia dal `check_cancelled`, che
-/// rispondeva sempre `Cancelled`.
+/// Classifica la cancellazione preservandone la causa.
+/// Una deadline produce Timeout; una richiesta esplicita produce Cancelled.
 pub(super) use crate::error::interruption_category;
 
 pub(super) fn interruption_message(cancellation: &CancellationToken) -> &'static str {

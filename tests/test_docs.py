@@ -3,11 +3,28 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts import check_docs
 
 
 class DocumentationGateTests(unittest.TestCase):
+    def test_examples_reject_removed_factories_for_any_import_alias(self) -> None:
+        with tempfile.TemporaryDirectory(dir=check_docs.ROOT) as directory:
+            example = Path(directory) / "example.md"
+            example.write_text(
+                "```python\nimport plenora_database as db\n"
+                "db.create_engine(dsn)\n```\n"
+                "```python\nfrom plenora_database import connect\n```\n",
+                encoding="utf-8",
+            )
+            with patch.object(check_docs, "markdown_documents", return_value=[example]):
+                violations = check_docs.validate_sdk_example_api()
+            self.assertEqual(
+                {item.reason for item in violations},
+                {"nome SDK non pubblico: create_engine", "import SDK non pubblico: connect"},
+            )
+
     def test_repository_documents_pass(self) -> None:
         checked, violations = check_docs.scan()
         self.assertGreaterEqual(checked, 15)

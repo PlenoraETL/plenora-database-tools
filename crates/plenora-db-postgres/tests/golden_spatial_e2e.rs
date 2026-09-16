@@ -526,27 +526,7 @@ async fn spatial_s4_geography_distance_in_meters() {
     Box::new(tx).rollback(&cancel).await.expect("rollback");
 }
 
-// ============================================================================
-//  S.5 — Predicati portable ST_Contains / ST_Within / ST_DWithin
-// ============================================================================
-//
-// L'unico test end-to-end preesistente era ST_Intersects. Qui estendiamo agli
-// altri 3 predicati del catalogo portable via `p_spatial`.
-//
-// Setup: 3 polygon "regioni" quadrate + 1 polygon reference ridotto interno.
-//   R1 = quadrato grande (0..10, 0..10)      — contiene tutto
-//   R2 = quadrato medio  (2..4, 2..4)         — contiene ref e più piccolo di R1
-//   R3 = quadrato esterno (100..101, 100..101) — nessuna relazione
-//   REF = quadrato piccolo (2.5..3.5, 2.5..3.5) — dentro R1 e R2
-//
-// Verifiche:
-//   - ST_Contains(g, REF): quali g contengono REF? → {R1, R2}
-//   - ST_Within(g, REF): quali g stanno dentro REF? → {} (nessuno più piccolo)
-//   - ST_DWithin(g::geography, REF::geography, 5_000_000 m): quali g sono
-//     entro ~5000 km da REF? → {R1, R2}. R3 (100°,100°) è a distanza
-//     geodetica maggiore.
-//     DWithin con Geometry su SRID 4326 è fail-closed perché confronterebbe
-//     gradi con metri; il test usa Geography.
+// Le prove eseguono i predicati spatial sul database e verificano le righe restituite.
 
 #[ignore = "live: richiede Postgres su dataflow-postgres con PostGIS"]
 #[tokio::test]

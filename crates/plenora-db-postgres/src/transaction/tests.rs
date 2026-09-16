@@ -247,46 +247,9 @@ mod live {
         drop_table("a1_rollback").await;
     }
 
-    /// Letture e scritture **insieme**, sullo stesso pool, per quanti giri si
-    /// vuole.
-    ///
-    /// # Cosa mancava
-    ///
-    /// `live_postgres_concurrent_pool_stress_when_dsn_is_available` mette
-    /// dodici **lettori** su un pool da quattro, e verifica le metriche del
-    /// pool riga per riga. E' la prova di contesa piu ricca del repository, e
-    /// legge soltanto.
-    ///
-    /// Un pool puo sbagliare proprio dove i due carichi si mescolano: una
-    /// connessione che torna dal path di scrittura con la transazione non
-    /// chiusa e innocua fra scrittori, che ne aprono un'altra subito, ed e
-    /// velenosa per un lettore che la trova con un `BEGIN` addosso.
-    ///
-    /// Su `MySQL`, `MariaDB` e `SQL Server` questa misura c'e. Qui era l'ultima a
-    /// mancare.
-    ///
-    /// # Perche e anche il soak
-    ///
-    /// `PLENORA_PG_MIXED_ROUNDS` cambia il numero di giri e nient'altro: la
-    /// corsa lunga e la corsa breve sono lo **stesso codice**. Un soak che
-    /// esercitasse un percorso diverso da quello del test misurerebbe la
-    /// tenuta di codice che nessuno attraversa mai.
-    ///
-    /// # Cosa verifica
-    ///
-    /// Ogni lettore ha una **fetta di lunghezza diversa**: con fette uguali,
-    /// due lettori che si scambiassero la connessione a meta transazione
-    /// renderebbero comunque il totale giusto. Cosi lo scambio cambia il
-    /// totale.
-    ///
-    /// Ogni scrittore scrive un payload che porta il proprio numero, e la
-    /// rilettura arriva da **un'altra connessione**: il conteggio coglie una
-    /// perdita, il payload coglie un'attribuzione sbagliata.
-    ///
-    /// Le metriche del pool chiudono il cerchio, e sono cio che `PostgreSQL` ha
-    /// e gli altri tre no: nessun timeout, nessuna sessione invalidata, e un
-    /// numero di connessioni nuove che resta dentro la capacita dichiarata —
-    /// cioe il pool non ne ha aperte e dimenticate lungo la strada.
+    /// Esegue letture e scritture concorrenti sullo stesso pool.
+    /// Verifica righe, payload e metriche del pool; `PLENORA_PG_MIXED_ROUNDS`
+    /// regola la durata della prova senza cambiarne il percorso.
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
     async fn live_postgres_mixed_load_shares_one_pool_between_readers_and_writers() {

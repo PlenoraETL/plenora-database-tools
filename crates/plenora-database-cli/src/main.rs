@@ -1719,9 +1719,7 @@ async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
         .await?;
     let mut report =
         write_stream_to_ipc(Path::new(&output), stream.as_mut(), &cancellation).await?;
-    // Un solo `as_object_mut`: le due `expect` che seguivano ripetevano un
-    // controllo gia' fatto qui sopra, e ripeterlo con un panico invece che con
-    // un errore era l'unico punto del binario che poteva abbattere il processo.
+    // Verifica la forma del report prima di aggiungere i campi diagnostici.
     let oggetto = report
         .as_object_mut()
         .ok_or_else(|| CliError::from("report Arrow IPC non valido"))?;
@@ -2143,14 +2141,7 @@ enum ProviderArguments {
         port: Option<u16>,
         tls: TlsPathEnvironments,
     },
-    /// `MariaDB`, che ha gli stessi argomenti di `MySQL` e un provider
-    /// diverso.
-    ///
-    /// Una variante sua e non un flag su quella di `MySQL`: la scelta del
-    /// prodotto e cio che decide quale provider viene costruito, e ADR 0014
-    /// vieta che sia il server a deciderlo. Un booleano dentro `Mysql`
-    /// avrebbe reso possibile costruire il provider sbagliato dimenticando di
-    /// leggerlo.
+    /// Seleziona il provider richiesto dal comando prima della connessione.
     #[cfg(feature = "mysql")]
     Mariadb {
         host: String,
@@ -3187,7 +3178,7 @@ fn postgres_usage() -> String {
         "",
         "== PostgreSQL: portable AST ==",
         "  portable-execute <dsn-env> <PORTABLE.json>",
-        "    compatibilita del comando storico PostgreSQL; la famiglia generica e sopra",
+        "    alias PostgreSQL; la famiglia generica e sopra",
         "",
         "== PostgreSQL: transazioni / concorrenza (test) ==",
         "  transaction-test <dsn-env>              — smoke: begin + savepoint + release + commit",
@@ -3223,7 +3214,7 @@ fn mysql_usage() -> String {
         "  mysql-conditional-update <args...> <UPDATE_SQL> <EXPECTED_AFFECTED>  — pattern optimistic-lock",
         "  nota: questi comandi sono di MySQL. MariaDB ha un provider suo, e",
         "  `mysql-probe` la rifiuta: si raggiunge dalla famiglia generica,",
-        "  `database-probe mariadb <args...>` (ADR 0014, nessuna selezione automatica)",
+        "  `database-probe mariadb <args...>` (nessuna selezione automatica)",
     ]
     .join("\n")
 }

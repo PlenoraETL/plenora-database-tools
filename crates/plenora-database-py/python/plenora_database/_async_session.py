@@ -13,7 +13,8 @@ Uso:
     import plenora_database as p
 
     async def handler():
-        async with await p.aconnect(dsn) as s:
+        engine = await p.async_engine_from_url(config)
+        async with engine, engine.session() as s:
             cnt = await s.execute_scalar("SELECT COUNT(*) FROM t")
             rows = await s.select("t").where_eq("id", 1).all()
 """
@@ -31,8 +32,8 @@ if TYPE_CHECKING:
 
 
 class AsyncSession(_AsyncBuilderFactory):
-    """Handle asincrono alla sessione Postgres. Ottenuto da
-    `await plenora_database.aconnect(dsn)`."""
+    """Sessione asincrona del provider selezionato da `EngineConfig`.
+    Si apre con `engine.session()` e supporta il context manager async."""
 
     __slots__ = ("_native",)
 
@@ -225,8 +226,8 @@ class AsyncSession(_AsyncBuilderFactory):
                 await tx.execute(...)
 
         Options aggiuntive (PFM):
-        - `context` (CHG-002): `SessionContext` transaction-local.
-        - `native_query_policy` (CHG-003): "allow" (default) o "deny".
+        - `context`: `SessionContext` transaction-local.
+        - `native_query_policy`: "allow" (default) o "deny".
         """
         from ._async_transaction import AsyncTransaction
 

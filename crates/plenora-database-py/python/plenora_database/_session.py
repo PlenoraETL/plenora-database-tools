@@ -21,8 +21,8 @@ from .result import MutationResult, Result
 
 
 class Session(_BuilderFactory):
-    """Handle alla sessione Postgres. Restituita da
-    `plenora_database.connect(dsn)`. Context-manager friendly."""
+    """Sessione sincrona del provider selezionato da `EngineConfig`.
+    Si apre con `engine.session()` e supporta il context manager."""
 
     __slots__ = ("_native",)
 
@@ -279,9 +279,9 @@ class Session(_BuilderFactory):
         - `read_only`: True/False
         - `deferrable`: True/False (solo con Serializable + ReadOnly)
         - `statement_timeout_ms`: int
-        - `context` (PFM CHG-002): SessionContext applicato via
+        - `context`: SessionContext applicato via
           `SET LOCAL` (transaction-local, no leak fra riusi pool).
-        - `native_query_policy` (PFM CHG-003): "allow" (default) o
+        - `native_query_policy`: "allow" (default) o
           "deny" — restringe agli statement CRUD OLTP.
         """
         native_tx = self._native.begin(

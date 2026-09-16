@@ -83,23 +83,9 @@ pub struct MysqlObjectDescription {
     pub token: MysqlSchemaToken,
 }
 
-/// Interruttore **di solo test** sul rifiuto iniziale di `MariaDB`.
-///
-/// Il provider `MySQL` non e qualificato per `MariaDB`, e lo dichiara alla
-/// probe.
-/// Quel rifiuto e cio che ADR 0014 chiede di misurare *attraverso*: senza
-/// attraversarlo non si possono misurare le superfici che divergono davvero.
-///
-/// Tre proprieta lo rendono un bypass e non un supporto:
-///
-/// * e `#[cfg(test)]`, quindi non esiste nel binario pubblico. Non e una
-///   feature, non e una variabile d'ambiente, non e un parametro: non c'e
-///   modo di attivarlo da fuori il crate;
-/// * salta **solo** il rifiuto. Non tocca SQL, mapping, timeout, transazioni
-///   ne classificazione degli errori: cio che succede dopo e il comportamento
-///   effettivo del provider;
-/// * fuori dai test la funzione e `false` costante, quindi la condizione
-///   resta quella di prima e il codice generato non cambia.
+/// Bypass del riconoscimento MariaDB riservato alle prove differenziali.
+/// Permette di misurare il percorso MySQL contro MariaDB senza modificare
+/// il comportamento dei costruttori pubblici.
 #[cfg(test)]
 static MARIADB_REJECTION_BYPASS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -172,23 +158,9 @@ pub(crate) async fn probe_server_with_profile(
     profile: &dyn crate::profile::ProductProfile,
     cancellation: &CancellationToken,
 ) -> Result<MysqlProbe> {
-    // **L'identita prima della capability**, e le due domande sono due query.
-    //
-    // Erano una sola, e chiedeva `@@transaction_isolation` insieme a
-    // `VERSION()`. Quella variabile non esiste su MariaDB prima della 11.1 —
-    // fino a li si chiama `@@tx_isolation` — quindi su 10.11 il server
-    // rispondeva 1193 e la probe finiva prima di arrivare al riconoscimento
-    // del prodotto e alla qualifica della versione.
-    //
-    // Il difetto non e il codice mancante: e che il messaggio onesto — «questa
-    // versione non e stata misurata» — era irraggiungibile **esattamente sulle
-    // versioni per cui era stato scritto**. Chi arrivava con una 10.11 leggeva
-    // un errore server redatto e andava a cercare un guasto che non c'era.
-    //
-    // Da qui la regola che questa separazione applica: una query di capability
-    // puo fallire per la stessa ragione che l'identita avrebbe spiegato,
-    // quindi l'identita si stabilisce prima. Il costo e un round-trip in piu
-    // per probe, ed e il prezzo di un rifiuto che si sa leggere.
+    // Verifica l'identita prima delle capability: i nomi delle variabili
+    // di sessione dipendono dal prodotto e dalla versione. Una versione non
+    // qualificata viene rifiutata prima di interrogare quelle variabili.
     let mut identity = session
         .query_rows(
             "SELECT VERSION() AS product_version, \
@@ -219,12 +191,8 @@ pub(crate) async fn probe_server_with_profile(
         }
     }
 
-    // La seconda domanda sta **fuori** dal bypass, e la differenza non e
-    // formale. Il bypass esiste per attraversare il rifiuto del prodotto e
-    // misurare cosa c'e dietro; la qualifica della versione non e quel
-    // rifiuto, e tenerla dentro voleva dire che la misura — che il bypass lo
-    // accende sempre — era l'unico percorso a non attraversarla mai. Cioe
-    // proprio il percorso che deve dimostrarla.
+    // La verifica della versione resta attiva anche con il bypass di test
+    // del riconoscimento del prodotto.
     if let Some(rejection) =
         crate::profile::unqualified_version_rejection(profile, &product_version)
     {

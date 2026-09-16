@@ -95,10 +95,7 @@ pub(crate) async fn execute_scalar(args: &mut impl Iterator<Item = String>) -> C
 // ============================================================================
 
 pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    // Sintassi: [--param X:TYPE ...] DSN_ENV UPDATE_SQL PROBE_SQL EXPECTED
-    // I --param sono positional per l'UPDATE. Il PROBE riusa gli stessi
-    // (compat con execute_conditional_update: key_probe è Statement, quindi
-    // condivide i params). Per semplicità v1: stesso set di params.
+    // La query diagnostica usa lo stesso insieme di parametri dello statement.
     let collected: Vec<String> = args.by_ref().collect();
     let (rest, params) = crate::typed_params::strip_bind_params(collected)?;
     let mut iter = rest.into_iter();

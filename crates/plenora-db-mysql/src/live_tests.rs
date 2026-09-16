@@ -5147,24 +5147,7 @@ async fn live_v12_write_update_via_staging_updates_matching_rows() {
 
 // ============================ Spatial verificato ==========================
 
-/// Cio che le capability pubblicano e **esattamente** la lista verified.
-///
-/// Questo test chiedeva altro: che le funzioni fossero almeno venti e che
-/// cinque nomi scelti a mano ci fossero dentro. Nessuna delle due domande
-/// parla del canale — la prima e una soglia sulla lunghezza di una costante, e
-/// non c'e misura che la sostenga; la seconda campiona cinque righe su ventisei
-/// e chiama copertura il campione.
-///
-/// La soglia era anche **dannosa**, non solo inutile. Quando la sonda live ha
-/// dimostrato che undici delle ventisei non eseguivano, accorciare la lista ha
-/// fatto diventare rosso questo test: un test che rende costoso togliere una
-/// promessa che il motore non mantiene e una pressione a tenerla. La regola 1
-/// dice che una capability si apre con una prova; un floor come questo dice il
-/// contrario, e lo dice al momento peggiore.
-///
-/// Quello che va verificato qui e che `probe_capabilities` non filtri, non
-/// riordini e non aggiunga niente: l'uguaglianza con la costante, che ha una
-/// sonda dedicata a tenerla vera contro il riferimento.
+/// La probe pubblica esattamente la lista delle funzioni spatial qualificate.
 #[tokio::test]
 async fn live_v12_capabilities_publish_verified_spatial_functions() {
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");
@@ -5286,12 +5269,8 @@ async fn live_v12_every_verified_spatial_function_executes() {
     let mut executed = 0_usize;
     let mut broken: Vec<String> = Vec::new();
     for function in crate::query::VERIFIED_SPATIAL_FUNCTIONS {
-        // Ogni funzione contro **entrambe** le geometrie: basta che ne
-        // attraversi una. `ST_Area` su una `LINESTRING` risponde 3516, e
-        // `ST_IsClosed` su un `POLYGON` non e piu felice — chiedere a
-        // ciascuna soltanto la forma che le compete vorrebbe dire deciderlo
-        // qui, per analogia, che e il modo in cui questa lista si era gonfiata
-        // la prima volta.
+        // Ogni funzione prova entrambe le geometrie: basta che una riesca.
+        // Un tipo di ingresso incompatibile non dimostra l'assenza della funzione.
         let mut refusals: Vec<String> = Vec::new();
         // Una funzione che **rende** geometria si chiede sulle colonne con un
         // sistema di riferimento, e dichiarandolo: e la sola forma in cui il
@@ -5371,12 +5350,8 @@ async fn live_v12_every_verified_spatial_function_executes() {
                 locking: None,
             };
 
-            // Il bag contiene il parametro **se** la funzione lo usa. Un
-            // parametro legato e mai riferito e ora un piano invalido — lo rifiuta
-            // il preflight, e a ragione: chi lo lega crede di averlo passato a
-            // qualcosa. Questo test lo metteva sempre, e per le funzioni di sola
-            // geometria — `GeometryType`, che di argomenti scalari non ne ha —
-            // era di troppo.
+            // Il bag contiene il parametro scalare solo se la funzione lo usa:
+            // il preflight rifiuta parametri legati ma non referenziati.
             let bag = if uses_scalar {
                 ParameterBag::new(BTreeMap::from([(
                     "scalare".to_owned(),
@@ -7073,12 +7048,7 @@ async fn live_v12_execute_ddl_pre_cancellation_reports_no_remote_effect() {
     );
 }
 
-/// `Create` con keys costruisce la tabella con la PRIMARY KEY dichiarata.
-///
-/// Prima `MySQL` rifiutava le keys su Create, quindi il ramo `PRIMARY KEY` di
-/// `build_create_table_sql` non era raggiungibile da nessun piano valido:
-/// codice presente e mai eseguito, e una tabella creata dal provider non
-/// poteva avere una chiave primaria.
+/// Verifica che Create con keys dichiari la PRIMARY KEY sulla tabella costruita.
 #[tokio::test]
 async fn live_v12_write_create_with_keys_declares_the_primary_key() {
     let table = "_v12_create_pk";
@@ -7503,28 +7473,10 @@ async fn stream_row_count(table: &str, value: i64) -> i64 {
         .expect("una riga di conteggio")
 }
 
-// === Concorrenza: quello che PostgreSQL aveva e questi due no ==============
+// Concorrenza e recupero del pool.
 
-/// Dodici lettori sullo stesso pool, e le righe tornano tutte.
-///
-/// `PostgreSQL` ha `live_postgres_concurrent_pool_stress_when_dsn_is_available`
-/// da tempo; qui non c'era niente di equivalente, e la lacuna non era spatial
-/// ne di contratto: era che nessuno aveva mai chiesto a questo provider di
-/// servire piu lettori insieme. Un pool che sotto contesa mescolasse le righe,
-/// o ne perdesse, non avrebbe fatto fallire nessuna prova di questo
-/// repository.
-///
-/// # Cosa verifica, e perche il conteggio non basta
-///
-/// Il totale delle righe e la prima cosa, ed e quella che coglie una perdita.
-/// Ma un pool che servisse a due lettori la **stessa** connessione a meta
-/// stream renderebbe comunque il totale giusto, con le righe mescolate fra i
-/// due: ogni worker verifica percio che le proprie righe siano quelle che ha
-/// chiesto — la sua fetta di id, in ordine — non solo quante sono.
-///
-/// Il pool e volutamente **piu piccolo** del numero di lettori: quattro
-/// connessioni per dodici worker. Un pool abbondante non misura la contesa, e
-/// la contesa e cio che questa prova esiste per attraversare.
+/// Misura lettori concorrenti sul pool, verifica i risultati e il
+/// rilascio delle connessioni dopo il completamento dei task.
 #[tokio::test]
 #[ignore = "live: richiede il riferimento MySQL"]
 async fn live_concurrent_readers_share_the_pool_without_mixing_rows() {

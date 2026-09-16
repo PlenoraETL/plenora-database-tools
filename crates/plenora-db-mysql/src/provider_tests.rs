@@ -51,17 +51,7 @@ fn the_mariadb_constructor_selects_the_mariadb_profile() {
     );
 }
 
-/// I due provider si rifiutano a vicenda, e nessuno dei due si adatta.
-///
-/// E la meta di ADR 0014 che il codice deve rendere vera: «nessuna
-/// selezione automatica». Un provider che accettasse l'altro motore
-/// sceglierebbe per il consumatore nel punto in cui il consumatore non sta
-/// guardando.
-///
-/// Il riconoscimento si esercita qui **senza rete**: e una funzione delle
-/// due stringhe che il server manda, e chiedergliele dal vivo
-/// misurerebbe anche la connessione. La corsa live che lo attraversa
-/// davvero e `provider.profile_probe`, nella matrice dell'evidenza.
+/// La selezione del prodotto e esplicita e precede la connessione.
 #[test]
 fn neither_provider_adapts_to_the_other_product() {
     let mysql = ("9.7.2", "MySQL Community Server - GPL");

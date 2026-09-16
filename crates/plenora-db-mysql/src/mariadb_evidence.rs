@@ -1024,31 +1024,11 @@ async fn provider_surface_probes(
 /// La tabella su cui si misura un commit di esito ignoto.
 const SCRATCH_COMMIT: &str = "plenora_driver_evidence_commit";
 
-/// Un commit **atterrato** di cui il chiamante non sa l'esito.
+/// Verifica un commit concluso sul server ma non confermato al chiamante.
 ///
-/// Era l'ultima superficie `not_measured` di questo documento, e la ragione
-/// dichiarata era buona: uccidere la connessione a meta `COMMIT` da una
-/// seconda sessione e una corsa, e un esito ottenuto cosi non distingue il
-/// comportamento del provider dal momento in cui e arrivato il colpo.
-///
-/// La ragione escludeva **quel** metodo, non la misura. Il provider SQL Server
-/// di questo repository usa da tempo la forma deterministica — `COMMIT
-/// TRANSACTION; WAITFOR DELAY` — e qui vale la stessa: `COMMIT; DO SLEEP(5)`
-/// fa atterrare il commit e **poi** trattiene la risposta, quindi la finestra
-/// in cui cancellare e larga, ripetibile e sempre nello stesso punto. Il
-/// percorso attraversato resta quello di produzione: l'interruttore cambia il
-/// testo dello statement, non la logica che ne classifica l'esito.
-///
-/// # Cosa verifica, e perche la rilettura e il punto
-///
-/// Che il provider dichiari `OutcomeUnknown` e meta della prova. L'altra meta
-/// e che quella dichiarazione sia **onesta**: `Unknown` non vuol dire «non e
-/// successo niente», vuol dire «non lo so», e le due si distinguono solo
-/// guardando il server da un'altra connessione. Se la riga c'e, il provider ha
-/// detto la verita su una scrittura andata a buon fine senza che lui potesse
-/// saperlo — che e il caso per cui `OutcomeUnknown` esiste, e il piu
-/// pericoloso da sbagliare: un `RolledBack` qui autorizzerebbe un retry che
-/// raddoppia la riga.
+/// Il test trattiene la risposta dopo COMMIT e cancella l'attesa. Il provider
+/// deve dichiarare `OutcomeUnknown`; una seconda connessione verifica che
+/// la riga esista e che un retry non sia automaticamente sicuro.
 async fn ambiguous_commit_probe(
     recorder: &mut Recorder,
     provider: &MysqlProvider,
@@ -1175,19 +1155,9 @@ async fn commit_contents(connection: &mut mysql_async::Conn) -> String {
         )
 }
 
-/// Il mapper del provider, raggiunto **senza** passare dal catalogo.
-///
-/// `read` deriva lo schema da `describe_object`, quindi su `MariaDB` si ferma
-/// prima di mappare qualsiasi cosa: i tipi wire divergenti — `JSON` come
-/// `MYSQL_TYPE_BLOB`, `TIMESTAMP` con il flag unsigned — finora erano stati
-/// osservati solo dal driver diretto, mai attraverso il codice che li
-/// converte in Arrow. `QueryOperation` prende quella strada: lo schema esce
-/// dai metadata del prepare, non da `information_schema`, quindi la sonda
-/// misura il mapper anche dove il catalogo non e raggiungibile.
-///
-/// Consuma il batch: schema, nullability e valori decodificati insieme, che e
-/// l'unico modo di accorgersi che due `DataType` uguali portano contenuti
-/// diversi.
+/// Misura il mapper Arrow attraverso `QueryOperation`, usando i metadata del
+/// prepare invece del catalogo. Verifica insieme schema, nullability e
+/// valori decodificati dei tipi wire specifici del prodotto.
 #[allow(clippy::too_many_lines)]
 async fn query_probes(
     recorder: &mut Recorder,
@@ -5905,32 +5875,11 @@ async fn profile_probes(
     }
 }
 
-/// Le due superfici spatial rimaste: la dichiarazione `exact` e le dimensioni.
+/// Misura dichiarazioni geometriche exact e supporto alle dimensioni.
 ///
-/// # La dichiarazione `exact`
-///
-/// Il contratto `GeoArrow` ammette due forme: `mixed`, dove la colonna e
-/// `GEOMETRY` e regge tipi diversi, e `exact`, dove il tipo e uno solo e la
-/// colonna lo dichiara — `POINT`, `POLYGON`. Tutte le sonde di scrittura di
-/// questo documento girano su `mixed`, quindi `exact` e una forma che il piano
-/// ammette e che nessuna misura ha attraversato.
-///
-/// Conta perche `writable_geometry_type` su `MariaDB` rinvia all'insieme di
-/// `MySQL`, e quel rinvio e sostenuto da un argomento — sono nomi OGC, non una
-/// tabella di prodotto — non da una prova.
-///
-/// # Le dimensioni
-///
-/// Il piano rifiuta ogni geometria che non sia XY, e la bandiera pubblica
-/// `dimensions: [xy]`. La sonda delle candidate ha gia trovato `ST_Z` e `ST_M`
-/// **assenti** da entrambi i prodotti, il che e un indizio forte; ma le
-/// funzioni di accesso e il supporto alle coordinate sono due cose diverse, e
-/// un prodotto potrebbe memorizzare una Z che non sa rendere.
-///
-/// Qui si chiede al parser: `POINT Z(1 2 3)` in WKT, e la dimensione che il
-/// server attribuisce a cio che ne esce. Se il parser rifiuta, la chiusura
-/// smette di essere «non misurata» e diventa un fatto del prodotto — che e cio
-/// che il documento dovrebbe poter dire di ogni bandiera chiusa.
+/// Le prove di tipi misti non qualificano da sole una colonna POINT o
+/// POLYGON; le funzioni Z/M non provano da sole il supporto del parser.
+/// La sonda interroga separatamente DDL, WKT e dimensioni del risultato.
 async fn exact_and_dimension_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
     let table = "plenora_driver_evidence_exact";
 
@@ -6019,32 +5968,10 @@ async fn exact_and_dimension_probe(recorder: &mut Recorder, connection: &mut mys
     );
 }
 
-/// Cosa esce da una funzione che **restituisce** una geometria.
+/// Misura formato binario e SRID dei risultati di funzioni geometriche.
 ///
-/// Trentuno delle settantadue funzioni del contratto restituiscono geometria, e
-/// sono chiuse tutte da una causa sola: il mapper del result set rifiuta
-/// `MYSQL_TYPE_GEOMETRY`, perche una geometria in uscita da una query non porta
-/// SRID ne profilo dimensionale dimostrati.
-///
-/// Il percorso di lettura ha risolto la stessa cosa: il CRS lo dichiara il
-/// piano e il provider lo verifica valore per valore. Prima di portare quella
-/// forma anche qui servono due fatti, e nessuno dei due e deducibile.
-///
-/// **`ST_AsBinary` di una funzione geometrica rende WKB?** Se rendesse il
-/// formato interno — quattro byte di SRID davanti al WKB — il contratto
-/// `GeoArrow` riceverebbe byte che non sono quelli che dichiara.
-///
-/// **L'SRID sopravvive alla funzione?** E' la domanda che decide il disegno.
-/// Se `ST_Buffer` di una geometria 4326 rendesse zero, non ci sarebbe **niente**
-/// da verificare valore per valore: il CRS dichiarato dal chiamante non
-/// potrebbe essere confermato da nulla, e la superficie resterebbe chiusa per
-/// assenza di una prova del CRS.
-///
-/// # Ambito
-///
-/// Questa sonda copre 4326, geografico, e 0, l'indefinito OGC. I sistemi
-/// proiettati sono esercitati separatamente da `crs_rule_probe`, perche su
-/// MySQL la disponibilita di queste funzioni dipende dalla categoria del CRS.
+/// `ST_AsBinary` deve restituire WKB e la regola del CRS deve essere verificata
+/// separatamente. I CRS proiettati sono coperti da `crs_rule_probe`.
 async fn geometry_result_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
     let table = "plenora_driver_evidence_geometry_result";
     for statement in [
@@ -6270,47 +6197,13 @@ fn scalar_argument_for(
     }
 }
 
-/// Le ventotto funzioni geometriche che nessuna sonda aveva mai chiesto.
+/// Misura le funzioni geometriche candidate usando nomi, arieta e ruoli
+/// degli argomenti del catalogo condiviso con il renderer.
 ///
-/// # Perche esistevano senza essere misurate
-///
-/// Trentuno funzioni del contratto restituiscono geometria. Erano chiuse tutte
-/// dalla stessa riga — il mapper del result set rifiutava `MYSQL_TYPE_GEOMETRY`
-/// — e finche quella riga c'era, chiederle al server non avrebbe cambiato
-/// niente: la risposta sarebbe stata «esiste, e non la sai consegnare».
-///
-/// Quella riga non c'e piu. Tre sono state aperte con `raw.crs_rule_check`, e
-/// le altre ventotto sono rimaste chiuse per una ragione diversa da prima:
-/// nessuno le aveva chieste. Va distinta una capability chiusa perche misurata
-/// assente — una promessa
-/// che il prodotto non puo mantenere, una chiusa perche nessuno ha guardato e
-/// una promessa che il prodotto forse mantiene gia.
-///
-/// # Come chiede
-///
-/// Il nome lo da `plenora_database_sql::spatial_function_name`, cioe **lo
-/// stesso** che il renderer emetterebbe. L'arieta e i ruoli degli argomenti li
-/// da il contratto — `accepts_argument_count` e `takes_geometry_at` — e non una
-/// tabella scritta qui: una sonda che deduce la firma misura una funzione che
-/// il crate non scrive mai.
-///
-/// Tre sistemi di riferimento, perche e la variabile che `raw.crs_rule_check`
-/// ha trovato decisiva, e tre forme geometriche, perche `ST_StartPoint` vuole
-/// una linea e `ST_PointOnSurface` una superficie: chiedere a ciascuna solo la
-/// forma che le compete vorrebbe dire deciderlo qui per analogia, ed e il modo
-/// in cui una lista si gonfia.
-///
-/// # Cosa registra
-///
-/// Per ogni funzione e per ogni sistema: l'SRID del risultato, se il risultato
-/// **interseca** l'ingresso, e la lunghezza del WKB. L'intersezione e il
-/// segnale che falsifica la regola `preserves`: un motore che riproiettasse in
-/// silenzio renderebbe un SRID plausibile e coordinate lontane ordini di
-/// grandezza, e nessuna intersezione.
-///
-/// Non e un giudizio universale, ed e la ragione per cui il dato resta grezzo:
-/// una curva di offset a distanza positiva non interseca la linea da cui viene,
-/// e li uno zero non smentisce niente. Chi legge decide; la sonda misura.
+/// Per ogni CRS e forma geometrica registra SRID, intersezione con
+/// l'ingresso e lunghezza WKB. L'intersezione e un'osservazione grezza:
+/// per esempio un offset positivo non deve necessariamente intersecare
+/// la linea sorgente. La sonda non apre automaticamente capability.
 #[allow(clippy::too_many_lines)]
 async fn geometry_function_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
     use plenora_database_core::query::SpatialFunction;
@@ -6468,37 +6361,11 @@ async fn geometry_function_probe(recorder: &mut Recorder, connection: &mut mysql
     );
 }
 
-/// Le funzioni del contratto che nessuno ha mai chiesto a questo server.
+/// Individua le funzioni candidate usando i nomi emessi dal renderer.
 ///
-/// La lista verified ne porta quindici. Il contratto ne dichiara settantadue, e
-/// quarantuno non restituiscono geometria — cioe quarantuno che il mapper del
-/// result set saprebbe consegnare. Le ventisei di mezzo non sono state
-/// **rifiutate**: non sono mai state chieste.
-///
-/// La differenza conta. Una capability chiusa perche misurata assente e una
-/// promessa che il prodotto non puo mantenere; una chiusa perche nessuno ha
-/// guardato e una promessa che il prodotto forse mantiene gia, e che il
-/// consumatore non puo usare. Il primo errore fa fallire un piano, il secondo
-/// fa scrivere a qualcun altro il codice che c'era gia.
-///
-/// # Come chiede
-///
-/// Il nome lo da `plenora_database_sql::spatial_function_name`, cioe **lo
-/// stesso** che il renderer emetterebbe. Ricavarlo dal catalogo o a mano
-/// misurerebbe una funzione che il crate non scrive mai. Il renderer è la
-/// fonte dei nomi effettivamente emessi.
-///
-/// La domanda e posta con zero argomenti. Un `1305` significa che la funzione
-/// non esiste; un `1582` — numero di parametri sbagliato — significa che esiste
-/// e che la si e chiamata male, che e cio che si voleva. Distinguere i due e
-/// tutta la sonda.
-///
-/// # Cosa **non** dice
-///
-/// Che una funzione esista non basta ad aprirla: deve anche rendere ciò che il
-/// contratto dichiara, con l'arieta che dichiara, attraverso il percorso del
-/// provider. Questa sonda produce un elenco di **candidate**, e il passo dopo e
-/// la lista verified, dove il gate le attraversa una per una.
+/// La chiamata senza argomenti distingue funzione assente (1305) da
+/// arieta errata (1582). La presenza non qualifica la funzione: occorre
+/// verificarne firma, risultato e percorso del provider.
 async fn scalar_function_probe(recorder: &mut Recorder, connection: &mut mysql_async::Conn) {
     use plenora_database_core::query::SpatialFunction;
 
@@ -6855,43 +6722,11 @@ const SCRATCH_MIXED_READ: &str = "plenora_driver_evidence_mixed_read";
 /// La tabella su cui gli scrittori si contendono lo stesso pool dei lettori.
 const SCRATCH_MIXED_WRITE: &str = "plenora_driver_evidence_mixed_write";
 
-/// Letture e scritture **insieme**, sullo stesso pool, per quanti giri si vuole.
+/// Misura letture e scritture concorrenti sullo stesso pool.
 ///
-/// Le due sonde precedenti separano i carichi: dodici lettori in una, dodici
-/// scrittori nell'altra. Un pool puo sbagliare proprio dove si mescolano, e
-/// nessuna delle due poteva dirlo — una connessione che torna dal path di
-/// scrittura con la transazione non chiusa e innocua fra scrittori, che ne
-/// aprono un'altra subito, e velenosa per un lettore che la trova con un
-/// `BEGIN` implicito addosso.
-///
-/// # Perche e anche il soak
-///
-/// L'altro residuo era la durata: le sonde durano secondi, e colgono una
-/// perdita **sistematica**, non una lenta. Una connessione persa ogni mille
-/// giri sfugge a centocinquanta giri e si vede in centomila.
-///
-/// I due residui si chiudono con lo stesso codice invece che con due sonde
-/// diverse, e non e un risparmio: e la ragione per cui il soak vale qualcosa.
-/// Un soak che esercitasse un percorso **diverso** da quello del gate
-/// misurerebbe la tenuta di codice che nessuno attraversa mai; qui la corsa
-/// lunga e la corsa breve sono la stessa, e cambia solo `PLENORA_MIXED_ROUNDS`.
-///
-/// Il gate ne fa pochi, perche un gate che dura ore non lo esegue nessuno — e
-/// una sonda che nessuno esegue non e una sonda. La corsa lunga si lancia a
-/// mano, e il documento porta la sua riga accanto a quella breve.
-///
-/// # Cosa verifica
-///
-/// A ogni giro, sei lettori e sei scrittori partono insieme sullo stesso pool
-/// da quattro. Ogni lettore ha una fetta di chiavi disgiunta e la pretende
-/// intera; ogni scrittore ha la propria fetta di id e ci scrive un payload che
-/// porta il suo numero.
-///
-/// Alla fine si guardano tre cose, e ciascuna coglie un difetto che le altre
-/// due lascerebbero passare: il **conteggio** delle righe scritte coglie una
-/// perdita, il **payload** coglie un'attribuzione sbagliata, e
-/// `Threads_connected` letto dal server coglie una connessione che il pool ha
-/// dimenticato e che il motore tiene ancora aperta.
+/// Ogni task usa chiavi distinte; la verifica finale controlla conteggi,
+/// payload e connessioni residue osservate dal server. `PLENORA_MIXED_ROUNDS`
+/// regola la durata mantenendo lo stesso percorso per smoke e soak.
 #[allow(clippy::too_many_lines)]
 async fn mixed_load_probe(
     recorder: &mut Recorder,
@@ -7373,24 +7208,11 @@ async fn concurrency_probe(
 /// La tabella su cui si attraversano le funzioni spatial.
 const SCRATCH_SPATIAL_FN: &str = "plenora_driver_evidence_spatial_fn";
 
-/// Le funzioni spatial pubblicate come verified, attraversate su questo
-/// prodotto.
+/// Esegue le funzioni spatial qualificate dal profilo del prodotto.
 ///
-/// `spatial.functions` e una lista vuota su `MariaDB`, e la ragione accanto e
-/// che nessuna sonda le ha eseguite. Non e prudenza generica: la lista di
-/// `MySQL` e scesa da ventisei a quindici il giorno in cui qualcuno l'ha
-/// attraversata davvero, e undici delle bocciate erano li per analogia con
-/// `PostgreSQL`. Ereditarla sarebbe lo stesso errore, un prodotto piu in la.
-///
-/// La sonda fa cio che fa la prova live di `MySQL`: costruisce per ogni
-/// funzione una `QueryOperation` con l'arieta che il contratto dichiara, la
-/// manda al provider, e **attraversa** il result set invece di limitarsi ad
-/// aprirlo — il prepare non e l'esecuzione, e un errore che arriva dopo
-/// sarebbe buttato via da un `drop`.
-///
-/// Due geometrie, una lineare e una areale, e basta che una passi: `ST_Area`
-/// su una linea risponde 3516, e chiuderla per quello sarebbe una falsa
-/// assenza.
+/// Costruisce `QueryOperation` con la firma del contratto e consuma tutto
+/// il result set. Le geometrie di prova distinguono un tipo di ingresso
+/// non ammesso dall'assenza della funzione.
 async fn spatial_function_probe(
     recorder: &mut Recorder,
     profile: &'static dyn ProductProfile,
@@ -7420,11 +7242,7 @@ async fn spatial_function_probe(
             .expect("tabella delle funzioni spatial: harness, non divergenza");
     }
 
-    // La lista del **profilo**, non quella di `MySQL`. Finche erano la stessa
-    // la distinzione non si vedeva; da quando divergono, attraversare l'altra
-    // misura il proprio cancello invece del prodotto — le tre che risultavano
-    // rifiutate lo erano da `render_query`, non dal server, e `Relate` non
-    // veniva nemmeno provata.
+    // La lista delle funzioni deriva dal profilo del prodotto interrogato.
     let functions = profile.verified_spatial_functions();
     let mut executed = Vec::new();
     let mut refused = Vec::new();
@@ -7478,9 +7296,8 @@ async fn cross_spatial_function(
     // di riferimento, e dichiarandolo: e la sola forma in cui il provider la
     // ammette.
     let framed = function.returns_geometry();
-    // Tre geometrie, non due. `ST_X` vuole un punto e su una linea fallisce
-    // per il dato, non per il motore: la stessa falsa assenza che `ST_Area` su
-    // una `LINESTRING` aveva quasi fatto registrare.
+    // Punto, linea e area coprono i tipi di ingresso richiesti dalle funzioni.
+    // Un tipo di ingresso incompatibile non dimostra l'assenza della funzione.
     for field in if framed {
         ["framed_point", "framed_line", "framed_poly"]
     } else {
@@ -7745,29 +7562,11 @@ async fn spatial_contents(connection: &mut mysql_async::Conn) -> String {
         )
 }
 
-/// La scrittura spatial, attraversata dal provider con il profilo del prodotto.
+/// Verifica scrittura e rilettura spatial attraverso il provider.
 ///
-/// `spatial.write_wkb` era chiusa, e la ragione era giusta: nessuna geometria
-/// era mai stata scritta attraverso il crate, e leggere un WKB che il server
-/// produce non dice nulla su cosa accetti in ingresso.
-///
-/// `raw.spatial_write_forms` ha misurato i tre fatti del server. Queste due
-/// sonde misurano il **percorso**, che e un'altra cosa: la DDL che il piano
-/// emette, il bind che l'INSERT costruisce, e cosa resta scritto.
-///
-/// # Perche la `Create` viene prima
-///
-/// Perche e li che i due prodotti divergono. Il piano emette `GEOMETRY SRID
-/// <n>` dove la colonna si puo vincolare e `GEOMETRY` dove non si puo, e la
-/// scelta sta nel profilo. Una sonda che scrivesse in una tabella preparata a
-/// mano proverebbe l'INSERT e salterebbe proprio la riga che diverge.
-///
-/// # Cosa la rilettura verifica
-///
-/// L'SRID di **ogni** riga, non il conteggio. E' la meta che chiude il cerchio
-/// con la lettura: su un prodotto dove la colonna non porta il CRS, l'unica
-/// cosa che puo portarlo e il valore — e se la scrittura lo perdesse, la
-/// lettura di questo stesso crate rifiuterebbe le righe che ha appena scritto.
+/// Create esercita la DDL specifica del prodotto; Append riusa il target.
+/// La rilettura verifica il CRS di ogni valore, non soltanto il conteggio.
+/// Le prove successive coprono tipi misti e creazione dell'indice.
 // Quattro domande in fila sulla stessa fixture, e l'ordine e parte della
 // misura: la `Create` lascia la tabella su cui l'`Append` scrive, i tipi
 // misti si aggiungono a quelle righe, e l'indice riparte da una tabella
@@ -7834,10 +7633,7 @@ async fn spatial_write_probes(
     )
     .await;
 
-    // La terza domanda: due tipi geometrici nella stessa colonna. Le due sonde
-    // di sopra scrivono soltanto punti, quindi `mixed` era una dichiarazione
-    // che nessuna misura attraversava — la colonna avrebbe retto anche se il
-    // prodotto avesse ammesso un tipo solo.
+    // Due tipi geometrici distinti verificano la colonna dichiarata mixed.
     let question = "una colonna dichiarata mixed regge due tipi geometrici diversi";
     let mixed = scripted_write(
         &provider,
@@ -8231,33 +8027,11 @@ async fn savepoint_unknown_name_probe(
 /// La tabella su cui si misura il CRS dichiarato.
 const SCRATCH_CRS: &str = "plenora_driver_evidence_crs";
 
-/// Il CRS dichiarato dal piano, attraversato dal percorso di lettura.
+/// Verifica il CRS dichiarato dal piano sul percorso di lettura.
 ///
-/// `GEOMETRY_COLUMNS.SRID` vale sempre zero, perche nessuna DDL puo
-/// vincolare una geometry a un sistema di riferimento — e aveva detto cosa
-/// servirebbe per riaprirlo: un CRS dichiarato dal chiamante e verificato
-/// valore per valore. Questa sonda misura quella forma.
-///
-/// # Tre domande, non una
-///
-/// **Una lettura senza dichiarazione resta rifiutata.** E' il caso che non deve
-/// cambiare: la dichiarazione apre una porta, non ne toglie una chiusa. Senza
-/// questa riga, un provider che smettesse di rifiutare pubblicherebbe un CRS
-/// che nessuno gli ha dato.
-///
-/// **Una lettura con la dichiarazione giusta consegna la geometria.** E' cio
-/// che apre la capability, ed e l'unica delle tre che potrebbe farlo.
-///
-/// **Una lettura con la dichiarazione sbagliata fallisce sui valori.** E' la
-/// meta che conta di piu, e la ragione per cui la seconda non basta: una
-/// dichiarazione creduta sulla parola darebbe lo stesso esito verde della
-/// seconda domanda. Solo la terza distingue «il provider ha verificato» da «il
-/// provider ha ripetuto quello che gli e stato detto».
-///
-/// Su `MySQL` le tre domande hanno risposte diverse, e va bene cosi: li il
-/// catalogo l'SRID lo sa, quindi la prima lettura riesce senza dichiarazioni e
-/// le altre due vengono rifiutate perche la dichiarazione e di troppo. La
-/// divergenza fra i prodotti e il fatto, non il difetto.
+/// Per MariaDB la sonda richiede il rifiuto senza dichiarazione, il successo
+/// con il CRS corretto e il rifiuto sui valori con CRS errato. MySQL usa
+/// il CRS vincolato dal catalogo e rifiuta una dichiarazione ridondante.
 async fn declared_crs_probe(
     recorder: &mut Recorder,
     profile: &'static dyn ProductProfile,
@@ -8705,13 +8479,8 @@ async fn functional_index_probes(
         .await;
 }
 
-/// Il timeout attraversato per intero: applicato dal profilo dentro una
-/// transazione vera, e fatto scattare.
-///
-/// E la sonda che chiude la distanza fra "il profilo emette la variabile
-/// giusta" e "il chiamante legge la cosa giusta quando scatta". Le due
-/// affermazioni si erano gia separate una volta: l'istruzione era corretta e
-/// il codice che ne usciva finiva nel ramo generico della classificazione.
+/// Fa scattare il timeout impostato dal profilo in una transazione reale
+/// e verifica la classificazione dell'errore restituito al chiamante.
 // La sessione vive quanto la sonda per costruzione: e la transazione che si
 // sta misurando, e rilasciarla prima renderebbe la misura piu corta della
 // domanda.

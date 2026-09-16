@@ -64,12 +64,7 @@ fn the_limit_counts_characters_not_bytes() {
     );
 }
 
-/// Cio che il tipo serializza deve stare nel proprio contratto.
-///
-/// `source_type` e `target_type` sono `{"type": "string"}` e non
-/// obbligatori: ammessi come stringa o assenti, mai `null`. Senza
-/// `skip_serializing_if` uscivano come `null` e il documento non era piu
-/// valido per lo schema che lo descrive.
+/// I campi opzionali assenti si omettono dal JSON: null non e ammesso.
 #[test]
 fn absent_type_names_are_omitted_not_null() {
     let document = serde_json::to_value(report(vec![loss(0)])).expect("serializzabile");

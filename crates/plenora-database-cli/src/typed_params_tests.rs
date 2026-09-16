@@ -167,7 +167,7 @@ fn no_parse_error_carries_the_value() {
         format!("{MARKER}:json"),
         format!("{MARKER}:bytes-hex"),
         format!("{MARKER}:tipo-inesistente"),
-        // Senza separatore: lo spec intero era finito nel messaggio.
+        // Un parametro senza separatore produce un errore senza il valore originale.
         MARKER.to_owned(),
     ];
 
@@ -180,7 +180,7 @@ fn no_parse_error_carries_the_value() {
         );
     }
 
-    // E la variante con nome, dove a perdersi era lo spec completo.
+    // Anche il parametro con nome deve mantenere il payload fuori dall'errore.
     let named = parse_named_value_type(&format!("segreto{MARKER}"))
         .expect_err("param senza '=' deve fallire");
     assert!(!format!("{named:?}").contains(MARKER), "{named:?}");

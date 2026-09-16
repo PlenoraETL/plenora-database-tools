@@ -12,7 +12,7 @@ python scripts\render_offline_microbench.py
 Le misure versionate coprono parsing e validazione dei piani, rendering
 SQL, ispezione EWKB, contratto Arrow e compilazione dei read plan. Il
 workflow misura inoltre compilazione statement, cache metadata, lifecycle
-di sessione/transazione e consumo a batch del Core v3. Nessuno scenario
+di sessione/transazione e consumo a batch del Core relazionale. Nessuno scenario
 apre connessioni: pool, cursori e latenza reali restano campagne provider.
 
 Non esiste un budget per queste superfici. Il workflow

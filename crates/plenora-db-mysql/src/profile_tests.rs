@@ -107,10 +107,7 @@ fn the_query_module_no_longer_maps_wire_types() {
 
 #[test]
 fn the_wire_produces_the_native_type_that_diverged() {
-    // Il caso che ADR 0014 ha misurato: dalla stessa DDL `document JSON`
-    // MySQL manda MYSQL_TYPE_JSON e MariaDB MYSQL_TYPE_BLOB. Il nome che
-    // ne esce e cio che finisce nei metadata Arrow, ed e questo il valore
-    // che un secondo profilo dovra decidere di nuovo.
+    // La stessa DDL JSON produce metadata wire diversi nei due prodotti.
     let json = Column::new(ColumnType::MYSQL_TYPE_JSON)
         .with_name(b"document")
         .with_character_set(255);
@@ -226,15 +223,8 @@ fn the_renderer_wraps_a_computed_geometry_as_the_profile_wraps_a_column() {
 
 #[test]
 fn the_scalar_census_does_not_skip_what_is_already_published() {
-    // La sonda delle scalari filtrava sulle due liste pubblicate, e cio la
-    // rendeva una misura che **scadeva**: una funzione aperta su `MySQL`
-    // smetteva di essere chiesta a `MariaDB`, dove non era aperta.
-    // `HausdorffDistance` e `FrechetDistance` devono essere riverificate
-    // sui riferimenti MariaDB, non semplicemente escluse da una lista.
-    //
-    // Il filtro sarebbe naturale da riscrivere — chiedere cio che si sa gia
-    // sembra spreco — e costa una SELECT per funzione. E' il prezzo di una
-    // misura ripetibile proprio dove i due prodotti divergono.
+    // La verifica interroga il profilo del prodotto, anche per capability
+    // che differiscono fra MySQL e MariaDB.
     let source = include_str!("mariadb_evidence.rs");
     let probe = source
         .split_once("async fn scalar_function_probe")
@@ -902,11 +892,7 @@ fn no_literal_carries_a_collapsed_continuation() {
 
 #[test]
 fn only_the_mariadb_provider_selects_the_mariadb_profile() {
-    // La selezione del profilo deve restare una sola e dichiarata. Un
-    // secondo punto che lo scegliesse sarebbe una selezione che nessuno
-    // ha deciso, ed e
-    // esattamente cio che ADR 0014 esclude quando dice «nessuna selezione
-    // automatica».
+    // Il profilo scelto non puo essere sostituito in base al server rilevato.
     let declaration = format!("impl PublishedProfile for {}Provider", "Mariadb");
     for (module, source) in GUARDED_MODULES {
         let production = source;
@@ -1217,10 +1203,7 @@ async fn the_pure_paths_no_longer_contradict_the_attribution() {
     );
 }
 
-// I riferimenti su cui ADR 0014 ha misurato, con le stringhe che i
-// server hanno davvero esposto. Non sono esempi: sono le righe `probe.
-// version` e `probe.version_comment` di `docs/mariadb/EVIDENCE.md`, ed e
-// su queste che il riconoscimento deve partizionare.
+// Stringhe di identita dei riferimenti usate per verificare il riconoscimento.
 const MEASURED_SERVERS: &[(&str, &str, bool)] = &[
     ("9.7.2", "MySQL Community Server - GPL", false),
     (
@@ -1617,11 +1600,7 @@ fn no_production_module_writes_the_metadata_namespace_itself() {
 
 #[test]
 fn the_wire_mapper_does_not_diverge_between_the_profiles() {
-    // ADR 0014 ha misurato che dai metadata di `COM_STMT_PREPARE`
-    // escono lo stesso `kind` e lo stesso `native_type` sui tre
-    // riferimenti: a divergere e l'ingresso, non il mapper. La stessa
-    // DDL `document JSON` arriva come `MYSQL_TYPE_JSON` da MySQL e come
-    // `MYSQL_TYPE_BLOB` da MariaDB, dove `JSON` e un alias di `LONGTEXT`.
+    // Il prepare espone il tipo wire, non la dichiarazione SQL del catalogo.
     for wire in [
         ColumnType::MYSQL_TYPE_JSON,
         ColumnType::MYSQL_TYPE_BLOB,
@@ -1910,10 +1889,7 @@ fn the_mariadb_capabilities_open_only_where_a_probe_supports_them() {
     // riferimenti. I savepoint no, e restano chiusi.
     let transactions = &published.transactions;
     assert!(transactions.single_transaction);
-    // I savepoint sono implementati una volta sola per i due prodotti, e le sonde danno lo
-    // stesso esito sui tre riferimenti. Il confronto sta qui perche una
-    // divergenza inventata su una superficie condivisa e il difetto che
-    // ADR 0010 ha nominato.
+    // Le capability del profilo richiedono prove specifiche del prodotto.
     assert!(transactions.savepoints);
     assert_eq!(
         transactions.savepoints,
@@ -1991,16 +1967,8 @@ fn the_shared_verdicts_are_shared_only_where_they_were_measured() {
 
 #[test]
 fn a_privilege_error_is_authorization_on_both_products() {
-    // 1142 arriva ogni volta che il permesso manca su un comando o una
-    // tabella, ed e il codice ricevuto **al posto** di 1044 e 1049: e la risposta piu comune del motore a una
-    // richiesta che l'utente non puo fare.
-    //
-    // Restava fuori dalla tabella, quindi si classificava come esecuzione
-    // generica: il chiamante leggeva un guasto dove c'era un permesso
-    // mancante, e le due cose si risolvono in modi diversi — una si
-    // ritenta, l'altra si concede. Il cambio tocca anche il provider
-    // MySQL qualificato, ed e giusto che lo tocchi: la misura vale per
-    // tutti e tre i riferimenti.
+    // Un errore di autorizzazione mantiene la categoria specifica
+    // invece di essere ridotto a un errore generico.
     for profile in [&MYSQL_PROFILE as &dyn ProductProfile, &MARIADB_PROFILE] {
         let verdict = profile.classify_server_code(1_142);
         assert_eq!(
