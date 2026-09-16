@@ -94,7 +94,7 @@ jobs:
       - name: build del wheel con feature DB2
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
-          maturin-version: '1.14.1'
+          maturin-version: '1.15.0'
           command: build
           args: >-
             --release

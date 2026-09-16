@@ -1444,7 +1444,7 @@ SDK_ARTIFACT = {
     "native_path": (
         "/usr/local/lib/python3.13/site-packages/plenora_database/_native.abi3.so"
     ),
-    "maturin": "1.14.1",
+    "maturin": "1.15.0",
     "rustc": "1.98.1",
 }
 SDK_VERSIONS = {
@@ -1715,7 +1715,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
                 "rustc",
             },
         )
-        self.assertEqual(recorded["versions"]["maturin"], "1.14.1")
+        self.assertEqual(recorded["versions"]["maturin"], "1.15.0")
         self.assertEqual(recorded["versions"]["rustc"], "1.98.1")
 
         # Il bench confronta due artefatti, quindi il verdetto ne identifica
