@@ -1,4 +1,4 @@
-FROM rust@sha256:271849e998ffce5776454bbf98c5dc21baafc854ff8e566197908d3aca9a81e8
+FROM rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b9acbf
 
 ARG CARGO_DENY_VERSION=0.20.2
 RUN cargo install --locked --version "${CARGO_DENY_VERSION}" cargo-deny

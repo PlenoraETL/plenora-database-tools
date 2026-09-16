@@ -474,7 +474,7 @@ class CiWorkflowTests(unittest.TestCase):
                         if reference.startswith("dtolnay/rust-toolchain@"):
                             self.assertEqual(
                                 (step.get("with") or {}).get("toolchain"),
-                                "1.98.0",
+                                "1.98.1",
                                 "action Rust pinnata senza toolchain esplicita",
                             )
 
