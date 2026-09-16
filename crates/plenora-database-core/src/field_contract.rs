@@ -7,7 +7,7 @@ use crate::arrow::schema::{DataType, Field, Schema};
 use crate::geometry::GEOARROW_WKB_EXTENSION_NAME;
 use crate::protocol;
 use crate::{DatabaseError, ErrorCategory, ErrorPhase, Result};
-use std::collections::HashMap;
+use arrow_schema::Metadata;
 
 const LEGACY_DIMENSIONS: &str = "plenora.dimensions";
 const LEGACY_SRID: &str = "plenora.srid";
@@ -104,7 +104,7 @@ impl<'a> FieldContract<'a> {
             .map(String::as_str);
         let has_canonical_geometry = CANONICAL_GEOMETRY_KEYS
             .iter()
-            .any(|key| metadata.contains_key(*key));
+            .any(|key| metadata.contains_key(key));
         let spatial = has_canonical_geometry
             || dimensions.is_some()
             || raw_srid.is_some()
@@ -354,7 +354,7 @@ pub fn validate_schema_contract(schema: &Schema) -> Result<()> {
         field.metadata().contains_key(protocol::FIELD_ID)
             || CANONICAL_GEOMETRY_KEYS
                 .iter()
-                .any(|key| field.metadata().contains_key(*key))
+                .any(|key| field.metadata().contains_key(key))
     });
     let version = schema
         .metadata()
@@ -422,7 +422,7 @@ fn validate_enum(value: Option<&str>, allowed: &[&str], label: &str) -> Result<(
 }
 
 fn coherent_value<'a>(
-    metadata: &'a HashMap<String, String>,
+    metadata: &'a Metadata,
     canonical: &str,
     legacy: &str,
     case_insensitive: bool,

@@ -28,6 +28,7 @@ SKIP_PARTS = {
     ".pytest_cache",
     ".ruff_cache",
     ".venv",
+    "assurance-results",
     "benchmarks",
     "build",
     "contracts",

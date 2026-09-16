@@ -23,7 +23,7 @@ from urllib.parse import unquote
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-SKIP_PARTS = {".git", "target", "node_modules", "__pycache__"}
+SKIP_PARTS = {".git", "target", "assurance-results", "node_modules", "__pycache__"}
 LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 PYTHON_COMMAND = re.compile(

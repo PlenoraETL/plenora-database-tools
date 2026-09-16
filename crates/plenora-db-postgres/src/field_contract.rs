@@ -1,10 +1,10 @@
 //! Adattatore del contratto canonico per i metadati nativi `PostgreSQL`.
 
 use arrow_schema::Field;
+use arrow_schema::Metadata;
 use plenora_database_core::field_contract::FieldContract as CanonicalFieldContract;
 use plenora_database_core::protocol;
 use plenora_database_core::{DatabaseError, Result};
-use std::collections::HashMap;
 
 const LEGACY_NATIVE_TYPE: &str = "plenora.native_type";
 const LEGACY_NATIVE_DECLARATION: &str = "plenora.native_declaration";
@@ -71,7 +71,7 @@ impl<'a> FieldContract<'a> {
 }
 
 fn coherent_value<'a>(
-    metadata: &'a HashMap<String, String>,
+    metadata: &'a Metadata,
     canonical: &str,
     legacy: &str,
 ) -> Result<Option<&'a str>> {

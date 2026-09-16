@@ -8,6 +8,41 @@ use std::sync::Arc;
 
 static FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+#[test]
+fn pyarrow_dictionary_file_preserves_metadata_as_json_objects() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/arrow/dictionary.file");
+    let report = inspect(path).expect("PyArrow file");
+    assert_eq!(report["rows"], 3);
+    assert_eq!(
+        report["schema_metadata"],
+        json!({"plenora.contract.version": "1"})
+    );
+    assert_eq!(
+        report["fields"][0]["metadata"],
+        json!({"test.unit": "label"})
+    );
+}
+
+#[test]
+fn dictionary_without_data_is_rejected_by_both_file_entrypoints() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/arrow/dictionary-missing-data.file");
+    let error = inspect(&path).expect_err("malformed dictionary");
+    assert_eq!(
+        error.database_error().message,
+        "file Arrow IPC non valido o non supportato"
+    );
+    let error = crate::ipc_input::IpcFileBatchStream::open(path.to_str().expect("fixture path"))
+        .err()
+        .expect("malformed write input");
+    assert_eq!(error.database_error().message, "input Arrow IPC malformato");
+    assert!(!error
+        .to_json()
+        .expect("public error")
+        .contains("PAYLOAD_MUST_NOT_LEAK"));
+}
+
 struct TestFile(std::path::PathBuf);
 
 impl Drop for TestFile {

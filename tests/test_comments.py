@@ -10,6 +10,17 @@ from scripts import check_comments
 
 
 class CommentExtractionTests(unittest.TestCase):
+    def test_local_evidence_is_not_product_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "assurance-results"
+            evidence.mkdir()
+            (evidence / "upstream.rs").write_text("// TODO upstream\n", encoding="utf-8")
+            (root / "product.rs").write_text("// Current invariant.\n", encoding="utf-8")
+            checked, violations = check_comments.check_repository(root)
+            self.assertEqual(checked, 1)
+            self.assertEqual(violations, [])
+
     def test_python_reads_comments_and_docstrings_but_not_values(self) -> None:
         source = '''"""TODO nel modulo"""
 VALUE = "FIXME in una stringa"
