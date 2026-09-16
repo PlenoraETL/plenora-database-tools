@@ -61,9 +61,9 @@ NODE24_ACTIONS = {
     "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
     "softprops/action-gh-release": "efb35369e0ad2afab669f228072c1b0d510eae64",
-    "actions/attest-build-provenance": "a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32",
+    "actions/attest-build-provenance": "4d101475d8b20a2381f78447822ac1eab6504dd8",
     "actions/attest-sbom": "4651f806c01d8637787e274ac3bdf724ef169f34",
-    "anchore/sbom-action": "e22c389904149dbc22b58101806040fa8d37a610",
+    "anchore/sbom-action": "3ad7283483fc7af8ff2b4ea19663c2d5ca935e26",
 }
 
 
