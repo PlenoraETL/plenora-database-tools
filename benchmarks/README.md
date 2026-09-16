@@ -19,7 +19,7 @@ Questa cartella contiene tre famiglie di misure, con regole diverse.
    prestazionali di quelle superfici non sono stati fissati e il workflow
    `.github/workflows/rust-microbench.yml` si limita a misurare e pubblicare.
 3. **Python SDK vs subprocess CLI**: parity bench live sul driver Postgres,
-   in `crates/plenora-database-py/python/tests/bench_*.py`. Misura latenza
+   in [`test_benchmark_parity.py`](../crates/plenora-database-py/python/tests/test_benchmark_parity.py). Misura latenza
    per-chiamata dal Python (in-process PyO3 vs subprocess CLI). Procedura e
    criteri di confronto in
    [`crates/plenora-database-py/README.md`](../crates/plenora-database-py/README.md#performance)
@@ -35,7 +35,7 @@ $env:PLENORA_PHASE0_PG_DSN = "<dsn fixture>"
 python scripts\phase0_harness.py postgres `
   --warmup 2 `
   --repeat 10 `
-  --output benchmarks\raw\phase0-postgres-smoke.jsonl
+  --output benchmarks\results\phase0-postgres-smoke.jsonl
 ```
 
 Le variabili d'ambiente non vengono copiate nei risultati. Gli errori
@@ -57,19 +57,16 @@ Ogni file è JSONL:
 
 ```powershell
 python scripts\phase0_report.py `
-  benchmarks\raw\phase0-postgres-smoke.jsonl `
-  --json benchmarks\baseline\phase0-smoke-report.json `
-  --markdown target\phase0-smoke-report.md
+  benchmarks\results\phase0-postgres-smoke.jsonl `
+  --json benchmarks\results\phase0-smoke-report.json `
+  --markdown benchmarks\results\phase0-smoke-report.md
 ```
 
 Il report calcola mediana, p95 nearest-rank, min/max, delta RSS e stabilità del
-digest semantico. I raw iniziali hanno un solo campione e restano smoke di
-convalida; non vanno presentati come baseline statistica. La baseline
-definitiva richiede piu campioni di questi.
-
-## Dati smoke
-
-- `raw/phase0-postgres-smoke.jsonl`.
+digest semantico. Una misura con un solo campione serve come smoke di
+convalida, non come baseline statistica. Raw e report della singola corsa
+restano in `results/`, esclusa dal versionamento; `baseline/` contiene i
+budget e i riferimenti numerici mantenuti per i confronti prestazionali.
 
 Nessun comando viene eseguito automaticamente contro un target. Endpoint e
 segreti sono richiesti solo quando viene esplicitamente aperto il gate
