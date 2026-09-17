@@ -924,14 +924,15 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         )
 
     def test_macos_is_not_part_of_the_distribution_matrix(self) -> None:
-        """La major successiva non deve continuare a produrre asset macOS."""
+        """La matrice di distribuzione comprende Linux e Windows."""
 
         workflow = self.WORKFLOW.read_text(encoding="utf-8")
         self.assertNotIn("  macos:", workflow)
         self.assertNotIn("macos-latest", workflow)
         self.assertNotIn("aarch64-apple-darwin", workflow)
         self.assertNotIn("wheel-macos", workflow)
-        self.assertIn("rimozione della\n# distribuzione macOS ARM", workflow)
+        self.assertIn("  linux:", workflow)
+        self.assertIn("  windows:", workflow)
 
     def test_db2_linux_wheel_is_live_qualified_before_upload(self) -> None:
         """L'asset Db2 esiste solo sulla piattaforma provata live."""

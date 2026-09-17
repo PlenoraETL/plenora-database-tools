@@ -14,6 +14,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shlex
 import tomllib
 from urllib.parse import quote
 import zipfile
@@ -74,13 +75,40 @@ def cargo_inventory(root: Path) -> tuple[dict, dict]:
 
 
 def python_inventory(root: Path) -> dict:
+    root = root.resolve()
     components = {}
     pattern = re.compile(r"([A-Za-z0-9_.-]+)(?:\[[^]]+\])?==([^;\s]+)(?:\s*;.*)?$")
-    for path in sorted(root.glob("requirements*.txt")):
+    files, visiting = {}, set()
+
+    def visit(path: Path) -> None:
+        path = path.resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise ValueError("Python requirement include must be an existing repository file")
+        if path in visiting:
+            raise ValueError("cyclic Python requirement include")
+        if path in files:
+            return
+        visiting.add(path)
+        lines = []
         for line in path.read_text(encoding="utf-8").splitlines():
             line = line.split("#", 1)[0].strip()
-            if not line or line.startswith(("-r ", "-c ")):
+            if not line:
                 continue
+            include = re.fullmatch(r"(?:-[rc]\s*|--(?:requirement|constraint)(?:=|\s+))(.+)", line)
+            if include:
+                arguments = shlex.split(include[1])
+                if len(arguments) != 1 or ':' in arguments[0] or Path(arguments[0]).is_absolute():
+                    raise ValueError("Python requirement include must be a relative repository path")
+                visit(path.parent / arguments[0])
+            else:
+                lines.append(line)
+        visiting.remove(path)
+        files[path] = lines
+
+    for path in sorted(root.glob("requirements*.txt")):
+        visit(path)
+    for path, lines in sorted(files.items()):
+        for line in lines:
             match = pattern.fullmatch(line)
             if not match:
                 raise ValueError(f"unresolved Python requirement in {path.name}")
@@ -92,8 +120,44 @@ def python_inventory(root: Path) -> dict:
                     property_value("scope", "qualification-environment; not wheel runtime"),
                 ],
             })
-            component["properties"].append(property_value("requirement", path.name + ": " + line))
+            component["properties"].append(property_value("requirement", path.relative_to(root).as_posix() + ": " + line))
     return components
+
+
+def check_header(bom: dict) -> None:
+    if (bom.get("bomFormat") != "CycloneDX"
+            or bom.get("specVersion") not in {"1.6", "1.7"}
+            or type(bom.get("version")) is not int or bom["version"] < 1):
+        raise ValueError("unsupported or incomplete SBOM header")
+
+
+def index_references(items: list, key: str) -> dict:
+    indexed = {}
+    for item in items:
+        ref = item.get(key)
+        if not isinstance(ref, str) or not ref:
+            raise ValueError("missing SBOM reference")
+        if ref in indexed:
+            raise ValueError("duplicate SBOM reference")
+        indexed[ref] = item
+    return indexed
+
+
+def dependency_graph(items: list) -> dict:
+    graph = {}
+    for ref, item in index_references(items, "ref").items():
+        values = item.get("dependsOn", [])
+        if not isinstance(values, list) or any(not isinstance(value, str) or not value for value in values):
+            raise ValueError("invalid SBOM dependency references")
+        if len(set(values)) != len(values):
+            raise ValueError("duplicate SBOM dependency reference")
+        graph[ref] = set(values)
+    return graph
+
+
+def check_graph(graph: dict, known: set) -> None:
+    if any(ref not in known or not values <= known for ref, values in graph.items()):
+        raise ValueError("dangling SBOM dependency reference")
 
 
 def wheel_inventory(dist: Path, version: str) -> dict:
@@ -123,19 +187,20 @@ def wheel_inventory(dist: Path, version: str) -> dict:
 
 
 def render(root: Path, dist: Path, artifact_bom: dict) -> dict:
-    if artifact_bom.get("bomFormat") != "CycloneDX":
-        raise ValueError("artifact SBOM must be CycloneDX")
+    check_header(artifact_bom)
     bom = deepcopy(artifact_bom)
     version = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
     cargo, edges = cargo_inventory(root)
     python = python_inventory(root)
     wheels = wheel_inventory(dist, version)
-    supplied = {c["bom-ref"]: c for c in bom.get("components", [])}
+    supplied = index_references(bom.get("components", []), "bom-ref")
     for group in (cargo, python, wheels):
         if supplied.keys() & group.keys():
             raise ValueError("duplicate SBOM component reference")
         supplied.update(group)
     root_ref = "plenora-release:" + version
+    if root_ref in supplied:
+        raise ValueError("duplicate SBOM root reference")
     bom.setdefault("metadata", {})["component"] = {
         "type": "application", "bom-ref": root_ref, "name": "plenora-database-tools", "version": version,
         "properties": [property_value("scope", "source workspace/fuzz lock union, Python qualification pins and release artifact discovery; not per-binary reachability or an OS inventory")],
@@ -143,13 +208,14 @@ def render(root: Path, dist: Path, artifact_bom: dict) -> dict:
     bom["components"] = [supplied[ref] for ref in sorted(supplied)]
     # Native scanner edges remain valid; the inventory root identifies the
     # aggregate. Cargo edges represent the lock graph, including build/dev.
-    dependencies = {d["ref"]: set(d.get("dependsOn", [])) for d in bom.get("dependencies", [])}
+    dependencies = dependency_graph(bom.get("dependencies", []))
+    if dependencies.keys() & (edges.keys() | {root_ref}):
+        raise ValueError("duplicate SBOM dependency reference")
     dependencies.update(edges)
     dependencies[root_ref] = set(supplied)
     bom["dependencies"] = [{"ref": ref, "dependsOn": sorted(values)} for ref, values in sorted(dependencies.items())]
     known = set(supplied) | {root_ref}
-    if any(ref not in known or not values <= known for ref, values in dependencies.items()):
-        raise ValueError("dangling SBOM dependency reference")
+    check_graph(dependencies, known)
     return bom
 
 
@@ -174,17 +240,25 @@ def main() -> int:
 
 
 def validate(root: Path, dist: Path, bom: dict) -> None:
+    check_header(bom)
     version = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
-    if bom.get("bomFormat") != "CycloneDX" or bom["metadata"]["component"]["version"] != version:
+    root_ref = "plenora-release:" + version
+    identity = bom.get("metadata", {}).get("component", {})
+    if any(identity.get(key) != value for key, value in {
+        "type": "application", "name": "plenora-database-tools", "version": version, "bom-ref": root_ref,
+    }.items()):
         raise ValueError("SBOM identity mismatch")
     cargo, edges = cargo_inventory(root)
     expected = cargo | python_inventory(root) | wheel_inventory(dist, version)
-    actual = {c["bom-ref"]: c for c in bom["components"]}
-    if len(actual) != len(bom["components"]):
-        raise ValueError("duplicate SBOM component reference")
+    actual = index_references(bom["components"], "bom-ref")
+    if root_ref in actual:
+        raise ValueError("duplicate SBOM root reference")
     if any(actual.get(ref) != component for ref, component in expected.items()):
         raise ValueError("SBOM dependency inventory incomplete or stale")
-    dependencies = {d["ref"]: set(d.get("dependsOn", [])) for d in bom["dependencies"]}
+    dependencies = dependency_graph(bom["dependencies"])
+    check_graph(dependencies, set(actual) | {root_ref})
+    if dependencies.get(root_ref) != set(actual):
+        raise ValueError("SBOM aggregate graph incomplete or stale")
     if any(dependencies.get(ref) != values for ref, values in edges.items()):
         raise ValueError("SBOM Cargo graph incomplete or stale")
 
