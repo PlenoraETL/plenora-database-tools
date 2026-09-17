@@ -10,6 +10,9 @@ cargo-fuzz = true
 # Keep nightly/libFuzzer outside the stable workspace and its MSRV contract.
 [workspace]
 
+[patch.crates-io]
+tiberius = { path = "../vendor/tiberius" }
+
 # Le versioni delle dipendenze comuni sono pinnate esattamente come in
 # [workspace.dependencies] del progetto principale.
 [dependencies]

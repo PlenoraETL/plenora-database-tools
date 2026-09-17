@@ -10,6 +10,16 @@ from scripts import check_comments
 
 
 class CommentExtractionTests(unittest.TestCase):
+    def test_upstream_vendor_comments_are_not_product_documentation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "vendor").mkdir()
+            (root / "vendor/upstream.rs").write_text("// TODO upstream\n", encoding="utf-8")
+            (root / "product.rs").write_text("// TODO product\n", encoding="utf-8")
+            checked, violations = check_comments.check_repository(root)
+            self.assertEqual(checked, 1)
+            self.assertEqual(len(violations), 1)
+
     def test_local_evidence_is_not_product_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

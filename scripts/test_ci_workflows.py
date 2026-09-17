@@ -876,7 +876,12 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         self.assertEqual(job["permissions"]["attestations"], "write")
         self.assertEqual(job["permissions"]["artifact-metadata"], "write")
         block = job_text(workflow, "attach-to-release")
-        self.assertIn("anchore/sbom-action@", block)
+        sbom = job_text(workflow, "release-sbom")
+        self.assertIn("anchore/sbom-action@", sbom)
+        self.assertIn("scripts/render_release_sbom.py --artifact-sbom", sbom)
+        self.assertIn("scripts/render_release_sbom.py --check", sbom)
+        self.assertIn("scripts/render_release_sbom.py --check", block)
+        self.assertNotIn("if", parsed_jobs(workflow)["release-sbom"])
         attestations = [
             step
             for step in job["steps"]
@@ -889,7 +894,7 @@ class PythonWheelWorkflowTests(unittest.TestCase):
             attestations[0]["with"]["subject-path"],
             attestations[1]["with"]["subject-path"],
         )
-        self.assertIn("cyclonedx-json", block)
+        self.assertIn("cyclonedx-json", sbom)
         self.assertGreaterEqual(block.count("dist/plenora-database-linux-x86_64"), 2)
         self.assertGreaterEqual(block.count("dist/*-source.tar.gz"), 2)
 
@@ -964,7 +969,7 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         needs = parsed_jobs(workflow)["attach-to-release"]["needs"]
         self.assertEqual(
             needs,
-            ["linux", "windows", "db2-linux", "smoke-test", "abi3-runtime"],
+            ["linux", "windows", "db2-linux", "smoke-test", "abi3-runtime", "release-sbom"],
         )
         self.assertNotIn("macos", needs)
 

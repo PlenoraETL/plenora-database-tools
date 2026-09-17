@@ -14,9 +14,8 @@ use std::sync::Arc;
 
 use pkcs8::EncryptedPrivateKeyInfo;
 use pkcs8::SecretDocument;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName};
 use rustls::{ClientConfig, RootCertStore};
-use rustls_pemfile::{certs, private_key};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
@@ -273,7 +272,9 @@ fn load_certs_from_file(path: &str) -> Result<Vec<CertificateDer<'static>>> {
         .map_err(|e| Error::Internal(format!("Failed to open cert file {}: {}", path, e)))?;
     let mut reader = BufReader::new(file);
 
-    let certs: Vec<CertificateDer<'static>> = certs(&mut reader).filter_map(|r| r.ok()).collect();
+    let certs = CertificateDer::pem_reader_iter(&mut reader)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| Error::Internal("Failed to parse certificate PEM".into()))?;
 
     if certs.is_empty() {
         return Err(Error::Internal(format!(
@@ -291,9 +292,8 @@ fn load_private_key_from_file(path: &str) -> Result<PrivateKeyDer<'static>> {
         .map_err(|e| Error::Internal(format!("Failed to open key file {}: {}", path, e)))?;
     let mut reader = BufReader::new(file);
 
-    private_key(&mut reader)
-        .map_err(|e| Error::Internal(format!("Failed to parse key file {}: {}", path, e)))?
-        .ok_or_else(|| Error::Internal(format!("No private key found in {}", path)))
+    PrivateKeyDer::from_pem_reader(&mut reader)
+        .map_err(|_| Error::Internal("Failed to parse private key PEM".into()))
 }
 
 /// Load certificates from an Oracle wallet directory
@@ -381,13 +381,15 @@ fn load_private_key_from_wallet(
         let der_bytes = decrypted_doc.as_bytes().to_vec();
         Ok(Some(PrivateKeyDer::Pkcs8(der_bytes.into())))
     } else {
-        // Try unencrypted key using standard rustls_pemfile
+        // An unencrypted wallet may contain certificates without a private key.
         let file = File::open(&pem_path)
             .map_err(|e| Error::Internal(format!("Failed to open wallet: {}", e)))?;
         let mut reader = BufReader::new(file);
 
-        Ok(private_key(&mut reader)
-            .map_err(|e| Error::Internal(format!("Failed to parse wallet key: {}", e)))?)
+        PrivateKeyDer::pem_reader_iter(&mut reader)
+            .next()
+            .transpose()
+            .map_err(|_| Error::Internal("Failed to parse wallet private key PEM".into()))
     }
 }
 

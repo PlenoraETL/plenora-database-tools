@@ -30,7 +30,9 @@ una fonte, non una copia.
 from __future__ import annotations
 
 import re
+import tempfile
 import unittest
+from unittest.mock import patch
 from collections import defaultdict
 from pathlib import Path
 
@@ -65,12 +67,22 @@ class EveryDigestHasOneHome(unittest.TestCase):
             if not path.is_file() or path.suffix not in {".py", ".json", ".yml", ".yaml", ".rs", ".toml"}:
                 continue
             relative = path.relative_to(ROOT).as_posix()
-            if relative.startswith(("target/", ".git/")):
+            if relative.startswith(("target/", "assurance-results/", ".git/")):
                 continue
             found = set(DIGEST.findall(path.read_text(encoding="utf-8", errors="replace")))
             if found:
                 trovati[relative] = found
         return trovati
+
+    def test_evidence_copies_do_not_become_configuration_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "assurance-results").mkdir()
+            digest = "sha256:" + "a" * 64
+            (root / "assurance-results/evidence.json").write_text(digest)
+            (root / "config.toml").write_text(digest)
+            with patch(__name__ + ".ROOT", root):
+                self.assertEqual(dict(self.digests_by_file()), {"config.toml": {digest}})
 
     def test_no_digest_is_copied_outside_its_source(self) -> None:
         per_file = self.digests_by_file()

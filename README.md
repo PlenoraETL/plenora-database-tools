@@ -120,6 +120,14 @@ python -m pip install ./plenora_database-<version>-cp310-abi3-<platform>.whl
 Gli asset ufficiali sono distribuiti soltanto tramite GitHub Releases. Il
 workflow allega anche SBOM e attestazioni; non pubblica su package index.
 
+Lo SBOM descrive l'unione dei grafi Cargo del workspace e del fuzz, i pin
+Python degli ambienti di qualifica e i componenti rilevati negli artefatti.
+Non attribuisce ogni dipendenza a ogni binario e non inventaria il sistema
+operativo dell'utente. Il generatore e il controllo di copertura sono in
+[`scripts/render_release_sbom.py`](scripts/render_release_sbom.py); anche il
+preflight del workflow li esegue. I requisiti runtime Python vengono letti
+dal METADATA dei wheel, separatamente dai pacchetti usati dai test.
+
 Da sorgenti, per lo sviluppo:
 
 ```bash
