@@ -15,6 +15,7 @@ on:
       - "crates/plenora-database-cli/**"
       - "crates/plenora-database-py/**"
       - "crates/plenora-db-oracle/**"
+      - "vendor/oracle-rs/**"
       - "docker-compose.oracle.yml"
       - "docker/oracle/**"
       - "scripts/check_oracle_reference.py"

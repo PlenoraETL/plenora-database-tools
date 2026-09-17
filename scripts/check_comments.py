@@ -35,6 +35,7 @@ SKIP_PARTS = {
     "dist",
     "docs",
     "target",
+    "vendor",
     "venv",
 }
 

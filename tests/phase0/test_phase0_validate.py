@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 from scripts.phase0_validate import (
     ACTIVE_CONTRACT_ROOT,
@@ -8,11 +11,22 @@ from scripts.phase0_validate import (
     build_registry,
     discover_schemas,
     run_gate,
+    markdown_documents,
     validate_instance,
 )
 
 
 class Phase0ValidateTests(unittest.TestCase):
+    def test_evidence_is_not_product_documentation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "assurance-results").mkdir()
+            (root / "assurance-results/upstream.md").write_text("[old link](missing)")
+            product = root / "README.md"
+            product.write_text("# Product")
+            with patch("scripts.phase0_validate.REPO_ROOT", root):
+                self.assertEqual(markdown_documents(), [product])
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.schemas = discover_schemas(ACTIVE_CONTRACT_ROOT)

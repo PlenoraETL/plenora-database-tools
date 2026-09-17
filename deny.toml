@@ -1,17 +1,6 @@
-# cargo-deny policy per plenora-database-tools.
-#
-# Regola generale: advisory = deny; licenze in allowlist ristretta;
-# duplicati di dipendenze critiche di sicurezza (rustls*, tokio) = deny.
-#
-# Le eccezioni documentate qui sotto sono limitate a dipendenze opzionali o a
-# percorsi dimostrati non raggiungibili. Ognuna dichiara portata, condizione di
-# rimozione e data di revisione: non certifica il provider che la introduce.
-#
-# Un'eccezione vale finche il suo presupposto regge, e il presupposto qui e
-# sempre "upstream non ha ancora rilasciato". Verificarlo e il senso della data
-# di revisione: senza qualcuno che la esegue, la nota invecchia e l'eccezione
-# resta per inerzia. `.github/workflows/supply-chain.yml` esegue questa policy
-# anche a calendario.
+# Supply-chain policy: advisories denied without exceptions; permissive
+# licenses allowlisted; only crates.io sources or reviewed local patches.
+# The scheduled supply-chain workflow checks workspace and fuzz graphs.
 
 # ============================================================================
 #  advisories
@@ -22,37 +11,7 @@ version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
 yanked = "deny"
-ignore = [
-    # RUSTSEC-2026-0098, RUSTSEC-2026-0099, RUSTSEC-2026-0104 →
-    # rustls-webpki 0.101.7. Tre advisory sullo stesso crate:
-    #   * 0098: name constraints per URI names accettati erroneamente
-    #   * 0099: name constraints per DNS con wildcard accettati
-    #   * 0104: reachable panic nel parsing di CRL malformate
-    # Path condiviso: tiberius 0.12.3 → tokio-rustls 0.24 → rustls 0.21
-    # → rustls-webpki 0.101.7.
-    #
-    # Motivo dell'eccezione:
-    # - Non entrano nella default build del CLI (feature `sqlserver` opt-in).
-    # - Non entrano nel path PostgreSQL, che usa una linea rustls-webpki
-    #   distinta.
-    # - Le CVE name-constraint sono reachable solo dopo signature verify
-    #   e richiedono misissuance del CA. Il CRL panic richiede parsing
-    #   di CRL malformate — path non attivo nel probe standard.
-    #
-    # Rimuovere quando tiberius rilascia con rustls ≥ 0.23.
-    #
-    # Revisione 2026-08-23: il presupposto dell'eccezione regge invariato.
-    # Prossima revisione: 2027-Q1.
-    "RUSTSEC-2026-0098",
-    "RUSTSEC-2026-0099",
-    "RUSTSEC-2026-0104",
-    # RUSTSEC-2025-0134 → rustls-pemfile 1.0.4 e 2.2.0 unmaintained.
-    # Nessuna vulnerabilità nota, solo dichiarazione di manutenzione ferma.
-    # Rimane nelle dipendenze dei driver tiberius (1.0.4) e oracle-rs
-    # (2.2.0). Il CLI usa PemObject da rustls-pki-types tramite rustls.
-    # L'eccezione resta necessaria finche i driver non migrano il parser.
-    "RUSTSEC-2025-0134",
-]
+ignore = []
 # ============================================================================
 #  licenses
 # ============================================================================
@@ -115,10 +74,11 @@ wildcards = "deny"
 allow-wildcard-paths = true
 # Vietiamo esplicitamente crypto legacy o già deprecato ove possibile.
 # openssl-sys e derivati: preferiamo la stack rustls per portabilità.
-deny = []
-# Il workspace ha genuinamente due versioni di alcuni crate low-level
-# (arrow-*, syn, etc.) a causa di combinazioni tra tokio-postgres e le
-# dipendenze Arrow. Skip espliciti dove ce lo aspettiamo.
+deny = [
+    { name = "rustls-pemfile" },
+    { name = "rustls", version = "<0.23" },
+    { name = "rustls-webpki", version = "<0.103.13" },
+]
 skip = []
 skip-tree = []
 

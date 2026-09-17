@@ -93,7 +93,7 @@ fn pagination_fetch_end(tokens: &[Token]) -> Option<usize> {
 
 fn normalize_fetch_counts(tokens: &mut Vec<Token>) -> Result<()> {
     let dialect = MsSqlDialect {};
-    // sqlparser 0.62 parses FETCH quantities as literal values. Validate the
+    // The parser handles FETCH quantities as literal values. Validate the
     // T-SQL scalar expression separately, then use a literal only in the
     // analysis token stream. The original SQL sent to the server is unchanged.
     for index in (0..tokens.len()).rev() {

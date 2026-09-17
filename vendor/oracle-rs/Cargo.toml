@@ -105,9 +105,6 @@ features = [
 ]
 default-features = false
 
-[dependencies.rustls-pemfile]
-version = "2"
-
 [dependencies.rustls-pki-types]
 version = "1"
 

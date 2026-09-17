@@ -484,7 +484,7 @@ def validate_python_sources() -> int:
 
 def markdown_documents() -> list[Path]:
     """Tutti i Markdown versionati, senza artefatti di build."""
-    skip = {"target", "node_modules", ".git", "__pycache__"}
+    skip = {"target", "assurance-results", "node_modules", ".git", "__pycache__"}
     found = [
         path
         for path in sorted(REPO_ROOT.rglob("*.md"))

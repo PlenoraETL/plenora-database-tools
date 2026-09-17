@@ -237,10 +237,48 @@ jobs:
           python -m pip install --no-deps dist/*.whl
           python .github/scripts/verify_wheel.py
 
+  # The preflight exercises the same SBOM generator as publication.
+  release-sbom:
+    name: source and artifact SBOM
+    needs: [linux, windows, db2-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Discover native artifact components
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: dist
+          format: cyclonedx-json
+          output-file: ${{ runner.temp }}/native.sbom.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Install gate requirements
+        run: python -m pip install -r requirements-self-tests.txt
+      - name: Generate and verify source dependency coverage
+        shell: bash
+        run: |
+          version="$(grep '^version = ' crates/plenora-database-py/pyproject.toml | head -n1 | cut -d'"' -f2)"
+          sbom="dist/plenora-database-py-v${version}.sbom.cdx.json"
+          python scripts/render_release_sbom.py --artifact-sbom "$RUNNER_TEMP/native.sbom.json" --dist dist --output "$sbom"
+          python scripts/render_release_sbom.py --check "$sbom" --dist dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-sbom
+          path: dist/*.sbom.cdx.json
+          if-no-files-found: error
+
   # ---------------- Provenance + GitHub Release ----------------
   attach-to-release:
     name: attest and attach release materials
-    needs: [linux, windows, db2-linux, smoke-test, abi3-runtime]
+    needs: [linux, windows, db2-linux, smoke-test, abi3-runtime, release-sbom]
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
@@ -293,14 +331,8 @@ jobs:
             --verification "bash .github/scripts/offline_suite.sh" \
             --schema .plenora-contracts/schemas/adoption-manifest-v4.schema.json \
             --output dist/plenora-database-${version}.adoption-manifest.json
-      - name: Generate CycloneDX SBOM
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
-        with:
-          path: dist
-          format: cyclonedx-json
-          output-file: dist/plenora-database-${{ github.event.release.tag_name }}.sbom.cdx.json
-          upload-artifact: false
-          upload-release-assets: false
+      - name: Verify the collected SBOM before attestation
+        run: python3 scripts/render_release_sbom.py --check "dist/plenora-database-${GITHUB_REF_NAME}.sbom.cdx.json" --dist dist
       - name: Attest wheel build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
