@@ -932,9 +932,9 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
     def test_no_tls_material_is_versioned_for_the_runner_to_reuse(self) -> None:
         """La CA e l'identita del server nascono sul runner, a ogni run.
 
-        Un certificato versionato sarebbe una chiave privata pubblicata e una
-        prova TLS che smette di provare l'emissione: il repository contiene
-        solo lo script generatore e le estensioni.
+        Le identita e le chiavi dei fixture live non sono riutilizzabili.
+        Il campione pubblico del parser PEM serve solo ai test offline;
+        non contiene una chiave privata e non configura alcun server.
         """
 
         tracked = subprocess.run(
@@ -945,6 +945,13 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             capture_output=True,
         ).stdout.split()
         for entry in tracked:
+            if entry == "tests/fixtures/tls/parser-ca.pem":
+                pem = (ROOT / entry).read_text(encoding="utf-8").strip()
+                self.assertTrue(pem.startswith("-----BEGIN CERTIFICATE-----"))
+                self.assertTrue(pem.endswith("-----END CERTIFICATE-----"))
+                self.assertEqual(pem.count("-----BEGIN "), 1)
+                self.assertNotIn("PRIVATE KEY", pem)
+                continue
             self.assertFalse(
                 entry.endswith((".pem", ".key", ".crt", ".p12", ".pfx", ".jks")),
                 f"materiale TLS versionato: {entry}",
