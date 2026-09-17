@@ -2,6 +2,10 @@ use crate::{OracleConfig, OracleTlsMode};
 use plenora_database_core::provider::SecretString;
 use std::time::Duration;
 
+#[cfg(test)]
+#[path = "tls_pem_tests.rs"]
+mod tls_pem_tests;
+
 #[test]
 fn debug_redacts_the_username_and_never_contains_a_secret() {
     let config = OracleConfig::new("db.internal", "FREEPDB1", "app_user");

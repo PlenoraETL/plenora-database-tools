@@ -152,11 +152,10 @@ impl TlsConfig {
                 .map_err(|e| Error::Internal(format!("Failed to configure client auth: {}", e)))?
         } else if let Some(wallet_path) = &self.wallet_path {
             // Try to load client cert from wallet
-            let certs_result = load_client_certs_from_wallet(wallet_path);
-            let key_result =
-                load_private_key_from_wallet(wallet_path, self.wallet_password.as_deref());
+            let certs = load_client_certs_from_wallet(wallet_path)?;
+            let key = load_private_key_from_wallet(wallet_path, self.wallet_password.as_deref())?;
 
-            if let (Ok(certs), Ok(Some(key))) = (certs_result, key_result) {
+            if let Some(key) = key {
                 if !certs.is_empty() {
                     builder.with_client_auth_cert(certs, key).map_err(|e| {
                         Error::Internal(format!("Failed to configure wallet client auth: {}", e))
