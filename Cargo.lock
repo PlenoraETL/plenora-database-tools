@@ -172,9 +172,9 @@ dependencies = [
 
 [[package]]
 name = "asynchronous-codec"
-version = "0.6.2"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4057f2c32adbb2fc158e22fb38433c8e9bbf76b75a4732c7c0cbaf695fb65568"
+checksum = "a860072022177f903e59730004fb5dc13db9275b79bb2aef7ba8ce831956c233"
 dependencies = [
  "bytes",
  "futures-sink",
@@ -1457,7 +1457,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "plenora-database-cli"
-version = "5.0.1"
+version = "6.0.0"
 dependencies = [
  "arrow-ipc",
  "base64 0.23.1",
@@ -1476,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-core"
-version = "5.0.1"
+version = "6.0.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-engine"
-version = "5.0.1"
+version = "6.0.0"
 dependencies = [
  "chrono",
  "plenora-database-core",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-py"
-version = "5.0.1"
+version = "6.0.0"
 dependencies = [
  "arrow-ipc",
  "plenora-database-core",
@@ -1520,7 +1520,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-sql"
-version = "5.0.1"
+version = "6.0.0"
 dependencies = [
  "plenora-database-core",
  "serde",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-testkit"
-version = "5.0.1"
+version = "6.0.0"
 dependencies = [
  "plenora-database-core",
  "serde",
@@ -1539,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-db2"
-version = "5.0.1"
+version = "6.0.0"
 dependencies = [
  "chrono",
  "odbc-api",
@@ -1553,7 +1553,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-mysql"
-version = "5.0.1"
+version = "6.0.0"
 dependencies = [
  "chrono",
  "futures-util",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-oracle"
-version = "5.0.1"
+version = "6.0.0"
 dependencies = [
  "chrono",
  "oracle-rs",
@@ -1586,7 +1586,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-postgres"
-version = "5.0.1"
+version = "6.0.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1609,7 +1609,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-sqlserver"
-version = "5.0.1"
+version = "6.0.0"
 dependencies = [
  "chrono",
  "futures-util",
@@ -1621,7 +1621,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "sqlparser",
- "tiberius",
+ "tiberius-ng",
  "tokio",
  "tokio-util",
 ]
@@ -1684,9 +1684,9 @@ dependencies = [
 
 [[package]]
 name = "pretty-hex"
-version = "0.3.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6fa0831dd7cc608c38a5e323422a0077678fa5744aa2be4ad91c4ece8eec8d5"
+checksum = "9a65843dfefbafd3c879c683306959a6de478443ffe9c9adf02f5976432402d7"
 
 [[package]]
 name = "proc-macro2"
@@ -2267,8 +2267,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "tiberius"
-version = "0.12.3"
+name = "tiberius-ng"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ab253018afea08e630df81d678998e061b9b38d2acbe87f5466f792ae62070f"
 dependencies = [
  "async-trait",
  "asynchronous-codec",
@@ -2279,16 +2281,30 @@ dependencies = [
  "encoding_rs",
  "enumflags2",
  "futures-util",
+ "libc",
  "num-traits",
  "once_cell",
  "pin-project-lite",
  "pretty-hex",
  "rustls-native-certs",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
+ "tiberius-ng-macros",
  "tokio-rustls",
  "tokio-util",
  "tracing",
  "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "tiberius-ng-macros"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df46152ea543b73fb69ab53907326889c9e5724f91c6b3c67fc993d6534bc455"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

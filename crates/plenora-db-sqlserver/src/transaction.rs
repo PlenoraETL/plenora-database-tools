@@ -414,15 +414,8 @@ fn decode_cell(
                 |value| ParameterValue::String(value.to_string()),
             )),
         Ct::Null => Ok(null_value(kind)),
-        // `Udt` e `SSVariant` possono fallire gia nella decodifica dei metadati
-        // del driver. Il panico e catturato in `connection.rs`, che mette la
-        // sessione in quarantena; qui restano soltanto
-        // le famiglie che arrivano davvero. Un ramo che dichiara di gestire
-        // qualcosa che non gli arriva e una promessa a nessuno.
-        //
-        // Il tipo non entra nel messaggio: un errore pubblico non porta
-        // dettagli del payload, e il nome di un tipo TDS ne e il confine piu
-        // vicino.
+        // Il driver decodifica anche famiglie fuori dal mapping pubblico.
+        // Rifiutarle non invalida una risposta gia drenata dal protocollo.
         _ => Err(DatabaseError::unsupported(
             ProviderKind::Sqlserver,
             ErrorPhase::Read,
@@ -509,39 +502,7 @@ impl TransactionScope for SqlServerTransaction {
             self.session
                 .session_mut()?
                 .execute_write_query(query, cancellation)
-                .await?;
-            // Il conteggio arriva da `@@ROWCOUNT`, non dal contatore TDS.
-            //
-            // Il bootstrap della sessione impone `SET NOCOUNT ON`, ed e la
-            // scelta giusta per il percorso bulk: sopprime un pacchetto per
-            // statement, e quel percorso le righe se le conta dai batch che ha
-            // mandato. Ma sopprime anche cio che `execute` deve rendere, e il
-            // contratto qui e esplicito — un `u64` che sono le righe toccate.
-            //
-            // Delle tre vie possibili questa e l'unica che non ha effetti
-            // collaterali. Spegnere `NOCOUNT` per la durata della transazione
-            // cambierebbe uno stato che la sessione condivide con il percorso
-            // di scrittura quando torna al pool; appendere `; SELECT @@ROWCOUNT`
-            // all'SQL del chiamante vorrebbe dire riscrivere cio che ha
-            // scritto, che questo modulo si vieta due funzioni piu sopra.
-            //
-            // Il costo e un round-trip, e va letto per quello che e: il prezzo
-            // di un conteggio vero invece di uno zero comodo.
-            let counted = self
-                .session
-                .session_mut()?
-                .execute_query(
-                    Query::new("SELECT CAST(@@ROWCOUNT AS bigint)"),
-                    ErrorPhase::Write,
-                    cancellation,
-                )
-                .await?;
-            let affected = counted
-                .first()
-                .and_then(|set| set.first())
-                .and_then(|row| row.try_get::<i64, _>(0).ok().flatten())
-                .unwrap_or_default();
-            Ok(u64::try_from(affected).unwrap_or_default())
+                .await
         })
     }
 
