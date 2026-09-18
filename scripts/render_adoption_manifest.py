@@ -15,6 +15,10 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+try:
+    from scripts.public_contract_semantics import load_semantics
+except ModuleNotFoundError:  # esecuzione diretta da scripts/
+    from public_contract_semantics import load_semantics
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "contracts" / "adoption-source.json"
@@ -84,7 +88,7 @@ def manifest(
 
 
 def validate_manifest(document: dict[str, Any], schema_path: Path) -> None:
-    """Rifiuta un manifest che non rispetta lo schema v4 fissato."""
+    """Applica schema v4 e invarianti semantiche del checkout fissato."""
 
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
@@ -93,8 +97,10 @@ def validate_manifest(document: dict[str, Any], schema_path: Path) -> None:
         key=lambda error: [str(item) for item in error.absolute_path],
     )
     if errors:
-        location = "/".join(str(item) for item in errors[0].absolute_path)
-        raise ValueError(f"manifest non valido a /{location}: {errors[0].message}")
+        raise ValueError("manifest non valido: documento non conforme allo schema")
+    semantics = load_semantics(schema_path.resolve().parents[1])
+    if semantics.adoption_errors(document):
+        raise ValueError("manifest non valido: invarianti semantiche non rispettate")
 
 
 def main() -> int:

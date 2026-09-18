@@ -631,6 +631,20 @@ class CiWorkflowTests(unittest.TestCase):
                             "sovrascrive la revisione dell'evento",
                         )
 
+    def test_public_contract_regressions_run_against_the_built_cli(self) -> None:
+        workflow = (WORKFLOW_DIRECTORY / "rust-ci.yml").read_text(encoding="utf-8")
+        steps = parsed_jobs(workflow)["public-contract"]["steps"]
+        regression = next(
+            step for step in steps
+            if "scripts/test_public_contract_integration.py" in step.get("run", "")
+        )
+        self.assertNotIn("if", regression)
+        self.assertNotIn("continue-on-error", regression)
+        self.assertIn("--contracts .plenora-contracts", regression["run"])
+        self.assertIn("--cli target/debug/plenora-database", regression["run"])
+        build = next(step for step in steps if "cargo build" in step.get("run", ""))
+        self.assertLess(steps.index(build), steps.index(regression))
+
     def test_every_adapter_is_checked_in_isolation(self) -> None:
         """Le quattro combinazioni di feature del CLI restano verificate.
 

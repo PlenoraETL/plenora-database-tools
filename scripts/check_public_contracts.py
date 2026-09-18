@@ -11,9 +11,12 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
+try:
+    from scripts.public_contract_semantics import load_semantics
+except ModuleNotFoundError:  # esecuzione diretta da scripts/
+    from public_contract_semantics import load_semantics
 
 ROOT = Path(__file__).resolve().parents[1]
-ADOPTION = ROOT / "contracts" / "adoption-source.json"
 BUNDLE = ROOT / "contracts" / "v2" / "public-operation-contracts.schema.json"
 
 
@@ -51,27 +54,11 @@ def validate(
         key=lambda error: [str(item) for item in error.absolute_path],
     )
     if errors:
-        raise RuntimeError(f"{label}: {errors[0].message}")
+        raise RuntimeError(f"{label}: documento non conforme allo schema")
 
 
 def check(contracts: Path, cli: Path) -> dict[str, int]:
-    adoption = load(ADOPTION)
-    expected_revision = adoption["contracts_source"]["revision"]
-    revision = subprocess.run(
-        [
-            "git",
-            "-c",
-            f"safe.directory={contracts.as_posix()}",
-            "rev-parse",
-            "HEAD",
-        ],
-        cwd=contracts,
-        capture_output=True,
-        check=True,
-        text=True,
-    ).stdout.strip()
-    if revision != expected_revision:
-        raise RuntimeError("checkout plenora-contracts diverso dal pin")
+    semantics = load_semantics(contracts)
 
     cli_schema = load(contracts / "schemas" / "cli-envelope-v2.schema.json")
     capability_schema = load(contracts / "schemas" / "capabilities-v2.schema.json")
@@ -92,6 +79,8 @@ def check(contracts: Path, cli: Path) -> dict[str, int]:
     capabilities = run_cli(cli, "capabilities", "--format", "json", success=True)
     validate(capabilities, cli_schema, "capability envelope", registry)
     validate(capabilities["result"], capability_schema, "capability document", registry)
+    if semantics.capability_errors(capabilities["result"]):
+        raise RuntimeError("capability document: invarianti semantiche non rispettate")
 
     invalid = run_cli(cli, "read", "--format", "json", success=False)
     validate(invalid, cli_schema, "error envelope", registry)
