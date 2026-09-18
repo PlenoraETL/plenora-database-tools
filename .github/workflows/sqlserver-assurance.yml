@@ -27,7 +27,6 @@ on:
       - "crates/plenora-database-sql/**"
       - "crates/plenora-database-testkit/**"
       - "crates/plenora-db-sqlserver/**"
-      - "vendor/tiberius/**"
       - "docker-compose.sqlserver.yml"
       - "docker/sqlserver/init/**"
       - "docker/sqlserver/tls/**"

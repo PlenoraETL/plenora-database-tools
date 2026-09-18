@@ -325,19 +325,8 @@ impl SqlServerSession {
             _ = cancellation.cancelled() => QueryOutcome::Cancelled,
             result = tokio::time::timeout(
                 self.operation_timeout,
-                // Il driver **va in panico** su due famiglie di tipo, e un
-                // panico non e un errore: attraversa lo stack e lascia la
-                // connessione a meta protocollo. Se tornasse al pool cosi, il
-                // prestito successivo la troverebbe con i pacchetti di
-                // qualcun altro in coda.
-                //
-                // Il decoder del driver non implementa `Udt` e `SSVariant`:
-                // basta che una SELECT renda una colonna
-                // `geometry`, `geography` o `sql_variant`, e succede sui
-                // **metadati**, prima di ogni riga — quindi nessun controllo
-                // sul valore potrebbe prevenirlo.
-                //
-                // Catturarlo qui e la sola forma che lasci il pool sano.
+                // Un panico inatteso lascia incerto lo stato del protocollo.
+                // Catturarlo permette di scartare la connessione dal pool.
                 std::panic::AssertUnwindSafe(query_and_drain(client, query)).catch_unwind(),
             ) => match result {
                 Ok(Ok(Ok(rows))) => QueryOutcome::Completed(rows),
@@ -348,17 +337,13 @@ impl SqlServerSession {
         };
         match outcome {
             QueryOutcome::Completed(rows) => Ok(rows),
-            // Il messaggio nomina le famiglie e la via d'uscita — per una
-            // geometria, `.AsBinaryZM()` nella proiezione — invece di
-            // riportare il testo del panico, che e interno al driver e non
-            // aiuta chi legge.
+            // Il messaggio pubblico non riporta il payload del panico.
             QueryOutcome::DriverPanic => {
                 self.quarantine();
                 Err(DatabaseError::unsupported(
                     plenora_database_core::plan::ProviderKind::Sqlserver,
                     phase,
-                    "il driver SQL Server non decodifica le colonne UDT e sql_variant: \
-                     per una geometria usare .AsBinaryZM() nella proiezione",
+                    "decodifica SQL Server interrotta: sessione non riutilizzabile",
                 ))
             }
             QueryOutcome::Cancelled => {
@@ -399,19 +384,8 @@ impl SqlServerSession {
             _ = cancellation.cancelled() => QueryOutcome::Cancelled,
             result = tokio::time::timeout(
                 self.operation_timeout,
-                // Il driver **va in panico** su due famiglie di tipo, e un
-                // panico non e un errore: attraversa lo stack e lascia la
-                // connessione a meta protocollo. Se tornasse al pool cosi, il
-                // prestito successivo la troverebbe con i pacchetti di
-                // qualcun altro in coda.
-                //
-                // Il decoder del driver non implementa `Udt` e `SSVariant`:
-                // basta che una SELECT renda una colonna
-                // `geometry`, `geography` o `sql_variant`, e succede sui
-                // **metadati**, prima di ogni riga — quindi nessun controllo
-                // sul valore potrebbe prevenirlo.
-                //
-                // Catturarlo qui e la sola forma che lasci il pool sano.
+                // Un panico inatteso lascia incerto lo stato del protocollo.
+                // Catturarlo permette di scartare la connessione dal pool.
                 std::panic::AssertUnwindSafe(query_and_drain(client, query)).catch_unwind(),
             ) => match result {
                 Ok(Ok(Ok(rows))) => QueryOutcome::Completed(rows),
@@ -429,7 +403,7 @@ impl SqlServerSession {
                 Err(DatabaseError::unsupported(
                     plenora_database_core::plan::ProviderKind::Sqlserver,
                     ErrorPhase::Write,
-                    "il driver SQL Server non decodifica le colonne UDT e sql_variant:                      per una geometria usare .AsBinaryZM() nella proiezione",
+                    "decodifica SQL Server interrotta: sessione non riutilizzabile",
                 ))
             }
             QueryOutcome::Cancelled => {
@@ -470,9 +444,9 @@ impl SqlServerSession {
         };
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => WriteQueryOutcome::Cancelled,
-            result = tokio::time::timeout(self.operation_timeout, query.execute(client)) => {
+            result = tokio::time::timeout(self.operation_timeout, execute_write_and_count(client, query)) => {
                 match result {
-                    Ok(Ok(result)) => WriteQueryOutcome::Completed(result.total()),
+                    Ok(Ok(rows)) => WriteQueryOutcome::Completed(rows),
                     Ok(Err(error)) => WriteQueryOutcome::Driver(error),
                     Err(_) => WriteQueryOutcome::Timeout,
                 }
@@ -626,11 +600,7 @@ enum QueryOutcome {
     Cancelled,
     Timeout,
     Driver(tiberius::error::Error),
-    /// Il driver ha incontrato un ramo di decodifica non implementato.
-    ///
-    /// Non e una condizione del server: e una famiglia di tipo che tiberius
-    /// 0.12.3 non sa decodificare, e la scopre sui metadati. La connessione
-    /// resta a meta protocollo, quindi va in quarantena e non torna al pool.
+    /// Panico inatteso del driver: il protocollo puo essere incompleto.
     DriverPanic,
 }
 
@@ -662,6 +632,32 @@ async fn query_and_drain(
     query.query(client).await?.into_results().await
 }
 
+// NOCOUNT sopprime i conteggi DONE. La lettura immediata di @@ROWCOUNT resta
+// nello stesso timeout e dominio di cancellazione della scrittura: se manca
+// la conferma, la sessione viene scartata e l'effetto resta sconosciuto.
+async fn server_row_count(client: &mut TdsClient) -> tiberius::Result<u64> {
+    let rows = client
+        .simple_query("SELECT CAST(@@ROWCOUNT AS bigint)")
+        .await?
+        .into_results()
+        .await?;
+    let count = rows
+        .first()
+        .and_then(|set| set.first())
+        .and_then(|row| row.try_get::<i64, _>(0).ok().flatten())
+        .and_then(|value| u64::try_from(value).ok());
+    count
+        .ok_or_else(|| tiberius::error::Error::Protocol("row count acknowledgement missing".into()))
+}
+
+async fn execute_write_and_count(
+    client: &mut TdsClient,
+    query: tiberius::Query<'static>,
+) -> tiberius::Result<u64> {
+    query.execute(client).await?;
+    server_row_count(client).await
+}
+
 async fn bulk_insert_rows<'a>(
     client: &'a mut TdsClient,
     table: &'a str,
@@ -671,7 +667,8 @@ async fn bulk_insert_rows<'a>(
     for row in rows {
         request.send(row).await?;
     }
-    Ok(request.finalize().await?.total())
+    request.finalize().await?;
+    server_row_count(client).await
 }
 
 async fn pump_rows(

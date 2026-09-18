@@ -668,6 +668,98 @@ async fn live_transaction_scope_writes_reads_streams_and_rolls_back() {
 }
 
 #[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e verifica conteggi con NOCOUNT"]
+async fn live_conditional_update_counts_with_nocount_and_detects_conflicts() {
+    use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionOptions};
+
+    let cancellation = CancellationToken::new();
+    let provider = live_provider();
+    let mut transaction = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &ResourceBudget::new(ResourceLimits::default()).expect("budget"),
+            &cancellation,
+        )
+        .await
+        .expect("transazione del conteggio");
+    transaction
+        .execute(
+            &Statement::new(
+                "CREATE TABLE [plenora_test].[conditional_count_probe] \
+                 ([id] int PRIMARY KEY, [revision] int NOT NULL)",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("fixture transazionale");
+    assert_eq!(
+        transaction
+            .execute(
+                &Statement::new(
+                    "INSERT INTO [plenora_test].[conditional_count_probe] VALUES (1, 0), (2, 0)",
+                ),
+                &cancellation,
+            )
+            .await
+            .expect("insert contato dal server"),
+        2
+    );
+    let options = transaction
+        .query(&Statement::new("SELECT @@OPTIONS & 512"), &cancellation)
+        .await
+        .expect("NOCOUNT della sessione");
+    assert_eq!(options[0].values()[0], ParameterValue::I32(512));
+
+    for (id, expected) in [
+        (1, None),
+        (1, Some(ErrorCategory::ConcurrentModification)),
+        (99, Some(ErrorCategory::NotFound)),
+    ] {
+        let update = Statement {
+            sql: "UPDATE [plenora_test].[conditional_count_probe] SET [revision] = 1 \
+                  WHERE [id] = @P1 AND [revision] = 0"
+                .to_owned(),
+            params: vec![ParameterValue::I32(id)],
+        };
+        let probe = Statement {
+            sql: "SELECT [id] FROM [plenora_test].[conditional_count_probe] WHERE [id] = @P1"
+                .to_owned(),
+            params: vec![ParameterValue::I32(id)],
+        };
+        let outcome = transaction
+            .execute_conditional_update(
+                ConditionalUpdate {
+                    update: &update,
+                    key_probe: Some(&probe),
+                    expected_affected_rows: 1,
+                },
+                &cancellation,
+            )
+            .await;
+        match expected {
+            None => outcome.expect("update valido con NOCOUNT ON"),
+            Some(category) => assert_eq!(outcome.expect_err("conflitto").category, category),
+        }
+    }
+    let rows = transaction
+        .query(
+            &Statement::new(
+                "SELECT [revision] FROM [plenora_test].[conditional_count_probe] ORDER BY [id]",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("verifica delle righe effettivamente modificate");
+    assert_eq!(rows[0].values()[0], ParameterValue::I32(1));
+    assert_eq!(rows[1].values()[0], ParameterValue::I32(0));
+    Box::new(transaction)
+        .rollback(&cancellation)
+        .await
+        .expect("rollback rimuove anche la fixture");
+}
+
+#[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e verifica la governance SQL nativa"]
 async fn live_native_query_policy_guards_every_transaction_entrypoint() {
     use plenora_database_core::native_query_policy::NativeQueryPolicy;
@@ -4610,48 +4702,26 @@ async fn live_transaction_decoder_crosses_every_declared_type_family() {
         sbagliate.join("; ")
     );
 
-    // Le due famiglie su cui il **driver** muore, e che devono arrivare al
-    // chiamante come rifiuti.
-    //
-    // Il decoder del driver non implementa `Udt` e `SSVariant`: una SELECT che rende una geometria o un `sql_variant`
-    // faceva panicare la libreria sui **metadati**, prima di ogni riga. Un
-    // panico non e un errore — attraversa lo stack e lascia la connessione a
-    // meta protocollo — e quella connessione tornava nel pool.
-    //
-    // La prova pretende due cose insieme, e la seconda e quella che conta: che
-    // il rifiuto arrivi, e che la sessione **non sia piu utilizzabile** dopo.
-    // La seconda dice che la connessione avvelenata e stata messa in
-    // quarantena invece di essere restituita sana.
-    for veleno in [
+    // Il wire e decodificato e drenato, ma questi tipi restano fuori dal
+    // mapping applicativo. Il rifiuto non deve rendere inutilizzabile la sessione.
+    for unsupported in [
         "SELECT CAST(1 AS sql_variant) AS v",
         "SELECT geometry::STGeomFromText('POINT(1 1)', 4326) AS g",
+        "SELECT geography::STGeomFromText('POINT(1 1)', 4326) AS g",
+        "SELECT CAST(NULL AS sql_variant) AS v",
+        "SELECT CAST(NULL AS geometry) AS g",
+        "SELECT CAST(NULL AS geography) AS g",
     ] {
-        let mut avvelenata = provider
-            .begin_transaction(
-                &live_secret(),
-                &TransactionOptions::default(),
-                &ResourceBudget::new(ResourceLimits::default()).expect("budget"),
-                &cancellation,
-            )
+        let refused = transaction
+            .query(&Statement::new(unsupported), &cancellation)
             .await
-            .expect("transazione della famiglia non decodificabile");
-        let refused = avvelenata
-            .query(&Statement::new(veleno), &cancellation)
-            .await
-            .expect_err("il driver non decodifica questa famiglia");
-        assert_eq!(
-            refused.category,
-            ErrorCategory::Unsupported,
-            "{veleno}: il panico deve diventare un rifiuto"
-        );
-        let dopo = avvelenata
+            .expect_err("tipo fuori dal mapping pubblico");
+        assert_eq!(refused.category, ErrorCategory::Unsupported);
+        let rows = transaction
             .query(&Statement::new("SELECT 1 AS uno"), &cancellation)
-            .await;
-        assert!(
-            dopo.is_err(),
-            "{veleno}: la sessione doveva restare in quarantena"
-        );
-        let _ = Box::new(avvelenata).rollback(&cancellation).await;
+            .await
+            .expect("la risposta drenata lascia riutilizzabile la sessione");
+        assert_eq!(rows[0].values()[0], ParameterValue::I32(1));
     }
 
     Box::new(transaction)
