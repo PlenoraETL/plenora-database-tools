@@ -40,6 +40,10 @@ dal componente sono in
 delle operazioni possedute da questo repository sono nel
 [`bundle pubblico`](contracts/v2/public-operation-contracts.schema.json); il
 gate black-box li confronta con quel pin in CI.
+I controlli semantici caricati dallo stesso checkout verificano le capability
+del CLI e il manifest di adozione prima della pubblicazione. Le regressioni
+del confine sono eseguite dal job `public-contract` di `rust-ci`; il generatore
+del manifest applica gli stessi controlli nel workflow di release.
 La mappa versionata della superficie Rust e prodotta dallo stesso catalogo in
 [`public_contract.rs`](crates/plenora-database-core/src/public_contract.rs) e
 viene compilata da un integration test che usa soltanto export pubblici.
