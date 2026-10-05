@@ -48,7 +48,7 @@ release; Windows resta build-only e non e distribuito come runtime Db2.
 
 ### Da sorgenti (dev)
 
-Richiede Rust 1.98+ e [maturin](https://maturin.rs).
+Richiede Rust 1.98.1+ e [maturin](https://maturin.rs).
 
 ```bash
 pip install maturin

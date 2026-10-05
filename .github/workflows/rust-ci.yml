@@ -117,6 +117,12 @@ jobs:
         run: python3 scripts/test_render_adoption_manifest.py
       - name: scripts/check_docs.py
         run: python3 scripts/check_docs.py
+      # Ogni pin di un manifest Cargo e esatto e porta la sua motivazione; la
+      # MSRV dichiarata e la toolchain fissata.
+      - name: scripts/check_dependency_pins.py
+        run: python3 scripts/check_dependency_pins.py
+      - name: scripts/test_check_dependency_pins.py
+        run: python3 scripts/test_check_dependency_pins.py
       - name: scripts/check_comments.py
         run: python3 scripts/check_comments.py
       - name: scripts/test_check_coverage.py
