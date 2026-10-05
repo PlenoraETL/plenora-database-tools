@@ -21,7 +21,7 @@ def report(*, covered: int = 34, count: int = 100, percent: float = 34.0) -> dic
     return {
         "type": "llvm.coverage.json.export",
         "version": "3.1.0",
-        "data": [{"totals": totals}],
+        "data": [{"files": [{"filename": "/repo/src/lib.rs"}], "totals": totals}],
     }
 
 
@@ -33,7 +33,8 @@ def budget(*, minimum: float = 34.0) -> dict:
                 "report_format": "llvm",
                 "minimum_percent": {
                     metric: minimum for metric in check_coverage.METRICS
-                }
+                },
+                "sources": ["src/"],
             }
         },
     }
@@ -55,6 +56,7 @@ class CoverageGateTests(unittest.TestCase):
                     self.write(root, "summary.json", report_value),
                     self.write(root, "budget.json", budget_value),
                     "unit",
+                    Path("/repo"),
                 )
 
     def test_equal_to_budget_passes(self) -> None:
@@ -104,10 +106,15 @@ class CoverageGateTests(unittest.TestCase):
                 "unit": {
                     "report_format": "coverage.py",
                     "minimum_percent": {"lines": 73.0, "branches": 82.0},
+                    "sources": ["package/"],
                 }
             },
         }
         self.assertTrue(self.run_check(python_report, python_budget))
+        escaping = json.loads(json.dumps(python_report))
+        escaping["files"] = {"site/package/../other/module.py": {}}
+        with self.assertRaises(check_coverage.CoverageError):
+            self.run_check(escaping, python_budget)
         python_budget["surfaces"]["unit"]["minimum_percent"]["branches"] = 82.1
         self.assertFalse(self.run_check(python_report, python_budget))
 
@@ -141,6 +148,46 @@ class CoverageGateTests(unittest.TestCase):
                 check_coverage.CoverageError
             ):
                 check_coverage.read_python_totals(value)
+
+    def test_files_must_belong_to_the_declared_sources(self) -> None:
+        for files in (
+            [],
+            [{"filename": "/repo/vendor/geo/src/lib.rs"}],
+            [{"filename": "/repo/src/lib.rs"}, {"filename": "/repo/vendor/x.rs"}],
+            [{"filename": "/altro/src/lib.rs"}],
+            [{"filename": "/repository/src/lib.rs"}],
+            [{"filename": "/repo/src/../vendor/geo/lib.rs"}],
+            [{"filename": "/repo/src/./lib.rs"}],
+            [{"filename": "\\repo\\src\\..\\vendor\\lib.rs"}],
+            [{"filename": 3}],
+        ):
+            value = report()
+            value["data"][0]["files"] = files
+            with self.subTest(files=files), self.assertRaises(
+                check_coverage.CoverageError
+            ):
+                self.run_check(value, budget())
+
+    def test_every_declared_source_needs_a_file(self) -> None:
+        two = budget()
+        two["surfaces"]["unit"]["sources"] = ["src/", "other/"]
+        with self.assertRaises(check_coverage.CoverageError):
+            self.run_check(report(), two)
+        windows = report()
+        windows["data"][0]["files"] = [{"filename": "\\repo\\src\\lib.rs"}]
+        self.assertTrue(self.run_check(windows, budget()))
+
+    def test_sources_are_required_in_the_budget(self) -> None:
+        for sources in (None, [], ["src"], ["/"], ["src/", "src/"]):
+            value = budget()
+            if sources is None:
+                del value["surfaces"]["unit"]["sources"]
+            else:
+                value["surfaces"]["unit"]["sources"] = sources
+            with self.subTest(sources=sources), self.assertRaises(
+                check_coverage.CoverageError
+            ):
+                check_coverage.read_budget(value, "unit")
 
     def test_inconsistent_or_non_finite_numbers_are_rejected(self) -> None:
         inconsistent = report(percent=99.0)

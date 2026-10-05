@@ -48,7 +48,9 @@ jobs:
           # Testkit, binding Python e moduli #[cfg(test)] hanno una propria
           # superficie: contarli nel prodotto renderebbe il denominatore
           # dipendente dalla dimensione dei test anziche dal runtime.
-          RUST_COVERAGE_IGNORE: '(^|/)(crates/(plenora-database-py|plenora-database-testkit)/|(test_suite|evidence|mariadb_evidence|session_evidence)\.rs$)'
+          # `vendor/` (oracle-rs, via [patch.crates-io]) entra nel binario ma
+          # non e' prodotto: le esclusioni automatiche non lo coprono.
+          RUST_COVERAGE_IGNORE: '(^|/)(vendor/|crates/(plenora-database-py|plenora-database-testkit)/|(test_suite|evidence|mariadb_evidence|session_evidence)\.rs$)'
         run: |
           mkdir -p coverage/rust
           cargo llvm-cov --locked --workspace --all-features \
@@ -101,6 +103,10 @@ jobs:
         run: cargo install cargo-llvm-cov --version 0.9.1 --locked
       - name: Costruisce la wheel instrumentata e misura SDK e binding
         shell: bash
+        env:
+          # Le dipendenze vendorizzate ([patch.crates-io]) entrano nella
+          # libreria nativa ma non sono il binding.
+          BINDING_COVERAGE_IGNORE: '(^|/)vendor/'
         run: |
           mkdir -p coverage/python-binding/dist coverage/python-sdk
           source <(cargo llvm-cov show-env --sh)
@@ -118,11 +124,14 @@ jobs:
           python -m coverage html -d coverage/python-sdk/html
           cargo llvm-cov report -p plenora-database-py \
             --json --summary-only \
-            --output-path coverage/python-binding/summary.json
+            --output-path coverage/python-binding/summary.json \
+            --ignore-filename-regex "$BINDING_COVERAGE_IGNORE"
           cargo llvm-cov report -p plenora-database-py \
-            --lcov --output-path coverage/python-binding/lcov.info
+            --lcov --output-path coverage/python-binding/lcov.info \
+            --ignore-filename-regex "$BINDING_COVERAGE_IGNORE"
           cargo llvm-cov report -p plenora-database-py \
-            --html --output-dir coverage/python-binding/html
+            --html --output-dir coverage/python-binding/html \
+            --ignore-filename-regex "$BINDING_COVERAGE_IGNORE"
       - name: Budget coverage SDK Python
         run: >-
           python3 scripts/check_coverage.py

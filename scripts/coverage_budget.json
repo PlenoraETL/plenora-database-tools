@@ -7,7 +7,10 @@
         "functions": 15.0,
         "lines": 20.0,
         "regions": 19.0
-      }
+      },
+      "sources": [
+        "crates/plenora-database-py/src/"
+      ]
     },
     "rust_product": {
       "report_format": "llvm",
@@ -15,14 +18,28 @@
         "functions": 38.0,
         "lines": 39.0,
         "regions": 36.5
-      }
+      },
+      "sources": [
+        "crates/plenora-database-cli/src/",
+        "crates/plenora-database-core/src/",
+        "crates/plenora-database-engine/src/",
+        "crates/plenora-database-sql/src/",
+        "crates/plenora-db-db2/src/",
+        "crates/plenora-db-mysql/src/",
+        "crates/plenora-db-oracle/src/",
+        "crates/plenora-db-postgres/src/",
+        "crates/plenora-db-sqlserver/src/"
+      ]
     },
     "python_sdk": {
       "report_format": "coverage.py",
       "minimum_percent": {
         "lines": 69.0,
         "branches": 55.0
-      }
+      },
+      "sources": [
+        "plenora_database/"
+      ]
     }
   }
 }
