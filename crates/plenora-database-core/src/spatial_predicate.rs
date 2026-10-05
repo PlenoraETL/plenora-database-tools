@@ -13,9 +13,14 @@ use serde::{Deserialize, Serialize};
 ///
 /// Non è un catalogo esaustivo OGC: delimita la semantica portabile supportata
 /// dal read GIS operativo.
+///
+/// La lettura passa da [`SpatialPredicateWire`]: con il tag interno
+/// `deny_unknown_fields` non raggiunge le varianti unitarie, e
+/// `{"kind":"within","distance_meters":100}` diventerebbe un `Within` senza
+/// distanza, accettato in silenzio. La forma serializzata non cambia.
 #[allow(clippy::derive_partial_eq_without_eq)] // DWithin contiene f64
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", from = "SpatialPredicateWire")]
 pub enum SpatialPredicate {
     /// La colonna geometry interseca il riferimento.
     Intersects,
@@ -57,6 +62,32 @@ pub enum SpatialPredicate {
     /// `Bounding-box` overlap (indice-friendly): equivalente a `&&` in
     /// `PostGIS`. Utile per filtri di viewport prima di predicati più stretti.
     BoundingBox,
+}
+
+/// Forma di lettura di [`SpatialPredicate`]: le varianti senza campi sono
+/// struct vuote, cosi `deny_unknown_fields` rifiuta anche le loro chiavi
+/// sconosciute. Il JSON accettato e quello di `SpatialPredicate` meno le
+/// chiavi che nessuna variante dichiara.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum SpatialPredicateWire {
+    Intersects {},
+    Contains {},
+    Within {},
+    DWithin { distance_meters: f64 },
+    BoundingBox {},
+}
+
+impl From<SpatialPredicateWire> for SpatialPredicate {
+    fn from(wire: SpatialPredicateWire) -> Self {
+        match wire {
+            SpatialPredicateWire::Intersects {} => Self::Intersects,
+            SpatialPredicateWire::Contains {} => Self::Contains,
+            SpatialPredicateWire::Within {} => Self::Within,
+            SpatialPredicateWire::DWithin { distance_meters } => Self::DWithin { distance_meters },
+            SpatialPredicateWire::BoundingBox {} => Self::BoundingBox,
+        }
+    }
 }
 
 impl SpatialPredicate {

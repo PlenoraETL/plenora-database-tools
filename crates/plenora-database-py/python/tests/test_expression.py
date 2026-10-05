@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import plenora_database as p
@@ -406,3 +408,37 @@ async def test_async_execution_uses_the_same_compiler_and_result() -> None:
         Native(), statement, {"answer": 8}, "sqlserver"
     )
     assert result.scalar_one() == 8
+
+
+def test_an_unknown_key_in_a_window_frame_bound_is_refused() -> None:
+    """Una chiave estranea in un limite di frame non viene ignorata.
+
+    Il JSON dell'IR attraversa il confine nativo: una chiave sconosciuta
+    accettata li cambierebbe la finestra senza errore.
+    """
+    events = p.table("events", "tenant", "sequence")
+    statement = p.select(
+        p.func.sum(events.c.sequence)
+        .over(order_by=(events.c.sequence,), rows=(-1, 0))
+        .label("running_total"),
+    )
+    document = json.loads(statement.to_json())
+    compile_relational_query(json.dumps(document), "postgres")
+
+    bounds: list[dict] = []
+
+    def collect(node: object) -> None:
+        if isinstance(node, dict):
+            if node.get("kind") == "preceding":
+                bounds.append(node)
+            for child in node.values():
+                collect(child)
+        elif isinstance(node, list):
+            for child in node:
+                collect(child)
+
+    collect(document)
+    assert len(bounds) == 1
+    bounds[0]["negate"] = True
+    with pytest.raises(ValueError, match="IR relazionale non valido"):
+        compile_relational_query(json.dumps(document), "postgres")

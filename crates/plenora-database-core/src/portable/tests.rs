@@ -1096,3 +1096,124 @@ fn mariadb_update_without_returning_still_compiles() {
     .expect("un UPDATE senza RETURNING non ha niente di divergente");
     assert_eq!(compiled.sql, "UPDATE `t` SET `a` = ?");
 }
+
+/// Un documento portable valido, con il punto in cui le prove sotto
+/// iniettano una chiave estranea.
+fn delete_with_filter(filter: &str) -> String {
+    format!(r#"{{"type":"delete","table":{{"name":"t"}},"filter":{filter}}}"#)
+}
+
+/// La chiave sconosciuta su un predicato non e ignorata: `negate` non
+/// esiste, e accettarla rovescerebbe il filtro di un `DELETE` in silenzio.
+#[test]
+fn an_unknown_key_on_a_predicate_is_refused_not_ignored() {
+    let accepted = delete_with_filter(r#"{"op":"is_null","column":"a"}"#);
+    serde_json::from_str::<PortableStatement>(&accepted).expect("documento valido");
+
+    let refused = delete_with_filter(r#"{"op":"is_null","column":"a","negate":true}"#);
+    let error = serde_json::from_str::<PortableStatement>(&refused)
+        .expect_err("una chiave sconosciuta non puo cambiare il filtro in silenzio");
+    assert!(error.to_string().contains("negate"), "{error}");
+}
+
+/// Ogni tipo dell'AST rifiuta una chiave che non conosce, a ogni livello di
+/// annidamento. Un caso per tipo: l'accettato prova che il documento base
+/// e valido, il rifiutato che l'unica differenza e la chiave estranea.
+#[test]
+fn every_portable_node_refuses_an_unknown_key() {
+    let literal = r#"{"kind":"literal","value":{"type":"i64","value":1}}"#;
+    let wkb = r#"{"type":"wkb","value":{"bytes":[1],"srid":4326,"dimensions":"xy","semantics":"geometry"}}"#;
+    let reference = r#"{"ewkb":[1],"srid":4326,"dimensions":"xy","semantics":"geometry"}"#;
+    let select = r#"{"type":"select","table":{"name":"t"},"projection":{"kind":"all"}}"#;
+    let cases: Vec<(&str, String, String)> = vec![
+        (
+            "Predicate eq",
+            delete_with_filter(&format!(r#"{{"op":"eq","column":"a","value":{literal}}}"#)),
+            delete_with_filter(&format!(
+                r#"{{"op":"eq","column":"a","value":{literal},"x":1}}"#
+            )),
+        ),
+        (
+            "Predicate annidato in not",
+            delete_with_filter(r#"{"op":"not","predicate":{"op":"is_null","column":"a"}}"#),
+            delete_with_filter(r#"{"op":"not","predicate":{"op":"is_null","column":"a","x":1}}"#),
+        ),
+        (
+            "Predicate annidato in and",
+            delete_with_filter(r#"{"op":"and","predicates":[{"op":"is_not_null","column":"a"}]}"#),
+            delete_with_filter(
+                r#"{"op":"and","predicates":[{"op":"is_not_null","column":"a","x":1}]}"#,
+            ),
+        ),
+        (
+            "Expression accanto a kind/value",
+            delete_with_filter(&format!(r#"{{"op":"eq","column":"a","value":{literal}}}"#)),
+            delete_with_filter(
+                r#"{"op":"eq","column":"a","value":{"kind":"literal","value":{"type":"i64","value":1},"x":1}}"#,
+            ),
+        ),
+        (
+            "Expression spatial_value",
+            delete_with_filter(&format!(
+                r#"{{"op":"eq","column":"a","value":{{"kind":"spatial_value","value":{{"expression":{literal},"srid":4326,"semantics":"geometry"}}}}}}"#
+            )),
+            delete_with_filter(&format!(
+                r#"{{"op":"eq","column":"a","value":{{"kind":"spatial_value","value":{{"expression":{literal},"srid":4326,"semantics":"geometry","x":1}}}}}}"#
+            )),
+        ),
+        (
+            "ParameterValue accanto a type/value",
+            delete_with_filter(&format!(r#"{{"op":"eq","column":"a","value":{literal}}}"#)),
+            delete_with_filter(
+                r#"{"op":"eq","column":"a","value":{"kind":"literal","value":{"type":"i64","value":1,"x":1}}}"#,
+            ),
+        ),
+        (
+            "ParameterValue wkb",
+            delete_with_filter(&format!(
+                r#"{{"op":"eq","column":"a","value":{{"kind":"literal","value":{wkb}}}}}"#
+            )),
+            delete_with_filter(
+                r#"{"op":"eq","column":"a","value":{"kind":"literal","value":{"type":"wkb","value":{"bytes":[1],"srid":4326,"dimensions":"xy","semantics":"geometry","x":1}}}}"#,
+            ),
+        ),
+        (
+            "ParameterValue null",
+            delete_with_filter(
+                r#"{"op":"eq","column":"a","value":{"kind":"literal","value":{"type":"null","value":{"type_name":"int"}}}}"#,
+            ),
+            delete_with_filter(
+                r#"{"op":"eq","column":"a","value":{"kind":"literal","value":{"type":"null","value":{"type_name":"int","x":1}}}}"#,
+            ),
+        ),
+        (
+            "SpatialPredicate unitario",
+            delete_with_filter(&format!(
+                r#"{{"op":"spatial","column":"g","predicate":{{"kind":"within"}},"reference":{reference}}}"#
+            )),
+            delete_with_filter(&format!(
+                r#"{{"op":"spatial","column":"g","predicate":{{"kind":"within","distance_meters":100.0}},"reference":{reference}}}"#
+            )),
+        ),
+        (
+            "Projection",
+            select.to_owned(),
+            r#"{"type":"select","table":{"name":"t"},"projection":{"kind":"all","x":1}}"#
+                .to_owned(),
+        ),
+        (
+            "PortableStatement",
+            select.to_owned(),
+            r#"{"type":"select","table":{"name":"t"},"projection":{"kind":"all"},"x":1}"#
+                .to_owned(),
+        ),
+    ];
+    for (name, accepted, refused) in cases {
+        serde_json::from_str::<PortableStatement>(&accepted)
+            .unwrap_or_else(|error| panic!("{name}: documento base rifiutato: {error}"));
+        assert!(
+            serde_json::from_str::<PortableStatement>(&refused).is_err(),
+            "{name}: chiave sconosciuta accettata"
+        );
+    }
+}
