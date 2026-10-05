@@ -32,6 +32,12 @@ l'enum pubblico Rust `PublicSurface` ha una variante in più.
   essere un identificatore di al massimo 128 caratteri e `provider_arguments`
   ha al massimo 32 elementi di 4096 caratteri, come dichiara
   `public-operation-contracts.schema.json`.
+- **Richiesta canonica non conforme: `invalid_configuration`** (#111).
+  Un `REQUEST.json` della CLI che non soddisfa il proprio input contract
+  (JSON non leggibile, campi fuori schema, schema `target`) era
+  `invalid_plan`; ora è `invalid_configuration`, come sul runtime. Il codice
+  d'uscita resta 2. I documenti di operazione (READ.json, WRITE.json,
+  PARAMETERS.json) restano `invalid_plan`.
 - **`PublicSurface::Runtime`** (#111). Un `match` esaustivo su
   `PublicSurface` nel codice Rust consumer va esteso.
 - **`arrow_field` di `OracleColumnSpec` e `Db2ColumnSpec` restituisce
