@@ -1779,12 +1779,13 @@ fn parse_ipc_options(args: &mut impl Iterator<Item = String>) -> CliResult<IpcOp
             "--filter" => {
                 // Il valore è un percorso a un JSON che deserializza in
                 // FilterExpression.
-                // Il percorso resta nel messaggio: e contesto operativo, cioe
-                // cio che `DatabaseError::message` ammette per contratto, e
-                // l'ha scritto il chiamante sulla riga di comando. Il
-                // *contenuto* del file no: quello e payload.
+                // Il percorso non entra nel messaggio, come quello di un
+                // argomento posizionale: il valore di un'opzione con nome non
+                // e validato, e puo essere una DSN o un token. Il messaggio
+                // dice l'opzione e il tipo dell'errore; il contenuto del file
+                // resta fuori, perche e payload.
                 let content = fs::read(&value)
-                    .map_err(|_| format!("--filter file non leggibile: {value}"))?;
+                    .map_err(|error| format!("--filter file non leggibile: {}", error.kind()))?;
                 let parsed: plenora_database_core::plan::FilterExpression =
                     serde_json::from_slice(&content).map_err(|e| {
                         format!(
@@ -1933,13 +1934,22 @@ async fn write_stream_to_ipc(
 
 /// Il messaggio di un artifact temporaneo che non si e potuto rimuovere.
 ///
-/// Porta il percorso dell'artifact, che serve alla recovery, e il tipo
-/// dell'errore di I/O, non il suo `Display`: quello e testo del sistema
-/// operativo, che `DatabaseError::message` non ammette.
+/// Il percorso dell'artifact non entra intero: directory e nome vengono
+/// dall'output scritto dal chiamante, che e un argomento posizionale. Entra
+/// solo il suffisso che generiamo noi (`partial-<pid>-<sequenza>`, vedi
+/// [`create_ipc_temporary`]), che con l'output noto al chiamante basta a
+/// trovare il file da rimuovere. Dell'errore di I/O entra il tipo, non il
+/// `Display`: quello e testo del sistema operativo, che
+/// `DatabaseError::message` non ammette.
 fn staging_cleanup_failure(context: &str, temporary: &Path, error: &std::io::Error) -> String {
+    let generated = temporary
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.rsplit_once(".partial-"))
+        .map_or("?", |(_, suffix)| suffix);
     format!(
-        "{context}; recovery richiesta per {}: {}",
-        temporary.display(),
+        "{context}; recovery richiesta: rimuovere `.<output>.partial-{generated}` nella \
+         directory dell'output: {}",
         error.kind()
     )
 }
