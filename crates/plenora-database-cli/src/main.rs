@@ -570,12 +570,14 @@ fn canonical_request<T: DeserializeOwned>(args: &mut impl Iterator<Item = String
         .next()
         .ok_or_else(|| CliError::from("--input richiede un percorso"))?;
     let input = fs::read(path).map_err(|_| CliError::from("REQUEST.json non leggibile"))?;
+    // Una richiesta fuori dal proprio input contract e
+    // `invalid_configuration`, come sul runtime (`public_ops::invalid_request`).
     plenora_database_core::strict_json::from_slice(&input).map_err(|error| {
-        CliError::from(format!(
+        CliError::from(public_ops::invalid_request(format!(
             "REQUEST.json non parsabile a riga {}, colonna {}",
             error.line(),
             error.column()
-        ))
+        )))
     })
 }
 

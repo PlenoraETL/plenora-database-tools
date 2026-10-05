@@ -39,9 +39,10 @@ use plenora_database_core::{
     RetryDisposition,
 };
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -64,8 +65,34 @@ pub const ERROR_CONTRACT: &str = "plenora-error-v1";
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 
 const MAX_DEADLINE_HORIZON: Duration = Duration::from_hours(365 * 24);
-const NIL_UUID: &str = "00000000-0000-0000-0000-000000000000";
-const UNKNOWN_OPERATION: &str = "database.unknown";
+/// Limite della chiave di idempotenza («opaque bounded key», RB §4).
+const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
+
+/// Chiavi riservate di una richiesta (RB §3, §4). Una chiave `plenora.*`
+/// fuori da questo elenco non e un alias di una riservata e non si ignora:
+/// si rifiuta (matrice runtime, caso 8, proposta).
+pub const MESSAGE_ID: &str = "plenora.message.id";
+pub const CAUSATION_ID: &str = "plenora.message.causation_id";
+pub const CAPABILITY_NAME_KEY: &str = "plenora.capability.name";
+pub const CAPABILITY_VERSION: &str = "plenora.capability.version";
+pub const OPERATION: &str = "plenora.capability.operation";
+pub const OPERATION_VERSION: &str = "plenora.operation.version";
+pub const INPUT_CONTRACT: &str = "plenora.input.contract";
+pub const DEADLINE: &str = "plenora.execution.deadline";
+pub const IDEMPOTENCY_KEY: &str = "plenora.execution.idempotency_key";
+pub const CORRELATION_ID: &str = "plenora.trace.correlation_id";
+const RESERVED_REQUEST_KEYS: [&str; 10] = [
+    MESSAGE_ID,
+    CAUSATION_ID,
+    CAPABILITY_NAME_KEY,
+    CAPABILITY_VERSION,
+    OPERATION,
+    OPERATION_VERSION,
+    INPUT_CONTRACT,
+    DEADLINE,
+    IDEMPOTENCY_KEY,
+    CORRELATION_ID,
+];
 
 /// Il documento Capability Discovery 2.0 della superficie runtime.
 #[must_use]
@@ -79,12 +106,17 @@ pub fn entrypoint(operation: &str, version: u32) -> String {
     format!("{CAPABILITY_NAME}#{operation}@{version}")
 }
 
-/// Richiesta runtime: content type, metadati riservati e payload JSON.
+/// Richiesta runtime: content type, metadati e payload JSON.
+///
+/// I metadati sono la mappa del messaggio cosi come arriva: stringhe, come
+/// vuole `runtime-vector-v1`. La validazione (chiavi riservate, forme
+/// canoniche, valori annunciati) e dell'ammissione, che risponde con un
+/// risultato d'errore invece di fallire nella deserializzazione.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeInvocation {
     pub content_type: String,
-    pub metadata: RuntimeRequestMetadata,
+    pub metadata: BTreeMap<String, String>,
     pub payload: Value,
 }
 
@@ -96,8 +128,8 @@ impl RuntimeInvocation {
     /// # Errors
     ///
     /// `Protocol` per JSON non valido, chiavi ripetute, chiavi sconosciute o
-    /// un metadato opzionale scritto `null`. Il messaggio porta riga e
-    /// colonna, mai il testo.
+    /// un metadato che non e una stringa (anche `null`, che non vale
+    /// assente). Il messaggio porta riga e colonna, mai il testo.
     pub fn from_json(bytes: &[u8]) -> Result<Self> {
         strict_json::from_slice(bytes).map_err(|error| {
             route_error(
@@ -110,64 +142,32 @@ impl RuntimeInvocation {
             )
         })
     }
+
+    fn get(&self, key: &str) -> Option<&str> {
+        self.metadata.get(key).map(String::as_str)
+    }
 }
 
-/// Metadati riservati della richiesta (RT-003, RT-012, controlli).
-///
-/// I campi opzionali si omettono quando assenti: `null` non e una stringa
-/// del trasporto e si rifiuta, invece di valere assente (una deadline `null`
-/// farebbe partire l'operazione senza scadenza).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeRequestMetadata {
-    #[serde(rename = "plenora.message.id")]
+/// La richiesta ammessa: identita e instradamento canonici, passati ai
+/// resolver dell'applicazione.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeRequest {
     pub message_id: String,
-    #[serde(
-        rename = "plenora.message.causation_id",
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
     pub causation_id: Option<String>,
-    #[serde(rename = "plenora.capability.name")]
-    pub capability_name: String,
-    #[serde(rename = "plenora.capability.version")]
-    pub capability_version: String,
-    #[serde(rename = "plenora.capability.operation")]
-    pub operation: String,
-    #[serde(rename = "plenora.operation.version")]
-    pub operation_version: String,
-    #[serde(rename = "plenora.input.contract")]
-    pub input_contract: String,
-    #[serde(
-        rename = "plenora.execution.deadline",
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub deadline: Option<String>,
-    #[serde(
-        rename = "plenora.execution.idempotency_key",
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub idempotency_key: Option<String>,
-    #[serde(rename = "plenora.trace.correlation_id")]
     pub correlation_id: String,
-}
-
-fn present<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<Option<String>, D::Error> {
-    String::deserialize(deserializer).map(Some)
+    pub operation: String,
+    pub operation_version: u32,
 }
 
 /// Metadati del risultato (RT-008, RT-010, RT-012).
 ///
-/// `message_id` e un'identita nuova, derivata in modo deterministico da
-/// quella della richiesta; `causation_id` e la richiesta stessa, causa
-/// diretta del risultato; `correlation_id` e quello della richiesta.
+/// - `message_id`: sempre un'identita nuova, derivata in modo deterministico
+///   dall'invocazione (matrice runtime, caso 6).
+/// - `causation_id`: il `message.id` della richiesta quando e canonico; la
+///   causa diretta del risultato e la richiesta (proposta P della matrice).
+/// - `operation`, `operation_version`, `correlation_id`: i valori della
+///   richiesta, byte per byte, solo se canonici; altrimenti la chiave si
+///   omette. Mai normalizzati, mai inventati (regola R2, proposta P).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeResultMetadata {
@@ -176,18 +176,29 @@ pub struct RuntimeResultMetadata {
     #[serde(
         rename = "plenora.message.causation_id",
         default,
-        deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
     pub causation_id: Option<String>,
-    #[serde(rename = "plenora.capability.operation")]
-    pub operation: String,
-    #[serde(rename = "plenora.operation.version")]
-    pub operation_version: String,
+    #[serde(
+        rename = "plenora.capability.operation",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub operation: Option<String>,
+    #[serde(
+        rename = "plenora.operation.version",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub operation_version: Option<String>,
     #[serde(rename = "plenora.output.contract")]
     pub output_contract: String,
-    #[serde(rename = "plenora.trace.correlation_id")]
-    pub correlation_id: String,
+    #[serde(
+        rename = "plenora.trace.correlation_id",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub correlation_id: Option<String>,
 }
 
 /// Il corpo di un risultato.
@@ -290,7 +301,7 @@ pub trait ArtifactResolver: Send + Sync {
     /// Dati assenti, non autorizzati o non leggibili come Arrow.
     fn open_write_input<'a>(
         &'a self,
-        request: &'a RuntimeRequestMetadata,
+        request: &'a RuntimeRequest,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>>;
 
     /// Il sink dello stream Arrow prodotto da questa invocazione di
@@ -301,7 +312,7 @@ pub trait ArtifactResolver: Send + Sync {
     /// Sink non autorizzato o non apribile.
     fn open_read_sink<'a>(
         &'a self,
-        request: &'a RuntimeRequestMetadata,
+        request: &'a RuntimeRequest,
     ) -> ProviderFuture<'a, Box<dyn ArrowSink>>;
 }
 
@@ -313,6 +324,7 @@ pub struct RuntimeBinding<'a> {
 
 struct Admitted {
     operation: PublicOperation,
+    request: RuntimeRequest,
     deadline: Option<Instant>,
 }
 
@@ -345,23 +357,7 @@ impl<'a> RuntimeBinding<'a> {
         invocation: &RuntimeInvocation,
         cancellation: &CancellationToken,
     ) -> RuntimeResult {
-        let request = &invocation.metadata;
-        let advertised = runtime_capabilities()
-            .operations
-            .into_iter()
-            .find(|operation| operation.id == request.operation);
-        let identity = RuntimeResultMetadata {
-            message_id: result_message_id(&request.message_id),
-            causation_id: canonical_uuid(&request.message_id).then(|| request.message_id.clone()),
-            operation: advertised
-                .as_ref()
-                .map_or(UNKNOWN_OPERATION, |operation| operation.id.as_str())
-                .to_owned(),
-            operation_version: parse_version(&request.operation_version)
-                .map_or_else(|_| "0".to_owned(), |version| version.to_string()),
-            output_contract: ERROR_CONTRACT.to_owned(),
-            correlation_id: public_uuid(&request.correlation_id),
-        };
+        let identity = result_identity(invocation);
         match self.invoke_admitted(invocation, cancellation).await {
             Ok((operation, content_type, body)) => RuntimeResult {
                 content_type: content_type.to_owned(),
@@ -371,11 +367,32 @@ impl<'a> RuntimeBinding<'a> {
                 },
                 body,
             },
-            Err(error) => RuntimeResult {
-                content_type: ERROR_CONTENT_TYPE.to_owned(),
-                metadata: identity,
-                body: RuntimeBody::Json(error_document(&error)),
-            },
+            Err(error) => error_result(identity, &error),
+        }
+    }
+
+    /// Come [`Self::invoke`], dal messaggio serializzato. Un messaggio che non
+    /// si legge (JSON non valido, chiavi ripetute o sconosciute, metadati che
+    /// non sono stringhe o scritti `null`) produce comunque un risultato
+    /// d'errore `protocol`, con un'identita nuova e nessun valore riflesso.
+    pub async fn invoke_json(
+        &self,
+        bytes: &[u8],
+        cancellation: &CancellationToken,
+    ) -> RuntimeResult {
+        match RuntimeInvocation::from_json(bytes) {
+            Ok(invocation) => self.invoke(&invocation, cancellation).await,
+            Err(error) => error_result(
+                RuntimeResultMetadata {
+                    message_id: derived_uuid(bytes),
+                    causation_id: None,
+                    operation: None,
+                    operation_version: None,
+                    output_contract: ERROR_CONTRACT.to_owned(),
+                    correlation_id: None,
+                },
+                &error,
+            ),
         }
     }
 
@@ -431,8 +448,8 @@ impl<'a> RuntimeBinding<'a> {
                 self.inspect(request.target(), operation, admitted.deadline, &token)
                     .await?
             }
-            "database.read" => self.read(invocation, admitted.deadline, &token).await?,
-            "database.write" => self.write(invocation, admitted.deadline, &token).await?,
+            "database.read" => self.read(invocation, &admitted, &token).await?,
+            "database.write" => self.write(invocation, &admitted, &token).await?,
             "database.query" => self.query(invocation, admitted.deadline, &token).await?,
             _ => {
                 return Err(route_error(
@@ -544,9 +561,10 @@ impl<'a> RuntimeBinding<'a> {
     async fn read(
         &self,
         invocation: &RuntimeInvocation,
-        deadline: Option<Instant>,
+        admitted: &Admitted,
         cancellation: &CancellationToken,
     ) -> Result<(&'static str, RuntimeBody)> {
+        let deadline = admitted.deadline;
         let request: OperationRequest = decode(&invocation.payload)?;
         let target = validated(request.target())?;
         let (operation, parameters): (ReadOperation, ParameterBag) =
@@ -561,20 +579,27 @@ impl<'a> RuntimeBinding<'a> {
             .await?;
         let mut sink = self
             .artifacts
-            .open_read_sink(&invocation.metadata)
+            .open_read_sink(&admitted.request)
             .await
             .map_err(|error| {
                 redact_host_error(&error, "apertura del sink rifiutata dall'applicazione")
             })?;
-        let delivered = match write_arrow_stream(&mut sink, stream.as_mut(), &token).await {
-            Ok(delivered) => delivered,
-            Err(error) => {
-                sink.abort();
-                return Err(error);
-            }
-        };
-        sink.finish().map_err(|error| {
-            redact_host_error(
+        let mut written = 0_u64;
+        let delivered =
+            match write_arrow_stream(&mut sink, stream.as_mut(), &token, &mut written).await {
+                Ok(delivered) => delivered,
+                Err(error) => {
+                    sink.abort();
+                    return Err(after_sink_bytes(error, written));
+                }
+            };
+        // La pubblicazione e dell'host: se fallisce, i byte possono essere
+        // gia visibili e niente prova il contrario (ERR-004).
+        sink.finish().map_err(|error| DatabaseError {
+            phase: ErrorPhase::Commit,
+            remote_effect: RemoteEffect::Unknown,
+            retry: RetryDisposition::RequiresRecovery,
+            ..redact_host_error(
                 &error,
                 "pubblicazione del risultato rifiutata dall'applicazione",
             )
@@ -588,9 +613,10 @@ impl<'a> RuntimeBinding<'a> {
     async fn write(
         &self,
         invocation: &RuntimeInvocation,
-        deadline: Option<Instant>,
+        admitted: &Admitted,
         cancellation: &CancellationToken,
     ) -> Result<(&'static str, RuntimeBody)> {
+        let deadline = admitted.deadline;
         let request: WriteRequest = decode(&invocation.payload)?;
         let target = validated(request.target())?;
         let operation_path = public_ops::required_value(request.operation_path, "operation_path")?;
@@ -598,7 +624,7 @@ impl<'a> RuntimeBinding<'a> {
         let connected = self.connect(target, deadline).await?;
         let input = self
             .artifacts
-            .open_write_input(&invocation.metadata)
+            .open_write_input(&admitted.request)
             .await
             .map_err(|error| {
                 redact_host_error(
@@ -694,107 +720,160 @@ impl Connected {
 }
 
 /// Routing e controlli prima di qualunque resolver o provider (RT-004,
-/// RT-005, RT-006, RT-011, RT-012). Ogni rifiuto ha `remote_effect: none`.
+/// RT-005, RT-006, RT-011, RT-012), secondo la matrice runtime comune:
+///
+/// - ogni rifiuto ha `phase: validate`, `remote_effect: none`,
+///   `retry: never` (R3, R4);
+/// - un valore assente, malformato o non canonico e `protocol`; un valore
+///   ben formato ma non annunciato dalla discovery e `unsupported` (R1).
+///
+/// R1, R2 e R3 sono proposte della matrice in attesa di ratifica in
+/// `plenora-contracts`: RT-004 ammette entrambe le categorie senza criterio.
 fn admit(invocation: &RuntimeInvocation) -> Result<Admitted> {
-    let request = &invocation.metadata;
-    if !canonical_uuid(&request.message_id)
-        || !canonical_uuid(&request.correlation_id)
-        || request
-            .causation_id
-            .as_deref()
-            .is_some_and(|value| !canonical_uuid(value))
-    {
-        return Err(route_error(
-            ErrorCategory::Protocol,
-            "le identita runtime devono essere UUID canonici minuscoli con trattini",
-        ));
+    let (message_id, correlation_id, causation) = admit_identities(invocation)?;
+    match invocation.get(CAPABILITY_NAME_KEY) {
+        Some(CAPABILITY_NAME) => {}
+        Some(name) if well_formed_capability_name(name) => {
+            return Err(unsupported(
+                "capability runtime non servita da questo componente",
+            ));
+        }
+        _ => return Err(protocol("plenora.capability.name assente o malformato")),
     }
-    if request.capability_name != CAPABILITY_NAME
-        || parse_version(&request.capability_version)? != RUNTIME_BINDING_VERSION
-    {
-        return Err(route_error(
-            ErrorCategory::Protocol,
-            "identita della capability runtime non supportata",
-        ));
+    match invocation.get(CAPABILITY_VERSION) {
+        Some(version) if canonical_version(version) => {
+            if version != RUNTIME_BINDING_VERSION.to_string() {
+                return Err(unsupported("versione del binding runtime non supportata"));
+            }
+        }
+        _ => {
+            return Err(protocol(
+                "plenora.capability.version assente o non canonica",
+            ))
+        }
     }
+    let requested = invocation
+        .get(OPERATION)
+        .filter(|value| well_formed_operation(value))
+        .ok_or_else(|| protocol("plenora.capability.operation assente o malformato"))?;
     let operation = runtime_capabilities()
         .operations
         .into_iter()
-        .find(|operation| operation.id == request.operation)
-        .ok_or_else(|| {
-            route_error(
-                ErrorCategory::Unsupported,
-                "operazione runtime non supportata",
-            )
-        })?;
-    if parse_version(&request.operation_version)? != operation.version {
-        return Err(route_error(
-            ErrorCategory::Unsupported,
-            "versione dell'operazione runtime non supportata",
+        .find(|operation| operation.id == requested)
+        .ok_or_else(|| unsupported("operazione runtime non annunciata"))?;
+    let version = invocation
+        .get(OPERATION_VERSION)
+        .filter(|value| canonical_version(value))
+        .ok_or_else(|| protocol("plenora.operation.version assente o non canonica"))?;
+    if version != operation.version.to_string() {
+        return Err(unsupported(
+            "versione dell'operazione runtime non annunciata",
         ));
     }
-    if request.input_contract != operation.input.contract {
-        return Err(route_error(
-            ErrorCategory::Protocol,
-            "contratto d'ingresso diverso da quello dell'operazione",
-        ));
+    match invocation.get(INPUT_CONTRACT) {
+        Some(contract) if contract == operation.input.contract => {}
+        Some(contract) if well_formed_contract(contract) => {
+            return Err(unsupported(
+                "contratto d'ingresso diverso da quello dell'operazione",
+            ));
+        }
+        _ => return Err(protocol("plenora.input.contract assente o malformato")),
     }
     // L'envelope porta il documento JSON della richiesta; per
     // `database.write` i dati Arrow, che il catalogo dichiara fra i content
     // type d'ingresso, arrivano dal resolver come sulla CLI da `--data`.
-    if invocation.content_type != JSON_CONTENT_TYPE
-        || !operation
-            .input
-            .content_types
-            .iter()
-            .any(|content_type| content_type == JSON_CONTENT_TYPE)
-    {
-        return Err(route_error(
-            ErrorCategory::Protocol,
-            "content type del payload non ammesso per l'operazione",
-        ));
+    if invocation.content_type != JSON_CONTENT_TYPE {
+        return Err(if well_formed_media_type(&invocation.content_type) {
+            unsupported("content type non accettato dal binding per l'operazione")
+        } else {
+            protocol("content type malformato")
+        });
     }
-    if request.idempotency_key.is_some() && !operation.controls.idempotency_key {
-        return Err(route_error(
-            ErrorCategory::Unsupported,
-            "l'operazione non accetta chiavi di idempotenza",
-        ));
+    if let Some(key) = invocation.get(IDEMPOTENCY_KEY) {
+        if key.is_empty() || key.len() > MAX_IDEMPOTENCY_KEY_BYTES {
+            return Err(protocol("chiave di idempotenza vuota o oltre il limite"));
+        }
+        if !operation.controls.idempotency_key {
+            return Err(unsupported(
+                "l'operazione non accetta chiavi di idempotenza",
+            ));
+        }
     }
-    let deadline = match request.deadline.as_deref() {
+    let deadline = match invocation.get(DEADLINE) {
         None => None,
         Some(_) if !operation.controls.deadline => {
-            return Err(route_error(
-                ErrorCategory::Unsupported,
-                "l'operazione non accetta una deadline",
-            ))
+            return Err(unsupported("l'operazione non accetta una deadline"));
         }
         Some(text) => Some(deadline_instant(text)?),
     };
     Ok(Admitted {
+        request: RuntimeRequest {
+            message_id: message_id.to_owned(),
+            causation_id: causation.map(str::to_owned),
+            correlation_id: correlation_id.to_owned(),
+            operation: operation.id.clone(),
+            operation_version: operation.version,
+        },
         operation,
         deadline,
     })
 }
 
-/// Una deadline RFC 3339 assoluta in UTC (`Z` o `+00:00`), convertita in un
-/// istante monotono. Gia scaduta: `timeout` prima dell'esecuzione.
+/// Chiavi `plenora.*` non riservate rifiutate, poi le identita (RT-012):
+/// `message.id` e correlazione obbligatorie, causazione facoltativa, tutte
+/// UUID canonici; una forma alternativa non e un alias.
+fn admit_identities(invocation: &RuntimeInvocation) -> Result<(&str, &str, Option<&str>)> {
+    if invocation
+        .metadata
+        .keys()
+        .any(|key| key.starts_with("plenora.") && !RESERVED_REQUEST_KEYS.contains(&key.as_str()))
+    {
+        return Err(protocol(
+            "metadato plenora.* non riservato dal binding runtime 1.0",
+        ));
+    }
+    let message_id = invocation
+        .get(MESSAGE_ID)
+        .filter(|value| canonical_uuid(value));
+    let correlation_id = invocation
+        .get(CORRELATION_ID)
+        .filter(|value| canonical_uuid(value));
+    let causation = invocation.get(CAUSATION_ID);
+    let (Some(message_id), Some(correlation_id)) = (message_id, correlation_id) else {
+        return Err(protocol(
+            "le identita runtime devono essere UUID canonici minuscoli con trattini",
+        ));
+    };
+    if causation.is_some_and(|value| !canonical_uuid(value)) {
+        return Err(protocol(
+            "le identita runtime devono essere UUID canonici minuscoli con trattini",
+        ));
+    }
+    Ok((message_id, correlation_id, causation))
+}
+
+/// Una deadline assoluta RFC 3339 in UTC, convertita in un istante monotono.
+///
+/// Grammatica (matrice runtime, caso 7, proposta P per cio che RB §4 non
+/// fissa): `AAAA-MM-GGThh:mm:ss[.f{1,9}]Z`, `T` e `Z` maiuscole, nessun
+/// offset (nemmeno `+00:00`), nessun secondo intercalare. Gia scaduta
+/// (`deadline <= now`): `timeout`, `validate`, `none`, `never`.
 fn deadline_instant(text: &str) -> Result<Instant> {
+    if !deadline_grammar(text) {
+        return Err(protocol(
+            "plenora.execution.deadline deve essere AAAA-MM-GGThh:mm:ss[.f]Z in UTC",
+        ));
+    }
     let parsed = chrono::DateTime::parse_from_rfc3339(text)
         .ok()
-        .filter(|value| value.offset().local_minus_utc() == 0)
-        .ok_or_else(|| {
-            route_error(
-                ErrorCategory::Protocol,
-                "plenora.execution.deadline deve essere un istante RFC 3339 in UTC",
-            )
-        })?;
+        .ok_or_else(|| protocol("plenora.execution.deadline non e una data di calendario"))?;
     // Secondi e nanosecondi separati: `timestamp_nanos_opt` sta in un `i64`
     // solo fino al 2262, e una deadline valida oltre quella data non e un
     // errore di protocollo.
     let seconds = u64::try_from(parsed.timestamp()).map_err(|_| deadline_expired())?;
     let deadline = SystemTime::UNIX_EPOCH
         .checked_add(Duration::new(seconds, parsed.timestamp_subsec_nanos()))
-        .ok_or_else(|| route_error(ErrorCategory::Protocol, "deadline fuori intervallo"))?;
+        .ok_or_else(|| protocol("deadline fuori intervallo"))?;
     let remaining = deadline
         .duration_since(SystemTime::now())
         .ok()
@@ -808,11 +887,43 @@ fn deadline_instant(text: &str) -> Result<Instant> {
         .ok_or_else(|| internal("orologio monotono fuori intervallo"))
 }
 
+/// `AAAA-MM-GGThh:mm:ss[.f{1,9}]Z`, secondi al piu 59.
+fn deadline_grammar(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let digits = |range: std::ops::Range<usize>| {
+        bytes
+            .get(range)
+            .is_some_and(|part| part.iter().all(u8::is_ascii_digit))
+    };
+    let fixed = bytes.len() >= 20
+        && digits(0..4)
+        && bytes.get(4) == Some(&b'-')
+        && digits(5..7)
+        && bytes.get(7) == Some(&b'-')
+        && digits(8..10)
+        && bytes.get(10) == Some(&b'T')
+        && digits(11..13)
+        && bytes.get(13) == Some(&b':')
+        && digits(14..16)
+        && bytes.get(16) == Some(&b':')
+        && digits(17..19)
+        && bytes.get(17).is_some_and(|tens| *tens <= b'5')
+        && bytes.last() == Some(&b'Z');
+    if !fixed {
+        return false;
+    }
+    match bytes.get(19..bytes.len() - 1) {
+        Some([]) => true,
+        Some([b'.', fraction @ ..]) => {
+            (1..=9).contains(&fraction.len()) && fraction.iter().all(u8::is_ascii_digit)
+        }
+        _ => false,
+    }
+}
+
 fn deadline_expired() -> DatabaseError {
-    DatabaseError::new(
+    route_error(
         ErrorCategory::Timeout,
-        ErrorPhase::Validate,
-        None,
         "deadline gia trascorsa prima dell'esecuzione",
     )
 }
@@ -859,15 +970,18 @@ fn ensure_artifact_reference(reference: &str) -> Result<()> {
     if opaque {
         Ok(())
     } else {
-        Err(DatabaseError::invalid_plan(
+        Err(public_ops::invalid_request(
             "sul runtime operation_path e parameters_path sono riferimenti opachi ad artefatti, non percorsi locali",
         ))
     }
 }
 
 fn decode<T: DeserializeOwned>(payload: &Value) -> Result<T> {
+    // Il payload che non soddisfa l'input contract (SURF-007):
+    // `invalid_configuration`, come la richiesta della CLI (matrice runtime,
+    // caso 4, proposta P).
     T::deserialize(payload).map_err(|_| {
-        DatabaseError::invalid_plan("payload diverso dal contratto d'ingresso dell'operazione")
+        public_ops::invalid_request("payload diverso dal contratto d'ingresso dell'operazione")
     })
 }
 
@@ -877,11 +991,12 @@ async fn write_arrow_stream(
     sink: &mut Box<dyn ArrowSink>,
     stream: &mut dyn BatchStream,
     cancellation: &CancellationToken,
+    written: &mut u64,
 ) -> Result<DeliveredArtifact> {
     let schema = stream.schema();
     let mut counted = CountingWriter {
         inner: sink,
-        bytes: 0,
+        bytes: written,
         digest: Sha256::new(),
     };
     {
@@ -900,9 +1015,10 @@ async fn write_arrow_stream(
     counted
         .flush()
         .map_err(|_| artifact_error(ErrorPhase::Finalize, "sink Arrow non svuotabile"))?;
+    let byte_count = *counted.bytes;
     let checksum = hex(&counted.digest.finalize());
     Ok(DeliveredArtifact {
-        byte_count: counted.bytes,
+        byte_count,
         checksum_algorithm: "sha256",
         checksum,
     })
@@ -910,7 +1026,7 @@ async fn write_arrow_stream(
 
 struct CountingWriter<'a> {
     inner: &'a mut Box<dyn ArrowSink>,
-    bytes: u64,
+    bytes: &'a mut u64,
     digest: Sha256,
 }
 
@@ -919,7 +1035,7 @@ impl Write for CountingWriter<'_> {
         let written = self.inner.write(buffer)?;
         let accepted = buffer.get(..written).unwrap_or(buffer);
         self.digest.update(accepted);
-        self.bytes = self
+        *self.bytes = self
             .bytes
             .checked_add(u64::try_from(written).unwrap_or(u64::MAX))
             .ok_or_else(|| std::io::Error::other("conteggio byte oltre u64"))?;
@@ -933,6 +1049,22 @@ impl Write for CountingWriter<'_> {
 
 fn artifact_error(phase: ErrorPhase, message: &'static str) -> DatabaseError {
     DatabaseError::new(ErrorCategory::Io, phase, None, message)
+}
+
+/// Un errore della lettura o della scrittura dopo che il sink dell'host ha
+/// ricevuto byte: il sink puo essere visibile all'esterno, e `abort` non
+/// prova che i byte siano spariti. L'effetto e `partial` e il retry
+/// automatico e escluso (matrice runtime, caso 9, sul modello di
+/// `storage-get-partial-error`). Senza byte scritti l'errore resta com'e.
+fn after_sink_bytes(error: DatabaseError, written: u64) -> DatabaseError {
+    if written == 0 || error.remote_effect != RemoteEffect::None {
+        return error;
+    }
+    DatabaseError {
+        remote_effect: RemoteEffect::Partial,
+        retry: RetryDisposition::Never,
+        ..error
+    }
 }
 
 /// L'errore di un resolver dell'applicazione: restano gli assi, il testo si
@@ -959,6 +1091,44 @@ fn route_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseE
     }
 }
 
+fn protocol(message: &'static str) -> DatabaseError {
+    route_error(ErrorCategory::Protocol, message)
+}
+
+fn unsupported(message: &'static str) -> DatabaseError {
+    route_error(ErrorCategory::Unsupported, message)
+}
+
+fn error_result(identity: RuntimeResultMetadata, error: &DatabaseError) -> RuntimeResult {
+    RuntimeResult {
+        content_type: ERROR_CONTENT_TYPE.to_owned(),
+        metadata: RuntimeResultMetadata {
+            output_contract: ERROR_CONTRACT.to_owned(),
+            ..identity
+        },
+        body: RuntimeBody::Json(error_document(error)),
+    }
+}
+
+/// L'identita del risultato secondo R2: dei valori della richiesta si
+/// copiano, byte per byte, solo quelli canonici.
+fn result_identity(invocation: &RuntimeInvocation) -> RuntimeResultMetadata {
+    let canonical = |key: &str, test: fn(&str) -> bool| {
+        invocation
+            .get(key)
+            .filter(|value| test(value))
+            .map(str::to_owned)
+    };
+    RuntimeResultMetadata {
+        message_id: derived_uuid(&serde_json::to_vec(invocation).unwrap_or_default()),
+        causation_id: canonical(MESSAGE_ID, canonical_uuid),
+        operation: canonical(OPERATION, well_formed_operation),
+        operation_version: canonical(OPERATION_VERSION, canonical_version),
+        output_contract: ERROR_CONTRACT.to_owned(),
+        correlation_id: canonical(CORRELATION_ID, canonical_uuid),
+    }
+}
+
 fn internal(message: &'static str) -> DatabaseError {
     DatabaseError::new(ErrorCategory::Internal, ErrorPhase::Validate, None, message)
 }
@@ -977,16 +1147,75 @@ fn error_document(error: &DatabaseError) -> Value {
     })
 }
 
-/// Solo la forma canonica decimale (`^[1-9][0-9]*$` dello schema dei
-/// vettori): `u32::from_str` accetterebbe anche `+1` e `01`.
-fn parse_version(value: &str) -> Result<u32> {
-    let canonical = !value.is_empty()
-        && value.bytes().all(|byte| byte.is_ascii_digit())
-        && !value.starts_with('0');
-    canonical
-        .then(|| value.parse().ok())
-        .flatten()
-        .ok_or_else(|| route_error(ErrorCategory::Protocol, "versione runtime non canonica"))
+/// `^[1-9][0-9]*$` dello schema dei vettori: `u32::from_str` accetterebbe
+/// anche `+1` e `01`, che non sono alias.
+fn canonical_version(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) && !value.starts_with('0')
+}
+
+/// `^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$` dello schema dei vettori.
+fn well_formed_operation(value: &str) -> bool {
+    let mut segments = value.split('.');
+    let first = segments.next().is_some_and(identifier_segment);
+    let mut rest = 0_usize;
+    first
+        && segments.all(|segment| {
+            rest += 1;
+            identifier_segment(segment)
+        })
+        && rest > 0
+}
+
+fn identifier_segment(segment: &str) -> bool {
+    let mut characters = segment.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_lowercase())
+        && characters.all(|next| {
+            next.is_ascii_lowercase() || next.is_ascii_digit() || matches!(next, '_' | '-')
+        })
+}
+
+/// `^plenora\.[a-z][a-z0-9-]*-tools$` dello schema dei vettori.
+fn well_formed_capability_name(value: &str) -> bool {
+    value
+        .strip_prefix("plenora.")
+        .and_then(|rest| rest.strip_suffix("-tools"))
+        .is_some_and(|middle| {
+            let mut characters = middle.chars();
+            characters
+                .next()
+                .is_some_and(|first| first.is_ascii_lowercase())
+                && characters
+                    .all(|next| next.is_ascii_lowercase() || next.is_ascii_digit() || next == '-')
+        })
+}
+
+/// `^plenora-[a-z0-9-]+-v[1-9][0-9]*$` dello schema dei vettori.
+fn well_formed_contract(value: &str) -> bool {
+    value
+        .strip_prefix("plenora-")
+        .and_then(|rest| rest.rsplit_once("-v"))
+        .is_some_and(|(name, version)| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|next| next.is_ascii_lowercase() || next.is_ascii_digit() || next == '-')
+                && canonical_version(version)
+        })
+}
+
+/// Un media type senza parametri, nella forma di `capabilities-v2`.
+fn well_formed_media_type(value: &str) -> bool {
+    let token = |part: &str| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|next| next.is_ascii_alphanumeric() || "!#$&^_.+-".contains(next))
+    };
+    value
+        .split_once('/')
+        .is_some_and(|(kind, subtype)| token(kind) && token(subtype))
 }
 
 fn canonical_uuid(value: &str) -> bool {
@@ -1000,26 +1229,13 @@ fn canonical_uuid(value: &str) -> bool {
         })
 }
 
-/// Un'identita della richiesta che non e un UUID canonico non si riflette:
-/// il risultato porta l'UUID nil.
-fn public_uuid(value: &str) -> String {
-    if canonical_uuid(value) {
-        value.to_owned()
-    } else {
-        NIL_UUID.to_owned()
-    }
-}
-
 /// L'identita del messaggio di risultato: un UUID versione 8 (RFC 9562)
-/// derivato da SHA-256 dell'identita della richiesta. Stessa richiesta, stesso
-/// risultato; richieste diverse, identita diverse.
-fn result_message_id(request_message_id: &str) -> String {
-    if !canonical_uuid(request_message_id) {
-        return NIL_UUID.to_owned();
-    }
+/// derivato da SHA-256 dei byte dell'invocazione. Sempre diversa da quella
+/// della richiesta; stessa invocazione, stesso risultato (determinismo).
+fn derived_uuid(source: &[u8]) -> String {
     let digest = Sha256::new()
         .chain_update(b"plenora.database-tools/runtime-result\0")
-        .chain_update(request_message_id.as_bytes())
+        .chain_update(source)
         .finalize();
     let mut bytes = [0_u8; 16];
     for (target, source) in bytes.iter_mut().zip(digest.iter()) {

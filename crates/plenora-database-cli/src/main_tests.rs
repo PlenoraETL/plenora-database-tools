@@ -942,6 +942,9 @@ fn canonical_target_applies_the_secret_environment_pattern() {
     }))
     .expect("forma della richiesta");
     let error = canonical_operation_arguments(target, Vec::new()).expect_err("DSN accettata");
-    assert_eq!(error.database_error().category, ErrorCategory::InvalidPlan);
+    assert_eq!(
+        error.database_error().category,
+        ErrorCategory::InvalidConfiguration
+    );
     assert!(!error.database_error().message.contains("secret@host"));
 }

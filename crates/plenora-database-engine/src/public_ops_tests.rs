@@ -23,7 +23,7 @@ fn target_applies_the_schema_pattern_and_limits() {
         &"A".repeat(129),
     ] {
         let error = target(secret, Vec::new()).validate().unwrap_err();
-        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.category, ErrorCategory::InvalidConfiguration);
         // Il valore ricevuto puo essere una DSN: il messaggio nomina il campo.
         assert!(!error.message.contains("user:pw"));
     }
@@ -37,7 +37,7 @@ fn target_applies_the_schema_pattern_and_limits() {
     };
     assert_eq!(
         unknown.validate().unwrap_err().category,
-        ErrorCategory::InvalidPlan
+        ErrorCategory::InvalidConfiguration
     );
 }
 
@@ -87,7 +87,7 @@ fn empty_schema_or_object_is_not_a_wildcard() {
     };
     assert_eq!(
         request.operation().unwrap_err().category,
-        ErrorCategory::InvalidPlan
+        ErrorCategory::InvalidConfiguration
     );
 }
 

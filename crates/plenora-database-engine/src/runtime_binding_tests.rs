@@ -4,28 +4,70 @@ const REQUEST: &str = "018f3d84-7b2c-7f00-8000-000000000101";
 
 #[test]
 fn the_result_identity_is_a_new_deterministic_uuid() {
-    let first = result_message_id(REQUEST);
-    assert_eq!(first, result_message_id(REQUEST));
+    let first = derived_uuid(REQUEST.as_bytes());
+    assert_eq!(first, derived_uuid(REQUEST.as_bytes()));
     assert_ne!(first, REQUEST);
-    assert_ne!(
-        first,
-        result_message_id("018f3d84-7b2c-7f00-8000-000000000102")
-    );
+    assert_ne!(first, derived_uuid(b"other"));
     assert!(canonical_uuid(&first));
     // Versione 8 e variante RFC 9562.
     assert_eq!(&first[14..15], "8");
     assert!(matches!(&first[19..20], "8" | "9" | "a" | "b"));
-    assert_eq!(result_message_id("not-a-uuid"), NIL_UUID);
+    // Anche da byte che non sono un'identita valida.
+    assert!(canonical_uuid(&derived_uuid(b"not json")));
 }
 
 #[test]
-fn only_canonical_decimal_versions_are_accepted() {
-    assert_eq!(parse_version("1").unwrap(), 1);
-    assert_eq!(parse_version("12").unwrap(), 12);
-    for invalid in ["", "0", "01", "+1", "-1", "1.0", " 1", "99999999999"] {
-        let error = parse_version(invalid).unwrap_err();
-        assert_eq!(error.category, ErrorCategory::Protocol, "{invalid}");
-        assert_eq!(error.remote_effect, RemoteEffect::None);
+fn only_canonical_decimal_versions_are_canonical() {
+    for valid in ["1", "12", "99999999999"] {
+        assert!(canonical_version(valid), "{valid}");
+    }
+    for invalid in ["", "0", "01", "+1", "-1", "1.0", " 1", "uno"] {
+        assert!(!canonical_version(invalid), "{invalid}");
+    }
+}
+
+#[test]
+fn routing_values_follow_the_vector_schema_patterns() {
+    assert!(well_formed_operation("database.read"));
+    assert!(well_formed_operation("database.transaction.begin"));
+    for invalid in [
+        "database",
+        "Database.read",
+        "database.",
+        ".read",
+        "database..read",
+        "database.Read",
+    ] {
+        assert!(!well_formed_operation(invalid), "{invalid}");
+    }
+    assert!(well_formed_capability_name("plenora.storage-tools"));
+    for invalid in [
+        "plenora.database",
+        "Plenora.database-tools",
+        "plenora.-tools",
+        "plenora.Db-tools",
+    ] {
+        assert!(!well_formed_capability_name(invalid), "{invalid}");
+    }
+    assert!(well_formed_contract("plenora-database-read-input-v1"));
+    for invalid in [
+        "plenora-database-read-input",
+        "plenora--v1",
+        "plenora-x-v01",
+        "database-read-input-v1",
+    ] {
+        assert!(!well_formed_contract(invalid), "{invalid}");
+    }
+    assert!(well_formed_media_type(
+        "application/vnd.apache.arrow.stream"
+    ));
+    for invalid in [
+        "application",
+        "application/json; charset=utf-8",
+        "/json",
+        "text/",
+    ] {
+        assert!(!well_formed_media_type(invalid), "{invalid}");
     }
 }
 
@@ -35,7 +77,6 @@ fn uppercase_or_unhyphenated_uuids_are_not_aliases() {
     assert!(!canonical_uuid(&REQUEST.to_uppercase()));
     assert!(!canonical_uuid(&REQUEST.replace('-', "")));
     assert!(!canonical_uuid(&format!("{{{REQUEST}}}")));
-    assert_eq!(public_uuid("x"), NIL_UUID);
 }
 
 #[test]
@@ -64,48 +105,80 @@ fn artifact_references_are_opaque_uris() {
 }
 
 #[test]
-fn deadlines_are_absolute_utc_instants() {
-    assert!(deadline_instant("2999-01-01T00:00:00Z").is_ok());
-    assert!(deadline_instant("2999-01-01T00:00:00+00:00").is_ok());
+fn deadlines_follow_one_utc_grammar() {
+    for valid in [
+        "2999-01-01T00:00:00Z",
+        "2999-01-01T00:00:00.5Z",
+        "2999-01-01T00:00:00.123456789Z",
+    ] {
+        assert!(deadline_instant(valid).is_ok(), "{valid}");
+    }
     for invalid in [
+        "2999-01-01T00:00:00+00:00",
+        "2999-01-01T00:00:00-00:00",
         "2999-01-01T01:00:00+01:00",
+        "2999-01-01t00:00:00Z",
+        "2999-01-01T00:00:00z",
+        "2999-01-01 00:00:00Z",
+        "2999-01-01T00:00:00.Z",
+        "2999-01-01T00:00:00.1234567890Z",
+        "2999-12-31T23:59:60Z",
+        "2999-02-30T00:00:00Z",
         "2999-01-01",
         "tomorrow",
         "2999-01-01T00:00:00",
     ] {
         let error = deadline_instant(invalid).unwrap_err();
         assert_eq!(error.category, ErrorCategory::Protocol, "{invalid}");
+        assert_eq!(error.retry, RetryDisposition::Never, "{invalid}");
     }
     let expired = deadline_instant("2000-01-01T00:00:00Z").unwrap_err();
     assert_eq!(expired.category, ErrorCategory::Timeout);
     assert_eq!(expired.phase, ErrorPhase::Validate);
     assert_eq!(expired.remote_effect, RemoteEffect::None);
+    assert_eq!(expired.retry, RetryDisposition::Never);
 }
 
 #[test]
-fn a_null_optional_metadata_value_is_not_an_absent_one() {
-    let metadata = serde_json::json!({
-        "plenora.message.id": REQUEST,
-        "plenora.capability.name": CAPABILITY_NAME,
-        "plenora.capability.version": "1",
-        "plenora.capability.operation": "database.read",
-        "plenora.operation.version": "1",
-        "plenora.input.contract": "plenora-database-read-input-v1",
-        "plenora.trace.correlation_id": REQUEST,
+fn a_null_metadata_value_is_not_an_absent_one() {
+    let base = serde_json::json!({
+        "content_type": "application/json",
+        "metadata": {"plenora.message.id": REQUEST},
+        "payload": {},
     });
-    assert!(serde_json::from_value::<RuntimeRequestMetadata>(metadata.clone()).is_ok());
+    assert!(RuntimeInvocation::from_json(base.to_string().as_bytes()).is_ok());
     for key in [
         "plenora.execution.deadline",
         "plenora.execution.idempotency_key",
         "plenora.message.causation_id",
     ] {
-        let mut with_null = metadata.clone();
-        with_null[key] = Value::Null;
-        assert!(
-            serde_json::from_value::<RuntimeRequestMetadata>(with_null).is_err(),
-            "{key}: null letto come assente"
-        );
+        let mut with_null = base.clone();
+        with_null["metadata"][key] = Value::Null;
+        let error = RuntimeInvocation::from_json(with_null.to_string().as_bytes())
+            .expect_err("null letto come assente");
+        assert_eq!(error.category, ErrorCategory::Protocol, "{key}");
     }
+}
+
+#[test]
+fn bytes_on_the_sink_make_a_later_error_partial() {
+    let error = artifact_error(ErrorPhase::Write, "x");
+    assert_eq!(
+        after_sink_bytes(error.clone(), 0).remote_effect,
+        RemoteEffect::None
+    );
+    let partial = after_sink_bytes(error, 10);
+    assert_eq!(partial.remote_effect, RemoteEffect::Partial);
+    assert_eq!(partial.retry, RetryDisposition::Never);
+    let unknown = DatabaseError {
+        remote_effect: RemoteEffect::Unknown,
+        retry: RetryDisposition::RequiresRecovery,
+        ..artifact_error(ErrorPhase::Read, "y")
+    };
+    assert_eq!(
+        after_sink_bytes(unknown, 10).remote_effect,
+        RemoteEffect::Unknown
+    );
 }
 
 #[test]

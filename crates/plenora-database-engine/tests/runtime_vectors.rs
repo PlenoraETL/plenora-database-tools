@@ -31,7 +31,7 @@ use plenora_database_core::{
 };
 use plenora_database_engine::runtime_binding::{
     entrypoint, runtime_capabilities, ArrowSink, ArtifactResolver, ConnectionResolver,
-    RuntimeBinding, RuntimeBody, RuntimeConnection, RuntimeInvocation, RuntimeRequestMetadata,
+    RuntimeBinding, RuntimeBody, RuntimeConnection, RuntimeInvocation, RuntimeRequest,
     RuntimeResult, RuntimeTarget, ARROW_STREAM_CONTENT_TYPE, CAPABILITY_NAME, DISCOVERY_ENTRYPOINT,
     ERROR_CONTENT_TYPE, ERROR_CONTRACT, JSON_CONTENT_TYPE,
 };
@@ -327,7 +327,18 @@ struct Host {
     calls: Arc<Calls>,
     documents: BTreeMap<String, Vec<u8>>,
     sink: Arc<Mutex<Vec<u8>>>,
+    sink_failure: SinkFailure,
     write: WriteScript,
+}
+
+/// Come il sink dell'host fallisce, per la riga 9 della matrice runtime.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SinkFailure {
+    None,
+    /// Accetta i primi byte, poi la scrittura fallisce.
+    WriteAfterBytes,
+    /// Riceve tutto, poi la pubblicazione fallisce.
+    Finish,
 }
 
 impl Host {
@@ -367,6 +378,7 @@ impl Host {
             })
             .collect(),
             sink: Arc::new(Mutex::new(Vec::new())),
+            sink_failure: SinkFailure::None,
             write,
         }
     }
@@ -389,11 +401,20 @@ impl ConnectionResolver for Host {
     }
 }
 
-struct MemorySink(Arc<Mutex<Vec<u8>>>);
+struct MemorySink {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    failure: SinkFailure,
+}
 
 impl Write for MemorySink {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().expect("lock").extend_from_slice(buffer);
+        {
+            let mut bytes = self.bytes.lock().expect("lock");
+            if self.failure == SinkFailure::WriteAfterBytes && !bytes.is_empty() {
+                return Err(std::io::Error::other("sink pieno"));
+            }
+            bytes.extend_from_slice(buffer);
+        }
         Ok(buffer.len())
     }
 
@@ -404,11 +425,19 @@ impl Write for MemorySink {
 
 impl ArrowSink for MemorySink {
     fn finish(self: Box<Self>) -> Result<()> {
+        if self.failure == SinkFailure::Finish {
+            return Err(DatabaseError::new(
+                ErrorCategory::Io,
+                ErrorPhase::Commit,
+                None,
+                "rename di /srv/private/output fallito",
+            ));
+        }
         Ok(())
     }
 
     fn abort(self: Box<Self>) {
-        self.0.lock().expect("lock").clear();
+        self.bytes.lock().expect("lock").clear();
     }
 }
 
@@ -429,7 +458,7 @@ impl ArtifactResolver for Host {
 
     fn open_write_input<'a>(
         &'a self,
-        _: &'a RuntimeRequestMetadata,
+        _: &'a RuntimeRequest,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         self.calls.record("host.open_write_input");
         Box::pin(async {
@@ -442,12 +471,15 @@ impl ArtifactResolver for Host {
 
     fn open_read_sink<'a>(
         &'a self,
-        _: &'a RuntimeRequestMetadata,
+        _: &'a RuntimeRequest,
     ) -> ProviderFuture<'a, Box<dyn ArrowSink>> {
         self.calls.record("host.open_read_sink");
-        Box::pin(
-            async move { Ok(Box::new(MemorySink(Arc::clone(&self.sink))) as Box<dyn ArrowSink>) },
-        )
+        Box::pin(async move {
+            Ok(Box::new(MemorySink {
+                bytes: Arc::clone(&self.sink),
+                failure: self.sink_failure,
+            }) as Box<dyn ArrowSink>)
+        })
     }
 }
 
@@ -521,6 +553,20 @@ fn as_vector(result: &RuntimeResult, payload: &Value) -> Value {
         "metadata": result.metadata,
         "payload": payload,
     })
+}
+
+/// Operazione, versione, output contract e correlazione del risultato sono
+/// quelli del vettore (RB §6, RT-012).
+fn assert_result_metadata(vector: &Value, result: &RuntimeResult) {
+    let metadata = serde_json::to_value(&result.metadata).expect("json");
+    for key in [
+        "plenora.capability.operation",
+        "plenora.operation.version",
+        "plenora.output.contract",
+        "plenora.trace.correlation_id",
+    ] {
+        assert_eq!(vector["metadata"][key], metadata[key], "{key}");
+    }
 }
 
 fn evidence(name: &str, document: &Value) {
@@ -618,13 +664,19 @@ fn database_read_request_vector_is_admitted_routed_and_executed() {
     );
     assert!(illustrative.is_error());
     let error = json_body(&illustrative);
-    assert_eq!(error["category"], "invalid_plan");
+    // Il payload che non soddisfa l'input contract: `invalid_configuration`
+    // (matrice runtime, caso 4, proposta P).
+    assert_eq!(error["category"], "invalid_configuration");
     assert_eq!(error["phase"], "validate");
     assert_eq!(error["remote_effect"], "none");
-    assert_eq!(illustrative.metadata.operation, "database.read");
+    assert_eq!(error["retry"]["kind"], "never");
     assert_eq!(
-        illustrative.metadata.correlation_id,
-        vector["metadata"]["plenora.trace.correlation_id"]
+        illustrative.metadata.operation.as_deref(),
+        Some("database.read")
+    );
+    assert_eq!(
+        illustrative.metadata.correlation_id.as_deref(),
+        vector["metadata"]["plenora.trace.correlation_id"].as_str()
     );
     assert!(
         host.calls.take().is_empty(),
@@ -638,15 +690,15 @@ fn database_read_request_vector_is_admitted_routed_and_executed() {
     );
     assert!(!result.is_error(), "{:?}", result.body);
     assert_eq!(result.content_type, ARROW_STREAM_CONTENT_TYPE);
-    assert_eq!(result.metadata.operation, "database.read");
-    assert_eq!(result.metadata.operation_version, "1");
+    assert_eq!(result.metadata.operation.as_deref(), Some("database.read"));
+    assert_eq!(result.metadata.operation_version.as_deref(), Some("1"));
     assert_eq!(
         result.metadata.output_contract,
         "plenora-database-read-result-v1"
     );
     assert_eq!(
-        result.metadata.correlation_id,
-        vector["metadata"]["plenora.trace.correlation_id"]
+        result.metadata.correlation_id.as_deref(),
+        vector["metadata"]["plenora.trace.correlation_id"].as_str()
     );
     assert_eq!(
         result.metadata.causation_id.as_deref(),
@@ -688,87 +740,335 @@ fn database_read_request_vector_is_admitted_routed_and_executed() {
     );
 }
 
+fn read_metadata() -> Value {
+    upstream("runtime-v1/database-read-request.json")["metadata"].clone()
+}
+
+fn read_payload() -> Value {
+    with(target_payload(), &json!({"operation_path": READ_REFERENCE}))
+}
+
+/// Un rifiuto prima dell'invocazione secondo la matrice runtime comune:
+/// `phase: validate`, `remote_effect: none`, `retry: never` (R3, R4),
+/// nessun resolver chiamato, un `message.id` nuovo.
+fn assert_rejected(host: &Host, result: &RuntimeResult, category: &str, case: &str) {
+    assert!(result.is_error(), "{case}");
+    assert_eq!(result.content_type, ERROR_CONTENT_TYPE, "{case}");
+    assert_eq!(result.metadata.output_contract, ERROR_CONTRACT, "{case}");
+    let error = json_body(result);
+    assert_eq!(error["category"], category, "{case}: {error}");
+    assert_eq!(error["phase"], "validate", "{case}");
+    assert_eq!(error["remote_effect"], "none", "{case}");
+    assert_eq!(error["retry"]["kind"], "never", "{case}");
+    assert!(host.calls.take().is_empty(), "{case}: invocato");
+    let request_id = read_metadata()["plenora.message.id"].clone();
+    assert_ne!(json!(result.metadata.message_id), request_id, "{case}");
+}
+
 /// Le mutazioni negative richieste da RUNTIME-VECTORS-1.0 per ogni vettore di
-/// richiesta: capability, operazione, versione e input contract mancanti o
-/// invalidi si rifiutano prima di qualunque resolver, senza effetto remoto.
+/// richiesta, con le categorie della matrice runtime (R1, proposta P):
+/// ben formato ma non annunciato `unsupported`; assente, malformato o non
+/// canonico `protocol`.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "la tabella dei casi della matrice runtime resta leggibile in un posto solo"
+)]
 fn routing_mutations_of_the_read_request_fail_closed_before_invocation() {
-    let vector = upstream("runtime-v1/database-read-request.json");
-    let payload = with(target_payload(), &json!({"operation_path": READ_REFERENCE}));
-    let keys = [
-        ("plenora.capability.name", json!("plenora.storage-tools")),
-        ("plenora.capability.version", json!("2")),
-        ("plenora.capability.version", json!("01")),
-        ("plenora.capability.operation", json!("database.execute")),
-        ("plenora.capability.operation", json!("database.unknown")),
-        ("plenora.operation.version", json!("2")),
-        ("plenora.operation.version", json!("+1")),
+    let host = Host::new(WriteScript::Committed);
+    let cases = [
+        // Caso 1: binding.
+        (
+            "plenora.capability.name",
+            json!("plenora.storage-tools"),
+            "unsupported",
+        ),
+        (
+            "plenora.capability.name",
+            json!("plenora.database"),
+            "protocol",
+        ),
+        ("plenora.capability.version", json!("2"), "unsupported"),
+        ("plenora.capability.version", json!("01"), "protocol"),
+        // Caso 2: operazione o versione ben formate, non annunciate.
+        (
+            "plenora.capability.operation",
+            json!("database.execute"),
+            "unsupported",
+        ),
+        (
+            "plenora.capability.operation",
+            json!("database.unknown"),
+            "unsupported",
+        ),
+        (
+            "plenora.capability.operation",
+            json!("Database.Read"),
+            "protocol",
+        ),
+        ("plenora.operation.version", json!("2"), "unsupported"),
+        (
+            "plenora.operation.version",
+            json!("99999999999"),
+            "unsupported",
+        ),
+        // Caso 3: versione non canonica.
+        ("plenora.operation.version", json!("+1"), "protocol"),
+        ("plenora.operation.version", json!("01"), "protocol"),
+        ("plenora.operation.version", json!("uno"), "protocol"),
+        ("plenora.operation.version", json!(" 1"), "protocol"),
+        // Caso 4: input contract.
         (
             "plenora.input.contract",
             json!("plenora-database-query-input-v1"),
+            "unsupported",
         ),
-        ("plenora.execution.deadline", json!("2001-01-01T00:00:00Z")),
         (
-            "plenora.execution.deadline",
-            json!("2030-01-01T01:00:00+01:00"),
+            "plenora.input.contract",
+            json!("database-read-input"),
+            "protocol",
         ),
-        ("plenora.execution.idempotency_key", json!("key-1")),
+        // Caso 5: identita non canoniche e chiavi non riservate.
         (
             "plenora.message.id",
             json!("018F3D84-7B2C-7F00-8000-000000000101"),
+            "protocol",
         ),
-        ("plenora.trace.correlation_id", json!("not-a-uuid")),
+        (
+            "plenora.trace.correlation_id",
+            json!("not-a-uuid"),
+            "protocol",
+        ),
+        (
+            "plenora.message.causation_id",
+            json!("{018f3d84-7b2c-7f00-8000-000000000101}"),
+            "protocol",
+        ),
+        (
+            "plenora.message.causationId",
+            json!("018f3d84-7b2c-7f00-8000-000000000109"),
+            "protocol",
+        ),
+        (
+            "plenora.correlation_id",
+            json!("018f3d84-7b2c-7f00-8000-000000000001"),
+            "protocol",
+        ),
+        // Caso 7: deadline.
+        (
+            "plenora.execution.deadline",
+            json!("2001-01-01T00:00:00Z"),
+            "timeout",
+        ),
+        (
+            "plenora.execution.deadline",
+            json!("2030-01-01T00:00:00+00:00"),
+            "protocol",
+        ),
+        (
+            "plenora.execution.deadline",
+            json!("2030-01-01T01:00:00+01:00"),
+            "protocol",
+        ),
+        (
+            "plenora.execution.deadline",
+            json!("2030-01-01t00:00:00z"),
+            "protocol",
+        ),
+        // Caso 8: chiave di idempotenza.
+        (
+            "plenora.execution.idempotency_key",
+            json!("key-1"),
+            "unsupported",
+        ),
+        ("plenora.execution.idempotency_key", json!(""), "protocol"),
+        ("plenora.idempotency_key", json!("key-1"), "protocol"),
     ];
-    let host = Host::new(WriteScript::Committed);
-    for (key, value) in keys {
-        let mut metadata = vector["metadata"].clone();
+    for (key, value, category) in cases {
+        let mut metadata = read_metadata();
         metadata[key] = value.clone();
         let result = invoke(
             &host,
-            &invocation(&vector["content_type"], &metadata, &payload),
+            &invocation(&json!(JSON_CONTENT_TYPE), &metadata, &read_payload()),
         );
-        let error = json_body(&result);
-        assert!(result.is_error(), "{key}={value}");
-        assert_eq!(result.metadata.output_contract, ERROR_CONTRACT);
-        assert!(
-            ["protocol", "unsupported", "timeout"]
-                .contains(&error["category"].as_str().unwrap_or("")),
-            "{key}={value}: {error}"
-        );
-        assert_eq!(error["remote_effect"], "none", "{key}={value}");
-        assert_eq!(error["phase"], "validate", "{key}={value}");
-        assert!(host.calls.take().is_empty(), "{key}={value}: invocato");
+        assert_rejected(&host, &result, category, &format!("{key}={value}"));
     }
     for key in [
+        "plenora.message.id",
+        "plenora.trace.correlation_id",
         "plenora.capability.name",
         "plenora.capability.version",
         "plenora.capability.operation",
         "plenora.operation.version",
         "plenora.input.contract",
     ] {
-        let mut metadata = vector["metadata"].clone();
+        let mut metadata = read_metadata();
         metadata.as_object_mut().expect("oggetto").remove(key);
-        let bytes = serde_json::to_vec(&json!({
-            "content_type": vector["content_type"], "metadata": metadata, "payload": payload,
-        }))
-        .expect("json");
-        // Un metadato di routing mancante non e una richiesta: il DTO lo
-        // rifiuta prima del binding, come errore di protocollo.
-        let error = RuntimeInvocation::from_json(&bytes).expect_err(key);
-        assert_eq!(error.category, ErrorCategory::Protocol);
-        assert_eq!(error.remote_effect, RemoteEffect::None);
+        let result = invoke(
+            &host,
+            &invocation(&json!(JSON_CONTENT_TYPE), &metadata, &read_payload()),
+        );
+        assert_rejected(&host, &result, "protocol", &format!("senza {key}"));
     }
-    for content_type in [
-        json!("application/vnd.apache.arrow.stream"),
-        json!("text/plain"),
+    for (content_type, category) in [
+        ("application/vnd.apache.arrow.stream", "unsupported"),
+        ("text/plain", "unsupported"),
+        ("application/json; charset=utf-8", "protocol"),
     ] {
         let result = invoke(
             &host,
-            &invocation(&content_type, &vector["metadata"], &payload),
+            &invocation(&json!(content_type), &read_metadata(), &read_payload()),
         );
-        assert_eq!(json_body(&result)["category"], "protocol");
-        assert!(host.calls.take().is_empty());
+        assert_rejected(&host, &result, category, content_type);
     }
+}
+
+/// R2: nel risultato di un rifiuto un valore di instradamento si copia solo
+/// se canonico, byte per byte; altrimenti la chiave si omette. Prima la
+/// versione non canonica diventava `"0"`, che lo schema dei vettori vieta.
+#[test]
+fn a_rejection_reflects_only_canonical_routing_values() {
+    let host = Host::new(WriteScript::Committed);
+    for version in ["+1", "01", "uno"] {
+        let mut metadata = read_metadata();
+        metadata["plenora.operation.version"] = json!(version);
+        let result = invoke(
+            &host,
+            &invocation(&json!(JSON_CONTENT_TYPE), &metadata, &read_payload()),
+        );
+        let reflected = serde_json::to_value(&result.metadata).expect("json");
+        assert!(
+            reflected.get("plenora.operation.version").is_none(),
+            "{version}: {reflected}"
+        );
+        assert_eq!(reflected["plenora.capability.operation"], "database.read");
+        host.calls.take();
+    }
+    // Ben formati ma sconosciuti: riflessi esattamente come ricevuti.
+    let mut metadata = read_metadata();
+    metadata["plenora.capability.operation"] = json!("database.unknown");
+    metadata["plenora.operation.version"] = json!("7");
+    let result = invoke(
+        &host,
+        &invocation(&json!(JSON_CONTENT_TYPE), &metadata, &read_payload()),
+    );
+    assert_eq!(
+        result.metadata.operation.as_deref(),
+        Some("database.unknown")
+    );
+    assert_eq!(result.metadata.operation_version.as_deref(), Some("7"));
+    // Operazione malformata e correlazione non canonica: omesse, mai
+    // normalizzate ne sostituite.
+    let mut metadata = read_metadata();
+    metadata["plenora.capability.operation"] = json!("Database.Read");
+    metadata["plenora.trace.correlation_id"] = json!("018F3D84-7B2C-7F00-8000-000000000001");
+    metadata["plenora.message.id"] = json!("not-a-uuid");
+    let result = invoke(
+        &host,
+        &invocation(&json!(JSON_CONTENT_TYPE), &metadata, &read_payload()),
+    );
+    let reflected = serde_json::to_value(&result.metadata).expect("json");
+    for key in [
+        "plenora.capability.operation",
+        "plenora.trace.correlation_id",
+        "plenora.message.causation_id",
+    ] {
+        assert!(reflected.get(key).is_none(), "{key}: {reflected}");
+    }
+    assert_ne!(reflected["plenora.message.id"], "not-a-uuid");
+    // La causation della richiesta non e la causa del risultato.
+    let mut metadata = read_metadata();
+    metadata["plenora.message.causation_id"] = json!("018f3d84-7b2c-7f00-8000-000000000999");
+    metadata["plenora.capability.version"] = json!("2");
+    let result = invoke(
+        &host,
+        &invocation(&json!(JSON_CONTENT_TYPE), &metadata, &read_payload()),
+    );
+    assert_eq!(
+        result.metadata.causation_id.as_deref(),
+        read_metadata()["plenora.message.id"].as_str()
+    );
+}
+
+/// Un messaggio che non si legge produce comunque un risultato d'errore,
+/// senza valori riflessi: metadati `null` o non stringa, JSON invalido.
+#[test]
+fn an_unreadable_message_still_gets_an_error_result() {
+    let host = Host::new(WriteScript::Committed);
+    let binding = RuntimeBinding::new(&host, &host);
+    for key in [
+        "plenora.execution.deadline",
+        "plenora.execution.idempotency_key",
+        "plenora.message.causation_id",
+        "plenora.operation.version",
+    ] {
+        let mut metadata = read_metadata();
+        metadata[key] = Value::Null;
+        let bytes = serde_json::to_vec(&json!({
+            "content_type": JSON_CONTENT_TYPE, "metadata": metadata, "payload": read_payload(),
+        }))
+        .expect("json");
+        let result = runtime().block_on(binding.invoke_json(&bytes, &CancellationToken::new()));
+        assert_rejected(&host, &result, "protocol", key);
+        let reflected = serde_json::to_value(&result.metadata).expect("json");
+        assert_eq!(
+            reflected.as_object().map(serde_json::Map::len),
+            Some(2),
+            "solo message.id e output.contract: {reflected}"
+        );
+    }
+    let result = runtime().block_on(binding.invoke_json(b"{not json", &CancellationToken::new()));
+    assert_rejected(&host, &result, "protocol", "JSON invalido");
+}
+
+/// Caso 7c: la deadline viaggia solo nei metadati. Nel payload e un campo
+/// che l'input contract non ha, quindi una richiesta non conforme.
+#[test]
+fn a_deadline_in_the_payload_is_a_nonconforming_request() {
+    let host = Host::new(WriteScript::Committed);
+    let payload = with(read_payload(), &json!({"deadline": "2030-01-01T00:00:00Z"}));
+    let result = invoke(
+        &host,
+        &invocation(&json!(JSON_CONTENT_TYPE), &read_metadata(), &payload),
+    );
+    assert_rejected(
+        &host,
+        &result,
+        "invalid_configuration",
+        "deadline nel payload",
+    );
+}
+
+/// Caso 9: errori dopo che il sink dell'host ha ricevuto byte. Con byte
+/// scritti l'effetto e `partial`, mai `none`; una pubblicazione fallita e
+/// `unknown` con `requires_recovery`, in fase `commit`, senza il testo
+/// dell'host.
+#[test]
+fn sink_failures_after_bytes_report_a_conservative_effect() {
+    let mut host = Host::new(WriteScript::Committed);
+    host.sink_failure = SinkFailure::WriteAfterBytes;
+    let result = invoke(
+        &host,
+        &invocation(&json!(JSON_CONTENT_TYPE), &read_metadata(), &read_payload()),
+    );
+    let error = json_body(&result);
+    assert_eq!(error["category"], "io");
+    assert_eq!(error["phase"], "write");
+    assert_eq!(error["remote_effect"], "partial");
+    assert_eq!(error["retry"]["kind"], "never");
+
+    let mut host = Host::new(WriteScript::Committed);
+    host.sink_failure = SinkFailure::Finish;
+    let result = invoke(
+        &host,
+        &invocation(&json!(JSON_CONTENT_TYPE), &read_metadata(), &read_payload()),
+    );
+    let error = json_body(&result);
+    assert_eq!(error["category"], "io");
+    assert_eq!(error["phase"], "commit");
+    assert_eq!(error["remote_effect"], "unknown");
+    assert_eq!(error["retry"]["kind"], "requires_recovery");
+    assert!(!error.to_string().contains("/srv/private"));
 }
 
 /// `database-query-success`: stessa operazione, versione, output contract,
@@ -798,20 +1098,7 @@ fn database_query_success_vector_is_reproduced() {
     );
     assert!(!result.is_error(), "{:?}", result.body);
     assert_eq!(result.content_type, vector["content_type"]);
-    for (key, actual) in [
-        ("plenora.capability.operation", &result.metadata.operation),
-        (
-            "plenora.operation.version",
-            &result.metadata.operation_version,
-        ),
-        ("plenora.output.contract", &result.metadata.output_contract),
-        (
-            "plenora.trace.correlation_id",
-            &result.metadata.correlation_id,
-        ),
-    ] {
-        assert_eq!(vector["metadata"][key], actual.as_str(), "{key}");
-    }
+    assert_result_metadata(&vector, &result);
     let summary = json_body(&result);
     let expected_columns = vector["payload"]["columns"].as_array().expect("columns");
     let fields = summary["fields"].as_array().expect("fields");
@@ -854,20 +1141,7 @@ fn database_write_error_vector_is_reproduced() {
     assert!(result.is_error());
     assert_eq!(result.content_type, vector["content_type"]);
     assert_eq!(result.content_type, ERROR_CONTENT_TYPE);
-    for (key, actual) in [
-        ("plenora.capability.operation", &result.metadata.operation),
-        (
-            "plenora.operation.version",
-            &result.metadata.operation_version,
-        ),
-        ("plenora.output.contract", &result.metadata.output_contract),
-        (
-            "plenora.trace.correlation_id",
-            &result.metadata.correlation_id,
-        ),
-    ] {
-        assert_eq!(vector["metadata"][key], actual.as_str(), "{key}");
-    }
+    assert_result_metadata(&vector, &result);
     let error = json_body(&result);
     for axis in [
         "category",
@@ -948,7 +1222,7 @@ fn every_bound_operation_returns_its_public_result() {
         );
         assert!(!result.is_error(), "{operation}: {:?}", result.body);
         assert_eq!(result.content_type, JSON_CONTENT_TYPE);
-        assert_eq!(result.metadata.operation, operation);
+        assert_eq!(result.metadata.operation.as_deref(), Some(operation));
         let body = json_body(&result);
         assert!(
             body.as_object().is_some_and(|object| !object.is_empty()),
@@ -983,7 +1257,11 @@ fn local_paths_do_not_cross_the_runtime_boundary() {
             &host,
             &invocation(&json!(JSON_CONTENT_TYPE), &metadata, &payload),
         );
-        assert_eq!(json_body(&result)["category"], "invalid_plan", "{path}");
+        assert_eq!(
+            json_body(&result)["category"],
+            "invalid_configuration",
+            "{path}"
+        );
         let message = json_body(&result)["message"].as_str().unwrap_or("");
         assert!(
             !message.contains(path),

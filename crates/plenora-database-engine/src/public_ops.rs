@@ -74,7 +74,7 @@ impl TargetRequest {
     pub fn validate(self) -> Result<ValidatedTarget> {
         let provider = parse_provider(&self.provider)?;
         if !is_identifier(&self.secret_environment, MAX_SECRET_ENVIRONMENT_CHARS) {
-            return Err(DatabaseError::invalid_plan(
+            return Err(invalid_request(
                 "secret_environment deve essere un identificatore di al piu 128 caratteri",
             ));
         }
@@ -84,7 +84,7 @@ impl TargetRequest {
                 .iter()
                 .any(|argument| argument.chars().count() > MAX_PROVIDER_ARGUMENT_CHARS)
         {
-            return Err(DatabaseError::invalid_plan(
+            return Err(invalid_request(
                 "provider_arguments oltre 32 elementi o 4096 caratteri",
             ));
         }
@@ -111,7 +111,7 @@ pub fn parse_provider(value: &str) -> Result<ProviderKind> {
         "db2" => Ok(ProviderKind::Db2),
         "sqlite" => Ok(ProviderKind::Sqlite),
         "duckdb" => Ok(ProviderKind::Duckdb),
-        _ => Err(DatabaseError::invalid_plan("provider sconosciuto")),
+        _ => Err(invalid_request("provider sconosciuto")),
     }
 }
 
@@ -235,7 +235,7 @@ where
 /// «tutti».
 pub fn required_value(value: String, label: &str) -> Result<String> {
     if value.trim().is_empty() {
-        return Err(DatabaseError::invalid_plan(format!("{label} vuoto")));
+        return Err(invalid_request(format!("{label} vuoto")));
     }
     Ok(value)
 }
@@ -363,6 +363,21 @@ pub async fn summarize_stream(
         "rows": rows,
         "fields": fields,
     }))
+}
+
+/// Una richiesta che non soddisfa il proprio input contract (SURF-007).
+///
+/// `invalid_configuration`, `validate`, `none`, `never`. E la categoria che la
+/// matrice runtime comune propone (caso 4) e vale per CLI e runtime insieme;
+/// `invalid_plan` resta ai documenti di operazione, che sono piani.
+#[must_use]
+pub fn invalid_request(message: impl Into<String>) -> DatabaseError {
+    DatabaseError::new(
+        plenora_database_core::ErrorCategory::InvalidConfiguration,
+        ErrorPhase::Validate,
+        None,
+        message,
+    )
 }
 
 fn internal(message: &'static str) -> DatabaseError {
