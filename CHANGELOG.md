@@ -34,6 +34,11 @@ l'enum pubblico Rust `PublicSurface` ha una variante in più.
   `public-operation-contracts.schema.json`.
 - **`PublicSurface::Runtime`** (#111). Un `match` esaustivo su
   `PublicSurface` nel codice Rust consumer va esteso.
+- **`arrow_field` di `OracleColumnSpec` e `Db2ColumnSpec` restituisce
+  `Result`** (#110). Una colonna geometrica senza SRID ora è un errore `Crs`;
+  prima andava in panico. Va adeguato chi chiama il metodo dall'API Rust.
+- **NUMERIC PostgreSQL** (#110). Una cifra fuori da [0, 9999] è un errore.
+  Prima produceva un numero plausibile e sbagliato.
 - **Messaggi d'errore** (#104). I comandi della CLI non ripetono più percorsi
   posizionali né il testo di `io::Error`: riportano lo slot e
   l'`io::ErrorKind`. Va adeguato chi confrontava il testo del messaggio.
