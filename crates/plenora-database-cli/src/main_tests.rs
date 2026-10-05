@@ -50,6 +50,43 @@ fn canonical_schema_inspection_preserves_the_optional_catalog() {
     assert_eq!(request.catalog.as_deref(), Some("warehouse"));
 }
 
+/// `catalog` a `null` e conforme allo schema pubblico e vale assente;
+/// `parameters_path` a `null` no: lo schema lo ammette solo come stringa e
+/// nessun produttore lo scrive, quindi si rifiuta invece di essere letto come
+/// assenza. Assente resta ammesso.
+#[test]
+fn canonical_requests_separate_a_null_catalog_from_a_null_parameters_path() {
+    let request: CanonicalListSchemasRequest = serde_json::from_value(json!({
+        "provider": "postgres",
+        "secret_environment": "PLENORA_TEST_DSN",
+        "catalog": null
+    }))
+    .expect("catalog null ammesso dallo schema");
+    assert_eq!(request.catalog, None);
+
+    let target = json!({
+        "provider": "postgres",
+        "secret_environment": "PLENORA_TEST_DSN",
+        "operation_path": "op.json"
+    });
+    let absent: CanonicalReadRequest =
+        serde_json::from_value(target.clone()).expect("parameters_path assente");
+    assert_eq!(absent.parameters_path, None);
+    let given: CanonicalQueryRequest = serde_json::from_value(json!({
+        "provider": "postgres",
+        "secret_environment": "PLENORA_TEST_DSN",
+        "operation_path": "op.json",
+        "parameters_path": "params.json"
+    }))
+    .expect("parameters_path stringa");
+    assert_eq!(given.parameters_path.as_deref(), Some("params.json"));
+
+    let mut null = target;
+    null["parameters_path"] = serde_json::Value::Null;
+    assert!(serde_json::from_value::<CanonicalReadRequest>(null.clone()).is_err());
+    assert!(serde_json::from_value::<CanonicalQueryRequest>(null).is_err());
+}
+
 /// Le posizionali di `database-describe` si leggono nell'ordine scritto.
 ///
 /// L'inversione e il difetto che questo test esiste per escludere, e non

@@ -247,6 +247,9 @@ pub struct UpdateStatement {
     pub table: TableRef,
     /// SET column = expression. Ordine preservato.
     pub assignments: Vec<(String, Expression)>,
+    /// Il `WHERE`: assente o `null`, l'aggiornamento tocca **tutte** le righe.
+    /// Limite dichiarato in
+    /// [`DeleteOperation::filter`](crate::relational::DeleteOperation::filter).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Predicate>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -258,6 +261,9 @@ pub struct UpdateStatement {
 #[serde(deny_unknown_fields)]
 pub struct DeleteStatement {
     pub table: TableRef,
+    /// Il `WHERE`: assente o `null`, la cancellazione tocca **tutte** le
+    /// righe. Limite dichiarato in
+    /// [`DeleteOperation::filter`](crate::relational::DeleteOperation::filter).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Predicate>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
