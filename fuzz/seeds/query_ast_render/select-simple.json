@@ -1,0 +1,1 @@
+{"common_table_expressions":[],"source":{"object":{"schema":"app","object":"events"},"alias":"e"},"projection":[{"expression":{"kind":"column","column":{"relation":"e","field":"id"}},"alias":null}],"joins":[],"filter":null,"group_by":[],"having":null,"order_by":[],"distinct":false,"row_limit":null}
