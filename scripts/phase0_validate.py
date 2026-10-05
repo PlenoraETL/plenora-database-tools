@@ -314,6 +314,11 @@ def validate_active_domain() -> int:
                 continue
             if "target" in path.relative_to(REPO_ROOT).parts:
                 continue
+            # Copie byte per byte del pin: i vettori di runtime-v1 descrivono
+            # payload illustrativi che questo componente rifiuta (`layer_id`),
+            # e proprio per questo si eseguono. Non sono contratti emessi qui.
+            if path.is_relative_to(UPSTREAM_COPIES):
+                continue
             if "__pycache__" in path.relative_to(REPO_ROOT).parts:
                 continue
             text = path.read_text(encoding="utf-8")

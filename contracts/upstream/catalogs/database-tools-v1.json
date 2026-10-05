@@ -1,0 +1,160 @@
+{
+  "$schema": "../schemas/public-catalog-v1.schema.json",
+  "schema_version": 1,
+  "contract": "plenora-public-catalog-v1",
+  "component": "plenora-database-tools",
+  "profile": "plenora-database-tools-profile-v1",
+  "status": "normative",
+  "target_surfaces": {
+    "rust": "required",
+    "cli": "required",
+    "python_sdk": "required",
+    "runtime": "conditional"
+  },
+  "operations": [
+    {
+      "id": "database.test_connection",
+      "version": 1,
+      "requirement": "required",
+      "summary": "Validate a protected connection reference and return redacted connection capabilities.",
+      "surfaces": ["rust", "cli", "python_sdk", "runtime"],
+      "input": {"contract": "plenora-database-connection-test-input-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "output": {"contract": "plenora-database-connection-test-result-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "side_effect": "none",
+      "controls": {"cancellation": true, "deadline": true, "idempotency_key": false}
+    },
+    {
+      "id": "database.list_catalogs",
+      "version": 1,
+      "requirement": "required",
+      "summary": "List visible database catalogs through a protected connection reference.",
+      "surfaces": ["rust", "cli", "python_sdk", "runtime"],
+      "input": {"contract": "plenora-database-list-catalogs-input-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "output": {"contract": "plenora-database-list-catalogs-result-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "side_effect": "none",
+      "controls": {"cancellation": true, "deadline": true, "idempotency_key": false}
+    },
+    {
+      "id": "database.list_schemas",
+      "version": 1,
+      "requirement": "required",
+      "summary": "List visible schemas, optionally under a selected catalog.",
+      "surfaces": ["rust", "cli", "python_sdk", "runtime"],
+      "input": {"contract": "plenora-database-list-schemas-input-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "output": {"contract": "plenora-database-list-schemas-result-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "side_effect": "none",
+      "controls": {"cancellation": true, "deadline": true, "idempotency_key": false}
+    },
+    {
+      "id": "database.list_objects",
+      "version": 1,
+      "requirement": "required",
+      "summary": "List visible tables, views or provider-equivalent objects.",
+      "surfaces": ["rust", "cli", "python_sdk", "runtime"],
+      "input": {"contract": "plenora-database-list-objects-input-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "output": {"contract": "plenora-database-list-objects-result-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "side_effect": "none",
+      "controls": {"cancellation": true, "deadline": true, "idempotency_key": false}
+    },
+    {
+      "id": "database.describe_object",
+      "version": 1,
+      "requirement": "required",
+      "summary": "Describe one database object and its externally visible schema and capabilities.",
+      "surfaces": ["rust", "cli", "python_sdk", "runtime"],
+      "input": {"contract": "plenora-database-describe-object-input-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "output": {"contract": "plenora-database-describe-object-result-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "side_effect": "none",
+      "controls": {"cancellation": true, "deadline": true, "idempotency_key": false}
+    },
+    {
+      "id": "database.read",
+      "version": 1,
+      "requirement": "required",
+      "summary": "Read a bounded projection and filter as an Arrow dataset.",
+      "surfaces": ["rust", "cli", "python_sdk", "runtime"],
+      "input": {"contract": "plenora-database-read-input-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "output": {"contract": "plenora-database-read-result-v1", "content_types": ["application/vnd.apache.arrow.stream", "application/vnd.apache.arrow.file"], "interchange_contracts": ["plenora-arrow-interchange-v1"]},
+      "side_effect": "none",
+      "controls": {"cancellation": true, "deadline": true, "idempotency_key": false}
+    },
+    {
+      "id": "database.write",
+      "version": 1,
+      "requirement": "required",
+      "summary": "Write Arrow rows under an explicit mode, mapping policy and transaction profile.",
+      "surfaces": ["rust", "cli", "python_sdk", "runtime"],
+      "input": {"contract": "plenora-database-write-input-v1", "content_types": ["application/json", "application/vnd.apache.arrow.stream", "application/vnd.apache.arrow.file"], "interchange_contracts": ["plenora-arrow-interchange-v1"]},
+      "output": {"contract": "plenora-database-write-result-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "side_effect": "remote",
+      "controls": {"cancellation": true, "deadline": true, "idempotency_key": false},
+      "attributes": {"contract": "plenora-database-capability-attributes-v1"}
+    },
+    {
+      "id": "database.query",
+      "version": 1,
+      "requirement": "conditional",
+      "summary": "Execute a provider-neutral query contract and return structured or Arrow results.",
+      "surfaces": ["rust", "cli", "python_sdk", "runtime"],
+      "input": {"contract": "plenora-database-query-input-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "output": {"contract": "plenora-database-query-result-v1", "content_types": ["application/json", "application/vnd.apache.arrow.stream"], "interchange_contracts": ["plenora-arrow-interchange-v1"]},
+      "side_effect": "none",
+      "controls": {"cancellation": true, "deadline": true, "idempotency_key": false}
+    },
+    {
+      "id": "database.execute",
+      "version": 1,
+      "requirement": "conditional",
+      "summary": "Execute an explicitly selected statement contract with conservative remote-effect reporting.",
+      "surfaces": ["rust", "cli", "python_sdk"],
+      "input": {"contract": "plenora-database-execute-input-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "output": {"contract": "plenora-database-execute-result-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "side_effect": "remote",
+      "controls": {"cancellation": true, "deadline": true, "idempotency_key": false}
+    },
+    {
+      "id": "database.transaction.begin",
+      "version": 1,
+      "requirement": "conditional",
+      "summary": "Begin a caller-managed transaction with explicit isolation and timeout controls.",
+      "surfaces": ["rust", "python_sdk"],
+      "input": {"contract": "plenora-database-transaction-begin-input-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "output": {"contract": "plenora-database-transaction-handle-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "side_effect": "remote",
+      "controls": {"cancellation": true, "deadline": true, "idempotency_key": false}
+    },
+    {
+      "id": "database.transaction.commit",
+      "version": 1,
+      "requirement": "conditional",
+      "summary": "Commit a caller-managed transaction and report ambiguous commit outcomes conservatively.",
+      "surfaces": ["rust", "python_sdk"],
+      "input": {"contract": "plenora-database-transaction-handle-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "output": {"contract": "plenora-database-transaction-outcome-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "side_effect": "remote",
+      "controls": {"cancellation": false, "deadline": true, "idempotency_key": false}
+    },
+    {
+      "id": "database.transaction.rollback",
+      "version": 1,
+      "requirement": "conditional",
+      "summary": "Rollback a caller-managed transaction and report whether rollback was confirmed.",
+      "surfaces": ["rust", "python_sdk"],
+      "input": {"contract": "plenora-database-transaction-handle-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "output": {"contract": "plenora-database-transaction-outcome-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "side_effect": "remote",
+      "controls": {"cancellation": false, "deadline": true, "idempotency_key": false}
+    },
+    {
+      "id": "database.transaction.savepoint",
+      "version": 1,
+      "requirement": "conditional",
+      "summary": "Create, release or rollback to a named savepoint within a caller-managed transaction.",
+      "surfaces": ["rust", "python_sdk"],
+      "input": {"contract": "plenora-database-savepoint-input-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "output": {"contract": "plenora-database-transaction-outcome-v1", "content_types": ["application/json"], "interchange_contracts": []},
+      "side_effect": "remote",
+      "controls": {"cancellation": true, "deadline": true, "idempotency_key": false}
+    }
+  ]
+}

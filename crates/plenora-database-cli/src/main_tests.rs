@@ -28,7 +28,7 @@ fn canonical_requests_reject_fields_from_another_operation() {
         "secret_environment": "PLENORA_TEST_DSN",
         "catalog": "warehouse"
     });
-    assert!(serde_json::from_value::<CanonicalTarget>(request).is_err());
+    assert!(serde_json::from_value::<TargetRequest>(request).is_err());
 
     let request = json!({
         "provider": "postgres",
@@ -36,12 +36,12 @@ fn canonical_requests_reject_fields_from_another_operation() {
         "operation_path": "read.json",
         "sql": "SELECT 1"
     });
-    assert!(serde_json::from_value::<CanonicalReadRequest>(request).is_err());
+    assert!(serde_json::from_value::<OperationRequest>(request).is_err());
 }
 
 #[test]
 fn canonical_schema_inspection_preserves_the_optional_catalog() {
-    let request: CanonicalListSchemasRequest = serde_json::from_value(json!({
+    let request: ListSchemasRequest = serde_json::from_value(json!({
         "provider": "postgres",
         "secret_environment": "PLENORA_TEST_DSN",
         "catalog": "warehouse"
@@ -56,7 +56,7 @@ fn canonical_schema_inspection_preserves_the_optional_catalog() {
 /// assenza. Assente resta ammesso.
 #[test]
 fn canonical_requests_separate_a_null_catalog_from_a_null_parameters_path() {
-    let request: CanonicalListSchemasRequest = serde_json::from_value(json!({
+    let request: ListSchemasRequest = serde_json::from_value(json!({
         "provider": "postgres",
         "secret_environment": "PLENORA_TEST_DSN",
         "catalog": null
@@ -69,10 +69,10 @@ fn canonical_requests_separate_a_null_catalog_from_a_null_parameters_path() {
         "secret_environment": "PLENORA_TEST_DSN",
         "operation_path": "op.json"
     });
-    let absent: CanonicalReadRequest =
+    let absent: OperationRequest =
         serde_json::from_value(target.clone()).expect("parameters_path assente");
     assert_eq!(absent.parameters_path, None);
-    let given: CanonicalQueryRequest = serde_json::from_value(json!({
+    let given: OperationRequest = serde_json::from_value(json!({
         "provider": "postgres",
         "secret_environment": "PLENORA_TEST_DSN",
         "operation_path": "op.json",
@@ -83,8 +83,8 @@ fn canonical_requests_separate_a_null_catalog_from_a_null_parameters_path() {
 
     let mut null = target;
     null["parameters_path"] = serde_json::Value::Null;
-    assert!(serde_json::from_value::<CanonicalReadRequest>(null.clone()).is_err());
-    assert!(serde_json::from_value::<CanonicalQueryRequest>(null).is_err());
+    assert!(serde_json::from_value::<OperationRequest>(null.clone()).is_err());
+    assert!(serde_json::from_value::<OperationRequest>(null).is_err());
 }
 
 /// Le posizionali di `database-describe` si leggono nell'ordine scritto.
@@ -171,7 +171,7 @@ fn provider_neutral_inspection_rejects_reserved_document_fields() {
         },
     )
     .expect_err("reserved field collision");
-    assert!(format!("{error:?}").contains("campo CLI riservato"));
+    assert!(format!("{error:?}").contains("campo riservato"));
 }
 
 #[cfg(feature = "postgres")]
@@ -911,4 +911,37 @@ fn a_staging_cleanup_failure_names_the_error_kind_not_its_text() {
         !message.contains("testo-del-sistema-operativo"),
         "{message}"
     );
+}
+
+/// Un parametro ripetuto in PARAMETERS.json e un errore: `serde_json`
+/// avrebbe tenuto l'ultima occorrenza, e il binding runtime lo rifiuta.
+#[test]
+fn a_repeated_parameter_is_refused_instead_of_keeping_the_last() {
+    let path = std::env::temp_dir().join(format!(
+        "plenora-cli-repeated-parameter-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &path,
+        br#"{"id": {"type": "int64", "value": 1}, "id": {"type": "int64", "value": 2}}"#,
+    )
+    .expect("parametri");
+    let result = read_parameters(path.to_str().expect("percorso"));
+    let _ = std::fs::remove_file(&path);
+    let error = result.expect_err("parametro ripetuto accettato");
+    assert_eq!(error.database_error().category, ErrorCategory::InvalidPlan);
+}
+
+/// Lo schema `target` vale anche sulla CLI: il riferimento al segreto e un
+/// identificatore, non una DSN scritta al suo posto.
+#[test]
+fn canonical_target_applies_the_secret_environment_pattern() {
+    let target: TargetRequest = serde_json::from_value(json!({
+        "provider": "postgres",
+        "secret_environment": "postgres://user:secret@host/db"
+    }))
+    .expect("forma della richiesta");
+    let error = canonical_operation_arguments(target, Vec::new()).expect_err("DSN accettata");
+    assert_eq!(error.database_error().category, ErrorCategory::InvalidPlan);
+    assert!(!error.database_error().message.contains("secret@host"));
 }

@@ -12,7 +12,7 @@ import json
 
 
 class AdoptionManifestTests(unittest.TestCase):
-    def test_records_real_digest_modes_pin_and_not_applicable_runtime(self) -> None:
+    def test_records_real_digest_modes_pin_and_conforming_runtime(self) -> None:
         with TemporaryDirectory() as directory:
             wheel = Path(directory) / "plenora_database-4.0.0.whl"
             wheel.write_bytes(b"released wheel")
@@ -27,12 +27,14 @@ class AdoptionManifestTests(unittest.TestCase):
         self.assertRegex(
             document["contracts_source"]["revision"], r"^[0-9a-f]{40}$"
         )
-        runtime = next(
+        # Il binding runtime e implementato (`runtime_binding` nel crate
+        # engine): non e piu dichiarato not_applicable.
+        runtime = [
             item
             for item in document["contracts"]
             if item["id"] == "plenora-runtime-binding-v1"
-        )
-        self.assertEqual(runtime["status"], "not_applicable")
+        ]
+        self.assertEqual([item["status"] for item in runtime], ["conforming"])
 
     def test_declared_deviations_reach_the_manifest(self) -> None:
         # Il manifest scriveva `deviations: []` fisso mentre il codice ne

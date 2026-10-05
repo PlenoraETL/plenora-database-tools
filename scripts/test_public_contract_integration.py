@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts import check_public_contracts as gate
+from scripts import check_runtime_evidence as runtime_gate
 from scripts.public_contract_semantics import load_semantics
 from scripts.render_adoption_manifest import manifest, validate_manifest
 
@@ -24,6 +25,7 @@ from scripts.render_adoption_manifest import manifest, validate_manifest
 class PublicContractIntegrationTests(unittest.TestCase):
     contracts: Path
     cli: Path
+    evidence: Path
 
     def schema(self, name):
         return self.contracts / "schemas" / name
@@ -144,6 +146,54 @@ class PublicContractIntegrationTests(unittest.TestCase):
         self.assertTrue(document["deviations"])
         validate_manifest(document, self.schema("adoption-manifest-v4.schema.json"))
 
+    def runtime_evidence_copy(self, directory):
+        import shutil
+
+        target = Path(directory) / "evidence"
+        shutil.copytree(self.evidence, target)
+        return target
+
+    def test_runtime_evidence_passes_the_pinned_schemas(self):
+        result = runtime_gate.check(self.contracts, self.evidence)
+        self.assertEqual(result["runtime_operations"], 8)
+
+    def test_runtime_evidence_counterexamples_are_rejected(self):
+        def missing(evidence):
+            (evidence / "database.write.json").unlink()
+
+        def unsafe_retry(evidence):
+            path = evidence / "database-write-error.json"
+            document = json.loads(path.read_text(encoding="utf-8"))
+            # ERR-006: un effetto ignoto non ammette un retry automatico.
+            document["payload"]["retry"] = {"kind": "safe"}
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+        def lost_correlation(evidence):
+            path = evidence / "database-query-success.json"
+            document = json.loads(path.read_text(encoding="utf-8"))
+            del document["metadata"]["plenora.trace.correlation_id"]
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+        def foreign_result(evidence):
+            path = evidence / "database.list_catalogs.json"
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["payload"] = {"schemas": ["public"]}
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+        def extra_operation(evidence):
+            path = evidence / "capabilities.json"
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["operations"] = document["operations"][:-1]
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+        for mutation in (missing, unsafe_retry, lost_correlation, foreign_result, extra_operation):
+            with self.subTest(mutation=mutation.__name__):
+                with TemporaryDirectory() as directory:
+                    evidence = self.runtime_evidence_copy(directory)
+                    mutation(evidence)
+                    with self.assertRaises(RuntimeError):
+                        runtime_gate.check(self.contracts, evidence)
+
     def test_wrong_pin_fails_closed(self):
         with TemporaryDirectory() as directory:
             source = Path(directory) / "source.json"
@@ -173,7 +223,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--contracts", type=Path, required=True)
     parser.add_argument("--cli", type=Path, required=True)
+    # Prodotte da `cargo test -p plenora-database-engine --test runtime_vectors`
+    # con PLENORA_RUNTIME_EVIDENCE: obbligatorie, un gate saltato non e un gate.
+    parser.add_argument("--runtime-evidence", type=Path, required=True)
     args, remaining = parser.parse_known_args()
     PublicContractIntegrationTests.contracts = args.contracts.resolve()
     PublicContractIntegrationTests.cli = args.cli.resolve()
+    PublicContractIntegrationTests.evidence = args.runtime_evidence.resolve()
     unittest.main(argv=[sys.argv[0], *remaining])

@@ -1,0 +1,18 @@
+{
+  "$schema": "../../schemas/runtime-vector-v1.schema.json",
+  "schema_version": 1,
+  "contract": "plenora-runtime-vector-v1",
+  "kind": "success",
+  "content_type": "application/json",
+  "metadata": {
+    "plenora.message.id": "018f3d84-7b2c-7f00-8000-000000000107",
+    "plenora.capability.operation": "database.query",
+    "plenora.operation.version": "1",
+    "plenora.output.contract": "plenora-database-query-result-v1",
+    "plenora.trace.correlation_id": "018f3d84-7b2c-7f00-8000-000000000007"
+  },
+  "payload": {
+    "columns": [{"name": "id", "type": "int64"}],
+    "rows": [[1]]
+  }
+}

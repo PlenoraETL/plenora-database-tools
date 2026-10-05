@@ -1490,6 +1490,7 @@ dependencies = [
 name = "plenora-database-engine"
 version = "6.0.0"
 dependencies = [
+ "arrow-ipc",
  "chrono",
  "plenora-database-core",
  "serde",

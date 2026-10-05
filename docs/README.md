@@ -8,6 +8,7 @@ che li produce. La cronologia delle modifiche si consulta in Git.
 | --- | --- |
 | [`STATO.md`](STATO.md) | stato generato: crate, capability, comandi e inventario dei test |
 | [`operativo.md`](operativo.md) | lifecycle e isolamento delle fixture Compose |
+| [`runtime.md`](runtime.md) | binding runtime: resolver dell'applicazione, richieste, risultati, limiti e prove |
 | [`README dello SDK`](../crates/plenora-database-py/README.md) | API Python, esempi e limiti |
 | [`CLI_AND_SDK.md`](../crates/plenora-database-py/docs/CLI_AND_SDK.md) | uso dello SDK nelle applicazioni che invocano il CLI |
 | [`mariadb/EVIDENCE.md`](mariadb/EVIDENCE.md) | inventario generato delle prove MariaDB |

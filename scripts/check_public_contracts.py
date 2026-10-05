@@ -23,7 +23,16 @@ UPSTREAM = ROOT / "contracts" / "upstream"
 # Le directory di vettori del pin che questo componente esegue per intero:
 # un vettore nuovo del pin che qui non ha una copia e un vettore che nessun
 # test esegue, e il gate lo rifiuta invece di ignorarlo.
-EXECUTED_VECTOR_SETS = {"arrow-v1": "vectors/arrow-v1"}
+# I vettori runtime sono dei cinque componenti: si eseguono quelli delle
+# operazioni che questo componente pubblica (RUNTIME-VECTORS-1.0, sezione 5).
+EXECUTED_VECTOR_SETS = {
+    "arrow-v1": ("vectors/arrow-v1", "*.json"),
+    "runtime-v1": ("vectors/runtime-v1", "database-*.json"),
+}
+VECTOR_SCHEMAS = {
+    "vectors/arrow-v1/": "arrow-metadata-vector-v1.schema.json",
+    "vectors/runtime-v1/": "runtime-vector-v1.schema.json",
+}
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -84,15 +93,15 @@ def check_upstream_copies(contracts: Path, registry: Registry) -> int:
         if hashlib.sha256(local).hexdigest() != entry["sha256"]:
             raise RuntimeError(f"{name}: SHA-256 dichiarato errato")
         copied[entry["source"]] = name
-    for directory in EXECUTED_VECTOR_SETS.values():
-        for path in sorted((contracts / directory).glob("*.json")):
+    for directory, pattern in EXECUTED_VECTOR_SETS.values():
+        for path in sorted((contracts / directory).glob(pattern)):
             relative = path.relative_to(contracts).as_posix()
             if relative not in copied:
                 raise RuntimeError(f"{relative}: vettore del pin senza copia eseguita")
-    vector_schema = load(contracts / "schemas" / "arrow-metadata-vector-v1.schema.json")
     for relative, name in copied.items():
-        if relative.startswith("vectors/arrow-v1/"):
-            validate(load(UPSTREAM / name), vector_schema, name, registry)
+        for prefix, schema in VECTOR_SCHEMAS.items():
+            if relative.startswith(prefix):
+                validate(load(UPSTREAM / name), load(contracts / "schemas" / schema), name, registry)
     return len(copied)
 
 
