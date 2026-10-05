@@ -717,7 +717,12 @@ pub enum WindowFrameUnits {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "offset", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    content = "offset",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum WindowFrameBound {
     UnboundedPreceding,
     Preceding(u64),

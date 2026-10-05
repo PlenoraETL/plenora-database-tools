@@ -79,3 +79,13 @@ fn crs_definition_requires_format_and_axis_order() {
     });
     assert!(contract.validate().is_err());
 }
+
+/// La risoluzione del CRS rifiuta le chiavi accanto a `status`/`value`, come
+/// il contratto di colonna che la contiene.
+#[test]
+fn a_crs_resolution_refuses_an_unknown_key() {
+    let missing: CrsResolution =
+        serde_json::from_str(r#"{"status":"missing"}"#).expect("risoluzione valida");
+    assert_eq!(missing, CrsResolution::Missing);
+    assert!(serde_json::from_str::<CrsResolution>(r#"{"status":"missing","x":1}"#).is_err());
+}

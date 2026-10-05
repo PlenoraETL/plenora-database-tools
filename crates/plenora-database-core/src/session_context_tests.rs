@@ -85,3 +85,13 @@ fn provider_string_encoding_covers_all_variants() {
     assert_eq!(SessionValue::Boolean(true).as_provider_string(), "true");
     assert_eq!(SessionValue::Boolean(false).as_provider_string(), "false");
 }
+
+/// Il valore di un entry rifiuta le chiavi accanto a `type`/`value`, come
+/// l'entry che lo contiene.
+#[test]
+fn a_session_value_refuses_an_unknown_key() {
+    let value: SessionValue =
+        serde_json::from_str(r#"{"type":"text","value":"t"}"#).expect("valore valido");
+    assert_eq!(value, SessionValue::Text("t".to_owned()));
+    assert!(serde_json::from_str::<SessionValue>(r#"{"type":"text","value":"t","x":1}"#).is_err());
+}
