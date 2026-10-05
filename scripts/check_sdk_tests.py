@@ -197,12 +197,12 @@ SCOPE_CONTRACTS = {
     # dedicati e qui devono restare skip espliciti, non essere assorbiti dal
     # totale.
     "live": ScopeContract(
-        passed=566,
+        passed=567,
         deselected=0,
         skips={DB2_SKIP: 9, ORACLE_SKIP: 6},
     ),
     "offline": ScopeContract(
-        passed=288,
+        passed=289,
         deselected=0,
         skips={
             POSTGRES_SKIP: 222,
@@ -216,7 +216,7 @@ SCOPE_CONTRACTS = {
         },
     ),
     "stabilization": ScopeContract(passed=30, deselected=0, skips={}),
-    "benchmark": ScopeContract(passed=2, deselected=579, skips={}),
+    "benchmark": ScopeContract(passed=2, deselected=580, skips={}),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende
