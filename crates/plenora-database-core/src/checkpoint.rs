@@ -23,6 +23,11 @@ const PARAMETER_PREFIX: &str = "__plenora_resume_";
 pub struct ReadCheckpoint {
     pub schema_version: u16,
     pub provider: ProviderKind,
+    /// La sorgente si legge senza `null`: il token lo scrive solo
+    /// [`Self::to_json`], che omette i campi assenti, e lo schema non lo
+    /// ammette. [`ObjectRef`] lo tollera altrove, per i consumatori che lo
+    /// mandano (vedi [`crate::plan`]); qui nessuno lo manda.
+    #[serde(deserialize_with = "source_without_null")]
     pub source: ObjectRef,
     pub order_by: Vec<OrderBy>,
     /// Fingerprint dell'intero scope logico della lettura, esclusi soltanto
@@ -215,6 +220,30 @@ impl ReadCheckpoint {
         checkpoint.validate()?;
         Ok(checkpoint)
     }
+}
+
+/// Forma di lettura della sorgente di un checkpoint: come [`ObjectRef`], ma
+/// `catalog` e `schema` possono mancare e non essere `null`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckpointSource {
+    #[serde(default, deserialize_with = "crate::limits::present_not_null")]
+    catalog: Option<String>,
+    #[serde(default, deserialize_with = "crate::limits::present_not_null")]
+    schema: Option<String>,
+    object: String,
+}
+
+fn source_without_null<'de, D>(deserializer: D) -> std::result::Result<ObjectRef, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let source = CheckpointSource::deserialize(deserializer)?;
+    Ok(ObjectRef {
+        catalog: source.catalog,
+        schema: source.schema,
+        object: source.object,
+    })
 }
 
 fn scope_fingerprint(

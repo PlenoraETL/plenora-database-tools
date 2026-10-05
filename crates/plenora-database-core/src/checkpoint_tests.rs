@@ -193,3 +193,36 @@ fn checkpoint_rejects_a_changed_logical_scope_but_allows_a_new_page_size() {
         .resume(ProviderKind::Postgres, &next_page, &parameters)
         .is_ok());
 }
+
+/// La sorgente di un checkpoint distingue l'assenza da `null`: il token lo
+/// scrive solo `to_json`, che omette `catalog` assente, e lo schema non
+/// ammette `null`. Un `null` e un token che nessuno ha emesso.
+#[test]
+fn a_checkpoint_source_refuses_null_and_accepts_absence() {
+    let operation = read();
+    let parameters = ParameterBag::new(BTreeMap::from([(
+        "active".to_owned(),
+        ParameterValue::Bool(true),
+    )]));
+    let checkpoint = ReadCheckpoint::new(
+        ProviderKind::Postgres,
+        &operation,
+        &parameters,
+        vec![ParameterValue::I64(7), ParameterValue::I64(42)],
+    )
+    .expect("checkpoint");
+    let token = checkpoint.to_json().expect("token");
+    assert!(!token.contains("null"), "il token non scrive null: {token}");
+    assert_eq!(
+        ReadCheckpoint::from_json(&token).expect("round-trip"),
+        checkpoint
+    );
+
+    for field in ["catalog", "schema"] {
+        let mut document: serde_json::Value = serde_json::from_str(&token).unwrap();
+        document["source"][field] = serde_json::Value::Null;
+        let error = ReadCheckpoint::from_json(&document.to_string())
+            .expect_err("null nella sorgente del checkpoint");
+        assert_eq!(error.category, crate::ErrorCategory::InvalidPlan, "{field}");
+    }
+}

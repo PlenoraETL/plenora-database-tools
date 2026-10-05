@@ -485,6 +485,13 @@ struct CanonicalTarget {
     provider_arguments: Vec<String>,
 }
 
+/// Richiesta di `list-schemas`.
+///
+/// Nelle richieste canoniche i campi opzionali (`catalog`,
+/// `parameters_path`) accettano `null` come assenza. Nessuno schema del
+/// repository le descrive, i vettori di `plenora-contracts` usano `null` per
+/// le opzioni assenti, e `null` non ha qui un significato diverso
+/// dall'assenza: il catalogo predefinito, nessun file di parametri.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CanonicalListSchemasRequest {

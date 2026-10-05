@@ -2,6 +2,12 @@
 //!
 //! Contiene solo riferimenti a colonne e parametri: i valori restano nel
 //! `ParameterBag` e non possono essere interpolati nel testo SQL.
+//!
+//! Nei campi `Option` dell'IR `null` vale assente, per costruzione: lo SDK
+//! scrive `null` per ogni opzione non usata (`expression.py`) e nessuno schema
+//! di `contracts/v2/` descrive questo IR. L'unico campo in cui l'assenza ha
+//! una conseguenza distruttiva e il filtro delle mutazioni, dichiarato in
+//! [`DeleteOperation::filter`].
 
 use crate::geometry::SpatialSemantics;
 use crate::plan::{ComparisonOperator, ObjectRef, SortDirection};
@@ -913,6 +919,8 @@ pub struct InsertOperation {
 pub struct UpdateOperation {
     pub target: crate::plan::ObjectRef,
     pub assignments: Vec<MutationAssignment>,
+    /// Il `WHERE`: assente o `null`, l'aggiornamento tocca **tutte** le righe.
+    /// Limite dichiarato in [`DeleteOperation::filter`].
     pub filter: Option<QueryExpression>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub returning: Vec<String>,
@@ -923,6 +931,22 @@ pub struct UpdateOperation {
 #[serde(deny_unknown_fields)]
 pub struct DeleteOperation {
     pub target: crate::plan::ObjectRef,
+    /// Il `WHERE`: assente o `null`, la cancellazione tocca **tutte** le righe.
+    ///
+    /// E un limite dichiarato, non un difetto da chiudere qui.
+    ///
+    /// - **Regola.** `filter` assente e `filter: null` si leggono entrambi
+    ///   come «nessun filtro», e il lowering non emette `WHERE`.
+    /// - **Ambito.** `UpdateOperation` e `DeleteOperation` relazionali,
+    ///   `UpdateStatement` e `DeleteStatement` portable; da Rust, dalla CLI e
+    ///   dallo SDK, che senza `.where()` manda `filter: null` di proposito.
+    /// - **Hazard.** Un documento che perde il filtro per un errore di chi lo
+    ///   produce, per esempio un `null` scritto al posto del predicato,
+    ///   aggiorna o cancella l'intera tabella senza errore.
+    /// - **Rientro.** Pretendere una dichiarazione esplicita per le mutazioni
+    ///   su tutta la tabella, un filtro obbligatorio o un'opzione dedicata,
+    ///   cambia il contratto pubblico: si decide con una nuova major. Fino ad
+    ///   allora la semantica e questa, ed e fissata dalle prove.
     pub filter: Option<QueryExpression>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub returning: Vec<String>,

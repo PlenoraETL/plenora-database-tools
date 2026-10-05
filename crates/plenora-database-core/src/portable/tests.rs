@@ -1096,3 +1096,30 @@ fn mariadb_update_without_returning_still_compiles() {
     .expect("un UPDATE senza RETURNING non ha niente di divergente");
     assert_eq!(compiled.sql, "UPDATE `t` SET `a` = ?");
 }
+
+/// Un `UPDATE` o un `DELETE` con `filter` assente o `null` tocca l'intera
+/// tabella. E il limite dichiarato su `DeleteOperation::filter`: la prova
+/// fissa che le due forme compilano allo stesso SQL senza `WHERE`, cosi un
+/// cambio di semantica non passa inosservato.
+#[test]
+fn a_mutation_without_a_filter_or_with_a_null_one_touches_every_row() {
+    let cases = [
+        (
+            r#"{"type":"delete","table":{"name":"t"}}"#,
+            r#"{"type":"delete","table":{"name":"t"},"filter":null}"#,
+            r#"DELETE FROM "t""#,
+        ),
+        (
+            r#"{"type":"update","table":{"name":"t"},"assignments":[["a",{"kind":"literal","value":{"type":"i64","value":1}}]]}"#,
+            r#"{"type":"update","table":{"name":"t"},"assignments":[["a",{"kind":"literal","value":{"type":"i64","value":1}}]],"filter":null}"#,
+            r#"UPDATE "t" SET "a" = $1"#,
+        ),
+    ];
+    for (absent, null, expected) in cases {
+        let absent: PortableStatement = serde_json::from_str(absent).expect("filtro assente");
+        let null: PortableStatement = serde_json::from_str(null).expect("filtro null");
+        assert_eq!(absent, null);
+        let compiled = compile_portable(ProviderKind::Postgres, &null).expect("compilazione");
+        assert_eq!(compiled.sql, expected);
+    }
+}

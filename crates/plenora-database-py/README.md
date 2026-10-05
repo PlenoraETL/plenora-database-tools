@@ -876,6 +876,21 @@ e li verifica; un artefatto assente non è supporto implicito.
 - **Portable spatial DWithin unità SRS** — per predicato DWithin su
   colonna `geometry(*, 4326)` la distanza è in gradi, non metri.
   Usare `spatial.geography(...)` per unità metriche geodetiche.
+- **Mutazioni senza filtro** — `p.update(...)` o `p.delete(...)` senza
+  `.where()` mandano `filter: null` e toccano tutte le righe della tabella.
+  Vale lo stesso per un documento portable o relazionale con `filter` assente
+  o `null`, dalla CLI come da Rust. Se il filtro si perde per errore, per
+  esempio un `null` scritto al posto del predicato, la mutazione agisce
+  sull'intera tabella senza errore. Una dichiarazione esplicita per queste
+  mutazioni cambierebbe il contratto e richiede una nuova major. La regola è
+  dichiarata su `DeleteOperation::filter` ed è fissata da prove.
+- **`null` come assente** — nei piani v2 e nelle richieste della CLI, un
+  campo opzionale a `null` vale assente, anche dove `plan.schema.json` non
+  ammette `null`. CLI, SDK e serializzatore Rust scrivono questa forma, e il
+  fingerprint del piano ne dipende. La deviazione è dichiarata in
+  `plenora_database_core::plan` e rientra con tipi distinti in
+  `contracts/v3/`. `limits.max_rows` e la sorgente di un `ReadCheckpoint`,
+  che nessuno scrive a `null`, lo rifiutano.
 - **ORM-like** — non c'e lazy loading implicito. Le relationship verso chiavi
   composite richiedono un mapping FK esplicito. Il bulk DML non attraversa
   tabelle joined e non accetta join, grouping, ordering o paginazione.

@@ -1,4 +1,37 @@
 //! Piano provider-neutral per letture, scritture e ispezioni.
+//!
+//! # `null` vale assente
+//!
+//! `plan.schema.json` non ammette `null` nei campi opzionali, e questo
+//! lettore lo accetta come assenza. La deviazione dal contratto e
+//! dichiarata, campo per campo.
+//!
+//! - **Regola.** `catalog` e `schema` di [`ObjectRef`]; `row_limit`,
+//!   `row_offset` e `filter` di [`ReadOperation`]; `srid_policy` di
+//!   [`WriteOperation`]; `source` di `database.list_schemas` e
+//!   `database.list_objects`; `geometry_parameter` e `distance_parameter` di
+//!   [`FilterExpression::Spatial`]. Per tutti `null` si legge come assente.
+//! - **Ambito.** Il piano v2, la superficie canonica della CLI (`read`,
+//!   `write`, che leggono gli stessi tipi) e l'IR relazionale dello SDK, che
+//!   condivide [`ObjectRef`].
+//! - **Hazard.** Un documento fuori schema viene accettato. Nessuno di questi
+//!   campi ha un significato per `null` diverso dall'assenza: un `filter`
+//!   `null` su una lettura legge tutte le righe entro i limiti del piano, come
+//!   un `filter` assente.
+//! - **Perche non si rifiuta.** La CLI e lo SDK mandano `null` per i campi
+//!   assenti, e lo fanno le loro prove (`test_cli_common_surface.py`,
+//!   `expression.py`). Il serializzatore Rust scrive `null` per `row_limit`,
+//!   `row_offset`, `filter`, `srid_policy`, `source` e i parametri spaziali,
+//!   e quella forma entra nel fingerprint del piano e nello scope dei
+//!   checkpoint: rifiutarla romperebbe il round-trip, ometterla cambierebbe i
+//!   fingerprint gia persistiti.
+//! - **Rientro.** Tipi distinti per il piano e per le superfici che mandano
+//!   `null`, con una forma canonica che ometta l'assenza e una nuova versione
+//!   del fingerprint: una modifica da `contracts/v3/`.
+//!
+//! Dove il rifiuto non rompe nessun consumatore, `null` si rifiuta:
+//! [`Limits::max_rows`] e la sorgente di
+//! [`ReadCheckpoint`](crate::checkpoint::ReadCheckpoint).
 
 use crate::limits::Limits;
 use crate::loss::MappingPolicy;
