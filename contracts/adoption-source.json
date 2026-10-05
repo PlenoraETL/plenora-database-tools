@@ -16,11 +16,10 @@
     "plenora-cli-v2",
     "plenora-python-sdk-v1",
     "plenora-surface-bindings-v1",
-    "plenora-composition-v1"
-  ],
-  "not_applicable": [
+    "plenora-composition-v1",
     "plenora-runtime-binding-v1"
   ],
+  "not_applicable": [],
   "deviations": [
     {
       "rule": "SURF-007",

@@ -55,9 +55,11 @@
 pub mod arrow_write;
 pub mod engine;
 pub mod metadata;
+pub mod public_ops;
 pub mod result;
 pub mod retry;
 pub mod runtime;
+pub mod runtime_binding;
 pub mod statement;
 pub use arrow_write::{arrow_binary_value, arrow_parameter_value};
 pub use engine::{

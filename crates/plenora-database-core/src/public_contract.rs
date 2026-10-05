@@ -13,6 +13,9 @@ use serde_json::json;
 pub const COMPONENT: &str = "plenora-database-tools";
 pub const CAPABILITIES_CONTRACT: &str = "plenora-capabilities-v2";
 pub const WRITE_ATTRIBUTES_CONTRACT: &str = "plenora-database-capability-attributes-v1";
+/// Identita della capability runtime (RT-001) e artefatto dichiarato in
+/// `bindings/runtime-v1.json` del pin.
+pub const RUNTIME_CAPABILITY: &str = "plenora.database-tools";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -20,6 +23,9 @@ pub enum PublicSurface {
     Rust,
     Cli,
     PythonSdk,
+    /// Runtime Binding 1.0: il binding transport-neutral di
+    /// `plenora_database_engine::runtime_binding`.
+    Runtime,
 }
 
 impl PublicSurface {
@@ -28,13 +34,14 @@ impl PublicSurface {
             Self::Rust => "plenora-rust-public-v1",
             Self::Cli => "plenora-cli-v2",
             Self::PythonSdk => "plenora-python-sdk-v1",
+            Self::Runtime => "plenora-runtime-binding-v1",
         }
     }
 
     const fn version(self) -> u32 {
         match self {
             Self::Cli => 2,
-            Self::Rust | Self::PythonSdk => 1,
+            Self::Rust | Self::PythonSdk | Self::Runtime => 1,
         }
     }
 }
@@ -130,6 +137,9 @@ struct OperationSpec {
     side_effect: PublicSideEffect,
     cancellation: bool,
     cli: bool,
+    /// Esposta dal binding runtime: `surfaces` del catalogo del pin la
+    /// elenca con `runtime`.
+    runtime: bool,
     rust_entrypoints: &'static [&'static str],
 }
 
@@ -155,6 +165,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::None,
         cancellation: true,
         cli: true,
+        runtime: true,
         rust_entrypoints: &["plenora_database_core::provider::Provider::test_connection"],
     },
     OperationSpec {
@@ -166,6 +177,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::None,
         cancellation: true,
         cli: true,
+        runtime: true,
         rust_entrypoints: &["plenora_database_core::provider::Provider::inspect"],
     },
     OperationSpec {
@@ -177,6 +189,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::None,
         cancellation: true,
         cli: true,
+        runtime: true,
         rust_entrypoints: &["plenora_database_core::provider::Provider::inspect"],
     },
     OperationSpec {
@@ -188,6 +201,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::None,
         cancellation: true,
         cli: true,
+        runtime: true,
         rust_entrypoints: &["plenora_database_core::provider::Provider::inspect"],
     },
     OperationSpec {
@@ -199,6 +213,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::None,
         cancellation: true,
         cli: true,
+        runtime: true,
         rust_entrypoints: &["plenora_database_core::provider::Provider::inspect"],
     },
     OperationSpec {
@@ -210,6 +225,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::None,
         cancellation: true,
         cli: true,
+        runtime: true,
         rust_entrypoints: &["plenora_database_core::provider::Provider::read"],
     },
     OperationSpec {
@@ -221,6 +237,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::Remote,
         cancellation: true,
         cli: true,
+        runtime: true,
         rust_entrypoints: &[
             "plenora_database_core::provider::Provider::prepare_write",
             "plenora_database_core::provider::Provider::write",
@@ -235,6 +252,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::None,
         cancellation: true,
         cli: true,
+        runtime: true,
         rust_entrypoints: &["plenora_database_core::provider::Provider::query"],
     },
     OperationSpec {
@@ -246,6 +264,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::Remote,
         cancellation: true,
         cli: true,
+        runtime: false,
         rust_entrypoints: &["plenora_database_core::transaction::TransactionScope::execute"],
     },
     OperationSpec {
@@ -257,6 +276,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::Remote,
         cancellation: true,
         cli: false,
+        runtime: false,
         rust_entrypoints: &["plenora_database_core::provider::Provider::begin_transaction"],
     },
     OperationSpec {
@@ -268,6 +288,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::Remote,
         cancellation: false,
         cli: false,
+        runtime: false,
         rust_entrypoints: &["plenora_database_core::transaction::TransactionScope::commit"],
     },
     OperationSpec {
@@ -279,6 +300,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::Remote,
         cancellation: false,
         cli: false,
+        runtime: false,
         rust_entrypoints: &["plenora_database_core::transaction::TransactionScope::rollback"],
     },
     OperationSpec {
@@ -290,6 +312,7 @@ const OPERATIONS: &[OperationSpec] = &[
         side_effect: PublicSideEffect::Remote,
         cancellation: true,
         cli: false,
+        runtime: false,
         rust_entrypoints: &[
             "plenora_database_core::transaction::TransactionScope::savepoint",
             "plenora_database_core::transaction::TransactionScope::release_savepoint",
@@ -311,7 +334,11 @@ pub fn public_capabilities(
 ) -> PublicCapabilities {
     let operations = OPERATIONS
         .iter()
-        .filter(|operation| surface != PublicSurface::Cli || operation.cli)
+        .filter(|operation| match surface {
+            PublicSurface::Cli => operation.cli,
+            PublicSurface::Runtime => operation.runtime,
+            PublicSurface::Rust | PublicSurface::PythonSdk => true,
+        })
         .map(|operation| PublicOperation {
             id: operation.id.to_owned(),
             version: 1,

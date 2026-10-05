@@ -322,12 +322,16 @@ jobs:
           artifacts+=(--artifact "plenora-database-windows-x86_64.exe|cli|dist/plenora-database-windows-x86_64.exe")
           source="$(find dist -maxdepth 1 -name 'plenora-database-tools-*-source.tar.gz' -print -quit)"
           artifacts+=(--artifact "$(basename "$source")|rust|$source")
+          # Il binding runtime e il modulo `runtime_binding` del crate engine,
+          # distribuito nello stesso sorgente: l'artefatto ne porta il nome
+          # di `bindings/runtime-v1.json` e lo stesso digest.
+          artifacts+=(--artifact "plenora.database-tools|runtime|$source")
           python3 scripts/render_adoption_manifest.py \
             --version "$version" \
             "${artifacts[@]}" \
             --verification "python3 scripts/check_public_contracts.py --contracts .plenora-contracts --cli dist/plenora-database-linux-x86_64" \
             --verification "cargo test --locked -p plenora-database-core --test public_rust_surface_v1" \
-            --verification "bash .github/scripts/offline_suite.sh" \
+            --verification "bash .github/scripts/offline_suite.sh"             --verification "cargo test --locked -p plenora-database-engine --test runtime_vectors" \
             --schema .plenora-contracts/schemas/adoption-manifest-v4.schema.json \
             --output dist/plenora-database-${version}.adoption-manifest.json
       - name: Verify the collected SBOM before attestation
