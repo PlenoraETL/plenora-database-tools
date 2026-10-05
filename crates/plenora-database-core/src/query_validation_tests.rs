@@ -735,3 +735,21 @@ fn the_plan_admits_exactly_the_spatial_predicates_this_engine_evaluates() {
 
     assert_eq!(declared, evaluated);
 }
+
+/// I limiti di finestra rifiutano le chiavi accanto a `kind`/`offset`: una
+/// chiave ignorata cambierebbe il frame senza errore.
+#[test]
+fn a_window_frame_bound_refuses_an_unknown_key() {
+    let bound: WindowFrameBound =
+        serde_json::from_str(r#"{"kind":"preceding","offset":1}"#).expect("limite valido");
+    assert_eq!(bound, WindowFrameBound::Preceding(1));
+    for refused in [
+        r#"{"kind":"preceding","offset":1,"x":1}"#,
+        r#"{"kind":"current_row","x":1}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<WindowFrameBound>(refused).is_err(),
+            "chiave sconosciuta accettata: {refused}"
+        );
+    }
+}

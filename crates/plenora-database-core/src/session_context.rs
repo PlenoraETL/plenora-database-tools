@@ -40,7 +40,12 @@ impl SessionClassification {
 
 /// Valore tipizzato di un entry di contesto.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum SessionValue {
     Text(String),
     Integer(i64),

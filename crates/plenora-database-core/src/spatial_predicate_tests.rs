@@ -101,3 +101,43 @@ fn new_validated_rejects_malformed_ewkb() {
     )
     .is_err());
 }
+
+/// Le varianti senza campi rifiutano le chiavi estranee: con il tag interno
+/// solo il lettore dedicato lo garantisce. `distance_meters` su un `within`
+/// e l'errore piu verosimile, e passerebbe come un `within` senza distanza.
+#[test]
+fn unit_predicates_refuse_unknown_keys_and_keep_their_serialized_form() {
+    let predicates = [
+        SpatialPredicate::Intersects,
+        SpatialPredicate::Contains,
+        SpatialPredicate::Within,
+        SpatialPredicate::BoundingBox,
+        SpatialPredicate::DWithin {
+            distance_meters: 5.0,
+        },
+    ];
+    for predicate in predicates {
+        let json = serde_json::to_value(&predicate).unwrap();
+        let back: SpatialPredicate = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back, predicate);
+
+        let mut extra = json;
+        extra
+            .as_object_mut()
+            .unwrap()
+            .insert("x".to_owned(), serde_json::json!(1));
+        assert!(
+            serde_json::from_value::<SpatialPredicate>(extra).is_err(),
+            "chiave sconosciuta accettata"
+        );
+    }
+    assert!(
+        serde_json::from_str::<SpatialPredicate>(r#"{"kind":"within","distance_meters":100.0}"#)
+            .is_err(),
+        "distance_meters su within non e una distanza"
+    );
+    assert_eq!(
+        serde_json::to_string(&SpatialPredicate::Within).unwrap(),
+        r#"{"kind":"within"}"#
+    );
+}

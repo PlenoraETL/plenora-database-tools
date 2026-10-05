@@ -53,9 +53,19 @@ impl TableRef {
 
 /// Espressione atomica: valore letterale (verrà bindato) o riferimento a
 /// colonna del target.
+///
+/// Come ogni nodo dell'AST, rifiuta le chiavi che non conosce: una chiave
+/// ignorata in un documento di controllo e un significato perso senza
+/// errore. Con il tag adiacente `deny_unknown_fields` copre sia le chiavi
+/// accanto a `kind`/`value` sia i campi della variante `spatial_value`.
 #[allow(clippy::derive_partial_eq_without_eq)] // ParameterValue::F64 contiene f64
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum Expression {
     Literal(ParameterValue),
     Column(String),
@@ -104,9 +114,16 @@ pub enum Nulls {
 
 /// Predicato del WHERE clause. Tutti gli operatori sono bind-safe: il
 /// consumer non può iniettare SQL, solo valori.
+///
+/// Le chiavi sconosciute si rifiutano: `{"op":"is_null","column":"a",
+/// "negate":true}` in un `DELETE` diventerebbe altrimenti `WHERE a IS NULL`,
+/// il filtro opposto a quello inteso. Con il tag interno l'attributo sul
+/// contenitore raggiunge ogni variante a struttura, che qui sono tutte: una
+/// variante unitaria lo eluderebbe, e non va aggiunta senza un lettore
+/// dedicato (vedi [`SpatialPredicate`]).
 #[allow(clippy::derive_partial_eq_without_eq)] // Expression contiene f64
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Predicate {
     Eq {
         column: String,
@@ -186,7 +203,12 @@ pub fn spatial(
 
 /// Projection: tutte le colonne o lista esplicita.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum Projection {
     All,
     Columns(Vec<String>),
@@ -266,9 +288,13 @@ pub struct UpsertStatement {
 }
 
 /// Nodo top-level dell'AST portable.
+///
+/// Le varianti avvolgono struct con `deny_unknown_fields`, che con il tag
+/// interno ricevono il documento senza `type`: sono loro a rifiutare le
+/// chiavi sconosciute. L'attributo sul contenitore dichiara la stessa regola.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PortableStatement {
     Select(SelectStatement),
     Insert(InsertStatement),

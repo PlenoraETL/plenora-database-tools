@@ -63,3 +63,52 @@ fn format_markdown_renders_title_and_bullets() {
     assert!(stdout.contains("# profile-list"));
     assert!(stdout.contains("- **profiles**:"));
 }
+
+/// Scrive un documento in un file proprio del test e ne rende il percorso.
+fn portable_file(name: &str, document: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "plenora-database-cli-offline-{name}-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(&path, document).expect("scrittura del documento di prova");
+    path
+}
+
+/// Una chiave sconosciuta nell'AST portable si ferma alla lettura su
+/// entrambi i comandi che lo ricevono, prima di qualunque connessione: un
+/// `negate` ignorato rovescerebbe il filtro di un `DELETE`.
+#[test]
+fn portable_commands_refuse_an_unknown_key_in_the_ast() {
+    let valid = portable_file(
+        "portable-valid",
+        r#"{"type":"delete","table":{"name":"t"},"filter":{"op":"is_null","column":"a"}}"#,
+    );
+    let output = Command::new(BIN)
+        .args(["portable-compile", "postgres", valid.to_str().unwrap()])
+        .output()
+        .expect("spawn CLI");
+    assert!(output.status.success(), "il documento base deve compilare");
+
+    let refused = portable_file(
+        "portable-negate",
+        r#"{"type":"delete","table":{"name":"t"},"filter":{"op":"is_null","column":"a","negate":true}}"#,
+    );
+    let path = refused.to_str().unwrap();
+    for args in [
+        vec!["portable-compile", "postgres", path],
+        vec!["portable-execute", "PG_DSN", path],
+    ] {
+        let err = run_expect_error(&args);
+        assert_eq!(err["error"]["category"], "invalid_plan", "{args:?}");
+        let message = err["error"]["message"].as_str().unwrap_or("");
+        // Dentro un enum con tag interno serde legge da un buffer e non
+        // conserva la posizione: il messaggio dice lo slot, non la riga.
+        assert!(
+            message.contains("PORTABLE.json non parsabile"),
+            "{args:?}: {message}"
+        );
+        assert!(!message.contains("negate"), "{args:?}: {message}");
+    }
+    let _ = std::fs::remove_file(valid);
+    let _ = std::fs::remove_file(refused);
+}

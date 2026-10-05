@@ -23,11 +23,9 @@ fn describe_object_without_a_source_is_within_the_contract_and_outside_this_read
 /// L'altro verso **non** e una divergenza, ed e utile dirlo.
 ///
 /// Un `database.list_catalogs` con `source` e ammesso dallo schema, e il
-/// lettore lo accetta ignorando il campo: `deny_unknown_fields` non
-/// raggiunge le varianti unitarie di un enum con tag interno. Non e una
-/// falla — il contratto permette quel documento, e la variante non ha un
-/// oggetto su cui operare — ma e un comportamento che si legge male dal
-/// solo `deny_unknown_fields`, e resta scritto qui.
+/// lettore lo accetta e non lo conserva: la variante non ha un oggetto su cui
+/// operare. Il campo e dichiarato nella forma di lettura di `Operation`, quindi
+/// deve comunque essere un `ObjectRef` valido.
 #[test]
 fn list_catalogs_ignores_a_source_the_contract_allows() {
     let plan: Plan = serde_json::from_str(
@@ -593,4 +591,40 @@ fn a_null_max_rows_is_refused_and_an_absent_one_is_not() {
     serde_json::from_str::<Plan>(&plan(r#"{"max_rows":null}"#)).expect_err("null non e un tetto");
     let canonical = serde_json::to_value(&absent).unwrap();
     assert!(canonical["limits"].get("max_rows").is_none());
+}
+
+/// Le operazioni senza campi rifiutano le chiavi estranee come le altre.
+///
+/// Con il tag interno `deny_unknown_fields` non raggiunge le varianti
+/// unitarie: senza la forma di lettura dedicata un
+/// `database.test_connection` con chiavi che lo schema rifiuta veniva
+/// accettato, e un `source` di tipo sbagliato su `database.list_catalogs`
+/// passava senza essere guardato.
+#[test]
+fn operations_without_fields_refuse_unknown_keys() {
+    for operation in [
+        r#"{"id":"database.test_connection","x":1}"#,
+        r#"{"id":"database.test_connection","source":{"object":"t"}}"#,
+        r#"{"id":"database.list_catalogs","x":1}"#,
+        r#"{"id":"database.list_catalogs","source":5}"#,
+        r#"{"id":"database.list_catalogs","source":{"object":"t","x":1}}"#,
+    ] {
+        let plan = format!(
+            r#"{{"schema_version":2,"connection_ref":"env:DSN","provider":"postgres","operation":{operation}}}"#
+        );
+        assert!(
+            serde_json::from_str::<Plan>(&plan).is_err(),
+            "operazione accettata con una chiave fuori contratto: {operation}"
+        );
+    }
+    let plan: Plan = serde_json::from_str(
+        r#"{"schema_version":2,"connection_ref":"env:DSN","provider":"postgres",
+            "operation":{"id":"database.test_connection"}}"#,
+    )
+    .expect("operazione valida");
+    assert_eq!(plan.operation, Operation::DatabaseTestConnection);
+    assert_eq!(
+        serde_json::to_value(&plan.operation).unwrap(),
+        serde_json::json!({"id": "database.test_connection"})
+    );
 }

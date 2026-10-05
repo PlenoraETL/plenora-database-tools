@@ -303,8 +303,14 @@ pub struct WriteOperation {
     pub allow_partial: bool,
 }
 
+/// Operazione del piano.
+///
+/// La lettura passa da [`OperationWire`]: con il tag interno
+/// `deny_unknown_fields` non raggiunge le varianti unitarie, e un
+/// `database.test_connection` con chiavi estranee, che lo schema rifiuta,
+/// verrebbe accettato. La forma serializzata non cambia.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "id", deny_unknown_fields)]
+#[serde(tag = "id", from = "OperationWire")]
 pub enum Operation {
     #[serde(rename = "database.test_connection")]
     DatabaseTestConnection,
@@ -326,6 +332,57 @@ pub enum Operation {
         #[serde(flatten)]
         write: WriteOperation,
     },
+}
+
+/// Forma di lettura di [`Operation`]: le varianti senza campi sono struct,
+/// cosi `deny_unknown_fields` rifiuta anche le loro chiavi sconosciute.
+///
+/// `database.list_catalogs` ammette `source` perche lo schema lo ammette per
+/// tutte le ispezioni; la variante non ha un oggetto su cui operare e il
+/// valore, validato come `ObjectRef`, non viene conservato.
+#[allow(clippy::enum_variant_names)] // specchio dei nomi di `Operation`
+#[derive(Deserialize)]
+#[serde(tag = "id", deny_unknown_fields)]
+enum OperationWire {
+    #[serde(rename = "database.test_connection")]
+    DatabaseTestConnection {},
+    #[serde(rename = "database.list_catalogs")]
+    DatabaseListCatalogs {
+        #[serde(default, rename = "source")]
+        _source: Option<ObjectRef>,
+    },
+    #[serde(rename = "database.list_schemas")]
+    DatabaseListSchemas { source: Option<ObjectRef> },
+    #[serde(rename = "database.list_objects")]
+    DatabaseListObjects { source: Option<ObjectRef> },
+    #[serde(rename = "database.describe_object")]
+    DatabaseDescribeObject { source: ObjectRef },
+    #[serde(rename = "database.read")]
+    DatabaseRead {
+        #[serde(flatten)]
+        read: ReadOperation,
+    },
+    #[serde(rename = "database.write")]
+    DatabaseWrite {
+        #[serde(flatten)]
+        write: WriteOperation,
+    },
+}
+
+impl From<OperationWire> for Operation {
+    fn from(wire: OperationWire) -> Self {
+        match wire {
+            OperationWire::DatabaseTestConnection {} => Self::DatabaseTestConnection,
+            OperationWire::DatabaseListCatalogs { .. } => Self::DatabaseListCatalogs,
+            OperationWire::DatabaseListSchemas { source } => Self::DatabaseListSchemas { source },
+            OperationWire::DatabaseListObjects { source } => Self::DatabaseListObjects { source },
+            OperationWire::DatabaseDescribeObject { source } => {
+                Self::DatabaseDescribeObject { source }
+            }
+            OperationWire::DatabaseRead { read } => Self::DatabaseRead { read },
+            OperationWire::DatabaseWrite { write } => Self::DatabaseWrite { write },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
