@@ -23,8 +23,10 @@ pub(crate) async fn bulk_write(args: &mut impl Iterator<Item = String>) -> CliRe
     let input_path = args.next().ok_or("manca il percorso INPUT.arrow")?;
     let dry_run = parse_dry_run(args)?;
 
+    // Il percorso e un argomento posizionale e non entra nel messaggio: in
+    // quello slot puo finire una DSN o un token (`DatabaseError::message`).
     let contents = fs::read(&write_op_path)
-        .map_err(|_| format!("WRITE_OP.json non leggibile: {write_op_path}"))?;
+        .map_err(|error| format!("WRITE_OP.json non leggibile: {}", error.kind()))?;
     let operation: WriteOperation = serde_json::from_slice(&contents).map_err(|e| {
         format!(
             "WRITE_OP.json non parsabile a riga {}, colonna {}",

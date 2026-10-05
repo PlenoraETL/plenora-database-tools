@@ -825,3 +825,25 @@ fn structured_provider_factories_accept_an_explicit_nonzero_port() {
         );
     }
 }
+
+/// Un artifact temporaneo non rimovibile si segnala con il tipo dell'errore
+/// di I/O, non con il suo testo: il `Display` di `io::Error` e del sistema
+/// operativo e puo ripetere percorsi e dati.
+#[test]
+fn a_staging_cleanup_failure_names_the_error_kind_not_its_text() {
+    let error = std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "testo-del-sistema-operativo",
+    );
+    let message = staging_cleanup_failure(
+        "rollback artifact temporaneo fallito",
+        Path::new(".out.arrow.partial-1-0"),
+        &error,
+    );
+    assert!(message.contains("permission denied"), "{message}");
+    assert!(message.contains(".out.arrow.partial-1-0"), "{message}");
+    assert!(
+        !message.contains("testo-del-sistema-operativo"),
+        "{message}"
+    );
+}

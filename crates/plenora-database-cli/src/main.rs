@@ -1868,10 +1868,10 @@ async fn write_stream_to_ipc(
                         ErrorPhase::Cleanup,
                         RemoteEffect::Partial,
                         RetryDisposition::RequiresRecovery,
-                        format!(
-                            "rollback artifact temporaneo fallito; recovery richiesta per {}: \
-                             {cleanup_error}",
-                            temporary.display()
+                        staging_cleanup_failure(
+                            "rollback artifact temporaneo fallito",
+                            &temporary,
+                            &cleanup_error,
                         ),
                     ));
                 }
@@ -1902,10 +1902,10 @@ async fn write_stream_to_ipc(
                 ErrorPhase::Cleanup,
                 RemoteEffect::Partial,
                 RetryDisposition::RequiresRecovery,
-                format!(
-                    "publish fallito e rollback artifact temporaneo fallito; recovery richiesta \
-                     per {}: {cleanup_error}",
-                    temporary.display()
+                staging_cleanup_failure(
+                    "publish fallito e rollback artifact temporaneo fallito",
+                    &temporary,
+                    &cleanup_error,
                 ),
             )),
         };
@@ -1929,6 +1929,19 @@ async fn write_stream_to_ipc(
         "durability": durability,
         "staging_cleanup": staging_cleanup,
     }))
+}
+
+/// Il messaggio di un artifact temporaneo che non si e potuto rimuovere.
+///
+/// Porta il percorso dell'artifact, che serve alla recovery, e il tipo
+/// dell'errore di I/O, non il suo `Display`: quello e testo del sistema
+/// operativo, che `DatabaseError::message` non ammette.
+fn staging_cleanup_failure(context: &str, temporary: &Path, error: &std::io::Error) -> String {
+    format!(
+        "{context}; recovery richiesta per {}: {}",
+        temporary.display(),
+        error.kind()
+    )
 }
 
 #[cfg(unix)]
