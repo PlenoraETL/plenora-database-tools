@@ -690,6 +690,55 @@ class CiWorkflowTests(unittest.TestCase):
             "la matrice moltiplica i job, e con essi i download della cache",
         )
 
+    def test_build_tests_and_sdk_run_on_linux_and_windows(self) -> None:
+        """Clippy, test e suite SDK girano su entrambe le piattaforme distribuite.
+
+        Prima Windows si vedeva solo al rilascio: un difetto di piattaforma
+        arrivava su `main` verde e si scopriva costruendo la release.
+        """
+
+        workflow = (WORKFLOW_DIRECTORY / "rust-ci.yml").read_text(encoding="utf-8")
+        jobs = parsed_jobs(workflow)
+        for name in ("check", "test-unit", "sdk-offline"):
+            job = jobs[name]
+            self.assertEqual(job["runs-on"], "${{ matrix.os }}", name)
+            self.assertEqual(
+                job["strategy"]["matrix"]["os"],
+                ["ubuntu-latest", "windows-latest"],
+                name,
+            )
+            self.assertNotIn("if", job, name)
+            self.assertIs(job["strategy"].get("fail-fast"), False, name)
+            # Solo la preparazione di sistema puo dipendere dalla piattaforma:
+            # un gate condizionato non girerebbe su una delle due.
+            for step in job["steps"]:
+                if "if" in step:
+                    self.assertIn("apt-get", step.get("run", ""), name)
+
+    def test_library_code_has_an_anti_panic_gate(self) -> None:
+        """Le primitive di panico sono vietate nelle librerie, e il gate gira."""
+
+        workflow = (WORKFLOW_DIRECTORY / "rust-ci.yml").read_text(encoding="utf-8")
+        steps = [
+            step
+            for step in parsed_jobs(workflow)["check"]["steps"]
+            if "--lib" in step.get("run", "") and "cargo clippy" in step.get("run", "")
+        ]
+        self.assertEqual(len(steps), 1, "manca il clippy anti-panic sulle librerie")
+        gate = steps[0]
+        self.assertNotIn("if", gate)
+        self.assertTrue(qualifies(gate))
+        for lint in (
+            "-D warnings",
+            "-D clippy::unwrap_used",
+            "-D clippy::expect_used",
+            "-D clippy::panic",
+            "-D clippy::unreachable",
+        ):
+            self.assertIn(lint, gate["run"])
+        self.assertIn("--workspace", gate["run"])
+        self.assertIn("--all-features", gate["run"])
+
     def test_the_static_job_runs_every_serverless_self_test(self) -> None:
         """I self-test che non chiedono un server girano a ogni push."""
 
