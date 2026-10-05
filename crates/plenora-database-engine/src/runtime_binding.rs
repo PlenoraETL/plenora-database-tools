@@ -68,9 +68,11 @@ const MAX_DEADLINE_HORIZON: Duration = Duration::from_hours(365 * 24);
 /// Limite della chiave di idempotenza («opaque bounded key», RB §4).
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
 
-/// Chiavi riservate di una richiesta (RB §3, §4). Una chiave `plenora.*`
-/// fuori da questo elenco non e un alias di una riservata e non si ignora:
-/// si rifiuta (matrice runtime, caso 8, proposta).
+/// Chiavi riservate di una richiesta (RB §3, §4).
+///
+/// Una chiave `plenora.*` sconosciuta si ignora, come ogni membro facoltativo sconosciuto (RB §9):
+/// non e un alias di una riservata, e un controllo dichiarato ma non
+/// supportato si rifiuta per RT-006.
 pub const MESSAGE_ID: &str = "plenora.message.id";
 pub const CAUSATION_ID: &str = "plenora.message.causation_id";
 pub const CAPABILITY_NAME_KEY: &str = "plenora.capability.name";
@@ -81,19 +83,6 @@ pub const INPUT_CONTRACT: &str = "plenora.input.contract";
 pub const DEADLINE: &str = "plenora.execution.deadline";
 pub const IDEMPOTENCY_KEY: &str = "plenora.execution.idempotency_key";
 pub const CORRELATION_ID: &str = "plenora.trace.correlation_id";
-const RESERVED_REQUEST_KEYS: [&str; 10] = [
-    MESSAGE_ID,
-    CAUSATION_ID,
-    CAPABILITY_NAME_KEY,
-    CAPABILITY_VERSION,
-    OPERATION,
-    OPERATION_VERSION,
-    INPUT_CONTRACT,
-    DEADLINE,
-    IDEMPOTENCY_KEY,
-    CORRELATION_ID,
-];
-
 /// Il documento Capability Discovery 2.0 della superficie runtime.
 #[must_use]
 pub fn runtime_capabilities() -> PublicCapabilities {
@@ -108,15 +97,16 @@ pub fn entrypoint(operation: &str, version: u32) -> String {
 
 /// Richiesta runtime: content type, metadati e payload JSON.
 ///
-/// I metadati sono la mappa del messaggio cosi come arriva: stringhe, come
-/// vuole `runtime-vector-v1`. La validazione (chiavi riservate, forme
+/// I metadati sono la mappa del messaggio cosi come arriva, di qualunque
+/// tipo JSON: un valore riservato che non e una stringa e malformato
+/// (RT-017) e si rifiuta con un risultato, non con un errore di lettura. La validazione (chiavi riservate, forme
 /// canoniche, valori annunciati) e dell'ammissione, che risponde con un
 /// risultato d'errore invece di fallire nella deserializzazione.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeInvocation {
     pub content_type: String,
-    pub metadata: BTreeMap<String, String>,
+    pub metadata: BTreeMap<String, Value>,
     pub payload: Value,
 }
 
@@ -127,9 +117,8 @@ impl RuntimeInvocation {
     ///
     /// # Errors
     ///
-    /// `Protocol` per JSON non valido, chiavi ripetute, chiavi sconosciute o
-    /// un metadato che non e una stringa (anche `null`, che non vale
-    /// assente). Il messaggio porta riga e colonna, mai il testo.
+    /// `Protocol` per JSON non valido, chiavi ripetute o chiavi sconosciute
+    /// dell'envelope. Il messaggio porta riga e colonna, mai il testo.
     pub fn from_json(bytes: &[u8]) -> Result<Self> {
         strict_json::from_slice(bytes).map_err(|error| {
             route_error(
@@ -143,8 +132,27 @@ impl RuntimeInvocation {
         })
     }
 
+    /// Il valore stringa di un metadato; `None` se assente o non stringa.
     fn get(&self, key: &str) -> Option<&str> {
-        self.metadata.get(key).map(String::as_str)
+        self.metadata.get(key).and_then(Value::as_str)
+    }
+
+    /// Un metadato facoltativo: assente, oppure una stringa che soddisfa
+    /// `grammar`. Presente ma non stringa (anche `null`) o fuori grammatica:
+    /// malformato.
+    fn optional(&self, key: &str, grammar: fn(&str) -> bool) -> Result<Option<&str>> {
+        match self.metadata.get(key) {
+            None => Ok(None),
+            Some(Value::String(text)) if grammar(text) => Ok(Some(text)),
+            Some(_) => Err(protocol("metadato runtime facoltativo malformato")),
+        }
+    }
+
+    /// Un metadato obbligatorio: una stringa che soddisfa `grammar`.
+    fn required(&self, key: &str, grammar: fn(&str) -> bool) -> Result<&str> {
+        self.get(key)
+            .filter(|value| grammar(value))
+            .ok_or_else(|| protocol("metadato runtime obbligatorio assente o malformato"))
     }
 }
 
@@ -719,93 +727,70 @@ impl Connected {
     }
 }
 
-/// Routing e controlli prima di qualunque resolver o provider (RT-004,
-/// RT-005, RT-006, RT-011, RT-012), secondo la matrice runtime comune:
+/// Routing e controlli prima di qualunque resolver o provider: RT-004,
+/// RT-005, RT-006, RT-011, RT-012 e i chiarimenti RT-016..RT-023 proposti in
+/// `plenora-contracts` #21 (non ancora normativi a `1e902df`).
 ///
-/// - ogni rifiuto ha `phase: validate`, `remote_effect: none`,
-///   `retry: never` (R3, R4);
-/// - un valore assente, malformato o non canonico e `protocol`; un valore
-///   ben formato ma non annunciato dalla discovery e `unsupported` (R1).
-///
-/// R1, R2 e R3 sono proposte della matrice in attesa di ratifica in
-/// `plenora-contracts`: RT-004 ammette entrambe le categorie senza criterio.
+/// Ogni rifiuto ha `phase: validate`, `remote_effect: none`, `retry: never`
+/// (RT-016). La categoria e la prima che si applica (RT-018): `protocol` se
+/// una chiave riservata e assente, non stringa o fuori grammatica (RT-017);
+/// `unsupported` se tutto e ben formato ma non corrisponde all'operazione
+/// annunciata, al content type o ai controlli; `timeout` se la deadline e
+/// gia trascorsa.
 fn admit(invocation: &RuntimeInvocation) -> Result<Admitted> {
-    let (message_id, correlation_id, causation) = admit_identities(invocation)?;
-    match invocation.get(CAPABILITY_NAME_KEY) {
-        Some(CAPABILITY_NAME) => {}
-        Some(name) if well_formed_capability_name(name) => {
-            return Err(unsupported(
-                "capability runtime non servita da questo componente",
-            ));
-        }
-        _ => return Err(protocol("plenora.capability.name assente o malformato")),
+    // 1. Grammatica (RT-017): protocol.
+    let message_id = invocation.required(MESSAGE_ID, canonical_uuid)?;
+    let correlation_id = invocation.required(CORRELATION_ID, canonical_uuid)?;
+    let causation = invocation.optional(CAUSATION_ID, canonical_uuid)?;
+    let capability_name = invocation.required(CAPABILITY_NAME_KEY, well_formed_capability_name)?;
+    let capability_version = invocation.required(CAPABILITY_VERSION, canonical_version)?;
+    let requested = invocation.required(OPERATION, well_formed_operation)?;
+    let version = invocation.required(OPERATION_VERSION, canonical_version)?;
+    let contract = invocation.required(INPUT_CONTRACT, well_formed_contract)?;
+    let deadline = invocation.optional(DEADLINE, utc_deadline)?;
+    let idempotency_key = invocation.optional(IDEMPOTENCY_KEY, bounded_key)?;
+    if !well_formed_media_type(&invocation.content_type) {
+        return Err(protocol("content type malformato"));
     }
-    match invocation.get(CAPABILITY_VERSION) {
-        Some(version) if canonical_version(version) => {
-            if version != RUNTIME_BINDING_VERSION.to_string() {
-                return Err(unsupported("versione del binding runtime non supportata"));
-            }
-        }
-        _ => {
-            return Err(protocol(
-                "plenora.capability.version assente o non canonica",
-            ))
-        }
+
+    // 2. Corrispondenza con la discovery (RT-004, RT-005, RT-006, RT-011):
+    // unsupported.
+    if capability_name != CAPABILITY_NAME
+        || capability_version != RUNTIME_BINDING_VERSION.to_string()
+    {
+        return Err(unsupported(
+            "capability runtime non servita da questo binding",
+        ));
     }
-    let requested = invocation
-        .get(OPERATION)
-        .filter(|value| well_formed_operation(value))
-        .ok_or_else(|| protocol("plenora.capability.operation assente o malformato"))?;
     let operation = runtime_capabilities()
         .operations
         .into_iter()
-        .find(|operation| operation.id == requested)
-        .ok_or_else(|| unsupported("operazione runtime non annunciata"))?;
-    let version = invocation
-        .get(OPERATION_VERSION)
-        .filter(|value| canonical_version(value))
-        .ok_or_else(|| protocol("plenora.operation.version assente o non canonica"))?;
-    if version != operation.version.to_string() {
+        .find(|operation| operation.id == requested && operation.version.to_string() == version)
+        .ok_or_else(|| unsupported("operazione o versione runtime non annunciata"))?;
+    if contract != operation.input.contract {
         return Err(unsupported(
-            "versione dell'operazione runtime non annunciata",
+            "contratto d'ingresso diverso da quello dell'operazione",
         ));
-    }
-    match invocation.get(INPUT_CONTRACT) {
-        Some(contract) if contract == operation.input.contract => {}
-        Some(contract) if well_formed_contract(contract) => {
-            return Err(unsupported(
-                "contratto d'ingresso diverso da quello dell'operazione",
-            ));
-        }
-        _ => return Err(protocol("plenora.input.contract assente o malformato")),
     }
     // L'envelope porta il documento JSON della richiesta; per
     // `database.write` i dati Arrow, che il catalogo dichiara fra i content
     // type d'ingresso, arrivano dal resolver come sulla CLI da `--data`.
     if invocation.content_type != JSON_CONTENT_TYPE {
-        return Err(if well_formed_media_type(&invocation.content_type) {
-            unsupported("content type non accettato dal binding per l'operazione")
-        } else {
-            protocol("content type malformato")
-        });
+        return Err(unsupported(
+            "content type non accettato dal binding per l'operazione",
+        ));
     }
-    if let Some(key) = invocation.get(IDEMPOTENCY_KEY) {
-        if key.is_empty() || key.len() > MAX_IDEMPOTENCY_KEY_BYTES {
-            return Err(protocol("chiave di idempotenza vuota o oltre il limite"));
-        }
-        if !operation.controls.idempotency_key {
-            return Err(unsupported(
-                "l'operazione non accetta chiavi di idempotenza",
-            ));
-        }
+    if idempotency_key.is_some() && !operation.controls.idempotency_key {
+        return Err(unsupported(
+            "l'operazione non accetta chiavi di idempotenza",
+        ));
     }
-    let deadline = match invocation.get(DEADLINE) {
-        None => None,
-        Some(_) if !operation.controls.deadline => {
-            return Err(unsupported("l'operazione non accetta una deadline"));
-        }
-        Some(text) => Some(deadline_instant(text)?),
-    };
+    if deadline.is_some() && !operation.controls.deadline {
+        return Err(unsupported("l'operazione non accetta una deadline"));
+    }
+
+    // 3. Deadline gia trascorsa (RT-021): timeout.
+    let deadline = deadline.map(deadline_instant).transpose()?;
     Ok(Admitted {
         request: RuntimeRequest {
             message_id: message_id.to_owned(),
@@ -819,54 +804,29 @@ fn admit(invocation: &RuntimeInvocation) -> Result<Admitted> {
     })
 }
 
-/// Chiavi `plenora.*` non riservate rifiutate, poi le identita (RT-012):
-/// `message.id` e correlazione obbligatorie, causazione facoltativa, tutte
-/// UUID canonici; una forma alternativa non e un alias.
-fn admit_identities(invocation: &RuntimeInvocation) -> Result<(&str, &str, Option<&str>)> {
-    if invocation
-        .metadata
-        .keys()
-        .any(|key| key.starts_with("plenora.") && !RESERVED_REQUEST_KEYS.contains(&key.as_str()))
-    {
-        return Err(protocol(
-            "metadato plenora.* non riservato dal binding runtime 1.0",
-        ));
-    }
-    let message_id = invocation
-        .get(MESSAGE_ID)
-        .filter(|value| canonical_uuid(value));
-    let correlation_id = invocation
-        .get(CORRELATION_ID)
-        .filter(|value| canonical_uuid(value));
-    let causation = invocation.get(CAUSATION_ID);
-    let (Some(message_id), Some(correlation_id)) = (message_id, correlation_id) else {
-        return Err(protocol(
-            "le identita runtime devono essere UUID canonici minuscoli con trattini",
-        ));
-    };
-    if causation.is_some_and(|value| !canonical_uuid(value)) {
-        return Err(protocol(
-            "le identita runtime devono essere UUID canonici minuscoli con trattini",
-        ));
-    }
-    Ok((message_id, correlation_id, causation))
+/// RT-022: una chiave non vuota entro il limite.
+const fn bounded_key(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_IDEMPOTENCY_KEY_BYTES
 }
 
-/// Una deadline assoluta RFC 3339 in UTC, convertita in un istante monotono.
-///
-/// Grammatica (matrice runtime, caso 7, proposta P per cio che RB §4 non
-/// fissa): `AAAA-MM-GGThh:mm:ss[.f{1,9}]Z`, `T` e `Z` maiuscole, nessun
-/// offset (nemmeno `+00:00`), nessun secondo intercalare. Gia scaduta
-/// (`deadline <= now`): `timeout`, `validate`, `none`, `never`.
+/// RT-021: un istante RFC 3339 in UTC. Si accetta ogni grafia RFC 3339 di
+/// UTC (`Z` o `z`, `+00:00`, `T` o `t`, frazioni); si rifiutano un offset
+/// diverso da zero e `-00:00` (offset locale sconosciuto in RFC 3339 §4.3).
+/// Lo spazio al posto di `T` non e nella grammatica di RFC 3339 §5.6.
+fn utc_deadline(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    matches!(bytes.get(10), Some(b'T' | b't'))
+        && !text.ends_with("-00:00")
+        && chrono::DateTime::parse_from_rfc3339(text)
+            .is_ok_and(|value| value.offset().local_minus_utc() == 0)
+}
+
+/// Una deadline gia validata da [`utc_deadline`], convertita in un istante
+/// monotono. Gia trascorsa (`deadline <= now`): `timeout`, `validate`,
+/// `none`, `never` (RT-021).
 fn deadline_instant(text: &str) -> Result<Instant> {
-    if !deadline_grammar(text) {
-        return Err(protocol(
-            "plenora.execution.deadline deve essere AAAA-MM-GGThh:mm:ss[.f]Z in UTC",
-        ));
-    }
     let parsed = chrono::DateTime::parse_from_rfc3339(text)
-        .ok()
-        .ok_or_else(|| protocol("plenora.execution.deadline non e una data di calendario"))?;
+        .map_err(|_| protocol("plenora.execution.deadline non e un istante RFC 3339"))?;
     // Secondi e nanosecondi separati: `timestamp_nanos_opt` sta in un `i64`
     // solo fino al 2262, e una deadline valida oltre quella data non e un
     // errore di protocollo.
@@ -885,40 +845,6 @@ fn deadline_instant(text: &str) -> Result<Instant> {
     Instant::now()
         .checked_add(remaining.min(MAX_DEADLINE_HORIZON))
         .ok_or_else(|| internal("orologio monotono fuori intervallo"))
-}
-
-/// `AAAA-MM-GGThh:mm:ss[.f{1,9}]Z`, secondi al piu 59.
-fn deadline_grammar(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let digits = |range: std::ops::Range<usize>| {
-        bytes
-            .get(range)
-            .is_some_and(|part| part.iter().all(u8::is_ascii_digit))
-    };
-    let fixed = bytes.len() >= 20
-        && digits(0..4)
-        && bytes.get(4) == Some(&b'-')
-        && digits(5..7)
-        && bytes.get(7) == Some(&b'-')
-        && digits(8..10)
-        && bytes.get(10) == Some(&b'T')
-        && digits(11..13)
-        && bytes.get(13) == Some(&b':')
-        && digits(14..16)
-        && bytes.get(16) == Some(&b':')
-        && digits(17..19)
-        && bytes.get(17).is_some_and(|tens| *tens <= b'5')
-        && bytes.last() == Some(&b'Z');
-    if !fixed {
-        return false;
-    }
-    match bytes.get(19..bytes.len() - 1) {
-        Some([]) => true,
-        Some([b'.', fraction @ ..]) => {
-            (1..=9).contains(&fraction.len()) && fraction.iter().all(u8::is_ascii_digit)
-        }
-        _ => false,
-    }
 }
 
 fn deadline_expired() -> DatabaseError {
@@ -1113,6 +1039,8 @@ fn error_result(identity: RuntimeResultMetadata, error: &DatabaseError) -> Runti
 /// L'identita del risultato secondo R2: dei valori della richiesta si
 /// copiano, byte per byte, solo quelli canonici.
 fn result_identity(invocation: &RuntimeInvocation) -> RuntimeResultMetadata {
+    // Solo stringhe ben formate, byte per byte (RT-019): `1` numerico o
+    // `"01"` non si riflettono.
     let canonical = |key: &str, test: fn(&str) -> bool| {
         invocation
             .get(key)

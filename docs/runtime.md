@@ -27,27 +27,32 @@ dichiara (RT-004).
 
 ## Richieste
 
-`RuntimeInvocation` porta `content_type`, i metadati (stringhe, come vuole
-`runtime-vector-v1`) e il payload JSON. `RuntimeBinding::invoke_json` legge il
+`RuntimeInvocation` porta `content_type`, i metadati (valori JSON di
+qualunque tipo: una chiave riservata che non è una stringa, `null` compreso, è
+malformata) e il payload JSON. `RuntimeBinding::invoke_json` legge il
 messaggio serializzato rifiutando le chiavi ripetute. Un messaggio che non si
-legge (JSON invalido, metadati `null` o non stringa) produce comunque un
-risultato d'errore `protocol`, senza valori riflessi.
+legge affatto produce comunque un risultato d'errore `protocol`, senza valori
+riflessi.
 
 Le regole di ammissione seguono la matrice runtime comune alle quattro
-librerie. Ogni rifiuto avviene prima di qualunque resolver, con
-`phase: validate`, `remote_effect: none` e `retry: never`. La categoria
-dipende dal valore ricevuto: `unsupported` se il valore è ben formato secondo
-`runtime-vector-v1` ma non è annunciato dalla discovery; `protocol` se è
-assente, malformato o non canonico (`"01"`, `"+1"`, UUID maiuscoli, una chiave
-`plenora.*` che il binding non riserva). In dettaglio:
+librerie e i chiarimenti RT-016..RT-023 proposti in `plenora-contracts` #21.
+Ogni rifiuto avviene prima di qualunque resolver, con `phase: validate`,
+`remote_effect: none` e `retry: never` (RT-016). La categoria è la prima che
+si applica (RT-018): `protocol` se una chiave riservata è assente, non è una
+stringa o è fuori grammatica (`"01"`, `"+1"`, `1`, UUID maiuscoli);
+`unsupported` se tutto è ben formato ma non corrisponde a un'operazione
+annunciata dalla discovery, al content type o ai controlli; `timeout` se la
+deadline è già trascorsa. Una chiave `plenora.*` che il binding non riserva
+viene ignorata, come ogni membro facoltativo sconosciuto (RB §9). In
+dettaglio:
 
 | caso | esito |
 | --- | --- |
 | capability, versione del binding, operazione, versione d'operazione, input contract | `unsupported` se ben formati ma diversi da quelli annunciati, `protocol` altrimenti |
 | identità (`message.id`, correlazione, causazione) assenti o non canoniche | `protocol` (RT-012) |
 | content type | `application/json`; un media type ben formato diverso è `unsupported`, uno malformato è `protocol` |
-| `plenora.execution.idempotency_key` | vuota o oltre 256 byte: `protocol`; presente, poiché nessuna operazione la accetta: `unsupported` (RT-006) |
-| `plenora.execution.deadline` | solo `AAAA-MM-GGThh:mm:ss[.f{1,9}]Z`: niente offset (nemmeno `+00:00`), niente minuscole, niente secondo intercalare; altrimenti `protocol`. Già scaduta (`deadline <= now`): `timeout` |
+| `plenora.execution.idempotency_key` | `null`, vuota o oltre 256 byte: `protocol`; presente, poiché nessuna operazione la accetta: `unsupported` (RT-006, RT-022) |
+| `plenora.execution.deadline` | ogni grafia RFC 3339 di UTC (`Z` o `z`, `+00:00`, `T` o `t`, frazioni); un offset diverso da zero, `-00:00` o un valore che non è RFC 3339: `protocol`. Già scaduta (`deadline <= now`): `timeout` (RT-021) |
 | payload che non soddisfa l'input contract, deadline nel payload compresa | `invalid_configuration` |
 
 Il payload è il documento `plenora-database-*-input-v1` della CLI, letto dagli
@@ -97,12 +102,12 @@ Il contenuto per esito:
   resolver dell'applicazione passano categoria, fase, effetto e retry; il
   testo viene sostituito.
 
-Seguono proposte P della matrice, non ancora normate in `plenora-contracts`:
-la scelta fra `protocol` e `unsupported` (R1), che cosa riflettere nel
-risultato (R2), `retry: never` per i rifiuti (R3), la causazione del
-risultato, la grammatica della deadline, il rifiuto delle chiavi `plenora.*`
-non riservate, `invalid_configuration` per il payload e gli assi dopo un
-effetto sul sink.
+Seguono regole proposte e non ancora normative al pin `1e902df`, ratificate
+come chiarimenti in `plenora-contracts` #21: l'ordine fra `protocol`,
+`unsupported` e `timeout` (RT-017, RT-018), che cosa riflettere nel risultato
+(RT-019), `retry: never` per i rifiuti (RT-016), la causazione del risultato
+(RT-020), `invalid_configuration` per il payload (RT-023) e gli assi dopo un
+effetto sul sink (ERR-014).
 
 ## Limiti dichiarati
 
@@ -138,5 +143,10 @@ con un provider scriptato:
   vettore (`internal`, `commit`, `unknown`, `requires_recovery`).
 
 Il test confronta inoltre la discovery con il catalogo e con i binding del
-pin. Nel job `public-contract`, i risultati prodotti vengono validati con gli
+pin. Esegue anche le 21 sonde `vectors/runtime-probes-v1` di
+`plenora-contracts` #21, copiate in
+[`contracts/upstream/proposed`](../contracts/upstream/proposed/source.json) e
+fissate per SHA-256 al commit `4890d27`. Sono proposte, non ancora
+normative. Le sonde su altri componenti si eseguono con la stessa mutazione
+sulla richiesta database. Nel job `public-contract`, i risultati prodotti vengono validati con gli
 schemi del pin da `python scripts/check_runtime_evidence.py`.

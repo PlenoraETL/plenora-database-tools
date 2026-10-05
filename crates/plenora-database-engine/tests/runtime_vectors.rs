@@ -844,16 +844,6 @@ fn routing_mutations_of_the_read_request_fail_closed_before_invocation() {
             json!("{018f3d84-7b2c-7f00-8000-000000000101}"),
             "protocol",
         ),
-        (
-            "plenora.message.causationId",
-            json!("018f3d84-7b2c-7f00-8000-000000000109"),
-            "protocol",
-        ),
-        (
-            "plenora.correlation_id",
-            json!("018f3d84-7b2c-7f00-8000-000000000001"),
-            "protocol",
-        ),
         // Caso 7: deadline.
         (
             "plenora.execution.deadline",
@@ -862,17 +852,17 @@ fn routing_mutations_of_the_read_request_fail_closed_before_invocation() {
         ),
         (
             "plenora.execution.deadline",
-            json!("2030-01-01T00:00:00+00:00"),
-            "protocol",
-        ),
-        (
-            "plenora.execution.deadline",
             json!("2030-01-01T01:00:00+01:00"),
             "protocol",
         ),
         (
             "plenora.execution.deadline",
-            json!("2030-01-01t00:00:00z"),
+            json!("2030-01-01T00:00:00-00:00"),
+            "protocol",
+        ),
+        (
+            "plenora.execution.deadline",
+            json!(2_000_000_000),
             "protocol",
         ),
         // Caso 8: chiave di idempotenza.
@@ -882,7 +872,6 @@ fn routing_mutations_of_the_read_request_fail_closed_before_invocation() {
             "unsupported",
         ),
         ("plenora.execution.idempotency_key", json!(""), "protocol"),
-        ("plenora.idempotency_key", json!("key-1"), "protocol"),
     ];
     for (key, value, category) in cases {
         let mut metadata = read_metadata();
@@ -990,8 +979,8 @@ fn a_rejection_reflects_only_canonical_routing_values() {
     );
 }
 
-/// Un messaggio che non si legge produce comunque un risultato d'errore,
-/// senza valori riflessi: metadati `null` o non stringa, JSON invalido.
+/// Un messaggio con metadati `null` produce un rifiuto `protocol`; un
+/// messaggio che non si legge affatto produce comunque un risultato d'errore.
 #[test]
 fn an_unreadable_message_still_gets_an_error_result() {
     let host = Host::new(WriteScript::Committed);
@@ -1010,15 +999,49 @@ fn an_unreadable_message_still_gets_an_error_result() {
         .expect("json");
         let result = runtime().block_on(binding.invoke_json(&bytes, &CancellationToken::new()));
         assert_rejected(&host, &result, "protocol", key);
+        // RT-019: si riflettono i valori ben formati della richiesta; quello
+        // `null` no.
         let reflected = serde_json::to_value(&result.metadata).expect("json");
         assert_eq!(
-            reflected.as_object().map(serde_json::Map::len),
-            Some(2),
-            "solo message.id e output.contract: {reflected}"
+            reflected.get(key).is_some(),
+            key == "plenora.message.causation_id",
+            "{key}: {reflected}"
         );
     }
     let result = runtime().block_on(binding.invoke_json(b"{not json", &CancellationToken::new()));
     assert_rejected(&host, &result, "protocol", "JSON invalido");
+}
+
+/// Una chiave `plenora.*` che il binding non riserva si ignora, come ogni
+/// membro facoltativo sconosciuto (RB §9): non e un alias e non cambia
+/// l'esito. Ogni grafia RFC 3339 di UTC della deadline e accettata (RT-021).
+#[test]
+fn unknown_plenora_keys_are_ignored_and_utc_spellings_accepted() {
+    let host = Host::new(WriteScript::Committed);
+    for (key, value) in [
+        (
+            "plenora.message.causationId",
+            "018f3d84-7b2c-7f00-8000-000000000109",
+        ),
+        (
+            "plenora.correlation_id",
+            "018f3d84-7b2c-7f00-8000-000000000001",
+        ),
+        ("plenora.idempotency_key", "key-1"),
+        ("plenora.execution.deadline", "2999-01-01T00:00:00+00:00"),
+        ("plenora.execution.deadline", "2999-01-01t00:00:00z"),
+        ("plenora.execution.deadline", "2999-01-01T00:00:00.25Z"),
+    ] {
+        let mut metadata = read_metadata();
+        metadata[key] = json!(value);
+        let result = invoke(
+            &host,
+            &invocation(&json!(JSON_CONTENT_TYPE), &metadata, &read_payload()),
+        );
+        assert!(!result.is_error(), "{key}={value}: {:?}", result.body);
+        host.calls.take();
+        host.sink.lock().expect("lock").clear();
+    }
 }
 
 /// Caso 7c: la deadline viaggia solo nei metadati. Nel payload e un campo
@@ -1305,4 +1328,104 @@ fn a_repeated_key_in_the_invocation_is_rejected() {
             .category,
         ErrorCategory::Protocol
     );
+}
+
+// ------------------------------------------------- sonde proposte (#21)
+
+/// Un file delle sonde proposte, verificato contro il proprio SHA-256.
+///
+/// Le sonde `vectors/runtime-probes-v1` vengono da `plenora-contracts` #21
+/// (`4890d27`): sono **proposte, non ancora normative**, e il pin di adozione
+/// resta `1e902df`. Si eseguono adesso perche, quando la #21 entra in `main`,
+/// l'adozione sia immediata.
+fn proposed(name: &str) -> Value {
+    let root = contracts_root().join("upstream/proposed");
+    let source = read_json(&root.join("source.json"));
+    assert_eq!(source["status"], "proposed");
+    let bytes = fs::read(root.join(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
+    assert_eq!(
+        sha256_hex(&bytes),
+        source["files"][name]["sha256"]
+            .as_str()
+            .expect("sha256 dichiarato"),
+        "{name}: copia diversa dalla sonda fissata"
+    );
+    serde_json::from_slice(&bytes).expect("JSON")
+}
+
+/// Ogni sonda di `runtime-probes-v1` (RT-016..RT-022) produce il rifiuto che
+/// dichiara. Le sonde su `database-read-request` si eseguono come sono; le
+/// altre descrivono la stessa mutazione su un vettore di un altro
+/// componente, e si eseguono sulla richiesta database: gli assi d'errore sono
+/// quelli attesi, e i metadati riflessi sono quelli della richiesta database
+/// dove la sonda riflette il valore della propria base.
+#[test]
+fn proposed_runtime_probes_are_rejected_as_declared() {
+    let root = contracts_root().join("upstream/proposed");
+    let source = read_json(&root.join("source.json"));
+    let probes = source["files"]
+        .as_object()
+        .expect("files")
+        .keys()
+        .filter(|name| name.starts_with("runtime-probes-v1/"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(probes.len(), 21, "sonde della #21");
+    let ours = read_metadata();
+    let host = Host::new(WriteScript::Committed);
+    for name in probes {
+        let probe = proposed(&name);
+        assert_eq!(probe["contract"], "plenora-runtime-probe-v1");
+        let base_name = probe["base"].as_str().expect("base");
+        let base = proposed(&format!("runtime-v1/{base_name}"));
+        let mut metadata = ours.clone();
+        let mutation = probe["mutation"].as_object().expect("mutazione");
+        if let Some(set) = mutation.get("set").and_then(Value::as_object) {
+            for (key, value) in set {
+                metadata[key] = value.clone();
+            }
+        }
+        if let Some(key) = mutation.get("remove").and_then(Value::as_str) {
+            metadata.as_object_mut().expect("oggetto").remove(key);
+        }
+        let result = invoke(
+            &host,
+            &invocation(&json!(JSON_CONTENT_TYPE), &metadata, &read_payload()),
+        );
+        let expected = &probe["expected"];
+        assert_eq!(result.content_type, expected["content_type"], "{name}");
+        let error = json_body(&result);
+        for axis in ["category", "phase", "remote_effect", "retry"] {
+            assert_eq!(error[axis], expected["error"][axis], "{name}: {axis}");
+        }
+        assert!(host.calls.take().is_empty(), "{name}: invocato");
+        let mut reflected = serde_json::to_value(&result.metadata).expect("json");
+        let reflected = reflected.as_object_mut().expect("oggetto");
+        let message_id = reflected.remove("plenora.message.id").expect("message.id");
+        assert_ne!(
+            Some(&message_id),
+            metadata.get("plenora.message.id"),
+            "{name}"
+        );
+        let causation = reflected.remove("plenora.message.causation_id");
+        if let Some(causation) = causation {
+            assert_eq!(
+                Some(&causation),
+                metadata.get("plenora.message.id"),
+                "{name}"
+            );
+        }
+        let mut wanted = serde_json::Map::new();
+        for (key, value) in expected["metadata"].as_object().expect("metadati attesi") {
+            // Il valore della base dell'altro componente diventa il nostro.
+            let value =
+                if base["metadata"].get(key) == Some(value) && key != "plenora.output.contract" {
+                    ours[key].clone()
+                } else {
+                    value.clone()
+                };
+            wanted.insert(key.clone(), value);
+        }
+        assert_eq!(*reflected, wanted, "{name}");
+    }
 }

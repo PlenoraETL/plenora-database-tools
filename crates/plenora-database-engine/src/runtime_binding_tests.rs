@@ -105,32 +105,31 @@ fn artifact_references_are_opaque_uris() {
 }
 
 #[test]
-fn deadlines_follow_one_utc_grammar() {
+fn deadlines_accept_every_rfc3339_utc_spelling() {
+    // RT-021: ogni grafia RFC 3339 di UTC e accettata.
     for valid in [
         "2999-01-01T00:00:00Z",
+        "2999-01-01T00:00:00z",
+        "2999-01-01t00:00:00Z",
+        "2999-01-01T00:00:00+00:00",
         "2999-01-01T00:00:00.5Z",
         "2999-01-01T00:00:00.123456789Z",
     ] {
+        assert!(utc_deadline(valid), "{valid}");
         assert!(deadline_instant(valid).is_ok(), "{valid}");
     }
+    // Offset diverso da zero, `-00:00` (offset locale sconosciuto) e cio che
+    // non e RFC 3339.
     for invalid in [
-        "2999-01-01T00:00:00+00:00",
         "2999-01-01T00:00:00-00:00",
         "2999-01-01T01:00:00+01:00",
-        "2999-01-01t00:00:00Z",
-        "2999-01-01T00:00:00z",
         "2999-01-01 00:00:00Z",
-        "2999-01-01T00:00:00.Z",
-        "2999-01-01T00:00:00.1234567890Z",
-        "2999-12-31T23:59:60Z",
         "2999-02-30T00:00:00Z",
         "2999-01-01",
         "tomorrow",
         "2999-01-01T00:00:00",
     ] {
-        let error = deadline_instant(invalid).unwrap_err();
-        assert_eq!(error.category, ErrorCategory::Protocol, "{invalid}");
-        assert_eq!(error.retry, RetryDisposition::Never, "{invalid}");
+        assert!(!utc_deadline(invalid), "{invalid}");
     }
     let expired = deadline_instant("2000-01-01T00:00:00Z").unwrap_err();
     assert_eq!(expired.category, ErrorCategory::Timeout);
@@ -140,24 +139,27 @@ fn deadlines_follow_one_utc_grammar() {
 }
 
 #[test]
-fn a_null_metadata_value_is_not_an_absent_one() {
-    let base = serde_json::json!({
-        "content_type": "application/json",
-        "metadata": {"plenora.message.id": REQUEST},
-        "payload": {},
-    });
-    assert!(RuntimeInvocation::from_json(base.to_string().as_bytes()).is_ok());
-    for key in [
-        "plenora.execution.deadline",
-        "plenora.execution.idempotency_key",
-        "plenora.message.causation_id",
-    ] {
-        let mut with_null = base.clone();
-        with_null["metadata"][key] = Value::Null;
-        let error = RuntimeInvocation::from_json(with_null.to_string().as_bytes())
+fn a_null_metadata_value_is_malformed_not_absent() {
+    let mut invocation = RuntimeInvocation {
+        content_type: JSON_CONTENT_TYPE.to_owned(),
+        metadata: BTreeMap::new(),
+        payload: Value::Null,
+    };
+    for key in [DEADLINE, IDEMPOTENCY_KEY, CAUSATION_ID] {
+        invocation.metadata.insert(key.to_owned(), Value::Null);
+        let error = invocation
+            .optional(key, |_| true)
             .expect_err("null letto come assente");
         assert_eq!(error.category, ErrorCategory::Protocol, "{key}");
+        invocation.metadata.clear();
+        assert_eq!(invocation.optional(key, |_| true).unwrap(), None);
     }
+    invocation
+        .metadata
+        .insert(OPERATION_VERSION.to_owned(), Value::from(1));
+    assert!(invocation
+        .required(OPERATION_VERSION, canonical_version)
+        .is_err());
 }
 
 #[test]

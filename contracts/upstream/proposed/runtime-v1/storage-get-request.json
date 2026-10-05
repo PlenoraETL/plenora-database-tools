@@ -1,0 +1,36 @@
+{
+  "$schema": "../../schemas/runtime-vector-v1.schema.json",
+  "schema_version": 1,
+  "contract": "plenora-runtime-vector-v1",
+  "kind": "request",
+  "content_type": "application/json",
+  "metadata": {
+    "plenora.message.id": "018f3d84-7b2c-7f00-8000-000000000113",
+    "plenora.capability.name": "plenora.storage-tools",
+    "plenora.capability.version": "1",
+    "plenora.capability.operation": "storage.get",
+    "plenora.operation.version": "1",
+    "plenora.input.contract": "plenora-storage-get-input-v1",
+    "plenora.execution.deadline": "2030-01-01T00:00:00Z",
+    "plenora.trace.correlation_id": "018f3d84-7b2c-7f00-8000-000000000013"
+  },
+  "payload": {
+    "schema_version": 1,
+    "connection": {
+      "provider": "s3",
+      "config_contract": "plenora-storage-s3-connection-v1",
+      "config": {"endpoint": "https://s3.example.invalid", "bucket": "example"},
+      "credential_ref": "secret://storage/vector"
+    },
+    "key": "incoming/vector.bin",
+    "artifact_sink": {
+      "reference": "artifact://output/storage-get-vector",
+      "overwrite": false,
+      "metadata": {
+        "content_type": "application/octet-stream",
+        "size": 17,
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    }
+  }
+}
