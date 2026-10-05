@@ -111,6 +111,39 @@ class PublicContractIntegrationTests(unittest.TestCase):
             subprocess.run(command, capture_output=True, check=True)
             validate_manifest(gate.load(output), self.schema("adoption-manifest-v4.schema.json"))
 
+    def upstream_copy(self, directory):
+        """Una copia di `contracts/upstream` da alterare senza toccare il repository."""
+
+        import shutil
+
+        target = Path(directory) / "upstream"
+        shutil.copytree(gate.UPSTREAM, target)
+        return target
+
+    def test_upstream_copy_differing_from_the_pin_is_rejected(self):
+        with TemporaryDirectory() as directory:
+            upstream = self.upstream_copy(directory)
+            vector = upstream / "arrow-v1" / "resolved-point.json"
+            vector.write_bytes(vector.read_bytes().replace(b"4326", b"3857", 1))
+            with patch.object(gate, "UPSTREAM", upstream):
+                with self.assertRaisesRegex(RuntimeError, "copia diversa"):
+                    gate.check(self.contracts, self.cli)
+
+    def test_pinned_vector_without_an_executed_copy_is_rejected(self):
+        with TemporaryDirectory() as directory:
+            upstream = self.upstream_copy(directory)
+            source = json.loads((upstream / "source.json").read_text(encoding="utf-8"))
+            del source["files"]["arrow-v1/missing-crs.json"]
+            (upstream / "source.json").write_text(json.dumps(source), encoding="utf-8")
+            with patch.object(gate, "UPSTREAM", upstream):
+                with self.assertRaisesRegex(RuntimeError, "senza copia eseguita"):
+                    gate.check(self.contracts, self.cli)
+
+    def test_manifest_with_declared_deviations_passes_the_pinned_validator(self):
+        document = self.document()
+        self.assertTrue(document["deviations"])
+        validate_manifest(document, self.schema("adoption-manifest-v4.schema.json"))
+
     def test_wrong_pin_fails_closed(self):
         with TemporaryDirectory() as directory:
             source = Path(directory) / "source.json"

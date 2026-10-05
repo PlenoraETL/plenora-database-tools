@@ -3,7 +3,7 @@
   "component": "plenora-database-tools",
   "contracts_source": {
     "repository": "https://github.com/PlenoraETL/plenora-contracts.git",
-    "revision": "f811f21f072b34896efdb6e110bee34d756153df"
+    "revision": "1e902dfaab5819c1d9ce785878d5b26dbeae48b3"
   },
   "profile": "plenora-database-tools-profile-v1",
   "contracts": [
@@ -18,5 +18,30 @@
     "plenora-surface-bindings-v1",
     "plenora-composition-v1"
   ],
-  "not_applicable": ["plenora-runtime-binding-v1"]
+  "not_applicable": [
+    "plenora-runtime-binding-v1"
+  ],
+  "deviations": [
+    {
+      "rule": "SURF-007",
+      "surface": "cli",
+      "observed_behavior": "READ.json and WRITE.json operation documents accept null for optional fields that plan.schema.json types without null (ObjectRef catalog/schema, row_limit, row_offset, filter, srid_policy, spatial parameters) and read it as absent.",
+      "tracking": "https://github.com/PlenoraETL/plenora-database-tools/issues/106",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "SURF-007",
+      "surface": "python_sdk",
+      "observed_behavior": "The relational IR sends null for absent optional fields (filter without .where(), ObjectRef catalog/schema) and the reader accepts it as absent, although plan.schema.json does not admit null there.",
+      "tracking": "https://github.com/PlenoraETL/plenora-database-tools/issues/106",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "SURF-007",
+      "surface": "rust",
+      "observed_behavior": "plan::Plan, ReadOperation, WriteOperation and ObjectRef deserialize null as absent in optional fields that plan.schema.json types without null, and serialize absent fields as null.",
+      "tracking": "https://github.com/PlenoraETL/plenora-database-tools/issues/106",
+      "detectable_before_invocation": true
+    }
+  ]
 }

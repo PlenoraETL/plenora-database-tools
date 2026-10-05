@@ -41,7 +41,12 @@ delle operazioni possedute da questo repository sono nel
 [`bundle pubblico`](contracts/v2/public-operation-contracts.schema.json); il
 gate black-box li confronta con quel pin in CI.
 I controlli semantici caricati dallo stesso checkout verificano le capability
-del CLI e il manifest di adozione prima della pubblicazione. Le regressioni
+del CLI e il manifest di adozione prima della pubblicazione. I vettori del pin
+che il componente esegue sono copiati byte per byte in
+[`contracts/upstream`](contracts/upstream/source.json), con il loro SHA-256;
+il gate rifiuta una copia diversa dal checkout o un vettore del pin senza
+copia. Le deviazioni dal profilo sono dichiarate in `adoption-source.json`
+accanto al pin, e il manifest le riporta. Le regressioni
 del confine sono eseguite dal job `public-contract` di `rust-ci`; il generatore
 del manifest applica gli stessi controlli nel workflow di release.
 La mappa versionata della superficie Rust e prodotta dallo stesso catalogo in

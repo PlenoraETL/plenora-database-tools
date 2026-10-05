@@ -4,7 +4,8 @@
 //!
 //! `plan.schema.json` non ammette `null` nei campi opzionali, e questo
 //! lettore lo accetta come assenza. La deviazione dal contratto e
-//! dichiarata, campo per campo.
+//! dichiarata, campo per campo, e il manifest di adozione la riporta
+//! (SURF-007, `contracts/adoption-source.json`).
 //!
 //! - **Regola.** `catalog` e `schema` di [`ObjectRef`]; `row_limit`,
 //!   `row_offset` e `filter` di [`ReadOperation`]; `srid_policy` di
