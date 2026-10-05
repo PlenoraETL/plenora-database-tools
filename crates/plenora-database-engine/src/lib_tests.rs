@@ -23,11 +23,9 @@ fn describe_object_without_a_source_is_within_the_contract_and_outside_this_read
 /// L'altro verso **non** e una divergenza, ed e utile dirlo.
 ///
 /// Un `database.list_catalogs` con `source` e ammesso dallo schema, e il
-/// lettore lo accetta ignorando il campo: `deny_unknown_fields` non
-/// raggiunge le varianti unitarie di un enum con tag interno. Non e una
-/// falla — il contratto permette quel documento, e la variante non ha un
-/// oggetto su cui operare — ma e un comportamento che si legge male dal
-/// solo `deny_unknown_fields`, e resta scritto qui.
+/// lettore lo accetta e non lo conserva: la variante non ha un oggetto su cui
+/// operare. Il campo e dichiarato nella forma di lettura di `Operation`, quindi
+/// deve comunque essere un `ObjectRef` valido.
 #[test]
 fn list_catalogs_ignores_a_source_the_contract_allows() {
     let plan: Plan = serde_json::from_str(
@@ -528,5 +526,105 @@ fn rejects_inline_dsn() {
     assert_eq!(
         error.category,
         plenora_database_core::ErrorCategory::InvalidPlan
+    );
+}
+
+/// Un piano con le opzioni a `null`, nella forma in cui lo scrivono la CLI,
+/// lo SDK e il serializzatore Rust.
+const PLAN_WITH_NULLS: &str = r#"{"schema_version":2,"connection_ref":"env:DSN","provider":"postgres",
+    "operation":{"id":"database.read",
+                 "source":{"catalog":null,"schema":null,"object":"eventi"},
+                 "order_by":[{"field":"id","direction":"asc"}],
+                 "row_limit":null,"row_offset":null,"filter":null}}"#;
+
+/// `null` vale assente nei campi opzionali del piano: e la deviazione
+/// dichiarata in `plenora_database_core::plan`, e questa prova la fissa.
+/// Se il lettore cominciasse a rifiutarla, i consumatori che la mandano
+/// smetterebbero di funzionare senza che nessun documento lo dica.
+#[test]
+fn null_options_in_a_plan_read_as_absent() {
+    let with_nulls: Plan = serde_json::from_str(PLAN_WITH_NULLS).expect("null come assente");
+    let absent: Plan = serde_json::from_str(
+        r#"{"schema_version":2,"connection_ref":"env:DSN","provider":"postgres",
+            "operation":{"id":"database.read","source":{"object":"eventi"},
+                         "order_by":[{"field":"id","direction":"asc"}]}}"#,
+    )
+    .expect("campi assenti");
+    assert_eq!(with_nulls, absent);
+
+    for operation in [
+        r#"{"id":"database.list_schemas","source":null}"#,
+        r#"{"id":"database.list_objects","source":null}"#,
+        r#"{"id":"database.write","target":{"object":"t"},"mode":"append",
+            "mapping_policy":"strict","transaction_profile":"single_transaction",
+            "srid_policy":null}"#,
+    ] {
+        let plan = format!(
+            r#"{{"schema_version":2,"connection_ref":"env:DSN","provider":"postgres","operation":{operation}}}"#
+        );
+        serde_json::from_str::<Plan>(&plan)
+            .unwrap_or_else(|error| panic!("null come assente rifiutato: {error}"));
+    }
+
+    // Il serializzatore scrive proprio questa forma, e il round-trip deve
+    // restare chiuso: e la ragione per cui il lettore non la rifiuta.
+    let canonical = serde_json::to_value(&absent).unwrap();
+    assert_eq!(canonical["operation"]["filter"], serde_json::Value::Null);
+    let reparsed: Plan = serde_json::from_value(canonical).expect("round-trip");
+    assert_eq!(reparsed, absent);
+}
+
+/// `max_rows` invece distingue: assente vale «nessun tetto», `null` si
+/// rifiuta. Lo schema non lo ammette e il serializzatore non lo scrive.
+#[test]
+fn a_null_max_rows_is_refused_and_an_absent_one_is_not() {
+    let plan = |limits: &str| {
+        format!(
+            r#"{{"schema_version":2,"connection_ref":"env:DSN","provider":"postgres",
+                "operation":{{"id":"database.test_connection"}},"limits":{limits}}}"#
+        )
+    };
+    let absent: Plan = serde_json::from_str(&plan("{}")).expect("tetto assente");
+    assert_eq!(absent.limits.max_rows, None);
+    let bounded: Plan = serde_json::from_str(&plan(r#"{"max_rows":5}"#)).expect("tetto");
+    assert_eq!(bounded.limits.max_rows, Some(5));
+    serde_json::from_str::<Plan>(&plan(r#"{"max_rows":null}"#)).expect_err("null non e un tetto");
+    let canonical = serde_json::to_value(&absent).unwrap();
+    assert!(canonical["limits"].get("max_rows").is_none());
+}
+
+/// Le operazioni senza campi rifiutano le chiavi estranee come le altre.
+///
+/// Con il tag interno `deny_unknown_fields` non raggiunge le varianti
+/// unitarie: senza la forma di lettura dedicata un
+/// `database.test_connection` con chiavi che lo schema rifiuta veniva
+/// accettato, e un `source` di tipo sbagliato su `database.list_catalogs`
+/// passava senza essere guardato.
+#[test]
+fn operations_without_fields_refuse_unknown_keys() {
+    for operation in [
+        r#"{"id":"database.test_connection","x":1}"#,
+        r#"{"id":"database.test_connection","source":{"object":"t"}}"#,
+        r#"{"id":"database.list_catalogs","x":1}"#,
+        r#"{"id":"database.list_catalogs","source":5}"#,
+        r#"{"id":"database.list_catalogs","source":{"object":"t","x":1}}"#,
+    ] {
+        let plan = format!(
+            r#"{{"schema_version":2,"connection_ref":"env:DSN","provider":"postgres","operation":{operation}}}"#
+        );
+        assert!(
+            serde_json::from_str::<Plan>(&plan).is_err(),
+            "operazione accettata con una chiave fuori contratto: {operation}"
+        );
+    }
+    let plan: Plan = serde_json::from_str(
+        r#"{"schema_version":2,"connection_ref":"env:DSN","provider":"postgres",
+            "operation":{"id":"database.test_connection"}}"#,
+    )
+    .expect("operazione valida");
+    assert_eq!(plan.operation, Operation::DatabaseTestConnection);
+    assert_eq!(
+        serde_json::to_value(&plan.operation).unwrap(),
+        serde_json::json!({"id": "database.test_connection"})
     );
 }

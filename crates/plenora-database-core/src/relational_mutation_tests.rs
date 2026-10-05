@@ -251,3 +251,38 @@ fn unsupported_dml_expression_fails_closed() {
 
     assert!(compile_relational_mutation(ProviderKind::Postgres, &operation).is_err());
 }
+
+/// Una mutazione relazionale con `filter` assente o `null` non emette
+/// `WHERE`: e il limite dichiarato su `DeleteOperation::filter`, e lo SDK lo
+/// usa di proposito per una mutazione senza `.where()`. La prova fissa la
+/// semantica su ogni provider che compila la mutazione.
+#[test]
+fn a_mutation_with_a_null_filter_touches_every_row() {
+    let documents = [
+        r#"{"type":"delete","target":{"object":"users"}}"#,
+        r#"{"type":"delete","target":{"object":"users"},"filter":null}"#,
+        r#"{"type":"update","target":{"object":"users"},
+            "assignments":[{"column":"name","value":{"kind":"parameter","name":"n"}}]}"#,
+        r#"{"type":"update","target":{"object":"users"},
+            "assignments":[{"column":"name","value":{"kind":"parameter","name":"n"}}],
+            "filter":null}"#,
+    ];
+    for document in documents {
+        let operation: MutationOperation = serde_json::from_str(document).expect("mutazione");
+        for provider in [
+            ProviderKind::Postgres,
+            ProviderKind::Mysql,
+            ProviderKind::Mariadb,
+            ProviderKind::Sqlserver,
+            ProviderKind::Db2,
+        ] {
+            let lowered = compile_relational_mutation(provider, &operation)
+                .unwrap_or_else(|error| panic!("{provider:?}: {}", error.message));
+            assert!(
+                !lowered.sql.contains("WHERE"),
+                "{provider:?}: {}",
+                lowered.sql
+            );
+        }
+    }
+}

@@ -485,6 +485,16 @@ struct CanonicalTarget {
     provider_arguments: Vec<String>,
 }
 
+/// Richiesta di `list-schemas`.
+///
+/// Le richieste canoniche sono descritte da
+/// `contracts/v2/public-operation-contracts.schema.json`. `catalog` ammette
+/// `null` per schema (`listSchemasInput`, `listObjectsInput`,
+/// `describeObjectInput`), e `null` vale il catalogo predefinito come
+/// l'assenza. `parameters_path` invece e solo una stringa (`readInput`,
+/// `queryInput`), e nessun produttore del repository ne dei vettori di
+/// `plenora-contracts` lo scrive a `null`: si rifiuta, vedi
+/// [`present_not_null`].
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CanonicalListSchemasRequest {
@@ -521,7 +531,7 @@ struct CanonicalReadRequest {
     #[serde(flatten)]
     target: CanonicalTarget,
     operation_path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_not_null")]
     parameters_path: Option<String>,
 }
 
@@ -577,8 +587,21 @@ struct CanonicalQueryRequest {
     #[serde(flatten)]
     target: CanonicalTarget,
     operation_path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_not_null")]
     parameters_path: Option<String>,
+}
+
+/// Legge un campo opzionale distinguendo l'assenza da `null`.
+///
+/// Con `#[serde(default)]` l'assenza la decide il default, e questa funzione
+/// riceve solo un valore presente, che quindi non puo essere `null`. Serve
+/// ai campi che lo schema pubblico ammette solo come stringa: accettare
+/// `null` come assenza sarebbe una tolleranza fuori contratto non dichiarata.
+fn present_not_null<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
 }
 
 fn no_extra_arguments(args: &mut impl Iterator<Item = String>) -> CliResult<()> {

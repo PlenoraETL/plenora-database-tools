@@ -83,8 +83,18 @@ pub trait BatchStream: Send {
     }
 }
 
+/// Valore bindato.
+///
+/// Viaggia nei documenti di controllo (letterali dell'AST portable,
+/// `PARAMETERS.json`), quindi rifiuta le chiavi sconosciute sia accanto a
+/// `type`/`value` sia dentro le varianti a struttura.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum ParameterValue {
     Bool(bool),
     I32(i32),
