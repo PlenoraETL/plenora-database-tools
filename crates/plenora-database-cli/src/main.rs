@@ -265,9 +265,6 @@ pub(crate) type CliResult<T> = std::result::Result<T, CliError>;
 
 static IPC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-const IPC_DEFAULT_MAX_ROWS: u64 = 10_000_000;
-const IPC_DEFAULT_MAX_OUTPUT_BYTES: u64 = 10 * 1024 * 1024 * 1024;
-const IPC_DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 #[cfg(any(
     feature = "postgres",
     feature = "mysql",
@@ -1626,12 +1623,7 @@ async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
 
 #[cfg(feature = "postgres")]
 fn parse_ipc_options(args: &mut impl Iterator<Item = String>) -> CliResult<IpcOptions> {
-    let mut limits = ResourceLimits {
-        rows: IPC_DEFAULT_MAX_ROWS,
-        output_bytes: IPC_DEFAULT_MAX_OUTPUT_BYTES,
-        duration_ms: IPC_DEFAULT_TIMEOUT_MS,
-        ..ResourceLimits::default()
-    };
+    let mut limits = public_ops::read_limits();
     let mut order_by = Vec::new();
     let mut projection: Vec<String> = Vec::new();
     let mut filter: Option<plenora_database_core::plan::FilterExpression> = None;
