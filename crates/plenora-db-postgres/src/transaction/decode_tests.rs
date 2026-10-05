@@ -93,3 +93,15 @@ fn numeric_truncated_digits_is_rejected() {
     buf.truncate(10); // 8 header + 2 = 10 (invece di 12).
     assert!(NumericDecoded::from_sql(&Type::NUMERIC, &buf).is_err());
 }
+
+#[test]
+fn numeric_digit_outside_base_10000_is_rejected() {
+    // Prima della verifica, `-1` diventava "-001" e `10000` cinque cifre in
+    // una posizione da quattro: un numero plausibile e sbagliato.
+    for digit in [-1_i16, 10_000] {
+        let raw = build_numeric(2, 1, 0, 0, &[1, digit]);
+        assert!(NumericDecoded::from_sql(&Type::NUMERIC, &raw).is_err());
+        let fraction = build_numeric(2, 0, 0, 4, &[1, digit]);
+        assert!(NumericDecoded::from_sql(&Type::NUMERIC, &fraction).is_err());
+    }
+}

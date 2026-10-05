@@ -11,6 +11,16 @@ use std::sync::Arc;
 use tokio_postgres::types::Type;
 
 /// Decodifica un batch di righe condividendo l'array dei nomi colonna.
+/// Accoda una cifra base-10000 con gli zeri a sinistra fino a quattro cifre,
+/// come `{:04}`, senza passare da `fmt::Write` e dal suo `Result`.
+fn push_four_digits(out: &mut String, chunk: u16) {
+    let digits = chunk.to_string();
+    for _ in digits.len()..4 {
+        out.push('0');
+    }
+    out.push_str(&digits);
+}
+
 pub(super) fn decode_rows(rows: &[tokio_postgres::Row]) -> Result<Vec<Row>> {
     if rows.is_empty() {
         return Ok(Vec::new());
@@ -77,7 +87,6 @@ impl<'a> tokio_postgres::types::FromSql<'a> for NumericDecoded {
         _ty: &Type,
         raw: &'a [u8],
     ) -> std::result::Result<Self, Box<dyn std::error::Error + Sync + Send>> {
-        use std::fmt::Write;
         if raw.len() < 8 {
             return Err(format!("NUMERIC payload troppo corto: {} byte < 8", raw.len()).into());
         }
@@ -111,7 +120,14 @@ impl<'a> tokio_postgres::types::FromSql<'a> for NumericDecoded {
         for i in 0..ndigits {
             let hi = raw[8 + i * 2];
             let lo = raw[8 + i * 2 + 1];
-            digits.push(i16::from_be_bytes([hi, lo]));
+            // Ogni cifra base-10000 sta in [0, 9999]. Una fuori intervallo e un
+            // payload corrotto: formattata darebbe un numero plausibile e
+            // sbagliato ("-001", cinque cifre), quindi si rifiuta.
+            let digit = u16::from_be_bytes([hi, lo]);
+            if digit > 9999 {
+                return Err("NUMERIC digit fuori dall'intervallo base-10000".into());
+            }
+            digits.push(digit);
         }
 
         // Caso zero puro: ndigits = 0. La stringa è "0" (o "0.000..." se dscale > 0).
@@ -136,7 +152,7 @@ impl<'a> tokio_postgres::types::FromSql<'a> for NumericDecoded {
                 if integer_part.is_empty() {
                     integer_part.push_str(&chunk.to_string());
                 } else {
-                    write!(integer_part, "{chunk:04}").expect("String write");
+                    push_four_digits(&mut integer_part, chunk);
                 }
             }
         }
@@ -154,7 +170,7 @@ impl<'a> tokio_postgres::types::FromSql<'a> for NumericDecoded {
                 let digit_idx = i32::from(weight) - pos;
                 let value = usize::try_from(digit_idx).ok().and_then(|i| digits.get(i));
                 let chunk = value.copied().unwrap_or(0);
-                write!(fraction_part, "{chunk:04}").expect("String write");
+                push_four_digits(&mut fraction_part, chunk);
             }
             fraction_part.truncate(dscale);
             while fraction_part.len() < dscale {

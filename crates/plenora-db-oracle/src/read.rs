@@ -695,15 +695,19 @@ fn validate_geometry(
             "geometry Oracle oltre il limite cella",
         ));
     }
-    if numeric_u32(srid)? != column.spatial_srid.expect("geometry con SRID") {
+    let catalog_srid = column
+        .spatial_srid
+        .ok_or_else(|| mapping("geometry Oracle senza SRID nel catalogo"))?;
+    let catalog_dimensions = column
+        .spatial_dimensions
+        .ok_or_else(|| mapping("geometry Oracle senza dimensioni nel catalogo"))?;
+    if numeric_u32(srid)? != catalog_srid {
         return Err(read_error(
             ErrorCategory::Crs,
             "SRID geometry Oracle diverso dal catalogo",
         ));
     }
-    if numeric_u32(dimensions)?
-        != u32::from(column.spatial_dimensions.expect("geometry con dimensioni"))
-    {
+    if numeric_u32(dimensions)? != u32::from(catalog_dimensions) {
         return Err(mapping("dimensioni geometry Oracle diverse dal catalogo"));
     }
     let remaining = component_limit.saturating_sub(*components);

@@ -199,12 +199,11 @@ pub fn validate_context_key(name: &str) -> crate::Result<()> {
         ));
     }
     let dot_count = name.chars().filter(|c| *c == '.').count();
-    if dot_count != 1 {
+    let Some((namespace, local)) = name.split_once('.').filter(|_| dot_count == 1) else {
         return Err(crate::DatabaseError::invalid_plan(
             "il nome del context di sessione richiede formato `namespace.name`",
         ));
-    }
-    let (namespace, local) = name.split_once('.').expect("dot presente");
+    };
     if namespace.is_empty() || local.is_empty() {
         return Err(crate::DatabaseError::invalid_plan(
             "namespace e nome locale del context di sessione non possono essere vuoti",
@@ -217,7 +216,11 @@ pub fn validate_context_key(name: &str) -> crate::Result<()> {
 
 fn validate_identifier_segment(segment: &str) -> crate::Result<()> {
     let mut chars = segment.chars();
-    let first = chars.next().expect("controllato non vuoto");
+    let Some(first) = chars.next() else {
+        return Err(crate::DatabaseError::invalid_plan(
+            "namespace e nome locale del context di sessione non possono essere vuoti",
+        ));
+    };
     if !(first.is_ascii_lowercase() || first == '_') {
         return Err(crate::DatabaseError::invalid_plan(
             "segmento del context deve iniziare con lettera minuscola o underscore",

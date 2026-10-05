@@ -34,8 +34,9 @@ pub(super) fn build_begin_sql(options: &TransactionOptions) -> String {
     let mut sql = parts.join(" ");
     sql.push(';');
     if let Some(ms) = options.statement_timeout_ms {
-        use std::fmt::Write;
-        write!(sql, " SET LOCAL statement_timeout = {ms};").expect("write to String non fallisce");
+        sql.push_str(" SET LOCAL statement_timeout = ");
+        sql.push_str(&ms.to_string());
+        sql.push(';');
     }
     sql
 }

@@ -254,8 +254,8 @@ async fn probe_uuid_roundtrip(
     .await
     .map_err(|e| format!("uuid: {}", e.message))?;
     let _ = tx.rollback(cancel).await;
-    match &row[0] {
-        ParameterValue::Uuid(s) if s == "12345678-1234-1234-1234-123456789012" => Ok(()),
+    match row.get_index(0) {
+        Some(ParameterValue::Uuid(s)) if s == "12345678-1234-1234-1234-123456789012" => Ok(()),
         other => Err(format!("uuid inatteso: {other:?}")),
     }
 }
@@ -280,9 +280,9 @@ async fn probe_decimal_roundtrip(
     .await
     .map_err(|e| format!("decimal query: {}", e.message))?;
     let _ = tx.rollback(cancel).await;
-    match &row[0] {
-        ParameterValue::Decimal(v) if v == "123.456" => Ok(()),
-        ParameterValue::Decimal(other) => Err(format!(
+    match row.get_index(0) {
+        Some(ParameterValue::Decimal(v)) if v == "123.456" => Ok(()),
+        Some(ParameterValue::Decimal(other)) => Err(format!(
             "decimal roundtrip: atteso \"123.456\", ottenuto {other:?}"
         )),
         other => Err(format!("atteso Decimal, ottenuto {other:?}")),
@@ -307,8 +307,8 @@ async fn probe_timestamptz_roundtrip(
     .await
     .map_err(|e| format!("timestamptz: {}", e.message))?;
     let _ = tx.rollback(cancel).await;
-    match &row[0] {
-        ParameterValue::TimestampTz(_) => Ok(()),
+    match row.get_index(0) {
+        Some(ParameterValue::TimestampTz(_)) => Ok(()),
         other => Err(format!("timestamptz inatteso: {other:?}")),
     }
 }

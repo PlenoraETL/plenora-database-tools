@@ -111,7 +111,7 @@ impl AsyncTransaction {
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let mut guard = locked_tx(&inner).await?;
-            let tx = guard.as_mut().expect("guard checked non-None");
+            let tx = guard.as_mut().ok_or_else(tx_closed_error)?;
             let cancel = CancellationToken::new();
             tx.execute(&statement, &cancel).await.map_err(to_py_err)
         })
@@ -129,7 +129,7 @@ impl AsyncTransaction {
         future_into_py(py, async move {
             let rows: Vec<Row> = {
                 let mut guard = locked_tx(&inner).await?;
-                let tx = guard.as_mut().expect("guard checked non-None");
+                let tx = guard.as_mut().ok_or_else(tx_closed_error)?;
                 let cancel = CancellationToken::new();
                 tx.query(&statement, &cancel).await.map_err(to_py_err)?
             };
@@ -153,7 +153,7 @@ impl AsyncTransaction {
         future_into_py(py, async move {
             let rows: Vec<Row> = {
                 let mut guard = locked_tx(&inner).await?;
-                let tx = guard.as_mut().expect("guard checked non-None");
+                let tx = guard.as_mut().ok_or_else(tx_closed_error)?;
                 let cancel = CancellationToken::new();
                 tx.query(&statement, &cancel).await.map_err(to_py_err)?
             };
@@ -177,7 +177,7 @@ impl AsyncTransaction {
         future_into_py(py, async move {
             let rows = {
                 let mut guard = locked_tx(&inner).await?;
-                let tx = guard.as_mut().expect("guard checked non-None");
+                let tx = guard.as_mut().ok_or_else(tx_closed_error)?;
                 let cancel = CancellationToken::new();
                 tx.execute_graph(&statement, &cancel)
                     .await
@@ -199,7 +199,7 @@ impl AsyncTransaction {
         future_into_py(py, async move {
             let rows: Vec<Row> = {
                 let mut guard = locked_tx(&inner).await?;
-                let tx = guard.as_mut().expect("guard checked non-None");
+                let tx = guard.as_mut().ok_or_else(tx_closed_error)?;
                 let cancel = CancellationToken::new();
                 execute_portable_returning(&mut **tx, &ast, &cancel)
                     .await
@@ -218,7 +218,7 @@ impl AsyncTransaction {
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let mut guard = locked_tx(&inner).await?;
-            let tx = guard.as_mut().expect("guard checked non-None");
+            let tx = guard.as_mut().ok_or_else(tx_closed_error)?;
             let cancel = CancellationToken::new();
             execute_portable(&mut **tx, &ast, &cancel)
                 .await
@@ -253,7 +253,7 @@ impl AsyncTransaction {
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let mut guard = locked_tx(&inner).await?;
-            let tx = guard.as_mut().expect("guard checked non-None");
+            let tx = guard.as_mut().ok_or_else(tx_closed_error)?;
             let cancel = CancellationToken::new();
             let request = ConditionalUpdate {
                 update: &update_stmt,
@@ -270,7 +270,7 @@ impl AsyncTransaction {
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let mut guard = locked_tx(&inner).await?;
-            let tx = guard.as_mut().expect("guard checked non-None");
+            let tx = guard.as_mut().ok_or_else(tx_closed_error)?;
             let cancel = CancellationToken::new();
             tx.savepoint(&name, &cancel).await.map_err(to_py_err)
         })
@@ -284,7 +284,7 @@ impl AsyncTransaction {
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let mut guard = locked_tx(&inner).await?;
-            let tx = guard.as_mut().expect("guard checked non-None");
+            let tx = guard.as_mut().ok_or_else(tx_closed_error)?;
             let cancel = CancellationToken::new();
             tx.rollback_to_savepoint(&name, &cancel)
                 .await
@@ -296,7 +296,7 @@ impl AsyncTransaction {
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let mut guard = locked_tx(&inner).await?;
-            let tx = guard.as_mut().expect("guard checked non-None");
+            let tx = guard.as_mut().ok_or_else(tx_closed_error)?;
             let cancel = CancellationToken::new();
             tx.release_savepoint(&name, &cancel)
                 .await

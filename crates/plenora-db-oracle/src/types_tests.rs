@@ -29,7 +29,8 @@ fn geography_catalog_semantics_reaches_the_arrow_contract() {
     spatial.spatial_semantics = Some(SpatialSemantics::Geography);
     let field = OracleColumnSpec::from_catalog(&spatial)
         .expect("geography Oracle catalogata")
-        .arrow_field();
+        .arrow_field()
+        .expect("campo Arrow geography");
     assert_eq!(
         field.metadata().get(GEOMETRY_SPATIAL_SEMANTICS),
         Some(&"geography".to_owned())
@@ -48,4 +49,21 @@ fn timestamp_precision_is_generic_but_local_time_zone_stays_closed() {
 
     OracleColumnSpec::from_catalog(&column("TIMESTAMP(6) WITH LOCAL TIME ZONE"))
         .expect_err("TIMESTAMP WITH LOCAL TIME ZONE non qualificato");
+}
+
+#[test]
+fn geometry_spec_without_srid_is_an_error_not_a_panic() {
+    // Una spec costruita a mano, fuori da `from_catalog`, puo mancare dello
+    // SRID: prima `arrow_field` andava in panic, ora rifiuta con `Crs`.
+    let spec = OracleColumnSpec {
+        name: "SHAPE".to_owned(),
+        native_type: "SDO_GEOMETRY".to_owned(),
+        nullable: true,
+        kind: OracleColumnKind::Geometry,
+        spatial_srid: None,
+        spatial_dimensions: Some(2),
+        spatial_semantics: Some(SpatialSemantics::Geometry),
+    };
+    let error = spec.arrow_field().expect_err("geometry senza SRID");
+    assert_eq!(error.category, plenora_database_core::ErrorCategory::Crs);
 }

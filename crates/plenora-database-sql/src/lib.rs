@@ -1466,7 +1466,15 @@ impl Renderer {
                 self.render_query_expression(expression, binds)?,
                 if *negated { "NOT " } else { "" }
             )),
-            _ => unreachable!("chiamata soltanto per espressioni predicate"),
+            // Il chiamante instrada qui soltanto espressioni predicate; se
+            // l'instradamento cambiasse, la risposta resta un errore tipizzato
+            // e non un panico nel processo che ospita la libreria.
+            _ => Err(DatabaseError::new(
+                plenora_database_core::ErrorCategory::Internal,
+                ErrorPhase::Prepare,
+                None,
+                "espressione non predicato passata al renderer dei predicati",
+            )),
         }
     }
 

@@ -141,6 +141,10 @@ impl Row {
 impl Index<&str> for Row {
     type Output = ParameterValue;
 
+    #[allow(
+        clippy::panic,
+        reason = "il contratto di `Index` e panicare sull'assenza; la variante fallibile e pubblica"
+    )]
     fn index(&self, name: &str) -> &ParameterValue {
         self.get(name).unwrap_or_else(|| {
             panic!(
@@ -157,6 +161,10 @@ impl Index<&str> for Row {
 impl Index<usize> for Row {
     type Output = ParameterValue;
 
+    #[allow(
+        clippy::panic,
+        reason = "il contratto di `Index` e panicare sull'assenza; la variante fallibile e pubblica"
+    )]
     fn index(&self, index: usize) -> &ParameterValue {
         self.values.get(index).unwrap_or_else(|| {
             panic!(
