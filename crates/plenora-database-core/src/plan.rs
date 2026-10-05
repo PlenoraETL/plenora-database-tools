@@ -30,8 +30,9 @@
 //!   del fingerprint: una modifica da `contracts/v3/`.
 //!
 //! Dove il rifiuto non rompe nessun consumatore, `null` si rifiuta:
-//! [`Limits::max_rows`] e la sorgente di
-//! [`ReadCheckpoint`](crate::checkpoint::ReadCheckpoint).
+//! [`Limits::max_rows`], la sorgente di
+//! [`ReadCheckpoint`](crate::checkpoint::ReadCheckpoint) e, nella CLI,
+//! `parameters_path` delle richieste canoniche.
 
 use crate::limits::Limits;
 use crate::loss::MappingPolicy;

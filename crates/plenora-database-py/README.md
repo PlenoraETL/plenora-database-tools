@@ -884,13 +884,15 @@ e li verifica; un artefatto assente non è supporto implicito.
   sull'intera tabella senza errore. Una dichiarazione esplicita per queste
   mutazioni cambierebbe il contratto e richiede una nuova major. La regola è
   dichiarata su `DeleteOperation::filter` ed è fissata da prove.
-- **`null` come assente** — nei piani v2 e nelle richieste della CLI, un
-  campo opzionale a `null` vale assente, anche dove `plan.schema.json` non
-  ammette `null`. CLI, SDK e serializzatore Rust scrivono questa forma, e il
-  fingerprint del piano ne dipende. La deviazione è dichiarata in
-  `plenora_database_core::plan` e rientra con tipi distinti in
-  `contracts/v3/`. `limits.max_rows` e la sorgente di un `ReadCheckpoint`,
-  che nessuno scrive a `null`, lo rifiutano.
+- **`null` come assente** — nei piani v2 e nei documenti di operazione
+  della CLI (READ.json, WRITE.json), un campo opzionale a `null` vale
+  assente, anche dove `plan.schema.json` non ammette `null`. CLI, SDK e
+  serializzatore Rust scrivono questa forma, e il fingerprint del piano ne
+  dipende. La deviazione è dichiarata in `plenora_database_core::plan` e
+  rientra con tipi distinti in `contracts/v3/`. `limits.max_rows`, la
+  sorgente di un `ReadCheckpoint` e `parameters_path` delle richieste
+  canoniche, che nessuno scrive a `null`, lo rifiutano. `catalog` a `null`
+  nelle richieste canoniche è ammesso dallo schema pubblico.
 - **ORM-like** — non c'e lazy loading implicito. Le relationship verso chiavi
   composite richiedono un mapping FK esplicito. Il bulk DML non attraversa
   tabelle joined e non accetta join, grouping, ordering o paginazione.
