@@ -99,6 +99,10 @@ def check_sources(files: list[str], sources: list[str], root: str | None) -> Non
     matched: set[str] = set()
     for name in files:
         normalized = _slash(name)
+        # Un segmento `.` o `..` potrebbe uscire dal sorgente che il prefisso
+        # sembra indicare: un percorso cosi' non sostiene un verdetto.
+        if any(segment in {".", ".."} for segment in normalized.split("/")):
+            raise CoverageError("report: un file misurato ha un segmento . o ..")
         if prefix is not None:
             if not normalized.startswith(prefix):
                 raise CoverageError("report: un file misurato è fuori dalla radice")

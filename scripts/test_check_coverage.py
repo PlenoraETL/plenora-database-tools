@@ -111,6 +111,10 @@ class CoverageGateTests(unittest.TestCase):
             },
         }
         self.assertTrue(self.run_check(python_report, python_budget))
+        escaping = json.loads(json.dumps(python_report))
+        escaping["files"] = {"site/package/../other/module.py": {}}
+        with self.assertRaises(check_coverage.CoverageError):
+            self.run_check(escaping, python_budget)
         python_budget["surfaces"]["unit"]["minimum_percent"]["branches"] = 82.1
         self.assertFalse(self.run_check(python_report, python_budget))
 
@@ -152,6 +156,9 @@ class CoverageGateTests(unittest.TestCase):
             [{"filename": "/repo/src/lib.rs"}, {"filename": "/repo/vendor/x.rs"}],
             [{"filename": "/altro/src/lib.rs"}],
             [{"filename": "/repository/src/lib.rs"}],
+            [{"filename": "/repo/src/../vendor/geo/lib.rs"}],
+            [{"filename": "/repo/src/./lib.rs"}],
+            [{"filename": "\\repo\\src\\..\\vendor\\lib.rs"}],
             [{"filename": 3}],
         ):
             value = report()
