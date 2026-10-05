@@ -482,6 +482,29 @@ fn ipc_options_reject_zero_invalid_and_unknown_values() {
     }
 }
 
+/// Il percorso di `--filter` non entra nel messaggio: il valore di
+/// un'opzione con nome non e validato piu di un posizionale, e in quello
+/// slot puo finire una DSN.
+#[cfg(feature = "postgres")]
+#[test]
+fn an_unreadable_filter_file_does_not_repeat_its_path() {
+    let mut arguments = [
+        "--filter",
+        "postgres://utente:segreto@host/inesistente.json",
+    ]
+    .into_iter()
+    .map(str::to_owned);
+    let Err(CliError::Fatal(fatal)) = parse_ipc_options(&mut arguments) else {
+        panic!("un filtro non leggibile deve fallire come errore fatale");
+    };
+    assert!(
+        fatal.message.starts_with("--filter file non leggibile: "),
+        "{}",
+        fatal.message
+    );
+    assert!(!fatal.message.contains("segreto"), "{}", fatal.message);
+}
+
 #[cfg(feature = "postgres")]
 #[test]
 fn postgres_probe_parser_accepts_private_ca_and_complete_client_identity_env_names() {
@@ -861,4 +884,31 @@ fn structured_provider_factories_accept_an_explicit_nonzero_port() {
             kind
         );
     }
+}
+
+/// Un artifact temporaneo non rimovibile si segnala con il tipo dell'errore
+/// di I/O, non con il suo testo: il `Display` di `io::Error` e del sistema
+/// operativo e puo ripetere percorsi e dati.
+#[test]
+fn a_staging_cleanup_failure_names_the_error_kind_not_its_text() {
+    let error = std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "testo-del-sistema-operativo",
+    );
+    let message = staging_cleanup_failure(
+        "rollback artifact temporaneo fallito",
+        Path::new("segreto-dir")
+            .join(".segreto-output.arrow.partial-1-0")
+            .as_path(),
+        &error,
+    );
+    assert!(message.contains("permission denied"), "{message}");
+    // Il suffisso lo generiamo noi; directory e nome dell'output li ha
+    // scritti il chiamante e restano fuori.
+    assert!(message.contains(".partial-1-0`"), "{message}");
+    assert!(!message.contains("segreto"), "{message}");
+    assert!(
+        !message.contains("testo-del-sistema-operativo"),
+        "{message}"
+    );
 }

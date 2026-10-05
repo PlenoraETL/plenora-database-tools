@@ -73,7 +73,9 @@ fn build_runtime() -> std::result::Result<&'static Runtime, String> {
         .enable_all()
         .thread_name("plenora-py")
         .build()
-        .map_err(|error| format!("runtime tokio non avviabile: {error}"))?;
+        // Il tipo dell'errore, non il `Display`: quello di `io::Error` e
+        // testo del sistema operativo, non contesto operativo garantito.
+        .map_err(|error| format!("runtime tokio non avviabile: {}", error.kind()))?;
     // `set` fallisce solo se un'altra thread ha vinto la corsa: in quel caso
     // il runtime buono e il suo, e il nostro viene droppato. Va bene.
     drop(RT.set(built));

@@ -44,3 +44,21 @@ fn an_unknown_dialect_names_the_ones_that_exist() {
         );
     }
 }
+
+/// Un file non leggibile si segnala senza ripetere il percorso: e un
+/// argomento posizionale, e in quello slot puo finire una DSN.
+#[test]
+fn an_unreadable_plan_does_not_repeat_its_path() {
+    let path = "postgres://utente:segreto@host/inesistente.json";
+    let mut args = ["postgres".to_owned(), path.to_owned()].into_iter();
+    let error = portable_compile(&mut args).expect_err("file inesistente");
+    let crate::CliError::Fatal(fatal) = error else {
+        panic!("un file non leggibile non e un fallimento silenzioso");
+    };
+    assert!(
+        fatal.message.starts_with("PORTABLE.json non leggibile"),
+        "{}",
+        fatal.message
+    );
+    assert!(!fatal.message.contains("segreto"), "{}", fatal.message);
+}

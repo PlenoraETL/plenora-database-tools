@@ -51,8 +51,10 @@ pub(crate) fn portable_compile(args: &mut impl Iterator<Item = String>) -> CliRe
         .map(|(_, kind)| *kind)
         .ok_or_else(|| format!("provider sconosciuto: ammessi {names}"))?;
 
+    // Il percorso e un argomento posizionale e non entra nel messaggio: in
+    // quello slot puo finire una DSN o un token (`DatabaseError::message`).
     let contents = fs::read(&portable_path)
-        .map_err(|_| format!("PORTABLE.json non leggibile: {portable_path}"))?;
+        .map_err(|error| format!("PORTABLE.json non leggibile: {}", error.kind()))?;
     let ast: PortableStatement = serde_json::from_slice(&contents).map_err(|e| {
         format!(
             "PORTABLE.json non parsabile a riga {}, colonna {}",
