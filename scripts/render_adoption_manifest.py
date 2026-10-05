@@ -83,7 +83,10 @@ def manifest(
             {"id": contract, "status": "not_applicable"}
             for contract in source["not_applicable"]
         ],
-        "deviations": [],
+        # Le deviazioni sono dichiarate accanto al pin, non qui: un elenco
+        # fisso a vuoto renderebbe il manifest valido e falso appena il codice
+        # ne dichiara una.
+        "deviations": source["deviations"],
     }
 
 

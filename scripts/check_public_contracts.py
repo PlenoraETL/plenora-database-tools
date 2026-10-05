@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -18,6 +19,11 @@ except ModuleNotFoundError:  # esecuzione diretta da scripts/
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / "contracts" / "v2" / "public-operation-contracts.schema.json"
+UPSTREAM = ROOT / "contracts" / "upstream"
+# Le directory di vettori del pin che questo componente esegue per intero:
+# un vettore nuovo del pin che qui non ha una copia e un vettore che nessun
+# test esegue, e il gate lo rifiuta invece di ignorarlo.
+EXECUTED_VECTOR_SETS = {"arrow-v1": "vectors/arrow-v1"}
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -55,6 +61,39 @@ def validate(
     )
     if errors:
         raise RuntimeError(f"{label}: documento non conforme allo schema")
+
+
+def check_upstream_copies(contracts: Path, registry: Registry) -> int:
+    """Le copie in `contracts/upstream` sono quelle del pin, e complete.
+
+    I test Rust le leggono dal repository, con il loro SHA-256: senza questo
+    confronto una copia potrebbe venire da un'altra revisione o mancare del
+    tutto, e il test passerebbe su un insieme diverso da quello adottato.
+    """
+
+    source = load(UPSTREAM / "source.json")
+    pin = load(ROOT / "contracts" / "adoption-source.json")
+    if source["revision"] != pin["contracts_source"]["revision"]:
+        raise RuntimeError("copie upstream da una revisione diversa dal pin")
+    copied = {}
+    for name, entry in source["files"].items():
+        local = (UPSTREAM / name).read_bytes()
+        pinned = (contracts / entry["source"]).read_bytes()
+        if local != pinned:
+            raise RuntimeError(f"{name}: copia diversa dal checkout fissato")
+        if hashlib.sha256(local).hexdigest() != entry["sha256"]:
+            raise RuntimeError(f"{name}: SHA-256 dichiarato errato")
+        copied[entry["source"]] = name
+    for directory in EXECUTED_VECTOR_SETS.values():
+        for path in sorted((contracts / directory).glob("*.json")):
+            relative = path.relative_to(contracts).as_posix()
+            if relative not in copied:
+                raise RuntimeError(f"{relative}: vettore del pin senza copia eseguita")
+    vector_schema = load(contracts / "schemas" / "arrow-metadata-vector-v1.schema.json")
+    for relative, name in copied.items():
+        if relative.startswith("vectors/arrow-v1/"):
+            validate(load(UPSTREAM / name), vector_schema, name, registry)
+    return len(copied)
 
 
 def check(contracts: Path, cli: Path) -> dict[str, int]:
@@ -132,7 +171,10 @@ def check(contracts: Path, cli: Path) -> dict[str, int]:
     if schemas != referenced:
         raise RuntimeError("schemi component-owned incompleti o orfani")
 
+    upstream_copies = check_upstream_copies(contracts, registry)
+
     return {
+        "upstream_copies": upstream_copies,
         "cli_envelopes": 3,
         "operations": len(advertised),
         "component_schemas": len(schemas),

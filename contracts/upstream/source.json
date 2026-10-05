@@ -1,0 +1,22 @@
+{
+  "repository": "https://github.com/PlenoraETL/plenora-contracts.git",
+  "revision": "1e902dfaab5819c1d9ce785878d5b26dbeae48b3",
+  "files": {
+    "arrow-v1/invalid-missing-crs-with-id.json": {
+      "source": "vectors/arrow-v1/invalid-missing-crs-with-id.json",
+      "sha256": "9959cd8fccc704fcad53c10ba6ad1f878189eb9d371b362dd81d9d9db3b7db41"
+    },
+    "arrow-v1/invalid-unversioned-geometry.json": {
+      "source": "vectors/arrow-v1/invalid-unversioned-geometry.json",
+      "sha256": "e590d1448d322f4be82a3d9e7a595f2412ce3421d7ac52a95abd24fa53cffa1c"
+    },
+    "arrow-v1/missing-crs.json": {
+      "source": "vectors/arrow-v1/missing-crs.json",
+      "sha256": "6b6af3bdae1642c15197f89c94ba432c299b92dabb9817d33653243e3405f0a3"
+    },
+    "arrow-v1/resolved-point.json": {
+      "source": "vectors/arrow-v1/resolved-point.json",
+      "sha256": "767ba951ac6f3a8a2046b7468cfefdcf3ddb2c4f29f7e6ea93da0e9bf9411428"
+    }
+  }
+}
