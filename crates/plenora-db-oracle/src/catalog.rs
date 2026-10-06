@@ -400,7 +400,9 @@ fn build_indexes(rows: &[Row]) -> Result<Vec<OracleIndex>> {
                 spatial,
             });
         }
-        let index = indexes.last_mut().expect("indice appena inserito");
+        let Some(index) = indexes.last_mut() else {
+            return Err(mapping_error("indice Oracle assente dopo l'inserimento"));
+        };
         if index.spatial != spatial {
             return Err(mapping_error(
                 "indice Oracle con tipo incoerente fra colonne",

@@ -104,15 +104,14 @@ impl AsyncDatabaseSession {
         self.operation_cancellation.clone()
     }
 
-    fn transaction_backend(&self) -> TransactionBackend {
-        TransactionBackend::Engine(
-            Arc::clone(
-                self.engine_handle
-                    .as_ref()
-                    .expect("ensure_open garantisce la sessione Engine"),
-            ),
+    fn transaction_backend(&self) -> PyResult<TransactionBackend> {
+        let handle = self.engine_handle.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("sessione chiusa: aprine una nuova con engine.session()")
+        })?;
+        Ok(TransactionBackend::Engine(
+            Arc::clone(handle),
             self.cancellation(),
-        )
+        ))
     }
 }
 
@@ -183,7 +182,7 @@ impl AsyncDatabaseSession {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let statement = statement_from_python(sql, params.as_ref())?;
-        crate::async_session_ops::execute_with_backend(py, self.transaction_backend(), statement)
+        crate::async_session_ops::execute_with_backend(py, self.transaction_backend()?, statement)
     }
 
     #[pyo3(signature = (sql, params=None))]
@@ -197,7 +196,7 @@ impl AsyncDatabaseSession {
         let statement = statement_from_python(sql, params.as_ref())?;
         crate::async_session_ops::execute_scalar_with_backend(
             py,
-            self.transaction_backend(),
+            self.transaction_backend()?,
             statement,
         )
     }
@@ -213,7 +212,7 @@ impl AsyncDatabaseSession {
         let statement = statement_from_python(sql, params.as_ref())?;
         crate::async_session_ops::execute_rows_with_backend(
             py,
-            self.transaction_backend(),
+            self.transaction_backend()?,
             statement,
         )
     }
@@ -350,7 +349,7 @@ impl AsyncDatabaseSession {
         let ast = portable_from_json(ast_json)?;
         crate::async_session_ops::execute_portable_rows_with_backend(
             py,
-            self.transaction_backend(),
+            self.transaction_backend()?,
             ast,
         )
     }
@@ -365,7 +364,7 @@ impl AsyncDatabaseSession {
         let ast = portable_from_json(ast_json)?;
         crate::async_session_ops::execute_portable_count_with_backend(
             py,
-            self.transaction_backend(),
+            self.transaction_backend()?,
             ast,
         )
     }

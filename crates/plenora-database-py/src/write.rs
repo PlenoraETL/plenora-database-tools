@@ -176,33 +176,30 @@ pub(crate) fn make_operation(
 ) -> Result<WriteOperation, DatabaseError> {
     // Validazione early: i mode che richiedono chiavi rifiutano input vacuo
     // (invece di produrre SQL malformato più a valle).
-    match mode {
-        WriteMode::Upsert | WriteMode::Update | WriteMode::DeleteByKeys => {
-            if keys.is_empty() {
-                return Err(DatabaseError::invalid_plan(format!(
-                    "mode '{}' richiede almeno una key column via keys=[...]",
-                    match mode {
-                        WriteMode::Upsert => "upsert",
-                        WriteMode::Update => "update",
-                        WriteMode::DeleteByKeys => "delete_by_keys",
-                        _ => unreachable!(),
-                    }
-                )));
-            }
+    let keyed = match mode {
+        WriteMode::Upsert => Some("upsert"),
+        WriteMode::Update => Some("update"),
+        WriteMode::DeleteByKeys => Some("delete_by_keys"),
+        _ => None,
+    };
+    if let Some(label) = keyed {
+        if keys.is_empty() {
+            return Err(DatabaseError::invalid_plan(format!(
+                "mode '{label}' richiede almeno una key column via keys=[...]"
+            )));
         }
-        _ => {
-            if !keys.is_empty() {
-                return Err(DatabaseError::invalid_plan(format!(
-                    "keys=[...] è supportato solo per mode upsert/update/delete_by_keys, \
-                     non per '{mode:?}'"
-                )));
-            }
-            if !update_columns.is_empty() {
-                return Err(DatabaseError::invalid_plan(format!(
-                    "update_columns=[...] è supportato solo per mode update, \
-                     non per '{mode:?}'"
-                )));
-            }
+    } else {
+        if !keys.is_empty() {
+            return Err(DatabaseError::invalid_plan(format!(
+                "keys=[...] è supportato solo per mode upsert/update/delete_by_keys, \
+                 non per '{mode:?}'"
+            )));
+        }
+        if !update_columns.is_empty() {
+            return Err(DatabaseError::invalid_plan(format!(
+                "update_columns=[...] è supportato solo per mode update, \
+                 non per '{mode:?}'"
+            )));
         }
     }
     Ok(WriteOperation {

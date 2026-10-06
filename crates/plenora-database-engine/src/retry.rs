@@ -60,11 +60,6 @@ impl Default for RetryPolicy {
 ///
 /// Propaga l'errore dell'ultimo tentativo (o l'errore non-retriable se
 /// incontrato prima).
-///
-/// # Panics
-///
-/// Non panics: gli `expect()` interni sono protetti dai controlli sui
-/// campi `last_error` che precedono le loro chiamate.
 pub async fn retry_with_policy<F, Fut, T>(
     op: F,
     policy: RetryPolicy,
@@ -80,27 +75,29 @@ where
         ));
     }
     let mut last_error: Option<DatabaseError> = None;
-    for attempt in 0..policy.max_attempts {
+    let mut attempt = 0_u32;
+    // `loop` e non `for`: ogni uscita restituisce il proprio esito, e
+    // l'ultimo tentativo restituisce il proprio errore. Non resta un "dopo il
+    // ciclo" in cui un errore dovrebbe esistere senza che il tipo lo provi.
+    loop {
         if cancellation.is_cancelled() {
             return Err(interrupted_error(last_error.as_ref(), cancellation));
         }
         match op(attempt).await {
             Ok(value) => return Ok(value),
             Err(error) => {
-                let disposition = error.retry;
-                last_error = Some(error);
                 let is_last = attempt + 1 >= policy.max_attempts;
                 if is_last {
-                    break;
+                    return Err(error);
                 }
-                match disposition {
+                match error.retry {
                     RetryDisposition::Safe => {
                         // Continue immediately.
                     }
                     RetryDisposition::After(ms) => {
                         let ms = policy.max_delay_ms.map_or(ms, |cap| ms.min(cap));
                         if sleep_cancellable(cancellation, ms).await {
-                            return Err(interrupted_error(last_error.as_ref(), cancellation));
+                            return Err(interrupted_error(Some(&error), cancellation));
                         }
                     }
                     RetryDisposition::Never
@@ -108,13 +105,14 @@ where
                     | RetryDisposition::RequiresRecovery
                     | RetryDisposition::RequiresIdempotencyKey => {
                         // Non-retriable: propaga subito.
-                        return Err(last_error.expect("appena assegnato"));
+                        return Err(error);
                     }
                 }
+                last_error = Some(error);
+                attempt += 1;
             }
         }
     }
-    Err(last_error.expect("almeno un tentativo eseguito"))
 }
 
 /// Sleeps for `ms` milliseconds unless the cancellation token fires first.

@@ -181,12 +181,21 @@ jobs:
       - name: cargo fmt (fuzz targets)
         run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
 
+  # Linux e Windows: il binario e il wheel si distribuiscono su entrambi, e
+  # un `cfg(windows)` o un percorso con `\` che rompe la build deve fermare la
+  # PR, non il rilascio. Su Windows il driver manager ODBC (odbc32) e di
+  # sistema, quindi Db2 compila senza pacchetti aggiuntivi.
   check:
-    name: cargo check + clippy
-    runs-on: ubuntu-latest
+    name: cargo check + clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: unixODBC development files
+        if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq unixodbc-dev
       - name: Install Rust 1.98.1 + clippy
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # 1.98.1
@@ -207,6 +216,18 @@ jobs:
       # qualsiasi deprecation warning di crate esterni.
       - name: cargo clippy (pedantic + nursery)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # Gate anti-panic: il codice di **libreria** non scrive primitive di
+      # panico. `--lib` lascia fuori test, binari ed esempi, dove un `expect`
+      # e un'asserzione e non un difetto. Un'eccezione e un `#[allow]`
+      # puntuale con `reason`, accanto al codice che la giustifica.
+      - name: cargo clippy anti-panic (librerie)
+        run: >-
+          cargo clippy --workspace --lib --all-features --
+          -D warnings
+          -D clippy::unwrap_used
+          -D clippy::expect_used
+          -D clippy::panic
+          -D clippy::unreachable
 
   # Ogni adapter deve compilare e superare i test anche isolato. Un solo job
   # riusa toolchain e cache, limitando le richieste concorrenti alle action.
@@ -247,8 +268,12 @@ jobs:
   # come modulo nativo importabile; gli artefatti distribuibili sono costruiti
   # dal workflow `python-wheel`.
   sdk-offline:
-    name: suite SDK offline
-    runs-on: ubuntu-latest
+    name: suite SDK offline (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -264,17 +289,26 @@ jobs:
             --out dist
             --manifest-path crates/plenora-database-py/Cargo.toml
           rust-toolchain: '1.98.1'
+      # `bash` anche su Windows: il glob del wheel e lo script della suite
+      # sono POSIX, e PowerShell non espanderebbe `dist/*.whl`.
       - name: Installa il wheel
+        shell: bash
         run: python -m pip install dist/*.whl
       - name: .github/scripts/offline_suite.sh
+        shell: bash
         run: bash .github/scripts/offline_suite.sh
 
   test-unit:
-    name: cargo test (unit + non-live)
-    runs-on: ubuntu-latest
+    name: cargo test (unit + non-live, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: unixODBC development files
+        if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq unixodbc-dev
       - name: Install Rust 1.98.1
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # 1.98.1

@@ -210,3 +210,20 @@ fn spatial_projection_requires_one_valid_declared_crs() {
         .expect_err("CRS dichiarato su scalare");
     assert_eq!(scalar.category, ErrorCategory::InvalidPlan);
 }
+
+#[test]
+fn geometry_spec_without_srid_is_an_error_not_a_panic() {
+    // Uno spec costruito a mano, fuori dal compilatore, puo mancare dello
+    // SRID: prima `arrow_field` andava in panic, ora rifiuta con `Crs`.
+    let spec = crate::Db2ColumnSpec {
+        name: "SHAPE".to_owned(),
+        native_type: "ST_GEOMETRY".to_owned(),
+        nullable: true,
+        kind: crate::Db2ColumnKind::Geometry,
+        text_capacity: 0,
+        spatial_srid: None,
+        geometry_type: None,
+    };
+    let error = spec.arrow_field().expect_err("geometry senza SRID");
+    assert_eq!(error.category, ErrorCategory::Crs);
+}
