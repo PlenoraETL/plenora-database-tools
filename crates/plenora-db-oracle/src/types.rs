@@ -9,7 +9,6 @@ use plenora_database_sql::{
     ObjectName, Renderer,
 };
 use std::collections::{BTreeSet, HashMap};
-use std::fmt::Write as _;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OracleColumnKind {
@@ -108,12 +107,12 @@ impl OracleColumnSpec {
 
     /// Costruisce il campo Arrow e i metadati canonici `GeoArrow`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Una `OracleColumnSpec` costruita manualmente con kind Geometry e senza
-    /// SRID viola l'invariante stabilita da `from_catalog`.
-    #[must_use]
-    pub fn arrow_field(&self) -> Field {
+    /// `Crs` se una `OracleColumnSpec` costruita a mano ha kind Geometry e
+    /// nessun SRID: l'invariante di `from_catalog` non vale, e pubblicare un
+    /// CRS che non si conosce sarebbe peggio del rifiuto.
+    pub fn arrow_field(&self) -> Result<Field> {
         let data_type = match self.kind {
             OracleColumnKind::Bool => DataType::Boolean,
             OracleColumnKind::I64 => DataType::Int64,
@@ -134,6 +133,12 @@ impl OracleColumnSpec {
             self.native_type.clone(),
         )]);
         if self.kind == OracleColumnKind::Geometry {
+            let srid = self.spatial_srid.ok_or_else(|| {
+                prepare_error(
+                    ErrorCategory::Crs,
+                    "colonna SDO_GEOMETRY Oracle senza SRID qualificato",
+                )
+            })?;
             metadata.extend([
                 (
                     protocol::GEOARROW_EXTENSION_NAME.to_owned(),
@@ -166,15 +171,10 @@ impl OracleColumnSpec {
                     protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
                     "resolved".to_owned(),
                 ),
-                (
-                    protocol::GEOMETRY_SRID.to_owned(),
-                    self.spatial_srid
-                        .expect("geometry compilata con SRID")
-                        .to_string(),
-                ),
+                (protocol::GEOMETRY_SRID.to_owned(), srid.to_string()),
             ]);
         }
-        Field::new(&self.name, data_type, self.nullable).with_metadata(metadata)
+        Ok(Field::new(&self.name, data_type, self.nullable).with_metadata(metadata))
     }
 }
 
@@ -330,7 +330,9 @@ impl OracleReadPlan {
             sql.push_str(&order.join(", "));
         }
         if let Some(offset) = operation.row_offset {
-            write!(sql, " OFFSET {offset} ROWS").expect("scrittura su String infallibile");
+            sql.push_str(" OFFSET ");
+            sql.push_str(&offset.to_string());
+            sql.push_str(" ROWS");
         }
         if let Some(limit) = operation.row_limit {
             sql.push_str(if operation.row_offset.is_some() {
@@ -341,7 +343,12 @@ impl OracleReadPlan {
             sql.push_str(&limit.to_string());
             sql.push_str(" ROWS ONLY");
         }
-        let schema = contract_schema(columns.iter().map(OracleColumnSpec::arrow_field).collect());
+        let schema = contract_schema(
+            columns
+                .iter()
+                .map(OracleColumnSpec::arrow_field)
+                .collect::<Result<Vec<_>>>()?,
+        );
         Ok(Self {
             columns,
             schema,

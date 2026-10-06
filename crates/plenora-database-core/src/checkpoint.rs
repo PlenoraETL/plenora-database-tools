@@ -264,12 +264,16 @@ fn scope_fingerprint(
     let digest = Sha256::digest(canonical);
     let mut encoded = String::with_capacity(71);
     encoded.push_str("sha256:");
+    // Esadecimale da tabella: nessuna formattazione, quindi nessun esito da
+    // gestire.
     for byte in digest {
-        use std::fmt::Write as _;
-        write!(&mut encoded, "{byte:02x}").expect("scrittura su String infallibile");
+        encoded.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
     }
     Ok(encoded)
 }
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 fn parameter_name(index: usize) -> String {
     format!("{PARAMETER_PREFIX}{index}")
@@ -298,17 +302,15 @@ fn lexicographic_filter(order_by: &[OrderBy]) -> FilterExpression {
                     parameter: parameter_name(index),
                 },
             });
-            if terms.len() == 1 {
-                terms.pop().expect("un termine costruito")
-            } else {
-                FilterExpression::And { args: terms }
+            match <[FilterExpression; 1]>::try_from(terms) {
+                Ok([only]) => only,
+                Err(terms) => FilterExpression::And { args: terms },
             }
         })
         .collect::<Vec<_>>();
-    if alternatives.len() == 1 {
-        alternatives.into_iter().next().expect("un'alternativa")
-    } else {
-        FilterExpression::Or { args: alternatives }
+    match <[FilterExpression; 1]>::try_from(alternatives) {
+        Ok([only]) => only,
+        Err(alternatives) => FilterExpression::Or { args: alternatives },
     }
 }
 

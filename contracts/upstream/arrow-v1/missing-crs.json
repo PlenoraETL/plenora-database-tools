@@ -1,0 +1,24 @@
+{
+  "$schema": "../../schemas/arrow-metadata-vector-v1.schema.json",
+  "schema_version": 1,
+  "contract": "plenora-arrow-metadata-vector-v1",
+  "expect": "valid",
+  "schema_metadata": {"plenora.contract.version": "1"},
+  "fields": [
+    {
+      "name": "geometry",
+      "type": "large_binary",
+      "nullable": true,
+      "metadata": {
+        "plenora.field_id": "0",
+        "ARROW:extension:name": "geoarrow.wkb",
+        "plenora.geometry.encoding": "wkb",
+        "plenora.geometry.dimensions": "unknown",
+        "plenora.geometry.spatial_semantics": "geometry",
+        "plenora.geometry.precision": "native",
+        "plenora.geometry.types_declaration": "unresolved",
+        "plenora.geometry.crs_resolution": "missing"
+      }
+    }
+  ]
+}

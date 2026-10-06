@@ -162,6 +162,46 @@ impl CompileContext {
 
 // ---- Helpers ----------------------------------------------------------------
 
+/// Accoda testo formattato allo statement.
+///
+/// `fmt::Write` su `String` fallisce solo se un `Display` inventa l'errore, e
+/// qui si formattano stringhe e numeri. Se accadesse, uno statement troncato
+/// non deve partire: diventa un errore interno, non un panico ne un SQL
+/// incompleto.
+fn push_sql(sql: &mut String, args: std::fmt::Arguments<'_>) -> Result<()> {
+    sql.write_fmt(args).map_err(|_| {
+        DatabaseError::new(
+            crate::ErrorCategory::Internal,
+            crate::ErrorPhase::Prepare,
+            None,
+            "composizione dello statement SQL fallita",
+        )
+    })
+}
+
+/// Il provider di un dialetto, totale: ogni dialetto ne ha uno.
+const fn dialect_provider(dialect: DialectKind) -> ProviderKind {
+    match dialect {
+        DialectKind::Postgres => ProviderKind::Postgres,
+        DialectKind::Mysql => ProviderKind::Mysql,
+        DialectKind::Mariadb => ProviderKind::Mariadb,
+        DialectKind::SqlServer => ProviderKind::Sqlserver,
+        DialectKind::Db2 => ProviderKind::Db2,
+        DialectKind::Oracle => ProviderKind::Oracle,
+    }
+}
+
+/// Rifiuto di un predicato spatial che il renderer del dialetto non sa
+/// scrivere. `spatial_policy::validate_predicate` lo emette per primo; qui
+/// resta la stessa risposta, invece di un panico, se l'ordine cambiasse.
+fn predicate_not_qualified(provider: ProviderKind) -> DatabaseError {
+    DatabaseError::unsupported(
+        provider,
+        crate::ErrorPhase::Prepare,
+        "il predicato spatial richiesto non e qualificato per il provider",
+    )
+}
+
 /// Applica la policy canonica di quoting degli identificatori condivisa dai
 /// renderer, evitando regole locali che possano divergere.
 fn quote_identifier(name: &str, dialect: DialectKind) -> Result<String> {
@@ -243,14 +283,7 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     "MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(TO_BLOB({value}), {srid})"
                 )),
                 _ => Err(DatabaseError::unsupported(
-                    match ctx.dialect {
-                        DialectKind::Mysql => ProviderKind::Mysql,
-                        DialectKind::Mariadb => ProviderKind::Mariadb,
-                        DialectKind::SqlServer => ProviderKind::Sqlserver,
-                        DialectKind::Db2 => ProviderKind::Db2,
-                        DialectKind::Oracle => ProviderKind::Oracle,
-                        DialectKind::Postgres => unreachable!(),
-                    },
+                    dialect_provider(ctx.dialect),
                     crate::ErrorPhase::Prepare,
                     "bind spatial OLTP non qualificato per il provider",
                 )),
@@ -438,8 +471,11 @@ fn compile_spatial_db2(
         SpatialPredicate::Intersects => "ST_INTERSECTS",
         SpatialPredicate::Contains => "ST_CONTAINS",
         SpatialPredicate::Within => "ST_WITHIN",
+        // `validate_predicate` li ha gia rifiutati; il rifiuto si ripete qui
+        // invece di un panico, cosi un ordine diverso delle chiamate resta un
+        // errore e non un crash.
         SpatialPredicate::DWithin { .. } | SpatialPredicate::BoundingBox => {
-            unreachable!("spatial_policy::validate_predicate deve rifiutare il predicato Db2")
+            return Err(predicate_not_qualified(ProviderKind::Db2));
         }
     };
     Ok(format!("({function}({col}, {reference}) = 1)"))
@@ -493,9 +529,9 @@ fn compile_spatial_sqlserver(
         }
         // Gia rifiutato da `validate_predicate`, e il match deve restare
         // esaustivo.
-        SpatialPredicate::DWithin { .. } => unreachable!(
-            "spatial_policy::validate_predicate deve aver gia rifiutato DWithin su SQL Server"
-        ),
+        SpatialPredicate::DWithin { .. } => {
+            return Err(predicate_not_qualified(ProviderKind::Sqlserver));
+        }
     };
     Ok(format!("({col}.{method}({geom_expr}) = 1)"))
 }
@@ -594,9 +630,7 @@ fn compile_spatial_mysql(
         SpatialPredicate::BoundingBox => Ok(format!("MBRIntersects({col}, {geom_expr})")),
         // DWithin è già escluso da validate_predicate (Unsupported), qui
         // non è raggiungibile — ma il match deve essere exhaustive.
-        SpatialPredicate::DWithin { .. } => unreachable!(
-            "spatial_policy::validate_predicate deve aver già rifiutato DWithin su MySQL"
-        ),
+        SpatialPredicate::DWithin { .. } => Err(predicate_not_qualified(ProviderKind::Mysql)),
     }
 }
 
@@ -793,19 +827,19 @@ fn compile_select(s: &SelectStatement, ctx: &mut CompileContext) -> Result<Strin
     let mut sql = format!("SELECT {top}{projection} FROM {table}");
     if let Some(filter) = &s.filter {
         let where_sql = compile_predicate(filter, ctx)?;
-        write!(sql, " WHERE {where_sql}").expect("write String");
+        push_sql(&mut sql, format_args!(" WHERE {where_sql}"))?;
     }
     if !s.order_by.is_empty() {
         let ob = compile_order_by(&s.order_by, ctx.dialect)?;
-        write!(sql, " ORDER BY {ob}").expect("write String");
+        push_sql(&mut sql, format_args!(" ORDER BY {ob}"))?;
     }
     if let Some(limit) = s.limit {
         match ctx.dialect {
             DialectKind::SqlServer => {}
             DialectKind::Db2 | DialectKind::Oracle => {
-                write!(sql, " FETCH FIRST {limit} ROWS ONLY").expect("write String");
+                push_sql(&mut sql, format_args!(" FETCH FIRST {limit} ROWS ONLY"))?;
             }
-            _ => write!(sql, " LIMIT {limit}").expect("write String"),
+            _ => push_sql(&mut sql, format_args!(" LIMIT {limit}"))?,
         }
     }
     Ok(sql)
@@ -882,7 +916,7 @@ fn compile_update(s: &UpdateStatement, ctx: &mut CompileContext) -> Result<Strin
     );
     if let Some(filter) = &s.filter {
         let where_sql = compile_predicate(filter, ctx)?;
-        write!(sql, " WHERE {where_sql}").expect("write String");
+        push_sql(&mut sql, format_args!(" WHERE {where_sql}"))?;
     }
     sql.push_str(returning.suffix());
     Ok(sql)
@@ -894,7 +928,7 @@ fn compile_delete(s: &DeleteStatement, ctx: &mut CompileContext) -> Result<Strin
     let mut sql = format!("DELETE FROM {table}{}", returning.inline());
     if let Some(filter) = &s.filter {
         let where_sql = compile_predicate(filter, ctx)?;
-        write!(sql, " WHERE {where_sql}").expect("write String");
+        push_sql(&mut sql, format_args!(" WHERE {where_sql}"))?;
     }
     sql.push_str(returning.suffix());
     Ok(sql)
@@ -1153,20 +1187,37 @@ fn compile_upsert_merge(
                 Ok(format!("T.{column} = {expression}"))
             })
             .collect();
-        write!(
-            sql,
-            " WHEN MATCHED THEN UPDATE SET {}",
-            assignments?.join(", ")
-        )
-        .expect("write String");
+        push_sql(
+            &mut sql,
+            format_args!(" WHEN MATCHED THEN UPDATE SET {}", assignments?.join(", ")),
+        )?;
     }
-    write!(
-        sql,
-        " WHEN NOT MATCHED THEN INSERT ({}) VALUES ({insert_values})",
-        cols.join(", ")
-    )
-    .expect("write String");
+    push_sql(
+        &mut sql,
+        format_args!(
+            " WHEN NOT MATCHED THEN INSERT ({}) VALUES ({insert_values})",
+            cols.join(", ")
+        ),
+    )?;
     Ok(sql)
+}
+
+/// La clausola di conflitto in coda a un `INSERT ... VALUES`.
+enum ConflictClause {
+    /// `ON CONFLICT (...) DO ...` di PostgreSQL.
+    OnConflict,
+    /// `ON DUPLICATE KEY UPDATE` / `INSERT IGNORE` di MySQL e MariaDB.
+    OnDuplicateKey,
+}
+
+fn insert_values(table: &str, cols_sql: &str, rows: &[Vec<String>]) -> String {
+    format!(
+        "INSERT INTO {table} ({cols_sql}) VALUES {}",
+        rows.iter()
+            .map(|row| format!("({})", row.join(", ")))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<String> {
@@ -1209,31 +1260,32 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
         .map(|row| row.iter().map(|e| compile_expression(e, ctx)).collect())
         .collect();
     let rows = rows?;
-    if ctx.dialect == DialectKind::SqlServer {
-        return compile_upsert_sqlserver(s, &table, &cols_sql, &rows, ctx);
-    }
-    if ctx.dialect == DialectKind::Db2 {
-        return compile_upsert_db2(s, &table, &cols, &rows, ctx);
-    }
-    if ctx.dialect == DialectKind::Oracle {
-        return compile_upsert_oracle(s, &table, &cols, &rows, ctx);
-    }
-    let mut sql = format!(
-        "INSERT INTO {table} ({cols_sql}) VALUES {}",
-        rows.iter()
-            .map(|row| format!("({})", row.join(", ")))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    match ctx.dialect {
-        DialectKind::Postgres => {
+    let (mut sql, conflict) = match ctx.dialect {
+        // T-SQL, Db2 e Oracle non hanno una clausola di conflitto: lo
+        // statement e un altro, e lo scrive la propria funzione.
+        DialectKind::SqlServer => {
+            return compile_upsert_sqlserver(s, &table, &cols_sql, &rows, ctx);
+        }
+        DialectKind::Db2 => return compile_upsert_db2(s, &table, &cols, &rows, ctx),
+        DialectKind::Oracle => return compile_upsert_oracle(s, &table, &cols, &rows, ctx),
+        DialectKind::Postgres => (
+            insert_values(&table, &cols_sql, &rows),
+            ConflictClause::OnConflict,
+        ),
+        DialectKind::Mysql | DialectKind::Mariadb => (
+            insert_values(&table, &cols_sql, &rows),
+            ConflictClause::OnDuplicateKey,
+        ),
+    };
+    match conflict {
+        ConflictClause::OnConflict => {
             let conflict: Result<Vec<_>> = s
                 .conflict_target
                 .iter()
                 .map(|c| quote_identifier(c, ctx.dialect))
                 .collect();
             let conflict_sql = conflict?.join(", ");
-            write!(sql, " ON CONFLICT ({conflict_sql})").expect("write String");
+            push_sql(&mut sql, format_args!(" ON CONFLICT ({conflict_sql})"))?;
             if s.update_on_conflict.is_empty() {
                 sql.push_str(" DO NOTHING");
             } else {
@@ -1246,19 +1298,16 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
                         Ok(format!("{c} = {e}"))
                     })
                     .collect();
-                write!(sql, " DO UPDATE SET {}", sets?.join(", ")).expect("write String");
+                push_sql(
+                    &mut sql,
+                    format_args!(" DO UPDATE SET {}", sets?.join(", ")),
+                )?;
             }
         }
         // `ON DUPLICATE KEY UPDATE` e `INSERT IGNORE`: stessa sintassi sui due
         // prodotti. La divergenza dell'upsert non e qui, e in cosa il server
         // consegna dopo — vedi `compile_returning`.
-        // Trattato prima del match, perche non e una variante della stessa
-        // forma: T-SQL non ha una clausola di conflitto e lo statement e un
-        // altro.
-        DialectKind::SqlServer => unreachable!("l'upsert T-SQL esce prima di questo match"),
-        DialectKind::Db2 => unreachable!("l'upsert Db2 esce prima di questo match"),
-        DialectKind::Oracle => unreachable!("l'upsert Oracle esce prima di questo match"),
-        DialectKind::Mysql | DialectKind::Mariadb => {
+        ConflictClause::OnDuplicateKey => {
             // MySQL: ON DUPLICATE KEY UPDATE. Il conflict_target NON è
             // esplicito in MySQL (usa la primary key / unique index
             // automatico) — accettiamo il campo per compat portable ma
@@ -1280,7 +1329,10 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
                         Ok(format!("{c} = {e}"))
                     })
                     .collect();
-                write!(sql, " ON DUPLICATE KEY UPDATE {}", sets?.join(", ")).expect("write String");
+                push_sql(
+                    &mut sql,
+                    format_args!(" ON DUPLICATE KEY UPDATE {}", sets?.join(", ")),
+                )?;
             }
         }
     }

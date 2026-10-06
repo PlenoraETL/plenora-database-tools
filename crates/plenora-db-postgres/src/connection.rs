@@ -194,6 +194,15 @@ impl PostgresTlsConfig {
 /// Un processo che collega anche il driver Oracle vede altrimenti sia `ring`
 /// sia `aws-lc-rs`; `ClientConfig::builder()` non puo indovinare e va in panic
 /// prima di qualsiasi I/O.
+///
+/// L'unico errore possibile e un provider che non supporta le versioni TLS
+/// predefinite. Il provider e quello `ring` costruito qui, con la feature
+/// `tls12` fissata nel workspace: supporta TLS 1.2 e 1.3 per costruzione, e
+/// ogni test che costruisce `PostgresTlsConfig::webpki()` lo esercita.
+#[allow(
+    clippy::expect_used,
+    reason = "provider ring statico con TLS 1.2/1.3: il caso d'errore non e costruibile"
+)]
 fn client_config_builder() -> rustls::ConfigBuilder<rustls::ClientConfig, rustls::WantsVerifier> {
     rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
         .with_safe_default_protocol_versions()

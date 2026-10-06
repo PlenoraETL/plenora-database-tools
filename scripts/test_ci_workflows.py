@@ -645,6 +645,36 @@ class CiWorkflowTests(unittest.TestCase):
         build = next(step for step in steps if "cargo build" in step.get("run", ""))
         self.assertLess(steps.index(build), steps.index(regression))
 
+    def test_runtime_vectors_run_and_their_evidence_is_validated(self) -> None:
+        """Il binding runtime esegue i vettori del pin in un job che gira.
+
+        Le evidenze si producono prima di validarle e prima delle regressioni
+        che le alterano: senza il test Rust la directory sarebbe vuota, e lo
+        script la rifiuta.
+        """
+
+        workflow = (WORKFLOW_DIRECTORY / "rust-ci.yml").read_text(encoding="utf-8")
+        steps = parsed_jobs(workflow)["public-contract"]["steps"]
+        vectors = next(
+            step for step in steps
+            if "--test runtime_vectors" in step.get("run", "")
+        )
+        self.assertIn("PLENORA_RUNTIME_EVIDENCE", vectors.get("env", {}))
+        check = next(
+            step for step in steps
+            if "scripts/check_runtime_evidence.py" in step.get("run", "")
+        )
+        regression = next(
+            step for step in steps
+            if "scripts/test_public_contract_integration.py" in step.get("run", "")
+        )
+        for step in (vectors, check, regression):
+            self.assertNotIn("if", step)
+            self.assertNotIn("continue-on-error", step)
+        self.assertIn("--runtime-evidence target/runtime-evidence", regression["run"])
+        self.assertLess(steps.index(vectors), steps.index(check))
+        self.assertLess(steps.index(check), steps.index(regression))
+
     def test_every_adapter_is_checked_in_isolation(self) -> None:
         """Le quattro combinazioni di feature del CLI restano verificate.
 
@@ -689,6 +719,55 @@ class CiWorkflowTests(unittest.TestCase):
             parsed_jobs(workflow)["cli-feature-matrix"],
             "la matrice moltiplica i job, e con essi i download della cache",
         )
+
+    def test_build_tests_and_sdk_run_on_linux_and_windows(self) -> None:
+        """Clippy, test e suite SDK girano su entrambe le piattaforme distribuite.
+
+        Prima Windows si vedeva solo al rilascio: un difetto di piattaforma
+        arrivava su `main` verde e si scopriva costruendo la release.
+        """
+
+        workflow = (WORKFLOW_DIRECTORY / "rust-ci.yml").read_text(encoding="utf-8")
+        jobs = parsed_jobs(workflow)
+        for name in ("check", "test-unit", "sdk-offline"):
+            job = jobs[name]
+            self.assertEqual(job["runs-on"], "${{ matrix.os }}", name)
+            self.assertEqual(
+                job["strategy"]["matrix"]["os"],
+                ["ubuntu-latest", "windows-latest"],
+                name,
+            )
+            self.assertNotIn("if", job, name)
+            self.assertIs(job["strategy"].get("fail-fast"), False, name)
+            # Solo la preparazione di sistema puo dipendere dalla piattaforma:
+            # un gate condizionato non girerebbe su una delle due.
+            for step in job["steps"]:
+                if "if" in step:
+                    self.assertIn("apt-get", step.get("run", ""), name)
+
+    def test_library_code_has_an_anti_panic_gate(self) -> None:
+        """Le primitive di panico sono vietate nelle librerie, e il gate gira."""
+
+        workflow = (WORKFLOW_DIRECTORY / "rust-ci.yml").read_text(encoding="utf-8")
+        steps = [
+            step
+            for step in parsed_jobs(workflow)["check"]["steps"]
+            if "--lib" in step.get("run", "") and "cargo clippy" in step.get("run", "")
+        ]
+        self.assertEqual(len(steps), 1, "manca il clippy anti-panic sulle librerie")
+        gate = steps[0]
+        self.assertNotIn("if", gate)
+        self.assertTrue(qualifies(gate))
+        for lint in (
+            "-D warnings",
+            "-D clippy::unwrap_used",
+            "-D clippy::expect_used",
+            "-D clippy::panic",
+            "-D clippy::unreachable",
+        ):
+            self.assertIn(lint, gate["run"])
+        self.assertIn("--workspace", gate["run"])
+        self.assertIn("--all-features", gate["run"])
 
     def test_the_static_job_runs_every_serverless_self_test(self) -> None:
         """I self-test che non chiedono un server girano a ogni push."""
@@ -754,6 +833,51 @@ class CiWorkflowTests(unittest.TestCase):
         )
 
         self.assertEqual(core["version"], workspace["workspace"]["package"]["version"])
+
+
+class FuzzWorkflowTests(unittest.TestCase):
+    """`fuzz`: ogni target dichiarato gira, e parte da semi versionati."""
+
+    WORKFLOW = WORKFLOW_DIRECTORY / "fuzz.yml"
+
+    @staticmethod
+    def declared_targets() -> list[str]:
+        manifest = tomllib.loads((ROOT / "fuzz" / "Cargo.toml").read_text(encoding="utf-8"))
+        return sorted(binary["name"] for binary in manifest["bin"])
+
+    def test_the_matrix_covers_every_target_of_the_fuzz_crate(self) -> None:
+        """Un target aggiunto a `fuzz/Cargo.toml` e fuori matrice non girerebbe mai."""
+
+        job = parsed_jobs(self.WORKFLOW.read_text(encoding="utf-8"))["fuzz"]
+        matrix = job["strategy"]["matrix"]["target"]
+        self.assertEqual(sorted(matrix), self.declared_targets())
+        self.assertEqual(len(matrix), len(set(matrix)))
+
+    def test_every_target_has_versioned_seeds_and_no_seed_is_orphaned(self) -> None:
+        seeds = ROOT / "fuzz" / "seeds"
+        directories = sorted(path.name for path in seeds.iterdir() if path.is_dir())
+        self.assertEqual(directories, self.declared_targets())
+        for name in directories:
+            with self.subTest(target=name):
+                files = [path for path in (seeds / name).iterdir() if path.is_file()]
+                self.assertTrue(files, "nessun seme versionato")
+                for path in files:
+                    self.assertGreater(path.stat().st_size, 0, path.name)
+
+    def test_the_nightly_is_the_one_documented_for_local_campaigns(self) -> None:
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        readme = (ROOT / "fuzz" / "README.md").read_text(encoding="utf-8")
+        nightly = re.search(r"NIGHTLY: (nightly-\d{4}-\d{2}-\d{2})", workflow)
+        self.assertIsNotNone(nightly, "nightly non fissata per data")
+        assert nightly is not None
+        self.assertIn(f"rustup run {nightly.group(1)} cargo fuzz", readme)
+        self.assertRegex(workflow, r"cargo-fuzz --version \d+\.\d+\.\d+ --locked")
+
+    def test_the_seeds_are_stored_byte_for_byte(self) -> None:
+        """Un seme e un input binario: nessuna conversione di fine riga."""
+
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(attributes[-1].strip(), "fuzz/seeds/** -text")
 
 
 class PythonWheelWorkflowTests(unittest.TestCase):

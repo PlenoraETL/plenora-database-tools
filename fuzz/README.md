@@ -56,11 +56,32 @@ and exposes them only through connected code paths.
 
 ## Running
 
-Run a bounded local campaign from the repository root:
+Run a bounded local campaign from the repository root, starting from the
+versioned seeds:
 
 ```text
-rustup run nightly-2026-07-27 cargo fuzz run ewkb_parser -- \
+mkdir -p fuzz/corpus/ewkb_parser
+cp fuzz/seeds/ewkb_parser/* fuzz/corpus/ewkb_parser/
+rustup run nightly-2026-07-27 cargo fuzz run ewkb_parser fuzz/corpus/ewkb_parser -- \
   -max_total_time=60 -timeout=10 -rss_limit_mb=2048
 ```
 
-Crash artifacts and generated corpora are intentionally ignored by Git.
+## Seeds and CI
+
+`fuzz/seeds/<target>/` holds a small, versioned seed corpus for every target,
+stored byte for byte (`.gitattributes`). The structured seeds are inputs the
+target accepts: plan examples from `contracts/v2/examples/`, the
+`tests/fixtures/tls/parser-ca.pem` test certificate, EWKB geometries of each
+shape, and JSON documents serialized from catalog descriptions and queries
+shaped like those of the read-plan benchmarks (`MysqlReadPlan::compile`,
+`SqlServerReadPlan::compile`, `validate_query_operation` and `render_query`
+accepted them when they were generated). The byte-cursor targets get short
+deterministic byte patterns. A new target needs its seed directory:
+`scripts/test_ci_workflows.py` fails otherwise.
+
+`.github/workflows/fuzz.yml` runs every target: one minute each on pull
+requests touching `fuzz/`, ten minutes each every Sunday and on manual
+dispatch. A crash, timeout or non-zero exit fails the job and the reproducer
+is uploaded as a run artifact. The corpus a campaign grows (`fuzz/corpus/`)
+and crash artifacts (`fuzz/artifacts/`) stay ignored by Git; a reproducer
+worth keeping becomes a regression test or a new seed.

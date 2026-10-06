@@ -290,8 +290,8 @@ async fn probe_spatial_wkb_roundtrip(
     .await
     .map_err(|e| format!("wkb: {}", e.message))?;
     let _ = tx.rollback(cancel).await;
-    match &row[0] {
-        ParameterValue::Bytes(b) if !b.is_empty() => Ok(()),
+    match row.get_index(0) {
+        Some(ParameterValue::Bytes(b)) if !b.is_empty() => Ok(()),
         other => Err(format!("attesa bytes EWKB non vuoto, ottenuto {other:?}")),
     }
 }

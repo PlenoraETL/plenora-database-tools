@@ -106,8 +106,8 @@ pub fn build_spatial_select(
         qualify_table(schema, table)?
     );
     if let Some(n) = limit {
-        use std::fmt::Write;
-        write!(sql, " LIMIT {n}").expect("write to String non fallisce");
+        sql.push_str(" LIMIT ");
+        sql.push_str(&n.to_string());
     }
 
     Ok(Statement { sql, params })

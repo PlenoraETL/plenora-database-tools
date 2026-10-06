@@ -514,11 +514,15 @@ fn parse_f64(value: &str) -> Result<f64> {
     }
 }
 
+/// 1970-01-01 e il giorno 719163 dall'era comune (1 gennaio dell'anno 1 =
+/// giorno 1): una costante, invece di costruire una data che il tipo dichiara
+/// fallibile. `read_tests` verifica che 1970-01-01 e 1969-12-31 rendano 0 e -1.
+const UNIX_EPOCH_DAYS_FROM_CE: i32 = 719_163;
+
 pub fn parse_date(value: &str) -> Result<i32> {
     let date = NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .map_err(|_| mapping("DATE Db2 non rappresentabile"))?;
-    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch valida");
-    Ok(date.num_days_from_ce() - epoch.num_days_from_ce())
+    Ok(date.num_days_from_ce() - UNIX_EPOCH_DAYS_FROM_CE)
 }
 
 pub fn parse_timestamp(value: &str) -> Result<i64> {

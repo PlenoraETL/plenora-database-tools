@@ -37,7 +37,8 @@ fn spatial_schema() -> SchemaRef {
             spatial_dimensions: Some(2),
             spatial_semantics: Some(plenora_database_core::geometry::SpatialSemantics::Geometry),
         }
-        .arrow_field(),
+        .arrow_field()
+        .expect("campo Arrow geometry"),
     ])
 }
 

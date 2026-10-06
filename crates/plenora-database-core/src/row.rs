@@ -141,6 +141,10 @@ impl Row {
 impl Index<&str> for Row {
     type Output = ParameterValue;
 
+    #[allow(
+        clippy::panic,
+        reason = "raggiungibile (nome assente / indice fuori intervallo): preserva il panic intenzionale e preesistente dell'API indicizzata, come `Index` di std; l'accesso fallibile e Row::get / Row::get_index"
+    )]
     fn index(&self, name: &str) -> &ParameterValue {
         self.get(name).unwrap_or_else(|| {
             panic!(
@@ -157,6 +161,10 @@ impl Index<&str> for Row {
 impl Index<usize> for Row {
     type Output = ParameterValue;
 
+    #[allow(
+        clippy::panic,
+        reason = "raggiungibile (nome assente / indice fuori intervallo): preserva il panic intenzionale e preesistente dell'API indicizzata, come `Index` di std; l'accesso fallibile e Row::get / Row::get_index"
+    )]
     fn index(&self, index: usize) -> &ParameterValue {
         self.values.get(index).unwrap_or_else(|| {
             panic!(
