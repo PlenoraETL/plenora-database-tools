@@ -37,6 +37,7 @@ arrow-ipc.workspace = true
 # Binding PyO3 con ABI stabile dal minimo Python dichiarato nelle feature.
 # I pin del binding e del bridge asyncio sono verificati dal gate supply-chain.
 pyo3 = { version = "=0.29.2", features = ["extension-module", "abi3-py310", "serde"] }
+# Ponte fra il runtime tokio del core e asyncio per le API `async` dello SDK.
 pyo3-async-runtimes = { version = "=0.29.0", features = ["tokio-runtime"] }
 serde_json.workspace = true
 rustls.workspace = true

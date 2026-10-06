@@ -345,6 +345,7 @@ python scripts\sweep.py                    # intera suite offline locale
 python scripts\phase0_validate.py          # contratti, esempi, golden, domini
 python scripts\check_docs.py               # coerenza strutturale dei documenti
 python scripts\check_comments.py           # standard dei commenti
+python scripts\check_dependency_pins.py    # pin Cargo esatti e motivati, MSRV
 python scripts\check_test_layout.py         # test Rust separati dal prodotto
 python scripts\check_cargo_deny.py          # supply chain in Docker, tool fissato
 python scripts\check_mysql_reference.py --static
