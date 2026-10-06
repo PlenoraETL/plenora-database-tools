@@ -1,0 +1,42 @@
+{
+  "repository": "https://github.com/PlenoraETL/plenora-contracts.git",
+  "revision": "1e902dfaab5819c1d9ce785878d5b26dbeae48b3",
+  "files": {
+    "arrow-v1/invalid-missing-crs-with-id.json": {
+      "source": "vectors/arrow-v1/invalid-missing-crs-with-id.json",
+      "sha256": "9959cd8fccc704fcad53c10ba6ad1f878189eb9d371b362dd81d9d9db3b7db41"
+    },
+    "arrow-v1/invalid-unversioned-geometry.json": {
+      "source": "vectors/arrow-v1/invalid-unversioned-geometry.json",
+      "sha256": "e590d1448d322f4be82a3d9e7a595f2412ce3421d7ac52a95abd24fa53cffa1c"
+    },
+    "arrow-v1/missing-crs.json": {
+      "source": "vectors/arrow-v1/missing-crs.json",
+      "sha256": "6b6af3bdae1642c15197f89c94ba432c299b92dabb9817d33653243e3405f0a3"
+    },
+    "arrow-v1/resolved-point.json": {
+      "source": "vectors/arrow-v1/resolved-point.json",
+      "sha256": "767ba951ac6f3a8a2046b7468cfefdcf3ddb2c4f29f7e6ea93da0e9bf9411428"
+    },
+    "bindings/runtime-v1.json": {
+      "source": "bindings/runtime-v1.json",
+      "sha256": "aa9505d109f73d0230254307d62fc3c8b8a68daca3a1bafaffb04ec30a573373"
+    },
+    "catalogs/database-tools-v1.json": {
+      "source": "catalogs/database-tools-v1.json",
+      "sha256": "30f03ab647ca05eee9d6ff28d032033b2e97f6064dd7fef165f9cc9230ab3e70"
+    },
+    "runtime-v1/database-query-success.json": {
+      "source": "vectors/runtime-v1/database-query-success.json",
+      "sha256": "4fa089c5c9f488fc518ff7d5af72ab3fd18b38d802141c1a609c2bee6144a439"
+    },
+    "runtime-v1/database-read-request.json": {
+      "source": "vectors/runtime-v1/database-read-request.json",
+      "sha256": "ae5d6cae84356f5f4893fae62f421d6760ff92108149a3a5f70492a1b4688d31"
+    },
+    "runtime-v1/database-write-error.json": {
+      "source": "vectors/runtime-v1/database-write-error.json",
+      "sha256": "5006c793384682a8c27abb983c1e80fb4ae24a3e5182243830de64f209bd991d"
+    }
+  }
+}

@@ -645,6 +645,36 @@ class CiWorkflowTests(unittest.TestCase):
         build = next(step for step in steps if "cargo build" in step.get("run", ""))
         self.assertLess(steps.index(build), steps.index(regression))
 
+    def test_runtime_vectors_run_and_their_evidence_is_validated(self) -> None:
+        """Il binding runtime esegue i vettori del pin in un job che gira.
+
+        Le evidenze si producono prima di validarle e prima delle regressioni
+        che le alterano: senza il test Rust la directory sarebbe vuota, e lo
+        script la rifiuta.
+        """
+
+        workflow = (WORKFLOW_DIRECTORY / "rust-ci.yml").read_text(encoding="utf-8")
+        steps = parsed_jobs(workflow)["public-contract"]["steps"]
+        vectors = next(
+            step for step in steps
+            if "--test runtime_vectors" in step.get("run", "")
+        )
+        self.assertIn("PLENORA_RUNTIME_EVIDENCE", vectors.get("env", {}))
+        check = next(
+            step for step in steps
+            if "scripts/check_runtime_evidence.py" in step.get("run", "")
+        )
+        regression = next(
+            step for step in steps
+            if "scripts/test_public_contract_integration.py" in step.get("run", "")
+        )
+        for step in (vectors, check, regression):
+            self.assertNotIn("if", step)
+            self.assertNotIn("continue-on-error", step)
+        self.assertIn("--runtime-evidence target/runtime-evidence", regression["run"])
+        self.assertLess(steps.index(vectors), steps.index(check))
+        self.assertLess(steps.index(check), steps.index(regression))
+
     def test_every_adapter_is_checked_in_isolation(self) -> None:
         """Le quattro combinazioni di feature del CLI restano verificate.
 

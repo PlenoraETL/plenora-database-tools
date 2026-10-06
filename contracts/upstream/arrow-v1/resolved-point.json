@@ -1,0 +1,29 @@
+{
+  "$schema": "../../schemas/arrow-metadata-vector-v1.schema.json",
+  "schema_version": 1,
+  "contract": "plenora-arrow-metadata-vector-v1",
+  "expect": "valid",
+  "schema_metadata": {"plenora.contract.version": "1"},
+  "fields": [
+    {"name": "id", "type": "int64", "nullable": false, "metadata": {"plenora.field_id": "1"}},
+    {
+      "name": "geometry",
+      "type": "binary",
+      "nullable": true,
+      "metadata": {
+        "plenora.field_id": "2",
+        "ARROW:extension:name": "geoarrow.wkb",
+        "plenora.geometry.encoding": "ewkb",
+        "plenora.geometry.dimensions": "xy",
+        "plenora.geometry.spatial_semantics": "geometry",
+        "plenora.geometry.precision": "float64",
+        "plenora.geometry.srid": "4326",
+        "plenora.geometry.types_declaration": "exact",
+        "plenora.geometry.types": "point",
+        "plenora.geometry.crs_resolution": "resolved",
+        "plenora.geometry.crs_id": "EPSG:4326",
+        "plenora.geometry.axis_order": "lat_lon"
+      }
+    }
+  ]
+}
