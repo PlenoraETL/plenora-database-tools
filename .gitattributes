@@ -11,3 +11,6 @@
 *.txt text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+# Semi del fuzz: input binari, confrontati byte per byte. Ultima riga: vince
+# sulle regole per estensione qui sopra (`*.json`).
+fuzz/seeds/** -text

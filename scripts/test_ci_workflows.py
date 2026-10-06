@@ -833,6 +833,51 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertEqual(core["version"], workspace["workspace"]["package"]["version"])
 
 
+class FuzzWorkflowTests(unittest.TestCase):
+    """`fuzz`: ogni target dichiarato gira, e parte da semi versionati."""
+
+    WORKFLOW = WORKFLOW_DIRECTORY / "fuzz.yml"
+
+    @staticmethod
+    def declared_targets() -> list[str]:
+        manifest = tomllib.loads((ROOT / "fuzz" / "Cargo.toml").read_text(encoding="utf-8"))
+        return sorted(binary["name"] for binary in manifest["bin"])
+
+    def test_the_matrix_covers_every_target_of_the_fuzz_crate(self) -> None:
+        """Un target aggiunto a `fuzz/Cargo.toml` e fuori matrice non girerebbe mai."""
+
+        job = parsed_jobs(self.WORKFLOW.read_text(encoding="utf-8"))["fuzz"]
+        matrix = job["strategy"]["matrix"]["target"]
+        self.assertEqual(sorted(matrix), self.declared_targets())
+        self.assertEqual(len(matrix), len(set(matrix)))
+
+    def test_every_target_has_versioned_seeds_and_no_seed_is_orphaned(self) -> None:
+        seeds = ROOT / "fuzz" / "seeds"
+        directories = sorted(path.name for path in seeds.iterdir() if path.is_dir())
+        self.assertEqual(directories, self.declared_targets())
+        for name in directories:
+            with self.subTest(target=name):
+                files = [path for path in (seeds / name).iterdir() if path.is_file()]
+                self.assertTrue(files, "nessun seme versionato")
+                for path in files:
+                    self.assertGreater(path.stat().st_size, 0, path.name)
+
+    def test_the_nightly_is_the_one_documented_for_local_campaigns(self) -> None:
+        workflow = self.WORKFLOW.read_text(encoding="utf-8")
+        readme = (ROOT / "fuzz" / "README.md").read_text(encoding="utf-8")
+        nightly = re.search(r"NIGHTLY: (nightly-\d{4}-\d{2}-\d{2})", workflow)
+        self.assertIsNotNone(nightly, "nightly non fissata per data")
+        assert nightly is not None
+        self.assertIn(f"rustup run {nightly.group(1)} cargo fuzz", readme)
+        self.assertRegex(workflow, r"cargo-fuzz --version \d+\.\d+\.\d+ --locked")
+
+    def test_the_seeds_are_stored_byte_for_byte(self) -> None:
+        """Un seme e un input binario: nessuna conversione di fine riga."""
+
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(attributes[-1].strip(), "fuzz/seeds/** -text")
+
+
 class PythonWheelWorkflowTests(unittest.TestCase):
     """`python-wheel`: cosa costruisce, e cosa verifica prima di pubblicarlo.
 
