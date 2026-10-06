@@ -18,6 +18,12 @@ set -euo pipefail
 
 repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 staging="${RUNNER_TEMP:-/tmp}/plenora-sdk-offline"
+# Su Windows `RUNNER_TEMP` e `D:\_temp`: la forma mista `D:/a/_temp` la
+# leggono sia gli strumenti di Git Bash sia Python, a cui lo script passa il
+# percorso del report JUnit.
+if command -v cygpath >/dev/null 2>&1; then
+    staging="$(cygpath -m "$staging")"
+fi
 
 python -m pip install -q -r "$repository/requirements-sdk-tests.txt"
 

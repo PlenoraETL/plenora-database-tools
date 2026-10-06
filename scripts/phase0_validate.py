@@ -39,9 +39,18 @@ if str(REPO_ROOT) not in sys.path:
 # la storia appartiene al controllo versione, non a copie ancora validabili.
 ACTIVE_MAJOR = "v2"
 ACTIVE_CONTRACT_ROOT = REPO_ROOT / "contracts" / ACTIVE_MAJOR
+# `contracts/upstream` non e una major del componente: sono copie byte per
+# byte di file del pin di `plenora-contracts` eseguite dai test, e il job
+# `public-contract` le confronta con il checkout fissato. Validarle qui come
+# contratti emessi dal codice le scambierebbe per una seconda major.
+UPSTREAM_COPIES = REPO_ROOT / "contracts" / "upstream"
 CONTRACT_ROOTS = tuple(
     sorted(
-        (path for path in (REPO_ROOT / "contracts").iterdir() if path.is_dir()),
+        (
+            path
+            for path in (REPO_ROOT / "contracts").iterdir()
+            if path.is_dir() and path != UPSTREAM_COPIES
+        ),
         key=lambda path: path.name,
     )
 )
@@ -136,6 +145,8 @@ def discover_schemas(root: Path) -> dict[Path, Mapping[str, Any]]:
     # Ricorsivo: gli schemi vivono una cartella per major, e cercarli solo al
     # primo livello ne trovava zero appena la radice e diventata `contracts/`.
     for path in sorted(root.rglob("*.schema.json")):
+        if path.is_relative_to(UPSTREAM_COPIES):
+            continue
         raw = load_json(path)
         if not isinstance(raw, dict):
             raise ValidationError(f"schema non object: {path}")
@@ -302,6 +313,11 @@ def validate_active_domain() -> int:
             if where in DOMAIN_EXEMPT:
                 continue
             if "target" in path.relative_to(REPO_ROOT).parts:
+                continue
+            # Copie byte per byte del pin: i vettori di runtime-v1 descrivono
+            # payload illustrativi che questo componente rifiuta (`layer_id`),
+            # e proprio per questo si eseguono. Non sono contratti emessi qui.
+            if path.is_relative_to(UPSTREAM_COPIES):
                 continue
             if "__pycache__" in path.relative_to(REPO_ROOT).parts:
                 continue
@@ -696,7 +712,40 @@ def validate_adoption_source() -> int:
         raise ValidationError("adozione senza selezione dei contratti")
     if set(selected) & set(not_applicable):
         raise ValidationError("contratto insieme adottato e non applicabile")
-    return len(selected) + len(not_applicable)
+    deviations = source.get("deviations")
+    if not isinstance(deviations, list):
+        raise ValidationError("adozione senza elenco delle deviazioni")
+    for deviation in deviations:
+        validate_deviation(deviation)
+    return len(selected) + len(not_applicable) + len(deviations)
+
+
+DEVIATION_REQUIRED = ("rule", "observed_behavior", "tracking", "detectable_before_invocation")
+DEVIATION_SURFACES = ("rust", "cli", "python_sdk", "runtime")
+
+
+def validate_deviation(deviation: Any) -> None:
+    """Una deviazione dichiara regola, comportamento, superficie e rientro.
+
+    E la forma che `adoption-manifest-v4` chiede, controllata qui perche il
+    manifest si genera solo al rilascio: un errore di forma scoperto allora
+    bloccherebbe la pubblicazione invece di una PR.
+    """
+
+    if not isinstance(deviation, dict):
+        raise ValidationError("deviazione non object")
+    allowed = {*DEVIATION_REQUIRED, "artifact", "surface"}
+    if set(deviation) - allowed or any(key not in deviation for key in DEVIATION_REQUIRED):
+        raise ValidationError("deviazione con campi mancanti o sconosciuti")
+    for key in ("rule", "observed_behavior", "tracking"):
+        if not isinstance(deviation[key], str) or not deviation[key].strip():
+            raise ValidationError("deviazione con testo vuoto")
+    if not isinstance(deviation["detectable_before_invocation"], bool):
+        raise ValidationError("deviazione senza rilevabilita booleana")
+    if "artifact" not in deviation and "surface" not in deviation:
+        raise ValidationError("deviazione senza artefatto ne superficie")
+    if "surface" in deviation and deviation["surface"] not in DEVIATION_SURFACES:
+        raise ValidationError("deviazione su una superficie sconosciuta")
 
 
 def run_gate() -> dict[str, Any]:

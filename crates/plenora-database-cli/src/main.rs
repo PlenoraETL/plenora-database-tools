@@ -26,6 +26,10 @@ use plenora_database_core::transaction::CommitOutcome;
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorPhase};
 // Il giudizio sul commit incerto e comune a tutti i provider.
 use plenora_database_core::{ErrorCategory, RemoteEffect, RetryDisposition};
+use plenora_database_engine::public_ops::{
+    self, DescribeObjectRequest, ListObjectsRequest, ListSchemasRequest, OperationRequest,
+    TargetRequest, WriteRequest,
+};
 use plenora_database_engine::{parse_and_validate, Engine as CoreEngine};
 #[cfg(feature = "db2")]
 use plenora_db_db2::{Db2Config, Db2Provider, Db2TlsMode};
@@ -261,9 +265,6 @@ pub(crate) type CliResult<T> = std::result::Result<T, CliError>;
 
 static IPC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-const IPC_DEFAULT_MAX_ROWS: u64 = 10_000_000;
-const IPC_DEFAULT_MAX_OUTPUT_BYTES: u64 = 10 * 1024 * 1024 * 1024;
-const IPC_DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 #[cfg(any(
     feature = "postgres",
     feature = "mysql",
@@ -476,78 +477,21 @@ async fn run() -> CliResult<()> {
     }
 }
 
+// Le richieste canoniche sono i tipi di `plenora_database_engine::public_ops`,
+// gli stessi che legge il binding runtime: SURF-017 vuole la stessa
+// validazione dell'input su ogni superficie, e una copia sola la ottiene per
+// costruzione. Descrivono
+// `contracts/v2/public-operation-contracts.schema.json`: `catalog` ammette
+// `null` (vale il catalogo predefinito), `parameters_path` no.
+
+/// Richiesta di `execute`, che il runtime non espone.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CanonicalTarget {
+struct CanonicalExecuteRequest {
     provider: String,
     secret_environment: String,
     #[serde(default)]
     provider_arguments: Vec<String>,
-}
-
-/// Richiesta di `list-schemas`.
-///
-/// Le richieste canoniche sono descritte da
-/// `contracts/v2/public-operation-contracts.schema.json`. `catalog` ammette
-/// `null` per schema (`listSchemasInput`, `listObjectsInput`,
-/// `describeObjectInput`), e `null` vale il catalogo predefinito come
-/// l'assenza. `parameters_path` invece e solo una stringa (`readInput`,
-/// `queryInput`), e nessun produttore del repository ne dei vettori di
-/// `plenora-contracts` lo scrive a `null`: si rifiuta, vedi
-/// [`present_not_null`].
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CanonicalListSchemasRequest {
-    #[serde(flatten)]
-    target: CanonicalTarget,
-    #[serde(default)]
-    catalog: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CanonicalListObjectsRequest {
-    #[serde(flatten)]
-    target: CanonicalTarget,
-    #[serde(default)]
-    catalog: Option<String>,
-    schema: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CanonicalDescribeRequest {
-    #[serde(flatten)]
-    target: CanonicalTarget,
-    #[serde(default)]
-    catalog: Option<String>,
-    schema: String,
-    object: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CanonicalReadRequest {
-    #[serde(flatten)]
-    target: CanonicalTarget,
-    operation_path: String,
-    #[serde(default, deserialize_with = "present_not_null")]
-    parameters_path: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CanonicalWriteRequest {
-    #[serde(flatten)]
-    target: CanonicalTarget,
-    operation_path: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CanonicalExecuteRequest {
-    #[serde(flatten)]
-    target: CanonicalTarget,
     sql: String,
     #[serde(default)]
     allow_raw: bool,
@@ -579,29 +523,6 @@ impl CanonicalInspection {
             Self::Describe => "plenora-database-describe-object-result-v1",
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CanonicalQueryRequest {
-    #[serde(flatten)]
-    target: CanonicalTarget,
-    operation_path: String,
-    #[serde(default, deserialize_with = "present_not_null")]
-    parameters_path: Option<String>,
-}
-
-/// Legge un campo opzionale distinguendo l'assenza da `null`.
-///
-/// Con `#[serde(default)]` l'assenza la decide il default, e questa funzione
-/// riceve solo un valore presente, che quindi non puo essere `null`. Serve
-/// ai campi che lo schema pubblico ammette solo come stringa: accettare
-/// `null` come assenza sarebbe una tolleranza fuori contratto non dichiarata.
-fn present_not_null<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    String::deserialize(deserializer).map(Some)
 }
 
 fn no_extra_arguments(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -640,6 +561,8 @@ fn print_capabilities(args: &mut impl Iterator<Item = String>) -> CliResult<()> 
 }
 
 fn canonical_request<T: DeserializeOwned>(args: &mut impl Iterator<Item = String>) -> CliResult<T> {
+    // Le chiavi ripetute si rifiutano (`strict_json`): `serde_json` terrebbe
+    // l'ultima occorrenza nelle mappe, e il binding runtime le rifiuta.
     if args.next().as_deref() != Some("--input") {
         return Err("il comando richiede --input REQUEST.json".into());
     }
@@ -647,27 +570,50 @@ fn canonical_request<T: DeserializeOwned>(args: &mut impl Iterator<Item = String
         .next()
         .ok_or_else(|| CliError::from("--input richiede un percorso"))?;
     let input = fs::read(path).map_err(|_| CliError::from("REQUEST.json non leggibile"))?;
-    serde_json::from_slice(&input).map_err(|error| {
-        CliError::from(format!(
+    // Una richiesta fuori dal proprio input contract e
+    // `invalid_configuration`, come sul runtime (`public_ops::invalid_request`).
+    plenora_database_core::strict_json::from_slice(&input).map_err(|error| {
+        CliError::from(public_ops::invalid_request(format!(
             "REQUEST.json non parsabile a riga {}, colonna {}",
             error.line(),
             error.column()
-        ))
+        )))
     })
 }
 
 fn canonical_operation_arguments(
-    target: CanonicalTarget,
+    target: TargetRequest,
     operation_arguments: impl IntoIterator<Item = String>,
-) -> Vec<String> {
-    let mut arguments = vec![target.provider, target.secret_environment];
+) -> CliResult<Vec<String>> {
+    // Lo schema `target` si applica qui, prima di ricomporre la riga di
+    // comando: pattern del riferimento al segreto e limiti degli argomenti
+    // sono gli stessi del runtime.
+    let target = target.validate()?;
+    let mut arguments = vec![
+        provider_name(target.provider).to_owned(),
+        target.secret_environment,
+    ];
     arguments.extend(operation_arguments);
     arguments.extend(target.provider_arguments);
-    arguments
+    Ok(arguments)
+}
+
+/// Il nome con cui la riga di comando nomina il provider.
+const fn provider_name(kind: ProviderKind) -> &'static str {
+    match kind {
+        ProviderKind::Postgres => "postgres",
+        ProviderKind::Mysql => "mysql",
+        ProviderKind::Mariadb => "mariadb",
+        ProviderKind::Sqlserver => "sqlserver",
+        ProviderKind::Oracle => "oracle",
+        ProviderKind::Db2 => "db2",
+        ProviderKind::Sqlite => "sqlite",
+        ProviderKind::Duckdb => "duckdb",
+    }
 }
 
 async fn canonical_test_connection(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let target: CanonicalTarget = canonical_request(args)?;
+    let target: TargetRequest = canonical_request(args)?;
     no_extra_arguments(args)?;
     set_public_command(
         "test-connection",
@@ -696,44 +642,20 @@ async fn canonical_inspect(
 ) -> CliResult<()> {
     let (target, operation) = match inspection {
         CanonicalInspection::Catalogs => {
-            let target: CanonicalTarget = canonical_request(args)?;
+            let target: TargetRequest = canonical_request(args)?;
             (target, Operation::DatabaseListCatalogs)
         }
         CanonicalInspection::Schemas => {
-            let request: CanonicalListSchemasRequest = canonical_request(args)?;
-            let source = request.catalog.map(|catalog| ObjectRef {
-                catalog: Some(catalog),
-                schema: None,
-                object: String::new(),
-            });
-            (request.target, Operation::DatabaseListSchemas { source })
+            let request: ListSchemasRequest = canonical_request(args)?;
+            (request.target(), request.operation())
         }
         CanonicalInspection::Objects => {
-            let request: CanonicalListObjectsRequest = canonical_request(args)?;
-            let schema = required_value(request.schema, "schema")?;
-            (
-                request.target,
-                Operation::DatabaseListObjects {
-                    source: Some(ObjectRef {
-                        catalog: request.catalog,
-                        schema: Some(schema),
-                        object: String::new(),
-                    }),
-                },
-            )
+            let request: ListObjectsRequest = canonical_request(args)?;
+            (request.target(), request.operation()?)
         }
         CanonicalInspection::Describe => {
-            let request: CanonicalDescribeRequest = canonical_request(args)?;
-            (
-                request.target,
-                Operation::DatabaseDescribeObject {
-                    source: ObjectRef {
-                        catalog: request.catalog,
-                        schema: Some(required_value(request.schema, "schema")?),
-                        object: required_value(request.object, "object")?,
-                    },
-                },
-            )
+            let request: DescribeObjectRequest = canonical_request(args)?;
+            (request.target(), request.operation()?)
         }
     };
     no_extra_arguments(args)?;
@@ -743,14 +665,11 @@ async fn canonical_inspect(
 }
 
 fn required_value(value: String, label: &str) -> CliResult<String> {
-    if value.trim().is_empty() {
-        return Err(format!("{label} vuoto").into());
-    }
-    Ok(value)
+    Ok(public_ops::required_value(value, label)?)
 }
 
 async fn canonical_read(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let request: CanonicalReadRequest = canonical_request(args)?;
+    let request: OperationRequest = canonical_request(args)?;
     if args.next().as_deref() != Some("--output") {
         return Err("read richiede --output OUTPUT.arrow".into());
     }
@@ -759,14 +678,15 @@ async fn canonical_read(args: &mut impl Iterator<Item = String>) -> CliResult<()
         .ok_or_else(|| CliError::from("--output richiede un percorso"))?;
     no_extra_arguments(args)?;
     set_public_command("read", "plenora-database-read-result-v1");
+    let target = request.target();
     let operation = required_value(request.operation_path, "operation_path")?;
     let parameters = request.parameters_path.unwrap_or_else(|| "-".to_owned());
-    let forwarded = canonical_operation_arguments(request.target, [operation, parameters, output]);
+    let forwarded = canonical_operation_arguments(target, [operation, parameters, output])?;
     database_read_ipc(&mut forwarded.into_iter()).await
 }
 
 async fn canonical_write(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let request: CanonicalWriteRequest = canonical_request(args)?;
+    let request: WriteRequest = canonical_request(args)?;
     if args.next().as_deref() != Some("--data") {
         return Err("write richiede --data INPUT.arrow".into());
     }
@@ -775,18 +695,20 @@ async fn canonical_write(args: &mut impl Iterator<Item = String>) -> CliResult<(
         .ok_or_else(|| CliError::from("--data richiede un percorso"))?;
     no_extra_arguments(args)?;
     set_public_command("write", "plenora-database-write-result-v1");
+    let target = request.target();
     let operation = required_value(request.operation_path, "operation_path")?;
-    let forwarded = canonical_operation_arguments(request.target, [operation, data]);
+    let forwarded = canonical_operation_arguments(target, [operation, data])?;
     database_write_ipc(&mut forwarded.into_iter()).await
 }
 
 async fn canonical_query(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
-    let request: CanonicalQueryRequest = canonical_request(args)?;
+    let request: OperationRequest = canonical_request(args)?;
     no_extra_arguments(args)?;
     set_public_command("query", "plenora-database-query-result-v1");
+    let target = request.target();
     let operation = required_value(request.operation_path, "operation_path")?;
     let parameters = request.parameters_path.unwrap_or_else(|| "-".to_owned());
-    let forwarded = canonical_operation_arguments(request.target, [operation, parameters]);
+    let forwarded = canonical_operation_arguments(target, [operation, parameters])?;
     database_query_summary(&mut forwarded.into_iter()).await
 }
 
@@ -799,7 +721,12 @@ async fn canonical_execute(args: &mut impl Iterator<Item = String>) -> CliResult
     if request.allow_raw {
         operation_arguments.push("--allow-raw".to_owned());
     }
-    let forwarded = canonical_operation_arguments(request.target, operation_arguments);
+    let target = TargetRequest {
+        provider: request.provider,
+        secret_environment: request.secret_environment,
+        provider_arguments: request.provider_arguments,
+    };
+    let forwarded = canonical_operation_arguments(target, operation_arguments)?;
     database_execute_sql(&mut forwarded.into_iter()).await
 }
 
@@ -949,15 +876,12 @@ struct OpenedProvider {
 }
 
 impl ProviderTarget {
-    fn from_canonical(target: CanonicalTarget) -> CliResult<(Self, Vec<String>)> {
-        let kind = parse_provider_kind(&target.provider)?;
-        ensure_adapter_available(kind)?;
-        if target.secret_environment.trim().is_empty() {
-            return Err("secret_environment vuoto".into());
-        }
+    fn from_canonical(target: TargetRequest) -> CliResult<(Self, Vec<String>)> {
+        let target = target.validate()?;
+        ensure_adapter_available(target.provider)?;
         Ok((
             Self {
-                kind,
+                kind: target.provider,
                 secret_environment: target.secret_environment,
             },
             target.provider_arguments,
@@ -1262,7 +1186,9 @@ fn read_parameters(path: &str) -> CliResult<ParameterBag> {
         return Ok(ParameterBag::default());
     }
     let contents = fs::read(path).map_err(|_| "PARAMETERS.json non leggibile".to_owned())?;
-    serde_json::from_slice(&contents).map_err(|error| {
+    // Una mappa: `serde_json` terrebbe l'ultima occorrenza di un parametro
+    // ripetuto, e il binding runtime lo rifiuta.
+    plenora_database_core::strict_json::from_slice(&contents).map_err(|error| {
         format!(
             "PARAMETERS.json non parsabile a riga {}, colonna {}",
             error.line(),
@@ -1272,49 +1198,12 @@ fn read_parameters(path: &str) -> CliResult<ParameterBag> {
     })
 }
 
-fn stream_fields(stream: &dyn BatchStream) -> Vec<serde_json::Value> {
-    stream
-        .schema()
-        .fields()
-        .iter()
-        .map(|field| {
-            json!({
-                "name": field.name(),
-                "data_type": field.data_type().to_string(),
-                "nullable": field.is_nullable(),
-                "metadata": field.metadata(),
-            })
-        })
-        .collect()
-}
-
 async fn consume_summary(
     kind: ProviderKind,
     stream: &mut dyn BatchStream,
     cancellation: &CancellationToken,
 ) -> CliResult<()> {
-    let fields = stream_fields(stream);
-    let mut batches = 0_u64;
-    let mut rows = 0_u64;
-    while let Some(batch) = stream.next_batch(cancellation).await? {
-        batches = batches
-            .checked_add(1)
-            .ok_or_else(|| CliError::from("conteggio batch oltre u64"))?;
-        rows = rows
-            .checked_add(
-                u64::try_from(batch.num_rows())
-                    .map_err(|_| CliError::from("conteggio righe oltre u64"))?,
-            )
-            .ok_or_else(|| CliError::from("conteggio righe oltre u64"))?;
-    }
-    print_json(&json!({
-        "schema_version": 1,
-        "status": "ok",
-        "provider": kind,
-        "batches": batches,
-        "rows": rows,
-        "fields": fields,
-    }))
+    print_json(&public_ops::summarize_stream(kind, stream, cancellation).await?)
 }
 
 /// Esegue un `QueryOperation` serializzato e rende uno summary bounded.
@@ -1375,12 +1264,7 @@ async fn database_read(
     })?;
     let parameters = read_parameters(&parameters_path)?;
     let opened = target.open(args)?;
-    let budget = ResourceBudget::new(ResourceLimits {
-        rows: IPC_DEFAULT_MAX_ROWS,
-        output_bytes: IPC_DEFAULT_MAX_OUTPUT_BYTES,
-        duration_ms: IPC_DEFAULT_TIMEOUT_MS,
-        ..ResourceLimits::default()
-    })?;
+    let budget = ResourceBudget::new(public_ops::read_limits())?;
     let session = opened.engine.session()?;
     let cancellation = session.cancellation_token();
     let mut stream = opened
@@ -1514,26 +1398,10 @@ async fn run_database_inspect(
     print_json(&inspection_output(kind, inspection)?)
 }
 
-/// Envelope CLI stabile per tutti i documenti di introspezione.
-///
-/// `Inspection::document` e sempre un oggetto nei quattro adapter. Appiattirlo
-/// mantiene comodi `schemas`, `objects` e `columns`, mentre provider e
-/// operazione rendono la risposta auto-descrittiva come gli altri comandi
-/// `database-*`.
+/// Envelope stabile dei documenti di introspezione, lo stesso del runtime:
+/// provider e operazione, poi i campi dell'adapter appiattiti.
 fn inspection_output(kind: ProviderKind, inspection: Inspection) -> CliResult<serde_json::Value> {
-    let serde_json::Value::Object(document) = inspection.document else {
-        return Err("documento di introspezione non strutturato".into());
-    };
-    let mut output = serde_json::Map::new();
-    output.insert("schema_version".to_owned(), json!(1));
-    output.insert("provider".to_owned(), json!(kind));
-    output.insert("operation".to_owned(), json!(inspection.operation));
-    for (key, value) in document {
-        if output.insert(key, value).is_some() {
-            return Err("documento di introspezione usa un campo CLI riservato".into());
-        }
-    }
-    Ok(serde_json::Value::Object(output))
+    Ok(public_ops::inspection_document(kind, inspection)?)
 }
 
 /// Il nome dello schema, che nessuna operazione puo dedurre.
@@ -1757,12 +1625,7 @@ async fn postgres_read_ipc(args: &mut impl Iterator<Item = String>) -> CliResult
 
 #[cfg(feature = "postgres")]
 fn parse_ipc_options(args: &mut impl Iterator<Item = String>) -> CliResult<IpcOptions> {
-    let mut limits = ResourceLimits {
-        rows: IPC_DEFAULT_MAX_ROWS,
-        output_bytes: IPC_DEFAULT_MAX_OUTPUT_BYTES,
-        duration_ms: IPC_DEFAULT_TIMEOUT_MS,
-        ..ResourceLimits::default()
-    };
+    let mut limits = public_ops::read_limits();
     let mut order_by = Vec::new();
     let mut projection: Vec<String> = Vec::new();
     let mut filter: Option<plenora_database_core::plan::FilterExpression> = None;

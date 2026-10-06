@@ -295,15 +295,14 @@ fn parse_protected_dml_status(status: &str) -> Result<u64> {
     }
     let code = parts.next().and_then(|value| value.parse::<i64>().ok());
     let affected = parts.next().and_then(|value| value.parse::<i64>().ok());
-    if parts.next().is_some() || code.is_none() || affected.is_none() {
+    let (Some(code), Some(affected), None) = (code, affected, parts.next()) else {
         return Err(DatabaseError::new(
             ErrorCategory::Protocol,
             ErrorPhase::Write,
             Some(ProviderKind::Oracle),
             "stato DML protetto Oracle non valido",
         ));
-    }
-    let code = code.expect("verificato");
+    };
     if code != 0 {
         let mut error = oracle_code_error(
             ErrorPhase::Write,
@@ -312,7 +311,7 @@ fn parse_protected_dml_status(status: &str) -> Result<u64> {
         error.remote_effect = plenora_database_core::RemoteEffect::RolledBack;
         return Err(error);
     }
-    u64::try_from(affected.expect("verificato")).map_err(|_| {
+    u64::try_from(affected).map_err(|_| {
         DatabaseError::new(
             ErrorCategory::Protocol,
             ErrorPhase::Write,

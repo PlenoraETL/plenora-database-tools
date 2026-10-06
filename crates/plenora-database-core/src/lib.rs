@@ -37,6 +37,7 @@ pub mod session_context;
 pub mod spatial_catalog;
 pub mod spatial_policy;
 pub mod spatial_predicate;
+pub mod strict_json;
 pub mod transaction;
 
 pub use cancellation::{CancellationReason, CancellationToken};

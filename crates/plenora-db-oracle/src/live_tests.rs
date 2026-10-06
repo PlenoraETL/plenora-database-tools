@@ -367,7 +367,8 @@ fn spatial_write_batch(ids: Vec<i32>, points: Vec<Vec<u8>>) -> RecordBatch {
         spatial_dimensions: Some(2),
         spatial_semantics: Some(plenora_database_core::geometry::SpatialSemantics::Geometry),
     }
-    .arrow_field();
+    .arrow_field()
+    .expect("campo Arrow geometry");
     let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false), geometry]);
     RecordBatch::try_new(
         schema,
@@ -389,7 +390,8 @@ fn spatial_xyz_write_batch(ids: Vec<i32>, points: Vec<Vec<u8>>) -> RecordBatch {
         spatial_dimensions: Some(3),
         spatial_semantics: Some(SpatialSemantics::Geometry),
     }
-    .arrow_field();
+    .arrow_field()
+    .expect("campo Arrow geometry");
     let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false), geometry]);
     RecordBatch::try_new(
         schema,

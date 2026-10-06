@@ -45,6 +45,8 @@ l'enum pubblico Rust `PublicSurface` ha una variante in più.
   prima andava in panico. Va adeguato chi chiama il metodo dall'API Rust.
 - **NUMERIC PostgreSQL** (#110). Una cifra fuori da [0, 9999] è un errore.
   Prima produceva un numero plausibile e sbagliato.
+- **MSRV 1.98.1** (#109). `rust-version` passa da `1.98` a `1.98.1`, la
+  toolchain con cui il workspace è compilato e provato.
 - **Messaggi d'errore** (#104). I comandi della CLI non ripetono più percorsi
   posizionali né il testo di `io::Error`: riportano lo slot e
   l'`io::ErrorKind`. Va adeguato chi confrontava il testo del messaggio.
@@ -55,15 +57,22 @@ l'enum pubblico Rust `PublicSurface` ha una variante in più.
   implementa Runtime Binding 1.0 per `plenora.database-tools` sulle otto
   operazioni del catalogo: discovery, test di connessione, ispezioni, read,
   write e query. Connessioni e artefatti li risolve l'applicazione. I vettori
-  `database-*` di `plenora-contracts` vengono eseguiti in CI. Guida:
+  `database-*` di `plenora-contracts` vengono eseguiti in CI. L'ammissione
+  segue la matrice runtime comune alle librerie Plenora e i chiarimenti
+  RT-016..RT-023 proposti in `plenora-contracts` #21, non ancora normativi;
+  le 21 sonde `runtime-probes-v1` sono eseguite come test. Guida:
   `docs/runtime.md`.
 - **Contratti** (#108). Il pin di `plenora-contracts` passa a `1e902dfa`. I
   vettori `arrow-v1` vengono eseguiti, e il manifest di adozione riporta le
   deviazioni dichiarate (null come assente nei piani v2, SURF-007, #106).
-- **Gate** (#101, #102, #107, #109, #110). Validatori semantici del pin su
-  capability e manifest; il gate di coverage verifica i sorgenti misurati;
-  campagne fuzz in CI con corpus seme; motivazione obbligatoria per ogni pin
-  e MSRV allineata; CI anche su Windows e gate anti-panic sulle librerie.
+- **Robustezza** (#110). Nessuna primitiva di panico nel codice di libreria:
+  63 siti convertiti in errori tipizzati, senza dati nei messaggi.
+- **Gate**:
+  - validatori semantici del pin su capability e manifest (#101);
+  - il gate di coverage verifica i sorgenti misurati (#102);
+  - campagne fuzz in CI con corpus seme versionato (#107);
+  - motivazione obbligatoria accanto a ogni pin, con una guardia (#109);
+  - CI anche su Windows e gate anti-panic sulle librerie (#110).
 
 ## 6.0.0 — 2026-09-18
 

@@ -256,7 +256,9 @@ pub fn build_indexes(rows: &[Vec<Option<String>>]) -> Result<Vec<Db2Index>> {
                 descending: Vec::new(),
             });
         }
-        let index = indexes.last_mut().expect("indice appena inserito");
+        let Some(index) = indexes.last_mut() else {
+            return Err(mapping_error("indice Db2 assente dopo l'inserimento"));
+        };
         if sequence != index.columns.len() + 1 {
             return Err(mapping_error("sequenza colonne indice Db2 non contigua"));
         }

@@ -12,6 +12,7 @@ from scripts.phase0_validate import (
     discover_schemas,
     run_gate,
     markdown_documents,
+    validate_deviation,
     validate_instance,
 )
 
@@ -34,6 +35,29 @@ class Phase0ValidateTests(unittest.TestCase):
 
     def plan_schema(self) -> dict:
         return self.schemas[(ACTIVE_CONTRACT_ROOT / "plan.schema.json").resolve()]
+
+    def test_deviation_declares_rule_behavior_scope_and_tracking(self) -> None:
+        valid = {
+            "rule": "SURF-007",
+            "surface": "cli",
+            "observed_behavior": "null read as absent",
+            "tracking": "https://example.invalid/issues/1",
+            "detectable_before_invocation": True,
+        }
+        validate_deviation(valid)
+        broken = [
+            {key: value for key, value in valid.items() if key != "tracking"},
+            {key: value for key, value in valid.items() if key != "surface"},
+            {**valid, "surface": "web"},
+            {**valid, "rule": " "},
+            {**valid, "detectable_before_invocation": "yes"},
+            {**valid, "note": "campo sconosciuto"},
+            ["SURF-007"],
+        ]
+        for deviation in broken:
+            with self.subTest(deviation=deviation):
+                with self.assertRaises(ValidationError):
+                    validate_deviation(deviation)
 
     def test_repository_gate_passes(self) -> None:
         report = run_gate()

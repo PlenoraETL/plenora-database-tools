@@ -1,0 +1,27 @@
+{
+  "$schema": "../../schemas/arrow-metadata-vector-v1.schema.json",
+  "schema_version": 1,
+  "contract": "plenora-arrow-metadata-vector-v1",
+  "expect": "invalid",
+  "reason": "A missing CRS cannot carry a CRS identifier.",
+  "schema_metadata": {"plenora.contract.version": "1"},
+  "fields": [
+    {
+      "name": "geometry",
+      "type": "binary",
+      "nullable": true,
+      "metadata": {
+        "plenora.field_id": "0",
+        "ARROW:extension:name": "geoarrow.wkb",
+        "plenora.geometry.encoding": "wkb",
+        "plenora.geometry.dimensions": "xy",
+        "plenora.geometry.spatial_semantics": "geometry",
+        "plenora.geometry.precision": "float64",
+        "plenora.geometry.types_declaration": "exact",
+        "plenora.geometry.types": "point",
+        "plenora.geometry.crs_resolution": "missing",
+        "plenora.geometry.crs_id": "EPSG:4326"
+      }
+    }
+  ]
+}

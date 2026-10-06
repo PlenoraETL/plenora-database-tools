@@ -1,0 +1,60 @@
+{
+  "$schema": "../../schemas/runtime-vector-v1.schema.json",
+  "schema_version": 1,
+  "contract": "plenora-runtime-vector-v1",
+  "kind": "request",
+  "content_type": "application/json",
+  "metadata": {
+    "plenora.message.id": "018f3d84-7b2c-7f00-8000-000000000130",
+    "plenora.capability.name": "plenora.data-tools",
+    "plenora.capability.version": "1",
+    "plenora.capability.operation": "data.run",
+    "plenora.operation.version": "3",
+    "plenora.input.contract": "plenora-data-execution-input-v3",
+    "plenora.execution.deadline": "2030-01-01T00:00:00Z",
+    "plenora.trace.correlation_id": "018f3d84-7b2c-7f00-8000-000000000030"
+  },
+  "payload": {
+    "schema_version": 1,
+    "plan": {
+      "version": 1,
+      "inputs": [
+        "parcels"
+      ],
+      "steps": [
+        {
+          "out": "large",
+          "op": "table.filter",
+          "in": [
+            "parcels"
+          ],
+          "config": {
+            "column": "area",
+            "operator": ">",
+            "value": 1000
+          }
+        }
+      ],
+      "outputs": [
+        "large"
+      ]
+    },
+    "inputs": {
+      "parcels": {
+        "reference": "artifact://input/data-run-v3-parcels",
+        "content_type": "application/vnd.apache.parquet",
+        "expected": {
+          "size": 4096,
+          "sha256": "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+        }
+      }
+    },
+    "outputs": {
+      "large": {
+        "reference": "artifact://output/data-run-v3-large",
+        "content_type": "application/vnd.apache.arrow.stream",
+        "overwrite": false
+      }
+    }
+  }
+}

@@ -148,12 +148,14 @@ impl Db2ColumnSpec {
         })
     }
 
-    #[must_use]
-    /// # Panics
+    /// Il campo Arrow con i metadati canonici `GeoArrow`.
     ///
-    /// Solo se viene costruito manualmente uno spec `Geometry` senza lo SRID
-    /// che il compilatore Db2 rende obbligatorio.
-    pub fn arrow_field(&self) -> Field {
+    /// # Errors
+    ///
+    /// `Crs` se uno spec `Geometry` costruito a mano non ha lo SRID che il
+    /// compilatore Db2 rende obbligatorio: pubblicare un CRS che non si
+    /// conosce sarebbe peggio del rifiuto.
+    pub fn arrow_field(&self) -> Result<Field> {
         let data_type = match self.kind {
             Db2ColumnKind::Bool => DataType::Boolean,
             Db2ColumnKind::I16 => DataType::Int16,
@@ -172,6 +174,12 @@ impl Db2ColumnSpec {
             self.native_type.clone(),
         )]);
         if self.kind == Db2ColumnKind::Geometry {
+            let srid = self.spatial_srid.ok_or_else(|| {
+                prepare_error(
+                    ErrorCategory::Crs,
+                    "colonna geometry Db2 senza SRID dichiarato",
+                )
+            })?;
             metadata.extend([
                 (
                     protocol::GEOARROW_EXTENSION_NAME.to_owned(),
@@ -199,18 +207,13 @@ impl Db2ColumnSpec {
                     protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
                     "declared_unresolved".to_owned(),
                 ),
-                (
-                    protocol::GEOMETRY_SRID.to_owned(),
-                    self.spatial_srid
-                        .expect("una geometry compilata ha sempre un SRID dichiarato")
-                        .to_string(),
-                ),
+                (protocol::GEOMETRY_SRID.to_owned(), srid.to_string()),
             ]);
             if let Some(geometry_type) = &self.geometry_type {
                 metadata.insert(protocol::GEOMETRY_TYPES.to_owned(), geometry_type.clone());
             }
         }
-        Field::new(&self.name, data_type, self.nullable).with_metadata(metadata)
+        Ok(Field::new(&self.name, data_type, self.nullable).with_metadata(metadata))
     }
 }
 
@@ -308,7 +311,12 @@ impl Db2ReadPlan {
             sql.push_str(&limit.to_string());
             sql.push_str(" ROWS ONLY");
         }
-        let schema = contract_schema(columns.iter().map(Db2ColumnSpec::arrow_field).collect());
+        let schema = contract_schema(
+            columns
+                .iter()
+                .map(Db2ColumnSpec::arrow_field)
+                .collect::<Result<Vec<_>>>()?,
+        );
         Ok(Self {
             columns,
             schema,

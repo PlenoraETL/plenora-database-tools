@@ -31,7 +31,7 @@ default-members = [
 [workspace.package]
 version = "7.0.0"
 edition = "2021"
-rust-version = "1.98"
+rust-version = "1.98.1"
 publish = false
 # I crate non sono pubblicati e usano la licenza proprietaria del repository.
 # `license-file` e il campo Cargo previsto quando non esiste un identificatore
@@ -39,23 +39,54 @@ publish = false
 license-file = "LICENSE"
 
 [workspace.dependencies]
+# Arrow e il data plane: `arrow-array` porta i `RecordBatch` del confine core
+# (letture e scritture bulk) e la conversione di riga nell'adapter PostgreSQL.
+# I tre crate Arrow stanno sulla stessa versione: tipi di versioni diverse non
+# sono intercambiabili.
 arrow-array = "=60.0.0"
+# File e stream Arrow IPC della CLI (`read`/`write`) e del binding Python.
 arrow-ipc = "=60.0.0"
+# Schema e metadati di campo del contratto Arrow (`field_contract`); `serde`
+# serializza gli schemi nei documenti di stato e capability.
 arrow-schema = { version = "=60.0.0", features = ["serde"] }
+# Buffer dei valori del protocollo PostgreSQL (codec dei parametri, COPY,
+# conversione Arrow): sono i tipi che `tokio-postgres` chiede ai trait `ToSql`.
 bytes = "=1.12.1"
+# (De)serializzazione dei piani, dei contratti JSON e dei documenti
+# capability in tutti i crate.
 serde = { version = "=1.0.229", features = ["derive"] }
+# JSON dei contratti v2, dei documenti CLI e dei fingerprint canonici.
 serde_json = "=1.0.151"
+# Solo nell'adapter SQL Server: `native_query_policy` analizza lo statement
+# nativo per applicarvi la policy prima dell'invio. Senza feature di default.
 sqlparser = { version = "=0.63.0", default-features = false, features = ["std"] }
+# Derive di `std::error::Error` per `DatabaseError` nel core.
 thiserror = "=2.0.20"
+# SHA-256 dei fingerprint di piano, statement e schema, dei checkpoint di
+# lettura e delle evidenze dei provider.
 sha2 = "=0.11.0"
+# Solo CLI: ricodifica in PEM i certificati DER delle CA private.
 base64 = "=0.23.1"
+# Date e timestamp dei valori nativi e della conversione Arrow negli adapter;
+# solo `std`, senza `clock`: il codice non legge l'orologio di sistema.
 chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
+# Combinatori di stream e sink per lo streaming di righe e COPY negli adapter
+# PostgreSQL, MySQL e SQL Server.
 futures-util = "=0.3.34"
+# Runtime async della CLI, dell'engine (deadline e task) e degli adapter;
+# solo le feature usate, niente `full`.
 tokio = { version = "=1.53.1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+# Solo SQL Server: `compat` adatta il `TcpStream` di tokio ai trait
+# `futures` che `tiberius` richiede.
 tokio-util = { version = "=0.7.19", features = ["compat"] }
-# Pin del driver PostgreSQL verificato dal gate cargo-deny.
+# Driver dell'adapter PostgreSQL (protocollo, COPY, tipi chrono e JSON);
+# pin verificato dal gate cargo-deny.
 tokio-postgres = { version = "=0.7.18", features = ["with-chrono-0_4", "with-serde_json-1"] }
+# Driver TDS dell'adapter SQL Server (`tiberius-ng`, fork di tiberius), con
+# TLS rustls e senza native-tls.
 tiberius = { package = "tiberius-ng", version = "=0.13.1", default-features = false, features = ["chrono", "rustls", "tds73"] }
+# Driver dell'adapter MySQL/MariaDB, solo Rust (`minimal-rust`) e TLS rustls
+# con `ring`: niente OpenSSL nella wheel.
 mysql_async = { version = "=0.37.1", default-features = false, features = ["minimal-rust", "rustls-tls", "ring", "tls12", "chrono"] }
 # Solo dev-dependency di `plenora-db-mysql`: `mysql_async` riesporta il tipo
 # `Row` ma non il costruttore `row::new_row`, quindi i test offline del
@@ -69,8 +100,13 @@ odbc-api = { version = "=29.0.0", default-features = false, features = ["odbc_ve
 # Driver thin asincrono: parla TNS senza Oracle Instant Client, quindi il
 # supporto Oracle non introduce una seconda famiglia di wheel native.
 oracle-rs = "=0.1.7"
+# TLS dei driver PostgreSQL e Oracle e delle CA private della CLI e del
+# binding; provider crittografico `ring`, senza aws-lc.
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+# Ponte fra `tokio-postgres` e rustls per le connessioni PostgreSQL TLS.
 tokio-postgres-rustls = { version = "=0.14.0", features = ["ring", "webpki-roots"] }
+# Radici pubbliche della configurazione TLS PostgreSQL predefinita
+# (`PostgresTlsConfig::webpki`); i costruttori a CA privata non le caricano.
 webpki-roots = "=1.0.9"
 
 plenora-database-core = { path = "crates/plenora-database-core" }
@@ -83,6 +119,12 @@ plenora-db-mysql = { path = "crates/plenora-db-mysql" }
 plenora-db-db2 = { path = "crates/plenora-db-db2" }
 plenora-db-oracle = { path = "crates/plenora-db-oracle" }
 
+# Le dipendenze di `vendor/oracle-rs` restano intervalli (`"0.8"`, `"1"`):
+# il manifest e quello pubblicato upstream, toccato solo dove serve la patch,
+# cosi un nuovo vendoring resta un diff leggibile. Le versioni effettive le
+# fissa `Cargo.lock`, che i build e i test della CI usano con `--locked` o
+# senza modificarlo, e che cargo-deny controlla per intero.
+#
 # `oracle-rs` 0.1.7 riconosce il flag TNS `TLS_RENEG` ma non esegue il
 # secondo handshake richiesto dai listener TCPS tradizionali. La patch locale
 # conserva l'API upstream e usa il parser PEM di rustls-pki-types.

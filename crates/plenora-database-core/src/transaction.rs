@@ -299,11 +299,6 @@ pub trait TransactionScope: Send {
 ///
 /// Restituisce `InvalidPlan` per nomi vuoti, troppo lunghi o contenenti
 /// caratteri non ammessi.
-///
-/// # Panics
-///
-/// Non panics: l'`expect()` interno è protetto dal controllo di non-vuoto
-/// che lo precede.
 pub fn validate_savepoint_name(name: &str) -> crate::Result<()> {
     if name.is_empty() {
         return Err(crate::DatabaseError::invalid_plan(
@@ -316,7 +311,11 @@ pub fn validate_savepoint_name(name: &str) -> crate::Result<()> {
         ));
     }
     let mut chars = name.chars();
-    let first = chars.next().expect("controllato non vuoto");
+    let Some(first) = chars.next() else {
+        return Err(crate::DatabaseError::invalid_plan(
+            "il nome di savepoint non può essere vuoto",
+        ));
+    };
     if !(first.is_ascii_alphabetic() || first == '_') {
         return Err(crate::DatabaseError::invalid_plan(
             "il nome di savepoint deve iniziare con lettera o underscore",

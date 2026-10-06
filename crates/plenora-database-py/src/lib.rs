@@ -91,6 +91,10 @@ fn build_runtime() -> std::result::Result<&'static Runtime, String> {
 /// che non e raggiungibile da Python: `#[pymodule]` costruisce il runtime e,
 /// se non ci riesce, l'import fallisce e nessuna di queste funzioni diventa
 /// chiamabile.
+#[allow(
+    clippy::expect_used,
+    reason = "il modulo _native non si importa se il runtime non e costruito: nessun chiamante Python arriva qui senza"
+)]
 pub(crate) fn runtime() -> &'static Runtime {
     RT.get()
         .expect("runtime costruito dall'inizializzazione del modulo _native")

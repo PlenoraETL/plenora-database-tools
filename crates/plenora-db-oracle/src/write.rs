@@ -551,10 +551,14 @@ async fn setup_created_target(
 ) -> Result<()> {
     let mut connection = pool.checkout(cancellation).await?;
     let raw = connection.connection()?;
-    let create_sql = plan
-        .create_sql
-        .as_ref()
-        .expect("setup richiesto soltanto per create");
+    let Some(create_sql) = plan.create_sql.as_ref() else {
+        return Err(DatabaseError::new(
+            ErrorCategory::Internal,
+            ErrorPhase::Write,
+            Some(ProviderKind::Oracle),
+            "setup Oracle richiesto senza statement di creazione",
+        ));
+    };
     with_timeout(
         config,
         ErrorPhase::Write,
@@ -562,12 +566,11 @@ async fn setup_created_target(
         raw.execute(create_sql, &[]),
     )
     .await?;
-    for column in plan
+    for (column, spatial) in plan
         .columns
         .iter()
-        .filter(|column| column.spatial.is_some())
+        .filter_map(|column| column.spatial.as_ref().map(|spatial| (column, spatial)))
     {
-        let spatial = column.spatial.as_ref().expect("filtrato");
         let geographic = plenora_database_core::spatial_policy::is_geographic_srid(spatial.srid);
         let xy = if geographic {
             "MDSYS.SDO_DIM_ELEMENT('LONGITUDE', -180, 180, 0.005), MDSYS.SDO_DIM_ELEMENT('LATITUDE', -90, 90, 0.005)"

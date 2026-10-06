@@ -66,6 +66,27 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
             "warnings",
         ],
     ),
+    (
+        "cargo clippy anti-panic",
+        [
+            "cargo",
+            "clippy",
+            "--workspace",
+            "--lib",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings",
+            "-D",
+            "clippy::unwrap_used",
+            "-D",
+            "clippy::expect_used",
+            "-D",
+            "clippy::panic",
+            "-D",
+            "clippy::unreachable",
+        ],
+    ),
     # Le prove unitarie, con lo **stesso** comando che la CI esegue: non
     # `--lib`, che ne lascerebbe fuori i test di integrazione dei crate.
     (
@@ -128,6 +149,11 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
         [sys.executable, "scripts/test_render_adoption_manifest.py"],
     ),
     ("check_docs.py", [sys.executable, "scripts/check_docs.py"]),
+    ("check_dependency_pins.py", [sys.executable, "scripts/check_dependency_pins.py"]),
+    (
+        "test_check_dependency_pins.py",
+        [sys.executable, "scripts/test_check_dependency_pins.py"],
+    ),
     ("check_comments.py", [sys.executable, "scripts/check_comments.py"]),
     ("test_check_coverage.py", [sys.executable, "scripts/test_check_coverage.py"]),
     ("check_test_layout.py", [sys.executable, "scripts/check_test_layout.py"]),

@@ -199,9 +199,11 @@ pub fn python_to_json(value: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
                  lato Python (None, math.isfinite check) prima di passarlo.",
             ));
         }
-        return Ok(serde_json::Value::Number(
-            serde_json::Number::from_f64(f).expect("valore f64 finito"),
-        ));
+        // `from_f64` rifiuta solo i non finiti, gia esclusi sopra; il ramo
+        // d'errore ripete lo stesso rifiuto invece di un panico.
+        return serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| PyValueError::new_err("float non-finito non serializzabile a JSON"));
     }
     if let Ok(i) = value.extract::<i64>() {
         return Ok(serde_json::Value::Number(serde_json::Number::from(i)));

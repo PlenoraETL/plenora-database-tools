@@ -8,6 +8,9 @@ publish.workspace = true
 license-file.workspace = true
 
 [dependencies]
+# Il binding runtime consegna il risultato di `database.read` come stream
+# Arrow IPC al sink dell'host: stessa versione fissata che usa la CLI.
+arrow-ipc.workspace = true
 plenora-database-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true

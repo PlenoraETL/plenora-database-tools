@@ -27,6 +27,7 @@ La matrice corrente dei provider, delle capability, dei crate e dei test è in
 | Graph | Cypher parametrizzato, mapping tipizzato, bulk e indici/vincoli per Apache AGE su PostgreSQL |
 | SDK Python | API applicativa, lifecycle engine/session provider-neutral, stub PEP 561 e binding PyO3 |
 | CLI | inspect, probe, read, write e diagnostica sugli stessi contratti del core |
+| Runtime | Runtime Binding 1.0 transport-neutral per l'orchestrazione, con resolver posseduti dall'applicazione ([`docs/runtime.md`](docs/runtime.md)) |
 | Assurance | contratti JSON Schema, golden test, fixture reali, matrici live, benchmark e fuzzing |
 
 Il dettaglio dell'API Python, inclusi esempi sync/async e limiti dichiarati, è
@@ -41,7 +42,12 @@ delle operazioni possedute da questo repository sono nel
 [`bundle pubblico`](contracts/v2/public-operation-contracts.schema.json); il
 gate black-box li confronta con quel pin in CI.
 I controlli semantici caricati dallo stesso checkout verificano le capability
-del CLI e il manifest di adozione prima della pubblicazione. Le regressioni
+del CLI e il manifest di adozione prima della pubblicazione. I vettori del pin
+che il componente esegue sono copiati byte per byte in
+[`contracts/upstream`](contracts/upstream/source.json), con il loro SHA-256;
+il gate rifiuta una copia diversa dal checkout o un vettore del pin senza
+copia. Le deviazioni dal profilo sono dichiarate in `adoption-source.json`
+accanto al pin, e il manifest le riporta. Le regressioni
 del confine sono eseguite dal job `public-contract` di `rust-ci`; il generatore
 del manifest applica gli stessi controlli nel workflow di release.
 La mappa versionata della superficie Rust e prodotta dallo stesso catalogo in
@@ -55,7 +61,8 @@ core dipende dal catalogo spatial versionato nel repository e non viene
 pubblicato separatamente su un package index.
 
 Il CLI espone discovery con `--version --format json` e
-`capabilities --format json`. Nel SDK, `session.capabilities` descrive
+`capabilities --format json`; il binding runtime con
+`RuntimeBinding::capabilities`. Nel SDK, `session.capabilities` descrive
 l'artefatto secondo Capability Discovery 2.0; le misure del database connesso
 sono disponibili separatamente in `session.provider_capabilities`.
 
@@ -338,6 +345,7 @@ python scripts\sweep.py                    # intera suite offline locale
 python scripts\phase0_validate.py          # contratti, esempi, golden, domini
 python scripts\check_docs.py               # coerenza strutturale dei documenti
 python scripts\check_comments.py           # standard dei commenti
+python scripts\check_dependency_pins.py    # pin Cargo esatti e motivati, MSRV
 python scripts\check_test_layout.py         # test Rust separati dal prodotto
 python scripts\check_cargo_deny.py          # supply chain in Docker, tool fissato
 python scripts\check_mysql_reference.py --static
