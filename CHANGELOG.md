@@ -6,7 +6,7 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
-## 7.0.0 — non ancora pubblicata
+## 7.0.0 — 2026-10-06
 
 Major: alcuni documenti di controllo prima accettati ora vengono rifiutati, e
 l'enum pubblico Rust `PublicSurface` ha una variante in più.
