@@ -158,41 +158,6 @@ fn live_profile_check_returns_pass_for_application_oltp_v1() {
     assert_eq!(out["failed"].as_array().map(Vec::len), Some(0));
 }
 
-/// `query --output` scrive il risultato come Arrow IPC stream, il content
-/// type che il catalogo dichiara per `database.query`; senza `--output` resta
-/// il riepilogo JSON.
-#[ignore = "live: richiede Postgres su dataflow-postgres"]
-#[test]
-fn live_query_writes_its_result_as_an_arrow_stream() {
-    use arrow_ipc::reader::StreamReader;
-
-    let directory =
-        std::env::temp_dir().join(format!("plenora-cli-query-arrow-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).expect("cartella di prova");
-    let operation = directory.join("query.json");
-    std::fs::write(
-        &operation,
-        // SELECT srid FROM public.spatial_ref_sys LIMIT 3
-        serde_json::json!({
-            "source": {"object": {"schema": "public", "object": "spatial_ref_sys"}, "alias": null},
-            "projection": [{
-                "expression": {"kind": "column", "column": {"relation": null, "field": "srid"}},
-                "alias": null
-            }],
-            "filter": null,
-            "having": null,
-            "row_limit": 3
-        })
-        .to_string(),
-    )
-    .expect("QUERY.json");
-    let request = directory.join("request.json");
-    std::fs::write(
-        &request,
-        serde_json::json!({
-            "provider": "postgres",
-            "secret_environment": "PG_DSN",
-            "operation_path": operation.to_str().expect("UTF-8"),
 /// Il percorso IO→database: WKB ISO (`encoding=wkb`) con il CRS nei metadati
 /// e piu tipi dichiarati entra, e la lettura restituisce un campo geometrico
 /// con tutte le chiavi che ARROW-VOCABULARY §4 richiede.
@@ -296,21 +261,6 @@ fn live_iso_wkb_with_declared_crs_and_types_round_trips() {
         .to_string(),
     )
     .expect("REQUEST.json");
-    let output = directory.join("result.arrows");
-    let out = run(&[
-        "query",
-        "--input",
-        request.to_str().expect("UTF-8"),
-        "--output",
-        output.to_str().expect("UTF-8"),
-    ]);
-    assert_eq!(out["status"], "ok", "{out}");
-    assert_eq!(out["result"]["format"], "arrow_ipc_stream", "{out}");
-    assert_eq!(out["result"]["rows"], 3, "{out}");
-    let reader = StreamReader::try_new(std::fs::File::open(&output).expect("output"), None)
-        .expect("stream Arrow");
-    let rows: usize = reader.map(|batch| batch.expect("batch").num_rows()).sum();
-    assert_eq!(rows, 3);
     let written = run(&[
         "write",
         "--input",
@@ -383,5 +333,89 @@ fn live_iso_wkb_with_declared_crs_and_types_round_trips() {
         "PG_DSN",
         &format!("DROP TABLE IF EXISTS public.{TABLE}"),
     ]);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+/// `query --output` scrive il risultato come Arrow IPC stream, il content
+/// type che il catalogo dichiara per `database.query`; senza `--output` resta
+/// il riepilogo JSON.
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[test]
+fn live_query_writes_its_result_as_an_arrow_stream() {
+    use arrow_ipc::reader::StreamReader;
+
+    let directory =
+        std::env::temp_dir().join(format!("plenora-cli-query-arrow-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("cartella di prova");
+    let operation = directory.join("query.json");
+    std::fs::write(
+        &operation,
+        // SELECT srid FROM public.spatial_ref_sys LIMIT 3
+        serde_json::json!({
+            "source": {"object": {"schema": "public", "object": "spatial_ref_sys"}, "alias": null},
+            "projection": [{
+                "expression": {"kind": "column", "column": {"relation": null, "field": "srid"}},
+                "alias": null
+            }],
+            "filter": null,
+            "having": null,
+            // Ordinamento totale: senza, l'ordine non e ripetibile e il
+            // contenuto non si confronta.
+            "order_by": [{
+                "expression": {"kind": "column", "column": {"relation": null, "field": "srid"}},
+                "direction": "asc"
+            }],
+            "row_limit": 3
+        })
+        .to_string(),
+    )
+    .expect("QUERY.json");
+    let request = directory.join("request.json");
+    std::fs::write(
+        &request,
+        serde_json::json!({
+            "provider": "postgres",
+            "secret_environment": "PG_DSN",
+            "operation_path": operation.to_str().expect("UTF-8"),
+        })
+        .to_string(),
+    )
+    .expect("REQUEST.json");
+    let output = directory.join("result.arrows");
+    let out = run(&[
+        "query",
+        "--input",
+        request.to_str().expect("UTF-8"),
+        "--output",
+        output.to_str().expect("UTF-8"),
+    ]);
+    assert_eq!(out["status"], "ok", "{out}");
+    assert_eq!(out["result"]["format"], "arrow_ipc_stream", "{out}");
+    assert_eq!(out["result"]["rows"], 3, "{out}");
+    let reader = StreamReader::try_new(std::fs::File::open(&output).expect("output"), None)
+        .expect("stream Arrow");
+    let mut srids = Vec::new();
+    for batch in reader {
+        let batch = batch.expect("batch");
+        let column = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<plenora_database_core::arrow::array::Int32Array>()
+            .expect("srid int4");
+        srids.extend(column.iter().map(|value| value.expect("srid").to_string()));
+    }
+    // Lo stesso contenuto, chiesto al database per un'altra strada.
+    let expected = run(&[
+        "database-execute-scalar",
+        "postgres",
+        "PG_DSN",
+        "SELECT string_agg(srid::text, ',' ORDER BY srid) FROM \
+         (SELECT srid FROM public.spatial_ref_sys ORDER BY srid LIMIT 3) s",
+    ]);
+    assert_eq!(
+        srids.join(","),
+        expected["value"]["value"].as_str().expect("string_agg"),
+        "{expected}"
+    );
     let _ = std::fs::remove_dir_all(directory);
 }

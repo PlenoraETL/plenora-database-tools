@@ -16,6 +16,12 @@ riassumono le note di quelle release.
   un output esistente); il risultato riporta `format: arrow_ipc_stream`,
   righe e batch. Senza `--output` resta il riepilogo JSON. Il binding runtime
   continua a restituire il riepilogo (vedi `docs/runtime.md`).
+  Lo schema si valida contro il vocabolario Arrow 1.0 prima di scrivere il
+  primo byte, per `query --output`, `read --output` e il sink runtime: uno
+  schema non conforme non diventa un artefatto. Limiti dichiarati: una
+  colonna `numeric` nel risultato di una query PostgreSQL e rifiutata come
+  `unsupported` (non c'e ancora una mappatura esatta per il risultato di una
+  query); senza un `order_by` totale l'ordine delle righe non e ripetibile.
 ### Correzioni (vocabolario Arrow 1.0)
 
 - **Più tipi geometrici dichiarati** (`plenora.geometry.types=point,polygon`,

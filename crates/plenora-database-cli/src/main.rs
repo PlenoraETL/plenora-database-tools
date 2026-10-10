@@ -1789,6 +1789,9 @@ async fn write_stream_to_ipc_as(
     cancellation: &CancellationToken,
     format: IpcOutput,
 ) -> CliResult<serde_json::Value> {
+    // Uno schema che non rispetta il vocabolario non diventa un artefatto: il
+    // consumatore lo rifiuterebbe, o lo leggerebbe a meta.
+    plenora_database_core::field_contract::validate_published_schema(&stream.schema())?;
     if output.exists() {
         return Err(local_artifact_error(
             ErrorCategory::Conflict,

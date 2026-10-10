@@ -189,6 +189,40 @@ impl<'a> FieldContract<'a> {
         Ok(())
     }
 
+    /// I requisiti di un campo che un componente **pubblica**
+    /// (ARROW-VOCABULARY §4): tutte le chiavi di [`Self::validate_current`],
+    /// piu field id, semantica spaziale e precisione.
+    ///
+    /// Sta separata da `validate_current`, che giudica anche gli ingressi:
+    /// chi riceve resta tollerante verso un produttore che omette la
+    /// precisione, chi pubblica no.
+    ///
+    /// # Errors
+    ///
+    /// `DataMapping` quando manca una chiave obbligatoria.
+    pub fn validate_published(self) -> Result<()> {
+        self.validate_current()?;
+        if !self.spatial {
+            return Ok(());
+        }
+        for (present, name) in [
+            (self.field_id.is_some(), protocol::FIELD_ID),
+            (
+                self.spatial_semantics.is_some(),
+                protocol::GEOMETRY_SPATIAL_SEMANTICS,
+            ),
+            (self.precision.is_some(), protocol::GEOMETRY_PRECISION),
+        ] {
+            if !present {
+                return Err(contract_error(
+                    ErrorCategory::DataMapping,
+                    format!("campo geometrico pubblicato senza {name}"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn is_geometry(self) -> bool {
         self.spatial
@@ -376,6 +410,43 @@ pub fn validate_schema_contract(schema: &Schema) -> Result<()> {
         let contract = FieldContract::parse(field)?;
         if carries_canonical {
             contract.validate_current()?;
+        }
+    }
+    Ok(())
+}
+
+/// Verifica lo schema che un componente pubblica.
+///
+/// Versione del contratto presente, ogni campo conforme a
+/// [`FieldContract::validate_published`], field id unici (ARROW-VOCABULARY §2
+/// e §4). Si chiama prima di scrivere il primo byte di un artefatto.
+///
+/// # Errors
+///
+/// Come [`validate_schema_contract`], piu `DataMapping` per una versione
+/// assente, una chiave obbligatoria mancante o field id ripetuti.
+pub fn validate_published_schema(schema: &Schema) -> Result<()> {
+    if !schema
+        .metadata()
+        .contains_key(protocol::CONTRACT_VERSION_KEY)
+    {
+        return Err(contract_error(
+            ErrorCategory::DataMapping,
+            "schema pubblicato senza plenora.contract.version",
+        ));
+    }
+    validate_schema_contract(schema)?;
+    let mut ids = std::collections::HashSet::new();
+    for field in schema.fields() {
+        let contract = FieldContract::parse(field)?;
+        contract.validate_published()?;
+        if let Some(id) = contract.field_id {
+            if !ids.insert(id) {
+                return Err(contract_error(
+                    ErrorCategory::DataMapping,
+                    "field_id ripetuto nello schema pubblicato",
+                ));
+            }
         }
     }
     Ok(())
