@@ -117,6 +117,35 @@ fn field_id_error(message: &str) -> crate::DatabaseError {
     )
 }
 
+/// I metadati CRS di una geometria letta di cui il database dichiara solo lo
+/// SRID nel proprio catalogo, senza un'autorita risolta.
+///
+/// ARROW-VOCABULARY §4: `declared_unresolved` chiede un identificatore CRS e
+/// un ordine degli assi. L'identificatore e lo SRID nello spazio dei nomi del
+/// catalogo del database (`authority:srid`, per esempio `MYSQL:4326`): e cio
+/// che il database ha dichiarato, senza pretendere che sia un codice EPSG.
+/// L'ordine degli assi non e noto. Senza SRID il CRS e `missing`.
+pub fn insert_declared_crs<S: std::hash::BuildHasher>(
+    metadata: &mut HashMap<String, String, S>,
+    authority: &str,
+    srid: Option<u32>,
+) {
+    if let Some(srid) = srid {
+        metadata.insert(GEOMETRY_SRID.to_owned(), srid.to_string());
+        metadata.insert(
+            GEOMETRY_CRS_RESOLUTION.to_owned(),
+            "declared_unresolved".to_owned(),
+        );
+        metadata.insert(GEOMETRY_CRS_ID.to_owned(), format!("{authority}:{srid}"));
+        metadata.insert(GEOMETRY_AXIS_ORDER.to_owned(), "unknown".to_owned());
+    } else {
+        for key in [GEOMETRY_SRID, GEOMETRY_CRS_ID, GEOMETRY_AXIS_ORDER] {
+            metadata.remove(key);
+        }
+        metadata.insert(GEOMETRY_CRS_RESOLUTION.to_owned(), "missing".to_owned());
+    }
+}
+
 pub const GEOMETRY_ENCODING: &str = "plenora.geometry.encoding";
 pub const GEOMETRY_DIMENSIONS: &str = "plenora.geometry.dimensions";
 pub const GEOMETRY_TYPES: &str = "plenora.geometry.types";

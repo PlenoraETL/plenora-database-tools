@@ -219,22 +219,72 @@ impl<'a> FieldContract<'a> {
         if !self.spatial {
             return Ok(());
         }
-        for (present, name) in [
-            (self.field_id.is_some(), protocol::FIELD_ID),
-            (
-                self.spatial_semantics.is_some(),
-                protocol::GEOMETRY_SPATIAL_SEMANTICS,
-            ),
-            (self.precision.is_some(), protocol::GEOMETRY_PRECISION),
+        let metadata = self.field.metadata();
+        let canonical = |key: &str| metadata.get(key).map(String::as_str);
+        let missing = |name: &str| {
+            contract_error(
+                ErrorCategory::DataMapping,
+                format!("campo geometrico pubblicato senza {name}"),
+            )
+        };
+        // Solo le chiavi canoniche: una chiave legacy e tollerata in
+        // ingresso, non pubblicata al posto della canonica.
+        for legacy in [
+            LEGACY_DIMENSIONS,
+            LEGACY_SRID,
+            LEGACY_SPATIAL_SEMANTICS,
+            LEGACY_GEOMETRY_TYPE,
         ] {
-            if !present {
+            if metadata.contains_key(legacy) {
                 return Err(contract_error(
                     ErrorCategory::DataMapping,
-                    format!("campo geometrico pubblicato senza {name}"),
+                    "campo geometrico pubblicato con chiavi legacy",
                 ));
             }
         }
-        Ok(())
+        if canonical(protocol::GEOARROW_EXTENSION_NAME) != Some(GEOARROW_WKB_EXTENSION_NAME) {
+            return Err(missing(protocol::GEOARROW_EXTENSION_NAME));
+        }
+        for key in [
+            protocol::FIELD_ID,
+            protocol::GEOMETRY_ENCODING,
+            protocol::GEOMETRY_DIMENSIONS,
+            protocol::GEOMETRY_SPATIAL_SEMANTICS,
+            protocol::GEOMETRY_PRECISION,
+            protocol::GEOMETRY_TYPES_DECLARATION,
+            protocol::GEOMETRY_CRS_RESOLUTION,
+        ] {
+            if canonical(key).is_none() {
+                return Err(missing(key));
+            }
+        }
+        // §3: il catalogo dei tipi e case-sensitive.
+        if let Some(types) = canonical(protocol::GEOMETRY_TYPES) {
+            if types.split(',').any(|item| !GEOMETRY_TYPES.contains(&item)) {
+                return Err(contract_error(
+                    ErrorCategory::DataMapping,
+                    "tipo geometrico pubblicato fuori dalla forma canonica",
+                ));
+            }
+        }
+        // §4: un CRS risolto o dichiarato ha un'identita e un ordine degli
+        // assi; un CRS mancante non ne ha.
+        let has_crs = canonical(protocol::GEOMETRY_CRS_ID).is_some()
+            || canonical(protocol::GEOMETRY_CRS_DEFINITION).is_some();
+        let has_axis = canonical(protocol::GEOMETRY_AXIS_ORDER).is_some();
+        match canonical(protocol::GEOMETRY_CRS_RESOLUTION) {
+            Some("resolved" | "declared_unresolved") if !(has_crs && has_axis) => {
+                Err(contract_error(
+                    ErrorCategory::Crs,
+                    "CRS pubblicato senza identita o senza ordine degli assi",
+                ))
+            }
+            Some("missing") if has_crs || has_axis => Err(contract_error(
+                ErrorCategory::Crs,
+                "CRS mancante pubblicato con identita o ordine degli assi",
+            )),
+            _ => Ok(()),
+        }
     }
 
     #[must_use]

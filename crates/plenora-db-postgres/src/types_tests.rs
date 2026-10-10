@@ -48,12 +48,21 @@ fn a_table_column_keeps_its_field_id_under_an_alias() {
 /// del CRS — anche quando il catalogo non dice tipo o dimensioni.
 #[test]
 fn a_read_geometry_field_declares_every_required_key() {
+    let mut declared_only = geometry_column(None, None);
+    declared_only.spatial_crs_id = None;
+    let mut without_srid = geometry_column(None, None);
+    without_srid.spatial_crs_id = None;
+    without_srid.spatial_srid = None;
     for column in [
         geometry_column(Some("Point"), Some("XY")),
         geometry_column(None, None),
+        declared_only,
+        without_srid,
     ] {
         let schema = contract_schema(vec![column.arrow_field()]).expect("schema");
         validate_schema_contract(&schema).expect("schema conforme");
+        plenora_database_core::field_contract::validate_published_schema(&schema)
+            .expect("schema pubblicabile");
         let field = schema.field(0);
         let metadata = field.metadata();
         for key in [

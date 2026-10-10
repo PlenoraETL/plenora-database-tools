@@ -359,29 +359,21 @@ impl ColumnSpec {
             }
             .to_owned(),
         );
-        if let Some(srid) = self.spatial_srid {
-            metadata.insert(protocol::GEOMETRY_SRID.to_owned(), srid.to_string());
-            metadata.insert(
-                protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
-                if self.spatial_crs_id.is_some() {
-                    "resolved"
-                } else {
-                    "declared_unresolved"
-                }
-                .to_owned(),
-            );
-            metadata.insert(
-                protocol::GEOMETRY_AXIS_ORDER.to_owned(),
-                "unknown".to_owned(),
-            );
-        } else {
-            metadata.insert(
-                protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
-                "missing".to_owned(),
-            );
-        }
-        if let Some(crs_id) = &self.spatial_crs_id {
-            metadata.insert(protocol::GEOMETRY_CRS_ID.to_owned(), crs_id.clone());
+        match (&self.spatial_crs_id, self.spatial_srid) {
+            // Autorita risolta da `spatial_ref_sys`.
+            (Some(crs_id), Some(srid)) => {
+                metadata.insert(protocol::GEOMETRY_SRID.to_owned(), srid.to_string());
+                metadata.insert(
+                    protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
+                    "resolved".to_owned(),
+                );
+                metadata.insert(protocol::GEOMETRY_CRS_ID.to_owned(), crs_id.clone());
+                metadata.insert(
+                    protocol::GEOMETRY_AXIS_ORDER.to_owned(),
+                    "unknown".to_owned(),
+                );
+            }
+            (_, srid) => protocol::insert_declared_crs(metadata, "POSTGIS", srid),
         }
         // ARROW-VOCABULARY §4: dimensioni e dichiarazione dei tipi sono
         // obbligatorie; quando il catalogo non le conosce (una colonna senza

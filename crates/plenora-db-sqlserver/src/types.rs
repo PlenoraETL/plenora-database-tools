@@ -637,13 +637,7 @@ impl SqlServerColumnSpec {
                 }
                 .to_owned(),
             );
-            if let Some(srid) = self.spatial_srid {
-                metadata.insert(protocol::GEOMETRY_SRID.to_owned(), srid.to_string());
-            }
-            metadata.insert(
-                protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
-                "declared_unresolved".to_owned(),
-            );
+            protocol::insert_declared_crs(&mut metadata, "SQLSERVER", self.spatial_srid);
         }
         Field::new(&self.name, data_type, self.nullable).with_metadata(metadata)
     }

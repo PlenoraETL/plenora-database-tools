@@ -18,7 +18,17 @@ riassumono le note di quelle release.
   continua a restituire il riepilogo (vedi `docs/runtime.md`).
   Lo schema si valida contro il vocabolario Arrow 1.0 prima di scrivere il
   primo byte, per `query --output`, `read --output` e il sink runtime: uno
-  schema non conforme non diventa un artefatto. Limiti dichiarati: una
+  schema non conforme non diventa un artefatto. La verifica guarda le sole
+  chiavi canoniche: estensione `geoarrow.wkb` obbligatoria, chiavi legacy
+  rifiutate, tipi geometrici case-sensitive, e un CRS `resolved` o
+  `declared_unresolved` con identificatore e ordine degli assi (§4).
+- **CRS conformi in lettura** in tutti gli adapter: uno SRID senza
+  un'autorità risolta si pubblica `declared_unresolved` con
+  l'identificatore nello spazio dei nomi del catalogo del database
+  (`POSTGIS:n`, `MYSQL:n`, `SQLSERVER:n`, `ORACLE:n`, `DB2:n`) e
+  `axis_order=unknown`; senza SRID il CRS è `missing`. Oracle dichiarava
+  `resolved` senza identificatore; MySQL, SQL Server e Db2
+  `declared_unresolved` senza identificatore né ordine degli assi. Limiti dichiarati: una
   colonna `numeric` nel risultato di una query PostgreSQL e rifiutata come
   `unsupported` (non c'e ancora una mappatura esatta per il risultato di una
   query); senza un `order_by` totale l'ordine delle righe non e ripetibile.
