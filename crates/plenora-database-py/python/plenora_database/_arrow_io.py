@@ -164,15 +164,29 @@ def _mapping_error(message: str, phase: str) -> Exception:
     return error
 
 
+class _SourceArgumentError(Exception):
+    """Un argomento sbagliato riconosciuto dallo SDK stesso: il messaggio e
+    suo, senza dati, e resta un `TypeError`/`ValueError` come prima."""
+
+
+class _SourceTypeError(_SourceArgumentError, TypeError):
+    pass
+
+
+class _SourceValueError(_SourceArgumentError, ValueError):
+    pass
+
+
 def _translated(phase: str, message: str, call: Any) -> Any:
-    """Esegue `call`: un errore Plenora resta com'e, ogni altro diventa un
-    errore tipizzato senza dati e senza la catena che li porterebbe."""
+    """Esegue `call`: un errore Plenora o un argomento rifiutato dallo SDK
+    restano com'erano, ogni altro diventa un errore tipizzato senza dati e
+    senza la catena che li porterebbe."""
 
     from .errors import PlenoraError
 
     try:
         return call()
-    except PlenoraError:
+    except (PlenoraError, _SourceArgumentError):
         raise
     except Exception:
         raise _mapping_error(message, phase) from None
@@ -268,6 +282,20 @@ def _to_ipc_bytes(source: Any) -> bytes:
             "non è già bytes: `pip install pyarrow`"
         ) from exc
 
+    # Tutto cio che tocca la sorgente — `hasattr`, `iter`, il primo `next`,
+    # la serializzazione — passa dalla traduzione: un produttore puo
+    # sollevare in qualunque punto, con qualunque messaggio.
+    return _translated(
+        "prepare",
+        "copy_from: sorgente Arrow non leggibile",
+        lambda: _source_to_ipc(source, pa, ipc),
+    )
+
+
+def _source_to_ipc(source: Any, pa: Any, ipc: Any) -> bytes:
+    """Il corpo di `_to_ipc_bytes`, sempre chiamato attraverso
+    `_translated`."""
+
     # pandas DataFrame — richiede pandas installato solo se usato
     if type(source).__name__ == "DataFrame" and hasattr(source, "to_dict"):
         # duck-type: pandas.DataFrame ha to_dict + iloc + columns
@@ -295,7 +323,7 @@ def _to_ipc_bytes(source: Any) -> bytes:
         batches = reader
     elif isinstance(source, list):
         if not source:
-            raise ValueError("copy_from: lista vuota")
+            raise _SourceValueError("copy_from: lista vuota")
         first = source[0]
         if isinstance(first, pa.RecordBatch):
             # lista di RecordBatch — tutti devono avere stesso schema
@@ -311,7 +339,7 @@ def _to_ipc_bytes(source: Any) -> bytes:
             schema = tbl.schema
             batches = tbl.to_batches()
         else:
-            raise TypeError(
+            raise _SourceTypeError(
                 f"copy_from: lista deve contenere pyarrow.RecordBatch o dict, "
                 f"trovato {type(first).__name__}"
             )
@@ -320,15 +348,15 @@ def _to_ipc_bytes(source: Any) -> bytes:
         try:
             first = next(iterator)
         except StopIteration:
-            raise ValueError("copy_from: iterabile vuoto") from None
+            raise _SourceValueError("copy_from: iterabile vuoto") from None
         if not isinstance(first, pa.RecordBatch):
-            raise TypeError(
+            raise _SourceTypeError(
                 "copy_from: l'iterabile deve contenere pyarrow.RecordBatch"
             )
         schema = first.schema
         batches = chain((first,), iterator)
     else:
-        raise TypeError(
+        raise _SourceTypeError(
             f"copy_from: source deve essere bytes, pyarrow.Table/RecordBatch, "
             f"iterabile di RecordBatch, list di dict o pandas.DataFrame — "
             f"trovato {type(source).__name__}"

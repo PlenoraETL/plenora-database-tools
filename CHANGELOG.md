@@ -22,8 +22,12 @@ riassumono le note di quelle release.
   concatenati non si leggono più come il solo primo. L'input si legge in due
   passate: la prima verifica l'inquadramento e il limite di ogni messaggio
   (prima di allocarne il corpo) e conta le righe dichiarate, la seconda
-  decodifica un batch alla volta. Prima si accumulavano tutti i batch in
-  memoria prima del budget, anche per il formato file.
+  decodifica un batch alla volta, leggendo solo i byte validati: ogni
+  messaggio deve avere l'impronta SHA-256 registrata nella prima passata,
+  quindi un file cambiato fra le due passate è un errore. Il formato file si
+  legge come lo stream che incapsula, e i blocchi del footer devono
+  coincidere con i messaggi dello stream. Prima si accumulavano tutti i
+  batch in memoria prima del budget, anche per il formato file.
 - **SDK Python: Arrow PyCapsule Interface.** `copy_from`/`acopy_from`
   accettano qualunque oggetto con `__arrow_c_stream__`; il `BatchReader` di
   `Session.read` lo espone, con `read_all()`. Una tabella letta dal database
@@ -36,6 +40,15 @@ riassumono le note di quelle release.
   produttore esterno diventa `PlenoraDataMappingError` (anche `ValueError`)
   con gli assi pubblici, senza il messaggio né la catena dell'originale, che
   possono contenere dati di riga. Vale anche per `read_all()`.
+- La traduzione copre ogni accesso alla sorgente (`hasattr`, `iter`, il
+  primo `next`, la serializzazione); gli argomenti rifiutati dallo SDK
+  restano `TypeError`/`ValueError`.
+- Il `BatchReader` non traduce un errore in Python tenendo il proprio
+  mutex e non lo attende tenendo il GIL (un errore di lettura e
+  `schema_bytes` da due thread potevano bloccarsi a vicenda).
+- Dichiarato: `python/interop/test_plenora_data.py` (database ↔
+  `plenora_data`) si esegue a mano; la CI non installa `plenora-data` e non
+  lo esegue.
 - **`acopy_from` consuma la sorgente in un executor**, non sul thread del
   loop asyncio (PYTHON-SDK §4): un `BatchReader` legge dal database. Il
   `BatchReader` sincrono non è più legato al thread che l'ha aperto.

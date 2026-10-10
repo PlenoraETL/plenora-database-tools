@@ -148,3 +148,48 @@ fn a_message_beyond_the_limit_is_rejected_before_decoding() {
         plenora_database_core::ErrorCategory::ResourceLimit
     );
 }
+
+/// Il file cambia dopo la validazione e prima della decodifica: i byte
+/// letti nella seconda passata non sono quelli validati, e la lettura
+/// fallisce invece di consegnare il dato nuovo. Il corpo e piu grande del
+/// buffer del lettore, quindi alla modifica non e ancora stato letto.
+#[test]
+fn bytes_changed_between_the_two_passes_are_rejected() {
+    let large = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+        vec![Arc::new(Int64Array::from(
+            (0..200_000_i64)
+                .map(|value| value * 10)
+                .chain([3])
+                .collect::<Vec<_>>(),
+        ))],
+    )
+    .expect("batch");
+    let mut stream = StreamWriter::try_new(Vec::new(), &large.schema()).expect("writer");
+    stream.write(&large).expect("write");
+    let mut file = FileWriter::try_new(Vec::new(), &large.schema()).expect("writer");
+    file.write(&large).expect("write");
+    for (name, bytes) in [
+        ("toctou.arrows", stream.into_inner().expect("stream")),
+        ("toctou.arrow", file.into_inner().expect("file")),
+    ] {
+        let input = scratch(name, &bytes);
+        let path = input.0.to_str().expect("UTF-8");
+        let opened = open_batches(path, 1 << 24).expect("validato");
+        // Il valore 3 dell'ultima riga diventa 4, stessa lunghezza.
+        let three = 3_i64.to_le_bytes();
+        let offset = bytes
+            .windows(8)
+            .rposition(|window| window == three)
+            .expect("valore nel corpo");
+        assert!(
+            offset > 64 * 1024,
+            "{name}: il valore deve stare oltre il buffer"
+        );
+        let mut changed = bytes.clone();
+        changed[offset] = 4;
+        std::fs::write(&input.0, &changed).expect("modifica sul posto");
+        let decoded: Result<Vec<_>, _> = opened.batches.collect();
+        assert!(decoded.is_err(), "{name}: byte diversi da quelli validati");
+    }
+}

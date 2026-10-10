@@ -78,6 +78,39 @@ def test_a_failing_producer_is_a_typed_error_without_its_data() -> None:
     assert error.__cause__ is None and error.__suppress_context__
 
 
+def test_a_generator_failing_before_its_first_batch_is_translated() -> None:
+    import plenora_database as p
+
+    def batches():
+        raise RuntimeError("CANARINO-riga-segreta")
+        yield  # pragma: no cover
+
+    with pytest.raises(p.PlenoraDataMappingError) as raised:
+        _to_ipc_bytes(batches())
+    assert "CANARINO" not in str(raised.value)
+    assert raised.value.__cause__ is None and raised.value.__suppress_context__
+
+
+def test_a_capsule_property_that_raises_is_translated() -> None:
+    import plenora_database as p
+
+    class Hostile:
+        @property
+        def __arrow_c_stream__(self):
+            raise RuntimeError("CANARINO-riga-segreta")
+
+    with pytest.raises(p.PlenoraDataMappingError) as raised:
+        _to_ipc_bytes(Hostile())
+    assert "CANARINO" not in str(raised.value)
+
+
+def test_argument_errors_stay_argument_errors() -> None:
+    with pytest.raises(ValueError):
+        _to_ipc_bytes([])
+    with pytest.raises(TypeError):
+        _to_ipc_bytes(42)
+
+
 def test_a_plenora_error_from_the_producer_is_kept() -> None:
     import plenora_database as p
 
@@ -97,7 +130,9 @@ def test_a_capsule_can_be_exported_once_per_request() -> None:
     assert first.equals(table) and second.equals(table)
 
 
-def test_a_capsule_released_early_does_not_leak_or_crash() -> None:
+def test_a_capsule_released_early_can_be_dropped_unconsumed() -> None:
+    """Rilascio senza consumatore: non misura la memoria, prova che la
+    capsula si scarta e che il produttore resta esportabile."""
     table = pyarrow.table({"id": pyarrow.array(range(10), pyarrow.int64())})
     capsule = table.__arrow_c_stream__()
     del capsule  # rilasciata senza consumatore
@@ -186,3 +221,45 @@ def test_the_reader_can_be_consumed_from_another_thread(session) -> None:
     with ThreadPoolExecutor(max_workers=1) as pool:
         table = pool.submit(reader.read_all).result()
     assert table.column("id").to_pylist() == list(range(1, 301))
+
+
+def test_reading_and_schema_from_two_threads_do_not_deadlock(session) -> None:
+    """Contesa sul reader: un thread legge fino a un errore del database,
+    un altro chiede lo schema in continuazione. Tradurre l'errore tenendo il
+    mutex, o attendere il mutex tenendo il GIL, li bloccava a vicenda."""
+    import threading
+
+    import plenora_database as p
+
+    session.execute_sql("DROP VIEW IF EXISTS _pyx_failing")
+    session.execute_sql(
+        "CREATE VIEW _pyx_failing AS "
+        "SELECT gs AS id, 1 / (gs - 150000) AS x FROM generate_series(1, 200000) gs"
+    )
+    try:
+        reader = session.read("public", "_pyx_failing")
+        done = threading.Event()
+        errors = []
+
+        def consume() -> None:
+            try:
+                for _ in reader:
+                    pass
+            except p.PlenoraError as error:
+                errors.append(error)
+            finally:
+                done.set()
+
+        def poll() -> None:
+            while not done.is_set():
+                reader.schema_bytes()
+
+        threads = [threading.Thread(target=consume), threading.Thread(target=poll)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+        assert not any(thread.is_alive() for thread in threads), "stallo fra GIL e mutex"
+        assert errors, "la divisione per zero doveva arrivare come PlenoraError"
+    finally:
+        session.execute_sql("DROP VIEW IF EXISTS _pyx_failing")

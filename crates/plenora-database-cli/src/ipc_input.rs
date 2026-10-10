@@ -17,13 +17,14 @@
 //! corrente, non dell'input.
 
 use crate::{CliResult, File};
-use arrow_ipc::reader::{read_footer_length, FileReader, StreamReader};
+use arrow_ipc::reader::{read_footer_length, StreamReader};
 use arrow_ipc::{root_as_footer, root_as_message, MessageHeader};
 use plenora_database_core::arrow::array::RecordBatch;
 use plenora_database_core::arrow::schema::ArrowError;
 use plenora_database_core::arrow::SchemaRef;
 use plenora_database_core::provider::{BatchStream, ProviderFuture};
 use plenora_database_core::DatabaseError;
+use sha2::{Digest, Sha256};
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::sync::Arc;
 
@@ -77,50 +78,72 @@ fn beyond_limit() -> crate::CliError {
     DatabaseError::resource_limit("messaggio Arrow IPC oltre il limite di memoria").into()
 }
 
+fn truncated() -> crate::CliError {
+    "stream Arrow IPC senza marcatore di fine: troncato o incompleto".into()
+}
+
+fn unreadable() -> crate::CliError {
+    "input Arrow IPC non leggibile".into()
+}
+
+/// Un messaggio dello stream come la prima passata l'ha visto: dove comincia,
+/// quanto e lungo (prefisso, metadati e corpo) e l'impronta dei suoi byte.
+struct Segment {
+    offset: u64,
+    metadata_length: u64,
+    body_length: u64,
+    digest: [u8; 32],
+}
+
+impl Segment {
+    const fn length(&self) -> u64 {
+        8 + self.metadata_length + self.body_length
+    }
+}
+
 /// Apre `path` come file o stream Arrow IPC, secondo i suoi primi byte.
 ///
 /// `max_message_bytes` limita ogni messaggio (intestazione e corpo): si
 /// controlla sull'inquadramento, prima di allocare.
 ///
+/// Un file Arrow e lo stesso stream fra il magic iniziale e il footer: si
+/// legge come tale, e i blocchi del footer devono coincidere con i messaggi
+/// dello stream. La seconda passata decodifica i byte attraverso
+/// [`VerifiedRange`], che confronta ogni messaggio con l'impronta registrata
+/// nella prima: un file cambiato fra le due passate e un errore, non un dato
+/// diverso da quello validato.
+///
 /// # Errors
 ///
 /// Contenuto non leggibile, formato non riconosciuto, stream senza fine
-/// esplicita o con byte dopo la fine, messaggio oltre il limite, schema non
-/// decodificabile.
+/// esplicita o con byte dopo la fine, messaggio oltre il limite, footer
+/// discordante dallo stream, schema non decodificabile.
 pub(crate) fn open_batches(path: &str, max_message_bytes: u64) -> CliResult<IpcBatches> {
-    let mut file = File::open(path).map_err(|_| "input Arrow IPC non leggibile")?;
-    let length = file
-        .metadata()
-        .map_err(|_| "input Arrow IPC non leggibile")?
-        .len();
+    let mut file = File::open(path).map_err(|_| unreadable())?;
+    let length = file.metadata().map_err(|_| unreadable())?.len();
     let mut prefix = [0_u8; 8];
     let read = read_prefix(&mut file, &mut prefix)?;
     let format = detect(&prefix[..read])?;
-    let rows = match format {
-        IpcFormat::File => scan_file(&mut file, length, max_message_bytes)?,
-        IpcFormat::Stream => scan_stream(&mut file, length, max_message_bytes)?,
+    let (start, end) = match format {
+        IpcFormat::Stream => (0, length),
+        IpcFormat::File => (
+            file_data_start(&mut file, length)?,
+            file_data_end(&mut file, length, max_message_bytes)?,
+        ),
     };
-    file.seek(SeekFrom::Start(0))
-        .map_err(|_| "input Arrow IPC non leggibile")?;
-    match format {
-        IpcFormat::File => {
-            let reader = FileReader::try_new(file, None).map_err(|_| malformed())?;
-            Ok(IpcBatches {
-                schema: reader.schema(),
-                rows,
-                batches: Box::new(reader),
-            })
-        }
-        IpcFormat::Stream => {
-            let reader =
-                StreamReader::try_new(BufReader::new(file), None).map_err(|_| malformed())?;
-            Ok(IpcBatches {
-                schema: reader.schema(),
-                rows,
-                batches: Box::new(reader),
-            })
-        }
+    let (segments, rows) = scan_stream(&mut file, start, end, max_message_bytes)?;
+    if format == IpcFormat::File {
+        check_footer_blocks(&mut file, length, end, &segments, max_message_bytes)?;
     }
+    file.seek(SeekFrom::Start(start))
+        .map_err(|_| unreadable())?;
+    let verified = VerifiedRange::new(BufReader::new(file), segments);
+    let reader = StreamReader::try_new(verified, None).map_err(|_| malformed())?;
+    Ok(IpcBatches {
+        schema: reader.schema(),
+        rows,
+        batches: Box::new(reader),
+    })
 }
 
 /// Le righe di un batch dai metadati del suo messaggio, senza il corpo.
@@ -138,47 +161,66 @@ fn message_rows(metadata: &[u8]) -> CliResult<Option<u64>> {
     }
 }
 
-/// L'inquadramento dello stream: messaggi entro il limite, la fine esplicita,
-/// nessun byte dopo.
-///
-/// La fine e il messaggio di lunghezza zero letto **al confine fra due
-/// messaggi**: otto byte uguali al marcatore dentro un corpo non lo sono, e
-/// uno stream che si chiude senza di esso e troncato.
-fn scan_stream(file: &mut File, length: u64, limit: u64) -> CliResult<u64> {
-    file.seek(SeekFrom::Start(0))
-        .map_err(|_| "input Arrow IPC non leggibile")?;
+/// L'inquadramento dello stream fra `start` e `end`: messaggi entro il
+/// limite, la fine esplicita al confine fra due messaggi, nessun byte dopo.
+/// Rende i segmenti con l'impronta di ogni messaggio e le righe dichiarate.
+fn scan_stream(
+    file: &mut File,
+    start: u64,
+    end: u64,
+    limit: u64,
+) -> CliResult<(Vec<Segment>, u64)> {
+    file.seek(SeekFrom::Start(start))
+        .map_err(|_| unreadable())?;
     let mut reader = BufReader::new(file);
-    let mut position = 0_u64;
+    let mut position = start;
     let mut rows = 0_u64;
     let mut schema = false;
-    let truncated = || -> crate::CliError {
-        "stream Arrow IPC senza marcatore di fine: troncato o incompleto".into()
-    };
+    let mut segments = Vec::new();
     loop {
-        let mut word = [0_u8; 4];
-        reader.read_exact(&mut word).map_err(|_| truncated())?;
-        if word != CONTINUATION {
+        let mut prefix = [0_u8; 8];
+        if position.checked_add(8).is_none_or(|next| next > end) {
+            return Err(truncated());
+        }
+        reader.read_exact(&mut prefix).map_err(|_| truncated())?;
+        if prefix[..4] != CONTINUATION {
             return Err(malformed());
         }
-        reader.read_exact(&mut word).map_err(|_| truncated())?;
-        position += 8;
-        let metadata_length = u64::from(u32::from_le_bytes(word));
+        let metadata_length = u64::from(u32::from_le_bytes([
+            prefix[4], prefix[5], prefix[6], prefix[7],
+        ]));
+        let mut hasher = Sha256::new();
+        hasher.update(prefix);
         if metadata_length == 0 {
+            segments.push(Segment {
+                offset: position,
+                metadata_length: 0,
+                body_length: 0,
+                digest: hasher.finalize().into(),
+            });
+            position += 8;
             break;
         }
         if metadata_length > limit {
             return Err(beyond_limit());
         }
-        if position + metadata_length > length {
+        let after_metadata = position
+            .checked_add(8)
+            .and_then(|value| value.checked_add(metadata_length))
+            .ok_or_else(malformed)?;
+        if after_metadata > end {
             return Err(truncated());
         }
         let mut metadata =
             vec![0_u8; usize::try_from(metadata_length).map_err(|_| beyond_limit())?];
         reader.read_exact(&mut metadata).map_err(|_| truncated())?;
-        position += metadata_length;
+        hasher.update(&metadata);
         let message = root_as_message(&metadata).map_err(|_| malformed())?;
-        let body = u64::try_from(message.bodyLength()).map_err(|_| malformed())?;
-        if metadata_length.saturating_add(body) > limit {
+        let body_length = u64::try_from(message.bodyLength()).map_err(|_| malformed())?;
+        if metadata_length
+            .checked_add(body_length)
+            .is_none_or(|size| size > limit)
+        {
             return Err(beyond_limit());
         }
         match message.header_type() {
@@ -189,30 +231,70 @@ fn scan_stream(file: &mut File, length: u64, limit: u64) -> CliResult<u64> {
         if let Some(batch_rows) = message_rows(&metadata)? {
             rows = rows.checked_add(batch_rows).ok_or_else(beyond_limit)?;
         }
-        if position + body > length {
+        let after_body = after_metadata
+            .checked_add(body_length)
+            .ok_or_else(malformed)?;
+        if after_body > end {
             return Err(truncated());
         }
-        reader
-            .seek_relative(i64::try_from(body).map_err(|_| malformed())?)
-            .map_err(|_| truncated())?;
-        position += body;
+        // Il corpo passa per l'impronta a blocchi fissi: la memoria resta
+        // quella del buffer, qualunque sia la lunghezza.
+        let mut remaining = body_length;
+        let mut buffer = vec![0_u8; 64 * 1024];
+        while remaining > 0 {
+            let chunk =
+                usize::try_from(remaining.min(buffer.len() as u64)).map_err(|_| malformed())?;
+            reader
+                .read_exact(&mut buffer[..chunk])
+                .map_err(|_| truncated())?;
+            hasher.update(&buffer[..chunk]);
+            remaining -= chunk as u64;
+        }
+        segments.push(Segment {
+            offset: position,
+            metadata_length,
+            body_length,
+            digest: hasher.finalize().into(),
+        });
+        position = after_body;
     }
     if !schema {
         return Err(malformed());
     }
-    if position != length {
+    if position != end {
         return Err(
             "byte dopo la fine dello stream Arrow IPC: un secondo stream o dati \
                     estranei non si ignorano"
                 .into(),
         );
     }
-    Ok(rows)
+    Ok((segments, rows))
 }
 
-/// L'inquadramento del file: footer, blocchi dentro il file e sotto il
-/// limite, righe dai metadati dei batch.
-fn scan_file(file: &mut File, length: u64, limit: u64) -> CliResult<u64> {
+/// L'inizio dello stream incapsulato in un file Arrow: il magic e seguito
+/// da byte nulli fino all'allineamento del writer (8 byte nella specifica,
+/// fino a 64 con arrow-rs). Byte non nulli prima del primo messaggio sono un
+/// file malformato.
+fn file_data_start(file: &mut File, length: u64) -> CliResult<u64> {
+    let mut header = [0_u8; 72];
+    let available = usize::try_from(length.min(72)).map_err(|_| malformed())?;
+    file.seek(SeekFrom::Start(0))
+        .and_then(|_| file.read_exact(&mut header[..available]))
+        .map_err(|_| malformed())?;
+    let start = header[FILE_MAGIC.len()..available]
+        .iter()
+        .position(|byte| *byte != 0)
+        .map(|offset| offset + FILE_MAGIC.len())
+        .ok_or_else(malformed)?;
+    if start % 8 != 0 || start > 64 {
+        return Err(malformed());
+    }
+    u64::try_from(start).map_err(|_| malformed())
+}
+
+/// La fine dello stream incapsulato in un file Arrow: dove comincia il
+/// footer.
+fn file_data_end(file: &mut File, length: u64, limit: u64) -> CliResult<u64> {
     if length < 16 {
         return Err(malformed());
     }
@@ -225,51 +307,127 @@ fn scan_file(file: &mut File, length: u64, limit: u64) -> CliResult<u64> {
     if footer_length > limit {
         return Err(beyond_limit());
     }
-    let data_end = length
-        .checked_sub(10 + footer_length)
-        .ok_or_else(malformed)?;
+    length
+        .checked_sub(10)
+        .and_then(|value| value.checked_sub(footer_length))
+        .filter(|end| *end >= 8)
+        .ok_or_else(malformed)
+}
+
+/// I blocchi del footer devono essere esattamente i messaggi di dizionario
+/// e di batch dello stream, con le stesse posizioni e lunghezze: un footer
+/// che indica altro non si segue.
+fn check_footer_blocks(
+    file: &mut File,
+    length: u64,
+    data_end: u64,
+    segments: &[Segment],
+    limit: u64,
+) -> CliResult<()> {
+    let footer_length = length - 10 - data_end;
     let mut footer = vec![0_u8; usize::try_from(footer_length).map_err(|_| beyond_limit())?];
     file.seek(SeekFrom::Start(data_end))
         .and_then(|_| file.read_exact(&mut footer))
         .map_err(|_| malformed())?;
     let footer = root_as_footer(&footer).map_err(|_| malformed())?;
-    let mut rows = 0_u64;
-    let dictionaries = footer.dictionaries().into_iter().flatten();
-    let batches = footer.recordBatches().into_iter().flatten();
-    for (block, is_batch) in dictionaries
-        .map(|block| (block, false))
-        .chain(batches.map(|block| (block, true)))
-    {
-        let offset = u64::try_from(block.offset()).map_err(|_| malformed())?;
-        let metadata_length = u64::try_from(block.metaDataLength()).map_err(|_| malformed())?;
-        let body = u64::try_from(block.bodyLength()).map_err(|_| malformed())?;
-        let size = metadata_length.checked_add(body).ok_or_else(malformed)?;
-        if size > limit {
-            return Err(beyond_limit());
-        }
-        if offset.checked_add(size).is_none_or(|end| end > data_end) {
-            return Err(malformed());
-        }
-        if !is_batch {
-            continue;
-        }
-        let mut metadata =
-            vec![0_u8; usize::try_from(metadata_length).map_err(|_| beyond_limit())?];
-        file.seek(SeekFrom::Start(offset))
-            .and_then(|_| file.read_exact(&mut metadata))
-            .map_err(|_| malformed())?;
-        // Il blocco comincia con la continuazione e la lunghezza, oppure, nel
-        // formato precedente ad Arrow 0.15, con la sola lunghezza.
-        let skip = if metadata.starts_with(&CONTINUATION) {
-            8
-        } else {
-            4
-        };
-        let message = metadata.get(skip..).ok_or_else(malformed)?;
-        let batch_rows = message_rows(message)?.ok_or_else(malformed)?;
-        rows = rows.checked_add(batch_rows).ok_or_else(beyond_limit)?;
+    let mut declared = footer
+        .dictionaries()
+        .into_iter()
+        .flatten()
+        .chain(footer.recordBatches().into_iter().flatten())
+        .map(|block| {
+            let offset = u64::try_from(block.offset()).map_err(|_| malformed())?;
+            let metadata = u64::try_from(block.metaDataLength()).map_err(|_| malformed())?;
+            let body = u64::try_from(block.bodyLength()).map_err(|_| malformed())?;
+            if metadata.checked_add(body).is_none_or(|size| size > limit) {
+                return Err(beyond_limit());
+            }
+            Ok((offset, metadata, body))
+        })
+        .collect::<CliResult<Vec<_>>>()?;
+    declared.sort_unstable();
+    // Nello stream: schema per primo, fine per ultima; i blocchi del footer
+    // sono i messaggi in mezzo. `metaDataLength` include il prefisso di otto
+    // byte.
+    let observed = segments
+        .get(1..segments.len().saturating_sub(1))
+        .ok_or_else(malformed)?
+        .iter()
+        .map(|segment| {
+            (
+                segment.offset,
+                segment.metadata_length + 8,
+                segment.body_length,
+            )
+        })
+        .collect::<Vec<_>>();
+    if declared != observed {
+        return Err("footer Arrow IPC discordante dallo stream del file".into());
     }
-    Ok(rows)
+    Ok(())
+}
+
+/// Lettore dei soli byte validati nella prima passata.
+///
+/// Rende i byte dei segmenti registrati, nell'ordine, e a ogni fine di
+/// segmento confronta l'impronta dei byte passati con quella registrata:
+/// se il file e cambiato nel frattempo, la lettura fallisce prima che il
+/// decoder renda il messaggio. Dopo l'ultimo segmento rende la fine del
+/// file, quindi nessun byte non validato raggiunge il decoder.
+struct VerifiedRange<R> {
+    inner: R,
+    segments: std::collections::VecDeque<Segment>,
+    remaining: u64,
+    hasher: Sha256,
+}
+
+impl<R> VerifiedRange<R> {
+    fn new(inner: R, segments: Vec<Segment>) -> Self {
+        Self {
+            inner,
+            segments: segments.into(),
+            remaining: 0,
+            hasher: Sha256::new(),
+        }
+    }
+}
+
+fn changed() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "input Arrow IPC cambiato dopo la validazione",
+    )
+}
+
+impl<R: Read> Read for VerifiedRange<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            match self.segments.front() {
+                None => return Ok(0),
+                Some(segment) => {
+                    self.remaining = segment.length();
+                    self.hasher = Sha256::new();
+                }
+            }
+        }
+        let wanted = usize::try_from(self.remaining)
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let read = self.inner.read(&mut buffer[..wanted])?;
+        if read == 0 && wanted > 0 {
+            return Err(changed());
+        }
+        self.hasher.update(&buffer[..read]);
+        self.remaining -= read as u64;
+        if self.remaining == 0 {
+            let digest: [u8; 32] = std::mem::take(&mut self.hasher).finalize().into();
+            let expected = self.segments.pop_front().map(|segment| segment.digest);
+            if expected != Some(digest) {
+                return Err(changed());
+            }
+        }
+        Ok(read)
+    }
 }
 
 /// Legge fino a `buffer.len()` byte, fermandosi solo alla fine del file.

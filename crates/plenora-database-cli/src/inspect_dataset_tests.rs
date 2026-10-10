@@ -29,16 +29,29 @@ fn pyarrow_dictionary_file_preserves_metadata_as_json_objects() {
 fn dictionary_without_data_is_rejected_by_both_file_entrypoints() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/arrow/dictionary-missing-data.file");
+    // Il dizionario si decodifica con il primo batch, nella seconda passata.
     let error = inspect(&path).expect_err("malformed dictionary");
-    assert_eq!(error.database_error().message, "input Arrow IPC malformato");
-    let error = crate::ipc_input::IpcFileBatchStream::open(path.to_str().expect("fixture path"))
-        .err()
-        .expect("malformed write input");
-    assert_eq!(error.database_error().message, "input Arrow IPC malformato");
-    assert!(!error
+    assert_eq!(
+        error.database_error().message,
+        "RecordBatch Arrow IPC non decodificabile"
+    );
+    let mut stream =
+        crate::ipc_input::IpcFileBatchStream::open(path.to_str().expect("fixture path"))
+            .expect("inquadramento valido");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime");
+    let error = runtime
+        .block_on(plenora_database_core::provider::BatchStream::next_batch(
+            &mut stream,
+            &plenora_database_core::CancellationToken::new(),
+        ))
+        .expect_err("malformed write input");
+    assert_eq!(error.message, "batch Arrow non leggibile");
+    let public = crate::CliError::from(error)
         .to_json()
-        .expect("public error")
-        .contains("PAYLOAD_MUST_NOT_LEAK"));
+        .expect("public error");
+    assert!(!public.contains("PAYLOAD_MUST_NOT_LEAK"));
 }
 
 struct TestFile(std::path::PathBuf);

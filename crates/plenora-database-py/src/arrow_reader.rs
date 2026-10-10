@@ -114,12 +114,18 @@ impl BatchReader {
     }
 
     fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let batch_opt = py.detach(|| {
-            let mut inner = self.inner.lock().map_err(|_| reader_poisoned())?;
+        // Il mutex si prende e si rilascia senza il GIL, e l'errore si
+        // traduce in Python solo dopo: tradurlo tenendo il mutex chiedeva il
+        // GIL mentre un altro thread, con il GIL, aspettava il mutex.
+        let outcome = py.detach(|| {
+            let Ok(mut inner) = self.inner.lock() else {
+                return Err(None);
+            };
             runtime()
                 .block_on(async { inner.next_batch(&self.cancellation).await })
-                .map_err(to_py_err)
-        })?;
+                .map_err(Some)
+        });
+        let batch_opt = outcome.map_err(|error| error.map_or_else(reader_poisoned, to_py_err))?;
         let batch = batch_opt.ok_or_else(|| PyStopIteration::new_err(()))?;
         let bytes = batch_to_ipc_bytes(&batch).map_err(to_py_err)?;
         Ok(PyBytes::new(py, &bytes))
@@ -129,7 +135,10 @@ impl BatchReader {
     /// solo header + EOS marker vuoto). Utile per costruire un
     /// RecordBatchReader Python-side prima di iterare i batch.
     fn schema_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let schema = self.inner.lock().map_err(|_| reader_poisoned())?.schema();
+        // Il mutex si attende senza il GIL: chi lo tiene puo averne bisogno.
+        let schema = py
+            .detach(|| self.inner.lock().map(|inner| inner.schema()).ok())
+            .ok_or_else(reader_poisoned)?;
         let mut buf = Vec::with_capacity(512);
         {
             let mut writer = StreamWriter::try_new(&mut buf, &schema)
