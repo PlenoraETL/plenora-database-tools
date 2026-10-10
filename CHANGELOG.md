@@ -16,6 +16,30 @@ riassumono le note di quelle release.
   un output esistente); il risultato riporta `format: arrow_ipc_stream`,
   righe e batch. Senza `--output` resta il riepilogo JSON. Il binding runtime
   continua a restituire il riepilogo (vedi `docs/runtime.md`).
+### Correzioni (vocabolario Arrow 1.0)
+
+- **Più tipi geometrici dichiarati** (`plenora.geometry.types=point,polygon`,
+  valido per ARROW-VOCABULARY §3) erano rifiutati da `write` PostgreSQL come
+  `invalid_plan`. Ora la colonna creata è `geometry(Geometry,SRID)` e ogni
+  valore deve essere di uno dei tipi dichiarati.
+- **WKB ISO con SRID nei metadati** (`encoding=wkb`): `write` pretendeva lo
+  SRID dentro il valore e rifiutava ogni ingresso IO con CRS. Ora lo SRID
+  viene dai metadati del campo e il valore è riscritto in EWKB prima della
+  scrittura; un SRID dentro un valore dichiarato `wkb` è un `data_mapping`.
+- **Categoria conservata nel rollback**: un errore di mappatura scoperto
+  mentre si riservano le risorse del batch usciva come `resource_limit`
+  (exit 4). Ora resta della sua categoria.
+- **`plenora.field_id` su ogni campo letto**, per tutti gli adapter
+  (`protocol::contract_schema`): un id dichiarato resta, gli altri si
+  derivano dal nome del campo (FNV-1a, 31 bit), quindi lo stesso campo ha lo
+  stesso id in ogni proiezione e ordine. Id duplicati — nomi ripetuti in una
+  query, o una collisione — sono un errore `schema`. **`precision`**
+  (`float64`), dimensioni e dichiarazione dei tipi sono sempre presenti sulle
+  geometrie PostgreSQL (ARROW-VOCABULARY §2 e §4).
+- **SRID annidati**: uno SRID dentro una geometria annidata (per esempio il
+  figlio di una `GeometryCollection`) e un `data_mapping`, per `wkb` e
+  `ewkb`: la verifica guarda tutto il valore, non solo la radice. La copia
+  EWKB dei valori `wkb` e prenotata nel budget prima di essere allocata.
 
 ## 7.0.0 — 2026-10-06
 

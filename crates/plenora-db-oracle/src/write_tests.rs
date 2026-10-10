@@ -40,6 +40,7 @@ fn spatial_schema() -> SchemaRef {
         .arrow_field()
         .expect("campo Arrow geometry"),
     ])
+    .expect("schema")
 }
 
 #[test]

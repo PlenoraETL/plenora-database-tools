@@ -12,12 +12,74 @@ pub const CONTRACT_VERSION_KEY: &str = "plenora.contract.version";
 ///
 /// Tenerlo nel core evita che i provider possano divergere silenziosamente
 /// sulla metadata obbligatoria dello schema.
-#[must_use]
-pub fn contract_schema(fields: Vec<Field>) -> SchemaRef {
-    Arc::new(Schema::new_with_metadata(
+///
+/// # Field id
+///
+/// Ogni campo esce con `plenora.field_id` (ARROW-VOCABULARY §2, e §4 per le
+/// geometrie). Un id gia dichiarato resta. Gli altri si derivano dal **nome**
+/// del campo, che per un database e l'identita della colonna sorgente: lo
+/// stesso campo ha lo stesso id letto da solo, in un'altra proiezione o in un
+/// altro ordine, come chiede §2 («independent of field name and ordinal
+/// position» vale fra campi diversi; per lo stesso campo invariato l'id resta
+/// quello). La posizione non entra: con la posizione, `b` valeva 1 in `[a, b]`
+/// e 0 in `[b]`.
+///
+/// L'id e FNV-1a a 32 bit del nome UTF-8, ridotto a 31 bit perche resti un
+/// intero non negativo anche per chi lo legge con segno.
+///
+/// # Errors
+///
+/// `Schema` se un id dichiarato non e un intero a 32 bit, o se due campi
+/// hanno lo stesso id — nomi ripetuti, o una collisione dell'hash: l'unicita
+/// non si ripara rinumerando.
+pub fn contract_schema(fields: Vec<Field>) -> crate::Result<SchemaRef> {
+    let mut seen = std::collections::HashSet::new();
+    let fields = fields
+        .into_iter()
+        .map(|field| {
+            let id = match field.metadata().get(FIELD_ID) {
+                Some(value) => value
+                    .parse::<u32>()
+                    .map_err(|_| field_id_error("field_id dichiarato non e un intero a 32 bit"))?,
+                None => name_field_id(field.name()),
+            };
+            if !seen.insert(id) {
+                return Err(field_id_error(
+                    "field_id duplicato nello schema: nomi di campo ripetuti o collisione",
+                ));
+            }
+            if field.metadata().contains_key(FIELD_ID) {
+                return Ok(field);
+            }
+            let mut metadata = field.metadata().clone();
+            metadata.insert(FIELD_ID.to_owned(), id.to_string());
+            Ok(field.with_metadata(metadata))
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
+    Ok(Arc::new(Schema::new_with_metadata(
         fields,
         HashMap::from([(CONTRACT_VERSION_KEY.to_owned(), CONTRACT_VERSION.to_owned())]),
-    ))
+    )))
+}
+
+/// L'id di un campo che non ne dichiara uno: FNV-1a 32 bit del nome, 31 bit.
+#[must_use]
+pub fn name_field_id(name: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in name.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash & 0x7fff_ffff
+}
+
+fn field_id_error(message: &str) -> crate::DatabaseError {
+    crate::DatabaseError::new(
+        crate::ErrorCategory::Schema,
+        crate::ErrorPhase::Read,
+        None,
+        message,
+    )
 }
 
 pub const GEOMETRY_ENCODING: &str = "plenora.geometry.encoding";
@@ -85,3 +147,7 @@ pub const MARIADB_NATIVE_DECLARATION: &str = "plenora.mariadb.native_declaration
 pub const MARIADB_COLLATION: &str = "plenora.mariadb.collation";
 
 pub const GEOARROW_EXTENSION_NAME: &str = "ARROW:extension:name";
+
+#[cfg(test)]
+#[path = "protocol_tests.rs"]
+mod tests;

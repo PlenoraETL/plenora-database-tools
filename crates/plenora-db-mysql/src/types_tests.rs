@@ -118,7 +118,7 @@ fn concrete_spatial_type_produces_an_exact_valid_contract() {
         field.metadata().get(protocol::GEOMETRY_TYPES_DECLARATION),
         Some(&"exact".to_owned())
     );
-    validate_schema_contract(contract_schema(vec![field]).as_ref())
+    validate_schema_contract(contract_schema(vec![field]).expect("schema").as_ref())
         .expect("contratto geometrico MySQL canonico");
 }
 
@@ -137,7 +137,7 @@ fn mysql_geomcollection_alias_produces_the_canonical_exact_type() {
         field.metadata().get(protocol::GEOMETRY_TYPES),
         Some(&"geometrycollection".to_owned())
     );
-    validate_schema_contract(contract_schema(vec![field]).as_ref())
+    validate_schema_contract(contract_schema(vec![field]).expect("schema").as_ref())
         .expect("contratto geometrycollection canonico");
 }
 

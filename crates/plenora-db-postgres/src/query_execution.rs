@@ -175,7 +175,7 @@ pub async fn read_stream(
             .iter()
             .map(ColumnSpec::arrow_field)
             .collect::<Vec<_>>(),
-    );
+    )?;
     Ok(Box::new(PostgresBatchStream::new(
         provider,
         ReadStreamSource::new(client, cancel_token, Box::pin(rows), plan.columns, schema),
@@ -301,7 +301,7 @@ pub async fn query_stream(
             .iter()
             .map(ColumnSpec::arrow_field)
             .collect::<Vec<_>>(),
-    );
+    )?;
     let column_count = u64::try_from(columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;

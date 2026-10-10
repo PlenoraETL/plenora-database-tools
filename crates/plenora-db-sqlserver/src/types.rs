@@ -134,7 +134,7 @@ impl SqlServerReadPlan {
             .collect::<Vec<_>>();
         Ok(Self {
             columns,
-            schema: contract_schema(fields),
+            schema: contract_schema(fields)?,
             sql: format!(
                 "SELECT {projection} FROM {} ORDER BY (SELECT NULL);",
                 renderer.quote_object(&object)?
@@ -247,7 +247,7 @@ impl SqlServerReadPlan {
             .collect::<Vec<_>>();
         Ok(Self {
             columns,
-            schema: contract_schema(fields),
+            schema: contract_schema(fields)?,
             sql,
             bind_names,
             structural_fingerprint: description.token.structural_fingerprint.clone(),
@@ -271,7 +271,7 @@ impl SqlServerReadPlan {
             .iter()
             .map(SqlServerColumnSpec::arrow_field)
             .collect::<Vec<_>>();
-        self.schema = contract_schema(fields);
+        self.schema = contract_schema(fields)?;
         Ok(())
     }
 
@@ -308,7 +308,7 @@ impl SqlServerReadPlan {
             .iter()
             .map(SqlServerColumnSpec::arrow_field)
             .collect::<Vec<_>>();
-        self.schema = contract_schema(fields);
+        self.schema = contract_schema(fields)?;
         Ok(())
     }
 
@@ -329,7 +329,7 @@ impl SqlServerReadPlan {
             .collect::<Vec<_>>();
         Ok(Self {
             columns,
-            schema: contract_schema(fields),
+            schema: contract_schema(fields)?,
             sql,
             bind_names,
             structural_fingerprint: "query-result-metadata-v1".to_owned(),

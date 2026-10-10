@@ -316,7 +316,7 @@ impl Db2ReadPlan {
                 .iter()
                 .map(Db2ColumnSpec::arrow_field)
                 .collect::<Result<Vec<_>>>()?,
-        );
+        )?;
         Ok(Self {
             columns,
             schema,
