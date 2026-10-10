@@ -339,6 +339,10 @@ pub async fn execute(
                 return Err(recovery.rollback_resource_error(transaction, &error).await);
             }
         };
+        let batch = match stamp_declared_srid(&batch, &column_plans) {
+            Ok(batch) => batch,
+            Err(error) => return Err(recovery.rollback_error(transaction, error).await),
+        };
         let batch_rows = resources.rows;
         if batch_rows == 0 {
             continue;
@@ -964,12 +968,26 @@ fn validate_ewkb_contract(metadata: EwkbGeometryMetadata, plan: &WriteColumnPlan
     let geometry_type = metadata
         .geometry_type_name()
         .ok_or_else(|| spatial_mapping_error("tipo geometry EWKB non supportato"))?;
-    if let Some(expected) = plan.geometry_type.as_deref() {
-        if expected != "Geometry" && !expected.eq_ignore_ascii_case(geometry_type) {
+    let declared = &plan.geometry_types;
+    if !declared.is_empty()
+        && !declared
+            .iter()
+            .any(|expected| expected == "unknown" || expected.eq_ignore_ascii_case(geometry_type))
+    {
+        return Err(spatial_mapping_error(
+            "tipo EWKB diverso dal contratto Arrow",
+        ));
+    }
+    if plan.encoding.as_deref() == Some("wkb") {
+        // WKB ISO: lo SRID e quello dei metadati del campo (ARROW-VOCABULARY
+        // §3), e un valore che ne porta uno proprio contraddice la
+        // dichiarazione invece di precisarla.
+        if metadata.srid.is_some() {
             return Err(spatial_mapping_error(
-                "tipo EWKB diverso dal contratto Arrow",
+                "SRID incorporato in un valore dichiarato wkb",
             ));
         }
+        return Ok(());
     }
     if let Some(expected) = plan.srid {
         if expected != 0 && metadata.srid != Some(expected) {
@@ -979,6 +997,45 @@ fn validate_ewkb_contract(metadata: EwkbGeometryMetadata, plan: &WriteColumnPlan
         }
     }
     Ok(())
+}
+
+/// I valori `wkb` di un campo con SRID dichiarato, riscritti in EWKB.
+///
+/// `PostGIS` legge EWKB su ogni percorso di scrittura (COPY testo e binario,
+/// `ST_GeomFromEWKB`): un WKB ISO senza SRID finirebbe con SRID 0 e la
+/// colonna `geometry(...,4326)` lo rifiuterebbe. Lo SRID e quello dei
+/// metadati del campo, gia confrontato con il contratto. Un batch senza campi
+/// da riscrivere torna com'e.
+fn stamp_declared_srid(batch: &RecordBatch, plans: &[WriteColumnPlan]) -> Result<RecordBatch> {
+    let stamp =
+        |plan: &WriteColumnPlan| plan.is_spatial() && plan.encoding.as_deref() == Some("wkb");
+    if !plans
+        .iter()
+        .any(|plan| stamp(plan) && plan.srid.is_some_and(|srid| srid != 0))
+    {
+        return Ok(batch.clone());
+    }
+    let mut columns = Vec::with_capacity(batch.num_columns());
+    for (plan, array) in plans.iter().zip(batch.columns()) {
+        let Some(srid) = plan.srid.filter(|srid| stamp(plan) && *srid != 0) else {
+            columns.push(Arc::clone(array));
+            continue;
+        };
+        let binary = array
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or_else(mapping_error)?;
+        let stamped = binary
+            .iter()
+            .map(|value| {
+                value
+                    .map(|wkb| plenora_database_core::ewkb::with_root_srid(wkb, srid))
+                    .transpose()
+            })
+            .collect::<Result<BinaryArray>>()?;
+        columns.push(Arc::new(stamped) as arrow_array::ArrayRef);
+    }
+    RecordBatch::try_new(batch.schema(), columns).map_err(|_| mapping_error())
 }
 
 fn spatial_mapping_error(message: &str) -> DatabaseError {

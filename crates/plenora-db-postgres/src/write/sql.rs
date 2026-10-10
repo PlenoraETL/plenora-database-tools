@@ -190,7 +190,12 @@ pub(super) fn pg_type(contract: &FieldContract<'_>) -> Result<String> {
         } else {
             "geometry"
         };
-        let geometry_type = contract.geometry_type.unwrap_or("Geometry");
+        // Piu tipi dichiarati (ARROW-VOCABULARY §3) chiedono una colonna
+        // generica: il controllo per valore sta in `validate_ewkb_contract`.
+        let geometry_type = contract
+            .geometry_type
+            .filter(|types| !types.contains(','))
+            .unwrap_or("Geometry");
         if !geometry_type
             .chars()
             .all(|character| character.is_ascii_alphanumeric())

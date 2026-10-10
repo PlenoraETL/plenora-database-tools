@@ -5,7 +5,7 @@ use plenora_database_core::outcome::{
 };
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::{
-    CancellationReason, CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect,
+    CancellationReason, CancellationToken, DatabaseError, ErrorPhase, RemoteEffect,
     RetryDisposition,
 };
 use tokio_postgres::{CancelToken, NoTls, Transaction};
@@ -162,12 +162,19 @@ pub(super) fn unknown_write_outcome(
     }
 }
 
+/// L'errore di un batch rifiutato prima della scrittura, dopo il rollback.
+///
+/// La categoria resta quella della causa: dalla riserva delle risorse
+/// arrivano anche i rifiuti di mappatura delle geometrie, e riclassificarli
+/// `resource_limit` diceva al chiamante di alzare un budget per un dato che
+/// non cambiera. Il rollback decide effetto remoto e retry, non che cosa e
+/// fallito.
 pub(super) fn resource_write_error(
     error: &DatabaseError,
     rollback_confirmed: bool,
 ) -> DatabaseError {
     public_error_envelope(
-        ErrorCategory::ResourceLimit,
+        error.category,
         ErrorPhase::Write,
         if rollback_confirmed {
             RemoteEffect::RolledBack

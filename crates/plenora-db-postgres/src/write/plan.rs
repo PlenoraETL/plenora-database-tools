@@ -9,7 +9,10 @@ pub(super) struct WriteColumnPlan {
     pub(super) postgres_type: String,
     pub(super) native_type: Option<String>,
     pub(super) native_declaration_sql: Option<String>,
-    pub(super) geometry_type: Option<String>,
+    /// I tipi dichiarati, in minuscolo; vuota se il campo non ne dichiara.
+    pub(super) geometry_types: Vec<String>,
+    /// `wkb` o `ewkb`; assente sugli ingressi legacy.
+    pub(super) encoding: Option<String>,
     pub(super) dimensions: Option<String>,
     pub(super) srid: Option<u32>,
     pub(super) semantics: ColumnSemantics,
@@ -32,7 +35,11 @@ impl WriteColumnPlan {
             postgres_type: pg_type(&contract)?,
             native_type: contract.native_type.map(str::to_owned),
             native_declaration_sql: native_declaration_sql(&contract),
-            geometry_type: contract.geometry_type.map(str::to_owned),
+            geometry_types: contract
+                .geometry_type
+                .map(|types| types.split(',').map(str::to_ascii_lowercase).collect())
+                .unwrap_or_default(),
+            encoding: contract.canonical.encoding.map(str::to_owned),
             dimensions: contract.dimensions.map(str::to_owned),
             srid: contract.srid,
             semantics: if contract.is_geography() {

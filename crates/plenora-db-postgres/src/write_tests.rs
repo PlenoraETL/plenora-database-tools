@@ -456,3 +456,107 @@ fn incoherent_crs_metadata_is_rejected_before_preflight() {
     );
     assert!(FieldContract::parse(&missing_with_srid).is_err());
 }
+
+/// Un campo geometrico secondo il vocabolario Arrow 1.0.
+fn vocabulary_geometry(encoding: &str, types: &str) -> Field {
+    Field::new("geom", DataType::Binary, true).with_metadata(std::collections::HashMap::from([
+        (
+            "ARROW:extension:name".to_owned(),
+            GEOARROW_WKB_EXTENSION_NAME.to_owned(),
+        ),
+        ("plenora.field_id".to_owned(), "1".to_owned()),
+        ("plenora.geometry.encoding".to_owned(), encoding.to_owned()),
+        ("plenora.geometry.dimensions".to_owned(), "xy".to_owned()),
+        (
+            "plenora.geometry.spatial_semantics".to_owned(),
+            "geometry".to_owned(),
+        ),
+        (
+            "plenora.geometry.precision".to_owned(),
+            "float64".to_owned(),
+        ),
+        (
+            "plenora.geometry.types_declaration".to_owned(),
+            "exact".to_owned(),
+        ),
+        ("plenora.geometry.types".to_owned(), types.to_owned()),
+        (
+            "plenora.geometry.crs_resolution".to_owned(),
+            "resolved".to_owned(),
+        ),
+        ("plenora.geometry.crs_id".to_owned(), "EPSG:4326".to_owned()),
+        ("plenora.geometry.srid".to_owned(), "4326".to_owned()),
+        (
+            "plenora.geometry.axis_order".to_owned(),
+            "lat_lon".to_owned(),
+        ),
+    ]))
+}
+
+/// WKB ISO little-endian di un punto XY, senza SRID.
+fn iso_point() -> Vec<u8> {
+    let mut point = vec![1_u8];
+    point.extend_from_slice(&1_u32.to_le_bytes());
+    point.extend_from_slice(&[0_u8; 16]);
+    point
+}
+
+/// ARROW-VOCABULARY §3: piu tipi dichiarati, unici e in ordine canonico, sono
+/// validi. La colonna e generica e ogni valore deve essere di un tipo della
+/// lista.
+#[test]
+fn several_declared_geometry_types_are_a_generic_column_checked_per_value() {
+    let plan = WriteColumnPlan::compile(&vocabulary_geometry("wkb", "point,polygon"))
+        .expect("tipi multipli validi");
+    assert_eq!(plan.postgres_type, "geometry(Geometry,4326)");
+    let point = inspect_ewkb_detailed(&iso_point(), 10, 1).expect("punto");
+    validate_ewkb_contract(point.root, &plan).expect("point e dichiarato");
+    let mut line = vec![1_u8];
+    line.extend_from_slice(&2_u32.to_le_bytes());
+    line.extend_from_slice(&1_u32.to_le_bytes());
+    line.extend_from_slice(&[0_u8; 16]);
+    let line = inspect_ewkb_detailed(&line, 10, 1).expect("linestring");
+    assert_eq!(
+        validate_ewkb_contract(line.root, &plan)
+            .expect_err("linestring non dichiarato")
+            .category,
+        ErrorCategory::DataMapping
+    );
+}
+
+/// Con `encoding=wkb` lo SRID viene dai metadati: un WKB ISO senza SRID e
+/// conforme. Un SRID dentro un valore dichiarato `wkb` contraddice il campo.
+#[test]
+fn iso_wkb_takes_its_srid_from_the_field_metadata() {
+    let plan = WriteColumnPlan::compile(&vocabulary_geometry("wkb", "point")).expect("piano WKB");
+    let point = inspect_ewkb_detailed(&iso_point(), 10, 1).expect("punto");
+    validate_ewkb_contract(point.root, &plan).expect("WKB ISO con SRID nei metadati");
+
+    let mut with_srid = vec![1_u8];
+    with_srid.extend_from_slice(&0x2000_0001_u32.to_le_bytes());
+    with_srid.extend_from_slice(&4326_u32.to_le_bytes());
+    with_srid.extend_from_slice(&[0_u8; 16]);
+    let embedded = inspect_ewkb_detailed(&with_srid, 10, 1).expect("EWKB");
+    assert_eq!(
+        validate_ewkb_contract(embedded.root, &plan)
+            .expect_err("SRID incorporato in un campo wkb")
+            .category,
+        ErrorCategory::DataMapping
+    );
+}
+
+/// Un errore di mappatura scoperto mentre si riservano le risorse del batch
+/// resta un errore di mappatura: il rollback cambia l'effetto remoto, non la
+/// categoria.
+#[test]
+fn a_mapping_failure_keeps_its_category_through_the_rollback() {
+    let cause = public_error(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Write,
+        false,
+        "SRID EWKB diverso dal contratto Arrow",
+    );
+    let rolled_back = resource_write_error(&cause, true);
+    assert_eq!(rolled_back.category, ErrorCategory::DataMapping);
+    assert_eq!(rolled_back.remote_effect, RemoteEffect::RolledBack);
+}

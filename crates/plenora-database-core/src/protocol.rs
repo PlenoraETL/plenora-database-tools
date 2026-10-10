@@ -12,8 +12,39 @@ pub const CONTRACT_VERSION_KEY: &str = "plenora.contract.version";
 ///
 /// Tenerlo nel core evita che i provider possano divergere silenziosamente
 /// sulla metadata obbligatoria dello schema.
+///
+/// Ogni campo esce con `plenora.field_id` (ARROW-VOCABULARY §2, e §4 per le
+/// geometrie, che lo richiedono): quello che il campo porta gia resta, gli
+/// altri ricevono la posizione nello schema, oppure — se qualche campo ne
+/// porta gia uno — il primo numero libero dopo il massimo, cosi gli id
+/// restano unici.
 #[must_use]
 pub fn contract_schema(fields: Vec<Field>) -> SchemaRef {
+    let declared = fields
+        .iter()
+        .filter_map(|field| field.metadata().get(FIELD_ID))
+        .filter_map(|value| value.parse::<u64>().ok())
+        .max();
+    let mut next = declared.map_or(0, |max| max.saturating_add(1));
+    let fields = fields
+        .into_iter()
+        .enumerate()
+        .map(|(index, field)| {
+            if field.metadata().contains_key(FIELD_ID) {
+                return field;
+            }
+            let id = if declared.is_some() {
+                let id = next;
+                next = next.saturating_add(1);
+                id
+            } else {
+                u64::try_from(index).unwrap_or(u64::MAX)
+            };
+            let mut metadata = field.metadata().clone();
+            metadata.insert(FIELD_ID.to_owned(), id.to_string());
+            field.with_metadata(metadata)
+        })
+        .collect::<Vec<_>>();
     Arc::new(Schema::new_with_metadata(
         fields,
         HashMap::from([(CONTRACT_VERSION_KEY.to_owned(), CONTRACT_VERSION.to_owned())]),
@@ -85,3 +116,7 @@ pub const MARIADB_NATIVE_DECLARATION: &str = "plenora.mariadb.native_declaration
 pub const MARIADB_COLLATION: &str = "plenora.mariadb.collation";
 
 pub const GEOARROW_EXTENSION_NAME: &str = "ARROW:extension:name";
+
+#[cfg(test)]
+#[path = "protocol_tests.rs"]
+mod tests;

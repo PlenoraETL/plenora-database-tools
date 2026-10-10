@@ -6,6 +6,26 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## Non rilasciato
+
+### Correzioni (vocabolario Arrow 1.0)
+
+- **Più tipi geometrici dichiarati** (`plenora.geometry.types=point,polygon`,
+  valido per ARROW-VOCABULARY §3) erano rifiutati da `write` PostgreSQL come
+  `invalid_plan`. Ora la colonna creata è `geometry(Geometry,SRID)` e ogni
+  valore deve essere di uno dei tipi dichiarati.
+- **WKB ISO con SRID nei metadati** (`encoding=wkb`): `write` pretendeva lo
+  SRID dentro il valore e rifiutava ogni ingresso IO con CRS. Ora lo SRID
+  viene dai metadati del campo e il valore è riscritto in EWKB prima della
+  scrittura; un SRID dentro un valore dichiarato `wkb` è un `data_mapping`.
+- **Categoria conservata nel rollback**: un errore di mappatura scoperto
+  mentre si riservano le risorse del batch usciva come `resource_limit`
+  (exit 4). Ora resta della sua categoria.
+- **`plenora.field_id` su ogni campo letto**, per tutti gli adapter
+  (`protocol::contract_schema`), e **`precision`** (`float64`), dimensioni e
+  dichiarazione dei tipi sempre presenti sulle geometrie PostgreSQL
+  (ARROW-VOCABULARY §2 e §4).
+
 ## 7.0.0 — 2026-10-06
 
 Major: alcuni documenti di controllo prima accettati ora vengono rifiutati, e
