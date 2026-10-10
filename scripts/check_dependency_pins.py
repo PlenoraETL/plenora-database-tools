@@ -9,8 +9,9 @@ le prime non hanno una versione da fissare, le seconde la prendono da
 `[workspace.dependencies]`, che questa guardia controlla.
 
 Fuori perimetro, dichiarato: `vendor/oracle-rs/Cargo.toml` e il manifest
-upstream con intervalli, le cui versioni effettive fissa `Cargo.lock` (il
-motivo e scritto accanto a `[patch.crates-io]` nel manifest del workspace).
+upstream del fork con intervalli, le cui versioni effettive fissa
+`Cargo.lock` (il motivo e scritto accanto alla dipendenza `oracle-rs` nel
+manifest del workspace).
 
 Controlla anche che `rust-version` del workspace coincida con la toolchain
 di `rust-toolchain.toml`: la MSRV dichiarata e quella che la CI compila.
