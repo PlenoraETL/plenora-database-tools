@@ -520,11 +520,13 @@ impl TransactionScope for OracleTransaction {
                         self.connection.allow_reuse();
                         Ok(CommitOutcome::Committed)
                     }
-                    Ok(Err(error)) if error.is_connection_error() => {
-                        self.open = false;
-                        Ok(CommitOutcome::OutcomeUnknown { recovery: outcome_unknown_recovery() })
+                    Ok(Err(error)) => {
+                        let outcome = commit_failure(&error);
+                        if matches!(outcome, Ok(CommitOutcome::OutcomeUnknown { .. })) {
+                            self.open = false;
+                        }
+                        outcome
                     }
-                    Ok(Err(error)) => Err(driver_error(ErrorPhase::Commit, &error)),
                     Err(_) => {
                         self.open = false;
                         Ok(CommitOutcome::OutcomeUnknown { recovery: outcome_unknown_recovery() })
@@ -734,3 +736,25 @@ pub async fn execute_ddl(
     drop(connection);
     Ok(())
 }
+
+/// L'esito di un COMMIT che il driver ha chiuso con un errore.
+///
+/// Il comando e gia partito: solo un rifiuto del server con un codice ORA
+/// prova che il commit non e avvenuto. Ogni altro errore — canale chiuso,
+/// risposta non interpretabile (`Error::Protocol` dopo l'invio), timeout del
+/// driver — non prova l'assenza di effetti (ERR-004, ERR-014) e diventa
+/// esito ignoto.
+fn commit_failure(error: &oracle_rs::Error) -> Result<CommitOutcome> {
+    match error {
+        oracle_rs::Error::OracleError { .. } | oracle_rs::Error::ServerError { .. } => {
+            Err(driver_error(ErrorPhase::Commit, error))
+        }
+        _ => Ok(CommitOutcome::OutcomeUnknown {
+            recovery: outcome_unknown_recovery(),
+        }),
+    }
+}
+
+#[cfg(test)]
+#[path = "transaction_commit_tests.rs"]
+mod commit_tests;

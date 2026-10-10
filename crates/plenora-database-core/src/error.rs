@@ -192,6 +192,23 @@ impl DatabaseError {
         }
     }
 
+    /// Gli assi di un errore dopo un rollback **non confermato**.
+    ///
+    /// L'ultima fase avviata e il rollback (ERR-003), e senza la sua conferma
+    /// l'effetto delle scritture della transazione non e provato (ERR-014):
+    /// effetto ignoto e recovery obbligatoria. Una `quarantine` gia decisa
+    /// resta, perche e ammessa con un effetto ignoto ed e piu severa.
+    /// Categoria e messaggio restano quelli di cio che e fallito.
+    #[must_use]
+    pub fn after_unconfirmed_rollback(mut self) -> Self {
+        self.phase = ErrorPhase::Rollback;
+        self.remote_effect = RemoteEffect::Unknown;
+        if self.retry != RetryDisposition::Quarantine {
+            self.retry = RetryDisposition::RequiresRecovery;
+        }
+        self
+    }
+
     #[must_use]
     pub fn invalid_plan(message: impl Into<String>) -> Self {
         Self::new(

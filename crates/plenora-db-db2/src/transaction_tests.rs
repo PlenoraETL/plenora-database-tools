@@ -5,7 +5,7 @@ use crate::transaction::{
 use odbc_api::DataType;
 use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::transaction::{AccessMode, IsolationLevel, TransactionOptions};
-use plenora_database_core::ErrorCategory;
+use plenora_database_core::{ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition};
 
 #[test]
 fn db2_isolation_levels_map_to_their_native_semantics() {
@@ -137,4 +137,21 @@ fn transaction_binary_decoder_recovers_the_driver_hex_representation() {
     let error = decode_value(Some(b"01GG"), data_type).expect_err("BLOB Db2 non valido");
     assert_eq!(error.category, ErrorCategory::DataMapping);
     assert!(!error.message.contains("01GG"));
+}
+
+/// Una cancellazione all'ingresso del commit, dopo che le righe sono state
+/// applicate: l'esito del rollback esplicito decide gli assi (ERR-005,
+/// ERR-014), non un `none` scritto prima di provarlo.
+#[test]
+fn an_abandoned_commit_reports_what_the_rollback_proved() {
+    let cancellation = plenora_database_core::CancellationToken::new();
+    cancellation.cancel();
+    let interrupted = || crate::error::interruption_error(&cancellation, ErrorPhase::Commit);
+    let confirmed = crate::transaction::abandoned_error(interrupted(), true);
+    assert_eq!(confirmed.remote_effect, RemoteEffect::RolledBack);
+    assert_eq!(confirmed.retry, RetryDisposition::Never);
+    let unconfirmed = crate::transaction::abandoned_error(interrupted(), false);
+    assert_eq!(unconfirmed.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(unconfirmed.retry, RetryDisposition::RequiresRecovery);
+    assert_eq!(unconfirmed.phase, ErrorPhase::Rollback);
 }

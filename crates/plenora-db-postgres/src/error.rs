@@ -151,6 +151,17 @@ fn resolve_mapping(sqlstate: Option<&str>, transport_closed: bool, phase: ErrorP
         };
     }
 
+    // Dopo l'invio del COMMIT, un errore senza SQLSTATE non e un rifiuto del
+    // server: non prova che il commit non sia avvenuto (ERR-004, ERR-014).
+    if phase == ErrorPhase::Commit {
+        return Mapping {
+            category: ErrorCategory::Protocol,
+            retry: RetryDisposition::RequiresRecovery,
+            remote_effect: RemoteEffect::Unknown,
+            message: "risposta al commit PostgreSQL non interpretabile",
+        };
+    }
+
     Mapping {
         category: ErrorCategory::Protocol,
         retry: RetryDisposition::Never,

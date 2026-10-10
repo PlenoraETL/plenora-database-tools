@@ -1244,8 +1244,7 @@ async fn rollback_and_shape(
             original.retry = RetryDisposition::Never;
         }
     } else {
-        original.remote_effect = RemoteEffect::Unknown;
-        original.retry = RetryDisposition::RequiresRecovery;
+        original = original.after_unconfirmed_rollback();
     }
     original
 }

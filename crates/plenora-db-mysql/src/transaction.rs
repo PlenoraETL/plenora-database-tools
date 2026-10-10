@@ -874,11 +874,15 @@ impl TransactionScope for MysqlTransaction {
                 self.open = false;
                 match outcome {
                     Ok(()) => Ok(CommitOutcome::Committed),
+                    // Canale compromesso, oppure un errore senza codice del
+                    // server dopo l'invio del COMMIT (che `driver_error`
+                    // dichiara gia di effetto ignoto): esito ignoto in ogni
+                    // caso, non un errore che sembra un rifiuto.
                     Err(err)
                         if matches!(
                             err.category,
                             ErrorCategory::Cancelled | ErrorCategory::Timeout | ErrorCategory::Io
-                        ) =>
+                        ) || err.remote_effect == RemoteEffect::Unknown =>
                     {
                         // Canale compromesso durante commit: outcome ignoto.
                         Ok(CommitOutcome::OutcomeUnknown {

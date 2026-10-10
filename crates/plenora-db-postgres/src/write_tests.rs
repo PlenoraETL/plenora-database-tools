@@ -353,6 +353,9 @@ fn cancellation_reports_verified_rollback_or_requires_recovery() {
     let unknown = cancelled_write_error(&cancellation, false);
     assert_eq!(unknown.remote_effect, RemoteEffect::Unknown);
     assert_eq!(unknown.retry, RetryDisposition::RequiresRecovery);
+    // ERR-003: l'ultima fase avviata e il rollback, non la scrittura.
+    assert_eq!(unknown.phase, ErrorPhase::Rollback);
+    assert_eq!(rolled_back.phase, ErrorPhase::Write);
 }
 
 #[test]
@@ -384,6 +387,7 @@ fn resource_failure_reports_verified_rollback_or_requires_recovery() {
     let unknown = resource_write_error(&cause, false);
     assert_eq!(unknown.remote_effect, RemoteEffect::Unknown);
     assert_eq!(unknown.retry, RetryDisposition::RequiresRecovery);
+    assert_eq!(unknown.phase, ErrorPhase::Rollback);
 }
 
 #[test]

@@ -1122,13 +1122,10 @@ pub fn rolled_back_error(
     error.execution_id = Some(execution_id.to_owned());
     if rollback_confirmed || error.remote_effect == RemoteEffect::RolledBack {
         error.remote_effect = RemoteEffect::RolledBack;
+        error
     } else {
-        error.remote_effect = RemoteEffect::Unknown;
-        if error.retry != RetryDisposition::Quarantine {
-            error.retry = RetryDisposition::RequiresRecovery;
-        }
+        error.after_unconfirmed_rollback()
     }
-    error
 }
 
 /// Marca l'esito con cio che il rollback non ha potuto annullare.

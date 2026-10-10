@@ -215,7 +215,7 @@ impl WriteOutcome {
             return Err(Box::new(UnsettledWrite {
                 error: DatabaseError {
                     category: ErrorCategory::Internal,
-                    phase: ErrorPhase::Finalize,
+                    phase: self.last_phase(),
                     remote_effect: RemoteEffect::Unknown,
                     retry: RetryDisposition::RequiresRecovery,
                     provider: Some(self.provider),
@@ -269,6 +269,29 @@ impl WriteOutcome {
             error,
             outcome: Some(self),
         }))
+    }
+}
+
+impl WriteOutcome {
+    /// L'ultima fase significativa che il documento dichiara (ERR-003): la
+    /// fase certa della `recovery` se c'e, altrimenti quella che lo stato
+    /// implica. Serve quando il documento e fuori contratto e non si inoltra,
+    /// ma la fase in cui la scrittura e arrivata resta vera.
+    const fn last_phase(&self) -> ErrorPhase {
+        if let Some(recovery) = &self.recovery {
+            return match recovery.last_certain_phase {
+                CertainPhase::SessionReady => ErrorPhase::Connect,
+                CertainPhase::TransactionBegun | CertainPhase::Writing => ErrorPhase::Write,
+                CertainPhase::StagingPrepared => ErrorPhase::Prepare,
+                CertainPhase::Finalizing => ErrorPhase::Finalize,
+                CertainPhase::CommitRequested => ErrorPhase::Commit,
+            };
+        }
+        match self.status {
+            WriteStatus::Committed | WriteStatus::OutcomeUnknown => ErrorPhase::Commit,
+            WriteStatus::RolledBack => ErrorPhase::Rollback,
+            WriteStatus::PartiallyCommitted => ErrorPhase::Write,
+        }
     }
 }
 

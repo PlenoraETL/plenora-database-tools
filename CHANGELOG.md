@@ -23,6 +23,27 @@ riassumono le note di quelle release.
 - **`execute` con commit ignoto** stampava `status: ok` ed usciva con 1:
   ora è un envelope d'errore con il `CommitOutcome` in `details.commit`
   (CLI-2.0 §4: exit diverso da zero solo con `status: error`).
+  Le due chiavi restano distinte perché portano documenti diversi:
+  `details.write_outcome` è il `write-outcome` di una scrittura (conteggi e
+  `recovery`), `details.commit` il `CommitOutcome` di una transazione.
+- **Assi dopo un effetto remoto possibile**, su tutti gli adapter:
+  - dopo l'invio del COMMIT, un errore che non è un rifiuto certo del server
+    (Oracle senza codice ORA, PostgreSQL senza SQLSTATE) è un esito ignoto,
+    non `protocol`/`none`; MySQL tratta allo stesso modo ogni errore che
+    `driver_error` dichiara già di effetto ignoto;
+  - un rollback non confermato porta `phase: rollback`, `remote_effect:
+    unknown`, `requires_recovery` (ERR-003, ERR-014) in PostgreSQL, MySQL,
+    SQL Server, Oracle e Db2;
+  - Db2: una cancellazione all'ingresso di `commit` o `rollback` esegue il
+    rollback in modo esplicito e ne riporta l'esito, invece di dichiarare
+    `none` e lasciarlo al distruttore;
+  - `WriteOutcome::settle` conserva la fase reale di un esito fuori
+    contratto (la fase certa della `recovery`), invece di `finalize`.
+- Dichiarato: PostgreSQL `append` con diagnostica di riga riporta una
+  conferma di commit persa come `protocol`/`quarantine` (exit 5), mentre
+  `create` usa gli assi del commit ignoto (`internal`/`requires_recovery`,
+  exit 70). Entrambi hanno effetto `unknown` e nessun retry automatico
+  (ERR-006 ammette `quarantine`).
 - **Niente più exit code 1.** I comandi operativi che stampano un verdetto
   negativo (`doctor`, `diagnose`, `profile-check`, `test-*`,
   `conditional-update`, `pool-status`, …) uscivano con 1, che CLI-2.0 §8 non

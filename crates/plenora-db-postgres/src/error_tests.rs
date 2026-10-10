@@ -178,3 +178,16 @@ fn message_never_contains_sqlstate_code() {
         );
     }
 }
+
+/// Dopo l'invio del COMMIT un errore senza SQLSTATE e senza canale chiuso —
+/// una risposta che il driver non sa interpretare — non prova che il commit
+/// non sia avvenuto (ERR-004, ERR-014).
+#[test]
+fn an_uncoded_commit_failure_has_an_unknown_effect() {
+    let mapping = resolve_mapping(None, false, ErrorPhase::Commit);
+    assert_eq!(mapping.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(mapping.retry, RetryDisposition::RequiresRecovery);
+    // Fuori dal commit il fallback resta quello di prima.
+    let read = resolve_mapping(None, false, ErrorPhase::Read);
+    assert_eq!(read.remote_effect, RemoteEffect::None);
+}

@@ -193,3 +193,26 @@ fn public_projection_never_serializes_automatic_retry_for_unknown_effect() {
         RetryDisposition::RequiresRecovery
     );
 }
+
+/// ERR-003 ed ERR-014: un rollback non confermato rende l'effetto ignoto e
+/// diventa l'ultima fase avviata; un `quarantine` gia deciso resta.
+#[test]
+fn an_unconfirmed_rollback_is_the_last_phase_and_leaves_the_effect_unknown() {
+    let shaped = DatabaseError::new(
+        ErrorCategory::Conflict,
+        ErrorPhase::Write,
+        None,
+        "vincolo violato",
+    )
+    .after_unconfirmed_rollback();
+    assert_eq!(shaped.category, ErrorCategory::Conflict);
+    assert_eq!(shaped.phase, ErrorPhase::Rollback);
+    assert_eq!(shaped.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(shaped.retry, RetryDisposition::RequiresRecovery);
+    let quarantined = DatabaseError {
+        retry: RetryDisposition::Quarantine,
+        ..DatabaseError::invalid_plan("x")
+    }
+    .after_unconfirmed_rollback();
+    assert_eq!(quarantined.retry, RetryDisposition::Quarantine);
+}

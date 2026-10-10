@@ -270,6 +270,8 @@ fn an_unconsumable_outcome_never_settles_and_is_not_forwarded() {
     committed.rows.confirmed = committed.rows.received + 1;
     let unsettled = committed.settle().expect_err("conteggi incoerenti");
     assert_eq!(unsettled.error().remote_effect, RemoteEffect::Unknown);
+    // Un `committed` incoerente arriva dopo il commit.
+    assert_eq!(unsettled.error().phase, ErrorPhase::Commit);
     assert!(unsettled.outcome().is_none());
 
     let auto_retry: WriteOutcome = serde_json::from_str(include_str!(
@@ -278,6 +280,9 @@ fn an_unconsumable_outcome_never_settles_and_is_not_forwarded() {
     .expect("example");
     let unsettled = auto_retry.settle().expect_err("retry automatico");
     assert_eq!(unsettled.error().retry, RetryDisposition::RequiresRecovery);
+    // La fase certa del documento e `commit_requested`: l'errore la conserva
+    // (ERR-003), non la sostituisce con `finalize`.
+    assert_eq!(unsettled.error().phase, ErrorPhase::Commit);
     let document = unsettled.public_document().expect("document");
     assert!(document.get("details").is_none(), "{document}");
 }

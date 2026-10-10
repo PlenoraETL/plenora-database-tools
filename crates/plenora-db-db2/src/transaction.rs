@@ -230,8 +230,17 @@ impl Db2Transaction {
             return Ok(());
         }
         if cancellation.is_cancelled() {
-            return Err(interruption_error(cancellation, ErrorPhase::Rollback));
+            // Anche qui il rollback si esegue e il suo esito decide gli assi:
+            // una cancellazione non lascia la transazione al `Drop`.
+            let error = interruption_error(cancellation, ErrorPhase::Rollback);
+            let confirmed = self.rollback_connection().await.is_ok();
+            return Err(abandoned_error(error, confirmed));
         }
+        self.rollback_connection().await
+    }
+
+    /// Rollback sulla connessione, atteso fino alla risposta del driver.
+    async fn rollback_connection(&mut self) -> Result<()> {
         self.open = false;
         let connection = self.connection.take().ok_or_else(|| {
             transaction_error(
@@ -779,7 +788,14 @@ impl TransactionScope for Db2Transaction {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Commit)?;
             if cancellation.is_cancelled() {
-                return Err(interruption_error(cancellation, ErrorPhase::Commit));
+                // Le righe sono gia applicate nella transazione: il commit non
+                // parte, e il rollback si tenta qui, in modo esplicito, perche
+                // il suo esito decida gli assi. Lasciarlo al `Drop`, che ne
+                // ignora l'esito, faceva dichiarare `none` anche quando il
+                // rollback falliva.
+                let error = interruption_error(cancellation, ErrorPhase::Commit);
+                let confirmed = self.rollback_connection().await.is_ok();
+                return Err(abandoned_error(error, confirmed));
             }
             self.open = false;
             let connection = self.connection.take().ok_or_else(|| {
@@ -801,5 +817,19 @@ impl TransactionScope for Db2Transaction {
 
     fn rollback(mut self: Box<Self>, cancellation: &CancellationToken) -> ProviderFuture<'_, ()> {
         Box::pin(async move { self.rollback_in_place(cancellation).await })
+    }
+}
+
+/// Gli assi di un'operazione interrotta prima del commit, dopo il rollback
+/// esplicito: annullata se il rollback e confermato, ignota altrimenti.
+pub fn abandoned_error(error: DatabaseError, rollback_confirmed: bool) -> DatabaseError {
+    if rollback_confirmed {
+        DatabaseError {
+            remote_effect: plenora_database_core::RemoteEffect::RolledBack,
+            retry: plenora_database_core::RetryDisposition::Never,
+            ..error
+        }
+    } else {
+        error.after_unconfirmed_rollback()
     }
 }

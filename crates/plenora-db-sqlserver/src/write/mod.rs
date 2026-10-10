@@ -982,8 +982,7 @@ async fn rollback_after_error_inner(
         };
         if rollback.is_err() {
             pooled.quarantine();
-            original.remote_effect = RemoteEffect::Unknown;
-            original.retry = RetryDisposition::RequiresRecovery;
+            original = original.after_unconfirmed_rollback();
             original.message = format!(
                 "{}; rollback SQL Server non confermato: recovery obbligatoria",
                 original.message
