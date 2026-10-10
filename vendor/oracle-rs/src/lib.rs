@@ -2,6 +2,8 @@
 
 //! # oracle-rs
 //!
+//! Fork Plenora di `oracle-rs` 0.1.7: vedi [`PLENORA_FORK`].
+//!
 //! A pure Rust driver for Oracle databases. No OCI or ODPI-C dependencies required.
 //!
 //! This crate implements the Oracle TNS (Transparent Network Substrate) protocol
@@ -243,3 +245,11 @@ pub use types::{
 
 // Re-export serde_json for users working with JSON columns
 pub use serde_json;
+
+/// Marcatore del fork Plenora: rinegoziazione TCPS (`TLS_RENEG`) prima del
+/// resend del CONNECT, e PEM letto con rustls-pki-types.
+///
+/// `plenora-db-oracle` lo legge in compilazione: contro l'`oracle-rs`
+/// pubblicato, che non lo dichiara, la build fallisce invece di produrre un
+/// driver con un comportamento TLS diverso.
+pub const PLENORA_FORK: &str = "plenora-tls-reneg-1";
