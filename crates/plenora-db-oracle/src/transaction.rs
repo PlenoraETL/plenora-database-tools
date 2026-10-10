@@ -559,7 +559,7 @@ impl TransactionScope for OracleTransaction {
             if result.is_ok() {
                 self.connection.allow_reuse();
             }
-            result
+            result.map_err(rollback_failure)
         })
     }
 }
@@ -751,18 +751,47 @@ pub async fn execute_ddl(
 /// driver — non prova l'assenza di effetti (ERR-004, ERR-014) e diventa
 /// esito ignoto.
 fn commit_failure(error: &oracle_rs::Error) -> Result<CommitOutcome> {
-    match error {
-        oracle_rs::Error::OracleError { .. } | oracle_rs::Error::ServerError { .. } => {
-            Err(driver_error(ErrorPhase::Commit, error))
+    let code = match error {
+        oracle_rs::Error::OracleError { code, .. } | oracle_rs::Error::ServerError { code, .. } => {
+            Some(*code)
         }
-        // La categoria della causa: `io` per un canale perso, `protocol` per
-        // una risposta che il driver non sa leggere (ERR-001).
-        _ => Ok(CommitOutcome::OutcomeUnknown {
-            recovery: outcome_unknown_recovery_for(
-                driver_error(ErrorPhase::Commit, error).category,
-            ),
-        }),
+        _ => None,
+    };
+    if let Some(code) = code.filter(|code| CERTAIN_COMMIT_REJECTIONS.contains(code)) {
+        // Il server ha risposto che la transazione e stata annullata.
+        return Err(DatabaseError {
+            remote_effect: plenora_database_core::RemoteEffect::RolledBack,
+            retry: plenora_database_core::RetryDisposition::Never,
+            ..crate::error::oracle_code_error(ErrorPhase::Commit, code)
+        });
     }
+    // Qualunque altro esito e ignoto. La categoria e la causa: `io` per i
+    // codici di connessione persa e per un canale chiuso, `protocol` per
+    // una risposta illeggibile (ERR-001).
+    let category = match code {
+        Some(code) if LOST_CONNECTION_CODES.contains(&code) => ErrorCategory::Io,
+        _ => driver_error(ErrorPhase::Commit, error).category,
+    };
+    Ok(CommitOutcome::OutcomeUnknown {
+        recovery: outcome_unknown_recovery_for(category),
+    })
+}
+
+/// I soli codici ORA che, dopo l'invio del COMMIT, provano che il commit e
+/// stato rifiutato: ORA-02091, transazione annullata (tipicamente da un
+/// vincolo differito). L'elenco e chiuso: un codice nuovo e esito ignoto
+/// finche qualcuno non ne dimostra la semantica.
+const CERTAIN_COMMIT_REJECTIONS: &[u32] = &[2_091];
+
+/// Codici che dicono che la connessione e persa: ORA-03113 (fine del
+/// canale), ORA-03114 (non connesso), ORA-25408 (chiamata non rieseguibile
+/// dopo la perdita della connessione).
+const LOST_CONNECTION_CODES: &[u32] = &[3_113, 3_114, 25_408];
+
+/// L'errore di un rollback esplicito non confermato: timeout, canale perso,
+/// rifiuto. In nessun caso prova che le scritture siano annullate.
+fn rollback_failure(error: DatabaseError) -> DatabaseError {
+    error.after_unconfirmed_rollback()
 }
 
 #[cfg(test)]

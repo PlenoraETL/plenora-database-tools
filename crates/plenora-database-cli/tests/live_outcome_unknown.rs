@@ -332,3 +332,74 @@ fn live_execute_with_a_lost_commit_acknowledgement_is_an_error_not_success() {
     ddl(&format!("DROP TABLE IF EXISTS public.{TABLE}"));
     let _ = std::fs::remove_dir_all(directory);
 }
+
+/// Lo stesso commit perso sul percorso `append`, che in PostgreSQL passa
+/// dalla diagnostica di riga: la categoria e la causa (`io`, ERR-016), con
+/// effetto ignoto e nessun retry automatico. La disposizione di quel
+/// percorso e `quarantine`, ammessa da ERR-006.
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[test]
+fn live_append_with_a_lost_commit_acknowledgement_is_an_io_error() {
+    const TABLE: &str = "plenora_cli_outcome_unknown_append";
+    let (upstream, _) = redirect(&dsn(), 0);
+    let cutter = CommitCutter::start(upstream, TABLE.as_bytes());
+    let (_, proxied) = redirect(&dsn(), cutter.port);
+    ddl(&format!("DROP TABLE IF EXISTS public.{TABLE}"));
+    ddl(&format!("CREATE TABLE public.{TABLE} (id bigint NOT NULL)"));
+
+    let directory = scratch("append");
+    let data = directory.join("input.arrow");
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
+    )
+    .expect("batch");
+    let file = std::fs::File::create(&data).expect("file Arrow");
+    let mut writer = FileWriter::try_new(file, &schema).expect("writer");
+    writer.write(&batch).expect("batch scritto");
+    writer.finish().expect("file chiuso");
+    let operation = directory.join("write.json");
+    write_json(
+        &operation,
+        &json!({
+            "target": {"schema": "public", "object": TABLE},
+            "mode": "append",
+            "mapping_policy": "compatible",
+            "transaction_profile": "single_transaction",
+        }),
+    );
+    let request = directory.join("request.json");
+    write_json(
+        &request,
+        &json!({
+            "provider": "postgres",
+            "secret_environment": PROXIED_SECRET,
+            "operation_path": operation.to_str().expect("percorso UTF-8"),
+        }),
+    );
+    let output = cli(
+        &[
+            "write",
+            "--input",
+            request.to_str().expect("percorso UTF-8"),
+            "--data",
+            data.to_str().expect("percorso UTF-8"),
+        ],
+        &proxied,
+    )
+    .output()
+    .expect("spawn CLI");
+    assert_eq!(cutter.cuts(), 1, "il proxy non ha interrotto il commit");
+    let document = envelope(&output);
+    assert_eq!(document["status"], "error", "{document}");
+    let error = &document["error"];
+    assert_eq!(error["category"], "io", "{document}");
+    assert_eq!(error["phase"], "commit", "{document}");
+    assert_eq!(error["remote_effect"], "unknown", "{document}");
+    assert_ne!(error["retry"]["kind"], "safe", "{document}");
+    assert_eq!(output.status.code(), Some(5), "{document}");
+
+    ddl(&format!("DROP TABLE IF EXISTS public.{TABLE}"));
+    let _ = std::fs::remove_dir_all(directory);
+}

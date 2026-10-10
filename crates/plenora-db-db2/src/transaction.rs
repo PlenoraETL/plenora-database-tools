@@ -33,6 +33,14 @@ pub struct Db2Transaction {
     _operation_lease: ResourceLease,
 }
 
+/// Ultima risorsa per uno scope abbandonato senza commit ne rollback.
+///
+/// Resta raggiungibile solo cosi: commit, rollback esplicito e i percorsi di
+/// write chiudono la transazione da se e riportano l'esito del rollback negli
+/// assi. Qui non c'e un errore da costruire, quindi nessun asse puo mentire:
+/// il chiamante che ha lasciato cadere lo scope non riceve un esito, e la
+/// connessione chiusa subito dopo fa annullare a Db2 il lavoro non
+/// confermato.
 impl Drop for Db2Transaction {
     fn drop(&mut self) {
         if self.open {
@@ -250,6 +258,8 @@ impl Db2Transaction {
                 "connessione Db2 assente al rollback",
             )
         })?;
+        // Un rollback non confermato non prova che le scritture siano
+        // annullate (ERR-003, ERR-014).
         tokio::task::spawn_blocking(move || {
             connection
                 .rollback()
@@ -257,6 +267,7 @@ impl Db2Transaction {
         })
         .await
         .map_err(|_| task_error(ErrorPhase::Rollback))?
+        .map_err(DatabaseError::after_unconfirmed_rollback)
     }
 }
 

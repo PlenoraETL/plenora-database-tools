@@ -917,7 +917,10 @@ impl TransactionScope for MysqlTransaction {
                         ErrorPhase::Rollback,
                         cancellation,
                     )
-                    .await;
+                    .await
+                    // Un rollback non confermato non prova che le scritture
+                    // siano annullate (ERR-003, ERR-014).
+                    .map_err(DatabaseError::after_unconfirmed_rollback);
                 self.open = false;
                 outcome
             }

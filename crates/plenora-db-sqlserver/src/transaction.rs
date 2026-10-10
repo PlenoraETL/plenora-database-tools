@@ -701,7 +701,13 @@ impl TransactionScope for SqlServerTransaction {
                 return Ok(());
             }
             self.open = false;
-            self.session.session_mut()?.rollback(cancellation).await
+            // Un rollback non confermato non prova che le scritture siano
+            // annullate (ERR-003, ERR-014).
+            self.session
+                .session_mut()?
+                .rollback(cancellation)
+                .await
+                .map_err(DatabaseError::after_unconfirmed_rollback)
         })
     }
 }

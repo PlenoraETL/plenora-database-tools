@@ -156,10 +156,13 @@ pub(super) async fn execute(
                     "commit diagnostico PostgreSQL interrotto; stato remoto ignoto",
                 )?);
             }
-            if commit_result.is_some_and(|result| result.is_err()) {
+            if let Some(Err(error)) = &commit_result {
                 runtime.metrics.write_outcome_unknown();
+                // La categoria e la causa osservata, come nel percorso
+                // ordinario: `io` per un canale chiuso (ERR-016).
+                let category = crate::error::classify_error(ErrorPhase::Commit, error).category;
                 return Err(commit_unknown_error(
-                    ErrorCategory::Protocol,
+                    category,
                     execution_id,
                     diagnostic_input.input_total,
                     "commit diagnostico PostgreSQL senza esito osservabile",

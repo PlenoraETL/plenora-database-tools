@@ -45,6 +45,18 @@ riassumono le note di quelle release.
   - Db2: una cancellazione all'ingresso di `commit` o `rollback` esegue il
     rollback in modo esplicito e ne riporta l'esito, invece di dichiarare
     `none` e lasciarlo al distruttore;
+  - Oracle: dopo l'invio del COMMIT è un rifiuto certo solo un elenco chiuso
+    di codici (ORA-02091, transazione annullata); ORA-03113, ORA-03114,
+    ORA-25408 e ogni altro codice sono esito ignoto (`io` per i codici di
+    connessione persa);
+  - il rollback esplicito dell'API transazionale riporta un rollback non
+    confermato come tale (fase `rollback`, effetto ignoto) in tutti gli
+    adapter; anche la pulizia dopo un `set_config` fallito in PostgreSQL;
+  - PostgreSQL, percorso con diagnostica di riga: la conferma di commit
+    persa porta la categoria della causa (`io`), non sempre `protocol`;
+  - dichiarato: il distruttore di una transazione Db2 abbandonata tenta
+    ancora il rollback senza riportarlo, perché non c'è un errore da
+    costruire; la connessione chiusa fa annullare il lavoro non confermato.
   - `WriteOutcome::settle` conserva la fase reale di un esito fuori
     contratto (la fase certa della `recovery`), invece di `finalize`.
 - Dichiarato: PostgreSQL `append` con diagnostica di riga riporta una

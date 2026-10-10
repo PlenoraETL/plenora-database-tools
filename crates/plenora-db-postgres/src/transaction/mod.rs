@@ -107,11 +107,11 @@ impl PostgresTransaction {
                     .await
                     .map_err(|error| classify_error(ErrorPhase::Prepare, &error))
                 {
-                    // Best-effort rollback per non lasciare la tx orfana;
-                    // se anche il rollback fallisce, invalidiamo la sessione.
-                    let _ = inner.batch_execute("ROLLBACK").await;
+                    // Rollback per non lasciare la tx orfana; se fallisce,
+                    // invalidiamo la sessione e l'errore lo dice.
+                    let rolled_back = inner.batch_execute("ROLLBACK").await.is_ok();
                     client.invalidate();
-                    return Err(error);
+                    return Err(context_failure(error, rolled_back));
                 }
             }
         }
@@ -727,7 +727,11 @@ impl TransactionScope for PostgresTransaction {
                 .client()?
                 .batch_execute("ROLLBACK")
                 .await
-                .map_err(|error| classify_error(ErrorPhase::Rollback, &error));
+                // Un rollback non confermato non prova che le scritture siano
+                // annullate (ERR-003, ERR-014).
+                .map_err(|error| {
+                    classify_error(ErrorPhase::Rollback, &error).after_unconfirmed_rollback()
+                });
             self.open = false;
             if result.is_err() {
                 self.client.invalidate();
@@ -741,3 +745,13 @@ impl TransactionScope for PostgresTransaction {
 // documentazione della retry disposition applicata al ramo timeout.
 #[allow(dead_code)]
 const _: fn() -> RetryDisposition = || RetryDisposition::Never;
+
+/// L'errore di un `set_config` fallito dopo il BEGIN, con l'esito del
+/// rollback di pulizia.
+fn context_failure(error: DatabaseError, rolled_back: bool) -> DatabaseError {
+    if rolled_back {
+        error
+    } else {
+        error.after_unconfirmed_rollback()
+    }
+}
