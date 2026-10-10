@@ -296,6 +296,7 @@ pub async fn query_stream(
         };
         (Box::pin(rows), columns)
     };
+    let columns = without_shared_origins(columns);
     let schema = contract_schema(
         columns
             .iter()
@@ -313,4 +314,24 @@ pub async fn query_stream(
         operation_lease,
         columns_lease,
     )))
+}
+
+/// Una query che proietta la stessa colonna sorgente piu volte darebbe a
+/// quei campi lo stesso field id. Per loro l'origine non identifica il campo:
+/// l'id si deriva dal nome di uscita, che la query rende distinto (limite
+/// dichiarato: una rinomina di quei campi cambia l'id).
+fn without_shared_origins(mut columns: Vec<ColumnSpec>) -> Vec<ColumnSpec> {
+    let mut counts = std::collections::HashMap::new();
+    for source in columns.iter().filter_map(|column| column.source) {
+        *counts.entry(source).or_insert(0_usize) += 1;
+    }
+    for column in &mut columns {
+        if column
+            .source
+            .is_some_and(|source| counts.get(&source).copied().unwrap_or(0) > 1)
+        {
+            column.source = None;
+        }
+    }
+    columns
 }

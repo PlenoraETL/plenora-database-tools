@@ -52,7 +52,15 @@ pub fn inspect(path: impl AsRef<Path>) -> CliResult<Value> {
                 ("name".to_owned(), json!(field.name())),
                 ("data_type".to_owned(), json!(field.data_type().to_string())),
                 ("nullable".to_owned(), json!(field.is_nullable())),
-                ("field_id".to_owned(), json!(contract.field_id)),
+                // Un numero JSON quando sta in u64, altrimenti la stringa: il
+                // vocabolario non pone un massimo.
+                (
+                    "field_id".to_owned(),
+                    contract.field_id.map_or(Value::Null, |id| {
+                        id.parse::<u64>()
+                            .map_or_else(|_| json!(id), |number| json!(number))
+                    }),
+                ),
                 ("metadata".to_owned(), json!(field.metadata())),
             ]);
             if contract.spatial {

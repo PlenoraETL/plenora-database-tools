@@ -23,8 +23,24 @@ fn geometry_column(spatial_type: Option<&str>, dimensions: Option<&str>) -> Colu
         domain_base_type: None,
         domain_constraints: Vec::new(),
         collation: None,
+        source: None,
         kind: ColumnKind::Geometry,
     }
+}
+
+/// L'id di una colonna letta da una tabella viene da `attrelid` e `attnum`:
+/// un alias non lo cambia (ARROW-VOCABULARY §2, ARROW-INTERCHANGE §3).
+#[test]
+fn a_table_column_keeps_its_field_id_under_an_alias() {
+    let mut original = geometry_column(Some("Point"), Some("XY"));
+    original.source = Some((16_384, 2));
+    let mut alias = original.clone();
+    alias.name = "posizione".to_owned();
+    let id = |column: &ColumnSpec| column.arrow_field().metadata()[protocol::FIELD_ID].clone();
+    assert_eq!(id(&original), id(&alias));
+    let mut other = original.clone();
+    other.source = Some((16_384, 3));
+    assert_ne!(id(&original), id(&other));
 }
 
 /// ARROW-VOCABULARY §4: un campo `geoarrow.wkb` dichiara field id, encoding,

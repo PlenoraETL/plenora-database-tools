@@ -960,7 +960,11 @@ async fn execute_sql(
 
 fn validate_ewkb_contract(inspection: &EwkbInspection, plan: &WriteColumnPlan) -> Result<()> {
     let metadata = inspection.root;
-    if let Some(expected) = plan.dimensions.as_deref() {
+    if let Some(expected) = plan
+        .dimensions
+        .as_deref()
+        .filter(|value| *value != "unknown")
+    {
         if expected != metadata.dimensions_label() {
             return Err(spatial_mapping_error(
                 "dimensioni EWKB diverse dal contratto Arrow",

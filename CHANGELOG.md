@@ -22,12 +22,17 @@ riassumono le note di quelle release.
   mentre si riservano le risorse del batch usciva come `resource_limit`
   (exit 4). Ora resta della sua categoria.
 - **`plenora.field_id` su ogni campo letto**, per tutti gli adapter
-  (`protocol::contract_schema`): un id dichiarato resta, gli altri si
-  derivano dal nome del campo (FNV-1a, 31 bit), quindi lo stesso campo ha lo
-  stesso id in ogni proiezione e ordine. Id duplicati — nomi ripetuti in una
-  query, o una collisione — sono un errore `schema`. **`precision`**
-  (`float64`), dimensioni e dichiarazione dei tipi sono sempre presenti sulle
-  geometrie PostgreSQL (ARROW-VOCABULARY §2 e §4).
+  (`protocol::contract_schema`). Un id dichiarato resta, qualunque intero
+  decimale non negativo sia. PostgreSQL dichiara l'id dall'origine della
+  colonna (`attrelid`, `attnum`), quindi una rinomina o un alias non lo
+  cambiano. Per le espressioni, per una colonna proiettata più volte e per
+  gli adapter che non espongono l'origine (MySQL, SQL Server, Oracle, Db2)
+  l'id si deriva dal nome: limite dichiarato, una rinomina cambia l'id.
+  Id duplicati — anche per collisione dell'hash — sono un errore `schema`.
+  **`precision`** (`float64`), dimensioni e dichiarazione dei tipi sono
+  sempre presenti sulle geometrie PostgreSQL (ARROW-VOCABULARY §2 e §4), e
+  una geometria letta con `dimensions=unknown` (colonna senza typmod) si
+  riscrive in una colonna `geometry` generica.
 - **SRID annidati**: uno SRID dentro una geometria annidata (per esempio il
   figlio di una `GeometryCollection`) e un `data_mapping`, per `wkb` e
   `ewkb`: la verifica guarda tutto il valore, non solo la radice. La copia

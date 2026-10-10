@@ -202,6 +202,11 @@ pub(super) fn pg_type(contract: &FieldContract<'_>) -> Result<String> {
         {
             return Err(DatabaseError::invalid_plan("geometry type non valido"));
         }
+        // Dimensioni non note in lettura (colonna senza typmod): la colonna
+        // si ricrea generica, perche un typmod imporrebbe XY.
+        if contract.dimensions == Some("unknown") {
+            return Ok(base.to_owned());
+        }
         let dimensions = match contract.dimensions {
             None | Some("xy") => "",
             Some("xyz") => "Z",

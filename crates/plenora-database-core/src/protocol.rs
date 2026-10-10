@@ -16,43 +16,46 @@ pub const CONTRACT_VERSION_KEY: &str = "plenora.contract.version";
 /// # Field id
 ///
 /// Ogni campo esce con `plenora.field_id` (ARROW-VOCABULARY §2, e §4 per le
-/// geometrie). Un id gia dichiarato resta. Gli altri si derivano dal **nome**
-/// del campo, che per un database e l'identita della colonna sorgente: lo
-/// stesso campo ha lo stesso id letto da solo, in un'altra proiezione o in un
-/// altro ordine, come chiede §2 («independent of field name and ordinal
-/// position» vale fra campi diversi; per lo stesso campo invariato l'id resta
-/// quello). La posizione non entra: con la posizione, `b` valeva 1 in `[a, b]`
-/// e 0 in `[b]`.
+/// geometrie). Un id gia dichiarato resta, qualunque intero decimale non
+/// negativo sia: il vocabolario non pone un massimo. Il provider dichiara
+/// l'id quando conosce l'origine della colonna (PostgreSQL: `attrelid` e
+/// `attnum`, vedi [`origin_field_id`]), cosi una rinomina o un alias non lo
+/// cambiano. Per gli altri campi — espressioni, e gli adapter che non
+/// espongono l'origine — l'id si deriva dal nome: e un limite dichiarato,
+/// perche una rinomina di quei campi cambia l'id. La posizione non entra mai.
 ///
-/// L'id e FNV-1a a 32 bit del nome UTF-8, ridotto a 31 bit perche resti un
-/// intero non negativo anche per chi lo legge con segno.
+/// Gli id generati sono FNV-1a a 32 bit ridotto a 31 bit, interi non negativi
+/// anche per chi li legge con segno.
 ///
 /// # Errors
 ///
-/// `Schema` se un id dichiarato non e un intero a 32 bit, o se due campi
-/// hanno lo stesso id — nomi ripetuti, o una collisione dell'hash: l'unicita
-/// non si ripara rinumerando.
+/// `Schema` se un id dichiarato non e un intero decimale non negativo, o se
+/// due campi hanno lo stesso id — nomi ripetuti, collisione dell'hash, id
+/// dichiarati uguali (anche con zeri iniziali diversi): l'unicita non si
+/// ripara rinumerando.
 pub fn contract_schema(fields: Vec<Field>) -> crate::Result<SchemaRef> {
     let mut seen = std::collections::HashSet::new();
     let fields = fields
         .into_iter()
         .map(|field| {
-            let id = match field.metadata().get(FIELD_ID) {
-                Some(value) => value
-                    .parse::<u32>()
-                    .map_err(|_| field_id_error("field_id dichiarato non e un intero a 32 bit"))?,
-                None => name_field_id(field.name()),
+            let declared = field.metadata().get(FIELD_ID).cloned();
+            let id = match &declared {
+                Some(value) => canonical_field_id(value).ok_or_else(|| {
+                    field_id_error("field_id dichiarato non e un intero decimale non negativo")
+                })?,
+                None => name_field_id(field.name()).to_string(),
             };
-            if !seen.insert(id) {
+            if !seen.insert(id.clone()) {
                 return Err(field_id_error(
-                    "field_id duplicato nello schema: nomi di campo ripetuti o collisione",
+                    "field_id duplicato nello schema: nomi di campo ripetuti, id uguali o \
+                     collisione",
                 ));
             }
-            if field.metadata().contains_key(FIELD_ID) {
+            if declared.is_some() {
                 return Ok(field);
             }
             let mut metadata = field.metadata().clone();
-            metadata.insert(FIELD_ID.to_owned(), id.to_string());
+            metadata.insert(FIELD_ID.to_owned(), id);
             Ok(field.with_metadata(metadata))
         })
         .collect::<crate::Result<Vec<_>>>()?;
@@ -62,13 +65,45 @@ pub fn contract_schema(fields: Vec<Field>) -> crate::Result<SchemaRef> {
     )))
 }
 
+/// La forma canonica di un field id: cifre decimali senza zeri iniziali.
+/// `None` se il valore non e un intero decimale non negativo.
+#[must_use]
+pub fn canonical_field_id(value: &str) -> Option<String> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let trimmed = value.trim_start_matches('0');
+    Some(if trimmed.is_empty() { "0" } else { trimmed }.to_owned())
+}
+
 /// L'id di un campo che non ne dichiara uno: FNV-1a 32 bit del nome, 31 bit.
 #[must_use]
 pub fn name_field_id(name: &str) -> u32 {
+    fnv31(&[name.as_bytes()])
+}
+
+/// L'id di una colonna dalla sua origine nel database.
+///
+/// Relazione e colonna, nei byte che il provider sceglie (per PostgreSQL
+/// `attrelid` e `attnum`): stabile finche la colonna e la stessa, qualunque
+/// nome abbia.
+#[must_use]
+pub fn origin_field_id(relation: &[u8], column: &[u8]) -> u32 {
+    fnv31(&[b"origin", relation, column])
+}
+
+/// FNV-1a 32 bit su parti separate, ridotto a 31 bit.
+fn fnv31(parts: &[&[u8]]) -> u32 {
     let mut hash: u32 = 0x811c_9dc5;
-    for byte in name.bytes() {
-        hash ^= u32::from(byte);
-        hash = hash.wrapping_mul(0x0100_0193);
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            hash ^= 0xff;
+            hash = hash.wrapping_mul(0x0100_0193);
+        }
+        for byte in *part {
+            hash ^= u32::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0193);
+        }
     }
     hash & 0x7fff_ffff
 }
