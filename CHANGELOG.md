@@ -30,6 +30,17 @@ riassumono le note di quelle release.
   ignoto, la categoria dell'errore quando c'è, 6 (`execution`) per una
   verifica non superata.
 
+- **Il fork di `oracle-rs` vale anche per i consumatori.** Entrava con
+  `[patch.crates-io]`, che Cargo applica solo dal workspace radice: chi usava
+  database-tools come dipendenza (path o git) riceveva `oracle-rs` 0.1.7 da
+  crates.io, senza la rinegoziazione TCPS, e senza errore. Ora è una
+  dipendenza `path` con nome proprio (`plenora-oracle-rs`, libreria
+  `oracle_rs`), e `plenora-db-oracle` legge in compilazione un marcatore che
+  esiste solo nel fork. `scripts/check_consumer_fork.py` costruisce un
+  consumatore esterno e lo verifica, in CI su Linux e Windows.
+- **`thiserror` =2.0.21**, come data-tools2: con `=2.0.20` un grafo che usa
+  entrambe le librerie non si risolveva.
+
 Chi leggeva `status` dal risultato di una scrittura, o l'exit 1, deve leggere
 ora l'envelope d'errore e i codici di CLI-2.0.
 

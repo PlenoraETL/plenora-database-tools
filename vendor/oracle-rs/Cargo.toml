@@ -12,7 +12,10 @@
 [package]
 edition = "2021"
 rust-version = "1.70"
-name = "oracle-rs"
+# Nome proprio del fork Plenora: una dipendenza `path` con questo nome vale
+# anche per chi usa database-tools come dipendenza, mentre un
+# `[patch.crates-io]` su `oracle-rs` no. La libreria resta `oracle_rs`.
+name = "plenora-oracle-rs"
 version = "0.1.7"
 authors = ["Stian Grytøyr"]
 build = false

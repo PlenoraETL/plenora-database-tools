@@ -132,6 +132,14 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
         [sys.executable, "scripts/test_check_postgres_reference.py"],
     ),
     (
+        "test_check_consumer_fork.py",
+        [sys.executable, "scripts/test_check_consumer_fork.py"],
+    ),
+    (
+        "check_consumer_fork.py",
+        [sys.executable, "scripts/check_consumer_fork.py", "--build"],
+    ),
+    (
         "test_check_postgres_hardening.py",
         [sys.executable, "scripts/test_check_postgres_hardening.py"],
     ),

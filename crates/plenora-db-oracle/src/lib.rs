@@ -3,6 +3,12 @@
 //! Non richiede Oracle Instant Client. Ogni capability pubblica e aperta solo
 //! dalla relativa prova live del repository; quelle non misurate restano chiuse.
 
+// Il driver deve essere il fork in `vendor/oracle-rs`: il marcatore esiste
+// solo li. Se un grafo risolvesse `oracle_rs` sull'upstream, qui la
+// compilazione si ferma invece di consegnare un driver che non esegue la
+// rinegoziazione TCPS.
+const _: &str = oracle_rs::PLENORA_FORK;
+
 mod catalog;
 mod config;
 mod connection;

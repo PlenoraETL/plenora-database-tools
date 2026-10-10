@@ -48,7 +48,7 @@ jobs:
           # Testkit, binding Python e moduli #[cfg(test)] hanno una propria
           # superficie: contarli nel prodotto renderebbe il denominatore
           # dipendente dalla dimensione dei test anziche dal runtime.
-          # `vendor/` (oracle-rs, via [patch.crates-io]) entra nel binario ma
+          # `vendor/` (il fork di oracle-rs, dipendenza path) entra nel binario ma
           # non e' prodotto: le esclusioni automatiche non lo coprono.
           RUST_COVERAGE_IGNORE: '(^|/)(vendor/|crates/(plenora-database-py|plenora-database-testkit)/|(test_suite|evidence|mariadb_evidence|session_evidence)\.rs$)'
         run: |
@@ -104,7 +104,7 @@ jobs:
       - name: Costruisce la wheel instrumentata e misura SDK e binding
         shell: bash
         env:
-          # Le dipendenze vendorizzate ([patch.crates-io]) entrano nella
+          # Le dipendenze vendorizzate (il fork di oracle-rs) entrano nella
           # libreria nativa ma non sono il binding.
           BINDING_COVERAGE_IGNORE: '(^|/)vendor/'
         run: |
