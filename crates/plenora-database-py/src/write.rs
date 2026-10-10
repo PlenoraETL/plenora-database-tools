@@ -370,10 +370,14 @@ pub(crate) fn outcome_into_py<'py>(
 
 fn unsettled_into_py_err(py: Python<'_>, unsettled: &UnsettledWrite) -> PyErr {
     let error = to_py_err(unsettled.error().clone());
+    // Un documento fuori contratto non si inoltra: restano gli assi.
+    let Some(outcome) = unsettled.outcome() else {
+        return error;
+    };
     let details = PyDict::new(py);
     // Se l'esito non si converte resta comunque l'eccezione con i suoi assi:
     // perdere il dettaglio e meno grave che perdere l'errore.
-    if let Ok(outcome) = outcome_to_pydict(py, unsettled.outcome()) {
+    if let Ok(outcome) = outcome_to_pydict(py, outcome) {
         let _ = details.set_item("write_outcome", outcome);
     }
     let _ = error.value(py).setattr("details", details);

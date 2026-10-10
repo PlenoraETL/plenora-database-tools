@@ -400,7 +400,7 @@ impl CliError {
 impl From<Box<UnsettledWrite>> for CliError {
     fn from(unsettled: Box<UnsettledWrite>) -> Self {
         let mut details = serde_json::Map::new();
-        if let Ok(outcome) = serde_json::to_value(unsettled.outcome()) {
+        if let Some(Ok(outcome)) = unsettled.outcome().map(serde_json::to_value) {
             details.insert("write_outcome".to_owned(), outcome);
         }
         Self::Detailed {

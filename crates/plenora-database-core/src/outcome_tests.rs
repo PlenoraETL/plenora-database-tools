@@ -226,7 +226,7 @@ fn an_unknown_outcome_settles_as_the_contract_commit_error() {
         error.execution_id.as_deref(),
         Some(unknown.execution_id.as_str())
     );
-    assert_eq!(unsettled.outcome(), &unknown);
+    assert_eq!(unsettled.outcome(), Some(&unknown));
 
     let document = unsettled.public_document().expect("document");
     assert_eq!(document["remote_effect"], "unknown");
@@ -248,6 +248,10 @@ fn partial_and_rolled_back_outcomes_are_not_success_either() {
 
     let mut rolled_back = example("committed");
     rolled_back.status = WriteStatus::RolledBack;
+    rolled_back.rows.confirmed = 0;
+    rolled_back.rows.inserted = None;
+    rolled_back.rows.updated = None;
+    rolled_back.rows.deleted = None;
     let error = rolled_back
         .settle()
         .expect_err("rolled back")
@@ -255,4 +259,25 @@ fn partial_and_rolled_back_outcomes_are_not_success_either() {
         .clone();
     assert_eq!(error.remote_effect, RemoteEffect::RolledBack);
     assert_eq!(error.retry, RetryDisposition::Never);
+}
+
+/// Un documento che il contratto rifiuta non e un successo, e non si inoltra:
+/// un `committed` con conteggi incoerenti, o un esito ignoto che autorizza il
+/// retry automatico, diventano un errore senza `details.write_outcome`.
+#[test]
+fn an_unconsumable_outcome_never_settles_and_is_not_forwarded() {
+    let mut committed = example("committed");
+    committed.rows.confirmed = committed.rows.received + 1;
+    let unsettled = committed.settle().expect_err("conteggi incoerenti");
+    assert_eq!(unsettled.error().remote_effect, RemoteEffect::Unknown);
+    assert!(unsettled.outcome().is_none());
+
+    let auto_retry: WriteOutcome = serde_json::from_str(include_str!(
+        "../../../contracts/v2/examples/unconsumable-outcome-unknown-auto-retry.json"
+    ))
+    .expect("example");
+    let unsettled = auto_retry.settle().expect_err("retry automatico");
+    assert_eq!(unsettled.error().retry, RetryDisposition::RequiresRecovery);
+    let document = unsettled.public_document().expect("document");
+    assert!(document.get("details").is_none(), "{document}");
 }

@@ -200,10 +200,34 @@ impl WriteOutcome {
     /// `details.write_outcome` dell'errore pubblico, dove `recovery` dice al
     /// chiamante che cosa verificare prima di un nuovo tentativo.
     ///
+    /// Un documento che [`Self::validate`] rifiuta non e mai un successo e
+    /// non si inoltra: un `committed` con conteggi incoerenti, o un esito
+    /// ignoto che autorizza il retry automatico, diventano un errore con
+    /// effetto remoto ignoto e senza il documento, che contraddirebbe gli
+    /// assi.
+    ///
     /// # Errors
     ///
-    /// [`UnsettledWrite`] per ogni stato diverso da `committed`.
+    /// [`UnsettledWrite`] per ogni stato diverso da `committed` e per ogni
+    /// documento fuori contratto.
     pub fn settle(self) -> std::result::Result<Self, Box<UnsettledWrite>> {
+        if self.validate().is_err() {
+            return Err(Box::new(UnsettledWrite {
+                error: DatabaseError {
+                    category: ErrorCategory::Internal,
+                    phase: ErrorPhase::Finalize,
+                    remote_effect: RemoteEffect::Unknown,
+                    retry: RetryDisposition::RequiresRecovery,
+                    provider: Some(self.provider),
+                    execution_id: None,
+                    message: "esito di scrittura fuori contratto: verificare lo stato remoto \
+                              prima di ogni nuovo tentativo"
+                        .to_owned(),
+                    diagnostics: None,
+                },
+                outcome: None,
+            }));
+        }
         let (category, phase, retry, message) = match self.status {
             WriteStatus::Committed => return Ok(self),
             // Gli stessi assi del vettore `database-write-error` dei contratti
@@ -243,7 +267,7 @@ impl WriteOutcome {
         };
         Err(Box::new(UnsettledWrite {
             error,
-            outcome: self,
+            outcome: Some(self),
         }))
     }
 }
@@ -256,7 +280,7 @@ impl WriteOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsettledWrite {
     error: DatabaseError,
-    outcome: WriteOutcome,
+    outcome: Option<WriteOutcome>,
 }
 
 impl UnsettledWrite {
@@ -266,13 +290,15 @@ impl UnsettledWrite {
         &self.error
     }
 
-    /// Il documento `write-outcome` restituito dal provider.
+    /// Il documento `write-outcome` restituito dal provider; `None` se il
+    /// contratto lo rifiuta.
     #[must_use]
-    pub const fn outcome(&self) -> &WriteOutcome {
-        &self.outcome
+    pub const fn outcome(&self) -> Option<&WriteOutcome> {
+        self.outcome.as_ref()
     }
 
-    /// L'errore `plenora-error-v1` con l'esito in `details.write_outcome`.
+    /// L'errore `plenora-error-v1` con l'esito, se c'e, in
+    /// `details.write_outcome`.
     ///
     /// `details` e l'unico oggetto aperto dello schema comune. L'esito non
     /// porta valori di riga: identificatore d'esecuzione, conteggi e, nella
@@ -284,7 +310,10 @@ impl UnsettledWrite {
     /// Se l'errore o l'esito non si serializzano.
     pub fn public_document(&self) -> serde_json::Result<serde_json::Value> {
         let mut document = serde_json::to_value(self.error.public_projection())?;
-        let outcome = serde_json::to_value(&self.outcome)?;
+        let Some(outcome) = &self.outcome else {
+            return Ok(document);
+        };
+        let outcome = serde_json::to_value(outcome)?;
         if let serde_json::Value::Object(fields) = &mut document {
             let details = fields
                 .entry("details")
