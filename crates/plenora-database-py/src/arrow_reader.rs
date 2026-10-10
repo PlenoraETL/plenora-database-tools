@@ -132,6 +132,34 @@ impl BatchReader {
         Ok(PyBytes::new(py, &buf))
     }
 
+    /// Arrow PyCapsule Interface: lo stream C dei batch ancora da leggere.
+    ///
+    /// Qualunque consumatore di `__arrow_c_stream__` — `pyarrow`,
+    /// `plenora_data.run`, polars, DuckDB — legge il reader direttamente,
+    /// senza passare dai `bytes`. Il lettore resta lazy: ogni batch si legge
+    /// dal database quando il consumatore lo chiede. Consuma il reader come
+    /// l'iterazione.
+    ///
+    /// Ogni batch attraversa ancora l'IPC (una copia): lo zero-copy dalla
+    /// memoria Rust richiederebbe la C Data Interface lato Rust, che il
+    /// binding non porta.
+    #[pyo3(signature = (requested_schema=None))]
+    fn __arrow_c_stream__<'py>(
+        slf: Bound<'py, Self>,
+        requested_schema: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
+        py.import("plenora_database._arrow_io")?
+            .call_method1("c_stream_from_reader", (slf, requested_schema))
+    }
+
+    /// I batch ancora da leggere come un'unica `pyarrow.Table`.
+    fn read_all(slf: Bound<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let py = slf.py();
+        py.import("plenora_database._arrow_io")?
+            .call_method1("table_from_reader", (slf,))
+    }
+
     fn __repr__(&self) -> String {
         "<BatchReader>".to_owned()
     }

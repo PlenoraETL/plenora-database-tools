@@ -6,6 +6,25 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## Non rilasciato
+
+### Interoperabilità
+
+- **`write` della CLI accetta l'Arrow IPC stream**, oltre al file, come
+  dichiara il catalogo. Il formato si riconosce dai primi byte (`ARROW1` per
+  il file, il marcatore di continuazione per lo stream); un inizio diverso,
+  compreso lo stream legacy senza marcatore, è un errore esplicito, e uno
+  stream senza marcatore di fine è rifiutato come troncato. Vale anche per
+  `inspect-dataset`, `database-write-ipc`, `bulk-write` e
+  `postgres-write-ipc`.
+- **SDK Python: Arrow PyCapsule Interface.** `copy_from`/`acopy_from`
+  accettano qualunque oggetto con `__arrow_c_stream__`; il `BatchReader` di
+  `Session.read` lo espone, con `read_all()`. Una tabella letta dal database
+  entra in `plenora_data.run` e la sua uscita torna in `copy_from` senza
+  conversioni (`python/interop/test_plenora_data.py`).
+- **`pyarrow>=25,<26`** è ora una dipendenza dichiarata dello SDK, nella
+  stessa finestra di `plenora-data`.
+
 ## 7.0.0 — 2026-10-06
 
 Major: alcuni documenti di controllo prima accettati ora vengono rifiutati, e

@@ -688,8 +688,17 @@ outcome = await s.acopy_from(
 )
 ```
 
-`source` accetta `pyarrow.Table`, `pyarrow.RecordBatch`, iterable di batch
-o `bytes` (Arrow IPC stream self-contained, per zero-copy da altri produttori).
+`source` accetta `pyarrow.Table`, `pyarrow.RecordBatch`, iterable di batch,
+`bytes` (Arrow IPC stream self-contained) o qualunque oggetto con
+`__arrow_c_stream__` (Arrow PyCapsule Interface): un `pyarrow.RecordBatchReader`,
+il `BatchReader` di `Session.read`, le tabelle di `plenora_data`.
+
+Il `BatchReader` di `Session.read` espone a sua volta `__arrow_c_stream__` e
+`read_all()` (una `pyarrow.Table`): `plenora_data.run` e
+`pyarrow.RecordBatchReader.from_stream` lo leggono senza passare dai `bytes`.
+Il lettore asincrono (`aread`) non lo espone: uno stream C e sincrono.
+`pyarrow` e una dipendenza dello SDK, nella finestra `>=25,<26` di
+`plenora-data`.
 
 Mode:
 - `append` (**default**) — INSERT bulk via COPY nel target esistente

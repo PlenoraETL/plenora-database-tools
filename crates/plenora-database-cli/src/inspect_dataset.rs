@@ -1,12 +1,11 @@
 use crate::CliResult;
-use arrow_ipc::reader::FileReader;
 use plenora_database_core::arrow::array::{Array, BinaryArray, LargeBinaryArray, RecordBatch};
 use plenora_database_core::arrow::schema::{DataType, SchemaRef};
 use plenora_database_core::ewkb::{inspect_ewkb_detailed, EwkbInspection};
 use plenora_database_core::field_contract::{validate_schema_contract, FieldContract};
 use plenora_database_core::protocol;
 use serde_json::{json, Map, Value};
-use std::fs::{self, File};
+use std::fs;
 use std::path::Path;
 
 const MAX_IPC_FILE_BYTES: u64 = 512 * 1024 * 1024;
@@ -27,10 +26,13 @@ pub fn inspect(path: impl AsRef<Path>) -> CliResult<Value> {
     if file_size == 0 || file_size > MAX_IPC_FILE_BYTES {
         return Err("dataset Arrow IPC vuoto o oltre il limite di 512 MiB".into());
     }
-    let file = File::open(path).map_err(|_| "dataset Arrow IPC non apribile".to_owned())?;
-    let reader = FileReader::try_new(file, None)
-        .map_err(|_| "file Arrow IPC non valido o non supportato".to_owned())?;
-    let schema = reader.schema();
+    // File o stream, riconosciuto dai primi byte come per l'input di `write`.
+    let path_text = path
+        .to_str()
+        .ok_or_else(|| "percorso del dataset non UTF-8".to_owned())?;
+    let input = crate::ipc_input::open_batches(path_text)?;
+    let schema = input.schema;
+    let reader = input.batches;
     if schema.fields().len() > MAX_COLUMNS {
         return Err("schema Arrow IPC oltre il limite di colonne".into());
     }

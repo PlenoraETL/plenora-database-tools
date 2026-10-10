@@ -134,6 +134,51 @@ def _narrowed_batch(
     )
 
 
+def _require_pyarrow() -> Any:
+    try:
+        import pyarrow as pa
+        import pyarrow.ipc  # noqa: F401  (`pa.ipc` si carica solo cosi)
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError(
+            "l'interfaccia Arrow richiede pyarrow installato: `pip install pyarrow`"
+        ) from exc
+    return pa
+
+
+def _record_batch_reader(reader: Any) -> Any:
+    """Un `pyarrow.RecordBatchReader` lazy sopra un `BatchReader` nativo.
+
+    Lo schema viene dal reader, non dal primo batch: un risultato vuoto ha
+    comunque il suo schema. Ogni chunk e uno stream IPC autonomo con un solo
+    batch; uno schema diverso da quello dichiarato e un errore, non un batch
+    accettato.
+    """
+
+    pa = _require_pyarrow()
+    schema = pa.ipc.open_stream(pa.py_buffer(reader.schema_bytes())).schema
+
+    def batches() -> Iterator[Any]:
+        for chunk in reader:
+            stream = pa.ipc.open_stream(pa.py_buffer(chunk))
+            if not stream.schema.equals(schema, check_metadata=True):
+                raise ValueError("batch con schema diverso da quello del reader")
+            yield from stream
+
+    return pa.RecordBatchReader.from_batches(schema, batches())
+
+
+def c_stream_from_reader(reader: Any, requested_schema: Any = None) -> Any:
+    """`__arrow_c_stream__` del `BatchReader` nativo (PyCapsule Interface)."""
+
+    return _record_batch_reader(reader).__arrow_c_stream__(requested_schema)
+
+
+def table_from_reader(reader: Any) -> Any:
+    """Tutti i batch ancora da leggere come `pyarrow.Table`."""
+
+    return _record_batch_reader(reader).read_all()
+
+
 def _to_ipc_bytes(source: Any) -> bytes:
     """Serializza `source` in bytes Arrow IPC stream self-contained.
 
@@ -144,6 +189,9 @@ def _to_ipc_bytes(source: Any) -> bytes:
       - iterabile di `pyarrow.RecordBatch` (tutti con stesso schema)
       - `pandas.DataFrame` — convertito via `pyarrow.Table.from_pandas`
       - `list[dict]` — convertito via `pyarrow.Table.from_pylist`
+      - qualunque oggetto con `__arrow_c_stream__` (Arrow PyCapsule
+        Interface): `pyarrow.RecordBatchReader`, il `BatchReader` di
+        `Session.read`, tabelle di altre librerie
 
     Raises:
       - `TypeError` se il tipo non è supportato
@@ -176,6 +224,15 @@ def _to_ipc_bytes(source: Any) -> bytes:
     elif isinstance(source, pa.RecordBatch):
         schema = source.schema
         batches = [source]
+    elif hasattr(source, "__arrow_c_stream__"):
+        # PyCapsule Interface: lo schema e quello dichiarato dal produttore,
+        # anche per uno stream vuoto.
+        try:
+            reader = pa.RecordBatchReader.from_stream(source)
+        except (pa.ArrowException, ValueError, TypeError):
+            raise ValueError("copy_from: stream Arrow non leggibile") from None
+        schema = reader.schema
+        batches = reader
     elif isinstance(source, list):
         if not source:
             raise ValueError("copy_from: lista vuota")
