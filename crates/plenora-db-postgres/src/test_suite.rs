@@ -267,7 +267,8 @@ mod tests {
 
     #[test]
     fn postgres_arrow_schema_declares_contract_version() {
-        let schema = contract_schema(vec![Field::new("value", DataType::Int64, false)]);
+        let schema =
+            contract_schema(vec![Field::new("value", DataType::Int64, false)]).expect("schema");
         assert_eq!(
             schema
                 .metadata()
@@ -2585,7 +2586,8 @@ mod tests {
         let schema = contract_schema(vec![
             Field::new("parcel_id", DataType::Int64, false),
             Field::new("area_m2", DataType::Int64, false),
-        ]);
+        ])
+        .expect("schema");
         let operation = WriteOperation {
             target: ObjectRef {
                 catalog: None,
@@ -2701,7 +2703,8 @@ mod tests {
         let schema = contract_schema(vec![
             Field::new("parcel_id", DataType::Int64, false),
             Field::new("area_m2", DataType::Int64, false),
-        ]);
+        ])
+        .expect("schema");
         let operation = WriteOperation {
             target: ObjectRef {
                 catalog: None,
@@ -2792,7 +2795,8 @@ mod tests {
         let schema = contract_schema(vec![
             Field::new("parcel_id", DataType::Int64, false),
             Field::new("area_m2", DataType::Int64, false),
-        ]);
+        ])
+        .expect("schema");
         let operation = WriteOperation {
             target: ObjectRef {
                 catalog: None,

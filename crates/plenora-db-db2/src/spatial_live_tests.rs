@@ -135,6 +135,7 @@ fn write_schema(dimensions: &str) -> SchemaRef {
             (protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned()),
         ])),
     ])
+    .expect("schema")
 }
 
 struct OneBatch {

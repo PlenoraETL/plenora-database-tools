@@ -348,7 +348,7 @@ impl OracleReadPlan {
                 .iter()
                 .map(OracleColumnSpec::arrow_field)
                 .collect::<Result<Vec<_>>>()?,
-        );
+        )?;
         Ok(Self {
             columns,
             schema,

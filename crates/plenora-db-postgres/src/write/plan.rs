@@ -56,6 +56,14 @@ impl WriteColumnPlan {
         })
     }
 
+    /// Un campo `wkb` con SRID dichiarato: i suoi valori si riscrivono in
+    /// EWKB prima di arrivare a `PostGIS`.
+    pub(super) fn needs_srid_stamp(&self) -> bool {
+        self.is_spatial()
+            && self.encoding.as_deref() == Some("wkb")
+            && self.srid.is_some_and(|srid| srid != 0)
+    }
+
     pub(super) const fn is_spatial(&self) -> bool {
         matches!(
             self.semantics,

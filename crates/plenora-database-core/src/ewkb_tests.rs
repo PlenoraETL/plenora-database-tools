@@ -105,7 +105,7 @@ fn iso_wkb_gets_the_declared_srid_in_its_byte_order() {
     let mut little = vec![1_u8];
     little.extend_from_slice(&1_u32.to_le_bytes());
     little.extend_from_slice(&[0_u8; 16]);
-    let stamped = with_root_srid(&little, 4326).expect("little endian");
+    let stamped = with_root_srid(&little, 4326, 8).expect("little endian");
     let inspection = inspect_ewkb_detailed(&stamped, 10, 1).expect("EWKB");
     assert_eq!(inspection.root.srid, Some(4326));
     assert_eq!(stamped.len(), little.len() + 4);
@@ -113,7 +113,7 @@ fn iso_wkb_gets_the_declared_srid_in_its_byte_order() {
     let mut big = vec![0_u8];
     big.extend_from_slice(&1_u32.to_be_bytes());
     big.extend_from_slice(&[0_u8; 16]);
-    let stamped = with_root_srid(&big, 3857).expect("big endian");
+    let stamped = with_root_srid(&big, 3857, 8).expect("big endian");
     assert_eq!(
         inspect_ewkb_detailed(&stamped, 10, 1)
             .expect("EWKB")
@@ -122,6 +122,9 @@ fn iso_wkb_gets_the_declared_srid_in_its_byte_order() {
         Some(3857)
     );
 
-    assert!(with_root_srid(&stamped, 4326).is_err(), "SRID gia presente");
-    assert!(with_root_srid(&[1, 1, 0], 4326).is_err(), "troncato");
+    assert!(
+        with_root_srid(&stamped, 4326, 8).is_err(),
+        "SRID gia presente"
+    );
+    assert!(with_root_srid(&[1, 1, 0], 4326, 8).is_err(), "troncato");
 }

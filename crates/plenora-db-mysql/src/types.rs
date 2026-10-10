@@ -258,7 +258,7 @@ impl MysqlReadPlan {
                 .iter()
                 .map(|column| column.arrow_field_with_profile(profile))
                 .collect(),
-        );
+        )?;
         Ok(Self {
             columns,
             crs_checks,
@@ -339,7 +339,7 @@ impl MysqlReadPlan {
                 .iter()
                 .map(|column| column.arrow_field_with_profile(profile))
                 .collect(),
-        );
+        )?;
         Ok(Self {
             columns,
             crs_checks: plan.crs_checks.clone(),

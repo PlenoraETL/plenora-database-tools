@@ -287,8 +287,16 @@ pub fn inspect_ewkb_detailed(
 /// # Errors
 ///
 /// `DataMapping` per un valore troncato, un byte order non valido o un SRID
-/// gia presente: un valore `wkb` che ne porta uno contraddice il campo.
-pub fn with_root_srid(wkb: &[u8], srid: u32) -> Result<Vec<u8>> {
+/// gia presente in qualunque geometria del valore, anche annidata: un valore
+/// `wkb` che ne porta uno contraddice il campo, e scriverne solo la radice
+/// lascerebbe il figlio con il suo.
+pub fn with_root_srid(wkb: &[u8], srid: u32, max_depth: u64) -> Result<Vec<u8>> {
+    let (inspection, _) = scan_ewkb(wkb, u64::MAX, max_depth, DimensionMode::Strict)?;
+    if inspection.has_any_embedded_srid {
+        return Err(mapping_error(
+            "SRID incorporato in un valore dichiarato wkb",
+        ));
+    }
     let little_endian = match wkb.first() {
         Some(0) => false,
         Some(1) => true,

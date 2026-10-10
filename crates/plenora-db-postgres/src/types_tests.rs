@@ -36,7 +36,7 @@ fn a_read_geometry_field_declares_every_required_key() {
         geometry_column(Some("Point"), Some("XY")),
         geometry_column(None, None),
     ] {
-        let schema = contract_schema(vec![column.arrow_field()]);
+        let schema = contract_schema(vec![column.arrow_field()]).expect("schema");
         validate_schema_contract(&schema).expect("schema conforme");
         let field = schema.field(0);
         let metadata = field.metadata();
