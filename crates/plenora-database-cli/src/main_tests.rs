@@ -948,3 +948,39 @@ fn canonical_target_applies_the_secret_environment_pattern() {
     );
     assert!(!error.database_error().message.contains("secret@host"));
 }
+
+/// L'uscita di `query --output` e uno stream Arrow IPC: stessi schema,
+/// metadati e righe del file di `read`, chiuso dal marcatore di fine.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn ipc_stream_materialization_is_a_complete_arrow_stream() {
+    let directory = TestDirectory::new("stream");
+    let output = directory.output();
+    let mut stream = stream_with_outcomes(VecDeque::new());
+    let batch = test_batch(stream.schema());
+    stream.outcomes = VecDeque::from([Ok(Some(batch)), Ok(None)]);
+
+    let report = write_stream_to_ipc_as(
+        &output,
+        &mut stream,
+        &CancellationToken::new(),
+        IpcOutput::Stream,
+    )
+    .await
+    .expect("materialize IPC stream");
+
+    assert_eq!(report["format"], "arrow_ipc_stream");
+    assert_eq!(report["rows"], 2);
+    let bytes = std::fs::read(&output).expect("stream");
+    assert!(bytes.starts_with(&[0xFF; 4]), "marcatore di continuazione");
+    assert!(
+        bytes.ends_with(&[0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0]),
+        "marcatore di fine"
+    );
+    let reader = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
+        .expect("read IPC stream");
+    assert_eq!(reader.schema().metadata()["plenora.contract.version"], "1");
+    let rows: usize = reader.map(|batch| batch.expect("batch").num_rows()).sum();
+    assert_eq!(rows, 2);
+    assert!(partial_artifacts(&output).is_empty());
+}

@@ -6,6 +6,17 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## Non rilasciato
+
+### Interoperabilità
+
+- **`query --output OUTPUT.arrows`**: il risultato di `query` come Arrow IPC
+  stream, il content type che il catalogo dichiara per `database.query`.
+  Pubblicazione atomica come per `read` (file temporaneo e hard link, mai su
+  un output esistente); il risultato riporta `format: arrow_ipc_stream`,
+  righe e batch. Senza `--output` resta il riepilogo JSON. Il binding runtime
+  continua a restituire il riepilogo (vedi `docs/runtime.md`).
+
 ## 7.0.0 — 2026-10-06
 
 Major: alcuni documenti di controllo prima accettati ora vengono rifiutati, e

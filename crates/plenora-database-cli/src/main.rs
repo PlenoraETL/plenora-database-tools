@@ -73,7 +73,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 
-use arrow_ipc::writer::FileWriter;
+use arrow_ipc::writer::{FileWriter, StreamWriter};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -701,15 +701,29 @@ async fn canonical_write(args: &mut impl Iterator<Item = String>) -> CliResult<(
     database_write_ipc(&mut forwarded.into_iter()).await
 }
 
+/// `query --input REQUEST.json [--output OUTPUT.arrows]`.
+///
+/// Senza `--output` il risultato e il riepilogo JSON; con `--output` le righe
+/// vanno in un Arrow IPC **stream**, il content type che il catalogo dichiara
+/// per `database.query`, e il risultato ne riporta righe e batch.
 async fn canonical_query(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let request: OperationRequest = canonical_request(args)?;
-    no_extra_arguments(args)?;
+    let mut args = args.peekable();
+    let output = if args.next_if(|value| value == "--output").is_some() {
+        Some(
+            args.next()
+                .ok_or_else(|| CliError::from("--output richiede un percorso"))?,
+        )
+    } else {
+        None
+    };
+    no_extra_arguments(&mut args)?;
     set_public_command("query", "plenora-database-query-result-v1");
     let target = request.target();
     let operation = required_value(request.operation_path, "operation_path")?;
     let parameters = request.parameters_path.unwrap_or_else(|| "-".to_owned());
     let forwarded = canonical_operation_arguments(target, [operation, parameters])?;
-    database_query_summary(&mut forwarded.into_iter()).await
+    database_query(&mut forwarded.into_iter(), output).await
 }
 
 async fn canonical_execute(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -1208,6 +1222,15 @@ async fn consume_summary(
 
 /// Esegue un `QueryOperation` serializzato e rende uno summary bounded.
 async fn database_query_summary(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
+    database_query(args, None).await
+}
+
+/// Esegue un `QueryOperation`: riepilogo JSON, oppure Arrow IPC stream su
+/// `output`.
+async fn database_query(
+    args: &mut impl Iterator<Item = String>,
+    output: Option<String>,
+) -> CliResult<()> {
     let target = ProviderTarget::parse(args)?;
     let kind = target.kind;
     let query_path = args
@@ -1239,6 +1262,20 @@ async fn database_query_summary(args: &mut impl Iterator<Item = String>) -> CliR
             &cancellation,
         )
         .await?;
+    if let Some(path) = output {
+        let mut report = write_stream_to_ipc_as(
+            Path::new(&path),
+            stream.as_mut(),
+            &cancellation,
+            IpcOutput::Stream,
+        )
+        .await?;
+        let document = report
+            .as_object_mut()
+            .ok_or_else(|| CliError::from("report Arrow IPC non valido"))?;
+        document.insert("provider".to_owned(), json!(kind));
+        return print_json(&report);
+    }
     consume_summary(kind, stream.as_mut(), &cancellation).await
 }
 
@@ -1718,10 +1755,39 @@ fn parse_positive_u64(option: &str, value: &str) -> CliResult<u64> {
     Ok(parsed)
 }
 
+/// Il formato Arrow IPC di un artifact pubblicato dalla CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IpcOutput {
+    /// `application/vnd.apache.arrow.file`, l'uscita di `read`.
+    File,
+    /// `application/vnd.apache.arrow.stream`, l'uscita di `query`.
+    Stream,
+}
+
+impl IpcOutput {
+    const fn report_name(self) -> &'static str {
+        match self {
+            Self::File => "arrow_ipc_file",
+            Self::Stream => "arrow_ipc_stream",
+        }
+    }
+}
+
 async fn write_stream_to_ipc(
     output: &Path,
     stream: &mut dyn BatchStream,
     cancellation: &CancellationToken,
+) -> CliResult<serde_json::Value> {
+    write_stream_to_ipc_as(output, stream, cancellation, IpcOutput::File).await
+}
+
+/// Scrive lo stream in un artifact nuovo, via file temporaneo e hard link:
+/// l'output o c'e intero o non c'e.
+async fn write_stream_to_ipc_as(
+    output: &Path,
+    stream: &mut dyn BatchStream,
+    cancellation: &CancellationToken,
+    format: IpcOutput,
 ) -> CliResult<serde_json::Value> {
     if output.exists() {
         return Err(local_artifact_error(
@@ -1739,7 +1805,7 @@ async fn write_stream_to_ipc(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| CliError::from("percorso output Arrow IPC non valido"))?;
     let (temporary, mut file) = create_ipc_temporary(parent, name)?;
-    let result = write_ipc_batches(&mut file, stream, cancellation).await;
+    let result = write_ipc_batches(&mut file, stream, cancellation, format).await;
     let (batches, rows) = match result {
         Ok(counts) => counts,
         Err(mut error) => {
@@ -1810,7 +1876,7 @@ async fn write_stream_to_ipc(
     Ok(json!({
         "schema_version": 1,
         "status": "materialized",
-        "format": "arrow_ipc_file",
+        "format": format.report_name(),
         "batches": batches,
         "rows": rows,
         "durability": durability,
@@ -1897,13 +1963,45 @@ fn create_ipc_temporary(parent: &Path, name: &str) -> CliResult<(PathBuf, File)>
     ))
 }
 
+/// Il writer del formato scelto: file e stream hanno la stessa forma d'uso.
+enum IpcWriter<W: std::io::Write> {
+    File(FileWriter<W>),
+    Stream(StreamWriter<W>),
+}
+
+impl<W: std::io::Write> IpcWriter<W> {
+    fn write(
+        &mut self,
+        batch: &plenora_database_core::arrow::RecordBatch,
+    ) -> Result<(), plenora_database_core::arrow::ArrowError> {
+        match self {
+            Self::File(writer) => writer.write(batch),
+            Self::Stream(writer) => writer.write(batch),
+        }
+    }
+
+    fn finish(&mut self) -> Result<(), plenora_database_core::arrow::ArrowError> {
+        match self {
+            Self::File(writer) => writer.finish(),
+            Self::Stream(writer) => writer.finish(),
+        }
+    }
+}
+
 async fn write_ipc_batches(
     file: &mut File,
     stream: &mut dyn BatchStream,
     cancellation: &CancellationToken,
+    format: IpcOutput,
 ) -> CliResult<(u64, u64)> {
     let schema = stream.schema();
-    let mut writer = FileWriter::try_new_buffered(&mut *file, &schema).map_err(|_| {
+    let writer = match format {
+        IpcOutput::File => FileWriter::try_new_buffered(&mut *file, &schema).map(IpcWriter::File),
+        IpcOutput::Stream => {
+            StreamWriter::try_new_buffered(&mut *file, &schema).map(IpcWriter::Stream)
+        }
+    };
+    let mut writer = writer.map_err(|_| {
         local_artifact_error(
             ErrorCategory::Io,
             ErrorPhase::Write,
@@ -3002,7 +3100,7 @@ fn common_usage() -> String {
         "  describe-object --input REQUEST.json --format json".to_owned(),
         "  read --input REQUEST.json --output OUTPUT.arrow --format json".to_owned(),
         "  write --input REQUEST.json --data INPUT.arrow --format json".to_owned(),
-        "  query --input REQUEST.json --format json".to_owned(),
+        "  query --input REQUEST.json [--output OUTPUT.arrows] --format json".to_owned(),
         "  execute --input REQUEST.json --format json".to_owned(),
         "  database-probe <provider> <secret-env> [args provider]".to_owned(),
         format!("    provider compilati in questo binario: {compiled}"),
