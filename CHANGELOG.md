@@ -17,6 +17,13 @@ riassumono le note di quelle release.
   stream senza marcatore di fine è rifiutato come troncato. Vale anche per
   `inspect-dataset`, `database-write-ipc`, `bulk-write` e
   `postgres-write-ipc`.
+  La fine dello stream è il messaggio di lunghezza zero letto al confine fra
+  due messaggi, e dopo di essa non ci devono essere byte: due stream
+  concatenati non si leggono più come il solo primo. L'input si legge in due
+  passate: la prima verifica l'inquadramento e il limite di ogni messaggio
+  (prima di allocarne il corpo) e conta le righe dichiarate, la seconda
+  decodifica un batch alla volta. Prima si accumulavano tutti i batch in
+  memoria prima del budget, anche per il formato file.
 - **SDK Python: Arrow PyCapsule Interface.** `copy_from`/`acopy_from`
   accettano qualunque oggetto con `__arrow_c_stream__`; il `BatchReader` di
   `Session.read` lo espone, con `read_all()`. Una tabella letta dal database
@@ -24,6 +31,14 @@ riassumono le note di quelle release.
   conversioni (`python/interop/test_plenora_data.py`).
 - **`pyarrow>=25,<26`** è ora una dipendenza dichiarata dello SDK, nella
   stessa finestra di `plenora-data`.
+- **Errori della sorgente tipizzati** (PYTHON-SDK §6): un errore Plenora
+  della sorgente resta tale; ogni altro errore di conversione o di un
+  produttore esterno diventa `PlenoraDataMappingError` (anche `ValueError`)
+  con gli assi pubblici, senza il messaggio né la catena dell'originale, che
+  possono contenere dati di riga. Vale anche per `read_all()`.
+- **`acopy_from` consuma la sorgente in un executor**, non sul thread del
+  loop asyncio (PYTHON-SDK §4): un `BatchReader` legge dal database. Il
+  `BatchReader` sincrono non è più legato al thread che l'ha aperto.
 
 ## 7.0.0 — 2026-10-06
 

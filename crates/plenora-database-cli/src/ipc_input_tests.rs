@@ -97,3 +97,54 @@ fn the_format_is_recognised_from_the_first_bytes() {
     );
     assert!(detect(b"ARROW").is_err());
 }
+
+/// Due stream concatenati: il lettore si fermerebbe al primo EOS e il
+/// secondo stream andrebbe perso con un successo parziale.
+#[test]
+fn bytes_after_the_end_of_stream_are_rejected() {
+    let mut twice = stream_bytes();
+    twice.extend_from_slice(&stream_bytes());
+    let input = scratch("twice.arrows", &twice);
+    let error = rows(&input).expect_err("due stream");
+    assert!(
+        error.database_error().message.contains("dopo la fine"),
+        "{}",
+        error.database_error().message
+    );
+}
+
+/// Uno stream senza EOS i cui ultimi otto byte sembrano il marcatore di
+/// fine: il framing, non la coda del file, decide dove finisce.
+#[test]
+fn a_tail_that_looks_like_the_end_marker_is_not_the_end() {
+    let mut forged = stream_bytes();
+    forged.truncate(forged.len() - END_OF_STREAM.len());
+    // Un messaggio dichiarato ma incompleto, che termina con otto byte
+    // uguali al marcatore di fine.
+    forged.extend_from_slice(&CONTINUATION);
+    forged.extend_from_slice(&64_u32.to_le_bytes());
+    forged.extend_from_slice(&END_OF_STREAM);
+    let input = scratch("forged.arrows", &forged);
+    assert!(rows(&input).is_err(), "coda ambigua accettata");
+}
+
+/// Un messaggio oltre il limite si rifiuta prima di allocarne il corpo.
+#[test]
+fn a_message_beyond_the_limit_is_rejected_before_decoding() {
+    let input = scratch("limited.arrows", &stream_bytes());
+    let error = open_batches(input.0.to_str().expect("UTF-8"), 16)
+        .err()
+        .expect("oltre il limite");
+    assert_eq!(
+        error.database_error().category,
+        plenora_database_core::ErrorCategory::ResourceLimit
+    );
+    let file = scratch("limited.arrow", &file_bytes());
+    let error = open_batches(file.0.to_str().expect("UTF-8"), 16)
+        .err()
+        .expect("oltre il limite");
+    assert_eq!(
+        error.database_error().category,
+        plenora_database_core::ErrorCategory::ResourceLimit
+    );
+}

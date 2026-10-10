@@ -84,19 +84,27 @@ fn batch_to_ipc_bytes(
 ///
 /// Al termine dello stream, ritorna `PyStopIteration` (che Python
 /// interpreta come fine dell'iterazione).
-#[pyclass(module = "plenora_database._native", unsendable)]
+///
+/// Lo stream sta dietro un `Mutex`: il reader si puo consumare da un thread
+/// diverso da quello che l'ha aperto, come fa `acopy_from` per non bloccare
+/// il loop asyncio.
+#[pyclass(module = "plenora_database._native")]
 pub struct BatchReader {
-    inner: Box<dyn BatchStream>,
+    inner: std::sync::Mutex<Box<dyn BatchStream>>,
     cancellation: CancellationToken,
 }
 
 impl BatchReader {
     pub(crate) fn new(inner: Box<dyn BatchStream>, cancellation: CancellationToken) -> Self {
         Self {
-            inner,
+            inner: std::sync::Mutex::new(inner),
             cancellation,
         }
     }
+}
+
+fn reader_poisoned() -> PyErr {
+    PyRuntimeError::new_err("BatchReader non piu utilizzabile dopo un errore interno")
 }
 
 #[pymethods]
@@ -105,12 +113,13 @@ impl BatchReader {
         slf
     }
 
-    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let batch_opt = py
-            .detach(|| {
-                runtime().block_on(async { self.inner.next_batch(&self.cancellation).await })
-            })
-            .map_err(to_py_err)?;
+    fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let batch_opt = py.detach(|| {
+            let mut inner = self.inner.lock().map_err(|_| reader_poisoned())?;
+            runtime()
+                .block_on(async { inner.next_batch(&self.cancellation).await })
+                .map_err(to_py_err)
+        })?;
         let batch = batch_opt.ok_or_else(|| PyStopIteration::new_err(()))?;
         let bytes = batch_to_ipc_bytes(&batch).map_err(to_py_err)?;
         Ok(PyBytes::new(py, &bytes))
@@ -120,7 +129,7 @@ impl BatchReader {
     /// solo header + EOS marker vuoto). Utile per costruire un
     /// RecordBatchReader Python-side prima di iterare i batch.
     fn schema_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let schema = self.inner.schema();
+        let schema = self.inner.lock().map_err(|_| reader_poisoned())?.schema();
         let mut buf = Vec::with_capacity(512);
         {
             let mut writer = StreamWriter::try_new(&mut buf, &schema)

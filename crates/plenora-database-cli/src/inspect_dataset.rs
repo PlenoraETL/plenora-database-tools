@@ -30,7 +30,9 @@ pub fn inspect(path: impl AsRef<Path>) -> CliResult<Value> {
     let path_text = path
         .to_str()
         .ok_or_else(|| "percorso del dataset non UTF-8".to_owned())?;
-    let input = crate::ipc_input::open_batches(path_text)?;
+    // Ogni messaggio sotto il limite di memoria del batch, verificato prima
+    // di decodificare.
+    let input = crate::ipc_input::open_batches(path_text, MAX_BATCH_MEMORY_BYTES as u64)?;
     let schema = input.schema;
     let reader = input.batches;
     if schema.fields().len() > MAX_COLUMNS {

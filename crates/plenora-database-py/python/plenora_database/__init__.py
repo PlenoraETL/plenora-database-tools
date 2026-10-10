@@ -888,9 +888,16 @@ class _AsyncDatabaseSessionWrapper(_AsyncBuilderFactory):
 
         `source` accetta pyarrow/pandas/list-of-dict/bytes.
         """
+        import asyncio
+
         from ._arrow_io import _to_ipc_bytes
 
-        ipc_bytes = _to_ipc_bytes(source)
+        # Consumare la sorgente puo voler dire leggere da un database (un
+        # `BatchReader`) o da un produttore lento: fuori dal thread del loop
+        # (PYTHON-SDK §4).
+        ipc_bytes = await asyncio.get_running_loop().run_in_executor(
+            None, _to_ipc_bytes, source
+        )
         return await self._native.acopy_from(
             schema,
             table,

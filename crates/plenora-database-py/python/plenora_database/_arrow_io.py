@@ -134,6 +134,50 @@ def _narrowed_batch(
     )
 
 
+def _mapping_error(message: str, phase: str) -> Exception:
+    """Un `PlenoraDataMappingError` con gli assi pubblici (PYTHON-SDK §6).
+
+    E anche un `ValueError`, come le conversioni fallite prima di questa
+    regola, cosi chi le intercettava cosi continua a farlo. Il messaggio
+    dice che cosa e fallito, mai il valore: l'eccezione originale di un
+    produttore esterno puo contenere dati di riga e non viene concatenata.
+    """
+
+    from .errors import PlenoraDataMappingError
+
+    class ArrowSourceError(PlenoraDataMappingError, ValueError):
+        pass
+
+    error = ArrowSourceError(f"data_mapping: {message}")
+    for name, value in (
+        ("category", "data_mapping"),
+        ("phase", phase),
+        ("remote_effect", "none"),
+        ("retry", {"kind": "never"}),
+        ("message", message),
+        ("provider", None),
+        ("execution_id", None),
+        ("details", None),
+        ("diagnostics", None),
+    ):
+        setattr(error, name, value)
+    return error
+
+
+def _translated(phase: str, message: str, call: Any) -> Any:
+    """Esegue `call`: un errore Plenora resta com'e, ogni altro diventa un
+    errore tipizzato senza dati e senza la catena che li porterebbe."""
+
+    from .errors import PlenoraError
+
+    try:
+        return call()
+    except PlenoraError:
+        raise
+    except Exception:
+        raise _mapping_error(message, phase) from None
+
+
 def _require_pyarrow() -> Any:
     try:
         import pyarrow as pa
@@ -168,15 +212,27 @@ def _record_batch_reader(reader: Any) -> Any:
 
 
 def c_stream_from_reader(reader: Any, requested_schema: Any = None) -> Any:
-    """`__arrow_c_stream__` del `BatchReader` nativo (PyCapsule Interface)."""
+    """`__arrow_c_stream__` del `BatchReader` nativo (PyCapsule Interface).
 
-    return _record_batch_reader(reader).__arrow_c_stream__(requested_schema)
+    Gli errori di lettura arrivano al consumatore quando chiede il batch: un
+    errore del database resta il `PlenoraError` del reader.
+    """
+
+    return _translated(
+        "read",
+        "stream Arrow del reader non esportabile",
+        lambda: _record_batch_reader(reader).__arrow_c_stream__(requested_schema),
+    )
 
 
 def table_from_reader(reader: Any) -> Any:
     """Tutti i batch ancora da leggere come `pyarrow.Table`."""
 
-    return _record_batch_reader(reader).read_all()
+    return _translated(
+        "read",
+        "batch Arrow del reader non leggibile",
+        lambda: _record_batch_reader(reader).read_all(),
+    )
 
 
 def _to_ipc_bytes(source: Any) -> bytes:
@@ -196,6 +252,8 @@ def _to_ipc_bytes(source: Any) -> bytes:
     Raises:
       - `TypeError` se il tipo non è supportato
       - `ValueError` se la lista è vuota o gli elementi hanno tipi misti
+      - `PlenoraDataMappingError` (anche `ValueError`) se la conversione o
+        la sorgente falliscono; un `PlenoraError` della sorgente resta tale
       - `ImportError` se pyarrow non è installato (a meno di bytes)
     """
     if isinstance(source, (bytes, bytearray, memoryview)):
@@ -213,10 +271,11 @@ def _to_ipc_bytes(source: Any) -> bytes:
     # pandas DataFrame — richiede pandas installato solo se usato
     if type(source).__name__ == "DataFrame" and hasattr(source, "to_dict"):
         # duck-type: pandas.DataFrame ha to_dict + iloc + columns
-        try:
-            source = pa.Table.from_pandas(source, preserve_index=False)
-        except (pa.ArrowException, ValueError, TypeError, OverflowError):
-            raise ValueError("copy_from: conversione DataFrame Arrow non valida") from None
+        source = _translated(
+            "prepare",
+            "copy_from: conversione DataFrame Arrow non valida",
+            lambda: pa.Table.from_pandas(source, preserve_index=False),
+        )
 
     if isinstance(source, pa.Table):
         schema = source.schema
@@ -227,10 +286,11 @@ def _to_ipc_bytes(source: Any) -> bytes:
     elif hasattr(source, "__arrow_c_stream__"):
         # PyCapsule Interface: lo schema e quello dichiarato dal produttore,
         # anche per uno stream vuoto.
-        try:
-            reader = pa.RecordBatchReader.from_stream(source)
-        except (pa.ArrowException, ValueError, TypeError):
-            raise ValueError("copy_from: stream Arrow non leggibile") from None
+        reader = _translated(
+            "prepare",
+            "copy_from: stream Arrow non leggibile",
+            lambda: pa.RecordBatchReader.from_stream(source),
+        )
         schema = reader.schema
         batches = reader
     elif isinstance(source, list):
@@ -243,10 +303,11 @@ def _to_ipc_bytes(source: Any) -> bytes:
             schema = first.schema
         elif isinstance(first, dict):
             # lista di dict — convertibile via pyarrow.Table.from_pylist
-            try:
-                tbl = pa.Table.from_pylist(source)
-            except (pa.ArrowException, ValueError, TypeError, OverflowError):
-                raise ValueError("copy_from: conversione record Arrow non valida") from None
+            tbl = _translated(
+                "prepare",
+                "copy_from: conversione record Arrow non valida",
+                lambda: pa.Table.from_pylist(source),
+            )
             schema = tbl.schema
             batches = tbl.to_batches()
         else:
@@ -273,15 +334,17 @@ def _to_ipc_bytes(source: Any) -> bytes:
             f"trovato {type(source).__name__}"
         )
 
-    try:
+    def serialize() -> bytes:
         source_schema = schema
-        schema, replacements = _narrowed_schema(source_schema, pa)
+        narrowed, replacements = _narrowed_schema(source_schema, pa)
         buf = io.BytesIO()
-        with ipc.new_stream(buf, schema) as writer:
+        with ipc.new_stream(buf, narrowed) as writer:
+            # Qui si consuma la sorgente: un produttore PyCapsule o un
+            # iterabile puo fallire a meta, con qualunque eccezione.
             for batch in batches:
                 writer.write_batch(
-                    _narrowed_batch(batch, source_schema, schema, replacements, pa)
+                    _narrowed_batch(batch, source_schema, narrowed, replacements, pa)
                 )
-    except (pa.ArrowException, ValueError, TypeError, OverflowError):
-        raise ValueError("copy_from: serializzazione Arrow non valida") from None
-    return buf.getvalue()
+        return buf.getvalue()
+
+    return _translated("prepare", "copy_from: serializzazione Arrow non valida", serialize)
