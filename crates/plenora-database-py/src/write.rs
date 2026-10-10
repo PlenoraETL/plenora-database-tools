@@ -26,7 +26,7 @@ use crate::runtime;
 use arrow_ipc::reader::StreamReader;
 use plenora_database_core::arrow::{RecordBatch, SchemaRef};
 use plenora_database_core::loss::MappingPolicy;
-use plenora_database_core::outcome::WriteOutcome;
+use plenora_database_core::outcome::{UnsettledWrite, WriteOutcome};
 use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::provider::{BatchStream, Provider, ProviderFuture, SecretString};
 use plenora_database_core::{CancellationToken, DatabaseError};
@@ -350,12 +350,34 @@ pub(crate) async fn copy_from_async(
 // ------------------------------ Python outcome converter --------------
 
 /// Converte un `WriteOutcome` in un Python dict con la stessa struttura
-/// del JSON contract del core.
+/// del JSON contract del core, **solo** se la scrittura e un successo pieno.
+///
+/// Un esito `outcome_unknown`, `partially_committed` o `rolled_back` non e un
+/// valore di ritorno: un chiamante che non legge `status` proseguirebbe su uno
+/// stato remoto che nessuno ha verificato (SURF-014). Diventa l'eccezione
+/// della sua categoria — `PlenoraCommitOutcomeUnknownError` per il commit
+/// ignoto, come in `Transaction.commit` — con il documento dell'esito, e la
+/// sua `recovery`, in `details["write_outcome"]`.
 pub(crate) fn outcome_into_py<'py>(
     py: Python<'py>,
     outcome: &WriteOutcome,
 ) -> PyResult<Bound<'py, PyDict>> {
-    outcome_to_pydict(py, outcome)
+    match outcome.clone().settle() {
+        Ok(settled) => outcome_to_pydict(py, &settled),
+        Err(unsettled) => Err(unsettled_into_py_err(py, &unsettled)),
+    }
+}
+
+fn unsettled_into_py_err(py: Python<'_>, unsettled: &UnsettledWrite) -> PyErr {
+    let error = to_py_err(unsettled.error().clone());
+    let details = PyDict::new(py);
+    // Se l'esito non si converte resta comunque l'eccezione con i suoi assi:
+    // perdere il dettaglio e meno grave che perdere l'errore.
+    if let Ok(outcome) = outcome_to_pydict(py, unsettled.outcome()) {
+        let _ = details.set_item("write_outcome", outcome);
+    }
+    let _ = error.value(py).setattr("details", details);
+    error
 }
 
 /// Wrapper `Result<WriteOutcome, DatabaseError>` → `PyResult<PyDict>` per

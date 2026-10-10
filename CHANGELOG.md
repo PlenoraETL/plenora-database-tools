@@ -6,6 +6,33 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## Non rilasciato
+
+### Correzioni
+
+- **Una scrittura dall'esito incerto non è più un successo.** `write` della
+  CLI (e `database-write-ipc`, `bulk-write`, `postgres-write-ipc`),
+  `database.write` del runtime e `copy_from`/`acopy_from` dello SDK Python
+  consegnavano un esito `outcome_unknown` come risultato riuscito: la CLI con
+  `status: ok` ed exit 0, lo SDK come valore di ritorno. Provato con un proxy
+  che fa cadere la conferma del `COMMIT` di PostgreSQL. Ora è l'errore di
+  commit ignoto (`internal`, `commit`, `unknown`, `requires_recovery`; exit
+  70; `PlenoraCommitOutcomeUnknownError`) con l'esito in
+  `details.write_outcome`. `partially_committed` e `rolled_back` seguono la
+  stessa regola con i propri assi (`execution`, exit 6). SURF-014.
+- **`execute` con commit ignoto** stampava `status: ok` ed usciva con 1:
+  ora è un envelope d'errore con il `CommitOutcome` in `details.commit`
+  (CLI-2.0 §4: exit diverso da zero solo con `status: error`).
+- **Niente più exit code 1.** I comandi operativi che stampano un verdetto
+  negativo (`doctor`, `diagnose`, `profile-check`, `test-*`,
+  `conditional-update`, `pool-status`, …) uscivano con 1, che CLI-2.0 §8 non
+  prevede. Ora escono con la proiezione della categoria: 70 per il commit
+  ignoto, la categoria dell'errore quando c'è, 6 (`execution`) per una
+  verifica non superata.
+
+Chi leggeva `status` dal risultato di una scrittura, o l'exit 1, deve leggere
+ora l'envelope d'errore e i codici di CLI-2.0.
+
 ## 7.0.0 — 2026-10-06
 
 Major: alcuni documenti di controllo prima accettati ora vengono rifiutati, e

@@ -37,5 +37,11 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
+[dev-dependencies]
+# La prova live dell'esito ignoto costruisce l'input Arrow della `write`: sono
+# gli stessi pin del workspace che la CLI gia usa attraverso `arrow-ipc`.
+arrow-array.workspace = true
+arrow-schema.workspace = true
+
 [lints]
 workspace = true

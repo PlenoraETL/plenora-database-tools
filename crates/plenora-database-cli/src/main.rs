@@ -21,6 +21,7 @@ use plenora_database_core::provider::{Inspection, Provider, SecretString};
 use plenora_database_core::provider::BatchStream;
 use plenora_database_core::provider::ParameterBag;
 // Anche i comandi `database-*` comuni applicano budget ai provider compilati.
+use plenora_database_core::outcome::UnsettledWrite;
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::CommitOutcome;
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorPhase};
@@ -79,18 +80,18 @@ use arrow_ipc::writer::FileWriter;
 async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
-        Err(CliError::Silent) => {
+        Err(CliError::Reported(category)) => {
             // Il sottocomando ha gia stampato il JSON con lo stato logico;
-            // qui si trasmette soltanto l'exit code non-zero
-            // per rendere affidabile l'uso in CI, senza duplicare il
-            // JSON con un secondo blocco `status: error`.
-            ExitCode::FAILURE
+            // qui si trasmette soltanto l'exit code, senza duplicare il JSON
+            // con un secondo blocco `status: error`. Il codice e la
+            // proiezione CLI-2.0 della categoria, come per ogni altro errore.
+            ExitCode::from(cli_exit_code(category))
         }
-        Err(CliError::Fatal(error)) => {
-            let exit = cli_exit_code(error.category);
+        Err(error) => {
+            let exit = cli_exit_code(error.category());
             println!(
                 "{}",
-                CliError::Fatal(error)
+                error
                     .to_json()
                     .unwrap_or_else(|_| ERROR_SERIALIZATION_FALLBACK.to_owned())
             );
@@ -161,16 +162,23 @@ const fn cli_exit_code(category: ErrorCategory) -> u8 {
 
 #[derive(Debug)]
 pub(crate) enum CliError {
-    /// Errore fatale — main stampa il JSON `status: error` + exit=1.
+    /// Errore fatale: main stampa l'envelope `status: error` e l'exit code
+    /// della sua categoria.
     Fatal(DatabaseError),
-    /// Fallimento logico già stampato dal sottocomando (es. doctor →
-    /// `status: unhealthy`). Main emette solo exit=1 senza duplicare
-    /// output.
-    // Costruita da `diagnose`, che vive dietro la feature `postgres`. La
-    // variante resta nell'enum perche i suoi rami di `match` sono neutri:
-    // spostarla dietro la feature significherebbe cfg-are anche quelli.
-    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
-    Silent,
+    /// Come `Fatal`, con un oggetto `details` accanto agli assi: l'esito di
+    /// una scrittura o di un commit non pienamente riusciti, che il chiamante
+    /// deve avere per decidere se e come riprendere.
+    Detailed {
+        error: DatabaseError,
+        details: Box<serde_json::Map<String, serde_json::Value>>,
+    },
+    /// Esito negativo gia stampato dal sottocomando (es. doctor →
+    /// `status: unhealthy`): main emette solo l'exit code della categoria,
+    /// senza duplicare l'output.
+    ///
+    /// Era `Silent`, con exit 1: un codice che CLI-2.0 §8 non prevede e che un
+    /// orchestratore non sapeva proiettare su nessuna categoria.
+    Reported(ErrorCategory),
 }
 
 /// Cosa la CLI dice di un `commit()`, e con quale codice di uscita.
@@ -217,7 +225,57 @@ pub(crate) const fn commit_status(outcome: &CommitOutcome) -> &'static str {
 pub(crate) const fn commit_exit(outcome: &CommitOutcome) -> CliResult<()> {
     match outcome {
         CommitOutcome::Committed => Ok(()),
-        CommitOutcome::OutcomeUnknown { .. } => Err(CliError::Silent),
+        // La categoria dell'errore di commit ignoto: exit 70, come
+        // `require_committed` e come le superfici pubbliche.
+        CommitOutcome::OutcomeUnknown { .. } => Err(CliError::Reported(ErrorCategory::Internal)),
+    }
+}
+
+/// Stampa l'esito di un comando che ha fatto commit, e ne decide l'uscita.
+///
+/// Sui comandi pubblici l'envelope `ok` dice successo (CLI-2.0 §4): un commit
+/// ignoto non puo starci dentro, nemmeno con un exit code diverso da zero.
+/// Li diventa l'errore di commit, con il `CommitOutcome` e la sua `recovery`
+/// in `details.commit`. I comandi operativi, che non hanno envelope, stampano
+/// il proprio documento con `status: outcome_unknown` ed escono con 70.
+///
+/// # Errors
+///
+/// Un commit ignoto, o un fallimento di stampa.
+pub(crate) fn print_committed(
+    value: &serde_json::Value,
+    commit: &CommitOutcome,
+    provider: ProviderKind,
+) -> CliResult<()> {
+    if active_public_command().is_some() && !commit.is_committed() {
+        let mut error = unknown_commit_error();
+        error.provider = Some(provider);
+        let mut details = serde_json::Map::new();
+        if let Ok(commit) = serde_json::to_value(commit) {
+            details.insert("commit".to_owned(), commit);
+        }
+        return Err(CliError::Detailed {
+            error,
+            details: Box::new(details),
+        });
+    }
+    print_json(value)?;
+    commit_exit(commit)
+}
+
+/// L'errore di un commit emesso e non confermato.
+fn unknown_commit_error() -> DatabaseError {
+    DatabaseError {
+        category: ErrorCategory::Internal,
+        phase: ErrorPhase::Commit,
+        remote_effect: RemoteEffect::Unknown,
+        retry: RetryDisposition::RequiresRecovery,
+        provider: None,
+        execution_id: None,
+        message: "commit emesso senza conferma: verificare lo stato remoto \
+                  prima di ogni retry"
+            .to_owned(),
+        diagnostics: None,
     }
 }
 
@@ -246,18 +304,7 @@ pub(crate) const fn commit_exit(outcome: &CommitOutcome) -> CliResult<()> {
 pub(crate) fn require_committed(outcome: &CommitOutcome) -> CliResult<()> {
     match outcome {
         CommitOutcome::Committed => Ok(()),
-        CommitOutcome::OutcomeUnknown { .. } => Err(CliError::Fatal(DatabaseError {
-            category: ErrorCategory::Internal,
-            phase: ErrorPhase::Commit,
-            remote_effect: RemoteEffect::Unknown,
-            retry: RetryDisposition::RequiresRecovery,
-            provider: None,
-            execution_id: None,
-            message: "commit emesso senza conferma: verificare lo stato remoto \
-                      prima di ogni retry"
-                .to_owned(),
-            diagnostics: None,
-        })),
+        CommitOutcome::OutcomeUnknown { .. } => Err(CliError::Fatal(unknown_commit_error())),
     }
 }
 
@@ -285,43 +332,80 @@ struct IpcOptions {
 }
 
 impl CliError {
-    /// Accesso al `DatabaseError` sottostante per test / mutazioni
-    /// diagnostiche. Panica per `Silent`.
-    #[cfg(test)]
-    fn database_error(&self) -> &DatabaseError {
+    /// La categoria che l'exit code proietta.
+    const fn category(&self) -> ErrorCategory {
         match self {
-            Self::Fatal(db_err) => db_err,
-            Self::Silent => panic!("CliError::Silent non ha DatabaseError"),
+            Self::Fatal(error) | Self::Detailed { error, .. } => error.category,
+            Self::Reported(category) => *category,
         }
     }
 
-    /// Accesso mutabile al `DatabaseError` sottostante. Panica per `Silent`.
+    /// Accesso al `DatabaseError` sottostante per test / mutazioni
+    /// diagnostiche. Panica per `Reported`.
+    #[cfg(test)]
+    fn database_error(&self) -> &DatabaseError {
+        match self {
+            Self::Fatal(db_err) | Self::Detailed { error: db_err, .. } => db_err,
+            Self::Reported(_) => panic!("CliError::Reported non ha DatabaseError"),
+        }
+    }
+
+    /// Accesso mutabile al `DatabaseError` sottostante. Panica per `Reported`.
     // Serve al solo percorso IPC, che riscrive `remote_effect` dopo un
     // fallimento di pubblicazione dell'artefatto locale.
     #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     fn database_error_mut(&mut self) -> &mut DatabaseError {
         match self {
-            Self::Fatal(db_err) => db_err,
-            Self::Silent => panic!("CliError::Silent non ha DatabaseError"),
+            Self::Fatal(db_err) | Self::Detailed { error: db_err, .. } => db_err,
+            Self::Reported(_) => panic!("CliError::Reported non ha DatabaseError"),
         }
     }
 
     fn to_json(&self) -> Result<String, serde_json::Error> {
-        match self {
-            Self::Fatal(db_err) => {
-                let error = serde_json::to_value(db_err.public_projection())?;
-                let command = active_public_command();
-                serde_json::to_string(&json!({
-                    "status": "error",
-                    "protocol_version": CLI_PROTOCOL_VERSION,
-                    "component": plenora_database_core::public_contract::COMPONENT,
-                    "component_version": env!("CARGO_PKG_VERSION"),
-                    "contract": command.map_or("plenora-error-v1", |value| value.output_contract),
-                    "command": command.map_or_else(format::active_command, |value| value.command.to_owned()),
-                    "error": error,
-                }))
+        let (db_err, details) = match self {
+            Self::Fatal(error) => (error, None),
+            Self::Detailed { error, details } => (error, Some(details)),
+            Self::Reported(_) => return Ok(String::new()),
+        };
+        let mut error = serde_json::to_value(db_err.public_projection())?;
+        // `details` e l'oggetto aperto di `plenora-error-v1`: le chiavi
+        // aggiunte qui stanno accanto a `row_diagnostics`, se c'e.
+        if let (Some(extra), serde_json::Value::Object(fields)) = (details, &mut error) {
+            let target = fields
+                .entry("details")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(target) = target {
+                target.extend(
+                    extra
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone())),
+                );
             }
-            Self::Silent => Ok(String::new()),
+        }
+        let command = active_public_command();
+        serde_json::to_string(&json!({
+            "status": "error",
+            "protocol_version": CLI_PROTOCOL_VERSION,
+            "component": plenora_database_core::public_contract::COMPONENT,
+            "component_version": env!("CARGO_PKG_VERSION"),
+            "contract": command.map_or("plenora-error-v1", |value| value.output_contract),
+            "command": command.map_or_else(format::active_command, |value| value.command.to_owned()),
+            "error": error,
+        }))
+    }
+}
+
+/// Una scrittura non pienamente riuscita: errore con l'esito in
+/// `details.write_outcome`.
+impl From<Box<UnsettledWrite>> for CliError {
+    fn from(unsettled: Box<UnsettledWrite>) -> Self {
+        let mut details = serde_json::Map::new();
+        if let Ok(outcome) = serde_json::to_value(unsettled.outcome()) {
+            details.insert("write_outcome".to_owned(), outcome);
+        }
+        Self::Detailed {
+            error: unsettled.error().clone(),
+            details: Box::new(details),
         }
     }
 }
@@ -978,13 +1062,16 @@ async fn database_execute_sql(args: &mut impl Iterator<Item = String>) -> CliRes
     };
     let affected = transaction.execute(&statement).await?;
     let commit = transaction.commit().await?;
-    print_json(&json!({
-        "provider": kind,
-        "status": commit_status(&commit),
-        "affected_rows": affected,
-        "commit": commit,
-    }))?;
-    commit_exit(&commit)
+    print_committed(
+        &json!({
+            "provider": kind,
+            "status": commit_status(&commit),
+            "affected_rows": affected,
+            "commit": commit,
+        }),
+        &commit,
+        kind,
+    )
 }
 
 /// `database-portable-execute <provider> <SECRET_ENV> <PORTABLE.json> <argomenti provider>`
@@ -1090,13 +1177,16 @@ async fn database_portable_execute(args: &mut impl Iterator<Item = String>) -> C
         }
     };
     let commit = transaction.commit().await?;
-    print_json(&json!({
-        "provider": kind,
-        "status": commit_status(&commit),
-        "outcome": outcome,
-        "commit": commit,
-    }))?;
-    commit_exit(&commit)
+    print_committed(
+        &json!({
+            "provider": kind,
+            "status": commit_status(&commit),
+            "outcome": outcome,
+            "commit": commit,
+        }),
+        &commit,
+        kind,
+    )
 }
 
 /// `database-execute-scalar <provider> <SECRET_ENV> <sql> <argomenti provider>`
@@ -1156,13 +1246,16 @@ async fn database_execute_scalar(args: &mut impl Iterator<Item = String>) -> Cli
         }
     };
     let commit = transaction.commit().await?;
-    print_json(&json!({
-        "provider": kind,
-        "status": commit_status(&commit),
-        "value": value,
-        "commit": commit,
-    }))?;
-    commit_exit(&commit)
+    print_committed(
+        &json!({
+            "provider": kind,
+            "status": commit_status(&commit),
+            "value": value,
+            "commit": commit,
+        }),
+        &commit,
+        kind,
+    )
 }
 
 /// Esegue DDL attraverso il bordo comune del provider, fuori transazione.
@@ -1346,6 +1439,7 @@ async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResul
             &cancellation,
         )
         .await?;
+    // Solo un commit certo e completo e un successo (SURF-014).
     let outcome = opened
         .provider
         .write(
@@ -1355,7 +1449,8 @@ async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResul
             &budget,
             &cancellation,
         )
-        .await?;
+        .await?
+        .settle()?;
     print_json(&serde_json::to_value(outcome).map_err(|_| "outcome non serializzabile".to_owned())?)
 }
 

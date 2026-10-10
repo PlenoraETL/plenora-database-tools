@@ -138,9 +138,11 @@ async fn execute_bulk_write(
     let prepared = provider
         .prepare_write(&secret, &operation, input_schema, &budget, &cancel)
         .await?;
+    // Solo un commit certo e completo e un successo (SURF-014).
     let outcome = provider
         .write(&secret, prepared, stream, &budget, &cancel)
-        .await?;
+        .await?
+        .settle()?;
 
     print_json(&serde_json::to_value(&outcome).map_err(|error| {
         CliError::from(format!(

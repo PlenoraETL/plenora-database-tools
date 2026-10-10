@@ -112,11 +112,12 @@ effetto sul sink (ERR-014).
 ## Limiti dichiarati
 
 - L'esito di `database.write` è il documento `write-outcome` della CLI e
-  dello SDK. Uno stato `outcome_unknown` o `partially_committed` arriva come
-  risultato con quello stato, come sulle altre superfici, e non come envelope
-  d'errore. Il consumatore legge `status`. Un errore del provider con effetto
-  ignoto arriva invece come envelope d'errore (vettore
-  `database-write-error`).
+  dello SDK solo quando la scrittura è `committed`. Uno stato
+  `outcome_unknown`, `partially_committed` o `rolled_back` non è un successo
+  (SURF-014): arriva come envelope d'errore con gli assi dell'esito — per il
+  commit ignoto quelli del vettore `database-write-error` — e con il
+  documento, compresa la `recovery`, in `details.write_outcome`. La CLI e lo
+  SDK Python fanno lo stesso (`WriteOutcome::settle`).
 - `database.query` restituisce il riepilogo JSON della CLI. Lo stream Arrow,
   dichiarato fra i content type d'uscita, non è prodotto da questo binding.
 - I documenti risolti da un riferimento hanno un limite di 8 MiB

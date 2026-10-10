@@ -1,7 +1,7 @@
 //! Esiti portabili delle scritture e informazioni necessarie al recupero.
 
 use crate::plan::ProviderKind;
-use crate::RemoteEffect;
+use crate::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +181,119 @@ impl WriteOutcome {
             WriteStatus::PartiallyCommitted => RemoteEffect::Partial,
             WriteStatus::OutcomeUnknown => RemoteEffect::Unknown,
         }
+    }
+}
+
+impl WriteOutcome {
+    /// La scrittura come la riporta una superficie pubblica: il documento se
+    /// e un successo pieno, l'errore tipizzato altrimenti.
+    ///
+    /// Un esito `outcome_unknown`, `partially_committed` o `rolled_back` e un
+    /// valore legittimo del tipo Rust, ma non e un successo: una superficie
+    /// che lo consegnasse come risultato `ok` direbbe all'orchestratore di
+    /// proseguire su uno stato remoto che nessuno ha verificato (SURF-014 dei
+    /// contratti comuni). CLI, runtime e SDK Python passano tutti da qui, cosi
+    /// la stessa classe di esito ha lo stesso trattamento su ogni strada.
+    ///
+    /// Il documento dell'esito non va perso: [`UnsettledWrite`] lo conserva,
+    /// e [`UnsettledWrite::public_document`] lo mette in
+    /// `details.write_outcome` dell'errore pubblico, dove `recovery` dice al
+    /// chiamante che cosa verificare prima di un nuovo tentativo.
+    ///
+    /// # Errors
+    ///
+    /// [`UnsettledWrite`] per ogni stato diverso da `committed`.
+    pub fn settle(self) -> std::result::Result<Self, Box<UnsettledWrite>> {
+        let (category, phase, retry, message) = match self.status {
+            WriteStatus::Committed => return Ok(self),
+            // Gli stessi assi del vettore `database-write-error` dei contratti
+            // e dell'errore di commit dell'SDK: l'incertezza sta sul COMMIT.
+            WriteStatus::OutcomeUnknown => (
+                ErrorCategory::Internal,
+                ErrorPhase::Commit,
+                RetryDisposition::RequiresRecovery,
+                "esito del commit ignoto: verificare lo stato remoto per execution_id \
+                 prima di ogni nuovo tentativo",
+            ),
+            WriteStatus::PartiallyCommitted => (
+                ErrorCategory::Execution,
+                ErrorPhase::Write,
+                RetryDisposition::RequiresRecovery,
+                "scrittura confermata solo in parte: recovery richiesto prima di ogni \
+                 nuovo tentativo",
+            ),
+            // Nessun adapter lo restituisce oggi come esito: lo stato esiste
+            // nel contratto, e una superficie non puo leggerlo come successo.
+            WriteStatus::RolledBack => (
+                ErrorCategory::Execution,
+                ErrorPhase::Write,
+                RetryDisposition::Never,
+                "scrittura annullata: nessuna riga confermata",
+            ),
+        };
+        let error = DatabaseError {
+            category,
+            phase,
+            remote_effect: self.remote_effect(),
+            retry,
+            provider: Some(self.provider),
+            execution_id: Some(self.execution_id.clone()),
+            message: message.to_owned(),
+            diagnostics: None,
+        };
+        Err(Box::new(UnsettledWrite {
+            error,
+            outcome: self,
+        }))
+    }
+}
+
+/// Una scrittura che non si e conclusa con un commit certo e completo.
+///
+/// Porta insieme l'errore pubblico e il documento dell'esito, che contiene la
+/// `recovery`: separarli farebbe perdere al chiamante proprio l'informazione
+/// che gli serve per decidere se e come riprendere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsettledWrite {
+    error: DatabaseError,
+    outcome: WriteOutcome,
+}
+
+impl UnsettledWrite {
+    /// L'errore tipizzato con gli assi dell'esito.
+    #[must_use]
+    pub const fn error(&self) -> &DatabaseError {
+        &self.error
+    }
+
+    /// Il documento `write-outcome` restituito dal provider.
+    #[must_use]
+    pub const fn outcome(&self) -> &WriteOutcome {
+        &self.outcome
+    }
+
+    /// L'errore `plenora-error-v1` con l'esito in `details.write_outcome`.
+    ///
+    /// `details` e l'unico oggetto aperto dello schema comune. L'esito non
+    /// porta valori di riga: identificatore d'esecuzione, conteggi e, nella
+    /// `recovery`, nomi di oggetto e la frase di verifica costruita su di essi,
+    /// tutti limitati in lunghezza da `write-outcome.schema.json`.
+    ///
+    /// # Errors
+    ///
+    /// Se l'errore o l'esito non si serializzano.
+    pub fn public_document(&self) -> serde_json::Result<serde_json::Value> {
+        let mut document = serde_json::to_value(self.error.public_projection())?;
+        let outcome = serde_json::to_value(&self.outcome)?;
+        if let serde_json::Value::Object(fields) = &mut document {
+            let details = fields
+                .entry("details")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(details) = details {
+                details.insert("write_outcome".to_owned(), outcome);
+            }
+        }
+        Ok(document)
     }
 }
 

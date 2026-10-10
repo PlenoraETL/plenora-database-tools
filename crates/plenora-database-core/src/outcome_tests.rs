@@ -192,3 +192,67 @@ fn unknown_outcome_cannot_authorize_automatic_retry() {
         .automatic_retry_allowed = true;
     assert!(outcome.validate().is_err());
 }
+
+fn example(name: &str) -> WriteOutcome {
+    let input = match name {
+        "unknown" => include_str!("../../../contracts/v2/examples/outcome-unknown.json"),
+        _ => include_str!("../../../contracts/v2/examples/outcome-committed.json"),
+    };
+    serde_json::from_str(input).expect("outcome example")
+}
+
+#[test]
+fn only_a_committed_outcome_settles_as_success() {
+    let committed = example("committed");
+    assert_eq!(committed.clone().settle().expect("committed"), committed);
+}
+
+/// Gli assi coincidono con il vettore `database-write-error` dei contratti:
+/// un esito ignoto non e un successo su nessuna superficie (SURF-014).
+#[test]
+fn an_unknown_outcome_settles_as_the_contract_commit_error() {
+    let unknown = example("unknown");
+    let unsettled = unknown
+        .clone()
+        .settle()
+        .expect_err("unknown is not success");
+    let error = unsettled.error();
+    assert_eq!(error.category, ErrorCategory::Internal);
+    assert_eq!(error.phase, ErrorPhase::Commit);
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    assert_eq!(error.provider, Some(unknown.provider));
+    assert_eq!(
+        error.execution_id.as_deref(),
+        Some(unknown.execution_id.as_str())
+    );
+    assert_eq!(unsettled.outcome(), &unknown);
+
+    let document = unsettled.public_document().expect("document");
+    assert_eq!(document["remote_effect"], "unknown");
+    assert_eq!(document["retry"]["kind"], "requires_recovery");
+    assert_eq!(
+        document["details"]["write_outcome"],
+        serde_json::to_value(&unknown).expect("outcome JSON")
+    );
+}
+
+#[test]
+fn partial_and_rolled_back_outcomes_are_not_success_either() {
+    let mut partial = example("unknown");
+    partial.status = WriteStatus::PartiallyCommitted;
+    let error = partial.settle().expect_err("partial").error().clone();
+    assert_eq!(error.remote_effect, RemoteEffect::Partial);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    assert_eq!(error.category, ErrorCategory::Execution);
+
+    let mut rolled_back = example("committed");
+    rolled_back.status = WriteStatus::RolledBack;
+    let error = rolled_back
+        .settle()
+        .expect_err("rolled back")
+        .error()
+        .clone();
+    assert_eq!(error.remote_effect, RemoteEffect::RolledBack);
+    assert_eq!(error.retry, RetryDisposition::Never);
+}

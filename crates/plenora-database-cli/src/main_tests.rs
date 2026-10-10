@@ -948,3 +948,76 @@ fn canonical_target_applies_the_secret_environment_pattern() {
     );
     assert!(!error.database_error().message.contains("secret@host"));
 }
+
+/// Un esito di scrittura incerto e un errore con gli assi del commit e
+/// l'esito in `details.write_outcome`, non un risultato `ok` (SURF-014).
+#[test]
+fn an_unknown_write_outcome_is_an_error_envelope_with_its_recovery() {
+    let outcome: plenora_database_core::outcome::WriteOutcome = serde_json::from_str(include_str!(
+        "../../../contracts/v2/examples/outcome-unknown.json"
+    ))
+    .expect("outcome example");
+    let error = CliError::from(outcome.clone().settle().expect_err("unknown"));
+    assert_eq!(cli_exit_code(error.category()), 70);
+    let value: serde_json::Value =
+        serde_json::from_str(&error.to_json().expect("serializable")).expect("JSON");
+    assert_eq!(value["status"], "error");
+    assert_eq!(value["error"]["category"], "internal");
+    assert_eq!(value["error"]["phase"], "commit");
+    assert_eq!(value["error"]["remote_effect"], "unknown");
+    assert_eq!(value["error"]["retry"]["kind"], "requires_recovery");
+    assert_eq!(
+        value["error"]["details"]["write_outcome"],
+        serde_json::to_value(&outcome).expect("outcome JSON")
+    );
+}
+
+/// Un commit ignoto stampato da un comando operativo esce con la categoria
+/// del commit ignoto, non con un codice che CLI-2.0 non prevede.
+#[test]
+fn an_unknown_commit_exits_with_the_internal_projection() {
+    let unknown = CommitOutcome::OutcomeUnknown {
+        recovery: plenora_database_core::transaction::outcome_unknown_recovery(),
+    };
+    let Err(CliError::Reported(category)) = commit_exit(&unknown) else {
+        panic!("un commit ignoto non e un successo");
+    };
+    assert_eq!(cli_exit_code(category), 70);
+    assert!(commit_exit(&CommitOutcome::Committed).is_ok());
+}
+
+/// CLI-2.0 §8: 0 solo per il successo, e nessuna categoria su un codice fuori
+/// dalla tabella. L'exit 1 di `Silent` non era in nessuna riga.
+#[test]
+fn every_category_projects_on_a_cli_2_exit_code() {
+    for category in [
+        ErrorCategory::InvalidPlan,
+        ErrorCategory::InvalidConfiguration,
+        ErrorCategory::Schema,
+        ErrorCategory::DataMapping,
+        ErrorCategory::Crs,
+        ErrorCategory::Unsupported,
+        ErrorCategory::NotFound,
+        ErrorCategory::Conflict,
+        ErrorCategory::ConcurrentModification,
+        ErrorCategory::Authentication,
+        ErrorCategory::Authorization,
+        ErrorCategory::Timeout,
+        ErrorCategory::Cancelled,
+        ErrorCategory::ResourceLimit,
+        ErrorCategory::Io,
+        ErrorCategory::Protocol,
+        ErrorCategory::Transient,
+        ErrorCategory::Execution,
+        ErrorCategory::Internal,
+    ] {
+        assert!(
+            [2, 3, 4, 5, 6, 70, 130].contains(&cli_exit_code(category)),
+            "{category:?}"
+        );
+        assert_eq!(
+            cli_exit_code(CliError::Reported(category).category()),
+            cli_exit_code(category)
+        );
+    }
+}

@@ -25,6 +25,7 @@ IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b
 CONTAINER = "dataflow-postgres"
 CLI_REFERENCE_SUITES = (
     "live_operations", "live_f5", "contract_snapshot", "cli_benchmarks",
+    "live_outcome_unknown",
 )
 DEFAULT_DSN = (
     "host=dataflow-postgres port=5432 user=dataflow "

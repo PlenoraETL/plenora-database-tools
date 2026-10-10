@@ -145,7 +145,10 @@ class CliLiveFixtures(unittest.TestCase):
     esplicita; ogni test dichiarato deve comparire fra gli esiti passati.
     """
 
-    SUITES = ("live_operations", "live_f5", "contract_snapshot", "cli_benchmarks")
+    SUITES = (
+        "live_operations", "live_f5", "contract_snapshot", "cli_benchmarks",
+        "live_outcome_unknown",
+    )
 
     def source(self) -> str:
         return (

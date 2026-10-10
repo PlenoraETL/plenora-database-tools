@@ -295,6 +295,13 @@ pub trait Provider: Send + Sync {
 
     /// Esegue il bulk write preparato via [`Self::prepare_write`].
     /// Consuma il `BatchStream` di input in streaming.
+    ///
+    /// Un `Ok` non e un successo: un commit senza conferma arriva come esito
+    /// con `status` `outcome_unknown` e la sua `recovery`. Chi lo consegna a
+    /// un'altra superficie passa da [`WriteOutcome::settle`], che lascia
+    /// passare soltanto `committed`; chi lo consuma in Rust legge `status`.
+    ///
+    /// [`WriteOutcome::settle`]: crate::outcome::WriteOutcome::settle
     fn write<'a>(
         &'a self,
         secret: &'a SecretString,
