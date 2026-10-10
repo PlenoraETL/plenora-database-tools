@@ -17,6 +17,8 @@ pub async fn load_columns_and_token(
             r"
             SELECT
                 a.attname,
+                a.attrelid AS source_relid,
+                a.attnum AS source_attnum,
                 t.typname,
                 NOT a.attnotnull AS nullable,
                 CASE

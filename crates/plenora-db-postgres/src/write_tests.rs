@@ -590,6 +590,93 @@ fn a_nested_srid_contradicting_the_field_is_rejected() {
     );
 }
 
+/// Lettura e scrittura dello stesso componente: una colonna senza typmod si
+/// legge con `dimensions=unknown` e si riscrive in una colonna generica, con
+/// la dimensione controllata per valore soltanto quando e dichiarata.
+#[test]
+fn a_geometry_read_without_typmod_can_be_written_back() {
+    let mut column = crate::types::ColumnSpec {
+        name: "geom".to_owned(),
+        native_type: "geometry".to_owned(),
+        nullable: true,
+        numeric_precision: None,
+        numeric_scale: None,
+        spatial_srid: Some(4326),
+        spatial_dimensions: None,
+        spatial_type: None,
+        spatial_crs_id: Some("EPSG:4326".to_owned()),
+        default_expression: None,
+        identity_kind: None,
+        generated_kind: None,
+        native_declaration: None,
+        type_kind: None,
+        composite_fields: Vec::new(),
+        enum_labels: Vec::new(),
+        domain_base_type: None,
+        domain_constraints: Vec::new(),
+        collation: None,
+        source: None,
+        kind: crate::types::ColumnKind::Geometry,
+    };
+    let field = column.arrow_field();
+    assert_eq!(field.metadata()["plenora.geometry.dimensions"], "unknown");
+    let plan = WriteColumnPlan::compile(&field).expect("riscrittura del letto");
+    assert_eq!(plan.postgres_type, "geometry");
+    let mut point_z = vec![1_u8];
+    point_z.extend_from_slice(&0xa000_0001_u32.to_le_bytes());
+    point_z.extend_from_slice(&4326_u32.to_le_bytes());
+    point_z.extend_from_slice(&[0_u8; 24]);
+    let inspection = inspect_ewkb_detailed(&point_z, 10, 1).expect("punto Z");
+    validate_ewkb_contract(&inspection, &plan).expect("dimensione non dichiarata");
+    column.spatial_dimensions = Some("XY".to_owned());
+}
+
+/// Uno SRID annidato in un EWKB la cui radice porta lo SRID giusto: lo
+/// rifiuta solo il controllo degli SRID annidati.
+#[test]
+fn a_nested_srid_under_a_correct_ewkb_root_is_rejected() {
+    let mut collection = vec![1_u8];
+    collection.extend_from_slice(&0x2000_0007_u32.to_le_bytes());
+    collection.extend_from_slice(&4326_u32.to_le_bytes());
+    collection.extend_from_slice(&1_u32.to_le_bytes());
+    collection.push(1);
+    collection.extend_from_slice(&0x2000_0001_u32.to_le_bytes());
+    collection.extend_from_slice(&3857_u32.to_le_bytes());
+    collection.extend_from_slice(&[0_u8; 16]);
+    let plan = WriteColumnPlan::compile(&vocabulary_geometry("ewkb", "geometrycollection"))
+        .expect("piano");
+    let inspection = inspect_ewkb_detailed(&collection, 10, 4).expect("collezione");
+    assert_eq!(inspection.root.srid, Some(4326));
+    let error = validate_ewkb_contract(&inspection, &plan).expect_err("SRID annidato");
+    assert_eq!(error.message, "SRID EWKB in una geometria annidata");
+}
+
+/// Un budget che basta per il batch ma non per la sua copia EWKB rifiuta il
+/// batch nella prenotazione, cioe prima che la copia sia allocata.
+#[test]
+fn a_budget_without_room_for_the_copy_rejects_before_allocating() {
+    use arrow_array::BinaryArray;
+    use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+    let field = vocabulary_geometry("wkb", "point");
+    let plan = WriteColumnPlan::compile(&field).expect("piano");
+    let schema = std::sync::Arc::new(arrow_schema::Schema::new(vec![field]));
+    let column = BinaryArray::from(vec![Some(&iso_point()[..]); 4]);
+    let column_bytes = u64::try_from(column.get_array_memory_size()).expect("u64");
+    let batch = RecordBatch::try_new(schema, vec![std::sync::Arc::new(column)]).expect("batch");
+    let reserved = super::resources::reserved_batch_bytes(&batch, &[plan]).expect("byte");
+    let budget = ResourceBudget::new(ResourceLimits {
+        memory_bytes: column_bytes + 1,
+        output_bytes: column_bytes + 1,
+        cell_bytes: column_bytes + 1,
+        ..ResourceLimits::default()
+    })
+    .expect("budget");
+    let error = super::resources::WriteBatchResources::acquire(&budget, 4, reserved, reserved, 0)
+        .err()
+        .expect("la copia non sta nel budget");
+    assert_eq!(error.category, ErrorCategory::ResourceLimit);
+}
+
 /// La copia EWKB di un campo `wkb` si prenota prima di allocarla.
 #[test]
 fn the_ewkb_rewrite_is_part_of_the_reserved_bytes() {

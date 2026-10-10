@@ -52,7 +52,9 @@ const GEOMETRY_TYPES: [&str; 16] = [
 #[derive(Debug, Clone, Copy)]
 pub struct FieldContract<'a> {
     pub field: &'a Field,
-    pub field_id: Option<u32>,
+    /// Il field id dichiarato, gia verificato come intero decimale non
+    /// negativo; la forma canonica la da `protocol::canonical_field_id`.
+    pub field_id: Option<&'a str>,
     pub encoding: Option<&'a str>,
     pub geometry_types: Option<&'a str>,
     pub types_declaration: Option<&'a str>,
@@ -125,7 +127,19 @@ impl<'a> FieldContract<'a> {
             ));
         }
 
-        let field_id = parse_optional_u32(metadata.get(protocol::FIELD_ID), "field_id", true)?;
+        let field_id = metadata
+            .get(protocol::FIELD_ID)
+            .map(|value| {
+                protocol::canonical_field_id(value)
+                    .map(|_| value.as_str())
+                    .ok_or_else(|| {
+                        contract_error(
+                            ErrorCategory::DataMapping,
+                            "field_id deve essere un intero decimale non negativo",
+                        )
+                    })
+            })
+            .transpose()?;
         let srid = parse_optional_u32(raw_srid, "SRID", true)?;
         let contract = Self {
             field,
