@@ -396,6 +396,7 @@ fn unknown_write_outcome_is_valid_and_never_retryable() {
         "pg-test-unknown".to_owned(),
         7,
         "verificare lo stato remoto",
+        Some(ErrorCategory::Io),
     );
     outcome.validate().expect("valid unknown outcome");
     assert_eq!(outcome.status, WriteStatus::OutcomeUnknown);

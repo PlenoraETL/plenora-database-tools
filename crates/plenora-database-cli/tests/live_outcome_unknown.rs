@@ -200,7 +200,8 @@ fn envelope(output: &Output) -> Value {
     serde_json::from_str(&stdout).unwrap_or_else(|error| panic!("JSON: {error}: {stdout}"))
 }
 
-/// Gli assi che un commit ignoto deve portare, e l'exit code che li proietta.
+/// Gli assi che un commit ignoto per canale perso deve portare, e l'exit code
+/// che li proietta.
 fn assert_unknown_commit(output: &Output, command: &str) -> Value {
     let document = envelope(output);
     assert_eq!(
@@ -209,12 +210,14 @@ fn assert_unknown_commit(output: &Output, command: &str) -> Value {
     );
     assert_eq!(document["command"], command);
     let error = &document["error"];
-    assert_eq!(error["category"], "internal", "{document}");
+    // ERR-001: la conferma e persa perche il canale e stato chiuso, quindi
+    // la categoria e `io`, con il suo exit code (CLI-2.0 §8).
+    assert_eq!(error["category"], "io", "{document}");
     assert_eq!(error["phase"], "commit", "{document}");
     assert_eq!(error["remote_effect"], "unknown", "{document}");
     assert_eq!(error["retry"]["kind"], "requires_recovery", "{document}");
     assert_eq!(error["provider"], "postgres", "{document}");
-    assert_eq!(output.status.code(), Some(70), "{document}");
+    assert_eq!(output.status.code(), Some(5), "{document}");
     document
 }
 

@@ -54,7 +54,7 @@ use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::provider::ProviderFuture;
 use plenora_database_core::row::Row;
 use plenora_database_core::transaction::{
-    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name,
+    concurrent_modification_error, outcome_unknown_recovery_for, validate_savepoint_name,
     CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{
@@ -687,7 +687,9 @@ impl TransactionScope for PostgresTransaction {
                 self.client.invalidate();
                 self.open = false;
                 return Ok(CommitOutcome::OutcomeUnknown {
-                    recovery: outcome_unknown_recovery(),
+                    recovery: outcome_unknown_recovery_for(
+                        plenora_database_core::interruption_category(cancellation),
+                    ),
                 });
             };
             match commit_result {
@@ -701,7 +703,7 @@ impl TransactionScope for PostgresTransaction {
                     if mapped.remote_effect == RemoteEffect::Unknown {
                         self.client.invalidate();
                         Ok(CommitOutcome::OutcomeUnknown {
-                            recovery: outcome_unknown_recovery(),
+                            recovery: outcome_unknown_recovery_for(mapped.category),
                         })
                     } else {
                         if error.is_closed() {

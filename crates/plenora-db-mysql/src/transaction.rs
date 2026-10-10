@@ -33,7 +33,7 @@ use mysql_async::{Row as MyRow, Value};
 use plenora_database_core::provider::{ParameterValue, ProviderFuture};
 use plenora_database_core::row::Row;
 use plenora_database_core::transaction::{
-    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name,
+    concurrent_modification_error, outcome_unknown_recovery_for, validate_savepoint_name,
     CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{
@@ -884,9 +884,10 @@ impl TransactionScope for MysqlTransaction {
                             ErrorCategory::Cancelled | ErrorCategory::Timeout | ErrorCategory::Io
                         ) || err.remote_effect == RemoteEffect::Unknown =>
                     {
-                        // Canale compromesso durante commit: outcome ignoto.
+                        // Canale compromesso durante commit: outcome ignoto,
+                        // con la causa osservata come categoria.
                         Ok(CommitOutcome::OutcomeUnknown {
-                            recovery: outcome_unknown_recovery(),
+                            recovery: outcome_unknown_recovery_for(err.category),
                         })
                     }
                     Err(err) => Err(err),

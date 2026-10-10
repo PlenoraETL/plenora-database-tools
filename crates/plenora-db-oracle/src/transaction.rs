@@ -13,7 +13,7 @@ use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::{ParameterValue, ProviderFuture};
 use plenora_database_core::row::Row;
 use plenora_database_core::transaction::{
-    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name,
+    concurrent_modification_error, outcome_unknown_recovery_for, validate_savepoint_name,
     CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
@@ -529,12 +529,18 @@ impl TransactionScope for OracleTransaction {
                     }
                     Err(_) => {
                         self.open = false;
-                        Ok(CommitOutcome::OutcomeUnknown { recovery: outcome_unknown_recovery() })
+                        Ok(CommitOutcome::OutcomeUnknown {
+                            recovery: outcome_unknown_recovery_for(ErrorCategory::Timeout),
+                        })
                     }
                 },
                 _ = cancellation.cancelled() => {
                     self.open = false;
-                    Ok(CommitOutcome::OutcomeUnknown { recovery: outcome_unknown_recovery() })
+                    Ok(CommitOutcome::OutcomeUnknown {
+                        recovery: outcome_unknown_recovery_for(
+                            plenora_database_core::interruption_category(cancellation),
+                        ),
+                    })
                 },
             }
         })
@@ -749,8 +755,12 @@ fn commit_failure(error: &oracle_rs::Error) -> Result<CommitOutcome> {
         oracle_rs::Error::OracleError { .. } | oracle_rs::Error::ServerError { .. } => {
             Err(driver_error(ErrorPhase::Commit, error))
         }
+        // La categoria della causa: `io` per un canale perso, `protocol` per
+        // una risposta che il driver non sa leggere (ERR-001).
         _ => Ok(CommitOutcome::OutcomeUnknown {
-            recovery: outcome_unknown_recovery(),
+            recovery: outcome_unknown_recovery_for(
+                driver_error(ErrorPhase::Commit, error).category,
+            ),
         }),
     }
 }

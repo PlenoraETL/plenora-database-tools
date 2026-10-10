@@ -127,7 +127,9 @@ def _table() -> "pyarrow.Table":
 
 
 def _assert_unknown(error: p.PlenoraCommitOutcomeUnknownError) -> None:
-    assert error.category == "internal"
+    # Il canale e stato chiuso: la categoria e `io` (ERR-001); la classe resta
+    # quella del commit ignoto.
+    assert error.category == "io"
     assert error.phase == "commit"
     assert error.remote_effect == "unknown"
     assert error.retry == {"kind": "requires_recovery"}

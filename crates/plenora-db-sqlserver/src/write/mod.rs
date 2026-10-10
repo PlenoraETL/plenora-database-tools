@@ -559,7 +559,7 @@ async fn write_prepared_inner(
     if commit_result.is_ok() {
         if fault == Some(WriteFaultPoint::CommitConfirmationLost) {
             pooled.quarantine();
-            return unknown_commit_outcome(&prepared, execution_id, received);
+            return unknown_commit_outcome(&prepared, execution_id, received, None);
         }
         pooled.allow_reuse_after_drain()?;
         let (inserted, updated, deleted) = match prepared.plan.mode {
@@ -599,7 +599,8 @@ async fn write_prepared_inner(
         Ok(outcome)
     } else {
         pooled.quarantine();
-        unknown_commit_outcome(&prepared, execution_id, received)
+        let cause = commit_result.err().map(|error| error.category);
+        unknown_commit_outcome(&prepared, execution_id, received, cause)
     }
 }
 
@@ -691,6 +692,7 @@ fn unknown_commit_outcome(
     prepared: &PreparedSqlServerWrite,
     execution_id: String,
     received: u64,
+    cause: Option<ErrorCategory>,
 ) -> Result<WriteOutcome> {
     let outcome = WriteOutcome {
         schema_version: 2,
@@ -707,6 +709,7 @@ fn unknown_commit_outcome(
             skipped: 0,
         },
         recovery: Some(Recovery {
+            cause,
             last_certain_phase: CertainPhase::CommitRequested,
             automatic_retry_allowed: false,
             idempotency_key: None,

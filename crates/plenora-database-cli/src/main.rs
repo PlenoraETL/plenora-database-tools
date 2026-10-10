@@ -222,12 +222,17 @@ pub(crate) const fn commit_status(outcome: &CommitOutcome) -> &'static str {
     )),
     allow(dead_code, reason = "nessun adapter compilato apre una transazione")
 )]
-pub(crate) const fn commit_exit(outcome: &CommitOutcome) -> CliResult<()> {
+pub(crate) fn commit_exit(outcome: &CommitOutcome) -> CliResult<()> {
     match outcome {
         CommitOutcome::Committed => Ok(()),
-        // La categoria dell'errore di commit ignoto: exit 70, come
-        // `require_committed` e come le superfici pubbliche.
-        CommitOutcome::OutcomeUnknown { .. } => Err(CliError::Reported(ErrorCategory::Internal)),
+        // La categoria della causa (exit 5 per `io` o `timeout`), `internal`
+        // (exit 70) se non ce n'e una dimostrabile: come `require_committed`
+        // e come le superfici pubbliche.
+        CommitOutcome::OutcomeUnknown { .. } => Err(CliError::Reported(
+            outcome
+                .unknown_category()
+                .unwrap_or(ErrorCategory::Internal),
+        )),
     }
 }
 
@@ -248,7 +253,7 @@ pub(crate) fn print_committed(
     provider: ProviderKind,
 ) -> CliResult<()> {
     if active_public_command().is_some() && !commit.is_committed() {
-        let mut error = unknown_commit_error();
+        let mut error = unknown_commit_error(commit);
         error.provider = Some(provider);
         let mut details = serde_json::Map::new();
         if let Ok(commit) = serde_json::to_value(commit) {
@@ -264,9 +269,13 @@ pub(crate) fn print_committed(
 }
 
 /// L'errore di un commit emesso e non confermato.
-fn unknown_commit_error() -> DatabaseError {
+///
+/// La categoria e la causa osservata dall'adapter (`io` per un canale perso,
+/// `timeout`, `cancelled`, `protocol`), `internal` se non ne ha una
+/// dimostrabile (ERR-001).
+fn unknown_commit_error(commit: &CommitOutcome) -> DatabaseError {
     DatabaseError {
-        category: ErrorCategory::Internal,
+        category: commit.unknown_category().unwrap_or(ErrorCategory::Internal),
         phase: ErrorPhase::Commit,
         remote_effect: RemoteEffect::Unknown,
         retry: RetryDisposition::RequiresRecovery,
@@ -304,7 +313,7 @@ fn unknown_commit_error() -> DatabaseError {
 pub(crate) fn require_committed(outcome: &CommitOutcome) -> CliResult<()> {
     match outcome {
         CommitOutcome::Committed => Ok(()),
-        CommitOutcome::OutcomeUnknown { .. } => Err(CliError::Fatal(unknown_commit_error())),
+        CommitOutcome::OutcomeUnknown { .. } => Err(CliError::Fatal(unknown_commit_error(outcome))),
     }
 }
 

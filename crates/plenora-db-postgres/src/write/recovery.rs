@@ -141,6 +141,7 @@ pub(super) fn unknown_write_outcome(
     execution_id: String,
     received: u64,
     verification_action: &str,
+    cause: Option<ErrorCategory>,
 ) -> WriteOutcome {
     WriteOutcome {
         schema_version: 2,
@@ -157,6 +158,7 @@ pub(super) fn unknown_write_outcome(
             skipped: 0,
         },
         recovery: Some(Recovery {
+            cause,
             last_certain_phase: CertainPhase::CommitRequested,
             automatic_retry_allowed: false,
             idempotency_key: None,

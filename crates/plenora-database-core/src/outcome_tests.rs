@@ -105,6 +105,7 @@ fn the_recovery_fields_are_measured_at_their_boundaries() {
         let build = |length: usize| {
             let filler = "a".repeat(length);
             Recovery {
+                cause: None,
                 last_certain_phase: CertainPhase::CommitRequested,
                 automatic_retry_allowed: false,
                 idempotency_key: (set == 0).then(|| filler.clone()),
@@ -285,4 +286,28 @@ fn an_unconsumable_outcome_never_settles_and_is_not_forwarded() {
     assert_eq!(unsettled.error().phase, ErrorPhase::Commit);
     let document = unsettled.public_document().expect("document");
     assert!(document.get("details").is_none(), "{document}");
+}
+
+/// ERR-001: la categoria di un esito ignoto e quella della causa che la
+/// sorgente ha osservato; senza causa resta `internal`. La causa non viaggia
+/// nel documento, il cui schema e chiuso.
+#[test]
+fn an_unknown_outcome_takes_the_category_of_its_cause() {
+    for (cause, expected) in [
+        (Some(ErrorCategory::Io), ErrorCategory::Io),
+        (Some(ErrorCategory::Timeout), ErrorCategory::Timeout),
+        (None, ErrorCategory::Internal),
+    ] {
+        let mut unknown = example("unknown");
+        if let Some(recovery) = unknown.recovery.as_mut() {
+            recovery.cause = cause;
+        }
+        let document = serde_json::to_value(&unknown).expect("JSON");
+        assert!(document["recovery"].get("cause").is_none(), "{document}");
+        let error = unknown.settle().expect_err("ignoto").error().clone();
+        assert_eq!(error.category, expected);
+        assert_eq!(error.phase, ErrorPhase::Commit);
+        assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    }
 }

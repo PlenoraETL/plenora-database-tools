@@ -16,9 +16,17 @@ riassumono le note di quelle release.
   consegnavano un esito `outcome_unknown` come risultato riuscito: la CLI con
   `status: ok` ed exit 0, lo SDK come valore di ritorno. Provato con un proxy
   che fa cadere la conferma del `COMMIT` di PostgreSQL. Ora è l'errore di
-  commit ignoto (`internal`, `commit`, `unknown`, `requires_recovery`; exit
-  70; `PlenoraCommitOutcomeUnknownError`) con l'esito in
-  `details.write_outcome`. `partially_committed` e `rolled_back` seguono la
+  commit ignoto (`commit`, `unknown`, `requires_recovery`;
+  `PlenoraCommitOutcomeUnknownError`) con l'esito in `details.write_outcome`.
+  La categoria è la causa che l'adapter ha osservato (ERR-001): `io` per un
+  canale perso (exit 5, il caso del proxy), `timeout` (5), `cancelled`
+  (130), `protocol` per una risposta non interpretabile (5), `internal`
+  (70) quando la causa non è dimostrabile. La causa viaggia in
+  `Recovery::cause`, solo Rust: lo schema `write-outcome` è chiuso e il
+  documento JSON non la porta. In Python la classe resta
+  `PlenoraCommitOutcomeUnknownError` (sottoclasse di `PlenoraInternalError`,
+  per compatibilità) e l'attributo `category` porta la causa: è l'attributo,
+  non la classe, a dire la categoria. `partially_committed` e `rolled_back` seguono la
   stessa regola con i propri assi (`execution`, exit 6). SURF-014.
 - **`execute` con commit ignoto** stampava `status: ok` ed usciva con 1:
   ora è un envelope d'errore con il `CommitOutcome` in `details.commit`

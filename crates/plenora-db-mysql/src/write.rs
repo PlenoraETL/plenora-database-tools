@@ -1074,6 +1074,7 @@ pub fn commit_failure(
             skipped: 0,
         },
         recovery: Some(Recovery {
+            cause: Some(error.category),
             last_certain_phase: CertainPhase::CommitRequested,
             automatic_retry_allowed: false,
             idempotency_key: None,

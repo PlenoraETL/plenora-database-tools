@@ -314,7 +314,12 @@ impl Transaction {
                 let cancel = CancellationToken::new();
                 let outcome = tx.commit(&cancel).await?;
                 if !outcome.is_committed() {
-                    return Err(crate::errors_commit::commit_outcome_unknown(provider));
+                    return Err(crate::errors_commit::commit_outcome_unknown(
+                        provider,
+                        outcome
+                            .unknown_category()
+                            .unwrap_or(plenora_database_core::ErrorCategory::Internal),
+                    ));
                 }
                 Ok(())
             })

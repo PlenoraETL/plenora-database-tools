@@ -1021,3 +1021,37 @@ fn every_category_projects_on_a_cli_2_exit_code() {
         );
     }
 }
+
+/// La categoria di un commit ignoto e la causa che l'adapter ha osservato:
+/// un canale perso e `io` ed esce con 5, un timeout `timeout` (5), una
+/// causa non dimostrabile `internal` (70). ERR-001, CLI-2.0 §8.
+#[test]
+fn an_unknown_commit_takes_the_category_of_its_cause() {
+    use plenora_database_core::transaction::{
+        outcome_unknown_recovery, outcome_unknown_recovery_for,
+    };
+    for (recovery, category, exit) in [
+        (
+            outcome_unknown_recovery_for(ErrorCategory::Io),
+            ErrorCategory::Io,
+            5,
+        ),
+        (
+            outcome_unknown_recovery_for(ErrorCategory::Timeout),
+            ErrorCategory::Timeout,
+            5,
+        ),
+        (outcome_unknown_recovery(), ErrorCategory::Internal, 70),
+    ] {
+        let commit = CommitOutcome::OutcomeUnknown { recovery };
+        let Err(error) = require_committed(&commit) else {
+            panic!("un commit ignoto non e un successo");
+        };
+        assert_eq!(error.category(), category);
+        assert_eq!(cli_exit_code(error.category()), exit);
+        let Err(CliError::Reported(reported)) = commit_exit(&commit) else {
+            panic!("un commit ignoto non e un successo");
+        };
+        assert_eq!(reported, category);
+    }
+}

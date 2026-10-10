@@ -60,7 +60,12 @@ where
             let provider_kind = transaction.provider_kind();
             let outcome = transaction.commit().await?;
             if !outcome.is_committed() {
-                return Err(crate::errors_commit::commit_outcome_unknown(provider_kind));
+                return Err(crate::errors_commit::commit_outcome_unknown(
+                    provider_kind,
+                    outcome
+                        .unknown_category()
+                        .unwrap_or(plenora_database_core::ErrorCategory::Internal),
+                ));
             }
             Ok(value)
         }

@@ -130,10 +130,11 @@ impl CommitOutcome {
     }
 }
 
-/// Costruisce la `Recovery` canonica per un commit ambiguo.
+/// Costruisce la `Recovery` canonica per un commit ambiguo, senza causa.
 #[must_use]
 pub fn outcome_unknown_recovery() -> Recovery {
     Recovery {
+        cause: None,
         last_certain_phase: CertainPhase::CommitRequested,
         automatic_retry_allowed: false,
         idempotency_key: None,
@@ -141,6 +142,28 @@ pub fn outcome_unknown_recovery() -> Recovery {
         verification_action: Some(
             "verificare fuori banda lo stato del target prima di ritentare".to_owned(),
         ),
+    }
+}
+
+/// La `Recovery` canonica di un commit ambiguo con la causa osservata.
+#[must_use]
+pub fn outcome_unknown_recovery_for(cause: crate::ErrorCategory) -> Recovery {
+    Recovery {
+        cause: Some(cause),
+        ..outcome_unknown_recovery()
+    }
+}
+
+impl CommitOutcome {
+    /// La categoria di un commit ignoto: la causa osservata, o `internal`.
+    #[must_use]
+    pub fn unknown_category(&self) -> Option<crate::ErrorCategory> {
+        match self {
+            Self::Committed => None,
+            Self::OutcomeUnknown { recovery } => {
+                Some(recovery.cause.unwrap_or(crate::ErrorCategory::Internal))
+            }
+        }
     }
 }
 

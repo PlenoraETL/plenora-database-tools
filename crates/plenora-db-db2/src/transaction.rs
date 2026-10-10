@@ -11,8 +11,9 @@ use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::{ParameterValue, ProviderFuture, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::transaction::{
-    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name,
-    CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
+    concurrent_modification_error, outcome_unknown_recovery, outcome_unknown_recovery_for,
+    validate_savepoint_name, CommitOutcome, ConditionalUpdate, RowStream, Statement,
+    TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result, Row,
@@ -808,7 +809,14 @@ impl TransactionScope for Db2Transaction {
             let result = tokio::task::spawn_blocking(move || connection.commit()).await;
             match result {
                 Ok(Ok(())) => Ok(CommitOutcome::Committed),
-                Ok(Err(_)) | Err(_) => Ok(CommitOutcome::OutcomeUnknown {
+                // La causa del driver diventa la categoria (ERR-001); un task
+                // perso non ne ha una dimostrabile.
+                Ok(Err(error)) => Ok(CommitOutcome::OutcomeUnknown {
+                    recovery: outcome_unknown_recovery_for(
+                        driver_error(&error, ErrorPhase::Commit).category,
+                    ),
+                }),
+                Err(_) => Ok(CommitOutcome::OutcomeUnknown {
                     recovery: outcome_unknown_recovery(),
                 }),
             }

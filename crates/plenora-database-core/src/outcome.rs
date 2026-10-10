@@ -44,6 +44,15 @@ pub struct Recovery {
     pub idempotency_key: Option<String>,
     pub staging_object: Option<String>,
     pub verification_action: Option<String>,
+    /// La causa osservata dalla sorgente quando la conferma e mancata: I/O o
+    /// connessione, timeout, cancellazione, protocollo. Le superfici ne
+    /// fanno la categoria dell'errore (ERR-001); senza, la categoria e
+    /// `internal`.
+    ///
+    /// Non viaggia nel documento: lo schema `write-outcome` e chiuso, e un
+    /// documento letto da JSON non la porta.
+    #[serde(skip)]
+    pub cause: Option<ErrorCategory>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,7 +242,10 @@ impl WriteOutcome {
             // Gli stessi assi del vettore `database-write-error` dei contratti
             // e dell'errore di commit dell'SDK: l'incertezza sta sul COMMIT.
             WriteStatus::OutcomeUnknown => (
-                ErrorCategory::Internal,
+                self.recovery
+                    .as_ref()
+                    .and_then(|recovery| recovery.cause)
+                    .unwrap_or(ErrorCategory::Internal),
                 ErrorPhase::Commit,
                 RetryDisposition::RequiresRecovery,
                 "esito del commit ignoto: verificare lo stato remoto per execution_id \
