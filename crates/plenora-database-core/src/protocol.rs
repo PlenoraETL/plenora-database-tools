@@ -125,6 +125,15 @@ fn field_id_error(message: &str) -> crate::DatabaseError {
 /// catalogo del database (`authority:srid`, per esempio `MYSQL:4326`): e cio
 /// che il database ha dichiarato, senza pretendere che sia un codice EPSG.
 /// L'ordine degli assi non e noto. Senza SRID il CRS e `missing`.
+///
+/// # Ambito dell'identificatore
+///
+/// L'identificatore e **locale all'installazione** del database che lo ha
+/// dichiarato: lo stesso `MYSQL:4326` in due server diversi puo indicare
+/// CRS diversi. Non viene mai promosso a `resolved`, e due campi con lo
+/// stesso identificatore di questa forma non si considerano nello stesso CRS
+/// se vengono da sorgenti diverse. La semantica e da ratificare in
+/// plenora-contracts; la sintassi e quella di ARROW-VOCABULARY 1.0.
 pub fn insert_declared_crs<S: std::hash::BuildHasher>(
     metadata: &mut HashMap<String, String, S>,
     authority: &str,

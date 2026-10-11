@@ -170,3 +170,24 @@ fn legacy_keys_do_not_satisfy_publication() {
         assert!(published(metadata).is_err(), "{legacy}");
     }
 }
+
+/// Due field id numericamente uguali con zeri iniziali diversi sono lo
+/// stesso id, come in `contract_schema`.
+#[test]
+fn equal_field_ids_with_leading_zeros_are_duplicates_when_published() {
+    let mut first = published_geometry();
+    first.insert("plenora.field_id".to_owned(), "7".to_owned());
+    let mut second = published_geometry();
+    second.insert("plenora.field_id".to_owned(), "007".to_owned());
+    let schema = Schema::new_with_metadata(
+        vec![
+            Field::new("a", DataType::Binary, true).with_metadata(first),
+            Field::new("b", DataType::Binary, true).with_metadata(second),
+        ],
+        std::collections::HashMap::from([(
+            protocol::CONTRACT_VERSION_KEY.to_owned(),
+            protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    );
+    assert!(validate_published_schema(&schema).is_err());
+}

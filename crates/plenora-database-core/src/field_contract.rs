@@ -504,7 +504,9 @@ pub fn validate_published_schema(schema: &Schema) -> Result<()> {
     for field in schema.fields() {
         let contract = FieldContract::parse(field)?;
         contract.validate_published()?;
-        if let Some(id) = contract.field_id {
+        // Forma canonica, come in `contract_schema`: "7" e "007" sono lo
+        // stesso id.
+        if let Some(id) = contract.field_id.and_then(protocol::canonical_field_id) {
             if !ids.insert(id) {
                 return Err(contract_error(
                     ErrorCategory::DataMapping,

@@ -318,8 +318,19 @@ pub async fn query_stream(
 
 /// Una query che proietta la stessa colonna sorgente piu volte darebbe a
 /// quei campi lo stesso field id. Per loro l'origine non identifica il campo:
-/// l'id si deriva dal nome di uscita, che la query rende distinto (limite
-/// dichiarato: una rinomina di quei campi cambia l'id).
+/// l'id si deriva dal nome di uscita, che la query rende distinto.
+///
+/// # Limite dichiarato
+///
+/// L'id di una colonna dipende quindi dalla **composizione** della
+/// proiezione: aggiungere una seconda proiezione della stessa origine — anche
+/// tramite un auto-join — fa passare **entrambe** le colonne all'id derivato
+/// dal nome, compresa quella rimasta invariata. Anche le espressioni hanno
+/// l'id del nome, e una rinomina lo cambia. Per le viste l'equivalenza non e
+/// garantita: il catalogo di una lettura usa `attrelid`/`attnum` della vista,
+/// una query l'origine che il driver riporta. L'unicita e garantita solo
+/// dentro lo schema prodotto; l'hash a 31 bit non e un'identita globale ne
+/// storica (una tabella ricreata ha un'altra origine).
 fn without_shared_origins(mut columns: Vec<ColumnSpec>) -> Vec<ColumnSpec> {
     let mut counts = std::collections::HashMap::new();
     for source in columns.iter().filter_map(|column| column.source) {

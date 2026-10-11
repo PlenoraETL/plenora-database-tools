@@ -26,7 +26,10 @@ riassumono le note di quelle release.
   un'autorità risolta si pubblica `declared_unresolved` con
   l'identificatore nello spazio dei nomi del catalogo del database
   (`POSTGIS:n`, `MYSQL:n`, `SQLSERVER:n`, `ORACLE:n`, `DB2:n`) e
-  `axis_order=unknown`; senza SRID il CRS è `missing`. Oracle dichiarava
+  `axis_order=unknown`; senza SRID il CRS è `missing`. L'identificatore è
+  locale all'installazione: non viene mai promosso a `resolved` e non è
+  confrontabile fra sorgenti diverse (semantica da ratificare in
+  plenora-contracts). Oracle dichiarava
   `resolved` senza identificatore; MySQL, SQL Server e Db2
   `declared_unresolved` senza identificatore né ordine degli assi. Limiti dichiarati: una
   colonna `numeric` nel risultato di una query PostgreSQL e rifiutata come
@@ -49,9 +52,13 @@ riassumono le note di quelle release.
   (`protocol::contract_schema`). Un id dichiarato resta, qualunque intero
   decimale non negativo sia. PostgreSQL dichiara l'id dall'origine della
   colonna (`attrelid`, `attnum`), quindi una rinomina o un alias non lo
-  cambiano. Per le espressioni, per una colonna proiettata più volte e per
-  gli adapter che non espongono l'origine (MySQL, SQL Server, Oracle, Db2)
-  l'id si deriva dal nome: limite dichiarato, una rinomina cambia l'id.
+  cambiano. Limite dichiarato: per le espressioni, per gli adapter che non
+  espongono l'origine (MySQL, SQL Server, Oracle, Db2) e per ogni colonna la
+  cui origine compare più volte nella proiezione l'id si deriva dal nome, e
+  una rinomina lo cambia. Aggiungere una seconda proiezione della stessa
+  origine (anche con un auto-join) cambia quindi l'id anche della colonna
+  rimasta invariata; per le viste l'equivalenza fra lettura e query non è
+  garantita; l'unicità vale dentro lo schema, non fra schemi o nel tempo.
   Id duplicati — anche per collisione dell'hash — sono un errore `schema`.
   **`precision`** (`float64`), dimensioni e dichiarazione dei tipi sono
   sempre presenti sulle geometrie PostgreSQL (ARROW-VOCABULARY §2 e §4), e
