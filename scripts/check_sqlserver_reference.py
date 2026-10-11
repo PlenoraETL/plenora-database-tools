@@ -44,6 +44,7 @@ SKIPPED_LIVE_TESTS = (
 REQUIRED_LIVE_TESTS = frozenset(
     {
         "live_native_query_policy_guards_every_transaction_entrypoint",
+        "live_a_native_batch_error_after_a_write_is_not_reported_as_no_effect",
         "live_provider_execute_ddl_creates_and_drops_table",
         "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
         "live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps",

@@ -36,6 +36,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_large_wkb_temporary_blob_bind_is_lossless",
         "live_arrow_scalar_create_and_read_preserves_supported_types",
         "live_an_abandoned_create_is_recorded_as_a_possible_residue",
+        "live_a_native_ddl_failure_after_a_write_is_not_reported_as_no_effect",
         "live_configurable_pool_bounds_waiters_and_reuses_after_rollback",
         "live_tcps_verifies_private_ca_and_rejects_untrusted_server",
         "live_keyset_checkpoint_resumes_after_the_last_delivered_row",

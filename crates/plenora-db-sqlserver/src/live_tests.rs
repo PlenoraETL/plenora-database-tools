@@ -9066,3 +9066,60 @@ async fn live_the_portable_facade_speaks_tsql_to_a_real_server() {
         .await
         .ok();
 }
+
+/// Un batch nativo `INSERT; RAISERROR`: il server rifiuta il batch con un
+/// codice, ma l'INSERT e gia avvenuto nella transazione. L'errore non puo
+/// dichiarare `none`.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta una fixture isolata"]
+async fn live_a_native_batch_error_after_a_write_is_not_reported_as_no_effect() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("sessione admin");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[native_batch_probe]; \
+                 CREATE TABLE [plenora_test].[native_batch_probe] ([id] int NOT NULL);",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("fixture");
+    let provider = SqlServerProvider::new(config.clone(), 1024, 4).expect("provider");
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut transaction = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+    let error = transaction
+        .execute(
+            &Statement::new(
+                "INSERT INTO [plenora_test].[native_batch_probe] ([id]) VALUES (1); \
+                 RAISERROR('rifiuto del batch', 16, 1);",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect_err("RAISERROR");
+    assert_ne!(error.remote_effect, RemoteEffect::None);
+    let _ = Box::new(transaction).rollback(&cancellation).await;
+    admin
+        .execute_query(
+            Query::new("DROP TABLE IF EXISTS [plenora_test].[native_batch_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup");
+}

@@ -2244,3 +2244,74 @@ async fn live_an_abandoned_create_is_recorded_as_a_possible_residue() {
         .await
         .expect("la tabella creata esiste e si rimuove");
 }
+
+/// SQL nativo nella transazione: un INSERT, poi un CREATE TABLE che fallisce
+/// con ORA-00955. Il commit implicito prima del DDL ha reso permanente
+/// l'INSERT, quindi l'errore non puo dichiarare `none`.
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_a_native_ddl_failure_after_a_write_is_not_reported_as_no_effect() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let table = "PLENORA_ORACLE_NATIVE_DDL";
+    let _ = provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("CREATE TABLE {table} (ID NUMBER(10))"),
+            &cancellation,
+        )
+        .await
+        .expect("fixture");
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+    transaction
+        .execute(
+            &Statement::new(format!("INSERT INTO {table} (ID) VALUES (1)")),
+            &cancellation,
+        )
+        .await
+        .expect("insert");
+    let error = transaction
+        .execute(
+            &Statement::new(format!("CREATE TABLE {table} (ID NUMBER(10))")),
+            &cancellation,
+        )
+        .await
+        .expect_err("ORA-00955");
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    let _ = transaction.rollback(&cancellation).await;
+    // L'INSERT e stato reso permanente dal commit implicito del DDL.
+    let mut verify = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("verifica");
+    let rows = verify
+        .query(
+            &Statement::new(format!("SELECT COUNT(*) AS N FROM {table}")),
+            &cancellation,
+        )
+        .await
+        .expect("conteggio");
+    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    let _ = verify.rollback(&cancellation).await;
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .expect("cleanup");
+}
