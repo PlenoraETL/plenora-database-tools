@@ -106,6 +106,49 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
+/// Riconosce il `COMMIT` della transazione marcata nel traffico del client,
+/// anche quando marcatore o comando sono spezzati fra due letture TCP.
+struct CommitScanner {
+    marker: Vec<u8>,
+    touched: bool,
+    tail: Vec<u8>,
+}
+
+impl CommitScanner {
+    fn new(marker: &[u8]) -> Self {
+        Self {
+            marker: marker.to_vec(),
+            touched: false,
+            tail: Vec::new(),
+        }
+    }
+
+    /// `true` quando questa lettura completa il `COMMIT` dopo il marcatore.
+    fn feed(&mut self, chunk: &[u8]) -> bool {
+        // Il marcatore o il `COMMIT` possono arrivare spezzati su due
+        // letture: si cerca nella coda della lettura precedente piu questa.
+        let mut window = std::mem::take(&mut self.tail);
+        window.extend_from_slice(chunk);
+        self.touched |= contains(&window, &self.marker);
+        let cut = self.touched && contains(&window, b"COMMIT");
+        let keep = self.marker.len().max(b"COMMIT".len()).saturating_sub(1);
+        self.tail = window[window.len().saturating_sub(keep)..].to_vec();
+        cut
+    }
+}
+
+/// Il proxy conserva la coda fra le letture: un marcatore e un `COMMIT`
+/// spezzati su piu chunk vengono comunque riconosciuti.
+#[test]
+fn the_scanner_finds_a_marker_and_a_commit_split_across_reads() {
+    let mut scanner = CommitScanner::new(b"plenora-marker");
+    assert!(!scanner.feed(b"INSERT ... plenora-ma"));
+    assert!(!scanner.feed(b"rker ... CO"));
+    assert!(scanner.feed(b"MMIT"));
+    let mut unmarked = CommitScanner::new(b"plenora-marker");
+    assert!(!unmarked.feed(b"COMMIT"));
+}
+
 fn relay(mut client: TcpStream, mut server: TcpStream, marker: &[u8], cuts: &AtomicUsize) {
     let (Ok(mut client_back), Ok(mut server_back)) = (client.try_clone(), server.try_clone())
     else {
@@ -115,7 +158,7 @@ fn relay(mut client: TcpStream, mut server: TcpStream, marker: &[u8], cuts: &Ato
     thread::spawn(move || {
         let _ = std::io::copy(&mut server_back, &mut client_back);
     });
-    let mut touched = false;
+    let mut scanner = CommitScanner::new(marker);
     let mut buffer = vec![0_u8; 64 * 1024];
     loop {
         let read = match client.read(&mut buffer) {
@@ -123,8 +166,7 @@ fn relay(mut client: TcpStream, mut server: TcpStream, marker: &[u8], cuts: &Ato
             Ok(read) => read,
         };
         let chunk = &buffer[..read];
-        touched |= contains(chunk, marker);
-        if touched && contains(chunk, b"COMMIT") {
+        if scanner.feed(chunk) {
             // Prima si chiude il client, poi si inoltra: la conferma del
             // server non ha piu una strada per tornare indietro.
             let _ = client.shutdown(Shutdown::Both);
