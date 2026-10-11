@@ -168,6 +168,19 @@ pub(crate) fn check_stream_framing(bytes: &[u8]) -> Result<(), DatabaseError> {
                 "endianness dello schema Arrow IPC diversa da quella della piattaforma",
             ));
         }
+        // Lo stesso limite dichiarato della CLI (`ipc_input::nests_a_dictionary`):
+        // un dizionario annidato nei valori di un altro non si decodifica.
+        if message.header_as_schema().is_some_and(|schema| {
+            schema
+                .fields()
+                .into_iter()
+                .flatten()
+                .any(|field| nests_a_dictionary(field, false))
+        }) {
+            return Err(DatabaseError::invalid_plan(
+                "dizionario Arrow IPC annidato nei valori di un altro dizionario: non supportato",
+            ));
+        }
         let body_length = usize::try_from(message.bodyLength()).map_err(|_| invalid())?;
         position = metadata_end
             .checked_add(body_length)
@@ -180,6 +193,22 @@ pub(crate) fn check_stream_framing(bytes: &[u8]) -> Result<(), DatabaseError> {
         ));
     }
     Ok(())
+}
+
+/// Un campo a dizionario dentro i valori di un altro dizionario, a
+/// qualunque profondita. Limite dichiarato nella CLI
+/// (`ipc_input::nests_a_dictionary`): il lettore di Arrow trattiene le
+/// generazioni sostituite del dizionario interno.
+fn nests_a_dictionary(field: arrow_ipc::Field<'_>, inside_dictionary: bool) -> bool {
+    let encoded = field.dictionary().is_some();
+    if encoded && inside_dictionary {
+        return true;
+    }
+    field
+        .children()
+        .into_iter()
+        .flatten()
+        .any(|child| nests_a_dictionary(child, inside_dictionary || encoded))
 }
 
 pub(crate) fn decode_ipc_stream(

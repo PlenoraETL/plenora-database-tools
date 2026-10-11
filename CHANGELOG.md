@@ -87,6 +87,14 @@ riassumono le note di quelle release.
   tiene per id per tutta la lettura: il totale residente si aggiorna a ogni
   sostituzione (il nuovo prende il posto del precedente) e a ogni delta (si
   concatena), con il picco in cui precedente e nuovo sono vivi insieme.
+  Limite dichiarato: un dizionario annidato nei valori di un altro
+  dizionario si rifiuta prima del decoder, nella CLI (file e stream) e nel
+  binding Python. Regola: nessun campo a dizionario, a qualunque
+  profondità, nel tipo dei valori di un campo a dizionario; ambito: i
+  dizionari affiancati o dentro struct e liste restano ammessi; hazard: il
+  lettore di Arrow trattiene le generazioni sostituite del dizionario
+  interno attraverso quello esterno, mentre il budget le sottrae; rientro:
+  un conteggio delle dipendenze fra dizionari.
   Uno schema che dichiara un ordine dei byte diverso da quello della
   piattaforma si rifiuta: il lettore dello stream di Arrow non lo controlla,
   e i valori si leggerebbero con i byte invertiti (un Int32 con valore 1

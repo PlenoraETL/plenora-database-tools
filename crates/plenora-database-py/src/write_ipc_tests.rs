@@ -133,3 +133,31 @@ fn a_foreign_endianness_is_rejected() {
     let error = decode_ipc_stream(&big_endian_stream()).expect_err("endianness estranea");
     assert!(error.message.contains("endianness"), "{}", error.message);
 }
+
+/// Un dizionario annidato nei valori di un altro dizionario si rifiuta
+/// prima del decoder, come nella CLI: lo stesso limite in ogni ingresso.
+#[test]
+fn a_dictionary_nested_inside_another_dictionary_is_rejected() {
+    use plenora_database_core::arrow::array::builder::{ListBuilder, StringDictionaryBuilder};
+    use plenora_database_core::arrow::array::types::Int32Type;
+    use plenora_database_core::arrow::array::{Array, DictionaryArray, Int32Array};
+    use plenora_database_core::arrow::{Field, RecordBatch, Schema};
+    use std::sync::Arc;
+    let mut list = ListBuilder::new(StringDictionaryBuilder::<Int32Type>::new());
+    list.values().append_value("a1");
+    list.append(true);
+    let outer =
+        DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0]), Arc::new(list.finish()))
+            .expect("dizionario esterno");
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "b",
+        outer.data_type().clone(),
+        false,
+    )]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(outer)]).expect("batch");
+    let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &schema).expect("writer");
+    writer.write(&batch).expect("write");
+    let bytes = writer.into_inner().expect("stream");
+    let error = check_stream_framing(&bytes).expect_err("dizionario annidato accettato");
+    assert!(error.message.contains("annidat"), "{}", error.message);
+}

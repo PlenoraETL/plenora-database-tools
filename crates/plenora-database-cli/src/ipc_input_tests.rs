@@ -771,3 +771,102 @@ fn dictionary_deltas_accumulate_in_the_budget() {
         .expect("decodifica");
     assert_eq!(batches.len(), 3);
 }
+
+/// Un dizionario B i cui valori contengono il dizionario A: A, B1, A', B2.
+/// Il lettore di Arrow trattiene la generazione vecchia di A attraverso B1,
+/// mentre il budget la sottrae alla sostituzione.
+fn nested_dictionary_stream() -> Vec<u8> {
+    use plenora_database_core::arrow::array::builder::{ListBuilder, StringDictionaryBuilder};
+    use plenora_database_core::arrow::array::types::Int32Type;
+    use plenora_database_core::arrow::array::{Array, DictionaryArray, Int32Array};
+    let outer = |values: &[&str]| {
+        let mut list = ListBuilder::new(StringDictionaryBuilder::<Int32Type>::new());
+        for value in values {
+            list.values().append_value(value);
+        }
+        list.append(true);
+        DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0, 0]), Arc::new(list.finish()))
+            .expect("dizionario esterno")
+    };
+    let first = outer(&["a1", "a2"]);
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "b",
+        first.data_type().clone(),
+        false,
+    )]));
+    let mut writer = StreamWriter::try_new(Vec::new(), &schema).expect("writer");
+    for values in [["a1", "a2"], ["a3", "a4"]] {
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(outer(&values))])
+            .expect("batch");
+        writer.write(&batch).expect("write");
+    }
+    writer.into_inner().expect("stream")
+}
+
+/// I dizionari annidati nei valori di un altro dizionario si rifiutano
+/// prima del decoder: il budget non conta le generazioni che il lettore
+/// trattiene attraverso il dizionario esterno.
+#[test]
+fn a_dictionary_nested_inside_another_dictionary_is_rejected() {
+    let bytes = nested_dictionary_stream();
+    // Lo scenario: quattro dizionari, A, B1, A' e B2, con id diversi per A e B.
+    let mut position = 0_usize;
+    let mut dictionaries = Vec::new();
+    loop {
+        let length =
+            u32::from_le_bytes(bytes[position + 4..position + 8].try_into().expect("u32")) as usize;
+        if length == 0 {
+            break;
+        }
+        let message = root_as_message(&bytes[position + 8..position + 8 + length]).expect("msg");
+        if let Some(dictionary) = message.header_as_dictionary_batch() {
+            dictionaries.push((dictionary.id(), dictionary.isDelta()));
+        }
+        position += 8 + length + usize::try_from(message.bodyLength()).expect("corpo");
+    }
+    assert_eq!(dictionaries.len(), 4, "{dictionaries:?}");
+    assert_eq!(dictionaries[0].0, dictionaries[2].0);
+    assert_eq!(dictionaries[1].0, dictionaries[3].0);
+    assert_ne!(dictionaries[0].0, dictionaries[1].0);
+    assert!(dictionaries.iter().all(|(_, delta)| !delta));
+    let input = scratch("nested-dictionary.arrows", &bytes);
+    let error = open_batches(input.0.to_str().expect("UTF-8"), 1 << 20)
+        .err()
+        .expect("dizionario annidato accettato");
+    assert!(
+        error.database_error().message.contains("annidat"),
+        "{}",
+        error.database_error().message
+    );
+}
+
+/// Lo stesso rifiuto per il formato file, che si legge come lo stream che
+/// incapsula.
+#[test]
+fn a_nested_dictionary_in_a_file_is_rejected() {
+    use plenora_database_core::arrow::array::builder::{ListBuilder, StringDictionaryBuilder};
+    use plenora_database_core::arrow::array::types::Int32Type;
+    use plenora_database_core::arrow::array::{Array, DictionaryArray, Int32Array};
+    let mut list = ListBuilder::new(StringDictionaryBuilder::<Int32Type>::new());
+    list.values().append_value("a1");
+    list.append(true);
+    let outer =
+        DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0]), Arc::new(list.finish()))
+            .expect("dizionario esterno");
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "b",
+        outer.data_type().clone(),
+        false,
+    )]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(outer)]).expect("batch");
+    let mut writer = FileWriter::try_new(Vec::new(), &schema).expect("writer");
+    writer.write(&batch).expect("write");
+    let input = scratch(
+        "nested-dictionary.arrow",
+        &writer.into_inner().expect("file"),
+    );
+    let error = open_batches(input.0.to_str().expect("UTF-8"), 1 << 20)
+        .err()
+        .expect("dizionario annidato accettato");
+    assert!(error.database_error().message.contains("annidat"));
+}

@@ -213,6 +213,36 @@ fn metadata_footprint<'a>(entries: impl Iterator<Item = arrow_ipc::KeyValue<'a>>
     })
 }
 
+/// Un campo a dizionario dentro i valori di un altro dizionario.
+///
+/// # Limite dichiarato
+///
+/// **Regola**: un input IPC con un dizionario annidato nei valori di un
+/// altro dizionario si rifiuta prima del decoder. **Ambito**: ogni campo a
+/// dizionario che compare, a qualunque profondita, nel tipo dei valori di
+/// un campo a dizionario; i dizionari affiancati o dentro struct e liste
+/// restano ammessi. **Hazard**: il lettore di Arrow trattiene le
+/// generazioni vecchie del dizionario interno attraverso il dizionario
+/// esterno che le contiene, mentre il budget dei dizionari residenti le
+/// sottrae alla sostituzione: con l'annidamento la memoria reale supera
+/// quella contata. **Rientro**: un conteggio delle dipendenze fra
+/// dizionari, o un lettore che non trattenga le generazioni sostituite.
+fn nests_a_dictionary(field: arrow_ipc::Field<'_>, inside_dictionary: bool) -> bool {
+    let encoded = field.dictionary().is_some();
+    if encoded && inside_dictionary {
+        return true;
+    }
+    field
+        .children()
+        .into_iter()
+        .flatten()
+        .any(|child| nests_a_dictionary(child, inside_dictionary || encoded))
+}
+
+fn nested_dictionary() -> crate::CliError {
+    "dizionario Arrow IPC annidato nei valori di un altro dizionario: non supportato".into()
+}
+
 /// Memoria di un dizionario residente oltre ai suoi dati: la voce della
 /// tabella per id del lettore, l'`ArrayRef` e la struttura dell'array
 /// (tipo, buffer, figli). Stima per eccesso.
@@ -583,6 +613,14 @@ fn schema_resident(
             // (un Int32 con valore 1 diventerebbe 16777216), senza errore.
             if !fields.endianness().equals_to_target_endianness() {
                 return Err(foreign_endianness());
+            }
+            if fields
+                .fields()
+                .into_iter()
+                .flatten()
+                .any(|field| nests_a_dictionary(field, false))
+            {
+                return Err(nested_dictionary());
             }
             schema_footprint(fields)
                 .and_then(|bytes| bytes.checked_add(metadata_length))
