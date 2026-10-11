@@ -387,7 +387,11 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
             }
             let resources = reserve_write_batch(&batch, self.plans, self.runtime, self.budget)?;
             resources.commit()?;
-            self.batch = Some(batch);
+            self.batch = Some(super::stamp_declared_srid(
+                &batch,
+                self.plans,
+                self.budget.limits().nesting_depth,
+            )?);
         }
     }
 }

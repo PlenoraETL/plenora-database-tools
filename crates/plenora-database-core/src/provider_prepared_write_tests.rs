@@ -7,7 +7,8 @@ use crate::resource::{ResourceKind, ResourceLimits};
 #[test]
 fn driver_state_is_opaque_typed_and_single_use() {
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
-    let schema = crate::protocol::contract_schema(vec![Field::new("id", DataType::Int64, false)]);
+    let schema = crate::protocol::contract_schema(vec![Field::new("id", DataType::Int64, false)])
+        .expect("schema");
     let mut prepared = PreparedWrite::new(
         WriteOperation {
             target: ObjectRef {
