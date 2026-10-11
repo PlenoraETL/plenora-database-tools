@@ -19,6 +19,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
+import uuid
 
 import pytest
 
@@ -28,7 +29,7 @@ from ._harness import aconnect_postgres, connect_postgres, postgres_dsn_or_skip
 
 pyarrow = pytest.importorskip("pyarrow")
 
-TABLE = "_pyp_outcome_unknown"
+TABLE_PREFIX = "_pyp_outcome_unknown"
 
 
 class CommitCutter:
@@ -41,10 +42,18 @@ class CommitCutter:
         self.port = self._listener.getsockname()[1]
         self.cuts = 0
         self._lock = threading.Lock()
+        self._relays: list[threading.Thread] = []
         threading.Thread(target=self._accept, daemon=True).start()
 
     def close(self) -> None:
+        """Chiude il proxy e attende i relay: il `COMMIT` interrotto e gia
+        stato inoltrato al server quando `close` ritorna."""
+
         self._listener.close()
+        with self._lock:
+            relays = list(self._relays)
+        for relay in relays:
+            relay.join(timeout=30)
 
     def _accept(self) -> None:
         while True:
@@ -53,9 +62,12 @@ class CommitCutter:
                 server = socket.create_connection(self._upstream)
             except OSError:
                 return
-            threading.Thread(
+            relay = threading.Thread(
                 target=self._relay, args=(client, server), daemon=True
-            ).start()
+            )
+            with self._lock:
+                self._relays.append(relay)
+            relay.start()
 
     def _relay(self, client: socket.socket, server: socket.socket) -> None:
         def back() -> None:
@@ -106,18 +118,23 @@ def _redirect(dsn: str, port: int) -> tuple[tuple[str, int], str]:
 
 @pytest.fixture(name="cutter")
 def _cutter():
+    # Una tabella per prova: il `COMMIT` interrotto arriva al server dopo che
+    # il client ha gia visto l'errore, e una pulizia che lo precede non vede
+    # ancora la tabella. Con un nome condiviso la prova successiva trovava il
+    # target gia esistente.
+    table = f"{TABLE_PREFIX}_{uuid.uuid4().hex[:12]}"
     dsn = postgres_dsn_or_skip()
     upstream, _ = _redirect(dsn, 0)
     direct = connect_postgres(dsn)
-    direct.execute_sql(f"DROP TABLE IF EXISTS {TABLE}")
-    cutter = CommitCutter(upstream, TABLE.encode())
+    cutter = CommitCutter(upstream, table.encode())
+    cutter.table = table
     _, cutter.dsn = _redirect(dsn, cutter.port)
     try:
         yield cutter
     finally:
         cutter.close()
         try:
-            direct.execute_sql(f"DROP TABLE IF EXISTS {TABLE}")
+            direct.execute_sql(f"DROP TABLE IF EXISTS {table}")
         finally:
             direct.close()
 
@@ -144,7 +161,7 @@ def test_copy_from_with_a_lost_commit_acknowledgement_raises(cutter) -> None:
     try:
         with pytest.raises(p.PlenoraCommitOutcomeUnknownError) as raised:
             session.copy_from(
-                "public", TABLE, _table(), mode="create",
+                "public", cutter.table, _table(), mode="create",
                 mapping_policy="compatible",
             )
     finally:
@@ -159,7 +176,7 @@ async def test_acopy_from_with_a_lost_commit_acknowledgement_raises(cutter) -> N
     try:
         with pytest.raises(p.PlenoraCommitOutcomeUnknownError) as raised:
             await session.acopy_from(
-                "public", TABLE, _table(), mode="create",
+                "public", cutter.table, _table(), mode="create",
                 mapping_policy="compatible",
             )
     finally:
