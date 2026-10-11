@@ -40,6 +40,8 @@ pub async fn with_timeout_duration<T>(
     cancellation: &CancellationToken,
     operation: impl std::future::Future<Output = oracle_rs::Result<T>>,
 ) -> Result<T> {
+    // Il comando e in volo: un timeout o una cancellazione non provano
+    // nulla sul suo effetto (`after_interrupted_send`).
     tokio::select! {
         result = tokio::time::timeout(timeout, operation) => result.map_or_else(
             |_| Err(plenora_database_core::DatabaseError::new(
@@ -47,9 +49,12 @@ pub async fn with_timeout_duration<T>(
                 phase,
                 Some(plenora_database_core::plan::ProviderKind::Oracle),
                 "operazione Oracle oltre il timeout configurato",
-            )),
+            )
+            .after_interrupted_send()),
             |result| result.map_err(|error| driver_error(phase, &error)),
         ),
-        _ = cancellation.cancelled() => Err(interruption_error(cancellation, phase)),
+        _ = cancellation.cancelled() => {
+            Err(interruption_error(cancellation, phase).after_interrupted_send())
+        }
     }
 }

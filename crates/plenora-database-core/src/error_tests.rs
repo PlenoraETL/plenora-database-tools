@@ -216,3 +216,34 @@ fn an_unconfirmed_rollback_is_the_last_phase_and_leaves_the_effect_unknown() {
     .after_unconfirmed_rollback();
     assert_eq!(quarantined.retry, RetryDisposition::Quarantine);
 }
+
+/// Regola unica dell'interruzione dopo l'invio: con il comando in volo, in
+/// una fase mutante, l'effetto non e mai `none`. Le fasi non mutanti restano
+/// senza effetto; la categoria resta quella della causa. `interrupted` da
+/// solo descrive l'interruzione prima dell'invio.
+#[test]
+fn an_interruption_in_flight_never_reports_no_effect_in_a_mutating_phase() {
+    let cancelled = crate::CancellationToken::new();
+    cancelled.cancel();
+    for phase in [ErrorPhase::Write, ErrorPhase::Commit, ErrorPhase::Rollback] {
+        let before = DatabaseError::interrupted(&cancelled, None, phase, "interrotta");
+        assert_eq!(before.remote_effect, RemoteEffect::None, "{phase:?}");
+        let error = before.after_interrupted_send();
+        assert_eq!(error.remote_effect, RemoteEffect::Unknown, "{phase:?}");
+        assert_eq!(error.retry, RetryDisposition::RequiresRecovery, "{phase:?}");
+        assert_eq!(error.category, ErrorCategory::Cancelled);
+        assert_eq!(error.phase, phase);
+    }
+    for phase in [ErrorPhase::Read, ErrorPhase::Connect, ErrorPhase::Validate] {
+        let error = DatabaseError::interrupted(&cancelled, None, phase, "interrotta")
+            .after_interrupted_send();
+        assert_eq!(error.remote_effect, RemoteEffect::None, "{phase:?}");
+    }
+    let quarantined = DatabaseError {
+        retry: RetryDisposition::Quarantine,
+        ..DatabaseError::new(ErrorCategory::Timeout, ErrorPhase::Rollback, None, "x")
+    }
+    .after_interrupted_send();
+    assert_eq!(quarantined.retry, RetryDisposition::Quarantine);
+    assert_eq!(quarantined.remote_effect, RemoteEffect::Unknown);
+}

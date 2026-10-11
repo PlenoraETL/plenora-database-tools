@@ -52,8 +52,32 @@ fn after_commit_only_a_closed_list_of_codes_proves_the_rollback() {
         assert_eq!(error.remote_effect, RemoteEffect::Unknown, "{code}");
         assert_eq!(error.phase, ErrorPhase::Commit);
     }
-    for code in super::COMMIT_ROLLBACK_CODES {
+    for code in crate::profile::ProductProfile::commit_rollback_codes(&profile) {
         let error = super::commit_failure(&profile, &server(*code));
         assert_eq!(error.remote_effect, RemoteEffect::RolledBack, "{code}");
     }
+}
+
+/// L'elenco dei rifiuti al COMMIT e del prodotto: per MariaDB non c'e prova
+/// che 3101 (`ER_TRANSACTION_ROLLBACK_DURING_COMMIT`, un codice MySQL) sia un
+/// rollback, quindi resta esito ignoto; 1213 (deadlock `InnoDB`) lo prova.
+#[test]
+fn mariadb_does_not_inherit_the_mysql_commit_rejection_list() {
+    use plenora_database_core::RemoteEffect;
+    let profile = crate::profile::MariadbProfile;
+    let server = |code: u16| {
+        mysql_async::Error::Server(mysql_async::ServerError {
+            code,
+            message: "commit".to_owned(),
+            state: "HY000".to_owned(),
+        })
+    };
+    assert_eq!(
+        super::commit_failure(&profile, &server(3_101)).remote_effect,
+        RemoteEffect::Unknown
+    );
+    assert_eq!(
+        super::commit_failure(&profile, &server(1_213)).remote_effect,
+        RemoteEffect::RolledBack
+    );
 }

@@ -755,14 +755,8 @@ pub(crate) fn state_error(
 #[path = "session_tests.rs"]
 mod tests;
 
-/// I codici server che, in risposta a un COMMIT, provano il rollback della
-/// transazione: 1213 (`ER_LOCK_DEADLOCK`, transazione annullata) e 3101
-/// (`ER_TRANSACTION_ROLLBACK_DURING_COMMIT`). Elenco chiuso: ogni altro
-/// codice e esito ignoto.
-pub const COMMIT_ROLLBACK_CODES: &[u16] = &[1_213, 3_101];
-
 /// L'errore di un COMMIT inviato: regola unica di `after_commit_sent`, con
-/// l'elenco chiuso di [`COMMIT_ROLLBACK_CODES`].
+/// l'elenco chiuso del prodotto (`ProductProfile::commit_rollback_codes`).
 pub fn commit_failure(
     profile: &dyn ProductProfile,
     error: &mysql_async::Error,
@@ -770,6 +764,6 @@ pub fn commit_failure(
     let public = driver_error(profile, error, ErrorPhase::Commit, RemoteEffect::None);
     after_commit_sent(
         public,
-        server_code(error).is_some_and(|code| COMMIT_ROLLBACK_CODES.contains(&code)),
+        server_code(error).is_some_and(|code| profile.commit_rollback_codes().contains(&code)),
     )
 }

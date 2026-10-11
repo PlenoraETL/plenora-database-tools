@@ -2675,6 +2675,88 @@ mod tests {
             .expect("cleanup row diagnostics PostgreSQL live");
     }
 
+    /// Regola unica dopo il COMMIT anche nella scrittura diagnostica: un
+    /// vincolo differito che rifiuta il COMMIT (23505, nell'elenco chiuso)
+    /// prova il rollback, come nella scrittura ordinaria; non e un esito
+    /// ignoto.
+    #[tokio::test]
+    async fn live_provider_row_diagnostics_commit_rejection_proves_the_rollback() {
+        let Some(dsn) = live_dsn_or_skip() else {
+            return;
+        };
+        let provider = PostgresProvider::insecure_local_with_batch_rows(7);
+        let secret = SecretString::new(dsn);
+        let cancellation = NeverCancelled;
+        let client = PostgresProvider::connect(&secret).await.expect("client");
+        client
+            .batch_execute(
+                "CREATE SCHEMA IF NOT EXISTS plenora_fixture;
+                 DROP TABLE IF EXISTS plenora_fixture.write_row_diagnostics_deferred;
+                 CREATE TABLE plenora_fixture.write_row_diagnostics_deferred (
+                     parcel_id BIGINT NOT NULL UNIQUE DEFERRABLE INITIALLY DEFERRED,
+                     area_m2 BIGINT NOT NULL
+                 )",
+            )
+            .await
+            .expect("setup vincolo differito");
+        let schema = contract_schema(vec![
+            Field::new("parcel_id", DataType::Int64, false),
+            Field::new("area_m2", DataType::Int64, false),
+        ]);
+        let operation = WriteOperation {
+            target: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "write_row_diagnostics_deferred".to_owned(),
+            },
+            mode: WriteMode::Append,
+            mapping_policy: MappingPolicy::Strict,
+            transaction_profile: TransactionProfile::SingleTransaction,
+            keys: Vec::new(),
+            update_columns: Vec::new(),
+            srid_policy: None,
+            create_spatial_index: false,
+            allow_partial: false,
+        };
+        let prepared = provider
+            .prepare_write_with_test_budget(&secret, &operation, Arc::clone(&schema), &cancellation)
+            .await
+            .expect("prepare");
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(vec![1_i64, 2, 1])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![1_i64, 1, 1])) as ArrayRef,
+            ],
+        )
+        .expect("batch");
+        let stream = DiagnosticBatchStream {
+            schema: Arc::clone(&schema),
+            batches: VecDeque::from(vec![batch]),
+            input_total: 3,
+        };
+        let error = provider
+            .write_with_prepared_budget(&secret, prepared, Box::new(stream), &cancellation)
+            .await
+            .expect_err("COMMIT rifiutato dal vincolo differito");
+        assert_eq!(error.phase, ErrorPhase::Commit);
+        assert_eq!(error.remote_effect, RemoteEffect::RolledBack);
+        assert!(error.execution_id.is_some());
+        let remaining: i64 = client
+            .query_one(
+                "SELECT count(*) FROM plenora_fixture.write_row_diagnostics_deferred",
+                &[],
+            )
+            .await
+            .expect("count")
+            .get(0);
+        assert_eq!(remaining, 0);
+        client
+            .batch_execute("DROP TABLE plenora_fixture.write_row_diagnostics_deferred")
+            .await
+            .expect("cleanup");
+    }
+
     #[tokio::test]
     async fn live_provider_row_diagnostics_lost_rollback_ack_is_quarantined() {
         const INPUT_TOTAL: u64 = 5_200;

@@ -309,7 +309,9 @@ impl PostgresProvider {
                 Some(ProviderKind::Postgres),
                 ErrorPhase::Write,
                 "creazione grafo AGE interrotta",
-            ));
+            )
+            // Il comando e in volo: l'effetto non e provato.
+            .after_interrupted_send());
         };
         let outcome = result
             .map(|_| ())
@@ -350,7 +352,9 @@ impl PostgresProvider {
                 Some(ProviderKind::Postgres),
                 ErrorPhase::Write,
                 "eliminazione grafo AGE interrotta",
-            ));
+            )
+            // Il comando e in volo: l'effetto non e provato.
+            .after_interrupted_send());
         };
         let outcome = result
             .map(|_| ())

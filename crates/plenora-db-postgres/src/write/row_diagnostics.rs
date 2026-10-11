@@ -157,6 +157,12 @@ pub(super) async fn execute(
                 )?);
             }
             if let Some(Err(error)) = &commit_result {
+                // Regola unica dopo il COMMIT, come nella scrittura
+                // ordinaria: un codice dell'elenco chiuso prova il rollback.
+                if let Some(mut rejected) = crate::error::proven_commit_rollback(error) {
+                    rejected.execution_id = Some(execution_id.to_owned());
+                    return Err(rejected);
+                }
                 runtime.metrics.write_outcome_unknown();
                 // La categoria e la causa osservata, come nel percorso
                 // ordinario: `io` per un canale chiuso (ERR-016).

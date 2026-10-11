@@ -103,6 +103,12 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// invece di lasciarlo implicito, e cio che rende visibile l'asimmetria.
     fn qualified_versions(&self) -> Option<&'static [(u32, u32)]>;
 
+    /// I codici server che, in risposta a un COMMIT, provano il rollback
+    /// della transazione. Elenco chiuso **del prodotto**: un codice entra
+    /// solo con la prova della sua semantica su quel prodotto, e ogni altro
+    /// codice e esito ignoto.
+    fn commit_rollback_codes(&self) -> &'static [u16];
+
     /// Il nome della variabile che porta il livello di isolamento della
     /// sessione.
     ///
@@ -356,6 +362,12 @@ pub(crate) static MYSQL_PROFILE: MysqlProfile = MysqlProfile;
 impl ProductProfile for MysqlProfile {
     fn product(&self) -> &'static str {
         "MySQL"
+    }
+
+    /// 1213 (`ER_LOCK_DEADLOCK`: `InnoDB` annulla l'intera transazione) e
+    /// 3101 (`ER_TRANSACTION_ROLLBACK_DURING_COMMIT`).
+    fn commit_rollback_codes(&self) -> &'static [u16] {
+        &[1_213, 3_101]
     }
 
     fn kind(&self) -> ProviderKind {
@@ -668,6 +680,13 @@ pub(crate) static MARIADB_PROFILE: MariadbProfile = MariadbProfile;
 impl ProductProfile for MariadbProfile {
     fn product(&self) -> &'static str {
         "MariaDB"
+    }
+
+    /// Solo 1213 (`ER_LOCK_DEADLOCK`, `InnoDB` annulla la transazione). 3101 e
+    /// un codice MySQL che il catalogo errori di MariaDB non definisce: senza
+    /// prova della sua semantica resta esito ignoto.
+    fn commit_rollback_codes(&self) -> &'static [u16] {
+        &[1_213]
     }
 
     fn kind(&self) -> ProviderKind {
@@ -1571,6 +1590,10 @@ pub(crate) static SECOND_PRODUCT_PROFILE: SecondProductProfile = SecondProductPr
 impl ProductProfile for SecondProductProfile {
     fn product(&self) -> &'static str {
         "SecondProduct"
+    }
+
+    fn commit_rollback_codes(&self) -> &'static [u16] {
+        MYSQL_PROFILE.commit_rollback_codes()
     }
 
     fn kind(&self) -> ProviderKind {

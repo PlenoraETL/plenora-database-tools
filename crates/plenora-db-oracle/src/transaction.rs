@@ -754,6 +754,19 @@ pub async fn execute_ddl(
 /// driver — non prova l'assenza di effetti (ERR-004, ERR-014) e diventa
 /// esito ignoto.
 fn commit_failure(error: &oracle_rs::Error) -> Result<CommitOutcome> {
+    let (public, proves_rollback) = classified_commit_failure(error);
+    plenora_database_core::transaction::commit_failure_outcome(public, proves_rollback)
+}
+
+/// L'errore di un COMMIT fuori da una transazione (il setup della
+/// creazione): la stessa regola di [`commit_failure`], come errore.
+pub fn commit_error(error: &oracle_rs::Error) -> DatabaseError {
+    let (public, proves_rollback) = classified_commit_failure(error);
+    plenora_database_core::transaction::after_commit_sent(public, proves_rollback)
+}
+
+/// L'errore pubblico di un COMMIT fallito e se prova il rollback.
+fn classified_commit_failure(error: &oracle_rs::Error) -> (DatabaseError, bool) {
     let code = match error {
         oracle_rs::Error::OracleError { code, .. } | oracle_rs::Error::ServerError { code, .. } => {
             Some(*code)
@@ -765,7 +778,7 @@ fn commit_failure(error: &oracle_rs::Error) -> Result<CommitOutcome> {
     if code.is_some_and(|code| LOST_CONNECTION_CODES.contains(&code)) {
         public.category = ErrorCategory::Io;
     }
-    plenora_database_core::transaction::commit_failure_outcome(
+    (
         public,
         code.is_some_and(|code| CERTAIN_COMMIT_REJECTIONS.contains(&code)),
     )

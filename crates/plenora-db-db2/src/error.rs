@@ -83,6 +83,10 @@ pub fn driver_error(error: &OdbcError, phase: ErrorPhase) -> DatabaseError {
     }
 }
 
+/// L'interruzione rilevata **prima** dell'invio: nessun effetto. Con il
+/// comando gia inviato gli assi vengono dalla regola unica del core
+/// (`DatabaseError::after_interrupted_send`, o `abandoned_error` per il
+/// rollback tentato).
 pub fn interruption_error(cancellation: &CancellationToken, phase: ErrorPhase) -> DatabaseError {
     let category = interruption_category(cancellation);
     DatabaseError {

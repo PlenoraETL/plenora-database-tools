@@ -431,11 +431,7 @@ pub async fn execute(
     if let Some(Err(error)) = &commit_result {
         // Regola unica dopo l'invio del COMMIT: uno SQLSTATE dell'elenco
         // chiuso prova il rollback, ogni altro errore lascia l'esito ignoto.
-        if crate::error::commit_rejection_proves_rollback(error) {
-            let mut rejected = plenora_database_core::transaction::after_commit_sent(
-                classify_error(ErrorPhase::Commit, error),
-                true,
-            );
+        if let Some(mut rejected) = crate::error::proven_commit_rollback(error) {
             rejected.execution_id = Some(execution_id);
             drop(client);
             return Err(rejected);

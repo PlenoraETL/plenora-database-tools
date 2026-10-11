@@ -209,6 +209,36 @@ impl DatabaseError {
         self
     }
 
+    /// Gli assi di un'interruzione (timeout o cancellazione) arrivata
+    /// **dopo l'invio** di un comando.
+    ///
+    /// Regola unica per tutti gli adapter (ERR-004, ERR-014): con un comando
+    /// mutante in volo l'interruzione non prova nulla. Un rollback interrotto
+    /// e un rollback non confermato ([`Self::after_unconfirmed_rollback`]);
+    /// una scrittura o un commit interrotti hanno effetto ignoto e
+    /// richiedono recovery. Le altre fasi restano come sono. Categoria e
+    /// messaggio restano quelli dell'interruzione; una `quarantine` gia
+    /// decisa resta.
+    #[must_use]
+    pub fn after_interrupted_send(self) -> Self {
+        match self.phase {
+            ErrorPhase::Rollback => self.after_unconfirmed_rollback(),
+            ErrorPhase::Write | ErrorPhase::Commit => {
+                let retry = if self.retry == RetryDisposition::Quarantine {
+                    RetryDisposition::Quarantine
+                } else {
+                    RetryDisposition::RequiresRecovery
+                };
+                Self {
+                    remote_effect: RemoteEffect::Unknown,
+                    retry,
+                    ..self
+                }
+            }
+            _ => self,
+        }
+    }
+
     #[must_use]
     pub fn invalid_plan(message: impl Into<String>) -> Self {
         Self::new(
@@ -235,6 +265,10 @@ impl DatabaseError {
     /// Una deadline scaduta e un `Timeout`, tutto il resto una `Cancelled`.
     /// La classificazione centralizzata impedisce che provider e retry engine
     /// attribuiscano categorie diverse allo stesso token.
+    ///
+    /// Gli assi sono quelli di un'interruzione **prima dell'invio**: nessun
+    /// effetto. Con il comando gia in volo il chiamante applica
+    /// [`Self::after_interrupted_send`].
     pub fn interrupted(
         cancellation: &crate::CancellationToken,
         provider: Option<ProviderKind>,

@@ -102,6 +102,19 @@ pub fn commit_rejection_proves_rollback(error: &tokio_postgres::Error) -> bool {
         .is_some_and(|code| COMMIT_ROLLBACK_SQLSTATES.contains(&code.code()))
 }
 
+/// L'errore di un COMMIT inviato e rifiutato con un codice dell'elenco
+/// chiuso, che prova il rollback; `None` se l'esito resta ignoto. Il punto
+/// unico per la scrittura ordinaria e per quella diagnostica.
+#[must_use]
+pub fn proven_commit_rollback(error: &tokio_postgres::Error) -> Option<DatabaseError> {
+    commit_rejection_proves_rollback(error).then(|| {
+        plenora_database_core::transaction::after_commit_sent(
+            classify_error(ErrorPhase::Commit, error),
+            true,
+        )
+    })
+}
+
 pub fn classify_error(phase: ErrorPhase, error: &tokio_postgres::Error) -> DatabaseError {
     let sqlstate = error.code().map(tokio_postgres::error::SqlState::code);
     let transport_closed = error.is_closed();

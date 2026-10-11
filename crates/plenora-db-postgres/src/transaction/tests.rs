@@ -3185,3 +3185,27 @@ fn a_failed_context_cleanup_reports_its_rollback() {
     assert_eq!(unconfirmed.phase, ErrorPhase::Rollback);
     assert_eq!(unconfirmed.remote_effect, RemoteEffect::Unknown);
 }
+
+/// Regola unica dell'interruzione dopo l'invio: in ogni fase mutante l'esito
+/// e ignoto e serve una recovery. Un ROLLBACK TO SAVEPOINT interrotto e un
+/// rollback non confermato, non un rollback senza effetto. La categoria resta
+/// quella della causa.
+#[test]
+fn an_interruption_after_sending_a_mutating_command_is_unknown() {
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let expired = CancellationToken::new();
+    expired.cancel_due_to_deadline();
+    for (token, category) in [
+        (&cancelled, ErrorCategory::Cancelled),
+        (&expired, ErrorCategory::Timeout),
+    ] {
+        for phase in [ErrorPhase::Write, ErrorPhase::Commit, ErrorPhase::Rollback] {
+            let error = PostgresTransaction::interruption_error(token, phase, "interrotto");
+            assert_eq!(error.remote_effect, RemoteEffect::Unknown, "{phase:?}");
+            assert_eq!(error.retry, RetryDisposition::RequiresRecovery, "{phase:?}");
+            assert_eq!(error.category, category);
+            assert_eq!(error.phase, phase);
+        }
+    }
+}

@@ -51,10 +51,26 @@ riassumono le note di quelle release.
     categoria, salvo un elenco chiuso e per-adapter di codici che provano il
     rollback — PostgreSQL `40001`, `40002`, `40P01` e le violazioni di
     vincoli differiti `23502`, `23503`, `23505`, `23514`, `23P01`; MySQL
-    `1213`, `3101`; Oracle ORA-02091; SQL Server `1205`; Db2 nessuno.
-    Uno SQLSTATE riconosciuto ma fuori elenco (per esempio `08006`, `08P01`)
-    non porta più `none`. Il percorso PostgreSQL con diagnostica di riga
-    tratta ogni errore come ignoto, senza eccezioni;
+    `1213`, `3101`; MariaDB solo `1213` (`3101` è un codice MySQL che il
+    catalogo MariaDB non definisce: senza prova resta ignoto); Oracle
+    ORA-02091; SQL Server `1205`; Db2 nessuno. L'elenco MySQL/MariaDB è del
+    profilo di prodotto. Uno SQLSTATE riconosciuto ma fuori elenco (per
+    esempio `08006`, `08P01`) non porta più `none`. Il percorso PostgreSQL
+    con diagnostica di riga usa lo stesso punto (`proven_commit_rollback`)
+    della scrittura ordinaria;
+  - il COMMIT del setup della creazione Oracle (metadati spaziali e indici
+    dopo il `CREATE TABLE`) passa dalla stessa regola, con timeout e
+    cancellazione; dopo la creazione un errore con effetto ignoto resta
+    `unknown` invece di diventare `partial`, e un errore prima della
+    creazione conserva i propri assi;
+  - **regola unica dell'interruzione dopo l'invio**
+    (`DatabaseError::after_interrupted_send`): un timeout o una cancellazione con un
+    comando mutante in volo danno effetto ignoto e recovery, e in fase
+    `rollback` un rollback non confermato, con la categoria della causa.
+    Prima PostgreSQL dichiarava `none` per un `ROLLBACK TO SAVEPOINT`
+    interrotto, Oracle per ogni comando interrotto in volo (scritture,
+    savepoint, rollback), e la creazione o l'eliminazione di un grafo AGE
+    interrotta dichiarava `none`;
   - ORA-03113, ORA-03114 e ORA-25408 dopo il COMMIT hanno categoria `io`;
   - ogni rollback inviato e non confermato — esplicito, `ROLLBACK TO
     SAVEPOINT`, pulizia dopo un `set_config` fallito in PostgreSQL — porta

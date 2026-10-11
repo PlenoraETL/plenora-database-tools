@@ -151,10 +151,12 @@ impl PostgresTransaction {
         }
     }
 
-    /// Costruisce l'errore di interruzione con `RemoteEffect::Unknown` nelle
-    /// fasi state-mutating (Write/Commit), dove la query può essere
-    /// stata già applicata server-side. Le fasi Read/Prepare/Rollback
-    /// restano con `None` (nessun effetto).
+    /// L'errore di un'interruzione arrivata con il comando gia inviato. Gli
+    /// assi vengono dalla regola unica del core
+    /// ([`DatabaseError::after_interrupted_send`]): nelle fasi mutanti
+    /// (Write, Commit, Rollback) l'effetto e ignoto e serve una recovery,
+    /// perche invalidare la connessione non conferma nulla; le altre fasi
+    /// restano senza effetto.
     ///
     /// La categoria viene dalla causa: una deadline scaduta è `Timeout`, una
     /// decisione del chiamante è `Cancelled`.
@@ -163,20 +165,17 @@ impl PostgresTransaction {
         phase: ErrorPhase,
         message: &str,
     ) -> DatabaseError {
-        let remote_effect = match phase {
-            ErrorPhase::Write | ErrorPhase::Commit => RemoteEffect::Unknown,
-            _ => RemoteEffect::None,
-        };
         DatabaseError {
             category: crate::error::interruption_category(cancellation),
             phase,
-            remote_effect,
+            remote_effect: RemoteEffect::None,
             retry: RetryDisposition::Never,
             provider: Some(plenora_database_core::plan::ProviderKind::Postgres),
             execution_id: None,
             message: message.to_owned(),
             diagnostics: None,
         }
+        .after_interrupted_send()
     }
 
     async fn prepare_bind(

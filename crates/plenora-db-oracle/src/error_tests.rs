@@ -55,3 +55,40 @@ fn unnumbered_driver_errors_are_classified_without_copying_payloads() {
         assert!(!error.message.contains("private_table"));
     }
 }
+
+/// Regola unica dell'interruzione dopo l'invio: una deadline o una
+/// cancellazione mentre un comando mutante e in volo non provano nulla, in
+/// nessuna delle due vie (timeout del driver o token).
+#[test]
+fn an_interruption_in_flight_during_a_mutating_phase_is_unknown() {
+    use plenora_database_core::{CancellationToken, RemoteEffect, RetryDisposition};
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime");
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let idle = CancellationToken::new();
+    for phase in [ErrorPhase::Write, ErrorPhase::Commit, ErrorPhase::Rollback] {
+        for (token, timeout, category) in [
+            (
+                &cancelled,
+                std::time::Duration::from_secs(60),
+                ErrorCategory::Cancelled,
+            ),
+            (&idle, std::time::Duration::ZERO, ErrorCategory::Timeout),
+        ] {
+            let error = runtime
+                .block_on(crate::connection::with_timeout_duration(
+                    timeout,
+                    phase,
+                    token,
+                    std::future::pending::<oracle_rs::Result<()>>(),
+                ))
+                .expect_err("interrotta");
+            assert_eq!(error.remote_effect, RemoteEffect::Unknown, "{phase:?}");
+            assert_eq!(error.retry, RetryDisposition::RequiresRecovery, "{phase:?}");
+            assert_eq!(error.category, category, "{phase:?}");
+        }
+    }
+}

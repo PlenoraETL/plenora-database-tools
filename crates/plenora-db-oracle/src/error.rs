@@ -189,6 +189,11 @@ pub fn oracle_code_error(phase: ErrorPhase, code: u32) -> DatabaseError {
     }
 }
 
+/// L'interruzione rilevata **prima** dell'invio: nessun effetto. Con il
+/// comando gia inviato gli assi vengono dalla regola unica del core
+/// (`DatabaseError::after_interrupted_send`, o `abandoned_error` per il
+/// rollback tentato).
+/// `connection::with_timeout_duration` applica la regola al comando in volo.
 pub fn interruption_error(cancellation: &CancellationToken, phase: ErrorPhase) -> DatabaseError {
     DatabaseError {
         category: interruption_category(cancellation),
