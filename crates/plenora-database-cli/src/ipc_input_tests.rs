@@ -348,3 +348,85 @@ fn after_a_failed_message_every_read_fails() {
     let mut buffer = [0_u8; 16];
     assert!(verified.read(&mut buffer).is_err(), "ripresa dopo l'errore");
 }
+
+/// Il footer si legge mentre l'indice dei segmenti e vivo: conta la sua
+/// capacita allocata, non la lunghezza. 513 batch vuoti con un limite di
+/// 60.000 byte stanno nella prima passata, ma indice (capacita 1024),
+/// footer e blocchi dichiarati insieme lo superano.
+#[test]
+fn the_footer_budget_counts_the_allocated_index() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let empty = RecordBatch::new_empty(Arc::clone(&schema));
+    let mut writer = FileWriter::try_new(Vec::new(), &schema).expect("writer");
+    for _ in 0..513 {
+        writer.write(&empty).expect("write");
+    }
+    let bytes = writer.into_inner().expect("file");
+    let input = scratch("footer-budget.arrow", &bytes);
+    let error = open_batches(input.0.to_str().expect("UTF-8"), 60_000)
+        .err()
+        .expect("indice, footer e blocchi oltre il budget");
+    assert_eq!(
+        error.database_error().category,
+        plenora_database_core::ErrorCategory::ResourceLimit
+    );
+}
+
+/// Sostituisce l'ultima occorrenza: nel file Arrow e quella del footer.
+fn replace_last(bytes: &mut [u8], from: &[u8], to: &[u8]) {
+    assert_eq!(from.len(), to.len());
+    let at = bytes
+        .windows(from.len())
+        .rposition(|window| window == from)
+        .expect("occorrenza nel footer");
+    bytes[at..at + to.len()].copy_from_slice(to);
+}
+
+/// Lo schema del footer deve coincidere con quello dello stream, metadati
+/// compresi: un lettore di file Arrow userebbe il footer, lo stream l'altro.
+#[test]
+fn a_footer_schema_different_from_the_stream_is_rejected() {
+    let schema = Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("colonna_a", DataType::Int64, false).with_metadata(
+                std::collections::HashMap::from([("chiave".to_owned(), "campo_1".to_owned())]),
+            ),
+        ],
+        std::collections::HashMap::from([("versione".to_owned(), "schema_1".to_owned())]),
+    ));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
+    )
+    .expect("batch");
+    let mut writer = FileWriter::try_new(Vec::new(), &schema).expect("writer");
+    writer.write(&batch).expect("write");
+    let original = writer.into_inner().expect("file");
+    for (name, from, to) in [
+        ("nome", b"colonna_a".as_slice(), b"colonna_b".as_slice()),
+        (
+            "metadati del campo",
+            b"campo_1".as_slice(),
+            b"campo_2".as_slice(),
+        ),
+        (
+            "metadati dello schema",
+            b"schema_1".as_slice(),
+            b"schema_2".as_slice(),
+        ),
+    ] {
+        let mut forged = original.clone();
+        replace_last(&mut forged, from, to);
+        let input = scratch(
+            &format!("footer-schema-{}.arrow", from[from.len() - 1]),
+            &forged,
+        );
+        let result = open_batches(input.0.to_str().expect("UTF-8"), 1 << 20);
+        assert!(
+            result.is_err(),
+            "{name}: schema del footer discordante accettato"
+        );
+    }
+    let input = scratch("footer-schema-same.arrow", &original);
+    open_batches(input.0.to_str().expect("UTF-8"), 1 << 20).expect("schema coerente");
+}

@@ -37,7 +37,7 @@ use arrow_ipc::reader::{read_footer_length, StreamReader};
 use arrow_ipc::{root_as_footer, root_as_message, MessageHeader};
 use plenora_database_core::arrow::array::RecordBatch;
 use plenora_database_core::arrow::schema::ArrowError;
-use plenora_database_core::arrow::SchemaRef;
+use plenora_database_core::arrow::{Schema, SchemaRef};
 use plenora_database_core::provider::{BatchStream, ProviderFuture};
 use plenora_database_core::DatabaseError;
 use sha2::{Digest, Sha256};
@@ -183,13 +183,28 @@ pub(crate) fn open_batches(path: &str, max_message_bytes: u64) -> CliResult<IpcB
         ),
     };
     let (segments, rows) = scan_stream(&mut file, start, end, max_message_bytes)?;
-    if format == IpcFormat::File {
-        check_footer_blocks(&mut file, length, end, &segments, max_message_bytes)?;
-    }
+    let footer_schema = if format == IpcFormat::File {
+        Some(check_footer_blocks(
+            &mut file,
+            length,
+            end,
+            &segments,
+            segments.capacity(),
+            max_message_bytes,
+        )?)
+    } else {
+        None
+    };
     file.seek(SeekFrom::Start(start))
         .map_err(|_| unreadable())?;
     let verified = VerifiedRange::new(BufReader::new(file), segments);
     let reader = StreamReader::try_new(verified, None).map_err(|_| malformed())?;
+    // Lo schema del footer e quello che un lettore di file Arrow userebbe:
+    // deve essere lo schema dello stream, metadati compresi, o lo stesso
+    // file darebbe colonne diverse a seconda del lettore.
+    if footer_schema.is_some_and(|footer| footer != *reader.schema()) {
+        return Err("schema del footer Arrow IPC discordante dallo stream del file".into());
+    }
     Ok(IpcBatches {
         schema: reader.schema(),
         rows,
@@ -379,20 +394,22 @@ fn file_data_end(file: &mut File, length: u64, limit: u64) -> CliResult<u64> {
 
 /// I blocchi del footer devono essere esattamente i messaggi di dizionario
 /// e di batch dello stream, con le stesse posizioni e lunghezze: un footer
-/// che indica altro non si segue.
+/// che indica altro non si segue. Rende lo schema del footer, che il
+/// chiamante confronta con quello dello stream.
+///
+/// `index_capacity` e la capacita allocata dell'indice: e la memoria che
+/// resta occupata mentre il footer si legge, non la sua lunghezza.
 fn check_footer_blocks(
     file: &mut File,
     length: u64,
     data_end: u64,
     segments: &[Segment],
+    index_capacity: usize,
     limit: u64,
-) -> CliResult<()> {
+) -> CliResult<Schema> {
     let footer_length = length - 10 - data_end;
     // Il footer si legge mentre l'indice e vivo: conta con lui.
-    let index_bytes = u64::try_from(segments.len())
-        .ok()
-        .and_then(|count| count.checked_mul(SEGMENT_BYTES))
-        .ok_or_else(beyond_limit)?;
+    let index_bytes = footprint(index_capacity, 0).ok_or_else(beyond_limit)?;
     if index_bytes
         .checked_add(footer_length)
         .is_none_or(|bytes| bytes > limit)
@@ -416,21 +433,22 @@ fn check_footer_blocks(
     {
         return Err(beyond_limit());
     }
-    let mut declared = footer
+    // La capacita e quella contata sopra: niente crescita per raddoppio.
+    let mut declared = Vec::with_capacity(blocks);
+    for block in footer
         .dictionaries()
         .into_iter()
         .flatten()
         .chain(footer.recordBatches().into_iter().flatten())
-        .map(|block| {
-            let offset = u64::try_from(block.offset()).map_err(|_| malformed())?;
-            let metadata = u64::try_from(block.metaDataLength()).map_err(|_| malformed())?;
-            let body = u64::try_from(block.bodyLength()).map_err(|_| malformed())?;
-            if metadata.checked_add(body).is_none_or(|size| size > limit) {
-                return Err(beyond_limit());
-            }
-            Ok((offset, metadata, body))
-        })
-        .collect::<CliResult<Vec<_>>>()?;
+    {
+        let offset = u64::try_from(block.offset()).map_err(|_| malformed())?;
+        let metadata = u64::try_from(block.metaDataLength()).map_err(|_| malformed())?;
+        let body = u64::try_from(block.bodyLength()).map_err(|_| malformed())?;
+        if metadata.checked_add(body).is_none_or(|size| size > limit) {
+            return Err(beyond_limit());
+        }
+        declared.push((offset, metadata, body));
+    }
     declared.sort_unstable();
     // Nello stream: schema per primo, fine per ultima; i blocchi del footer
     // sono i messaggi in mezzo. `metaDataLength` include il prefisso di otto
@@ -449,7 +467,8 @@ fn check_footer_blocks(
     if !declared.iter().copied().eq(observed) {
         return Err("footer Arrow IPC discordante dallo stream del file".into());
     }
-    Ok(())
+    let schema = footer.schema().ok_or_else(malformed)?;
+    arrow_ipc::convert::try_fb_to_schema(schema).map_err(|_| malformed())
 }
 
 /// Lettore dei soli messaggi validati nella prima passata.

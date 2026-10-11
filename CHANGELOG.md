@@ -63,12 +63,16 @@ riassumono le note di quelle release.
   messaggio con il prefisso di otto byte, il messaggio più grande due volte
   (copia verificata e copia del decoder), l'indice dei segmenti per la
   capacità allocata (molti batch vuoti non lo fanno crescere oltre il
-  limite) e, per il file, il footer con i blocchi che dichiara. Il
+  limite) e, per il file, il footer con i blocchi che dichiara, mentre
+  l'indice resta occupato per la sua capacità allocata. Il
   verificatore libera il messaggio precedente prima di allocare il
   successivo. Un messaggio che stava nel limite solo senza il prefisso, o
   la cui doppia copia non ci sta, ora è `resource_limit`. Il formato file si
   legge come lo stream che incapsula, e i blocchi del footer devono
-  coincidere con i messaggi dello stream. Prima si accumulavano tutti i
+  coincidere con i messaggi dello stream, e lo schema del footer con quello
+  dello stream, metadati compresi: un lettore di file Arrow userebbe il
+  primo, e lo stesso file non deve dare colonne diverse a seconda del
+  lettore. Prima si accumulavano tutti i
   batch in memoria prima del budget, anche per il formato file.
 - **SDK Python: Arrow PyCapsule Interface.** `copy_from`/`acopy_from`
   accettano qualunque oggetto con `__arrow_c_stream__`; il `BatchReader` di
