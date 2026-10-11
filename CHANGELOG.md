@@ -80,7 +80,17 @@ riassumono le note di quelle release.
   schema materializzato conta nel budget: quello del lettore dello stream
   per tutta la lettura, quello del footer finché è vivo, misurati dal
   flatbuffer prima di materializzarli (nomi, metadati, campi annidati, con
-  una stima per eccesso del costo di ogni campo e di ogni voce). Prima si accumulavano tutti i
+  una stima per eccesso del costo di ogni campo, di ogni mappa di metadati
+  e di ogni voce: Arrow 60 costruisce una tabella hash temporanea e la
+  converte in un `BTreeMap`, quindi anche una mappa con una sola voce ha
+  un costo fisso). Contano anche i dizionari che il lettore dello stream
+  tiene per id per tutta la lettura: il totale residente si aggiorna a ogni
+  sostituzione (il nuovo prende il posto del precedente) e a ogni delta (si
+  concatena), con il picco in cui precedente e nuovo sono vivi insieme.
+  Uno schema che dichiara un ordine dei byte diverso da quello della
+  piattaforma si rifiuta: il lettore dello stream di Arrow non lo controlla,
+  e i valori si leggerebbero con i byte invertiti (un Int32 con valore 1
+  diventerebbe 16777216). Prima si accumulavano tutti i
   batch in memoria prima del budget, anche per il formato file.
 - **SDK Python: Arrow PyCapsule Interface.** `copy_from`/`acopy_from`
   accettano qualunque oggetto con `__arrow_c_stream__`; il `BatchReader` di
@@ -94,7 +104,9 @@ riassumono le note di quelle release.
   messaggio con il marcatore di continuazione e con metadati e corpo dentro
   i byte ricevuti, la fine esplicita e nessun byte dopo. Prima uno stream
   troncato al confine fra due messaggi si scriveva più corto senza errore,
-  e le lunghezze dichiarate governavano le allocazioni del decoder.
+  e le lunghezze dichiarate governavano le allocazioni del decoder. Uno
+  schema con un ordine dei byte diverso da quello della piattaforma si
+  rifiuta anche qui.
 - **`pyarrow>=25,<26`** è ora una dipendenza dichiarata dello SDK, nella
   stessa finestra di `plenora-data`.
 - **Errori della sorgente tipizzati** (PYTHON-SDK §6): un errore Plenora

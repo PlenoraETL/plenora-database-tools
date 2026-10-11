@@ -538,3 +538,236 @@ fn a_footer_with_swapped_dictionary_ids_is_rejected() {
     let input = scratch("footer-dictionary-ids-same.arrow", &original);
     open_batches(input.0.to_str().expect("UTF-8"), 1 << 20).expect("footer coerente");
 }
+
+/// Il valore della chiave di schema che porta i due byte `01 00` (una
+/// endianness `Big`) in posizione pari, qualunque sia l'allineamento della
+/// stringa nel flatbuffer.
+const BIG_ENDIAN_CARRIER: &str = "\u{1}\u{0}\u{1}\u{0}\u{1}\u{1}\u{0}";
+
+/// Uno stream il cui schema dichiara l'ordine dei byte big-endian, mentre i
+/// dati restano quelli scritti dalla piattaforma. Arrow non permette di
+/// scriverlo, quindi lo slot `endianness` della vtable dello schema, assente
+/// perche al valore predefinito, si fa puntare a due byte `01 00` di un
+/// metadato.
+fn big_endian_stream() -> Vec<u8> {
+    let schema = Arc::new(Schema::new_with_metadata(
+        vec![Field::new("id", DataType::Int32, false)],
+        std::collections::HashMap::from([("portatore".to_owned(), BIG_ENDIAN_CARRIER.to_owned())]),
+    ));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(
+            plenora_database_core::arrow::array::Int32Array::from(vec![1]),
+        )],
+    )
+    .expect("batch");
+    let mut writer = StreamWriter::try_new(Vec::new(), &schema).expect("writer");
+    writer.write(&batch).expect("write");
+    let mut bytes = writer.into_inner().expect("stream");
+    declare_big_endian(&mut bytes[8..]);
+    bytes
+}
+
+/// Riscrive in place il primo messaggio (lo schema) di `metadata`.
+fn declare_big_endian(metadata: &mut [u8]) {
+    let (table, carrier) = {
+        let message = root_as_message(metadata).expect("messaggio di schema");
+        let schema = message.header_as_schema().expect("schema");
+        let table = schema._tab.loc();
+        let pattern = BIG_ENDIAN_CARRIER.as_bytes();
+        let start = metadata
+            .windows(pattern.len())
+            .position(|window| window == pattern)
+            .expect("portatore");
+        // `01 00` in posizione pari: all'inizio o dal sesto byte.
+        let carrier = if start % 2 == 0 { start } else { start + 5 };
+        (table, carrier)
+    };
+    let soffset = i32::from_le_bytes(metadata[table..table + 4].try_into().expect("soffset"));
+    let vtable =
+        usize::try_from(i64::try_from(table).expect("loc") - i64::from(soffset)).expect("vtable");
+    let relative = u16::try_from(carrier - table).expect("offset nel tavolo");
+    // Lo slot 0 della vtable (dopo le due lunghezze) e `endianness`.
+    metadata[vtable + 4..vtable + 6].copy_from_slice(&relative.to_le_bytes());
+    let message = root_as_message(metadata).expect("ancora valido");
+    assert_eq!(
+        message.header_as_schema().expect("schema").endianness(),
+        arrow_ipc::Endianness::Big
+    );
+}
+
+/// Un'endianness diversa da quella della piattaforma si rifiuta: il lettore
+/// dello stream di Arrow non la confronta, e un Int32 con valore 1 scritto
+/// big-endian si leggerebbe 16777216.
+#[test]
+fn a_foreign_endianness_is_rejected() {
+    let bytes = big_endian_stream();
+    let input = scratch("big-endian.arrows", &bytes);
+    let error = open_batches(input.0.to_str().expect("UTF-8"), 1 << 20)
+        .err()
+        .expect("endianness estranea");
+    assert!(
+        error.database_error().message.contains("endianness"),
+        "{}",
+        error.database_error().message
+    );
+}
+
+/// Una colonna dizionario con valori lunghi: il dizionario resta in memoria
+/// per tutta la lettura.
+fn dictionary_column(
+    name: &str,
+    seed: char,
+) -> (Field, plenora_database_core::arrow::array::ArrayRef) {
+    let values = (0..10)
+        .map(|index| format!("{seed}{index}{}", "x".repeat(1_000)))
+        .collect::<Vec<_>>();
+    let keys = plenora_database_core::arrow::array::Int32Array::from(vec![0, 1]);
+    let array = plenora_database_core::arrow::array::DictionaryArray::new(
+        keys,
+        Arc::new(plenora_database_core::arrow::array::StringArray::from(
+            values,
+        )),
+    );
+    (
+        Field::new(
+            name,
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            false,
+        ),
+        Arc::new(array),
+    )
+}
+
+/// I dizionari restano tutti residenti nel lettore, per id: il budget li
+/// conta insieme. Ciascuno sta nel limite, i tre insieme no.
+#[test]
+fn resident_dictionaries_count_together_in_the_budget() {
+    let (fields, columns): (Vec<_>, Vec<_>) = [("a", 'a'), ("b", 'b'), ("c", 'c')]
+        .into_iter()
+        .map(|(name, seed)| dictionary_column(name, seed))
+        .unzip();
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), columns).expect("batch");
+    let mut writer = StreamWriter::try_new(Vec::new(), &schema).expect("writer");
+    writer.write(&batch).expect("write");
+    let bytes = writer.into_inner().expect("stream");
+    let input = scratch("resident-dictionaries.arrows", &bytes);
+    // Un dizionario e circa 10 KB: due copie del messaggio piu grande
+    // stanno in 40 KB, i tre dizionari residenti in piu no.
+    let error = open_batches(input.0.to_str().expect("UTF-8"), 40_000)
+        .err()
+        .expect("dizionari residenti oltre il budget");
+    assert_eq!(
+        error.database_error().category,
+        plenora_database_core::ErrorCategory::ResourceLimit
+    );
+    open_batches(input.0.to_str().expect("UTF-8"), 1 << 20).expect("nel budget");
+}
+
+/// Un dizionario sostituito prende il posto del precedente: la memoria
+/// residente e quella dell'ultimo (con il precedente vivo durante la
+/// sostituzione), non la somma di tutti quelli arrivati.
+#[test]
+fn a_replaced_dictionary_does_not_add_up() {
+    let (field, first) = dictionary_column("a", 'a');
+    let (_, second) = dictionary_column("a", 'b');
+    let (_, third) = dictionary_column("a", 'c');
+    let schema = Arc::new(Schema::new(vec![field]));
+    let mut writer = StreamWriter::try_new(Vec::new(), &schema).expect("writer");
+    for column in [first, second, third] {
+        writer
+            .write(&RecordBatch::try_new(Arc::clone(&schema), vec![column]).expect("batch"))
+            .expect("write");
+    }
+    let bytes = writer.into_inner().expect("stream");
+    let input = scratch("replaced-dictionary.arrows", &bytes);
+    // Due copie del messaggio piu grande e due dizionari vivi durante una
+    // sostituzione stanno in 48 KB; la somma dei tre dizionari no.
+    let batches = open_batches(input.0.to_str().expect("UTF-8"), 48_000)
+        .expect("un dizionario residente alla volta")
+        .batches
+        .collect::<Result<Vec<_>, _>>()
+        .expect("decodifica");
+    assert_eq!(batches.len(), 3);
+}
+
+/// Uno schema con molti campi e metadati piccoli: la memoria di ogni mappa
+/// materializzata (tabella hash di costruzione, vettore ordinato, nodo del
+/// `BTreeMap`, `Arc`) supera di molto i byte del flatbuffer, e conta.
+#[test]
+fn many_fields_with_small_metadata_count_their_maps() {
+    let fields = (0..2_000)
+        .map(|index| {
+            Field::new(format!("c{index}"), DataType::Int32, false).with_metadata(
+                std::collections::HashMap::from([("k".to_owned(), "v".to_owned())]),
+            )
+        })
+        .collect::<Vec<_>>();
+    let schema = Arc::new(Schema::new(fields));
+    let writer = StreamWriter::try_new(Vec::new(), &schema).expect("writer");
+    let bytes = writer.into_inner().expect("stream");
+    assert!(
+        bytes.len() < 512 * 1024,
+        "flatbuffer piccolo: {}",
+        bytes.len()
+    );
+    let input = scratch("small-maps.arrows", &bytes);
+    let error = open_batches(input.0.to_str().expect("UTF-8"), 3 << 19)
+        .err()
+        .expect("mappe materializzate oltre il budget");
+    assert_eq!(
+        error.database_error().category,
+        plenora_database_core::ErrorCategory::ResourceLimit
+    );
+}
+
+/// Un delta si concatena al dizionario precedente: la memoria residente
+/// cresce a ogni delta, e durante la concatenazione il precedente e il
+/// nuovo sono vivi insieme.
+#[test]
+fn dictionary_deltas_accumulate_in_the_budget() {
+    use arrow_ipc::writer::{DictionaryHandling, IpcWriteOptions};
+    let field = Field::new(
+        "a",
+        DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+        false,
+    );
+    let schema = Arc::new(Schema::new(vec![field]));
+    let options = IpcWriteOptions::default().with_dictionary_handling(DictionaryHandling::Delta);
+    let mut writer =
+        StreamWriter::try_new_with_options(Vec::new(), &schema, options).expect("writer");
+    let mut values = Vec::new();
+    for seed in ['a', 'b', 'c'] {
+        values.extend((0..10).map(|index| format!("{seed}{index}{}", "x".repeat(1_000))));
+        let keys = plenora_database_core::arrow::array::Int32Array::from(vec![0]);
+        let array = plenora_database_core::arrow::array::DictionaryArray::new(
+            keys,
+            Arc::new(plenora_database_core::arrow::array::StringArray::from(
+                values.clone(),
+            )),
+        );
+        writer
+            .write(
+                &RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).expect("batch"),
+            )
+            .expect("write");
+    }
+    let bytes = writer.into_inner().expect("stream");
+    let input = scratch("dictionary-deltas.arrows", &bytes);
+    // Ogni messaggio e circa 10 KB: con i delta il dizionario arriva a 30 KB,
+    // e la terza concatenazione tiene vivi 20 KB e 30 KB.
+    let error = open_batches(input.0.to_str().expect("UTF-8"), 60_000)
+        .err()
+        .expect("delta accumulati oltre il budget");
+    assert_eq!(
+        error.database_error().category,
+        plenora_database_core::ErrorCategory::ResourceLimit
+    );
+    let batches = open_batches(input.0.to_str().expect("UTF-8"), 1 << 20)
+        .expect("nel budget")
+        .batches
+        .collect::<Result<Vec<_>, _>>()
+        .expect("decodifica");
+    assert_eq!(batches.len(), 3);
+}

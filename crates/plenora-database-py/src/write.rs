@@ -118,7 +118,10 @@ mod ipc_tests;
 
 /// L'inquadramento dello stream, prima del decoder: ogni messaggio con il
 /// marcatore di continuazione e con metadati e corpo dentro l'input, la fine
-/// esplicita al confine fra due messaggi e nessun byte dopo.
+/// esplicita al confine fra due messaggi e nessun byte dopo. Lo schema deve
+/// dichiarare l'ordine dei byte della piattaforma: il lettore dello stream
+/// di Arrow non lo confronta, e dati di un'altra endianness si leggerebbero
+/// con i byte invertiti, senza errore.
 ///
 /// Il decoder alloca la lunghezza che il prefisso e i metadati dichiarano
 /// prima di leggerla: qui le lunghezze si confrontano con i byte presenti,
@@ -157,6 +160,14 @@ pub(crate) fn check_stream_framing(bytes: &[u8]) -> Result<(), DatabaseError> {
             .ok_or_else(invalid)?;
         let message =
             arrow_ipc::root_as_message(&bytes[position..metadata_end]).map_err(|_| invalid())?;
+        if message
+            .header_as_schema()
+            .is_some_and(|schema| !schema.endianness().equals_to_target_endianness())
+        {
+            return Err(DatabaseError::invalid_plan(
+                "endianness dello schema Arrow IPC diversa da quella della piattaforma",
+            ));
+        }
         let body_length = usize::try_from(message.bodyLength()).map_err(|_| invalid())?;
         position = metadata_end
             .checked_add(body_length)

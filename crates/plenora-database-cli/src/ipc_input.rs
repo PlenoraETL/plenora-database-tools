@@ -98,6 +98,12 @@ fn truncated() -> crate::CliError {
     "stream Arrow IPC senza marcatore di fine: troncato o incompleto".into()
 }
 
+fn foreign_endianness() -> crate::CliError {
+    "endianness dello schema Arrow IPC diversa da quella della piattaforma: i valori si \
+     leggerebbero con i byte invertiti"
+        .into()
+}
+
 fn unreadable() -> crate::CliError {
     "input Arrow IPC non leggibile".into()
 }
@@ -138,11 +144,27 @@ const FIELD_BYTES: u64 = (std::mem::size_of::<plenora_database_core::arrow::Fiel
     + std::mem::size_of::<plenora_database_core::arrow::DataType>()
     + 64) as u64;
 
-/// Memoria di una voce di metadati materializzata oltre a chiave e valore:
-/// lo slot `(String, String)` della tabella hash con il byte di controllo,
-/// moltiplicato per il fattore di carico massimo della tabella (meno di un
-/// terzo degli slot puo essere vuoto). Stima per eccesso.
-const ENTRY_BYTES: u64 = (3 * (2 * std::mem::size_of::<String>() + 1)) as u64;
+/// Uno slot `(String, String)` di una mappa di metadati.
+const KEY_VALUE_BYTES: usize = 2 * std::mem::size_of::<String>();
+
+/// Memoria di una voce di metadati materializzata oltre a chiave e valore.
+///
+/// Arrow 60 (`convert.rs`) raccoglie i metadati di schema e campi in una
+/// `HashMap<String, String>` temporanea e la converte in `Metadata`, cioe un
+/// `Arc<BTreeMap<String, String>>`: la conversione raccoglie le voci in un
+/// vettore, lo ordina e costruisce l'albero, mentre la tabella hash consumata
+/// e ancora allocata. Per ogni voce, insieme: la tabella hash (fino a tre
+/// slot con il byte di controllo, per il fattore di carico e la capacita a
+/// potenze di due), lo slot del vettore, e i nodi dell'albero (fino a tre
+/// slot per voce: le foglie della costruzione ordinata sono piene almeno a
+/// meta, piu i nodi interni). Stima per eccesso.
+const ENTRY_BYTES: u64 = (3 * (KEY_VALUE_BYTES + 1) + KEY_VALUE_BYTES + 3 * KEY_VALUE_BYTES) as u64;
+
+/// Memoria fissa di una mappa di metadati non vuota, anche con una sola
+/// voce: la tabella hash minima (quattro slot e il gruppo dei byte di
+/// controllo), una foglia del `BTreeMap` (undici slot, il puntatore al
+/// padre e le due lunghezze) e l'intestazione dell'`Arc`. Stima per eccesso.
+const MAP_BYTES: u64 = (4 * (KEY_VALUE_BYTES + 1) + 16 + 11 * KEY_VALUE_BYTES + 16 + 16) as u64;
 
 /// La memoria dello schema che `try_fb_to_schema` (o il lettore dello
 /// stream) materializza da questo flatbuffer: nomi, metadati e campi
@@ -176,12 +198,91 @@ fn field_footprint(field: arrow_ipc::Field<'_>) -> Option<u64> {
 }
 
 fn metadata_footprint<'a>(entries: impl Iterator<Item = arrow_ipc::KeyValue<'a>>) -> Option<u64> {
-    entries.into_iter().try_fold(0_u64, |total, entry| {
+    let mut entries = entries.peekable();
+    // Una mappa vuota non alloca (`Metadata` la rappresenta con `None`).
+    let fixed = if entries.peek().is_some() {
+        MAP_BYTES
+    } else {
+        0
+    };
+    entries.try_fold(fixed, |total, entry| {
         total
             .checked_add(ENTRY_BYTES)?
             .checked_add(entry.key().map_or(0, str::len) as u64)?
             .checked_add(entry.value().map_or(0, str::len) as u64)
     })
+}
+
+/// Memoria di un dizionario residente oltre ai suoi dati: la voce della
+/// tabella per id del lettore, l'`ArrayRef` e la struttura dell'array
+/// (tipo, buffer, figli). Stima per eccesso.
+const DICTIONARY_ENTRY_BYTES: u64 = 512;
+
+/// La memoria che resta viva per tutta la lettura, oltre a indice e
+/// messaggi: lo schema (vedi [`schema_resident`]) e i dizionari che il
+/// lettore dello stream tiene per id (`dictionaries_by_id` di Arrow). Un
+/// dizionario sostituisce il precedente con lo stesso id, un delta si
+/// concatena a lui. I dati di un dizionario restano nel corpo del suo
+/// messaggio, o nella concatenazione: la sua memoria e al piu la lunghezza
+/// dei corpi che lo compongono.
+#[derive(Default)]
+struct Residency {
+    schema: u64,
+    sizes: std::collections::HashMap<i64, u64>,
+    total: u64,
+}
+
+impl Residency {
+    /// Schema e dizionari residenti.
+    fn resident(&self) -> CliResult<u64> {
+        self.schema.checked_add(self.total).ok_or_else(beyond_limit)
+    }
+
+    /// Registra un messaggio di dizionario. Rende il picco durante la sua
+    /// decodifica: il dizionario precedente con lo stesso id e ancora vivo
+    /// mentre nasce il nuovo (sostituzione o concatenazione).
+    fn apply(&mut self, id: i64, is_delta: bool, body_length: u64) -> Option<u64> {
+        let previous = self.sizes.get(&id).copied();
+        let size = match (is_delta, previous) {
+            (true, Some(previous)) => previous.checked_add(body_length)?,
+            _ => body_length,
+        };
+        let entry = if previous.is_some() {
+            0
+        } else {
+            DICTIONARY_ENTRY_BYTES
+        };
+        let peak = self.total.checked_add(size)?.checked_add(entry)?;
+        self.total = peak.checked_sub(previous.unwrap_or(0))?;
+        self.sizes.insert(id, size);
+        Some(peak)
+    }
+
+    /// Se `message` e un dizionario, lo registra e controlla nel budget il
+    /// picco della sua decodifica, con lo schema, l'indice e le due copie
+    /// del messaggio piu grande.
+    fn admit_dictionary(
+        &mut self,
+        message: &arrow_ipc::Message<'_>,
+        index_capacity: usize,
+        largest: u64,
+        limit: u64,
+    ) -> CliResult<()> {
+        let Some(dictionary) = message.header_as_dictionary_batch() else {
+            return Ok(());
+        };
+        let body_length = u64::try_from(message.bodyLength()).map_err(|_| malformed())?;
+        let schema = self.schema;
+        if self
+            .apply(dictionary.id(), dictionary.isDelta(), body_length)
+            .and_then(|peak| peak.checked_add(schema))
+            .and_then(|peak| footprint(index_capacity, largest, peak))
+            .is_none_or(|bytes| bytes > limit)
+        {
+            return Err(beyond_limit());
+        }
+        Ok(())
+    }
 }
 
 /// Le proprieta IPC che governano la decodifica e che il confronto degli
@@ -372,6 +473,7 @@ fn scan_stream(file: &mut File, start: u64, end: u64, limit: u64) -> CliResult<S
     let mut segments = Vec::new();
     let mut largest = 0_u64;
     let mut resident = 0_u64;
+    let mut residency = Residency::default();
     let mut schema_message = Vec::new();
     loop {
         let (prefix, metadata_length) = read_frame_prefix(&mut reader, position, end)?;
@@ -413,9 +515,10 @@ fn scan_stream(file: &mut File, start: u64, end: u64, limit: u64) -> CliResult<S
         let message = root_as_message(&metadata).map_err(|_| malformed())?;
         let body_length = u64::try_from(message.bodyLength()).map_err(|_| malformed())?;
         let schema_resident = schema_resident(&message, &mut schema, metadata_length)?;
-        if let Some(bytes) = schema_resident {
-            resident = bytes;
-        }
+        residency.schema = schema_resident.unwrap_or(residency.schema);
+        let length = 8 + metadata_length + body_length;
+        residency.admit_dictionary(&message, segments.capacity(), largest.max(length), limit)?;
+        resident = residency.resident()?;
         if (8 + metadata_length)
             .checked_add(body_length)
             .and_then(|length| footprint(segments.capacity(), largest.max(length), resident))
@@ -475,6 +578,12 @@ fn schema_resident(
         MessageHeader::Schema if !*schema => {
             *schema = true;
             let fields = message.header_as_schema().ok_or_else(malformed)?;
+            // Il lettore dello stream di Arrow non confronta l'ordine dei
+            // byte: dati di un'altra endianness si leggerebbero invertiti
+            // (un Int32 con valore 1 diventerebbe 16777216), senza errore.
+            if !fields.endianness().equals_to_target_endianness() {
+                return Err(foreign_endianness());
+            }
             schema_footprint(fields)
                 .and_then(|bytes| bytes.checked_add(metadata_length))
                 .map(Some)
