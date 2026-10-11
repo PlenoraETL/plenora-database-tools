@@ -894,7 +894,7 @@ impl Provider for PostgresProvider {
         })
     }
 
-    fn begin_transaction<'a>(
+    fn open_transaction<'a>(
         &'a self,
         secret: &'a SecretString,
         options: &'a plenora_database_core::transaction::TransactionOptions,
@@ -912,7 +912,7 @@ impl Provider for PostgresProvider {
         })
     }
 
-    fn execute_ddl<'a>(
+    fn run_ddl<'a>(
         &'a self,
         secret: &'a SecretString,
         sql: &'a str,

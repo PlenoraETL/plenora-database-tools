@@ -346,7 +346,7 @@ impl Provider for SqlServerProvider {
     /// Se il pool non consegna una sessione, se il server rifiuta il livello
     /// di isolamento, o se il piano chiede la sola lettura, che su SQL Server
     /// non ha una forma dichiarativa.
-    fn begin_transaction<'a>(
+    fn open_transaction<'a>(
         &'a self,
         secret: &'a SecretString,
         options: &'a plenora_database_core::transaction::TransactionOptions,
@@ -515,7 +515,7 @@ impl Provider for SqlServerProvider {
         })
     }
 
-    fn execute_ddl<'a>(
+    fn run_ddl<'a>(
         &'a self,
         secret: &'a SecretString,
         sql: &'a str,

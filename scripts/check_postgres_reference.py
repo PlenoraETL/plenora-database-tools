@@ -40,6 +40,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_provider_row_diagnostics_lost_rollback_ack_is_quarantined",
         "live_provider_row_diagnostics_commit_ambiguity_partitions_all_rows_unknown",
         "live_provider_row_diagnostics_commit_rejection_proves_the_rollback",
+        "live_a_procedure_that_commits_then_raises_is_not_reported_as_no_effect",
         "live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps",
     }
 )

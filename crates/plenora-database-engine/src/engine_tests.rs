@@ -217,7 +217,7 @@ impl Provider for TestProvider {
     // Il permit viene deliberatamente spostato nella transazione: anticiparne
     // il Drop, come suggerisce il lint, falserebbe la saturazione del pool.
     #[allow(clippy::significant_drop_tightening)]
-    fn begin_transaction<'a>(
+    fn open_transaction<'a>(
         &'a self,
         _secret: &'a SecretString,
         _options: &'a TransactionOptions,

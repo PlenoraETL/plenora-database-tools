@@ -241,7 +241,7 @@ impl Provider for OracleProvider {
         })
     }
 
-    fn begin_transaction<'a>(
+    fn open_transaction<'a>(
         &'a self,
         secret: &'a SecretString,
         options: &'a TransactionOptions,
@@ -256,7 +256,7 @@ impl Provider for OracleProvider {
         })
     }
 
-    fn execute_ddl<'a>(
+    fn run_ddl<'a>(
         &'a self,
         secret: &'a SecretString,
         sql: &'a str,

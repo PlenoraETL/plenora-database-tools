@@ -145,21 +145,29 @@ riassumono le note di quelle release.
     effetto ignoto con recovery; i codici di connessione persa (ORA-03113,
     03114, 03135, 12537, 12547, 12570, 25408) hanno categoria `io`. Prima
     usciva `none` con `retry=safe`, anche per il `CREATE TABLE` del setup;
-  - **SQL del chiamante dopo l'invio non dichiara mai `none`**
-    (`DatabaseError::after_unproven_send`), in Oracle, SQL Server, MySQL e
-    Db2: `execute`, `query`, `query_stream` e l'update condizionale delle
-    transazioni. Il contesto non prova l'assenza di effetti: un DDL Oracle o
-    MySQL fa commit implicito di ciò che lo precede (un INSERT seguito da un
-    `CREATE TABLE` rifiutato con ORA-00955 era già permanente), una
-    procedura o un trigger autonomo fa commit da solo, un batch T-SQL
-    `INSERT; RAISERROR` ha già scritto quando arriva il codice. Un effetto
-    `none` diventa ignoto con recovery; un rollback confermato resta. Le
-    istruzioni generate dall'adapter, di forma nota, conservano l'elenco
-    chiuso dei rifiuti. PostgreSQL non ne ha bisogno, ed è dichiarato nel
-    codice: DDL transazionale, nessun COMMIT nelle procedure dentro un
-    blocco, una sola istruzione per invio, transazione abortita dopo un
-    errore. Il difetto in SQL Server c'era già su `main`. Prove live in
-    Oracle e SQL Server, rosse prima della correzione;
+  - **SQL del chiamante dopo l'invio non dichiara mai `none`**, in un
+    punto obbligato (`plenora_database_core::caller_sql`) per tutti i
+    provider, PostgreSQL compreso. `Provider::begin_transaction` ed
+    `execute_ddl` non si ridefiniscono più: avvolgono `open_transaction` e
+    `run_ddl` dell'adapter, e qualunque errore di `execute`, `query`,
+    `query_stream` con il suo stream, `execute_graph` e dell'update
+    condizionale — invio, fetch, decodifica, cancellazione, timeout,
+    worker fallito — passa da `DatabaseError::after_unproven_send`: un
+    effetto `none` diventa ignoto con recovery, un rollback confermato
+    resta. Il contesto non prova l'assenza di effetti: un DDL Oracle o
+    MySQL fa commit implicito di ciò che lo precede, una procedura
+    PostgreSQL chiamata in autocommit fa COMMIT e poi RAISE, un trigger
+    autonomo fa commit da solo, un batch T-SQL `INSERT; RAISERROR` ha già
+    scritto. Una prova d'inventario fallisce se un adapter ridefinisce i
+    due metodi pubblici. Limite dichiarato — regola: un errore di fase
+    `validate` precede l'invio e resta com'è; ambito: un errore locale
+    dell'adapter in un'altra fase prima dell'invio (parametro non
+    convertibile, transazione già chiusa) esce ignoto; hazard: nessuno per
+    la correttezza, ma `requires_recovery` dove `none` sarebbe stato vero;
+    rientro: un confine esplicito fra preparazione e invio nel trait degli
+    adapter. Il difetto in SQL Server c'era già su `main`. Prove live in
+    PostgreSQL (procedura che fa COMMIT e poi RAISE), SQL Server (batch
+    `INSERT; RAISERROR`) e Oracle (INSERT poi CREATE TABLE con ORA-00955);
   - **scritture `create` abbandonate** (Oracle e MySQL): una guardia armata
     prima del `CREATE TABLE` registra il target nel registro del provider
     (`ddl_residues()`, modulo `ddl_residue`) se la scrittura non arriva a un

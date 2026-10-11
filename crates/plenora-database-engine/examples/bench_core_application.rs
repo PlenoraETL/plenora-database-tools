@@ -136,7 +136,7 @@ impl Provider for OfflineProvider {
         Box::pin(async { Self::unused(ErrorPhase::Write) })
     }
 
-    fn begin_transaction<'a>(
+    fn open_transaction<'a>(
         &'a self,
         _secret: &'a SecretString,
         _options: &'a TransactionOptions,

@@ -103,16 +103,6 @@ pub const fn server_code(error: &Error) -> Option<u16> {
     }
 }
 
-/// Un errore senza codice del server in una fase mutante: risposta persa.
-///
-/// # Perche un codice del server basta qui
-///
-/// Il classificatore vale per le istruzioni **dell'adapter**, di forma nota:
-/// un solo DML, oppure il DDL di `mode='create'` su una sessione senza
-/// transazione aperta (il commit implicito non ha nulla da rendere
-/// permanente). Per SQL del chiamante il contesto non prova l'assenza di
-/// effetti, e le transazioni applicano `DatabaseError::after_unproven_send`
-/// dopo l'invio: un codice del server non porta mai `none`.
 const fn has_ambiguous_effect(code: Option<u16>, phase: ErrorPhase) -> bool {
     code.is_none()
         && matches!(

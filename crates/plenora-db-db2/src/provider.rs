@@ -142,7 +142,7 @@ impl Provider for Db2Provider {
         })
     }
 
-    fn begin_transaction<'a>(
+    fn open_transaction<'a>(
         &'a self,
         secret: &'a SecretString,
         options: &'a TransactionOptions,
@@ -162,7 +162,7 @@ impl Provider for Db2Provider {
         })
     }
 
-    fn execute_ddl<'a>(
+    fn run_ddl<'a>(
         &'a self,
         secret: &'a SecretString,
         sql: &'a str,

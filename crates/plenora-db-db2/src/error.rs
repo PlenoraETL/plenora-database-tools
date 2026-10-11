@@ -5,15 +5,6 @@ use plenora_database_core::{
     RemoteEffect, RetryDisposition,
 };
 
-/// L'errore pubblico di un errore ODBC.
-///
-/// # Perche una diagnostica del server basta qui
-///
-/// Il classificatore vale per le istruzioni **dell'adapter**, di forma nota.
-/// Il DDL Db2 e transazionale (nessun commit implicito). Per SQL del
-/// chiamante — dove una procedura puo fare commit da sola — le transazioni
-/// applicano `DatabaseError::after_unproven_send` dopo l'invio: una
-/// diagnostica del server non porta mai `none`.
 pub fn driver_error(error: &OdbcError, phase: ErrorPhase) -> DatabaseError {
     let (category, mut retry, message) = match error {
         OdbcError::Diagnostics { record, .. } => {

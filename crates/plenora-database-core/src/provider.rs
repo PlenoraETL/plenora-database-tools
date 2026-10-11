@@ -323,7 +323,33 @@ pub trait Provider: Send + Sync {
     /// capability richieste dichiarato fuori dalla libreria e verificato da
     /// [`check_profile`](crate::conformance::check_profile) su evidence live.
     /// Un profilo si supera, non si pubblica nel documento capability.
+    ///
+    /// Non si ridefinisce: avvolge [`Self::open_transaction`] nel punto
+    /// obbligato dello SQL del chiamante ([`crate::caller_sql`]), che dopo
+    /// l'invio non dichiara mai `none`. Una prova d'inventario verifica che
+    /// nessun adapter lo ridefinisca.
     fn begin_transaction<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        options: &'a TransactionOptions,
+        budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Box<dyn TransactionScope>> {
+        Box::pin(async move {
+            let inner = self
+                .open_transaction(secret, options, budget, cancellation)
+                .await?;
+            Ok(
+                Box::new(crate::caller_sql::CallerSqlTransaction::new(inner))
+                    as Box<dyn TransactionScope>,
+            )
+        })
+    }
+
+    /// Apre la transazione dell'adapter. Si chiama solo da
+    /// [`Self::begin_transaction`], che la avvolge nel punto obbligato dello
+    /// SQL del chiamante.
+    fn open_transaction<'a>(
         &'a self,
         _secret: &'a SecretString,
         _options: &'a TransactionOptions,
@@ -349,8 +375,11 @@ pub trait Provider: Send + Sync {
     /// # Rischi
     ///
     /// Nessuna semantica transazionale: se lo statement fallisce a metà,
-    /// il chiamante deve verificare lo stato del DB fuori banda. La libreria
-    /// **non** produce `OutcomeUnknown` qui — un errore è un errore.
+    /// il chiamante deve verificare lo stato del DB fuori banda. Un errore
+    /// dopo l'invio ha effetto ignoto, mai `none` ([`crate::caller_sql`]):
+    /// un batch o una procedura possono aver fatto commit prima di fallire.
+    ///
+    /// Non si ridefinisce: avvolge [`Self::run_ddl`].
     ///
     /// # Governance
     ///
@@ -359,6 +388,20 @@ pub trait Provider: Send + Sync {
     /// invocato solo da codice migration autorizzato, non dal path
     /// applicativo di dominio.
     fn execute_ddl<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        sql: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            self.run_ddl(secret, sql, cancellation)
+                .await
+                .map_err(crate::caller_sql::caller_sql_failure)
+        })
+    }
+
+    /// Esegue il DDL dell'adapter. Si chiama solo da [`Self::execute_ddl`].
+    fn run_ddl<'a>(
         &'a self,
         _secret: &'a SecretString,
         _sql: &'a str,

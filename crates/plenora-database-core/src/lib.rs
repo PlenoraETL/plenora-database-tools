@@ -2,6 +2,7 @@
 //!
 //! Questo crate non contiene client, pool, runtime async o dialect SQL.
 
+pub mod caller_sql;
 pub mod cancellation;
 pub mod capabilities;
 pub mod checkpoint;

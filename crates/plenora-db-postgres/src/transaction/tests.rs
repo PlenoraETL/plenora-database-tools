@@ -2242,6 +2242,53 @@ mod live {
         );
     }
 
+    /// Una procedura (PostgreSQL 11+) chiamata fuori transazione fa COMMIT e
+    /// poi RAISE: la riga e permanente, quindi l'errore non puo dichiarare
+    /// `none`.
+    #[tokio::test]
+    async fn live_a_procedure_that_commits_then_raises_is_not_reported_as_no_effect() {
+        use plenora_database_core::provider::Provider;
+        scratch_table("opz3_commit_raise").await;
+        let provider = provider();
+        let cancel = CancellationToken::new();
+        Provider::execute_ddl(
+            &provider,
+            &secret(),
+            "CREATE OR REPLACE PROCEDURE opz3_commit_raise_proc() LANGUAGE plpgsql AS $$ \
+             BEGIN \
+               INSERT INTO opz3_commit_raise (id, v) VALUES (1, 'permanente'); \
+               COMMIT; \
+               RAISE EXCEPTION 'dopo il commit'; \
+             END $$",
+            &cancel,
+        )
+        .await
+        .expect("procedura");
+        let error = Provider::execute_ddl(
+            &provider,
+            &secret(),
+            "CALL opz3_commit_raise_proc()",
+            &cancel,
+        )
+        .await
+        .expect_err("RAISE dopo il COMMIT");
+        assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+        assert_eq!(
+            count(&provider, "SELECT count(*) FROM opz3_commit_raise").await,
+            1
+        );
+        Provider::execute_ddl(
+            &provider,
+            &secret(),
+            "DROP PROCEDURE IF EXISTS opz3_commit_raise_proc()",
+            &cancel,
+        )
+        .await
+        .expect("cleanup");
+        drop_table("opz3_commit_raise").await;
+    }
+
     // === Profilo di conformita ===
 
     use plenora_database_core::conformance::{

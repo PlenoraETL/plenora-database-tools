@@ -466,10 +466,10 @@ impl RowStream for SqlServerRowStream<'_> {
                         "stream della transazione SQL Server interrotto",
                     ));
                 }
-                // Lo stream e di SQL del chiamante: dopo l'invio mai `none`.
-                let next = self.inner.try_next().await.map_err(|error| {
-                    driver_error(&error, ErrorPhase::Read, RemoteEffect::None).after_unproven_send()
-                })?;
+                let next =
+                    self.inner.try_next().await.map_err(|error| {
+                        driver_error(&error, ErrorPhase::Read, RemoteEffect::None)
+                    })?;
                 let Some(row) = next else {
                     self.finished = true;
                     break;
@@ -501,7 +501,7 @@ impl TransactionScope for SqlServerTransaction {
             let query = prepared(statement)?;
             self.session
                 .session_mut()?
-                .execute_caller_write_query(query, cancellation)
+                .execute_write_query(query, cancellation)
                 .await
         })
     }
@@ -518,7 +518,7 @@ impl TransactionScope for SqlServerTransaction {
             let sets = self
                 .session
                 .session_mut()?
-                .execute_caller_query(query, ErrorPhase::Read, cancellation)
+                .execute_query(query, ErrorPhase::Read, cancellation)
                 .await?;
             let mut rows = Vec::new();
             let mut columns: Option<Arc<[String]>> = None;
@@ -560,9 +560,7 @@ impl TransactionScope for SqlServerTransaction {
             let inner = query
                 .query(client)
                 .await
-                .map_err(|error| {
-                    driver_error(&error, ErrorPhase::Read, RemoteEffect::None).after_unproven_send()
-                })?
+                .map_err(|error| driver_error(&error, ErrorPhase::Read, RemoteEffect::None))?
                 .into_row_stream();
             Ok(Box::new(SqlServerRowStream {
                 inner,
@@ -647,7 +645,7 @@ impl TransactionScope for SqlServerTransaction {
                 let query = prepared(request.update)?;
                 self.session
                     .session_mut()?
-                    .execute_caller_write_query(query, cancellation)
+                    .execute_write_query(query, cancellation)
                     .await?
             };
             if affected == request.expected_affected_rows {
@@ -667,7 +665,7 @@ impl TransactionScope for SqlServerTransaction {
             let sets = self
                 .session
                 .session_mut()?
-                .execute_caller_query(query, ErrorPhase::Write, cancellation)
+                .execute_query(query, ErrorPhase::Write, cancellation)
                 .await?;
             let found = sets.iter().any(|set| !set.is_empty());
             if found {

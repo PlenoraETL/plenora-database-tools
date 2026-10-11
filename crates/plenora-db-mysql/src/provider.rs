@@ -494,7 +494,7 @@ impl Provider for MysqlProvider {
         })
     }
 
-    fn begin_transaction<'a>(
+    fn open_transaction<'a>(
         &'a self,
         secret: &'a SecretString,
         options: &'a plenora_database_core::transaction::TransactionOptions,
@@ -520,7 +520,7 @@ impl Provider for MysqlProvider {
         })
     }
 
-    fn execute_ddl<'a>(
+    fn run_ddl<'a>(
         &'a self,
         secret: &'a SecretString,
         sql: &'a str,
@@ -1270,7 +1270,7 @@ impl Provider for MariadbProvider {
         self.0.write(secret, prepared, input, budget, cancellation)
     }
 
-    fn begin_transaction<'a>(
+    fn open_transaction<'a>(
         &'a self,
         secret: &'a SecretString,
         options: &'a plenora_database_core::transaction::TransactionOptions,
@@ -1278,16 +1278,16 @@ impl Provider for MariadbProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
         self.0
-            .begin_transaction(secret, options, budget, cancellation)
+            .open_transaction(secret, options, budget, cancellation)
     }
 
-    fn execute_ddl<'a>(
+    fn run_ddl<'a>(
         &'a self,
         secret: &'a SecretString,
         sql: &'a str,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        self.0.execute_ddl(secret, sql, cancellation)
+        self.0.run_ddl(secret, sql, cancellation)
     }
 }
 

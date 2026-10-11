@@ -2289,10 +2289,15 @@ async fn live_a_native_ddl_failure_after_a_write_is_not_reported_as_no_effect() 
         )
         .await
         .expect_err("ORA-00955");
-    // Il messaggio e redatto: dice solo la classe e il codice ORA, se c'e.
-    eprintln!(
-        "errore del DDL nativo: {:?} {}",
-        error.category, error.message
+    // Che cosa prova: il driver ha consegnato il rifiuto con il codice
+    // ORA-00955, che l'elenco chiuso dei rifiuti certi ammette. Senza il
+    // punto obbligato dello SQL del chiamante sarebbe uscito `none`. Il
+    // messaggio e redatto: porta solo il codice.
+    assert!(
+        error.message.contains("ORA-00955"),
+        "ramo di errore inatteso: {:?} {}",
+        error.category,
+        error.message
     );
     assert_eq!(error.remote_effect, RemoteEffect::Unknown);
     let _ = transaction.rollback(&cancellation).await;
