@@ -790,10 +790,7 @@ fn classified_commit_failure(error: &oracle_rs::Error) -> (DatabaseError, bool) 
 /// finche qualcuno non ne dimostra la semantica.
 const CERTAIN_COMMIT_REJECTIONS: &[u32] = &[2_091];
 
-/// Codici che dicono che la connessione e persa: ORA-03113 (fine del
-/// canale), ORA-03114 (non connesso), ORA-25408 (chiamata non rieseguibile
-/// dopo la perdita della connessione).
-const LOST_CONNECTION_CODES: &[u32] = &[3_113, 3_114, 25_408];
+use crate::error::LOST_CONNECTION_CODES;
 
 /// L'errore di un rollback esplicito non confermato: timeout, canale perso,
 /// rifiuto. In nessun caso prova che le scritture siano annullate.

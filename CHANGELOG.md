@@ -130,6 +130,17 @@ riassumono le note di quelle release.
     cancellazione; dopo la creazione un errore con effetto ignoto resta
     `unknown` invece di diventare `partial`, e un errore prima della
     creazione conserva i propri assi;
+  - Oracle, ogni uscita dopo la creazione del target (apertura della
+    transazione di carico, scrittura, COMMIT annullato, esito ignoto) passa
+    da un punto solo, come `stamp_ddl_residue` di MySQL: il DDL Oracle fa
+    commit implicito, quindi un effetto noto è `partial` e uno ignoto resta
+    `unknown`. Prima l'apertura fallita della transazione e un COMMIT
+    `rolled_back` dichiaravano `none`/`rolled_back` con la tabella creata;
+  - Oracle, risposta persa a un comando inviato (canale chiuso, trasporto
+    interrotto, ORA-03113/03114/25408): in una fase mutante l'effetto è
+    ignoto con recovery, distinto dal rifiuto certo del server con un codice
+    ORA. Prima usciva `none` con `retry=safe`, anche per il `CREATE TABLE`
+    del setup;
   - **regola unica dell'interruzione dopo l'invio**
     (`DatabaseError::after_interrupted_send`): un timeout o una cancellazione con un
     comando mutante in volo danno effetto ignoto e recovery, e in fase

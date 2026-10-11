@@ -92,3 +92,45 @@ fn an_interruption_in_flight_during_a_mutating_phase_is_unknown() {
         }
     }
 }
+
+/// Una risposta persa (canale chiuso, trasporto interrotto, codice ORA di
+/// connessione persa) dopo l'invio di un comando mutante non prova l'effetto:
+/// ignoto con recovery, mai `none`/`safe`. Un rifiuto del server con un codice
+/// ORA resta certo.
+#[test]
+fn a_lost_response_to_a_sent_mutating_command_is_unknown() {
+    use crate::error::sent_command_error;
+    use plenora_database_core::{RemoteEffect, RetryDisposition};
+    for phase in [ErrorPhase::Write, ErrorPhase::Commit, ErrorPhase::Rollback] {
+        for error in [
+            Error::ConnectionClosed,
+            Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset)),
+            Error::OracleError {
+                code: 3_113,
+                message: "fine del canale".to_owned(),
+            },
+        ] {
+            let public = sent_command_error(phase, &error);
+            assert_eq!(
+                public.remote_effect,
+                RemoteEffect::Unknown,
+                "{phase:?} {error:?}"
+            );
+            assert_eq!(
+                public.retry,
+                RetryDisposition::RequiresRecovery,
+                "{phase:?}"
+            );
+        }
+        let refused = sent_command_error(
+            phase,
+            &Error::OracleError {
+                code: 955,
+                message: "esiste gia".to_owned(),
+            },
+        );
+        assert_eq!(refused.remote_effect, RemoteEffect::None, "{phase:?}");
+    }
+    let read = sent_command_error(ErrorPhase::Read, &Error::ConnectionClosed);
+    assert_eq!(read.remote_effect, RemoteEffect::None);
+}

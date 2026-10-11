@@ -51,7 +51,7 @@ pub async fn with_timeout_duration<T>(
                 "operazione Oracle oltre il timeout configurato",
             )
             .after_interrupted_send()),
-            |result| result.map_err(|error| driver_error(phase, &error)),
+            |result| result.map_err(|error| crate::error::sent_command_error(phase, &error)),
         ),
         _ = cancellation.cancelled() => {
             Err(interruption_error(cancellation, phase).after_interrupted_send())

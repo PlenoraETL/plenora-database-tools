@@ -112,3 +112,42 @@ fn the_setup_commit_follows_the_single_commit_rule() {
     });
     assert_eq!(rejected.remote_effect, RemoteEffect::RolledBack);
 }
+
+/// Dopo la creazione del target ogni errore successivo — apertura della
+/// transazione di carico, rollback provato del COMMIT, validazione — porta
+/// l'effetto persistente: `partial`, o `unknown` se gia ignoto. Senza
+/// creazione l'errore passa invariato.
+#[test]
+fn every_exit_after_the_create_carries_the_persistent_effect() {
+    let with = |effect: RemoteEffect, retry: RetryDisposition| DatabaseError {
+        remote_effect: effect,
+        retry,
+        ..write_error(ErrorCategory::Io, "dopo il setup")
+    };
+    for (effect, expected) in [
+        (RemoteEffect::None, RemoteEffect::Partial),
+        (RemoteEffect::RolledBack, RemoteEffect::Partial),
+        (RemoteEffect::Partial, RemoteEffect::Partial),
+        (RemoteEffect::Unknown, RemoteEffect::Unknown),
+    ] {
+        let error = stamp_created_target::<()>(Err(with(effect, RetryDisposition::Safe)), true)
+            .expect_err("errore");
+        assert_eq!(error.remote_effect, expected, "{effect:?}");
+        assert_eq!(
+            error.retry,
+            RetryDisposition::RequiresRecovery,
+            "{effect:?}"
+        );
+    }
+    let quarantined = stamp_created_target::<()>(
+        Err(with(RemoteEffect::None, RetryDisposition::Quarantine)),
+        true,
+    )
+    .expect_err("errore");
+    assert_eq!(quarantined.retry, RetryDisposition::Quarantine);
+    let untouched =
+        stamp_created_target::<()>(Err(with(RemoteEffect::None, RetryDisposition::Safe)), false)
+            .expect_err("errore");
+    assert_eq!(untouched.remote_effect, RemoteEffect::None);
+    assert_eq!(untouched.retry, RetryDisposition::Safe);
+}

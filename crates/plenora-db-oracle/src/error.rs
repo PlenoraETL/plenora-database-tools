@@ -36,6 +36,35 @@ pub fn driver_error(phase: ErrorPhase, error: &Error) -> DatabaseError {
     )
 }
 
+/// Codici che dicono che la connessione e persa: ORA-03113 (fine del
+/// canale), ORA-03114 (non connesso), ORA-25408 (chiamata non rieseguibile
+/// dopo la perdita della connessione). Non sono un rifiuto del comando.
+pub const LOST_CONNECTION_CODES: &[u32] = &[3_113, 3_114, 25_408];
+
+/// L'errore del driver per un comando **gia inviato**.
+///
+/// Un rifiuto del server con un codice ORA e certo: il comando non ha avuto
+/// effetto. Ogni altro esito — canale chiuso, trasporto interrotto, risposta
+/// non interpretabile, codice di connessione persa — e una risposta persa,
+/// non un rifiuto: in una fase mutante l'effetto e ignoto
+/// (`DatabaseError::after_interrupted_send`), con categoria `io` per la
+/// connessione persa.
+pub fn sent_command_error(phase: ErrorPhase, error: &Error) -> DatabaseError {
+    let mut public = driver_error(phase, error);
+    let code = match error {
+        Error::OracleError { code, .. } | Error::ServerError { code, .. } => Some(*code),
+        _ => None,
+    };
+    match code {
+        Some(code) if !LOST_CONNECTION_CODES.contains(&code) => public,
+        Some(_) => {
+            public.category = ErrorCategory::Io;
+            public.after_interrupted_send()
+        }
+        None => public.after_interrupted_send(),
+    }
+}
+
 /// Classifica la variante del driver senza copiarne i campi, che possono
 /// contenere SQL, nomi remoti o altri dati non adatti all'errore pubblico.
 fn classify_driver_error(error: &Error) -> (ErrorCategory, &'static str) {

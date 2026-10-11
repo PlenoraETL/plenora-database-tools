@@ -459,7 +459,7 @@ pub async fn execute_write(
     config: &OracleConfig,
     pool: &Arc<OraclePool>,
     mut prepared: PreparedWrite,
-    mut input: Box<dyn BatchStream>,
+    input: Box<dyn BatchStream>,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<WriteOutcome> {
@@ -491,6 +491,35 @@ pub async fn execute_write(
     if created {
         setup_created_target(config, pool, &plan, cancellation).await?;
     }
+    stamp_created_target(
+        load_target(
+            config,
+            pool,
+            &plan,
+            prepared,
+            input,
+            budget,
+            cancellation,
+            declared_rows,
+        )
+        .await,
+        created,
+    )
+}
+
+/// Il carico dopo l'eventuale creazione: transazione, righe, COMMIT.
+#[allow(clippy::too_many_arguments, clippy::significant_drop_tightening)]
+async fn load_target(
+    config: &OracleConfig,
+    pool: &Arc<OraclePool>,
+    plan: &OracleWritePlan,
+    prepared: PreparedWrite,
+    mut input: Box<dyn BatchStream>,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+    declared_rows: u64,
+) -> Result<WriteOutcome> {
+    let created = plan.create_sql.is_some();
     let mut transaction = OracleTransaction::begin(
         config,
         pool,
@@ -500,7 +529,7 @@ pub async fn execute_write(
     .await?;
     let execution = execute_input(
         &mut transaction,
-        &plan,
+        plan,
         &prepared.input_schema,
         input.as_mut(),
         budget,
@@ -517,7 +546,7 @@ pub async fn execute_write(
         EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
     match Box::new(transaction).commit(cancellation).await? {
-        CommitOutcome::Committed => committed_outcome(execution_id, &plan, received, affected),
+        CommitOutcome::Committed => committed_outcome(execution_id, plan, received, affected),
         CommitOutcome::OutcomeUnknown { recovery } => {
             let outcome = WriteOutcome {
                 schema_version: 2,
@@ -1251,6 +1280,20 @@ fn spatial_index_name(table: &str, column: &str) -> String {
     let suffix = u64::from_be_bytes(std::array::from_fn(|index| digest[index]));
     let end = base.floor_char_boundary(101);
     format!("{}_{suffix:016X}", &base[..end])
+}
+
+/// Ogni uscita dopo la creazione del target passa da qui, in un punto solo
+/// (come `stamp_ddl_residue` di MySQL): il DDL Oracle fa commit implicito,
+/// quindi la tabella resta anche se il carico fallisce o viene annullato.
+/// Un effetto noto diventa `partial`, un effetto ignoto resta ignoto;
+/// sempre recovery, o la `quarantine` gia decisa. Senza creazione l'esito
+/// passa invariato.
+fn stamp_created_target<T>(result: Result<T>, created: bool) -> Result<T> {
+    if created {
+        result.map_err(shape_create_setup_error)
+    } else {
+        result
+    }
 }
 
 fn setup_commit_error(error: &oracle_rs::Error) -> DatabaseError {
