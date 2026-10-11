@@ -258,7 +258,7 @@ impl MysqlReadPlan {
                 .iter()
                 .map(|column| column.arrow_field_with_profile(profile))
                 .collect(),
-        );
+        )?;
         Ok(Self {
             columns,
             crs_checks,
@@ -339,7 +339,7 @@ impl MysqlReadPlan {
                 .iter()
                 .map(|column| column.arrow_field_with_profile(profile))
                 .collect(),
-        );
+        )?;
         Ok(Self {
             columns,
             crs_checks: plan.crs_checks.clone(),
@@ -616,14 +616,8 @@ impl MysqlColumnSpec {
                     "geometry".to_owned(),
                 ),
                 (protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned()),
-                (
-                    protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
-                    "declared_unresolved".to_owned(),
-                ),
             ]);
-            if let Some(srid) = self.spatial_srid {
-                metadata.insert(protocol::GEOMETRY_SRID.to_owned(), srid.to_string());
-            }
+            protocol::insert_declared_crs(&mut metadata, "MYSQL", self.spatial_srid);
             if self.native_type != "geometry" {
                 metadata.insert(
                     protocol::GEOMETRY_TYPES.to_owned(),

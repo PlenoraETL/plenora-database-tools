@@ -25,12 +25,28 @@ pub(super) fn reserve_write_batch(
     )?;
     let rows = u64::try_from(batch.num_rows())
         .map_err(|_| DatabaseError::resource_limit("batch oltre il conteggio supportato"))?;
-    let bytes = batch
-        .columns()
-        .iter()
-        .try_fold(0_u64, |total, array| {
-            total.checked_add(u64::try_from(array.get_array_memory_size()).unwrap_or(u64::MAX))
-        })
-        .ok_or_else(|| DatabaseError::resource_limit("overflow nel conteggio byte del batch"))?;
+    let bytes = reserved_batch_bytes(batch, plans)?;
     WriteBatchResources::acquire(budget, rows, bytes, bytes, geometry_components)
+}
+
+/// I byte che il batch occupa mentre si scrive: le colonne, piu la copia EWKB
+/// delle colonne `wkb` con SRID dichiarato, che convive con l'originale finche
+/// il batch riscritto non lo sostituisce. La copia si prenota qui, prima di
+/// allocarla: valori, quattro byte di SRID per riga e offset.
+pub(super) fn reserved_batch_bytes(batch: &RecordBatch, plans: &[WriteColumnPlan]) -> Result<u64> {
+    let overflow = || DatabaseError::resource_limit("overflow nel conteggio byte del batch");
+    let mut total = 0_u64;
+    for (plan, array) in plans.iter().zip(batch.columns()) {
+        let size = u64::try_from(array.get_array_memory_size()).map_err(|_| overflow())?;
+        total = total.checked_add(size).ok_or_else(overflow)?;
+        if plan.needs_srid_stamp() {
+            let rows = u64::try_from(array.len()).map_err(|_| overflow())?;
+            let copy = rows
+                .checked_mul(8)
+                .and_then(|extra| extra.checked_add(size))
+                .ok_or_else(overflow)?;
+            total = total.checked_add(copy).ok_or_else(overflow)?;
+        }
+    }
+    Ok(total)
 }

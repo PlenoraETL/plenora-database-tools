@@ -24,6 +24,7 @@ fn column(name: &str) -> ColumnSpec {
         domain_base_type: None,
         domain_constraints: Vec::new(),
         collation: None,
+        source: None,
         kind: ColumnKind::I32,
     }
 }

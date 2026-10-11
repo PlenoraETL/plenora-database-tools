@@ -167,12 +167,10 @@ impl OracleColumnSpec {
                     .to_owned(),
                 ),
                 (protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned()),
-                (
-                    protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
-                    "resolved".to_owned(),
-                ),
-                (protocol::GEOMETRY_SRID.to_owned(), srid.to_string()),
             ]);
+            // Lo SRID Oracle non e risolto verso un'autorita: era dichiarato
+            // `resolved` senza identificatore, contro §4.
+            protocol::insert_declared_crs(&mut metadata, "ORACLE", Some(srid));
         }
         Ok(Field::new(&self.name, data_type, self.nullable).with_metadata(metadata))
     }
@@ -348,7 +346,7 @@ impl OracleReadPlan {
                 .iter()
                 .map(OracleColumnSpec::arrow_field)
                 .collect::<Result<Vec<_>>>()?,
-        );
+        )?;
         Ok(Self {
             columns,
             schema,

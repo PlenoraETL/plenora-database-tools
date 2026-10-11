@@ -118,8 +118,11 @@ effetto sul sink (ERR-014).
   commit ignoto quelli del vettore `database-write-error` — e con il
   documento, compresa la `recovery`, in `details.write_outcome`. La CLI e lo
   SDK Python fanno lo stesso (`WriteOutcome::settle`).
-- `database.query` restituisce il riepilogo JSON della CLI. Lo stream Arrow,
-  dichiarato fra i content type d'uscita, non è prodotto da questo binding.
+- `database.query` restituisce il riepilogo JSON. Lo stream Arrow, dichiarato
+  fra i content type d'uscita, lo produce la CLI (`query --output`), non
+  questo binding: Runtime Binding 1.0 non ha un modo per chiedere uno dei due
+  content type, e l'input contract di `database.query` è chiuso, quindi una
+  scelta richiede un cambio di contratto.
 - I documenti risolti da un riferimento hanno un limite di 8 MiB
   (`MAX_DOCUMENT_BYTES`).
 
