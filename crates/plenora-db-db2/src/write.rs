@@ -829,7 +829,7 @@ async fn execute_statement(
     statement: Statement,
     cancellation: &CancellationToken,
 ) -> Result<u64> {
-    transaction.execute(&statement, cancellation).await
+    transaction.execute_adapter(&statement, cancellation).await
 }
 
 async fn rollback_and_shape(

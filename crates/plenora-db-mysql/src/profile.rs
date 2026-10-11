@@ -1310,6 +1310,15 @@ fn classify_shared_code(product: &str, code: u16) -> ServerCodeVerdict {
 /// riuscire. E la risposta giusta per un codice che non si conosce, ed e per
 /// questo che esiste una funzione sola — un profilo che se la riscrivesse
 /// potrebbe farla diventare, senza volerlo, un permesso di ritentare.
+///
+/// # Perche un codice del server basta qui
+///
+/// Il classificatore vale per le istruzioni **dell'adapter**, di forma nota:
+/// un solo DML, oppure il DDL di `mode='create'` su una sessione senza
+/// transazione aperta (il commit implicito non ha nulla da rendere
+/// permanente). Per SQL del chiamante il contesto non prova l'assenza di
+/// effetti, e le transazioni applicano `DatabaseError::after_unproven_send`
+/// dopo l'invio: un codice del server non porta mai `none`.
 fn generic_server_code(product: &str, code: u16) -> ServerCodeVerdict {
     ServerCodeVerdict {
         category: ErrorCategory::Execution,

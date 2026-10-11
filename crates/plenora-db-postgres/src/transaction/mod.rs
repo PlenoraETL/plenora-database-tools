@@ -206,6 +206,12 @@ impl TransactionScope for PostgresTransaction {
         plenora_database_core::plan::ProviderKind::Postgres
     }
 
+    /// SQL del chiamante. A differenza di Oracle, MySQL, SQL Server e Db2, un
+    /// rifiuto con SQLSTATE qui prova l'assenza di effetti persistenti: il
+    /// DDL di PostgreSQL e transazionale, una procedura non puo fare COMMIT
+    /// dentro un blocco di transazione, il protocollo esteso esegue una sola
+    /// istruzione, e dopo un errore la transazione e abortita, quindi
+    /// nessuna istruzione precedente arriva al commit.
     fn execute<'a>(
         &'a mut self,
         statement: &'a Statement,

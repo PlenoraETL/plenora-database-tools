@@ -247,3 +247,28 @@ fn an_interruption_in_flight_never_reports_no_effect_in_a_mutating_phase() {
     assert_eq!(quarantined.retry, RetryDisposition::Quarantine);
     assert_eq!(quarantined.remote_effect, RemoteEffect::Unknown);
 }
+
+/// SQL del chiamante dopo l'invio: `none` non e provato in nessuna fase;
+/// un rollback confermato o una quarantena restano.
+#[test]
+fn an_error_after_sending_caller_sql_never_reports_no_effect() {
+    for phase in [ErrorPhase::Write, ErrorPhase::Read] {
+        let error = DatabaseError::new(ErrorCategory::Conflict, phase, None, "rifiuto")
+            .after_unproven_send();
+        assert_eq!(error.remote_effect, RemoteEffect::Unknown, "{phase:?}");
+        assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+        assert_eq!(error.category, ErrorCategory::Conflict);
+    }
+    let rolled_back = DatabaseError {
+        remote_effect: RemoteEffect::RolledBack,
+        ..DatabaseError::new(ErrorCategory::Transient, ErrorPhase::Write, None, "1205")
+    }
+    .after_unproven_send();
+    assert_eq!(rolled_back.remote_effect, RemoteEffect::RolledBack);
+    let quarantined = DatabaseError {
+        retry: RetryDisposition::Quarantine,
+        ..DatabaseError::new(ErrorCategory::Io, ErrorPhase::Write, None, "canale")
+    }
+    .after_unproven_send();
+    assert_eq!(quarantined.retry, RetryDisposition::Quarantine);
+}

@@ -58,18 +58,35 @@ impl OracleTransaction {
         })
     }
 
+    /// SQL del chiamante: dopo l'invio un errore non dichiara mai `none`
+    /// (`DatabaseError::after_unproven_send`). Un DDL fa commit implicito di
+    /// cio che lo precede, una procedura o un trigger autonomo fa commit da
+    /// solo: il codice ORA non basta a provare l'assenza di effetti.
     async fn execute_inner(
         &mut self,
         statement: &Statement,
         cancellation: &CancellationToken,
     ) -> Result<u64> {
-        self.execute_dml(statement, false, cancellation).await
+        self.execute_dml(statement, false, StatementOrigin::Caller, cancellation)
+            .await
+    }
+
+    /// Un'istruzione generata dall'adapter, di forma nota (DML): vale
+    /// l'elenco chiuso dei rifiuti ORA.
+    pub(crate) async fn execute_adapter(
+        &mut self,
+        statement: &Statement,
+        cancellation: &CancellationToken,
+    ) -> Result<u64> {
+        self.execute_dml(statement, false, StatementOrigin::Adapter, cancellation)
+            .await
     }
 
     async fn execute_dml(
         &mut self,
         statement: &Statement,
         promote_binary_lobs: bool,
+        origin: StatementOrigin,
         cancellation: &CancellationToken,
     ) -> Result<u64> {
         enforce_policy(self.native_query_policy, &statement.sql)?;
@@ -92,7 +109,7 @@ impl OracleTransaction {
                 .execute(&statement.sql, &params),
         )
         .await
-        .map_err(statement_execution_error)?;
+        .map_err(|error| origin.after_send(statement_execution_error(error)))?;
         Ok(result.rows_affected)
     }
 
@@ -273,6 +290,8 @@ impl OracleTransaction {
             cancellation,
         )
         .await?;
+        // SQL del chiamante anche in lettura: con la policy `Allow` puo
+        // essere qualunque cosa, e il contesto non prova l'assenza di effetti.
         timed(
             self.operation_timeout,
             ErrorPhase::Read,
@@ -280,6 +299,25 @@ impl OracleTransaction {
             self.connection.connection()?.query(&statement.sql, &params),
         )
         .await
+        .map_err(DatabaseError::after_unproven_send)
+    }
+}
+
+/// Chi ha scritto l'SQL: decide che cosa un codice ORA puo provare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatementOrigin {
+    /// Istruzione dell'adapter, di forma nota.
+    Adapter,
+    /// SQL del chiamante.
+    Caller,
+}
+
+impl StatementOrigin {
+    fn after_send(self, error: DatabaseError) -> DatabaseError {
+        match self {
+            Self::Adapter => error,
+            Self::Caller => error.after_unproven_send(),
+        }
     }
 }
 
@@ -634,7 +672,9 @@ impl RowStream for OracleRowStream<'_> {
                     self.connection
                         .fetch_more(self.cursor_id, &self.columns, self.batch_size),
                 )
-                .await?;
+                .await
+                // Il cursore e di SQL del chiamante (`query_stream`).
+                .map_err(DatabaseError::after_unproven_send)?;
                 self.cursor_id = result.cursor_id;
                 self.has_more = result.has_more_rows;
                 self.pending.extend(result.rows);

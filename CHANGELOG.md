@@ -145,6 +145,21 @@ riassumono le note di quelle release.
     effetto ignoto con recovery; i codici di connessione persa (ORA-03113,
     03114, 03135, 12537, 12547, 12570, 25408) hanno categoria `io`. Prima
     usciva `none` con `retry=safe`, anche per il `CREATE TABLE` del setup;
+  - **SQL del chiamante dopo l'invio non dichiara mai `none`**
+    (`DatabaseError::after_unproven_send`), in Oracle, SQL Server, MySQL e
+    Db2: `execute`, `query`, `query_stream` e l'update condizionale delle
+    transazioni. Il contesto non prova l'assenza di effetti: un DDL Oracle o
+    MySQL fa commit implicito di ciò che lo precede (un INSERT seguito da un
+    `CREATE TABLE` rifiutato con ORA-00955 era già permanente), una
+    procedura o un trigger autonomo fa commit da solo, un batch T-SQL
+    `INSERT; RAISERROR` ha già scritto quando arriva il codice. Un effetto
+    `none` diventa ignoto con recovery; un rollback confermato resta. Le
+    istruzioni generate dall'adapter, di forma nota, conservano l'elenco
+    chiuso dei rifiuti. PostgreSQL non ne ha bisogno, ed è dichiarato nel
+    codice: DDL transazionale, nessun COMMIT nelle procedure dentro un
+    blocco, una sola istruzione per invio, transazione abortita dopo un
+    errore. Il difetto in SQL Server c'era già su `main`. Prove live in
+    Oracle e SQL Server, rosse prima della correzione;
   - **scritture `create` abbandonate** (Oracle e MySQL): una guardia armata
     prima del `CREATE TABLE` registra il target nel registro del provider
     (`ddl_residues()`, modulo `ddl_residue`) se la scrittura non arriva a un

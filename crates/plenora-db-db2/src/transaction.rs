@@ -133,6 +133,46 @@ impl Db2Transaction {
         }
     }
 
+    /// Esegue un'istruzione. Per SQL del chiamante un errore dopo l'invio
+    /// non dichiara mai `none` (`DatabaseError::after_unproven_send`): una
+    /// procedura chiamata puo fare commit da sola, e il codice SQLSTATE
+    /// dell'errore non dice nulla di cio che l'ha preceduto. Un'istruzione
+    /// dell'adapter ha forma nota.
+    async fn execute_from(
+        &mut self,
+        statement: &Statement,
+        caller: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<u64> {
+        let sql = statement.sql.clone();
+        let parameters = encode_parameters(&statement.params)?;
+        let requires_row_count = db2_statement_requires_row_count(&sql);
+        self.run(
+            ErrorPhase::Write,
+            cancellation,
+            move |connection, timeout| {
+                let result =
+                    execute_statement(connection, timeout, &sql, &parameters, requires_row_count);
+                if caller {
+                    result.map_err(DatabaseError::after_unproven_send)
+                } else {
+                    result
+                }
+            },
+        )
+        .await
+    }
+
+    /// Un'istruzione generata dall'adapter, di forma nota.
+    pub(crate) async fn execute_adapter(
+        &mut self,
+        statement: &Statement,
+        cancellation: &CancellationToken,
+    ) -> Result<u64> {
+        enforce_policy(self.native_query_policy, &statement.sql)?;
+        self.execute_from(statement, false, cancellation).await
+    }
+
     async fn control(
         &mut self,
         sql: String,
@@ -668,17 +708,7 @@ impl TransactionScope for Db2Transaction {
     ) -> ProviderFuture<'a, u64> {
         Box::pin(async move {
             enforce_policy(self.native_query_policy, &statement.sql)?;
-            let sql = statement.sql.clone();
-            let parameters = encode_parameters(&statement.params)?;
-            let requires_row_count = db2_statement_requires_row_count(&sql);
-            self.run(
-                ErrorPhase::Write,
-                cancellation,
-                move |connection, timeout| {
-                    execute_statement(connection, timeout, &sql, &parameters, requires_row_count)
-                },
-            )
-            .await
+            self.execute_from(statement, true, cancellation).await
         })
     }
 
@@ -691,10 +721,14 @@ impl TransactionScope for Db2Transaction {
             enforce_policy(self.native_query_policy, &statement.sql)?;
             let sql = statement.sql.clone();
             let parameters = encode_parameters(&statement.params)?;
+            // SQL del chiamante: dopo l'invio mai `none`.
             self.run(
                 ErrorPhase::Read,
                 cancellation,
-                move |connection, timeout| query_rows(connection, timeout, &sql, &parameters),
+                move |connection, timeout| {
+                    query_rows(connection, timeout, &sql, &parameters)
+                        .map_err(DatabaseError::after_unproven_send)
+                },
             )
             .await
         })

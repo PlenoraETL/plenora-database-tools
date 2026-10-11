@@ -292,16 +292,16 @@ impl RowStream for MysqlRowStream<'_> {
                         // token torni a leggere righe di una lettura che il
                         // chiamante ha gia dichiarato di non volere.
                         //
-                        // La **transazione**, invece, resta usabile:
-                        // `RemoteEffect::None` è sostenuto dalla prova che la
-                        // transazione resta usabile dopo la cancellazione.
+                        // La **transazione**, invece, resta usabile. Lo SQL
+                        // e del chiamante: l'effetto non e provato `none`.
                         self.exhausted = true;
                         return Err(interruption_error(
                             self.profile,
                             cancellation,
                             ErrorPhase::Read,
                             RemoteEffect::None,
-                        ));
+                        )
+                            .after_unproven_send());
                     }
                     result = tokio::time::timeout(self.timeout, self.result.next()) => result,
                 };
@@ -320,7 +320,8 @@ impl RowStream for MysqlRowStream<'_> {
                             &error,
                             ErrorPhase::Read,
                             RemoteEffect::None,
-                        ));
+                        )
+                        .after_unproven_send());
                     }
                     Err(_) => {
                         self.exhausted = true;
@@ -573,7 +574,10 @@ impl TransactionScope for MysqlTransaction {
                         self.open = false;
                     }
                 }
-                result
+                // SQL del chiamante: un codice del server non prova che il
+                // comando sia rimasto senza effetto (un DDL MySQL fa commit
+                // implicito di cio che lo precede). Mai `none` dopo l'invio.
+                result.map_err(DatabaseError::after_unproven_send)
             }
             .await;
             crate::profile::attributed_kind(kind, outcome)
@@ -627,7 +631,8 @@ impl TransactionScope for MysqlTransaction {
                             cancellation,
                             ErrorPhase::Read,
                             RemoteEffect::None,
-                        ));
+                        )
+                            .after_unproven_send());
                     }
                     result = tokio::time::timeout(timeout, execution) => result,
                 };
@@ -639,7 +644,8 @@ impl TransactionScope for MysqlTransaction {
                             &error,
                             ErrorPhase::Read,
                             RemoteEffect::None,
-                        ));
+                        )
+                        .after_unproven_send());
                     }
                     Err(_) => {
                         self.session.discard().await;
@@ -713,7 +719,8 @@ impl TransactionScope for MysqlTransaction {
                             cancellation,
                             ErrorPhase::Read,
                             RemoteEffect::None,
-                        ));
+                        )
+                            .after_unproven_send());
                     }
                     result = tokio::time::timeout(timeout, open) => result,
                 };
@@ -725,7 +732,8 @@ impl TransactionScope for MysqlTransaction {
                             &error,
                             ErrorPhase::Read,
                             RemoteEffect::None,
-                        ));
+                        )
+                        .after_unproven_send());
                     }
                     Err(_) => {
                         return Err(query_timeout_error(profile));
@@ -961,7 +969,8 @@ impl TransactionScope for MysqlTransaction {
                 let affected = self
                     .session
                     .exec_write(&request.update.sql, params, ErrorPhase::Write, cancellation)
-                    .await?;
+                    .await
+                    .map_err(DatabaseError::after_unproven_send)?;
                 if affected == request.expected_affected_rows {
                     self.release_savepoint(sp, cancellation).await?;
                     Ok(())
@@ -985,12 +994,14 @@ impl TransactionScope for MysqlTransaction {
 /// Costruisce l'errore di timeout con il nome del prodotto della sessione.
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) fn query_timeout_error(profile: &dyn crate::profile::ProductProfile) -> DatabaseError {
+    // Solo le query del chiamante lo usano: dopo l'invio mai `none`.
     DatabaseError::new(
         ErrorCategory::Timeout,
         ErrorPhase::Read,
         Some(profile.kind()),
         format!("query {} timeout", profile.product()),
     )
+    .after_unproven_send()
 }
 
 /// Il mismatch di righe di un update condizionale.

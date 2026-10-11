@@ -737,7 +737,7 @@ async fn execute_input(
 ) -> Result<(u64, u64)> {
     if plan.mode == WriteMode::Replace {
         transaction
-            .execute(
+            .execute_adapter(
                 &Statement::new(format!("DELETE FROM {}", plan.target)),
                 cancellation,
             )

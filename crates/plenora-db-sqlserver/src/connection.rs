@@ -308,10 +308,33 @@ impl SqlServerSession {
         }
     }
 
+    /// Esegue SQL dell'adapter e ne drena i risultati.
     pub(crate) async fn execute_query(
         &mut self,
         query: tiberius::Query<'static>,
         phase: ErrorPhase,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<Vec<tiberius::Row>>> {
+        self.execute_query_from(query, phase, SqlOrigin::Adapter, cancellation)
+            .await
+    }
+
+    /// Esegue SQL del chiamante: dopo l'invio un errore non e mai `none`.
+    pub(crate) async fn execute_caller_query(
+        &mut self,
+        query: tiberius::Query<'static>,
+        phase: ErrorPhase,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<Vec<tiberius::Row>>> {
+        self.execute_query_from(query, phase, SqlOrigin::Caller, cancellation)
+            .await
+    }
+
+    async fn execute_query_from(
+        &mut self,
+        query: tiberius::Query<'static>,
+        phase: ErrorPhase,
+        origin: SqlOrigin,
         cancellation: &CancellationToken,
     ) -> Result<Vec<Vec<tiberius::Row>>> {
         let in_transaction = self.state() == SessionState::Transaction;
@@ -335,7 +358,7 @@ impl SqlServerSession {
                 Err(_) => QueryOutcome::Timeout,
             },
         };
-        match outcome {
+        let result = match outcome {
             QueryOutcome::Completed(rows) => Ok(rows),
             // Il messaggio pubblico non riporta il payload del panico.
             QueryOutcome::DriverPanic => {
@@ -368,7 +391,10 @@ impl SqlServerSession {
                 }
                 Err(public)
             }
-        }
+        };
+        // SQL del chiamante: un codice del server non prova l'assenza di
+        // effetti (un batch T-SQL puo avere piu istruzioni).
+        result.map_err(|error| origin.after_send(error))
     }
 
     pub(super) async fn execute_row_query(
@@ -433,9 +459,31 @@ impl SqlServerSession {
         }
     }
 
+    /// Esegue un'istruzione di scrittura dell'adapter.
     pub(crate) async fn execute_write_query(
         &mut self,
         query: tiberius::Query<'static>,
+        cancellation: &CancellationToken,
+    ) -> Result<u64> {
+        self.execute_write_query_from(query, SqlOrigin::Adapter, cancellation)
+            .await
+    }
+
+    /// Esegue SQL di scrittura del chiamante: dopo l'invio un errore non e
+    /// mai `none`.
+    pub(crate) async fn execute_caller_write_query(
+        &mut self,
+        query: tiberius::Query<'static>,
+        cancellation: &CancellationToken,
+    ) -> Result<u64> {
+        self.execute_write_query_from(query, SqlOrigin::Caller, cancellation)
+            .await
+    }
+
+    async fn execute_write_query_from(
+        &mut self,
+        query: tiberius::Query<'static>,
+        origin: SqlOrigin,
         cancellation: &CancellationToken,
     ) -> Result<u64> {
         self.require_state(SessionState::Transaction, ErrorPhase::Write)?;
@@ -452,7 +500,7 @@ impl SqlServerSession {
                 }
             }
         };
-        match outcome {
+        let result = match outcome {
             WriteQueryOutcome::Completed(rows) => Ok(rows),
             WriteQueryOutcome::Cancelled => {
                 self.quarantine();
@@ -480,7 +528,10 @@ impl SqlServerSession {
                 }
                 Err(public)
             }
-        }
+        };
+        // SQL del chiamante: un codice del server non prova l'assenza di
+        // effetti (un batch T-SQL puo avere piu istruzioni).
+        result.map_err(|error| origin.after_send(error))
     }
 
     pub(crate) async fn execute_bulk_rows<'a>(
@@ -763,6 +814,28 @@ fn read_protocol_error(message: &'static str) -> DatabaseError {
         Some(plenora_database_core::plan::ProviderKind::Sqlserver),
         message,
     )
+}
+
+/// Chi ha scritto l'SQL: decide che cosa un codice del server puo provare.
+///
+/// Un'istruzione dell'adapter ha forma nota: un rifiuto con codice e senza
+/// effetto. SQL del chiamante no: un batch T-SQL puo contenere piu
+/// istruzioni senza separatori (`INSERT ...; RAISERROR ...`), e il codice
+/// dell'ultima non dice nulla delle precedenti. Dopo l'invio l'effetto non e
+/// mai `none` (`DatabaseError::after_unproven_send`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SqlOrigin {
+    Adapter,
+    Caller,
+}
+
+impl SqlOrigin {
+    fn after_send(self, error: DatabaseError) -> DatabaseError {
+        match self {
+            Self::Adapter => error,
+            Self::Caller => error.after_unproven_send(),
+        }
+    }
 }
 
 fn state_error(phase: ErrorPhase) -> DatabaseError {

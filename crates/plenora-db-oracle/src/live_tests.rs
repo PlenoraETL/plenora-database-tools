@@ -2289,6 +2289,11 @@ async fn live_a_native_ddl_failure_after_a_write_is_not_reported_as_no_effect() 
         )
         .await
         .expect_err("ORA-00955");
+    // Il messaggio e redatto: dice solo la classe e il codice ORA, se c'e.
+    eprintln!(
+        "errore del DDL nativo: {:?} {}",
+        error.category, error.message
+    );
     assert_eq!(error.remote_effect, RemoteEffect::Unknown);
     let _ = transaction.rollback(&cancellation).await;
     // L'INSERT e stato reso permanente dal commit implicito del DDL.

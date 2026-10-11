@@ -239,6 +239,33 @@ impl DatabaseError {
         }
     }
 
+    /// Gli assi di un errore arrivato dopo l'invio di **SQL del chiamante**.
+    ///
+    /// Il contesto non prova che il comando sia rimasto senza effetto: un DDL
+    /// Oracle fa commit implicito di cio che lo precede, una procedura o un
+    /// trigger con transazione autonoma fa commit da solo, un batch T-SQL
+    /// puo contenere piu istruzioni senza separatori. Stabilirlo
+    /// richiederebbe di analizzare l'SQL, e la libreria non lo fa: un
+    /// effetto `none` diventa ignoto con recovery, in ogni fase. Un effetto
+    /// gia diverso (rollback confermato, parziale) resta; una `quarantine`
+    /// gia decisa resta.
+    #[must_use]
+    pub fn after_unproven_send(self) -> Self {
+        if self.remote_effect != RemoteEffect::None {
+            return self;
+        }
+        let retry = if self.retry == RetryDisposition::Quarantine {
+            RetryDisposition::Quarantine
+        } else {
+            RetryDisposition::RequiresRecovery
+        };
+        Self {
+            remote_effect: RemoteEffect::Unknown,
+            retry,
+            ..self
+        }
+    }
+
     #[must_use]
     pub fn invalid_plan(message: impl Into<String>) -> Self {
         Self::new(
