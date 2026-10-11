@@ -357,6 +357,30 @@ impl BatchStream for VecBatchStream {
     }
 }
 
+/// Il produttore che, finiti i batch, non risponde piu: la scrittura resta
+/// in attesa e il chiamante la abbandona.
+struct StallingBatchStream(VecBatchStream);
+
+impl BatchStream for StallingBatchStream {
+    fn schema(&self) -> SchemaRef {
+        self.0.schema()
+    }
+
+    fn next_batch<'a>(
+        &'a mut self,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
+        if self.0.batches.is_empty() {
+            return Box::pin(std::future::pending());
+        }
+        self.0.next_batch(cancellation)
+    }
+
+    fn declared_input_rows(&self) -> Option<u64> {
+        self.0.declared_input_rows()
+    }
+}
+
 fn spatial_write_batch(ids: Vec<i32>, points: Vec<Vec<u8>>) -> RecordBatch {
     let geometry = crate::types::OracleColumnSpec {
         name: "SHAPE".to_owned(),
@@ -2155,4 +2179,68 @@ async fn live_tcps_verifies_private_ca_and_rejects_untrusted_server() {
         .await
         .expect_err("certificato fixture non deve essere pubblicamente trusted");
     assert!(!error.message.contains(secret.expose()));
+}
+
+/// Una scrittura `create` abbandonata dopo il CREATE confermato (il
+/// chiamante lascia cadere la future mentre il produttore non risponde) non
+/// arriva a un esito: il target resta osservabile nel registro dei residui
+/// del provider.
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_an_abandoned_create_is_recorded_as_a_possible_residue() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let table = "PLENORA_ORACLE_ABANDONED_CREATE";
+    let _ = provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await;
+    let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false)]).expect("schema");
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2]))],
+    )
+    .expect("batch");
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: table.to_owned(),
+        },
+        mode: WriteMode::Create,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::BestEffortDdl,
+        keys: vec!["ID".to_owned()],
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    let prepared = provider
+        .prepare_write(&secret, &operation, schema, &budget, &cancellation)
+        .await
+        .expect("prepare");
+    assert_eq!(provider.ddl_residues().total, 0);
+    let abandoned = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        provider.write(
+            &secret,
+            prepared,
+            Box::new(StallingBatchStream(VecBatchStream::new(vec![batch]))),
+            &budget,
+            &cancellation,
+        ),
+    )
+    .await;
+    assert!(
+        abandoned.is_err(),
+        "la scrittura doveva attendere il produttore"
+    );
+    let residues = provider.ddl_residues();
+    assert_eq!(residues.total, 1);
+    assert_eq!(residues.recent[0].object, table);
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .expect("la tabella creata esiste e si rimuove");
 }

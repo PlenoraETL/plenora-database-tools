@@ -136,11 +136,28 @@ riassumono le note di quelle release.
     commit implicito, quindi un effetto noto è `partial` e uno ignoto resta
     `unknown`. Prima l'apertura fallita della transazione e un COMMIT
     `rolled_back` dichiaravano `none`/`rolled_back` con la tabella creata;
-  - Oracle, risposta persa a un comando inviato (canale chiuso, trasporto
-    interrotto, ORA-03113/03114/25408): in una fase mutante l'effetto è
-    ignoto con recovery, distinto dal rifiuto certo del server con un codice
-    ORA. Prima usciva `none` con `retry=safe`, anche per il `CREATE TABLE`
-    del setup;
+  - Oracle, dopo l'invio di un comando mutante solo un **elenco chiuso** di
+    codici ORA prova il rifiuto senza effetto
+    (`CERTAIN_STATEMENT_REJECTIONS`: errori di analisi come ORA-00900–00957,
+    00942, 01031, e rifiuti con rollback dell'istruzione come ORA-00001,
+    01400, 02290–02292, 12899, ciascuno motivato nel codice). Ogni altro
+    esito — canale chiuso, trasporto interrotto, codice non qualificato — dà
+    effetto ignoto con recovery; i codici di connessione persa (ORA-03113,
+    03114, 03135, 12537, 12547, 12570, 25408) hanno categoria `io`. Prima
+    usciva `none` con `retry=safe`, anche per il `CREATE TABLE` del setup;
+  - **scritture `create` abbandonate** (Oracle e MySQL): una guardia armata
+    prima del `CREATE TABLE` registra il target nel registro del provider
+    (`ddl_residues()`, modulo `ddl_residue`) se la scrittura non arriva a un
+    esito — future lasciata cadere dal chiamante, panic del produttore dei
+    batch. In Oracle anche il setup passa dal punto unico
+    (`stamp_created_target`). MySQL esegue il DDL in fase `write`, così una
+    risposta persa al `CREATE` lascia l'esito ignoto come per ogni comando
+    mutante. Limite dichiarato — regola: un'operazione `create` abbandonata
+    è osservabile dal registro del provider; ambito: il registro vive nel
+    processo, e il crash o l'uscita del processo (anche `panic = "abort"`)
+    lo perdono; hazard: dopo un crash una tabella creata può restare senza
+    che nessun esito lo dica; rientro: un registro durevole delle intenzioni
+    (journal su disco o tabella di servizio), che la libreria oggi non ha;
   - **regola unica dell'interruzione dopo l'invio**
     (`DatabaseError::after_interrupted_send`): un timeout o una cancellazione con un
     comando mutante in volo danno effetto ignoto e recovery, e in fase

@@ -32,6 +32,8 @@ pub struct OracleProvider {
     config: OracleConfig,
     max_connections: usize,
     cached_pool: Mutex<Option<CachedPool>>,
+    /// Le scritture `create` abbandonate dopo l'invio del DDL.
+    residues: Arc<plenora_database_core::ddl_residue::ResidueLedger>,
 }
 
 impl std::fmt::Debug for OracleProvider {
@@ -44,6 +46,7 @@ impl std::fmt::Debug for OracleProvider {
                 "pool_initialized",
                 &lock_recover(&self.cached_pool).is_some(),
             )
+            .field("ddl_residues", &self.residues.snapshot().total)
             .finish()
     }
 }
@@ -78,7 +81,17 @@ impl OracleProvider {
             config,
             max_connections,
             cached_pool: Mutex::new(None),
+            residues: Arc::default(),
         })
+    }
+
+    /// Le scritture `mode='create'` abbandonate (future lasciata cadere,
+    /// panic del produttore) dopo l'invio del `CREATE TABLE`: la tabella puo
+    /// esistere senza che nessun esito lo abbia detto. Il registro vive nel
+    /// processo; vedi `plenora_database_core::ddl_residue`.
+    #[must_use]
+    pub fn ddl_residues(&self) -> plenora_database_core::ddl_residue::ResidueSnapshot {
+        self.residues.snapshot()
     }
 
     #[must_use]
@@ -215,8 +228,16 @@ impl Provider for OracleProvider {
     ) -> ProviderFuture<'a, WriteOutcome> {
         Box::pin(async move {
             let pool = self.pool_for(secret)?;
-            crate::write::execute_write(&self.config, &pool, prepared, input, budget, cancellation)
-                .await
+            crate::write::execute_write(
+                &self.config,
+                &pool,
+                &self.residues,
+                prepared,
+                input,
+                budget,
+                cancellation,
+            )
+            .await
         })
     }
 

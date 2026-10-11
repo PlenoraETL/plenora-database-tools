@@ -134,3 +134,29 @@ fn a_lost_response_to_a_sent_mutating_command_is_unknown() {
     let read = sent_command_error(ErrorPhase::Read, &Error::ConnectionClosed);
     assert_eq!(read.remote_effect, RemoteEffect::None);
 }
+
+/// Dopo l'invio solo un elenco chiuso di codici ORA prova il rifiuto senza
+/// effetto; ogni altro codice — anche uno non riconosciuto — lascia l'esito
+/// ignoto. I codici di connessione persa hanno categoria `io`.
+#[test]
+fn only_a_closed_list_of_ora_codes_proves_a_rejection_after_sending() {
+    use crate::error::sent_command_error;
+    use plenora_database_core::{ErrorCategory, RemoteEffect};
+    let oracle = |code: u32| Error::OracleError {
+        code,
+        message: "rifiuto".to_owned(),
+    };
+    for code in [3_135, 12_537, 12_570, 12_547] {
+        let public = sent_command_error(ErrorPhase::Write, &oracle(code));
+        assert_eq!(public.remote_effect, RemoteEffect::Unknown, "ORA-{code}");
+        assert_eq!(public.category, ErrorCategory::Io, "ORA-{code}");
+    }
+    for code in [4_031, 600, 7_445, 99_999] {
+        let public = sent_command_error(ErrorPhase::Write, &oracle(code));
+        assert_eq!(public.remote_effect, RemoteEffect::Unknown, "ORA-{code}");
+    }
+    for code in crate::error::CERTAIN_STATEMENT_REJECTIONS {
+        let public = sent_command_error(ErrorPhase::Write, &oracle(*code));
+        assert_eq!(public.remote_effect, RemoteEffect::None, "ORA-{code}");
+    }
+}

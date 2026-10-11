@@ -4591,6 +4591,99 @@ impl plenora_database_core::provider::BatchStream for BatchesStream {
     }
 }
 
+/// Il produttore che, finiti i batch, non risponde piu.
+struct StallingBatchesStream(BatchesStream);
+
+impl plenora_database_core::provider::BatchStream for StallingBatchesStream {
+    fn schema(&self) -> plenora_database_core::arrow::SchemaRef {
+        self.0.schema()
+    }
+    fn next_batch<'a>(
+        &'a mut self,
+        cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<
+        'a,
+        Option<plenora_database_core::arrow::RecordBatch>,
+    > {
+        if self.0.batches.is_empty() {
+            return Box::pin(std::future::pending());
+        }
+        self.0.next_batch(cancellation)
+    }
+    fn declared_input_rows(&self) -> Option<u64> {
+        self.0.declared_input_rows()
+    }
+}
+
+/// Una scrittura `create` abbandonata dopo il DDL confermato (il chiamante
+/// lascia cadere la future mentre il produttore non risponde) non arriva a
+/// un esito: il target resta osservabile nel registro dei residui.
+#[tokio::test]
+async fn live_v12_an_abandoned_create_is_recorded_as_a_possible_residue() {
+    use plenora_database_core::provider::BatchStream as _;
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut setup = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("setup");
+    setup
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _v12_abandoned_create")
+        .await
+        .ok();
+    let (schema, batch) = scalar_batch(&[1, 2, 3], &["a", "b", "c"]);
+    let operation = write_op_scalar(
+        "dataflow_test",
+        "_v12_abandoned_create",
+        plenora_database_core::plan::WriteMode::Create,
+    );
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare_write create");
+    // Il batch dichiara piu righe di quante ne arrivino: la scrittura resta
+    // in attesa del produttore.
+    let stream = StallingBatchesStream(BatchesStream {
+        schema: std::sync::Arc::clone(&schema),
+        batches: std::collections::VecDeque::from(vec![batch]),
+        declared: 6,
+    });
+    assert!(stream.declared_input_rows().is_some());
+    assert_eq!(provider.ddl_residues().total, 0);
+    let abandoned = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        provider.write(
+            &live_secret(),
+            prepared,
+            Box::new(stream),
+            &budget,
+            &cancellation,
+        ),
+    )
+    .await;
+    assert!(
+        abandoned.is_err(),
+        "la scrittura doveva attendere il produttore"
+    );
+    let residues = provider.ddl_residues();
+    assert_eq!(residues.total, 1);
+    assert_eq!(residues.recent[0].object, "_v12_abandoned_create");
+    setup
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE IF EXISTS _v12_abandoned_create")
+        .await
+        .ok();
+}
+
 #[tokio::test]
 async fn live_v12_write_create_mode_builds_table_and_inserts() {
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");

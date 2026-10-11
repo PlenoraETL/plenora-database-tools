@@ -309,6 +309,7 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_v12_session_context_does_not_reach_the_next_transaction",
     "live_tests::live_v12_transaction_savepoint_rollback_to_partial",
     "live_tests::live_v12_write_create_failure_leaves_the_table_and_reports_partial",
+    "live_tests::live_v12_an_abandoned_create_is_recorded_as_a_possible_residue",
     "live_tests::live_v12_write_create_mode_builds_table_and_inserts",
     "live_tests::live_v12_write_create_mode_conflict_if_exists",
     "live_tests::live_v12_write_create_with_keys_declares_the_primary_key",

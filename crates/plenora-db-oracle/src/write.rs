@@ -458,6 +458,7 @@ pub async fn prepare_write(
 pub async fn execute_write(
     config: &OracleConfig,
     pool: &Arc<OraclePool>,
+    residues: &Arc<plenora_database_core::ddl_residue::ResidueLedger>,
     mut prepared: PreparedWrite,
     input: Box<dyn BatchStream>,
     budget: &ResourceBudget,
@@ -487,12 +488,8 @@ pub async fn execute_write(
     let plan = prepared
         .take_driver_state::<OracleWritePlan>()
         .ok_or_else(|| write_error(ErrorCategory::InvalidPlan, "piano preparato Oracle assente"))?;
-    let created = plan.create_sql.is_some();
-    if created {
-        setup_created_target(config, pool, &plan, cancellation).await?;
-    }
-    stamp_created_target(
-        load_target(
+    if plan.create_sql.is_none() {
+        return Box::pin(load_target(
             config,
             pool,
             &plan,
@@ -501,10 +498,60 @@ pub async fn execute_write(
             budget,
             cancellation,
             declared_rows,
-        )
-        .await,
-        created,
+        ))
+        .await;
+    }
+    // La guardia e armata prima del CREATE: una scrittura abbandonata da qui
+    // in poi resta osservabile nel registro del provider.
+    let target = prepared.operation.target.clone();
+    plenora_database_core::ddl_residue::with_residue_guard(
+        residues,
+        target,
+        Box::pin(create_and_load(
+            config,
+            pool,
+            &plan,
+            prepared,
+            input,
+            budget,
+            cancellation,
+            declared_rows,
+        )),
     )
+    .await
+}
+
+/// `mode='create'`: CREATE, metadati e carico. Ogni uscita — anche il
+/// setup — passa da [`stamp_created_target`], che sa se il CREATE e stato
+/// confermato.
+#[allow(clippy::too_many_arguments)]
+async fn create_and_load(
+    config: &OracleConfig,
+    pool: &Arc<OraclePool>,
+    plan: &OracleWritePlan,
+    prepared: PreparedWrite,
+    input: Box<dyn BatchStream>,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+    declared_rows: u64,
+) -> Result<WriteOutcome> {
+    let mut target_created = false;
+    let result = async {
+        setup_created_target(config, pool, plan, cancellation, &mut target_created).await?;
+        load_target(
+            config,
+            pool,
+            plan,
+            prepared,
+            input,
+            budget,
+            cancellation,
+            declared_rows,
+        )
+        .await
+    }
+    .await;
+    stamp_created_target(result, target_created)
 }
 
 /// Il carico dopo l'eventuale creazione: transazione, righe, COMMIT.
@@ -575,6 +622,7 @@ async fn setup_created_target(
     pool: &Arc<OraclePool>,
     plan: &OracleWritePlan,
     cancellation: &CancellationToken,
+    target_created: &mut bool,
 ) -> Result<()> {
     let mut connection = pool.checkout(cancellation).await?;
     let raw = connection.connection()?;
@@ -594,10 +642,10 @@ async fn setup_created_target(
     )
     .await?;
     // Da qui il target esiste (il DDL Oracle fa commit implicito): un
-    // errore dei passi successivi ha effetto almeno parziale, o ignoto.
-    complete_created_target(config, raw, plan, cancellation)
-        .await
-        .map_err(shape_create_setup_error)?;
+    // errore dei passi successivi ha effetto almeno parziale, o ignoto, e
+    // lo dichiara `stamp_created_target`.
+    *target_created = true;
+    complete_created_target(config, raw, plan, cancellation).await?;
     connection.allow_reuse();
     drop(connection);
     Ok(())
