@@ -8,6 +8,90 @@ riassumono le note di quelle release.
 
 ## Non rilasciato
 
+### Interoperabilità
+
+- **`write` della CLI accetta l'Arrow IPC stream**, oltre al file, come
+  dichiara il catalogo. Il formato si riconosce dai primi byte (`ARROW1` per
+  il file, il marcatore di continuazione per lo stream); un inizio diverso,
+  compreso lo stream legacy senza marcatore, è un errore esplicito, e uno
+  stream senza marcatore di fine è rifiutato come troncato. Vale anche per
+  `inspect-dataset`, `database-write-ipc`, `bulk-write` e
+  `postgres-write-ipc`.
+  La fine dello stream è il messaggio di lunghezza zero letto al confine fra
+  due messaggi, e dopo di essa non ci devono essere byte: due stream
+  concatenati non si leggono più come il solo primo. L'input si legge in due
+  passate: la prima verifica l'inquadramento e il limite di ogni messaggio
+  (prima di allocarne il corpo) e conta le righe dichiarate, la seconda
+  decodifica un batch alla volta. La seconda passata legge ogni messaggio
+  intero (prefisso, metadati e corpo, nella lunghezza registrata), ne
+  verifica l'impronta SHA-256 registrata nella prima passata e solo dopo lo
+  consegna al decoder: un file cambiato fra le due passate è un errore, e
+  nemmeno un prefisso alterato (una fine anticipata, una lunghezza diversa)
+  arriva al decoder. Dopo un messaggio non verificato ogni lettura
+  successiva fallisce, invece di riprendere dal segmento dopo.
+  Il budget conta tutto ciò che la lettura tiene per l'input: ogni
+  messaggio con il prefisso di otto byte, il messaggio più grande due volte
+  (copia verificata e copia del decoder), l'indice dei segmenti per la
+  capacità allocata (molti batch vuoti non lo fanno crescere oltre il
+  limite) e, per il file, il footer con i blocchi che dichiara. Il
+  verificatore libera il messaggio precedente prima di allocare il
+  successivo. Un messaggio che stava nel limite solo senza il prefisso, o
+  la cui doppia copia non ci sta, ora è `resource_limit`. Il formato file si
+  legge come lo stream che incapsula, e i blocchi del footer devono
+  coincidere con i messaggi dello stream. Prima si accumulavano tutti i
+  batch in memoria prima del budget, anche per il formato file.
+- **SDK Python: Arrow PyCapsule Interface.** `copy_from`/`acopy_from`
+  accettano qualunque oggetto con `__arrow_c_stream__`; il `BatchReader` di
+  `Session.read` lo espone, con `read_all()`. Una tabella letta dal database
+  entra in `plenora_data.run` e la sua uscita torna in `copy_from` senza
+  conversioni (`python/interop/test_plenora_data.py`).
+- **SDK: lo stream IPC di `copy_from` si verifica prima del decoder**: ogni
+  messaggio con il marcatore di continuazione e con metadati e corpo dentro
+  i byte ricevuti, la fine esplicita e nessun byte dopo. Prima uno stream
+  troncato al confine fra due messaggi si scriveva più corto senza errore,
+  e le lunghezze dichiarate governavano le allocazioni del decoder.
+- **`pyarrow>=25,<26`** è ora una dipendenza dichiarata dello SDK, nella
+  stessa finestra di `plenora-data`.
+- **Errori della sorgente tipizzati** (PYTHON-SDK §6): un errore Plenora
+  della sorgente resta tale; ogni altro errore di conversione o di un
+  produttore esterno diventa `PlenoraDataMappingError` (anche `ValueError`)
+  con gli assi pubblici, senza il messaggio né la catena dell'originale, che
+  possono contenere dati di riga. Vale anche per `read_all()`.
+- La traduzione copre ogni accesso alla sorgente (`hasattr`, `iter`, il
+  primo `next`, la serializzazione, e anche il riconoscimento dei `bytes`:
+  una sottoclasse può ridefinire `__bytes__`); nessun messaggio dello SDK
+  riporta il nome della classe del chiamante, che può essere costruito a
+  runtime. Un `PlenoraError` sollevato dalla sorgente è esterno come ogni
+  altro errore del chiamante: diventa `data_mapping` senza il suo
+  messaggio. Limite dichiarato: l'errore di un `BatchReader` del database
+  usato come sorgente attraversa lo stream C di pyarrow, che non ne conserva
+  la classe, e arriva anch'esso come `data_mapping` (era già così).
+- **Ogni eccezione dello SDK porta gli assi di PYTHON-SDK §6**
+  (`category`, `phase`, `remote_effect`, `retry`, `message`), anche quelle
+  definite in Python. Gli argomenti rifiutati da `copy_from` restano
+  `TypeError`/`ValueError` e sono anche `PlenoraInvalidPlanError`;
+  `NoResultFound`, `MultipleResultsFound`, `JsonInputError` e gli errori ORM
+  ricevono gli assi della loro categoria. Gli errori ORM dichiarano la
+  categoria anche nella gerarchia: `OrmMappingError` e `OrmStateError` sono
+  `PlenoraInvalidPlanError`, `StaleObjectError` è
+  `PlenoraConcurrentModificationError` con `remote_effect=unknown` (la
+  transazione resta aperta e del chiamante), `OrmUnsupportedError` è
+  `PlenoraUnsupportedError`. Limite dichiarato: i `TypeError`/`ValueError`
+  built-in con cui il resto dello SDK valida gli argomenti delle proprie API
+  non portano ancora gli assi.
+- Il `BatchReader` non traduce un errore in Python tenendo il proprio
+  mutex e non lo attende tenendo il GIL (un errore di lettura e
+  `schema_bytes` da due thread potevano bloccarsi a vicenda). La prova forza
+  la contesa in un processo separato con timeout esterno, e chiede lo
+  schema solo quando `pg_stat_activity` mostra la query ferma in `pg_sleep`
+  e il consumatore non avanza più: il mutex è del consumatore.
+- Dichiarato: `python/interop/test_plenora_data.py` (database ↔
+  `plenora_data`) si esegue a mano; la CI non installa `plenora-data` e non
+  lo esegue.
+- **`acopy_from` consuma la sorgente in un executor**, non sul thread del
+  loop asyncio (PYTHON-SDK §4): un `BatchReader` legge dal database. Il
+  `BatchReader` sincrono non è più legato al thread che l'ha aperto.
+
 ### Correzioni
 
 - **Il fork di `oracle-rs` vale anche per i consumatori.** Entrava con

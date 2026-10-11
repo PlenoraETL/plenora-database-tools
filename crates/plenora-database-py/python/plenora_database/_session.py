@@ -173,6 +173,11 @@ class Session(_BuilderFactory):
         dal cursor server-side. La size dei batch è decisa dal provider
         (Postgres: bounded dal buffer del cursore server-side).
 
+        Il reader espone anche `__arrow_c_stream__` (Arrow PyCapsule
+        Interface) e `read_all()`: `pyarrow.RecordBatchReader.from_stream`,
+        `plenora_data.run` e `copy_from` lo leggono direttamente, senza
+        passare dai `bytes`.
+
         Nota: per filter WHERE, usa il builder pythonic
         `s.select(table).where_eq(...).all()` (path OLTP portable AST).
         """

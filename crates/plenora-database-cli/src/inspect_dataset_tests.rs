@@ -1,8 +1,9 @@
 use super::*;
-use arrow_ipc::writer::FileWriter;
+use arrow_ipc::writer::{FileWriter, StreamWriter};
 use plenora_database_core::arrow::array::{ArrayRef, BinaryArray};
 use plenora_database_core::arrow::schema::{Field, Schema};
 use std::collections::HashMap;
+use std::fs::File;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -28,19 +29,29 @@ fn pyarrow_dictionary_file_preserves_metadata_as_json_objects() {
 fn dictionary_without_data_is_rejected_by_both_file_entrypoints() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/arrow/dictionary-missing-data.file");
+    // Il dizionario si decodifica con il primo batch, nella seconda passata.
     let error = inspect(&path).expect_err("malformed dictionary");
     assert_eq!(
         error.database_error().message,
-        "file Arrow IPC non valido o non supportato"
+        "RecordBatch Arrow IPC non decodificabile"
     );
-    let error = crate::ipc_input::IpcFileBatchStream::open(path.to_str().expect("fixture path"))
-        .err()
-        .expect("malformed write input");
-    assert_eq!(error.database_error().message, "input Arrow IPC malformato");
-    assert!(!error
+    let mut stream =
+        crate::ipc_input::IpcFileBatchStream::open(path.to_str().expect("fixture path"))
+            .expect("inquadramento valido");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime");
+    let error = runtime
+        .block_on(plenora_database_core::provider::BatchStream::next_batch(
+            &mut stream,
+            &plenora_database_core::CancellationToken::new(),
+        ))
+        .expect_err("malformed write input");
+    assert_eq!(error.message, "batch Arrow non leggibile");
+    let public = crate::CliError::from(error)
         .to_json()
-        .expect("public error")
-        .contains("PAYLOAD_MUST_NOT_LEAK"));
+        .expect("public error");
+    assert!(!public.contains("PAYLOAD_MUST_NOT_LEAK"));
 }
 
 struct TestFile(std::path::PathBuf);
@@ -189,4 +200,22 @@ fn geometry_cell_product_is_bounded_before_output_growth() {
     assert!(reserve_geometry_cells(&mut cells, 1).is_err());
     let mut overflow = u64::MAX;
     assert!(reserve_geometry_cells(&mut overflow, 1).is_err());
+}
+
+/// Lo stesso dataset come stream Arrow IPC da lo stesso rapporto del file.
+#[test]
+fn the_stream_format_reports_like_the_file() {
+    let schema = schema("OGC:CRS84", None, Some("lon_lat"));
+    let fixture = write_fixture(Arc::clone(&schema), &[Some(point_xy()), None]);
+    let array: ArrayRef = Arc::new(BinaryArray::from(vec![Some(&point_xy()[..]), None]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array]).expect("batch");
+    let mut writer = StreamWriter::try_new(Vec::new(), &schema).expect("stream writer");
+    writer.write(&batch).expect("write stream");
+    let path = fixture.0.with_extension("arrows");
+    fs::write(&path, writer.into_inner().expect("finish stream")).expect("stream fixture");
+    let stream = TestFile(path);
+    assert_eq!(
+        inspect(&stream.0).expect("stream"),
+        inspect(&fixture.0).expect("file")
+    );
 }

@@ -77,3 +77,33 @@ __all__ = [
     "PlenoraInternalError",
     "PlenoraCommitOutcomeUnknownError",
 ]
+
+
+class _SdkAxes:
+    """Gli assi di PYTHON-SDK §6 per un errore che solleva lo SDK Python.
+
+    Le eccezioni native ricevono gli assi dal Rust; una classe definita in
+    Python li dichiara qui, come attributi di classe, e ogni istanza li porta
+    senza che chi la solleva debba ricordarsene. Va messa per prima fra le
+    basi, davanti alla classe nativa della sua categoria.
+    """
+
+    _category = "internal"
+    _phase = "validate"
+    _remote_effect = "none"
+
+    def __init__(self, message: str = "", *args: object, phase: str | None = None) -> None:
+        super().__init__(message, *args)
+        for name, value in (
+            ("category", self._category),
+            ("phase", phase or self._phase),
+            ("remote_effect", self._remote_effect),
+            ("retry", {"kind": "never"}),
+            ("message", str(message)),
+            ("provider", None),
+            ("execution_id", None),
+            ("details", None),
+            ("diagnostics", None),
+        ):
+            setattr(self, name, value)
+

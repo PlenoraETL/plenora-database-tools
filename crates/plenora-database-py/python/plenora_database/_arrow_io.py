@@ -11,6 +11,8 @@ from collections.abc import Iterable, Iterator
 from itertools import chain
 from typing import Any
 
+from .errors import PlenoraDataMappingError, PlenoraInvalidPlanError, _SdkAxes
+
 
 def _narrowed_type(field_type: Any, pa: Any) -> Any:
     """Restituisce l'equivalente a offset 32 bit di un tipo Arrow, se esiste.
@@ -134,6 +136,131 @@ def _narrowed_batch(
     )
 
 
+def _mapping_error(message: str, phase: str) -> Exception:
+    """Un `PlenoraDataMappingError` con gli assi pubblici (PYTHON-SDK §6).
+
+    E anche un `ValueError`, come le conversioni fallite prima di questa
+    regola, cosi chi le intercettava cosi continua a farlo. Il messaggio
+    dice che cosa e fallito, mai il valore: l'eccezione originale di un
+    produttore esterno puo contenere dati di riga e non viene concatenata.
+    """
+
+    return _ArrowSourceError(message, phase=phase)
+
+
+class _ArrowSourceError(_SdkAxes, PlenoraDataMappingError, ValueError):
+    """Una sorgente o una conversione fallita, tradotta dallo SDK."""
+
+    _category = "data_mapping"
+    _phase = "prepare"
+
+    def __str__(self) -> str:
+        return f"data_mapping: {self.message}"
+
+
+class _SourceArgumentError(_SdkAxes, PlenoraInvalidPlanError):
+    """Un argomento sbagliato riconosciuto dallo SDK stesso: il messaggio e
+    suo, senza dati, e resta un `TypeError`/`ValueError` come prima. E
+    anche un `PlenoraInvalidPlanError`, con gli assi di PYTHON-SDK §6."""
+
+    _category = "invalid_plan"
+    _phase = "validate"
+
+
+class _SourceTypeError(_SourceArgumentError, TypeError):
+    pass
+
+
+class _SourceValueError(_SourceArgumentError, ValueError):
+    pass
+
+
+def _translated(phase: str, message: str, call: Any, *, trusted: bool = False) -> Any:
+    """Esegue `call`: un errore che lo SDK stesso ha costruito resta com'era,
+    ogni altro diventa un errore tipizzato senza dati e senza la catena che
+    li porterebbe.
+
+    Un `PlenoraError` qualunque resta tale solo con `trusted`, quando `call`
+    non esegue codice del chiamante (il reader nativo). Da una sorgente di
+    `copy_from` e esterno: il chiamante puo sollevarlo con qualunque
+    messaggio. Limite dichiarato: l'errore di un `BatchReader` del database
+    usato come sorgente attraversa lo stream C di pyarrow, che non conserva
+    la classe, e arriva come `data_mapping`.
+    """
+
+    from .errors import PlenoraError
+
+    try:
+        return call()
+    except (_ArrowSourceError, _SourceArgumentError):
+        raise
+    except PlenoraError:
+        if trusted:
+            raise
+        raise _mapping_error(message, phase) from None
+    except Exception:
+        raise _mapping_error(message, phase) from None
+
+
+def _require_pyarrow() -> Any:
+    try:
+        import pyarrow as pa
+        import pyarrow.ipc  # noqa: F401  (`pa.ipc` si carica solo cosi)
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError(
+            "l'interfaccia Arrow richiede pyarrow installato: `pip install pyarrow`"
+        ) from exc
+    return pa
+
+
+def _record_batch_reader(reader: Any) -> Any:
+    """Un `pyarrow.RecordBatchReader` lazy sopra un `BatchReader` nativo.
+
+    Lo schema viene dal reader, non dal primo batch: un risultato vuoto ha
+    comunque il suo schema. Ogni chunk e uno stream IPC autonomo con un solo
+    batch; uno schema diverso da quello dichiarato e un errore, non un batch
+    accettato.
+    """
+
+    pa = _require_pyarrow()
+    schema = pa.ipc.open_stream(pa.py_buffer(reader.schema_bytes())).schema
+
+    def batches() -> Iterator[Any]:
+        for chunk in reader:
+            stream = pa.ipc.open_stream(pa.py_buffer(chunk))
+            if not stream.schema.equals(schema, check_metadata=True):
+                raise ValueError("batch con schema diverso da quello del reader")
+            yield from stream
+
+    return pa.RecordBatchReader.from_batches(schema, batches())
+
+
+def c_stream_from_reader(reader: Any, requested_schema: Any = None) -> Any:
+    """`__arrow_c_stream__` del `BatchReader` nativo (PyCapsule Interface).
+
+    Gli errori di lettura arrivano al consumatore quando chiede il batch: un
+    errore del database resta il `PlenoraError` del reader.
+    """
+
+    return _translated(
+        "read",
+        "stream Arrow del reader non esportabile",
+        lambda: _record_batch_reader(reader).__arrow_c_stream__(requested_schema),
+        trusted=True,
+    )
+
+
+def table_from_reader(reader: Any) -> Any:
+    """Tutti i batch ancora da leggere come `pyarrow.Table`."""
+
+    return _translated(
+        "read",
+        "batch Arrow del reader non leggibile",
+        lambda: _record_batch_reader(reader).read_all(),
+        trusted=True,
+    )
+
+
 def _to_ipc_bytes(source: Any) -> bytes:
     """Serializza `source` in bytes Arrow IPC stream self-contained.
 
@@ -144,14 +271,30 @@ def _to_ipc_bytes(source: Any) -> bytes:
       - iterabile di `pyarrow.RecordBatch` (tutti con stesso schema)
       - `pandas.DataFrame` — convertito via `pyarrow.Table.from_pandas`
       - `list[dict]` — convertito via `pyarrow.Table.from_pylist`
+      - qualunque oggetto con `__arrow_c_stream__` (Arrow PyCapsule
+        Interface): `pyarrow.RecordBatchReader`, il `BatchReader` di
+        `Session.read`, tabelle di altre librerie
 
     Raises:
       - `TypeError` se il tipo non è supportato
       - `ValueError` se la lista è vuota o gli elementi hanno tipi misti
+      - `PlenoraDataMappingError` (anche `ValueError`) se la conversione o
+        la sorgente falliscono, anche con un `PlenoraError` della sorgente:
+        e codice del chiamante, e il suo messaggio non si propaga
+      - `TypeError`/`ValueError` per un argomento rifiutato sono anche
+        `PlenoraInvalidPlanError`, con gli assi pubblici
       - `ImportError` se pyarrow non è installato (a meno di bytes)
     """
-    if isinstance(source, (bytes, bytearray, memoryview)):
-        return bytes(source)
+    # Anche il riconoscimento dei `bytes` passa dalla traduzione: una
+    # sottoclasse puo ridefinire `__bytes__`, e `isinstance` puo eseguire
+    # codice del chiamante.
+    raw = _translated(
+        "prepare",
+        "copy_from: sorgente Arrow non leggibile",
+        lambda: _as_ipc_buffer(source),
+    )
+    if raw is not None:
+        return raw
 
     try:
         import pyarrow as pa
@@ -162,13 +305,36 @@ def _to_ipc_bytes(source: Any) -> bytes:
             "non è già bytes: `pip install pyarrow`"
         ) from exc
 
+    # Tutto cio che tocca la sorgente — `hasattr`, `iter`, il primo `next`,
+    # la serializzazione — passa dalla traduzione: un produttore puo
+    # sollevare in qualunque punto, con qualunque messaggio.
+    return _translated(
+        "prepare",
+        "copy_from: sorgente Arrow non leggibile",
+        lambda: _source_to_ipc(source, pa, ipc),
+    )
+
+
+def _as_ipc_buffer(source: Any) -> bytes | None:
+    """I byte di una sorgente gia IPC, `None` se la sorgente non lo e."""
+
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        return bytes(source)
+    return None
+
+
+def _source_to_ipc(source: Any, pa: Any, ipc: Any) -> bytes:
+    """Il corpo di `_to_ipc_bytes`, sempre chiamato attraverso
+    `_translated`."""
+
     # pandas DataFrame — richiede pandas installato solo se usato
     if type(source).__name__ == "DataFrame" and hasattr(source, "to_dict"):
         # duck-type: pandas.DataFrame ha to_dict + iloc + columns
-        try:
-            source = pa.Table.from_pandas(source, preserve_index=False)
-        except (pa.ArrowException, ValueError, TypeError, OverflowError):
-            raise ValueError("copy_from: conversione DataFrame Arrow non valida") from None
+        source = _translated(
+            "prepare",
+            "copy_from: conversione DataFrame Arrow non valida",
+            lambda: pa.Table.from_pandas(source, preserve_index=False),
+        )
 
     if isinstance(source, pa.Table):
         schema = source.schema
@@ -176,9 +342,19 @@ def _to_ipc_bytes(source: Any) -> bytes:
     elif isinstance(source, pa.RecordBatch):
         schema = source.schema
         batches = [source]
+    elif hasattr(source, "__arrow_c_stream__"):
+        # PyCapsule Interface: lo schema e quello dichiarato dal produttore,
+        # anche per uno stream vuoto.
+        reader = _translated(
+            "prepare",
+            "copy_from: stream Arrow non leggibile",
+            lambda: pa.RecordBatchReader.from_stream(source),
+        )
+        schema = reader.schema
+        batches = reader
     elif isinstance(source, list):
         if not source:
-            raise ValueError("copy_from: lista vuota")
+            raise _SourceValueError("copy_from: lista vuota")
         first = source[0]
         if isinstance(first, pa.RecordBatch):
             # lista di RecordBatch — tutti devono avere stesso schema
@@ -186,45 +362,49 @@ def _to_ipc_bytes(source: Any) -> bytes:
             schema = first.schema
         elif isinstance(first, dict):
             # lista di dict — convertibile via pyarrow.Table.from_pylist
-            try:
-                tbl = pa.Table.from_pylist(source)
-            except (pa.ArrowException, ValueError, TypeError, OverflowError):
-                raise ValueError("copy_from: conversione record Arrow non valida") from None
+            tbl = _translated(
+                "prepare",
+                "copy_from: conversione record Arrow non valida",
+                lambda: pa.Table.from_pylist(source),
+            )
             schema = tbl.schema
             batches = tbl.to_batches()
         else:
-            raise TypeError(
-                f"copy_from: lista deve contenere pyarrow.RecordBatch o dict, "
-                f"trovato {type(first).__name__}"
+            # Il nome del tipo del chiamante non entra nel messaggio: puo
+            # essere costruito a runtime e portare dati.
+            raise _SourceTypeError(
+                "copy_from: la lista deve contenere pyarrow.RecordBatch o dict"
             )
     elif isinstance(source, Iterable):
         iterator: Iterator[Any] = iter(source)
         try:
             first = next(iterator)
         except StopIteration:
-            raise ValueError("copy_from: iterabile vuoto") from None
+            raise _SourceValueError("copy_from: iterabile vuoto") from None
         if not isinstance(first, pa.RecordBatch):
-            raise TypeError(
+            raise _SourceTypeError(
                 "copy_from: l'iterabile deve contenere pyarrow.RecordBatch"
             )
         schema = first.schema
         batches = chain((first,), iterator)
     else:
-        raise TypeError(
-            f"copy_from: source deve essere bytes, pyarrow.Table/RecordBatch, "
-            f"iterabile di RecordBatch, list di dict o pandas.DataFrame — "
-            f"trovato {type(source).__name__}"
+        raise _SourceTypeError(
+            "copy_from: source deve essere bytes, pyarrow.Table/RecordBatch, "
+            "iterabile di RecordBatch, list di dict, pandas.DataFrame o un "
+            "oggetto con __arrow_c_stream__"
         )
 
-    try:
+    def serialize() -> bytes:
         source_schema = schema
-        schema, replacements = _narrowed_schema(source_schema, pa)
+        narrowed, replacements = _narrowed_schema(source_schema, pa)
         buf = io.BytesIO()
-        with ipc.new_stream(buf, schema) as writer:
+        with ipc.new_stream(buf, narrowed) as writer:
+            # Qui si consuma la sorgente: un produttore PyCapsule o un
+            # iterabile puo fallire a meta, con qualunque eccezione.
             for batch in batches:
                 writer.write_batch(
-                    _narrowed_batch(batch, source_schema, schema, replacements, pa)
+                    _narrowed_batch(batch, source_schema, narrowed, replacements, pa)
                 )
-    except (pa.ArrowException, ValueError, TypeError, OverflowError):
-        raise ValueError("copy_from: serializzazione Arrow non valida") from None
-    return buf.getvalue()
+        return buf.getvalue()
+
+    return _translated("prepare", "copy_from: serializzazione Arrow non valida", serialize)

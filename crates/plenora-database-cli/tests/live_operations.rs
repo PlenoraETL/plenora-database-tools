@@ -157,3 +157,93 @@ fn live_profile_check_returns_pass_for_application_oltp_v1() {
     assert_eq!(out["missing"].as_array().map(Vec::len), Some(0));
     assert_eq!(out["failed"].as_array().map(Vec::len), Some(0));
 }
+
+/// `write` accetta l'Arrow IPC stream, oltre al file: il catalogo li dichiara
+/// entrambi in ingresso, e data-tools2 e IO-tools producono lo stream.
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[test]
+fn live_write_accepts_the_arrow_stream_and_the_file() {
+    use arrow_ipc::writer::{FileWriter, StreamWriter};
+    use plenora_database_core::arrow::array::Int64Array;
+    use plenora_database_core::arrow::{DataType, Field, RecordBatch, Schema};
+    use std::sync::Arc;
+
+    const TABLE: &str = "plenora_cli_write_formats";
+    let directory =
+        std::env::temp_dir().join(format!("plenora-cli-write-formats-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("cartella di prova");
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
+    )
+    .expect("batch");
+    let mut stream = StreamWriter::try_new(Vec::new(), &schema).expect("stream writer");
+    stream.write(&batch).expect("stream");
+    let stream_path = directory.join("input.arrows");
+    std::fs::write(&stream_path, stream.into_inner().expect("stream")).expect("stream file");
+    let mut file = FileWriter::try_new(Vec::new(), &schema).expect("file writer");
+    file.write(&batch).expect("file");
+    let file_path = directory.join("input.arrow");
+    std::fs::write(&file_path, file.into_inner().expect("file")).expect("file file");
+
+    run(&[
+        "database-execute-ddl",
+        "postgres",
+        "PG_DSN",
+        &format!("DROP TABLE IF EXISTS public.{TABLE}"),
+    ]);
+    let request = |mode: &str| {
+        let operation = directory.join(format!("write-{mode}.json"));
+        std::fs::write(
+            &operation,
+            serde_json::json!({
+                "target": {"schema": "public", "object": TABLE},
+                "mode": mode,
+                "mapping_policy": "compatible",
+                "transaction_profile": "single_transaction",
+            })
+            .to_string(),
+        )
+        .expect("WRITE.json");
+        let request = directory.join(format!("request-{mode}.json"));
+        std::fs::write(
+            &request,
+            serde_json::json!({
+                "provider": "postgres",
+                "secret_environment": "PG_DSN",
+                "operation_path": operation.to_str().expect("UTF-8"),
+            })
+            .to_string(),
+        )
+        .expect("REQUEST.json");
+        request
+    };
+    for (mode, data) in [("create", &stream_path), ("append", &file_path)] {
+        let request = request(mode);
+        let out = run(&[
+            "write",
+            "--input",
+            request.to_str().expect("UTF-8"),
+            "--data",
+            data.to_str().expect("UTF-8"),
+        ]);
+        assert_eq!(out["status"], "ok", "{mode}: {out}");
+        assert_eq!(out["result"]["status"], "committed", "{mode}: {out}");
+        assert_eq!(out["result"]["rows"]["confirmed"], 3, "{mode}: {out}");
+    }
+    let count = run(&[
+        "database-execute-scalar",
+        "postgres",
+        "PG_DSN",
+        &format!("SELECT count(*) FROM public.{TABLE}"),
+    ]);
+    assert_eq!(count["value"]["value"], 6, "{count}");
+    run(&[
+        "database-execute-ddl",
+        "postgres",
+        "PG_DSN",
+        &format!("DROP TABLE IF EXISTS public.{TABLE}"),
+    ]);
+    let _ = std::fs::remove_dir_all(directory);
+}

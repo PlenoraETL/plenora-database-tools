@@ -116,9 +116,65 @@ pub(crate) fn parse_mapping_policy(s: &str) -> Result<MappingPolicy, DatabaseErr
 #[path = "write_ipc_tests.rs"]
 mod ipc_tests;
 
+/// L'inquadramento dello stream, prima del decoder: ogni messaggio con il
+/// marcatore di continuazione e con metadati e corpo dentro l'input, la fine
+/// esplicita al confine fra due messaggi e nessun byte dopo.
+///
+/// Il decoder alloca la lunghezza che il prefisso e i metadati dichiarano
+/// prima di leggerla: qui le lunghezze si confrontano con i byte presenti,
+/// quindi nessuna allocazione supera l'input. Uno stream senza fine e
+/// troncato e si rifiuta, come nella CLI, invece di leggersi piu corto.
+///
+/// # Errors
+///
+/// `invalid_plan` per un inquadramento non valido, senza i byte.
+pub(crate) fn check_stream_framing(bytes: &[u8]) -> Result<(), DatabaseError> {
+    let invalid = || DatabaseError::invalid_plan("Arrow IPC stream non valido");
+    let mut position = 0_usize;
+    loop {
+        let prefix = position
+            .checked_add(8)
+            .and_then(|end| bytes.get(position..end))
+            .ok_or_else(|| {
+                DatabaseError::invalid_plan(
+                    "Arrow IPC stream senza marcatore di fine: troncato o incompleto",
+                )
+            })?;
+        if prefix[..4] != [0xFF; 4] {
+            return Err(invalid());
+        }
+        let metadata_length = usize::try_from(u32::from_le_bytes([
+            prefix[4], prefix[5], prefix[6], prefix[7],
+        ]))
+        .map_err(|_| invalid())?;
+        position += 8;
+        if metadata_length == 0 {
+            break;
+        }
+        let metadata_end = position
+            .checked_add(metadata_length)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(invalid)?;
+        let message =
+            arrow_ipc::root_as_message(&bytes[position..metadata_end]).map_err(|_| invalid())?;
+        let body_length = usize::try_from(message.bodyLength()).map_err(|_| invalid())?;
+        position = metadata_end
+            .checked_add(body_length)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(invalid)?;
+    }
+    if position != bytes.len() {
+        return Err(DatabaseError::invalid_plan(
+            "byte dopo la fine dello stream Arrow IPC",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn decode_ipc_stream(
     ipc_bytes: &[u8],
 ) -> Result<(SchemaRef, VecDeque<RecordBatch>, u64), DatabaseError> {
+    check_stream_framing(ipc_bytes)?;
     let cursor = Cursor::new(ipc_bytes);
     // Stessa regola dei messaggi sull'AST: `DatabaseError::message` non porta
     // payload, e un errore Arrow nomina volentieri colonne e valori.
