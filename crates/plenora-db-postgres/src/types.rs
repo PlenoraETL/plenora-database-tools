@@ -33,6 +33,10 @@ pub struct ColumnSpec {
     pub domain_base_type: Option<String>,
     pub domain_constraints: Vec<String>,
     pub collation: Option<String>,
+    /// L'origine della colonna, `(attrelid, attnum)`, quando viene da una
+    /// tabella: ne fa il field id, che cosi non cambia con il nome.
+    #[serde(skip)]
+    pub source: Option<(u32, i16)>,
     #[serde(skip)]
     pub kind: ColumnKind,
 }
@@ -130,6 +134,7 @@ impl ColumnSpec {
             domain_base_type: None,
             domain_constraints: Vec::new(),
             collation: None,
+            source: column.table_oid().zip(column.column_id()),
             kind,
         })
     }
@@ -219,13 +224,25 @@ impl ColumnSpec {
             domain_base_type,
             domain_constraints,
             collation,
+            source: catalog_field::<Option<u32>>(row, "source_relid")?.zip(catalog_field::<
+                Option<i16>,
+            >(
+                row, "source_attnum"
+            )?),
             kind,
         })
     }
 
     pub fn arrow_field(&self) -> Field {
-        Field::new(&self.name, self.arrow_data_type(), self.nullable)
-            .with_metadata(self.arrow_metadata())
+        let mut metadata = self.arrow_metadata();
+        if let Some((relation, column)) = self.source {
+            metadata.insert(
+                protocol::FIELD_ID.to_owned(),
+                protocol::origin_field_id(&relation.to_le_bytes(), &column.to_le_bytes())
+                    .to_string(),
+            );
+        }
+        Field::new(&self.name, self.arrow_data_type(), self.nullable).with_metadata(metadata)
     }
 
     fn arrow_data_type(&self) -> DataType {
@@ -342,34 +359,41 @@ impl ColumnSpec {
             }
             .to_owned(),
         );
-        if let Some(srid) = self.spatial_srid {
-            metadata.insert(protocol::GEOMETRY_SRID.to_owned(), srid.to_string());
-            metadata.insert(
-                protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
-                if self.spatial_crs_id.is_some() {
-                    "resolved"
-                } else {
-                    "declared_unresolved"
-                }
-                .to_owned(),
-            );
-            metadata.insert(
-                protocol::GEOMETRY_AXIS_ORDER.to_owned(),
-                "unknown".to_owned(),
-            );
-        } else {
-            metadata.insert(
-                protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
-                "missing".to_owned(),
-            );
+        match (&self.spatial_crs_id, self.spatial_srid) {
+            // Autorita risolta da `spatial_ref_sys`.
+            (Some(crs_id), Some(srid)) => {
+                metadata.insert(protocol::GEOMETRY_SRID.to_owned(), srid.to_string());
+                metadata.insert(
+                    protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
+                    "resolved".to_owned(),
+                );
+                metadata.insert(protocol::GEOMETRY_CRS_ID.to_owned(), crs_id.clone());
+                metadata.insert(
+                    protocol::GEOMETRY_AXIS_ORDER.to_owned(),
+                    "unknown".to_owned(),
+                );
+            }
+            (_, srid) => protocol::insert_declared_crs(metadata, "POSTGIS", srid),
         }
-        if let Some(crs_id) = &self.spatial_crs_id {
-            metadata.insert(protocol::GEOMETRY_CRS_ID.to_owned(), crs_id.clone());
-        }
-        if let Some(dimensions) = &self.spatial_dimensions {
+        // ARROW-VOCABULARY §4: dimensioni e dichiarazione dei tipi sono
+        // obbligatorie; quando il catalogo non le conosce (una colonna senza
+        // typmod, un'espressione di query) si dichiarano `unknown` e
+        // `unresolved` invece di ometterle.
+        metadata.insert(
+            protocol::GEOMETRY_DIMENSIONS.to_owned(),
+            self.spatial_dimensions
+                .as_deref()
+                .map_or_else(|| "unknown".to_owned(), str::to_ascii_lowercase),
+        );
+        // PostGIS memorizza le coordinate in doppia precisione.
+        metadata.insert(
+            protocol::GEOMETRY_PRECISION.to_owned(),
+            "float64".to_owned(),
+        );
+        if self.spatial_type.is_none() {
             metadata.insert(
-                protocol::GEOMETRY_DIMENSIONS.to_owned(),
-                dimensions.to_ascii_lowercase(),
+                protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
+                "unresolved".to_owned(),
             );
         }
         if let Some(spatial_type) = &self.spatial_type {
@@ -488,3 +512,7 @@ fn spatial_base_type(typmod_type: &str) -> String {
         base.to_owned()
     }
 }
+
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod tests;

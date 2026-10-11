@@ -52,7 +52,9 @@ const GEOMETRY_TYPES: [&str; 16] = [
 #[derive(Debug, Clone, Copy)]
 pub struct FieldContract<'a> {
     pub field: &'a Field,
-    pub field_id: Option<u32>,
+    /// Il field id dichiarato, gia verificato come intero decimale non
+    /// negativo; la forma canonica la da `protocol::canonical_field_id`.
+    pub field_id: Option<&'a str>,
     pub encoding: Option<&'a str>,
     pub geometry_types: Option<&'a str>,
     pub types_declaration: Option<&'a str>,
@@ -125,8 +127,20 @@ impl<'a> FieldContract<'a> {
             ));
         }
 
-        let field_id = parse_optional_u32(metadata.get(protocol::FIELD_ID), "field_id", true)?;
-        let srid = parse_optional_u32(raw_srid, "SRID", true)?;
+        let field_id = metadata
+            .get(protocol::FIELD_ID)
+            .map(|value| {
+                protocol::canonical_field_id(value)
+                    .map(|_| value.as_str())
+                    .ok_or_else(|| {
+                        contract_error(
+                            ErrorCategory::DataMapping,
+                            "field_id deve essere un intero decimale non negativo",
+                        )
+                    })
+            })
+            .transpose()?;
+        let srid = parse_srid(raw_srid)?;
         let contract = Self {
             field,
             field_id,
@@ -187,6 +201,90 @@ impl<'a> FieldContract<'a> {
             }
         }
         Ok(())
+    }
+
+    /// I requisiti di un campo che un componente **pubblica**
+    /// (ARROW-VOCABULARY §4): tutte le chiavi di [`Self::validate_current`],
+    /// piu field id, semantica spaziale e precisione.
+    ///
+    /// Sta separata da `validate_current`, che giudica anche gli ingressi:
+    /// chi riceve resta tollerante verso un produttore che omette la
+    /// precisione, chi pubblica no.
+    ///
+    /// # Errors
+    ///
+    /// `DataMapping` quando manca una chiave obbligatoria.
+    pub fn validate_published(self) -> Result<()> {
+        self.validate_current()?;
+        if !self.spatial {
+            return Ok(());
+        }
+        let metadata = self.field.metadata();
+        let canonical = |key: &str| metadata.get(key).map(String::as_str);
+        let missing = |name: &str| {
+            contract_error(
+                ErrorCategory::DataMapping,
+                format!("campo geometrico pubblicato senza {name}"),
+            )
+        };
+        // Solo le chiavi canoniche: una chiave legacy e tollerata in
+        // ingresso, non pubblicata al posto della canonica.
+        for legacy in [
+            LEGACY_DIMENSIONS,
+            LEGACY_SRID,
+            LEGACY_SPATIAL_SEMANTICS,
+            LEGACY_GEOMETRY_TYPE,
+        ] {
+            if metadata.contains_key(legacy) {
+                return Err(contract_error(
+                    ErrorCategory::DataMapping,
+                    "campo geometrico pubblicato con chiavi legacy",
+                ));
+            }
+        }
+        if canonical(protocol::GEOARROW_EXTENSION_NAME) != Some(GEOARROW_WKB_EXTENSION_NAME) {
+            return Err(missing(protocol::GEOARROW_EXTENSION_NAME));
+        }
+        for key in [
+            protocol::FIELD_ID,
+            protocol::GEOMETRY_ENCODING,
+            protocol::GEOMETRY_DIMENSIONS,
+            protocol::GEOMETRY_SPATIAL_SEMANTICS,
+            protocol::GEOMETRY_PRECISION,
+            protocol::GEOMETRY_TYPES_DECLARATION,
+            protocol::GEOMETRY_CRS_RESOLUTION,
+        ] {
+            if canonical(key).is_none() {
+                return Err(missing(key));
+            }
+        }
+        // §3: il catalogo dei tipi e case-sensitive.
+        if let Some(types) = canonical(protocol::GEOMETRY_TYPES) {
+            if types.split(',').any(|item| !GEOMETRY_TYPES.contains(&item)) {
+                return Err(contract_error(
+                    ErrorCategory::DataMapping,
+                    "tipo geometrico pubblicato fuori dalla forma canonica",
+                ));
+            }
+        }
+        // §4: un CRS risolto o dichiarato ha un'identita e un ordine degli
+        // assi; un CRS mancante non ne ha.
+        let has_crs = canonical(protocol::GEOMETRY_CRS_ID).is_some()
+            || canonical(protocol::GEOMETRY_CRS_DEFINITION).is_some();
+        let has_axis = canonical(protocol::GEOMETRY_AXIS_ORDER).is_some();
+        match canonical(protocol::GEOMETRY_CRS_RESOLUTION) {
+            Some("resolved" | "declared_unresolved") if !(has_crs && has_axis) => {
+                Err(contract_error(
+                    ErrorCategory::Crs,
+                    "CRS pubblicato senza identita o senza ordine degli assi",
+                ))
+            }
+            Some("missing") if has_crs || has_axis => Err(contract_error(
+                ErrorCategory::Crs,
+                "CRS mancante pubblicato con identita o ordine degli assi",
+            )),
+            _ => Ok(()),
+        }
     }
 
     #[must_use]
@@ -295,6 +393,14 @@ impl<'a> FieldContract<'a> {
     }
 
     fn validate_crs(self) -> Result<()> {
+        // §3: una definizione presente non e vuota; vuota o di soli spazi
+        // non identifica alcun CRS.
+        if self
+            .crs_definition
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(contract_error(ErrorCategory::Crs, "definizione CRS vuota"));
+        }
         if self.crs_definition.is_some() != self.crs_definition_format.is_some() {
             return Err(contract_error(
                 ErrorCategory::Crs,
@@ -381,6 +487,45 @@ pub fn validate_schema_contract(schema: &Schema) -> Result<()> {
     Ok(())
 }
 
+/// Verifica lo schema che un componente pubblica.
+///
+/// Versione del contratto presente, ogni campo conforme a
+/// [`FieldContract::validate_published`], field id unici (ARROW-VOCABULARY §2
+/// e §4). Si chiama prima di scrivere il primo byte di un artefatto.
+///
+/// # Errors
+///
+/// Come [`validate_schema_contract`], piu `DataMapping` per una versione
+/// assente, una chiave obbligatoria mancante o field id ripetuti.
+pub fn validate_published_schema(schema: &Schema) -> Result<()> {
+    if !schema
+        .metadata()
+        .contains_key(protocol::CONTRACT_VERSION_KEY)
+    {
+        return Err(contract_error(
+            ErrorCategory::DataMapping,
+            "schema pubblicato senza plenora.contract.version",
+        ));
+    }
+    validate_schema_contract(schema)?;
+    let mut ids = std::collections::HashSet::new();
+    for field in schema.fields() {
+        let contract = FieldContract::parse(field)?;
+        contract.validate_published()?;
+        // Forma canonica, come in `contract_schema`: "7" e "007" sono lo
+        // stesso id.
+        if let Some(id) = contract.field_id.and_then(protocol::canonical_field_id) {
+            if !ids.insert(id) {
+                return Err(contract_error(
+                    ErrorCategory::DataMapping,
+                    "field_id ripetuto nello schema pubblicato",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn authority_srid(value: &str) -> Option<u32> {
     let (authority, code) = value.split_once(':')?;
     authority
@@ -389,23 +534,36 @@ fn authority_srid(value: &str) -> Option<u32> {
         .flatten()
 }
 
-fn parse_optional_u32(
-    value: Option<impl AsRef<str>>,
-    label: &str,
-    allow_zero: bool,
-) -> Result<Option<u32>> {
+/// Lo SRID secondo ARROW-VOCABULARY §3: un intero decimale signed 32-bit,
+/// cifre con un eventuale `-` iniziale. Il controllo vale per l'ingresso e
+/// per la pubblicazione, che passa da questo parser.
+///
+/// # Deviazione dichiarata
+///
+/// Un negativo e nel dominio del contratto, ma nessun provider lo
+/// rappresenta (gli SRID dei cataloghi sono non negativi): si rifiuta come
+/// `unsupported`, non come fuori formato. Rientra quando un provider
+/// qualificato dichiara SRID negativi.
+fn parse_srid(value: Option<impl AsRef<str>>) -> Result<Option<u32>> {
     value
         .map(|raw| {
-            raw.as_ref()
-                .parse::<u32>()
-                .ok()
-                .filter(|parsed| allow_zero || *parsed > 0)
+            let raw = raw.as_ref();
+            let digits = raw.strip_prefix('-').unwrap_or(raw);
+            let parsed = (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| raw.parse::<i32>().ok())
+                .flatten()
                 .ok_or_else(|| {
                     contract_error(
                         ErrorCategory::DataMapping,
-                        format!("{label} deve essere un intero decimale senza segno"),
+                        "SRID deve essere un intero decimale signed a 32 bit",
                     )
-                })
+                })?;
+            u32::try_from(parsed).map_err(|_| {
+                contract_error(
+                    ErrorCategory::Unsupported,
+                    "SRID negativo: nessun provider lo rappresenta",
+                )
+            })
         })
         .transpose()
 }

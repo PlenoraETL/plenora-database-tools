@@ -1027,7 +1027,8 @@ fn write_batch(ids: Vec<i32>, values: Vec<Option<&str>>, versions: Vec<i32>) -> 
         Field::new("ID", DataType::Int32, false),
         Field::new("VALUE", DataType::Utf8, true),
         Field::new("VERSION", DataType::Int32, false),
-    ]);
+    ])
+    .expect("schema");
     RecordBatch::try_new(
         schema,
         vec![
@@ -1164,7 +1165,8 @@ async fn exercise_keyed_write_modes(
     .expect("upsert Arrow Db2");
     assert_eq!(outcome.rows.confirmed, 2);
 
-    let delete_schema = contract_schema(vec![Field::new("ID", DataType::Int32, false)]);
+    let delete_schema =
+        contract_schema(vec![Field::new("ID", DataType::Int32, false)]).expect("schema");
     let delete = RecordBatch::try_new(
         Arc::clone(&delete_schema),
         vec![Arc::new(Int32Array::from(vec![2, 999]))],
@@ -1486,7 +1488,8 @@ fn scalar_create_batch(ids: Vec<i32>) -> RecordBatch {
             DataType::Timestamp(TimeUnit::Microsecond, None),
             true,
         ),
-    ]);
+    ])
+    .expect("schema");
     let decimals = Decimal128Array::from(first_then_null(row_count, 1_234_567_i128))
         .with_precision_and_scale(18, 4)
         .expect("decimal fixture Db2");

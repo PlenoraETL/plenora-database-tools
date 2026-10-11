@@ -117,8 +117,11 @@ effetto sul sink (ERR-014).
   d'errore. Il consumatore legge `status`. Un errore del provider con effetto
   ignoto arriva invece come envelope d'errore (vettore
   `database-write-error`).
-- `database.query` restituisce il riepilogo JSON della CLI. Lo stream Arrow,
-  dichiarato fra i content type d'uscita, non è prodotto da questo binding.
+- `database.query` restituisce il riepilogo JSON. Lo stream Arrow, dichiarato
+  fra i content type d'uscita, lo produce la CLI (`query --output`), non
+  questo binding: Runtime Binding 1.0 non ha un modo per chiedere uno dei due
+  content type, e l'input contract di `database.query` è chiuso, quindi una
+  scelta richiede un cambio di contratto.
 - I documenti risolti da un riferimento hanno un limite di 8 MiB
   (`MAX_DOCUMENT_BYTES`).
 

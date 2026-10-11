@@ -12,12 +12,165 @@ pub const CONTRACT_VERSION_KEY: &str = "plenora.contract.version";
 ///
 /// Tenerlo nel core evita che i provider possano divergere silenziosamente
 /// sulla metadata obbligatoria dello schema.
-#[must_use]
-pub fn contract_schema(fields: Vec<Field>) -> SchemaRef {
-    Arc::new(Schema::new_with_metadata(
+///
+/// # Field id
+///
+/// Ogni campo esce con `plenora.field_id` (ARROW-VOCABULARY §2, e §4 per le
+/// geometrie). Un id gia dichiarato resta, qualunque intero decimale non
+/// negativo sia: il vocabolario non pone un massimo. Il provider dichiara
+/// l'id quando conosce l'origine della colonna (PostgreSQL: `attrelid` e
+/// `attnum`, vedi [`origin_field_id`]), cosi una rinomina o un alias non lo
+/// cambiano. Per gli altri campi — espressioni, e gli adapter che non
+/// espongono l'origine — l'id si deriva dal nome: e un limite dichiarato,
+/// perche una rinomina di quei campi cambia l'id. La posizione non entra mai.
+///
+/// Gli id generati sono FNV-1a a 32 bit ridotto a 31 bit, interi non negativi
+/// anche per chi li legge con segno.
+///
+/// # Errors
+///
+/// `Schema` se un id dichiarato non e un intero decimale non negativo, o se
+/// due campi hanno lo stesso id — nomi ripetuti, collisione dell'hash, id
+/// dichiarati uguali (anche con zeri iniziali diversi): l'unicita non si
+/// ripara rinumerando.
+pub fn contract_schema(fields: Vec<Field>) -> crate::Result<SchemaRef> {
+    let mut seen = std::collections::HashSet::new();
+    let fields = fields
+        .into_iter()
+        .map(|field| {
+            let declared = field.metadata().get(FIELD_ID).cloned();
+            let id = match &declared {
+                Some(value) => canonical_field_id(value).ok_or_else(|| {
+                    field_id_error("field_id dichiarato non e un intero decimale non negativo")
+                })?,
+                None => name_field_id(field.name()).to_string(),
+            };
+            // ARROW-VOCABULARY §3: lo SRID pubblicato e signed 32-bit. Un
+            // catalogo con SRID senza segno puo superarlo: si rifiuta qui,
+            // nel punto unico di ogni schema pubblicato, non a valle.
+            if field
+                .metadata()
+                .get(GEOMETRY_SRID)
+                .is_some_and(|srid| srid.parse::<i32>().is_err())
+            {
+                return Err(crate::DatabaseError::new(
+                    crate::ErrorCategory::DataMapping,
+                    crate::ErrorPhase::Validate,
+                    None,
+                    "SRID fuori dal dominio signed 32-bit del contratto",
+                ));
+            }
+            if !seen.insert(id.clone()) {
+                return Err(field_id_error(
+                    "field_id duplicato nello schema: nomi di campo ripetuti, id uguali o \
+                     collisione",
+                ));
+            }
+            if declared.is_some() {
+                return Ok(field);
+            }
+            let mut metadata = field.metadata().clone();
+            metadata.insert(FIELD_ID.to_owned(), id);
+            Ok(field.with_metadata(metadata))
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
+    Ok(Arc::new(Schema::new_with_metadata(
         fields,
         HashMap::from([(CONTRACT_VERSION_KEY.to_owned(), CONTRACT_VERSION.to_owned())]),
-    ))
+    )))
+}
+
+/// La forma canonica di un field id: cifre decimali senza zeri iniziali.
+/// `None` se il valore non e un intero decimale non negativo.
+#[must_use]
+pub fn canonical_field_id(value: &str) -> Option<String> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let trimmed = value.trim_start_matches('0');
+    Some(if trimmed.is_empty() { "0" } else { trimmed }.to_owned())
+}
+
+/// L'id di un campo che non ne dichiara uno: FNV-1a 32 bit del nome, 31 bit.
+#[must_use]
+pub fn name_field_id(name: &str) -> u32 {
+    fnv31(&[name.as_bytes()])
+}
+
+/// L'id di una colonna dalla sua origine nel database.
+///
+/// Relazione e colonna, nei byte che il provider sceglie (per PostgreSQL
+/// `attrelid` e `attnum`): stabile finche la colonna e la stessa, qualunque
+/// nome abbia.
+#[must_use]
+pub fn origin_field_id(relation: &[u8], column: &[u8]) -> u32 {
+    fnv31(&[b"origin", relation, column])
+}
+
+/// FNV-1a 32 bit su parti separate, ridotto a 31 bit.
+fn fnv31(parts: &[&[u8]]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            hash ^= 0xff;
+            hash = hash.wrapping_mul(0x0100_0193);
+        }
+        for byte in *part {
+            hash ^= u32::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0193);
+        }
+    }
+    hash & 0x7fff_ffff
+}
+
+fn field_id_error(message: &str) -> crate::DatabaseError {
+    crate::DatabaseError::new(
+        crate::ErrorCategory::Schema,
+        crate::ErrorPhase::Read,
+        None,
+        message,
+    )
+}
+
+/// I metadati CRS di una geometria letta di cui il database dichiara solo lo
+/// SRID nel proprio catalogo, senza un'autorita risolta.
+///
+/// ARROW-VOCABULARY §4: `declared_unresolved` chiede un identificatore CRS e
+/// un ordine degli assi. L'identificatore e lo SRID nello spazio dei nomi del
+/// catalogo del database (`authority:srid`, per esempio `MYSQL:4326`): e cio
+/// che il database ha dichiarato, senza pretendere che sia un codice EPSG.
+/// L'ordine degli assi non e noto. Senza SRID il CRS e `missing`.
+///
+/// # Ambito dell'identificatore
+///
+/// L'identificatore e **locale all'installazione** del database che lo ha
+/// dichiarato: lo stesso `MYSQL:4326` in due server diversi puo indicare
+/// CRS diversi. Non viene mai promosso a `resolved`, e due campi con lo
+/// stesso identificatore di questa forma non si considerano nello stesso CRS
+/// se vengono da sorgenti diverse. La semantica e da ratificare in
+/// plenora-contracts; la sintassi e quella di ARROW-VOCABULARY 1.0.
+///
+/// Uno SRID oltre `i32::MAX` e fuori dal dominio del contratto: lo rifiuta
+/// [`contract_schema`], il punto unico di ogni schema pubblicato.
+pub fn insert_declared_crs<S: std::hash::BuildHasher>(
+    metadata: &mut HashMap<String, String, S>,
+    authority: &str,
+    srid: Option<u32>,
+) {
+    if let Some(srid) = srid {
+        metadata.insert(GEOMETRY_SRID.to_owned(), srid.to_string());
+        metadata.insert(
+            GEOMETRY_CRS_RESOLUTION.to_owned(),
+            "declared_unresolved".to_owned(),
+        );
+        metadata.insert(GEOMETRY_CRS_ID.to_owned(), format!("{authority}:{srid}"));
+        metadata.insert(GEOMETRY_AXIS_ORDER.to_owned(), "unknown".to_owned());
+    } else {
+        for key in [GEOMETRY_SRID, GEOMETRY_CRS_ID, GEOMETRY_AXIS_ORDER] {
+            metadata.remove(key);
+        }
+        metadata.insert(GEOMETRY_CRS_RESOLUTION.to_owned(), "missing".to_owned());
+    }
 }
 
 pub const GEOMETRY_ENCODING: &str = "plenora.geometry.encoding";
@@ -85,3 +238,7 @@ pub const MARIADB_NATIVE_DECLARATION: &str = "plenora.mariadb.native_declaration
 pub const MARIADB_COLLATION: &str = "plenora.mariadb.collation";
 
 pub const GEOARROW_EXTENSION_NAME: &str = "ARROW:extension:name";
+
+#[cfg(test)]
+#[path = "protocol_tests.rs"]
+mod tests;

@@ -15,7 +15,7 @@
 
 use arrow_ipc::reader::StreamReader;
 use plenora_database_core::arrow::array::Int64Array;
-use plenora_database_core::arrow::{DataType, Field, RecordBatch, Schema, SchemaRef};
+use plenora_database_core::arrow::{DataType, Field, RecordBatch, SchemaRef};
 use plenora_database_core::capabilities::ProviderCapabilities;
 use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::plan::{Operation, ProviderKind, ReadOperation, WriteOperation};
@@ -104,7 +104,9 @@ impl Calls {
 }
 
 fn id_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]))
+    // Lo schema di un provider reale: passa da `contract_schema`.
+    plenora_database_core::protocol::contract_schema(vec![Field::new("id", DataType::Int64, false)])
+        .expect("schema")
 }
 
 fn id_batch() -> RecordBatch {

@@ -920,6 +920,8 @@ async fn write_arrow_stream(
     written: &mut u64,
 ) -> Result<DeliveredArtifact> {
     let schema = stream.schema();
+    // Come la CLI: uno schema fuori vocabolario non arriva al sink.
+    plenora_database_core::field_contract::validate_published_schema(&schema)?;
     let mut counted = CountingWriter {
         inner: sink,
         bytes: written,
