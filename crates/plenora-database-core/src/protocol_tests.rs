@@ -91,3 +91,19 @@ fn an_origin_field_id_survives_a_rename() {
         origin_field_id(&16_384_u32.to_le_bytes(), &4_i16.to_le_bytes())
     );
 }
+
+/// Il punto unico di ogni schema pubblicato non lascia uscire uno SRID fuori
+/// dal dominio signed 32-bit di ARROW-VOCABULARY §3: un catalogo con SRID
+/// senza segno (MySQL `SRS_ID`) puo dichiarare 4294967295.
+#[test]
+fn a_catalog_srid_outside_the_signed_32_bit_domain_is_not_published() {
+    let mut metadata = HashMap::new();
+    insert_declared_crs(&mut metadata, "MYSQL", Some(u32::MAX));
+    let field = Field::new("geom", DataType::Binary, true).with_metadata(metadata);
+    let error = contract_schema(vec![field]).expect_err("SRID fuori dominio");
+    assert_eq!(error.category, crate::ErrorCategory::DataMapping);
+    let mut boundary = HashMap::new();
+    insert_declared_crs(&mut boundary, "MYSQL", Some(2_147_483_647));
+    let field = Field::new("geom", DataType::Binary, true).with_metadata(boundary);
+    contract_schema(vec![field]).expect("i32::MAX e nel dominio");
+}

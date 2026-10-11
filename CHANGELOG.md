@@ -29,7 +29,13 @@ riassumono le note di quelle release.
   `axis_order=unknown`; senza SRID il CRS è `missing`. L'identificatore è
   locale all'installazione: non viene mai promosso a `resolved` e non è
   confrontabile fra sorgenti diverse (semantica da ratificare in
-  plenora-contracts). Oracle dichiarava
+  plenora-contracts). Lo SRID segue il dominio di ARROW-VOCABULARY §3,
+  intero decimale signed 32-bit, in ingresso e in pubblicazione:
+  `2147483648` è rifiutato, e `contract_schema` non lascia pubblicare uno
+  SRID di catalogo fuori dominio (MySQL `SRS_ID` è senza segno). Deviazione
+  dichiarata: un SRID negativo è nel contratto ma nessun provider lo
+  rappresenta, ed è rifiutato come `unsupported`. Una definizione CRS vuota
+  o di soli spazi non è un'identità ed è rifiutata. Oracle dichiarava
   `resolved` senza identificatore; MySQL, SQL Server e Db2
   `declared_unresolved` senza identificatore né ordine degli assi. Limiti dichiarati: una
   colonna `numeric` nel risultato di una query PostgreSQL e rifiutata come

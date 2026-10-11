@@ -140,7 +140,7 @@ impl<'a> FieldContract<'a> {
                     })
             })
             .transpose()?;
-        let srid = parse_optional_u32(raw_srid, "SRID", true)?;
+        let srid = parse_srid(raw_srid)?;
         let contract = Self {
             field,
             field_id,
@@ -393,6 +393,14 @@ impl<'a> FieldContract<'a> {
     }
 
     fn validate_crs(self) -> Result<()> {
+        // §3: una definizione presente non e vuota; vuota o di soli spazi
+        // non identifica alcun CRS.
+        if self
+            .crs_definition
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(contract_error(ErrorCategory::Crs, "definizione CRS vuota"));
+        }
         if self.crs_definition.is_some() != self.crs_definition_format.is_some() {
             return Err(contract_error(
                 ErrorCategory::Crs,
@@ -526,23 +534,36 @@ fn authority_srid(value: &str) -> Option<u32> {
         .flatten()
 }
 
-fn parse_optional_u32(
-    value: Option<impl AsRef<str>>,
-    label: &str,
-    allow_zero: bool,
-) -> Result<Option<u32>> {
+/// Lo SRID secondo ARROW-VOCABULARY §3: un intero decimale signed 32-bit,
+/// cifre con un eventuale `-` iniziale. Il controllo vale per l'ingresso e
+/// per la pubblicazione, che passa da questo parser.
+///
+/// # Deviazione dichiarata
+///
+/// Un negativo e nel dominio del contratto, ma nessun provider lo
+/// rappresenta (gli SRID dei cataloghi sono non negativi): si rifiuta come
+/// `unsupported`, non come fuori formato. Rientra quando un provider
+/// qualificato dichiara SRID negativi.
+fn parse_srid(value: Option<impl AsRef<str>>) -> Result<Option<u32>> {
     value
         .map(|raw| {
-            raw.as_ref()
-                .parse::<u32>()
-                .ok()
-                .filter(|parsed| allow_zero || *parsed > 0)
+            let raw = raw.as_ref();
+            let digits = raw.strip_prefix('-').unwrap_or(raw);
+            let parsed = (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| raw.parse::<i32>().ok())
+                .flatten()
                 .ok_or_else(|| {
                     contract_error(
                         ErrorCategory::DataMapping,
-                        format!("{label} deve essere un intero decimale senza segno"),
+                        "SRID deve essere un intero decimale signed a 32 bit",
                     )
-                })
+                })?;
+            u32::try_from(parsed).map_err(|_| {
+                contract_error(
+                    ErrorCategory::Unsupported,
+                    "SRID negativo: nessun provider lo rappresenta",
+                )
+            })
         })
         .transpose()
 }

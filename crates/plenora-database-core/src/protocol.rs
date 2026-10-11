@@ -45,6 +45,21 @@ pub fn contract_schema(fields: Vec<Field>) -> crate::Result<SchemaRef> {
                 })?,
                 None => name_field_id(field.name()).to_string(),
             };
+            // ARROW-VOCABULARY §3: lo SRID pubblicato e signed 32-bit. Un
+            // catalogo con SRID senza segno puo superarlo: si rifiuta qui,
+            // nel punto unico di ogni schema pubblicato, non a valle.
+            if field
+                .metadata()
+                .get(GEOMETRY_SRID)
+                .is_some_and(|srid| srid.parse::<i32>().is_err())
+            {
+                return Err(crate::DatabaseError::new(
+                    crate::ErrorCategory::DataMapping,
+                    crate::ErrorPhase::Validate,
+                    None,
+                    "SRID fuori dal dominio signed 32-bit del contratto",
+                ));
+            }
             if !seen.insert(id.clone()) {
                 return Err(field_id_error(
                     "field_id duplicato nello schema: nomi di campo ripetuti, id uguali o \
@@ -134,6 +149,9 @@ fn field_id_error(message: &str) -> crate::DatabaseError {
 /// stesso identificatore di questa forma non si considerano nello stesso CRS
 /// se vengono da sorgenti diverse. La semantica e da ratificare in
 /// plenora-contracts; la sintassi e quella di ARROW-VOCABULARY 1.0.
+///
+/// Uno SRID oltre `i32::MAX` e fuori dal dominio del contratto: lo rifiuta
+/// [`contract_schema`], il punto unico di ogni schema pubblicato.
 pub fn insert_declared_crs<S: std::hash::BuildHasher>(
     metadata: &mut HashMap<String, String, S>,
     authority: &str,

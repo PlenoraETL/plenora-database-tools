@@ -191,3 +191,68 @@ fn equal_field_ids_with_leading_zeros_are_duplicates_when_published() {
     );
     assert!(validate_published_schema(&schema).is_err());
 }
+
+/// §3: lo SRID e un intero decimale signed 32-bit. 2147483648 e fuori dal
+/// dominio e non si pubblica (ne si accetta), anche con un CRS dichiarato.
+#[test]
+fn an_srid_outside_the_signed_32_bit_domain_is_rejected() {
+    let mut metadata = published_geometry();
+    for (key, value) in [
+        ("plenora.geometry.srid", "2147483648"),
+        ("plenora.geometry.crs_resolution", "declared_unresolved"),
+        ("plenora.geometry.crs_id", "MYSQL:2147483648"),
+        ("plenora.geometry.axis_order", "unknown"),
+    ] {
+        metadata.insert(key.to_owned(), value.to_owned());
+    }
+    let error = published(metadata).expect_err("fuori dal dominio i32");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    let mut boundary = published_geometry();
+    for (key, value) in [
+        ("plenora.geometry.srid", "2147483647"),
+        ("plenora.geometry.crs_resolution", "declared_unresolved"),
+        ("plenora.geometry.crs_id", "MYSQL:2147483647"),
+        ("plenora.geometry.axis_order", "unknown"),
+    ] {
+        boundary.insert(key.to_owned(), value.to_owned());
+    }
+    published(boundary).expect("i32::MAX e nel dominio");
+}
+
+/// §3: un negativo e nel dominio del contratto, ma nessun provider lo
+/// rappresenta: si rifiuta come non supportato, non come fuori formato.
+#[test]
+fn a_negative_srid_is_in_the_contract_but_unsupported() {
+    for raw in ["-1", "-2147483648"] {
+        let mut metadata = published_geometry();
+        metadata.insert("plenora.geometry.srid".to_owned(), raw.to_owned());
+        let error = published(metadata).expect_err(raw);
+        assert_eq!(error.category, ErrorCategory::Unsupported, "{raw}");
+    }
+}
+
+/// §3: definizione e identificatore del CRS, se presenti, non sono vuoti;
+/// una definizione vuota non soddisfa il requisito di identita.
+#[test]
+fn an_empty_crs_definition_or_id_is_not_an_identity() {
+    for resolution in ["resolved", "declared_unresolved"] {
+        let mut metadata = published_geometry();
+        metadata.remove("plenora.geometry.crs_id");
+        metadata.remove("plenora.geometry.srid");
+        for (key, value) in [
+            ("plenora.geometry.crs_resolution", resolution),
+            ("plenora.geometry.crs_definition", ""),
+            ("plenora.geometry.crs_definition_format", "wkt"),
+            ("plenora.geometry.axis_order", "unknown"),
+        ] {
+            metadata.insert(key.to_owned(), value.to_owned());
+        }
+        assert!(
+            published(metadata).is_err(),
+            "{resolution} con definizione vuota"
+        );
+    }
+    let mut empty_id = published_geometry();
+    empty_id.insert("plenora.geometry.crs_id".to_owned(), String::new());
+    assert!(published(empty_id).is_err(), "identificatore vuoto");
+}
