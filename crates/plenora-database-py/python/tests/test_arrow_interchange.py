@@ -131,15 +131,42 @@ def test_argument_errors_stay_argument_errors() -> None:
         _to_ipc_bytes(42)
 
 
-def test_a_plenora_error_from_the_producer_is_kept() -> None:
+def test_argument_errors_carry_the_public_axes() -> None:
+    """PYTHON-SDK §6: anche un argomento rifiutato e un `PlenoraError` con
+    gli assi, oltre che un `TypeError`/`ValueError`."""
+    import plenora_database as p
+
+    for source, builtin in (([], ValueError), (42, TypeError), (iter(()), ValueError)):
+        with pytest.raises(builtin) as raised:
+            _to_ipc_bytes(source)
+        error = raised.value
+        assert isinstance(error, p.PlenoraInvalidPlanError)
+        assert error.category == "invalid_plan"
+        assert error.phase == "validate"
+        assert error.remote_effect == "none"
+        assert error.retry == {"kind": "never"}
+        assert error.message
+
+
+def test_a_plenora_error_from_the_producer_is_external() -> None:
+    """La sorgente e codice del chiamante: un `PlenoraError` che solleva non
+    e dello SDK, e il suo messaggio puo portare dati."""
     import plenora_database as p
 
     class PlenoraProducer:
         def __arrow_c_stream__(self, requested_schema=None):
-            raise p.PlenoraTimeoutError("timeout: scaduto")
+            raise p.PlenoraTimeoutError("CANARINO-riga-segreta")
 
-    with pytest.raises(p.PlenoraTimeoutError):
-        _to_ipc_bytes(PlenoraProducer())
+    class PlenoraBytes(bytes):
+        def __bytes__(self):
+            raise p.PlenoraExecutionError("CANARINO-riga-segreta")
+
+    for source in (PlenoraProducer(), PlenoraBytes(b"x")):
+        with pytest.raises(p.PlenoraDataMappingError) as raised:
+            _to_ipc_bytes(source)
+        assert "CANARINO" not in str(raised.value)
+        assert "CANARINO" not in raised.value.message
+        assert raised.value.category == "data_mapping"
 
 
 def test_a_capsule_can_be_exported_once_per_request() -> None:
@@ -249,37 +276,57 @@ import plenora_database as p
 from tests._harness import connect_postgres
 
 session = connect_postgres(sys.argv[1])
+observer = connect_postgres(sys.argv[1])
 reader = session.read("public", "_pyx_slow_failure")
-inside = threading.Event()
 outcome = []
+progress = [0]
 
 def consume():
     try:
         for _ in reader:
-            inside.set()
+            progress[0] += 1
     except p.PlenoraError as error:
         outcome.append(error.category)
-    finally:
-        inside.set()
+
+def sleeping() -> bool:
+    return observer.execute_scalar(
+        "SELECT count(*) FROM pg_stat_activity "
+        "WHERE wait_event = 'PgSleep' AND query LIKE '%_pyx_slow_failure%' "
+        "AND pid <> pg_backend_pid()"
+    ) == 1
 
 consumer = threading.Thread(target=consume)
 consumer.start()
-inside.wait()
-# Il consumatore ha ricevuto il primo batch ed e dentro la lettura del
-# successivo, con il mutex e senza il GIL: la riga 150000 dorme tre secondi
-# e poi divide per zero. Qui si chiede lo schema tenendo il GIL.
-time.sleep(0.5)
-assert consumer.is_alive(), "nessuna contesa: la lettura era gia finita"
+# Punto di contesa: il server dorme sulla riga 150000. Il consumatore non
+# puo andare avanti finche il server non risponde, quindi, appena ha finito
+# le righe gia ricevute, resta dentro la lettura: con il mutex e senza il
+# GIL. Si aspetta che il server dorma e che il consumatore sia fermo.
+deadline = time.monotonic() + 30
+while not sleeping():
+    assert time.monotonic() < deadline, "la query non e mai arrivata a pg_sleep"
+    time.sleep(0.01)
+while True:
+    seen = progress[0]
+    time.sleep(0.2)
+    if progress[0] == seen:
+        break
+assert sleeping(), "pg_sleep finito prima della contesa: ripetere con un sonno piu lungo"
+assert consumer.is_alive()
+# Qui si chiede lo schema tenendo il GIL: il mutex e del consumatore, che
+# dopo il sonno ricevera la divisione per zero e dovra tradurla.
+started = time.monotonic()
 reader.schema_bytes()
+waited = time.monotonic() - started
 consumer.join()
-print("ok", outcome)
+print("ok", outcome, round(waited, 2))
 """
 
 
 def test_reading_and_schema_from_two_threads_do_not_deadlock(session) -> None:
     """Contesa forzata in un processo separato con timeout esterno: un
-    thread e dentro una lettura che fallira dopo tre secondi, l'altro chiede
-    lo schema. Con la traduzione dell'errore sotto il mutex, o l'attesa del
+    thread e dentro una lettura che il server tiene ferma in `pg_sleep` e che
+    poi fallira, e solo allora l'altro chiede lo schema (sincronizzazione su
+    `pg_stat_activity`, non sull'avanzamento). Con la traduzione dell'errore sotto il mutex, o l'attesa del
     mutex sotto il GIL, il processo si bloccava."""
     import subprocess
     import sys
@@ -289,7 +336,7 @@ def test_reading_and_schema_from_two_threads_do_not_deadlock(session) -> None:
     session.execute_sql(
         "CREATE VIEW _pyx_slow_failure AS "
         "SELECT gs AS id, CASE WHEN gs = 150000 "
-        "THEN length(pg_sleep(3)::text) / 0 ELSE gs END AS x "
+        "THEN length(pg_sleep(5)::text) / 0 ELSE gs END AS x "
         "FROM generate_series(1, 200000) gs"
     )
     try:

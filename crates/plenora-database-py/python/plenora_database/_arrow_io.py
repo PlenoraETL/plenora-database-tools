@@ -11,6 +11,8 @@ from collections.abc import Iterable, Iterator
 from itertools import chain
 from typing import Any
 
+from .errors import PlenoraDataMappingError, PlenoraInvalidPlanError, _SdkAxes
+
 
 def _narrowed_type(field_type: Any, pa: Any) -> Any:
     """Restituisce l'equivalente a offset 32 bit di un tipo Arrow, se esiste.
@@ -143,30 +145,26 @@ def _mapping_error(message: str, phase: str) -> Exception:
     produttore esterno puo contenere dati di riga e non viene concatenata.
     """
 
-    from .errors import PlenoraDataMappingError
-
-    class ArrowSourceError(PlenoraDataMappingError, ValueError):
-        pass
-
-    error = ArrowSourceError(f"data_mapping: {message}")
-    for name, value in (
-        ("category", "data_mapping"),
-        ("phase", phase),
-        ("remote_effect", "none"),
-        ("retry", {"kind": "never"}),
-        ("message", message),
-        ("provider", None),
-        ("execution_id", None),
-        ("details", None),
-        ("diagnostics", None),
-    ):
-        setattr(error, name, value)
-    return error
+    return _ArrowSourceError(message, phase=phase)
 
 
-class _SourceArgumentError(Exception):
+class _ArrowSourceError(_SdkAxes, PlenoraDataMappingError, ValueError):
+    """Una sorgente o una conversione fallita, tradotta dallo SDK."""
+
+    _category = "data_mapping"
+    _phase = "prepare"
+
+    def __str__(self) -> str:
+        return f"data_mapping: {self.message}"
+
+
+class _SourceArgumentError(_SdkAxes, PlenoraInvalidPlanError):
     """Un argomento sbagliato riconosciuto dallo SDK stesso: il messaggio e
-    suo, senza dati, e resta un `TypeError`/`ValueError` come prima."""
+    suo, senza dati, e resta un `TypeError`/`ValueError` come prima. E
+    anche un `PlenoraInvalidPlanError`, con gli assi di PYTHON-SDK §6."""
+
+    _category = "invalid_plan"
+    _phase = "validate"
 
 
 class _SourceTypeError(_SourceArgumentError, TypeError):
@@ -177,17 +175,29 @@ class _SourceValueError(_SourceArgumentError, ValueError):
     pass
 
 
-def _translated(phase: str, message: str, call: Any) -> Any:
-    """Esegue `call`: un errore Plenora o un argomento rifiutato dallo SDK
-    restano com'erano, ogni altro diventa un errore tipizzato senza dati e
-    senza la catena che li porterebbe."""
+def _translated(phase: str, message: str, call: Any, *, trusted: bool = False) -> Any:
+    """Esegue `call`: un errore che lo SDK stesso ha costruito resta com'era,
+    ogni altro diventa un errore tipizzato senza dati e senza la catena che
+    li porterebbe.
+
+    Un `PlenoraError` qualunque resta tale solo con `trusted`, quando `call`
+    non esegue codice del chiamante (il reader nativo). Da una sorgente di
+    `copy_from` e esterno: il chiamante puo sollevarlo con qualunque
+    messaggio. Limite dichiarato: l'errore di un `BatchReader` del database
+    usato come sorgente attraversa lo stream C di pyarrow, che non conserva
+    la classe, e arriva come `data_mapping`.
+    """
 
     from .errors import PlenoraError
 
     try:
         return call()
-    except (PlenoraError, _SourceArgumentError):
+    except (_ArrowSourceError, _SourceArgumentError):
         raise
+    except PlenoraError:
+        if trusted:
+            raise
+        raise _mapping_error(message, phase) from None
     except Exception:
         raise _mapping_error(message, phase) from None
 
@@ -236,6 +246,7 @@ def c_stream_from_reader(reader: Any, requested_schema: Any = None) -> Any:
         "read",
         "stream Arrow del reader non esportabile",
         lambda: _record_batch_reader(reader).__arrow_c_stream__(requested_schema),
+        trusted=True,
     )
 
 
@@ -246,6 +257,7 @@ def table_from_reader(reader: Any) -> Any:
         "read",
         "batch Arrow del reader non leggibile",
         lambda: _record_batch_reader(reader).read_all(),
+        trusted=True,
     )
 
 
@@ -267,7 +279,10 @@ def _to_ipc_bytes(source: Any) -> bytes:
       - `TypeError` se il tipo non è supportato
       - `ValueError` se la lista è vuota o gli elementi hanno tipi misti
       - `PlenoraDataMappingError` (anche `ValueError`) se la conversione o
-        la sorgente falliscono; un `PlenoraError` della sorgente resta tale
+        la sorgente falliscono, anche con un `PlenoraError` della sorgente:
+        e codice del chiamante, e il suo messaggio non si propaga
+      - `TypeError`/`ValueError` per un argomento rifiutato sono anche
+        `PlenoraInvalidPlanError`, con gli assi pubblici
       - `ImportError` se pyarrow non è installato (a meno di bytes)
     """
     # Anche il riconoscimento dei `bytes` passa dalla traduzione: una

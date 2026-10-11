@@ -15,6 +15,22 @@
 //! messaggio di fine e nessun byte dopo. La seconda passata decodifica un
 //! batch alla volta, sullo stesso file: la memoria e quella del batch
 //! corrente, non dell'input.
+//!
+//! # Il budget
+//!
+//! Il limite si confronta con tutto cio che la lettura tiene in memoria per
+//! colpa dell'input, non con il solo corpo di un messaggio:
+//!
+//! - ogni messaggio conta intero, prefisso di otto byte compreso (il padding
+//!   sta gia nelle lunghezze di metadati e corpo);
+//! - il messaggio piu grande conta **due volte**: la copia verificata e la
+//!   copia del decoder esistono insieme;
+//! - l'indice dei segmenti conta per la capacita allocata, quindi molti
+//!   messaggi piccoli o vuoti non lo fanno crescere fuori dal limite;
+//! - il footer di un file conta insieme all'indice e ai blocchi che dichiara.
+//!
+//! Il batch decodificato, una volta consegnato, e del consumatore: lo conta
+//! il budget della scrittura.
 
 use crate::{CliResult, File};
 use arrow_ipc::reader::{read_footer_length, StreamReader};
@@ -101,6 +117,41 @@ impl Segment {
     }
 }
 
+/// La memoria di una voce dell'indice dei segmenti.
+const SEGMENT_BYTES: u64 = std::mem::size_of::<Segment>() as u64;
+
+/// La memoria che la lettura tiene per l'input: l'indice con la capacita
+/// data e due copie del messaggio piu grande (verificatore e decoder).
+fn footprint(index_capacity: usize, largest: u64) -> Option<u64> {
+    u64::try_from(index_capacity)
+        .ok()?
+        .checked_mul(SEGMENT_BYTES)?
+        .checked_add(largest.checked_mul(2)?)
+}
+
+/// Registra un segmento se l'indice, con la sua nuova capacita, e il
+/// messaggio piu grande stanno nel limite. La capacita cresce in modo
+/// esplicito, raddoppiando, e si controlla prima di allocarla.
+fn admit(
+    segments: &mut Vec<Segment>,
+    largest: &mut u64,
+    segment: Segment,
+    limit: u64,
+) -> CliResult<()> {
+    *largest = (*largest).max(segment.length());
+    let capacity = if segments.len() == segments.capacity() {
+        segments.capacity().saturating_mul(2).max(4)
+    } else {
+        segments.capacity()
+    };
+    if footprint(capacity, *largest).is_none_or(|bytes| bytes > limit) {
+        return Err(beyond_limit());
+    }
+    segments.reserve_exact(capacity - segments.len());
+    segments.push(segment);
+    Ok(())
+}
+
 /// Apre `path` come file o stream Arrow IPC, secondo i suoi primi byte.
 ///
 /// `max_message_bytes` limita ogni messaggio (intestazione e corpo): si
@@ -177,6 +228,7 @@ fn scan_stream(
     let mut rows = 0_u64;
     let mut schema = false;
     let mut segments = Vec::new();
+    let mut largest = 0_u64;
     loop {
         let mut prefix = [0_u8; 8];
         if position.checked_add(8).is_none_or(|next| next > end) {
@@ -192,16 +244,21 @@ fn scan_stream(
         let mut hasher = Sha256::new();
         hasher.update(prefix);
         if metadata_length == 0 {
-            segments.push(Segment {
+            let end_of_stream = Segment {
                 offset: position,
                 metadata_length: 0,
                 body_length: 0,
                 digest: hasher.finalize().into(),
-            });
+            };
+            admit(&mut segments, &mut largest, end_of_stream, limit)?;
             position += 8;
             break;
         }
-        if metadata_length > limit {
+        // Prima di allocare i metadati: il loro inquadramento, da solo, deve
+        // gia stare nel budget.
+        if footprint(segments.capacity(), largest.max(8 + metadata_length))
+            .is_none_or(|bytes| bytes > limit)
+        {
             return Err(beyond_limit());
         }
         let after_metadata = position
@@ -217,9 +274,10 @@ fn scan_stream(
         hasher.update(&metadata);
         let message = root_as_message(&metadata).map_err(|_| malformed())?;
         let body_length = u64::try_from(message.bodyLength()).map_err(|_| malformed())?;
-        if metadata_length
+        if (8 + metadata_length)
             .checked_add(body_length)
-            .is_none_or(|size| size > limit)
+            .and_then(|length| footprint(segments.capacity(), largest.max(length)))
+            .is_none_or(|bytes| bytes > limit)
         {
             return Err(beyond_limit());
         }
@@ -237,25 +295,14 @@ fn scan_stream(
         if after_body > end {
             return Err(truncated());
         }
-        // Il corpo passa per l'impronta a blocchi fissi: la memoria resta
-        // quella del buffer, qualunque sia la lunghezza.
-        let mut remaining = body_length;
-        let mut buffer = vec![0_u8; 64 * 1024];
-        while remaining > 0 {
-            let chunk =
-                usize::try_from(remaining.min(buffer.len() as u64)).map_err(|_| malformed())?;
-            reader
-                .read_exact(&mut buffer[..chunk])
-                .map_err(|_| truncated())?;
-            hasher.update(&buffer[..chunk]);
-            remaining -= chunk as u64;
-        }
-        segments.push(Segment {
+        hash_body(&mut reader, &mut hasher, body_length)?;
+        let segment = Segment {
             offset: position,
             metadata_length,
             body_length,
             digest: hasher.finalize().into(),
-        });
+        };
+        admit(&mut segments, &mut largest, segment, limit)?;
         position = after_body;
     }
     if !schema {
@@ -269,6 +316,22 @@ fn scan_stream(
         );
     }
     Ok((segments, rows))
+}
+
+/// Il corpo di un messaggio passa per l'impronta a blocchi fissi: la
+/// memoria resta quella del buffer, qualunque sia la lunghezza.
+fn hash_body(reader: &mut impl Read, hasher: &mut Sha256, body_length: u64) -> CliResult<()> {
+    let mut remaining = body_length;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    while remaining > 0 {
+        let chunk = usize::try_from(remaining.min(buffer.len() as u64)).map_err(|_| malformed())?;
+        reader
+            .read_exact(&mut buffer[..chunk])
+            .map_err(|_| truncated())?;
+        hasher.update(&buffer[..chunk]);
+        remaining -= chunk as u64;
+    }
+    Ok(())
 }
 
 /// L'inizio dello stream incapsulato in un file Arrow: il magic e seguito
@@ -325,11 +388,34 @@ fn check_footer_blocks(
     limit: u64,
 ) -> CliResult<()> {
     let footer_length = length - 10 - data_end;
+    // Il footer si legge mentre l'indice e vivo: conta con lui.
+    let index_bytes = u64::try_from(segments.len())
+        .ok()
+        .and_then(|count| count.checked_mul(SEGMENT_BYTES))
+        .ok_or_else(beyond_limit)?;
+    if index_bytes
+        .checked_add(footer_length)
+        .is_none_or(|bytes| bytes > limit)
+    {
+        return Err(beyond_limit());
+    }
     let mut footer = vec![0_u8; usize::try_from(footer_length).map_err(|_| beyond_limit())?];
     file.seek(SeekFrom::Start(data_end))
         .and_then(|_| file.read_exact(&mut footer))
         .map_err(|_| malformed())?;
     let footer = root_as_footer(&footer).map_err(|_| malformed())?;
+    // I blocchi dichiarati si copiano per ordinarli: anche loro nel budget.
+    let blocks = footer.dictionaries().map_or(0, |list| list.len())
+        + footer.recordBatches().map_or(0, |list| list.len());
+    if u64::try_from(blocks)
+        .ok()
+        .and_then(|count| count.checked_mul(std::mem::size_of::<(u64, u64, u64)>() as u64))
+        .and_then(|bytes| bytes.checked_add(index_bytes))
+        .and_then(|bytes| bytes.checked_add(footer_length))
+        .is_none_or(|bytes| bytes > limit)
+    {
+        return Err(beyond_limit());
+    }
     let mut declared = footer
         .dictionaries()
         .into_iter()
@@ -359,9 +445,8 @@ fn check_footer_blocks(
                 segment.metadata_length + 8,
                 segment.body_length,
             )
-        })
-        .collect::<Vec<_>>();
-    if declared != observed {
+        });
+    if !declared.iter().copied().eq(observed) {
         return Err("footer Arrow IPC discordante dallo stream del file".into());
     }
     Ok(())
@@ -372,7 +457,9 @@ fn check_footer_blocks(
 /// Per ogni segmento registrato legge il messaggio **intero** — prefisso,
 /// metadati e corpo, nella lunghezza registrata, che la prima passata ha
 /// gia confrontato con il limite — ne verifica l'impronta e solo dopo lo
-/// consegna al decoder da un buffer che nessuno modifica piu. Prima della
+/// consegna al decoder da un buffer che nessuno modifica piu. Il messaggio
+/// precedente si libera prima di allocare il successivo: il verificatore
+/// tiene un messaggio alla volta. Prima della
 /// verifica il decoder non vede un byte: un prefisso alterato (una fine
 /// anticipata, una lunghezza diversa) non arriva a governare il framing ne
 /// le allocazioni. Dopo l'ultimo segmento rende la fine del file.
@@ -381,6 +468,11 @@ struct VerifiedRange<R> {
     segments: std::collections::VecDeque<Segment>,
     current: Vec<u8>,
     served: usize,
+    /// I byte di messaggio tenuti insieme nel momento di massima occupazione.
+    peak: usize,
+    /// Un messaggio non e stato verificato: da qui ogni lettura fallisce,
+    /// invece di riprendere dal segmento successivo.
+    failed: bool,
 }
 
 impl<R> VerifiedRange<R> {
@@ -390,6 +482,8 @@ impl<R> VerifiedRange<R> {
             segments: segments.into(),
             current: Vec::new(),
             served: 0,
+            peak: 0,
+            failed: false,
         }
     }
 }
@@ -408,7 +502,10 @@ impl<R: Read> VerifiedRange<R> {
             return Ok(false);
         };
         let length = usize::try_from(segment.length()).map_err(|_| changed())?;
+        self.current = Vec::new();
+        self.served = 0;
         let mut message = vec![0_u8; length];
+        self.peak = self.peak.max(self.current.capacity() + message.capacity());
         self.inner.read_exact(&mut message).map_err(|_| changed())?;
         let digest: [u8; 32] = Sha256::digest(&message).into();
         if digest != segment.digest {
@@ -422,8 +519,18 @@ impl<R: Read> VerifiedRange<R> {
 
 impl<R: Read> Read for VerifiedRange<R> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        if self.served == self.current.len() && !self.load_next()? {
-            return Ok(0);
+        if self.failed {
+            return Err(changed());
+        }
+        if self.served == self.current.len() {
+            match self.load_next() {
+                Ok(true) => {}
+                Ok(false) => return Ok(0),
+                Err(error) => {
+                    self.failed = true;
+                    return Err(error);
+                }
+            }
         }
         let available = &self.current[self.served..];
         let count = available.len().min(buffer.len());

@@ -243,3 +243,108 @@ fn a_prefix_changed_between_the_two_passes_is_rejected() {
         );
     }
 }
+
+fn two_large_batches() -> Vec<u8> {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let mut writer = StreamWriter::try_new(Vec::new(), &schema).expect("writer");
+    for start in [0_i64, 100_000] {
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(
+                (start..start + 100_000).collect::<Vec<_>>(),
+            ))],
+        )
+        .expect("batch");
+        writer.write(&batch).expect("write");
+    }
+    writer.into_inner().expect("stream")
+}
+
+/// Due messaggi consecutivi vicini al limite: il verificatore libera il
+/// precedente prima di allocare il successivo, e non tiene mai piu di un
+/// messaggio.
+#[test]
+fn the_verifier_holds_one_message_at_a_time() {
+    let bytes = two_large_batches();
+    let input = scratch("two-large.arrows", &bytes);
+    let mut file = File::open(&input.0).expect("apertura");
+    let length = bytes.len() as u64;
+    let (segments, _) = scan_stream(&mut file, 0, length, 1 << 24).expect("validato");
+    let largest = segments
+        .iter()
+        .map(Segment::length)
+        .max()
+        .expect("segmenti");
+    file.seek(SeekFrom::Start(0)).expect("seek");
+    let mut verified = VerifiedRange::new(BufReader::new(file), segments);
+    std::io::copy(&mut verified, &mut std::io::sink()).expect("lettura verificata");
+    assert!(
+        verified.peak <= usize::try_from(largest).expect("usize"),
+        "picco {} oltre un messaggio ({largest})",
+        verified.peak
+    );
+}
+
+/// Il limite conta tutto l'inquadramento: un messaggio che lo rispetta solo
+/// senza il prefisso di otto byte e oltre il limite.
+#[test]
+fn the_limit_counts_the_message_prefix() {
+    let bytes = stream_bytes();
+    let input = scratch("prefix-limit.arrows", &bytes);
+    let mut file = File::open(&input.0).expect("apertura");
+    let (segments, _) = scan_stream(&mut file, 0, bytes.len() as u64, 1 << 24).expect("validato");
+    let without_prefix = segments
+        .iter()
+        .map(|segment| segment.metadata_length + segment.body_length)
+        .max()
+        .expect("segmenti");
+    let error = open_batches(input.0.to_str().expect("UTF-8"), without_prefix)
+        .err()
+        .expect("il prefisso deve contare");
+    assert_eq!(
+        error.database_error().category,
+        plenora_database_core::ErrorCategory::ResourceLimit
+    );
+}
+
+/// Molti batch vuoti: ogni messaggio sta nel limite, ma l'indice dei
+/// segmenti cresce con il loro numero e deve stare nello stesso budget.
+#[test]
+fn many_empty_batches_beyond_the_index_budget_are_rejected() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let empty = RecordBatch::new_empty(Arc::clone(&schema));
+    let mut writer = StreamWriter::try_new(Vec::new(), &schema).expect("writer");
+    for _ in 0..2_000 {
+        writer.write(&empty).expect("write");
+    }
+    let bytes = writer.into_inner().expect("stream");
+    let input = scratch("many-empty.arrows", &bytes);
+    let error = open_batches(input.0.to_str().expect("UTF-8"), 16 * 1024)
+        .err()
+        .expect("indice oltre il budget");
+    let error = error.database_error();
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::ResourceLimit
+    );
+    assert!(!error.message.contains("2000"), "{}", error.message);
+}
+
+/// Dopo un messaggio non verificato il lettore non riprende dal segmento
+/// successivo: ogni lettura seguente fallisce.
+#[test]
+fn after_a_failed_message_every_read_fails() {
+    let bytes = two_large_batches();
+    let input = scratch("poisoned.arrows", &bytes);
+    let mut file = File::open(&input.0).expect("apertura");
+    let (segments, _) = scan_stream(&mut file, 0, bytes.len() as u64, 1 << 24).expect("validato");
+    // Il primo batch cambia: lo schema passa, il batch no.
+    let first_batch = usize::try_from(segments[1].offset).expect("usize") + 64;
+    let mut changed = bytes;
+    changed[first_batch] ^= 0xFF;
+    let mut verified = VerifiedRange::new(std::io::Cursor::new(changed), segments);
+    let mut sink = Vec::new();
+    assert!(verified.read_to_end(&mut sink).is_err(), "primo errore");
+    let mut buffer = [0_u8; 16];
+    assert!(verified.read(&mut buffer).is_err(), "ripresa dopo l'errore");
+}
