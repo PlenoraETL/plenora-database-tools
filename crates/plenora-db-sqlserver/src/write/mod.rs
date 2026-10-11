@@ -599,8 +599,20 @@ async fn write_prepared_inner(
         Ok(outcome)
     } else {
         pooled.quarantine();
-        let cause = commit_result.err().map(|error| error.category);
-        unknown_commit_outcome(&prepared, execution_id, received, cause)
+        // Regola unica dopo l'invio del COMMIT: il codice 1205 prova il
+        // rollback, ogni altro errore lascia l'esito ignoto.
+        match commit_result {
+            Err(mut error) if error.remote_effect == RemoteEffect::RolledBack => {
+                error.execution_id = Some(execution_id);
+                Err(plenora_database_core::transaction::after_commit_sent(
+                    error, true,
+                ))
+            }
+            other => {
+                let cause = other.err().map(|error| error.category);
+                unknown_commit_outcome(&prepared, execution_id, received, cause)
+            }
+        }
     }
 }
 

@@ -11,9 +11,8 @@ use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::{ParameterValue, ProviderFuture, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind, ResourceLease};
 use plenora_database_core::transaction::{
-    concurrent_modification_error, outcome_unknown_recovery, outcome_unknown_recovery_for,
-    validate_savepoint_name, CommitOutcome, ConditionalUpdate, RowStream, Statement,
-    TransactionOptions, TransactionScope,
+    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name,
+    CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result, Row,
@@ -739,12 +738,14 @@ impl TransactionScope for Db2Transaction {
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
             validate_savepoint_name(name)?;
+            // Inviato il ROLLBACK TO SAVEPOINT, un errore non lo conferma.
             self.control(
                 format!("ROLLBACK TO SAVEPOINT {name}"),
                 ErrorPhase::Rollback,
                 cancellation,
             )
             .await
+            .map_err(DatabaseError::after_unconfirmed_rollback)
         })
     }
 
@@ -822,11 +823,13 @@ impl TransactionScope for Db2Transaction {
                 Ok(Ok(())) => Ok(CommitOutcome::Committed),
                 // La causa del driver diventa la categoria (ERR-001); un task
                 // perso non ne ha una dimostrabile.
-                Ok(Err(error)) => Ok(CommitOutcome::OutcomeUnknown {
-                    recovery: outcome_unknown_recovery_for(
-                        driver_error(&error, ErrorPhase::Commit).category,
-                    ),
-                }),
+                // Regola unica dopo l'invio del COMMIT; per Db2 l'elenco dei
+                // rifiuti che provano il rollback e vuoto, quindi ogni errore
+                // lascia l'esito ignoto.
+                Ok(Err(error)) => plenora_database_core::transaction::commit_failure_outcome(
+                    driver_error(&error, ErrorPhase::Commit),
+                    false,
+                ),
                 Err(_) => Ok(CommitOutcome::OutcomeUnknown {
                     recovery: outcome_unknown_recovery(),
                 }),

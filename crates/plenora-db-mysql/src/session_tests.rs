@@ -33,3 +33,27 @@ fn an_abandoned_transaction_marks_its_session_quarantined() {
     session.quarantine_on_drop();
     assert_eq!(session.state(), MysqlSessionState::Quarantined);
 }
+
+/// Regola unica dopo il COMMIT: un codice server non basta a provare che il
+/// commit non sia avvenuto; solo 1213 e 3101 provano il rollback.
+#[test]
+fn after_commit_only_a_closed_list_of_codes_proves_the_rollback() {
+    use plenora_database_core::{ErrorPhase, RemoteEffect};
+    let profile = crate::profile::MysqlProfile;
+    let server = |code: u16| {
+        mysql_async::Error::Server(mysql_async::ServerError {
+            code,
+            message: "commit".to_owned(),
+            state: "HY000".to_owned(),
+        })
+    };
+    for code in [1_062, 1_180, 2_013, 9_999] {
+        let error = super::commit_failure(&profile, &server(code));
+        assert_eq!(error.remote_effect, RemoteEffect::Unknown, "{code}");
+        assert_eq!(error.phase, ErrorPhase::Commit);
+    }
+    for code in super::COMMIT_ROLLBACK_CODES {
+        let error = super::commit_failure(&profile, &server(*code));
+        assert_eq!(error.remote_effect, RemoteEffect::RolledBack, "{code}");
+    }
+}

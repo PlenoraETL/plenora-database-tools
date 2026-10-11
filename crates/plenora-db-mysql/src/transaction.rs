@@ -805,6 +805,8 @@ impl TransactionScope for MysqlTransaction {
                     return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
                 }
                 let quoted = quote_savepoint_name(name)?;
+                // Inviato il ROLLBACK TO SAVEPOINT, un errore non lo
+                // conferma.
                 raw_exec(
                     &mut self.session,
                     &format!("ROLLBACK TO SAVEPOINT {quoted}"),
@@ -812,6 +814,7 @@ impl TransactionScope for MysqlTransaction {
                     cancellation,
                 )
                 .await
+                .map_err(DatabaseError::after_unconfirmed_rollback)
             }
             .await;
             crate::profile::attributed_kind(kind, outcome)
@@ -874,18 +877,10 @@ impl TransactionScope for MysqlTransaction {
                 self.open = false;
                 match outcome {
                     Ok(()) => Ok(CommitOutcome::Committed),
-                    // Canale compromesso, oppure un errore senza codice del
-                    // server dopo l'invio del COMMIT (che `driver_error`
-                    // dichiara gia di effetto ignoto): esito ignoto in ogni
-                    // caso, non un errore che sembra un rifiuto.
-                    Err(err)
-                        if matches!(
-                            err.category,
-                            ErrorCategory::Cancelled | ErrorCategory::Timeout | ErrorCategory::Io
-                        ) || err.remote_effect == RemoteEffect::Unknown =>
-                    {
-                        // Canale compromesso durante commit: outcome ignoto,
-                        // con la causa osservata come categoria.
+                    // Dopo l'invio `exec_transaction` applica la regola unica:
+                    // ignoto, salvo un codice che prova il rollback. Un errore
+                    // con effetto `none` viene da prima dell'invio.
+                    Err(err) if err.remote_effect == RemoteEffect::Unknown => {
                         Ok(CommitOutcome::OutcomeUnknown {
                             recovery: outcome_unknown_recovery_for(err.category),
                         })

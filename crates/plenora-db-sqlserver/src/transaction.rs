@@ -592,8 +592,10 @@ impl TransactionScope for SqlServerTransaction {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Write)?;
             let quoted = Self::quoted_savepoint(name)?;
+            // Inviato il rollback al savepoint, un errore non lo conferma.
             self.control(format!("ROLLBACK TRANSACTION {quoted}"), cancellation)
                 .await
+                .map_err(DatabaseError::after_unconfirmed_rollback)
         })
     }
 
@@ -690,8 +692,11 @@ impl TransactionScope for SqlServerTransaction {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Commit)?;
             self.open = false;
-            self.session.session_mut()?.commit(cancellation).await?;
-            Ok(CommitOutcome::Committed)
+            let session = self.session.session_mut()?;
+            match session.commit(cancellation).await {
+                Ok(()) => Ok(CommitOutcome::Committed),
+                Err(error) => commit_failure(error),
+            }
         })
     }
 
@@ -719,3 +724,22 @@ mod decode_error_tests;
 #[cfg(test)]
 #[path = "transaction_option_tests.rs"]
 mod option_tests;
+
+/// L'esito di un COMMIT fallito: `driver_error` segna `rolled_back` il solo
+/// codice 1205 (vittima di deadlock), l'elenco chiuso di SQL Server dei
+/// rifiuti che provano il rollback; un errore di stato viene da prima
+/// dell'invio e porta `none`. Ogni altro esito e ignoto.
+fn commit_failure(error: DatabaseError) -> Result<CommitOutcome> {
+    match error.remote_effect {
+        // Prima dell'invio: nessun effetto.
+        RemoteEffect::None => Err(error),
+        effect => plenora_database_core::transaction::commit_failure_outcome(
+            error,
+            effect == RemoteEffect::RolledBack,
+        ),
+    }
+}
+
+#[cfg(test)]
+#[path = "transaction_commit_tests.rs"]
+mod commit_tests;

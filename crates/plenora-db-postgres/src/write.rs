@@ -429,6 +429,17 @@ pub async fn execute(
         return Err(commit_interruption_error(cancellation, &execution_id));
     }
     if let Some(Err(error)) = &commit_result {
+        // Regola unica dopo l'invio del COMMIT: uno SQLSTATE dell'elenco
+        // chiuso prova il rollback, ogni altro errore lascia l'esito ignoto.
+        if crate::error::commit_rejection_proves_rollback(error) {
+            let mut rejected = plenora_database_core::transaction::after_commit_sent(
+                classify_error(ErrorPhase::Commit, error),
+                true,
+            );
+            rejected.execution_id = Some(execution_id);
+            drop(client);
+            return Err(rejected);
+        }
         runtime.metrics.write_outcome_unknown();
         // La causa osservata — canale chiuso (`io`), risposta non
         // interpretabile (`protocol`), rifiuto del server — diventa la

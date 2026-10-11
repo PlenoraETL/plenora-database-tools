@@ -154,6 +154,58 @@ pub fn outcome_unknown_recovery_for(cause: crate::ErrorCategory) -> Recovery {
     }
 }
 
+/// La regola unica per un errore arrivato **dopo l'invio** del COMMIT.
+///
+/// Un errore dopo l'invio non prova che il commit non sia avvenuto
+/// (ERR-004, ERR-014): l'effetto e ignoto, con recovery obbligatoria e la
+/// categoria della causa (ERR-001). L'unica eccezione e un rifiuto che prova
+/// il rollback, deciso dall'adapter con un elenco **chiuso** di codici
+/// documentati come tali (`proves_rollback`); un codice fuori elenco, anche
+/// riconosciuto, resta ignoto. Tutti gli adapter passano da qui.
+#[must_use]
+pub fn after_commit_sent(
+    error: crate::DatabaseError,
+    proves_rollback: bool,
+) -> crate::DatabaseError {
+    if proves_rollback {
+        return crate::DatabaseError {
+            phase: crate::ErrorPhase::Commit,
+            remote_effect: crate::RemoteEffect::RolledBack,
+            ..error
+        };
+    }
+    crate::DatabaseError {
+        phase: crate::ErrorPhase::Commit,
+        remote_effect: crate::RemoteEffect::Unknown,
+        retry: if error.retry == crate::RetryDisposition::Quarantine {
+            crate::RetryDisposition::Quarantine
+        } else {
+            crate::RetryDisposition::RequiresRecovery
+        },
+        ..error
+    }
+}
+
+/// [`after_commit_sent`] per chi rende un [`CommitOutcome`]: il rollback
+/// provato resta un errore, ogni altro esito e `OutcomeUnknown` con la
+/// causa come categoria.
+///
+/// # Errors
+///
+/// L'errore di un rifiuto che prova il rollback.
+pub fn commit_failure_outcome(
+    error: crate::DatabaseError,
+    proves_rollback: bool,
+) -> crate::Result<CommitOutcome> {
+    let error = after_commit_sent(error, proves_rollback);
+    if error.remote_effect == crate::RemoteEffect::RolledBack {
+        return Err(error);
+    }
+    Ok(CommitOutcome::OutcomeUnknown {
+        recovery: outcome_unknown_recovery_for(error.category),
+    })
+}
+
 impl CommitOutcome {
     /// La categoria di un commit ignoto: la causa osservata, o `internal`.
     #[must_use]

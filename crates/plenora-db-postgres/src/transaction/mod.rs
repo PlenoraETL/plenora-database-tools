@@ -304,7 +304,10 @@ impl TransactionScope for PostgresTransaction {
             if let Some(result) =
                 select_with_cancellation(client.batch_execute(&sql), cancellation).await
             {
-                result.map_err(|error| classify_error(ErrorPhase::Rollback, &error))
+                // Inviato il ROLLBACK TO SAVEPOINT, un errore non lo conferma.
+                result.map_err(|error| {
+                    classify_error(ErrorPhase::Rollback, &error).after_unconfirmed_rollback()
+                })
             } else {
                 self.client.invalidate();
                 self.open = false;
@@ -697,20 +700,18 @@ impl TransactionScope for PostgresTransaction {
                     self.open = false;
                     Ok(CommitOutcome::Committed)
                 }
+                // Regola unica dopo l'invio del COMMIT: ignoto, salvo uno
+                // SQLSTATE che prova il rollback.
                 Err(error) => {
-                    let mapped = classify_error(ErrorPhase::Commit, &error);
                     self.open = false;
-                    if mapped.remote_effect == RemoteEffect::Unknown {
+                    let proves = crate::error::commit_rejection_proves_rollback(&error);
+                    if !proves || error.is_closed() {
                         self.client.invalidate();
-                        Ok(CommitOutcome::OutcomeUnknown {
-                            recovery: outcome_unknown_recovery_for(mapped.category),
-                        })
-                    } else {
-                        if error.is_closed() {
-                            self.client.invalidate();
-                        }
-                        Err(mapped)
                     }
+                    crate::error::commit_failure(
+                        error.code().map(tokio_postgres::error::SqlState::code),
+                        error.is_closed(),
+                    )
                 }
             }
         })

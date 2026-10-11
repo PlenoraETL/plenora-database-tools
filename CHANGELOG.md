@@ -45,13 +45,20 @@ riassumono le note di quelle release.
   - Db2: una cancellazione all'ingresso di `commit` o `rollback` esegue il
     rollback in modo esplicito e ne riporta l'esito, invece di dichiarare
     `none` e lasciarlo al distruttore;
-  - Oracle: dopo l'invio del COMMIT è un rifiuto certo solo un elenco chiuso
-    di codici (ORA-02091, transazione annullata); ORA-03113, ORA-03114,
-    ORA-25408 e ogni altro codice sono esito ignoto (`io` per i codici di
-    connessione persa);
-  - il rollback esplicito dell'API transazionale riporta un rollback non
-    confermato come tale (fase `rollback`, effetto ignoto) in tutti gli
-    adapter; anche la pulizia dopo un `set_config` fallito in PostgreSQL;
+  - **regola unica dopo l'invio del COMMIT**, in un punto solo
+    (`transaction::after_commit_sent` e `commit_failure_outcome`) usato da
+    tutti gli adapter: ogni errore lascia l'esito ignoto, con la causa come
+    categoria, salvo un elenco chiuso e per-adapter di codici che provano il
+    rollback — PostgreSQL `40001`, `40002`, `40P01` e le violazioni di
+    vincoli differiti `23502`, `23503`, `23505`, `23514`, `23P01`; MySQL
+    `1213`, `3101`; Oracle ORA-02091; SQL Server `1205`; Db2 nessuno.
+    Uno SQLSTATE riconosciuto ma fuori elenco (per esempio `08006`, `08P01`)
+    non porta più `none`. Il percorso PostgreSQL con diagnostica di riga
+    tratta ogni errore come ignoto, senza eccezioni;
+  - ORA-03113, ORA-03114 e ORA-25408 dopo il COMMIT hanno categoria `io`;
+  - ogni rollback inviato e non confermato — esplicito, `ROLLBACK TO
+    SAVEPOINT`, pulizia dopo un `set_config` fallito in PostgreSQL — porta
+    fase `rollback` ed effetto ignoto, mai `none`, in tutti gli adapter;
   - PostgreSQL, percorso con diagnostica di riga: la conferma di commit
     persa porta la categoria della causa (`io`), non sempre `protocol`;
   - dichiarato: il distruttore di una transazione Db2 abbandonata tenta

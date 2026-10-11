@@ -457,13 +457,16 @@ impl TransactionScope for OracleTransaction {
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
             validate_savepoint_name(name)?;
+            let connection = self.connection.connection()?;
+            // Inviato il ROLLBACK TO SAVEPOINT, un errore non lo conferma.
             timed(
                 self.operation_timeout,
                 ErrorPhase::Rollback,
                 cancellation,
-                self.connection.connection()?.rollback_to_savepoint(name),
+                connection.rollback_to_savepoint(name),
             )
             .await
+            .map_err(rollback_failure)
         })
     }
 
@@ -757,24 +760,15 @@ fn commit_failure(error: &oracle_rs::Error) -> Result<CommitOutcome> {
         }
         _ => None,
     };
-    if let Some(code) = code.filter(|code| CERTAIN_COMMIT_REJECTIONS.contains(code)) {
-        // Il server ha risposto che la transazione e stata annullata.
-        return Err(DatabaseError {
-            remote_effect: plenora_database_core::RemoteEffect::RolledBack,
-            retry: plenora_database_core::RetryDisposition::Never,
-            ..crate::error::oracle_code_error(ErrorPhase::Commit, code)
-        });
+    let mut public = driver_error(ErrorPhase::Commit, error);
+    // La categoria della causa: `io` per i codici di connessione persa.
+    if code.is_some_and(|code| LOST_CONNECTION_CODES.contains(&code)) {
+        public.category = ErrorCategory::Io;
     }
-    // Qualunque altro esito e ignoto. La categoria e la causa: `io` per i
-    // codici di connessione persa e per un canale chiuso, `protocol` per
-    // una risposta illeggibile (ERR-001).
-    let category = match code {
-        Some(code) if LOST_CONNECTION_CODES.contains(&code) => ErrorCategory::Io,
-        _ => driver_error(ErrorPhase::Commit, error).category,
-    };
-    Ok(CommitOutcome::OutcomeUnknown {
-        recovery: outcome_unknown_recovery_for(category),
-    })
+    plenora_database_core::transaction::commit_failure_outcome(
+        public,
+        code.is_some_and(|code| CERTAIN_COMMIT_REJECTIONS.contains(&code)),
+    )
 }
 
 /// I soli codici ORA che, dopo l'invio del COMMIT, provano che il commit e

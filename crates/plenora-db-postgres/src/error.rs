@@ -59,6 +59,49 @@ pub fn row_decode_error(_: tokio_postgres::Error) -> DatabaseError {
 ///
 /// La funzione non espone mai il SQLSTATE nel messaggio pubblico: il codice
 /// vendor resta materia dei sink di tracing/metrics.
+/// Gli SQLSTATE che, in risposta a un COMMIT, provano il rollback della
+/// transazione: classe 40 (`serialization_failure`,
+/// `transaction_integrity_constraint_violation`, `deadlock_detected`) e le
+/// violazioni di vincoli differiti, che PostgreSQL verifica al COMMIT e che
+/// annullano la transazione. Elenco chiuso: `40003`
+/// (`statement_completion_unknown`) e qualunque altro codice restano esito
+/// ignoto.
+pub const COMMIT_ROLLBACK_SQLSTATES: &[&str] = &[
+    "40001", "40002", "40P01", "23502", "23503", "23505", "23514", "23P01",
+];
+
+/// L'esito di un COMMIT inviato e fallito con questo SQLSTATE: la regola
+/// unica di `commit_failure_outcome`, con l'elenco chiuso di PostgreSQL.
+///
+/// # Errors
+///
+/// Il rollback provato.
+pub fn commit_failure(
+    sqlstate: Option<&str>,
+    transport_closed: bool,
+) -> Result<plenora_database_core::transaction::CommitOutcome> {
+    let mapping = resolve_mapping(sqlstate, transport_closed, ErrorPhase::Commit);
+    let error = public_error_envelope(
+        mapping.category,
+        ErrorPhase::Commit,
+        mapping.remote_effect,
+        mapping.retry,
+        mapping.message,
+    );
+    plenora_database_core::transaction::commit_failure_outcome(
+        error,
+        sqlstate.is_some_and(|code| COMMIT_ROLLBACK_SQLSTATES.contains(&code)),
+    )
+}
+
+/// Un errore al COMMIT prova il rollback?
+#[must_use]
+pub fn commit_rejection_proves_rollback(error: &tokio_postgres::Error) -> bool {
+    error
+        .code()
+        .is_some_and(|code| COMMIT_ROLLBACK_SQLSTATES.contains(&code.code()))
+}
+
 pub fn classify_error(phase: ErrorPhase, error: &tokio_postgres::Error) -> DatabaseError {
     let sqlstate = error.code().map(tokio_postgres::error::SqlState::code);
     let transport_closed = error.is_closed();
