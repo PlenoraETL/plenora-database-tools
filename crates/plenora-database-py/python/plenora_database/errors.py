@@ -106,4 +106,3 @@ class _SdkAxes:
             ("diagnostics", None),
         ):
             setattr(self, name, value)
-

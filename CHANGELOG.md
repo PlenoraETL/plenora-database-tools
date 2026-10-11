@@ -72,13 +72,24 @@ riassumono le note di quelle release.
   coincidere con i messaggi dello stream, e lo schema del footer con quello
   dello stream, metadati compresi: un lettore di file Arrow userebbe il
   primo, e lo stesso file non deve dare colonne diverse a seconda del
-  lettore. Prima si accumulavano tutti i
+  lettore. Il confronto comprende le proprietà IPC che lo schema Arrow
+  materializzato non porta (`Field::eq` ignora `dict_id` e
+  `dict_is_ordered`): ordine dei byte, feature e, ricorsivamente per ogni
+  campo, tipo IPC e codifica a dizionario (id, ordinamento, tipo degli
+  indici). Un footer con gli id dei dizionari scambiati è un errore. Lo
+  schema materializzato conta nel budget: quello del lettore dello stream
+  per tutta la lettura, quello del footer finché è vivo, misurati dal
+  flatbuffer prima di materializzarli (nomi, metadati, campi annidati, con
+  una stima per eccesso del costo di ogni campo e di ogni voce). Prima si accumulavano tutti i
   batch in memoria prima del budget, anche per il formato file.
 - **SDK Python: Arrow PyCapsule Interface.** `copy_from`/`acopy_from`
   accettano qualunque oggetto con `__arrow_c_stream__`; il `BatchReader` di
   `Session.read` lo espone, con `read_all()`. Una tabella letta dal database
   entra in `plenora_data.run` e la sua uscita torna in `copy_from` senza
   conversioni (`python/interop/test_plenora_data.py`).
+- **SDK: i batch di `copy_from` devono avere lo stesso schema del primo,
+  metadati compresi** (`equals(check_metadata=True)`): un batch con un CRS
+  diverso nel campo o nello schema si scriveva con i metadati del primo.
 - **SDK: lo stream IPC di `copy_from` si verifica prima del decoder**: ogni
   messaggio con il marcatore di continuazione e con metadati e corpo dentro
   i byte ricevuti, la fine esplicita e nessun byte dopo. Prima uno stream

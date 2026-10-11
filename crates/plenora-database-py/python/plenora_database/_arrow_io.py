@@ -121,7 +121,9 @@ def _narrowed_batch(
 
     if not isinstance(batch, pa.RecordBatch):
         raise TypeError("copy_from: l'iterabile deve contenere solo RecordBatch")
-    if batch.schema != source_schema:
+    # Anche i metadati: un CRS diverso nel campo o nello schema non si
+    # sostituisce in silenzio con quello del primo batch.
+    if not batch.schema.equals(source_schema, check_metadata=True):
         raise ValueError("copy_from: i RecordBatch devono avere lo stesso schema")
     if not replacements:
         return batch

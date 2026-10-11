@@ -121,12 +121,132 @@ impl Segment {
 const SEGMENT_BYTES: u64 = std::mem::size_of::<Segment>() as u64;
 
 /// La memoria che la lettura tiene per l'input: l'indice con la capacita
-/// data e due copie del messaggio piu grande (verificatore e decoder).
-fn footprint(index_capacity: usize, largest: u64) -> Option<u64> {
+/// data, due copie del messaggio piu grande (verificatore e decoder) e la
+/// parte residente per tutta la lettura (lo schema, vedi [`Scan::resident`]).
+fn footprint(index_capacity: usize, largest: u64, resident: u64) -> Option<u64> {
     u64::try_from(index_capacity)
         .ok()?
         .checked_mul(SEGMENT_BYTES)?
-        .checked_add(largest.checked_mul(2)?)
+        .checked_add(largest.checked_mul(2)?)?
+        .checked_add(resident)
+}
+
+/// Memoria di un campo materializzato oltre ai suoi testi: `Field`, il suo
+/// `DataType` e i contenitori che li tengono (`Arc`, `Box`, vettori dei
+/// figli). Stima per eccesso.
+const FIELD_BYTES: u64 = (std::mem::size_of::<plenora_database_core::arrow::Field>()
+    + std::mem::size_of::<plenora_database_core::arrow::DataType>()
+    + 64) as u64;
+
+/// Memoria di una voce di metadati materializzata oltre a chiave e valore:
+/// lo slot `(String, String)` della tabella hash con il byte di controllo,
+/// moltiplicato per il fattore di carico massimo della tabella (meno di un
+/// terzo degli slot puo essere vuoto). Stima per eccesso.
+const ENTRY_BYTES: u64 = (3 * (2 * std::mem::size_of::<String>() + 1)) as u64;
+
+/// La memoria dello schema che `try_fb_to_schema` (o il lettore dello
+/// stream) materializza da questo flatbuffer: nomi, metadati e campi
+/// annidati, misurati **prima** di materializzarli. La ricorsione e limitata
+/// dalla profondita che il verificatore del flatbuffer accetta.
+fn schema_footprint(schema: arrow_ipc::Schema<'_>) -> Option<u64> {
+    let mut total = metadata_footprint(schema.custom_metadata().into_iter().flatten())?;
+    for field in schema.fields().into_iter().flatten() {
+        total = total.checked_add(field_footprint(field)?)?;
+    }
+    Some(total)
+}
+
+fn field_footprint(field: arrow_ipc::Field<'_>) -> Option<u64> {
+    let mut total = FIELD_BYTES
+        .checked_add(field.name().map_or(0, str::len) as u64)?
+        .checked_add(metadata_footprint(
+            field.custom_metadata().into_iter().flatten(),
+        )?)?;
+    // I soli testi e vettori che il tipo porta con se.
+    if let Some(timezone) = field.type_as_timestamp().and_then(|t| t.timezone()) {
+        total = total.checked_add(timezone.len() as u64)?;
+    }
+    if let Some(ids) = field.type_as_union().and_then(|u| u.typeIds()) {
+        total = total.checked_add((ids.len() as u64).checked_mul(4)?)?;
+    }
+    for child in field.children().into_iter().flatten() {
+        total = total.checked_add(field_footprint(child)?)?;
+    }
+    Some(total)
+}
+
+fn metadata_footprint<'a>(entries: impl Iterator<Item = arrow_ipc::KeyValue<'a>>) -> Option<u64> {
+    entries.into_iter().try_fold(0_u64, |total, entry| {
+        total
+            .checked_add(ENTRY_BYTES)?
+            .checked_add(entry.key().map_or(0, str::len) as u64)?
+            .checked_add(entry.value().map_or(0, str::len) as u64)
+    })
+}
+
+/// Le proprieta IPC che governano la decodifica e che il confronto degli
+/// schemi Arrow materializzati non vede: ordine dei byte, feature, e per
+/// ogni campo, ricorsivamente, la codifica a dizionario (id, ordinamento,
+/// tipo e segno degli indici, tipo di dizionario) e il tipo IPC. Gli id dei
+/// dizionari collegano le colonne ai messaggi di dizionario: con id diversi
+/// lo stesso file darebbe valori diversi al lettore del file e a quello
+/// dello stream (`Field::eq` di Arrow ignora `dict_id` e `dict_is_ordered`).
+fn same_ipc_encoding(left: arrow_ipc::Schema<'_>, right: arrow_ipc::Schema<'_>) -> bool {
+    left.endianness() == right.endianness()
+        && left.features().map(|list| list.iter().collect::<Vec<_>>())
+            == right.features().map(|list| list.iter().collect::<Vec<_>>())
+        && same_fields(
+            left.fields().into_iter().flatten(),
+            left.fields().map_or(0, |list| list.len()),
+            right.fields().into_iter().flatten(),
+            right.fields().map_or(0, |list| list.len()),
+        )
+}
+
+fn same_fields<'a>(
+    left: impl Iterator<Item = arrow_ipc::Field<'a>>,
+    left_len: usize,
+    right: impl Iterator<Item = arrow_ipc::Field<'a>>,
+    right_len: usize,
+) -> bool {
+    left_len == right_len && left.zip(right).all(|(left, right)| same_field(left, right))
+}
+
+fn same_field(left: arrow_ipc::Field<'_>, right: arrow_ipc::Field<'_>) -> bool {
+    let dictionary = |field: arrow_ipc::Field<'_>| {
+        field.dictionary().map(|encoding| {
+            (
+                encoding.id(),
+                encoding.isOrdered(),
+                encoding.dictionaryKind(),
+                encoding
+                    .indexType()
+                    .map(|index| (index.bitWidth(), index.is_signed())),
+            )
+        })
+    };
+    left.type_type() == right.type_type()
+        && dictionary(left) == dictionary(right)
+        && same_fields(
+            left.children().into_iter().flatten(),
+            left.children().map_or(0, |list| list.len()),
+            right.children().into_iter().flatten(),
+            right.children().map_or(0, |list| list.len()),
+        )
+}
+
+/// La prima passata: i segmenti, le righe dichiarate, la memoria residente
+/// e i metadati del messaggio di schema.
+struct Scan {
+    segments: Vec<Segment>,
+    rows: u64,
+    /// La memoria tenuta per tutta la lettura oltre a indice e messaggi: lo
+    /// schema che il lettore dello stream materializza, e i byte del
+    /// messaggio di schema conservati per il confronto con il footer. Per lo
+    /// stream questi ultimi servono solo fino alla fine della prima passata:
+    /// contarli per tutta la lettura e una stima per eccesso.
+    resident: u64,
+    schema_message: Vec<u8>,
 }
 
 /// Registra un segmento se l'indice, con la sua nuova capacita, e il
@@ -136,6 +256,7 @@ fn admit(
     segments: &mut Vec<Segment>,
     largest: &mut u64,
     segment: Segment,
+    resident: u64,
     limit: u64,
 ) -> CliResult<()> {
     *largest = (*largest).max(segment.length());
@@ -144,7 +265,7 @@ fn admit(
     } else {
         segments.capacity()
     };
-    if footprint(capacity, *largest).is_none_or(|bytes| bytes > limit) {
+    if footprint(capacity, *largest, resident).is_none_or(|bytes| bytes > limit) {
         return Err(beyond_limit());
     }
     segments.reserve_exact(capacity - segments.len());
@@ -182,26 +303,37 @@ pub(crate) fn open_batches(path: &str, max_message_bytes: u64) -> CliResult<IpcB
             file_data_end(&mut file, length, max_message_bytes)?,
         ),
     };
-    let (segments, rows) = scan_stream(&mut file, start, end, max_message_bytes)?;
-    let footer_schema = if format == IpcFormat::File {
-        Some(check_footer_blocks(
-            &mut file,
-            length,
-            end,
-            &segments,
-            segments.capacity(),
-            max_message_bytes,
-        )?)
+    let scan = scan_stream(&mut file, start, end, max_message_bytes)?;
+    let (footer_schema, footer_resident) = if format == IpcFormat::File {
+        let (schema, resident) =
+            check_footer_blocks(&mut file, length, end, &scan, max_message_bytes)?;
+        (Some(schema), resident)
     } else {
-        None
+        (None, 0)
     };
+    let Scan {
+        segments,
+        rows,
+        resident,
+        schema_message,
+    } = scan;
+    drop(schema_message);
+    // Lo schema del footer resta vivo mentre il lettore dello stream legge il
+    // primo messaggio e materializza il proprio: conta con loro.
+    if footprint(segments.capacity(), largest_segment(&segments), resident)
+        .and_then(|bytes| bytes.checked_add(footer_resident))
+        .is_none_or(|bytes| bytes > max_message_bytes)
+    {
+        return Err(beyond_limit());
+    }
     file.seek(SeekFrom::Start(start))
         .map_err(|_| unreadable())?;
     let verified = VerifiedRange::new(BufReader::new(file), segments);
     let reader = StreamReader::try_new(verified, None).map_err(|_| malformed())?;
     // Lo schema del footer e quello che un lettore di file Arrow userebbe:
     // deve essere lo schema dello stream, metadati compresi, o lo stesso
-    // file darebbe colonne diverse a seconda del lettore.
+    // file darebbe colonne diverse a seconda del lettore. Le proprieta IPC
+    // che lo schema materializzato non porta le confronta il footer.
     if footer_schema.is_some_and(|footer| footer != *reader.schema()) {
         return Err("schema del footer Arrow IPC discordante dallo stream del file".into());
     }
@@ -230,12 +362,7 @@ fn message_rows(metadata: &[u8]) -> CliResult<Option<u64>> {
 /// L'inquadramento dello stream fra `start` e `end`: messaggi entro il
 /// limite, la fine esplicita al confine fra due messaggi, nessun byte dopo.
 /// Rende i segmenti con l'impronta di ogni messaggio e le righe dichiarate.
-fn scan_stream(
-    file: &mut File,
-    start: u64,
-    end: u64,
-    limit: u64,
-) -> CliResult<(Vec<Segment>, u64)> {
+fn scan_stream(file: &mut File, start: u64, end: u64, limit: u64) -> CliResult<Scan> {
     file.seek(SeekFrom::Start(start))
         .map_err(|_| unreadable())?;
     let mut reader = BufReader::new(file);
@@ -244,18 +371,10 @@ fn scan_stream(
     let mut schema = false;
     let mut segments = Vec::new();
     let mut largest = 0_u64;
+    let mut resident = 0_u64;
+    let mut schema_message = Vec::new();
     loop {
-        let mut prefix = [0_u8; 8];
-        if position.checked_add(8).is_none_or(|next| next > end) {
-            return Err(truncated());
-        }
-        reader.read_exact(&mut prefix).map_err(|_| truncated())?;
-        if prefix[..4] != CONTINUATION {
-            return Err(malformed());
-        }
-        let metadata_length = u64::from(u32::from_le_bytes([
-            prefix[4], prefix[5], prefix[6], prefix[7],
-        ]));
+        let (prefix, metadata_length) = read_frame_prefix(&mut reader, position, end)?;
         let mut hasher = Sha256::new();
         hasher.update(prefix);
         if metadata_length == 0 {
@@ -265,14 +384,18 @@ fn scan_stream(
                 body_length: 0,
                 digest: hasher.finalize().into(),
             };
-            admit(&mut segments, &mut largest, end_of_stream, limit)?;
+            admit(&mut segments, &mut largest, end_of_stream, resident, limit)?;
             position += 8;
             break;
         }
         // Prima di allocare i metadati: il loro inquadramento, da solo, deve
         // gia stare nel budget.
-        if footprint(segments.capacity(), largest.max(8 + metadata_length))
-            .is_none_or(|bytes| bytes > limit)
+        if footprint(
+            segments.capacity(),
+            largest.max(8 + metadata_length),
+            resident,
+        )
+        .is_none_or(|bytes| bytes > limit)
         {
             return Err(beyond_limit());
         }
@@ -289,20 +412,22 @@ fn scan_stream(
         hasher.update(&metadata);
         let message = root_as_message(&metadata).map_err(|_| malformed())?;
         let body_length = u64::try_from(message.bodyLength()).map_err(|_| malformed())?;
+        let schema_resident = schema_resident(&message, &mut schema, metadata_length)?;
+        if let Some(bytes) = schema_resident {
+            resident = bytes;
+        }
         if (8 + metadata_length)
             .checked_add(body_length)
-            .and_then(|length| footprint(segments.capacity(), largest.max(length)))
+            .and_then(|length| footprint(segments.capacity(), largest.max(length), resident))
             .is_none_or(|bytes| bytes > limit)
         {
             return Err(beyond_limit());
         }
-        match message.header_type() {
-            MessageHeader::Schema if !schema => schema = true,
-            MessageHeader::RecordBatch | MessageHeader::DictionaryBatch if schema => {}
-            _ => return Err(malformed()),
-        }
         if let Some(batch_rows) = message_rows(&metadata)? {
             rows = rows.checked_add(batch_rows).ok_or_else(beyond_limit)?;
+        }
+        if schema_resident.is_some() {
+            schema_message = metadata;
         }
         let after_body = after_metadata
             .checked_add(body_length)
@@ -317,7 +442,7 @@ fn scan_stream(
             body_length,
             digest: hasher.finalize().into(),
         };
-        admit(&mut segments, &mut largest, segment, limit)?;
+        admit(&mut segments, &mut largest, segment, resident, limit)?;
         position = after_body;
     }
     if !schema {
@@ -330,7 +455,56 @@ fn scan_stream(
                 .into(),
         );
     }
-    Ok((segments, rows))
+    Ok(Scan {
+        segments,
+        rows,
+        resident,
+        schema_message,
+    })
+}
+
+/// L'ordine dei messaggi (schema per primo, poi batch e dizionari) e, per
+/// il messaggio di schema, la memoria che resta viva per tutta la lettura:
+/// lo schema materializzato e i byte del messaggio.
+fn schema_resident(
+    message: &arrow_ipc::Message<'_>,
+    schema: &mut bool,
+    metadata_length: u64,
+) -> CliResult<Option<u64>> {
+    match message.header_type() {
+        MessageHeader::Schema if !*schema => {
+            *schema = true;
+            let fields = message.header_as_schema().ok_or_else(malformed)?;
+            schema_footprint(fields)
+                .and_then(|bytes| bytes.checked_add(metadata_length))
+                .map(Some)
+                .ok_or_else(beyond_limit)
+        }
+        MessageHeader::RecordBatch | MessageHeader::DictionaryBatch if *schema => Ok(None),
+        _ => Err(malformed()),
+    }
+}
+
+/// Il prefisso di otto byte di un messaggio in `position`: marcatore di
+/// continuazione e lunghezza dei metadati.
+fn read_frame_prefix(reader: &mut impl Read, position: u64, end: u64) -> CliResult<([u8; 8], u64)> {
+    let mut prefix = [0_u8; 8];
+    if position.checked_add(8).is_none_or(|next| next > end) {
+        return Err(truncated());
+    }
+    reader.read_exact(&mut prefix).map_err(|_| truncated())?;
+    if prefix[..4] != CONTINUATION {
+        return Err(malformed());
+    }
+    let metadata_length = u64::from(u32::from_le_bytes([
+        prefix[4], prefix[5], prefix[6], prefix[7],
+    ]));
+    Ok((prefix, metadata_length))
+}
+
+/// Il messaggio piu lungo registrato.
+fn largest_segment(segments: &[Segment]) -> u64 {
+    segments.iter().map(Segment::length).max().unwrap_or(0)
 }
 
 /// Il corpo di un messaggio passa per l'impronta a blocchi fissi: la
@@ -394,22 +568,24 @@ fn file_data_end(file: &mut File, length: u64, limit: u64) -> CliResult<u64> {
 
 /// I blocchi del footer devono essere esattamente i messaggi di dizionario
 /// e di batch dello stream, con le stesse posizioni e lunghezze: un footer
-/// che indica altro non si segue. Rende lo schema del footer, che il
-/// chiamante confronta con quello dello stream.
+/// che indica altro non si segue. Le proprieta IPC dello schema del footer
+/// si confrontano con il messaggio di schema dello stream; rende lo schema
+/// del footer materializzato, che il chiamante confronta con quello dello
+/// stream, e la sua memoria.
 ///
-/// `index_capacity` e la capacita allocata dell'indice: e la memoria che
-/// resta occupata mentre il footer si legge, non la sua lunghezza.
+/// Mentre il footer si legge restano vivi l'indice, per la sua capacita
+/// allocata, e la parte residente della prima passata.
 fn check_footer_blocks(
     file: &mut File,
     length: u64,
     data_end: u64,
-    segments: &[Segment],
-    index_capacity: usize,
+    scan: &Scan,
     limit: u64,
-) -> CliResult<Schema> {
+) -> CliResult<(Schema, u64)> {
+    let segments = &scan.segments;
     let footer_length = length - 10 - data_end;
-    // Il footer si legge mentre l'indice e vivo: conta con lui.
-    let index_bytes = footprint(index_capacity, 0).ok_or_else(beyond_limit)?;
+    // Il footer si legge mentre l'indice e la parte residente sono vivi.
+    let index_bytes = footprint(segments.capacity(), 0, scan.resident).ok_or_else(beyond_limit)?;
     if index_bytes
         .checked_add(footer_length)
         .is_none_or(|bytes| bytes > limit)
@@ -467,8 +643,26 @@ fn check_footer_blocks(
     if !declared.iter().copied().eq(observed) {
         return Err("footer Arrow IPC discordante dallo stream del file".into());
     }
-    let schema = footer.schema().ok_or_else(malformed)?;
-    arrow_ipc::convert::try_fb_to_schema(schema).map_err(|_| malformed())
+    drop(declared);
+    let footer_schema = footer.schema().ok_or_else(malformed)?;
+    let stream_schema = root_as_message(&scan.schema_message)
+        .ok()
+        .and_then(|message| message.header_as_schema())
+        .ok_or_else(malformed)?;
+    if !same_ipc_encoding(footer_schema, stream_schema) {
+        return Err("schema del footer Arrow IPC discordante dallo stream del file".into());
+    }
+    // Lo schema del footer si materializza mentre il footer e vivo.
+    let footer_resident = schema_footprint(footer_schema).ok_or_else(beyond_limit)?;
+    if index_bytes
+        .checked_add(footer_length)
+        .and_then(|bytes| bytes.checked_add(footer_resident))
+        .is_none_or(|bytes| bytes > limit)
+    {
+        return Err(beyond_limit());
+    }
+    let schema = arrow_ipc::convert::try_fb_to_schema(footer_schema).map_err(|_| malformed())?;
+    Ok((schema, footer_resident))
 }
 
 /// Lettore dei soli messaggi validati nella prima passata.

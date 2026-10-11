@@ -269,7 +269,9 @@ fn the_verifier_holds_one_message_at_a_time() {
     let input = scratch("two-large.arrows", &bytes);
     let mut file = File::open(&input.0).expect("apertura");
     let length = bytes.len() as u64;
-    let (segments, _) = scan_stream(&mut file, 0, length, 1 << 24).expect("validato");
+    let segments = scan_stream(&mut file, 0, length, 1 << 24)
+        .expect("validato")
+        .segments;
     let largest = segments
         .iter()
         .map(Segment::length)
@@ -292,7 +294,9 @@ fn the_limit_counts_the_message_prefix() {
     let bytes = stream_bytes();
     let input = scratch("prefix-limit.arrows", &bytes);
     let mut file = File::open(&input.0).expect("apertura");
-    let (segments, _) = scan_stream(&mut file, 0, bytes.len() as u64, 1 << 24).expect("validato");
+    let segments = scan_stream(&mut file, 0, bytes.len() as u64, 1 << 24)
+        .expect("validato")
+        .segments;
     let without_prefix = segments
         .iter()
         .map(|segment| segment.metadata_length + segment.body_length)
@@ -337,7 +341,9 @@ fn after_a_failed_message_every_read_fails() {
     let bytes = two_large_batches();
     let input = scratch("poisoned.arrows", &bytes);
     let mut file = File::open(&input.0).expect("apertura");
-    let (segments, _) = scan_stream(&mut file, 0, bytes.len() as u64, 1 << 24).expect("validato");
+    let segments = scan_stream(&mut file, 0, bytes.len() as u64, 1 << 24)
+        .expect("validato")
+        .segments;
     // Il primo batch cambia: lo schema passa, il batch no.
     let first_batch = usize::try_from(segments[1].offset).expect("usize") + 64;
     let mut changed = bytes;
@@ -429,4 +435,106 @@ fn a_footer_schema_different_from_the_stream_is_rejected() {
     }
     let input = scratch("footer-schema-same.arrow", &original);
     open_batches(input.0.to_str().expect("UTF-8"), 1 << 20).expect("schema coerente");
+}
+
+/// Uno schema con metadati grandi resta vivo per tutta la lettura (lo
+/// materializza il lettore dello stream) e, per il file, anche come schema
+/// del footer: conta nel budget. Un valore di 20.000 byte con un limite di
+/// 64 KiB sta nel limite per messaggio, ma non con le copie dello schema.
+#[test]
+fn a_large_schema_counts_in_the_budget_while_it_is_alive() {
+    let schema = Arc::new(Schema::new_with_metadata(
+        vec![Field::new("id", DataType::Int64, false)],
+        std::collections::HashMap::from([("grande".to_owned(), "x".repeat(20_000))]),
+    ));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
+    )
+    .expect("batch");
+    let mut stream = StreamWriter::try_new(Vec::new(), &schema).expect("writer");
+    stream.write(&batch).expect("write");
+    let mut file = FileWriter::try_new(Vec::new(), &schema).expect("writer");
+    file.write(&batch).expect("write");
+    for (name, bytes) in [
+        ("large-schema.arrows", stream.into_inner().expect("stream")),
+        ("large-schema.arrow", file.into_inner().expect("file")),
+    ] {
+        let input = scratch(name, &bytes);
+        let error = open_batches(input.0.to_str().expect("UTF-8"), 64 * 1024)
+            .err()
+            .unwrap_or_else(|| panic!("{name}: schema oltre il budget accettato"));
+        assert_eq!(
+            error.database_error().category,
+            plenora_database_core::ErrorCategory::ResourceLimit,
+            "{name}"
+        );
+        // Con un limite largo lo stesso input si legge.
+        open_batches(input.0.to_str().expect("UTF-8"), 1 << 20).expect(name);
+    }
+}
+
+/// Gli id dei dizionari governano la decodifica: un footer con gli id
+/// scambiati darebbe a un lettore di file Arrow i valori di un'altra
+/// colonna. Si rifiuta anche se nomi, tipi e metadati coincidono.
+#[test]
+fn a_footer_with_swapped_dictionary_ids_is_rejected() {
+    use plenora_database_core::arrow::array::types::Int32Type;
+    use plenora_database_core::arrow::array::{DictionaryArray, StringArray};
+    let dictionary = |values: &[&str]| -> Arc<dyn plenora_database_core::arrow::array::Array> {
+        Arc::new(DictionaryArray::<Int32Type>::new(
+            vec![0_i32, 1].into(),
+            Arc::new(StringArray::from(values.to_vec())),
+        ))
+    };
+    let field = |name: &str| {
+        Field::new(
+            name,
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            false,
+        )
+    };
+    // Tre colonne: gli id 1 e 2 non sono il valore di default, quindi
+    // compaiono nel footer e si possono scambiare.
+    let schema = Arc::new(Schema::new(vec![field("c0"), field("c1"), field("c2")]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            dictionary(&["a", "a"]),
+            dictionary(&["b", "b"]),
+            dictionary(&["c", "c"]),
+        ],
+    )
+    .expect("batch");
+    let mut writer = FileWriter::try_new(Vec::new(), &schema).expect("writer");
+    writer.write(&batch).expect("write");
+    let original = writer.into_inner().expect("file");
+    let footer_length = u32::from_le_bytes(
+        original[original.len() - 10..original.len() - 6]
+            .try_into()
+            .expect("u32"),
+    ) as usize;
+    let footer_start = original.len() - 10 - footer_length;
+    let mut forged = original.clone();
+    let footer = &mut forged[footer_start..original.len() - 10];
+    let one = 1_i64.to_le_bytes();
+    let two = 2_i64.to_le_bytes();
+    let find = |bytes: &[u8], needle: &[u8; 8]| {
+        let found: Vec<usize> = (0..=bytes.len() - 8)
+            .step_by(8)
+            .filter(|at| bytes[*at..*at + 8] == *needle)
+            .collect();
+        assert_eq!(found.len(), 1, "id non univoco nel footer");
+        found[0]
+    };
+    let (at_one, at_two) = (find(footer, &one), find(footer, &two));
+    footer[at_one..at_one + 8].copy_from_slice(&two);
+    footer[at_two..at_two + 8].copy_from_slice(&one);
+    let input = scratch("footer-dictionary-ids.arrow", &forged);
+    assert!(
+        open_batches(input.0.to_str().expect("UTF-8"), 1 << 20).is_err(),
+        "id dei dizionari scambiati nel footer accettati"
+    );
+    let input = scratch("footer-dictionary-ids-same.arrow", &original);
+    open_batches(input.0.to_str().expect("UTF-8"), 1 << 20).expect("footer coerente");
 }

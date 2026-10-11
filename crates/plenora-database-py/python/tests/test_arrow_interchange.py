@@ -124,6 +124,24 @@ def test_error_messages_do_not_carry_caller_type_names() -> None:
         assert "CANARINO" not in str(raised.value)
 
 
+def test_batches_with_different_metadata_are_not_rewritten() -> None:
+    """I metadati (per esempio il CRS di una geometria) fanno parte dello
+    schema: un batch con metadati diversi dal primo non si scrive in
+    silenzio con quelli del primo."""
+
+    def batch(srid: str, schema_tag: str) -> "pyarrow.RecordBatch":
+        field = pyarrow.field("geom", pyarrow.binary(), metadata={"plenora.geometry.srid": srid})
+        schema = pyarrow.schema([field], metadata={"origine": schema_tag})
+        return pyarrow.record_batch([pyarrow.array([b"x"], pyarrow.binary())], schema=schema)
+
+    for second in (batch("3003", "a"), batch("4326", "b")):
+        for source in ([batch("4326", "a"), second], iter([batch("4326", "a"), second])):
+            with pytest.raises(ValueError):
+                _to_ipc_bytes(source)
+    same = _decoded(_to_ipc_bytes([batch("4326", "a"), batch("4326", "a")]))
+    assert same.num_rows == 2
+
+
 def test_argument_errors_stay_argument_errors() -> None:
     with pytest.raises(ValueError):
         _to_ipc_bytes([])
