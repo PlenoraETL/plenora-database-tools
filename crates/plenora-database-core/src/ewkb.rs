@@ -277,6 +277,58 @@ pub fn inspect_ewkb_detailed(
         .map(|(inspection, _)| inspection)
 }
 
+/// WKB ISO con lo SRID dichiarato altrove: lo stesso valore in EWKB.
+///
+/// Imposta il flag SRID nel type word della geometria radice e inserisce lo
+/// SRID subito dopo, nel byte order del valore; il resto non cambia. Serve a
+/// chi riceve `plenora.geometry.encoding=wkb` con lo SRID nei metadati del
+/// campo (ARROW-VOCABULARY §3) e scrive verso un database che vuole EWKB.
+///
+/// # Errors
+///
+/// `DataMapping` per un valore troncato, un byte order non valido o un SRID
+/// gia presente in qualunque geometria del valore, anche annidata: un valore
+/// `wkb` che ne porta uno contraddice il campo, e scriverne solo la radice
+/// lascerebbe il figlio con il suo.
+pub fn with_root_srid(wkb: &[u8], srid: u32, max_depth: u64) -> Result<Vec<u8>> {
+    let (inspection, _) = scan_ewkb(wkb, u64::MAX, max_depth, DimensionMode::Strict)?;
+    if inspection.has_any_embedded_srid {
+        return Err(mapping_error(
+            "SRID incorporato in un valore dichiarato wkb",
+        ));
+    }
+    let little_endian = match wkb.first() {
+        Some(0) => false,
+        Some(1) => true,
+        _ => return Err(mapping_error("byte order WKB non valido")),
+    };
+    let raw: [u8; 4] = wkb
+        .get(1..5)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| mapping_error("type word WKB troncato"))?;
+    let type_word = if little_endian {
+        u32::from_le_bytes(raw)
+    } else {
+        u32::from_be_bytes(raw)
+    };
+    if type_word & 0x2000_0000 != 0 {
+        return Err(mapping_error(
+            "SRID incorporato in un valore dichiarato wkb",
+        ));
+    }
+    let (type_bytes, srid_bytes) = if little_endian {
+        ((type_word | 0x2000_0000).to_le_bytes(), srid.to_le_bytes())
+    } else {
+        ((type_word | 0x2000_0000).to_be_bytes(), srid.to_be_bytes())
+    };
+    let mut stamped = Vec::with_capacity(wkb.len() + 4);
+    stamped.push(wkb[0]);
+    stamped.extend_from_slice(&type_bytes);
+    stamped.extend_from_slice(&srid_bytes);
+    stamped.extend_from_slice(&wkb[5..]);
+    Ok(stamped)
+}
+
 /// Normalizza un WKB XYZ il cui produttore scrive la terza ordinata senza
 /// marcarla nel type word. La scansione valida prima l'intero payload e poi
 /// imposta il flag Z EWKB su ogni geometry annidata.

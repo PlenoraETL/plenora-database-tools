@@ -217,3 +217,76 @@ fn the_runtime_discovery_document_binds_every_advertised_operation() {
         .iter()
         .any(|value| value == JSON_CONTENT_TYPE)));
 }
+
+/// Il sink del runtime non riceve un byte da uno schema fuori vocabolario:
+/// la verifica precede il writer Arrow.
+#[test]
+fn a_non_conforming_schema_never_reaches_the_runtime_sink() {
+    use plenora_database_core::arrow::{DataType, Field, Schema};
+
+    struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Sink {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("sink").extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl ArrowSink for Sink {
+        fn finish(self: Box<Self>) -> Result<()> {
+            Ok(())
+        }
+        fn abort(self: Box<Self>) {}
+    }
+    struct Stream(plenora_database_core::arrow::SchemaRef);
+    impl BatchStream for Stream {
+        fn schema(&self) -> plenora_database_core::arrow::SchemaRef {
+            Arc::clone(&self.0)
+        }
+        fn next_batch<'a>(
+            &'a mut self,
+            _cancellation: &'a CancellationToken,
+        ) -> ProviderFuture<'a, Option<plenora_database_core::arrow::RecordBatch>> {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+    }
+
+    // Tutte le chiavi canoniche di §4 tranne l'estensione GeoArrow: il solo
+    // difetto e quello.
+    let field = Field::new("geom", DataType::Binary, true).with_metadata(
+        [
+            ("plenora.field_id", "1"),
+            ("plenora.geometry.encoding", "ewkb"),
+            ("plenora.geometry.dimensions", "xy"),
+            ("plenora.geometry.spatial_semantics", "geometry"),
+            ("plenora.geometry.precision", "float64"),
+            ("plenora.geometry.types_declaration", "mixed"),
+            ("plenora.geometry.crs_resolution", "missing"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect::<std::collections::HashMap<_, _>>(),
+    );
+    let schema = Arc::new(Schema::new_with_metadata(
+        vec![field],
+        std::collections::HashMap::from([("plenora.contract.version".to_owned(), "1".to_owned())]),
+    ));
+    let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut sink: Box<dyn ArrowSink> = Box::new(Sink(std::sync::Arc::clone(&bytes)));
+    let mut stream = Stream(schema);
+    let mut written = 0;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime");
+    let result = runtime.block_on(write_arrow_stream(
+        &mut sink,
+        &mut stream,
+        &CancellationToken::new(),
+        &mut written,
+    ));
+    assert!(result.is_err(), "schema fuori vocabolario consegnato");
+    assert!(bytes.lock().expect("sink").is_empty());
+    assert_eq!(written, 0);
+}

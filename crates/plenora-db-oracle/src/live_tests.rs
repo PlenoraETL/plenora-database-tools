@@ -369,7 +369,8 @@ fn spatial_write_batch(ids: Vec<i32>, points: Vec<Vec<u8>>) -> RecordBatch {
     }
     .arrow_field()
     .expect("campo Arrow geometry");
-    let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false), geometry]);
+    let schema =
+        contract_schema(vec![Field::new("ID", DataType::Int32, false), geometry]).expect("schema");
     RecordBatch::try_new(
         schema,
         vec![
@@ -392,7 +393,8 @@ fn spatial_xyz_write_batch(ids: Vec<i32>, points: Vec<Vec<u8>>) -> RecordBatch {
     }
     .arrow_field()
     .expect("campo Arrow geometry");
-    let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false), geometry]);
+    let schema =
+        contract_schema(vec![Field::new("ID", DataType::Int32, false), geometry]).expect("schema");
     RecordBatch::try_new(
         schema,
         vec![
@@ -433,7 +435,7 @@ fn spatial_write_operation(mode: WriteMode, create_index: bool) -> WriteOperatio
 }
 
 fn key_delete_batch(ids: Vec<i32>) -> RecordBatch {
-    let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false)]);
+    let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false)]).expect("schema");
     RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(ids))])
         .expect("batch delete Oracle")
 }
@@ -507,7 +509,8 @@ async fn live_arrow_scalar_create_and_read_preserves_supported_types() {
             ),
             false,
         ),
-    ]);
+    ])
+    .expect("schema");
     let decimal = Decimal128Array::from(vec![12_345_i128, 67_890_i128])
         .with_precision_and_scale(12, 2)
         .expect("decimal Arrow Oracle");
@@ -648,7 +651,8 @@ async fn live_array_dml_crosses_batches_and_rolls_back_atomically() {
     let schema = contract_schema(vec![
         Field::new("ID", DataType::Int32, false),
         Field::new("LABEL", DataType::Utf8, false),
-    ]);
+    ])
+    .expect("schema");
     let operation = WriteOperation {
         target: ObjectRef {
             catalog: None,
@@ -814,7 +818,7 @@ async fn live_closed_capabilities_fail_closed_and_match_ddl_semantics() {
     assert!(!capabilities.transactions.transactional_ddl);
     assert!(!capabilities.transactions.staged_swap);
 
-    let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false)]);
+    let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false)]).expect("schema");
     for (mode, transaction_profile) in [
         (
             WriteMode::TruncateInsert,
