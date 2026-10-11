@@ -193,3 +193,53 @@ fn bytes_changed_between_the_two_passes_are_rejected() {
         assert!(decoded.is_err(), "{name}: byte diversi da quelli validati");
     }
 }
+
+/// Il prefisso di un messaggio cambia dopo la validazione: una fine
+/// anticipata o una lunghezza diversa non devono arrivare al decoder. Il
+/// messaggio alterato segue un batch piu grande dei buffer di lettura,
+/// quindi alla modifica non e ancora stato letto.
+#[test]
+fn a_prefix_changed_between_the_two_passes_is_rejected() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let large = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(
+            (0..200_000_i64).collect::<Vec<_>>(),
+        ))],
+    )
+    .expect("batch grande");
+    let small = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))],
+    )
+    .expect("batch piccolo");
+    let mut writer = StreamWriter::try_new(Vec::new(), &schema).expect("writer");
+    writer.write(&large).expect("write");
+    writer.write(&small).expect("write");
+    let bytes = writer.into_inner().expect("stream");
+    // Il prefisso dell'ultimo batch: tre messaggi prima (schema, grande).
+    let mut position = 0_usize;
+    for _ in 0..2 {
+        let metadata =
+            u32::from_le_bytes(bytes[position + 4..position + 8].try_into().expect("u32")) as usize;
+        let message = root_as_message(&bytes[position + 8..position + 8 + metadata]).expect("msg");
+        position += 8 + metadata + usize::try_from(message.bodyLength()).expect("corpo");
+    }
+    assert!(
+        position > 128 * 1024,
+        "il prefisso deve stare oltre i buffer"
+    );
+    let declared = u32::from_le_bytes(bytes[position + 4..position + 8].try_into().expect("u32"));
+    for (name, value) in [("eos", 0_u32), ("length", declared + 8)] {
+        let mut forged = bytes.clone();
+        forged[position + 4..position + 8].copy_from_slice(&value.to_le_bytes());
+        let input = scratch(&format!("prefix-{name}.arrows"), &bytes);
+        let opened = open_batches(input.0.to_str().expect("UTF-8"), 1 << 24).expect("validato");
+        std::fs::write(&input.0, &forged).expect("modifica sul posto");
+        let decoded: Result<Vec<_>, _> = opened.batches.collect();
+        assert!(
+            decoded.is_err(),
+            "{name}: prefisso alterato consegnato al decoder"
+        );
+    }
+}

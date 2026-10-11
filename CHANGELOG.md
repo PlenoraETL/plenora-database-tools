@@ -22,9 +22,12 @@ riassumono le note di quelle release.
   concatenati non si leggono più come il solo primo. L'input si legge in due
   passate: la prima verifica l'inquadramento e il limite di ogni messaggio
   (prima di allocarne il corpo) e conta le righe dichiarate, la seconda
-  decodifica un batch alla volta, leggendo solo i byte validati: ogni
-  messaggio deve avere l'impronta SHA-256 registrata nella prima passata,
-  quindi un file cambiato fra le due passate è un errore. Il formato file si
+  decodifica un batch alla volta. La seconda passata legge ogni messaggio
+  intero (prefisso, metadati e corpo, nella lunghezza registrata), ne
+  verifica l'impronta SHA-256 registrata nella prima passata e solo dopo lo
+  consegna al decoder: un file cambiato fra le due passate è un errore, e
+  nemmeno un prefisso alterato (una fine anticipata, una lunghezza diversa)
+  arriva al decoder. Il formato file si
   legge come lo stream che incapsula, e i blocchi del footer devono
   coincidere con i messaggi dello stream. Prima si accumulavano tutti i
   batch in memoria prima del budget, anche per il formato file.
@@ -41,11 +44,14 @@ riassumono le note di quelle release.
   con gli assi pubblici, senza il messaggio né la catena dell'originale, che
   possono contenere dati di riga. Vale anche per `read_all()`.
 - La traduzione copre ogni accesso alla sorgente (`hasattr`, `iter`, il
-  primo `next`, la serializzazione); gli argomenti rifiutati dallo SDK
-  restano `TypeError`/`ValueError`.
+  primo `next`, la serializzazione, e anche il riconoscimento dei `bytes`:
+  una sottoclasse può ridefinire `__bytes__`); gli argomenti rifiutati dallo
+  SDK restano `TypeError`/`ValueError`, e nessun messaggio dello SDK riporta
+  il nome della classe del chiamante, che può essere costruito a runtime.
 - Il `BatchReader` non traduce un errore in Python tenendo il proprio
   mutex e non lo attende tenendo il GIL (un errore di lettura e
-  `schema_bytes` da due thread potevano bloccarsi a vicenda).
+  `schema_bytes` da due thread potevano bloccarsi a vicenda). La prova forza
+  la contesa in un processo separato con timeout esterno.
 - Dichiarato: `python/interop/test_plenora_data.py` (database ↔
   `plenora_data`) si esegue a mano; la CI non installa `plenora-data` e non
   lo esegue.

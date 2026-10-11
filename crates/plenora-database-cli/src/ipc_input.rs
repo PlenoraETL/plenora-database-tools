@@ -367,18 +367,20 @@ fn check_footer_blocks(
     Ok(())
 }
 
-/// Lettore dei soli byte validati nella prima passata.
+/// Lettore dei soli messaggi validati nella prima passata.
 ///
-/// Rende i byte dei segmenti registrati, nell'ordine, e a ogni fine di
-/// segmento confronta l'impronta dei byte passati con quella registrata:
-/// se il file e cambiato nel frattempo, la lettura fallisce prima che il
-/// decoder renda il messaggio. Dopo l'ultimo segmento rende la fine del
-/// file, quindi nessun byte non validato raggiunge il decoder.
+/// Per ogni segmento registrato legge il messaggio **intero** — prefisso,
+/// metadati e corpo, nella lunghezza registrata, che la prima passata ha
+/// gia confrontato con il limite — ne verifica l'impronta e solo dopo lo
+/// consegna al decoder da un buffer che nessuno modifica piu. Prima della
+/// verifica il decoder non vede un byte: un prefisso alterato (una fine
+/// anticipata, una lunghezza diversa) non arriva a governare il framing ne
+/// le allocazioni. Dopo l'ultimo segmento rende la fine del file.
 struct VerifiedRange<R> {
     inner: R,
     segments: std::collections::VecDeque<Segment>,
-    remaining: u64,
-    hasher: Sha256,
+    current: Vec<u8>,
+    served: usize,
 }
 
 impl<R> VerifiedRange<R> {
@@ -386,8 +388,8 @@ impl<R> VerifiedRange<R> {
         Self {
             inner,
             segments: segments.into(),
-            remaining: 0,
-            hasher: Sha256::new(),
+            current: Vec::new(),
+            served: 0,
         }
     }
 }
@@ -399,34 +401,35 @@ fn changed() -> std::io::Error {
     )
 }
 
-impl<R: Read> Read for VerifiedRange<R> {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        if self.remaining == 0 {
-            match self.segments.front() {
-                None => return Ok(0),
-                Some(segment) => {
-                    self.remaining = segment.length();
-                    self.hasher = Sha256::new();
-                }
-            }
-        }
-        let wanted = usize::try_from(self.remaining)
-            .unwrap_or(usize::MAX)
-            .min(buffer.len());
-        let read = self.inner.read(&mut buffer[..wanted])?;
-        if read == 0 && wanted > 0 {
+impl<R: Read> VerifiedRange<R> {
+    /// Carica e verifica il prossimo segmento; `false` dopo l'ultimo.
+    fn load_next(&mut self) -> std::io::Result<bool> {
+        let Some(segment) = self.segments.pop_front() else {
+            return Ok(false);
+        };
+        let length = usize::try_from(segment.length()).map_err(|_| changed())?;
+        let mut message = vec![0_u8; length];
+        self.inner.read_exact(&mut message).map_err(|_| changed())?;
+        let digest: [u8; 32] = Sha256::digest(&message).into();
+        if digest != segment.digest {
             return Err(changed());
         }
-        self.hasher.update(&buffer[..read]);
-        self.remaining -= read as u64;
-        if self.remaining == 0 {
-            let digest: [u8; 32] = std::mem::take(&mut self.hasher).finalize().into();
-            let expected = self.segments.pop_front().map(|segment| segment.digest);
-            if expected != Some(digest) {
-                return Err(changed());
-            }
+        self.current = message;
+        self.served = 0;
+        Ok(true)
+    }
+}
+
+impl<R: Read> Read for VerifiedRange<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.served == self.current.len() && !self.load_next()? {
+            return Ok(0);
         }
-        Ok(read)
+        let available = &self.current[self.served..];
+        let count = available.len().min(buffer.len());
+        buffer[..count].copy_from_slice(&available[..count]);
+        self.served += count;
+        Ok(count)
     }
 }
 

@@ -104,6 +104,26 @@ def test_a_capsule_property_that_raises_is_translated() -> None:
     assert "CANARINO" not in str(raised.value)
 
 
+def test_a_bytes_subclass_that_raises_is_translated() -> None:
+    import plenora_database as p
+
+    class Hostile(bytes):
+        def __bytes__(self):
+            raise RuntimeError("CANARINO-riga-segreta")
+
+    with pytest.raises(p.PlenoraDataMappingError) as raised:
+        _to_ipc_bytes(Hostile(b"x"))
+    assert "CANARINO" not in str(raised.value)
+
+
+def test_error_messages_do_not_carry_caller_type_names() -> None:
+    hostile = type("CANARINO_riga_segreta", (), {})
+    for source in (hostile(), [hostile()]):
+        with pytest.raises(TypeError) as raised:
+            _to_ipc_bytes(source)
+        assert "CANARINO" not in str(raised.value)
+
+
 def test_argument_errors_stay_argument_errors() -> None:
     with pytest.raises(ValueError):
         _to_ipc_bytes([])
@@ -223,43 +243,65 @@ def test_the_reader_can_be_consumed_from_another_thread(session) -> None:
     assert table.column("id").to_pylist() == list(range(1, 301))
 
 
+_CONTENTION = r"""
+import sys, threading, time
+import plenora_database as p
+from tests._harness import connect_postgres
+
+session = connect_postgres(sys.argv[1])
+reader = session.read("public", "_pyx_slow_failure")
+inside = threading.Event()
+outcome = []
+
+def consume():
+    try:
+        for _ in reader:
+            inside.set()
+    except p.PlenoraError as error:
+        outcome.append(error.category)
+    finally:
+        inside.set()
+
+consumer = threading.Thread(target=consume)
+consumer.start()
+inside.wait()
+# Il consumatore ha ricevuto il primo batch ed e dentro la lettura del
+# successivo, con il mutex e senza il GIL: la riga 150000 dorme tre secondi
+# e poi divide per zero. Qui si chiede lo schema tenendo il GIL.
+time.sleep(0.5)
+assert consumer.is_alive(), "nessuna contesa: la lettura era gia finita"
+reader.schema_bytes()
+consumer.join()
+print("ok", outcome)
+"""
+
+
 def test_reading_and_schema_from_two_threads_do_not_deadlock(session) -> None:
-    """Contesa sul reader: un thread legge fino a un errore del database,
-    un altro chiede lo schema in continuazione. Tradurre l'errore tenendo il
-    mutex, o attendere il mutex tenendo il GIL, li bloccava a vicenda."""
-    import threading
+    """Contesa forzata in un processo separato con timeout esterno: un
+    thread e dentro una lettura che fallira dopo tre secondi, l'altro chiede
+    lo schema. Con la traduzione dell'errore sotto il mutex, o l'attesa del
+    mutex sotto il GIL, il processo si bloccava."""
+    import subprocess
+    import sys
+    from pathlib import Path
 
-    import plenora_database as p
-
-    session.execute_sql("DROP VIEW IF EXISTS _pyx_failing")
+    session.execute_sql("DROP VIEW IF EXISTS _pyx_slow_failure")
     session.execute_sql(
-        "CREATE VIEW _pyx_failing AS "
-        "SELECT gs AS id, 1 / (gs - 150000) AS x FROM generate_series(1, 200000) gs"
+        "CREATE VIEW _pyx_slow_failure AS "
+        "SELECT gs AS id, CASE WHEN gs = 150000 "
+        "THEN length(pg_sleep(3)::text) / 0 ELSE gs END AS x "
+        "FROM generate_series(1, 200000) gs"
     )
     try:
-        reader = session.read("public", "_pyx_failing")
-        done = threading.Event()
-        errors = []
-
-        def consume() -> None:
-            try:
-                for _ in reader:
-                    pass
-            except p.PlenoraError as error:
-                errors.append(error)
-            finally:
-                done.set()
-
-        def poll() -> None:
-            while not done.is_set():
-                reader.schema_bytes()
-
-        threads = [threading.Thread(target=consume), threading.Thread(target=poll)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=60)
-        assert not any(thread.is_alive() for thread in threads), "stallo fra GIL e mutex"
-        assert errors, "la divisione per zero doveva arrivare come PlenoraError"
+        completed = subprocess.run(
+            [sys.executable, "-c", _CONTENTION, postgres_dsn_or_skip()],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert completed.returncode == 0, completed.stderr[-2000:]
+        assert completed.stdout.strip().startswith("ok"), completed.stdout
+        assert "execution" in completed.stdout or "invalid_plan" in completed.stdout, completed.stdout
     finally:
-        session.execute_sql("DROP VIEW IF EXISTS _pyx_failing")
+        session.execute_sql("DROP VIEW IF EXISTS _pyx_slow_failure")

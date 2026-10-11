@@ -270,8 +270,16 @@ def _to_ipc_bytes(source: Any) -> bytes:
         la sorgente falliscono; un `PlenoraError` della sorgente resta tale
       - `ImportError` se pyarrow non è installato (a meno di bytes)
     """
-    if isinstance(source, (bytes, bytearray, memoryview)):
-        return bytes(source)
+    # Anche il riconoscimento dei `bytes` passa dalla traduzione: una
+    # sottoclasse puo ridefinire `__bytes__`, e `isinstance` puo eseguire
+    # codice del chiamante.
+    raw = _translated(
+        "prepare",
+        "copy_from: sorgente Arrow non leggibile",
+        lambda: _as_ipc_buffer(source),
+    )
+    if raw is not None:
+        return raw
 
     try:
         import pyarrow as pa
@@ -290,6 +298,14 @@ def _to_ipc_bytes(source: Any) -> bytes:
         "copy_from: sorgente Arrow non leggibile",
         lambda: _source_to_ipc(source, pa, ipc),
     )
+
+
+def _as_ipc_buffer(source: Any) -> bytes | None:
+    """I byte di una sorgente gia IPC, `None` se la sorgente non lo e."""
+
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        return bytes(source)
+    return None
 
 
 def _source_to_ipc(source: Any, pa: Any, ipc: Any) -> bytes:
@@ -339,9 +355,10 @@ def _source_to_ipc(source: Any, pa: Any, ipc: Any) -> bytes:
             schema = tbl.schema
             batches = tbl.to_batches()
         else:
+            # Il nome del tipo del chiamante non entra nel messaggio: puo
+            # essere costruito a runtime e portare dati.
             raise _SourceTypeError(
-                f"copy_from: lista deve contenere pyarrow.RecordBatch o dict, "
-                f"trovato {type(first).__name__}"
+                "copy_from: la lista deve contenere pyarrow.RecordBatch o dict"
             )
     elif isinstance(source, Iterable):
         iterator: Iterator[Any] = iter(source)
@@ -357,9 +374,9 @@ def _source_to_ipc(source: Any, pa: Any, ipc: Any) -> bytes:
         batches = chain((first,), iterator)
     else:
         raise _SourceTypeError(
-            f"copy_from: source deve essere bytes, pyarrow.Table/RecordBatch, "
-            f"iterabile di RecordBatch, list di dict o pandas.DataFrame — "
-            f"trovato {type(source).__name__}"
+            "copy_from: source deve essere bytes, pyarrow.Table/RecordBatch, "
+            "iterabile di RecordBatch, list di dict, pandas.DataFrame o un "
+            "oggetto con __arrow_c_stream__"
         )
 
     def serialize() -> bytes:
