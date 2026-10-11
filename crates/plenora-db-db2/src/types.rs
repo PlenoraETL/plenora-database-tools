@@ -203,12 +203,8 @@ impl Db2ColumnSpec {
                     "geometry".to_owned(),
                 ),
                 (protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned()),
-                (
-                    protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
-                    "declared_unresolved".to_owned(),
-                ),
-                (protocol::GEOMETRY_SRID.to_owned(), srid.to_string()),
             ]);
+            protocol::insert_declared_crs(&mut metadata, "DB2", Some(srid));
             if let Some(geometry_type) = &self.geometry_type {
                 metadata.insert(protocol::GEOMETRY_TYPES.to_owned(), geometry_type.clone());
             }
@@ -316,7 +312,7 @@ impl Db2ReadPlan {
                 .iter()
                 .map(Db2ColumnSpec::arrow_field)
                 .collect::<Result<Vec<_>>>()?,
-        );
+        )?;
         Ok(Self {
             columns,
             schema,

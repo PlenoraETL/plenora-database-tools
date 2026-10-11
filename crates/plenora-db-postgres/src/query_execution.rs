@@ -175,7 +175,7 @@ pub async fn read_stream(
             .iter()
             .map(ColumnSpec::arrow_field)
             .collect::<Vec<_>>(),
-    );
+    )?;
     Ok(Box::new(PostgresBatchStream::new(
         provider,
         ReadStreamSource::new(client, cancel_token, Box::pin(rows), plan.columns, schema),
@@ -296,12 +296,13 @@ pub async fn query_stream(
         };
         (Box::pin(rows), columns)
     };
+    let columns = without_shared_origins(columns);
     let schema = contract_schema(
         columns
             .iter()
             .map(ColumnSpec::arrow_field)
             .collect::<Vec<_>>(),
-    );
+    )?;
     let column_count = u64::try_from(columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
@@ -313,4 +314,35 @@ pub async fn query_stream(
         operation_lease,
         columns_lease,
     )))
+}
+
+/// Una query che proietta la stessa colonna sorgente piu volte darebbe a
+/// quei campi lo stesso field id. Per loro l'origine non identifica il campo:
+/// l'id si deriva dal nome di uscita, che la query rende distinto.
+///
+/// # Limite dichiarato
+///
+/// L'id di una colonna dipende quindi dalla **composizione** della
+/// proiezione: aggiungere una seconda proiezione della stessa origine — anche
+/// tramite un auto-join — fa passare **entrambe** le colonne all'id derivato
+/// dal nome, compresa quella rimasta invariata. Anche le espressioni hanno
+/// l'id del nome, e una rinomina lo cambia. Per le viste l'equivalenza non e
+/// garantita: il catalogo di una lettura usa `attrelid`/`attnum` della vista,
+/// una query l'origine che il driver riporta. L'unicita e garantita solo
+/// dentro lo schema prodotto; l'hash a 31 bit non e un'identita globale ne
+/// storica (una tabella ricreata ha un'altra origine).
+fn without_shared_origins(mut columns: Vec<ColumnSpec>) -> Vec<ColumnSpec> {
+    let mut counts = std::collections::HashMap::new();
+    for source in columns.iter().filter_map(|column| column.source) {
+        *counts.entry(source).or_insert(0_usize) += 1;
+    }
+    for column in &mut columns {
+        if column
+            .source
+            .is_some_and(|source| counts.get(&source).copied().unwrap_or(0) > 1)
+        {
+            column.source = None;
+        }
+    }
+    columns
 }

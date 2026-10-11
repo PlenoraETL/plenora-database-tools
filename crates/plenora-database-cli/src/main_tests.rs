@@ -244,6 +244,30 @@ fn partial_artifacts(output: &Path) -> Vec<PathBuf> {
 fn stream_with_outcomes(
     outcomes: VecDeque<plenora_database_core::Result<Option<RecordBatch>>>,
 ) -> TestStream {
+    let mut stream = non_conforming_stream(outcomes);
+    let mut metadata = stream.schema.field(0).metadata().clone();
+    for (key, value) in [
+        ("plenora.field_id", "1"),
+        ("plenora.geometry.precision", "float64"),
+        ("plenora.geometry.spatial_semantics", "geometry"),
+        ("plenora.geometry.types_declaration", "exact"),
+    ] {
+        metadata.insert(key.to_owned(), value.to_owned());
+    }
+    let field = stream.schema.field(0).clone().with_metadata(metadata);
+    stream.schema = Arc::new(Schema::new_with_metadata(
+        vec![field],
+        stream.schema.metadata().clone(),
+    ));
+    stream
+}
+
+/// Il flusso di prova prima del vocabolario 1.0: mancano field id,
+/// precisione, semantica e dichiarazione dei tipi.
+#[cfg(feature = "postgres")]
+fn non_conforming_stream(
+    outcomes: VecDeque<plenora_database_core::Result<Option<RecordBatch>>>,
+) -> TestStream {
     let field = Field::new("geom", plenora_database_core::arrow::DataType::Binary, true)
         .with_metadata(HashMap::from([
             ("ARROW:extension:name".to_owned(), "geoarrow.wkb".to_owned()),
@@ -947,4 +971,65 @@ fn canonical_target_applies_the_secret_environment_pattern() {
         ErrorCategory::InvalidConfiguration
     );
     assert!(!error.database_error().message.contains("secret@host"));
+}
+
+/// L'uscita di `query --output` e uno stream Arrow IPC: stessi schema,
+/// metadati e righe del file di `read`, chiuso dal marcatore di fine.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn ipc_stream_materialization_is_a_complete_arrow_stream() {
+    let directory = TestDirectory::new("stream");
+    let output = directory.output();
+    let mut stream = stream_with_outcomes(VecDeque::new());
+    let batch = test_batch(stream.schema());
+    stream.outcomes = VecDeque::from([Ok(Some(batch)), Ok(None)]);
+
+    let report = write_stream_to_ipc_as(
+        &output,
+        &mut stream,
+        &CancellationToken::new(),
+        IpcOutput::Stream,
+    )
+    .await
+    .expect("materialize IPC stream");
+
+    assert_eq!(report["format"], "arrow_ipc_stream");
+    assert_eq!(report["rows"], 2);
+    let bytes = std::fs::read(&output).expect("stream");
+    assert!(bytes.starts_with(&[0xFF; 4]), "marcatore di continuazione");
+    assert!(
+        bytes.ends_with(&[0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0]),
+        "marcatore di fine"
+    );
+    let reader = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
+        .expect("read IPC stream");
+    assert_eq!(reader.schema().metadata()["plenora.contract.version"], "1");
+    let rows: usize = reader.map(|batch| batch.expect("batch").num_rows()).sum();
+    assert_eq!(rows, 2);
+    assert!(partial_artifacts(&output).is_empty());
+}
+
+/// Un campo `geoarrow.wkb` senza le chiavi che ARROW-VOCABULARY §4 richiede
+/// (qui field id, precisione, semantica, dichiarazione dei tipi) non si
+/// pubblica: l'artefatto non nasce, e l'errore e di schema.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn a_non_conforming_geometry_schema_is_never_published() {
+    let directory = TestDirectory::new("non-conforming");
+    let output = directory.output();
+    let mut stream = non_conforming_stream(VecDeque::new());
+    let batch = test_batch(stream.schema());
+    stream.outcomes = VecDeque::from([Ok(Some(batch)), Ok(None)]);
+    for format in [IpcOutput::File, IpcOutput::Stream] {
+        let error = write_stream_to_ipc_as(&output, &mut stream, &CancellationToken::new(), format)
+            .await
+            .expect_err("schema non conforme pubblicato");
+        assert_eq!(
+            error.database_error().category,
+            ErrorCategory::DataMapping,
+            "{format:?}"
+        );
+        assert!(!output.exists());
+        assert!(partial_artifacts(&output).is_empty());
+    }
 }

@@ -22,6 +22,7 @@ fn schema() -> plenora_database_core::arrow::schema::SchemaRef {
         Field::new("ID", DataType::Int32, false),
         Field::new("VALUE", DataType::Utf8, true),
     ])
+    .expect("schema")
 }
 
 fn operation(mode: WriteMode) -> WriteOperation {
@@ -78,6 +79,7 @@ fn spatial_schema(
             (protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned()),
         ])),
     ])
+    .expect("schema")
 }
 
 fn point_xy() -> Vec<u8> {

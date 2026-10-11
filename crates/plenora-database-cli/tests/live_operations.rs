@@ -157,3 +157,265 @@ fn live_profile_check_returns_pass_for_application_oltp_v1() {
     assert_eq!(out["missing"].as_array().map(Vec::len), Some(0));
     assert_eq!(out["failed"].as_array().map(Vec::len), Some(0));
 }
+
+/// Il percorso IO→database: WKB ISO (`encoding=wkb`) con il CRS nei metadati
+/// e piu tipi dichiarati entra, e la lettura restituisce un campo geometrico
+/// con tutte le chiavi che ARROW-VOCABULARY §4 richiede.
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "un percorso scrittura-lettura completo, leggibile in sequenza"
+)]
+fn live_iso_wkb_with_declared_crs_and_types_round_trips() {
+    use arrow_ipc::reader::FileReader;
+    use arrow_ipc::writer::FileWriter;
+    use plenora_database_core::arrow::array::{BinaryArray, Int64Array};
+    use plenora_database_core::arrow::{DataType, Field, RecordBatch, Schema};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    const TABLE: &str = "plenora_cli_iso_wkb";
+    let directory =
+        std::env::temp_dir().join(format!("plenora-cli-iso-wkb-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("cartella di prova");
+    let geometry = Field::new("geom", DataType::Binary, true).with_metadata(HashMap::from(
+        [
+            ("ARROW:extension:name", "geoarrow.wkb"),
+            ("plenora.field_id", "1"),
+            ("plenora.geometry.encoding", "wkb"),
+            ("plenora.geometry.dimensions", "xy"),
+            ("plenora.geometry.spatial_semantics", "geometry"),
+            ("plenora.geometry.precision", "float64"),
+            ("plenora.geometry.types_declaration", "exact"),
+            ("plenora.geometry.types", "point,polygon"),
+            ("plenora.geometry.crs_resolution", "resolved"),
+            ("plenora.geometry.crs_id", "EPSG:4326"),
+            ("plenora.geometry.srid", "4326"),
+            ("plenora.geometry.axis_order", "lat_lon"),
+        ]
+        .map(|(key, value)| (key.to_owned(), value.to_owned())),
+    ));
+    let id = Field::new("id", DataType::Int64, false).with_metadata(HashMap::from([(
+        "plenora.field_id".to_owned(),
+        "0".to_owned(),
+    )]));
+    let schema = Arc::new(Schema::new_with_metadata(
+        vec![id, geometry],
+        HashMap::from([("plenora.contract.version".to_owned(), "1".to_owned())]),
+    ));
+    let mut point = vec![1_u8];
+    point.extend_from_slice(&1_u32.to_le_bytes());
+    point.extend_from_slice(&12.5_f64.to_le_bytes());
+    point.extend_from_slice(&41.9_f64.to_le_bytes());
+    let mut polygon = vec![1_u8];
+    polygon.extend_from_slice(&3_u32.to_le_bytes());
+    polygon.extend_from_slice(&1_u32.to_le_bytes());
+    polygon.extend_from_slice(&4_u32.to_le_bytes());
+    for (x, y) in [(0.0_f64, 0.0_f64), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)] {
+        polygon.extend_from_slice(&x.to_le_bytes());
+        polygon.extend_from_slice(&y.to_le_bytes());
+    }
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 2])),
+            Arc::new(BinaryArray::from(vec![
+                Some(&point[..]),
+                Some(&polygon[..]),
+            ])),
+        ],
+    )
+    .expect("batch");
+    let mut writer = FileWriter::try_new(Vec::new(), &schema).expect("writer");
+    writer.write(&batch).expect("batch");
+    let data = directory.join("input.arrow");
+    std::fs::write(&data, writer.into_inner().expect("file")).expect("input");
+
+    run(&[
+        "database-execute-ddl",
+        "postgres",
+        "PG_DSN",
+        &format!("DROP TABLE IF EXISTS public.{TABLE}"),
+    ]);
+    let write_operation = directory.join("write.json");
+    std::fs::write(
+        &write_operation,
+        serde_json::json!({
+            "target": {"schema": "public", "object": TABLE},
+            "mode": "create",
+            "mapping_policy": "compatible",
+            "transaction_profile": "single_transaction",
+        })
+        .to_string(),
+    )
+    .expect("WRITE.json");
+    let write_request = directory.join("write-request.json");
+    std::fs::write(
+        &write_request,
+        serde_json::json!({
+            "provider": "postgres",
+            "secret_environment": "PG_DSN",
+            "operation_path": write_operation.to_str().expect("UTF-8"),
+        })
+        .to_string(),
+    )
+    .expect("REQUEST.json");
+    let written = run(&[
+        "write",
+        "--input",
+        write_request.to_str().expect("UTF-8"),
+        "--data",
+        data.to_str().expect("UTF-8"),
+    ]);
+    assert_eq!(written["result"]["status"], "committed", "{written}");
+    let srid = run(&[
+        "database-execute-scalar",
+        "postgres",
+        "PG_DSN",
+        &format!("SELECT count(*) FROM public.{TABLE} WHERE ST_SRID(geom) = 4326"),
+    ]);
+    assert_eq!(srid["value"]["value"], 2, "{srid}");
+
+    let read_operation = directory.join("read.json");
+    std::fs::write(
+        &read_operation,
+        serde_json::json!({
+            "source": {"schema": "public", "object": TABLE},
+            "projection": ["id", "geom"],
+            "order_by": [{"field": "id", "direction": "asc"}],
+            "row_limit": null,
+        })
+        .to_string(),
+    )
+    .expect("READ.json");
+    let read_request = directory.join("read-request.json");
+    std::fs::write(
+        &read_request,
+        serde_json::json!({
+            "provider": "postgres",
+            "secret_environment": "PG_DSN",
+            "operation_path": read_operation.to_str().expect("UTF-8"),
+        })
+        .to_string(),
+    )
+    .expect("REQUEST.json");
+    let output = directory.join("read.arrow");
+    run(&[
+        "read",
+        "--input",
+        read_request.to_str().expect("UTF-8"),
+        "--output",
+        output.to_str().expect("UTF-8"),
+    ]);
+    let reader =
+        FileReader::try_new(std::fs::File::open(&output).expect("output"), None).expect("IPC");
+    let schema = reader.schema();
+    let geometry = schema.field_with_name("geom").expect("geom");
+    for key in [
+        "plenora.field_id",
+        "plenora.geometry.encoding",
+        "plenora.geometry.dimensions",
+        "plenora.geometry.spatial_semantics",
+        "plenora.geometry.precision",
+        "plenora.geometry.types_declaration",
+        "plenora.geometry.crs_resolution",
+    ] {
+        assert!(
+            geometry.metadata().contains_key(key),
+            "{key} assente: {:?}",
+            geometry.metadata()
+        );
+    }
+    run(&[
+        "database-execute-ddl",
+        "postgres",
+        "PG_DSN",
+        &format!("DROP TABLE IF EXISTS public.{TABLE}"),
+    ]);
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+/// `query --output` scrive il risultato come Arrow IPC stream, il content
+/// type che il catalogo dichiara per `database.query`; senza `--output` resta
+/// il riepilogo JSON.
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[test]
+fn live_query_writes_its_result_as_an_arrow_stream() {
+    use arrow_ipc::reader::StreamReader;
+
+    let directory =
+        std::env::temp_dir().join(format!("plenora-cli-query-arrow-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("cartella di prova");
+    let operation = directory.join("query.json");
+    std::fs::write(
+        &operation,
+        // SELECT srid FROM public.spatial_ref_sys LIMIT 3
+        serde_json::json!({
+            "source": {"object": {"schema": "public", "object": "spatial_ref_sys"}, "alias": null},
+            "projection": [{
+                "expression": {"kind": "column", "column": {"relation": null, "field": "srid"}},
+                "alias": null
+            }],
+            "filter": null,
+            "having": null,
+            // Ordinamento totale: senza, l'ordine non e ripetibile e il
+            // contenuto non si confronta.
+            "order_by": [{
+                "expression": {"kind": "column", "column": {"relation": null, "field": "srid"}},
+                "direction": "asc"
+            }],
+            "row_limit": 3
+        })
+        .to_string(),
+    )
+    .expect("QUERY.json");
+    let request = directory.join("request.json");
+    std::fs::write(
+        &request,
+        serde_json::json!({
+            "provider": "postgres",
+            "secret_environment": "PG_DSN",
+            "operation_path": operation.to_str().expect("UTF-8"),
+        })
+        .to_string(),
+    )
+    .expect("REQUEST.json");
+    let output = directory.join("result.arrows");
+    let out = run(&[
+        "query",
+        "--input",
+        request.to_str().expect("UTF-8"),
+        "--output",
+        output.to_str().expect("UTF-8"),
+    ]);
+    assert_eq!(out["status"], "ok", "{out}");
+    assert_eq!(out["result"]["format"], "arrow_ipc_stream", "{out}");
+    assert_eq!(out["result"]["rows"], 3, "{out}");
+    let reader = StreamReader::try_new(std::fs::File::open(&output).expect("output"), None)
+        .expect("stream Arrow");
+    let mut srids = Vec::new();
+    for batch in reader {
+        let batch = batch.expect("batch");
+        let column = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<plenora_database_core::arrow::array::Int32Array>()
+            .expect("srid int4");
+        srids.extend(column.iter().map(|value| value.expect("srid").to_string()));
+    }
+    // Lo stesso contenuto, chiesto al database per un'altra strada.
+    let expected = run(&[
+        "database-execute-scalar",
+        "postgres",
+        "PG_DSN",
+        "SELECT string_agg(srid::text, ',' ORDER BY srid) FROM \
+         (SELECT srid FROM public.spatial_ref_sys ORDER BY srid LIMIT 3) s",
+    ]);
+    assert_eq!(
+        srids.join(","),
+        expected["value"]["value"].as_str().expect("string_agg"),
+        "{expected}"
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}

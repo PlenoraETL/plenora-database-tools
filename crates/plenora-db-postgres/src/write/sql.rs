@@ -190,12 +190,22 @@ pub(super) fn pg_type(contract: &FieldContract<'_>) -> Result<String> {
         } else {
             "geometry"
         };
-        let geometry_type = contract.geometry_type.unwrap_or("Geometry");
+        // Piu tipi dichiarati (ARROW-VOCABULARY §3) chiedono una colonna
+        // generica: il controllo per valore sta in `validate_ewkb_contract`.
+        let geometry_type = contract
+            .geometry_type
+            .filter(|types| !types.contains(','))
+            .unwrap_or("Geometry");
         if !geometry_type
             .chars()
             .all(|character| character.is_ascii_alphanumeric())
         {
             return Err(DatabaseError::invalid_plan("geometry type non valido"));
+        }
+        // Dimensioni non note in lettura (colonna senza typmod): la colonna
+        // si ricrea generica, perche un typmod imporrebbe XY.
+        if contract.dimensions == Some("unknown") {
+            return Ok(base.to_owned());
         }
         let dimensions = match contract.dimensions {
             None | Some("xy") => "",

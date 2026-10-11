@@ -8,6 +8,73 @@ riassumono le note di quelle release.
 
 ## Non rilasciato
 
+### Interoperabilità
+
+- **`query --output OUTPUT.arrows`**: il risultato di `query` come Arrow IPC
+  stream, il content type che il catalogo dichiara per `database.query`.
+  Pubblicazione atomica come per `read` (file temporaneo e hard link, mai su
+  un output esistente); il risultato riporta `format: arrow_ipc_stream`,
+  righe e batch. Senza `--output` resta il riepilogo JSON. Il binding runtime
+  continua a restituire il riepilogo (vedi `docs/runtime.md`).
+  Lo schema si valida contro il vocabolario Arrow 1.0 prima di scrivere il
+  primo byte, per `query --output`, `read --output` e il sink runtime: uno
+  schema non conforme non diventa un artefatto. La verifica guarda le sole
+  chiavi canoniche: estensione `geoarrow.wkb` obbligatoria, chiavi legacy
+  rifiutate, tipi geometrici case-sensitive, e un CRS `resolved` o
+  `declared_unresolved` con identificatore e ordine degli assi (§4).
+- **CRS conformi in lettura** in tutti gli adapter: uno SRID senza
+  un'autorità risolta si pubblica `declared_unresolved` con
+  l'identificatore nello spazio dei nomi del catalogo del database
+  (`POSTGIS:n`, `MYSQL:n`, `SQLSERVER:n`, `ORACLE:n`, `DB2:n`) e
+  `axis_order=unknown`; senza SRID il CRS è `missing`. L'identificatore è
+  locale all'installazione: non viene mai promosso a `resolved` e non è
+  confrontabile fra sorgenti diverse (semantica da ratificare in
+  plenora-contracts). Lo SRID segue il dominio di ARROW-VOCABULARY §3,
+  intero decimale signed 32-bit, in ingresso e in pubblicazione:
+  `2147483648` è rifiutato, e `contract_schema` non lascia pubblicare uno
+  SRID di catalogo fuori dominio (MySQL `SRS_ID` è senza segno). Deviazione
+  dichiarata: un SRID negativo è nel contratto ma nessun provider lo
+  rappresenta, ed è rifiutato come `unsupported`. Una definizione CRS vuota
+  o di soli spazi non è un'identità ed è rifiutata. Oracle dichiarava
+  `resolved` senza identificatore; MySQL, SQL Server e Db2
+  `declared_unresolved` senza identificatore né ordine degli assi. Limiti dichiarati: una
+  colonna `numeric` nel risultato di una query PostgreSQL e rifiutata come
+  `unsupported` (non c'e ancora una mappatura esatta per il risultato di una
+  query); senza un `order_by` totale l'ordine delle righe non e ripetibile.
+### Correzioni (vocabolario Arrow 1.0)
+
+- **Più tipi geometrici dichiarati** (`plenora.geometry.types=point,polygon`,
+  valido per ARROW-VOCABULARY §3) erano rifiutati da `write` PostgreSQL come
+  `invalid_plan`. Ora la colonna creata è `geometry(Geometry,SRID)` e ogni
+  valore deve essere di uno dei tipi dichiarati.
+- **WKB ISO con SRID nei metadati** (`encoding=wkb`): `write` pretendeva lo
+  SRID dentro il valore e rifiutava ogni ingresso IO con CRS. Ora lo SRID
+  viene dai metadati del campo e il valore è riscritto in EWKB prima della
+  scrittura; un SRID dentro un valore dichiarato `wkb` è un `data_mapping`.
+- **Categoria conservata nel rollback**: un errore di mappatura scoperto
+  mentre si riservano le risorse del batch usciva come `resource_limit`
+  (exit 4). Ora resta della sua categoria.
+- **`plenora.field_id` su ogni campo letto**, per tutti gli adapter
+  (`protocol::contract_schema`). Un id dichiarato resta, qualunque intero
+  decimale non negativo sia. PostgreSQL dichiara l'id dall'origine della
+  colonna (`attrelid`, `attnum`), quindi una rinomina o un alias non lo
+  cambiano. Limite dichiarato: per le espressioni, per gli adapter che non
+  espongono l'origine (MySQL, SQL Server, Oracle, Db2) e per ogni colonna la
+  cui origine compare più volte nella proiezione l'id si deriva dal nome, e
+  una rinomina lo cambia. Aggiungere una seconda proiezione della stessa
+  origine (anche con un auto-join) cambia quindi l'id anche della colonna
+  rimasta invariata; per le viste l'equivalenza fra lettura e query non è
+  garantita; l'unicità vale dentro lo schema, non fra schemi o nel tempo.
+  Id duplicati — anche per collisione dell'hash — sono un errore `schema`.
+  **`precision`** (`float64`), dimensioni e dichiarazione dei tipi sono
+  sempre presenti sulle geometrie PostgreSQL (ARROW-VOCABULARY §2 e §4), e
+  una geometria letta con `dimensions=unknown` (colonna senza typmod) si
+  riscrive in una colonna `geometry` generica.
+- **SRID annidati**: uno SRID dentro una geometria annidata (per esempio il
+  figlio di una `GeometryCollection`) e un `data_mapping`, per `wkb` e
+  `ewkb`: la verifica guarda tutto il valore, non solo la radice. La copia
+  EWKB dei valori `wkb` e prenotata nel budget prima di essere allocata.
+
 ### Correzioni
 
 - **Il fork di `oracle-rs` vale anche per i consumatori.** Entrava con
