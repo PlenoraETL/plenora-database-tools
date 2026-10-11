@@ -1,7 +1,7 @@
 //! Esiti portabili delle scritture e informazioni necessarie al recupero.
 
 use crate::plan::ProviderKind;
-use crate::RemoteEffect;
+use crate::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +44,15 @@ pub struct Recovery {
     pub idempotency_key: Option<String>,
     pub staging_object: Option<String>,
     pub verification_action: Option<String>,
+    /// La causa osservata dalla sorgente quando la conferma e mancata: I/O o
+    /// connessione, timeout, cancellazione, protocollo. Le superfici ne
+    /// fanno la categoria dell'errore (ERR-001); senza, la categoria e
+    /// `internal`.
+    ///
+    /// Non viaggia nel documento: lo schema `write-outcome` e chiuso, e un
+    /// documento letto da JSON non la porta.
+    #[serde(skip)]
+    pub cause: Option<ErrorCategory>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +190,174 @@ impl WriteOutcome {
             WriteStatus::PartiallyCommitted => RemoteEffect::Partial,
             WriteStatus::OutcomeUnknown => RemoteEffect::Unknown,
         }
+    }
+}
+
+impl WriteOutcome {
+    /// La scrittura come la riporta una superficie pubblica: il documento se
+    /// e un successo pieno, l'errore tipizzato altrimenti.
+    ///
+    /// Un esito `outcome_unknown`, `partially_committed` o `rolled_back` e un
+    /// valore legittimo del tipo Rust, ma non e un successo: una superficie
+    /// che lo consegnasse come risultato `ok` direbbe all'orchestratore di
+    /// proseguire su uno stato remoto che nessuno ha verificato (SURF-014 dei
+    /// contratti comuni). CLI, runtime e SDK Python passano tutti da qui, cosi
+    /// la stessa classe di esito ha lo stesso trattamento su ogni strada.
+    ///
+    /// Il documento dell'esito non va perso: [`UnsettledWrite`] lo conserva,
+    /// e [`UnsettledWrite::public_document`] lo mette in
+    /// `details.write_outcome` dell'errore pubblico, dove `recovery` dice al
+    /// chiamante che cosa verificare prima di un nuovo tentativo.
+    ///
+    /// Un documento che [`Self::validate`] rifiuta non e mai un successo e
+    /// non si inoltra: un `committed` con conteggi incoerenti, o un esito
+    /// ignoto che autorizza il retry automatico, diventano un errore con
+    /// effetto remoto ignoto e senza il documento, che contraddirebbe gli
+    /// assi.
+    ///
+    /// # Errors
+    ///
+    /// [`UnsettledWrite`] per ogni stato diverso da `committed` e per ogni
+    /// documento fuori contratto.
+    pub fn settle(self) -> std::result::Result<Self, Box<UnsettledWrite>> {
+        if self.validate().is_err() {
+            return Err(Box::new(UnsettledWrite {
+                error: DatabaseError {
+                    category: ErrorCategory::Internal,
+                    phase: self.last_phase(),
+                    remote_effect: RemoteEffect::Unknown,
+                    retry: RetryDisposition::RequiresRecovery,
+                    provider: Some(self.provider),
+                    execution_id: None,
+                    message: "esito di scrittura fuori contratto: verificare lo stato remoto \
+                              prima di ogni nuovo tentativo"
+                        .to_owned(),
+                    diagnostics: None,
+                },
+                outcome: None,
+            }));
+        }
+        let (category, phase, retry, message) = match self.status {
+            WriteStatus::Committed => return Ok(self),
+            // Gli stessi assi del vettore `database-write-error` dei contratti
+            // e dell'errore di commit dell'SDK: l'incertezza sta sul COMMIT.
+            WriteStatus::OutcomeUnknown => (
+                self.recovery
+                    .as_ref()
+                    .and_then(|recovery| recovery.cause)
+                    .unwrap_or(ErrorCategory::Internal),
+                ErrorPhase::Commit,
+                RetryDisposition::RequiresRecovery,
+                "esito del commit ignoto: verificare lo stato remoto per execution_id \
+                 prima di ogni nuovo tentativo",
+            ),
+            WriteStatus::PartiallyCommitted => (
+                ErrorCategory::Execution,
+                ErrorPhase::Write,
+                RetryDisposition::RequiresRecovery,
+                "scrittura confermata solo in parte: recovery richiesto prima di ogni \
+                 nuovo tentativo",
+            ),
+            // Nessun adapter lo restituisce oggi come esito: lo stato esiste
+            // nel contratto, e una superficie non puo leggerlo come successo.
+            WriteStatus::RolledBack => (
+                ErrorCategory::Execution,
+                ErrorPhase::Write,
+                RetryDisposition::Never,
+                "scrittura annullata: nessuna riga confermata",
+            ),
+        };
+        let error = DatabaseError {
+            category,
+            phase,
+            remote_effect: self.remote_effect(),
+            retry,
+            provider: Some(self.provider),
+            execution_id: Some(self.execution_id.clone()),
+            message: message.to_owned(),
+            diagnostics: None,
+        };
+        Err(Box::new(UnsettledWrite {
+            error,
+            outcome: Some(self),
+        }))
+    }
+}
+
+impl WriteOutcome {
+    /// L'ultima fase significativa che il documento dichiara (ERR-003): la
+    /// fase certa della `recovery` se c'e, altrimenti quella che lo stato
+    /// implica. Serve quando il documento e fuori contratto e non si inoltra,
+    /// ma la fase in cui la scrittura e arrivata resta vera.
+    const fn last_phase(&self) -> ErrorPhase {
+        if let Some(recovery) = &self.recovery {
+            return match recovery.last_certain_phase {
+                CertainPhase::SessionReady => ErrorPhase::Connect,
+                CertainPhase::TransactionBegun | CertainPhase::Writing => ErrorPhase::Write,
+                CertainPhase::StagingPrepared => ErrorPhase::Prepare,
+                CertainPhase::Finalizing => ErrorPhase::Finalize,
+                CertainPhase::CommitRequested => ErrorPhase::Commit,
+            };
+        }
+        match self.status {
+            WriteStatus::Committed | WriteStatus::OutcomeUnknown => ErrorPhase::Commit,
+            WriteStatus::RolledBack => ErrorPhase::Rollback,
+            WriteStatus::PartiallyCommitted => ErrorPhase::Write,
+        }
+    }
+}
+
+/// Una scrittura che non si e conclusa con un commit certo e completo.
+///
+/// Porta insieme l'errore pubblico e il documento dell'esito, che contiene la
+/// `recovery`: separarli farebbe perdere al chiamante proprio l'informazione
+/// che gli serve per decidere se e come riprendere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsettledWrite {
+    error: DatabaseError,
+    outcome: Option<WriteOutcome>,
+}
+
+impl UnsettledWrite {
+    /// L'errore tipizzato con gli assi dell'esito.
+    #[must_use]
+    pub const fn error(&self) -> &DatabaseError {
+        &self.error
+    }
+
+    /// Il documento `write-outcome` restituito dal provider; `None` se il
+    /// contratto lo rifiuta.
+    #[must_use]
+    pub const fn outcome(&self) -> Option<&WriteOutcome> {
+        self.outcome.as_ref()
+    }
+
+    /// L'errore `plenora-error-v1` con l'esito, se c'e, in
+    /// `details.write_outcome`.
+    ///
+    /// `details` e l'unico oggetto aperto dello schema comune. L'esito non
+    /// porta valori di riga: identificatore d'esecuzione, conteggi e, nella
+    /// `recovery`, nomi di oggetto e la frase di verifica costruita su di essi,
+    /// tutti limitati in lunghezza da `write-outcome.schema.json`.
+    ///
+    /// # Errors
+    ///
+    /// Se l'errore o l'esito non si serializzano.
+    pub fn public_document(&self) -> serde_json::Result<serde_json::Value> {
+        let mut document = serde_json::to_value(self.error.public_projection())?;
+        let Some(outcome) = &self.outcome else {
+            return Ok(document);
+        };
+        let outcome = serde_json::to_value(outcome)?;
+        if let serde_json::Value::Object(fields) = &mut document {
+            let details = fields
+                .entry("details")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(details) = details {
+                details.insert("write_outcome".to_owned(), outcome);
+            }
+        }
+        Ok(document)
     }
 }
 

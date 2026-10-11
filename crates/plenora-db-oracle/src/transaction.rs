@@ -13,7 +13,7 @@ use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::{ParameterValue, ProviderFuture};
 use plenora_database_core::row::Row;
 use plenora_database_core::transaction::{
-    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name,
+    concurrent_modification_error, outcome_unknown_recovery_for, validate_savepoint_name,
     CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
@@ -457,13 +457,16 @@ impl TransactionScope for OracleTransaction {
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
             validate_savepoint_name(name)?;
+            let connection = self.connection.connection()?;
+            // Inviato il ROLLBACK TO SAVEPOINT, un errore non lo conferma.
             timed(
                 self.operation_timeout,
                 ErrorPhase::Rollback,
                 cancellation,
-                self.connection.connection()?.rollback_to_savepoint(name),
+                connection.rollback_to_savepoint(name),
             )
             .await
+            .map_err(rollback_failure)
         })
     }
 
@@ -520,19 +523,27 @@ impl TransactionScope for OracleTransaction {
                         self.connection.allow_reuse();
                         Ok(CommitOutcome::Committed)
                     }
-                    Ok(Err(error)) if error.is_connection_error() => {
-                        self.open = false;
-                        Ok(CommitOutcome::OutcomeUnknown { recovery: outcome_unknown_recovery() })
+                    Ok(Err(error)) => {
+                        let outcome = commit_failure(&error);
+                        if matches!(outcome, Ok(CommitOutcome::OutcomeUnknown { .. })) {
+                            self.open = false;
+                        }
+                        outcome
                     }
-                    Ok(Err(error)) => Err(driver_error(ErrorPhase::Commit, &error)),
                     Err(_) => {
                         self.open = false;
-                        Ok(CommitOutcome::OutcomeUnknown { recovery: outcome_unknown_recovery() })
+                        Ok(CommitOutcome::OutcomeUnknown {
+                            recovery: outcome_unknown_recovery_for(ErrorCategory::Timeout),
+                        })
                     }
                 },
                 _ = cancellation.cancelled() => {
                     self.open = false;
-                    Ok(CommitOutcome::OutcomeUnknown { recovery: outcome_unknown_recovery() })
+                    Ok(CommitOutcome::OutcomeUnknown {
+                        recovery: outcome_unknown_recovery_for(
+                            plenora_database_core::interruption_category(cancellation),
+                        ),
+                    })
                 },
             }
         })
@@ -551,7 +562,7 @@ impl TransactionScope for OracleTransaction {
             if result.is_ok() {
                 self.connection.allow_reuse();
             }
-            result
+            result.map_err(rollback_failure)
         })
     }
 }
@@ -734,3 +745,62 @@ pub async fn execute_ddl(
     drop(connection);
     Ok(())
 }
+
+/// L'esito di un COMMIT che il driver ha chiuso con un errore.
+///
+/// Il comando e gia partito: solo un rifiuto del server con un codice ORA
+/// prova che il commit non e avvenuto. Ogni altro errore — canale chiuso,
+/// risposta non interpretabile (`Error::Protocol` dopo l'invio), timeout del
+/// driver — non prova l'assenza di effetti (ERR-004, ERR-014) e diventa
+/// esito ignoto.
+fn commit_failure(error: &oracle_rs::Error) -> Result<CommitOutcome> {
+    let (public, proves_rollback) = classified_commit_failure(error);
+    plenora_database_core::transaction::commit_failure_outcome(public, proves_rollback)
+}
+
+/// L'errore di un COMMIT fuori da una transazione (il setup della
+/// creazione): la stessa regola di [`commit_failure`], come errore.
+pub fn commit_error(error: &oracle_rs::Error) -> DatabaseError {
+    let (public, proves_rollback) = classified_commit_failure(error);
+    plenora_database_core::transaction::after_commit_sent(public, proves_rollback)
+}
+
+/// L'errore pubblico di un COMMIT fallito e se prova il rollback.
+fn classified_commit_failure(error: &oracle_rs::Error) -> (DatabaseError, bool) {
+    let code = match error {
+        oracle_rs::Error::OracleError { code, .. } | oracle_rs::Error::ServerError { code, .. } => {
+            Some(*code)
+        }
+        _ => None,
+    };
+    let mut public = driver_error(ErrorPhase::Commit, error);
+    // La categoria della causa: `io` per i codici di connessione persa.
+    if code.is_some_and(|code| LOST_CONNECTION_CODES.contains(&code)) {
+        public.category = ErrorCategory::Io;
+    }
+    (
+        public,
+        code.is_some_and(|code| CERTAIN_COMMIT_REJECTIONS.contains(&code)),
+    )
+}
+
+/// I soli codici ORA che, dopo l'invio del COMMIT, provano che il commit e
+/// stato rifiutato: ORA-02091, transazione annullata (tipicamente da un
+/// vincolo differito). L'elenco e chiuso: un codice nuovo e esito ignoto
+/// finche qualcuno non ne dimostra la semantica.
+const CERTAIN_COMMIT_REJECTIONS: &[u32] = &[2_091];
+
+/// Codici che dicono che la connessione e persa: ORA-03113 (fine del
+/// canale), ORA-03114 (non connesso), ORA-25408 (chiamata non rieseguibile
+/// dopo la perdita della connessione).
+const LOST_CONNECTION_CODES: &[u32] = &[3_113, 3_114, 25_408];
+
+/// L'errore di un rollback esplicito non confermato: timeout, canale perso,
+/// rifiuto. In nessun caso prova che le scritture siano annullate.
+fn rollback_failure(error: DatabaseError) -> DatabaseError {
+    error.after_unconfirmed_rollback()
+}
+
+#[cfg(test)]
+#[path = "transaction_commit_tests.rs"]
+mod commit_tests;

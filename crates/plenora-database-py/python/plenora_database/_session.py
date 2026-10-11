@@ -242,10 +242,12 @@ class Session(_BuilderFactory):
               "rows": {"received": N, "confirmed": N, "inserted": N, ...},
             }
 
-        `recovery` compare **solo** negli esiti che lo prevedono —
-        `partially_committed` e `outcome_unknown` — perche le altre varianti
-        dello schema non lo dichiarano. Gli stati usano la forma del contratto
-        (`partially_committed`, non `partiallycommitted`).
+        Ritorna solo una scrittura `committed`. Un esito `outcome_unknown`,
+        `partially_committed` o `rolled_back` non e un successo e solleva
+        l'eccezione della sua categoria (`PlenoraCommitOutcomeUnknownError`
+        per il commit ignoto) con gli assi `remote_effect` e `retry`; il
+        documento dell'esito, con la sua `recovery`, sta in
+        `exc.details["write_outcome"]`.
 
         Richiede pyarrow installato (a meno che `source` sia già bytes).
         """

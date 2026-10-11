@@ -117,23 +117,12 @@ pub fn timeout_error(
     effect: RemoteEffect,
 ) -> DatabaseError {
     let product = profile.product();
-    let ambiguous = matches!(
-        phase,
-        ErrorPhase::Write | ErrorPhase::Commit | ErrorPhase::Rollback
-    );
+    // Gli assi delle fasi mutanti vengono dalla regola unica del core.
     DatabaseError {
         category: ErrorCategory::Timeout,
         phase,
-        remote_effect: if ambiguous {
-            RemoteEffect::Unknown
-        } else {
-            effect
-        },
-        retry: if ambiguous {
-            RetryDisposition::RequiresRecovery
-        } else {
-            RetryDisposition::Never
-        },
+        remote_effect: effect,
+        retry: RetryDisposition::Never,
         provider: Some(profile.kind()),
         execution_id: None,
         message: if phase == ErrorPhase::Connect {
@@ -143,6 +132,7 @@ pub fn timeout_error(
         },
         diagnostics: None,
     }
+    .after_interrupted_send()
 }
 
 pub fn cancellation_error(
@@ -151,23 +141,12 @@ pub fn cancellation_error(
     effect: RemoteEffect,
 ) -> DatabaseError {
     let product = profile.product();
-    let ambiguous = matches!(
-        phase,
-        ErrorPhase::Write | ErrorPhase::Commit | ErrorPhase::Rollback
-    );
+    // Gli assi delle fasi mutanti vengono dalla regola unica del core.
     DatabaseError {
         category: ErrorCategory::Cancelled,
         phase,
-        remote_effect: if ambiguous {
-            RemoteEffect::Unknown
-        } else {
-            effect
-        },
-        retry: if ambiguous {
-            RetryDisposition::RequiresRecovery
-        } else {
-            RetryDisposition::Never
-        },
+        remote_effect: effect,
+        retry: RetryDisposition::Never,
         provider: Some(profile.kind()),
         execution_id: None,
         message: if phase == ErrorPhase::Connect {
@@ -177,6 +156,7 @@ pub fn cancellation_error(
         },
         diagnostics: None,
     }
+    .after_interrupted_send()
 }
 
 pub fn interruption_error(

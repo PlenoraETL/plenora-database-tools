@@ -25,6 +25,7 @@ use crate::public_ops::{
 };
 use crate::Engine;
 use arrow_ipc::writer::StreamWriter;
+use plenora_database_core::outcome::UnsettledWrite;
 use plenora_database_core::plan::{Operation, ProviderKind, ReadOperation, WriteOperation};
 use plenora_database_core::provider::{
     BatchStream, ParameterBag, Provider, ProviderFuture, SecretString,
@@ -375,7 +376,7 @@ impl<'a> RuntimeBinding<'a> {
                 },
                 body,
             },
-            Err(error) => error_result(identity, &error),
+            Err(failure) => error_result(identity, &failure),
         }
     }
 
@@ -399,7 +400,7 @@ impl<'a> RuntimeBinding<'a> {
                     output_contract: ERROR_CONTRACT.to_owned(),
                     correlation_id: None,
                 },
-                &error,
+                &Failure::from(error),
             ),
         }
     }
@@ -408,7 +409,7 @@ impl<'a> RuntimeBinding<'a> {
         &self,
         invocation: &RuntimeInvocation,
         cancellation: &CancellationToken,
-    ) -> Result<(PublicOperation, &'static str, RuntimeBody)> {
+    ) -> std::result::Result<(PublicOperation, &'static str, RuntimeBody), Failure> {
         let admitted = admit(invocation)?;
         if cancellation.is_cancelled() {
             return Err(DatabaseError::interrupted(
@@ -416,7 +417,8 @@ impl<'a> RuntimeBinding<'a> {
                 None,
                 ErrorPhase::Validate,
                 "invocazione annullata prima dell'esecuzione",
-            ));
+            )
+            .into());
         }
         let token = cancellation.child_token_with_deadline(admitted.deadline);
         let (content_type, body) = match admitted.operation.id.as_str() {
@@ -463,7 +465,8 @@ impl<'a> RuntimeBinding<'a> {
                 return Err(route_error(
                     ErrorCategory::Unsupported,
                     "operazione runtime non supportata",
-                ))
+                )
+                .into())
             }
         };
         Ok((admitted.operation, content_type, body))
@@ -623,7 +626,7 @@ impl<'a> RuntimeBinding<'a> {
         invocation: &RuntimeInvocation,
         admitted: &Admitted,
         cancellation: &CancellationToken,
-    ) -> Result<(&'static str, RuntimeBody)> {
+    ) -> std::result::Result<(&'static str, RuntimeBody), Failure> {
         let deadline = admitted.deadline;
         let request: WriteRequest = decode(&invocation.payload)?;
         let target = validated(request.target())?;
@@ -656,7 +659,9 @@ impl<'a> RuntimeBinding<'a> {
         let outcome = connected
             .provider
             .write(&connected.secret, prepared, input, &budget, &token)
-            .await?;
+            .await?
+            .settle()
+            .map_err(Failure::Unsettled)?;
         let document = serde_json::to_value(outcome)
             .map_err(|_| internal("esito della scrittura non serializzabile"))?;
         Ok((JSON_CONTENT_TYPE, RuntimeBody::Json(document)))
@@ -1025,14 +1030,36 @@ fn unsupported(message: &'static str) -> DatabaseError {
     route_error(ErrorCategory::Unsupported, message)
 }
 
-fn error_result(identity: RuntimeResultMetadata, error: &DatabaseError) -> RuntimeResult {
+/// Come finisce un'invocazione che non produce il proprio risultato.
+///
+/// Una scrittura non pienamente riuscita e un fallimento anche quando il
+/// provider la restituisce come esito (SURF-014): l'envelope d'errore porta
+/// gli assi, e `details.write_outcome` il documento con la `recovery`.
+enum Failure {
+    Error(DatabaseError),
+    Unsettled(Box<UnsettledWrite>),
+}
+
+impl From<DatabaseError> for Failure {
+    fn from(error: DatabaseError) -> Self {
+        Self::Error(error)
+    }
+}
+
+fn error_result(identity: RuntimeResultMetadata, failure: &Failure) -> RuntimeResult {
+    let body = match failure {
+        Failure::Error(error) => error_document(error),
+        Failure::Unsettled(unsettled) => unsettled
+            .public_document()
+            .unwrap_or_else(|_| error_document(unsettled.error())),
+    };
     RuntimeResult {
         content_type: ERROR_CONTENT_TYPE.to_owned(),
         metadata: RuntimeResultMetadata {
             output_contract: ERROR_CONTRACT.to_owned(),
             ..identity
         },
-        body: RuntimeBody::Json(error_document(error)),
+        body: RuntimeBody::Json(body),
     }
 }
 

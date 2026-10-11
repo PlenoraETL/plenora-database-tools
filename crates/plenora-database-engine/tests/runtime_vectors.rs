@@ -144,6 +144,9 @@ impl BatchStream for Batches {
 enum WriteScript {
     Committed,
     CommitOutcomeUnknown,
+    /// Cio che gli adapter reali restituiscono su un commit senza conferma:
+    /// un `Ok` con lo stato `outcome_unknown`, non un `Err`.
+    UnknownOutcomeDocument,
 }
 
 /// Provider `postgres` scriptato con gli esiti dei vettori.
@@ -302,6 +305,19 @@ impl Provider for Scripted {
                     "provider": "postgres",
                     "rows": {"received": 1, "confirmed": 1, "inserted": 1, "updated": null,
                              "deleted": null, "failed": 0, "skipped": 0}
+                }))
+                .expect("outcome")),
+                WriteScript::UnknownOutcomeDocument => Ok(serde_json::from_value(json!({
+                    "schema_version": 2,
+                    "status": "outcome_unknown",
+                    "execution_id": "vector-execution-1",
+                    "provider": "postgres",
+                    "rows": {"received": 1, "confirmed": 0, "inserted": null, "updated": null,
+                             "deleted": null, "failed": 0, "skipped": 0},
+                    "recovery": {"last_certain_phase": "commit_requested",
+                                 "automatic_retry_allowed": false, "idempotency_key": null,
+                                 "staging_object": null,
+                                 "verification_action": "verificare lo stato remoto"}
                 }))
                 .expect("outcome")),
                 // L'esito che il vettore `database-write-error` descrive.
@@ -1187,6 +1203,52 @@ fn database_write_error_vector_is_reproduced() {
         ]
     );
     evidence("database-write-error.json", &as_vector(&result, error));
+}
+
+/// Un esito `outcome_unknown` restituito come documento dal provider non e un
+/// successo (SURF-014): il runtime risponde con l'errore del vettore
+/// `database-write-error` e conserva l'esito in `details.write_outcome`.
+#[test]
+fn an_unknown_outcome_document_is_the_vector_error_not_a_result() {
+    let vector = upstream("runtime-v1/database-write-error.json");
+    let metadata = request_metadata(
+        "database.write",
+        "plenora-database-write-input-v1",
+        "018f3d84-7b2c-7f00-8000-000000000204",
+        vector["metadata"]["plenora.trace.correlation_id"]
+            .as_str()
+            .expect("correlation"),
+    );
+    let payload = with(
+        target_payload(),
+        &json!({"operation_path": WRITE_REFERENCE}),
+    );
+    let host = Host::new(WriteScript::UnknownOutcomeDocument);
+    let result = invoke(
+        &host,
+        &invocation(&json!(JSON_CONTENT_TYPE), &metadata, &payload),
+    );
+    assert!(result.is_error(), "esito ignoto consegnato come risultato");
+    assert_eq!(result.content_type, ERROR_CONTENT_TYPE);
+    let error = json_body(&result);
+    for axis in [
+        "category",
+        "phase",
+        "remote_effect",
+        "retry",
+        "provider",
+        "execution_id",
+    ] {
+        assert_eq!(error[axis], vector["payload"][axis], "{axis}");
+    }
+    assert_eq!(
+        error["details"]["write_outcome"]["status"],
+        "outcome_unknown"
+    );
+    assert_eq!(
+        error["details"]["write_outcome"]["recovery"]["automatic_retry_allowed"],
+        false
+    );
 }
 
 /// Le altre operazioni legate al runtime: ognuna restituisce il proprio

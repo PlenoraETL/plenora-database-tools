@@ -54,7 +54,7 @@ use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::provider::ProviderFuture;
 use plenora_database_core::row::Row;
 use plenora_database_core::transaction::{
-    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name,
+    concurrent_modification_error, outcome_unknown_recovery_for, validate_savepoint_name,
     CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{
@@ -107,11 +107,11 @@ impl PostgresTransaction {
                     .await
                     .map_err(|error| classify_error(ErrorPhase::Prepare, &error))
                 {
-                    // Best-effort rollback per non lasciare la tx orfana;
-                    // se anche il rollback fallisce, invalidiamo la sessione.
-                    let _ = inner.batch_execute("ROLLBACK").await;
+                    // Rollback per non lasciare la tx orfana; se fallisce,
+                    // invalidiamo la sessione e l'errore lo dice.
+                    let rolled_back = inner.batch_execute("ROLLBACK").await.is_ok();
                     client.invalidate();
-                    return Err(error);
+                    return Err(context_failure(error, rolled_back));
                 }
             }
         }
@@ -151,10 +151,12 @@ impl PostgresTransaction {
         }
     }
 
-    /// Costruisce l'errore di interruzione con `RemoteEffect::Unknown` nelle
-    /// fasi state-mutating (Write/Commit), dove la query può essere
-    /// stata già applicata server-side. Le fasi Read/Prepare/Rollback
-    /// restano con `None` (nessun effetto).
+    /// L'errore di un'interruzione arrivata con il comando gia inviato. Gli
+    /// assi vengono dalla regola unica del core
+    /// ([`DatabaseError::after_interrupted_send`]): nelle fasi mutanti
+    /// (Write, Commit, Rollback) l'effetto e ignoto e serve una recovery,
+    /// perche invalidare la connessione non conferma nulla; le altre fasi
+    /// restano senza effetto.
     ///
     /// La categoria viene dalla causa: una deadline scaduta è `Timeout`, una
     /// decisione del chiamante è `Cancelled`.
@@ -163,20 +165,17 @@ impl PostgresTransaction {
         phase: ErrorPhase,
         message: &str,
     ) -> DatabaseError {
-        let remote_effect = match phase {
-            ErrorPhase::Write | ErrorPhase::Commit => RemoteEffect::Unknown,
-            _ => RemoteEffect::None,
-        };
         DatabaseError {
             category: crate::error::interruption_category(cancellation),
             phase,
-            remote_effect,
+            remote_effect: RemoteEffect::None,
             retry: RetryDisposition::Never,
             provider: Some(plenora_database_core::plan::ProviderKind::Postgres),
             execution_id: None,
             message: message.to_owned(),
             diagnostics: None,
         }
+        .after_interrupted_send()
     }
 
     async fn prepare_bind(
@@ -304,7 +303,10 @@ impl TransactionScope for PostgresTransaction {
             if let Some(result) =
                 select_with_cancellation(client.batch_execute(&sql), cancellation).await
             {
-                result.map_err(|error| classify_error(ErrorPhase::Rollback, &error))
+                // Inviato il ROLLBACK TO SAVEPOINT, un errore non lo conferma.
+                result.map_err(|error| {
+                    classify_error(ErrorPhase::Rollback, &error).after_unconfirmed_rollback()
+                })
             } else {
                 self.client.invalidate();
                 self.open = false;
@@ -687,7 +689,9 @@ impl TransactionScope for PostgresTransaction {
                 self.client.invalidate();
                 self.open = false;
                 return Ok(CommitOutcome::OutcomeUnknown {
-                    recovery: outcome_unknown_recovery(),
+                    recovery: outcome_unknown_recovery_for(
+                        plenora_database_core::interruption_category(cancellation),
+                    ),
                 });
             };
             match commit_result {
@@ -695,20 +699,18 @@ impl TransactionScope for PostgresTransaction {
                     self.open = false;
                     Ok(CommitOutcome::Committed)
                 }
+                // Regola unica dopo l'invio del COMMIT: ignoto, salvo uno
+                // SQLSTATE che prova il rollback.
                 Err(error) => {
-                    let mapped = classify_error(ErrorPhase::Commit, &error);
                     self.open = false;
-                    if mapped.remote_effect == RemoteEffect::Unknown {
+                    let proves = crate::error::commit_rejection_proves_rollback(&error);
+                    if !proves || error.is_closed() {
                         self.client.invalidate();
-                        Ok(CommitOutcome::OutcomeUnknown {
-                            recovery: outcome_unknown_recovery(),
-                        })
-                    } else {
-                        if error.is_closed() {
-                            self.client.invalidate();
-                        }
-                        Err(mapped)
                     }
+                    crate::error::commit_failure(
+                        error.code().map(tokio_postgres::error::SqlState::code),
+                        error.is_closed(),
+                    )
                 }
             }
         })
@@ -725,7 +727,11 @@ impl TransactionScope for PostgresTransaction {
                 .client()?
                 .batch_execute("ROLLBACK")
                 .await
-                .map_err(|error| classify_error(ErrorPhase::Rollback, &error));
+                // Un rollback non confermato non prova che le scritture siano
+                // annullate (ERR-003, ERR-014).
+                .map_err(|error| {
+                    classify_error(ErrorPhase::Rollback, &error).after_unconfirmed_rollback()
+                });
             self.open = false;
             if result.is_err() {
                 self.client.invalidate();
@@ -739,3 +745,13 @@ impl TransactionScope for PostgresTransaction {
 // documentazione della retry disposition applicata al ramo timeout.
 #[allow(dead_code)]
 const _: fn() -> RetryDisposition = || RetryDisposition::Never;
+
+/// L'errore di un `set_config` fallito dopo il BEGIN, con l'esito del
+/// rollback di pulizia.
+fn context_failure(error: DatabaseError, rolled_back: bool) -> DatabaseError {
+    if rolled_back {
+        error
+    } else {
+        error.after_unconfirmed_rollback()
+    }
+}

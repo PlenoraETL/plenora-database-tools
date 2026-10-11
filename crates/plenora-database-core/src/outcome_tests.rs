@@ -105,6 +105,7 @@ fn the_recovery_fields_are_measured_at_their_boundaries() {
         let build = |length: usize| {
             let filler = "a".repeat(length);
             Recovery {
+                cause: None,
                 last_certain_phase: CertainPhase::CommitRequested,
                 automatic_retry_allowed: false,
                 idempotency_key: (set == 0).then(|| filler.clone()),
@@ -191,4 +192,122 @@ fn unknown_outcome_cannot_authorize_automatic_retry() {
         .expect("unknown recovery")
         .automatic_retry_allowed = true;
     assert!(outcome.validate().is_err());
+}
+
+fn example(name: &str) -> WriteOutcome {
+    let input = match name {
+        "unknown" => include_str!("../../../contracts/v2/examples/outcome-unknown.json"),
+        _ => include_str!("../../../contracts/v2/examples/outcome-committed.json"),
+    };
+    serde_json::from_str(input).expect("outcome example")
+}
+
+#[test]
+fn only_a_committed_outcome_settles_as_success() {
+    let committed = example("committed");
+    assert_eq!(committed.clone().settle().expect("committed"), committed);
+}
+
+/// Gli assi coincidono con il vettore `database-write-error` dei contratti:
+/// un esito ignoto non e un successo su nessuna superficie (SURF-014).
+#[test]
+fn an_unknown_outcome_settles_as_the_contract_commit_error() {
+    let unknown = example("unknown");
+    let unsettled = unknown
+        .clone()
+        .settle()
+        .expect_err("unknown is not success");
+    let error = unsettled.error();
+    assert_eq!(error.category, ErrorCategory::Internal);
+    assert_eq!(error.phase, ErrorPhase::Commit);
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    assert_eq!(error.provider, Some(unknown.provider));
+    assert_eq!(
+        error.execution_id.as_deref(),
+        Some(unknown.execution_id.as_str())
+    );
+    assert_eq!(unsettled.outcome(), Some(&unknown));
+
+    let document = unsettled.public_document().expect("document");
+    assert_eq!(document["remote_effect"], "unknown");
+    assert_eq!(document["retry"]["kind"], "requires_recovery");
+    assert_eq!(
+        document["details"]["write_outcome"],
+        serde_json::to_value(&unknown).expect("outcome JSON")
+    );
+}
+
+#[test]
+fn partial_and_rolled_back_outcomes_are_not_success_either() {
+    let mut partial = example("unknown");
+    partial.status = WriteStatus::PartiallyCommitted;
+    let error = partial.settle().expect_err("partial").error().clone();
+    assert_eq!(error.remote_effect, RemoteEffect::Partial);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    assert_eq!(error.category, ErrorCategory::Execution);
+
+    let mut rolled_back = example("committed");
+    rolled_back.status = WriteStatus::RolledBack;
+    rolled_back.rows.confirmed = 0;
+    rolled_back.rows.inserted = None;
+    rolled_back.rows.updated = None;
+    rolled_back.rows.deleted = None;
+    let error = rolled_back
+        .settle()
+        .expect_err("rolled back")
+        .error()
+        .clone();
+    assert_eq!(error.remote_effect, RemoteEffect::RolledBack);
+    assert_eq!(error.retry, RetryDisposition::Never);
+}
+
+/// Un documento che il contratto rifiuta non e un successo, e non si inoltra:
+/// un `committed` con conteggi incoerenti, o un esito ignoto che autorizza il
+/// retry automatico, diventano un errore senza `details.write_outcome`.
+#[test]
+fn an_unconsumable_outcome_never_settles_and_is_not_forwarded() {
+    let mut committed = example("committed");
+    committed.rows.confirmed = committed.rows.received + 1;
+    let unsettled = committed.settle().expect_err("conteggi incoerenti");
+    assert_eq!(unsettled.error().remote_effect, RemoteEffect::Unknown);
+    // Un `committed` incoerente arriva dopo il commit.
+    assert_eq!(unsettled.error().phase, ErrorPhase::Commit);
+    assert!(unsettled.outcome().is_none());
+
+    let auto_retry: WriteOutcome = serde_json::from_str(include_str!(
+        "../../../contracts/v2/examples/unconsumable-outcome-unknown-auto-retry.json"
+    ))
+    .expect("example");
+    let unsettled = auto_retry.settle().expect_err("retry automatico");
+    assert_eq!(unsettled.error().retry, RetryDisposition::RequiresRecovery);
+    // La fase certa del documento e `commit_requested`: l'errore la conserva
+    // (ERR-003), non la sostituisce con `finalize`.
+    assert_eq!(unsettled.error().phase, ErrorPhase::Commit);
+    let document = unsettled.public_document().expect("document");
+    assert!(document.get("details").is_none(), "{document}");
+}
+
+/// ERR-001: la categoria di un esito ignoto e quella della causa che la
+/// sorgente ha osservato; senza causa resta `internal`. La causa non viaggia
+/// nel documento, il cui schema e chiuso.
+#[test]
+fn an_unknown_outcome_takes_the_category_of_its_cause() {
+    for (cause, expected) in [
+        (Some(ErrorCategory::Io), ErrorCategory::Io),
+        (Some(ErrorCategory::Timeout), ErrorCategory::Timeout),
+        (None, ErrorCategory::Internal),
+    ] {
+        let mut unknown = example("unknown");
+        if let Some(recovery) = unknown.recovery.as_mut() {
+            recovery.cause = cause;
+        }
+        let document = serde_json::to_value(&unknown).expect("JSON");
+        assert!(document["recovery"].get("cause").is_none(), "{document}");
+        let error = unknown.settle().expect_err("ignoto").error().clone();
+        assert_eq!(error.category, expected);
+        assert_eq!(error.phase, ErrorPhase::Commit);
+        assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    }
 }

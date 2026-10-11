@@ -192,6 +192,53 @@ impl DatabaseError {
         }
     }
 
+    /// Gli assi di un errore dopo un rollback **non confermato**.
+    ///
+    /// L'ultima fase avviata e il rollback (ERR-003), e senza la sua conferma
+    /// l'effetto delle scritture della transazione non e provato (ERR-014):
+    /// effetto ignoto e recovery obbligatoria. Una `quarantine` gia decisa
+    /// resta, perche e ammessa con un effetto ignoto ed e piu severa.
+    /// Categoria e messaggio restano quelli di cio che e fallito.
+    #[must_use]
+    pub fn after_unconfirmed_rollback(mut self) -> Self {
+        self.phase = ErrorPhase::Rollback;
+        self.remote_effect = RemoteEffect::Unknown;
+        if self.retry != RetryDisposition::Quarantine {
+            self.retry = RetryDisposition::RequiresRecovery;
+        }
+        self
+    }
+
+    /// Gli assi di un'interruzione (timeout o cancellazione) arrivata
+    /// **dopo l'invio** di un comando.
+    ///
+    /// Regola unica per tutti gli adapter (ERR-004, ERR-014): con un comando
+    /// mutante in volo l'interruzione non prova nulla. Un rollback interrotto
+    /// e un rollback non confermato ([`Self::after_unconfirmed_rollback`]);
+    /// una scrittura o un commit interrotti hanno effetto ignoto e
+    /// richiedono recovery. Le altre fasi restano come sono. Categoria e
+    /// messaggio restano quelli dell'interruzione; una `quarantine` gia
+    /// decisa resta.
+    #[must_use]
+    pub fn after_interrupted_send(self) -> Self {
+        match self.phase {
+            ErrorPhase::Rollback => self.after_unconfirmed_rollback(),
+            ErrorPhase::Write | ErrorPhase::Commit => {
+                let retry = if self.retry == RetryDisposition::Quarantine {
+                    RetryDisposition::Quarantine
+                } else {
+                    RetryDisposition::RequiresRecovery
+                };
+                Self {
+                    remote_effect: RemoteEffect::Unknown,
+                    retry,
+                    ..self
+                }
+            }
+            _ => self,
+        }
+    }
+
     #[must_use]
     pub fn invalid_plan(message: impl Into<String>) -> Self {
         Self::new(
@@ -218,6 +265,10 @@ impl DatabaseError {
     /// Una deadline scaduta e un `Timeout`, tutto il resto una `Cancelled`.
     /// La classificazione centralizzata impedisce che provider e retry engine
     /// attribuiscano categorie diverse allo stesso token.
+    ///
+    /// Gli assi sono quelli di un'interruzione **prima dell'invio**: nessun
+    /// effetto. Con il comando gia in volo il chiamante applica
+    /// [`Self::after_interrupted_send`].
     pub fn interrupted(
         cancellation: &crate::CancellationToken,
         provider: Option<ProviderKind>,

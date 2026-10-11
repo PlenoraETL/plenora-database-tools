@@ -33,7 +33,7 @@ use mysql_async::{Row as MyRow, Value};
 use plenora_database_core::provider::{ParameterValue, ProviderFuture};
 use plenora_database_core::row::Row;
 use plenora_database_core::transaction::{
-    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name,
+    concurrent_modification_error, outcome_unknown_recovery_for, validate_savepoint_name,
     CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{
@@ -805,6 +805,8 @@ impl TransactionScope for MysqlTransaction {
                     return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
                 }
                 let quoted = quote_savepoint_name(name)?;
+                // Inviato il ROLLBACK TO SAVEPOINT, un errore non lo
+                // conferma.
                 raw_exec(
                     &mut self.session,
                     &format!("ROLLBACK TO SAVEPOINT {quoted}"),
@@ -812,6 +814,7 @@ impl TransactionScope for MysqlTransaction {
                     cancellation,
                 )
                 .await
+                .map_err(DatabaseError::after_unconfirmed_rollback)
             }
             .await;
             crate::profile::attributed_kind(kind, outcome)
@@ -874,15 +877,12 @@ impl TransactionScope for MysqlTransaction {
                 self.open = false;
                 match outcome {
                     Ok(()) => Ok(CommitOutcome::Committed),
-                    Err(err)
-                        if matches!(
-                            err.category,
-                            ErrorCategory::Cancelled | ErrorCategory::Timeout | ErrorCategory::Io
-                        ) =>
-                    {
-                        // Canale compromesso durante commit: outcome ignoto.
+                    // Dopo l'invio `exec_transaction` applica la regola unica:
+                    // ignoto, salvo un codice che prova il rollback. Un errore
+                    // con effetto `none` viene da prima dell'invio.
+                    Err(err) if err.remote_effect == RemoteEffect::Unknown => {
                         Ok(CommitOutcome::OutcomeUnknown {
-                            recovery: outcome_unknown_recovery(),
+                            recovery: outcome_unknown_recovery_for(err.category),
                         })
                     }
                     Err(err) => Err(err),
@@ -912,7 +912,10 @@ impl TransactionScope for MysqlTransaction {
                         ErrorPhase::Rollback,
                         cancellation,
                     )
-                    .await;
+                    .await
+                    // Un rollback non confermato non prova che le scritture
+                    // siano annullate (ERR-003, ERR-014).
+                    .map_err(DatabaseError::after_unconfirmed_rollback);
                 self.open = false;
                 outcome
             }

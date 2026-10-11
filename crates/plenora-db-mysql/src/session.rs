@@ -4,6 +4,7 @@ use crate::profile::ProductProfile;
 use futures_util::StreamExt;
 use mysql_async::prelude::{Queryable, StatementLike};
 use mysql_async::{Conn, Params, Row, Statement};
+use plenora_database_core::transaction::after_commit_sent;
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
     RetryDisposition,
@@ -493,12 +494,14 @@ impl MysqlSession {
                 if error.is_fatal() {
                     self.quarantine().await;
                 }
-                Err(driver_error(
-                    self.profile,
-                    &error,
-                    phase,
-                    RemoteEffect::None,
-                ))
+                let public = driver_error(self.profile, &error, phase, RemoteEffect::None);
+                // Il comando e partito: regola unica dopo il COMMIT, e un
+                // ROLLBACK che fallisce non e confermato.
+                Err(match command {
+                    MysqlTransactionCommand::Commit => commit_failure(self.profile, &error),
+                    MysqlTransactionCommand::Rollback => public.after_unconfirmed_rollback(),
+                    MysqlTransactionCommand::Start => public,
+                })
             }
             Err(_) => {
                 self.quarantine().await;
@@ -751,3 +754,16 @@ pub(crate) fn state_error(
 #[cfg(test)]
 #[path = "session_tests.rs"]
 mod tests;
+
+/// L'errore di un COMMIT inviato: regola unica di `after_commit_sent`, con
+/// l'elenco chiuso del prodotto (`ProductProfile::commit_rollback_codes`).
+pub fn commit_failure(
+    profile: &dyn ProductProfile,
+    error: &mysql_async::Error,
+) -> plenora_database_core::DatabaseError {
+    let public = driver_error(profile, error, ErrorPhase::Commit, RemoteEffect::None);
+    after_commit_sent(
+        public,
+        server_code(error).is_some_and(|code| profile.commit_rollback_codes().contains(&code)),
+    )
+}

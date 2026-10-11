@@ -169,11 +169,15 @@ pub(crate) async fn conditional_update(args: &mut impl Iterator<Item = String>) 
         "expected_affected": expected,
         "commit": commit,
     }))?;
-    // Ogni esito update non-ok produce un exit code non-zero.
+    // Ogni esito update non-ok produce un exit code non-zero: quello della
+    // categoria dell'errore, o del commit ignoto.
     if status == "ok" {
         Ok(())
     } else {
-        Err(crate::CliError::Silent)
+        Err(crate::CliError::Reported(outcome.err().map_or(
+            plenora_database_core::ErrorCategory::Internal,
+            |error| error.category,
+        )))
     }
 }
 
@@ -191,7 +195,7 @@ pub(crate) async fn pool_status(args: &mut impl Iterator<Item = String>) -> CliR
 
     // Questa superficie misura la connessione; lo stato granulare del pool non
     // è esposto dall'API del provider.
-    let ok = connection.is_ok();
+    let failure = connection.as_ref().err().map(|error| error.category);
     let payload = match connection {
         Ok(info) => json!({
             "status": "ok",
@@ -208,12 +212,8 @@ pub(crate) async fn pool_status(args: &mut impl Iterator<Item = String>) -> CliR
         }),
     };
     print_json(&payload)?;
-    // Un acquire fallito produce un exit code non-zero.
-    if ok {
-        Ok(())
-    } else {
-        Err(crate::CliError::Silent)
-    }
+    // Un acquire fallito esce con il codice della categoria del suo errore.
+    failure.map_or(Ok(()), |category| Err(crate::CliError::Reported(category)))
 }
 
 // ============================================================================

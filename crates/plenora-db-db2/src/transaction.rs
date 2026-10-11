@@ -32,6 +32,14 @@ pub struct Db2Transaction {
     _operation_lease: ResourceLease,
 }
 
+/// Ultima risorsa per uno scope abbandonato senza commit ne rollback.
+///
+/// Resta raggiungibile solo cosi: commit, rollback esplicito e i percorsi di
+/// write chiudono la transazione da se e riportano l'esito del rollback negli
+/// assi. Qui non c'e un errore da costruire, quindi nessun asse puo mentire:
+/// il chiamante che ha lasciato cadere lo scope non riceve un esito, e la
+/// connessione chiusa subito dopo fa annullare a Db2 il lavoro non
+/// confermato.
 impl Drop for Db2Transaction {
     fn drop(&mut self) {
         if self.open {
@@ -230,8 +238,17 @@ impl Db2Transaction {
             return Ok(());
         }
         if cancellation.is_cancelled() {
-            return Err(interruption_error(cancellation, ErrorPhase::Rollback));
+            // Anche qui il rollback si esegue e il suo esito decide gli assi:
+            // una cancellazione non lascia la transazione al `Drop`.
+            let error = interruption_error(cancellation, ErrorPhase::Rollback);
+            let confirmed = self.rollback_connection().await.is_ok();
+            return Err(abandoned_error(error, confirmed));
         }
+        self.rollback_connection().await
+    }
+
+    /// Rollback sulla connessione, atteso fino alla risposta del driver.
+    async fn rollback_connection(&mut self) -> Result<()> {
         self.open = false;
         let connection = self.connection.take().ok_or_else(|| {
             transaction_error(
@@ -240,6 +257,8 @@ impl Db2Transaction {
                 "connessione Db2 assente al rollback",
             )
         })?;
+        // Un rollback non confermato non prova che le scritture siano
+        // annullate (ERR-003, ERR-014).
         tokio::task::spawn_blocking(move || {
             connection
                 .rollback()
@@ -247,6 +266,7 @@ impl Db2Transaction {
         })
         .await
         .map_err(|_| task_error(ErrorPhase::Rollback))?
+        .map_err(DatabaseError::after_unconfirmed_rollback)
     }
 }
 
@@ -718,12 +738,14 @@ impl TransactionScope for Db2Transaction {
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
             validate_savepoint_name(name)?;
+            // Inviato il ROLLBACK TO SAVEPOINT, un errore non lo conferma.
             self.control(
                 format!("ROLLBACK TO SAVEPOINT {name}"),
                 ErrorPhase::Rollback,
                 cancellation,
             )
             .await
+            .map_err(DatabaseError::after_unconfirmed_rollback)
         })
     }
 
@@ -779,7 +801,14 @@ impl TransactionScope for Db2Transaction {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Commit)?;
             if cancellation.is_cancelled() {
-                return Err(interruption_error(cancellation, ErrorPhase::Commit));
+                // Le righe sono gia applicate nella transazione: il commit non
+                // parte, e il rollback si tenta qui, in modo esplicito, perche
+                // il suo esito decida gli assi. Lasciarlo al `Drop`, che ne
+                // ignora l'esito, faceva dichiarare `none` anche quando il
+                // rollback falliva.
+                let error = interruption_error(cancellation, ErrorPhase::Commit);
+                let confirmed = self.rollback_connection().await.is_ok();
+                return Err(abandoned_error(error, confirmed));
             }
             self.open = false;
             let connection = self.connection.take().ok_or_else(|| {
@@ -792,7 +821,16 @@ impl TransactionScope for Db2Transaction {
             let result = tokio::task::spawn_blocking(move || connection.commit()).await;
             match result {
                 Ok(Ok(())) => Ok(CommitOutcome::Committed),
-                Ok(Err(_)) | Err(_) => Ok(CommitOutcome::OutcomeUnknown {
+                // La causa del driver diventa la categoria (ERR-001); un task
+                // perso non ne ha una dimostrabile.
+                // Regola unica dopo l'invio del COMMIT; per Db2 l'elenco dei
+                // rifiuti che provano il rollback e vuoto, quindi ogni errore
+                // lascia l'esito ignoto.
+                Ok(Err(error)) => plenora_database_core::transaction::commit_failure_outcome(
+                    driver_error(&error, ErrorPhase::Commit),
+                    false,
+                ),
+                Err(_) => Ok(CommitOutcome::OutcomeUnknown {
                     recovery: outcome_unknown_recovery(),
                 }),
             }
@@ -801,5 +839,19 @@ impl TransactionScope for Db2Transaction {
 
     fn rollback(mut self: Box<Self>, cancellation: &CancellationToken) -> ProviderFuture<'_, ()> {
         Box::pin(async move { self.rollback_in_place(cancellation).await })
+    }
+}
+
+/// Gli assi di un'operazione interrotta prima del commit, dopo il rollback
+/// esplicito: annullata se il rollback e confermato, ignota altrimenti.
+pub fn abandoned_error(error: DatabaseError, rollback_confirmed: bool) -> DatabaseError {
+    if rollback_confirmed {
+        DatabaseError {
+            remote_effect: plenora_database_core::RemoteEffect::RolledBack,
+            retry: plenora_database_core::RetryDisposition::Never,
+            ..error
+        }
+    } else {
+        error.after_unconfirmed_rollback()
     }
 }

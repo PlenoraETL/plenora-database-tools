@@ -320,6 +320,9 @@ impl AsyncTransaction {
             if !outcome.is_committed() {
                 return Err(to_py_err(crate::errors_commit::commit_outcome_unknown(
                     provider,
+                    outcome
+                        .unknown_category()
+                        .unwrap_or(plenora_database_core::ErrorCategory::Internal),
                 )));
             }
             Ok(())
@@ -372,6 +375,9 @@ impl AsyncTransaction {
                 if !outcome.is_committed() {
                     return Err(to_py_err(crate::errors_commit::commit_outcome_unknown(
                         provider,
+                        outcome
+                            .unknown_category()
+                            .unwrap_or(plenora_database_core::ErrorCategory::Internal),
                     )));
                 }
             } else {

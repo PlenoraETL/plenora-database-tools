@@ -559,7 +559,7 @@ async fn write_prepared_inner(
     if commit_result.is_ok() {
         if fault == Some(WriteFaultPoint::CommitConfirmationLost) {
             pooled.quarantine();
-            return unknown_commit_outcome(&prepared, execution_id, received);
+            return unknown_commit_outcome(&prepared, execution_id, received, None);
         }
         pooled.allow_reuse_after_drain()?;
         let (inserted, updated, deleted) = match prepared.plan.mode {
@@ -599,7 +599,20 @@ async fn write_prepared_inner(
         Ok(outcome)
     } else {
         pooled.quarantine();
-        unknown_commit_outcome(&prepared, execution_id, received)
+        // Regola unica dopo l'invio del COMMIT: il codice 1205 prova il
+        // rollback, ogni altro errore lascia l'esito ignoto.
+        match commit_result {
+            Err(mut error) if error.remote_effect == RemoteEffect::RolledBack => {
+                error.execution_id = Some(execution_id);
+                Err(plenora_database_core::transaction::after_commit_sent(
+                    error, true,
+                ))
+            }
+            other => {
+                let cause = other.err().map(|error| error.category);
+                unknown_commit_outcome(&prepared, execution_id, received, cause)
+            }
+        }
     }
 }
 
@@ -691,6 +704,7 @@ fn unknown_commit_outcome(
     prepared: &PreparedSqlServerWrite,
     execution_id: String,
     received: u64,
+    cause: Option<ErrorCategory>,
 ) -> Result<WriteOutcome> {
     let outcome = WriteOutcome {
         schema_version: 2,
@@ -707,6 +721,7 @@ fn unknown_commit_outcome(
             skipped: 0,
         },
         recovery: Some(Recovery {
+            cause,
             last_certain_phase: CertainPhase::CommitRequested,
             automatic_retry_allowed: false,
             idempotency_key: None,
@@ -982,8 +997,7 @@ async fn rollback_after_error_inner(
         };
         if rollback.is_err() {
             pooled.quarantine();
-            original.remote_effect = RemoteEffect::Unknown;
-            original.retry = RetryDisposition::RequiresRecovery;
+            original = original.after_unconfirmed_rollback();
             original.message = format!(
                 "{}; rollback SQL Server non confermato: recovery obbligatoria",
                 original.message

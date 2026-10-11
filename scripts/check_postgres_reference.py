@@ -25,6 +25,7 @@ IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b
 CONTAINER = "dataflow-postgres"
 CLI_REFERENCE_SUITES = (
     "live_operations", "live_f5", "contract_snapshot", "cli_benchmarks",
+    "live_outcome_unknown",
 )
 DEFAULT_DSN = (
     "host=dataflow-postgres port=5432 user=dataflow "
@@ -38,6 +39,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
         "live_provider_row_diagnostics_lost_rollback_ack_is_quarantined",
         "live_provider_row_diagnostics_commit_ambiguity_partitions_all_rows_unknown",
+        "live_provider_row_diagnostics_commit_rejection_proves_the_rollback",
         "live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps",
     }
 )

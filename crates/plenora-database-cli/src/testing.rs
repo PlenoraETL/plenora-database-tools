@@ -86,7 +86,9 @@ pub(crate) async fn test_cancellation(args: &mut impl Iterator<Item = String>) -
     if status == "ok" {
         Ok(())
     } else {
-        Err(crate::CliError::Silent)
+        Err(crate::CliError::Reported(
+            plenora_database_core::ErrorCategory::Execution,
+        ))
     }
 }
 
@@ -141,7 +143,9 @@ pub(crate) async fn test_streaming(args: &mut impl Iterator<Item = String>) -> C
     if is_ok {
         Ok(())
     } else {
-        Err(crate::CliError::Silent)
+        Err(crate::CliError::Reported(
+            plenora_database_core::ErrorCategory::Execution,
+        ))
     }
 }
 
@@ -301,7 +305,9 @@ pub(crate) async fn test_concurrency(args: &mut impl Iterator<Item = String>) ->
     if status == "ok" {
         Ok(())
     } else {
-        Err(crate::CliError::Silent)
+        Err(crate::CliError::Reported(
+            plenora_database_core::ErrorCategory::Execution,
+        ))
     }
 }
 

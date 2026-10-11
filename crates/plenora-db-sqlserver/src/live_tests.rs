@@ -7210,7 +7210,8 @@ async fn live_physical_blackhole_after_server_rollback_requires_recovery() {
         .expect_err("lost rollback response must not become success");
 
     assert_eq!(error.category, ErrorCategory::Execution);
-    assert_eq!(error.phase, ErrorPhase::Write);
+    // ERR-003: l'ultima fase avviata e il rollback, la cui risposta e persa.
+    assert_eq!(error.phase, ErrorPhase::Rollback);
     assert_eq!(error.remote_effect, RemoteEffect::Unknown);
     assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
     assert!(error.execution_id.is_some());

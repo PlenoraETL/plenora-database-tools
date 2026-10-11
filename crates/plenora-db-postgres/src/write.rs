@@ -428,13 +428,25 @@ pub async fn execute(
         drop(client);
         return Err(commit_interruption_error(cancellation, &execution_id));
     }
-    if commit_result.is_some_and(|result| result.is_err()) {
+    if let Some(Err(error)) = &commit_result {
+        // Regola unica dopo l'invio del COMMIT: uno SQLSTATE dell'elenco
+        // chiuso prova il rollback, ogni altro errore lascia l'esito ignoto.
+        if let Some(mut rejected) = crate::error::proven_commit_rollback(error) {
+            rejected.execution_id = Some(execution_id);
+            drop(client);
+            return Err(rejected);
+        }
         runtime.metrics.write_outcome_unknown();
+        // La causa osservata — canale chiuso (`io`), risposta non
+        // interpretabile (`protocol`), rifiuto del server — diventa la
+        // categoria dell'errore pubblico (ERR-001).
+        let cause = classify_error(ErrorPhase::Commit, error).category;
         drop(client);
         return Ok(unknown_write_outcome(
             execution_id,
             received,
             "verificare lo stato remoto prima di un retry",
+            Some(cause),
         ));
     }
     if runtime.fault_point == Some(PostgresFaultPoint::AfterCommitAcknowledgement) {
@@ -444,6 +456,7 @@ pub async fn execute(
             execution_id,
             received,
             "fault injection: verificare lo stato remoto già committed",
+            None,
         ));
     }
     client.mark_reusable();

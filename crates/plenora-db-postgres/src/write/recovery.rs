@@ -30,7 +30,7 @@ pub(super) fn cancelled_write_error(
     cancellation: &CancellationToken,
     rollback_confirmed: bool,
 ) -> DatabaseError {
-    public_error_envelope(
+    let error = public_error_envelope(
         interruption_category(cancellation),
         ErrorPhase::Write,
         if rollback_confirmed {
@@ -44,7 +44,12 @@ pub(super) fn cancelled_write_error(
             RetryDisposition::RequiresRecovery
         },
         interruption_message(cancellation),
-    )
+    );
+    if rollback_confirmed {
+        error
+    } else {
+        error.after_unconfirmed_rollback()
+    }
 }
 
 /// Classifica la cancellazione preservandone la causa.
@@ -125,11 +130,10 @@ impl PreCommitRecovery<'_> {
         error.execution_id = Some(self.execution_id.to_owned());
         if rollback_confirmed {
             error.remote_effect = RemoteEffect::RolledBack;
+            error
         } else {
-            error.remote_effect = RemoteEffect::Unknown;
-            error.retry = RetryDisposition::RequiresRecovery;
+            error.after_unconfirmed_rollback()
         }
-        error
     }
 }
 
@@ -137,6 +141,7 @@ pub(super) fn unknown_write_outcome(
     execution_id: String,
     received: u64,
     verification_action: &str,
+    cause: Option<ErrorCategory>,
 ) -> WriteOutcome {
     WriteOutcome {
         schema_version: 2,
@@ -153,6 +158,7 @@ pub(super) fn unknown_write_outcome(
             skipped: 0,
         },
         recovery: Some(Recovery {
+            cause,
             last_certain_phase: CertainPhase::CommitRequested,
             automatic_retry_allowed: false,
             idempotency_key: None,
@@ -166,7 +172,7 @@ pub(super) fn resource_write_error(
     error: &DatabaseError,
     rollback_confirmed: bool,
 ) -> DatabaseError {
-    public_error_envelope(
+    let error = public_error_envelope(
         ErrorCategory::ResourceLimit,
         ErrorPhase::Write,
         if rollback_confirmed {
@@ -180,5 +186,10 @@ pub(super) fn resource_write_error(
             RetryDisposition::RequiresRecovery
         },
         &error.message,
-    )
+    );
+    if rollback_confirmed {
+        error
+    } else {
+        error.after_unconfirmed_rollback()
+    }
 }
