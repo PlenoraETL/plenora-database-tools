@@ -20,14 +20,14 @@
 //!
 //! # Limite dichiarato
 //!
-//! **Regola**: un errore di fase `validate` resta com'e, perche quella fase
-//! e per definizione la validazione locale prima di qualunque I/O (policy
-//! nativa, nomi, argomenti). **Ambito**: un errore locale dell'adapter in
-//! un'altra fase prima dell'invio — un parametro non convertibile, una
-//! transazione gia chiusa — esce come ignoto. **Hazard**: nessuno per la
-//! correttezza (ignoto non afferma nulla di falso), ma il chiamante riceve
-//! `requires_recovery` dove `none` sarebbe stato vero. **Rientro**: un
-//! confine esplicito fra preparazione e invio nel trait degli adapter.
+//! **Regola**: ogni errore restituito dall'adapter passa dalla promozione,
+//! anche in fase `validate`: limiti del risultato e policy di una sonda
+//! possono fallire dopo una scrittura. **Ambito**: anche una validazione
+//! locale prima dell'invio esce come ignota se avviene dentro l'adapter.
+//! **Hazard**: il chiamante riceve `requires_recovery` dove `none` sarebbe
+//! stato vero, ma non puo scambiare una scrittura per un rifiuto senza effetti.
+//! **Rientro**: un confine esplicito fra preparazione e invio nel trait degli
+//! adapter; la sola fase dell'errore non dimostra quel confine.
 
 use crate::error::{DatabaseError, ErrorPhase};
 use crate::graph::{GraphRow, GraphStatement};
@@ -39,14 +39,10 @@ use crate::transaction::{
 use crate::CancellationToken;
 
 /// La regola, in un punto solo: dopo l'invio di SQL del chiamante un errore
-/// non e mai `none`. Un errore di fase `validate` precede l'invio.
+/// non e mai `none`. La fase `validate` non prova che l'invio sia escluso.
 #[must_use]
 pub fn caller_sql_failure(error: DatabaseError) -> DatabaseError {
-    if error.phase == ErrorPhase::Validate {
-        error
-    } else {
-        error.after_unproven_send()
-    }
+    error.after_unproven_send()
 }
 
 /// Protegge anche l'ingresso pubblico diretto dell'adapter.

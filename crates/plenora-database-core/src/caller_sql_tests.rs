@@ -27,6 +27,9 @@ enum Scenario {
     DecodeFails,
     /// Un errore di validazione locale, prima dell'invio.
     Validation,
+    GraphRowLimit,
+    OracleProbePolicy,
+    Db2ProbePolicy,
 }
 
 struct FakeScope(Scenario);
@@ -82,6 +85,24 @@ impl TransactionScope for FakeScope {
         })
     }
 
+    fn execute_graph<'a>(
+        &'a mut self,
+        statement: &'a GraphStatement,
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Vec<GraphRow>> {
+        Box::pin(async move {
+            statement.validate()?;
+            // Il server ha creato tre nodi prima del controllo locale.
+            let returned_rows = 3;
+            if returned_rows > statement.max_rows {
+                return Err(DatabaseError::resource_limit(
+                    "il risultato Cypher supera il limite righe dichiarato",
+                ));
+            }
+            Ok(Vec::new())
+        })
+    }
+
     fn query_stream<'a>(
         &'a mut self,
         _statement: &'a Statement,
@@ -118,10 +139,25 @@ impl TransactionScope for FakeScope {
 
     fn execute_conditional_update<'a>(
         &'a mut self,
-        _request: ConditionalUpdate<'a>,
+        request: ConditionalUpdate<'a>,
         _cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        Box::pin(async { Err(none_error(ErrorCategory::Execution, ErrorPhase::Write)) })
+        let scenario = self.0;
+        Box::pin(async move {
+            if matches!(
+                scenario,
+                Scenario::OracleProbePolicy | Scenario::Db2ProbePolicy
+            ) {
+                // UPDATE gia riuscito con conteggio diverso dall'atteso;
+                // Oracle e Db2 validano la sonda soltanto a questo punto.
+                assert_eq!(request.expected_affected_rows, 2);
+                crate::native_query_policy::enforce_policy(
+                    crate::native_query_policy::NativeQueryPolicy::Deny,
+                    &request.key_probe.expect("sonda").sql,
+                )?;
+            }
+            Err(none_error(ErrorCategory::Execution, ErrorPhase::Write))
+        })
     }
 
     fn commit(
@@ -288,9 +324,9 @@ fn every_caller_sql_exit_after_sending_is_unknown() {
     }
 }
 
-/// Un errore di validazione locale precede l'invio e resta `none`.
+/// Il wrapper non puo distinguere una validazione locale da una dopo invio.
 #[test]
-fn a_validation_error_before_sending_keeps_its_axes() {
+fn adapter_validation_without_send_evidence_requires_recovery() {
     let cancellation = CancellationToken::new();
     let provider = FakeProvider(Scenario::Validation);
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
@@ -303,6 +339,49 @@ fn a_validation_error_before_sending_keeps_its_axes() {
     .expect("begin");
     let error =
         block_on(transaction.execute(&Statement::new("DROP"), &cancellation)).expect_err("policy");
-    assert_eq!(error.remote_effect, RemoteEffect::None);
+    assert_unknown(&error, "validazione adapter senza prova di mancato invio");
     assert_eq!(error.phase, ErrorPhase::Validate);
+}
+
+#[test]
+fn postgres_graph_row_limit_after_send_requires_recovery() {
+    let mut transaction = CallerSqlTransaction::new(Box::new(FakeScope(Scenario::GraphRowLimit)));
+    let statement = GraphStatement::new(
+        "graph",
+        "UNWIND [1,2,3] AS i CREATE (n) RETURN n",
+        vec!["n".into()],
+    )
+    .with_max_rows(2);
+    let error = block_on(transaction.execute_graph(&statement, &CancellationToken::new()))
+        .expect_err("limite dopo CREATE");
+    assert_eq!(error.phase, ErrorPhase::Validate);
+    assert_eq!(error.category, ErrorCategory::ResourceLimit);
+    assert_unknown(&error, "Cypher dopo CREATE");
+}
+
+fn assert_probe_policy_after_update(scenario: Scenario) {
+    let mut transaction = CallerSqlTransaction::new(Box::new(FakeScope(scenario)));
+    let update = Statement::new("UPDATE items SET version = version + 1 WHERE id = 1");
+    let probe = Statement::new("DROP TABLE items");
+    let request = ConditionalUpdate {
+        update: &update,
+        key_probe: Some(&probe),
+        expected_affected_rows: 2,
+    };
+    let error =
+        block_on(transaction.execute_conditional_update(request, &CancellationToken::new()))
+            .expect_err("policy sonda dopo UPDATE");
+    assert_eq!(error.phase, ErrorPhase::Validate);
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    assert_unknown(&error, "sonda dopo UPDATE");
+}
+
+#[test]
+fn oracle_probe_policy_after_send_requires_recovery() {
+    assert_probe_policy_after_update(Scenario::OracleProbePolicy);
+}
+
+#[test]
+fn db2_probe_policy_after_send_requires_recovery() {
+    assert_probe_policy_after_update(Scenario::Db2ProbePolicy);
 }
