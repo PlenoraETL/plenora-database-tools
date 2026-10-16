@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 106091,
-  "max_code_lines": 87415
+  "max_physical_lines": 106165,
+  "max_code_lines": 87481,
+  "rationale": "Correzione del protocollo TTC nel provider Oracle: ricomposizione multi-pacchetto, terminali per capability, budget di memoria. Soglie riallineate alla misura di scripts/code_size.py; conteggio e perimetro invariati."
 }

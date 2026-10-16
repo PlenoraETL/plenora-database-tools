@@ -248,11 +248,15 @@ enum OracleStream {
     Plain(TcpStream),
     /// TLS-encrypted connection
     Tls(TlsOracleStream),
+    #[cfg(test)]
+    WriteFault(tests::WriteFault),
 }
 
 impl OracleStream {
     async fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
         match self {
+            #[cfg(test)]
+            OracleStream::WriteFault(_) => Err(std::io::ErrorKind::BrokenPipe.into()),
             OracleStream::Plain(stream) => {
                 AsyncReadExt::read_exact(stream, buf).await?;
                 Ok(())
@@ -268,6 +272,8 @@ impl OracleStream {
         match self {
             OracleStream::Plain(stream) => stream.write_all(buf).await,
             OracleStream::Tls(stream) => stream.write_all(buf).await,
+            #[cfg(test)]
+            OracleStream::WriteFault(fault) => fault.run(false).await,
         }
     }
 
@@ -275,6 +281,8 @@ impl OracleStream {
         match self {
             OracleStream::Plain(stream) => stream.flush().await,
             OracleStream::Tls(stream) => stream.flush().await,
+            #[cfg(test)]
+            OracleStream::WriteFault(fault) => fault.run(true).await,
         }
     }
 }
@@ -289,6 +297,7 @@ struct ConnectionInner {
     large_sdu: bool,
     response_limit: usize,
     response_in_progress: bool,
+    response_bytes: usize,
     /// Sequence number for TTC messages (increments per message)
     sequence_number: u8,
     /// Statement cache for prepared statement reuse
@@ -301,26 +310,28 @@ struct PageFraming<'a> {
     params: &'a [BindParam],
     row_counts: bool,
     lob: Option<(usize, bool)>,
+    lob_tail: usize,
     offset: usize,
-    columns: Vec<ColumnInfo>,
+    columns: std::borrow::Cow<'a, [ColumnInfo]>,
     bit_vector: Option<Vec<u8>>,
 }
 
-impl PageFraming<'_> {
-    fn new(columns: &[ColumnInfo]) -> Self {
+impl<'a> PageFraming<'a> {
+    fn new(columns: &'a [ColumnInfo]) -> Self {
         Self {
             params: &[],
             row_counts: false,
             lob: None,
+            lob_tail: 0,
             offset: 0,
-            columns: columns.to_vec(),
+            columns: std::borrow::Cow::Borrowed(columns),
             bit_vector: None,
         }
     }
 
-    fn advance(&mut self, data: &[u8], caps: &Capabilities) -> Result<bool> {
+    fn advance(&mut self, data: &bytes::Bytes, caps: &Capabilities) -> Result<bool> {
         let start = self.offset;
-        let mut buf = ReadBuffer::from_slice(&data[start..]);
+        let mut buf = ReadBuffer::new(data.slice(start..));
         while buf.remaining() > 0 {
             let mut columns = None;
             let mut bit_vector = None;
@@ -371,6 +382,12 @@ impl PageFraming<'_> {
                             if amount {
                                 buf.read_ub8()?;
                             }
+                            if self.lob_tail == 2 {
+                                buf.skip_ub2()?;
+                            }
+                            if self.lob_tail != 0 {
+                                buf.skip(1)?;
+                            }
                         } else {
                             Connection::parse_return_parameters_internal(
                                 &mut buf,
@@ -398,7 +415,7 @@ impl PageFraming<'_> {
                 Ok(terminal) => {
                     self.offset = start + buf.position();
                     if let Some(columns) = columns {
-                        self.columns = columns;
+                        self.columns = std::borrow::Cow::Owned(columns);
                     }
                     if clear_bits {
                         self.bit_vector = None;
@@ -429,6 +446,7 @@ impl ConnectionInner {
             large_sdu: false,
             response_limit: crate::config::DEFAULT_RESPONSE_LIMIT,
             response_in_progress: false,
+            response_bytes: 0,
             sequence_number: 0,
             statement_cache: if cache_size > 0 {
                 Some(StatementCache::new(cache_size))
@@ -451,18 +469,29 @@ impl ConnectionInner {
         if self.response_in_progress {
             return Err(Error::ConnectionClosed);
         }
-        if let Some(stream) = &mut self.stream {
-            stream.write_all(data).await?;
-            stream.flush().await?;
-            Ok(())
+        // Moving the socket into the future makes both errors and cancellation fatal.
+        let mut stream = self.stream.take().ok_or(Error::ConnectionClosed)?;
+        if data.get(4) == Some(&(PacketType::Marker as u8)) {
+            self.response_bytes = self.response_bytes.saturating_add(data.len());
+            if self.response_bytes > self.response_limit {
+                return Err(Error::Protocol(
+                    "Oracle response byte limit exceeded".into(),
+                ));
+            }
         } else {
-            Err(Error::ConnectionClosed)
+            self.response_bytes = 0;
         }
+        stream.write_all(data).await?;
+        stream.flush().await?;
+        self.stream = Some(stream);
+        Ok(())
     }
 
     async fn renegotiate_tls(&mut self, server_name: &str, config: &TlsConfig) -> Result<()> {
         let stream = self.stream.take().ok_or(Error::ConnectionClosed)?;
         let tls_stream = match stream {
+            #[cfg(test)]
+            OracleStream::WriteFault(_) => return Err(Error::ConnectionClosed),
             OracleStream::Tls(stream) => {
                 stream.renegotiate(server_name, config).await.map_err(|_| {
                     Error::ProtocolError(
@@ -501,7 +530,8 @@ impl ConnectionInner {
         if self.response_in_progress {
             return Err(Error::ConnectionClosed);
         }
-        let stream = self.stream.as_mut().ok_or(Error::ConnectionClosed)?;
+        let mut stream = self.stream.take().ok_or(Error::ConnectionClosed)?;
+        self.response_bytes = 0;
 
         // Calculate max payload per packet: SDU - header (8) - data flags (2)
         let max_payload_per_packet = self.sdu_size as usize - PACKET_HEADER_SIZE - 2;
@@ -531,11 +561,13 @@ impl ConnectionInner {
             }
         }
 
+        self.stream = Some(stream);
         Ok(())
     }
 
     async fn receive(&mut self) -> Result<bytes::Bytes> {
-        self.receive_limited(self.response_limit).await
+        self.receive_limited(self.response_limit.saturating_sub(self.response_bytes))
+            .await
     }
 
     // Take ownership while reading: an error or cancelled read drops the channel.
@@ -562,6 +594,7 @@ impl ConnectionInner {
         let mut packet = vec![0; packet_len];
         packet[..PACKET_HEADER_SIZE].copy_from_slice(&header);
         stream.read_exact(&mut packet[PACKET_HEADER_SIZE..]).await?;
+        self.response_bytes += packet_len;
         self.stream = Some(stream);
         Ok(bytes::Bytes::from(packet))
     }
@@ -590,13 +623,46 @@ impl ConnectionInner {
         result
     }
 
+    async fn receive_lob_response<T>(
+        &mut self,
+        locator_len: usize,
+        amount: bool,
+        tail: usize,
+        parse: impl FnOnce(&[u8], &Capabilities) -> Result<T>,
+    ) -> Result<T> {
+        let mut framing = PageFraming::new(&[]);
+        framing.lob = Some((locator_len, amount));
+        framing.lob_tail = tail;
+        let result = async {
+            let mut response = self.receive_response_checked(framing).await?;
+            if response[4] == PacketType::Marker as u8 {
+                response = self.handle_marker_reset().await?;
+            }
+            if response.len() < PACKET_HEADER_SIZE + 2 || response[4] != PacketType::Data as u8 {
+                return Err(Error::Protocol("Invalid LOB response frame".into()));
+            }
+            parse(&response[PACKET_HEADER_SIZE..], &self.capabilities)
+        }
+        .await;
+        self.checked_result(result)
+    }
+
+    fn checked_result<T>(&mut self, result: Result<T>) -> Result<T> {
+        if result.is_err() {
+            self.stream = None;
+            self.state = ConnectionState::Disconnected;
+        }
+        result
+    }
+
     async fn collect_response(&mut self, mut framing: PageFraming<'_>) -> Result<bytes::Bytes> {
         use crate::constants::data_flags;
-        let mut result = Vec::new();
-        let mut remaining = self.response_limit;
+        let mut result = bytes::BytesMut::new();
         loop {
-            let packet = self.receive_limited(remaining).await?;
-            remaining -= packet.len();
+            // Bound the new frame before allocation while the accumulated page lives.
+            let remaining = self.response_limit.saturating_sub(self.response_bytes);
+            let frame_space = self.response_limit.saturating_sub(result.capacity());
+            let packet = self.receive_limited(remaining.min(frame_space)).await?;
             if packet[4] != PacketType::Data as u8 {
                 // BREAK aborts a partial result; the caller performs the
                 // MARKER/reset handshake before reading the server error.
@@ -616,17 +682,47 @@ impl ConnectionInner {
             } else {
                 &packet[10..]
             };
-            // The wire budget was checked before allocating the frame, and
-            // bounds this buffer as well. Reserve exactly; no synthetic copy.
-            result
-                .try_reserve_exact(data.len())
-                .map_err(|_| Error::Protocol("Oracle response allocation failed".into()))?;
+            let needed = result.len().saturating_add(data.len());
+            // Framing retains metadata and decodes at most one message at a time.
+            let scratch = needed
+                .saturating_mul(16)
+                .saturating_add(framing.columns.len().saturating_mul(1024));
+            let available = self
+                .response_limit
+                .saturating_sub(packet.len().saturating_add(scratch));
+            if needed > available || result.capacity() > available {
+                return Err(Error::Protocol(
+                    "Oracle response memory limit exceeded".into(),
+                ));
+            }
+            if needed > result.capacity() {
+                // The old and new allocations coexist while growing.
+                let available = available.saturating_sub(result.capacity());
+                if needed > available {
+                    return Err(Error::Protocol(
+                        "Oracle response memory limit exceeded".into(),
+                    ));
+                }
+                let capacity = needed
+                    .max(result.capacity().saturating_mul(2))
+                    .min(available);
+                let mut grown = bytes::BytesMut::with_capacity(capacity);
+                grown.extend_from_slice(&result);
+                result = grown;
+            }
             result.extend_from_slice(data);
             let flagged = flags & (data_flags::END_OF_RESPONSE | data_flags::EOF) != 0;
+            let frozen = result.freeze();
+            let terminal = framing.advance(&frozen.slice(10..), &self.capabilities)?;
+            result = frozen
+                .try_into_mut()
+                .map_err(|_| Error::Protocol("Oracle response buffer still shared".into()))?;
             if flagged {
+                if framing.offset != result.len() - 10 {
+                    return Err(Error::Protocol("Incomplete Oracle response".into()));
+                }
                 break;
             }
-            let terminal = framing.advance(&result[10..], &self.capabilities)?;
             if terminal {
                 break;
             }
@@ -639,7 +735,8 @@ impl ConnectionInner {
         } else {
             result[..2].copy_from_slice(&u16::try_from(len).unwrap_or(0).to_be_bytes());
         }
-        Ok(bytes::Bytes::from(result))
+        self.response_bytes = 0;
+        Ok(result.freeze())
     }
 
     /// Send a marker packet with the specified marker type
@@ -4117,29 +4214,12 @@ impl Connection {
         let request = lob_msg.build_request(&inner.capabilities, large_sdu)?;
         inner.send(&request).await?;
 
-        // Receive and parse response
-        let response = inner.receive().await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty LOB chunk size response".to_string()));
-        }
-
-        // Check for MARKER packet
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let mut buf = crate::buffer::ReadBuffer::from_slice(payload);
-            buf.skip(2)?;
-            return self.parse_lob_error(&mut buf, &inner.capabilities);
-        }
-
-        // Parse the amount response (chunk size is returned as amount)
-        self.parse_lob_amount_response(
-            &response[PACKET_HEADER_SIZE..],
-            locator,
-            &inner.capabilities,
-        )
-        .map(|v| v as u32)
+        inner
+            .receive_lob_response(locator.locator_bytes().len(), true, 0, |payload, caps| {
+                self.parse_lob_amount_response(payload, locator, caps)
+                    .map(|v| v as u32)
+            })
+            .await
     }
 
     /// Internal LOB read implementation
@@ -4161,28 +4241,11 @@ impl Connection {
         let request = lob_msg.build_request(&inner.capabilities, large_sdu)?;
         inner.send(&request).await?;
 
-        // Receive and parse response (may span multiple packets for large LOBs)
-        let mut framing = PageFraming::new(&[]);
-        framing.lob = Some((locator.locator_bytes().len(), true));
-        let response = inner.receive_response_checked(framing).await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty LOB read response".to_string()));
-        }
-
-        // Check for MARKER packet (indicates error)
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let mut buf = crate::buffer::ReadBuffer::from_slice(payload);
-            // Skip data flags
-            buf.skip(2)?;
-            return self.parse_lob_error(&mut buf, &inner.capabilities);
-        }
-
-        // Parse LOB data response
-        let payload = &response[PACKET_HEADER_SIZE..];
-        self.parse_lob_read_response(payload, locator, &inner.capabilities)
+        inner
+            .receive_lob_response(locator.locator_bytes().len(), true, 0, |payload, caps| {
+                self.parse_lob_read_response(payload, locator, caps)
+            })
+            .await
     }
 
     /// Parse LOB read response
@@ -4226,7 +4289,8 @@ impl Connection {
                 // Error/Status message (4) - code 0 means success
                 x if x == MessageType::Error as u8 => {
                     // Parse error info - code 0 means success
-                    if let Ok((code, msg, _)) = self.parse_error_info(&mut buf, caps) {
+                    {
+                        let (code, msg, _) = self.parse_error_info(&mut buf, caps)?;
                         if code != 0 {
                             let message = msg.unwrap_or_else(|| "LOB error".to_string());
                             return Err(Error::OracleError { code, message });
@@ -4242,8 +4306,12 @@ impl Connection {
 
                 // Skip other message types
                 _ => {
-                    // Try to skip unknown messages
-                    continue;
+                    if msg_type == MessageType::Status as u8 {
+                        buf.read_ub4()?;
+                        buf.read_ub2()?;
+                    } else {
+                        return Err(Error::Protocol("Unexpected LOB response message".into()));
+                    }
                 }
             }
         }
@@ -4327,33 +4395,11 @@ impl Connection {
             inner.send(&request).await?;
         }
 
-        // Receive and parse response
-        // Accumulate frames using the LOB return-parameter layout.
-        // This is necessary because Oracle may send multiple packets for the response,
-        // and if we only read one packet, leftover data causes close() to hang.
-        let mut framing = PageFraming::new(&[]);
-        framing.lob = Some((locator.locator_bytes().len(), false));
-        let response = inner.receive_response_checked(framing).await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty LOB write response".to_string()));
-        }
-
-        // Check for MARKER packet (indicates error)
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let mut buf = crate::buffer::ReadBuffer::from_slice(payload);
-            buf.skip(2)?;
-            return self.parse_lob_error(&mut buf, &inner.capabilities);
-        }
-
-        // Parse response to check for errors
-        self.parse_lob_simple_response(
-            &response[PACKET_HEADER_SIZE..],
-            locator,
-            &inner.capabilities,
-        )
+        inner
+            .receive_lob_response(locator.locator_bytes().len(), false, 0, |payload, caps| {
+                self.parse_lob_simple_response(payload, locator, false, caps)
+            })
+            .await
     }
 
     /// Write string data to a CLOB
@@ -4395,28 +4441,11 @@ impl Connection {
         let request = lob_msg.build_request(&inner.capabilities, large_sdu)?;
         inner.send(&request).await?;
 
-        // Receive and parse response
-        let response = inner.receive().await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty LOB get_length response".to_string()));
-        }
-
-        // Check for MARKER packet (indicates error)
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let mut buf = crate::buffer::ReadBuffer::from_slice(payload);
-            buf.skip(2)?;
-            return self.parse_lob_error(&mut buf, &inner.capabilities);
-        }
-
-        // Parse response to get the length
-        self.parse_lob_amount_response(
-            &response[PACKET_HEADER_SIZE..],
-            locator,
-            &inner.capabilities,
-        )
+        inner
+            .receive_lob_response(locator.locator_bytes().len(), true, 0, |payload, caps| {
+                self.parse_lob_amount_response(payload, locator, caps)
+            })
+            .await
     }
 
     /// Trim a LOB to a specified length
@@ -4439,28 +4468,11 @@ impl Connection {
         let request = lob_msg.build_request(&inner.capabilities, large_sdu)?;
         inner.send(&request).await?;
 
-        // Receive and parse response
-        let response = inner.receive().await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty LOB trim response".to_string()));
-        }
-
-        // Check for MARKER packet (indicates error)
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let mut buf = crate::buffer::ReadBuffer::from_slice(payload);
-            buf.skip(2)?;
-            return self.parse_lob_error(&mut buf, &inner.capabilities);
-        }
-
-        // Parse response to check for errors
-        self.parse_lob_simple_response(
-            &response[PACKET_HEADER_SIZE..],
-            locator,
-            &inner.capabilities,
-        )
+        inner
+            .receive_lob_response(locator.locator_bytes().len(), true, 0, |payload, caps| {
+                self.parse_lob_simple_response(payload, locator, true, caps)
+            })
+            .await
     }
 
     /// Create a temporary LOB on the server
@@ -4483,8 +4495,6 @@ impl Connection {
     /// // Now bind the locator to insert into a CLOB column
     /// ```
     pub async fn create_temp_lob(&self, oracle_type: OracleType) -> Result<LobLocator> {
-        use crate::buffer::ReadBuffer;
-
         // Validate oracle_type is a LOB type
         match oracle_type {
             OracleType::Clob | OracleType::Blob => {}
@@ -4510,26 +4520,20 @@ impl Connection {
         let request = lob_msg.build_request(&inner.capabilities, large_sdu)?;
         inner.send(&request).await?;
 
-        // Receive and parse response
-        let response = inner.receive().await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol(
-                "Empty CREATE_TEMP LOB response".to_string(),
-            ));
-        }
+        inner
+            .receive_lob_response(40, false, 2, |payload, caps| {
+                self.parse_temp_lob_response(payload, caps, oracle_type)
+            })
+            .await
+    }
 
-        // Check for MARKER packet (indicates error)
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let mut buf = ReadBuffer::from_slice(payload);
-            buf.skip(2)?;
-            return self.parse_lob_error(&mut buf, &inner.capabilities);
-        }
-
+    fn parse_temp_lob_response(
+        &self,
+        payload: &[u8],
+        caps: &Capabilities,
+        oracle_type: OracleType,
+    ) -> Result<LobLocator> {
         // Parse response to extract the locator
-        let payload = &response[PACKET_HEADER_SIZE..];
         let mut buf = ReadBuffer::from_slice(payload);
         buf.skip(2)?; // Skip data flags
 
@@ -4551,13 +4555,10 @@ impl Connection {
 
                 // Error/Status message (4) - code 0 means success
                 x if x == MessageType::Error as u8 => {
-                    if let Ok((code, msg, _)) = self.parse_error_info(&mut buf, &inner.capabilities)
-                    {
-                        if code != 0 {
-                            let message =
-                                msg.unwrap_or_else(|| "CREATE_TEMP LOB error".to_string());
-                            return Err(Error::OracleError { code, message });
-                        }
+                    let (code, msg, _) = self.parse_error_info(&mut buf, caps)?;
+                    if code != 0 {
+                        let message = msg.unwrap_or_else(|| "CREATE_TEMP LOB error".to_string());
+                        return Err(Error::OracleError { code, message });
                     }
                 }
 
@@ -4566,7 +4567,11 @@ impl Connection {
                     break;
                 }
 
-                _ => continue,
+                x if x == MessageType::Status as u8 => {
+                    buf.read_ub4()?;
+                    buf.read_ub2()?;
+                }
+                _ => return Err(Error::Protocol("Unexpected LOB response message".into())),
             }
         }
 
@@ -4611,25 +4616,11 @@ impl Connection {
         let request = lob_msg.build_request(&inner.capabilities, large_sdu)?;
         inner.send(&request).await?;
 
-        let response = inner.receive().await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty BFILE exists response".to_string()));
-        }
-
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let mut buf = crate::buffer::ReadBuffer::from_slice(payload);
-            buf.skip(2)?;
-            return self.parse_lob_error(&mut buf, &inner.capabilities);
-        }
-
-        self.parse_lob_bool_response(
-            &response[PACKET_HEADER_SIZE..],
-            locator,
-            &inner.capabilities,
-        )
+        inner
+            .receive_lob_response(locator.locator_bytes().len(), false, 1, |payload, caps| {
+                self.parse_lob_bool_response(payload, locator, caps)
+            })
+            .await
     }
 
     /// Open a BFILE for reading
@@ -4654,25 +4645,11 @@ impl Connection {
         let request = lob_msg.build_request(&inner.capabilities, large_sdu)?;
         inner.send(&request).await?;
 
-        let response = inner.receive().await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty BFILE open response".to_string()));
-        }
-
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let mut buf = crate::buffer::ReadBuffer::from_slice(payload);
-            buf.skip(2)?;
-            return self.parse_lob_error(&mut buf, &inner.capabilities);
-        }
-
-        self.parse_lob_simple_response(
-            &response[PACKET_HEADER_SIZE..],
-            locator,
-            &inner.capabilities,
-        )
+        inner
+            .receive_lob_response(locator.locator_bytes().len(), true, 0, |payload, caps| {
+                self.parse_lob_simple_response(payload, locator, true, caps)
+            })
+            .await
     }
 
     /// Close a BFILE after reading
@@ -4695,25 +4672,11 @@ impl Connection {
         let request = lob_msg.build_request(&inner.capabilities, large_sdu)?;
         inner.send(&request).await?;
 
-        let response = inner.receive().await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty BFILE close response".to_string()));
-        }
-
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let mut buf = crate::buffer::ReadBuffer::from_slice(payload);
-            buf.skip(2)?;
-            return self.parse_lob_error(&mut buf, &inner.capabilities);
-        }
-
-        self.parse_lob_simple_response(
-            &response[PACKET_HEADER_SIZE..],
-            locator,
-            &inner.capabilities,
-        )
+        inner
+            .receive_lob_response(locator.locator_bytes().len(), false, 0, |payload, caps| {
+                self.parse_lob_simple_response(payload, locator, false, caps)
+            })
+            .await
     }
 
     /// Check if a BFILE is currently open
@@ -4736,25 +4699,11 @@ impl Connection {
         let request = lob_msg.build_request(&inner.capabilities, large_sdu)?;
         inner.send(&request).await?;
 
-        let response = inner.receive().await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty BFILE is_open response".to_string()));
-        }
-
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let mut buf = crate::buffer::ReadBuffer::from_slice(payload);
-            buf.skip(2)?;
-            return self.parse_lob_error(&mut buf, &inner.capabilities);
-        }
-
-        self.parse_lob_bool_response(
-            &response[PACKET_HEADER_SIZE..],
-            locator,
-            &inner.capabilities,
-        )
+        inner
+            .receive_lob_response(locator.locator_bytes().len(), false, 1, |payload, caps| {
+                self.parse_lob_bool_response(payload, locator, caps)
+            })
+            .await
     }
 
     /// Read BFILE data
@@ -4816,11 +4765,10 @@ impl Connection {
 
                 // Error/Status message (4) - code 0 means success
                 x if x == MessageType::Error as u8 => {
-                    if let Ok((code, msg, _)) = self.parse_error_info(&mut buf, caps) {
-                        if code != 0 {
-                            let message = msg.unwrap_or_else(|| "LOB error".to_string());
-                            return Err(Error::OracleError { code, message });
-                        }
+                    let (code, msg, _) = self.parse_error_info(&mut buf, caps)?;
+                    if code != 0 {
+                        let message = msg.unwrap_or_else(|| "LOB error".to_string());
+                        return Err(Error::OracleError { code, message });
                     }
                 }
 
@@ -4829,7 +4777,11 @@ impl Connection {
                     break;
                 }
 
-                _ => continue,
+                x if x == MessageType::Status as u8 => {
+                    buf.read_ub4()?;
+                    buf.read_ub2()?;
+                }
+                _ => return Err(Error::Protocol("Unexpected LOB response message".into())),
             }
         }
 
@@ -4841,6 +4793,7 @@ impl Connection {
         &self,
         payload: &[u8],
         locator: &LobLocator,
+        amount: bool,
         caps: &Capabilities,
     ) -> Result<()> {
         use crate::buffer::ReadBuffer;
@@ -4856,17 +4809,17 @@ impl Connection {
                 x if x == MessageType::Parameter as u8 => {
                     let locator_len = locator.locator_bytes().len();
                     buf.skip(locator_len)?;
-                    // After locator, there may be amount (ub8) if send_amount was true
-                    // We just skip any remaining bytes until we hit Error or EndOfResponse
+                    if amount {
+                        buf.read_ub8()?;
+                    }
                 }
 
                 // Error/Status message (4) - code 0 means success
                 x if x == MessageType::Error as u8 => {
-                    if let Ok((code, msg, _)) = self.parse_error_info(&mut buf, caps) {
-                        if code != 0 {
-                            let message = msg.unwrap_or_else(|| "LOB error".to_string());
-                            return Err(Error::OracleError { code, message });
-                        }
+                    let (code, msg, _) = self.parse_error_info(&mut buf, caps)?;
+                    if code != 0 {
+                        let message = msg.unwrap_or_else(|| "LOB error".to_string());
+                        return Err(Error::OracleError { code, message });
                     }
                 }
 
@@ -4875,7 +4828,11 @@ impl Connection {
                     break;
                 }
 
-                _ => continue,
+                x if x == MessageType::Status as u8 => {
+                    buf.read_ub4()?;
+                    buf.read_ub2()?;
+                }
+                _ => return Err(Error::Protocol("Unexpected LOB response message".into())),
             }
         }
 
@@ -4909,11 +4866,10 @@ impl Connection {
 
                 // Error/Status message (4) - code 0 means success
                 x if x == MessageType::Error as u8 => {
-                    if let Ok((code, msg, _)) = self.parse_error_info(&mut buf, caps) {
-                        if code != 0 {
-                            let message = msg.unwrap_or_else(|| "LOB error".to_string());
-                            return Err(Error::OracleError { code, message });
-                        }
+                    let (code, msg, _) = self.parse_error_info(&mut buf, caps)?;
+                    if code != 0 {
+                        let message = msg.unwrap_or_else(|| "LOB error".to_string());
+                        return Err(Error::OracleError { code, message });
                     }
                 }
 
@@ -4922,26 +4878,15 @@ impl Connection {
                     break;
                 }
 
-                _ => continue,
+                x if x == MessageType::Status as u8 => {
+                    buf.read_ub4()?;
+                    buf.read_ub2()?;
+                }
+                _ => return Err(Error::Protocol("Unexpected LOB response message".into())),
             }
         }
 
         Ok(returned_amount)
-    }
-
-    /// Parse LOB error response
-    fn parse_lob_error<T>(
-        &self,
-        buf: &mut crate::buffer::ReadBuffer,
-        caps: &Capabilities,
-    ) -> Result<T> {
-        // Try to extract error info
-        if let Ok((code, msg, _)) = self.parse_error_info(buf, caps) {
-            let message = msg.unwrap_or_else(|| "Unknown LOB error".to_string());
-            Err(Error::OracleError { code, message })
-        } else {
-            Err(Error::Protocol("LOB operation failed".to_string()))
-        }
     }
 
     /// Close the connection.
@@ -5288,6 +5233,8 @@ mod tests {
         buf.as_slice().to_vec()
     }
 
+    include!("connection_exchange_tests.rs");
+
     fn parser_connection() -> Connection {
         Connection {
             inner: Arc::new(Mutex::new(ConnectionInner::new_with_cache(0))),
@@ -5447,12 +5394,18 @@ mod tests {
         let mut framing = PageFraming::new(&columns);
         // ROW_HEADER with one bitmap byte (all duplicates), then empty ROW_DATA.
         let mut data = vec![6, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 7];
-        assert!(!framing.advance(&data, &caps).unwrap());
+        assert!(!framing
+            .advance(&bytes::Bytes::copy_from_slice(&data), &caps)
+            .unwrap());
         data.extend_from_slice(&completion_packet(1403, 1)[2..]);
         for end in 13..data.len() {
-            assert!(!framing.advance(&data[..end], &caps).unwrap());
+            assert!(!framing
+                .advance(&bytes::Bytes::copy_from_slice(&data[..end]), &caps)
+                .unwrap());
         }
-        assert!(framing.advance(&data, &caps).unwrap());
+        assert!(framing
+            .advance(&bytes::Bytes::copy_from_slice(&data), &caps)
+            .unwrap());
     }
 
     #[tokio::test]
@@ -5532,9 +5485,13 @@ mod tests {
         let mut data = buf.as_slice().to_vec();
         data.extend_from_slice(&completion_packet(0, 42)[2..]);
         for end in 1..data.len() {
-            assert!(!framing.advance(&data[..end], &caps).unwrap());
+            assert!(!framing
+                .advance(&bytes::Bytes::copy_from_slice(&data[..end]), &caps)
+                .unwrap());
         }
-        assert!(framing.advance(&data, &caps).unwrap());
+        assert!(framing
+            .advance(&bytes::Bytes::copy_from_slice(&data), &caps)
+            .unwrap());
     }
 
     #[tokio::test]

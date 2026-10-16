@@ -586,33 +586,38 @@ impl TransactionScope for OracleTransaction {
     }
 }
 
-// La scadenza nasce all'ingresso nel drain o alla creazione dello stream,
-// dopo la query iniziale. Nessuna pagina, vuota o piena, rinnova il timeout.
+// Conta soltanto le attese FETCH consecutive senza righe, non il consumatore o i LOB.
 struct FetchProgress {
-    deadline: tokio::time::Instant,
+    timeout: Duration,
+    idle: Duration,
 }
 
 impl FetchProgress {
-    fn new(timeout: Duration) -> Self {
+    const fn new(timeout: Duration) -> Self {
         Self {
-            deadline: tokio::time::Instant::now() + timeout,
+            timeout,
+            idle: Duration::ZERO,
         }
     }
 
-    fn remaining(&self) -> Result<Duration> {
-        self.remaining_at(tokio::time::Instant::now())
+    const fn record(&mut self, elapsed: Duration, has_rows: bool) {
+        self.idle = if has_rows {
+            Duration::ZERO
+        } else {
+            self.idle.saturating_add(elapsed)
+        };
     }
 
-    fn remaining_at(&self, now: tokio::time::Instant) -> Result<Duration> {
-        self.deadline
-            .checked_duration_since(now)
+    fn remaining(&self) -> Result<Duration> {
+        self.timeout
+            .checked_sub(self.idle)
             .filter(|left| !left.is_zero())
             .ok_or_else(|| {
                 DatabaseError::new(
                     ErrorCategory::Timeout,
                     ErrorPhase::Read,
                     Some(ProviderKind::Oracle),
-                    "FETCH Oracle oltre la scadenza complessiva",
+                    "FETCH Oracle senza avanzamento oltre il timeout",
                 )
             })
     }
@@ -624,8 +629,9 @@ async fn drain_result(
     cancellation: &CancellationToken,
     mut result: QueryResult,
 ) -> Result<QueryResult> {
-    let progress = FetchProgress::new(timeout);
+    let mut progress = FetchProgress::new(timeout);
     while result.has_more_rows {
+        let started = tokio::time::Instant::now();
         let page = timed(
             progress.remaining()?,
             ErrorPhase::Read,
@@ -633,6 +639,7 @@ async fn drain_result(
             connection.fetch_more(result.cursor_id, &result.columns, 256),
         )
         .await?;
+        progress.record(started.elapsed(), !page.rows.is_empty());
         result.rows.extend(page.rows);
         result.cursor_id = page.cursor_id;
         result.has_more_rows = page.has_more_rows;
@@ -682,6 +689,7 @@ impl RowStream for OracleRowStream<'_> {
     ) -> ProviderFuture<'a, Option<Vec<Row>>> {
         Box::pin(async move {
             while self.pending.is_empty() && self.has_more {
+                let started = tokio::time::Instant::now();
                 let result = timed(
                     self.progress.remaining()?,
                     ErrorPhase::Read,
@@ -690,6 +698,8 @@ impl RowStream for OracleRowStream<'_> {
                         .fetch_more(self.cursor_id, &self.columns, self.batch_size),
                 )
                 .await?;
+                self.progress
+                    .record(started.elapsed(), !result.rows.is_empty());
                 self.cursor_id = result.cursor_id;
                 self.has_more = result.has_more_rows;
                 self.pending.extend(result.rows);
