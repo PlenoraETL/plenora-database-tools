@@ -223,3 +223,7 @@ fn pool_error_with_retry(
 #[cfg(test)]
 #[path = "pool_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "caller_sql_pool_tests.rs"]
+mod caller_sql_pool_tests;

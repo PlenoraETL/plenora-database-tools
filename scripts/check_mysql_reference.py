@@ -58,6 +58,11 @@ EXPECTED_VERSION_PREFIX = BASELINE.version_prefix
 # chiuso invece di qualificare una superficie che non e piu quella dichiarata.
 
 EXPECTED_UNIT_TESTS = {
+    "transaction::caller_sql_send_tests::denied_sql_before_send_has_no_effect",
+    "transaction::caller_sql_send_tests::zero_batch_before_send_has_no_effect",
+    "transaction::caller_sql_send_tests::validation_after_driver_execution_requires_recovery",
+    "transaction::caller_sql_send_tests::mariadb_preserves_local_errors_and_promotes_post_send_validation",
+
     "transaction::tests::caller_sql_uint_overflow_preserves_decoder_context_and_requires_recovery",
     "arrow::tests::decimal_parser_is_exact_and_checked",
     "arrow::tests::zero_dates_fail_closed_without_panicking",

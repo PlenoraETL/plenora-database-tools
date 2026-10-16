@@ -18,16 +18,8 @@
 //! rispettivi helper di questo modulo anche per le chiamate dirette. La prova
 //! d'inventario copre tutti i metodi pubblici e verifica entrambi gli ingressi.
 //!
-//! # Limite dichiarato
-//!
-//! **Regola**: ogni errore restituito dall'adapter passa dalla promozione,
-//! anche in fase `validate`: limiti del risultato e policy di una sonda
-//! possono fallire dopo una scrittura. **Ambito**: anche una validazione
-//! locale prima dell'invio esce come ignota se avviene dentro l'adapter.
-//! **Hazard**: il chiamante riceve `requires_recovery` dove `none` sarebbe
-//! stato vero, ma non puo scambiare una scrittura per un rifiuto senza effetti.
-//! **Rientro**: un confine esplicito fra preparazione e invio nel trait degli
-//! adapter; la sola fase dell'errore non dimostra quel confine.
+//! Gli adapter restituiscono un marcatore per operazione e lo aggiornano al
+//! confine del driver. Senza marcatore l'invio si presume avvenuto.
 
 use crate::error::{DatabaseError, ErrorPhase};
 use crate::graph::{GraphRow, GraphStatement};
@@ -37,6 +29,49 @@ use crate::transaction::{
     CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionScope,
 };
 use crate::CancellationToken;
+
+/// Prova condivisa del confine di invio di una singola operazione.
+/// Il valore predefinito presume l'invio; solo un adapter che traccia il
+/// confine puo costruire un marcatore con `before_send`.
+#[derive(Clone, Debug)]
+pub struct SendMarker(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Default for SendMarker {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            true,
+        )))
+    }
+}
+
+impl SendMarker {
+    #[must_use]
+    pub fn before_send() -> Self {
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            false,
+        )))
+    }
+
+    /// Chiamare prima di consegnare l'operazione al driver, mai dopo l'await.
+    pub fn mark_sent(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Marca soltanto quando il futuro del driver viene interrogato.
+    pub async fn sending<F: std::future::Future>(&self, call: F) -> F::Output {
+        self.mark_sent();
+        call.await
+    }
+
+    #[must_use]
+    pub fn failure(&self, error: DatabaseError) -> DatabaseError {
+        if self.0.load(std::sync::atomic::Ordering::Acquire) {
+            caller_sql_failure(error)
+        } else {
+            error
+        }
+    }
+}
 
 /// La regola, in un punto solo: dopo l'invio di SQL del chiamante un errore
 /// non e mai `none`. La fase `validate` non prova che l'invio sia escluso.
@@ -99,8 +134,9 @@ impl TransactionScope for CallerSqlTransaction {
         statement: &'a Statement,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, u64> {
+        let sent = self.inner.begin_caller_sql();
         let call = self.inner.execute(statement, cancellation);
-        Box::pin(async move { call.await.map_err(caller_sql_failure) })
+        Box::pin(async move { call.await.map_err(|error| sent.failure(error)) })
     }
 
     fn query<'a>(
@@ -108,8 +144,9 @@ impl TransactionScope for CallerSqlTransaction {
         statement: &'a Statement,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Vec<Row>> {
+        let sent = self.inner.begin_caller_sql();
         let call = self.inner.query(statement, cancellation);
-        Box::pin(async move { call.await.map_err(caller_sql_failure) })
+        Box::pin(async move { call.await.map_err(|error| sent.failure(error)) })
     }
 
     fn execute_graph<'a>(
@@ -117,8 +154,9 @@ impl TransactionScope for CallerSqlTransaction {
         statement: &'a GraphStatement,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Vec<GraphRow>> {
+        let sent = self.inner.begin_caller_sql();
         let call = self.inner.execute_graph(statement, cancellation);
-        Box::pin(async move { call.await.map_err(caller_sql_failure) })
+        Box::pin(async move { call.await.map_err(|error| sent.failure(error)) })
     }
 
     fn query_stream<'a>(
@@ -127,9 +165,10 @@ impl TransactionScope for CallerSqlTransaction {
         batch_size: u32,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn RowStream + Send + 'a>> {
+        let sent = self.inner.begin_caller_sql();
         let call = self.inner.query_stream(statement, batch_size, cancellation);
         Box::pin(async move {
-            let stream = call.await.map_err(caller_sql_failure)?;
+            let stream = call.await.map_err(|error| sent.failure(error))?;
             Ok(Box::new(CallerSqlRowStream { inner: stream }) as Box<dyn RowStream + Send + 'a>)
         })
     }
@@ -163,8 +202,9 @@ impl TransactionScope for CallerSqlTransaction {
         request: ConditionalUpdate<'a>,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
+        let sent = self.inner.begin_caller_sql();
         let call = self.inner.execute_conditional_update(request, cancellation);
-        Box::pin(async move { call.await.map_err(caller_sql_failure) })
+        Box::pin(async move { call.await.map_err(|error| sent.failure(error)) })
     }
 
     fn commit(

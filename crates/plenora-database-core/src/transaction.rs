@@ -274,6 +274,13 @@ pub trait TransactionScope: Send {
     /// Usato dalle facade portable per selezionare il compilatore SQL.
     fn provider_kind(&self) -> crate::plan::ProviderKind;
 
+    /// Inizia il tracciamento di una sola operazione SQL del chiamante.
+    /// Il default presume l'invio, anche per adapter che non implementano
+    /// il tracciamento. Le chiamate interne non devono azzerare il marcatore.
+    fn begin_caller_sql(&mut self) -> crate::caller_sql::SendMarker {
+        crate::caller_sql::SendMarker::default()
+    }
+
     fn execute<'a>(
         &'a mut self,
         statement: &'a Statement,

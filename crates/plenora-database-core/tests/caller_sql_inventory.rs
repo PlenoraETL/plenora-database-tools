@@ -156,6 +156,7 @@ fn every_transaction_sql_method_is_wrapped() {
         methods,
         [
             "provider_kind",
+            "begin_caller_sql",
             "execute",
             "query",
             "execute_graph",
@@ -180,6 +181,9 @@ fn every_transaction_sql_method_is_wrapped() {
         let marker = format!("fn {method}<'");
         let body = wrapper.split_once(&marker).expect("metodo protetto").1;
         let body = body.split("\n    fn ").next().expect("corpo");
-        assert!(body.contains("map_err(caller_sql_failure)"), "{method}");
+        assert!(
+            body.contains("map_err(caller_sql_failure)") || body.contains("sent.failure(error)"),
+            "{method}"
+        );
     }
 }

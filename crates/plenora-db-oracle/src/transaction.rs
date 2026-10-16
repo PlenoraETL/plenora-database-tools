@@ -8,6 +8,7 @@ use oracle_rs::types::LobValue;
 use oracle_rs::{
     BatchBuilder, BindDirection, BindParam, ColumnInfo, Connection, QueryResult, Value,
 };
+use plenora_database_core::caller_sql::SendMarker;
 use plenora_database_core::native_query_policy::{enforce_policy, NativeQueryPolicy};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::{ParameterValue, ProviderFuture};
@@ -22,6 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub struct OracleTransaction {
+    sent: SendMarker,
     connection: PooledOracleConnection,
     operation_timeout: Duration,
     open: bool,
@@ -54,6 +56,7 @@ impl OracleTransaction {
             operation_timeout: config.operation_timeout(),
             open: true,
             native_query_policy: options.native_query_policy,
+            sent: SendMarker::default(),
             lob_cache: LobCache::default(),
         })
     }
@@ -87,9 +90,11 @@ impl OracleTransaction {
             self.operation_timeout,
             ErrorPhase::Write,
             cancellation,
-            self.connection
-                .connection()?
-                .execute(&statement.sql, &params),
+            self.sent.sending(
+                self.connection
+                    .connection()?
+                    .execute(&statement.sql, &params),
+            ),
         )
         .await
         .map_err(statement_execution_error)?;
@@ -277,7 +282,8 @@ impl OracleTransaction {
             self.operation_timeout,
             ErrorPhase::Read,
             cancellation,
-            self.connection.connection()?.query(&statement.sql, &params),
+            self.sent
+                .sending(self.connection.connection()?.query(&statement.sql, &params)),
         )
         .await
     }
@@ -373,6 +379,11 @@ impl Drop for OracleTransaction {
 }
 
 impl TransactionScope for OracleTransaction {
+    fn begin_caller_sql(&mut self) -> SendMarker {
+        self.sent = SendMarker::before_send();
+        self.sent.clone()
+    }
+
     fn provider_kind(&self) -> ProviderKind {
         ProviderKind::Oracle
     }
@@ -801,3 +812,7 @@ fn rollback_failure(error: DatabaseError) -> DatabaseError {
 #[cfg(test)]
 #[path = "transaction_commit_tests.rs"]
 mod commit_tests;
+
+#[cfg(test)]
+#[path = "caller_sql_send_tests.rs"]
+mod caller_sql_send_tests;

@@ -48,6 +48,7 @@ use crate::error::{check_cancelled, classify_error, public_error};
 use crate::pool::PooledClient;
 use decode::decode_rows;
 use params::{encode_params, validate_parameter_targets};
+use plenora_database_core::caller_sql::SendMarker;
 use plenora_database_core::graph::{GraphRow, GraphStatement, GraphValue};
 use plenora_database_core::native_query_policy::{enforce_policy, NativeQueryPolicy};
 use plenora_database_core::provider::ParameterValue;
@@ -69,6 +70,7 @@ use tokio_postgres::Statement as PreparedStatement;
 
 /// Transazione `PostgreSQL` costruita sopra un `PooledClient`.
 pub struct PostgresTransaction {
+    sent: SendMarker,
     client: PooledClient,
     open: bool,
     cursor_counter: u32,
@@ -120,6 +122,7 @@ impl PostgresTransaction {
             open: true,
             cursor_counter: 0,
             native_query_policy: options.native_query_policy,
+            sent: SendMarker::default(),
         })
     }
 }
@@ -186,7 +189,9 @@ impl PostgresTransaction {
         operation_phase: ErrorPhase,
     ) -> Result<PreparedStatement> {
         let client = self.client.client()?;
-        let Some(result) = select_with_cancellation(client.prepare(sql), cancellation).await else {
+        let Some(result) =
+            select_with_cancellation(self.sent.sending(client.prepare(sql)), cancellation).await
+        else {
             self.client.invalidate();
             self.open = false;
             return Err(Self::interruption_error(
@@ -202,6 +207,11 @@ impl PostgresTransaction {
 }
 
 impl TransactionScope for PostgresTransaction {
+    fn begin_caller_sql(&mut self) -> SendMarker {
+        self.sent = SendMarker::before_send();
+        self.sent.clone()
+    }
+
     fn provider_kind(&self) -> plenora_database_core::plan::ProviderKind {
         plenora_database_core::plan::ProviderKind::Postgres
     }
@@ -441,9 +451,8 @@ impl TransactionScope for PostgresTransaction {
                 )
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
-            let Some(result) =
-                select_with_cancellation(client.query(&sql, &parameter_refs), cancellation).await
-            else {
+            let query = self.sent.sending(client.query(&sql, &parameter_refs));
+            let Some(result) = select_with_cancellation(query, cancellation).await else {
                 self.client.invalidate();
                 self.open = false;
                 return Err(Self::interruption_error(
@@ -755,3 +764,7 @@ fn context_failure(error: DatabaseError, rolled_back: bool) -> DatabaseError {
         error.after_unconfirmed_rollback()
     }
 }
+
+#[cfg(test)]
+#[path = "caller_sql_send_tests.rs"]
+mod caller_sql_send_tests;

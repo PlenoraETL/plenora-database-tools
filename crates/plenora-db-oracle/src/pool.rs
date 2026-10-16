@@ -189,3 +189,7 @@ fn pool_error(
         diagnostics: None,
     }
 }
+
+#[cfg(test)]
+#[path = "caller_sql_pool_tests.rs"]
+mod caller_sql_pool_tests;

@@ -27,12 +27,14 @@ enum Scenario {
     DecodeFails,
     /// Un errore di validazione locale, prima dell'invio.
     Validation,
+    TrackedBeforeSend,
+    TrackedAfterSend,
     GraphRowLimit,
     OracleProbePolicy,
     Db2ProbePolicy,
 }
 
-struct FakeScope(Scenario);
+struct FakeScope(Scenario, SendMarker);
 
 struct FakeStream(Scenario);
 
@@ -52,6 +54,18 @@ impl RowStream for FakeStream {
 }
 
 impl TransactionScope for FakeScope {
+    fn begin_caller_sql(&mut self) -> SendMarker {
+        self.1 = if matches!(
+            self.0,
+            Scenario::TrackedBeforeSend | Scenario::TrackedAfterSend
+        ) {
+            SendMarker::before_send()
+        } else {
+            SendMarker::default()
+        };
+        self.1.clone()
+    }
+
     fn provider_kind(&self) -> ProviderKind {
         ProviderKind::Postgres
     }
@@ -62,9 +76,15 @@ impl TransactionScope for FakeScope {
         _cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, u64> {
         let scenario = self.0;
+        let sent = self.1.clone();
         Box::pin(async move {
+            if matches!(scenario, Scenario::TrackedAfterSend) {
+                sent.sending(async {}).await;
+            }
             Err(match scenario {
-                Scenario::Validation => DatabaseError::invalid_plan("policy nativa"),
+                Scenario::Validation | Scenario::TrackedBeforeSend | Scenario::TrackedAfterSend => {
+                    DatabaseError::invalid_plan("policy nativa")
+                }
                 _ => none_error(ErrorCategory::Execution, ErrorPhase::Write),
             })
         })
@@ -246,7 +266,10 @@ impl Provider for FakeProvider {
     ) -> ProviderFuture<'a, Box<dyn TransactionScope>> {
         crate::caller_sql::open_transaction({
             let scenario = self.0;
-            Box::pin(async move { Ok(Box::new(FakeScope(scenario)) as Box<dyn TransactionScope>) })
+            Box::pin(async move {
+                Ok(Box::new(FakeScope(scenario, SendMarker::default()))
+                    as Box<dyn TransactionScope>)
+            })
         })
     }
 
@@ -345,7 +368,10 @@ fn adapter_validation_without_send_evidence_requires_recovery() {
 
 #[test]
 fn postgres_graph_row_limit_after_send_requires_recovery() {
-    let mut transaction = CallerSqlTransaction::new(Box::new(FakeScope(Scenario::GraphRowLimit)));
+    let mut transaction = CallerSqlTransaction::new(Box::new(FakeScope(
+        Scenario::GraphRowLimit,
+        SendMarker::default(),
+    )));
     let statement = GraphStatement::new(
         "graph",
         "UNWIND [1,2,3] AS i CREATE (n) RETURN n",
@@ -360,7 +386,8 @@ fn postgres_graph_row_limit_after_send_requires_recovery() {
 }
 
 fn assert_probe_policy_after_update(scenario: Scenario) {
-    let mut transaction = CallerSqlTransaction::new(Box::new(FakeScope(scenario)));
+    let mut transaction =
+        CallerSqlTransaction::new(Box::new(FakeScope(scenario, SendMarker::default())));
     let update = Statement::new("UPDATE items SET version = version + 1 WHERE id = 1");
     let probe = Statement::new("DROP TABLE items");
     let request = ConditionalUpdate {
@@ -384,4 +411,35 @@ fn oracle_probe_policy_after_send_requires_recovery() {
 #[test]
 fn db2_probe_policy_after_send_requires_recovery() {
     assert_probe_policy_after_update(Scenario::Db2ProbePolicy);
+}
+
+#[test]
+fn wrapper_uses_send_evidence_instead_of_validation_phase() {
+    for (scenario, effect) in [
+        (Scenario::TrackedBeforeSend, RemoteEffect::None),
+        (Scenario::TrackedAfterSend, RemoteEffect::Unknown),
+    ] {
+        let mut tx =
+            CallerSqlTransaction::new(Box::new(FakeScope(scenario, SendMarker::default())));
+        let error =
+            block_on(tx.execute(&Statement::new("DROP TABLE t"), &CancellationToken::new()))
+                .unwrap_err();
+        assert_eq!(error.phase, ErrorPhase::Validate);
+        assert_eq!(error.remote_effect, effect);
+    }
+}
+
+#[test]
+fn unpolled_driver_future_is_not_a_send() {
+    let sent = SendMarker::before_send();
+    drop(sent.sending(async {}));
+    assert_eq!(
+        sent.failure(DatabaseError::invalid_plan("locale"))
+            .remote_effect,
+        RemoteEffect::None
+    );
+    assert_unknown(
+        &SendMarker::default().failure(DatabaseError::invalid_plan("senza marcatore")),
+        "default conservativo",
+    );
 }

@@ -320,13 +320,31 @@ impl MysqlSession {
         phase: ErrorPhase,
         cancellation: &CancellationToken,
     ) -> Result<u64> {
+        self.exec_write_tracked(
+            sql,
+            parameters,
+            phase,
+            cancellation,
+            &plenora_database_core::caller_sql::SendMarker::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn exec_write_tracked(
+        &mut self,
+        sql: &str,
+        parameters: Params,
+        phase: ErrorPhase,
+        cancellation: &CancellationToken,
+        sent: &plenora_database_core::caller_sql::SendMarker,
+    ) -> Result<u64> {
         let profile = self.profile;
         self.require_ready(phase)?;
         let connection = self
             .connection
             .as_mut()
             .ok_or_else(|| state_error(phase, profile))?;
-        let execution = connection.exec_drop(sql, parameters);
+        let execution = sent.sending(connection.exec_drop(sql, parameters));
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.quarantine().await;
@@ -767,3 +785,7 @@ pub fn commit_failure(
         server_code(error).is_some_and(|code| profile.commit_rollback_codes().contains(&code)),
     )
 }
+
+#[cfg(test)]
+#[path = "caller_sql_session_tests.rs"]
+mod caller_sql_session_tests;

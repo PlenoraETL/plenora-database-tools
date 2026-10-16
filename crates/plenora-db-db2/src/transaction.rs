@@ -4,6 +4,7 @@ use crate::read::decode_hex_binary;
 use crate::Db2Config;
 use odbc_api::buffers::TextRowSet;
 use odbc_api::{sys::SqlDataType, Connection, Cursor, DataType, IntoParameter, ResultSetMetadata};
+use plenora_database_core::caller_sql::SendMarker;
 use plenora_database_core::native_query_policy::{
     enforce_policy, statement_head, NativeQueryPolicy,
 };
@@ -25,6 +26,7 @@ const QUERY_CELL_BYTES: usize = 64 * 1024;
 const DB2_SQL_BLOB: SqlDataType = SqlDataType(-98);
 
 pub struct Db2Transaction {
+    sent: SendMarker,
     #[cfg(test)]
     panic_read_worker: bool,
     connection: Option<Connection<'static>>,
@@ -90,6 +92,7 @@ impl Db2Transaction {
             connection: Some(opened.0),
             timeout: statement_timeout(options).unwrap_or(opened.1),
             native_query_policy: options.native_query_policy,
+            sent: SendMarker::default(),
             open: true,
             _operation_lease: operation_lease,
         })
@@ -421,6 +424,7 @@ fn execute_statement(
     sql: &str,
     parameters: &[Option<String>],
     requires_row_count: bool,
+    sent: &SendMarker,
 ) -> Result<u64> {
     let parameters: Vec<_> = parameters
         .iter()
@@ -432,6 +436,7 @@ fn execute_statement(
     statement
         .set_query_timeout_sec(timeout)
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
+    sent.mark_sent();
     let has_cursor = statement
         .execute(sql, parameters.as_slice())
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?
@@ -469,11 +474,13 @@ fn query_rows(
     timeout: usize,
     sql: &str,
     parameters: &[Option<String>],
+    sent: &SendMarker,
 ) -> Result<Vec<Row>> {
     let parameters: Vec<_> = parameters
         .iter()
         .map(|parameter| parameter.as_deref().into_parameter())
         .collect();
+    sent.mark_sent();
     let mut cursor = connection
         .execute(sql, parameters.as_slice(), Some(timeout))
         .map_err(|error| driver_error(&error, ErrorPhase::Read))?
@@ -670,6 +677,11 @@ fn transaction_error(
 }
 
 impl TransactionScope for Db2Transaction {
+    fn begin_caller_sql(&mut self) -> SendMarker {
+        self.sent = SendMarker::before_send();
+        self.sent.clone()
+    }
+
     fn provider_kind(&self) -> ProviderKind {
         ProviderKind::Db2
     }
@@ -684,11 +696,19 @@ impl TransactionScope for Db2Transaction {
             let sql = statement.sql.clone();
             let parameters = encode_parameters(&statement.params)?;
             let requires_row_count = db2_statement_requires_row_count(&sql);
+            let sent = self.sent.clone();
             self.run(
                 ErrorPhase::Write,
                 cancellation,
                 move |connection, timeout| {
-                    execute_statement(connection, timeout, &sql, &parameters, requires_row_count)
+                    execute_statement(
+                        connection,
+                        timeout,
+                        &sql,
+                        &parameters,
+                        requires_row_count,
+                        &sent,
+                    )
                 },
             )
             .await
@@ -704,10 +724,13 @@ impl TransactionScope for Db2Transaction {
             enforce_policy(self.native_query_policy, &statement.sql)?;
             let sql = statement.sql.clone();
             let parameters = encode_parameters(&statement.params)?;
+            let sent = self.sent.clone();
             self.run(
                 ErrorPhase::Read,
                 cancellation,
-                move |connection, timeout| query_rows(connection, timeout, &sql, &parameters),
+                move |connection, timeout| {
+                    query_rows(connection, timeout, &sql, &parameters, &sent)
+                },
             )
             .await
         })
@@ -868,3 +891,7 @@ pub fn abandoned_error(error: DatabaseError, rollback_confirmed: bool) -> Databa
         error.after_unconfirmed_rollback()
     }
 }
+
+#[cfg(test)]
+#[path = "caller_sql_send_tests.rs"]
+mod caller_sql_send_tests;

@@ -207,3 +207,7 @@ impl Drop for PooledClient {
         drop(idle);
     }
 }
+
+#[cfg(test)]
+#[path = "caller_sql_pool_tests.rs"]
+mod caller_sql_pool_tests;
