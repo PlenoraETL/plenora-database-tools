@@ -627,17 +627,25 @@ impl ConnectionInner {
 
     /// Send a marker packet with the specified marker type
     async fn send_marker(&mut self, marker_type: u8) -> Result<()> {
+        let packet = self.build_marker(marker_type)?;
+        self.send(&packet).await
+    }
+
+    fn build_marker(&self, marker_type: u8) -> Result<bytes::Bytes> {
         let mut buf = WriteBuffer::with_capacity(16);
 
         // Build marker packet header
-        // Marker packet structure: [length][0x00][0x00][0x00][0x0c][flags][0x00][0x00] + payload
         // Payload: [0x01][0x00][marker_type]
         let payload_len = 3; // 0x01, 0x00, marker_type
         let total_len = (PACKET_HEADER_SIZE + payload_len) as u16;
 
         // Header
-        buf.write_u16_be(total_len)?;
-        buf.write_u16_be(0)?; // zeros in large_sdu position
+        if self.large_sdu {
+            buf.write_u32_be(u32::from(total_len))?;
+        } else {
+            buf.write_u16_be(total_len)?;
+            buf.write_u16_be(0)?; // Checksum
+        }
         buf.write_u8(PacketType::Marker as u8)?;
         buf.write_u8(0)?; // flags
         buf.write_u16_be(0)?; // reserved
@@ -647,7 +655,7 @@ impl ConnectionInner {
         buf.write_u8(0x00)?; // constant
         buf.write_u8(marker_type)?;
 
-        self.send(buf.as_slice()).await
+        Ok(buf.freeze())
     }
 
     /// Handle the reset protocol after receiving a MARKER packet
@@ -5168,22 +5176,7 @@ impl Connection {
     /// Send a marker packet to the server
     /// marker_type: 1=BREAK, 2=RESET, 3=INTERRUPT
     async fn send_marker(&self, inner: &mut ConnectionInner, marker_type: u8) -> Result<()> {
-        let mut packet_buf = WriteBuffer::new();
-
-        // Build MARKER packet header
-        let packet_len = PACKET_HEADER_SIZE + 3; // Header + 3 bytes payload
-        packet_buf.write_u16_be(packet_len as u16)?;
-        packet_buf.write_u16_be(0)?; // Checksum
-        packet_buf.write_u8(PacketType::Marker as u8)?;
-        packet_buf.write_u8(0)?; // Flags
-        packet_buf.write_u16_be(0)?; // Header checksum
-
-        // Marker payload: [1, 0, marker_type] per Python's _send_marker
-        packet_buf.write_u8(1)?;
-        packet_buf.write_u8(0)?;
-        packet_buf.write_u8(marker_type)?;
-
-        inner.send(&packet_buf.freeze()).await
+        inner.send_marker(marker_type).await
     }
 
     async fn send_simple_function_inner(
@@ -5470,6 +5463,19 @@ fn oracle_type_from_name(type_name: &str) -> crate::constants::OracleType {
 mod tests {
     use super::*;
     use crate::row::Value;
+
+    #[test]
+    fn test_marker_packet_length_encoding() {
+        let mut inner = ConnectionInner::new_with_cache(0);
+        for (large_sdu, length) in [(false, [0, 11, 0, 0]), (true, [0, 0, 0, 11])] {
+            inner.large_sdu = large_sdu;
+            for marker_type in [1, 2, 3] {
+                let packet = inner.build_marker(marker_type).unwrap();
+                assert_eq!(&packet[..4], &length);
+                assert_eq!(&packet[4..], &[12, 0, 0, 0, 1, 0, marker_type]);
+            }
+        }
+    }
 
     #[test]
     fn test_query_options_default() {

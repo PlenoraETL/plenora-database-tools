@@ -2376,4 +2376,11 @@ async fn live_caller_stream_fetch_failure_requires_recovery() {
         error.retry,
         plenora_database_core::RetryDisposition::RequiresRecovery
     );
+    drop(stream);
+    let rows = tx
+        .query(&Statement::new("SELECT 1 AS N FROM DUAL"), &cancellation)
+        .await
+        .expect("la stessa connessione deve rispondere dopo il reset del fetch");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
 }
