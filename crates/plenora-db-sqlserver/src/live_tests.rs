@@ -9123,3 +9123,54 @@ async fn live_a_native_batch_error_after_a_write_is_not_reported_as_no_effect() 
         .await
         .expect("cleanup");
 }
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito"]
+async fn live_caller_stream_cancellation_requires_recovery() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let provider = SqlServerProvider::new(
+        live_config(CertificatePolicy::TrustServerCertificate),
+        1024,
+        4,
+    )
+    .expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .open_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin reale");
+    let statement = Statement::new("SELECT 1 AS n UNION ALL SELECT 2 AS n");
+    let mut stream = tx
+        .query_stream(&statement, 1, &cancellation)
+        .await
+        .expect("stream reale");
+    assert_eq!(
+        stream
+            .next_batch(&cancellation)
+            .await
+            .expect("prima riga")
+            .expect("batch")
+            .len(),
+        1
+    );
+    cancellation.cancel();
+    let error = stream
+        .next_batch(&cancellation)
+        .await
+        .expect_err("stream annullato");
+    assert_eq!(error.category, ErrorCategory::Cancelled);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::Unknown
+    );
+    assert_eq!(
+        error.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
+}

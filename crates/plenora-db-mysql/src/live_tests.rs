@@ -7763,3 +7763,38 @@ async fn live_concurrent_cancellation_does_not_disturb_the_other_readers() {
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "live: richiede il riferimento MySQL"]
+async fn live_caller_query_decode_failure_requires_recovery() {
+    let provider = MysqlProvider::new(live_config(), 2).expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .open_transaction(
+            &live_secret(),
+            &plenora_database_core::transaction::TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin reale");
+    let error = tx
+        .query(
+            &stream_statement("SELECT CAST(18446744073709551615 AS UNSIGNED) AS n"),
+            &cancellation,
+        )
+        .await
+        .expect_err("UInt64 oltre i64");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::Unknown
+    );
+    assert_eq!(
+        error.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
+    tx.rollback(&cancellation).await.expect("rollback");
+}

@@ -143,7 +143,9 @@ impl Provider for OfflineProvider {
         _budget: &'a ResourceBudget,
         _cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn TransactionScope>> {
-        Box::pin(async { Ok(Box::new(OfflineTransaction) as Box<dyn TransactionScope>) })
+        plenora_database_core::caller_sql::open_transaction({
+            Box::pin(async { Ok(Box::new(OfflineTransaction) as Box<dyn TransactionScope>) })
+        })
     }
 }
 

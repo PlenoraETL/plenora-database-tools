@@ -238,3 +238,26 @@ fn a_missing_cell_is_a_protocol_error() {
     assert_eq!(error.category, ErrorCategory::Protocol);
     assert!(!error.is_retryable());
 }
+
+#[test]
+fn caller_sql_uint_overflow_preserves_decoder_context_and_requires_recovery() {
+    let error = super::convert_value(
+        mysql_async::Value::UInt(u64::MAX),
+        3,
+        plenora_database_core::plan::ProviderKind::Mysql,
+        (mysql_async::consts::ColumnType::MYSQL_TYPE_LONGLONG, 63),
+    )
+    .expect_err("overflow reale del decoder");
+    let public = plenora_database_core::caller_sql::caller_sql_failure(error);
+    assert_eq!(public.category, ErrorCategory::DataMapping);
+    assert_eq!(
+        public.remote_effect,
+        plenora_database_core::RemoteEffect::Unknown
+    );
+    assert_eq!(
+        public.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
+    assert!(public.message.contains("idx=3"));
+    assert!(!public.message.contains(&u64::MAX.to_string()));
+}

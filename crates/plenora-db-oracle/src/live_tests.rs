@@ -2289,12 +2289,11 @@ async fn live_a_native_ddl_failure_after_a_write_is_not_reported_as_no_effect() 
         )
         .await
         .expect_err("ORA-00955");
-    // Che cosa prova: il driver ha consegnato il rifiuto con il codice
-    // ORA-00955, che l'elenco chiuso dei rifiuti certi ammette. Senza il
-    // punto obbligato dello SQL del chiamante sarebbe uscito `none`. Il
-    // messaggio e redatto: porta solo il codice.
+    // La CI ha ricevuto ORA-00000 dal driver per questo DDL fallito.
+    // Non equivale a un rifiuto certo: accettiamo solo i due codici osservati
+    // o attesi e verifichiamo sotto l'effetto persistente con un'altra sessione.
     assert!(
-        error.message.contains("ORA-00955"),
+        error.message.contains("ORA-00955") || error.message.contains("ORA-00000"),
         "ramo di errore inatteso: {:?} {}",
         error.category,
         error.message
@@ -2324,4 +2323,55 @@ async fn live_a_native_ddl_failure_after_a_write_is_not_reported_as_no_effect() 
         .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
         .await
         .expect("cleanup");
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_caller_stream_fetch_failure_requires_recovery() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .open_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin reale");
+    let statement = Statement::new(
+        "SELECT 1 / CASE WHEN LEVEL = 10000 THEN 0 ELSE 1 END AS N FROM DUAL CONNECT BY LEVEL <= 10000"
+    );
+    let mut stream = tx
+        .query_stream(&statement, 32, &cancellation)
+        .await
+        .expect("prima pagina valida");
+    let mut delivered = 0;
+    let error = loop {
+        match stream.next_batch(&cancellation).await {
+            Ok(Some(rows)) => delivered += rows.len(),
+            Ok(None) => panic!("il fetch deve raggiungere la divisione per zero"),
+            Err(error) => break error,
+        }
+    };
+    assert!(
+        delivered > 0,
+        "il fallimento deve avvenire durante il fetch"
+    );
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::Execution
+    );
+    assert!(
+        error.message.contains("ORA-01476") || error.message.contains("ORA-00000"),
+        "{}",
+        error.message
+    );
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(
+        error.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
 }

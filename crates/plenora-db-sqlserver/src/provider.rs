@@ -353,17 +353,19 @@ impl Provider for SqlServerProvider {
         _budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
-        Box::pin(async move {
-            crate::transaction::validate_options(options)?;
-            let pool = self.pool_for(secret)?;
-            let session = pool.checkout(cancellation).await?;
-            let transaction =
-                crate::transaction::SqlServerTransaction::begin(session, options, cancellation)
-                    .await?;
-            Ok(Box::new(transaction)
-                as Box<
-                    dyn plenora_database_core::transaction::TransactionScope,
-                >)
+        plenora_database_core::caller_sql::open_transaction({
+            Box::pin(async move {
+                crate::transaction::validate_options(options)?;
+                let pool = self.pool_for(secret)?;
+                let session = pool.checkout(cancellation).await?;
+                let transaction =
+                    crate::transaction::SqlServerTransaction::begin(session, options, cancellation)
+                        .await?;
+                Ok(Box::new(transaction)
+                    as Box<
+                        dyn plenora_database_core::transaction::TransactionScope,
+                    >)
+            })
         })
     }
 
@@ -521,16 +523,18 @@ impl Provider for SqlServerProvider {
         sql: &'a str,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        Box::pin(async move {
-            ensure_not_cancelled(cancellation, ErrorPhase::Write)?;
-            let pool = self.pool_for(secret)?;
-            let mut session = pool.checkout(cancellation).await?;
-            let outcome = session
-                .session_mut()?
-                .execute_query(Query::new(sql.to_owned()), ErrorPhase::Write, cancellation)
-                .await;
-            drop(session);
-            outcome.map(|_| ()).map_err(ddl_execution_error)
+        plenora_database_core::caller_sql::run_ddl(self.kind(), cancellation, {
+            Box::pin(async move {
+                ensure_not_cancelled(cancellation, ErrorPhase::Write)?;
+                let pool = self.pool_for(secret)?;
+                let mut session = pool.checkout(cancellation).await?;
+                let outcome = session
+                    .session_mut()?
+                    .execute_query(Query::new(sql.to_owned()), ErrorPhase::Write, cancellation)
+                    .await;
+                drop(session);
+                outcome.map(|_| ()).map_err(ddl_execution_error)
+            })
         })
     }
 }

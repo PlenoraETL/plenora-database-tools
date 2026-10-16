@@ -141,18 +141,21 @@ async fn pre_cancelled_connection_fails_without_network() {
 async fn pre_cancelled_ddl_fails_without_network_and_without_remote_effect() {
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let error = provider()
-        .execute_ddl(
-            &SecretString::new("runtime-secret"),
-            "CREATE TABLE should_not_run (id int)",
-            &cancellation,
-        )
-        .await
+    let provider = provider();
+    let secret = SecretString::new("runtime-secret");
+    let sql = "CREATE TABLE should_not_run (id int)";
+    for direct in [false, true] {
+        let error = if direct {
+            provider.run_ddl(&secret, sql, &cancellation).await
+        } else {
+            provider.execute_ddl(&secret, sql, &cancellation).await
+        }
         .expect_err("cancelled");
-    assert_eq!(error.category, ErrorCategory::Cancelled);
-    assert_eq!(error.phase, ErrorPhase::Write);
-    assert_eq!(error.remote_effect, RemoteEffect::None);
-    assert_eq!(error.retry, RetryDisposition::Never);
+        assert_eq!(error.category, ErrorCategory::Cancelled);
+        assert_eq!(error.phase, ErrorPhase::Write);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert_eq!(error.retry, RetryDisposition::Never);
+    }
 }
 
 #[tokio::test]

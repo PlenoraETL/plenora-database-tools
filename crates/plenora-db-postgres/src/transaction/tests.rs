@@ -2264,7 +2264,7 @@ mod live {
         )
         .await
         .expect("procedura");
-        let error = Provider::execute_ddl(
+        let error = Provider::run_ddl(
             &provider,
             &secret(),
             "CALL opz3_commit_raise_proc()",

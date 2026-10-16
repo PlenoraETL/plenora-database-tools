@@ -248,11 +248,13 @@ impl Provider for OracleProvider {
         _budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn Transaction>> {
-        Box::pin(async move {
-            let pool = self.pool_for(secret)?;
-            let transaction =
-                OracleTransaction::begin(&self.config, &pool, options, cancellation).await?;
-            Ok(Box::new(transaction) as Box<dyn Transaction>)
+        plenora_database_core::caller_sql::open_transaction({
+            Box::pin(async move {
+                let pool = self.pool_for(secret)?;
+                let transaction =
+                    OracleTransaction::begin(&self.config, &pool, options, cancellation).await?;
+                Ok(Box::new(transaction) as Box<dyn Transaction>)
+            })
         })
     }
 
@@ -262,9 +264,11 @@ impl Provider for OracleProvider {
         sql: &'a str,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        Box::pin(async move {
-            let pool = self.pool_for(secret)?;
-            execute_ddl(&self.config, &pool, sql, cancellation).await
+        plenora_database_core::caller_sql::run_ddl(self.kind(), cancellation, {
+            Box::pin(async move {
+                let pool = self.pool_for(secret)?;
+                execute_ddl(&self.config, &pool, sql, cancellation).await
+            })
         })
     }
 }

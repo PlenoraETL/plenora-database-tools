@@ -319,7 +319,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
         )
         # Le prove concorrenti verificano il recupero delle connessioni e del pool.
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 34)
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 35)
 
     def test_gate_pins_the_query_operation_live_test_by_name(self) -> None:
         for name in (

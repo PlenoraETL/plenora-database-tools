@@ -11,8 +11,8 @@ fn none_error(category: ErrorCategory, phase: ErrorPhase) -> DatabaseError {
     DatabaseError::new(category, phase, Some(ProviderKind::Postgres), "rifiuto")
 }
 
-/// Lo scenario di ogni provider, riprodotto da un adapter finto che rende
-/// `none` dove il reale lo rendeva.
+/// Test di instradamento del wrapper, non evidence dei provider.
+/// I percorsi driver sono qualificati dalle rispettive prove live.
 #[derive(Clone, Copy)]
 enum Scenario {
     /// PostgreSQL: una procedura fa COMMIT e poi RAISE.
@@ -208,18 +208,22 @@ impl Provider for FakeProvider {
         _budget: &'a ResourceBudget,
         _cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn TransactionScope>> {
-        let scenario = self.0;
-        Box::pin(async move { Ok(Box::new(FakeScope(scenario)) as Box<dyn TransactionScope>) })
+        crate::caller_sql::open_transaction({
+            let scenario = self.0;
+            Box::pin(async move { Ok(Box::new(FakeScope(scenario)) as Box<dyn TransactionScope>) })
+        })
     }
 
     fn run_ddl<'a>(
         &'a self,
         _secret: &'a SecretString,
         _sql: &'a str,
-        _cancellation: &'a CancellationToken,
+        cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        // `CALL` fuori transazione: la procedura ha fatto COMMIT, poi RAISE.
-        Box::pin(async { Err(none_error(ErrorCategory::Execution, ErrorPhase::Write)) })
+        crate::caller_sql::run_ddl(self.kind(), cancellation, {
+            // `CALL` fuori transazione: la procedura ha fatto COMMIT, poi RAISE.
+            Box::pin(async { Err(none_error(ErrorCategory::Execution, ErrorPhase::Write)) })
+        })
     }
 }
 

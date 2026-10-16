@@ -224,42 +224,44 @@ impl Provider for TestProvider {
         _budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn TransactionScope>> {
-        let executions = Arc::clone(&self.executions);
-        let pool = self.pool.clone();
-        let active_transactions = Arc::clone(&self.active_transactions);
-        let peak_transactions = Arc::clone(&self.peak_transactions);
-        let fail_next_execution = Arc::clone(&self.fail_next_execution);
-        let transaction_delay = self.transaction_delay;
-        Box::pin(async move {
-            interrupted(cancellation, ErrorPhase::Connect)?;
-            let permit = if let Some(pool) = pool {
-                Some(tokio::select! {
-                    acquired = pool.acquire_owned() => acquired.map_err(|_| {
-                        DatabaseError::resource_limit("pool sintetico chiuso")
-                    })?,
-                    _reason = cancellation.cancelled() => {
-                        return Err(DatabaseError::interrupted(
-                            cancellation,
-                            Some(ProviderKind::Postgres),
-                            ErrorPhase::Connect,
-                            "checkout del pool interrotto",
-                        ));
-                    }
-                })
-            } else {
-                None
-            };
-            if permit.is_some() {
-                let active = active_transactions.fetch_add(1, Ordering::AcqRel) + 1;
-                peak_transactions.fetch_max(active, Ordering::AcqRel);
-            }
-            Ok(Box::new(TestTransaction {
-                executions,
-                active_transactions,
-                fail_next_execution,
-                transaction_delay,
-                permit,
-            }) as Box<dyn TransactionScope>)
+        plenora_database_core::caller_sql::open_transaction({
+            let executions = Arc::clone(&self.executions);
+            let pool = self.pool.clone();
+            let active_transactions = Arc::clone(&self.active_transactions);
+            let peak_transactions = Arc::clone(&self.peak_transactions);
+            let fail_next_execution = Arc::clone(&self.fail_next_execution);
+            let transaction_delay = self.transaction_delay;
+            Box::pin(async move {
+                interrupted(cancellation, ErrorPhase::Connect)?;
+                let permit = if let Some(pool) = pool {
+                    Some(tokio::select! {
+                        acquired = pool.acquire_owned() => acquired.map_err(|_| {
+                            DatabaseError::resource_limit("pool sintetico chiuso")
+                        })?,
+                        _reason = cancellation.cancelled() => {
+                            return Err(DatabaseError::interrupted(
+                                cancellation,
+                                Some(ProviderKind::Postgres),
+                                ErrorPhase::Connect,
+                                "checkout del pool interrotto",
+                            ));
+                        }
+                    })
+                } else {
+                    None
+                };
+                if permit.is_some() {
+                    let active = active_transactions.fetch_add(1, Ordering::AcqRel) + 1;
+                    peak_transactions.fetch_max(active, Ordering::AcqRel);
+                }
+                Ok(Box::new(TestTransaction {
+                    executions,
+                    active_transactions,
+                    fail_next_execution,
+                    transaction_delay,
+                    permit,
+                }) as Box<dyn TransactionScope>)
+            })
         })
     }
 }

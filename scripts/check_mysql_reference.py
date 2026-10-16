@@ -58,6 +58,7 @@ EXPECTED_VERSION_PREFIX = BASELINE.version_prefix
 # chiuso invece di qualificare una superficie che non e piu quella dichiarata.
 
 EXPECTED_UNIT_TESTS = {
+    "transaction::tests::caller_sql_uint_overflow_preserves_decoder_context_and_requires_recovery",
     "arrow::tests::decimal_parser_is_exact_and_checked",
     "arrow::tests::zero_dates_fail_closed_without_panicking",
     "catalog::tests::a_functional_index_is_described_where_the_product_publishes_its_parts",
@@ -328,6 +329,7 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_v12_write_upsert_without_keys_rejected",
 }
 EXPECTED_LIVE_REFERENCE_TESTS = {
+    "live_tests::live_caller_query_decode_failure_requires_recovery",
     "live_tests::live_a_row_over_the_batch_budget_carries_over_to_the_next_batch",
     "live_tests::live_append_batch_failure_rolls_back_without_partial_rows",
     "live_tests::live_append_commits_a_single_transaction_and_reads_back_exactly",

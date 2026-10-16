@@ -151,7 +151,7 @@ fn only_a_closed_list_of_ora_codes_proves_a_rejection_after_sending() {
         assert_eq!(public.remote_effect, RemoteEffect::Unknown, "ORA-{code}");
         assert_eq!(public.category, ErrorCategory::Io, "ORA-{code}");
     }
-    for code in [4_031, 600, 7_445, 99_999] {
+    for code in [0, 4_031, 600, 7_445, 99_999] {
         let public = sent_command_error(ErrorPhase::Write, &oracle(code));
         assert_eq!(public.remote_effect, RemoteEffect::Unknown, "ORA-{code}");
     }

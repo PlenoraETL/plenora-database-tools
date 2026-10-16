@@ -48,6 +48,7 @@ PYTHON_ENV = {
 }
 REQUIRED_LIVE_TESTS = frozenset(
     {
+        "live_caller_query_worker_panic_requires_recovery",
         "live_reference_probe_catalog_and_capabilities",
         "live_errors_classify_security_and_missing_objects_without_payloads",
         "live_portable_sql_executes_insert_merge_select_and_rollback",

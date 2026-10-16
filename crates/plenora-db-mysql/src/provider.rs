@@ -501,22 +501,24 @@ impl Provider for MysqlProvider {
         _budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
-        Box::pin(async move {
-            // Bordo: da qui in poi l'attribuzione e quella del
-            // profilo, non il segnaposto con cui l'errore e nato.
-            let outcome = async move {
-                let pool = self.pool_for(secret)?;
-                let session = pool.checkout(cancellation).await?;
-                let transaction =
-                    crate::transaction::MysqlTransaction::begin(session, options, cancellation)
-                        .await?;
-                Ok(Box::new(transaction)
-                    as Box<
-                        dyn plenora_database_core::transaction::TransactionScope,
-                    >)
-            }
-            .await;
-            crate::profile::attributed(self.profile, outcome)
+        plenora_database_core::caller_sql::open_transaction({
+            Box::pin(async move {
+                // Bordo: da qui in poi l'attribuzione e quella del
+                // profilo, non il segnaposto con cui l'errore e nato.
+                let outcome = async move {
+                    let pool = self.pool_for(secret)?;
+                    let session = pool.checkout(cancellation).await?;
+                    let transaction =
+                        crate::transaction::MysqlTransaction::begin(session, options, cancellation)
+                            .await?;
+                    Ok(Box::new(transaction)
+                        as Box<
+                            dyn plenora_database_core::transaction::TransactionScope,
+                        >)
+                }
+                .await;
+                crate::profile::attributed(self.profile, outcome)
+            })
         })
     }
 
@@ -526,34 +528,36 @@ impl Provider for MysqlProvider {
         sql: &'a str,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        Box::pin(async move {
-            // Bordo: da qui in poi l'attribuzione e quella del
-            // profilo, non il segnaposto con cui l'errore e nato.
-            let outcome = async move {
-                let pool = self.pool_for(secret)?;
-                let mut session = pool.checkout(cancellation).await?;
-                // Text protocol via `exec_control`, non prepared via `exec_write`,
-                // per due ragioni distinte:
-                //
-                // 1. MySQL rifiuta parte del DDL nel prepared statement protocol
-                //    (errore 1295), quindi `exec_write` chiuderebbe statement che
-                //    il server accetta senza problemi in text protocol;
-                // 2. il DDL MySQL fa autocommit. Su cancellazione o timeout
-                //    `exec_write` dichiara `RemoteEffect::None` — "non e successo
-                //    nulla" — mentre lo statement puo essersi gia committato.
-                //    `exec_control` dichiara `Unknown`, che e la sola cosa vera
-                //    quando la connessione cade mentre un DDL autocommit e in
-                //    volo.
-                //
-                // La fase e `Write`: qui si esegue, non si prepara. Con `Prepare`
-                // il consumer leggerebbe il fallimento come pre-esecuzione, cioe
-                // senza effetto remoto possibile.
-                session
-                    .exec_control(sql, ErrorPhase::Write, cancellation)
-                    .await
-            }
-            .await;
-            crate::profile::attributed(self.profile, outcome)
+        plenora_database_core::caller_sql::run_ddl(self.kind(), cancellation, {
+            Box::pin(async move {
+                // Bordo: da qui in poi l'attribuzione e quella del
+                // profilo, non il segnaposto con cui l'errore e nato.
+                let outcome = async move {
+                    let pool = self.pool_for(secret)?;
+                    let mut session = pool.checkout(cancellation).await?;
+                    // Text protocol via `exec_control`, non prepared via `exec_write`,
+                    // per due ragioni distinte:
+                    //
+                    // 1. MySQL rifiuta parte del DDL nel prepared statement protocol
+                    //    (errore 1295), quindi `exec_write` chiuderebbe statement che
+                    //    il server accetta senza problemi in text protocol;
+                    // 2. il DDL MySQL fa autocommit. Su cancellazione o timeout
+                    //    `exec_write` dichiara `RemoteEffect::None` — "non e successo
+                    //    nulla" — mentre lo statement puo essersi gia committato.
+                    //    `exec_control` dichiara `Unknown`, che e la sola cosa vera
+                    //    quando la connessione cade mentre un DDL autocommit e in
+                    //    volo.
+                    //
+                    // La fase e `Write`: qui si esegue, non si prepara. Con `Prepare`
+                    // il consumer leggerebbe il fallimento come pre-esecuzione, cioe
+                    // senza effetto remoto possibile.
+                    session
+                        .exec_control(sql, ErrorPhase::Write, cancellation)
+                        .await
+                }
+                .await;
+                crate::profile::attributed(self.profile, outcome)
+            })
         })
     }
 }
@@ -1277,8 +1281,10 @@ impl Provider for MariadbProvider {
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
-        self.0
-            .open_transaction(secret, options, budget, cancellation)
+        plenora_database_core::caller_sql::open_transaction({
+            self.0
+                .open_transaction(secret, options, budget, cancellation)
+        })
     }
 
     fn run_ddl<'a>(
@@ -1287,7 +1293,9 @@ impl Provider for MariadbProvider {
         sql: &'a str,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        self.0.run_ddl(secret, sql, cancellation)
+        plenora_database_core::caller_sql::run_ddl(self.kind(), cancellation, {
+            self.0.run_ddl(secret, sql, cancellation)
+        })
     }
 }
 

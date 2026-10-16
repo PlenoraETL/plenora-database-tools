@@ -901,14 +901,16 @@ impl Provider for PostgresProvider {
         _budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
-        Box::pin(async move {
-            let client = self.connect_session(secret).await?;
-            let transaction =
-                transaction::PostgresTransaction::begin(client, options, cancellation).await?;
-            Ok(Box::new(transaction)
-                as Box<
-                    dyn plenora_database_core::transaction::TransactionScope,
-                >)
+        plenora_database_core::caller_sql::open_transaction({
+            Box::pin(async move {
+                let client = self.connect_session(secret).await?;
+                let transaction =
+                    transaction::PostgresTransaction::begin(client, options, cancellation).await?;
+                Ok(Box::new(transaction)
+                    as Box<
+                        dyn plenora_database_core::transaction::TransactionScope,
+                    >)
+            })
         })
     }
 
@@ -918,18 +920,20 @@ impl Provider for PostgresProvider {
         sql: &'a str,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        Box::pin(async move {
-            error::check_cancelled(cancellation, ErrorPhase::Prepare)?;
-            let mut client = self.connect_session(secret).await?;
-            let result = client
-                .client_mut()?
-                .batch_execute(sql)
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Write, &error));
-            if result.is_err() {
-                client.invalidate();
-            }
-            result
+        plenora_database_core::caller_sql::run_ddl(self.kind(), cancellation, {
+            Box::pin(async move {
+                error::check_cancelled(cancellation, ErrorPhase::Prepare)?;
+                let mut client = self.connect_session(secret).await?;
+                let result = client
+                    .client_mut()?
+                    .batch_execute(sql)
+                    .await
+                    .map_err(|error| classify_error(ErrorPhase::Write, &error));
+                if result.is_err() {
+                    client.invalidate();
+                }
+                result
+            })
         })
     }
 }

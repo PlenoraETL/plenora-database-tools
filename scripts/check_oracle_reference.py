@@ -28,6 +28,7 @@ RESULT = ROOT / "assurance-results" / "oracle-reference.json"
 TIMEOUT = 30 * 60
 REQUIRED_LIVE_TESTS = frozenset(
     {
+        "live_caller_stream_fetch_failure_requires_recovery",
         "live_thin_driver_crud_merge_stream_and_rollback",
         "live_driver_errors_are_redacted",
         "live_type_fidelity_includes_utc_timestamptz_and_lobs",

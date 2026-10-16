@@ -14,9 +14,9 @@
 //!
 //! Gli adapter non applicano la regola da soli: implementano
 //! [`Provider::open_transaction`](crate::provider::Provider::open_transaction)
-//! e [`Provider::run_ddl`](crate::provider::Provider::run_ddl), e i metodi
-//! pubblici `begin_transaction` ed `execute_ddl` li avvolgono qui. Una prova
-//! d'inventario verifica che nessun adapter ridefinisca i metodi pubblici.
+//! e [`Provider::run_ddl`](crate::provider::Provider::run_ddl), passando dai
+//! rispettivi helper di questo modulo anche per le chiamate dirette. La prova
+//! d'inventario copre tutti i metodi pubblici e verifica entrambi gli ingressi.
 //!
 //! # Limite dichiarato
 //!
@@ -49,9 +49,40 @@ pub fn caller_sql_failure(error: DatabaseError) -> DatabaseError {
     }
 }
 
+/// Protegge anche l'ingresso pubblico diretto dell'adapter.
+#[must_use]
+pub fn open_transaction(
+    call: ProviderFuture<'_, Box<dyn TransactionScope>>,
+) -> ProviderFuture<'_, Box<dyn TransactionScope>> {
+    Box::pin(async move {
+        Ok(Box::new(CallerSqlTransaction::new(call.await?)) as Box<dyn TransactionScope>)
+    })
+}
+
+/// Controlla l'annullamento prima di interrogare l'adapter; dopo l'invio
+/// conserva l'incertezza anche quando il driver restituisce un rifiuto.
+#[must_use]
+pub fn run_ddl<'a>(
+    provider: crate::plan::ProviderKind,
+    cancellation: &'a CancellationToken,
+    call: ProviderFuture<'a, ()>,
+) -> ProviderFuture<'a, ()> {
+    Box::pin(async move {
+        if cancellation.is_cancelled() {
+            return Err(DatabaseError::interrupted(
+                cancellation,
+                Some(provider),
+                ErrorPhase::Write,
+                "DDL interrotto prima dell'invio",
+            ));
+        }
+        call.await.map_err(caller_sql_failure)
+    })
+}
+
 /// Una transazione il cui SQL del chiamante passa dalla regola.
 ///
-/// Si costruisce soltanto dal core, in `Provider::begin_transaction`.
+/// Si costruisce soltanto dal core, tramite [`open_transaction`].
 pub struct CallerSqlTransaction {
     inner: Box<dyn TransactionScope>,
 }

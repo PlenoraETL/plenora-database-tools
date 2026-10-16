@@ -25,6 +25,8 @@ const QUERY_CELL_BYTES: usize = 64 * 1024;
 const DB2_SQL_BLOB: SqlDataType = SqlDataType(-98);
 
 pub struct Db2Transaction {
+    #[cfg(test)]
+    panic_read_worker: bool,
     connection: Option<Connection<'static>>,
     timeout: usize,
     native_query_policy: NativeQueryPolicy,
@@ -65,6 +67,8 @@ impl Db2Transaction {
         }
         budget.ensure_active()?;
         let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
+        #[cfg(test)]
+        let panic_read_worker = config.panic_read_worker;
         let config = config.clone();
         let secret = secret.clone();
         let isolation = isolation_statement(options);
@@ -81,6 +85,8 @@ impl Db2Transaction {
         .await
         .map_err(|_| task_error(ErrorPhase::Prepare))??;
         Ok(Self {
+            #[cfg(test)]
+            panic_read_worker,
             connection: Some(opened.0),
             timeout: statement_timeout(options).unwrap_or(opened.1),
             native_query_policy: options.native_query_policy,
@@ -119,8 +125,15 @@ impl Db2Transaction {
             transaction_error(ErrorCategory::Internal, phase, "connessione Db2 assente")
         })?;
         let timeout = self.timeout;
+        #[cfg(test)]
+        let panic_read_worker = self.panic_read_worker && phase == ErrorPhase::Read;
         let outcome = tokio::task::spawn_blocking(move || {
             let result = operation(&connection, timeout);
+            #[cfg(test)]
+            assert!(
+                !(panic_read_worker && result.is_ok()),
+                "panic del worker dopo SQL reale"
+            );
             (connection, result)
         })
         .await;

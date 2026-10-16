@@ -20,6 +20,8 @@ pub enum Db2TlsMode {
 /// mai incluse nella rappresentazione `Debug`.
 #[derive(Clone)]
 pub struct Db2Config {
+    #[cfg(test)]
+    pub(crate) panic_read_worker: bool,
     host: String,
     port: u16,
     database: String,
@@ -34,8 +36,10 @@ pub struct Db2Config {
 
 impl std::fmt::Debug for Db2Config {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("Db2Config")
+        let mut debug = formatter.debug_struct("Db2Config");
+        #[cfg(test)]
+        debug.field("panic_read_worker", &self.panic_read_worker);
+        debug
             .field("host", &self.host)
             .field("port", &self.port)
             .field("database", &self.database)
@@ -58,6 +62,8 @@ impl Db2Config {
         username: impl Into<String>,
     ) -> Self {
         Self {
+            #[cfg(test)]
+            panic_read_worker: false,
             host: host.into(),
             port: 50_000,
             database: database.into(),

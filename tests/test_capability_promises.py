@@ -58,9 +58,9 @@ class ScopeTransactionIsImplemented(unittest.TestCase):
             )
             if declares:
                 promised.append(crate)
-            # L'implementazione: una `fn begin_transaction` che non sia la
+            # L'implementazione: una `fn open_transaction` che non sia la
             # chiamata a quella di qualcun altro.
-            if re.search(r"fn begin_transaction\s*<", text):
+            if re.search(r"fn open_transaction\s*<", text):
                 implemented.append(crate)
 
         self.assertTrue(promised, "nessun provider dichiara scope Transaction")
@@ -69,7 +69,7 @@ class ScopeTransactionIsImplemented(unittest.TestCase):
             mancanti,
             [],
             "questi provider pubblicano transactions.scope = Transaction e non "
-            f"implementano begin_transaction: {mancanti}. Il default del "
+            f"implementano open_transaction: {mancanti}. Il default del "
             "contratto risponde Unsupported, quindi la capability e una "
             "promessa che nessuno puo mantenere.",
         )

@@ -149,16 +149,18 @@ impl Provider for Db2Provider {
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn TransactionScopeContract>> {
-        Box::pin(async move {
-            let transaction = crate::transaction::Db2Transaction::begin(
-                &self.config,
-                secret,
-                options,
-                budget,
-                cancellation,
-            )
-            .await?;
-            Ok(Box::new(transaction) as Box<dyn TransactionScopeContract>)
+        plenora_database_core::caller_sql::open_transaction({
+            Box::pin(async move {
+                let transaction = crate::transaction::Db2Transaction::begin(
+                    &self.config,
+                    secret,
+                    options,
+                    budget,
+                    cancellation,
+                )
+                .await?;
+                Ok(Box::new(transaction) as Box<dyn TransactionScopeContract>)
+            })
         })
     }
 
@@ -168,8 +170,10 @@ impl Provider for Db2Provider {
         sql: &'a str,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        Box::pin(async move {
-            crate::transaction::execute_ddl(&self.config, secret, sql, cancellation).await
+        plenora_database_core::caller_sql::run_ddl(self.kind(), cancellation, {
+            Box::pin(async move {
+                crate::transaction::execute_ddl(&self.config, secret, sql, cancellation).await
+            })
         })
     }
 }

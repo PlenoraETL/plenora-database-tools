@@ -324,7 +324,7 @@ pub trait Provider: Send + Sync {
     /// [`check_profile`](crate::conformance::check_profile) su evidence live.
     /// Un profilo si supera, non si pubblica nel documento capability.
     ///
-    /// Non si ridefinisce: avvolge [`Self::open_transaction`] nel punto
+    /// Non si ridefinisce: delega a [`Self::open_transaction`] nel punto
     /// obbligato dello SQL del chiamante ([`crate::caller_sql`]), che dopo
     /// l'invio non dichiara mai `none`. Una prova d'inventario verifica che
     /// nessun adapter lo ridefinisca.
@@ -335,20 +335,11 @@ pub trait Provider: Send + Sync {
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn TransactionScope>> {
-        Box::pin(async move {
-            let inner = self
-                .open_transaction(secret, options, budget, cancellation)
-                .await?;
-            Ok(
-                Box::new(crate::caller_sql::CallerSqlTransaction::new(inner))
-                    as Box<dyn TransactionScope>,
-            )
-        })
+        self.open_transaction(secret, options, budget, cancellation)
     }
 
-    /// Apre la transazione dell'adapter. Si chiama solo da
-    /// [`Self::begin_transaction`], che la avvolge nel punto obbligato dello
-    /// SQL del chiamante.
+    /// Apre una transazione protetta anche per chi usa direttamente questo
+    /// ingresso. Ogni adapter passa da [`crate::caller_sql::open_transaction`].
     fn open_transaction<'a>(
         &'a self,
         _secret: &'a SecretString,
@@ -379,7 +370,7 @@ pub trait Provider: Send + Sync {
     /// dopo l'invio ha effetto ignoto, mai `none` ([`crate::caller_sql`]):
     /// un batch o una procedura possono aver fatto commit prima di fallire.
     ///
-    /// Non si ridefinisce: avvolge [`Self::run_ddl`].
+    /// Non si ridefinisce: delega a [`Self::run_ddl`], gia protetto.
     ///
     /// # Governance
     ///
@@ -393,14 +384,11 @@ pub trait Provider: Send + Sync {
         sql: &'a str,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        Box::pin(async move {
-            self.run_ddl(secret, sql, cancellation)
-                .await
-                .map_err(crate::caller_sql::caller_sql_failure)
-        })
+        self.run_ddl(secret, sql, cancellation)
     }
 
-    /// Esegue il DDL dell'adapter. Si chiama solo da [`Self::execute_ddl`].
+    /// Esegue DDL passando da [`crate::caller_sql::run_ddl`] anche quando
+    /// il chiamante usa direttamente questo ingresso pubblico.
     fn run_ddl<'a>(
         &'a self,
         _secret: &'a SecretString,
