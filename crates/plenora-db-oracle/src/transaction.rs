@@ -578,12 +578,39 @@ impl TransactionScope for OracleTransaction {
     }
 }
 
+// Una pagina vuota puo essere transitoria; una sequenza persistente e un errore.
+#[derive(Default)]
+struct FetchProgress {
+    empty_pages: usize,
+}
+
+impl FetchProgress {
+    fn observe(&mut self, rows: usize, has_more: bool) -> Result<()> {
+        if rows == 0 && has_more {
+            self.empty_pages += 1;
+            if self.empty_pages >= 8 {
+                return Err(DatabaseError::new(
+                    ErrorCategory::Protocol,
+                    ErrorPhase::Read,
+                    Some(ProviderKind::Oracle),
+                    "FETCH Oracle senza avanzamento dopo pagine vuote consecutive",
+                ));
+            }
+        } else {
+            self.empty_pages = 0;
+        }
+        Ok(())
+    }
+}
+
 async fn drain_result(
     connection: &Connection,
     timeout: Duration,
     cancellation: &CancellationToken,
     mut result: QueryResult,
 ) -> Result<QueryResult> {
+    let mut progress = FetchProgress::default();
+    progress.observe(result.rows.len(), result.has_more_rows)?;
     while result.has_more_rows {
         let page = timed(
             timeout,
@@ -592,6 +619,7 @@ async fn drain_result(
             connection.fetch_more(result.cursor_id, &result.columns, 256),
         )
         .await?;
+        progress.observe(page.rows.len(), page.has_more_rows)?;
         result.rows.extend(page.rows);
         result.cursor_id = page.cursor_id;
         result.has_more_rows = page.has_more_rows;
@@ -608,6 +636,7 @@ struct OracleRowStream<'a> {
     cursor_id: u16,
     has_more: bool,
     batch_size: u32,
+    progress: FetchProgress,
 }
 
 impl<'a> OracleRowStream<'a> {
@@ -618,6 +647,8 @@ impl<'a> OracleRowStream<'a> {
         result: QueryResult,
     ) -> Result<Self> {
         let columns = decode_columns(&result.columns)?;
+        let mut progress = FetchProgress::default();
+        progress.observe(result.rows.len(), result.has_more_rows)?;
         Ok(Self {
             connection,
             timeout,
@@ -627,6 +658,7 @@ impl<'a> OracleRowStream<'a> {
             cursor_id: result.cursor_id,
             has_more: result.has_more_rows,
             batch_size,
+            progress,
         })
     }
 }
@@ -646,6 +678,13 @@ impl RowStream for OracleRowStream<'_> {
                         .fetch_more(self.cursor_id, &self.columns, self.batch_size),
                 )
                 .await?;
+                if let Err(error) = self
+                    .progress
+                    .observe(result.rows.len(), result.has_more_rows)
+                {
+                    self.has_more = false;
+                    return Err(error);
+                }
                 self.cursor_id = result.cursor_id;
                 self.has_more = result.has_more_rows;
                 self.pending.extend(result.rows);
@@ -816,3 +855,7 @@ mod commit_tests;
 #[cfg(test)]
 #[path = "caller_sql_send_tests.rs"]
 mod caller_sql_send_tests;
+
+#[cfg(test)]
+#[path = "transaction_fetch_tests.rs"]
+mod fetch_progress_tests;

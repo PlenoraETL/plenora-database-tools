@@ -2004,9 +2004,22 @@ async fn live_keyset_checkpoint_resumes_after_the_last_delivered_row() {
 #[tokio::test]
 #[ignore = "richiede Oracle Free live esplicito"]
 async fn live_driver_errors_are_redacted() {
-    let (provider, secret) = fixture();
+    let (config, secret) = fixture_config();
+    let provider = OracleProvider::new_with_pool(config, 1).expect("pool per verifica rollback");
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let table = "PLENORA_RESET_ROLLBACK";
+    let _ = provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("CREATE TABLE {table} (ID NUMBER(10))"),
+            &cancellation,
+        )
+        .await
+        .expect("crea fixture rollback");
     let mut transaction = provider
         .begin_transaction(
             &secret,
@@ -2016,6 +2029,18 @@ async fn live_driver_errors_are_redacted() {
         )
         .await
         .expect("begin");
+    transaction
+        .execute(
+            &Statement::new(format!("INSERT INTO {table} (ID) VALUES (1)")),
+            &cancellation,
+        )
+        .await
+        .expect("scrittura prima dell'errore");
+    let session_query = Statement::new("SELECT SYS_CONTEXT('USERENV', 'SID') AS SID FROM DUAL");
+    let session = transaction
+        .query(&session_query, &cancellation)
+        .await
+        .expect("sessione prima del reset");
     let marker = "PLENORA_SECRET_IDENTIFIER_79F";
     let error = transaction
         .query(
@@ -2026,17 +2051,61 @@ async fn live_driver_errors_are_redacted() {
         .expect_err("tabella inesistente");
     assert!(!error.message.contains(marker));
     assert!(error.message.contains("ORA-00942"));
+    // NUMBER(10) dichiara scala zero per la verifica I64; il literal non la garantisce.
     // Il reset mantiene utilizzabile la stessa sessione prima del rollback.
     let rows = transaction
-        .query(&Statement::new("SELECT 1 AS N FROM DUAL"), &cancellation)
+        .query(
+            &Statement::new("SELECT CAST(1 AS NUMBER(10)) AS N FROM DUAL"),
+            &cancellation,
+        )
         .await
         .expect("sessione utilizzabile dopo l'errore server");
     assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    // L'errore deve lasciare la scrittura pendente, altrimenti il rollback non e provato.
+    let pending = transaction
+        .query(
+            &Statement::new(format!("SELECT ID FROM {table}")),
+            &cancellation,
+        )
+        .await
+        .expect("scrittura ancora pendente dopo il reset");
+    assert_eq!(pending.len(), 1);
     let rollback = transaction.rollback(&cancellation).await;
     if let Err(error) = &rollback {
         assert!(!error.message.contains(marker));
     }
     rollback.expect("rollback confermato dopo il reset");
+    let mut verification = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione successiva");
+    // Riutilizzare la stessa sessione esclude un falso positivo da disconnessione.
+    let next_session = verification
+        .query(&session_query, &cancellation)
+        .await
+        .expect("sessione dopo rollback");
+    assert_eq!(session[0].get("SID"), next_session[0].get("SID"));
+    let rows = verification
+        .query(
+            &Statement::new(format!("SELECT ID FROM {table}")),
+            &cancellation,
+        )
+        .await
+        .expect("verifica rollback effettivo");
+    assert!(rows.is_empty(), "la scrittura deve essere annullata");
+    verification
+        .rollback(&cancellation)
+        .await
+        .expect("chiude verifica");
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .expect("rimuove fixture rollback");
 }
 
 #[tokio::test]
@@ -2379,8 +2448,12 @@ async fn live_caller_stream_fetch_failure_requires_recovery() {
         plenora_database_core::RetryDisposition::RequiresRecovery
     );
     drop(stream);
+    // NUMBER(10) dichiara scala zero anche per la query successiva al reset.
     let rows = tx
-        .query(&Statement::new("SELECT 1 AS N FROM DUAL"), &cancellation)
+        .query(
+            &Statement::new("SELECT CAST(1 AS NUMBER(10)) AS N FROM DUAL"),
+            &cancellation,
+        )
         .await
         .expect("la stessa connessione deve rispondere dopo il reset del fetch");
     assert_eq!(rows.len(), 1);
