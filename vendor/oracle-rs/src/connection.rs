@@ -379,14 +379,14 @@ impl<'a> PageFraming<'a> {
                     x if x == MessageType::Parameter as u8 => {
                         if let Some((locator_len, amount)) = self.lob {
                             buf.skip(locator_len)?;
-                            if amount {
-                                buf.read_ub8()?;
-                            }
                             if self.lob_tail == 2 {
                                 buf.skip_ub2()?;
                             }
                             if self.lob_tail != 0 {
                                 buf.skip(1)?;
+                            }
+                            if amount {
+                                buf.read_ub8()?;
                             }
                         } else {
                             Connection::parse_return_parameters_internal(
@@ -402,6 +402,9 @@ impl<'a> PageFraming<'a> {
                     x if x == MessageType::FlushOutBinds as u8 => {}
                     x if x == MessageType::ImplicitResultset as u8 => {
                         Connection::parse_implicit_results(&mut buf, caps)?;
+                    }
+                    x if x == MessageType::ServerSidePiggyback as u8 => {
+                        Connection::parse_server_piggyback(&mut buf)?;
                     }
                     _ => {
                         return Err(Error::Protocol(
@@ -1862,6 +1865,10 @@ impl Connection {
             let msg_type = buf.read_u8()?;
 
             match msg_type {
+                x if x == MessageType::IoVector as u8 => {
+                    Self::parse_io_vector(&mut buf, &[])?;
+                }
+
                 // Error (4) - may contain error or success info
                 x if x == MessageType::Error as u8 => {
                     let (error_code, error_msg, _cid, row_count) =
@@ -1884,6 +1891,10 @@ impl Connection {
                     }
                 }
 
+                // Server side piggyback (23)
+                x if x == MessageType::ServerSidePiggyback as u8 => {
+                    Self::parse_server_piggyback(&mut buf)?;
+                }
                 // Status (9) - call status
                 x if x == MessageType::Status as u8 => {
                     let _call_status = buf.read_ub4()?;
@@ -2201,6 +2212,9 @@ impl Connection {
                         });
                     }
                     break; // Error message marks end of response
+                }
+                x if x == MessageType::ServerSidePiggyback as u8 => {
+                    Self::parse_server_piggyback(&mut buf)?;
                 }
                 x if x == MessageType::Status as u8 => {
                     buf.skip_ub4()?;
@@ -2855,6 +2869,10 @@ impl Connection {
                     Self::parse_return_parameters(&mut buf)?;
                 }
 
+                // Server side piggyback (23)
+                x if x == MessageType::ServerSidePiggyback as u8 => {
+                    Self::parse_server_piggyback(&mut buf)?;
+                }
                 // Status (9) - call status
                 x if x == MessageType::Status as u8 => {
                     // Read call status and end-to-end seq number
@@ -3001,6 +3019,10 @@ impl Connection {
                     Self::parse_return_parameters(&mut buf)?;
                 }
 
+                // Server side piggyback (23)
+                x if x == MessageType::ServerSidePiggyback as u8 => {
+                    Self::parse_server_piggyback(&mut buf)?;
+                }
                 // Status (9)
                 x if x == MessageType::Status as u8 => {
                     let _call_status = buf.read_ub4()?;
@@ -3090,7 +3112,10 @@ impl Connection {
         buf.skip(1)?; // flag
         let num_requests = buf.read_ub2()? as u32;
         let num_iters = buf.read_ub4()?;
-        let num_binds = num_iters * 256 + num_requests;
+        let num_binds = num_iters
+            .checked_mul(256)
+            .and_then(|count| count.checked_add(num_requests))
+            .ok_or_else(|| Error::Protocol("Oracle bind count overflow".into()))?;
         let _ = buf.read_ub4()?; // num iters this time (discard)
         let _ = buf.read_ub2()?; // uac buffer length (discard)
 
@@ -3110,16 +3135,19 @@ impl Connection {
         let mut out_indices = Vec::new();
         let mut out_columns = Vec::new();
 
-        for i in 0..(num_binds as usize).min(params.len()) {
+        // Wire consumption must not depend on locally available bind metadata.
+        for i in 0..num_binds as usize {
             let dir_byte = buf.read_u8()?;
-            let dir = BindDirection::try_from(dir_byte).unwrap_or(BindDirection::Input);
+            let dir = BindDirection::try_from(dir_byte)?;
 
             // If this is not an INPUT-only parameter, it has OUT data
             if dir != BindDirection::Input {
                 out_indices.push(i);
 
                 // Create a column info for parsing the OUT value
-                let param = &params[i];
+                let param = params.get(i).ok_or_else(|| {
+                    Error::Protocol("Oracle output bind without parameter metadata".into())
+                })?;
                 let mut col = ColumnInfo::new(format!("OUT_{}", i), param.oracle_type);
                 col.buffer_size = param.buffer_size;
                 col.data_size = param.buffer_size;
@@ -3164,6 +3192,38 @@ impl Connection {
     /// Parse return parameters (TNS_MSG_TYPE_PARAMETER = 8)
     fn parse_return_parameters(buf: &mut ReadBuffer) -> Result<()> {
         Self::parse_return_parameters_internal(buf, false).map(|_| ())
+    }
+
+    // SYNC side messages precede completion on Oracle Free (opcode 5).
+    // Consume fields by their lengths; unknown opcodes remain fail-closed.
+    fn parse_server_piggyback(buf: &mut ReadBuffer) -> Result<()> {
+        match buf.read_u8()? {
+            1 | 3 => {}
+            opcode @ (5 | 9) => {
+                buf.skip_ub2()?;
+                buf.skip_ub1()?;
+                if opcode == 5 {
+                    let pairs = buf.read_ub2()?;
+                    buf.skip_ub1()?;
+                    for _ in 0..pairs {
+                        for _ in 0..2 {
+                            let length = buf.read_ub2()?;
+                            if length != 0 {
+                                buf.skip_raw_bytes_chunked()?;
+                            }
+                        }
+                        buf.skip_ub2()?;
+                    }
+                    buf.skip_ub4()?;
+                }
+            }
+            _ => {
+                return Err(Error::Protocol(
+                    "Unsupported Oracle server piggyback".into(),
+                ))
+            }
+        }
+        Ok(())
     }
 
     /// Parse return parameters with optional row counts extraction
@@ -3647,6 +3707,10 @@ impl Connection {
             let msg_type = buf.read_u8()?;
 
             match msg_type {
+                x if x == MessageType::IoVector as u8 => {
+                    Self::parse_io_vector(&mut buf, &[])?;
+                }
+
                 // Error (4) - may contain error or success info
                 x if x == MessageType::Error as u8 => {
                     let (error_code, error_msg, cid, row_count) =
@@ -3668,6 +3732,10 @@ impl Connection {
                     Self::parse_return_parameters(&mut buf)?;
                 }
 
+                // Server side piggyback (23)
+                x if x == MessageType::ServerSidePiggyback as u8 => {
+                    Self::parse_server_piggyback(&mut buf)?;
+                }
                 // Status (9) - call status
                 x if x == MessageType::Status as u8 => {
                     let _call_status = buf.read_ub4()?;
@@ -4521,7 +4589,7 @@ impl Connection {
         inner.send(&request).await?;
 
         inner
-            .receive_lob_response(40, false, 2, |payload, caps| {
+            .receive_lob_response(40, true, 2, |payload, caps| {
                 self.parse_temp_lob_response(payload, caps, oracle_type)
             })
             .await
@@ -4548,9 +4616,10 @@ impl Connection {
                     // Read the 40-byte locator (matches the 40 bytes sent in request)
                     let loc_data = buf.read_bytes_vec(40)?;
                     locator_bytes = Some(loc_data);
-                    // Skip charset (variable-length ub2) and trailing flags (raw u8)
+                    // Charset, raw flags, then amount requested by CREATE_TEMP.
                     buf.skip_ub2()?;
                     buf.skip(1)?;
+                    buf.read_ub8()?;
                 }
 
                 // Error/Status message (4) - code 0 means success
@@ -4567,6 +4636,9 @@ impl Connection {
                     break;
                 }
 
+                x if x == MessageType::ServerSidePiggyback as u8 => {
+                    Self::parse_server_piggyback(&mut buf)?;
+                }
                 x if x == MessageType::Status as u8 => {
                     buf.read_ub4()?;
                     buf.read_ub2()?;
@@ -4777,6 +4849,9 @@ impl Connection {
                     break;
                 }
 
+                x if x == MessageType::ServerSidePiggyback as u8 => {
+                    Self::parse_server_piggyback(&mut buf)?;
+                }
                 x if x == MessageType::Status as u8 => {
                     buf.read_ub4()?;
                     buf.read_ub2()?;
@@ -4828,6 +4903,9 @@ impl Connection {
                     break;
                 }
 
+                x if x == MessageType::ServerSidePiggyback as u8 => {
+                    Self::parse_server_piggyback(&mut buf)?;
+                }
                 x if x == MessageType::Status as u8 => {
                     buf.read_ub4()?;
                     buf.read_ub2()?;
@@ -4878,6 +4956,9 @@ impl Connection {
                     break;
                 }
 
+                x if x == MessageType::ServerSidePiggyback as u8 => {
+                    Self::parse_server_piggyback(&mut buf)?;
+                }
                 x if x == MessageType::Status as u8 => {
                     buf.read_ub4()?;
                     buf.read_ub2()?;
@@ -5234,6 +5315,7 @@ mod tests {
     }
 
     include!("connection_exchange_tests.rs");
+    include!("connection_side_message_tests.rs");
 
     fn parser_connection() -> Connection {
         Connection {

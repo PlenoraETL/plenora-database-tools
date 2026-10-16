@@ -155,7 +155,7 @@ async fn every_lob_route_collects_fragments_and_rejects_bad_completion() {
                     let mut payload = vec![8];
                     if route == 0 {
                         payload.extend_from_slice(&[29; 40]);
-                        payload.extend_from_slice(&[0, 0]);
+                        payload.extend_from_slice(&[0, 0, 0]);
                     } else {
                         payload.extend_from_slice(locator.locator_bytes());
                         if matches!(route, 1..=5 | 7 | 8) {
