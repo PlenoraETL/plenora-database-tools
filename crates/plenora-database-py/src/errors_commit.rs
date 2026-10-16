@@ -23,7 +23,10 @@ use plenora_database_core::{
 /// poterlo leggere.
 #[must_use]
 #[allow(clippy::redundant_pub_crate)]
-pub(crate) fn commit_outcome_unknown(provider: ProviderKind) -> DatabaseError {
+pub(crate) fn commit_outcome_unknown(
+    provider: ProviderKind,
+    category: ErrorCategory,
+) -> DatabaseError {
     let provider_label = match provider {
         ProviderKind::Postgres => "PostgreSQL",
         ProviderKind::Mysql => "MySQL",
@@ -35,7 +38,10 @@ pub(crate) fn commit_outcome_unknown(provider: ProviderKind) -> DatabaseError {
         ProviderKind::Duckdb => "DuckDB",
     };
     DatabaseError {
-        category: ErrorCategory::Internal,
+        // La causa osservata dall'adapter (ERR-001); `internal` se non ce n'e
+        // una dimostrabile. La classe Python resta
+        // `PlenoraCommitOutcomeUnknownError`.
+        category,
         // `Write` appartiene allo statement DML; qui l'ambiguita e sul COMMIT.
         phase: ErrorPhase::Commit,
         remote_effect: RemoteEffect::Unknown,

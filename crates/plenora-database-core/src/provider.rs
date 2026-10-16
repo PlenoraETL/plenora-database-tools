@@ -295,6 +295,13 @@ pub trait Provider: Send + Sync {
 
     /// Esegue il bulk write preparato via [`Self::prepare_write`].
     /// Consuma il `BatchStream` di input in streaming.
+    ///
+    /// Un `Ok` non e un successo: un commit senza conferma arriva come esito
+    /// con `status` `outcome_unknown` e la sua `recovery`. Chi lo consegna a
+    /// un'altra superficie passa da [`WriteOutcome::settle`], che lascia
+    /// passare soltanto `committed`; chi lo consuma in Rust legge `status`.
+    ///
+    /// [`WriteOutcome::settle`]: crate::outcome::WriteOutcome::settle
     fn write<'a>(
         &'a self,
         secret: &'a SecretString,
@@ -316,7 +323,24 @@ pub trait Provider: Send + Sync {
     /// capability richieste dichiarato fuori dalla libreria e verificato da
     /// [`check_profile`](crate::conformance::check_profile) su evidence live.
     /// Un profilo si supera, non si pubblica nel documento capability.
+    ///
+    /// Non si ridefinisce: delega a [`Self::open_transaction`] nel punto
+    /// obbligato dello SQL del chiamante ([`crate::caller_sql`]), che dopo
+    /// l'invio non dichiara mai `none`. Una prova d'inventario verifica che
+    /// nessun adapter lo ridefinisca.
     fn begin_transaction<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        options: &'a TransactionOptions,
+        budget: &'a ResourceBudget,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Box<dyn TransactionScope>> {
+        self.open_transaction(secret, options, budget, cancellation)
+    }
+
+    /// Apre una transazione protetta anche per chi usa direttamente questo
+    /// ingresso. Ogni adapter passa da [`crate::caller_sql::open_transaction`].
+    fn open_transaction<'a>(
         &'a self,
         _secret: &'a SecretString,
         _options: &'a TransactionOptions,
@@ -342,8 +366,11 @@ pub trait Provider: Send + Sync {
     /// # Rischi
     ///
     /// Nessuna semantica transazionale: se lo statement fallisce a metà,
-    /// il chiamante deve verificare lo stato del DB fuori banda. La libreria
-    /// **non** produce `OutcomeUnknown` qui — un errore è un errore.
+    /// il chiamante deve verificare lo stato del DB fuori banda. Un errore
+    /// dopo l'invio ha effetto ignoto, mai `none` ([`crate::caller_sql`]):
+    /// un batch o una procedura possono aver fatto commit prima di fallire.
+    ///
+    /// Non si ridefinisce: delega a [`Self::run_ddl`], gia protetto.
     ///
     /// # Governance
     ///
@@ -352,6 +379,17 @@ pub trait Provider: Send + Sync {
     /// invocato solo da codice migration autorizzato, non dal path
     /// applicativo di dominio.
     fn execute_ddl<'a>(
+        &'a self,
+        secret: &'a SecretString,
+        sql: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, ()> {
+        self.run_ddl(secret, sql, cancellation)
+    }
+
+    /// Esegue DDL passando da [`crate::caller_sql::run_ddl`] anche quando
+    /// il chiamante usa direttamente questo ingresso pubblico.
+    fn run_ddl<'a>(
         &'a self,
         _secret: &'a SecretString,
         _sql: &'a str,

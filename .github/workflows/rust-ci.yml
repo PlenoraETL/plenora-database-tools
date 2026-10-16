@@ -339,3 +339,11 @@ jobs:
       # provider; questo job esegue il resto del workspace.
       - name: cargo test --workspace (senza live_*)
         run: cargo test --workspace -- --skip live_
+      - name: test unitari del fork Oracle
+        # Il fork escluso dal workspace richiede una risoluzione standalone.
+        # La copia temporanea conserva intatti i lockfile del checkout.
+        shell: bash
+        run: |
+          fork_test_dir=$(mktemp -d)
+          cp -R vendor/oracle-rs/. "$fork_test_dir/"
+          cargo test --manifest-path "$fork_test_dir/Cargo.toml" --lib

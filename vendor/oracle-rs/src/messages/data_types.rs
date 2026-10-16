@@ -11,9 +11,9 @@ use bytes::Bytes;
 
 use crate::buffer::{ReadBuffer, WriteBuffer};
 use crate::capabilities::Capabilities;
-use crate::constants::{charset, encoding, MessageType, PacketType, PACKET_HEADER_SIZE};
+use crate::constants::{charset, encoding, MessageType, PacketType};
 use crate::error::Result;
-use crate::packet::PacketHeader;
+use crate::packet::encode_packet;
 
 /// A data type definition for negotiation
 #[derive(Debug, Clone, Copy)]
@@ -1973,9 +1973,6 @@ impl DataTypesMessage {
     pub fn build_request(&self, caps: &Capabilities, large_sdu: bool) -> Result<Bytes> {
         let mut buf = WriteBuffer::with_capacity(4096);
 
-        // Reserve space for packet header
-        buf.write_zeros(PACKET_HEADER_SIZE)?;
-
         // Data flags (2 bytes)
         buf.write_u16_be(0)?;
 
@@ -2006,17 +2003,7 @@ impl DataTypesMessage {
         // Terminator
         buf.write_u16_be(0)?;
 
-        // Calculate total length and write header
-        let total_len = buf.len() as u32;
-        let header = PacketHeader::new(PacketType::Data, total_len);
-        let mut header_buf = WriteBuffer::with_capacity(PACKET_HEADER_SIZE);
-        header.write(&mut header_buf, large_sdu)?;
-
-        // Patch the header at the beginning
-        let mut result = buf.into_inner();
-        result[..PACKET_HEADER_SIZE].copy_from_slice(header_buf.as_slice());
-
-        Ok(result.freeze())
+        encode_packet(PacketType::Data, buf.as_slice(), large_sdu)
     }
 
     /// Parse the DataTypes response
@@ -2057,6 +2044,18 @@ impl Default for DataTypesMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::PACKET_HEADER_SIZE;
+
+    #[test]
+    fn packet_bytes_both_sdu_formats() {
+        let caps = Capabilities::new();
+        let msg = DataTypesMessage::new();
+        for large_sdu in [false, true] {
+            let packet = msg.build_request(&caps, large_sdu).unwrap();
+            crate::packet::assert_packet_bytes(&packet, PacketType::Data, large_sdu);
+            assert_eq!(&packet[8..10], &[0, 0]);
+        }
+    }
 
     #[test]
     fn test_data_types_count() {

@@ -314,6 +314,22 @@ impl SqlServerSession {
         phase: ErrorPhase,
         cancellation: &CancellationToken,
     ) -> Result<Vec<Vec<tiberius::Row>>> {
+        self.execute_query_tracked(
+            query,
+            phase,
+            cancellation,
+            &plenora_database_core::caller_sql::SendMarker::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn execute_query_tracked(
+        &mut self,
+        query: tiberius::Query<'static>,
+        phase: ErrorPhase,
+        cancellation: &CancellationToken,
+        sent: &plenora_database_core::caller_sql::SendMarker,
+    ) -> Result<Vec<Vec<tiberius::Row>>> {
         let in_transaction = self.state() == SessionState::Transaction;
         if !in_transaction {
             self.require_state(SessionState::Ready, phase)?;
@@ -327,7 +343,7 @@ impl SqlServerSession {
                 self.operation_timeout,
                 // Un panico inatteso lascia incerto lo stato del protocollo.
                 // Catturarlo permette di scartare la connessione dal pool.
-                std::panic::AssertUnwindSafe(query_and_drain(client, query)).catch_unwind(),
+                std::panic::AssertUnwindSafe(sent.sending(query_and_drain(client, query))).catch_unwind(),
             ) => match result {
                 Ok(Ok(Ok(rows))) => QueryOutcome::Completed(rows),
                 Ok(Ok(Err(error))) => QueryOutcome::Driver(error),
@@ -438,13 +454,27 @@ impl SqlServerSession {
         query: tiberius::Query<'static>,
         cancellation: &CancellationToken,
     ) -> Result<u64> {
+        self.execute_write_query_tracked(
+            query,
+            cancellation,
+            &plenora_database_core::caller_sql::SendMarker::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn execute_write_query_tracked(
+        &mut self,
+        query: tiberius::Query<'static>,
+        cancellation: &CancellationToken,
+        sent: &plenora_database_core::caller_sql::SendMarker,
+    ) -> Result<u64> {
         self.require_state(SessionState::Transaction, ErrorPhase::Write)?;
         let Some(client) = self.client.as_mut() else {
             return Err(state_error(ErrorPhase::Write));
         };
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => WriteQueryOutcome::Cancelled,
-            result = tokio::time::timeout(self.operation_timeout, execute_write_and_count(client, query)) => {
+            result = tokio::time::timeout(self.operation_timeout, sent.sending(execute_write_and_count(client, query))) => {
                 match result {
                     Ok(Ok(rows)) => WriteQueryOutcome::Completed(rows),
                     Ok(Err(error)) => WriteQueryOutcome::Driver(error),

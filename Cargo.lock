@@ -1429,7 +1429,9 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 name = "plenora-database-cli"
 version = "7.0.0"
 dependencies = [
+ "arrow-array",
  "arrow-ipc",
+ "arrow-schema",
  "base64 0.23.1",
  "plenora-database-core",
  "plenora-database-engine",
@@ -1902,9 +1904,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "log",

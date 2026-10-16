@@ -199,8 +199,9 @@ pub fn to_py_err(err: DatabaseError) -> PyErr {
     drop(err);
     let bind_context = bind_error_context(&public.message);
     let message = format!("{}: {}", category_name(public.category), public.message);
-    let is_commit_outcome_unknown = public.category == ErrorCategory::Internal
-        && public.phase == ErrorPhase::Commit
+    // La classe dice "commit ignoto" qualunque sia la causa: la categoria
+    // (`io`, `timeout`, `internal`, ...) resta nell'attributo `category`.
+    let is_commit_outcome_unknown = public.phase == ErrorPhase::Commit
         && public.remote_effect == RemoteEffect::Unknown
         // La disposizione e `RequiresRecovery`: il commit non e perso, va
         // verificato fuori banda e poi eventualmente ripreso. Riconoscerlo su

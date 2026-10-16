@@ -248,6 +248,16 @@ pub use serde_json;
 
 /// Marcatore del fork Plenora: rinegoziazione TCPS (`TLS_RENEG`) prima del
 /// resend del CONNECT, e PEM letto con rustls-pki-types.
+/// Gestisce il MARKER/reset durante il fetch e conserva il `cursor_id`
+/// nei fetch successivi. Tutti i costruttori di pacchetto condividono
+/// `packet::encode_packet`: lunghezza totale inclusi i flag DATA, a 32 bit
+/// con `large_sdu`, a 16 bit con checksum altrimenti. FETCH usa la modalita
+/// negoziata; CONNECT e la sua continuazione precedono la negoziazione.
+/// Le lunghezze non rappresentabili sono rifiutate senza troncamento.
+/// Il reset non richiede la chiusura della sessione: gli errori di trasporto
+/// restano distinti dagli errori Oracle. Query e fetch distinguono il termine
+/// della pagina dall'esaurimento del cursore (ORA-01403), con completamento
+/// obbligatorio e parser condiviso; FETCH include sequenza e token TTC.
 ///
 /// `plenora-db-oracle` lo legge in compilazione: contro l'`oracle-rs`
 /// pubblicato, che non lo dichiara, la build fallisce invece di produrre un

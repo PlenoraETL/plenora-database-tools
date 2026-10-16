@@ -47,3 +47,22 @@ fn commit_outcome_serialization_roundtrip() {
     let round: CommitOutcome = serde_json::from_str(&json).expect("deserialize");
     assert!(matches!(round, CommitOutcome::OutcomeUnknown { .. }));
 }
+
+/// La regola unica dopo il COMMIT: ogni errore e ignoto con la causa come
+/// categoria, salvo il rollback provato; mai `none`.
+#[test]
+fn after_commit_sent_never_reports_no_effect() {
+    use crate::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition};
+    let failure = DatabaseError::new(ErrorCategory::Io, ErrorPhase::Write, None, "canale");
+    let unknown = after_commit_sent(failure.clone(), false);
+    assert_eq!(unknown.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(unknown.phase, ErrorPhase::Commit);
+    assert_eq!(unknown.retry, RetryDisposition::RequiresRecovery);
+    assert_eq!(unknown.category, ErrorCategory::Io);
+    assert!(matches!(
+        commit_failure_outcome(failure.clone(), false),
+        Ok(CommitOutcome::OutcomeUnknown { recovery }) if recovery.cause == Some(ErrorCategory::Io)
+    ));
+    let rejected = commit_failure_outcome(failure, true).expect_err("rollback provato");
+    assert_eq!(rejected.remote_effect, RemoteEffect::RolledBack);
+}

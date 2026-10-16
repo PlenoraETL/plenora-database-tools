@@ -1627,3 +1627,38 @@ async fn live_create_write_is_transactional_and_scalar_complete() {
 
     drop_table_if_present(&provider, &secret, &budget, &cancellation, "WRITE_CREATED").await;
 }
+
+#[tokio::test]
+#[ignore = "richiede Db2 live esplicito"]
+async fn live_caller_query_worker_panic_requires_recovery() {
+    let mut config = live_provider().config().clone();
+    config.panic_read_worker = true;
+    let provider = Db2Provider::new(config).expect("provider");
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .open_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin reale");
+    let error = tx
+        .query(&Statement::new("VALUES 1"), &cancellation)
+        .await
+        .expect_err("worker panic");
+    assert_eq!(error.category, ErrorCategory::Protocol);
+    assert_eq!(error.message, "worker ODBC Db2 terminato in modo anomalo");
+    assert_eq!(error.phase, ErrorPhase::Read);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::Unknown
+    );
+    assert_eq!(
+        error.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
+}

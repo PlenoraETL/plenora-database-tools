@@ -150,7 +150,9 @@ pub(crate) async fn profile_check(args: &mut impl Iterator<Item = String>) -> Cl
     if is_pass {
         Ok(())
     } else {
-        Err(CliError::Silent)
+        Err(CliError::Reported(
+            plenora_database_core::ErrorCategory::Execution,
+        ))
     }
 }
 
@@ -203,7 +205,9 @@ pub(crate) async fn doctor(args: &mut impl Iterator<Item = String>) -> CliResult
     if overall_pass {
         Ok(())
     } else {
-        Err(CliError::Silent)
+        Err(CliError::Reported(
+            plenora_database_core::ErrorCategory::Execution,
+        ))
     }
 }
 
@@ -352,7 +356,9 @@ pub(crate) async fn transaction_test(args: &mut impl Iterator<Item = String>) ->
     if all_steps_ok {
         crate::commit_exit(&commit)
     } else {
-        Err(CliError::Silent)
+        Err(CliError::Reported(
+            plenora_database_core::ErrorCategory::Execution,
+        ))
     }
 }
 
@@ -413,7 +419,9 @@ pub(crate) async fn session_context_test(args: &mut impl Iterator<Item = String>
     if leak_free {
         Ok(())
     } else {
-        Err(CliError::Silent)
+        Err(CliError::Reported(
+            plenora_database_core::ErrorCategory::Execution,
+        ))
     }
 }
 

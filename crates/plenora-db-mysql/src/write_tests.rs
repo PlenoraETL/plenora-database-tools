@@ -1009,6 +1009,9 @@ fn pre_commit_errors_claim_rollback_only_when_it_is_confirmed() {
     let ambiguous = rolled_back_error(failure, false, "mysql-test-3");
     assert_eq!(ambiguous.remote_effect, RemoteEffect::Unknown);
     assert_eq!(ambiguous.retry, RetryDisposition::RequiresRecovery);
+    // ERR-003: l'ultima fase avviata e il rollback.
+    assert_eq!(ambiguous.phase, ErrorPhase::Rollback);
+    assert_eq!(confirmed.phase, ErrorPhase::Write);
 }
 
 #[test]

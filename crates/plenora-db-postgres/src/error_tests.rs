@@ -178,3 +178,42 @@ fn message_never_contains_sqlstate_code() {
         );
     }
 }
+
+/// Dopo l'invio del COMMIT un errore senza SQLSTATE e senza canale chiuso —
+/// una risposta che il driver non sa interpretare — non prova che il commit
+/// non sia avvenuto (ERR-004, ERR-014).
+#[test]
+fn an_uncoded_commit_failure_has_an_unknown_effect() {
+    let mapping = resolve_mapping(None, false, ErrorPhase::Commit);
+    assert_eq!(mapping.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(mapping.retry, RetryDisposition::RequiresRecovery);
+    // Fuori dal commit il fallback resta quello di prima.
+    let read = resolve_mapping(None, false, ErrorPhase::Read);
+    assert_eq!(read.remote_effect, RemoteEffect::None);
+}
+
+/// Regola unica dopo il COMMIT: uno SQLSTATE riconosciuto ma fuori
+/// dall'elenco chiuso (08006, 08P01, 40003, 23xxx non differito non c'entra)
+/// lascia l'esito ignoto; solo un codice che prova il rollback e un errore.
+#[test]
+fn after_commit_only_a_closed_list_proves_the_rollback() {
+    use plenora_database_core::transaction::CommitOutcome;
+    for code in ["08006", "08P01", "40003", "57014", "XX000"] {
+        assert!(
+            matches!(
+                commit_failure(Some(code), false),
+                Ok(CommitOutcome::OutcomeUnknown { .. })
+            ),
+            "{code}"
+        );
+    }
+    assert!(matches!(
+        commit_failure(None, false),
+        Ok(CommitOutcome::OutcomeUnknown { .. })
+    ));
+    for code in COMMIT_ROLLBACK_SQLSTATES {
+        let error = commit_failure(Some(code), false).expect_err(code);
+        assert_eq!(error.remote_effect, RemoteEffect::RolledBack, "{code}");
+        assert_eq!(error.phase, ErrorPhase::Commit);
+    }
+}

@@ -17,7 +17,10 @@ pub async fn connect(
     if cancellation.is_cancelled() {
         return Err(interruption_error(cancellation, ErrorPhase::Connect));
     }
-    let driver_config = config.driver_config(secret)?.into_inner();
+    let mut driver_config = config.driver_config(secret)?.into_inner();
+    driver_config.response_limit =
+        usize::try_from(plenora_database_core::resource::ResourceLimits::default().memory_bytes)
+            .unwrap_or(usize::MAX);
     let operation = Connection::connect_with_config(driver_config);
     tokio::select! {
         result = operation => result.map_err(|error| driver_error(ErrorPhase::Connect, &error)),
@@ -40,6 +43,8 @@ pub async fn with_timeout_duration<T>(
     cancellation: &CancellationToken,
     operation: impl std::future::Future<Output = oracle_rs::Result<T>>,
 ) -> Result<T> {
+    // Il comando e in volo: un timeout o una cancellazione non provano
+    // nulla sul suo effetto (`after_interrupted_send`).
     tokio::select! {
         result = tokio::time::timeout(timeout, operation) => result.map_or_else(
             |_| Err(plenora_database_core::DatabaseError::new(
@@ -47,9 +52,12 @@ pub async fn with_timeout_duration<T>(
                 phase,
                 Some(plenora_database_core::plan::ProviderKind::Oracle),
                 "operazione Oracle oltre il timeout configurato",
-            )),
-            |result| result.map_err(|error| driver_error(phase, &error)),
+            )
+            .after_interrupted_send()),
+            |result| result.map_err(|error| crate::error::sent_command_error(phase, &error)),
         ),
-        _ = cancellation.cancelled() => Err(interruption_error(cancellation, phase)),
+        _ = cancellation.cancelled() => {
+            Err(interruption_error(cancellation, phase).after_interrupted_send())
+        }
     }
 }

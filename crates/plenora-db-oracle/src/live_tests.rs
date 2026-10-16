@@ -357,6 +357,30 @@ impl BatchStream for VecBatchStream {
     }
 }
 
+/// Il produttore che, finiti i batch, non risponde piu: la scrittura resta
+/// in attesa e il chiamante la abbandona.
+struct StallingBatchStream(VecBatchStream);
+
+impl BatchStream for StallingBatchStream {
+    fn schema(&self) -> SchemaRef {
+        self.0.schema()
+    }
+
+    fn next_batch<'a>(
+        &'a mut self,
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
+        if self.0.batches.is_empty() {
+            return Box::pin(std::future::pending());
+        }
+        self.0.next_batch(cancellation)
+    }
+
+    fn declared_input_rows(&self) -> Option<u64> {
+        self.0.declared_input_rows()
+    }
+}
+
 fn spatial_write_batch(ids: Vec<i32>, points: Vec<Vec<u8>>) -> RecordBatch {
     let geometry = crate::types::OracleColumnSpec {
         name: "SHAPE".to_owned(),
@@ -1980,9 +2004,22 @@ async fn live_keyset_checkpoint_resumes_after_the_last_delivered_row() {
 #[tokio::test]
 #[ignore = "richiede Oracle Free live esplicito"]
 async fn live_driver_errors_are_redacted() {
-    let (provider, secret) = fixture();
+    let (config, secret) = fixture_config();
+    let provider = OracleProvider::new_with_pool(config, 1).expect("pool per verifica rollback");
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let table = "PLENORA_RESET_ROLLBACK";
+    let _ = provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("CREATE TABLE {table} (ID NUMBER(10))"),
+            &cancellation,
+        )
+        .await
+        .expect("crea fixture rollback");
     let mut transaction = provider
         .begin_transaction(
             &secret,
@@ -1992,6 +2029,18 @@ async fn live_driver_errors_are_redacted() {
         )
         .await
         .expect("begin");
+    transaction
+        .execute(
+            &Statement::new(format!("INSERT INTO {table} (ID) VALUES (1)")),
+            &cancellation,
+        )
+        .await
+        .expect("scrittura prima dell'errore");
+    let session_query = Statement::new("SELECT SYS_CONTEXT('USERENV', 'SID') AS SID FROM DUAL");
+    let session = transaction
+        .query(&session_query, &cancellation)
+        .await
+        .expect("sessione prima del reset");
     let marker = "PLENORA_SECRET_IDENTIFIER_79F";
     let error = transaction
         .query(
@@ -2001,12 +2050,62 @@ async fn live_driver_errors_are_redacted() {
         .await
         .expect_err("tabella inesistente");
     assert!(!error.message.contains(marker));
-    let rollback = transaction
+    assert!(error.message.contains("ORA-00942"));
+    // NUMBER(10) dichiara scala zero per la verifica I64; il literal non la garantisce.
+    // Il reset mantiene utilizzabile la stessa sessione prima del rollback.
+    let rows = transaction
+        .query(
+            &Statement::new("SELECT CAST(1 AS NUMBER(10)) AS N FROM DUAL"),
+            &cancellation,
+        )
+        .await
+        .expect("sessione utilizzabile dopo l'errore server");
+    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    // L'errore deve lasciare la scrittura pendente, altrimenti il rollback non e provato.
+    let pending = transaction
+        .query(
+            &Statement::new(format!("SELECT ID FROM {table}")),
+            &cancellation,
+        )
+        .await
+        .expect("scrittura ancora pendente dopo il reset");
+    assert_eq!(pending.len(), 1);
+    let rollback = transaction.rollback(&cancellation).await;
+    if let Err(error) = &rollback {
+        assert!(!error.message.contains(marker));
+    }
+    rollback.expect("rollback confermato dopo il reset");
+    let mut verification = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione successiva");
+    // Riutilizzare la stessa sessione esclude un falso positivo da disconnessione.
+    let next_session = verification
+        .query(&session_query, &cancellation)
+        .await
+        .expect("sessione dopo rollback");
+    assert_eq!(session[0].get("SID"), next_session[0].get("SID"));
+    let rows = verification
+        .query(
+            &Statement::new(format!("SELECT ID FROM {table}")),
+            &cancellation,
+        )
+        .await
+        .expect("verifica rollback effettivo");
+    assert!(rows.is_empty(), "la scrittura deve essere annullata");
+    verification
         .rollback(&cancellation)
         .await
-        .expect_err("il driver chiude il canale dopo l'errore server");
-    assert_eq!(rollback.category, plenora_database_core::ErrorCategory::Io);
-    assert!(!rollback.message.contains(marker));
+        .expect("chiude verifica");
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .expect("rimuove fixture rollback");
 }
 
 #[tokio::test]
@@ -2155,4 +2254,238 @@ async fn live_tcps_verifies_private_ca_and_rejects_untrusted_server() {
         .await
         .expect_err("certificato fixture non deve essere pubblicamente trusted");
     assert!(!error.message.contains(secret.expose()));
+}
+
+/// Una scrittura `create` abbandonata dopo il CREATE confermato (il
+/// chiamante lascia cadere la future mentre il produttore non risponde) non
+/// arriva a un esito: il target resta osservabile nel registro dei residui
+/// del provider.
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_an_abandoned_create_is_recorded_as_a_possible_residue() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let table = "PLENORA_ORACLE_ABANDONED_CREATE";
+    let _ = provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await;
+    let schema = contract_schema(vec![Field::new("ID", DataType::Int32, false)]).expect("schema");
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2]))],
+    )
+    .expect("batch");
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: table.to_owned(),
+        },
+        mode: WriteMode::Create,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::BestEffortDdl,
+        keys: vec!["ID".to_owned()],
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    let prepared = provider
+        .prepare_write(&secret, &operation, schema, &budget, &cancellation)
+        .await
+        .expect("prepare");
+    assert_eq!(provider.ddl_residues().total, 0);
+    let abandoned = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        provider.write(
+            &secret,
+            prepared,
+            Box::new(StallingBatchStream(VecBatchStream::new(vec![batch]))),
+            &budget,
+            &cancellation,
+        ),
+    )
+    .await;
+    assert!(
+        abandoned.is_err(),
+        "la scrittura doveva attendere il produttore"
+    );
+    let residues = provider.ddl_residues();
+    assert_eq!(residues.total, 1);
+    assert_eq!(residues.recent[0].object, table);
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .expect("la tabella creata esiste e si rimuove");
+}
+
+/// SQL nativo nella transazione: un INSERT, poi un CREATE TABLE che fallisce
+/// con ORA-00955. Il commit implicito prima del DDL ha reso permanente
+/// l'INSERT, quindi l'errore non puo dichiarare `none`.
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_a_native_ddl_failure_after_a_write_is_not_reported_as_no_effect() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let table = "PLENORA_ORACLE_NATIVE_DDL";
+    let _ = provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("CREATE TABLE {table} (ID NUMBER(10))"),
+            &cancellation,
+        )
+        .await
+        .expect("fixture");
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+    transaction
+        .execute(
+            &Statement::new(format!("INSERT INTO {table} (ID) VALUES (1)")),
+            &cancellation,
+        )
+        .await
+        .expect("insert");
+    let error = transaction
+        .execute(
+            &Statement::new(format!("CREATE TABLE {table} (ID NUMBER(10))")),
+            &cancellation,
+        )
+        .await
+        .expect_err("ORA-00955");
+    // La CI ha ricevuto ORA-00000 dal driver per questo DDL fallito.
+    // Non equivale a un rifiuto certo: accettiamo solo i due codici osservati
+    // o attesi e verifichiamo sotto l'effetto persistente con un'altra sessione.
+    assert!(
+        error.message.contains("ORA-00955") || error.message.contains("ORA-00000"),
+        "ramo di errore inatteso: {:?} {}",
+        error.category,
+        error.message
+    );
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    let _ = transaction.rollback(&cancellation).await;
+    // L'INSERT e stato reso permanente dal commit implicito del DDL.
+    let mut verify = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("verifica");
+    let rows = verify
+        .query(
+            &Statement::new(format!("SELECT COUNT(*) AS N FROM {table}")),
+            &cancellation,
+        )
+        .await
+        .expect("conteggio");
+    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    let _ = verify.rollback(&cancellation).await;
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .expect("cleanup");
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_caller_stream_fetch_failure_requires_recovery() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .open_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin reale");
+    // query_inner apre con il prefetch di 100 righe del driver. Le righe 101
+    // e 102 provano due fetch_more sullo stesso cursore; la 103 deve fallire.
+    // Nessun ORDER BY: un sort potrebbe valutare tutte le righe in apertura.
+    let statement =
+        Statement::new("SELECT LEVEL / (103 - LEVEL) AS N FROM DUAL CONNECT BY LEVEL <= 103");
+    let mut stream = tx
+        .query_stream(&statement, 1, &cancellation)
+        .await
+        .expect("prima pagina valida");
+    for _ in 0..102 {
+        let rows = stream
+            .next_batch(&cancellation)
+            .await
+            .expect("prefetch e primi due fetch devono riuscire")
+            .expect("il cursore deve consegnare tutte le 102 righe valide");
+        assert_eq!(rows.len(), 1);
+    }
+    let error = stream
+        .next_batch(&cancellation)
+        .await
+        .expect_err("il fetch della riga 103 deve raggiungere la divisione per zero");
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::Execution
+    );
+    assert!(error.message.contains("ORA-01476"), "{}", error.message);
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(
+        error.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
+    drop(stream);
+    // NUMBER(10) dichiara scala zero anche per la query successiva al reset.
+    let rows = tx
+        .query(
+            &Statement::new("SELECT CAST(1 AS NUMBER(10)) AS N FROM DUAL"),
+            &cancellation,
+        )
+        .await
+        .expect("la stessa connessione deve rispondere dopo il reset del fetch");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture Oracle"]
+async fn live_cached_query_reexecutes_with_an_unexhausted_first_page() {
+    let (config, secret) = fixture_config();
+    let driver = config
+        .driver_config(&secret)
+        .expect("driver config")
+        .into_inner()
+        .with_statement_cache_size(4);
+    let connection = oracle_rs::Connection::connect_with_config(driver)
+        .await
+        .expect("connessione cache probe");
+    let sql = "SELECT LEVEL AS N FROM DUAL CONNECT BY LEVEL <= 250";
+    for _ in 0..2 {
+        let page = connection
+            .query(sql, &[])
+            .await
+            .expect("pagina query cache");
+        assert!(page.has_more_rows);
+        assert!(!page.rows.is_empty());
+        assert!(page.rows.len() < 250);
+        assert_eq!(page.columns[0].name, "N");
+        assert_eq!(
+            page.rows[0].get(0).and_then(oracle_rs::Value::as_str),
+            Some("1")
+        );
+    }
+    connection.close().await.expect("chiusura cache probe");
 }

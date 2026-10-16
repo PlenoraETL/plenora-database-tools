@@ -7210,7 +7210,8 @@ async fn live_physical_blackhole_after_server_rollback_requires_recovery() {
         .expect_err("lost rollback response must not become success");
 
     assert_eq!(error.category, ErrorCategory::Execution);
-    assert_eq!(error.phase, ErrorPhase::Write);
+    // ERR-003: l'ultima fase avviata e il rollback, la cui risposta e persa.
+    assert_eq!(error.phase, ErrorPhase::Rollback);
     assert_eq!(error.remote_effect, RemoteEffect::Unknown);
     assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
     assert!(error.execution_id.is_some());
@@ -9064,4 +9065,112 @@ async fn live_the_portable_facade_speaks_tsql_to_a_real_server() {
         )
         .await
         .ok();
+}
+
+/// Un batch nativo `INSERT; RAISERROR`: il server rifiuta il batch con un
+/// codice, ma l'INSERT e gia avvenuto nella transazione. L'errore non puo
+/// dichiarare `none`.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta una fixture isolata"]
+async fn live_a_native_batch_error_after_a_write_is_not_reported_as_no_effect() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("sessione admin");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP TABLE IF EXISTS [plenora_test].[native_batch_probe]; \
+                 CREATE TABLE [plenora_test].[native_batch_probe] ([id] int NOT NULL);",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("fixture");
+    let provider = SqlServerProvider::new(config.clone(), 1024, 4).expect("provider");
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut transaction = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin");
+    let error = transaction
+        .execute(
+            &Statement::new(
+                "INSERT INTO [plenora_test].[native_batch_probe] ([id]) VALUES (1); \
+                 RAISERROR('rifiuto del batch', 16, 1);",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect_err("RAISERROR");
+    assert_ne!(error.remote_effect, RemoteEffect::None);
+    let _ = Box::new(transaction).rollback(&cancellation).await;
+    admin
+        .execute_query(
+            Query::new("DROP TABLE IF EXISTS [plenora_test].[native_batch_probe];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("cleanup");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito"]
+async fn live_caller_stream_cancellation_requires_recovery() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let provider = SqlServerProvider::new(
+        live_config(CertificatePolicy::TrustServerCertificate),
+        1024,
+        4,
+    )
+    .expect("provider");
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .open_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("begin reale");
+    let statement = Statement::new("SELECT 1 AS n UNION ALL SELECT 2 AS n");
+    let mut stream = tx
+        .query_stream(&statement, 1, &cancellation)
+        .await
+        .expect("stream reale");
+    assert_eq!(
+        stream
+            .next_batch(&cancellation)
+            .await
+            .expect("prima riga")
+            .expect("batch")
+            .len(),
+        1
+    );
+    cancellation.cancel();
+    let error = stream
+        .next_batch(&cancellation)
+        .await
+        .expect_err("stream annullato");
+    assert_eq!(error.category, ErrorCategory::Cancelled);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::Unknown
+    );
+    assert_eq!(
+        error.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
 }

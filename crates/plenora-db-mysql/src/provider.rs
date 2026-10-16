@@ -32,6 +32,8 @@ pub struct MysqlProvider {
     /// La configurazione condivisa non seleziona il prodotto: lo sceglie il
     /// tipo pubblico del provider prima di aprire la connessione.
     profile: &'static dyn ProductProfile,
+    /// Le scritture `create` abbandonate dopo l'invio del DDL.
+    residues: std::sync::Arc<plenora_database_core::ddl_residue::ResidueLedger>,
 }
 
 // Il profilo non compare nel `Debug`: quell'output e superficie
@@ -124,7 +126,17 @@ impl MysqlProvider {
             max_connections,
             cached_pool: Mutex::new(None),
             profile,
+            residues: std::sync::Arc::default(),
         })
+    }
+
+    /// Le scritture `mode='create'` abbandonate (future lasciata cadere,
+    /// panic del produttore) dopo l'invio del `CREATE TABLE`: la tabella puo
+    /// esistere senza che nessun esito lo abbia detto. Il registro vive nel
+    /// processo; vedi `plenora_database_core::ddl_residue`.
+    #[must_use]
+    pub fn ddl_residues(&self) -> plenora_database_core::ddl_residue::ResidueSnapshot {
+        self.residues.snapshot()
     }
 
     fn pool_for(&self, secret: &SecretString) -> Result<Arc<MysqlPool>> {
@@ -482,66 +494,70 @@ impl Provider for MysqlProvider {
         })
     }
 
-    fn begin_transaction<'a>(
+    fn open_transaction<'a>(
         &'a self,
         secret: &'a SecretString,
         options: &'a plenora_database_core::transaction::TransactionOptions,
         _budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
-        Box::pin(async move {
-            // Bordo: da qui in poi l'attribuzione e quella del
-            // profilo, non il segnaposto con cui l'errore e nato.
-            let outcome = async move {
-                let pool = self.pool_for(secret)?;
-                let session = pool.checkout(cancellation).await?;
-                let transaction =
-                    crate::transaction::MysqlTransaction::begin(session, options, cancellation)
-                        .await?;
-                Ok(Box::new(transaction)
-                    as Box<
-                        dyn plenora_database_core::transaction::TransactionScope,
-                    >)
-            }
-            .await;
-            crate::profile::attributed(self.profile, outcome)
+        plenora_database_core::caller_sql::open_transaction({
+            Box::pin(async move {
+                // Bordo: da qui in poi l'attribuzione e quella del
+                // profilo, non il segnaposto con cui l'errore e nato.
+                let outcome = async move {
+                    let pool = self.pool_for(secret)?;
+                    let session = pool.checkout(cancellation).await?;
+                    let transaction =
+                        crate::transaction::MysqlTransaction::begin(session, options, cancellation)
+                            .await?;
+                    Ok(Box::new(transaction)
+                        as Box<
+                            dyn plenora_database_core::transaction::TransactionScope,
+                        >)
+                }
+                .await;
+                crate::profile::attributed(self.profile, outcome)
+            })
         })
     }
 
-    fn execute_ddl<'a>(
+    fn run_ddl<'a>(
         &'a self,
         secret: &'a SecretString,
         sql: &'a str,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        Box::pin(async move {
-            // Bordo: da qui in poi l'attribuzione e quella del
-            // profilo, non il segnaposto con cui l'errore e nato.
-            let outcome = async move {
-                let pool = self.pool_for(secret)?;
-                let mut session = pool.checkout(cancellation).await?;
-                // Text protocol via `exec_control`, non prepared via `exec_write`,
-                // per due ragioni distinte:
-                //
-                // 1. MySQL rifiuta parte del DDL nel prepared statement protocol
-                //    (errore 1295), quindi `exec_write` chiuderebbe statement che
-                //    il server accetta senza problemi in text protocol;
-                // 2. il DDL MySQL fa autocommit. Su cancellazione o timeout
-                //    `exec_write` dichiara `RemoteEffect::None` — "non e successo
-                //    nulla" — mentre lo statement puo essersi gia committato.
-                //    `exec_control` dichiara `Unknown`, che e la sola cosa vera
-                //    quando la connessione cade mentre un DDL autocommit e in
-                //    volo.
-                //
-                // La fase e `Write`: qui si esegue, non si prepara. Con `Prepare`
-                // il consumer leggerebbe il fallimento come pre-esecuzione, cioe
-                // senza effetto remoto possibile.
-                session
-                    .exec_control(sql, ErrorPhase::Write, cancellation)
-                    .await
-            }
-            .await;
-            crate::profile::attributed(self.profile, outcome)
+        plenora_database_core::caller_sql::run_ddl(self.kind(), cancellation, {
+            Box::pin(async move {
+                // Bordo: da qui in poi l'attribuzione e quella del
+                // profilo, non il segnaposto con cui l'errore e nato.
+                let outcome = async move {
+                    let pool = self.pool_for(secret)?;
+                    let mut session = pool.checkout(cancellation).await?;
+                    // Text protocol via `exec_control`, non prepared via `exec_write`,
+                    // per due ragioni distinte:
+                    //
+                    // 1. MySQL rifiuta parte del DDL nel prepared statement protocol
+                    //    (errore 1295), quindi `exec_write` chiuderebbe statement che
+                    //    il server accetta senza problemi in text protocol;
+                    // 2. il DDL MySQL fa autocommit. Su cancellazione o timeout
+                    //    `exec_write` dichiara `RemoteEffect::None` — "non e successo
+                    //    nulla" — mentre lo statement puo essersi gia committato.
+                    //    `exec_control` dichiara `Unknown`, che e la sola cosa vera
+                    //    quando la connessione cade mentre un DDL autocommit e in
+                    //    volo.
+                    //
+                    // La fase e `Write`: qui si esegue, non si prepara. Con `Prepare`
+                    // il consumer leggerebbe il fallimento come pre-esecuzione, cioe
+                    // senza effetto remoto possibile.
+                    session
+                        .exec_control(sql, ErrorPhase::Write, cancellation)
+                        .await
+                }
+                .await;
+                crate::profile::attributed(self.profile, outcome)
+            })
         })
     }
 }
@@ -584,7 +600,8 @@ async fn execute_mysql_write(
     // Prepare target step per Create: verifica NON exists, poi CREATE TABLE.
     // Le altre mode non emettono DDL — Replace usa DELETE, Update una
     // TEMPORARY table che muore con la sessione.
-    let ddl_residue = if operation.mode == plenora_database_core::plan::WriteMode::Create {
+    let creates = operation.mode == plenora_database_core::plan::WriteMode::Create;
+    if creates {
         let pre_check = crate::catalog::describe_object_with_profile(
             &mut session,
             target_schema,
@@ -604,41 +621,56 @@ async fn execute_mysql_write(
             Err(err) if err.category == ErrorCategory::NotFound => {}
             Err(other) => return Err(other),
         }
-        let ddl = crate::write::build_create_table_sql(
-            &schema,
-            operation,
-            provider.config.database(),
-            provider.profile,
-        )?;
-        session
-            .exec_control(&ddl, ErrorPhase::Prepare, token)
-            .await?;
-        // Da qui in poi la tabella esiste sul server e nessun ROLLBACK la
-        // rimuove: il DDL MySQL fa commit implicito.
-        crate::write::DdlResidue::CreatedTable
-    } else {
-        crate::write::DdlResidue::None
-    };
+    }
 
-    // Il resto della scrittura ha molte uscite — describe, preflight, apertura
-    // transazione, scrittura, commit — e ciascuna, dopo la DDL, direbbe il
-    // falso da sola. Passano tutte da qui, e il residuo si stampa una volta
-    // sul risultato.
-    let result = execute_mysql_write_after_ddl(
-        provider,
-        &mut session,
-        input,
-        operation,
-        &schema,
-        &plan,
-        prepared.loss_report.clone(),
-        target_schema,
-        budget,
-        token,
-    )
+    // Una scrittura `create` abbandonata (future lasciata cadere, panic del
+    // produttore) dopo l'invio del DDL non arriva a nessun esito: la guardia,
+    // armata prima del DDL, la registra nel registro del provider. Chiusa
+    // solo quando c'e un esito da restituire.
+    let guard = creates.then(|| provider.residues.arm(operation.target.clone()));
+    let result = async {
+        let ddl_residue = if creates {
+            let ddl = crate::write::build_create_table_sql(
+                &schema,
+                operation,
+                provider.config.database(),
+                provider.profile,
+            )?;
+            // Fase `write`: il DDL modifica il server, e una risposta persa
+            // lascia l'esito ignoto come per ogni comando mutante.
+            session.exec_control(&ddl, ErrorPhase::Write, token).await?;
+            // Da qui in poi la tabella esiste sul server e nessun ROLLBACK la
+            // rimuove: il DDL MySQL fa commit implicito.
+            crate::write::DdlResidue::CreatedTable
+        } else {
+            crate::write::DdlResidue::None
+        };
+
+        // Il resto della scrittura ha molte uscite — describe, preflight,
+        // apertura transazione, scrittura, commit — e ciascuna, dopo la DDL,
+        // direbbe il falso da sola. Passano tutte da qui, e il residuo si
+        // stampa una volta sul risultato.
+        let result = execute_mysql_write_after_ddl(
+            provider,
+            &mut session,
+            input,
+            operation,
+            &schema,
+            &plan,
+            prepared.loss_report.clone(),
+            target_schema,
+            budget,
+            token,
+        )
+        .await;
+        crate::write::stamp_ddl_residue(result, ddl_residue)
+    }
     .await;
+    if let Some(guard) = guard {
+        guard.settle();
+    }
     drop(session);
-    crate::write::stamp_ddl_residue(result, ddl_residue)
+    result
 }
 
 /// Il corpo della scrittura dopo l'eventuale DDL di preparazione.
@@ -1242,24 +1274,28 @@ impl Provider for MariadbProvider {
         self.0.write(secret, prepared, input, budget, cancellation)
     }
 
-    fn begin_transaction<'a>(
+    fn open_transaction<'a>(
         &'a self,
         secret: &'a SecretString,
         options: &'a plenora_database_core::transaction::TransactionOptions,
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn plenora_database_core::transaction::TransactionScope>> {
-        self.0
-            .begin_transaction(secret, options, budget, cancellation)
+        plenora_database_core::caller_sql::open_transaction({
+            self.0
+                .open_transaction(secret, options, budget, cancellation)
+        })
     }
 
-    fn execute_ddl<'a>(
+    fn run_ddl<'a>(
         &'a self,
         secret: &'a SecretString,
         sql: &'a str,
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()> {
-        self.0.execute_ddl(secret, sql, cancellation)
+        plenora_database_core::caller_sql::run_ddl(self.kind(), cancellation, {
+            self.0.run_ddl(secret, sql, cancellation)
+        })
     }
 }
 

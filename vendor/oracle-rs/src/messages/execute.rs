@@ -3,13 +3,14 @@
 //! This module implements the execute message used for running SQL statements
 //! and PL/SQL blocks on the Oracle server.
 
-use bytes::{BufMut, Bytes, BytesMut};
+use crate::packet::encode_packet;
+use bytes::Bytes;
 
 use crate::buffer::WriteBuffer;
 use crate::capabilities::Capabilities;
 use crate::constants::{
     ccap_value, exec_flags, exec_option, FunctionCode, MessageType, OracleType, PacketType,
-    MAX_LONG_LENGTH, PACKET_HEADER_SIZE,
+    MAX_LONG_LENGTH,
 };
 use crate::error::Result;
 use crate::row::Value;
@@ -242,27 +243,7 @@ impl<'a> ExecuteMessage<'a> {
             _ => unreachable!(),
         }
 
-        // Build packet with header
-        let payload = buf.freeze();
-        let packet_len = PACKET_HEADER_SIZE + payload.len();
-
-        let mut packet = BytesMut::with_capacity(packet_len);
-
-        // Packet header - use 4-byte length for large SDU
-        if large_sdu {
-            packet.put_u32((packet_len) as u32);
-        } else {
-            packet.put_u16(packet_len as u16);
-            packet.put_u16(0); // Checksum (not used for large SDU)
-        }
-        packet.put_u8(PacketType::Data as u8);
-        packet.put_u8(0); // Flags
-        packet.put_u16(0); // Header checksum
-
-        // Payload (includes data flags)
-        packet.extend_from_slice(&payload);
-
-        Ok(packet.freeze())
+        encode_packet(PacketType::Data, buf.as_slice(), large_sdu)
     }
 
     /// Write a full execute message
@@ -1154,6 +1135,19 @@ impl<'a> ExecuteMessage<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::PACKET_HEADER_SIZE;
+
+    #[test]
+    fn packet_bytes_both_sdu_formats() {
+        let caps = Capabilities::new();
+        let stmt = Statement::new("SELECT 1 FROM dual");
+        let msg = ExecuteMessage::new(&stmt, ExecuteOptions::for_query(1));
+        for large_sdu in [false, true] {
+            let packet = msg.build_request_with_sdu(&caps, large_sdu).unwrap();
+            crate::packet::assert_packet_bytes(&packet, PacketType::Data, large_sdu);
+            assert_eq!(&packet[8..10], &[0, 0]);
+        }
+    }
 
     #[test]
     fn test_execute_options_for_query() {

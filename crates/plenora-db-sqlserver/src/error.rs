@@ -146,28 +146,18 @@ fn classify_transport(
 }
 
 pub fn timeout_error(phase: ErrorPhase, remote_effect: RemoteEffect) -> DatabaseError {
-    let ambiguous = matches!(
-        phase,
-        ErrorPhase::Write | ErrorPhase::Commit | ErrorPhase::Rollback
-    );
+    // Gli assi delle fasi mutanti vengono dalla regola unica del core.
     DatabaseError {
         category: ErrorCategory::Timeout,
         phase,
-        remote_effect: if ambiguous {
-            RemoteEffect::Unknown
-        } else {
-            remote_effect
-        },
-        retry: if ambiguous {
-            RetryDisposition::RequiresRecovery
-        } else {
-            RetryDisposition::Never
-        },
+        remote_effect,
+        retry: RetryDisposition::Never,
         provider: Some(ProviderKind::Sqlserver),
         execution_id: None,
         message: "timeout operazione SQL Server".to_owned(),
         diagnostics: None,
     }
+    .after_interrupted_send()
 }
 
 /// L'errore pubblico di un'operazione interrotta, con la causa che l'ha
@@ -194,28 +184,18 @@ pub fn interruption_error(
 }
 
 pub fn cancellation_error(phase: ErrorPhase, remote_effect: RemoteEffect) -> DatabaseError {
-    let ambiguous = matches!(
-        phase,
-        ErrorPhase::Write | ErrorPhase::Commit | ErrorPhase::Rollback
-    );
+    // Gli assi delle fasi mutanti vengono dalla regola unica del core.
     DatabaseError {
         category: ErrorCategory::Cancelled,
         phase,
-        remote_effect: if ambiguous {
-            RemoteEffect::Unknown
-        } else {
-            remote_effect
-        },
-        retry: if ambiguous {
-            RetryDisposition::RequiresRecovery
-        } else {
-            RetryDisposition::Never
-        },
+        remote_effect,
+        retry: RetryDisposition::Never,
         provider: Some(ProviderKind::Sqlserver),
         execution_id: None,
         message: "operazione SQL Server cancellata; connessione quarantinata".to_owned(),
         diagnostics: None,
     }
+    .after_interrupted_send()
 }
 
 #[cfg(test)]

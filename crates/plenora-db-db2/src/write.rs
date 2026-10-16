@@ -840,11 +840,10 @@ async fn rollback_and_shape(
     if transaction.rollback(&cleanup).await.is_ok() {
         original.remote_effect = RemoteEffect::RolledBack;
         original.retry = RetryDisposition::Never;
+        original
     } else {
-        original.remote_effect = RemoteEffect::Unknown;
-        original.retry = RetryDisposition::RequiresRecovery;
+        original.after_unconfirmed_rollback()
     }
-    original
 }
 
 fn committed_outcome(

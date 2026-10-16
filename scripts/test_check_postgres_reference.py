@@ -23,6 +23,8 @@ REQUIRED_LIVE = (
     "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
     "live_provider_row_diagnostics_lost_rollback_ack_is_quarantined",
     "live_provider_row_diagnostics_commit_ambiguity_partitions_all_rows_unknown",
+    "live_provider_row_diagnostics_commit_rejection_proves_the_rollback",
+    "live_a_procedure_that_commits_then_raises_is_not_reported_as_no_effect",
     "live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps",
 )
 
@@ -37,6 +39,18 @@ class RequiredLiveTests(unittest.TestCase):
 
     def test_a_complete_run_passes(self) -> None:
         gate.validate_live_row_diagnostics(output(REQUIRED_LIVE))
+
+    def test_required_tests_in_other_modules_must_pass_not_be_ignored(self) -> None:
+        name = "live_a_procedure_that_commits_then_raises_is_not_reported_as_no_effect"
+        observed = output(REQUIRED_LIVE).replace(
+            f"test_suite::tests::{name}", f"transaction::tests::live::{name}",
+        )
+        gate.validate_live_row_diagnostics(observed)
+        for status in ("ignored", "FAILED"):
+            with self.subTest(status=status), self.assertRaisesRegex(RuntimeError, name):
+                gate.validate_live_row_diagnostics(observed.replace(
+                    f"{name} ... ok", f"{name} ... {status}",
+                ))
 
     def test_a_silently_skipped_test_fails_the_gate(self) -> None:
         """Il caso che il gate deve impedire: DSN assente, early-return."""
@@ -145,7 +159,10 @@ class CliLiveFixtures(unittest.TestCase):
     esplicita; ogni test dichiarato deve comparire fra gli esiti passati.
     """
 
-    SUITES = ("live_operations", "live_f5", "contract_snapshot", "cli_benchmarks")
+    SUITES = (
+        "live_operations", "live_f5", "contract_snapshot", "cli_benchmarks",
+        "live_outcome_unknown",
+    )
 
     def source(self) -> str:
         return (

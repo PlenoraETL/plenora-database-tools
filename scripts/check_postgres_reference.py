@@ -25,6 +25,7 @@ IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b
 CONTAINER = "dataflow-postgres"
 CLI_REFERENCE_SUITES = (
     "live_operations", "live_f5", "contract_snapshot", "cli_benchmarks",
+    "live_outcome_unknown",
 )
 DEFAULT_DSN = (
     "host=dataflow-postgres port=5432 user=dataflow "
@@ -38,6 +39,8 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_provider_row_diagnostics_matches_confirmed_rollback_oracle",
         "live_provider_row_diagnostics_lost_rollback_ack_is_quarantined",
         "live_provider_row_diagnostics_commit_ambiguity_partitions_all_rows_unknown",
+        "live_provider_row_diagnostics_commit_rejection_proves_the_rollback",
+        "live_a_procedure_that_commits_then_raises_is_not_reported_as_no_effect",
         "live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps",
     }
 )
@@ -270,9 +273,9 @@ def validate_live_row_diagnostics(output: str) -> None:
     prova e qui fallisce invece di sparire in silenzio.
     """
 
-    executed = set(
-        re.findall(r"^test test_suite::tests::([^ ]+) \.\.\. ok$", output, re.MULTILINE)
-    )
+    executed = {
+        live_inventory.leaf(name) for name in live_inventory.executed_tests(output)
+    }
     missing = sorted(REQUIRED_LIVE_TESTS - executed)
     if missing:
         raise RuntimeError(

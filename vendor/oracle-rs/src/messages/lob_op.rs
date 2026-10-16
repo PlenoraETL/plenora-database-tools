@@ -7,7 +7,6 @@ use crate::buffer::WriteBuffer;
 use crate::capabilities::Capabilities;
 use crate::constants::{
     charset, lob_duration, lob_op, FunctionCode, MessageType, OracleType, PacketType,
-    PACKET_HEADER_SIZE,
 };
 use crate::error::Result;
 use crate::types::LobLocator;
@@ -245,30 +244,10 @@ impl<'a> LobOpMessage<'a> {
     /// Build the LOB operation request packet (for small payloads that fit in one packet)
     pub fn build_request(&self, caps: &Capabilities, large_sdu: bool) -> Result<Bytes> {
         let message = self.build_message_only(caps)?;
-        // Total payload = data flags (2) + message
-        let payload_len = 2 + message.len();
-
-        // Wrap in DATA packet
-        let mut packet = WriteBuffer::new();
-
-        // Packet header
-        if large_sdu {
-            packet.write_u32_be(payload_len as u32 + PACKET_HEADER_SIZE as u32)?;
-        } else {
-            packet.write_u16_be(payload_len as u16 + PACKET_HEADER_SIZE as u16)?;
-            packet.write_u16_be(0)?; // Checksum
-        }
-        packet.write_u8(PacketType::Data as u8)?;
-        packet.write_u8(0)?; // Reserved flags
-        packet.write_u16_be(0)?; // Header checksum
-
-        // Data flags
-        packet.write_u16_be(0)?;
-
-        // Message payload
-        packet.write_bytes(&message)?;
-
-        Ok(packet.freeze())
+        let mut payload = WriteBuffer::new();
+        payload.write_u16_be(0)?;
+        payload.write_bytes(&message)?;
+        crate::packet::encode_packet(PacketType::Data, payload.as_slice(), large_sdu)
     }
 
     /// Build just the message bytes (without packet header or data flags)
@@ -392,6 +371,17 @@ impl<'a> LobOpMessage<'a> {
 mod tests {
     use super::*;
     use crate::constants::OracleType;
+
+    #[test]
+    fn packet_bytes_both_sdu_formats() {
+        let caps = Capabilities::new();
+        let msg = LobOpMessage::new_create_temp(OracleType::Blob);
+        for large_sdu in [false, true] {
+            let packet = msg.build_request(&caps, large_sdu).unwrap();
+            crate::packet::assert_packet_bytes(&packet, PacketType::Data, large_sdu);
+            assert_eq!(&packet[8..10], &[0, 0]);
+        }
+    }
 
     #[test]
     fn test_lob_read_message_creation() {

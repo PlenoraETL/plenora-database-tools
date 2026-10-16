@@ -21,6 +21,11 @@ pub const DEFAULT_PORT: u16 = 1521;
 /// Default SDU size
 pub const DEFAULT_SDU: u32 = 8192;
 
+/// Standalone wire-response ceiling, aligned with Plenora ResourceLimits' memory
+/// default (512 MiB). The provider supplies its authoritative limit explicitly;
+/// the fork cannot depend on the provider/core. Includes TNS headers and flags.
+pub const DEFAULT_RESPONSE_LIMIT: usize = 512 * 1024 * 1024;
+
 /// Default statement cache size (matches python-oracledb default)
 pub const DEFAULT_STMTCACHESIZE: usize = 20;
 
@@ -108,6 +113,8 @@ pub enum TlsMode {
 /// ```
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Cumulative wire bytes allowed per response.
+    pub response_limit: usize,
     /// Host to connect to
     pub host: String,
     /// Port to connect to
@@ -156,6 +163,7 @@ impl Config {
             charset_id: charset::UTF8,
             ncharset_id: charset::UTF16,
             stmtcachesize: DEFAULT_STMTCACHESIZE,
+            response_limit: DEFAULT_RESPONSE_LIMIT,
         }
     }
 
@@ -180,6 +188,7 @@ impl Config {
             charset_id: charset::UTF8,
             ncharset_id: charset::UTF16,
             stmtcachesize: DEFAULT_STMTCACHESIZE,
+            response_limit: DEFAULT_RESPONSE_LIMIT,
         }
     }
 
@@ -384,6 +393,7 @@ impl Default for Config {
             charset_id: charset::UTF8,
             ncharset_id: charset::UTF16,
             stmtcachesize: DEFAULT_STMTCACHESIZE,
+            response_limit: DEFAULT_RESPONSE_LIMIT,
         }
     }
 }

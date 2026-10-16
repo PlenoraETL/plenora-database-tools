@@ -8,6 +8,16 @@ riassumono le note di quelle release.
 
 ## Non rilasciato
 
+- **Oracle: prosecuzione del cursore e reset degli errori.** La prima pagina
+  non dichiara piu la fine prima del completamento Oracle; la regressione live
+  richiede 102 righe e poi ORA-01476. I parser di query, fetch, REF CURSOR e
+  risultati impliciti rifiutano risposte incomplete o sconosciute; il fetch
+  condivide la decodifica del completamento e include sequenza e token TTC.
+  Il reset con header `large_sdu` corretto mantiene utilizzabile la sessione:
+  il test di redazione verifica ORA-00942, riuso e rollback riuscito, senza
+  richiedere la precedente chiusura del canale. Le verifiche live richiedono
+  il fixture Oracle; i test offline del fork girano nel workflow Rust esistente.
+
 ### Interoperabilità
 
 - **`query --output OUTPUT.arrows`**: il risultato di `query` come Arrow IPC
@@ -193,6 +203,141 @@ riassumono le note di quelle release.
 
 ### Correzioni
 
+- **Una scrittura dall'esito incerto non è più un successo.** `write` della
+  CLI (e `database-write-ipc`, `bulk-write`, `postgres-write-ipc`),
+  `database.write` del runtime e `copy_from`/`acopy_from` dello SDK Python
+  consegnavano un esito `outcome_unknown` come risultato riuscito: la CLI con
+  `status: ok` ed exit 0, lo SDK come valore di ritorno. Provato con un proxy
+  che fa cadere la conferma del `COMMIT` di PostgreSQL. Ora è l'errore di
+  commit ignoto (`commit`, `unknown`, `requires_recovery`;
+  `PlenoraCommitOutcomeUnknownError`) con l'esito in `details.write_outcome`.
+  La categoria è la causa che l'adapter ha osservato (ERR-001): `io` per un
+  canale perso (exit 5, il caso del proxy), `timeout` (5), `cancelled`
+  (130), `protocol` per una risposta non interpretabile (5), `internal`
+  (70) quando la causa non è dimostrabile. La causa viaggia in
+  `Recovery::cause`, solo Rust: lo schema `write-outcome` è chiuso e il
+  documento JSON non la porta. In Python la classe resta
+  `PlenoraCommitOutcomeUnknownError` (sottoclasse di `PlenoraInternalError`,
+  per compatibilità) e l'attributo `category` porta la causa: è l'attributo,
+  non la classe, a dire la categoria. `partially_committed` e `rolled_back` seguono la
+  stessa regola con i propri assi (`execution`, exit 6). SURF-014.
+- **`execute` con commit ignoto** stampava `status: ok` ed usciva con 1:
+  ora è un envelope d'errore con il `CommitOutcome` in `details.commit`
+  (CLI-2.0 §4: exit diverso da zero solo con `status: error`).
+  Le due chiavi restano distinte perché portano documenti diversi:
+  `details.write_outcome` è il `write-outcome` di una scrittura (conteggi e
+  `recovery`), `details.commit` il `CommitOutcome` di una transazione.
+- **Assi dopo un effetto remoto possibile**, su tutti gli adapter:
+  - dopo l'invio del COMMIT, un errore che non è un rifiuto certo del server
+    (Oracle senza codice ORA, PostgreSQL senza SQLSTATE) è un esito ignoto,
+    non `protocol`/`none`; MySQL tratta allo stesso modo ogni errore che
+    `driver_error` dichiara già di effetto ignoto;
+  - un rollback non confermato porta `phase: rollback`, `remote_effect:
+    unknown`, `requires_recovery` (ERR-003, ERR-014) in PostgreSQL, MySQL,
+    SQL Server, Oracle e Db2;
+  - Db2: una cancellazione all'ingresso di `commit` o `rollback` esegue il
+    rollback in modo esplicito e ne riporta l'esito, invece di dichiarare
+    `none` e lasciarlo al distruttore;
+  - **regola unica dopo l'invio del COMMIT**, in un punto solo
+    (`transaction::after_commit_sent` e `commit_failure_outcome`) usato da
+    tutti gli adapter: ogni errore lascia l'esito ignoto, con la causa come
+    categoria, salvo un elenco chiuso e per-adapter di codici che provano il
+    rollback — PostgreSQL `40001`, `40002`, `40P01` e le violazioni di
+    vincoli differiti `23502`, `23503`, `23505`, `23514`, `23P01`; MySQL
+    `1213`, `3101`; MariaDB solo `1213` (`3101` è un codice MySQL che il
+    catalogo MariaDB non definisce: senza prova resta ignoto); Oracle
+    ORA-02091; SQL Server `1205`; Db2 nessuno. L'elenco MySQL/MariaDB è del
+    profilo di prodotto. Uno SQLSTATE riconosciuto ma fuori elenco (per
+    esempio `08006`, `08P01`) non porta più `none`. Il percorso PostgreSQL
+    con diagnostica di riga usa lo stesso punto (`proven_commit_rollback`)
+    della scrittura ordinaria;
+  - il COMMIT del setup della creazione Oracle (metadati spaziali e indici
+    dopo il `CREATE TABLE`) passa dalla stessa regola, con timeout e
+    cancellazione; dopo la creazione un errore con effetto ignoto resta
+    `unknown` invece di diventare `partial`, e un errore prima della
+    creazione conserva i propri assi;
+  - Oracle, ogni uscita dopo la creazione del target (apertura della
+    transazione di carico, scrittura, COMMIT annullato, esito ignoto) passa
+    da un punto solo, come `stamp_ddl_residue` di MySQL: il DDL Oracle fa
+    commit implicito, quindi un effetto noto è `partial` e uno ignoto resta
+    `unknown`. Prima l'apertura fallita della transazione e un COMMIT
+    `rolled_back` dichiaravano `none`/`rolled_back` con la tabella creata;
+  - Oracle, dopo l'invio di un comando mutante solo un **elenco chiuso** di
+    codici ORA prova il rifiuto senza effetto
+    (`CERTAIN_STATEMENT_REJECTIONS`: errori di analisi come ORA-00900–00957,
+    00942, 01031, e rifiuti con rollback dell'istruzione come ORA-00001,
+    01400, 02290–02292, 12899, ciascuno motivato nel codice). Ogni altro
+    esito — canale chiuso, trasporto interrotto, codice non qualificato — dà
+    effetto ignoto con recovery; i codici di connessione persa (ORA-03113,
+    03114, 03135, 12537, 12547, 12570, 25408) hanno categoria `io`. Prima
+    usciva `none` con `retry=safe`, anche per il `CREATE TABLE` del setup;
+  - **SQL del chiamante dopo l'invio non dichiara mai `none`**, in un
+    punto obbligato (`plenora_database_core::caller_sql`) per tutti i
+    provider, PostgreSQL compreso. `Provider::begin_transaction` ed
+    `execute_ddl` non si ridefiniscono più: avvolgono `open_transaction` e
+    `run_ddl` dell'adapter, e qualunque errore di `execute`, `query`,
+    `query_stream` con il suo stream, `execute_graph` e dell'update
+    condizionale — invio, fetch, decodifica, cancellazione, timeout,
+    worker fallito — passa da `DatabaseError::after_unproven_send`: un
+    effetto `none` diventa ignoto con recovery, un rollback confermato
+    resta. Il contesto non prova l'assenza di effetti: un DDL Oracle o
+    MySQL fa commit implicito di ciò che lo precede, una procedura
+    PostgreSQL chiamata in autocommit fa COMMIT e poi RAISE, un trigger
+    autonomo fa commit da solo, un batch T-SQL `INSERT; RAISERROR` ha già
+    scritto. Una prova d'inventario fallisce se un adapter ridefinisce i
+    due metodi pubblici. Limite dichiarato — regola: un errore di fase
+    `validate` precede l'invio e resta com'è; ambito: un errore locale
+    dell'adapter in un'altra fase prima dell'invio (parametro non
+    convertibile, transazione già chiusa) esce ignoto; hazard: nessuno per
+    la correttezza, ma `requires_recovery` dove `none` sarebbe stato vero;
+    rientro: un confine esplicito fra preparazione e invio nel trait degli
+    adapter. Il difetto in SQL Server c'era già su `main`. Prove live in
+    PostgreSQL (procedura che fa COMMIT e poi RAISE), SQL Server (batch
+    `INSERT; RAISERROR`) e Oracle (INSERT poi CREATE TABLE con ORA-00955);
+  - **scritture `create` abbandonate** (Oracle e MySQL): una guardia armata
+    prima del `CREATE TABLE` registra il target nel registro del provider
+    (`ddl_residues()`, modulo `ddl_residue`) se la scrittura non arriva a un
+    esito — future lasciata cadere dal chiamante, panic del produttore dei
+    batch. In Oracle anche il setup passa dal punto unico
+    (`stamp_created_target`). MySQL esegue il DDL in fase `write`, così una
+    risposta persa al `CREATE` lascia l'esito ignoto come per ogni comando
+    mutante. Limite dichiarato — regola: un'operazione `create` abbandonata
+    è osservabile dal registro del provider; ambito: il registro vive nel
+    processo, e il crash o l'uscita del processo (anche `panic = "abort"`)
+    lo perdono; hazard: dopo un crash una tabella creata può restare senza
+    che nessun esito lo dica; rientro: un registro durevole delle intenzioni
+    (journal su disco o tabella di servizio), che la libreria oggi non ha;
+  - **regola unica dell'interruzione dopo l'invio**
+    (`DatabaseError::after_interrupted_send`): un timeout o una cancellazione con un
+    comando mutante in volo danno effetto ignoto e recovery, e in fase
+    `rollback` un rollback non confermato, con la categoria della causa.
+    Prima PostgreSQL dichiarava `none` per un `ROLLBACK TO SAVEPOINT`
+    interrotto, Oracle per ogni comando interrotto in volo (scritture,
+    savepoint, rollback), e la creazione o l'eliminazione di un grafo AGE
+    interrotta dichiarava `none`;
+  - ORA-03113, ORA-03114 e ORA-25408 dopo il COMMIT hanno categoria `io`;
+  - ogni rollback inviato e non confermato — esplicito, `ROLLBACK TO
+    SAVEPOINT`, pulizia dopo un `set_config` fallito in PostgreSQL — porta
+    fase `rollback` ed effetto ignoto, mai `none`, in tutti gli adapter;
+  - PostgreSQL, percorso con diagnostica di riga: la conferma di commit
+    persa porta la categoria della causa (`io`), non sempre `protocol`;
+  - dichiarato: il distruttore di una transazione Db2 abbandonata tenta
+    ancora il rollback senza riportarlo, perché non c'è un errore da
+    costruire; la connessione chiusa fa annullare il lavoro non confermato.
+  - `WriteOutcome::settle` conserva la fase reale di un esito fuori
+    contratto (la fase certa della `recovery`), invece di `finalize`.
+- Dichiarato: PostgreSQL `append` con diagnostica di riga riporta una
+  conferma di commit persa come `protocol`/`quarantine` (exit 5), mentre
+  `create` usa gli assi del commit ignoto (`internal`/`requires_recovery`,
+  exit 70). Entrambi hanno effetto `unknown` e nessun retry automatico
+  (ERR-006 ammette `quarantine`).
+- **Niente più exit code 1.** I comandi operativi che stampano un verdetto
+  negativo (`doctor`, `diagnose`, `profile-check`, `test-*`,
+  `conditional-update`, `pool-status`, …) uscivano con 1, che CLI-2.0 §8 non
+  prevede. Ora escono con la proiezione della categoria: 70 per il commit
+  ignoto, la categoria dell'errore quando c'è, 6 (`execution`) per una
+  verifica non superata.
+
 - **Il fork di `oracle-rs` vale anche per i consumatori.** Entrava con
   `[patch.crates-io]`, che Cargo applica solo dal workspace radice: chi usava
   database-tools come dipendenza (path o git) riceveva `oracle-rs` 0.1.7 da
@@ -203,6 +348,9 @@ riassumono le note di quelle release.
   consumatore esterno e lo verifica, in CI su Linux e Windows.
 - **`thiserror` =2.0.21**, come data-tools2: con `=2.0.20` un grafo che usa
   entrambe le librerie non si risolveva.
+
+Chi leggeva `status` dal risultato di una scrittura, o l'exit 1, deve leggere
+ora l'envelope d'errore e i codici di CLI-2.0.
 
 ## 7.0.0 — 2026-10-06
 

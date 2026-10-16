@@ -81,7 +81,9 @@ pub(crate) async fn diagnose(args: &mut impl Iterator<Item = String>) -> CliResu
     if overall_pass {
         Ok(())
     } else {
-        Err(crate::CliError::Silent)
+        Err(crate::CliError::Reported(
+            plenora_database_core::ErrorCategory::Execution,
+        ))
     }
 }
 

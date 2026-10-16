@@ -4,6 +4,7 @@ use crate::read::decode_hex_binary;
 use crate::Db2Config;
 use odbc_api::buffers::TextRowSet;
 use odbc_api::{sys::SqlDataType, Connection, Cursor, DataType, IntoParameter, ResultSetMetadata};
+use plenora_database_core::caller_sql::SendMarker;
 use plenora_database_core::native_query_policy::{
     enforce_policy, statement_head, NativeQueryPolicy,
 };
@@ -25,6 +26,9 @@ const QUERY_CELL_BYTES: usize = 64 * 1024;
 const DB2_SQL_BLOB: SqlDataType = SqlDataType(-98);
 
 pub struct Db2Transaction {
+    sent: SendMarker,
+    #[cfg(test)]
+    panic_read_worker: bool,
     connection: Option<Connection<'static>>,
     timeout: usize,
     native_query_policy: NativeQueryPolicy,
@@ -32,6 +36,14 @@ pub struct Db2Transaction {
     _operation_lease: ResourceLease,
 }
 
+/// Ultima risorsa per uno scope abbandonato senza commit ne rollback.
+///
+/// Resta raggiungibile solo cosi: commit, rollback esplicito e i percorsi di
+/// write chiudono la transazione da se e riportano l'esito del rollback negli
+/// assi. Qui non c'e un errore da costruire, quindi nessun asse puo mentire:
+/// il chiamante che ha lasciato cadere lo scope non riceve un esito, e la
+/// connessione chiusa subito dopo fa annullare a Db2 il lavoro non
+/// confermato.
 impl Drop for Db2Transaction {
     fn drop(&mut self) {
         if self.open {
@@ -57,6 +69,8 @@ impl Db2Transaction {
         }
         budget.ensure_active()?;
         let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
+        #[cfg(test)]
+        let panic_read_worker = config.panic_read_worker;
         let config = config.clone();
         let secret = secret.clone();
         let isolation = isolation_statement(options);
@@ -73,9 +87,12 @@ impl Db2Transaction {
         .await
         .map_err(|_| task_error(ErrorPhase::Prepare))??;
         Ok(Self {
+            #[cfg(test)]
+            panic_read_worker,
             connection: Some(opened.0),
             timeout: statement_timeout(options).unwrap_or(opened.1),
             native_query_policy: options.native_query_policy,
+            sent: SendMarker::default(),
             open: true,
             _operation_lease: operation_lease,
         })
@@ -111,8 +128,15 @@ impl Db2Transaction {
             transaction_error(ErrorCategory::Internal, phase, "connessione Db2 assente")
         })?;
         let timeout = self.timeout;
+        #[cfg(test)]
+        let panic_read_worker = self.panic_read_worker && phase == ErrorPhase::Read;
         let outcome = tokio::task::spawn_blocking(move || {
             let result = operation(&connection, timeout);
+            #[cfg(test)]
+            assert!(
+                !(panic_read_worker && result.is_ok()),
+                "panic del worker dopo SQL reale"
+            );
             (connection, result)
         })
         .await;
@@ -230,8 +254,17 @@ impl Db2Transaction {
             return Ok(());
         }
         if cancellation.is_cancelled() {
-            return Err(interruption_error(cancellation, ErrorPhase::Rollback));
+            // Anche qui il rollback si esegue e il suo esito decide gli assi:
+            // una cancellazione non lascia la transazione al `Drop`.
+            let error = interruption_error(cancellation, ErrorPhase::Rollback);
+            let confirmed = self.rollback_connection().await.is_ok();
+            return Err(abandoned_error(error, confirmed));
         }
+        self.rollback_connection().await
+    }
+
+    /// Rollback sulla connessione, atteso fino alla risposta del driver.
+    async fn rollback_connection(&mut self) -> Result<()> {
         self.open = false;
         let connection = self.connection.take().ok_or_else(|| {
             transaction_error(
@@ -240,6 +273,8 @@ impl Db2Transaction {
                 "connessione Db2 assente al rollback",
             )
         })?;
+        // Un rollback non confermato non prova che le scritture siano
+        // annullate (ERR-003, ERR-014).
         tokio::task::spawn_blocking(move || {
             connection
                 .rollback()
@@ -247,6 +282,7 @@ impl Db2Transaction {
         })
         .await
         .map_err(|_| task_error(ErrorPhase::Rollback))?
+        .map_err(DatabaseError::after_unconfirmed_rollback)
     }
 }
 
@@ -388,6 +424,7 @@ fn execute_statement(
     sql: &str,
     parameters: &[Option<String>],
     requires_row_count: bool,
+    sent: &SendMarker,
 ) -> Result<u64> {
     let parameters: Vec<_> = parameters
         .iter()
@@ -399,6 +436,7 @@ fn execute_statement(
     statement
         .set_query_timeout_sec(timeout)
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
+    sent.mark_sent();
     let has_cursor = statement
         .execute(sql, parameters.as_slice())
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?
@@ -436,11 +474,13 @@ fn query_rows(
     timeout: usize,
     sql: &str,
     parameters: &[Option<String>],
+    sent: &SendMarker,
 ) -> Result<Vec<Row>> {
     let parameters: Vec<_> = parameters
         .iter()
         .map(|parameter| parameter.as_deref().into_parameter())
         .collect();
+    sent.mark_sent();
     let mut cursor = connection
         .execute(sql, parameters.as_slice(), Some(timeout))
         .map_err(|error| driver_error(&error, ErrorPhase::Read))?
@@ -637,6 +677,11 @@ fn transaction_error(
 }
 
 impl TransactionScope for Db2Transaction {
+    fn begin_caller_sql(&mut self) -> SendMarker {
+        self.sent = SendMarker::before_send();
+        self.sent.clone()
+    }
+
     fn provider_kind(&self) -> ProviderKind {
         ProviderKind::Db2
     }
@@ -651,11 +696,19 @@ impl TransactionScope for Db2Transaction {
             let sql = statement.sql.clone();
             let parameters = encode_parameters(&statement.params)?;
             let requires_row_count = db2_statement_requires_row_count(&sql);
+            let sent = self.sent.clone();
             self.run(
                 ErrorPhase::Write,
                 cancellation,
                 move |connection, timeout| {
-                    execute_statement(connection, timeout, &sql, &parameters, requires_row_count)
+                    execute_statement(
+                        connection,
+                        timeout,
+                        &sql,
+                        &parameters,
+                        requires_row_count,
+                        &sent,
+                    )
                 },
             )
             .await
@@ -671,10 +724,13 @@ impl TransactionScope for Db2Transaction {
             enforce_policy(self.native_query_policy, &statement.sql)?;
             let sql = statement.sql.clone();
             let parameters = encode_parameters(&statement.params)?;
+            let sent = self.sent.clone();
             self.run(
                 ErrorPhase::Read,
                 cancellation,
-                move |connection, timeout| query_rows(connection, timeout, &sql, &parameters),
+                move |connection, timeout| {
+                    query_rows(connection, timeout, &sql, &parameters, &sent)
+                },
             )
             .await
         })
@@ -718,12 +774,14 @@ impl TransactionScope for Db2Transaction {
     ) -> ProviderFuture<'a, ()> {
         Box::pin(async move {
             validate_savepoint_name(name)?;
+            // Inviato il ROLLBACK TO SAVEPOINT, un errore non lo conferma.
             self.control(
                 format!("ROLLBACK TO SAVEPOINT {name}"),
                 ErrorPhase::Rollback,
                 cancellation,
             )
             .await
+            .map_err(DatabaseError::after_unconfirmed_rollback)
         })
     }
 
@@ -779,7 +837,14 @@ impl TransactionScope for Db2Transaction {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Commit)?;
             if cancellation.is_cancelled() {
-                return Err(interruption_error(cancellation, ErrorPhase::Commit));
+                // Le righe sono gia applicate nella transazione: il commit non
+                // parte, e il rollback si tenta qui, in modo esplicito, perche
+                // il suo esito decida gli assi. Lasciarlo al `Drop`, che ne
+                // ignora l'esito, faceva dichiarare `none` anche quando il
+                // rollback falliva.
+                let error = interruption_error(cancellation, ErrorPhase::Commit);
+                let confirmed = self.rollback_connection().await.is_ok();
+                return Err(abandoned_error(error, confirmed));
             }
             self.open = false;
             let connection = self.connection.take().ok_or_else(|| {
@@ -792,7 +857,16 @@ impl TransactionScope for Db2Transaction {
             let result = tokio::task::spawn_blocking(move || connection.commit()).await;
             match result {
                 Ok(Ok(())) => Ok(CommitOutcome::Committed),
-                Ok(Err(_)) | Err(_) => Ok(CommitOutcome::OutcomeUnknown {
+                // La causa del driver diventa la categoria (ERR-001); un task
+                // perso non ne ha una dimostrabile.
+                // Regola unica dopo l'invio del COMMIT; per Db2 l'elenco dei
+                // rifiuti che provano il rollback e vuoto, quindi ogni errore
+                // lascia l'esito ignoto.
+                Ok(Err(error)) => plenora_database_core::transaction::commit_failure_outcome(
+                    driver_error(&error, ErrorPhase::Commit),
+                    false,
+                ),
+                Err(_) => Ok(CommitOutcome::OutcomeUnknown {
                     recovery: outcome_unknown_recovery(),
                 }),
             }
@@ -803,3 +877,21 @@ impl TransactionScope for Db2Transaction {
         Box::pin(async move { self.rollback_in_place(cancellation).await })
     }
 }
+
+/// Gli assi di un'operazione interrotta prima del commit, dopo il rollback
+/// esplicito: annullata se il rollback e confermato, ignota altrimenti.
+pub fn abandoned_error(error: DatabaseError, rollback_confirmed: bool) -> DatabaseError {
+    if rollback_confirmed {
+        DatabaseError {
+            remote_effect: plenora_database_core::RemoteEffect::RolledBack,
+            retry: plenora_database_core::RetryDisposition::Never,
+            ..error
+        }
+    } else {
+        error.after_unconfirmed_rollback()
+    }
+}
+
+#[cfg(test)]
+#[path = "caller_sql_send_tests.rs"]
+mod caller_sql_send_tests;

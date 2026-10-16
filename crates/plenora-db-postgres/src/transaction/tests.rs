@@ -2242,6 +2242,53 @@ mod live {
         );
     }
 
+    /// Una procedura (PostgreSQL 11+) chiamata fuori transazione fa COMMIT e
+    /// poi RAISE: la riga e permanente, quindi l'errore non puo dichiarare
+    /// `none`.
+    #[tokio::test]
+    async fn live_a_procedure_that_commits_then_raises_is_not_reported_as_no_effect() {
+        use plenora_database_core::provider::Provider;
+        scratch_table("opz3_commit_raise").await;
+        let provider = provider();
+        let cancel = CancellationToken::new();
+        Provider::execute_ddl(
+            &provider,
+            &secret(),
+            "CREATE OR REPLACE PROCEDURE opz3_commit_raise_proc() LANGUAGE plpgsql AS $$ \
+             BEGIN \
+               INSERT INTO opz3_commit_raise (id, v) VALUES (1, 'permanente'); \
+               COMMIT; \
+               RAISE EXCEPTION 'dopo il commit'; \
+             END $$",
+            &cancel,
+        )
+        .await
+        .expect("procedura");
+        let error = Provider::run_ddl(
+            &provider,
+            &secret(),
+            "CALL opz3_commit_raise_proc()",
+            &cancel,
+        )
+        .await
+        .expect_err("RAISE dopo il COMMIT");
+        assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+        assert_eq!(
+            count(&provider, "SELECT count(*) FROM opz3_commit_raise").await,
+            1
+        );
+        Provider::execute_ddl(
+            &provider,
+            &secret(),
+            "DROP PROCEDURE IF EXISTS opz3_commit_raise_proc()",
+            &cancel,
+        )
+        .await
+        .expect("cleanup");
+        drop_table("opz3_commit_raise").await;
+    }
+
     // === Profilo di conformita ===
 
     use plenora_database_core::conformance::{
@@ -3162,5 +3209,50 @@ mod live {
 
         tx.rollback(&cancel).await.expect("rollback");
         drop_table("a1_fail").await;
+    }
+}
+
+/// Un `set_config` fallito dopo il BEGIN: se il ROLLBACK di pulizia non e
+/// confermato, l'errore lo dice (fase rollback, effetto ignoto, ERR-003).
+#[test]
+fn a_failed_context_cleanup_reports_its_rollback() {
+    use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect};
+    let failure = || {
+        DatabaseError::new(
+            ErrorCategory::InvalidPlan,
+            ErrorPhase::Prepare,
+            None,
+            "set_config rifiutato",
+        )
+    };
+    let confirmed = super::context_failure(failure(), true);
+    assert_eq!(confirmed.phase, ErrorPhase::Prepare);
+    assert_eq!(confirmed.remote_effect, RemoteEffect::None);
+    let unconfirmed = super::context_failure(failure(), false);
+    assert_eq!(unconfirmed.phase, ErrorPhase::Rollback);
+    assert_eq!(unconfirmed.remote_effect, RemoteEffect::Unknown);
+}
+
+/// Regola unica dell'interruzione dopo l'invio: in ogni fase mutante l'esito
+/// e ignoto e serve una recovery. Un ROLLBACK TO SAVEPOINT interrotto e un
+/// rollback non confermato, non un rollback senza effetto. La categoria resta
+/// quella della causa.
+#[test]
+fn an_interruption_after_sending_a_mutating_command_is_unknown() {
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let expired = CancellationToken::new();
+    expired.cancel_due_to_deadline();
+    for (token, category) in [
+        (&cancelled, ErrorCategory::Cancelled),
+        (&expired, ErrorCategory::Timeout),
+    ] {
+        for phase in [ErrorPhase::Write, ErrorPhase::Commit, ErrorPhase::Rollback] {
+            let error = PostgresTransaction::interruption_error(token, phase, "interrotto");
+            assert_eq!(error.remote_effect, RemoteEffect::Unknown, "{phase:?}");
+            assert_eq!(error.retry, RetryDisposition::RequiresRecovery, "{phase:?}");
+            assert_eq!(error.category, category);
+            assert_eq!(error.phase, phase);
+        }
     }
 }

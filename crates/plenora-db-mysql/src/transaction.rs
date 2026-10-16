@@ -30,10 +30,11 @@ use crate::session::{MysqlSession, MysqlTransactionCommand};
 use mysql_async::consts::ColumnType;
 use mysql_async::prelude::Queryable;
 use mysql_async::{Row as MyRow, Value};
+use plenora_database_core::caller_sql::SendMarker;
 use plenora_database_core::provider::{ParameterValue, ProviderFuture};
 use plenora_database_core::row::Row;
 use plenora_database_core::transaction::{
-    concurrent_modification_error, outcome_unknown_recovery, validate_savepoint_name,
+    concurrent_modification_error, outcome_unknown_recovery_for, validate_savepoint_name,
     CommitOutcome, ConditionalUpdate, RowStream, Statement, TransactionOptions, TransactionScope,
 };
 use plenora_database_core::{
@@ -43,6 +44,7 @@ use plenora_database_core::{
 use std::sync::Arc;
 
 pub struct MysqlTransaction {
+    sent: SendMarker,
     session: MysqlSession,
     open: bool,
     /// Policy di ammissione statement (Allow default, Deny per PFM).
@@ -143,6 +145,7 @@ impl MysqlTransaction {
             session,
             open: true,
             native_query_policy: options.native_query_policy,
+            sent: SendMarker::default(),
         })
     }
 }
@@ -530,6 +533,11 @@ fn convert_value(
 // ------------------------------ TransactionScope impl -----------------------
 
 impl TransactionScope for MysqlTransaction {
+    fn begin_caller_sql(&mut self) -> SendMarker {
+        self.sent = SendMarker::before_send();
+        self.sent.clone()
+    }
+
     fn provider_kind(&self) -> ProviderKind {
         self.session.kind()
     }
@@ -559,7 +567,13 @@ impl TransactionScope for MysqlTransaction {
                 let params = bind_positional_params(&statement.params)?;
                 let result = self
                     .session
-                    .exec_write(&statement.sql, params, ErrorPhase::Write, cancellation)
+                    .exec_write_tracked(
+                        &statement.sql,
+                        params,
+                        ErrorPhase::Write,
+                        cancellation,
+                        &self.sent,
+                    )
                     .await;
                 // Quando il server restituisce `RolledBack` (per esempio per
                 // deadlock o timeout ambiguo), la transazione vittima non e
@@ -612,7 +626,9 @@ impl TransactionScope for MysqlTransaction {
                     .session
                     .connection_mut()
                     .ok_or_else(|| closed_error(ErrorPhase::Read, kind))?;
-                let execution = connection.exec::<MyRow, _, _>(&statement.sql, params);
+                let execution = self
+                    .sent
+                    .sending(connection.exec::<MyRow, _, _>(&statement.sql, params));
                 let outcome = tokio::select! {
                     _ = cancellation.cancelled() => {
                         self.session.discard().await;
@@ -694,7 +710,7 @@ impl TransactionScope for MysqlTransaction {
                 let params = bind_positional_params(&statement.params)?;
                 let profile = self.session.profile();
                 let timeout = self.session.operation_timeout();
-                let Self { session, .. } = self;
+                let Self { session, sent, .. } = self;
                 let connection = session
                     .connection_mut()
                     .ok_or_else(|| closed_error(ErrorPhase::Read, kind))?;
@@ -703,7 +719,7 @@ impl TransactionScope for MysqlTransaction {
                 // sua vita a quella del testo. E' la stessa forma che il
                 // percorso Arrow usa gia in `pump_exec_rows`.
                 let sql = statement.sql.clone();
-                let open = connection.exec_iter(sql, params);
+                let open = sent.sending(connection.exec_iter(sql, params));
                 // La cancellazione vale anche **all'apertura**: un token gia
                 // scaduto non deve far partire una query che nessuno leggera.
                 let opened = tokio::select! {
@@ -805,6 +821,8 @@ impl TransactionScope for MysqlTransaction {
                     return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
                 }
                 let quoted = quote_savepoint_name(name)?;
+                // Inviato il ROLLBACK TO SAVEPOINT, un errore non lo
+                // conferma.
                 raw_exec(
                     &mut self.session,
                     &format!("ROLLBACK TO SAVEPOINT {quoted}"),
@@ -812,6 +830,7 @@ impl TransactionScope for MysqlTransaction {
                     cancellation,
                 )
                 .await
+                .map_err(DatabaseError::after_unconfirmed_rollback)
             }
             .await;
             crate::profile::attributed_kind(kind, outcome)
@@ -874,15 +893,12 @@ impl TransactionScope for MysqlTransaction {
                 self.open = false;
                 match outcome {
                     Ok(()) => Ok(CommitOutcome::Committed),
-                    Err(err)
-                        if matches!(
-                            err.category,
-                            ErrorCategory::Cancelled | ErrorCategory::Timeout | ErrorCategory::Io
-                        ) =>
-                    {
-                        // Canale compromesso durante commit: outcome ignoto.
+                    // Dopo l'invio `exec_transaction` applica la regola unica:
+                    // ignoto, salvo un codice che prova il rollback. Un errore
+                    // con effetto `none` viene da prima dell'invio.
+                    Err(err) if err.remote_effect == RemoteEffect::Unknown => {
                         Ok(CommitOutcome::OutcomeUnknown {
-                            recovery: outcome_unknown_recovery(),
+                            recovery: outcome_unknown_recovery_for(err.category),
                         })
                     }
                     Err(err) => Err(err),
@@ -912,7 +928,10 @@ impl TransactionScope for MysqlTransaction {
                         ErrorPhase::Rollback,
                         cancellation,
                     )
-                    .await;
+                    .await
+                    // Un rollback non confermato non prova che le scritture
+                    // siano annullate (ERR-003, ERR-014).
+                    .map_err(DatabaseError::after_unconfirmed_rollback);
                 self.open = false;
                 outcome
             }
@@ -957,7 +976,13 @@ impl TransactionScope for MysqlTransaction {
                 let params = bind_positional_params(&request.update.params)?;
                 let affected = self
                     .session
-                    .exec_write(&request.update.sql, params, ErrorPhase::Write, cancellation)
+                    .exec_write_tracked(
+                        &request.update.sql,
+                        params,
+                        ErrorPhase::Write,
+                        cancellation,
+                        &self.sent,
+                    )
                     .await?;
                 if affected == request.expected_affected_rows {
                     self.release_savepoint(sp, cancellation).await?;
@@ -1016,3 +1041,7 @@ fn closed_error(phase: ErrorPhase, kind: ProviderKind) -> DatabaseError {
 #[cfg(test)]
 #[path = "transaction_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "caller_sql_send_tests.rs"]
+mod caller_sql_send_tests;

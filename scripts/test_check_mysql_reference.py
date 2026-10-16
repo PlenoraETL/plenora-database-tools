@@ -319,7 +319,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
         )
         # Le prove concorrenti verificano il recupero delle connessioni e del pool.
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 34)
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 35)
 
     def test_gate_pins_the_query_operation_live_test_by_name(self) -> None:
         for name in (
@@ -2297,9 +2297,9 @@ class PythonSdkRunnerTests(unittest.TestCase):
         stabilization = sdk.SCOPE_CONTRACTS["stabilization"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (587, 15, 0))
+        self.assertEqual((live.passed, live.skipped, live.deselected), (589, 15, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (304, 298, 0)
+            (offline.passed, offline.skipped, offline.deselected), (304, 300, 0)
         )
         self.assertEqual(
             (
@@ -2311,7 +2311,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 600),
+            (2, 0, 602),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
         # il wheel standard salta Db2 e Oracle anche live, e nessuno

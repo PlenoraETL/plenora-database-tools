@@ -100,6 +100,14 @@ impl OraclePool {
             Some(connection) => connection,
             None => connect(&self.config, &self.secret, cancellation).await?,
         };
+        connection
+            .set_response_byte_limit(
+                usize::try_from(
+                    plenora_database_core::resource::ResourceLimits::default().memory_bytes,
+                )
+                .unwrap_or(usize::MAX),
+            )
+            .await;
         Ok(PooledOracleConnection {
             connection: Some(connection),
             pool: Arc::clone(self),
@@ -189,3 +197,7 @@ fn pool_error(
         diagnostics: None,
     }
 }
+
+#[cfg(test)]
+#[path = "caller_sql_pool_tests.rs"]
+mod caller_sql_pool_tests;

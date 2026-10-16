@@ -581,8 +581,11 @@ impl Session {
     ///       "execution_id": "...",
     ///       "provider": "postgres",
     ///       "rows": {"received": N, "confirmed": N, "inserted": N, ...},
-    ///       "recovery": None,
     ///     }
+    ///
+    /// Solo una scrittura `committed` ritorna: gli altri esiti sollevano
+    /// l'eccezione della loro categoria con l'esito in
+    /// `details["write_outcome"]`.
     #[pyo3(signature = (
         schema,
         table,

@@ -15,16 +15,14 @@ use std::collections::HashMap;
 
 use crate::buffer::{ReadBuffer, WriteBuffer};
 use crate::capabilities::Capabilities;
-use crate::constants::{
-    auth_mode, verifier_type, FunctionCode, MessageType, PacketType, PACKET_HEADER_SIZE,
-};
+use crate::constants::{auth_mode, verifier_type, FunctionCode, MessageType, PacketType};
 use crate::crypto::{
     decrypt_cbc_192, decrypt_cbc_256, encrypt_cbc_192, encrypt_cbc_256_pkcs7,
     generate_11g_combo_key, generate_11g_password_hash, generate_12c_combo_key,
     generate_12c_password_hash, generate_salt, generate_session_key_part, pbkdf2_derive,
 };
 use crate::error::{Error, Result};
-use crate::packet::PacketHeader;
+use crate::packet::encode_packet;
 
 /// Session data received from server during authentication
 #[derive(Debug, Default)]
@@ -207,9 +205,6 @@ impl AuthMessage {
     fn build_phase_one(&self, caps: &Capabilities, large_sdu: bool) -> Result<Bytes> {
         let mut buf = WriteBuffer::with_capacity(512);
 
-        // Reserve space for packet header
-        buf.write_zeros(PACKET_HEADER_SIZE)?;
-
         // Data flags (2 bytes)
         buf.write_u16_be(0)?;
 
@@ -264,17 +259,7 @@ impl AuthMessage {
         self.write_key_value(&mut buf, "AUTH_PID", &self.pid, 0)?;
         self.write_key_value(&mut buf, "AUTH_SID", &self.osuser, 0)?;
 
-        // Calculate total length and write header
-        let total_len = buf.len() as u32;
-        let header = PacketHeader::new(PacketType::Data, total_len);
-        let mut header_buf = WriteBuffer::with_capacity(PACKET_HEADER_SIZE);
-        header.write(&mut header_buf, large_sdu)?;
-
-        // Patch the header at the beginning
-        let mut result = buf.into_inner();
-        result[..PACKET_HEADER_SIZE].copy_from_slice(header_buf.as_slice());
-
-        Ok(result.freeze())
+        encode_packet(PacketType::Data, buf.as_slice(), large_sdu)
     }
 
     /// Build phase two request (encrypted password and session parameters)
@@ -287,9 +272,6 @@ impl AuthMessage {
             .ok_or_else(|| Error::Protocol("Client session key not generated".to_string()))?;
 
         let mut buf = WriteBuffer::with_capacity(1024);
-
-        // Reserve space for packet header
-        buf.write_zeros(PACKET_HEADER_SIZE)?;
 
         // Data flags (2 bytes)
         buf.write_u16_be(0)?;
@@ -378,17 +360,7 @@ impl AuthMessage {
         let tz_stmt = self.get_alter_timezone_statement();
         self.write_key_value(&mut buf, "AUTH_ALTER_SESSION", &tz_stmt, 1)?;
 
-        // Calculate total length and write header
-        let total_len = buf.len() as u32;
-        let header = PacketHeader::new(PacketType::Data, total_len);
-        let mut header_buf = WriteBuffer::with_capacity(PACKET_HEADER_SIZE);
-        header.write(&mut header_buf, large_sdu)?;
-
-        // Patch the header
-        let mut result = buf.into_inner();
-        result[..PACKET_HEADER_SIZE].copy_from_slice(header_buf.as_slice());
-
-        Ok(result.freeze())
+        encode_packet(PacketType::Data, buf.as_slice(), large_sdu)
     }
 
     /// Write a key-value pair to the buffer
@@ -716,6 +688,33 @@ impl Drop for AuthMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::PACKET_HEADER_SIZE;
+
+    #[test]
+    fn phase_two_packet_bytes_both_sdu_formats() {
+        let caps = Capabilities::new();
+        let mut msg = AuthMessage::new("test", b"test", "test");
+        msg.phase = AuthPhase::Two;
+        msg.combo_key = Some(vec![0; 24]);
+        msg.client_session_key = Some(vec![0; 48]);
+        msg.verifier_type = verifier_type::V11G_1;
+        for large_sdu in [false, true] {
+            let packet = msg.build_request(&caps, large_sdu).unwrap();
+            crate::packet::assert_packet_bytes(&packet, PacketType::Data, large_sdu);
+            assert_eq!(&packet[8..12], &[0, 0, 3, FunctionCode::AuthPhaseTwo as u8]);
+        }
+    }
+
+    #[test]
+    fn packet_bytes_both_sdu_formats() {
+        let caps = Capabilities::new();
+        let msg = AuthMessage::new("test", b"test", "test");
+        for large_sdu in [false, true] {
+            let packet = msg.build_request(&caps, large_sdu).unwrap();
+            crate::packet::assert_packet_bytes(&packet, PacketType::Data, large_sdu);
+            assert_eq!(&packet[8..10], &[0, 0]);
+        }
+    }
 
     #[test]
     fn test_auth_message_creation() {

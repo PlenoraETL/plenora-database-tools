@@ -58,6 +58,12 @@ EXPECTED_VERSION_PREFIX = BASELINE.version_prefix
 # chiuso invece di qualificare una superficie che non e piu quella dichiarata.
 
 EXPECTED_UNIT_TESTS = {
+    "transaction::caller_sql_send_tests::denied_sql_before_send_has_no_effect",
+    "transaction::caller_sql_send_tests::zero_batch_before_send_has_no_effect",
+    "transaction::caller_sql_send_tests::validation_after_driver_execution_requires_recovery",
+    "transaction::caller_sql_send_tests::mariadb_preserves_local_errors_and_promotes_post_send_validation",
+
+    "transaction::tests::caller_sql_uint_overflow_preserves_decoder_context_and_requires_recovery",
     "arrow::tests::decimal_parser_is_exact_and_checked",
     "arrow::tests::zero_dates_fail_closed_without_panicking",
     "catalog::tests::a_functional_index_is_described_where_the_product_publishes_its_parts",
@@ -213,6 +219,8 @@ EXPECTED_UNIT_TESTS = {
     "row_diagnostics::tests::row_rejection_causes_come_from_server_codes_only",
     "row_diagnostics::tests::source_offsets_advance_absolutely_across_batch_boundaries",
     "session::tests::bootstrap_is_explicit_and_deterministic",
+    "session::tests::after_commit_only_a_closed_list_of_codes_proves_the_rollback",
+    "session::tests::mariadb_does_not_inherit_the_mysql_commit_rejection_list",
     "session::tests::an_abandoned_transaction_marks_its_session_quarantined",
     "session::tests::exactly_one_affected_row_is_required_for_row_scoped_success",
     "transaction::tests::a_bit_column_stays_binary_whatever_the_bytes_look_like",
@@ -307,6 +315,7 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_v12_session_context_does_not_reach_the_next_transaction",
     "live_tests::live_v12_transaction_savepoint_rollback_to_partial",
     "live_tests::live_v12_write_create_failure_leaves_the_table_and_reports_partial",
+    "live_tests::live_v12_an_abandoned_create_is_recorded_as_a_possible_residue",
     "live_tests::live_v12_write_create_mode_builds_table_and_inserts",
     "live_tests::live_v12_write_create_mode_conflict_if_exists",
     "live_tests::live_v12_write_create_with_keys_declares_the_primary_key",
@@ -325,6 +334,7 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_v12_write_upsert_without_keys_rejected",
 }
 EXPECTED_LIVE_REFERENCE_TESTS = {
+    "live_tests::live_caller_query_decode_failure_requires_recovery",
     "live_tests::live_a_row_over_the_batch_budget_carries_over_to_the_next_batch",
     "live_tests::live_append_batch_failure_rolls_back_without_partial_rows",
     "live_tests::live_append_commits_a_single_transaction_and_reads_back_exactly",

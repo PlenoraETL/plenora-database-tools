@@ -458,8 +458,9 @@ pub async fn prepare_write(
 pub async fn execute_write(
     config: &OracleConfig,
     pool: &Arc<OraclePool>,
+    residues: &Arc<plenora_database_core::ddl_residue::ResidueLedger>,
     mut prepared: PreparedWrite,
-    mut input: Box<dyn BatchStream>,
+    input: Box<dyn BatchStream>,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<WriteOutcome> {
@@ -487,12 +488,85 @@ pub async fn execute_write(
     let plan = prepared
         .take_driver_state::<OracleWritePlan>()
         .ok_or_else(|| write_error(ErrorCategory::InvalidPlan, "piano preparato Oracle assente"))?;
-    let created = plan.create_sql.is_some();
-    if created {
-        setup_created_target(config, pool, &plan, cancellation)
-            .await
-            .map_err(shape_create_setup_error)?;
+    if plan.create_sql.is_none() {
+        return Box::pin(load_target(
+            config,
+            pool,
+            &plan,
+            prepared,
+            input,
+            budget,
+            cancellation,
+            declared_rows,
+        ))
+        .await;
     }
+    // La guardia e armata prima del CREATE: una scrittura abbandonata da qui
+    // in poi resta osservabile nel registro del provider.
+    let target = prepared.operation.target.clone();
+    plenora_database_core::ddl_residue::with_residue_guard(
+        residues,
+        target,
+        Box::pin(create_and_load(
+            config,
+            pool,
+            &plan,
+            prepared,
+            input,
+            budget,
+            cancellation,
+            declared_rows,
+        )),
+    )
+    .await
+}
+
+/// `mode='create'`: CREATE, metadati e carico. Ogni uscita — anche il
+/// setup — passa da [`stamp_created_target`], che sa se il CREATE e stato
+/// confermato.
+#[allow(clippy::too_many_arguments)]
+async fn create_and_load(
+    config: &OracleConfig,
+    pool: &Arc<OraclePool>,
+    plan: &OracleWritePlan,
+    prepared: PreparedWrite,
+    input: Box<dyn BatchStream>,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+    declared_rows: u64,
+) -> Result<WriteOutcome> {
+    let mut target_created = false;
+    let result = async {
+        setup_created_target(config, pool, plan, cancellation, &mut target_created).await?;
+        load_target(
+            config,
+            pool,
+            plan,
+            prepared,
+            input,
+            budget,
+            cancellation,
+            declared_rows,
+        )
+        .await
+    }
+    .await;
+    stamp_created_target(result, target_created)
+}
+
+/// Il carico dopo l'eventuale creazione: transazione, righe, COMMIT.
+#[allow(clippy::too_many_arguments, clippy::significant_drop_tightening)]
+async fn load_target(
+    config: &OracleConfig,
+    pool: &Arc<OraclePool>,
+    plan: &OracleWritePlan,
+    prepared: PreparedWrite,
+    mut input: Box<dyn BatchStream>,
+    budget: &ResourceBudget,
+    cancellation: &CancellationToken,
+    declared_rows: u64,
+) -> Result<WriteOutcome> {
+    let created = plan.create_sql.is_some();
     let mut transaction = OracleTransaction::begin(
         config,
         pool,
@@ -502,7 +576,7 @@ pub async fn execute_write(
     .await?;
     let execution = execute_input(
         &mut transaction,
-        &plan,
+        plan,
         &prepared.input_schema,
         input.as_mut(),
         budget,
@@ -519,7 +593,7 @@ pub async fn execute_write(
         EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
     match Box::new(transaction).commit(cancellation).await? {
-        CommitOutcome::Committed => committed_outcome(execution_id, &plan, received, affected),
+        CommitOutcome::Committed => committed_outcome(execution_id, plan, received, affected),
         CommitOutcome::OutcomeUnknown { recovery } => {
             let outcome = WriteOutcome {
                 schema_version: 2,
@@ -548,6 +622,7 @@ async fn setup_created_target(
     pool: &Arc<OraclePool>,
     plan: &OracleWritePlan,
     cancellation: &CancellationToken,
+    target_created: &mut bool,
 ) -> Result<()> {
     let mut connection = pool.checkout(cancellation).await?;
     let raw = connection.connection()?;
@@ -566,6 +641,23 @@ async fn setup_created_target(
         raw.execute(create_sql, &[]),
     )
     .await?;
+    // Da qui il target esiste (il DDL Oracle fa commit implicito): un
+    // errore dei passi successivi ha effetto almeno parziale, o ignoto, e
+    // lo dichiara `stamp_created_target`.
+    *target_created = true;
+    complete_created_target(config, raw, plan, cancellation).await?;
+    connection.allow_reuse();
+    drop(connection);
+    Ok(())
+}
+
+/// Metadati spaziali, indici e COMMIT del setup, dopo la creazione.
+async fn complete_created_target(
+    config: &OracleConfig,
+    raw: &oracle_rs::Connection,
+    plan: &OracleWritePlan,
+    cancellation: &CancellationToken,
+) -> Result<()> {
     for (column, spatial) in plan
         .columns
         .iter()
@@ -611,12 +703,27 @@ async fn setup_created_target(
             .await?;
         }
     }
-    raw.commit()
-        .await
-        .map_err(|error| crate::error::driver_error(ErrorPhase::Commit, &error))?;
-    connection.allow_reuse();
-    drop(connection);
-    Ok(())
+    // Il COMMIT passa dalla regola unica: timeout e cancellazione con il
+    // comando in volo non provano nulla, un errore del driver si classifica
+    // con l'elenco chiuso di Oracle.
+    tokio::select! {
+        result = tokio::time::timeout(config.operation_timeout(), raw.commit()) => match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(setup_commit_error(&error)),
+            Err(_) => Err(DatabaseError::new(
+                ErrorCategory::Timeout,
+                ErrorPhase::Commit,
+                Some(ProviderKind::Oracle),
+                "COMMIT del setup Oracle oltre il timeout configurato",
+            )
+            .after_interrupted_send()),
+        },
+        _ = cancellation.cancelled() => Err(crate::error::interruption_error(
+            cancellation,
+            ErrorPhase::Commit,
+        )
+        .after_interrupted_send()),
+    }
 }
 
 async fn execute_input(
@@ -628,6 +735,9 @@ async fn execute_input(
     cancellation: &CancellationToken,
     declared_rows: u64,
 ) -> Result<(u64, u64)> {
+    transaction
+        .set_response_byte_limit(budget.limits().memory_bytes)
+        .await?;
     if plan.mode == WriteMode::Replace {
         transaction
             .execute(
@@ -1223,9 +1333,35 @@ fn spatial_index_name(table: &str, column: &str) -> String {
     format!("{}_{suffix:016X}", &base[..end])
 }
 
+/// Ogni uscita dopo la creazione del target passa da qui, in un punto solo
+/// (come `stamp_ddl_residue` di MySQL): il DDL Oracle fa commit implicito,
+/// quindi la tabella resta anche se il carico fallisce o viene annullato.
+/// Un effetto noto diventa `partial`, un effetto ignoto resta ignoto;
+/// sempre recovery, o la `quarantine` gia decisa. Senza creazione l'esito
+/// passa invariato.
+fn stamp_created_target<T>(result: Result<T>, created: bool) -> Result<T> {
+    if created {
+        result.map_err(shape_create_setup_error)
+    } else {
+        result
+    }
+}
+
+fn setup_commit_error(error: &oracle_rs::Error) -> DatabaseError {
+    crate::transaction::commit_error(error)
+}
+
+/// Gli assi di un errore del setup **dopo** la creazione del target. La
+/// tabella esiste, quindi un effetto noto e `partial` (anche un rollback
+/// provato del COMMIT dei metadati la lascia); un effetto ignoto resta
+/// ignoto (ERR-014). Sempre recovery, o la `quarantine` gia decisa.
 const fn shape_create_setup_error(mut error: DatabaseError) -> DatabaseError {
-    error.remote_effect = RemoteEffect::Partial;
-    error.retry = RetryDisposition::RequiresRecovery;
+    if !matches!(error.remote_effect, RemoteEffect::Unknown) {
+        error.remote_effect = RemoteEffect::Partial;
+    }
+    if !matches!(error.retry, RetryDisposition::Quarantine) {
+        error.retry = RetryDisposition::RequiresRecovery;
+    }
     error
 }
 
@@ -1244,8 +1380,7 @@ async fn rollback_and_shape(
             original.retry = RetryDisposition::Never;
         }
     } else {
-        original.remote_effect = RemoteEffect::Unknown;
-        original.retry = RetryDisposition::RequiresRecovery;
+        original = original.after_unconfirmed_rollback();
     }
     original
 }

@@ -73,6 +73,10 @@ pub async fn read_operation(
     let mut connection = pool.checkout(&internal).await?;
     connection.disallow_reuse();
     let raw = connection.connection()?;
+    raw.set_response_byte_limit(
+        usize::try_from(budget.limits().memory_bytes).unwrap_or(usize::MAX),
+    )
+    .await;
     let mut lob_cache = LobCache::default();
     let params = bind_parameters_with_lobs(
         raw,

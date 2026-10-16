@@ -8,6 +8,7 @@ use crate::connection::TdsClient;
 use crate::error::driver_error;
 use crate::pool::PooledSqlServerSession;
 use futures_util::TryStreamExt;
+use plenora_database_core::caller_sql::SendMarker;
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::{ParameterValue, ProviderFuture};
 use plenora_database_core::transaction::{
@@ -22,6 +23,7 @@ use tiberius::Query;
 
 /// Una transazione aperta su una sessione presa dal pool.
 pub struct SqlServerTransaction {
+    sent: SendMarker,
     session: PooledSqlServerSession,
     open: bool,
     native_query_policy: plenora_database_core::native_query_policy::NativeQueryPolicy,
@@ -69,6 +71,7 @@ impl SqlServerTransaction {
             session,
             open: true,
             native_query_policy: options.native_query_policy,
+            sent: SendMarker::default(),
         })
     }
 
@@ -486,6 +489,11 @@ impl RowStream for SqlServerRowStream<'_> {
 }
 
 impl TransactionScope for SqlServerTransaction {
+    fn begin_caller_sql(&mut self) -> SendMarker {
+        self.sent = SendMarker::before_send();
+        self.sent.clone()
+    }
+
     fn provider_kind(&self) -> ProviderKind {
         ProviderKind::Sqlserver
     }
@@ -501,7 +509,7 @@ impl TransactionScope for SqlServerTransaction {
             let query = prepared(statement)?;
             self.session
                 .session_mut()?
-                .execute_write_query(query, cancellation)
+                .execute_write_query_tracked(query, cancellation, &self.sent)
                 .await
         })
     }
@@ -518,7 +526,7 @@ impl TransactionScope for SqlServerTransaction {
             let sets = self
                 .session
                 .session_mut()?
-                .execute_query(query, ErrorPhase::Read, cancellation)
+                .execute_query_tracked(query, ErrorPhase::Read, cancellation, &self.sent)
                 .await?;
             let mut rows = Vec::new();
             let mut columns: Option<Arc<[String]>> = None;
@@ -557,8 +565,9 @@ impl TransactionScope for SqlServerTransaction {
             let query = prepared(statement)?;
             let client: &mut TdsClient =
                 self.session.session_mut()?.client_mut(ErrorPhase::Read)?;
-            let inner = query
-                .query(client)
+            let inner = self
+                .sent
+                .sending(query.query(client))
                 .await
                 .map_err(|error| driver_error(&error, ErrorPhase::Read, RemoteEffect::None))?
                 .into_row_stream();
@@ -592,8 +601,10 @@ impl TransactionScope for SqlServerTransaction {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Write)?;
             let quoted = Self::quoted_savepoint(name)?;
+            // Inviato il rollback al savepoint, un errore non lo conferma.
             self.control(format!("ROLLBACK TRANSACTION {quoted}"), cancellation)
                 .await
+                .map_err(DatabaseError::after_unconfirmed_rollback)
         })
     }
 
@@ -643,7 +654,7 @@ impl TransactionScope for SqlServerTransaction {
                 let query = prepared(request.update)?;
                 self.session
                     .session_mut()?
-                    .execute_write_query(query, cancellation)
+                    .execute_write_query_tracked(query, cancellation, &self.sent)
                     .await?
             };
             if affected == request.expected_affected_rows {
@@ -663,7 +674,7 @@ impl TransactionScope for SqlServerTransaction {
             let sets = self
                 .session
                 .session_mut()?
-                .execute_query(query, ErrorPhase::Write, cancellation)
+                .execute_query_tracked(query, ErrorPhase::Write, cancellation, &self.sent)
                 .await?;
             let found = sets.iter().any(|set| !set.is_empty());
             if found {
@@ -690,8 +701,11 @@ impl TransactionScope for SqlServerTransaction {
         Box::pin(async move {
             self.ensure_open(ErrorPhase::Commit)?;
             self.open = false;
-            self.session.session_mut()?.commit(cancellation).await?;
-            Ok(CommitOutcome::Committed)
+            let session = self.session.session_mut()?;
+            match session.commit(cancellation).await {
+                Ok(()) => Ok(CommitOutcome::Committed),
+                Err(error) => commit_failure(error),
+            }
         })
     }
 
@@ -701,7 +715,13 @@ impl TransactionScope for SqlServerTransaction {
                 return Ok(());
             }
             self.open = false;
-            self.session.session_mut()?.rollback(cancellation).await
+            // Un rollback non confermato non prova che le scritture siano
+            // annullate (ERR-003, ERR-014).
+            self.session
+                .session_mut()?
+                .rollback(cancellation)
+                .await
+                .map_err(DatabaseError::after_unconfirmed_rollback)
         })
     }
 }
@@ -713,3 +733,26 @@ mod decode_error_tests;
 #[cfg(test)]
 #[path = "transaction_option_tests.rs"]
 mod option_tests;
+
+/// L'esito di un COMMIT fallito: `driver_error` segna `rolled_back` il solo
+/// codice 1205 (vittima di deadlock), l'elenco chiuso di SQL Server dei
+/// rifiuti che provano il rollback; un errore di stato viene da prima
+/// dell'invio e porta `none`. Ogni altro esito e ignoto.
+fn commit_failure(error: DatabaseError) -> Result<CommitOutcome> {
+    match error.remote_effect {
+        // Prima dell'invio: nessun effetto.
+        RemoteEffect::None => Err(error),
+        effect => plenora_database_core::transaction::commit_failure_outcome(
+            error,
+            effect == RemoteEffect::RolledBack,
+        ),
+    }
+}
+
+#[cfg(test)]
+#[path = "transaction_commit_tests.rs"]
+mod commit_tests;
+
+#[cfg(test)]
+#[path = "caller_sql_send_tests.rs"]
+mod caller_sql_send_tests;
