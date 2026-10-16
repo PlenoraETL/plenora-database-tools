@@ -1854,11 +1854,21 @@ impl Connection {
             return Err(Error::Protocol("Empty fetch response".to_string()));
         }
 
+        // Fetch errors use the same MARKER/reset exchange as query execution.
+        // Parsing a MARKER as row data would silently end the stream.
+        if response[4] == PacketType::Marker as u8 {
+            let error_response = inner.handle_marker_reset().await?;
+            let payload = &error_response[PACKET_HEADER_SIZE..];
+            return self.parse_error_response(payload);
+        }
+
         // Parse row data from response
         let payload = &response[PACKET_HEADER_SIZE..];
         let caps = inner.capabilities.clone();
         drop(inner); // Release lock before parsing
-        self.parse_fetch_response(payload, columns, &caps)
+        let mut result = self.parse_fetch_response(payload, columns, &caps)?;
+        result.cursor_id = cursor_id;
+        Ok(result)
     }
 
     /// Fetch rows from a REF CURSOR
@@ -1961,7 +1971,9 @@ impl Connection {
         let payload = &response[PACKET_HEADER_SIZE..];
         let caps = inner.capabilities.clone();
         drop(inner); // Release lock before parsing
-        self.parse_fetch_response(payload, cursor.columns(), &caps)
+        let mut result = self.parse_fetch_response(payload, cursor.columns(), &caps)?;
+        result.cursor_id = cursor.cursor_id();
+        Ok(result)
     }
 
     /// Fetch rows from an implicit result set

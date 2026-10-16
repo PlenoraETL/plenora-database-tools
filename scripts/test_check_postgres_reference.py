@@ -40,6 +40,18 @@ class RequiredLiveTests(unittest.TestCase):
     def test_a_complete_run_passes(self) -> None:
         gate.validate_live_row_diagnostics(output(REQUIRED_LIVE))
 
+    def test_required_tests_in_other_modules_must_pass_not_be_ignored(self) -> None:
+        name = "live_a_procedure_that_commits_then_raises_is_not_reported_as_no_effect"
+        observed = output(REQUIRED_LIVE).replace(
+            f"test_suite::tests::{name}", f"transaction::tests::live::{name}",
+        )
+        gate.validate_live_row_diagnostics(observed)
+        for status in ("ignored", "FAILED"):
+            with self.subTest(status=status), self.assertRaisesRegex(RuntimeError, name):
+                gate.validate_live_row_diagnostics(observed.replace(
+                    f"{name} ... ok", f"{name} ... {status}",
+                ))
+
     def test_a_silently_skipped_test_fails_the_gate(self) -> None:
         """Il caso che il gate deve impedire: DSN assente, early-return."""
         with self.assertRaises(RuntimeError) as raised:

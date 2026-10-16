@@ -2340,25 +2340,27 @@ async fn live_caller_stream_fetch_failure_requires_recovery() {
         )
         .await
         .expect("begin reale");
-    let statement = Statement::new(
-        "SELECT 1 / CASE WHEN LEVEL = 10000 THEN 0 ELSE 1 END AS N FROM DUAL CONNECT BY LEVEL <= 10000"
-    );
+    // query_inner apre con il prefetch di 100 righe del driver. Le righe 101
+    // e 102 provano due fetch_more sullo stesso cursore; la 103 deve fallire.
+    // Nessun ORDER BY: un sort potrebbe valutare tutte le righe in apertura.
+    let statement =
+        Statement::new("SELECT LEVEL / (103 - LEVEL) AS N FROM DUAL CONNECT BY LEVEL <= 103");
     let mut stream = tx
-        .query_stream(&statement, 32, &cancellation)
+        .query_stream(&statement, 1, &cancellation)
         .await
         .expect("prima pagina valida");
-    let mut delivered = 0;
-    let error = loop {
-        match stream.next_batch(&cancellation).await {
-            Ok(Some(rows)) => delivered += rows.len(),
-            Ok(None) => panic!("il fetch deve raggiungere la divisione per zero"),
-            Err(error) => break error,
-        }
-    };
-    assert!(
-        delivered > 0,
-        "il fallimento deve avvenire durante il fetch"
-    );
+    for _ in 0..102 {
+        let rows = stream
+            .next_batch(&cancellation)
+            .await
+            .expect("prefetch e primi due fetch devono riuscire")
+            .expect("il cursore deve consegnare tutte le 102 righe valide");
+        assert_eq!(rows.len(), 1);
+    }
+    let error = stream
+        .next_batch(&cancellation)
+        .await
+        .expect_err("il fetch della riga 103 deve raggiungere la divisione per zero");
     assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
     assert_eq!(
         error.category,

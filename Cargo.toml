@@ -115,7 +115,7 @@ odbc-api = { version = "=29.0.0", default-features = false, features = ["odbc_ve
 oracle-rs = { package = "plenora-oracle-rs", path = "vendor/oracle-rs" }
 # TLS dei driver PostgreSQL e Oracle e delle CA private della CLI e del
 # binding; provider crittografico `ring`, senza aws-lc.
-rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 # Ponte fra `tokio-postgres` e rustls per le connessioni PostgreSQL TLS.
 tokio-postgres-rustls = { version = "=0.14.0", features = ["ring", "webpki-roots"] }
 # Radici pubbliche della configurazione TLS PostgreSQL predefinita

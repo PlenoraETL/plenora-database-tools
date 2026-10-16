@@ -273,9 +273,9 @@ def validate_live_row_diagnostics(output: str) -> None:
     prova e qui fallisce invece di sparire in silenzio.
     """
 
-    executed = set(
-        re.findall(r"^test test_suite::tests::([^ ]+) \.\.\. ok$", output, re.MULTILINE)
-    )
+    executed = {
+        live_inventory.leaf(name) for name in live_inventory.executed_tests(output)
+    }
     missing = sorted(REQUIRED_LIVE_TESTS - executed)
     if missing:
         raise RuntimeError(
