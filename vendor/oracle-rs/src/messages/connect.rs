@@ -36,7 +36,7 @@ use crate::constants::{
     connection, nsi_flags, service_options, version, PacketType, PACKET_HEADER_SIZE,
 };
 use crate::error::Result;
-use crate::packet::PacketHeader;
+use crate::packet::encode_packet;
 
 /// Connect message sent to initiate a connection
 #[derive(Debug)]
@@ -104,9 +104,6 @@ impl ConnectMessage {
         // Build the main CONNECT packet
         let mut buf = WriteBuffer::with_capacity(512);
 
-        // Reserve space for header (will be written at the end)
-        buf.write_zeros(PACKET_HEADER_SIZE)?;
-
         // Protocol versions
         buf.write_u16_be(self.version_desired)?;
         buf.write_u16_be(self.version_minimum)?;
@@ -162,26 +159,7 @@ impl ConnectMessage {
         }
         // If needs_split, connect data goes in a separate DATA packet
 
-        // Calculate total length and write header
-        let total_len = buf.len() as u32;
-
-        // Go back and write the packet header
-        let header = if needs_split {
-            // Empty connect data in this packet
-            PacketHeader::new(PacketType::Connect, total_len)
-        } else {
-            PacketHeader::new(PacketType::Connect, total_len)
-        };
-
-        // Patch the header at the beginning
-        let mut header_buf = WriteBuffer::with_capacity(PACKET_HEADER_SIZE);
-        header.write(&mut header_buf, false)?;
-
-        // Get the full buffer and patch the header
-        let mut result = buf.into_inner();
-        result[..PACKET_HEADER_SIZE].copy_from_slice(header_buf.as_slice());
-
-        Ok(result.freeze())
+        encode_packet(PacketType::Connect, buf.as_slice(), false)
     }
 
     /// Build the CONNECT packet and optional DATA packet for large connect strings
@@ -199,9 +177,6 @@ impl ConnectMessage {
 
         // Build CONNECT packet without data
         let mut connect_buf = WriteBuffer::with_capacity(128);
-
-        // Header placeholder
-        connect_buf.write_zeros(PACKET_HEADER_SIZE)?;
 
         // Protocol versions
         connect_buf.write_u16_be(self.version_desired)?;
@@ -223,20 +198,10 @@ impl ConnectMessage {
         connect_buf.write_u32_be(self.connect_flags_1)?;
         connect_buf.write_u32_be(self.connect_flags_2)?;
 
-        // Patch header
-        let connect_len = connect_buf.len() as u32;
-        let header = PacketHeader::new(PacketType::Connect, connect_len);
-        let mut header_buf = WriteBuffer::with_capacity(PACKET_HEADER_SIZE);
-        header.write(&mut header_buf, false)?;
-
-        let mut connect_result = connect_buf.into_inner();
-        connect_result[..PACKET_HEADER_SIZE].copy_from_slice(header_buf.as_slice());
+        let connect_result = encode_packet(PacketType::Connect, connect_buf.as_slice(), false)?;
 
         // Build DATA packet with connect data
         let mut data_buf = WriteBuffer::with_capacity(PACKET_HEADER_SIZE + 2 + connect_data_len);
-
-        // Header placeholder
-        data_buf.write_zeros(PACKET_HEADER_SIZE)?;
 
         // Data flags (0 for connect continuation)
         data_buf.write_u16_be(0)?;
@@ -244,22 +209,39 @@ impl ConnectMessage {
         // Connect data
         data_buf.write_bytes(connect_data_bytes)?;
 
-        // Patch header
-        let data_len = data_buf.len() as u32;
-        let data_header = PacketHeader::new(PacketType::Data, data_len);
-        let mut data_header_buf = WriteBuffer::with_capacity(PACKET_HEADER_SIZE);
-        data_header.write(&mut data_header_buf, false)?;
-
-        let mut data_result = data_buf.into_inner();
-        data_result[..PACKET_HEADER_SIZE].copy_from_slice(data_header_buf.as_slice());
-
-        Ok((connect_result.freeze(), Some(data_result.freeze())))
+        let data_result = encode_packet(PacketType::Data, data_buf.as_slice(), false)?;
+        Ok((connect_result, Some(data_result)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_packets_use_pre_negotiation_header() {
+        for sdu in [8192, 131072] {
+            for length in [1, 230, 231] {
+                let config = Config::new("localhost", 1521, "test", "test", "test");
+                let mut msg = ConnectMessage::from_config(&config);
+                msg.sdu = sdu;
+                msg.connect_data = "x".repeat(length);
+                let packet = msg.build().unwrap();
+                crate::packet::assert_packet_bytes(&packet, PacketType::Connect, false);
+                let (connect, data) = msg.build_with_continuation().unwrap();
+                assert_eq!(packet, connect);
+                if length > 230 {
+                    let data = data.unwrap();
+                    crate::packet::assert_packet_bytes(&data, PacketType::Data, false);
+                    assert_eq!(&data[8..10], &[0, 0]);
+                    assert_eq!(&data[10..], msg.connect_data.as_bytes());
+                } else {
+                    assert!(data.is_none());
+                    assert_eq!(&connect[74..], msg.connect_data.as_bytes());
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_connect_message_from_config() {

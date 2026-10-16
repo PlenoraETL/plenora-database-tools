@@ -12,6 +12,26 @@ use bytes::Bytes;
 use crate::constants::PacketType;
 use crate::error::Result;
 
+/// Encode a packet from its complete payload, including DATA flags when present.
+pub(crate) fn encode_packet(
+    packet_type: PacketType,
+    payload: &[u8],
+    large_sdu: bool,
+) -> Result<Bytes> {
+    let length = payload
+        .len()
+        .checked_add(crate::constants::PACKET_HEADER_SIZE)
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|&n| large_sdu || n <= u16::MAX as u32)
+        .ok_or_else(|| {
+            crate::error::Error::Protocol("Packet exceeds negotiated length format".into())
+        })?;
+    let mut buf = crate::buffer::WriteBuffer::with_capacity(length as usize);
+    PacketHeader::new(packet_type, length).write(&mut buf, large_sdu)?;
+    buf.write_bytes(payload)?;
+    Ok(buf.freeze())
+}
+
 /// A complete TNS packet with header and payload
 #[derive(Debug, Clone)]
 pub struct Packet {
@@ -85,6 +105,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn packet_length_boundaries() {
+        for large_sdu in [false, true] {
+            let payload = vec![0x5a; u16::MAX as usize - 8];
+            let packet = encode_packet(PacketType::Data, &payload, large_sdu).unwrap();
+            assert_packet_bytes(&packet, PacketType::Data, large_sdu);
+            assert_eq!(&packet[8..], &payload);
+            let payload = vec![0x5a; u16::MAX as usize - 7];
+            let result = encode_packet(PacketType::Data, &payload, large_sdu);
+            if large_sdu {
+                let packet = result.unwrap();
+                assert_eq!(&packet[..8], &[0, 1, 0, 0, 6, 0, 0, 0]);
+                assert_eq!(&packet[8..], &payload);
+            } else {
+                assert!(result.is_err());
+            }
+        }
+    }
+
+    #[test]
     fn test_packet_from_bytes() {
         // Minimal CONNECT packet
         let data = Bytes::from_static(&[
@@ -102,4 +141,16 @@ mod tests {
         assert_eq!(packet.payload_size(), 2);
         assert_eq!(&packet.payload[..], &[0x41, 0x42]);
     }
+}
+
+#[cfg(test)]
+pub(crate) fn assert_packet_bytes(packet: &[u8], kind: PacketType, large_sdu: bool) {
+    let n = packet.len();
+    let length = if large_sdu {
+        (n as u32).to_be_bytes()
+    } else {
+        [((n >> 8) & 255) as u8, (n & 255) as u8, 0, 0]
+    };
+    assert_eq!(&packet[..4], &length);
+    assert_eq!(&packet[4..8], &[kind as u8, 0, 0, 0]);
 }

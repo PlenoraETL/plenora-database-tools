@@ -48,7 +48,7 @@ use crate::messages::{
     AcceptMessage, AuthMessage, AuthPhase, ConnectMessage, ExecuteMessage, ExecuteOptions,
     FetchMessage, LobOpMessage,
 };
-use crate::packet::Packet;
+use crate::packet::{encode_packet, Packet};
 use crate::row::{Row, Value};
 use crate::statement::{BindParam, ColumnInfo, Statement, StatementType};
 use crate::statement_cache::StatementCache;
@@ -351,6 +351,13 @@ impl ConnectionInner {
         Ok(())
     }
 
+    fn build_data_chunk(payload: &[u8], flags: u16, large_sdu: bool) -> Result<bytes::Bytes> {
+        let mut buf = WriteBuffer::new();
+        buf.write_u16_be(flags)?;
+        buf.write_bytes(payload)?;
+        encode_packet(PacketType::Data, buf.as_slice(), large_sdu)
+    }
+
     /// Send a payload that may need to be split across multiple packets.
     ///
     /// This is used for large LOB writes and other operations where the payload
@@ -374,34 +381,13 @@ impl ConnectionInner {
             let chunk_size = std::cmp::min(remaining, max_payload_per_packet);
             let is_last = offset + chunk_size >= payload.len();
 
-            // Build packet
-            let packet_len = PACKET_HEADER_SIZE + 2 + chunk_size; // header + data flags + payload
-            let mut packet = Vec::with_capacity(packet_len);
-
-            // Header
-            if self.large_sdu {
-                packet.extend_from_slice(&(packet_len as u32).to_be_bytes());
-            } else {
-                packet.extend_from_slice(&(packet_len as u16).to_be_bytes());
-                packet.extend_from_slice(&[0, 0]); // Checksum
-            }
-            packet.push(PacketType::Data as u8);
-            packet.push(0); // Flags
-            packet.extend_from_slice(&[0, 0]); // Header checksum
-
-            // Data flags - only include on first packet
-            if is_first {
-                packet.extend_from_slice(&data_flags.to_be_bytes());
-                is_first = false;
-            } else {
-                // Continuation packets still need data flags position but value is 0
-                packet.extend_from_slice(&0u16.to_be_bytes());
-            }
-
-            // Payload chunk
-            packet.extend_from_slice(&payload[offset..offset + chunk_size]);
-
-            // Send this packet
+            let flags = if is_first { data_flags } else { 0 };
+            is_first = false;
+            let packet = Self::build_data_chunk(
+                &payload[offset..offset + chunk_size],
+                flags,
+                self.large_sdu,
+            )?;
             stream.write_all(&packet).await?;
 
             offset += chunk_size;
@@ -631,31 +617,32 @@ impl ConnectionInner {
         self.send(&packet).await
     }
 
-    fn build_marker(&self, marker_type: u8) -> Result<bytes::Bytes> {
-        let mut buf = WriteBuffer::with_capacity(16);
+    fn build_simple_function(&mut self, function_code: FunctionCode) -> Result<bytes::Bytes> {
+        // Build function message
+        let mut buf = WriteBuffer::new();
 
-        // Build marker packet header
-        // Payload: [0x01][0x00][marker_type]
-        let payload_len = 3; // 0x01, 0x00, marker_type
-        let total_len = (PACKET_HEADER_SIZE + payload_len) as u16;
+        // Get next sequence number (must be done before sending)
+        let seq_num = self.next_sequence_number();
 
-        // Header
-        if self.large_sdu {
-            buf.write_u32_be(u32::from(total_len))?;
-        } else {
-            buf.write_u16_be(total_len)?;
-            buf.write_u16_be(0)?; // Checksum
+        // Data flags
+        buf.write_u16_be(0)?;
+        // Message type: Function
+        buf.write_u8(MessageType::Function as u8)?;
+        // Function code
+        buf.write_u8(function_code as u8)?;
+        // Sequence number (tracked per connection)
+        buf.write_u8(seq_num)?;
+
+        // Token number (required for TTC field version >= 18, i.e. Oracle 23ai)
+        if self.capabilities.ttc_field_version >= 18 {
+            buf.write_ub8(0)?;
         }
-        buf.write_u8(PacketType::Marker as u8)?;
-        buf.write_u8(0)?; // flags
-        buf.write_u16_be(0)?; // reserved
 
-        // Payload
-        buf.write_u8(0x01)?; // constant
-        buf.write_u8(0x00)?; // constant
-        buf.write_u8(marker_type)?;
+        encode_packet(PacketType::Data, buf.as_slice(), self.large_sdu)
+    }
 
-        Ok(buf.freeze())
+    fn build_marker(&self, marker_type: u8) -> Result<bytes::Bytes> {
+        encode_packet(PacketType::Marker, &[1, 0, marker_type], self.large_sdu)
     }
 
     /// Handle the reset protocol after receiving a MARKER packet
@@ -932,20 +919,8 @@ impl Connection {
 
         // Step 2: Send MARKER packet with Reset
         let marker_payload = [1u8, 0u8, crate::constants::MarkerType::Reset as u8];
-        let mut packet_buf = WriteBuffer::new();
-
-        if large_sdu {
-            packet_buf.write_u32_be((PACKET_HEADER_SIZE + marker_payload.len()) as u32)?;
-        } else {
-            packet_buf.write_u16_be((PACKET_HEADER_SIZE + marker_payload.len()) as u16)?;
-            packet_buf.write_u16_be(0)?; // Checksum
-        }
-        packet_buf.write_u8(PacketType::Marker as u8)?;
-        packet_buf.write_u8(0)?; // Flags
-        packet_buf.write_u16_be(0)?; // Header checksum
-        packet_buf.write_bytes(&marker_payload)?;
-
-        inner.send(&packet_buf.freeze()).await?;
+        let packet = encode_packet(PacketType::Marker, &marker_payload, large_sdu)?;
+        inner.send(&packet).await?;
 
         // Step 3: Wait for OOB reset response
         // The server sends back a MARKER packet or reset acknowledgment
@@ -1853,7 +1828,7 @@ impl Connection {
         let fetch_msg = FetchMessage::new(cursor_id, fetch_size);
 
         let mut inner = self.inner.lock().await;
-        let request = fetch_msg.build_request(&inner.capabilities)?;
+        let request = fetch_msg.build_request_with_sdu(&inner.capabilities, inner.large_sdu)?;
         inner.send(&request).await?;
 
         // Receive and parse response
@@ -5184,38 +5159,7 @@ impl Connection {
         inner: &mut ConnectionInner,
         function_code: FunctionCode,
     ) -> Result<()> {
-        // Build function message
-        let mut buf = WriteBuffer::new();
-
-        // Get next sequence number (must be done before sending)
-        let seq_num = inner.next_sequence_number();
-
-        // Data flags
-        buf.write_u16_be(0)?;
-        // Message type: Function
-        buf.write_u8(MessageType::Function as u8)?;
-        // Function code
-        buf.write_u8(function_code as u8)?;
-        // Sequence number (tracked per connection)
-        buf.write_u8(seq_num)?;
-
-        // Token number (required for TTC field version >= 18, i.e. Oracle 23ai)
-        if inner.capabilities.ttc_field_version >= 18 {
-            buf.write_ub8(0)?;
-        }
-
-        // Build DATA packet
-        let data_payload = buf.freeze();
-        let mut packet_buf = WriteBuffer::new();
-        let packet_len = PACKET_HEADER_SIZE + data_payload.len();
-        packet_buf.write_u16_be(packet_len as u16)?;
-        packet_buf.write_u16_be(0)?; // Checksum
-        packet_buf.write_u8(PacketType::Data as u8)?;
-        packet_buf.write_u8(0)?; // Flags
-        packet_buf.write_u16_be(0)?; // Header checksum
-        packet_buf.write_bytes(&data_payload)?;
-
-        let packet_bytes = packet_buf.freeze();
+        let packet_bytes = inner.build_simple_function(function_code)?;
         inner.send(&packet_bytes).await?;
 
         // Wait for response
@@ -5463,6 +5407,43 @@ fn oracle_type_from_name(type_name: &str) -> crate::constants::OracleType {
 mod tests {
     use super::*;
     use crate::row::Value;
+
+    #[test]
+    fn data_chunk_packet_bytes() {
+        for large_sdu in [false, true] {
+            for flags in [0, 0x1234] {
+                for size in [0, 1, 8192 - 10] {
+                    let payload = vec![0x5a; size];
+                    let packet =
+                        ConnectionInner::build_data_chunk(&payload, flags, large_sdu).unwrap();
+                    crate::packet::assert_packet_bytes(&packet, PacketType::Data, large_sdu);
+                    assert_eq!(&packet[8..10], &flags.to_be_bytes());
+                    assert_eq!(&packet[10..], &payload);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn simple_function_packet_bytes() {
+        for large_sdu in [false, true] {
+            for version in [17, 18] {
+                let mut inner = ConnectionInner::new_with_cache(0);
+                inner.large_sdu = large_sdu;
+                inner.capabilities.ttc_field_version = version;
+                for function in [
+                    FunctionCode::Commit,
+                    FunctionCode::Rollback,
+                    FunctionCode::Logoff,
+                ] {
+                    let packet = inner.build_simple_function(function).unwrap();
+                    crate::packet::assert_packet_bytes(&packet, PacketType::Data, large_sdu);
+                    assert_eq!(&packet[8..12], &[0, 0, 3, function as u8]);
+                    assert_eq!(packet.len(), if version >= 18 { 14 } else { 13 });
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_marker_packet_length_encoding() {
