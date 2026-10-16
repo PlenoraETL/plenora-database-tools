@@ -1,22 +1,22 @@
 use super::*;
 
 #[test]
-fn empty_pages_can_be_transient_but_not_persistent() {
-    let mut progress = FetchProgress::default();
-    for _ in 0..20 {
-        progress.observe(0, true).unwrap();
-        progress.observe(1, true).unwrap();
+fn fetch_deadline_is_overall_and_not_a_page_count() {
+    let progress = FetchProgress::new(Duration::from_secs(30));
+    let before = progress.deadline - Duration::from_secs(1);
+    // Arbitrarily many empty or nonempty pages do not change the deadline.
+    for _ in 0..100 {
+        assert_eq!(
+            progress.remaining_at(before).unwrap(),
+            Duration::from_secs(1)
+        );
     }
-    for _ in 0..7 {
-        progress.observe(0, true).unwrap();
+    for now in [
+        progress.deadline,
+        progress.deadline + Duration::from_secs(1),
+    ] {
+        let error = progress.remaining_at(now).unwrap_err();
+        assert_eq!(error.category, ErrorCategory::Timeout);
+        assert_eq!(error.phase, ErrorPhase::Read);
     }
-    let error = progress.observe(0, true).unwrap_err();
-    assert_eq!(error.category, ErrorCategory::Protocol);
-    assert_eq!(error.phase, ErrorPhase::Read);
-    assert_eq!(
-        error.message,
-        "FETCH Oracle senza avanzamento dopo pagine vuote consecutive"
-    );
-    progress.observe(0, false).unwrap();
-    progress.observe(0, true).unwrap();
 }

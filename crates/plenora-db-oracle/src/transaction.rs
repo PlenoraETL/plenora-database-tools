@@ -61,6 +61,14 @@ impl OracleTransaction {
         })
     }
 
+    pub(crate) async fn set_response_byte_limit(&self, bytes: u64) -> Result<()> {
+        self.connection
+            .connection()?
+            .set_response_byte_limit(usize::try_from(bytes).unwrap_or(usize::MAX))
+            .await;
+        Ok(())
+    }
+
     async fn execute_inner(
         &mut self,
         statement: &Statement,
@@ -578,28 +586,35 @@ impl TransactionScope for OracleTransaction {
     }
 }
 
-// Una pagina vuota puo essere transitoria; una sequenza persistente e un errore.
-#[derive(Default)]
+// La scadenza nasce all'ingresso nel drain o alla creazione dello stream,
+// dopo la query iniziale. Nessuna pagina, vuota o piena, rinnova il timeout.
 struct FetchProgress {
-    empty_pages: usize,
+    deadline: tokio::time::Instant,
 }
 
 impl FetchProgress {
-    fn observe(&mut self, rows: usize, has_more: bool) -> Result<()> {
-        if rows == 0 && has_more {
-            self.empty_pages += 1;
-            if self.empty_pages >= 8 {
-                return Err(DatabaseError::new(
-                    ErrorCategory::Protocol,
+    fn new(timeout: Duration) -> Self {
+        Self {
+            deadline: tokio::time::Instant::now() + timeout,
+        }
+    }
+
+    fn remaining(&self) -> Result<Duration> {
+        self.remaining_at(tokio::time::Instant::now())
+    }
+
+    fn remaining_at(&self, now: tokio::time::Instant) -> Result<Duration> {
+        self.deadline
+            .checked_duration_since(now)
+            .filter(|left| !left.is_zero())
+            .ok_or_else(|| {
+                DatabaseError::new(
+                    ErrorCategory::Timeout,
                     ErrorPhase::Read,
                     Some(ProviderKind::Oracle),
-                    "FETCH Oracle senza avanzamento dopo pagine vuote consecutive",
-                ));
-            }
-        } else {
-            self.empty_pages = 0;
-        }
-        Ok(())
+                    "FETCH Oracle oltre la scadenza complessiva",
+                )
+            })
     }
 }
 
@@ -609,17 +624,15 @@ async fn drain_result(
     cancellation: &CancellationToken,
     mut result: QueryResult,
 ) -> Result<QueryResult> {
-    let mut progress = FetchProgress::default();
-    progress.observe(result.rows.len(), result.has_more_rows)?;
+    let progress = FetchProgress::new(timeout);
     while result.has_more_rows {
         let page = timed(
-            timeout,
+            progress.remaining()?,
             ErrorPhase::Read,
             cancellation,
             connection.fetch_more(result.cursor_id, &result.columns, 256),
         )
         .await?;
-        progress.observe(page.rows.len(), page.has_more_rows)?;
         result.rows.extend(page.rows);
         result.cursor_id = page.cursor_id;
         result.has_more_rows = page.has_more_rows;
@@ -647,8 +660,7 @@ impl<'a> OracleRowStream<'a> {
         result: QueryResult,
     ) -> Result<Self> {
         let columns = decode_columns(&result.columns)?;
-        let mut progress = FetchProgress::default();
-        progress.observe(result.rows.len(), result.has_more_rows)?;
+        let progress = FetchProgress::new(timeout);
         Ok(Self {
             connection,
             timeout,
@@ -671,20 +683,13 @@ impl RowStream for OracleRowStream<'_> {
         Box::pin(async move {
             while self.pending.is_empty() && self.has_more {
                 let result = timed(
-                    self.timeout,
+                    self.progress.remaining()?,
                     ErrorPhase::Read,
                     cancellation,
                     self.connection
                         .fetch_more(self.cursor_id, &self.columns, self.batch_size),
                 )
                 .await?;
-                if let Err(error) = self
-                    .progress
-                    .observe(result.rows.len(), result.has_more_rows)
-                {
-                    self.has_more = false;
-                    return Err(error);
-                }
                 self.cursor_id = result.cursor_id;
                 self.has_more = result.has_more_rows;
                 self.pending.extend(result.rows);

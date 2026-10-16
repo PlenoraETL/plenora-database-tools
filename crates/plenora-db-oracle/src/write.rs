@@ -735,6 +735,9 @@ async fn execute_input(
     cancellation: &CancellationToken,
     declared_rows: u64,
 ) -> Result<(u64, u64)> {
+    transaction
+        .set_response_byte_limit(budget.limits().memory_bytes)
+        .await?;
     if plan.mode == WriteMode::Replace {
         transaction
             .execute(

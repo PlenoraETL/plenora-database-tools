@@ -17,7 +17,10 @@ pub async fn connect(
     if cancellation.is_cancelled() {
         return Err(interruption_error(cancellation, ErrorPhase::Connect));
     }
-    let driver_config = config.driver_config(secret)?.into_inner();
+    let mut driver_config = config.driver_config(secret)?.into_inner();
+    driver_config.response_limit =
+        usize::try_from(plenora_database_core::resource::ResourceLimits::default().memory_bytes)
+            .unwrap_or(usize::MAX);
     let operation = Connection::connect_with_config(driver_config);
     tokio::select! {
         result = operation => result.map_err(|error| driver_error(ErrorPhase::Connect, &error)),
