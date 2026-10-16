@@ -15,7 +15,7 @@ from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 from typing import Any, Generic, TypeVar
 
-from .errors import PlenoraDataMappingError
+from .errors import PlenoraDataMappingError, _SdkAxes
 from .orm import DeclarativeBase, Geometry
 
 
@@ -33,8 +33,11 @@ _GEOMETRY_TYPES = {
 }
 
 
-class JsonInputError(PlenoraDataMappingError):
+class JsonInputError(_SdkAxes, PlenoraDataMappingError):
     """Input JSON non conforme, senza il valore rifiutato nel messaggio."""
+
+    _category = "data_mapping"
+    _phase = "prepare"
 
     def __init__(
         self,

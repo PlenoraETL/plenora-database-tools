@@ -6,15 +6,21 @@ from collections.abc import Iterator, Mapping
 from typing import Any
 
 from .expression import Column
-from .errors import PlenoraConflictError, PlenoraNotFoundError
+from .errors import PlenoraConflictError, PlenoraNotFoundError, _SdkAxes
 
 
-class NoResultFound(PlenoraNotFoundError):
+class NoResultFound(_SdkAxes, PlenoraNotFoundError):
     """Lo statement non ha restituito la riga richiesta."""
 
+    _category = "not_found"
+    _phase = "read"
 
-class MultipleResultsFound(PlenoraConflictError):
+
+class MultipleResultsFound(_SdkAxes, PlenoraConflictError):
     """Lo statement ha restituito più righe di quelle ammesse."""
+
+    _category = "conflict"
+    _phase = "read"
 
 
 class MutationResult:

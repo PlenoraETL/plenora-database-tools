@@ -45,7 +45,8 @@ def literal_value(value: Any) -> dict:
     if isinstance(value, (dict, list)):
         return {"type": "json", "value": value}
     raise TypeError(
-        f"tipo Python non supportato come letterale AST portable: {type(value).__name__}"
+        # Il nome del tipo del chiamante non entra nel messaggio.
+        "tipo Python non supportato come letterale AST portable"
     )
 
 

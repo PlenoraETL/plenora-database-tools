@@ -26,7 +26,9 @@ L'iterazione e ordinata, ma i confronti dei documenti e gli scambi IPC
 devono verificare contenuto e schema, non l'identita dei byte serializzati.
 
 Il confine Python usa IPC: non richiede che il numero di versione PyArrow
-coincida con quello dei crate Rust. Le versioni qualificate sono nei
+coincida con quello dei crate Rust. Verso gli altri SDK il confine e la
+PyCapsule Interface (`__arrow_c_stream__`), prodotta e accettata da PyArrow:
+ogni batch attraversa ancora l'IPC una volta. Le versioni qualificate sono nei
 [`requisiti SDK`](../requirements-sdk-tests.txt); i test di interoperabilita
 verificano schema, null e metadati. I vincoli GeoArrow e le capability dei
 provider rimangono quelli del contratto pubblico.
