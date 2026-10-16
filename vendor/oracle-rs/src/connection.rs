@@ -647,7 +647,7 @@ impl ConnectionInner {
 
     /// Handle the reset protocol after receiving a MARKER packet
     /// This sends a reset marker, waits for the reset response, then returns the error packet
-    /// Returns Err if the connection is closed after reset (some Oracle versions do this)
+    /// Un errore di trasporto durante il reset resta un errore, senza attribuirlo al server.
     async fn handle_marker_reset(&mut self) -> Result<bytes::Bytes> {
         const MARKER_TYPE_RESET: u8 = 2;
 
@@ -677,9 +677,7 @@ impl ConnectionInner {
             }
         }
 
-        // Try to read the error packet (may need to skip additional marker packets first)
-        // Note: Some Oracle versions (like Oracle Free) may close the connection after reset
-        // instead of sending an error packet
+        // Dopo il reset si legge la risposta, saltando eventuali altri MARKER.
         loop {
             match self.receive().await {
                 Ok(packet) => {
@@ -691,18 +689,7 @@ impl ConnectionInner {
                     }
                     // Skip additional marker packets
                 }
-                Err(_) => {
-                    // Connection closed after reset - Oracle Free and some versions
-                    // close the connection instead of sending the error details.
-                    // This typically happens when:
-                    // - Table or view doesn't exist
-                    // - Insufficient privileges to access the object
-                    // - Invalid SQL syntax
-                    return Err(Error::ConnectionClosedByServer(
-                        "Query failed - Oracle closed the connection without providing error details. \
-                         This typically indicates insufficient privileges or the object doesn't exist.".to_string()
-                    ));
-                }
+                Err(error) => return Err(error),
             }
         }
     }
@@ -1825,9 +1812,10 @@ impl Connection {
         self.ensure_ready().await?;
 
         // Build fetch message
-        let fetch_msg = FetchMessage::new(cursor_id, fetch_size);
+        let mut fetch_msg = FetchMessage::new(cursor_id, fetch_size);
 
         let mut inner = self.inner.lock().await;
+        fetch_msg.set_sequence_number(inner.next_sequence_number());
         let request = fetch_msg.build_request_with_sdu(&inner.capabilities, inner.large_sdu)?;
         inner.send(&request).await?;
 
@@ -2018,7 +2006,7 @@ impl Connection {
 
         let mut buf = ReadBuffer::from_slice(payload);
         let mut rows = Vec::new();
-        let mut has_more_rows = false;
+        let mut has_more_rows = None;
 
         // Bit vector for duplicate column optimization
         let mut bit_vector: Option<Vec<u8>> = None;
@@ -2076,28 +2064,27 @@ impl Connection {
                 }
                 x if x == MessageType::Error as u8 => {
                     // Error message contains row count and cursor info
-                    let (error_code, error_msg, more_rows) =
-                        self.parse_error_message_info(&mut buf)?;
-                    has_more_rows = more_rows;
+                    let (error_code, error_msg, _, _) =
+                        self.parse_error_info_with_rowcount(&mut buf)?;
+                    has_more_rows = Some(error_code != 1403);
                     if error_code != 0 && error_code != 1403 {
                         // 1403 = no data found
                         return Err(Error::OracleError {
                             code: error_code,
-                            message: error_msg,
+                            message: error_msg.unwrap_or_default(),
                         });
                     }
                     break; // Error message marks end of response
                 }
                 x if x == MessageType::Status as u8 => {
-                    // Status message - usually marks end
-                    break;
+                    buf.skip_ub4()?;
+                    buf.skip_ub2()?;
                 }
                 x if x == MessageType::EndOfResponse as u8 => {
                     break;
                 }
                 _ => {
-                    // Unknown message type - stop processing
-                    break;
+                    return Err(Error::Protocol("Messaggio fetch non riconosciuto".into()));
                 }
             }
         }
@@ -2106,70 +2093,10 @@ impl Connection {
             columns: columns.to_vec(),
             rows,
             rows_affected: 0,
-            has_more_rows,
+            has_more_rows: has_more_rows
+                .ok_or_else(|| Error::Protocol("Fetch senza completamento del cursore".into()))?,
             cursor_id: 0,
         })
-    }
-
-    /// Parse error message info including cursor_id and row counts
-    fn parse_error_message_info(&self, buf: &mut ReadBuffer) -> Result<(u32, String, bool)> {
-        let _call_status = buf.read_ub4()?; // end of call status
-        buf.skip_ub2()?; // end to end seq#
-        buf.skip_ub4()?; // current row number
-        buf.skip_ub2()?; // error number
-        buf.skip_ub2()?; // array elem error
-        buf.skip_ub2()?; // array elem error
-        let _cursor_id = buf.read_ub2()?; // cursor id
-        let _error_pos = buf.read_sb2()?; // error position
-        buf.skip(1)?; // sql type
-        buf.skip(1)?; // fatal?
-        buf.skip(1)?; // flags
-        buf.skip(1)?; // user cursor options
-        buf.skip(1)?; // UPI parameter
-        let flags = buf.read_u8()?; // flags
-                                    // Skip rowid - fixed 10 bytes in Oracle format
-        buf.skip(10)?; // rowid is 10 bytes
-        buf.skip_ub4()?; // OS error
-        buf.skip(1)?; // statement number
-        buf.skip(1)?; // call number
-        buf.skip_ub2()?; // padding
-        buf.skip_ub4()?; // success iters
-        let num_bytes = buf.read_ub4()?; // oerrdd
-        if num_bytes > 0 {
-            buf.skip_raw_bytes_chunked()?;
-        }
-
-        // Skip batch error codes
-        let num_errors = buf.read_ub2()?;
-        if num_errors > 0 {
-            buf.skip_raw_bytes_chunked()?;
-        }
-
-        // Skip batch error offsets
-        let num_offsets = buf.read_ub4()?;
-        if num_offsets > 0 {
-            buf.skip_raw_bytes_chunked()?;
-        }
-
-        // Skip batch error messages
-        let temp16 = buf.read_ub2()?;
-        if temp16 > 0 {
-            buf.skip_raw_bytes_chunked()?;
-        }
-
-        // Read extended error info
-        let error_num = buf.read_ub4()?;
-        let row_count = buf.read_ub8()?;
-        let more_rows = row_count > 0 || (flags & 0x20) != 0;
-
-        // Read error message if present
-        let error_msg = if error_num != 0 {
-            buf.read_string_with_length()?.unwrap_or_default()
-        } else {
-            String::new()
-        };
-
-        Ok((error_num, error_msg, more_rows))
     }
 
     /// Open a scrollable cursor for bidirectional navigation
@@ -2737,6 +2664,7 @@ impl Connection {
         let mut cursor_id: u16 = 0;
         let mut row_count: u64 = 0;
         let mut end_of_response = false;
+        let mut has_more_rows = None;
 
         // Bit vector for duplicate column optimization
         // When Some, indicates which columns have actual data (bit=1) vs duplicates (bit=0)
@@ -2783,6 +2711,7 @@ impl Connection {
                         self.parse_error_info_with_rowcount(&mut buf)?;
                     cursor_id = cid;
                     row_count = rc;
+                    has_more_rows = Some(error_code != 1403);
                     if error_code != 0 && error_code != 1403 {
                         // 1403 is "no data found" which is not an error for queries
                         return Err(Error::OracleError {
@@ -2821,8 +2750,7 @@ impl Connection {
                 }
 
                 _ => {
-                    // Unknown message type - break to avoid parsing errors
-                    break;
+                    return Err(Error::Protocol("Messaggio query non riconosciuto".into()));
                 }
             }
         }
@@ -2831,7 +2759,8 @@ impl Connection {
             columns,
             rows,
             rows_affected: row_count,
-            has_more_rows: false,
+            has_more_rows: has_more_rows
+                .ok_or_else(|| Error::Protocol("Query senza completamento del cursore".into()))?,
             cursor_id,
         })
     }
@@ -3537,101 +3466,10 @@ impl Connection {
     /// Parse error info message and extract cursor_id
     /// Format per Python's _process_error_info in base.pyx
     fn parse_error_info(&self, buf: &mut ReadBuffer) -> Result<(u32, Option<String>, u16)> {
-        // End of call status
-        let _call_status = buf.read_ub4()?;
-        // End to end seq#
-        buf.skip_ub2()?;
-        // Current row number
-        buf.skip_ub4()?;
-        // Error number (short form)
-        buf.skip_ub2()?;
-        // Array elem error
-        buf.skip_ub2()?;
-        // Array elem error
-        buf.skip_ub2()?;
-        // Cursor ID
-        let cursor_id = buf.read_ub2()?;
-        // Error position
-        let _error_pos = buf.read_sb2()?;
-        // SQL type (19c and earlier)
-        buf.skip_ub1()?;
-        // Fatal?
-        buf.skip_ub1()?;
-        // Flags
-        buf.skip_ub1()?;
-        // User cursor options
-        buf.skip_ub1()?;
-        // UPI parameter
-        buf.skip_ub1()?;
-        // Flags (second)
-        buf.skip_ub1()?;
-        // Rowid (rba, partition_id, skip 1, block_num, slot_num)
-        buf.skip_ub4()?; // rba
-        buf.skip_ub2()?; // partition_id
-        buf.skip_ub1()?; // skip
-        buf.skip_ub4()?; // block_num
-        buf.skip_ub2()?; // slot_num
-                         // OS error
-        buf.skip_ub4()?;
-        // Statement number
-        buf.skip_ub1()?;
-        // Call number
-        buf.skip_ub1()?;
-        // Padding
-        buf.skip_ub2()?;
-        // Success iters
-        buf.skip_ub4()?;
-        // oerrdd (logical rowid)
-        let oerrdd_len = buf.read_ub4()?;
-        if oerrdd_len > 0 {
-            buf.skip_raw_bytes_chunked()?;
-        }
-
-        // Batch error codes array
-        let num_batch_errors = buf.read_ub2()?;
-        if num_batch_errors > 0 {
-            buf.skip_ub1()?; // first byte
-            for _ in 0..num_batch_errors {
-                buf.skip_ub2()?; // error code
-            }
-        }
-
-        // Batch error row offset array
-        let num_offsets = buf.read_ub4()?;
-        if num_offsets > 0 {
-            buf.skip_ub1()?; // first byte
-            for _ in 0..num_offsets {
-                buf.skip_ub4()?; // offset
-            }
-        }
-
-        // Batch error messages array
-        let num_batch_msgs = buf.read_ub2()?;
-        if num_batch_msgs > 0 {
-            buf.skip_ub1()?; // packed size
-            for _ in 0..num_batch_msgs {
-                buf.skip_ub2()?; // chunk length
-                buf.read_string_with_length()?; // message
-                buf.skip(2)?; // end marker
-            }
-        }
-
-        // Extended error number (UB4)
-        let error_code = buf.read_ub4()?;
-        // Row count (UB8)
-        let _row_count = buf.read_ub8()?;
-
-        // Error message
-        let error_msg = if error_code != 0 {
-            buf.read_string_with_length()?.map(|s| s.trim().to_string())
-        } else {
-            None
-        };
-
-        Ok((error_code, error_msg, cursor_id))
+        let (code, message, cursor_id, _) = self.parse_error_info_with_rowcount(buf)?;
+        Ok((code, message, cursor_id))
     }
 
-    /// Parse error response packet (received after marker reset)
     fn parse_error_response(&self, payload: &[u8]) -> Result<QueryResult> {
         if payload.len() < 3 {
             return Err(Error::Protocol("Error response too short".to_string()));
@@ -3645,88 +3483,11 @@ impl Connection {
         // Read message type
         let msg_type = buf.read_u8()?;
 
-        // Check for error message type (4)
         if msg_type == MessageType::Error as u8 {
-            // Parse error info per Python's _process_error_info
-            let _call_status = buf.read_ub4()?; // end of call status
-            buf.skip_ub2()?; // end to end seq#
-            buf.skip_ub4()?; // current row number
-            buf.skip_ub2()?; // error number (short form)
-            buf.skip_ub2()?; // array elem error
-            buf.skip_ub2()?; // array elem error
-            let _cursor_id = buf.read_ub2()?; // cursor id
-            let _error_pos = buf.read_sb2()?; // error position
-            buf.skip_ub1()?; // sql type (19c and earlier)
-            buf.skip_ub1()?; // fatal?
-            buf.skip_ub1()?; // flags
-            buf.skip_ub1()?; // user cursor options
-            buf.skip_ub1()?; // UPI parameter
-            buf.skip_ub1()?; // flags
-
-            // Rowid (rba, partition_id, skip 1, block_num, slot_num)
-            buf.skip_ub4()?; // rba
-            buf.skip_ub2()?; // partition_id
-            buf.skip_ub1()?; // skip
-            buf.skip_ub4()?; // block_num
-            buf.skip_ub2()?; // slot_num
-
-            buf.skip_ub4()?; // OS error
-            buf.skip_ub1()?; // statement number
-            buf.skip_ub1()?; // call number
-            buf.skip_ub2()?; // padding
-            buf.skip_ub4()?; // success iters
-
-            // oerrdd (logical rowid)
-            let oerrdd_len = buf.read_ub4()?;
-            if oerrdd_len > 0 {
-                buf.skip_raw_bytes_chunked()?;
-            }
-
-            // batch error codes array
-            let num_batch_errors = buf.read_ub2()?;
-            if num_batch_errors > 0 {
-                // Skip batch error data - we don't process it for now
-                buf.skip_ub1()?; // first byte
-                for _ in 0..num_batch_errors {
-                    buf.skip_ub2()?; // error code
-                }
-            }
-
-            // batch error row offset array
-            let num_offsets = buf.read_ub4()?;
-            if num_offsets > 0 {
-                buf.skip_ub1()?; // first byte
-                for _ in 0..num_offsets {
-                    buf.skip_ub4()?; // offset
-                }
-            }
-
-            // batch error messages array
-            let num_batch_msgs = buf.read_ub2()?;
-            if num_batch_msgs > 0 {
-                // Skip batch error messages
-                buf.skip_ub1()?; // packed size
-                for _ in 0..num_batch_msgs {
-                    buf.skip_ub2()?; // chunk length
-                    buf.read_string_with_length()?; // message
-                    buf.skip(2)?; // end marker
-                }
-            }
-
-            // Extended error number (UB4)
-            let error_num = buf.read_ub4()?;
-            let _row_count = buf.read_ub8()?; // row number (extended)
-
-            // Read error message
-            let error_msg = if error_num != 0 {
-                buf.read_string_with_length()?.map(|s| s.trim().to_string())
-            } else {
-                None
-            };
-
+            let (code, message, _, _) = self.parse_error_info_with_rowcount(&mut buf)?;
             return Err(Error::OracleError {
-                code: error_num,
-                message: error_msg.unwrap_or_else(|| format!("ORA-{:05}", error_num)),
+                code,
+                message: message.unwrap_or_else(|| format!("ORA-{:05}", code)),
             });
         }
 
@@ -5407,6 +5168,106 @@ fn oracle_type_from_name(type_name: &str) -> crate::constants::OracleType {
 mod tests {
     use super::*;
     use crate::row::Value;
+
+    // Risposta TTC con ROWID compresso, conteggio cumulativo e campi 20c+.
+    fn completion_packet(code: u32, count: u64) -> Vec<u8> {
+        let mut buf = WriteBuffer::new();
+        buf.write_u16_be(0).unwrap();
+        buf.write_u8(MessageType::Error as u8).unwrap();
+        for _ in 0..6 {
+            buf.write_u8(0).unwrap();
+        }
+        buf.write_ub2(42).unwrap();
+        for _ in 0..21 {
+            buf.write_u8(0).unwrap();
+        }
+        buf.write_ub4(code).unwrap();
+        buf.write_ub8(count).unwrap();
+        buf.write_ub4(0).unwrap();
+        buf.write_ub4(0).unwrap();
+        if code != 0 {
+            buf.write_string_with_length(Some("errore sintetico"))
+                .unwrap();
+        }
+        buf.as_slice().to_vec()
+    }
+
+    fn parser_connection() -> Connection {
+        Connection {
+            inner: Arc::new(Mutex::new(ConnectionInner::new_with_cache(0))),
+            config: Config::default(),
+            closed: AtomicBool::new(true),
+            id: 0,
+        }
+    }
+
+    #[test]
+    fn query_and_fetch_require_explicit_exhaustion() {
+        let conn = parser_connection();
+        let caps = Capabilities::new();
+        // Un conteggio positivo non significa altre righe; zero non significa EOF.
+        for (code, count, more) in [(0, 100, true), (0, 0, true), (1403, 102, false)] {
+            let packet = completion_packet(code, count);
+            let query = conn.parse_query_response(&packet, &caps).unwrap();
+            assert_eq!(query.has_more_rows, more);
+            assert_eq!(query.cursor_id, 42);
+            let fetch = conn.parse_fetch_response(&packet, &[], &caps).unwrap();
+            assert_eq!(fetch.has_more_rows, more);
+        }
+        let packet = completion_packet(1476, 102);
+        for result in [
+            conn.parse_query_response(&packet, &caps),
+            conn.parse_fetch_response(&packet, &[], &caps),
+            conn.parse_error_response(&packet),
+        ] {
+            assert!(matches!(result, Err(Error::OracleError { code: 1476, .. })));
+        }
+    }
+
+    #[test]
+    fn prefetch_and_two_fetches_deliver_102_rows_before_error() {
+        let conn = parser_connection();
+        let caps = Capabilities::new();
+        let columns = [ColumnInfo::new("N", crate::constants::OracleType::Number)];
+        let mut delivered = 0;
+        for (size, cumulative) in [(100, 100), (1, 101), (1, 102)] {
+            let mut packet = vec![0, 0];
+            for _ in 0..size {
+                // RowData, lunghezza NUMBER, valore Oracle NUMBER 1.
+                packet.extend_from_slice(&[7, 2, 193, 2]);
+            }
+            packet.extend_from_slice(&completion_packet(0, cumulative)[2..]);
+            let result = if delivered == 0 {
+                conn.parse_query_response_with_columns(&packet, &caps, &columns)
+            } else {
+                conn.parse_fetch_response(&packet, &columns, &caps)
+            }
+            .unwrap();
+            assert_eq!(result.rows.len(), size);
+            assert!(result.has_more_rows);
+            delivered += result.rows.len();
+        }
+        assert_eq!(delivered, 102);
+        assert!(matches!(
+            conn.parse_fetch_response(&completion_packet(1476, 102), &columns, &caps),
+            Err(Error::OracleError { code: 1476, .. })
+        ));
+    }
+
+    #[test]
+    fn incomplete_or_unknown_responses_are_not_eof() {
+        let conn = parser_connection();
+        let caps = Capabilities::new();
+        for packet in [
+            vec![0, 0, 255],
+            vec![0, 0, 29],
+            vec![0, 0, 9, 0, 0],
+            completion_packet(0, 100)[..15].to_vec(),
+        ] {
+            assert!(conn.parse_query_response(&packet, &caps).is_err());
+            assert!(conn.parse_fetch_response(&packet, &[], &caps).is_err());
+        }
+    }
 
     #[test]
     fn data_chunk_packet_bytes() {

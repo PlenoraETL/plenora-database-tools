@@ -8,6 +8,16 @@ riassumono le note di quelle release.
 
 ## Non rilasciato
 
+- **Oracle: prosecuzione del cursore e reset degli errori.** La prima pagina
+  non dichiara piu la fine prima del completamento Oracle; la regressione live
+  richiede 102 righe e poi ORA-01476. I parser di query, fetch, REF CURSOR e
+  risultati impliciti rifiutano risposte incomplete o sconosciute; il fetch
+  condivide la decodifica del completamento e include sequenza e token TTC.
+  Il reset con header `large_sdu` corretto mantiene utilizzabile la sessione:
+  il test di redazione verifica ORA-00942, riuso e rollback riuscito, senza
+  richiedere la precedente chiusura del canale. Le verifiche live richiedono
+  il fixture Oracle; i test offline del fork girano nel workflow Rust esistente.
+
 ### Interoperabilità
 
 - **`query --output OUTPUT.arrows`**: il risultato di `query` come Arrow IPC

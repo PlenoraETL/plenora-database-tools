@@ -254,6 +254,10 @@ pub use serde_json;
 /// con `large_sdu`, a 16 bit con checksum altrimenti. FETCH usa la modalita
 /// negoziata; CONNECT e la sua continuazione precedono la negoziazione.
 /// Le lunghezze non rappresentabili sono rifiutate senza troncamento.
+/// Il reset non richiede la chiusura della sessione: gli errori di trasporto
+/// restano distinti dagli errori Oracle. Query e fetch distinguono il termine
+/// della pagina dall'esaurimento del cursore (ORA-01403), con completamento
+/// obbligatorio e parser condiviso; FETCH include sequenza e token TTC.
 ///
 /// `plenora-db-oracle` lo legge in compilazione: contro l'`oracle-rs`
 /// pubblicato, che non lo dichiara, la build fallisce invece di produrre un

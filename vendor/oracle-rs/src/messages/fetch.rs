@@ -16,6 +16,7 @@ use crate::error::Result;
 pub struct FetchMessage {
     /// Cursor ID to fetch from
     cursor_id: u16,
+    sequence_number: u8,
     /// Number of rows to fetch
     num_rows: u32,
     /// Fetch orientation for scrollable cursors
@@ -29,6 +30,7 @@ impl FetchMessage {
     pub fn new(cursor_id: u16, num_rows: u32) -> Self {
         Self {
             cursor_id,
+            sequence_number: 0,
             num_rows,
             orientation: None,
             offset: 0,
@@ -44,10 +46,16 @@ impl FetchMessage {
     ) -> Self {
         Self {
             cursor_id,
+            sequence_number: 0,
             num_rows,
             orientation: Some(orientation),
             offset,
         }
+    }
+
+    /// Imposta la sequenza della connessione.
+    pub fn set_sequence_number(&mut self, sequence: u8) {
+        self.sequence_number = sequence;
     }
 
     /// Build the fetch request packet
@@ -56,14 +64,18 @@ impl FetchMessage {
     }
 
     /// Build the fetch request using the negotiated length format.
-    pub fn build_request_with_sdu(&self, _caps: &Capabilities, large_sdu: bool) -> Result<Bytes> {
+    pub fn build_request_with_sdu(&self, caps: &Capabilities, large_sdu: bool) -> Result<Bytes> {
         let mut buf = WriteBuffer::new();
         buf.write_u16_be(0)?;
 
         // Write message header
         buf.write_u8(MessageType::Function as u8)?;
         buf.write_u8(FunctionCode::Fetch as u8)?;
-        buf.write_u8(0)?; // Sequence number
+        buf.write_u8(self.sequence_number)?;
+        // Come EXECUTE, FETCH include il token dalla versione TTC 18.
+        if caps.ttc_field_version >= 18 {
+            buf.write_ub8(0)?;
+        }
 
         // Write fetch body
         buf.write_ub4(self.cursor_id as u32)?;
@@ -95,13 +107,33 @@ mod tests {
     use crate::constants::PACKET_HEADER_SIZE;
 
     #[test]
+    fn fetch_includes_negotiated_token_and_sequence() {
+        for version in [17, 18, 19] {
+            let mut caps = Capabilities::new();
+            caps.ttc_field_version = version;
+            for large_sdu in [false, true] {
+                let mut msg = FetchMessage::new(42, 1);
+                msg.set_sequence_number(7);
+                let packet = msg.build_request_with_sdu(&caps, large_sdu).unwrap();
+                crate::packet::assert_packet_bytes(&packet, PacketType::Data, large_sdu);
+                let expected: &[u8] = if version >= 18 {
+                    &[0, 0, 3, 5, 7, 0, 1, 42, 1, 1]
+                } else {
+                    &[0, 0, 3, 5, 7, 1, 42, 1, 1]
+                };
+                assert_eq!(&packet[8..], expected);
+            }
+        }
+    }
+
+    #[test]
     fn scrollable_fetch_packet_bytes() {
         let caps = Capabilities::new();
         let msg = FetchMessage::new_scrollable(1, 1, FetchOrientation::Absolute, 2);
         for large_sdu in [false, true] {
             let packet = msg.build_request_with_sdu(&caps, large_sdu).unwrap();
             crate::packet::assert_packet_bytes(&packet, PacketType::Data, large_sdu);
-            assert_eq!(&packet[8..], &[0, 0, 3, 5, 0, 1, 1, 1, 1, 1, 32, 1, 2]);
+            assert_eq!(&packet[8..], &[0, 0, 3, 5, 0, 0, 1, 1, 1, 1, 1, 32, 1, 2]);
         }
         assert_eq!(
             FetchMessage::new(1, 1).build_request(&caps).unwrap(),
@@ -119,8 +151,8 @@ mod tests {
             let packet = msg.build_request_with_sdu(&caps, large_sdu).unwrap();
             crate::packet::assert_packet_bytes(&packet, PacketType::Data, large_sdu);
             assert_eq!(&packet[8..10], &[0, 0]);
-            assert_eq!(&packet[8..], &[0, 0, 3, 5, 0, 1, 1, 1, 1]);
-            assert_eq!(packet.len(), 17);
+            assert_eq!(&packet[8..], &[0, 0, 3, 5, 0, 0, 1, 1, 1, 1]);
+            assert_eq!(packet.len(), 18);
         }
     }
 

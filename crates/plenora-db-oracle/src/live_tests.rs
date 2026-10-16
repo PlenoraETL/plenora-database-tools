@@ -2025,12 +2025,18 @@ async fn live_driver_errors_are_redacted() {
         .await
         .expect_err("tabella inesistente");
     assert!(!error.message.contains(marker));
-    let rollback = transaction
-        .rollback(&cancellation)
+    assert!(error.message.contains("ORA-00942"));
+    // Il reset mantiene utilizzabile la stessa sessione prima del rollback.
+    let rows = transaction
+        .query(&Statement::new("SELECT 1 AS N FROM DUAL"), &cancellation)
         .await
-        .expect_err("il driver chiude il canale dopo l'errore server");
-    assert_eq!(rollback.category, plenora_database_core::ErrorCategory::Io);
-    assert!(!rollback.message.contains(marker));
+        .expect("sessione utilizzabile dopo l'errore server");
+    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    let rollback = transaction.rollback(&cancellation).await;
+    if let Err(error) = &rollback {
+        assert!(!error.message.contains(marker));
+    }
+    rollback.expect("rollback confermato dopo il reset");
 }
 
 #[tokio::test]
@@ -2366,11 +2372,7 @@ async fn live_caller_stream_fetch_failure_requires_recovery() {
         error.category,
         plenora_database_core::ErrorCategory::Execution
     );
-    assert!(
-        error.message.contains("ORA-01476") || error.message.contains("ORA-00000"),
-        "{}",
-        error.message
-    );
+    assert!(error.message.contains("ORA-01476"), "{}", error.message);
     assert_eq!(error.remote_effect, RemoteEffect::Unknown);
     assert_eq!(
         error.retry,

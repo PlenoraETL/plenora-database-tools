@@ -637,7 +637,7 @@ impl RowStream for OracleRowStream<'_> {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Option<Vec<Row>>> {
         Box::pin(async move {
-            if self.pending.is_empty() && self.has_more {
+            while self.pending.is_empty() && self.has_more {
                 let result = timed(
                     self.timeout,
                     ErrorPhase::Read,
