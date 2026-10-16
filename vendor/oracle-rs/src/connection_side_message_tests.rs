@@ -135,6 +135,31 @@ fn sync_pairs_before_completion_are_consumed_by_framing_and_parsers() {
         assert!(conn.parse_dml_response(&packet, &caps).is_ok());
         assert!(conn.parse_batch_response(&packet, 1, false, &caps).is_ok());
         assert!(conn.parse_fetch_response(&packet, &[], &caps).is_ok());
+        assert!(conn.parse_query_response(&packet, &caps).is_ok());
+        assert!(conn.parse_plsql_response(&packet, &caps, &[]).is_ok());
+        for kind in [OracleType::Blob, OracleType::Clob] {
+            let locator = LobLocator::new(bytes::Bytes::from_static(&[1, 2, 3]), 0, 0, kind, 0);
+            let mut lob_packet =
+                packet[..packet.len() - completion_packet(0, 0).len() + 2].to_vec();
+            lob_packet.extend_from_slice(&[14, 3, b'a', b'b', b'c']);
+            lob_packet.extend_from_slice(&completion_packet(0, 0)[2..]);
+            let result = conn
+                .parse_lob_read_response(&lob_packet, &locator, &caps)
+                .unwrap();
+            match result {
+                LobData::Bytes(data) => assert_eq!(&data[..], b"abc"),
+                LobData::String(data) => assert_eq!(data, "abc"),
+            }
+            assert!(conn
+                .parse_lob_bool_response(&packet, &locator, &caps)
+                .is_ok());
+            assert!(conn
+                .parse_lob_simple_response(&packet, &locator, false, &caps)
+                .is_ok());
+            assert!(conn
+                .parse_lob_amount_response(&packet, &locator, &caps)
+                .is_ok());
+        }
     }
     assert!(matches!(
         Connection::parse_server_piggyback(&mut ReadBuffer::from_slice(&[255])),

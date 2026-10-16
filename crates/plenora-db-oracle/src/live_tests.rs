@@ -2459,3 +2459,33 @@ async fn live_caller_stream_fetch_failure_requires_recovery() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
 }
+
+#[tokio::test]
+#[ignore = "richiede fixture Oracle"]
+async fn live_cached_query_reexecutes_with_an_unexhausted_first_page() {
+    let (config, secret) = fixture_config();
+    let driver = config
+        .driver_config(&secret)
+        .expect("driver config")
+        .into_inner()
+        .with_statement_cache_size(4);
+    let connection = oracle_rs::Connection::connect_with_config(driver)
+        .await
+        .expect("connessione cache probe");
+    let sql = "SELECT LEVEL AS N FROM DUAL CONNECT BY LEVEL <= 250";
+    for _ in 0..2 {
+        let page = connection
+            .query(sql, &[])
+            .await
+            .expect("pagina query cache");
+        assert!(page.has_more_rows);
+        assert!(!page.rows.is_empty());
+        assert!(page.rows.len() < 250);
+        assert_eq!(page.columns[0].name, "N");
+        assert_eq!(
+            page.rows[0].get(0).and_then(oracle_rs::Value::as_str),
+            Some("1")
+        );
+    }
+    connection.close().await.expect("chiusura cache probe");
+}

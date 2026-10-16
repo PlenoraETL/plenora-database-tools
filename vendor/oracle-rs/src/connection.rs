@@ -26,7 +26,6 @@
 //! }
 //! ```
 
-use bytes::Bytes;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -397,7 +396,10 @@ impl<'a> PageFraming<'a> {
                     }
                     x if x == MessageType::LobData as u8 => buf.skip_raw_bytes_chunked()?,
                     x if x == MessageType::IoVector as u8 => {
-                        columns = Some(Connection::parse_io_vector(&mut buf, self.params)?.1);
+                        let output_columns = Connection::parse_io_vector(&mut buf, self.params)?.1;
+                        if !output_columns.is_empty() {
+                            columns = Some(output_columns);
+                        }
                     }
                     x if x == MessageType::FlushOutBinds as u8 => {}
                     x if x == MessageType::ImplicitResultset as u8 => {
@@ -617,8 +619,8 @@ impl ConnectionInner {
         }
         self.response_in_progress = true;
         let result = self.collect_response(framing).await;
-        if result.is_ok() {
-            self.response_in_progress = false;
+        if let Ok(packet) = &result {
+            self.response_in_progress = packet[4] == PacketType::Marker as u8;
         } else {
             self.stream = None;
             self.state = ConnectionState::Disconnected;
@@ -650,6 +652,15 @@ impl ConnectionInner {
         self.checked_result(result)
     }
 
+    // A fully collected Oracle error leaves no unread exchange. Decode failures do.
+    fn checked_parse_result<T>(&mut self, result: Result<T>) -> Result<T> {
+        if matches!(&result, Err(Error::OracleError { .. })) {
+            result
+        } else {
+            self.checked_result(result)
+        }
+    }
+
     fn checked_result<T>(&mut self, result: Result<T>) -> Result<T> {
         if result.is_err() {
             self.stream = None;
@@ -669,7 +680,7 @@ impl ConnectionInner {
             if packet[4] != PacketType::Data as u8 {
                 // BREAK aborts a partial result; the caller performs the
                 // MARKER/reset handshake before reading the server error.
-                if !result.is_empty() && packet[4] != PacketType::Marker as u8 {
+                if packet[4] != PacketType::Marker as u8 {
                     return Err(Error::Protocol(
                         "Non-DATA frame inside Oracle response".into(),
                     ));
@@ -721,12 +732,15 @@ impl ConnectionInner {
                 .try_into_mut()
                 .map_err(|_| Error::Protocol("Oracle response buffer still shared".into()))?;
             if flagged {
-                if framing.offset != result.len() - 10 {
+                if !terminal || framing.offset != result.len() - 10 {
                     return Err(Error::Protocol("Incomplete Oracle response".into()));
                 }
                 break;
             }
             if terminal {
+                if framing.offset != result.len() - 10 {
+                    return Err(Error::Protocol("Trailing Oracle response data".into()));
+                }
                 break;
             }
         }
@@ -745,7 +759,19 @@ impl ConnectionInner {
     /// Send a marker packet with the specified marker type
     async fn send_marker(&mut self, marker_type: u8) -> Result<()> {
         let packet = self.build_marker(marker_type)?;
-        self.send(&packet).await
+        // RESET belongs to the pending exchange; keep its guard across both awaits.
+        let mut stream = self.stream.take().ok_or(Error::ConnectionClosed)?;
+        self.response_bytes = self.response_bytes.saturating_add(packet.len());
+        if self.response_bytes > self.response_limit {
+            self.state = ConnectionState::Disconnected;
+            return Err(Error::Protocol(
+                "Oracle response byte limit exceeded".into(),
+            ));
+        }
+        stream.write_all(&packet).await?;
+        stream.flush().await?;
+        self.stream = Some(stream);
+        Ok(())
     }
 
     fn build_simple_function(&mut self, function_code: FunctionCode) -> Result<bytes::Bytes> {
@@ -780,49 +806,30 @@ impl ConnectionInner {
     /// This sends a reset marker, waits for the reset response, then returns the error packet
     /// Un errore di trasporto durante il reset resta un errore, senza attribuirlo al server.
     async fn handle_marker_reset(&mut self) -> Result<bytes::Bytes> {
-        const MARKER_TYPE_RESET: u8 = 2;
-
-        // Send reset marker
-        self.send_marker(MARKER_TYPE_RESET).await?;
-
-        // Read packets until we get a reset marker back
-        loop {
-            let packet = self.receive_page().await?;
-            if packet.len() < PACKET_HEADER_SIZE {
-                return Err(Error::Protocol("Invalid packet received".to_string()));
-            }
-
-            let packet_type = packet[4];
-
-            if packet_type == PacketType::Marker as u8 {
-                // Check if it's a reset marker
-                if packet.len() >= PACKET_HEADER_SIZE + 3 {
-                    let marker_type = packet[PACKET_HEADER_SIZE + 2];
-                    if marker_type == MARKER_TYPE_RESET {
-                        break;
+        self.response_in_progress = true;
+        let result = async {
+            self.send_marker(2).await?;
+            loop {
+                let packet = self.collect_response(PageFraming::new(&[])).await?;
+                if packet[4] == PacketType::Marker as u8 {
+                    if packet.len() != PACKET_HEADER_SIZE + 3
+                        || !matches!(packet[PACKET_HEADER_SIZE + 2], 1 | 2)
+                    {
+                        return Err(Error::Protocol("Invalid Oracle reset marker".into()));
                     }
+                    continue;
                 }
-            } else {
-                // Non-marker packet received unexpectedly during reset wait
+                if packet[4] != PacketType::Data as u8 {
+                    return Err(Error::Protocol("Invalid Oracle reset response".into()));
+                }
                 return Ok(packet);
             }
         }
-
-        // Dopo il reset si legge la risposta, saltando eventuali altri MARKER.
-        loop {
-            match self.receive_page().await {
-                Ok(packet) => {
-                    let packet_type = packet[4];
-
-                    if packet_type != PacketType::Marker as u8 {
-                        // This should be the error data packet
-                        return Ok(packet);
-                    }
-                    // Skip additional marker packets
-                }
-                Err(error) => return Err(error),
-            }
+        .await;
+        if result.is_ok() {
+            self.response_in_progress = false;
         }
+        self.checked_result(result)
     }
 }
 
@@ -1381,6 +1388,7 @@ impl Connection {
                         let mut stmt_to_cache = statement.clone();
                         stmt_to_cache.set_cursor_id(query_result.cursor_id);
                         stmt_to_cache.set_executed(true);
+                        stmt_to_cache.set_columns(query_result.columns.clone());
                         cache.put(sql.to_string(), stmt_to_cache);
                         if should_close_cursor {
                             cache.mark_cursor_closed(sql);
@@ -1675,16 +1683,17 @@ impl Connection {
             let error_response = inner.handle_marker_reset().await?;
             let payload = &error_response[PACKET_HEADER_SIZE..];
             // Parse error response to extract the actual Oracle error
-            let _: QueryResult = self.parse_error_response(payload, &inner.capabilities)?;
+            let parsed = self.parse_error_response(payload, &inner.capabilities);
+            let _: QueryResult = inner.checked_parse_result(parsed)?;
             return Err(Error::Protocol("PL/SQL execution failed".to_string()));
         }
 
         // Parse the PL/SQL response
         let payload = &response[PACKET_HEADER_SIZE..];
         let caps = inner.capabilities.clone();
-        drop(inner); // Release lock before parsing
 
-        self.parse_plsql_response(payload, &caps, params)
+        let result = self.parse_plsql_response(payload, &caps, params);
+        inner.checked_parse_result(result)
     }
 
     /// Execute a batch of DML statements with multiple rows of bind values
@@ -1749,94 +1758,20 @@ impl Connection {
         let packet_type = response[4];
         if packet_type == PacketType::Marker as u8 {
             // Handle BREAK/RESET protocol same as regular DML
-            response = self.handle_marker_protocol(&mut inner, response).await?;
+            response = inner.handle_marker_reset().await?;
         }
 
         // Parse the batch response
         let payload = &response[PACKET_HEADER_SIZE..];
         let caps = inner.capabilities.clone();
-        drop(inner); // Release lock before parsing
 
-        self.parse_batch_response(
+        let result = self.parse_batch_response(
             payload,
             batch.rows.len(),
             batch.options.array_dml_row_counts,
             &caps,
-        )
-    }
-
-    /// Handle MARKER packet protocol (BREAK/RESET)
-    async fn handle_marker_protocol(
-        &self,
-        inner: &mut ConnectionInner,
-        initial_response: Bytes,
-    ) -> Result<Bytes> {
-        // Extract marker type from packet
-        let marker_type = if initial_response.len() >= PACKET_HEADER_SIZE + 3 {
-            initial_response[PACKET_HEADER_SIZE + 2]
-        } else {
-            1 // Assume BREAK
-        };
-
-        if marker_type == 1 {
-            // BREAK marker - send RESET and wait for response
-            self.send_marker(inner, 2).await?;
-
-            // Wait for RESET marker back
-            loop {
-                match inner.receive_page().await {
-                    Ok(pkt) => {
-                        if pkt.len() < PACKET_HEADER_SIZE + 1 {
-                            break;
-                        }
-                        let pkt_type = pkt[4];
-                        if pkt_type == PacketType::Marker as u8 {
-                            if pkt.len() >= PACKET_HEADER_SIZE + 3 {
-                                let mk_type = pkt[PACKET_HEADER_SIZE + 2];
-                                if mk_type == 2 {
-                                    // Got RESET marker, break out
-                                    break;
-                                }
-                            }
-                        } else if pkt_type == PacketType::Data as u8 {
-                            // Got DATA packet - return it as the response
-                            return Ok(pkt);
-                        } else {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        inner.state = ConnectionState::Closed;
-                        return Err(e);
-                    }
-                }
-            }
-
-            // After RESET, continue receiving until we get DATA packet
-            loop {
-                match inner.receive_page().await {
-                    Ok(pkt) => {
-                        let pkt_type = pkt[4];
-                        if pkt_type == PacketType::Marker as u8 {
-                            continue;
-                        } else if pkt_type == PacketType::Data as u8 {
-                            return Ok(pkt);
-                        } else {
-                            return Err(Error::Protocol(format!(
-                                "Unexpected packet type {} after reset",
-                                pkt_type
-                            )));
-                        }
-                    }
-                    Err(e) => {
-                        inner.state = ConnectionState::Closed;
-                        return Err(e);
-                    }
-                }
-            }
-        }
-
-        Ok(initial_response)
+        );
+        inner.checked_parse_result(result)
     }
 
     /// Parse batch execution response
@@ -1983,14 +1918,16 @@ impl Connection {
         if response[4] == PacketType::Marker as u8 {
             let error_response = inner.handle_marker_reset().await?;
             let payload = &error_response[PACKET_HEADER_SIZE..];
-            return self.parse_error_response(payload, &inner.capabilities);
+            let parsed = self.parse_error_response(payload, &inner.capabilities);
+            return inner.checked_parse_result(parsed);
         }
 
         // Parse row data from response
         let payload = &response[PACKET_HEADER_SIZE..];
         let caps = inner.capabilities.clone();
-        drop(inner); // Release lock before parsing
-        let mut result = self.parse_fetch_response(payload, columns, &caps)?;
+        let parsed = self.parse_fetch_response(payload, columns, &caps);
+        let mut result = inner.checked_parse_result(parsed)?;
+        drop(inner);
         result.cursor_id = cursor_id;
         Ok(result)
     }
@@ -2088,14 +2025,16 @@ impl Connection {
         if packet_type == PacketType::Marker as u8 {
             let error_response = inner.handle_marker_reset().await?;
             let payload = &error_response[PACKET_HEADER_SIZE..];
-            return self.parse_error_response(payload, &inner.capabilities);
+            let parsed = self.parse_error_response(payload, &inner.capabilities);
+            return inner.checked_parse_result(parsed);
         }
 
         // Parse query response - use cursor's columns since they're already defined
         let payload = &response[PACKET_HEADER_SIZE..];
         let caps = inner.capabilities.clone();
-        drop(inner); // Release lock before parsing
-        let mut result = self.parse_fetch_response(payload, cursor.columns(), &caps)?;
+        let parsed = self.parse_fetch_response(payload, cursor.columns(), &caps);
+        let mut result = inner.checked_parse_result(parsed)?;
+        drop(inner);
         result.cursor_id = cursor.cursor_id();
         Ok(result)
     }
@@ -2173,6 +2112,9 @@ impl Connection {
             let msg_type = buf.read_u8()?;
 
             match msg_type {
+                x if x == MessageType::IoVector as u8 => {
+                    Self::parse_io_vector(&mut buf, &[])?;
+                }
                 x if x == MessageType::RowHeader as u8 => {
                     bit_vector = Self::parse_row_header(&mut buf)?;
                 }
@@ -2297,7 +2239,8 @@ impl Connection {
             let error_response = inner.handle_marker_reset().await?;
             let payload = &error_response[PACKET_HEADER_SIZE..];
             // Parse error response to extract the actual Oracle error
-            let _: QueryResult = self.parse_error_response(payload, &inner.capabilities)?;
+            let parsed = self.parse_error_response(payload, &inner.capabilities);
+            let _: QueryResult = inner.checked_parse_result(parsed)?;
             // If we get here without error, something unexpected happened
             return Err(Error::Protocol(
                 "Unexpected successful response after MARKER".to_string(),
@@ -2306,7 +2249,8 @@ impl Connection {
 
         // Parse describe info to get columns
         let payload = &response[PACKET_HEADER_SIZE..];
-        let result = self.parse_query_response(payload, &inner.capabilities)?;
+        let parsed = self.parse_query_response(payload, &inner.capabilities);
+        let result = inner.checked_parse_result(parsed)?;
 
         Ok(ScrollableCursor::new(result.cursor_id, result.columns))
     }
@@ -2389,14 +2333,16 @@ impl Connection {
         if packet_type == PacketType::Marker as u8 {
             let error_response = inner.handle_marker_reset().await?;
             let payload = &error_response[PACKET_HEADER_SIZE..];
-            let _: QueryResult = self.parse_error_response(payload, &inner.capabilities)?;
+            let parsed = self.parse_error_response(payload, &inner.capabilities);
+            let _: QueryResult = inner.checked_parse_result(parsed)?;
             return Err(Error::Protocol("Scroll operation failed".to_string()));
         }
 
         let payload = &response[PACKET_HEADER_SIZE..];
         // Use cursor's columns since Oracle doesn't re-send column metadata for scroll operations
-        let query_result =
-            self.parse_query_response_with_columns(payload, &inner.capabilities, &cursor.columns)?;
+        let parsed =
+            self.parse_query_response_with_columns(payload, &inner.capabilities, &cursor.columns);
+        let query_result = inner.checked_parse_result(parsed)?;
 
         // Use position from Oracle's response (rows_affected contains the row position)
         // For scrollable cursors, Oracle returns the row number in error_info.rowcount
@@ -2561,7 +2507,7 @@ impl Connection {
         inner.send(&request).await?;
 
         // Receive and parse response
-        let response = inner.receive_page().await?;
+        let response = inner.receive_page_with_columns(statement.columns()).await?;
         if response.len() <= PACKET_HEADER_SIZE {
             return Err(Error::Protocol("Empty query response".to_string()));
         }
@@ -2572,12 +2518,18 @@ impl Connection {
             // Handle marker reset protocol and get the error packet
             let error_response = inner.handle_marker_reset().await?;
             let payload = &error_response[PACKET_HEADER_SIZE..];
-            return self.parse_error_response(payload, &inner.capabilities);
+            let parsed = self.parse_error_response(payload, &inner.capabilities);
+            return inner.checked_parse_result(parsed);
         }
 
         // Parse the response to extract columns and rows
         let payload = &response[PACKET_HEADER_SIZE..];
-        let mut result = self.parse_query_response(payload, &inner.capabilities)?;
+        let parsed = self.parse_query_response_with_columns(
+            payload,
+            &inner.capabilities,
+            statement.columns(),
+        );
+        let mut result = inner.checked_parse_result(parsed)?;
 
         // Check if any columns are LOB types that require defines
         let has_lob_columns = result.columns.iter().any(|col| col.is_lob());
@@ -2615,16 +2567,18 @@ impl Connection {
             if packet_type == PacketType::Marker as u8 {
                 let error_response = inner.handle_marker_reset().await?;
                 let payload = &error_response[PACKET_HEADER_SIZE..];
-                return self.parse_error_response(payload, &inner.capabilities);
+                let parsed = self.parse_error_response(payload, &inner.capabilities);
+                return inner.checked_parse_result(parsed);
             }
 
             // Parse the response with LOB data, using the columns we already know
             let payload = &define_response[PACKET_HEADER_SIZE..];
-            result = self.parse_query_response_with_columns(
+            let parsed = self.parse_query_response_with_columns(
                 payload,
                 &inner.capabilities,
-                &stmt_with_define.columns(),
-            )?;
+                stmt_with_define.columns(),
+            );
+            result = inner.checked_parse_result(parsed)?;
         }
 
         Ok(result)
@@ -2652,125 +2606,12 @@ impl Connection {
 
         inner.send(&request).await?;
 
-        // Receive response
         let mut response = inner.receive_page().await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty DML response".to_string()));
+        if response[4] == PacketType::Marker as u8 {
+            response = inner.handle_marker_reset().await?;
         }
-
-        // Check packet type - handle MARKER packets
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            // Need to do reset protocol and then get the actual response
-            // Extract marker type from packet: after header (8 bytes) + data flags (2 bytes) + marker type (1 byte)
-            let marker_type = if response.len() >= PACKET_HEADER_SIZE + 3 {
-                response[PACKET_HEADER_SIZE + 2]
-            } else {
-                1 // Assume BREAK
-            };
-
-            if marker_type == 1 {
-                // BREAK marker - send RESET and wait for response
-                self.send_marker(&mut inner, 2).await?;
-
-                // Wait for RESET marker back or DATA packet with error
-                // The server may send: RESET marker, or BREAK marker followed by DATA, or just close
-                let mut got_reset = false;
-                let mut max_attempts = 5;
-                loop {
-                    match inner.receive_page().await {
-                        Ok(pkt) => {
-                            if pkt.len() < PACKET_HEADER_SIZE + 1 {
-                                break;
-                            }
-                            let pkt_type = pkt[4];
-                            if pkt_type == PacketType::Marker as u8 {
-                                if pkt.len() >= PACKET_HEADER_SIZE + 3 {
-                                    let mk_type = pkt[PACKET_HEADER_SIZE + 2];
-                                    if mk_type == 2 {
-                                        // Got RESET marker, break out
-                                        got_reset = true;
-                                        break;
-                                    }
-                                    // Got another BREAK marker - server may be acknowledging
-                                    // Keep trying a few times
-                                    max_attempts -= 1;
-                                    if max_attempts == 0 {
-                                        // Give up and return a generic error
-                                        return Err(Error::Protocol(
-                                            "Server rejected operation (multiple BREAK markers)"
-                                                .to_string(),
-                                        ));
-                                    }
-                                    continue;
-                                }
-                            } else if pkt_type == PacketType::Data as u8 {
-                                // Got DATA packet - use this as the response (may contain error)
-                                let payload = &pkt[PACKET_HEADER_SIZE..];
-                                return self.parse_dml_response(payload, &inner.capabilities);
-                            } else {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            // If we get EOF, the server may have closed the connection
-                            // This can happen with temp LOB binding issues
-                            inner.state = ConnectionState::Closed;
-                            return Err(Error::Protocol(format!(
-                                "Server closed connection during error handling: {}",
-                                e
-                            )));
-                        }
-                    }
-                }
-
-                // After RESET, try to receive DATA packet with error response
-                // Note: Some Oracle servers "quit immediately" after reset without sending
-                // an error packet. In that case, we'll get EOF which is handled below.
-                if got_reset {
-                    loop {
-                        match inner.receive_page().await {
-                            Ok(pkt) => {
-                                if pkt.len() < PACKET_HEADER_SIZE + 1 {
-                                    // Too short, connection may be closing
-                                    break;
-                                }
-                                let pkt_type = pkt[4];
-                                if pkt_type == PacketType::Marker as u8 {
-                                    // More markers, keep reading
-                                    continue;
-                                } else if pkt_type == PacketType::Data as u8 {
-                                    // Got DATA packet, use this as the response
-                                    response = pkt;
-                                    break;
-                                } else {
-                                    // Unknown packet type, return error
-                                    return Err(Error::Protocol(format!(
-                                        "Unexpected packet type {} after reset",
-                                        pkt_type
-                                    )));
-                                }
-                            }
-                            Err(_e) => {
-                                // EOF after reset is normal - server may close connection
-                                // without sending error details. Return a descriptive error.
-                                inner.state = ConnectionState::Closed;
-                                return Err(Error::OracleError {
-                                    code: 0,
-                                    message: "Server rejected the operation and closed the connection. \
-                                              This may happen when binding a temporary LOB to an INSERT statement. \
-                                              Try using a different approach (e.g., DBMS_LOB procedures).".to_string(),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Parse the response to extract rows affected (or error)
-        let payload = &response[PACKET_HEADER_SIZE..];
-        self.parse_dml_response(payload, &inner.capabilities)
+        let result = self.parse_dml_response(&response[PACKET_HEADER_SIZE..], &inner.capabilities);
+        inner.checked_parse_result(result)
     }
 
     /// Parse query response to extract columns and rows
@@ -2819,6 +2660,9 @@ impl Connection {
             let msg_type = buf.read_u8()?;
 
             match msg_type {
+                x if x == MessageType::IoVector as u8 => {
+                    Self::parse_io_vector(&mut buf, &[])?;
+                }
                 // DescribeInfo (16) - column metadata
                 x if x == MessageType::DescribeInfo as u8 => {
                     // Skip chunked bytes first
@@ -3668,22 +3512,23 @@ impl Connection {
         // Skip data flags
         buf.skip(2)?;
 
-        // Read message type
-        let msg_type = buf.read_u8()?;
-
-        if msg_type == MessageType::Error as u8 {
-            let (code, message, _, _) = Self::parse_error_info_with_rowcount(&mut buf, caps)?;
-            return Err(Error::OracleError {
-                code,
-                message: message.unwrap_or_else(|| format!("ORA-{:05}", code)),
-            });
+        while buf.remaining() > 0 {
+            match buf.read_u8()? {
+                x if x == MessageType::ServerSidePiggyback as u8 => {
+                    Self::parse_server_piggyback(&mut buf)?;
+                }
+                x if x == MessageType::Error as u8 => {
+                    let (code, message, _, _) =
+                        Self::parse_error_info_with_rowcount(&mut buf, caps)?;
+                    return Err(Error::OracleError {
+                        code,
+                        message: message.unwrap_or_else(|| format!("ORA-{:05}", code)),
+                    });
+                }
+                _ => return Err(Error::Protocol("Expected Oracle error completion".into())),
+            }
         }
-
-        // If not an error message type, return generic error
-        Err(Error::Protocol(format!(
-            "Expected error message type 4, got {}",
-            msg_type
-        )))
+        Err(Error::Protocol("Missing Oracle error completion".into()))
     }
 
     /// Parse DML response to extract rows affected
@@ -4372,6 +4217,10 @@ impl Connection {
                     break;
                 }
 
+                x if x == MessageType::ServerSidePiggyback as u8 => {
+                    Self::parse_server_piggyback(&mut buf)?;
+                }
+
                 // Skip other message types
                 _ => {
                     if msg_type == MessageType::Status as u8 {
@@ -5024,190 +4873,19 @@ impl Connection {
         Ok(())
     }
 
-    /// Send a marker packet to the server
-    /// marker_type: 1=BREAK, 2=RESET, 3=INTERRUPT
-    async fn send_marker(&self, inner: &mut ConnectionInner, marker_type: u8) -> Result<()> {
-        inner.send_marker(marker_type).await
-    }
-
     async fn send_simple_function_inner(
         &self,
         inner: &mut ConnectionInner,
         function_code: FunctionCode,
     ) -> Result<()> {
-        let packet_bytes = inner.build_simple_function(function_code)?;
-        inner.send(&packet_bytes).await?;
-
-        // Wait for response
-        let response = inner.receive().await?;
-
-        // Check response
-        if response.len() <= 4 {
-            return Err(Error::Protocol("Response too short".to_string()));
+        let packet = inner.build_simple_function(function_code)?;
+        inner.send(&packet).await?;
+        let mut response = inner.receive_page().await?;
+        if response[4] == PacketType::Marker as u8 {
+            response = inner.handle_marker_reset().await?;
         }
-
-        let packet_type = response[4];
-
-        // MARKER packet (type 12) - need to handle reset protocol
-        if packet_type == PacketType::Marker as u8 {
-            // Check marker type
-            if response.len() >= PACKET_HEADER_SIZE + 3 {
-                let marker_type = response[PACKET_HEADER_SIZE + 2];
-
-                // For BREAK marker (1), we need to do the reset protocol
-                if marker_type == 1 {
-                    // For Logoff, Oracle may send BREAK to indicate "connection closing"
-                    // Don't try to do the full reset handshake - just return success
-                    if function_code == FunctionCode::Logoff {
-                        inner.state = ConnectionState::Closed;
-                        return Ok(());
-                    }
-
-                    // The BREAK marker means the server is interrupting/breaking the current operation
-                    // We MUST complete the reset handshake or the connection will be in a bad state
-
-                    // Send RESET marker to server
-                    if let Err(e) = self.send_marker(inner, 2).await {
-                        inner.state = ConnectionState::Closed;
-                        return Err(e);
-                    }
-
-                    // Read and discard packets until we get RESET marker
-                    // This follows Python's _reset() logic
-                    let mut current_packet_type: u8;
-                    loop {
-                        match inner.receive().await {
-                            Ok(pkt) => {
-                                if pkt.len() < PACKET_HEADER_SIZE + 1 {
-                                    break;
-                                }
-                                current_packet_type = pkt[4];
-
-                                if current_packet_type == PacketType::Marker as u8 {
-                                    if pkt.len() >= PACKET_HEADER_SIZE + 3 {
-                                        let mk_type = pkt[PACKET_HEADER_SIZE + 2];
-                                        if mk_type == 2 {
-                                            // Got RESET marker, exit this loop
-                                            break;
-                                        }
-                                    }
-                                } else {
-                                    // Non-marker packet - unexpected during reset wait
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                inner.state = ConnectionState::Closed;
-                                return Err(e);
-                            }
-                        }
-                    }
-
-                    // After RESET, continue reading while we still get MARKER packets
-                    // Some servers send multiple RESET markers, others send DATA response
-                    // Python comment: "some quit immediately" - meaning some servers close
-                    // the connection right after the reset handshake
-                    loop {
-                        match inner.receive().await {
-                            Ok(pkt) => {
-                                if pkt.len() < PACKET_HEADER_SIZE + 1 {
-                                    break;
-                                }
-                                current_packet_type = pkt[4];
-
-                                if current_packet_type == PacketType::Marker as u8 {
-                                    // Another marker, continue reading
-                                    continue;
-                                }
-
-                                // Got a non-marker packet (probably DATA with error/status)
-                                if current_packet_type == PacketType::Data as u8 {
-                                    if pkt.len() > PACKET_HEADER_SIZE + 2 {
-                                        let msg_type = pkt[PACKET_HEADER_SIZE + 2];
-                                        if msg_type == MessageType::Error as u8 {
-                                            let payload = &pkt[PACKET_HEADER_SIZE..];
-                                            let mut buf = ReadBuffer::from_slice(payload);
-                                            buf.skip(2)?; // data flags
-                                            buf.skip(1)?; // msg_type
-                                            let (error_code, error_msg, _) = self
-                                                .parse_error_info(&mut buf, &inner.capabilities)?;
-                                            if error_code != 0 {
-                                                return Err(Error::OracleError {
-                                                    code: error_code,
-                                                    message: error_msg.unwrap_or_else(|| {
-                                                        format!("ORA-{:05}", error_code)
-                                                    }),
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                                // Exit after processing non-marker packet
-                                break;
-                            }
-                            Err(_) => {
-                                // Error reading - connection might be closed
-                                // Python comment says "some quit immediately" - meaning some
-                                // servers close the connection after BREAK/RESET handshake.
-                                // For commit/rollback/logoff, treat this as success since
-                                // the operation was processed before the close.
-                                if matches!(
-                                    function_code,
-                                    FunctionCode::Logoff
-                                        | FunctionCode::Commit
-                                        | FunctionCode::Rollback
-                                ) {
-                                    // The operation succeeded, but the server closed the connection
-                                    // Mark connection as closed for future operations
-                                    inner.state = ConnectionState::Closed;
-                                    return Ok(());
-                                }
-                                // For other functions, this means connection is broken
-                                inner.state = ConnectionState::Closed;
-                                // Don't return error for Ping - treat as success
-                                if function_code == FunctionCode::Ping {
-                                    return Ok(());
-                                }
-                                return Ok(()); // Conservative approach - treat as success
-                            }
-                        }
-                    }
-
-                    return Ok(());
-                }
-            }
-            // For non-BREAK markers, just return success
-            return Ok(());
-        }
-
-        // DATA packet (type 6)
-        if packet_type == PacketType::Data as u8 {
-            // Parse response to check for errors
-            if response.len() > PACKET_HEADER_SIZE + 2 {
-                let msg_type = response[PACKET_HEADER_SIZE + 2];
-                if msg_type == MessageType::Error as u8 {
-                    // Parse the error info
-                    let payload = &response[PACKET_HEADER_SIZE..];
-                    let mut buf = ReadBuffer::from_slice(payload);
-                    buf.skip(2)?; // data flags
-                    buf.skip(1)?; // msg_type
-                    let (error_code, error_msg, _) =
-                        self.parse_error_info(&mut buf, &inner.capabilities)?;
-                    if error_code != 0 {
-                        return Err(Error::OracleError {
-                            code: error_code,
-                            message: error_msg.unwrap_or_else(|| format!("ORA-{:05}", error_code)),
-                        });
-                    }
-                }
-            }
-            return Ok(());
-        }
-
-        Err(Error::Protocol(format!(
-            "Unexpected packet type {} for function call",
-            packet_type
-        )))
+        let result = self.parse_dml_response(&response[PACKET_HEADER_SIZE..], &inner.capabilities);
+        inner.checked_parse_result(result).map(|_| ())
     }
 
     /// Ensure the connection is ready for operations
@@ -5217,6 +4895,9 @@ impl Connection {
         }
 
         let inner = self.inner.lock().await;
+        if inner.stream.is_none() || inner.response_in_progress {
+            return Err(Error::ConnectionClosed);
+        }
         if inner.state != ConnectionState::Ready {
             return Err(Error::ConnectionNotReady);
         }
@@ -5636,7 +5317,10 @@ mod tests {
                 (&[7, 3][..], 0),
                 (&[29][..], 0),
                 (&[4][..], 0),
-                (&[9][..], crate::constants::data_flags::END_OF_RESPONSE),
+                (
+                    &[9, 9, 0, 0][..],
+                    crate::constants::data_flags::END_OF_RESPONSE,
+                ),
             ] {
                 peer.write_all(&ConnectionInner::build_data_chunk(data, flags, false).unwrap())
                     .await
@@ -5652,7 +5336,7 @@ mod tests {
                 )])
                 .await
                 .unwrap();
-            assert_eq!(&packet[8..], &[0, 0, 7, 3, 29, 4, 9]);
+            assert_eq!(&packet[8..], &[0, 0, 7, 3, 29, 4, 9, 9, 0, 0]);
             conn.closed.store(true, Ordering::Release);
         })
         .await

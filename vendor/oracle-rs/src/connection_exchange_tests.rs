@@ -256,3 +256,139 @@ async fn missing_temp_locator_and_server_lob_errors_invalidate_channel() {
         conn.closed.store(true, Ordering::Release);
     }
 }
+
+#[tokio::test]
+async fn complete_messages_without_negotiated_terminal_discard_channel() {
+    for large in [false, true] {
+        for eor in [false, true] {
+            for flags in [
+                crate::constants::data_flags::END_OF_RESPONSE,
+                crate::constants::data_flags::EOF,
+            ] {
+                let (conn, mut peer) = synthetic_connection(large).await;
+                let mut inner = conn.inner.lock().await;
+                inner.capabilities.ttc_field_version = 16;
+                inner.capabilities.supports_end_of_response = eor;
+                // Complete LOB parameters alone are never a completion. With EOR,
+                // even a complete Error message requires the explicit message 29.
+                let mut data = vec![8, 1, 2, 3, 0];
+                if eor {
+                    data.extend_from_slice(&completion_packet(0, 0)[2..]);
+                }
+                peer.write_all(&ConnectionInner::build_data_chunk(&data, flags, large).unwrap())
+                    .await
+                    .unwrap();
+                let result = inner.receive_lob_response(3, true, 0, |_, _| Ok(())).await;
+                assert!(matches!(result, Err(Error::Protocol(_))));
+                assert!(inner.stream.is_none());
+                assert_eq!(inner.state, ConnectionState::Disconnected);
+                assert!(inner.send(&[0]).await.is_err());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn execute_break_exchange_never_allows_a_second_send_before_terminal() {
+    for reset in [false, true] {
+        for cancel in [false, true] {
+            let (conn, mut peer) = synthetic_connection(false).await;
+            {
+                let inner = conn.inner.lock().await;
+                for kind in [1].into_iter().chain([if reset { 2 } else { 1 }; 5]) {
+                    peer.write_all(&inner.build_marker(kind).unwrap())
+                        .await
+                        .unwrap();
+                }
+                if !cancel {
+                    peer.shutdown().await.unwrap();
+                }
+            }
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                conn.execute("UPDATE t SET n = 1", &[]),
+            )
+            .await;
+            if cancel {
+                assert!(result.is_err());
+            } else {
+                assert!(result.unwrap().is_err());
+            }
+            assert!(conn.inner.lock().await.stream.is_none());
+            assert!(conn.execute("UPDATE t SET n = 2", &[]).await.is_err());
+        }
+    }
+}
+
+fn describe_number() -> Vec<u8> {
+    let mut b = WriteBuffer::new();
+    b.write_bytes(&[16, 0, 0]).unwrap(); // Describe, empty prefix, max row size
+    b.write_ub4(1).unwrap();
+    b.write_bytes(&[0, OracleType::Number as u8, 0, 0, 0])
+        .unwrap();
+    b.write_ub4(22).unwrap();
+    b.write_bytes(&[0; 6]).unwrap(); // array, flags, OID, version, charset, form
+    b.write_ub4(22).unwrap();
+    b.write_bytes(&[0, 1, 0]).unwrap(); // column ID, nullable, v7 name length
+    b.write_ub4(1).unwrap();
+    b.write_string_with_length(Some("N")).unwrap();
+    b.write_bytes(&[0; 10]).unwrap(); // schema/type, position/flags, describe tail
+    b.as_slice().to_vec()
+}
+
+#[tokio::test]
+async fn repeated_query_uses_cached_layout_without_describe_on_nonfinal_page() {
+    for execute in [false, true] {
+        let (conn, mut peer) = synthetic_connection(false).await;
+        {
+            let mut inner = conn.inner.lock().await;
+            inner.statement_cache = Some(StatementCache::new(4));
+            inner.capabilities.ttc_field_version = 16;
+            inner.capabilities.supports_end_of_response = false;
+        }
+        for first in [true, false] {
+            let mut data = if first { describe_number() } else { Vec::new() };
+            data.extend_from_slice(&io_vector_frame(&[32], 1));
+            data.extend_from_slice(&[7, 2, 193, 2]);
+            data.extend_from_slice(&completion_packet(0, 1)[2..]);
+            peer.write_all(&ConnectionInner::build_data_chunk(&data, 0, false).unwrap())
+                .await
+                .unwrap();
+            let result = if execute {
+                conn.execute("SELECT n FROM t", &[]).await
+            } else {
+                conn.query("SELECT n FROM t", &[]).await
+            }
+            .unwrap();
+            assert!(result.has_more_rows);
+            assert_eq!(result.columns[0].name, "N");
+            assert_eq!(result.rows.len(), 1);
+            assert_eq!(result.rows[0].get(0).and_then(Value::as_str), Some("1"));
+        }
+        assert!(conn.inner.lock().await.stream.is_some());
+    }
+}
+
+#[tokio::test]
+async fn simple_functions_reject_missing_completion_after_reset() {
+    for function in [
+        FunctionCode::Commit,
+        FunctionCode::Rollback,
+        FunctionCode::Ping,
+        FunctionCode::Logoff,
+    ] {
+        let (conn, mut peer) = synthetic_connection(false).await;
+        let mut inner = conn.inner.lock().await;
+        for kind in [1, 2] {
+            peer.write_all(&inner.build_marker(kind).unwrap())
+                .await
+                .unwrap();
+        }
+        peer.shutdown().await.unwrap();
+        assert!(conn
+            .send_simple_function_inner(&mut inner, function)
+            .await
+            .is_err());
+        assert!(inner.stream.is_none());
+    }
+}
