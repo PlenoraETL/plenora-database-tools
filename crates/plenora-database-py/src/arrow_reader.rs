@@ -84,19 +84,27 @@ fn batch_to_ipc_bytes(
 ///
 /// Al termine dello stream, ritorna `PyStopIteration` (che Python
 /// interpreta come fine dell'iterazione).
-#[pyclass(module = "plenora_database._native", unsendable)]
+///
+/// Lo stream sta dietro un `Mutex`: il reader si puo consumare da un thread
+/// diverso da quello che l'ha aperto, come fa `acopy_from` per non bloccare
+/// il loop asyncio.
+#[pyclass(module = "plenora_database._native")]
 pub struct BatchReader {
-    inner: Box<dyn BatchStream>,
+    inner: std::sync::Mutex<Box<dyn BatchStream>>,
     cancellation: CancellationToken,
 }
 
 impl BatchReader {
     pub(crate) fn new(inner: Box<dyn BatchStream>, cancellation: CancellationToken) -> Self {
         Self {
-            inner,
+            inner: std::sync::Mutex::new(inner),
             cancellation,
         }
     }
+}
+
+fn reader_poisoned() -> PyErr {
+    PyRuntimeError::new_err("BatchReader non piu utilizzabile dopo un errore interno")
 }
 
 #[pymethods]
@@ -105,12 +113,19 @@ impl BatchReader {
         slf
     }
 
-    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let batch_opt = py
-            .detach(|| {
-                runtime().block_on(async { self.inner.next_batch(&self.cancellation).await })
-            })
-            .map_err(to_py_err)?;
+    fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        // Il mutex si prende e si rilascia senza il GIL, e l'errore si
+        // traduce in Python solo dopo: tradurlo tenendo il mutex chiedeva il
+        // GIL mentre un altro thread, con il GIL, aspettava il mutex.
+        let outcome = py.detach(|| {
+            let Ok(mut inner) = self.inner.lock() else {
+                return Err(None);
+            };
+            runtime()
+                .block_on(async { inner.next_batch(&self.cancellation).await })
+                .map_err(Some)
+        });
+        let batch_opt = outcome.map_err(|error| error.map_or_else(reader_poisoned, to_py_err))?;
         let batch = batch_opt.ok_or_else(|| PyStopIteration::new_err(()))?;
         let bytes = batch_to_ipc_bytes(&batch).map_err(to_py_err)?;
         Ok(PyBytes::new(py, &bytes))
@@ -120,7 +135,10 @@ impl BatchReader {
     /// solo header + EOS marker vuoto). Utile per costruire un
     /// RecordBatchReader Python-side prima di iterare i batch.
     fn schema_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let schema = self.inner.schema();
+        // Il mutex si attende senza il GIL: chi lo tiene puo averne bisogno.
+        let schema = py
+            .detach(|| self.inner.lock().map(|inner| inner.schema()).ok())
+            .ok_or_else(reader_poisoned)?;
         let mut buf = Vec::with_capacity(512);
         {
             let mut writer = StreamWriter::try_new(&mut buf, &schema)
@@ -130,6 +148,34 @@ impl BatchReader {
                 .map_err(|_| PyRuntimeError::new_err("arrow-ipc schema finish"))?;
         }
         Ok(PyBytes::new(py, &buf))
+    }
+
+    /// Arrow PyCapsule Interface: lo stream C dei batch ancora da leggere.
+    ///
+    /// Qualunque consumatore di `__arrow_c_stream__` — `pyarrow`,
+    /// `plenora_data.run`, polars, DuckDB — legge il reader direttamente,
+    /// senza passare dai `bytes`. Il lettore resta lazy: ogni batch si legge
+    /// dal database quando il consumatore lo chiede. Consuma il reader come
+    /// l'iterazione.
+    ///
+    /// Ogni batch attraversa ancora l'IPC (una copia): lo zero-copy dalla
+    /// memoria Rust richiederebbe la C Data Interface lato Rust, che il
+    /// binding non porta.
+    #[pyo3(signature = (requested_schema=None))]
+    fn __arrow_c_stream__<'py>(
+        slf: Bound<'py, Self>,
+        requested_schema: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
+        py.import("plenora_database._arrow_io")?
+            .call_method1("c_stream_from_reader", (slf, requested_schema))
+    }
+
+    /// I batch ancora da leggere come un'unica `pyarrow.Table`.
+    fn read_all(slf: Bound<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let py = slf.py();
+        py.import("plenora_database._arrow_io")?
+            .call_method1("table_from_reader", (slf,))
     }
 
     fn __repr__(&self) -> String {

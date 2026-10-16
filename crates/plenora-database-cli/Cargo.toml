@@ -35,6 +35,9 @@ plenora-db-oracle = { workspace = true, optional = true }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Impronta dei messaggi Arrow IPC fra validazione e decodifica dell'input
+# di `write` (`ipc_input`): stesso pin del workspace, gia nel grafo.
+sha2.workspace = true
 tokio.workspace = true
 
 [lints]

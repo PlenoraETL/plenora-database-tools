@@ -43,7 +43,13 @@ from .expression import (
     upsert,
 )
 from .result import MultipleResultsFound, MutationResult, NoResultFound, Result
-from .errors import PlenoraError
+from .errors import (
+    PlenoraConcurrentModificationError,
+    PlenoraError,
+    PlenoraInvalidPlanError,
+    PlenoraUnsupportedError,
+    _SdkAxes,
+)
 from .spatial import SpatialReference, _require_geographic_srids
 from .types import int64 as typed_int64
 from .types import date as typed_date
@@ -112,24 +118,41 @@ _QUALIFIED_ORM_GEOMETRY_TYPES = frozenset({"point", "linestring", "polygon"})
 _GEOMETRY_ORM_PROVIDERS = frozenset({"postgres", *_WKB_ORM_PROVIDERS})
 
 
-class OrmError(PlenoraError):
-    """Errore pubblico dello strato ORM; non include valori applicativi."""
+class OrmError(_SdkAxes, PlenoraError):
+    """Errore pubblico dello strato ORM; non include valori applicativi.
+
+    Ogni sottoclasse dichiara la sua categoria anche nella gerarchia, con la
+    classe nativa corrispondente.
+    """
+
+    _category = "invalid_plan"
 
 
-class OrmMappingError(OrmError):
+class OrmMappingError(OrmError, PlenoraInvalidPlanError):
     """Il mapping dichiarativo viola un'invariante dell'ORM."""
 
 
-class OrmStateError(OrmError):
+class OrmStateError(OrmError, PlenoraInvalidPlanError):
     """L'operazione non e valida nello stato corrente dell'istanza/sessione."""
 
 
-class StaleObjectError(OrmError):
-    """Una mutazione ottimistica non ha interessato esattamente una riga."""
+class StaleObjectError(OrmError, PlenoraConcurrentModificationError):
+    """Una mutazione ottimistica non ha interessato esattamente una riga.
+
+    Lo statement e stato eseguito nella transazione aperta, che resta del
+    chiamante: l'effetto dipende da come la chiude, quindi e `unknown`
+    (ERR-004).
+    """
+
+    _category = "concurrent_modification"
+    _phase = "write"
+    _remote_effect = "unknown"
 
 
-class OrmUnsupportedError(OrmError):
+class OrmUnsupportedError(OrmError, PlenoraUnsupportedError):
     """Capability ORM non ancora aperta da una prova riproducibile."""
+
+    _category = "unsupported"
 
 
 class ObjectState(str, Enum):

@@ -186,7 +186,7 @@ class SpatialReference:
     ) -> None:
         if not isinstance(ewkb, (bytes, bytearray)):
             raise TypeError(
-                f"SpatialReference.ewkb deve essere bytes/bytearray, non {type(ewkb).__name__}"
+                "SpatialReference.ewkb deve essere bytes/bytearray"
             )
         if not isinstance(srid, int) or srid < 0:
             raise ValueError("SpatialReference.srid deve essere int >= 0")
@@ -258,7 +258,7 @@ def _spatial_predicate_dict(predicate: str, distance_meters: float | None) -> di
             )
         if not isinstance(distance_meters, (int, float)):
             raise TypeError(
-                f"distance_meters deve essere numero, non {type(distance_meters).__name__}"
+                "distance_meters deve essere un numero"
             )
         return {"kind": "d_within", "distance_meters": float(distance_meters)}
     if distance_meters is not None:

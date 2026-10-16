@@ -37,6 +37,67 @@ def test_specific_errors_inherit_from_plenora_error() -> None:
         assert issubclass(cls, plenora_database.PlenoraError)
 
 
+_CATEGORIES = {
+    "invalid_plan", "invalid_configuration", "schema", "data_mapping", "crs",
+    "unsupported", "not_found", "conflict", "concurrent_modification",
+    "authentication", "authorization", "timeout", "cancelled",
+    "resource_limit", "io", "protocol", "transient", "execution", "internal",
+}
+_PHASES = {
+    "validate", "connect", "probe", "prepare", "read", "write", "finalize",
+    "commit", "rollback", "cleanup",
+}
+_EFFECTS = {"none", "rolled_back", "partial", "committed", "unknown"}
+
+
+def _python_error_classes() -> list[type]:
+    """Le classi di errore che lo SDK definisce in Python, sotto
+    `PlenoraError`: quelle native hanno gli assi dal Rust."""
+    import plenora_database._arrow_io  # noqa: F401
+    import plenora_database.json_input  # noqa: F401
+    import plenora_database.orm  # noqa: F401
+
+    found, pending = [], [plenora_database.PlenoraError]
+    while pending:
+        cls = pending.pop()
+        for sub in cls.__subclasses__():
+            pending.append(sub)
+            if not sub.__module__.endswith("._native"):
+                found.append(sub)
+    return found
+
+
+def _category_of_class(cls: type) -> str | None:
+    """La categoria della classe nativa piu specifica nella gerarchia."""
+    import re
+
+    for base in cls.__mro__:
+        if base.__module__.endswith("._native"):
+            name = base.__name__[len("Plenora"):-len("Error")]
+            snake = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+            if snake in _CATEGORIES:
+                return snake
+    return None
+
+
+def test_every_python_error_class_carries_the_public_axes() -> None:
+    """PYTHON-SDK §6: ogni eccezione pubblica rende disponibili categoria,
+    fase, effetto remoto, retry e messaggio, coerenti con la sua classe."""
+    classes = _python_error_classes()
+    names = {cls.__name__ for cls in classes}
+    assert {"OrmError", "StaleObjectError", "JsonInputError", "NoResultFound"} <= names
+    for cls in classes:
+        error = cls("code", "messaggio") if cls.__name__ == "JsonInputError" else cls("messaggio")
+        assert error.category in _CATEGORIES, cls.__name__
+        expected = _category_of_class(cls)
+        if expected is not None:
+            assert error.category == expected, cls.__name__
+        assert error.phase in _PHASES, cls.__name__
+        assert error.remote_effect in _EFFECTS, cls.__name__
+        assert error.retry["kind"] in {"never", "quarantine", "requires_recovery"}, cls.__name__
+        assert error.message == "messaggio", cls.__name__
+
+
 def test_result_and_mapping_errors_join_the_public_taxonomy() -> None:
     assert issubclass(
         plenora_database.NoResultFound, plenora_database.PlenoraNotFoundError
