@@ -31,9 +31,9 @@ fn runtime_catalog_lists_the_operations_bound_by_runtime_v1() {
     let document = public_capabilities(PublicSurface::Runtime, RUNTIME_CAPABILITY, None);
     assert_eq!(
         document.interfaces[0].contract,
-        "plenora-runtime-binding-v1"
+        "plenora-runtime-binding-v2"
     );
-    assert_eq!(document.interfaces[0].version, 1);
+    assert_eq!(document.interfaces[0].version, 2);
     assert_eq!(document.interfaces[0].artifact, "plenora.database-tools");
     let ids = document
         .operations

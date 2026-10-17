@@ -1,7 +1,7 @@
 # Binding runtime
 
 [`plenora_database_engine::runtime_binding`](../crates/plenora-database-engine/src/runtime_binding.rs)
-implementa Runtime Binding 1.0 (`plenora-runtime-binding-v1`) per la
+implementa Runtime Binding 2.0 (`plenora-runtime-binding-v2`) per la
 capability `plenora.database-tools`, versione 1. È un confine
 transport-neutral: l'applicazione finale lo avvolge nel proprio handler di
 capability, per esempio il `CapabilityHandler` di runtime-tools. Il crate non
@@ -102,12 +102,11 @@ Il contenuto per esito:
   resolver dell'applicazione passano categoria, fase, effetto e retry; il
   testo viene sostituito.
 
-Seguono regole proposte e non ancora normative al pin `1e902df`, ratificate
-come chiarimenti in `plenora-contracts` #21: l'ordine fra `protocol`,
-`unsupported` e `timeout` (RT-017, RT-018), che cosa riflettere nel risultato
-(RT-019), `retry: never` per i rifiuti (RT-016), la causazione del risultato
-(RT-020), `invalid_configuration` per il payload (RT-023) e gli assi dopo un
-effetto sul sink (ERR-014).
+Le regole di ammissione e di identita sono normative al pin adottato.
+Il contratto pubblicato in discovery e distinto dalla versione wire:
+vedere RT-025 nel [testo adottato](../contracts/upstream/specs/runtime/RUNTIME-BINDING-2.0.md).
+Negoziazione, inoltri e acceptance record (RT-026, RT-027) appartengono
+al trasporto ospitante: questo binding e soltanto una destinazione.
 
 ## Limiti dichiarati
 
@@ -115,12 +114,12 @@ effetto sul sink (ERR-014).
   dello SDK solo quando la scrittura è `committed`. Uno stato
   `outcome_unknown`, `partially_committed` o `rolled_back` non è un successo
   (SURF-014): arriva come envelope d'errore con gli assi dell'esito — per il
-  commit ignoto quelli del vettore `database-write-error` — e con il
+  commit ignoto quelli della causa osservata (ERR-016) — e con il
   documento, compresa la `recovery`, in `details.write_outcome`. La CLI e lo
   SDK Python fanno lo stesso (`WriteOutcome::settle`).
 - `database.query` restituisce il riepilogo JSON. Lo stream Arrow, dichiarato
   fra i content type d'uscita, lo produce la CLI (`query --output`), non
-  questo binding: Runtime Binding 1.0 non ha un modo per chiedere uno dei due
+  questo binding: Runtime Binding 2.0 non ha un modo per chiedere uno dei due
   content type, e l'input contract di `database.query` è chiuso, quindi una
   scelta richiede un cambio di contratto.
 - I documenti risolti da un riferimento hanno un limite di 8 MiB
@@ -129,28 +128,15 @@ effetto sul sink (ERR-014).
 ## Prove
 
 [`tests/runtime_vectors.rs`](../crates/plenora-database-engine/tests/runtime_vectors.rs)
-esegue i tre vettori `database-*` di `vectors/runtime-v1` del pin, copiati
-byte per byte in [`contracts/upstream`](../contracts/upstream/source.json),
-con un provider scriptato:
+esegue i vettori database e le sonde normative della revisione adottata,
+verificandone gli hash. Il job `public-contract` confronta le copie con il
+checkout e valida le evidenze prodotte contro gli schemi del pin.
+Le cause del commit ignoto e i limiti di risultato sono esercitati con un
+provider scriptato: non costituiscono una qualifica live dei provider.
 
-- `database-read-request`: l'instradamento viene ammesso. Il payload
-  illustrativo viene rifiutato dallo schema del componente prima di qualunque
-  resolver. Con un payload conforme, la stessa richiesta legge e consegna lo
-  stream. Ogni caso applicabile della matrice runtime è provato: mutazioni di
-  capability, operazione, versioni, input contract, content type, deadline,
-  chiave di idempotenza e identità; metadati assenti o `null`; valori
-  riflessi solo se canonici; sink che fallisce dopo i primi byte o alla
-  pubblicazione.
-- `database-query-success`: stessa operazione, versione, output contract,
-  content type e correlazione; il riepilogo descrive i dati del vettore.
-- `database-write-error`: un commit dall'esito ignoto produce gli assi del
-  vettore (`internal`, `commit`, `unknown`, `requires_recovery`).
-
-Il test confronta inoltre la discovery con il catalogo e con i binding del
-pin. Esegue anche le 21 sonde `vectors/runtime-probes-v1` di
-`plenora-contracts` #21, copiate in
-[`contracts/upstream/proposed`](../contracts/upstream/proposed/source.json) e
-fissate per SHA-256 al commit `4890d27`. Sono proposte, non ancora
-normative. Le sonde su altri componenti si eseguono con la stessa mutazione
-sulla richiesta database. Nel job `public-contract`, i risultati prodotti vengono validati con gli
-schemi del pin da `python scripts/check_runtime_evidence.py`.
+Stati dei requisiti, ambito, limiti e deviazioni sono nel
+[registro di adozione](../contracts/adoption-source.json). Il limite del
+risultato query e applicato prima della consegna; l'host puo restringerlo con
+`RuntimeBinding::with_query_payload_limit` e dichiara il proprio limite nel
+suo manifest. Lo schema degli attributi v1 resta invariato: la mancata
+pubblicazione del limite in discovery e una deviazione esplicita.

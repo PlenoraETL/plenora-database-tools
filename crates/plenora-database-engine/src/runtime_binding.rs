@@ -1,4 +1,4 @@
-//! Runtime Binding 1.0: il confine transport-neutral di `plenora.database-tools`.
+//! Runtime Binding 2.0: il confine transport-neutral di `plenora.database-tools`.
 //!
 //! Un'applicazione finale avvolge [`RuntimeBinding`] nel proprio handler di
 //! capability (per esempio il `CapabilityHandler` di runtime-tools); questo
@@ -50,7 +50,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// Nome della capability runtime (RT-001).
 pub const CAPABILITY_NAME: &str = RUNTIME_CAPABILITY;
-/// Versione del binding runtime (RT-002), indipendente dal rilascio.
+/// Versione wire (RT-025), distinta dal contratto v2 pubblicato in discovery.
 pub const RUNTIME_BINDING_VERSION: u32 = 1;
 /// Entrypoint di discovery dichiarato in `bindings/runtime-v1.json`.
 pub const DISCOVERY_ENTRYPOINT: &str = "plenora.database-tools#capabilities@1";
@@ -64,6 +64,11 @@ pub const ERROR_CONTENT_TYPE: &str = "application/vnd.plenora.error+json";
 pub const ERROR_CONTRACT: &str = "plenora-error-v1";
 /// Limite dei documenti risolti da un riferimento (operazione, parametri).
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+/// DB-RT-003: byte del risultato query serializzato come JSON UTF-8 compatto.
+///
+/// Il contratto attributi v1 e chiuso: il limite e dichiarato nel manifest
+/// con una deviazione per la discovery, senza alterare quello schema.
+pub const MAX_QUERY_RESULT_BYTES: usize = 8 * 1024 * 1024;
 
 const MAX_DEADLINE_HORIZON: Duration = Duration::from_hours(365 * 24);
 /// Limite della chiave di idempotenza («opaque bounded key», RB §4).
@@ -329,6 +334,7 @@ pub trait ArtifactResolver: Send + Sync {
 pub struct RuntimeBinding<'a> {
     connections: &'a dyn ConnectionResolver,
     artifacts: &'a dyn ArtifactResolver,
+    query_result_bytes: usize,
 }
 
 struct Admitted {
@@ -347,7 +353,21 @@ impl<'a> RuntimeBinding<'a> {
         Self {
             connections,
             artifacts,
+            query_result_bytes: MAX_QUERY_RESULT_BYTES,
         }
+    }
+
+    /// Restringe il payload query al limite del trasporto ospitante (RT-024).
+    /// Il trasporto dichiara il proprio limite nel suo manifest; questo
+    /// binding non negozia destinazioni e non possiede un acceptance store.
+    #[must_use]
+    pub const fn with_query_payload_limit(mut self, bytes: usize) -> Self {
+        self.query_result_bytes = if bytes < MAX_QUERY_RESULT_BYTES {
+            bytes
+        } else {
+            MAX_QUERY_RESULT_BYTES
+        };
+        self
     }
 
     /// L'entrypoint di discovery (`plenora.database-tools#capabilities@1`).
@@ -685,8 +705,43 @@ impl<'a> RuntimeBinding<'a> {
             .provider
             .query(&connected.secret, &operation, &parameters, &budget, &token)
             .await?;
+        // SURF-006, adozione: il runtime produce solo il riepilogo JSON,
+        // pur conservando i descriptor del catalogo (anche Arrow). Hazard:
+        // Arrow non selezionabile qui. Rientro: percorso Arrow con selezione
+        // versionata esplicita, senza restringere query@1 a JSON.
         let summary = public_ops::summarize_stream(connected.kind, stream.as_mut(), &token).await?;
+        // Conta senza allocare una seconda copia del risultato; non pubblica
+        // alcun byte. Lo stesso controllo vale per il limite imposto dall'host.
+        let mut counter = ResultSize {
+            remaining: self.query_result_bytes,
+        };
+        if serde_json::to_writer(&mut counter, &summary).is_err() {
+            return Err(DatabaseError::new(
+                ErrorCategory::ResourceLimit,
+                ErrorPhase::Read,
+                Some(connected.kind),
+                "risultato query oltre il limite runtime: nessun risultato restituito",
+            ));
+        }
         Ok((JSON_CONTENT_TYPE, RuntimeBody::Json(summary)))
+    }
+}
+
+struct ResultSize {
+    remaining: usize,
+}
+
+impl Write for ResultSize {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.remaining = self
+            .remaining
+            .checked_sub(bytes.len())
+            .ok_or_else(|| std::io::Error::other("risultato oltre il limite runtime"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

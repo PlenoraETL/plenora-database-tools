@@ -158,6 +158,14 @@
           ]
         },
         {
+          "operation": "io.catalog",
+          "version": 2,
+          "requirement": "required",
+          "entrypoints": [
+            "plenora.io-tools#io.catalog@2"
+          ]
+        },
+        {
           "operation": "io.inspect",
           "version": 1,
           "requirement": "required",
@@ -182,11 +190,27 @@
           ]
         },
         {
+          "operation": "io.read",
+          "version": 2,
+          "requirement": "required",
+          "entrypoints": [
+            "plenora.io-tools#io.read@2"
+          ]
+        },
+        {
           "operation": "io.write",
           "version": 1,
           "requirement": "required",
           "entrypoints": [
             "plenora.io-tools#io.write@1"
+          ]
+        },
+        {
+          "operation": "io.write",
+          "version": 2,
+          "requirement": "required",
+          "entrypoints": [
+            "plenora.io-tools#io.write@2"
           ]
         },
         {

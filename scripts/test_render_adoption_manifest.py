@@ -2,16 +2,28 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import sys
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.render_adoption_manifest import SOURCE, manifest, validate_manifest
+from scripts.phase0_validate import validate_adoption_source, ValidationError
 import json
 
 
 class AdoptionManifestTests(unittest.TestCase):
+    def test_new_requirement_cannot_disappear_or_lose_its_deviation(self) -> None:
+        declared = json.loads(SOURCE.read_text(encoding="utf-8"))
+        validate_adoption_source()
+        for key, rule in (("requirements", "RT-024"), ("deviations", "DB-RT-003")):
+            document = json.loads(json.dumps(declared))
+            document[key] = [item for item in document[key] if item["rule"] != rule]
+            with patch("scripts.phase0_validate.load_json", return_value=document):
+                with self.assertRaises(ValidationError):
+                    validate_adoption_source()
+
     def test_records_real_digest_modes_pin_and_conforming_runtime(self) -> None:
         with TemporaryDirectory() as directory:
             wheel = Path(directory) / "plenora_database-4.0.0.whl"
@@ -32,7 +44,7 @@ class AdoptionManifestTests(unittest.TestCase):
         runtime = [
             item
             for item in document["contracts"]
-            if item["id"] == "plenora-runtime-binding-v1"
+            if item["id"] == "plenora-runtime-binding-v2"
         ]
         self.assertEqual([item["status"] for item in runtime], ["conforming"])
 

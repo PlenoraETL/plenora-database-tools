@@ -63,6 +63,9 @@ def markdown_documents(root: Path = ROOT) -> list[Path]:
         path
         for path in sorted(root.rglob("*.md"))
         if not SKIP_PARTS.intersection(path.relative_to(root).parts)
+        # Copie esatte: i link appartengono al checkout upstream, validato
+        # dal job public-contract, non alla selezione vendorizzata.
+        and not path.is_relative_to(root / "contracts" / "upstream")
     ]
 
 

@@ -505,6 +505,9 @@ def markdown_documents() -> list[Path]:
         path
         for path in sorted(REPO_ROOT.rglob("*.md"))
         if not skip & set(path.relative_to(REPO_ROOT).parts)
+        # La selezione upstream non e un sito completo: link verificati
+        # nel checkout del pin dal job public-contract.
+        and not path.is_relative_to(UPSTREAM_COPIES)
     ]
     if not found:
         raise ValidationError("nessun documento trovato")
@@ -717,6 +720,26 @@ def validate_adoption_source() -> int:
         raise ValidationError("adozione senza elenco delle deviazioni")
     for deviation in deviations:
         validate_deviation(deviation)
+    if source.get("profile") != "plenora-database-tools-profile-v2" or source.get("catalog") != "catalogs/database-tools-v2.json":
+        raise ValidationError("profilo o catalogo di adozione non v2")
+    if not {"plenora-public-catalog-v2", "plenora-runtime-binding-v2"}.issubset(selected):
+        raise ValidationError("contratti v2 non adottati")
+    requirements = source.get("requirements", [])
+    required = {"CAT-001", "CAT-002", "CAT-003", "DB-ABS-001", "DB-ABS-002", "DB-ABS-003", "DB-RT-003", "ERR-016"}
+    required.update(f"RT-{number:03d}" for number in range(16, 28))
+    required.update(f"INTEROP-{number:03d}" for number in range(1, 6))
+    seen = set()
+    for item in requirements:
+        if not isinstance(item, dict) or item.get("status") not in {"implemented", "deviation", "not_applicable"}:
+            raise ValidationError("requisito senza stato valido")
+        rule = item.get("rule")
+        if not isinstance(rule, str) or rule in seen or not item.get("scope") or not item.get("evidence"):
+            raise ValidationError("requisito duplicato o senza ambito e motivazione")
+        seen.add(rule)
+        if item["status"] == "deviation" and not any(entry["rule"] == rule for entry in deviations):
+            raise ValidationError("requisito deviato senza registro dei limiti")
+    if not required.issubset(seen):
+        raise ValidationError("adozione senza stato di ogni nuovo requisito")
     return len(selected) + len(not_applicable) + len(deviations)
 
 

@@ -3,9 +3,9 @@
   "component": "plenora-database-tools",
   "contracts_source": {
     "repository": "https://github.com/PlenoraETL/plenora-contracts.git",
-    "revision": "1e902dfaab5819c1d9ce785878d5b26dbeae48b3"
+    "revision": "3aec9f724f5a0ad21366f293895b4d0dbcd0aad1"
   },
-  "profile": "plenora-database-tools-profile-v1",
+  "profile": "plenora-database-tools-profile-v2",
   "contracts": [
     "plenora-public-surfaces-v1",
     "plenora-capabilities-v2",
@@ -17,9 +17,14 @@
     "plenora-python-sdk-v1",
     "plenora-surface-bindings-v1",
     "plenora-composition-v1",
-    "plenora-runtime-binding-v1"
+    "plenora-runtime-binding-v2",
+    "plenora-public-catalog-v2"
   ],
-  "not_applicable": [],
+  "not_applicable": [
+    "plenora-arrow-geometry-semantics-v1",
+    "plenora-interop-vectors-v1",
+    "plenora-rest-arrow-adapter-v1"
+  ],
   "deviations": [
     {
       "rule": "SURF-007",
@@ -41,6 +46,198 @@
       "observed_behavior": "plan::Plan, ReadOperation, WriteOperation and ObjectRef deserialize null as absent in optional fields that plan.schema.json types without null, and serialize absent fields as null.",
       "tracking": "https://github.com/PlenoraETL/plenora-database-tools/issues/106",
       "detectable_before_invocation": true
+    },
+    {
+      "rule": "DB-RT-003",
+      "surface": "runtime",
+      "observed_behavior": "Query results are limited to 8388608 bytes of compact UTF-8 JSON, before returning any result. The bound is recorded here: capability-attributes-v1 is closed and has no member for it. Hazard: discovery alone cannot reveal the bound. Reentry: adopt a successor attributes contract that declares it.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "SURF-006",
+      "surface": "runtime",
+      "observed_behavior": "database.query advertises the catalog JSON and Arrow outputs, but this binding produces only the JSON summary. Hazard: a consumer cannot obtain Arrow from this surface. Reentry: implement an Arrow result path under an explicit versioned selection contract; do not impose a JSON-only restriction on query@1.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
     }
-  ]
+  ],
+  "catalog": "catalogs/database-tools-v2.json",
+  "requirements": [
+    {
+      "rule": "CAT-001",
+      "status": "implemented",
+      "scope": "component adoption",
+      "evidence": "Artifact capabilities select only the answering surface; the target catalog does not imply availability."
+    },
+    {
+      "rule": "CAT-002",
+      "status": "implemented",
+      "scope": "component adoption",
+      "evidence": "Runtime is conditional in the adopted catalog; this artifact implements it."
+    },
+    {
+      "rule": "CAT-003",
+      "status": "implemented",
+      "scope": "component adoption",
+      "evidence": "Catalog v2 is copied exactly; intentionally absent surfaces remain absent."
+    },
+    {
+      "rule": "DB-ABS-001",
+      "status": "implemented",
+      "scope": "component adoption",
+      "evidence": "Transaction handles are native Rust/Python only, never CLI/runtime."
+    },
+    {
+      "rule": "DB-ABS-002",
+      "status": "implemented",
+      "scope": "component adoption",
+      "evidence": "database.execute is absent from runtime discovery and rejected by admission."
+    },
+    {
+      "rule": "DB-ABS-003",
+      "status": "implemented",
+      "scope": "component adoption",
+      "evidence": "Handles remain process/session native; no serialized handle surface."
+    },
+    {
+      "rule": "DB-RT-003",
+      "status": "deviation",
+      "scope": "component adoption",
+      "evidence": "Result bound enforced; discovery publication is blocked by the immutable closed attributes-v1. See deviation."
+    },
+    {
+      "rule": "RT-024",
+      "status": "implemented",
+      "scope": "component adoption",
+      "evidence": "Query summary beyond 8388608 compact JSON bytes fails resource_limit/read/none/never; no result escapes. Transport limits belong to the host."
+    },
+    {
+      "rule": "RT-025",
+      "status": "implemented",
+      "scope": "component adoption",
+      "evidence": "Discovery contract v2/version 2; wire capability version and selectors remain 1."
+    },
+    {
+      "rule": "RT-018",
+      "status": "implemented",
+      "scope": "component adoption",
+      "evidence": "Admission compares wire version 1, independently of discovery contract 2."
+    },
+    {
+      "rule": "RT-026",
+      "status": "not_applicable",
+      "scope": "component adoption",
+      "evidence": "Destination-only binding: no sender or destination selector. Negotiation is the host transport responsibility."
+    },
+    {
+      "rule": "RT-027",
+      "status": "not_applicable",
+      "scope": "component adoption",
+      "evidence": "No ingress, queue, forwarding or acceptance store; negotiation context belongs to the host outside the envelope."
+    },
+    {
+      "rule": "ERR-016",
+      "status": "implemented",
+      "scope": "component adoption",
+      "evidence": "Commit cause preserved independently of unknown effect; runtime tests execute defect, IO and timeout vectors."
+    },
+    {
+      "rule": "DB-RT-001/DB-RT-002",
+      "status": "not_applicable",
+      "scope": "component adoption",
+      "evidence": "Withdrawn identifiers; no new JSON-only restriction is introduced."
+    },
+    {
+      "rule": "contracts-39/40",
+      "status": "implemented",
+      "scope": "component adoption",
+      "evidence": "Load validators and their exact-value dependency from the pinned checkout; keep diagnostics data-free. Upstream fuzz cache is tooling, not a component contract."
+    },
+    {
+      "rule": "SURF-006",
+      "status": "deviation",
+      "scope": "database.query runtime output",
+      "evidence": "Existing JSON summary only; Arrow output gap is declared in deviations and next to the implementation."
+    },
+    {
+      "rule": "RT-016",
+      "status": "implemented",
+      "scope": "runtime admission and result identity",
+      "evidence": "Normative runtime probes and runtime_vectors admission/control tests."
+    },
+    {
+      "rule": "RT-017",
+      "status": "implemented",
+      "scope": "runtime admission and result identity",
+      "evidence": "Normative runtime probes and runtime_vectors admission/control tests."
+    },
+    {
+      "rule": "RT-019",
+      "status": "implemented",
+      "scope": "runtime admission and result identity",
+      "evidence": "Normative runtime probes and runtime_vectors admission/control tests."
+    },
+    {
+      "rule": "RT-020",
+      "status": "implemented",
+      "scope": "runtime admission and result identity",
+      "evidence": "Normative runtime probes and runtime_vectors admission/control tests."
+    },
+    {
+      "rule": "RT-021",
+      "status": "implemented",
+      "scope": "runtime admission and result identity",
+      "evidence": "Normative runtime probes and runtime_vectors admission/control tests."
+    },
+    {
+      "rule": "RT-022",
+      "status": "implemented",
+      "scope": "runtime admission and result identity",
+      "evidence": "Normative runtime probes and runtime_vectors admission/control tests."
+    },
+    {
+      "rule": "RT-023",
+      "status": "implemented",
+      "scope": "runtime admission and result identity",
+      "evidence": "Normative runtime probes and runtime_vectors admission/control tests."
+    },
+    {
+      "rule": "INTEROP-001",
+      "status": "not_applicable",
+      "scope": "component adoption",
+      "evidence": "Opt-in requires Arrow Geometry Semantics 1.0, not claimed by this component; no cross-component conformance asserted."
+    },
+    {
+      "rule": "INTEROP-002",
+      "status": "not_applicable",
+      "scope": "component adoption",
+      "evidence": "Opt-in requires Arrow Geometry Semantics 1.0, not claimed by this component; no cross-component conformance asserted."
+    },
+    {
+      "rule": "INTEROP-003",
+      "status": "not_applicable",
+      "scope": "component adoption",
+      "evidence": "Opt-in requires Arrow Geometry Semantics 1.0, not claimed by this component; no cross-component conformance asserted."
+    },
+    {
+      "rule": "INTEROP-004",
+      "status": "not_applicable",
+      "scope": "component adoption",
+      "evidence": "Opt-in requires Arrow Geometry Semantics 1.0, not claimed by this component; no cross-component conformance asserted."
+    },
+    {
+      "rule": "INTEROP-005",
+      "status": "not_applicable",
+      "scope": "component adoption",
+      "evidence": "Opt-in requires Arrow Geometry Semantics 1.0, not claimed by this component; no cross-component conformance asserted."
+    }
+  ],
+  "runtime_limits": {
+    "database.query": {
+      "max_result_bytes": 8388608,
+      "representation": "compact_utf8_json",
+      "transport_may_narrow": true
+    }
+  }
 }

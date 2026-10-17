@@ -1,0 +1,26 @@
+{
+  "$schema": "../../schemas/runtime-vector-v1.schema.json",
+  "schema_version": 1,
+  "contract": "plenora-runtime-vector-v1",
+  "kind": "error",
+  "content_type": "application/vnd.plenora.error+json",
+  "metadata": {
+    "plenora.message.id": "018f3d84-7b2c-7f00-8000-000000000204",
+    "plenora.capability.operation": "database.write",
+    "plenora.operation.version": "1",
+    "plenora.output.contract": "plenora-error-v1",
+    "plenora.trace.correlation_id": "018f3d84-7b2c-7f00-8000-000000000304"
+  },
+  "payload": {
+    "category": "timeout",
+    "phase": "commit",
+    "remote_effect": "unknown",
+    "retry": {
+      "kind": "requires_recovery"
+    },
+    "code": "COMMIT_DEADLINE_ELAPSED",
+    "provider": "postgres",
+    "execution_id": "vector-execution-3",
+    "message": "The deadline elapsed after the commit was sent; the outcome is unknown. Reconcile by execution identity."
+  }
+}
