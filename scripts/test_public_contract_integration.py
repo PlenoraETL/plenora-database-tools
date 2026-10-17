@@ -108,7 +108,8 @@ class PublicContractIntegrationTests(unittest.TestCase):
                 [*command, "--artifact", f"database-cli|cli|{second}"], capture_output=True, text=True,
             )
             self.assertNotEqual(failed.returncode, 0)
-            self.assertIn("invarianti semantiche", failed.stderr)
+            self.assertIn("gate fallito (ValueError)", failed.stderr)
+            self.assertNotIn("Traceback", failed.stderr)
             self.assertFalse(output.exists())
             subprocess.run(command, capture_output=True, check=True)
             validate_manifest(gate.load(output), self.schema("adoption-manifest-v4.schema.json"))

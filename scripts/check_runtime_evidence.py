@@ -44,6 +44,10 @@ EXPECTED = {
     "database-read-success.json",
     "database-query-success.json",
     "database-write-error.json",
+    "database-write-commit-io-error.json",
+    "database-write-commit-timeout-error.json",
+    "database-query-result-limit-error.json",
+    "database-query-transport-limit-error.json",
     "database.test_connection.json",
     "database.list_catalogs.json",
     "database.list_schemas.json",
@@ -59,7 +63,7 @@ def load(path: Path) -> Any:
 
 def errors(instance: Any, schema: dict[str, Any], registry: Registry) -> list[str]:
     return [
-        error.message
+        "documento non conforme allo schema"
         for error in Draft202012Validator(schema, registry=registry).iter_errors(instance)
     ]
 
@@ -88,7 +92,7 @@ def check(contracts: Path, evidence: Path) -> dict[str, int]:
     vector_schema = load(contracts / "schemas" / "runtime-vector-v1.schema.json")
     error_schema = load(contracts / "schemas" / "error-v1.schema.json")
     capability_schema = load(contracts / "schemas" / "capabilities-v2.schema.json")
-    catalog = load(contracts / "catalogs" / "database-tools-v1.json")
+    catalog = load(contracts / "catalogs" / "database-tools-v2.json")
 
     found = {path.name for path in evidence.glob("*.json")}
     if found != EXPECTED:
@@ -98,6 +102,9 @@ def check(contracts: Path, evidence: Path) -> dict[str, int]:
     require(capabilities, capability_schema, registry, "discovery runtime")
     if semantics.capability_errors(capabilities):
         raise RuntimeError("discovery runtime: invarianti semantiche non rispettate")
+    interface = capabilities["interfaces"]
+    if len(interface) != 1 or interface[0]["contract"] != "plenora-runtime-binding-v2" or not semantics.same_value(interface[0]["version"], 2):
+        raise RuntimeError("RT-025: discovery runtime non v2")
     bound = [item["id"] for item in catalog["operations"] if "runtime" in item["surfaces"]]
     if [item["id"] for item in capabilities["operations"]] != bound:
         raise RuntimeError("discovery runtime diversa dal catalogo del pin")
@@ -134,4 +141,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        # ERR-010: un'eccezione di parser/schema puo contenere il payload.
+        raise SystemExit(f"gate fallito ({type(error).__name__}); nessun dato pubblicato") from None
