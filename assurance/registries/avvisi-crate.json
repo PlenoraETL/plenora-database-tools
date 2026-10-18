@@ -2777,6 +2777,18 @@
           "file": "COPYING",
           "origin": "cargo-package",
           "sha256": "c962ee4d1d05ddc138b202b2540219ebc57893fcf97b364852094a9a94ce1365"
+        },
+        {
+          "file": "LICENSE-APACHE",
+          "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+          "origin": "https://github.com/jedisct1/rust-siphash/blob/2fcf2a742340824ee23328e6eba4bc7ea0e52613/LICENSE-APACHE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "file": "LICENSE-MIT",
+          "git_blob": "969d061e8ba2e38d69391910b1ef0d4869ff18d1",
+          "origin": "https://github.com/jedisct1/rust-siphash/blob/2fcf2a742340824ee23328e6eba4bc7ea0e52613/LICENSE-MIT",
+          "sha256": "f9c4c77baa3828004ee54b8a4f2db2e88ed44a6237a493965bf551fac0fcb62d"
         }
       ],
       "license": "MIT/Apache-2.0",

@@ -94,6 +94,34 @@ class Notices(unittest.TestCase):
             notices.bundle("test")
         self.assertTrue(notices.validate(self.registry))
 
+    def test_referral_only_notice_rejected(self):
+        """Il caso siphasher: un COPYING di soli rinvii non e un avviso completo.
+
+        Copyright e link a MIT/Apache senza il testo delle condizioni passavano
+        il gate, e ogni artefatto riceveva un avviso incompleto. La regola
+        pretende almeno un testo con nome LICENSE/UNLICENSE; il testo acquisito
+        dall'upstream con provenienza soddisfa la regola accanto al COPYING.
+        """
+        crate = self.texts / "referral-1"
+        crate.mkdir()
+        referral = b"Copyright Referral\nSee LICENSE-MIT\n"
+        (crate / "COPYING").write_bytes(referral)
+        self.registry["profiles"]["test"]["crates"].append("referral-1")
+        self.registry["crates"]["referral-1"] = {
+            "name": "referral", "version": "1", "files": [
+                {"file": "COPYING", "sha256": notices.digest(referral), "origin": "cargo-package"},
+            ],
+        }
+        self.assertTrue(any("rinvii" in error for error in notices.validate(self.registry)))
+
+        supplementary = b"Permission is hereby granted...\n"
+        (crate / "LICENSE-MIT").write_bytes(supplementary)
+        self.registry["crates"]["referral-1"]["files"].append(
+            {"file": "LICENSE-MIT", "sha256": notices.digest(supplementary),
+             "origin": "https://example.invalid/LICENSE-MIT"},
+        )
+        self.assertEqual(notices.validate(self.registry), [])
+
     def test_obsolete_file_and_crate_rejected(self):
         (self.texts / "extra").write_bytes(b"obsolete")
         self.assertTrue(notices.validate(self.registry))

@@ -28,6 +28,9 @@ PROFILES = {
     "wheel-db2": ("plenora-database-py", ["--features", "db2"]),
 }
 NOTICE = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|COPYRIGHT|UNLICENSE)", re.I)
+# Un COPYING o un NOTICE possono essere soli rinvii (copyright e link alle
+# condizioni): l'avviso completo pretende almeno un testo con nome LICENSE.
+CONDITIONS = re.compile(r"^(LICEN[CS]E|UNLICENSE)", re.I)
 
 
 def digest(data: bytes) -> str:
@@ -102,25 +105,27 @@ def collect(previous: dict) -> tuple[dict, dict[str, bytes]]:
             record["files"].append({"file": name, "sha256": digest(data), "origin": "cargo-package"})
             contents[f"{key}/{name}"] = data
         old = previous.get("crates", {}).get(key, {})
+        # I testi supplementari (presi dall'upstream con provenienza) convivono
+        # con quelli del pacchetto: un COPYING di soli rinvii non basta, e il
+        # testo delle condizioni acquisito non deve sparire alla rigenerazione.
+        for entry in old.get("files", []):
+            if entry["origin"] == "cargo-package":
+                continue
+            data = (TEXTS / key / entry["file"]).read_bytes()
+            if digest(data) != entry["sha256"]:
+                raise ValueError(f"{key}: impronta del testo supplementare diversa")
+            record["files"].append(entry)
+            contents[f"{key}/{entry['file']}"] = data
         if not record["files"]:
-            for entry in old.get("files", []):
-                if entry["origin"] == "cargo-package":
-                    continue
-                data = (TEXTS / key / entry["file"]).read_bytes()
-                if digest(data) != entry["sha256"]:
-                    raise ValueError(f"{key}: impronta del testo supplementare diversa")
-                record["files"].append(entry)
-                contents[f"{key}/{entry['file']}"] = data
-            if not record["files"]:
-                record["missing_reason"] = old.get("missing_reason") or (
-                    "Nessun testo di licenza nel pacchetto della cache Cargo; "
-                    "upstream non consultato (raccolta offline). Il solo SPDX non e un avviso."
-                )
-                record["authors"] = package["authors"]
-                record["repository"] = package["repository"]
-                vcs = root / ".cargo_vcs_info.json"
-                if vcs.is_file():
-                    record["vcs"] = json.loads(vcs.read_text(encoding="utf-8"))
+            record["missing_reason"] = old.get("missing_reason") or (
+                "Nessun testo di licenza nel pacchetto della cache Cargo; "
+                "upstream non consultato (raccolta offline). Il solo SPDX non e un avviso."
+            )
+            record["authors"] = package["authors"]
+            record["repository"] = package["repository"]
+            vcs = root / ".cargo_vcs_info.json"
+            if vcs.is_file():
+                record["vcs"] = json.loads(vcs.read_text(encoding="utf-8"))
         result[key] = record
     inputs = {"Cargo.lock", "Cargo.toml"}
     inputs.update(Path(p["manifest_path"]).relative_to(ROOT).as_posix()
@@ -151,6 +156,12 @@ def validate(registry: dict) -> list[str]:
             continue
         if not record["files"] or record.get("missing_reason"):
             errors.append(f"{key}: {record.get('missing_reason', 'nessun testo')}")
+        elif not any(
+            CONDITIONS.match(entry["file"].split("/")[-1]) for entry in record["files"]
+        ):
+            errors.append(
+                f"{key}: solo rinvii (COPYING/NOTICE), manca il testo delle condizioni"
+            )
         for entry in record["files"]:
             name = entry["file"]
             if not safe_name(name):
@@ -208,6 +219,14 @@ def main() -> int:
                 old = current
             elif old != current:
                 errors.append("registro diverso dai grafi/testi Cargo offline: rieseguire --aggiorna")
+                # Solo i nomi delle voci divergenti (crate, profili, input):
+                # senza, un mismatch che compare su una sola piattaforma non
+                # e' diagnosticabile. Nessun contenuto dei testi nel messaggio.
+                for area in ("profiles", "crates", "inputs"):
+                    before, after = old.get(area, {}), current.get(area, {})
+                    diverse = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
+                    if diverse:
+                        errors.append(f"{area} divergenti: {', '.join(diverse[:12])}")
         errors += validate(old)
         print(f"{len(old['crates'])} crate; {sum(len(c['files']) for c in old['crates'].values())} avvisi; {len(errors)} errori")
         for error in errors:
