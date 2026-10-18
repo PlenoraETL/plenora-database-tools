@@ -97,14 +97,35 @@ checksum = "''' + 'a' * 64 + '''"
         for declared, message in (
             ('pyarrow>=26', 'does not satisfy'),
             ('pyarrow==25.0.2', 'does not satisfy'),
+            ('pyarrow>25.0.1', 'does not satisfy'),
             ('pyarrow>=25; python_version > "3"', 'unsupported'),
             ('pyarrow[extra]>=25', 'unsupported'),
             ('pyarrow~=25.0', 'unsupported'),
+            ('pyarrow(>=25', 'unsupported'),
+            ('pyarrow>=25)', 'unsupported'),
+            ('pyarrow()', 'unsupported'),
+            ('pyarrow,,,', 'unsupported'),
+            ('pyarrow>=25,,<26', 'unsupported'),
         ):
             with self.subTest(declared=declared):
                 self.wheel('Requires-Dist: ' + declared + '\n')
                 with self.assertRaisesRegex(ValueError, message):
                     sbom.render(self.root, self.dist, self.native)
+
+    def test_version_comparison_pads_trailing_zeros_like_pep_440(self):
+        """`25.0.0` e `25` sono la stessa versione: il confronto a tuple nude
+        direbbe il contrario (`>25` soddisfatto da `25.0.0`, `==25` no)."""
+        python = {'pkg:pypi/demo@25.0.0': {}}
+        self.assertEqual(sbom.resolve_requirement('demo==25', python), 'pkg:pypi/demo@25.0.0')
+        self.assertEqual(sbom.resolve_requirement('demo>=25', python), 'pkg:pypi/demo@25.0.0')
+        for declared in ('demo>25', 'demo<25'):
+            with self.subTest(declared=declared):
+                with self.assertRaisesRegex(ValueError, 'does not satisfy'):
+                    sbom.resolve_requirement(declared, python)
+        corto = {'pkg:pypi/demo@25': {}}
+        with self.assertRaisesRegex(ValueError, 'does not satisfy'):
+            sbom.resolve_requirement('demo<25.0.0', corto)
+        self.assertEqual(sbom.resolve_requirement('demo==25.0.0', corto), 'pkg:pypi/demo@25')
 
     def test_duplicate_and_dangling_references_are_rejected(self):
         result = sbom.render(self.root, self.dist, self.native)

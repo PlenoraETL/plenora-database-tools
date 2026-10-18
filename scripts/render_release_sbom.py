@@ -168,34 +168,57 @@ def version_key(text: str) -> tuple:
     return tuple(int(part) for part in parts)
 
 
+def compare_versions(left: tuple, right: tuple) -> int:
+    """PEP 440 for final releases: `25.0.0` and `25` are the same version.
+
+    The shorter tuple pads with zeros before comparing; plain tuple order
+    would make `25.0.0` greater than `25`.
+    """
+    width = max(len(left), len(right))
+    left = left + (0,) * (width - len(left))
+    right = right + (0,) * (width - len(right))
+    return (left > right) - (left < right)
+
+
 def resolve_requirement(requirement: str, python: dict) -> str:
     """Map a declared wheel requirement to its pinned SBOM component.
 
     The pin is the qualification resolution from requirements*.txt: exactly
     one pinned version must exist for the name, and it must satisfy every
     specifier. Only `==`, `>=`, `>`, `<=`, `<` over dotted numeric versions
-    are understood; extras, markers and other forms are refused so that an
-    unhandled case stops publication instead of passing unverified.
+    are understood; extras, markers, unbalanced parentheses, empty
+    specifier segments and other forms are refused so that an unhandled
+    case stops publication instead of passing unverified.
     """
     if ";" in requirement or "[" in requirement:
         raise ValueError("unsupported wheel requirement form (marker or extra)")
-    match = re.fullmatch(r"\s*([A-Za-z0-9_.-]+)\s*\(?([^)]*)\)?\s*", requirement)
-    if not match:
+    text = requirement.strip()
+    name_match = re.match(r"[A-Za-z0-9_.-]+", text)
+    if not name_match:
         raise ValueError("unsupported wheel requirement form")
-    name = re.sub(r"[-_.]+", "-", match[1]).lower()
+    name = re.sub(r"[-_.]+", "-", name_match[0]).lower()
+    rest = text[name_match.end():].strip()
+    if rest.startswith("("):
+        if not rest.endswith(")"):
+            raise ValueError("unsupported wheel requirement form (unbalanced parentheses)")
+        rest = rest[1:-1].strip()
+        if not rest:
+            raise ValueError("unsupported wheel requirement form (empty parentheses)")
+    if "(" in rest or ")" in rest:
+        raise ValueError("unsupported wheel requirement form (unbalanced parentheses)")
     prefix = f"pkg:pypi/{quote(name)}@"
     pinned = [ref for ref in python if ref.startswith(prefix)]
     if len(pinned) != 1:
         raise ValueError("wheel runtime dependency is not pinned exactly once in requirements")
     resolved = version_key(pinned[0][len(prefix):])
-    for specifier in filter(None, (s.strip() for s in match[2].split(","))):
-        spec = re.fullmatch(r"(==|>=|<=|>|<)\s*([0-9.]+)", specifier)
+    for segment in rest.split(",") if rest else []:
+        spec = re.fullmatch(r"\s*(==|>=|<=|>|<)\s*([0-9.]+)\s*", segment)
         if not spec:
             raise ValueError("unsupported wheel requirement specifier")
-        bound = version_key(spec[2])
+        order = compare_versions(resolved, version_key(spec[2]))
         satisfied = {
-            "==": resolved == bound, ">=": resolved >= bound, "<=": resolved <= bound,
-            ">": resolved > bound, "<": resolved < bound,
+            "==": order == 0, ">=": order >= 0, "<=": order <= 0,
+            ">": order > 0, "<": order < 0,
         }[spec[1]]
         if not satisfied:
             raise ValueError("pinned Python dependency does not satisfy the wheel requirement")
