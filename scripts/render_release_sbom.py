@@ -160,8 +160,73 @@ def check_graph(graph: dict, known: set) -> None:
         raise ValueError("dangling SBOM dependency reference")
 
 
-def wheel_inventory(dist: Path, version: str) -> dict:
-    components = {}
+def version_key(text: str) -> tuple:
+    """Dotted numeric versions only; anything else is refused, not guessed."""
+    parts = text.split(".")
+    if not parts or any(not part.isdigit() for part in parts):
+        raise ValueError("unsupported Python version form in wheel requirement")
+    return tuple(int(part) for part in parts)
+
+
+def compare_versions(left: tuple, right: tuple) -> int:
+    """PEP 440 for final releases: `25.0.0` and `25` are the same version.
+
+    The shorter tuple pads with zeros before comparing; plain tuple order
+    would make `25.0.0` greater than `25`.
+    """
+    width = max(len(left), len(right))
+    left = left + (0,) * (width - len(left))
+    right = right + (0,) * (width - len(right))
+    return (left > right) - (left < right)
+
+
+def resolve_requirement(requirement: str, python: dict) -> str:
+    """Map a declared wheel requirement to its pinned SBOM component.
+
+    The pin is the qualification resolution from requirements*.txt: exactly
+    one pinned version must exist for the name, and it must satisfy every
+    specifier. Only `==`, `>=`, `>`, `<=`, `<` over dotted numeric versions
+    are understood; extras, markers, unbalanced parentheses, empty
+    specifier segments and other forms are refused so that an unhandled
+    case stops publication instead of passing unverified.
+    """
+    if ";" in requirement or "[" in requirement:
+        raise ValueError("unsupported wheel requirement form (marker or extra)")
+    text = requirement.strip()
+    name_match = re.match(r"[A-Za-z0-9_.-]+", text)
+    if not name_match:
+        raise ValueError("unsupported wheel requirement form")
+    name = re.sub(r"[-_.]+", "-", name_match[0]).lower()
+    rest = text[name_match.end():].strip()
+    if rest.startswith("("):
+        if not rest.endswith(")"):
+            raise ValueError("unsupported wheel requirement form (unbalanced parentheses)")
+        rest = rest[1:-1].strip()
+        if not rest:
+            raise ValueError("unsupported wheel requirement form (empty parentheses)")
+    if "(" in rest or ")" in rest:
+        raise ValueError("unsupported wheel requirement form (unbalanced parentheses)")
+    prefix = f"pkg:pypi/{quote(name)}@"
+    pinned = [ref for ref in python if ref.startswith(prefix)]
+    if len(pinned) != 1:
+        raise ValueError("wheel runtime dependency is not pinned exactly once in requirements")
+    resolved = version_key(pinned[0][len(prefix):])
+    for segment in rest.split(",") if rest else []:
+        spec = re.fullmatch(r"\s*(==|>=|<=|>|<)\s*([0-9.]+)\s*", segment)
+        if not spec:
+            raise ValueError("unsupported wheel requirement specifier")
+        order = compare_versions(resolved, version_key(spec[2]))
+        satisfied = {
+            "==": order == 0, ">=": order >= 0, "<=": order <= 0,
+            ">": order > 0, "<": order < 0,
+        }[spec[1]]
+        if not satisfied:
+            raise ValueError("pinned Python dependency does not satisfy the wheel requirement")
+    return pinned[0]
+
+
+def wheel_inventory(dist: Path, version: str, python: dict) -> tuple[dict, dict]:
+    components, edges = {}, {}
     wheels = sorted(dist.glob("*.whl"))
     if not wheels:
         raise ValueError("release wheels missing")
@@ -173,17 +238,22 @@ def wheel_inventory(dist: Path, version: str) -> dict:
             metadata = BytesParser().parsebytes(archive.read(metadata_files[0]))
         if metadata["Version"] != version or metadata["Name"] != "plenora-database":
             raise ValueError("wheel identity differs from source")
-        # The SDK has no mandatory Python runtime dependencies. If one is
-        # introduced, its resolved graph must be added before publication.
-        if metadata.get_all("Requires-Dist", []):
-            raise ValueError("wheel runtime dependencies require a resolved SBOM graph")
+        # A mandatory Python runtime dependency enters the SBOM resolved: the
+        # declared range must map onto the single qualification pin, and the
+        # wheel gains the dependency edge. An unparseable declaration stops
+        # publication instead of passing unverified.
+        declared = metadata.get_all("Requires-Dist", [])
+        resolved = sorted(resolve_requirement(entry, python) for entry in declared)
         ref = "wheel:" + wheel.name
+        summary = "; ".join(declared) if declared else "none (wheel METADATA)"
         components[ref] = {
             "type": "library", "bom-ref": ref, "name": wheel.name, "version": version,
             "hashes": [{"alg": "SHA-256", "content": hashlib.sha256(wheel.read_bytes()).hexdigest()}],
-            "properties": [property_value("python-runtime-dependencies", "none (wheel METADATA)")],
+            "properties": [property_value("python-runtime-dependencies", summary)],
         }
-    return components
+        if resolved:
+            edges[ref] = set(resolved)
+    return components, edges
 
 
 def render(root: Path, dist: Path, artifact_bom: dict) -> dict:
@@ -192,7 +262,7 @@ def render(root: Path, dist: Path, artifact_bom: dict) -> dict:
     version = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
     cargo, edges = cargo_inventory(root)
     python = python_inventory(root)
-    wheels = wheel_inventory(dist, version)
+    wheels, wheel_edges = wheel_inventory(dist, version, python)
     supplied = index_references(bom.get("components", []), "bom-ref")
     for group in (cargo, python, wheels):
         if supplied.keys() & group.keys():
@@ -209,9 +279,10 @@ def render(root: Path, dist: Path, artifact_bom: dict) -> dict:
     # Native scanner edges remain valid; the inventory root identifies the
     # aggregate. Cargo edges represent the lock graph, including build/dev.
     dependencies = dependency_graph(bom.get("dependencies", []))
-    if dependencies.keys() & (edges.keys() | {root_ref}):
+    if dependencies.keys() & (edges.keys() | wheel_edges.keys() | {root_ref}):
         raise ValueError("duplicate SBOM dependency reference")
     dependencies.update(edges)
+    dependencies.update(wheel_edges)
     dependencies[root_ref] = set(supplied)
     bom["dependencies"] = [{"ref": ref, "dependsOn": sorted(values)} for ref, values in sorted(dependencies.items())]
     known = set(supplied) | {root_ref}
@@ -249,7 +320,9 @@ def validate(root: Path, dist: Path, bom: dict) -> None:
     }.items()):
         raise ValueError("SBOM identity mismatch")
     cargo, edges = cargo_inventory(root)
-    expected = cargo | python_inventory(root) | wheel_inventory(dist, version)
+    python = python_inventory(root)
+    wheels, wheel_edges = wheel_inventory(dist, version, python)
+    expected = cargo | python | wheels
     actual = index_references(bom["components"], "bom-ref")
     if root_ref in actual:
         raise ValueError("duplicate SBOM root reference")
@@ -261,6 +334,8 @@ def validate(root: Path, dist: Path, bom: dict) -> None:
         raise ValueError("SBOM aggregate graph incomplete or stale")
     if any(dependencies.get(ref) != values for ref, values in edges.items()):
         raise ValueError("SBOM Cargo graph incomplete or stale")
+    if any(dependencies.get(ref) != values for ref, values in wheel_edges.items()):
+        raise ValueError("SBOM wheel dependency graph incomplete or stale")
 
 
 if __name__ == "__main__":
