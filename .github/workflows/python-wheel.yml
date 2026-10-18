@@ -31,6 +31,7 @@ permissions:
 jobs:
   # ---------------- Linux (manylinux_2_34) ----------------
   linux:
+    needs: [crate-notices]
     name: build linux-x86_64
     runs-on: ubuntu-latest
     steps:
@@ -48,23 +49,28 @@ jobs:
             --manifest-path crates/plenora-database-py/Cargo.toml
           manylinux: 2_34
           rust-toolchain: '1.98.1'
+      - name: Dipendenze dei gate
+        run: python -m pip install -r requirements-self-tests.txt
       - name: Build CLI and qualify the Rust mapping
         shell: bash
         run: |
           cargo build --release --locked -p plenora-database-cli
           cargo test --locked -p plenora-database-core --test public_rust_surface_v1
-          cp target/release/plenora-database dist/plenora-database-linux-x86_64
+          python3 scripts/licenze_artefatto.py --profile cli-linux --binary target/release/plenora-database dist/plenora-database-linux-x86_64.zip
           version="$(grep '^version = ' crates/plenora-database-py/pyproject.toml | head -n1 | cut -d'"' -f2)"
           git archive --format=tar.gz \
             --prefix="plenora-database-tools-${version}/" \
             --output="dist/plenora-database-tools-${version}-source.tar.gz" \
             HEAD
+          python3 scripts/licenze_artefatto.py --profile source "dist/plenora-database-tools-${version}-source.tar.gz"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Install and verify wheel
         shell: bash
         run: |
+          python scripts/licenze_artefatto.py --profile wheel-linux dist/*.whl
+          python scripts/check-licenze-artefatto.py --profile wheel-linux dist/*.whl
           python -m pip install dist/*.whl
           python .github/scripts/verify_wheel.py
       # Dopo l'import, la suite offline verifica il comportamento:
@@ -79,10 +85,11 @@ jobs:
           path: |
             dist/*.whl
             dist/*-source.tar.gz
-            dist/plenora-database-linux-x86_64
+            dist/plenora-database-linux-x86_64.zip
 
   # ---------------- Windows (x86_64) ----------------
   windows:
+    needs: [crate-notices]
     name: build windows-x86_64
     runs-on: windows-latest
     steps:
@@ -99,17 +106,22 @@ jobs:
             --out dist
             --manifest-path crates/plenora-database-py/Cargo.toml
           rust-toolchain: '1.98.1'
+      - name: Dipendenze dei gate
+        run: python -m pip install -r requirements-self-tests.txt
       - name: Build CLI
         shell: pwsh
         run: |
           cargo build --release --locked -p plenora-database-cli
-          Copy-Item -LiteralPath target\release\plenora-database.exe -Destination dist\plenora-database-windows-x86_64.exe
+          python scripts/licenze_artefatto.py --profile cli-windows --binary target/release/plenora-database.exe dist/plenora-database-windows-x86_64.zip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Install and verify wheel
         shell: bash
         run: |
+          python scripts/licenze_artefatto.py --profile wheel-windows dist/*.whl
+          python scripts/check-licenze-artefatto.py --profile wheel-windows dist/*.whl
           python -m pip install dist/*.whl
           python .github/scripts/verify_wheel.py
       # Dopo l'import, la suite offline verifica il comportamento:
@@ -123,12 +135,13 @@ jobs:
           name: wheel-windows-x86_64
           path: |
             dist/*.whl
-            dist/plenora-database-windows-x86_64.exe
+            dist/plenora-database-windows-x86_64.zip
 
   # ---------------- Db2 runtime (Linux x86_64) ----------------
   # Questo non e il wheel standard: usa il client IBM del fixture e porta il
   # build tag PEP 427 `1db2`. Viene esportato solo dopo la qualifica live.
   db2-linux:
+    needs: [crate-notices]
     name: build and qualify db2-linux-x86_64
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -251,6 +264,22 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+      - name: Dipendenze del controllo avvisi
+        run: python -m pip install -r requirements-self-tests.txt
+      - name: Verifica avvisi degli artefatti scaricati
+        shell: bash
+        run: |
+          python scripts/check-licenze-artefatto.py --profile cli-linux dist/plenora-database-linux-x86_64.zip
+          python scripts/check-licenze-artefatto.py --profile cli-windows dist/plenora-database-windows-x86_64.zip
+          python scripts/check-licenze-artefatto.py --profile source dist/*-source.tar.gz
+          for wheel in dist/*.whl; do
+            case "$wheel" in
+              *-1db2-*) profile=wheel-db2-linux ;;
+              *win_amd64*) profile=wheel-windows ;;
+              *) profile=wheel-linux ;;
+            esac
+            python scripts/check-licenze-artefatto.py --profile "$profile" "$wheel"
+          done
       - name: Discover native artifact components
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
@@ -306,10 +335,15 @@ jobs:
         run: python3 -m pip install -r requirements-self-tests.txt
       - name: Validate the released CLI against the immutable contract pin
         run: |
-          chmod +x dist/plenora-database-linux-x86_64
+          python3 scripts/check-licenze-artefatto.py --profile cli-linux dist/plenora-database-linux-x86_64.zip
+          python3 scripts/check-licenze-artefatto.py --profile cli-windows dist/plenora-database-windows-x86_64.zip
+          python3 scripts/check-licenze-artefatto.py --profile source dist/*-source.tar.gz
+          mkdir -p "$RUNNER_TEMP/released-cli"
+          unzip dist/plenora-database-linux-x86_64.zip -d "$RUNNER_TEMP/released-cli"
+          chmod +x "$RUNNER_TEMP/released-cli/plenora-database"
           python3 scripts/check_public_contracts.py \
             --contracts .plenora-contracts \
-            --cli dist/plenora-database-linux-x86_64
+            --cli "$RUNNER_TEMP/released-cli/plenora-database"
       - name: Generate the immutable adoption manifest
         shell: bash
         run: |
@@ -318,8 +352,8 @@ jobs:
           for path in dist/*.whl; do
             artifacts+=(--artifact "$(basename "$path")|python_sdk|$path|sync,async")
           done
-          artifacts+=(--artifact "plenora-database-linux-x86_64|cli|dist/plenora-database-linux-x86_64")
-          artifacts+=(--artifact "plenora-database-windows-x86_64.exe|cli|dist/plenora-database-windows-x86_64.exe")
+          artifacts+=(--artifact "plenora-database-linux-x86_64.zip|cli|dist/plenora-database-linux-x86_64.zip")
+          artifacts+=(--artifact "plenora-database-windows-x86_64.zip|cli|dist/plenora-database-windows-x86_64.zip")
           source="$(find dist -maxdepth 1 -name 'plenora-database-tools-*-source.tar.gz' -print -quit)"
           artifacts+=(--artifact "$(basename "$source")|rust|$source")
           # Il binding runtime e il modulo `runtime_binding` del crate engine,
@@ -329,7 +363,7 @@ jobs:
           python3 scripts/render_adoption_manifest.py \
             --version "$version" \
             "${artifacts[@]}" \
-            --verification "python3 scripts/check_public_contracts.py --contracts .plenora-contracts --cli dist/plenora-database-linux-x86_64" \
+            --verification "python3 scripts/check_public_contracts.py --contracts .plenora-contracts --cli $RUNNER_TEMP/released-cli/plenora-database" \
             --verification "cargo test --locked -p plenora-database-core --test public_rust_surface_v1" \
             --verification "bash .github/scripts/offline_suite.sh"             --verification "cargo test --locked -p plenora-database-engine --test runtime_vectors" \
             --schema .plenora-contracts/schemas/adoption-manifest-v4.schema.json \
@@ -341,19 +375,39 @@ jobs:
         with:
           subject-path: |
             dist/*.whl
-            dist/plenora-database-linux-x86_64
-            dist/plenora-database-windows-x86_64.exe
+            dist/plenora-database-linux-x86_64.zip
+            dist/plenora-database-windows-x86_64.zip
             dist/*-source.tar.gz
       - name: Attest the release SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             dist/*.whl
-            dist/plenora-database-linux-x86_64
-            dist/plenora-database-windows-x86_64.exe
+            dist/plenora-database-linux-x86_64.zip
+            dist/plenora-database-windows-x86_64.zip
             dist/*-source.tar.gz
           sbom-path: dist/plenora-database-${{ github.event.release.tag_name }}.sbom.cdx.json
       - name: Upload release artifacts, adoption manifest and SBOM
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*
+
+  crate-notices:
+    name: avvisi crate offline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # 1.98.1
+        with:
+          toolchain: '1.98.1'
+      - name: Popola cache vincolata al lock
+        run: cargo fetch --locked
+      - name: Dipendenze dei self-test
+        run: python -m pip install -r requirements-self-tests.txt
+      - name: Regressioni e copertura degli avvisi
+        run: |
+          python scripts/test_avvisi_crate.py
+          python scripts/avvisi_crate.py

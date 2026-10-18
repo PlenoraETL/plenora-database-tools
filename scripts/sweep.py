@@ -41,6 +41,8 @@ ROOT = Path(__file__).resolve().parents[1]
 #: `test_ci_workflows.py` pretende che questa lista copra i passi statici di
 #: `rust-ci.yml`, cosi non puo restare indietro in silenzio.
 STEPS: tuple[tuple[str, list[str]], ...] = (
+    ("avvisi crate", [sys.executable, "scripts/avvisi_crate.py"]),
+    ("test avvisi crate", [sys.executable, "scripts/test_avvisi_crate.py"]),
     ("cargo fmt", ["cargo", "fmt", "--all", "--", "--check"]),
     (
         "cargo fmt fuzz",

@@ -346,6 +346,8 @@ python scripts\phase0_validate.py          # contratti, esempi, golden, domini
 python scripts\check_docs.py               # coerenza strutturale dei documenti
 python scripts\check_comments.py           # standard dei commenti
 python scripts\check_dependency_pins.py    # pin Cargo esatti e motivati, MSRV
+python scripts\avvisi_crate.py             # avvisi Rust e grafi di release, offline
+python scripts\test_avvisi_crate.py        # regressioni del confezionamento e del gate
 python scripts\check_test_layout.py         # test Rust separati dal prodotto
 python scripts\check_cargo_deny.py          # supply chain in Docker, tool fissato
 python scripts\check_mysql_reference.py --static
@@ -401,3 +403,7 @@ Le regole complete sono in [`AGENTS.md`](AGENTS.md).
 ## Licenza
 
 Software proprietario. I termini sono in [`LICENSE`](LICENSE).
+
+Gli avvisi dei crate Rust viaggiano negli archivi CLI, nei wheel e nel
+sorgente di release. Raccolta offline, confezionamento e controllo degli
+artefatti sono descritti in [`docs/RELEASE.md`](docs/RELEASE.md).

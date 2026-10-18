@@ -321,6 +321,9 @@ def build_and_run_python_live(environment: dict[str, str]) -> str:
         wheels = list(wheel_dir.glob("*.whl"))
         if len(wheels) != 1:
             raise RuntimeError("build Oracle non ha prodotto esattamente un wheel")
+        profile = "wheel-windows" if sys.platform == "win32" else "wheel-linux"
+        run([sys.executable, str(ROOT / "scripts/licenze_artefatto.py"),
+             "--profile", profile, str(wheels[0])])
         run(
             [
                 sys.executable,
