@@ -71,12 +71,40 @@ checksum = "''' + 'a' * 64 + '''"
 
     def test_unresolved_python_runtime_or_qualification_dependency_blocks_release(self):
         self.wheel('Requires-Dist: new-runtime>=1\n')
-        with self.assertRaisesRegex(ValueError, 'resolved SBOM graph'):
+        with self.assertRaisesRegex(ValueError, 'not pinned exactly once'):
             sbom.render(self.root, self.dist, self.native)
         self.wheel()
         (self.root / 'requirements-sdk-tests.txt').write_text('new-package>=1\n')
         with self.assertRaisesRegex(ValueError, 'unresolved Python'):
             sbom.render(self.root, self.dist, self.native)
+
+    def test_wheel_runtime_dependency_resolves_to_the_pin_with_an_edge(self):
+        self.wheel('Requires-Dist: pyarrow<26,>=25\n')
+        result = sbom.render(self.root, self.dist, self.native)
+        sbom.validate(self.root, self.dist, result)
+        components = {c['name']: c for c in result['components']}
+        edges = {d['ref']: d['dependsOn'] for d in result['dependencies']}
+        wheel_ref = components['sdk.whl']['bom-ref']
+        self.assertEqual(edges[wheel_ref], [components['pyarrow']['bom-ref']])
+        self.assertIn('pyarrow<26,>=25', components['sdk.whl']['properties'][0]['value'])
+        # Un arco manomesso non passa il --check.
+        broken = {d['ref']: d for d in result['dependencies']}
+        broken[wheel_ref]['dependsOn'] = []
+        with self.assertRaisesRegex(ValueError, 'wheel dependency graph'):
+            sbom.validate(self.root, self.dist, result)
+
+    def test_wheel_requirement_out_of_range_or_unsupported_blocks_release(self):
+        for declared, message in (
+            ('pyarrow>=26', 'does not satisfy'),
+            ('pyarrow==25.0.2', 'does not satisfy'),
+            ('pyarrow>=25; python_version > "3"', 'unsupported'),
+            ('pyarrow[extra]>=25', 'unsupported'),
+            ('pyarrow~=25.0', 'unsupported'),
+        ):
+            with self.subTest(declared=declared):
+                self.wheel('Requires-Dist: ' + declared + '\n')
+                with self.assertRaisesRegex(ValueError, message):
+                    sbom.render(self.root, self.dist, self.native)
 
     def test_duplicate_and_dangling_references_are_rejected(self):
         result = sbom.render(self.root, self.dist, self.native)
