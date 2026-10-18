@@ -1050,7 +1050,7 @@ class PythonWheelWorkflowTests(unittest.TestCase):
         self.assertIn("-source.tar.gz", linux)
         self.assertIn("public_rust_surface_v1", linux)
         self.assertIn("plenora-database-linux-x86_64", linux)
-        self.assertIn("plenora-database-windows-x86_64.exe", windows)
+        self.assertIn("plenora-database-windows-x86_64.zip", windows)
         self.assertIn("scripts/render_adoption_manifest.py", release)
         self.assertIn("|rust|", release)
         self.assertIn("|cli|", release)
@@ -1724,6 +1724,7 @@ class TheSweepCoversTheFastCi(unittest.TestCase):
 
     #: I passi della CI che la spazzata non esegue, e perche.
     DECLARED_ABSENT = {
+        "cargo:fetch": "prepara la cache in CI; lo sweep e il gate avvisi restano offline",
         "pip": "installa le dipendenze dei self-test; su una macchina di sviluppo ci sono gia",
         "wheel": "costruisce e installa il wheel: vuole maturin e minuti, non secondi",
         "offline_suite": "gira sul wheel appena installato, quindi dipende dal passo sopra",

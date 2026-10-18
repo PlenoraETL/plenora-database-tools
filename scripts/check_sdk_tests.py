@@ -655,6 +655,8 @@ def build_artifacts(destination: Path) -> dict[str, object]:
         f"/tmp/v/bin/pip install -q -r /workspace/{BUILD_REQUIREMENTS.name}; "
         "cd /workspace/crates/plenora-database-py; "
         f"/tmp/v/bin/maturin build --release --locked --out {ARTIFACT_MOUNT}; "
+        f"/tmp/v/bin/python /workspace/scripts/licenze_artefatto.py --profile wheel-linux {ARTIFACT_MOUNT}/*.whl; "
+        f"/tmp/v/bin/python /workspace/scripts/licenze_artefatto.py --profile cli-sdk-linux --binary {ARTIFACT_MOUNT}/{CLI_BINARY_NAME} {ARTIFACT_MOUNT}/plenora-database-linux.zip; "
         f'echo "{BUILD_MARKER}'
         "$(/tmp/v/bin/maturin --version | cut -d' ' -f2) "
         "$(rustc --version | cut -d' ' -f2)\""
