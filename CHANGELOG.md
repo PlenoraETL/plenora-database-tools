@@ -6,7 +6,54 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
-## Non rilasciato
+## 8.0.0 — 2026-10-18
+
+Major: l'adozione del catalogo e del profilo database-tools v2 cambia le
+operazioni pubbliche, che passano alla versione 2 (#119).
+
+### Incompatibilità e migrazione
+
+- **Contratti v2** (#119). Il pin di `plenora-contracts` passa a `3aec9f7`,
+  con Public Catalogs 2.0, Runtime Binding 2.0 e il catalogo e profilo
+  database-tools v2. I consumer devono allineare le operazioni richieste e
+  i contratti alla versione 2. La versione wire e i selettori del runtime
+  restano 1: sono distinti dalla versione del contratto dichiarata in discovery.
+- **Risultato query del runtime limitato a 8 MiB** (#119), misurati sul
+  JSON UTF-8 compatto; l'host può restringere il limite. Il superamento è
+  `resource_limit`, mai un successo troncato. Il manifest dichiara la
+  deviazione DB-RT-003: il limite non è esprimibile nella discovery chiusa
+  `attributes-v1`. Dichiara anche SURF-006 (query runtime con solo riepilogo
+  JSON, senza percorso Arrow) e conserva le deviazioni SURF-007.
+- **Esito incerto dopo l'invio del COMMIT** (#114). I consumer devono
+  leggere l'envelope d'errore e gli assi di recovery invece di trattare
+  l'esito come un risultato riuscito. La CLI usa i codici di CLI-2.0 per
+  la causa osservata: 5 per `io`, `timeout` o `protocol`, 130 per
+  `cancelled`, 70 per `internal`; non esiste un unico codice per ogni
+  commit ignoto. Dettagli e migrazione sono nelle correzioni sotto.
+
+### Novità
+
+- **Discovery degli effetti locali** (#119). `database.read` e
+  `database.query` della CLI dichiarano `plenora.surface_side_effects`
+  con `{"cli":"local"}`; il gate black-box lo verifica sul binario.
+  Una pulizia fallita dopo la pubblicazione riporta soltanto i token
+  `cleanup`/`committed`/`never`, senza payload nel messaggio, e conserva
+  l'output pubblicato.
+- **Avvisi di licenza per ogni crate linkato** (#120), negli archivi CLI,
+  nei wheel e nel sorgente di release. Raccolta offline e gate sugli
+  artefatti entrano nel workflow di pubblicazione; i testi supplementari
+  richiedono origine HTTPS e un blob Git verificato dai byte conservati.
+  Guida: `docs/RELEASE.md`.
+- **Interoperabilità dei formati** (#116) e **vocabolario delle geometrie**
+  (#118): IPC file e stream in ingresso, PyCapsule nello SDK, query Arrow
+  in uscita dalla CLI e metadati geometrici conformi, descritti sotto.
+- **Dipendenze e protocollo Oracle** (#114, #115). `rustls` passa a
+  0.23.46. Il fork `oracle-rs` corregge ricomposizione TNS, terminali TTC,
+  bind e LOB, con scambi protetti dall'invio al completamento e fetch
+  limitati; gli errori di fetch non diventano fine dati. La dipendenza
+  diretta dal fork vale anche per i consumatori esterni.
+
+### Correzioni Oracle
 
 - **Oracle: prosecuzione del cursore e reset degli errori.** La prima pagina
   non dichiara piu la fine prima del completamento Oracle; la regressione live
@@ -50,7 +97,8 @@ riassumono le note di quelle release.
   `declared_unresolved` senza identificatore né ordine degli assi. Limiti dichiarati: una
   colonna `numeric` nel risultato di una query PostgreSQL e rifiutata come
   `unsupported` (non c'e ancora una mappatura esatta per il risultato di una
-  query); senza un `order_by` totale l'ordine delle righe non e ripetibile.- **`write` della CLI accetta l'Arrow IPC stream**, oltre al file, come
+  query); senza un `order_by` totale l'ordine delle righe non e ripetibile.
+- **`write` della CLI accetta l'Arrow IPC stream**, oltre al file, come
   dichiara il catalogo. Il formato si riconosce dai primi byte (`ARROW1` per
   il file, il marcatore di continuazione per lo stream); un inizio diverso,
   compreso lo stream legacy senza marcatore, è un errore esplicito, e uno
