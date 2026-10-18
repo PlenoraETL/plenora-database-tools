@@ -291,6 +291,11 @@
     "aws-lc-sys-0.45.0": {
       "files": [
         {
+          "file": "LICENSE",
+          "origin": "cargo-package",
+          "sha256": "728536b4160e051f86d7c9c388f704866b3d512cd7df97ac3516c65279523c4e"
+        },
+        {
           "file": "aws-lc/LICENSE",
           "origin": "cargo-package",
           "sha256": "977c541bd25ffe36975dde25c028c0cd15ddf3d08243983b58e8a6a3d9447523"
@@ -299,11 +304,6 @@
           "file": "aws-lc/third_party/fiat/LICENSE",
           "origin": "cargo-package",
           "sha256": "43e358d7b6eb109d0f51f7b3a090fd82607965767c25fadee39e922475de2061"
-        },
-        {
-          "file": "LICENSE",
-          "origin": "cargo-package",
-          "sha256": "728536b4160e051f86d7c9c388f704866b3d512cd7df97ac3516c65279523c4e"
         }
       ],
       "license": "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)",

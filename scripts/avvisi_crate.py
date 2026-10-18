@@ -74,7 +74,10 @@ def package_files(package: dict) -> list[Path]:
         if not path.is_file():
             raise ValueError(f"license-file assente: {package['name']}")
         files.add(path)
-    return sorted(files)
+    # Ordine per byte del percorso POSIX: il confronto fra Path su Windows
+    # ignora le maiuscole, e per aws-lc-sys (LICENSE accanto a aws-lc/...)
+    # produceva un registro con un ordine che Linux non riproduce.
+    return sorted(files, key=Path.as_posix)
 
 
 def collect(previous: dict) -> tuple[dict, dict[str, bytes]]:
