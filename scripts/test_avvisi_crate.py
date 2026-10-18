@@ -116,11 +116,39 @@ class Notices(unittest.TestCase):
 
         supplementary = b"Permission is hereby granted...\n"
         (crate / "LICENSE-MIT").write_bytes(supplementary)
-        self.registry["crates"]["referral-1"]["files"].append(
-            {"file": "LICENSE-MIT", "sha256": notices.digest(supplementary),
-             "origin": "https://example.invalid/LICENSE-MIT"},
-        )
+        entry = {"file": "LICENSE-MIT", "sha256": notices.digest(supplementary),
+                 "origin": "https://example.invalid/LICENSE-MIT",
+                 "git_blob": notices.git_blob_digests(supplementary)[0]}
+        self.registry["crates"]["referral-1"]["files"].append(entry)
         self.assertEqual(notices.validate(self.registry), [])
+
+    def test_supplementary_without_provenance_rejected(self):
+        """Un supplementare entra solo con origin https e blob git verificato.
+
+        L'impronta del blob si ricalcola offline dai byte conservati (forma LF
+        o CRLF): un origin vuoto, un blob assente o un blob che non e' quello
+        del testo sono tre modi di dichiarare una provenienza che non c'e'.
+        """
+        text = b"MIT terms\n"
+        (self.texts / "example-1" / "LICENSE-EXTRA").write_bytes(text)
+        entry = {"file": "LICENSE-EXTRA", "sha256": notices.digest(text),
+                 "origin": "https://example.invalid/LICENSE-EXTRA",
+                 "git_blob": notices.git_blob_digests(text)[0]}
+        self.registry["crates"]["example-1"]["files"].append(entry)
+        self.assertEqual(notices.validate(self.registry), [])
+
+        for field, value in (
+            ("origin", ""), ("origin", "git@example.invalid:x"),
+            ("git_blob", ""), ("git_blob", "0" * 40),
+        ):
+            with self.subTest(field=field, value=value):
+                broken = dict(entry)
+                broken[field] = value
+                self.registry["crates"]["example-1"]["files"][-1] = broken
+                self.assertTrue(any(
+                    "provenienza" in error or "blob git" in error
+                    for error in notices.validate(self.registry)
+                ))
 
     def test_obsolete_file_and_crate_rejected(self):
         (self.texts / "extra").write_bytes(b"obsolete")

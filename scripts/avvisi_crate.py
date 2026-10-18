@@ -38,6 +38,41 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
 
 
+def git_blob_digests(data: bytes) -> tuple[str, str]:
+    """Le impronte git possibili del testo conservato.
+
+    L'impronta del blob e' sui byte esatti dell'upstream, ma il checkout
+    locale normalizza i fine riga: si ricostruiscono le due forme pure, LF e
+    CRLF, e il blob dichiarato deve essere una delle due. Un upstream a fine
+    riga misti non si ricostruisce, e la copia va rifatta conservando i byte.
+    """
+    lf = data.replace(b"\r\n", b"\n")
+    crlf = lf.replace(b"\n", b"\r\n")
+    return tuple(
+        hashlib.sha1(b"blob %d\x00" % len(v) + v).hexdigest() for v in (lf, crlf)
+    )
+
+
+BLOB = re.compile(r"[0-9a-f]{40}")
+
+
+def provenance_errors(key: str, entry: dict, data: bytes) -> list[str]:
+    """Un supplementare senza provenienza verificabile non entra negli avvisi.
+
+    `origin` deve nominare l'URL https del testo e `git_blob` l'impronta che
+    Git da' a quel blob: cosi' il gate prova offline, dai soli byte
+    conservati, che il testo e' quello che l'origine dichiara.
+    """
+    name = entry.get("file", "")
+    origin = str(entry.get("origin", ""))
+    blob = str(entry.get("git_blob", ""))
+    if not origin.startswith("https://") or not BLOB.fullmatch(blob):
+        return [f"{key}/{name}: supplementare senza provenienza (origin https e git_blob)"]
+    if blob not in git_blob_digests(data):
+        return [f"{key}/{name}: il testo non e' il blob git dichiarato dall'origine"]
+    return []
+
+
 def encoded(value: object) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
 
@@ -117,6 +152,9 @@ def collect(previous: dict) -> tuple[dict, dict[str, bytes]]:
             data = (TEXTS / key / entry["file"]).read_bytes()
             if digest(data) != entry["sha256"]:
                 raise ValueError(f"{key}: impronta del testo supplementare diversa")
+            problems = provenance_errors(key, entry, data)
+            if problems:
+                raise ValueError(problems[0])
             record["files"].append(entry)
             contents[f"{key}/{entry['file']}"] = data
         if not record["files"]:
@@ -174,6 +212,8 @@ def validate(registry: dict) -> list[str]:
             path = TEXTS / key / name
             if not path.is_file() or not path.read_bytes().strip() or digest(path.read_bytes()) != entry["sha256"]:
                 errors.append(f"{key}/{name}: assente, vuoto o impronta diversa")
+            elif entry.get("origin") != "cargo-package":
+                errors += provenance_errors(key, entry, path.read_bytes())
     actual = {p.relative_to(TEXTS).as_posix() for p in TEXTS.rglob("*") if p.is_file()}
     if actual != expected:
         errors.append("testi versionati mancanti o non dichiarati dal registro")
