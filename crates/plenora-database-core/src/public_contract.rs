@@ -352,9 +352,15 @@ pub fn public_capabilities(
                 deadline: true,
                 idempotency_key: false,
             },
-            attributes: (operation.id == "database.write")
-                .then(|| provider.map(write_attributes))
-                .flatten(),
+            attributes: if surface == PublicSurface::Cli
+                && matches!(operation.id, "database.read" | "database.query")
+            {
+                Some(json!({"plenora.surface_side_effects": {"cli": "local"}}))
+            } else if operation.id == "database.write" {
+                provider.map(write_attributes)
+            } else {
+                None
+            },
         })
         .collect();
 

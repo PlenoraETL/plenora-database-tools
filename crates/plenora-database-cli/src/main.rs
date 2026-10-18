@@ -1893,6 +1893,20 @@ async fn write_stream_to_ipc_as(
     cancellation: &CancellationToken,
     format: IpcOutput,
 ) -> CliResult<serde_json::Value> {
+    write_stream_to_ipc_with_cleanup(output, stream, cancellation, format, |path| {
+        fs::remove_file(path)
+    })
+    .await
+}
+
+/// La rimozione e iniettabile per provare i fallimenti dopo la pubblicazione.
+async fn write_stream_to_ipc_with_cleanup(
+    output: &Path,
+    stream: &mut dyn BatchStream,
+    cancellation: &CancellationToken,
+    format: IpcOutput,
+    remove_temporary: impl Fn(&Path) -> std::io::Result<()>,
+) -> CliResult<serde_json::Value> {
     // Uno schema che non rispetta il vocabolario non diventa un artefatto: il
     // consumatore lo rifiuterebbe, o lo leggerebbe a meta.
     plenora_database_core::field_contract::validate_published_schema(&stream.schema())?;
@@ -1917,7 +1931,7 @@ async fn write_stream_to_ipc_as(
         Ok(counts) => counts,
         Err(mut error) => {
             drop(file);
-            match fs::remove_file(&temporary) {
+            match remove_temporary(&temporary) {
                 Ok(()) => {
                     error.database_error_mut().remote_effect = RemoteEffect::RolledBack;
                     return Err(error);
@@ -1952,7 +1966,7 @@ async fn write_stream_to_ipc_as(
             RetryDisposition::Never,
             format!("pubblicazione Arrow IPC fallita: {}", error.kind()),
         );
-        return match fs::remove_file(&temporary) {
+        return match remove_temporary(&temporary) {
             Ok(()) => {
                 publish_error.database_error_mut().remote_effect = RemoteEffect::RolledBack;
                 Err(publish_error)
@@ -1970,11 +1984,15 @@ async fn write_stream_to_ipc_as(
             )),
         };
     }
-    let staging_cleanup = if fs::remove_file(&temporary).is_ok() {
-        "complete"
-    } else {
-        "required"
-    };
+    remove_temporary(&temporary).map_err(|error| {
+        local_artifact_error(
+            ErrorCategory::Io,
+            ErrorPhase::Cleanup,
+            RemoteEffect::Committed,
+            RetryDisposition::Never,
+            staging_cleanup_failure("artifact pubblicato; cleanup fallito", &temporary, &error),
+        )
+    })?;
     let durability = if sync_parent_directory(parent) {
         "confirmed"
     } else {
@@ -1987,7 +2005,7 @@ async fn write_stream_to_ipc_as(
         "batches": batches,
         "rows": rows,
         "durability": durability,
-        "staging_cleanup": staging_cleanup,
+        "staging_cleanup": "complete",
     }))
 }
 

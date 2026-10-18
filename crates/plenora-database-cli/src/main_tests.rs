@@ -1140,3 +1140,54 @@ async fn a_non_conforming_geometry_schema_is_never_published() {
         assert!(partial_artifacts(&output).is_empty());
     }
 }
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn published_ipc_cleanup_failure_is_committed_and_never_retried() {
+    for format in [IpcOutput::File, IpcOutput::Stream] {
+        let directory = TestDirectory::new("cleanup-failure");
+        let output = directory.output();
+        let mut stream = stream_with_outcomes(VecDeque::new());
+        let batch = test_batch(stream.schema());
+        stream.outcomes = VecDeque::from([Ok(Some(batch)), Ok(None)]);
+        let error = write_stream_to_ipc_with_cleanup(
+            &output,
+            &mut stream,
+            &CancellationToken::new(),
+            format,
+            |temporary| {
+                assert!(output.exists(), "publication precedes cleanup");
+                assert_eq!(fs::read(temporary).unwrap(), fs::read(&output).unwrap());
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "SECRET OS payload",
+                ))
+            },
+        )
+        .await
+        .expect_err("local residue must fail after publication");
+        let envelope: serde_json::Value = serde_json::from_str(&error.to_json().unwrap()).unwrap();
+        assert_eq!(envelope["status"], "error");
+        assert_eq!(envelope["error"]["category"], "io");
+        assert_eq!(envelope["error"]["phase"], "cleanup");
+        assert_eq!(envelope["error"]["remote_effect"], "committed");
+        assert_eq!(envelope["error"]["retry"]["kind"], "never");
+        assert!(!envelope.to_string().contains("SECRET"));
+        assert!(!envelope
+            .to_string()
+            .contains(&output.to_string_lossy().to_string()));
+        assert_eq!(partial_artifacts(&output).len(), 1);
+        let file = File::open(&output).unwrap();
+        let rows: usize = match format {
+            IpcOutput::File => FileReader::try_new(file, None)
+                .unwrap()
+                .map(|batch| batch.unwrap().num_rows())
+                .sum(),
+            IpcOutput::Stream => arrow_ipc::reader::StreamReader::try_new(file, None)
+                .unwrap()
+                .map(|batch| batch.unwrap().num_rows())
+                .sum(),
+        };
+        assert_eq!(rows, 2, "published result remains readable");
+    }
+}

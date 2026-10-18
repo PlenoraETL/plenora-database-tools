@@ -65,6 +65,12 @@
   "catalog": "catalogs/database-tools-v2.json",
   "requirements": [
     {
+      "rule": "SB-001",
+      "status": "implemented",
+      "scope": "database.read and database.query CLI materialization",
+      "evidence": "CLI discovery declares plenora.surface_side_effects cli:local; scripts/check_public_contracts.py checks both operations against the built artifact."
+    },
+    {
       "rule": "CAT-001",
       "status": "implemented",
       "scope": "component adoption",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 106165,
-  "max_code_lines": 87481,
-  "rationale": "Correzione del protocollo TTC nel provider Oracle: ricomposizione multi-pacchetto, terminali per capability, budget di memoria. Soglie riallineate alla misura di scripts/code_size.py; conteggio e perimetro invariati."
+  "max_physical_lines": 106244,
+  "max_code_lines": 87543,
+  "rationale": "Adozione di plenora-contracts 3aec9f7 (catalogo database-tools v2) con i rilievi del secondo lettore: esito della pulizia dopo la pubblicazione senza payload (cleanup/committed/never) e discovery con plenora.surface_side_effects per read e query (SB-001). Soglie riallineate alla misura di scripts/code_size.py; conteggio e perimetro invariati."
 }

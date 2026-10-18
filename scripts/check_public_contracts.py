@@ -141,6 +141,10 @@ def check(contracts: Path, cli: Path) -> dict[str, int]:
         raise RuntimeError("invocazione invalida senza categoria invalid_plan")
 
     advertised = {item["id"]: item for item in capabilities["result"]["operations"]}
+    for operation in ("database.read", "database.query"):
+        attributes = advertised.get(operation, {}).get("attributes", {})
+        if attributes.get("plenora.surface_side_effects") != {"cli": "local"}:
+            raise RuntimeError(f"SB-001: {operation} omette l'effetto locale della CLI")
     selected = {
         item["id"]: item
         for item in catalog["operations"]

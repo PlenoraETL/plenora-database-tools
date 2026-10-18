@@ -61,3 +61,26 @@ fn runtime_catalog_lists_the_operations_bound_by_runtime_v1() {
         .iter()
         .all(|operation| operation.surfaces == [PublicSurface::Runtime]));
 }
+
+#[test]
+fn materialization_effect_is_declared_only_on_cli() {
+    for surface in [
+        PublicSurface::Cli,
+        PublicSurface::Rust,
+        PublicSurface::PythonSdk,
+        PublicSurface::Runtime,
+    ] {
+        let document = public_capabilities(surface, "fixture", None);
+        for id in ["database.read", "database.query"] {
+            let operation = document
+                .operations
+                .iter()
+                .find(|operation| operation.id == id)
+                .unwrap();
+            assert_eq!(operation.side_effect, PublicSideEffect::None);
+            let expected = (surface == PublicSurface::Cli)
+                .then(|| json!({"plenora.surface_side_effects": {"cli": "local"}}));
+            assert_eq!(operation.attributes, expected);
+        }
+    }
+}
