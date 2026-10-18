@@ -146,6 +146,7 @@ impl BatchStream for Batches {
 enum WriteScript {
     Committed,
     CommitOutcomeUnknown,
+    CommitCause(ErrorCategory),
     /// Cio che gli adapter reali restituiscono su un commit senza conferma:
     /// un `Ok` con lo stato `outcome_unknown`, non un `Err`.
     UnknownOutcomeDocument,
@@ -153,6 +154,7 @@ enum WriteScript {
 
 /// Provider `postgres` scriptato con gli esiti dei vettori.
 struct Scripted {
+    query_padding: usize,
     calls: Arc<Calls>,
     write: WriteScript,
 }
@@ -256,9 +258,22 @@ impl Provider for Scripted {
         _: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
         self.calls.record("provider.query");
-        Box::pin(async {
+        let padding = self.query_padding;
+        Box::pin(async move {
             Ok(Box::new(Batches {
-                schema: id_schema(),
+                schema: if padding == 0 {
+                    id_schema()
+                } else {
+                    Arc::new(plenora_database_core::arrow::Schema::new(vec![Field::new(
+                        "id",
+                        DataType::Int64,
+                        false,
+                    )
+                    .with_metadata(std::collections::HashMap::from([(
+                        "padding".to_owned(),
+                        "x".repeat(padding),
+                    )]))]))
+                },
                 batches: vec![id_batch()],
             }) as Box<dyn BatchStream>)
         })
@@ -300,6 +315,20 @@ impl Provider for Scripted {
         let script = self.write;
         Box::pin(async move {
             match script {
+                WriteScript::CommitCause(category) => {
+                    let mut outcome: WriteOutcome = serde_json::from_value(json!({
+                        "schema_version": 2, "status": "outcome_unknown",
+                        "execution_id": if category == ErrorCategory::Io { "vector-execution-2" } else { "vector-execution-3" },
+                        "provider": "postgres",
+                        "rows": {"received": 1, "confirmed": 0, "inserted": null, "updated": null,
+                                 "deleted": null, "failed": 0, "skipped": 0},
+                        "recovery": {"last_certain_phase": "commit_requested",
+                                     "automatic_retry_allowed": false, "idempotency_key": null,
+                                     "staging_object": null, "verification_action": "verify remote state"}
+                    })).expect("outcome");
+                    outcome.recovery.as_mut().expect("recovery").cause = Some(category);
+                    Ok(outcome)
+                }
                 WriteScript::Committed => Ok(serde_json::from_value(json!({
                     "schema_version": 2,
                     "status": "committed",
@@ -342,6 +371,7 @@ impl Provider for Scripted {
 // --------------------------------------------------------------- resolver
 
 struct Host {
+    query_padding: usize,
     calls: Arc<Calls>,
     documents: BTreeMap<String, Vec<u8>>,
     sink: Arc<Mutex<Vec<u8>>>,
@@ -381,6 +411,7 @@ impl Host {
             "transaction_profile": "single_transaction"
         });
         Self {
+            query_padding: 0,
             calls: Arc::new(Calls::default()),
             documents: [
                 (READ_REFERENCE, read),
@@ -410,6 +441,7 @@ impl ConnectionResolver for Host {
             assert_eq!(target.secret_environment, SECRET_REFERENCE);
             Ok(RuntimeConnection {
                 provider: Arc::new(Scripted {
+                    query_padding: self.query_padding,
                     calls: Arc::clone(&self.calls),
                     write: self.write,
                 }),
@@ -574,7 +606,7 @@ fn as_vector(result: &RuntimeResult, payload: &Value) -> Value {
 }
 
 /// Operazione, versione, output contract e correlazione del risultato sono
-/// quelli del vettore (RB §6, RT-012).
+/// quelli del vettore (RB Â§6, RT-012).
 fn assert_result_metadata(vector: &Value, result: &RuntimeResult) {
     let metadata = serde_json::to_value(&result.metadata).expect("json");
     for key in [
@@ -603,7 +635,7 @@ fn evidence(name: &str, document: &Value) {
 
 #[test]
 fn runtime_discovery_matches_the_pinned_catalog_and_bindings() {
-    let catalog = upstream("catalogs/database-tools-v1.json");
+    let catalog = upstream("catalogs/database-tools-v2.json");
     let bindings = upstream("bindings/runtime-v1.json");
     let document = runtime_capabilities();
     evidence(
@@ -1031,7 +1063,7 @@ fn an_unreadable_message_still_gets_an_error_result() {
 }
 
 /// Una chiave `plenora.*` che il binding non riserva si ignora, come ogni
-/// membro facoltativo sconosciuto (RB §9): non e un alias e non cambia
+/// membro facoltativo sconosciuto (RB Â§9): non e un alias e non cambia
 /// l'esito. Ogni grafia RFC 3339 di UTC della deadline e accettata (RT-021).
 #[test]
 fn unknown_plenora_keys_are_ignored_and_utc_spellings_accepted() {
@@ -1394,28 +1426,7 @@ fn a_repeated_key_in_the_invocation_is_rejected() {
     );
 }
 
-// ------------------------------------------------- sonde proposte (#21)
-
-/// Un file delle sonde proposte, verificato contro il proprio SHA-256.
-///
-/// Le sonde `vectors/runtime-probes-v1` vengono da `plenora-contracts` #21
-/// (`4890d27`): sono **proposte, non ancora normative**, e il pin di adozione
-/// resta `1e902df`. Si eseguono adesso perche, quando la #21 entra in `main`,
-/// l'adozione sia immediata.
-fn proposed(name: &str) -> Value {
-    let root = contracts_root().join("upstream/proposed");
-    let source = read_json(&root.join("source.json"));
-    assert_eq!(source["status"], "proposed");
-    let bytes = fs::read(root.join(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
-    assert_eq!(
-        sha256_hex(&bytes),
-        source["files"][name]["sha256"]
-            .as_str()
-            .expect("sha256 dichiarato"),
-        "{name}: copia diversa dalla sonda fissata"
-    );
-    serde_json::from_slice(&bytes).expect("JSON")
-}
+// Sonde normative RT-016..RT-022 del pin adottato.
 
 /// Ogni sonda di `runtime-probes-v1` (RT-016..RT-022) produce il rifiuto che
 /// dichiara. Le sonde su `database-read-request` si eseguono come sono; le
@@ -1424,8 +1435,8 @@ fn proposed(name: &str) -> Value {
 /// quelli attesi, e i metadati riflessi sono quelli della richiesta database
 /// dove la sonda riflette il valore della propria base.
 #[test]
-fn proposed_runtime_probes_are_rejected_as_declared() {
-    let root = contracts_root().join("upstream/proposed");
+fn normative_runtime_probes_are_rejected_as_declared() {
+    let root = contracts_root().join("upstream");
     let source = read_json(&root.join("source.json"));
     let probes = source["files"]
         .as_object()
@@ -1438,10 +1449,10 @@ fn proposed_runtime_probes_are_rejected_as_declared() {
     let ours = read_metadata();
     let host = Host::new(WriteScript::Committed);
     for name in probes {
-        let probe = proposed(&name);
+        let probe = upstream(&name);
         assert_eq!(probe["contract"], "plenora-runtime-probe-v1");
         let base_name = probe["base"].as_str().expect("base");
-        let base = proposed(&format!("runtime-v1/{base_name}"));
+        let base = upstream(&format!("runtime-v1/{base_name}"));
         let mut metadata = ours.clone();
         let mutation = probe["mutation"].as_object().expect("mutazione");
         if let Some(set) = mutation.get("set").and_then(Value::as_object) {
@@ -1491,5 +1502,140 @@ fn proposed_runtime_probes_are_rejected_as_declared() {
             wanted.insert(key.clone(), value);
         }
         assert_eq!(*reflected, wanted, "{name}");
+    }
+}
+
+/// ERR-016 attraversa anche il percorso `Ok(outcome_unknown)` dei provider.
+#[test]
+fn commit_cause_vectors_preserve_unknown_effect_and_recovery() {
+    for (name, category) in [
+        ("database-write-commit-io-error.json", ErrorCategory::Io),
+        (
+            "database-write-commit-timeout-error.json",
+            ErrorCategory::Timeout,
+        ),
+    ] {
+        let vector = upstream(&format!("runtime-v1/{name}"));
+        let host = Host::new(WriteScript::CommitCause(category));
+        let metadata = request_metadata(
+            "database.write",
+            "plenora-database-write-input-v1",
+            "018f3d84-7b2c-7f00-8000-000000000203",
+            vector["metadata"]["plenora.trace.correlation_id"]
+                .as_str()
+                .expect("correlation"),
+        );
+        let request = invocation(
+            &json!(JSON_CONTENT_TYPE),
+            &metadata,
+            &with(
+                target_payload(),
+                &json!({"operation_path": WRITE_REFERENCE}),
+            ),
+        );
+        let result = invoke(&host, &request);
+        assert!(result.is_error());
+        assert_result_metadata(&vector, &result);
+        let error = json_body(&result);
+        for axis in [
+            "category",
+            "phase",
+            "remote_effect",
+            "retry",
+            "provider",
+            "execution_id",
+        ] {
+            assert_eq!(error[axis], vector["payload"][axis], "{axis}");
+        }
+        assert_eq!(
+            error["details"]["write_outcome"]["status"],
+            "outcome_unknown"
+        );
+        evidence(name, &as_vector(&result, error));
+    }
+}
+
+/// Il limite locale e quello ristretto dall'host non tagliano un successo.
+#[test]
+fn query_result_limits_reproduce_v2_vectors_before_any_delivery() {
+    use plenora_database_engine::runtime_binding::MAX_QUERY_RESULT_BYTES;
+    let adoption = read_json(&contracts_root().join("adoption-source.json"));
+    assert_eq!(
+        adoption["runtime_limits"]["database.query"]["max_result_bytes"],
+        json!(MAX_QUERY_RESULT_BYTES)
+    );
+    for (name, transport) in [
+        ("database-query-result-limit-error.json", false),
+        ("database-query-transport-limit-error.json", true),
+    ] {
+        let vector = upstream(&format!("runtime-v2/{name}"));
+        let mut host = Host::new(WriteScript::Committed);
+        if !transport {
+            host.query_padding = MAX_QUERY_RESULT_BYTES;
+        }
+        let metadata = request_metadata(
+            "database.query",
+            "plenora-database-query-input-v1",
+            "018f3d84-7b2c-7f00-8000-000000000207",
+            vector["metadata"]["plenora.trace.correlation_id"]
+                .as_str()
+                .expect("correlation"),
+        );
+        let request = invocation(
+            &json!(JSON_CONTENT_TYPE),
+            &metadata,
+            &with(
+                target_payload(),
+                &json!({"operation_path": QUERY_REFERENCE}),
+            ),
+        );
+        let mut binding = RuntimeBinding::new(&host, &host);
+        if transport {
+            binding = binding.with_query_payload_limit(1);
+        }
+        let result = runtime().block_on(binding.invoke(&request, &CancellationToken::new()));
+        assert!(result.is_error());
+        assert_result_metadata(&vector, &result);
+        let error = json_body(&result);
+        for axis in ["category", "phase", "remote_effect", "retry", "provider"] {
+            assert_eq!(error[axis], vector["payload"][axis], "{axis}");
+        }
+        assert!(host.sink.lock().expect("sink").is_empty());
+        evidence(name, &as_vector(&result, error));
+    }
+}
+
+#[test]
+fn query_payload_limit_accepts_exact_size_and_rejects_one_byte_less() {
+    let host = Host::new(WriteScript::Committed);
+    let metadata = request_metadata(
+        "database.query",
+        "plenora-database-query-input-v1",
+        "018f3d84-7b2c-7f00-8000-000000000207",
+        "018f3d84-7b2c-7f00-8000-000000000301",
+    );
+    let request = invocation(
+        &json!(JSON_CONTENT_TYPE),
+        &metadata,
+        &with(
+            target_payload(),
+            &json!({"operation_path": QUERY_REFERENCE}),
+        ),
+    );
+    let original = invoke(&host, &request);
+    assert!(!original.is_error());
+    let size = serde_json::to_vec(&json_body(&original))
+        .expect("json")
+        .len();
+    for (bound, error) in [(size, false), (size - 1, true), (usize::MAX, false)] {
+        let result = runtime().block_on(
+            RuntimeBinding::new(&host, &host)
+                .with_query_payload_limit(bound)
+                .invoke(&request, &CancellationToken::new()),
+        );
+        assert_eq!(result.is_error(), error);
+        if !error {
+            assert_eq!(json_body(&result), json_body(&original));
+        }
     }
 }

@@ -28,10 +28,14 @@ UPSTREAM = ROOT / "contracts" / "upstream"
 EXECUTED_VECTOR_SETS = {
     "arrow-v1": ("vectors/arrow-v1", "*.json"),
     "runtime-v1": ("vectors/runtime-v1", "database-*.json"),
+    "runtime-v2": ("vectors/runtime-v2", "database-*.json"),
+    "runtime-probes-v1": ("vectors/runtime-probes-v1", "*.json"),
 }
 VECTOR_SCHEMAS = {
     "vectors/arrow-v1/": "arrow-metadata-vector-v1.schema.json",
     "vectors/runtime-v1/": "runtime-vector-v1.schema.json",
+    "vectors/runtime-v2/": "runtime-vector-v1.schema.json",
+    "vectors/runtime-probes-v1/": "runtime-probe-v1.schema.json",
 }
 
 
@@ -111,7 +115,7 @@ def check(contracts: Path, cli: Path) -> dict[str, int]:
     cli_schema = load(contracts / "schemas" / "cli-envelope-v2.schema.json")
     capability_schema = load(contracts / "schemas" / "capabilities-v2.schema.json")
     error_schema = load(contracts / "schemas" / "error-v1.schema.json")
-    catalog = load(contracts / "catalogs" / "database-tools-v1.json")
+    catalog = load(contracts / "catalogs" / "database-tools-v2.json")
     shared_schemas = [load(path) for path in (contracts / "schemas").glob("*.json")]
     registry = Registry().with_resources(
         (schema["$id"], Resource.from_contents(schema))
@@ -137,6 +141,10 @@ def check(contracts: Path, cli: Path) -> dict[str, int]:
         raise RuntimeError("invocazione invalida senza categoria invalid_plan")
 
     advertised = {item["id"]: item for item in capabilities["result"]["operations"]}
+    for operation in ("database.read", "database.query"):
+        attributes = advertised.get(operation, {}).get("attributes", {})
+        if attributes.get("plenora.surface_side_effects") != {"cli": "local"}:
+            raise RuntimeError(f"SB-001: {operation} omette l'effetto locale della CLI")
     selected = {
         item["id"]: item
         for item in catalog["operations"]
@@ -147,7 +155,7 @@ def check(contracts: Path, cli: Path) -> dict[str, int]:
     for operation, expected in selected.items():
         actual = advertised[operation]
         for field in ("version", "side_effect", "controls"):
-            if actual[field] != expected[field]:
+            if not semantics.same_value(actual[field], expected[field]):
                 raise RuntimeError(f"{operation}: campo {field} divergente")
         # Il catalogo conserva anche gli interchange contract per la
         # composizione; `plenora-capabilities-v2` espone solo questi due campi.
@@ -156,7 +164,7 @@ def check(contracts: Path, cli: Path) -> dict[str, int]:
                 "contract": expected[field]["contract"],
                 "content_types": expected[field]["content_types"],
             }
-            if actual[field] != descriptor:
+            if not semantics.same_value(actual[field], descriptor):
                 raise RuntimeError(f"{operation}: campo {field} divergente")
         if actual["surfaces"] != ["cli"]:
             raise RuntimeError(f"{operation}: superficie artifact non esatta")
@@ -200,4 +208,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        # ERR-010: un'eccezione di parser/schema puo contenere il payload.
+        raise SystemExit(f"gate fallito ({type(error).__name__}); nessun dato pubblicato") from None

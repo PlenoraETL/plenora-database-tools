@@ -36,7 +36,7 @@ class PublicContractIntegrationTests(unittest.TestCase):
     def assert_structural(self, document, schema):
         Draft202012Validator(gate.load(self.schema(schema))).validate(document)
 
-    def check_capabilities(self, document):
+    def check_capabilities(self, document, error="invarianti semantiche"):
         run_cli = gate.run_cli
 
         def invoke(cli, *arguments, **kwargs):
@@ -47,7 +47,7 @@ class PublicContractIntegrationTests(unittest.TestCase):
 
         self.assert_structural(document, "capabilities-v2.schema.json")
         with patch.object(gate, "run_cli", side_effect=invoke):
-            with self.assertRaisesRegex(RuntimeError, "invarianti semantiche"):
+            with self.assertRaisesRegex(RuntimeError, error):
                 gate.check(self.contracts, self.cli)
 
     def test_real_cli_passes(self):
@@ -66,6 +66,14 @@ class PublicContractIntegrationTests(unittest.TestCase):
         document = gate.run_cli(self.cli, "capabilities", "--format", "json", success=True)["result"]
         document["interfaces"][0]["kind"] = "rust"
         self.check_capabilities(document)
+
+    def test_materialization_effect_cannot_be_omitted(self):
+        for operation_id in ("database.read", "database.query"):
+            with self.subTest(operation=operation_id):
+                document = gate.run_cli(self.cli, "capabilities", "--format", "json", success=True)["result"]
+                operation = next(item for item in document["operations"] if item["id"] == operation_id)
+                operation.pop("attributes")
+                self.check_capabilities(document, "SB-001")
 
     def test_manifest_from_real_artifact_passes(self):
         validate_manifest(self.document(), self.schema("adoption-manifest-v4.schema.json"))
@@ -108,7 +116,8 @@ class PublicContractIntegrationTests(unittest.TestCase):
                 [*command, "--artifact", f"database-cli|cli|{second}"], capture_output=True, text=True,
             )
             self.assertNotEqual(failed.returncode, 0)
-            self.assertIn("invarianti semantiche", failed.stderr)
+            self.assertIn("gate fallito (ValueError)", failed.stderr)
+            self.assertNotIn("Traceback", failed.stderr)
             self.assertFalse(output.exists())
             subprocess.run(command, capture_output=True, check=True)
             validate_manifest(gate.load(output), self.schema("adoption-manifest-v4.schema.json"))

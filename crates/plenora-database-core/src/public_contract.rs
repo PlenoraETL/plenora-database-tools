@@ -23,7 +23,7 @@ pub enum PublicSurface {
     Rust,
     Cli,
     PythonSdk,
-    /// Runtime Binding 1.0: il binding transport-neutral di
+    /// Runtime Binding 2.0: il binding transport-neutral di
     /// `plenora_database_engine::runtime_binding`.
     Runtime,
 }
@@ -34,14 +34,14 @@ impl PublicSurface {
             Self::Rust => "plenora-rust-public-v1",
             Self::Cli => "plenora-cli-v2",
             Self::PythonSdk => "plenora-python-sdk-v1",
-            Self::Runtime => "plenora-runtime-binding-v1",
+            Self::Runtime => "plenora-runtime-binding-v2",
         }
     }
 
     const fn version(self) -> u32 {
         match self {
-            Self::Cli => 2,
-            Self::Rust | Self::PythonSdk | Self::Runtime => 1,
+            Self::Cli | Self::Runtime => 2,
+            Self::Rust | Self::PythonSdk => 1,
         }
     }
 }
@@ -352,9 +352,15 @@ pub fn public_capabilities(
                 deadline: true,
                 idempotency_key: false,
             },
-            attributes: (operation.id == "database.write")
-                .then(|| provider.map(write_attributes))
-                .flatten(),
+            attributes: if surface == PublicSurface::Cli
+                && matches!(operation.id, "database.read" | "database.query")
+            {
+                Some(json!({"plenora.surface_side_effects": {"cli": "local"}}))
+            } else if operation.id == "database.write" {
+                provider.map(write_attributes)
+            } else {
+                None
+            },
         })
         .collect();
 

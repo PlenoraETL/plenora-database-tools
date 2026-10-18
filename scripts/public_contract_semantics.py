@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -24,7 +25,7 @@ def load_semantics(contracts: Path) -> ModuleType:
         raise RuntimeError("checkout plenora-contracts diverso dal pin")
     subprocess.run(
         [*command, "diff", "--exit-code", "HEAD", "--", "schemas", "catalogs",
-         "tools/conformance_checks.py"],
+         "profiles", "specs", "vectors", "bindings", "tools"],
         cwd=contracts, capture_output=True, check=True,
     )
     spec = importlib.util.spec_from_file_location(
@@ -33,5 +34,25 @@ def load_semantics(contracts: Path) -> ModuleType:
     if spec is None or spec.loader is None:
         raise RuntimeError("controlli semantici del pin non disponibili")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Il validatore del pin importa json_values: anche la dipendenza deve
+    # provenire da quel checkout, mai da un modulo omonimo gia in cache.
+    dependency_spec = importlib.util.spec_from_file_location(
+        "json_values", contracts / "tools" / "json_values.py"
+    )
+    if dependency_spec is None or dependency_spec.loader is None:
+        raise RuntimeError("dipendenza semantica del pin non disponibile")
+    dependency = importlib.util.module_from_spec(dependency_spec)
+    previous = sys.modules.get("json_values")
+    previous_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    sys.modules["json_values"] = dependency
+    try:
+        dependency_spec.loader.exec_module(dependency)
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous_bytecode
+        if previous is None:
+            sys.modules.pop("json_values", None)
+        else:
+            sys.modules["json_values"] = previous
     return module
