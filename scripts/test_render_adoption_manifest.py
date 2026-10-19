@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts import strict_json
 from scripts.render_adoption_manifest import SOURCE, manifest, validate_manifest
 from scripts.phase0_validate import validate_adoption_source, ValidationError
 import json
@@ -15,7 +16,7 @@ import json
 
 class AdoptionManifestTests(unittest.TestCase):
     def test_new_requirement_cannot_disappear_or_lose_its_deviation(self) -> None:
-        declared = json.loads(SOURCE.read_text(encoding="utf-8"))
+        declared = strict_json.loads(SOURCE.read_text(encoding="utf-8"))
         validate_adoption_source()
         for key, rule in (("requirements", "RT-024"), ("deviations", "DB-RT-003")):
             document = json.loads(json.dumps(declared))
@@ -51,7 +52,7 @@ class AdoptionManifestTests(unittest.TestCase):
     def test_declared_deviations_reach_the_manifest(self) -> None:
         # Il manifest scriveva `deviations: []` fisso mentre il codice ne
         # dichiarava una: la sorgente e l'unico posto in cui si dichiarano.
-        declared = json.loads(SOURCE.read_text(encoding="utf-8"))["deviations"]
+        declared = strict_json.loads(SOURCE.read_text(encoding="utf-8"))["deviations"]
         self.assertTrue(declared)
         with TemporaryDirectory() as directory:
             cli = Path(directory) / "plenora-database"

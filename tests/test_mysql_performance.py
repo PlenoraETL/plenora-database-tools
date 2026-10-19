@@ -8,6 +8,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from scripts import strict_json
 from scripts.check_mysql_performance import (
     APPEND_MODE,
     DEFAULT_BUDGET,
@@ -448,8 +449,8 @@ class MysqlPerformanceTests(unittest.TestCase):
     # --- artefatti versionati --------------------------------------------
 
     def test_versioned_manifest_and_budget_are_valid_and_consistent(self) -> None:
-        manifest = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
-        budget = json.loads(DEFAULT_BUDGET.read_text(encoding="utf-8"))
+        manifest = strict_json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+        budget = strict_json.loads(DEFAULT_BUDGET.read_text(encoding="utf-8"))
         validate_manifest(manifest)
         validate_budget(budget)
         self.assertEqual(manifest["campaign"], budget["profile"])

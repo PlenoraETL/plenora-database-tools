@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts import strict_json
 from scripts import check_public_contracts as gate
 from scripts import check_runtime_evidence as runtime_gate
 from scripts.public_contract_semantics import load_semantics
@@ -150,7 +151,7 @@ class PublicContractIntegrationTests(unittest.TestCase):
     def test_pinned_vector_without_an_executed_copy_is_rejected(self):
         with TemporaryDirectory() as directory:
             upstream = self.upstream_copy(directory)
-            source = json.loads((upstream / "source.json").read_text(encoding="utf-8"))
+            source = strict_json.loads((upstream / "source.json").read_text(encoding="utf-8"))
             del source["files"]["arrow-v1/missing-crs.json"]
             (upstream / "source.json").write_text(json.dumps(source), encoding="utf-8")
             with patch.object(gate, "UPSTREAM", upstream):
@@ -179,26 +180,26 @@ class PublicContractIntegrationTests(unittest.TestCase):
 
         def unsafe_retry(evidence):
             path = evidence / "database-write-error.json"
-            document = json.loads(path.read_text(encoding="utf-8"))
+            document = strict_json.loads(path.read_text(encoding="utf-8"))
             # ERR-006: un effetto ignoto non ammette un retry automatico.
             document["payload"]["retry"] = {"kind": "safe"}
             path.write_text(json.dumps(document), encoding="utf-8")
 
         def lost_correlation(evidence):
             path = evidence / "database-query-success.json"
-            document = json.loads(path.read_text(encoding="utf-8"))
+            document = strict_json.loads(path.read_text(encoding="utf-8"))
             del document["metadata"]["plenora.trace.correlation_id"]
             path.write_text(json.dumps(document), encoding="utf-8")
 
         def foreign_result(evidence):
             path = evidence / "database.list_catalogs.json"
-            document = json.loads(path.read_text(encoding="utf-8"))
+            document = strict_json.loads(path.read_text(encoding="utf-8"))
             document["payload"] = {"schemas": ["public"]}
             path.write_text(json.dumps(document), encoding="utf-8")
 
         def extra_operation(evidence):
             path = evidence / "capabilities.json"
-            document = json.loads(path.read_text(encoding="utf-8"))
+            document = strict_json.loads(path.read_text(encoding="utf-8"))
             document["operations"] = document["operations"][:-1]
             path.write_text(json.dumps(document), encoding="utf-8")
 
