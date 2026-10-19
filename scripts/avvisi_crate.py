@@ -11,6 +11,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+
+try:  # importabile come scripts.<modulo> e come script semplice
+    from . import strict_json
+except ImportError:  # pragma: no cover - percorso da scripts/<file>.py
+    import strict_json
 from pathlib import Path
 import re
 import subprocess
@@ -166,7 +171,7 @@ def collect(previous: dict) -> tuple[dict, dict[str, bytes]]:
             record["repository"] = package["repository"]
             vcs = root / ".cargo_vcs_info.json"
             if vcs.is_file():
-                record["vcs"] = json.loads(vcs.read_text(encoding="utf-8"))
+                record["vcs"] = strict_json.loads(vcs.read_text(encoding="utf-8"))
         result[key] = record
     inputs = {"Cargo.lock", "Cargo.toml"}
     inputs.update(Path(p["manifest_path"]).relative_to(ROOT).as_posix()
@@ -176,7 +181,7 @@ def collect(previous: dict) -> tuple[dict, dict[str, bytes]]:
 
 
 def read_registry() -> dict:
-    return json.loads(REGISTRY.read_text(encoding="utf-8"))
+    return strict_json.loads(REGISTRY.read_text(encoding="utf-8"))
 
 
 def safe_name(name: str) -> bool:

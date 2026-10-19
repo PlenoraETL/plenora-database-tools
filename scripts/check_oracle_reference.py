@@ -4,6 +4,11 @@
 from __future__ import annotations
 
 import json
+
+try:  # importabile come scripts.<modulo> e come script semplice
+    from . import strict_json
+except ImportError:  # pragma: no cover - percorso da scripts/<file>.py
+    import strict_json
 import os
 import re
 import shutil
@@ -86,7 +91,7 @@ def compose(arguments: list[str]) -> list[str]:
 
 
 def reference_contract() -> dict[str, str]:
-    document = json.loads(REFERENCE_FILE.read_text(encoding="utf-8"))
+    document = strict_json.loads(REFERENCE_FILE.read_text(encoding="utf-8"))
     if document.get("schema_version") != 1:
         raise RuntimeError("schema del riferimento Oracle non supportato")
     reference = document.get("reference")
@@ -103,7 +108,7 @@ def reference_contract() -> dict[str, str]:
         raise RuntimeError("Compose Oracle diverge dal digest di riferimento")
     if f"platform: {reference['platform']}" not in compose_source:
         raise RuntimeError("Compose Oracle diverge dalla piattaforma qualificata")
-    mysql_document = json.loads(MYSQL_REFERENCE_FILE.read_text(encoding="utf-8"))
+    mysql_document = strict_json.loads(MYSQL_REFERENCE_FILE.read_text(encoding="utf-8"))
     mysql_baseline = next(
         (
             item
