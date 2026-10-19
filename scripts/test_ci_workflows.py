@@ -29,6 +29,11 @@ from pathlib import Path
 
 import yaml
 
+try:
+    from . import strict_json
+except ImportError:  # eseguito come modulo di primo livello
+    import strict_json
+
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_DIRECTORY = ROOT / ".github" / "workflows"
@@ -607,7 +612,7 @@ class CiWorkflowTests(unittest.TestCase):
         Il test fissa il comportamento effettivo della CI, non un ref parallelo.
         """
 
-        adoption = yaml.safe_load(
+        adoption = strict_json.loads(
             (ROOT / "contracts" / "adoption-source.json").read_text(encoding="utf-8")
         )
         contract_revision = adoption["contracts_source"]["revision"]
