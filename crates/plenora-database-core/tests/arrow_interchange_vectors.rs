@@ -26,7 +26,8 @@ fn contracts_root() -> PathBuf {
 
 fn json(path: &PathBuf) -> Value {
     let bytes = fs::read(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-    serde_json::from_slice(&bytes).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+    plenora_database_core::strict_json::from_slice(&bytes)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -60,7 +61,8 @@ fn pinned_arrow_vectors() -> Vec<(String, Value)> {
             entry["sha256"].as_str().expect("sha256"),
             "{name}: copia diversa dal vettore fissato"
         );
-        let vector: Value = serde_json::from_slice(&bytes).expect("vettore JSON");
+        let vector: Value =
+            plenora_database_core::strict_json::from_slice(&bytes).expect("vettore JSON");
         vectors.push((name.clone(), vector));
     }
     vectors

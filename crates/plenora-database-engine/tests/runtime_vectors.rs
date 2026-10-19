@@ -54,7 +54,8 @@ fn contracts_root() -> PathBuf {
 
 fn read_json(path: &PathBuf) -> Value {
     let bytes = fs::read(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-    serde_json::from_slice(&bytes).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+    plenora_database_core::strict_json::from_slice(&bytes)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -84,7 +85,7 @@ fn upstream(name: &str) -> Value {
             .expect("sha256 dichiarato"),
         "{name}: copia diversa dal file fissato"
     );
-    serde_json::from_slice(&bytes).expect("JSON")
+    plenora_database_core::strict_json::from_slice(&bytes).expect("JSON")
 }
 
 // ---------------------------------------------------------------- provider
