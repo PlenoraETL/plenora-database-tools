@@ -110,6 +110,21 @@ class DuplicateJsonTests(unittest.TestCase):
         self.assertEqual(loads('[{"a":1},{"a":2}]'), [{"a":1},{"a":2}])
 
 
+class GatePrestazionaliTests(unittest.TestCase):
+    def test_i_gate_prestazionali_leggono_tramite_strict_json(self):
+        """Manifesti, budget e baseline dei gate prestazionali passano dal
+        lettore che rifiuta i duplicati: il rilievo della revisione era
+        proprio il json.load nudo in questi tre."""
+        import check_mysql_performance
+        import check_postgres_performance
+        import check_sqlserver_performance
+        import strict_json
+        for modulo in (check_mysql_performance, check_postgres_performance,
+                       check_sqlserver_performance):
+            with self.subTest(modulo=modulo.__name__):
+                self.assertIs(getattr(modulo, "strict_json"), strict_json)
+
+
 if __name__ == "__main__":
     unittest.main()
 

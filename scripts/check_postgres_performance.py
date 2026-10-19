@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+
+import strict_json
 import math
 import os
 import platform
@@ -56,7 +58,7 @@ def parse_args() -> argparse.Namespace:
 
 def load_json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as source:
-        value = json.load(source)
+        value = strict_json.loads(source.read())
     if not isinstance(value, dict):
         raise ValueError(f"{path} non contiene un oggetto JSON")
     return value
