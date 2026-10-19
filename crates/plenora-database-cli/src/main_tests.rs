@@ -1192,6 +1192,7 @@ async fn published_ipc_cleanup_failure_is_committed_and_never_retried() {
     }
 }
 
+#[cfg(feature = "postgres")]
 #[test]
 fn filter_file_rejects_repeated_keys() {
     let path = std::env::temp_dir().join(format!("plenora-filter-{}.json", std::process::id()));
