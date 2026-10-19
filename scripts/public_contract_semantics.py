@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+if __package__:
+    from .strict_json import loads as strict_json_loads
+else:  # esecuzione diretta da scripts/
+    from strict_json import loads as strict_json_loads
+
 import importlib.util
 import json
 import subprocess
@@ -15,7 +20,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "contracts" / "adoption-source.js
 
 def load_semantics(contracts: Path) -> ModuleType:
     contracts = contracts.resolve()
-    expected = json.loads(SOURCE.read_text(encoding="utf-8"))["contracts_source"]["revision"]
+    expected = strict_json_loads(SOURCE.read_text(encoding="utf-8"))["contracts_source"]["revision"]
     command = ["git", "-c", f"safe.directory={contracts.as_posix()}"]
     revision = subprocess.run(
         [*command, "rev-parse", "HEAD"], cwd=contracts,

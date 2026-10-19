@@ -27,6 +27,13 @@ class PublicContractIntegrationTests(unittest.TestCase):
     cli: Path
     evidence: Path
 
+    @classmethod
+    def setUpClass(cls):
+        if not all(hasattr(cls, name) for name in ("contracts", "cli", "evidence")):
+            raise unittest.SkipTest(
+                "richiede il runner dedicato con --contracts, --cli e --runtime-evidence"
+            )
+
     def schema(self, name):
         return self.contracts / "schemas" / name
 

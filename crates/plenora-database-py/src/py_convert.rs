@@ -341,12 +341,15 @@ pub fn graph_rows_to_pylist<'py>(
 
 /// Deserializza l'AST portabile senza esporre nel messaggio il payload JSON.
 pub fn portable_from_json(value: &str) -> PyResult<PortableStatement> {
-    serde_json::from_str(value).map_err(|error| {
-        to_py_err(DatabaseError::invalid_plan(format!(
-            "AST portable non valida a riga {}, colonna {}",
-            error.line(),
-            error.column()
-        )))
+    parse_portable_json(value).map_err(to_py_err)
+}
+
+fn parse_portable_json(value: &str) -> Result<PortableStatement, DatabaseError> {
+    plenora_database_core::strict_json::from_slice(value.as_bytes()).map_err(|error| {
+        DatabaseError::invalid_plan(plenora_database_core::strict_json::error_message(
+            "AST portable non valida",
+            &error,
+        ))
     })
 }
 
@@ -374,3 +377,7 @@ pub fn rows_to_pylist(py: Python<'_>, rows: Vec<Row>) -> PyResult<Bound<'_, PyLi
 #[cfg(test)]
 #[path = "py_convert_number_tests.rs"]
 mod number_tests;
+
+#[cfg(test)]
+#[path = "py_convert_tests.rs"]
+mod tests;

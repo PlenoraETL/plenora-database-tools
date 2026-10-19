@@ -16,6 +16,11 @@ installato, sono la cartella del pacchetto, come segmento del percorso.
 
 from __future__ import annotations
 
+if __package__:
+    from .strict_json import loads as strict_json_loads, DuplicateJsonMember
+else:  # esecuzione diretta da scripts/
+    from strict_json import loads as strict_json_loads, DuplicateJsonMember
+
 import argparse
 import json
 import math
@@ -57,8 +62,10 @@ def _number(value: Any, where: str) -> float:
 def load_json(path: Path, kind: str) -> dict[str, Any]:
     try:
         with path.open(encoding="utf-8") as handle:
-            return _object(json.load(handle), kind)
-    except (OSError, json.JSONDecodeError) as error:
+            return _object(strict_json_loads(handle.read()), kind)
+    except DuplicateJsonMember:
+        raise CoverageError(f"{kind}: chiave JSON ripetuta") from None
+    except (OSError, ValueError) as error:
         raise CoverageError(f"{kind}: impossibile leggere {path}: {error}") from error
 
 

@@ -8,6 +8,11 @@ Python del testkit.
 
 from __future__ import annotations
 
+if __package__:
+    from .strict_json import loads as strict_json_loads, DuplicateJsonMember
+else:  # esecuzione diretta da scripts/
+    from strict_json import loads as strict_json_loads, DuplicateJsonMember
+
 import argparse
 import ast
 import json
@@ -134,8 +139,10 @@ class ValidationError(RuntimeError):
 
 def load_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        return strict_json_loads(path.read_text(encoding="utf-8"))
+    except DuplicateJsonMember:
+        raise ValidationError("chiave JSON ripetuta") from None
+    except (OSError, ValueError) as exc:
         raise ValidationError(f"JSON non valido: {path}") from exc
 
 

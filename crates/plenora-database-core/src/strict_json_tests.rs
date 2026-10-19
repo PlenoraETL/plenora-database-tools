@@ -31,3 +31,13 @@ fn distinct_keys_and_trailing_garbage_keep_their_usual_outcome() {
     assert!(from_slice::<Value>(br#"{"a": 1} {"a": 2}"#).is_err());
     assert!(from_slice::<Value>(b"{").is_err());
 }
+
+#[test]
+fn public_error_summary_never_repeats_document_data() {
+    let duplicate =
+        from_slice::<Value>(br#"{"SECRET_KEY":1,"SECRET_KEY":"SECRET_VALUE"}"#).unwrap_err();
+    assert!(error_message("test", &duplicate).contains("chiave JSON ripetuta"));
+    let mismatch = from_slice::<BTreeMap<String, u8>>(br#"{"a":"SECRET_VALUE"}"#).unwrap_err();
+    assert!(mismatch.to_string().contains("SECRET_VALUE"));
+    assert!(!error_message("test", &mismatch).contains("SECRET"));
+}

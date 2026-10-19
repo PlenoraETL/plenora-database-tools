@@ -3,6 +3,11 @@
 
 from __future__ import annotations
 
+if __package__:
+    from .strict_json import loads as strict_json_loads, DuplicateJsonMember
+else:  # esecuzione diretta da scripts/
+    from strict_json import loads as strict_json_loads, DuplicateJsonMember
+
 import argparse
 import json
 import math
@@ -42,8 +47,10 @@ def read_records(paths: Iterable[Path]) -> list[dict[str, Any]]:
                 if not line.strip():
                     continue
                 try:
-                    item = json.loads(line)
-                except json.JSONDecodeError as exc:
+                    item = strict_json_loads(line)
+                except DuplicateJsonMember:
+                    raise ReportError("chiave JSON ripetuta") from None
+                except ValueError as exc:
                     raise ReportError(
                         f"JSONL non valido: {path.name}:{line_number}"
                     ) from exc

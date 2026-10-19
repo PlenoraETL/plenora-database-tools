@@ -1,5 +1,7 @@
 #![allow(clippy::redundant_pub_crate)]
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use plenora_database_core::plan::ProviderKind;
 #[cfg(any(
     feature = "postgres",
     feature = "mysql",
@@ -7,8 +9,7 @@
     feature = "oracle",
     feature = "db2"
 ))]
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use plenora_database_core::plan::ProviderKind;
+use plenora_database_core::strict_json;
 // La famiglia `database-*` costruisce piani per qualunque provider compilato.
 use plenora_database_core::plan::{ObjectRef, Operation, ReadOperation, WriteOperation};
 #[cfg(feature = "postgres")]
@@ -665,11 +666,10 @@ fn canonical_request<T: DeserializeOwned>(args: &mut impl Iterator<Item = String
     let input = fs::read(path).map_err(|_| CliError::from("REQUEST.json non leggibile"))?;
     // Una richiesta fuori dal proprio input contract e
     // `invalid_configuration`, come sul runtime (`public_ops::invalid_request`).
-    plenora_database_core::strict_json::from_slice(&input).map_err(|error| {
-        CliError::from(public_ops::invalid_request(format!(
-            "REQUEST.json non parsabile a riga {}, colonna {}",
-            error.line(),
-            error.column()
+    strict_json::from_slice(&input).map_err(|error| {
+        CliError::from(public_ops::invalid_request(strict_json::error_message(
+            "REQUEST.json non parsabile",
+            &error,
         )))
     })
 }
@@ -894,13 +894,8 @@ fn validate_plan(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     let document =
         fs::read(&capabilities_path).map_err(|_| "capability non leggibili".to_owned())?;
     let capabilities: plenora_database_core::capabilities::ProviderCapabilities =
-        serde_json::from_slice(&document).map_err(|e| {
-            format!(
-                "capability non parsabili a riga {}, colonna {}",
-                e.line(),
-                e.column()
-            )
-        })?;
+        strict_json::from_slice(&document)
+            .map_err(|e| strict_json::error_message("capability non parsabili", &e))?;
     let prepared = plenora_database_engine::prepare(validated, capabilities)?;
     print_json(&json!({
         "schema_version": 1,
@@ -1135,12 +1130,8 @@ async fn database_portable_execute(args: &mut impl Iterator<Item = String>) -> C
         )
     })?;
     let statement: plenora_database_core::portable::PortableStatement =
-        serde_json::from_str(&source).map_err(|error| {
-            format!(
-                "PortableStatement JSON non parsabile a riga {}, colonna {}",
-                error.line(),
-                error.column()
-            )
+        strict_json::from_slice(source.as_bytes()).map_err(|error| {
+            strict_json::error_message("PortableStatement JSON non parsabile", &error)
         })?;
 
     let cancellation = CancellationToken::new();
@@ -1304,14 +1295,8 @@ fn read_parameters(path: &str) -> CliResult<ParameterBag> {
     let contents = fs::read(path).map_err(|_| "PARAMETERS.json non leggibile".to_owned())?;
     // Una mappa: `serde_json` terrebbe l'ultima occorrenza di un parametro
     // ripetuto, e il binding runtime lo rifiuta.
-    plenora_database_core::strict_json::from_slice(&contents).map_err(|error| {
-        format!(
-            "PARAMETERS.json non parsabile a riga {}, colonna {}",
-            error.line(),
-            error.column()
-        )
-        .into()
-    })
+    strict_json::from_slice(&contents)
+        .map_err(|error| strict_json::error_message("PARAMETERS.json non parsabile", &error).into())
 }
 
 async fn consume_summary(

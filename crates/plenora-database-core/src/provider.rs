@@ -107,6 +107,9 @@ pub enum ParameterValue {
     TimestampTz(String),
     Decimal(String),
     Uuid(String),
+    /// Valore utente destinato al database. Ai confini JSON di CLI e SDK i
+    /// membri duplicati sono rifiutati ricorsivamente prima di costruire il
+    /// `Value`: anche il dato utente deve essere esatto per costruzione.
     Json(Value),
     Wkb {
         bytes: Vec<u8>,

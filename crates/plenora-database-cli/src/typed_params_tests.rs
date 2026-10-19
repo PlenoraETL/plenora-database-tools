@@ -201,3 +201,21 @@ fn hex_errors_report_shape_not_content() {
         assert!(!rendered.contains(marker), "{rendered}");
     }
 }
+
+#[test]
+fn json_arguments_reject_repeated_keys_recursively_without_payload() {
+    for value in [
+        r#"{"SECRET_KEY":"SECRET_VALUE","SECRET_KEY":2}:json"#,
+        r#"[{"nested":{"SECRET_KEY":1,"SECRET_KEY":"SECRET_VALUE"}}]:json"#,
+    ] {
+        let crate::CliError::Fatal(error) = parse_value_type(value).unwrap_err() else {
+            panic!("expected fatal parsing error");
+        };
+        assert!(error.message.contains("chiave JSON ripetuta"));
+        assert!(!error.message.contains("SECRET"));
+    }
+    assert!(matches!(
+        parse_value_type(r#"{"a":[{"b":1},{"b":2}]}:json"#).unwrap(),
+        ParameterValue::Json(_)
+    ));
+}

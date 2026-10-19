@@ -19,6 +19,11 @@ Un'evidenza attesa che manca e un errore: una directory vuota non prova niente.
 
 from __future__ import annotations
 
+if __package__:
+    from .strict_json import loads as strict_json_loads
+else:  # esecuzione diretta da scripts/
+    from strict_json import loads as strict_json_loads
+
 import argparse
 import json
 from pathlib import Path
@@ -58,7 +63,7 @@ EXPECTED = {
 
 
 def load(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return strict_json_loads(path.read_text(encoding="utf-8"))
 
 
 def errors(instance: Any, schema: dict[str, Any], registry: Registry) -> list[str]:

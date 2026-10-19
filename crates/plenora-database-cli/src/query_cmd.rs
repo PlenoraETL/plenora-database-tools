@@ -9,6 +9,7 @@ use plenora_database_core::portable::{compile_portable, PortableStatement};
 use plenora_database_core::provider::{ParameterBag, Provider};
 use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+use plenora_database_core::strict_json;
 use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::CancellationToken;
 use serde_json::{json, Value};
@@ -92,13 +93,8 @@ pub(crate) async fn portable_execute(args: &mut impl Iterator<Item = String>) ->
 
     let contents = fs::read(&portable_path)
         .map_err(|error| format!("PORTABLE.json non leggibile: {}", error.kind()))?;
-    let ast: PortableStatement = serde_json::from_slice(&contents).map_err(|e| {
-        format!(
-            "PORTABLE.json non parsabile a riga {}, colonna {}",
-            e.line(),
-            e.column()
-        )
-    })?;
+    let ast: PortableStatement = strict_json::from_slice(&contents)
+        .map_err(|e| strict_json::error_message("PORTABLE.json non parsabile", &e))?;
 
     let secret = secret_from_env(&dsn_env)?;
     let provider = postgres_provider_for_pfm()?;
