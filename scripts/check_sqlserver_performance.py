@@ -6,7 +6,10 @@ from __future__ import annotations
 import argparse
 import json
 
-import strict_json
+try:  # importabile come scripts.<modulo> e come script semplice
+    from . import strict_json
+except ImportError:  # pragma: no cover - percorso da scripts/<file>.py
+    import strict_json
 import math
 import os
 import platform
