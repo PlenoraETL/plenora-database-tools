@@ -138,7 +138,7 @@ impl Provider for TestProvider {
                 self.probe_release.notified().await;
             }
             interrupted(cancellation, ErrorPhase::Probe)?;
-            serde_json::from_slice(include_bytes!(
+            plenora_database_core::strict_json::from_slice(include_bytes!(
                 "../../../contracts/v2/examples/capabilities-postgres.json"
             ))
             .map_err(|_| DatabaseError::invalid_plan("fixture capability non valida"))

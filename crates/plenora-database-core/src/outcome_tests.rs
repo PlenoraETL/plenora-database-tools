@@ -3,7 +3,8 @@ use super::*;
 #[test]
 fn parses_the_unknown_outcome_example() {
     let input = include_str!("../../../contracts/v2/examples/outcome-unknown.json");
-    let outcome: WriteOutcome = serde_json::from_str(input).expect("outcome example");
+    let outcome: WriteOutcome =
+        crate::strict_json::from_slice(input.as_bytes()).expect("outcome example");
     outcome.validate().expect("valid outcome");
     assert_eq!(outcome.schema_version, 2);
     assert_eq!(outcome.status, WriteStatus::OutcomeUnknown);
@@ -147,7 +148,7 @@ fn only_the_declared_major_is_consumed() {
 fn row_counts_beyond_u64_are_within_the_contract_and_outside_this_reader() {
     let input =
         include_str!("../../../contracts/v2/examples/unconsumable-outcome-rows-over-u64.json");
-    serde_json::from_str::<WriteOutcome>(input)
+    crate::strict_json::from_slice::<WriteOutcome>(input.as_bytes())
         .expect_err("un conteggio oltre u64 non e rappresentabile qui");
 }
 
@@ -170,8 +171,8 @@ fn documents_the_contract_accepts_can_still_be_unconsumable() {
         ),
         include_str!("../../../contracts/v2/examples/unconsumable-outcome-unknown-mutations.json"),
     ] {
-        let outcome: WriteOutcome =
-            serde_json::from_str(input).expect("documento conforme allo schema v2");
+        let outcome: WriteOutcome = crate::strict_json::from_slice(input.as_bytes())
+            .expect("documento conforme allo schema v2");
         assert!(
             outcome.validate().is_err(),
             "esito incoerente accettato: {}",
@@ -182,7 +183,7 @@ fn documents_the_contract_accepts_can_still_be_unconsumable() {
 
 #[test]
 fn unknown_outcome_cannot_authorize_automatic_retry() {
-    let mut outcome: WriteOutcome = serde_json::from_str(include_str!(
+    let mut outcome: WriteOutcome = crate::strict_json::from_slice(include_bytes!(
         "../../../contracts/v2/examples/outcome-unknown.json"
     ))
     .expect("outcome example");
@@ -199,7 +200,7 @@ fn example(name: &str) -> WriteOutcome {
         "unknown" => include_str!("../../../contracts/v2/examples/outcome-unknown.json"),
         _ => include_str!("../../../contracts/v2/examples/outcome-committed.json"),
     };
-    serde_json::from_str(input).expect("outcome example")
+    crate::strict_json::from_slice(input.as_bytes()).expect("outcome example")
 }
 
 #[test]
@@ -275,7 +276,7 @@ fn an_unconsumable_outcome_never_settles_and_is_not_forwarded() {
     assert_eq!(unsettled.error().phase, ErrorPhase::Commit);
     assert!(unsettled.outcome().is_none());
 
-    let auto_retry: WriteOutcome = serde_json::from_str(include_str!(
+    let auto_retry: WriteOutcome = crate::strict_json::from_slice(include_bytes!(
         "../../../contracts/v2/examples/unconsumable-outcome-unknown-auto-retry.json"
     ))
     .expect("example");

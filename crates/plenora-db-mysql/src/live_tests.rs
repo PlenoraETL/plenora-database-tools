@@ -30,7 +30,8 @@ const REFERENCE_MATRIX: &str = include_str!("../../../docker/mysql/references.js
 /// Il prefisso `major.minor.` della baseline dichiarata dalla matrice.
 fn baseline_version_prefix() -> String {
     let document: serde_json::Value =
-        serde_json::from_str(REFERENCE_MATRIX).expect("matrice MySQL leggibile");
+        plenora_database_core::strict_json::from_slice(REFERENCE_MATRIX.as_bytes())
+            .expect("matrice MySQL leggibile");
     let baseline = document["references"]
         .as_array()
         .expect("matrice MySQL con elenco riferimenti")

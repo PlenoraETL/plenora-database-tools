@@ -29,7 +29,7 @@ pub(crate) async fn postgres_query(args: &mut impl Iterator<Item = String>) -> C
     // quello slot puo finire una DSN o un token (`DatabaseError::message`).
     let contents = fs::read(&query_path)
         .map_err(|error| format!("QUERY.json non leggibile: {}", error.kind()))?;
-    let operation: QueryOperation = serde_json::from_slice(&contents)
+    let operation: QueryOperation = strict_json::from_slice(&contents)
         // Riga e colonna, non il frammento: il `Display` di
         // `serde_json::Error` cita il testo che non ha saputo leggere.
         .map_err(|e| {

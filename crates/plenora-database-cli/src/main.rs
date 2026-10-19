@@ -1327,7 +1327,7 @@ async fn database_query(
         .next()
         .ok_or_else(|| "manca PARAMETERS.json (usa - per nessun parametro)".to_owned())?;
     let query_contents = fs::read(query_path).map_err(|_| "QUERY.json non leggibile".to_owned())?;
-    let operation: QueryOperation = serde_json::from_slice(&query_contents).map_err(|error| {
+    let operation: QueryOperation = strict_json::from_slice(&query_contents).map_err(|error| {
         format!(
             "QUERY.json non parsabile a riga {}, colonna {}",
             error.line(),
@@ -1379,7 +1379,7 @@ async fn database_read(
         .next()
         .ok_or_else(|| "manca PARAMETERS.json (usa - per nessun parametro)".to_owned())?;
     let contents = fs::read(read_path).map_err(|_| "READ.json non leggibile".to_owned())?;
-    let operation: ReadOperation = serde_json::from_slice(&contents).map_err(|error| {
+    let operation: ReadOperation = strict_json::from_slice(&contents).map_err(|error| {
         format!(
             "READ.json non parsabile a riga {}, colonna {}",
             error.line(),
@@ -1447,7 +1447,7 @@ async fn database_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResul
         .next()
         .ok_or_else(|| "manca il percorso INPUT.arrow".to_owned())?;
     let contents = fs::read(operation_path).map_err(|_| "WRITE.json non leggibile".to_owned())?;
-    let operation: WriteOperation = serde_json::from_slice(&contents).map_err(|error| {
+    let operation: WriteOperation = strict_json::from_slice(&contents).map_err(|error| {
         format!(
             "WRITE.json non parsabile a riga {}, colonna {}",
             error.line(),
@@ -1799,7 +1799,7 @@ fn parse_ipc_options(args: &mut impl Iterator<Item = String>) -> CliResult<IpcOp
                 let content = fs::read(&value)
                     .map_err(|error| format!("--filter file non leggibile: {}", error.kind()))?;
                 let parsed: plenora_database_core::plan::FilterExpression =
-                    serde_json::from_slice(&content).map_err(|e| {
+                    strict_json::from_slice(&content).map_err(|e| {
                         format!(
                             "--filter JSON non parsabile a riga {}, colonna {}",
                             e.line(),
