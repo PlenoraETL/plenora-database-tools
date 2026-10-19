@@ -7,6 +7,11 @@ Le credenziali entrano esclusivamente da variabili d'ambiente.
 
 from __future__ import annotations
 
+if __package__:
+    from .strict_json import loads as strict_json_loads
+else:  # esecuzione diretta da scripts/
+    from strict_json import loads as strict_json_loads
+
 import argparse
 import ast
 import hashlib
@@ -63,7 +68,10 @@ RUNNERS = ("postgres",)
 
 class Manifest:
     def __init__(self, path: Path) -> None:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            raw = strict_json_loads(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise HarnessError(str(exc)) from None
         if raw.get("schema_version") != SCHEMA_VERSION:
             raise HarnessError("schema_version manifest non supportata")
         cases: dict[str, CaseSpec] = {}

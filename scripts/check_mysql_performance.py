@@ -13,6 +13,11 @@ from __future__ import annotations
 
 import argparse
 import json
+
+try:  # importabile come scripts.<modulo> e come script semplice
+    from . import strict_json
+except ImportError:  # pragma: no cover - percorso da scripts/<file>.py
+    import strict_json
 import math
 import os
 import platform
@@ -104,7 +109,7 @@ def parse_args() -> argparse.Namespace:
 
 def load_object(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as source:
-        value = json.load(source)
+        value = strict_json.loads(source.read())
     if not isinstance(value, dict):
         raise ValueError(f"{path} non contiene un oggetto JSON")
     return value

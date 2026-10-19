@@ -6,6 +6,7 @@
 use crate::{ensure_end, print_json, CliResult};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::portable::{compile_portable, PortableStatement};
+use plenora_database_core::strict_json;
 use serde_json::json;
 use std::fs;
 
@@ -55,13 +56,8 @@ pub(crate) fn portable_compile(args: &mut impl Iterator<Item = String>) -> CliRe
     // quello slot puo finire una DSN o un token (`DatabaseError::message`).
     let contents = fs::read(&portable_path)
         .map_err(|error| format!("PORTABLE.json non leggibile: {}", error.kind()))?;
-    let ast: PortableStatement = serde_json::from_slice(&contents).map_err(|e| {
-        format!(
-            "PORTABLE.json non parsabile a riga {}, colonna {}",
-            e.line(),
-            e.column()
-        )
-    })?;
+    let ast: PortableStatement = strict_json::from_slice(&contents)
+        .map_err(|e| strict_json::error_message("PORTABLE.json non parsabile", &e))?;
     let compiled = compile_portable(kind, &ast)?;
 
     print_json(&json!({

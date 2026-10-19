@@ -33,6 +33,7 @@
 
 use crate::CliResult;
 use plenora_database_core::provider::ParameterValue;
+use plenora_database_core::strict_json;
 
 /// Elenco di parametri parsed da CLI, in ordine posizionale ($1, $2, ...).
 #[derive(Debug, Default, Clone)]
@@ -121,19 +122,13 @@ pub(crate) fn parse_value_type(spec: &str) -> CliResult<ParameterValue> {
             }
             Ok(ParameterValue::Uuid(value.to_owned()))
         }
-        "json" => serde_json::from_str::<serde_json::Value>(value)
-            .map(ParameterValue::Json)
-            // Solo riga e colonna: il `Display` di `serde_json::Error`
-            // include il frammento che non ha saputo leggere, cioe una parte
-            // del valore.
-            .map_err(|e| {
-                format!(
-                    "json non parsabile a riga {}, colonna {}",
-                    e.line(),
-                    e.column()
-                )
-                .into()
-            }),
+        "json" => {
+            strict_json::from_slice::<serde_json::Value>(value.as_bytes())
+                .map(ParameterValue::Json)
+                // Categoria e posizione, mai il frammento del valore che il
+                // `Display` di `serde_json::Error` potrebbe includere.
+                .map_err(|e| strict_json::error_message("json non parsabile", &e).into())
+        }
         "date" => Ok(ParameterValue::Date(value.to_owned())),
         "timestamp" => Ok(ParameterValue::Timestamp(value.to_owned())),
         "timestamptz" => Ok(ParameterValue::TimestampTz(value.to_owned())),

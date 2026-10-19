@@ -8,6 +8,11 @@ sia quando vivono in un file proprio sia quando sono inline.
 
 from __future__ import annotations
 
+if __package__:
+    from .strict_json import loads as strict_json_loads
+else:  # esecuzione diretta da scripts/
+    from strict_json import loads as strict_json_loads
+
 import argparse
 import json
 import re
@@ -159,7 +164,7 @@ def measure(root: Path = REPO_ROOT) -> dict[str, object]:
 
 
 def check_budget(report: dict[str, object], budget_path: Path = BUDGET_PATH) -> list[str]:
-    budget = json.loads(budget_path.read_text(encoding="utf-8"))
+    budget = strict_json_loads(budget_path.read_text(encoding="utf-8"))
     total = report["total"]
     assert isinstance(total, dict)
     failures = []

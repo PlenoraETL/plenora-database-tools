@@ -75,21 +75,16 @@ pub struct SpatialFunctionCatalog {
 /// Restituisce `InvalidPlan` se il catalogo incorporato non è valido; un
 /// pacchetto corrotto non può causare un panic nel processo chiamante.
 pub fn spatial_function_catalog() -> crate::Result<&'static SpatialFunctionCatalog> {
-    static CATALOG: OnceLock<std::result::Result<SpatialFunctionCatalog, String>> = OnceLock::new();
+    static CATALOG: OnceLock<crate::Result<SpatialFunctionCatalog>> = OnceLock::new();
     CATALOG
-        .get_or_init(|| {
-            serde_json::from_str(include_str!("../../../catalog/spatial-functions.v1.json"))
-                .map_err(|error| error.to_string())
-        })
+        .get_or_init(|| parse_catalog(include_bytes!("../../../catalog/spatial-functions.v1.json")))
         .as_ref()
-        .map_or_else(
-            |_| {
-                Err(crate::DatabaseError::invalid_plan(
-                    "catalogo spatial incorporato non valido",
-                ))
-            },
-            Ok,
-        )
+        .map_err(Clone::clone)
+}
+
+fn parse_catalog(bytes: &[u8]) -> crate::Result<SpatialFunctionCatalog> {
+    crate::strict_json::from_slice(bytes)
+        .map_err(|_| crate::DatabaseError::invalid_plan("catalogo spatial incorporato non valido"))
 }
 
 #[cfg(test)]

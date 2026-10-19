@@ -134,7 +134,7 @@ pub fn parse_and_validate(input: &[u8]) -> Result<ValidatedPlan> {
             "piano oltre il limite di parsing",
         ));
     }
-    let plan: Plan = serde_json::from_slice(input)
+    let plan: Plan = plenora_database_core::strict_json::from_slice(input)
         .map_err(|_| DatabaseError::invalid_plan("JSON piano non valido"))?;
     validate(plan)
 }

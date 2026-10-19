@@ -18,7 +18,8 @@ use std::fmt;
 /// # Errors
 ///
 /// L'errore di `serde_json`: sintassi, chiave ripetuta o forma diversa da `T`.
-/// Il testo porta riga e colonna, mai la chiave o il valore.
+/// Per esporre un errore al pubblico usare `error_message`: gli errori di
+/// deserializzazione del tipo possono contenere dati del documento.
 pub fn from_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
     reject_repeated_keys(bytes)?;
     serde_json::from_slice(bytes)
@@ -96,3 +97,15 @@ impl<'de> Visitor<'de> for UniqueKeys {
 #[cfg(test)]
 #[path = "strict_json_tests.rs"]
 mod tests;
+
+/// Descrive un errore di parsing senza includere chiavi o valori del documento.
+#[must_use]
+pub fn error_message(context: &str, error: &serde_json::Error) -> String {
+    let category = if error.to_string().starts_with("chiave JSON ripetuta") {
+        "chiave JSON ripetuta"
+    } else {
+        "JSON non valido"
+    };
+    let (line, column) = (error.line(), error.column());
+    format!("{context}: {category} a riga {line}, colonna {column}")
+}

@@ -16,7 +16,7 @@ fn describe_object_without_a_source_is_within_the_contract_and_outside_this_read
     let bytes = include_bytes!(
         "../../../contracts/v2/examples/unconsumable-plan-describe-without-source.json"
     );
-    serde_json::from_slice::<Plan>(bytes)
+    plenora_database_core::strict_json::from_slice::<Plan>(bytes)
         .expect_err("documento conforme allo schema e non consumabile");
 }
 
@@ -43,7 +43,7 @@ fn list_catalogs_ignores_a_source_the_contract_allows() {
 fn a_plan_limit_beyond_u64_is_within_the_contract_and_outside_this_reader() {
     let bytes =
         include_bytes!("../../../contracts/v2/examples/unconsumable-plan-limit-over-u64.json");
-    serde_json::from_slice::<Plan>(bytes)
+    plenora_database_core::strict_json::from_slice::<Plan>(bytes)
         .expect_err("un limite oltre u64 non e rappresentabile qui");
 }
 
@@ -152,7 +152,7 @@ const CONTRACT_READ_PLAN: &[u8] =
 type Veto = (&'static str, fn(&mut ProviderCapabilities));
 
 fn postgres_capabilities() -> ProviderCapabilities {
-    serde_json::from_slice(include_bytes!(
+    plenora_database_core::strict_json::from_slice(include_bytes!(
         "../../../contracts/v2/examples/capabilities-postgres.json"
     ))
     .expect("documento capability del contratto")
@@ -214,7 +214,8 @@ fn a_capability_the_plan_does_not_use_does_not_veto_it() {
 /// e un campo che lo schema rifiutasse non arriverebbe mai qui.
 fn plan_declaring(declarations: &[(&str, u32)]) -> Vec<u8> {
     let mut document: serde_json::Value =
-        serde_json::from_slice(CONTRACT_READ_PLAN).expect("piano del contratto");
+        plenora_database_core::strict_json::from_slice(CONTRACT_READ_PLAN)
+            .expect("piano del contratto");
     document["operation"]["declared_crs"] = declarations
         .iter()
         .map(|(column, srid)| serde_json::json!({"column": column, "srid": srid}))
@@ -627,4 +628,29 @@ fn operations_without_fields_refuse_unknown_keys() {
         serde_json::to_value(&plan.operation).unwrap(),
         serde_json::json!({"id": "database.test_connection"})
     );
+}
+
+#[test]
+fn plan_reader_rejects_repeated_keys_without_payload() {
+    let clean = std::str::from_utf8(CONTRACT_READ_PLAN).unwrap();
+    let expected =
+        validate(plenora_database_core::strict_json::from_slice(CONTRACT_READ_PLAN).unwrap())
+            .unwrap();
+    assert_eq!(
+        parse_and_validate(CONTRACT_READ_PLAN)
+            .unwrap()
+            .fingerprint(),
+        expected.fingerprint()
+    );
+    for text in [
+        clean.replacen('{', r#"{"schema_version":2,"#, 1),
+        clean.replacen(r#""operation": {"#, r#""operation": {"id":"SECRET","#, 1),
+    ] {
+        let error = parse_and_validate(text.as_bytes()).unwrap_err();
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::InvalidPlan
+        );
+        assert_eq!(error.message, "JSON piano non valido");
+    }
 }

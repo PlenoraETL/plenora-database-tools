@@ -9,6 +9,7 @@ use plenora_database_core::portable::{compile_portable, PortableStatement};
 use plenora_database_core::provider::{ParameterBag, Provider};
 use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+use plenora_database_core::strict_json;
 use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::CancellationToken;
 use serde_json::{json, Value};
@@ -28,7 +29,7 @@ pub(crate) async fn postgres_query(args: &mut impl Iterator<Item = String>) -> C
     // quello slot puo finire una DSN o un token (`DatabaseError::message`).
     let contents = fs::read(&query_path)
         .map_err(|error| format!("QUERY.json non leggibile: {}", error.kind()))?;
-    let operation: QueryOperation = serde_json::from_slice(&contents)
+    let operation: QueryOperation = strict_json::from_slice(&contents)
         // Riga e colonna, non il frammento: il `Display` di
         // `serde_json::Error` cita il testo che non ha saputo leggere.
         .map_err(|e| {
@@ -92,13 +93,8 @@ pub(crate) async fn portable_execute(args: &mut impl Iterator<Item = String>) ->
 
     let contents = fs::read(&portable_path)
         .map_err(|error| format!("PORTABLE.json non leggibile: {}", error.kind()))?;
-    let ast: PortableStatement = serde_json::from_slice(&contents).map_err(|e| {
-        format!(
-            "PORTABLE.json non parsabile a riga {}, colonna {}",
-            e.line(),
-            e.column()
-        )
-    })?;
+    let ast: PortableStatement = strict_json::from_slice(&contents)
+        .map_err(|e| strict_json::error_message("PORTABLE.json non parsabile", &e))?;
 
     let secret = secret_from_env(&dsn_env)?;
     let provider = postgres_provider_for_pfm()?;

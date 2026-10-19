@@ -47,7 +47,11 @@ pub struct GoldenCase {
 /// Restituisce `InvalidPlan` se il JSON è invalido, vuoto o contiene ID
 /// duplicati.
 pub fn golden_suite() -> Result<GoldenSuite> {
-    let suite: GoldenSuite = serde_json::from_str(GOLDEN_SUITE)
+    parse_golden_suite(GOLDEN_SUITE.as_bytes())
+}
+
+fn parse_golden_suite(bytes: &[u8]) -> Result<GoldenSuite> {
+    let suite: GoldenSuite = plenora_database_core::strict_json::from_slice(bytes)
         .map_err(|_| DatabaseError::invalid_plan("golden non valido"))?;
     let mut ids = BTreeSet::new();
     if suite.schema_version != 2

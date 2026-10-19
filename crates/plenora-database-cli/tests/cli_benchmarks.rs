@@ -15,7 +15,10 @@ fn load_baseline() -> Value {
         PathBuf::from,
     );
     let content = std::fs::read(path).expect("configurazione benchmark assente");
-    serde_json::from_slice(&content).expect("baseline JSON non parsabile")
+    // La baseline e' un documento versionato: le chiavi duplicate si
+    // rifiutano al parse come per ogni documento di controllo su file.
+    plenora_database_core::strict_json::from_slice(&content)
+        .expect("baseline JSON non parsabile o con chiavi duplicate")
 }
 
 fn run_json(args: &[&str]) -> Value {

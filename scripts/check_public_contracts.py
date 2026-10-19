@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+if __package__:
+    from .strict_json import loads as strict_json_loads
+else:  # esecuzione diretta da scripts/
+    from strict_json import loads as strict_json_loads
+
 import argparse
 import hashlib
 import json
@@ -40,7 +45,7 @@ VECTOR_SCHEMAS = {
 
 
 def load(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = strict_json_loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise RuntimeError("documento JSON non object")
     return value
@@ -56,7 +61,7 @@ def run_cli(cli: Path, *arguments: str, success: bool) -> dict[str, Any]:
         raise RuntimeError("exit code CLI incoerente con lo status atteso")
     if completed.stdout.count(b"\n") != 1:
         raise RuntimeError("il CLI deve emettere un documento e una newline")
-    value = json.loads(completed.stdout)
+    value = strict_json_loads(completed.stdout)
     if not isinstance(value, dict):
         raise RuntimeError("envelope CLI non object")
     return value

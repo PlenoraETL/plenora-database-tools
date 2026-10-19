@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from scripts import strict_json
 import scripts.check_oracle_reference as gate
 
 
@@ -34,7 +35,7 @@ def main() -> int:
         "docker-compose.oracle.yml down --volumes",
     ):
         assert required in workflow, required
-    json.loads((ROOT / "docker/oracle/references.json").read_text(encoding="utf-8"))
+    strict_json.loads((ROOT / "docker/oracle/references.json").read_text(encoding="utf-8"))
     print("PASS oracle gate wiring")
     return 0
 

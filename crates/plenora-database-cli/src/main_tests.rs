@@ -977,9 +977,9 @@ fn canonical_target_applies_the_secret_environment_pattern() {
 /// l'esito in `details.write_outcome`, non un risultato `ok` (SURF-014).
 #[test]
 fn an_unknown_write_outcome_is_an_error_envelope_with_its_recovery() {
-    let outcome: plenora_database_core::outcome::WriteOutcome = serde_json::from_str(include_str!(
-        "../../../contracts/v2/examples/outcome-unknown.json"
-    ))
+    let outcome: plenora_database_core::outcome::WriteOutcome = strict_json::from_slice(
+        include_bytes!("../../../contracts/v2/examples/outcome-unknown.json"),
+    )
     .expect("outcome example");
     let error = CliError::from(outcome.clone().settle().expect_err("unknown"));
     assert_eq!(cli_exit_code(error.category()), 70);
@@ -1190,4 +1190,34 @@ async fn published_ipc_cleanup_failure_is_committed_and_never_retried() {
         };
         assert_eq!(rows, 2, "published result remains readable");
     }
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn filter_file_rejects_repeated_keys() {
+    let path = std::env::temp_dir().join(format!("plenora-filter-{}.json", std::process::id()));
+    let clean = r#"{"op":"and","args":[{"op":"eq","field":"id","parameter":"value"}]}"#;
+    let parse = |text: &str| {
+        fs::write(&path, text).unwrap();
+        parse_ipc_options(
+            &mut ["--filter".to_owned(), path.to_str().unwrap().to_owned()].into_iter(),
+        )
+    };
+    let options = parse(clean).unwrap();
+    let expected: plenora_database_core::plan::FilterExpression =
+        strict_json::from_slice(clean.as_bytes()).unwrap();
+    assert_eq!(options.filter, Some(expected));
+    for text in [
+        clean.replacen('{', r#"{"op":"SECRET","#, 1),
+        clean.replace(r#""field":"id""#, r#""field":"SECRET","field":"id""#),
+    ] {
+        let error = parse(&text).err().expect("duplicato rifiutato");
+        assert_eq!(error.category(), ErrorCategory::InvalidPlan);
+        let error = error.database_error();
+        assert!(error
+            .message
+            .starts_with("--filter JSON non parsabile a riga "));
+        assert!(!error.message.contains("SECRET"));
+    }
+    fs::remove_file(path).unwrap();
 }

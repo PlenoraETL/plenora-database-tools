@@ -27,13 +27,14 @@ pub(crate) async fn bulk_write(args: &mut impl Iterator<Item = String>) -> CliRe
     // quello slot puo finire una DSN o un token (`DatabaseError::message`).
     let contents = fs::read(&write_op_path)
         .map_err(|error| format!("WRITE_OP.json non leggibile: {}", error.kind()))?;
-    let operation: WriteOperation = serde_json::from_slice(&contents).map_err(|e| {
-        format!(
-            "WRITE_OP.json non parsabile a riga {}, colonna {}",
-            e.line(),
-            e.column()
-        )
-    })?;
+    let operation: WriteOperation = plenora_database_core::strict_json::from_slice(&contents)
+        .map_err(|e| {
+            format!(
+                "WRITE_OP.json non parsabile a riga {}, colonna {}",
+                e.line(),
+                e.column()
+            )
+        })?;
 
     let stream = IpcFileBatchStream::open(&input_path)?;
     execute_bulk_write(&dsn_env, operation, Box::new(stream), dry_run).await

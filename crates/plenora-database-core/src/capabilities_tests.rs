@@ -24,7 +24,7 @@ use super::*;
 fn a_relation_the_contract_does_not_state_is_not_rejected_on_the_consumption_path() {
     let bytes = include_bytes!("../../../contracts/v2/examples/capabilities-minimal.json");
     let mut capabilities: ProviderCapabilities =
-        serde_json::from_slice(bytes).expect("documento minimo");
+        crate::strict_json::from_slice(bytes).expect("documento minimo");
     capabilities.reads.server_cursor = true;
     capabilities.reads.streaming = false;
 
@@ -49,7 +49,7 @@ fn a_limit_beyond_u64_is_within_the_contract_and_outside_this_reader() {
     let bytes = include_bytes!(
         "../../../contracts/v2/examples/unconsumable-capabilities-limit-over-u64.json"
     );
-    serde_json::from_slice::<ProviderCapabilities>(bytes)
+    crate::strict_json::from_slice::<ProviderCapabilities>(bytes)
         .expect_err("un limite oltre u64 non e rappresentabile qui");
 }
 
@@ -59,14 +59,14 @@ fn a_limit_beyond_u64_is_within_the_contract_and_outside_this_reader() {
 fn what_the_contract_states_is_still_rejected_on_the_consumption_path() {
     let bytes = include_bytes!("../../../contracts/v2/examples/capabilities-minimal.json");
     let mut capabilities: ProviderCapabilities =
-        serde_json::from_slice(bytes).expect("documento minimo");
+        crate::strict_json::from_slice(bytes).expect("documento minimo");
 
     // Lo schema ha `minimum: 1` su questo limite.
     capabilities.limits.max_batch_rows = Some(0);
     capabilities.validate().expect_err("limite a zero");
 
     // E `minLength: 1` sulla versione del provider.
-    capabilities = serde_json::from_slice(bytes).expect("documento minimo");
+    capabilities = crate::strict_json::from_slice(bytes).expect("documento minimo");
     capabilities.provider_version = String::new();
     capabilities.validate().expect_err("versione vuota");
 }
@@ -74,8 +74,8 @@ fn what_the_contract_states_is_still_rejected_on_the_consumption_path() {
 #[test]
 fn the_minimal_contract_document_deserialises() {
     let bytes = include_bytes!("../../../contracts/v2/examples/capabilities-minimal.json");
-    let capabilities: ProviderCapabilities =
-        serde_json::from_slice(bytes).expect("il documento minimo del contratto deve caricare");
+    let capabilities: ProviderCapabilities = crate::strict_json::from_slice(bytes)
+        .expect("il documento minimo del contratto deve caricare");
 
     // I default non sono neutri: sono la risposta conservativa.
     assert!(!capabilities.reads.server_cursor);
@@ -107,7 +107,7 @@ fn the_minimal_contract_document_deserialises() {
 fn serialising_emits_every_field_the_schema_requires() {
     let bytes = include_bytes!("../../../contracts/v2/examples/capabilities-minimal.json");
     let capabilities: ProviderCapabilities =
-        serde_json::from_slice(bytes).expect("documento minimo");
+        crate::strict_json::from_slice(bytes).expect("documento minimo");
     let emitted = serde_json::to_value(&capabilities).expect("serializzabile");
 
     for field in [

@@ -710,7 +710,7 @@ fn the_plan_admits_exactly_the_spatial_predicates_this_engine_evaluates() {
     }
 
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../../../contracts/v2/plan.schema.json"))
+        crate::strict_json::from_slice(include_bytes!("../../../contracts/v2/plan.schema.json"))
             .expect("schema del piano");
 
     let declared: std::collections::BTreeSet<String> = spatial_variant(&schema)

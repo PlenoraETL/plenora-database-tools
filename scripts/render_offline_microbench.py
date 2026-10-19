@@ -5,6 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+
+try:  # importabile come scripts.<modulo> e come script semplice
+    from . import strict_json
+except ImportError:  # pragma: no cover - percorso da scripts/<file>.py
+    import strict_json
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -20,7 +25,7 @@ def number(value: float) -> str:
 
 def render() -> str:
     records = [
-        json.loads(line)
+        strict_json.loads(line)
         for line in SOURCE.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]

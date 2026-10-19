@@ -153,6 +153,7 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
         "test_check_sqlserver_reference.py",
         [sys.executable, "scripts/test_check_sqlserver_reference.py"],
     ),
+    ("test_duplicate_json.py", [sys.executable, "scripts/test_duplicate_json.py"]),
     ("phase0_validate.py", [sys.executable, "scripts/phase0_validate.py"]),
     (
         "test_render_adoption_manifest.py",

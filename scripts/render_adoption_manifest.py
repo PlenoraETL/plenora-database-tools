@@ -7,6 +7,11 @@ renderebbe il manifest formalmente valido e materialmente falso.
 
 from __future__ import annotations
 
+if __package__:
+    from .strict_json import loads as strict_json_loads
+else:  # esecuzione diretta da scripts/
+    from strict_json import loads as strict_json_loads
+
 import argparse
 import hashlib
 import json
@@ -66,7 +71,7 @@ def manifest(
     artifacts: list[str],
     verification: list[str],
 ) -> dict[str, Any]:
-    source = json.loads(SOURCE.read_text(encoding="utf-8"))
+    source = strict_json_loads(SOURCE.read_text(encoding="utf-8"))
     return {
         "schema_version": 4,
         "component": source["component"],
@@ -93,7 +98,7 @@ def manifest(
 def validate_manifest(document: dict[str, Any], schema_path: Path) -> None:
     """Applica schema v4 e invarianti semantiche del checkout fissato."""
 
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema = strict_json_loads(schema_path.read_text(encoding="utf-8"))
     Draft202012Validator.check_schema(schema)
     errors = sorted(
         Draft202012Validator(schema).iter_errors(document),

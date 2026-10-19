@@ -21,6 +21,11 @@ dei riferimenti.
 from __future__ import annotations
 
 import json
+
+try:  # importabile come scripts.<modulo> e come script semplice
+    from . import strict_json
+except ImportError:  # pragma: no cover - percorso da scripts/<file>.py
+    import strict_json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,7 +79,7 @@ class MariadbReference:
 
 
 def _load() -> tuple[MariadbReference, ...]:
-    document = json.loads(REFERENCES_FILE.read_text(encoding="utf-8"))
+    document = strict_json.loads(REFERENCES_FILE.read_text(encoding="utf-8"))
     if document.get("schema_version") != 1:
         raise RuntimeError("schema dei riferimenti MariaDB non riconosciuto")
     entries = tuple(

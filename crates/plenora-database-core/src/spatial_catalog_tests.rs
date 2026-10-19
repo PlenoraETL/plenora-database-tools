@@ -122,3 +122,21 @@ fn spatial_function_wire_names_match_the_versioned_catalog() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(wire_ids, catalog_ids);
 }
+
+#[test]
+fn catalog_reader_rejects_repeated_keys_without_payload() {
+    let clean = include_str!("../../../catalog/spatial-functions.v1.json");
+    assert_eq!(
+        &parse_catalog(clean.as_bytes()).unwrap(),
+        spatial_function_catalog().unwrap()
+    );
+    for text in [
+        clean.replacen('{', r#"{"schema_version":1,"#, 1),
+        clean.replacen(r#""id":"#, r#""id":"SECRET","id":"#, 1),
+    ] {
+        assert_ne!(text, clean);
+        let error = parse_catalog(text.as_bytes()).unwrap_err();
+        assert_eq!(error.category, crate::ErrorCategory::InvalidPlan);
+        assert_eq!(error.message, "catalogo spatial incorporato non valido");
+    }
+}

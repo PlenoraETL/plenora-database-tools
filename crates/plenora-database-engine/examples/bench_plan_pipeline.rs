@@ -141,7 +141,7 @@ fn main() {
         },
     );
     run_scenario("parse_only_contract_read", iterations, repetitions, || {
-        serde_json::from_slice::<Plan>(CONTRACT_READ_PLAN)
+        plenora_database_core::strict_json::from_slice::<Plan>(CONTRACT_READ_PLAN)
             .expect("piano di contratto deserializzabile")
             .connection_ref
             .len()
