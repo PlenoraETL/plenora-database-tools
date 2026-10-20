@@ -11,7 +11,6 @@ use crate::read_stream::{
 };
 use crate::types::ColumnSpec;
 use crate::{contract_schema, PostgresProvider};
-use futures_util::StreamExt;
 use plenora_database_core::plan::ReadOperation;
 use plenora_database_core::provider::{BatchStream, ParameterBag, SecretString};
 use plenora_database_core::relational::QueryOperation;
@@ -217,6 +216,38 @@ pub async fn query_stream(
         .parameterized_read_fast_path
         .then(|| typed_query_parameter_types(&bind_names, parameters))
         .flatten();
+    // Risolvi l'identita prima di avviare lo stream: una query al catalogo
+    // sulla stessa connessione con righe non consumate puo bloccare il driver.
+    let statement = client
+        .client()?
+        .prepare_typed(
+            &rendered.sql,
+            typed_parameter_types.as_deref().unwrap_or(&[]),
+        )
+        .await
+        .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
+    let mut columns = statement
+        .columns()
+        .iter()
+        .map(ColumnSpec::from_statement_column)
+        .collect::<Result<Vec<_>>>()?;
+    mark_query_spatial_columns(operation, &mut columns);
+    let mut columns = without_shared_origins(columns);
+    for column in &mut columns {
+        if let Some((relation, number)) = column.source {
+            let row = client
+                .client()?
+                .query_one(
+                    "SELECT col_description($1::oid, $2::int4)",
+                    &[&relation, &i32::from(number)],
+                )
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
+            let comment: Option<String> = row.get(0);
+            column.registered_field_id =
+                crate::field_identity::registered_id(comment.as_deref())?.map(str::to_owned);
+        }
+    }
     let mut typed_rows = None;
     if let Some(parameter_types) = typed_parameter_types {
         let typed_parameters = parameter_refs.iter().copied().zip(parameter_types);
@@ -229,61 +260,17 @@ pub async fn query_stream(
         .await
         {
             if let Ok(rows) = result {
+                provider.metrics.query_typed_fast_path();
                 typed_rows = Some(rows);
             }
         } else {
             return Err(cancel_inflight(provider, &mut client, cancellation).await);
         }
     }
-    let (rows, columns): (PostgresRows, Vec<ColumnSpec>) = if let Some(raw_rows) = typed_rows {
-        let mut raw_rows = Box::pin(raw_rows);
-        let first = if let Some(result) =
-            select_with_cancellation(raw_rows.as_mut().next(), cancellation).await
-        {
-            result.transpose().map_err(|error| {
-                client.invalidate();
-                classify_error(ErrorPhase::Read, &error)
-            })?
-        } else {
-            return Err(cancel_inflight(provider, &mut client, cancellation).await);
-        };
-        provider.metrics.query_typed_fast_path();
-        if let Some(first) = first {
-            let mut columns = first
-                .columns()
-                .iter()
-                .map(ColumnSpec::from_statement_column)
-                .collect::<Result<Vec<_>>>()?;
-            mark_query_spatial_columns(operation, &mut columns);
-            let rows = futures_util::stream::once(async move { Ok(first) }).chain(raw_rows);
-            (Box::pin(rows), columns)
-        } else {
-            let statement = client
-                .client()?
-                .prepare(&rendered.sql)
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
-            let mut columns = statement
-                .columns()
-                .iter()
-                .map(ColumnSpec::from_statement_column)
-                .collect::<Result<Vec<_>>>()?;
-            mark_query_spatial_columns(operation, &mut columns);
-            (Box::pin(futures_util::stream::empty()), columns)
-        }
+    let rows: PostgresRows = if let Some(rows) = typed_rows {
+        Box::pin(rows)
     } else {
         provider.metrics.query_prepared_fallback();
-        let statement = client
-            .client()?
-            .prepare(&rendered.sql)
-            .await
-            .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
-        let mut columns = statement
-            .columns()
-            .iter()
-            .map(ColumnSpec::from_statement_column)
-            .collect::<Result<Vec<_>>>()?;
-        mark_query_spatial_columns(operation, &mut columns);
         let rows = if let Some(result) = select_with_cancellation(
             client.client()?.query_raw(&statement, parameter_refs),
             cancellation,
@@ -294,9 +281,8 @@ pub async fn query_stream(
         } else {
             return Err(cancel_inflight(provider, &mut client, cancellation).await);
         };
-        (Box::pin(rows), columns)
+        Box::pin(rows)
     };
-    let columns = without_shared_origins(columns);
     let schema = contract_schema(
         columns
             .iter()

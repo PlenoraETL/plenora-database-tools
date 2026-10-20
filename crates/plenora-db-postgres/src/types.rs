@@ -34,9 +34,11 @@ pub struct ColumnSpec {
     pub domain_constraints: Vec<String>,
     pub collation: Option<String>,
     /// L'origine della colonna, `(attrelid, attnum)`, quando viene da una
-    /// tabella: ne fa il field id, che cosi non cambia con il nome.
+    /// tabella: assegna un id solo quando il writer non ne ha registrato uno.
     #[serde(skip)]
     pub source: Option<(u32, i16)>,
+    #[serde(skip)]
+    pub registered_field_id: Option<String>,
     #[serde(skip)]
     pub kind: ColumnKind,
 }
@@ -134,6 +136,7 @@ impl ColumnSpec {
             domain_base_type: None,
             domain_constraints: Vec::new(),
             collation: None,
+            registered_field_id: None,
             source: column.table_oid().zip(column.column_id()),
             kind,
         })
@@ -224,6 +227,10 @@ impl ColumnSpec {
             domain_base_type,
             domain_constraints,
             collation,
+            registered_field_id: crate::field_identity::registered_id(
+                catalog_field::<Option<String>>(row, "column_comment")?.as_deref(),
+            )?
+            .map(str::to_owned),
             source: catalog_field::<Option<u32>>(row, "source_relid")?.zip(catalog_field::<
                 Option<i16>,
             >(
@@ -235,7 +242,9 @@ impl ColumnSpec {
 
     pub fn arrow_field(&self) -> Field {
         let mut metadata = self.arrow_metadata();
-        if let Some((relation, column)) = self.source {
+        if let Some(id) = &self.registered_field_id {
+            metadata.insert(protocol::FIELD_ID.to_owned(), id.clone());
+        } else if let Some((relation, column)) = self.source {
             metadata.insert(
                 protocol::FIELD_ID.to_owned(),
                 protocol::origin_field_id(&relation.to_le_bytes(), &column.to_le_bytes())

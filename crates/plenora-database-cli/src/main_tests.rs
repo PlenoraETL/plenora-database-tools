@@ -399,6 +399,7 @@ async fn ipc_materialization_preserves_schema_metadata_and_rows() {
     assert_eq!(report["staging_cleanup"], "complete");
     let reader =
         FileReader::try_new(File::open(&output).expect("open IPC"), None).expect("read IPC");
+    assert_eq!(reader.schema().as_ref(), stream.schema().as_ref());
     assert_eq!(reader.schema().metadata()["plenora.contract.version"], "1");
     assert_eq!(
         reader.schema().field(0).metadata()["plenora.geometry.crs_id"],

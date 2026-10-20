@@ -621,6 +621,7 @@ fn a_geometry_read_without_typmod_can_be_written_back() {
         domain_constraints: Vec::new(),
         collation: None,
         source: None,
+        registered_field_id: None,
         kind: crate::types::ColumnKind::Geometry,
     };
     let field = column.arrow_field();

@@ -599,6 +599,7 @@ mod tests {
                 domain_constraints: Vec::new(),
                 collation: None,
                 source: None,
+                registered_field_id: None,
                 kind: ColumnKind::Utf8,
             }
         }
@@ -1225,6 +1226,10 @@ mod tests {
                 .map(String::as_str),
             Some("unknown")
         );
+        assert_eq!(geom_metadata[protocol::GEOMETRY_PRECISION], "float64");
+        assert!(geom_metadata.contains_key(protocol::FIELD_ID));
+        plenora_database_core::field_contract::validate_published_schema(&stream_schema)
+            .expect("API schema conforme senza arricchimento CLI");
         let mut rows = 0;
         let mut batches = 0;
         while let Some(batch) = stream.next_batch(&NeverCancelled).await.expect("batch") {
@@ -2672,6 +2677,10 @@ mod tests {
             .expect("count row diagnostics PostgreSQL live")
             .get(0);
         assert_eq!(remaining, 0);
+        let comment: Option<String> = client.query_one(
+            "SELECT col_description('plenora_fixture.write_row_diagnostics_probe'::regclass, 1)", &[],
+        ).await.expect("rolled back identity").get(0);
+        assert!(comment.is_none());
         client
             .batch_execute("DROP TABLE plenora_fixture.write_row_diagnostics_probe")
             .await
@@ -2940,6 +2949,13 @@ mod tests {
             .expect("count commit ambiguity probe")
             .get(0);
         assert_eq!(remaining, 3);
+        let comment: String = client.query_one(
+            "SELECT col_description('plenora_fixture.write_row_diagnostics_commit_unknown_probe'::regclass, 1)", &[],
+        ).await.expect("committed identity").get(0);
+        assert_eq!(
+            crate::field_identity::registered_id(Some(&comment)).expect("identity"),
+            Some(schema.field(0).metadata()[protocol::FIELD_ID].as_str())
+        );
         client
             .batch_execute("DROP TABLE plenora_fixture.write_row_diagnostics_commit_unknown_probe")
             .await
@@ -3023,11 +3039,197 @@ mod tests {
             )
             .await
             .expect("advanced prepare");
+        let original_schema = advanced_stream.schema();
         let advanced_outcome = provider
             .write_with_prepared_budget(&secret, advanced_prepared, advanced_stream, &cancellation)
             .await
             .expect("advanced write");
         assert_eq!(advanced_outcome.rows.confirmed, 1);
+        // Le API Rust ricevono lo stesso schema che la CLI serializza: l'id
+        // sopravvive al cambio di relazione, senza passare dalla CLI.
+        let reread = ReadOperation {
+            source: advanced_operation.target.clone(),
+            projection: Vec::new(),
+            order_by: Vec::new(),
+            row_limit: Some(1),
+            row_offset: None,
+            filter: None,
+            declared_crs: Vec::new(),
+        };
+        let roundtrip = provider
+            .read_with_test_budget(&secret, &reread, &ParameterBag::default(), &cancellation)
+            .await
+            .expect("roundtrip API");
+        for (before, after) in original_schema
+            .fields()
+            .iter()
+            .zip(roundtrip.schema().fields())
+        {
+            assert_eq!(
+                before.metadata()[plenora_database_core::protocol::FIELD_ID],
+                after.metadata()[plenora_database_core::protocol::FIELD_ID]
+            );
+        }
+        drop(roundtrip);
+        let query = QueryOperation {
+            declared_crs: Vec::new(),
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: advanced_operation.target.clone(),
+                alias: None,
+            }),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: None,
+                        field: "integer_values".to_owned(),
+                    },
+                },
+                alias: Some("renamed".to_owned()),
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: Some(1),
+            row_offset: None,
+            locking: None,
+        };
+        let mut queried = provider
+            .query_with_test_budget(&secret, &query, &ParameterBag::default(), &cancellation)
+            .await
+            .expect("query registered identity");
+        assert_eq!(
+            queried.schema().field(0).metadata()[protocol::FIELD_ID],
+            original_schema
+                .field_with_name("integer_values")
+                .expect("array field")
+                .metadata()[protocol::FIELD_ID]
+        );
+        assert_eq!(
+            queried
+                .next_batch(&cancellation)
+                .await
+                .expect("query batch")
+                .expect("row")
+                .num_rows(),
+            1
+        );
+        drop(queried);
+        let mut append = advanced_operation.clone();
+        append.mode = WriteMode::Append;
+        let prepared = provider
+            .prepare_write_with_test_budget(
+                &secret,
+                &append,
+                original_schema.clone(),
+                &cancellation,
+            )
+            .await
+            .expect("append prepare");
+        provider
+            .write_with_prepared_budget(
+                &secret,
+                prepared,
+                Box::new(NoBatchStream {
+                    schema: original_schema.clone(),
+                }),
+                &cancellation,
+            )
+            .await
+            .expect("same identity append");
+        let mut fields = original_schema
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone())
+            .collect::<Vec<_>>();
+        let mut metadata = fields[0].metadata().clone();
+        metadata.insert(
+            plenora_database_core::protocol::FIELD_ID.to_owned(),
+            "987654321098765432109876543210".to_owned(),
+        );
+        fields[0] = fields[0].clone().with_metadata(metadata);
+        let conflicting = Arc::new(arrow_schema::Schema::new_with_metadata(
+            fields,
+            original_schema.metadata().clone(),
+        ));
+        let prepared = provider
+            .prepare_write_with_test_budget(&secret, &append, conflicting.clone(), &cancellation)
+            .await
+            .expect("conflict prepare");
+        let error = provider
+            .write_with_prepared_budget(
+                &secret,
+                prepared,
+                Box::new(NoBatchStream {
+                    schema: conflicting,
+                }),
+                &cancellation,
+            )
+            .await
+            .expect_err("identity conflict");
+        assert_eq!(error.category, ErrorCategory::Conflict);
+        assert!(!error.message.contains("987654321098765432109876543210"));
+        // Una modifica esterna del commento invalida anche la cache gia calda.
+        client
+            .batch_execute(
+                "COMMENT ON COLUMN plenora_fixture.advanced_roundtrip.status IS 'owner comment'",
+            )
+            .await
+            .expect("foreign comment");
+        let fallback = provider
+            .read_with_test_budget(&secret, &reread, &ParameterBag::default(), &cancellation)
+            .await
+            .expect("fallback API");
+        assert_ne!(
+            fallback.schema().field(0).metadata()[plenora_database_core::protocol::FIELD_ID],
+            original_schema.field(0).metadata()[plenora_database_core::protocol::FIELD_ID]
+        );
+        drop(fallback);
+        let prepared = provider
+            .prepare_write_with_test_budget(
+                &secret,
+                &append,
+                original_schema.clone(),
+                &cancellation,
+            )
+            .await
+            .expect("register on existing column");
+        provider
+            .write_with_prepared_budget(
+                &secret,
+                prepared,
+                Box::new(NoBatchStream {
+                    schema: original_schema.clone(),
+                }),
+                &cancellation,
+            )
+            .await
+            .expect("foreign comment preserved");
+        let comment: String = client
+            .query_one(
+                "SELECT col_description('plenora_fixture.advanced_roundtrip'::regclass, 1)",
+                &[],
+            )
+            .await
+            .expect("comment")
+            .get(0);
+        assert!(comment.ends_with("\nowner comment"));
+        let restored = provider
+            .read_with_test_budget(&secret, &reread, &ParameterBag::default(), &cancellation)
+            .await
+            .expect("restored identity API");
+        assert_eq!(
+            restored.schema().field(0).metadata()[plenora_database_core::protocol::FIELD_ID],
+            original_schema.field(0).metadata()[plenora_database_core::protocol::FIELD_ID]
+        );
+        drop(restored);
+
         let advanced_matches: bool = client
             .query_one(
                 "SELECT
