@@ -120,7 +120,7 @@ rustls = { version = "=0.23.46", default-features = false, features = ["ring", "
 tokio-postgres-rustls = { version = "=0.14.0", features = ["ring", "webpki-roots"] }
 # Radici pubbliche della configurazione TLS PostgreSQL predefinita
 # (`PostgresTlsConfig::webpki`); i costruttori a CA privata non le caricano.
-webpki-roots = "=1.0.9"
+webpki-roots = "=1.0.10"
 
 plenora-database-core = { path = "crates/plenora-database-core" }
 plenora-database-sql = { path = "crates/plenora-database-sql" }
