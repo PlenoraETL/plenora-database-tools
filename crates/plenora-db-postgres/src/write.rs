@@ -256,6 +256,16 @@ pub async fn execute(
     };
     let operation = &prepared.operation;
     if let Some(diagnostic_input) = diagnostic_input {
+        match select_with_cancellation(
+            crate::field_identity::register(&transaction, operation, &schema),
+            cancellation,
+        )
+        .await
+        {
+            Some(Ok(())) => {}
+            Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+            None => return Err(recovery.rollback_cancellation(transaction).await),
+        }
         let result = row_diagnostics::execute(
             transaction,
             input.as_mut(),
@@ -298,7 +308,10 @@ pub async fn execute(
         return Err(recovery.rollback_cancellation(transaction).await);
     }
     if let Some(result) = select_with_cancellation(
-        prepare_target(&transaction, operation, &schema, &column_plans),
+        async {
+            prepare_target(&transaction, operation, &schema, &column_plans).await?;
+            crate::field_identity::register(&transaction, operation, &schema).await
+        },
         cancellation,
     )
     .await

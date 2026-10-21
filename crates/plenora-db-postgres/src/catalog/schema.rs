@@ -19,6 +19,7 @@ pub async fn load_columns_and_token(
                 a.attname,
                 a.attrelid AS source_relid,
                 a.attnum AS source_attnum,
+                col_description(a.attrelid, a.attnum) AS column_comment,
                 t.typname,
                 NOT a.attnotnull AS nullable,
                 CASE
@@ -120,6 +121,7 @@ pub async fn load_columns_and_token(
                                 sa.attgenerated,
                                 sa.attcollation::text,
                                 sa.xmin::text,
+                                col_description(sa.attrelid, sa.attnum),
                                 st.typname,
                                 st.typtype,
                                 st.xmin::text,
@@ -249,6 +251,7 @@ pub async fn schema_token(client: &Client, source: &ObjectRef) -> Result<Catalog
                                 a.attgenerated,
                                 a.attcollation::text,
                                 a.xmin::text,
+                                col_description(a.attrelid, a.attnum),
                                 t.typname,
                                 t.typtype,
                                 t.xmin::text,

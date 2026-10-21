@@ -23,6 +23,7 @@ fn column(name: &str) -> ColumnSpec {
         domain_constraints: Vec::new(),
         collation: None,
         source: None,
+        registered_field_id: None,
         kind: ColumnKind::Geometry,
     }
 }

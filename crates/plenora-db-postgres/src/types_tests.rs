@@ -24,6 +24,7 @@ fn geometry_column(spatial_type: Option<&str>, dimensions: Option<&str>) -> Colu
         domain_constraints: Vec::new(),
         collation: None,
         source: None,
+        registered_field_id: None,
         kind: ColumnKind::Geometry,
     }
 }
@@ -81,4 +82,17 @@ fn a_read_geometry_field_declares_every_required_key() {
             .and_then(FieldContract::validate_current)
             .expect("campo corrente conforme");
     }
+}
+
+/// Un id ricevuto prevale sulla provenienza anche dopo una rinomina.
+#[test]
+fn registered_identity_wins_over_provenance() {
+    let mut column = geometry_column(Some("Point"), Some("XY"));
+    column.source = Some((16384, 2));
+    column.registered_field_id = Some("123456789012345678901234567890".to_owned());
+    column.name = "renamed".to_owned();
+    assert_eq!(
+        column.arrow_field().metadata()[protocol::FIELD_ID],
+        "123456789012345678901234567890"
+    );
 }

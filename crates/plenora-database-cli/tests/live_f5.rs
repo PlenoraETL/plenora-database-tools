@@ -689,3 +689,114 @@ fn f5_x_unknown_command_returns_usage_error() {
     let err = run_json_err(&["completely-unknown-command"]);
     assert_eq!(err["status"], "error");
 }
+
+/// Stessa QueryOperation su API Rust e CLI, inclusi tutti i metadati Arrow.
+#[cfg(feature = "postgres")]
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_registered_projection_schema_matches_rust_and_cli() {
+    use arrow_ipc::reader::StreamReader;
+    use plenora_database_core::protocol::{name_field_id, FIELD_ID};
+    use plenora_database_core::provider::SecretString;
+    use plenora_database_core::provider::{ParameterBag, Provider};
+    use plenora_database_core::relational::QueryOperation;
+    use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+    use plenora_database_core::{CancellationToken, ErrorCategory};
+    use plenora_db_postgres::PostgresProvider;
+
+    let table = "public.plenora_cli_identity_parity";
+    let ddl = |sql: &str| run_json(&["database-execute-ddl", "postgres", "PG_DSN", sql]);
+    ddl(&format!("DROP TABLE IF EXISTS {table}"));
+    ddl(&format!("CREATE TABLE {table} (c integer)"));
+    // Forza una collisione fra l'id registrato e l'hash dell'alias duplicato.
+    let registered = format!("00{}", name_field_id("b"));
+    ddl(&format!(
+        "COMMENT ON COLUMN {table}.c IS E'plenora.field_id.v1:{registered}\\nowner'"
+    ));
+    let query_json = serde_json::json!({
+        "source": {"object": {"schema": "public", "object": "plenora_cli_identity_parity"}},
+        "projection": [
+            {"expression": {"kind": "column", "column": {"field": "c"}}, "alias": "a"},
+            {"expression": {"kind": "column", "column": {"field": "c"}}, "alias": "b"}
+        ]
+    });
+    let operation: QueryOperation = serde_json::from_value(query_json.clone()).expect("query");
+    let provider = PostgresProvider::insecure_local();
+    let secret = SecretString::new(dsn());
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let cancel = CancellationToken::new();
+    let parameters = ParameterBag::default();
+    let mut schemas = Vec::new();
+    for _ in 0..2 {
+        let mut stream = provider
+            .query(&secret, &operation, &parameters, &budget, &cancel)
+            .await
+            .expect("registered projection");
+        let schema = stream.schema();
+        assert_eq!(schema.field(0).metadata()[FIELD_ID], registered);
+        assert_eq!(
+            schema.field(1).metadata()[FIELD_ID],
+            (u64::from(name_field_id("b")) + 1).to_string()
+        );
+        schemas.push(serde_json::to_value(schema.as_ref()).expect("serialized schema"));
+        while stream.next_batch(&cancel).await.expect("batch").is_some() {}
+    }
+    assert_eq!(schemas[0], schemas[1]);
+    let directory =
+        std::env::temp_dir().join(format!("plenora-identity-parity-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("directory");
+    let query_path = directory.join("query.json");
+    std::fs::write(&query_path, query_json.to_string()).expect("query file");
+    let request_path = directory.join("request.json");
+    std::fs::write(
+        &request_path,
+        serde_json::json!({
+            "provider": "postgres", "secret_environment": "PG_DSN",
+            "operation_path": query_path.to_str().expect("path")
+        })
+        .to_string(),
+    )
+    .expect("request file");
+    let output_path = directory.join("query.arrows");
+    run_json(&[
+        "query",
+        "--input",
+        request_path.to_str().expect("path"),
+        "--output",
+        output_path.to_str().expect("path"),
+    ]);
+    let reader = StreamReader::try_new(std::fs::File::open(&output_path).expect("output"), None)
+        .expect("IPC stream");
+    assert_eq!(
+        schemas[0],
+        serde_json::to_value(reader.schema().as_ref()).expect("CLI schema")
+    );
+    drop(reader);
+
+    ddl(&format!(
+        "COMMENT ON COLUMN {table}.c IS 'plenora.field_id.v1:PRIVATE_INVALID_HEADER'"
+    ));
+    let Err(error) = provider
+        .query(&secret, &operation, &parameters, &budget, &cancel)
+        .await
+    else {
+        panic!("corrupt registered projection accepted");
+    };
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(
+        error.message,
+        "metadati identita colonna PostgreSQL non validi"
+    );
+    let error = run_json_err(&[
+        "query",
+        "--input",
+        request_path.to_str().expect("path"),
+        "--output",
+        output_path.to_str().expect("path"),
+    ]);
+    assert_eq!(error["error"]["category"], "data_mapping");
+    assert!(!error.to_string().contains("PRIVATE_INVALID_HEADER"));
+    ddl(&format!("DROP TABLE {table}"));
+    std::fs::remove_dir_all(directory).expect("cleanup");
+}

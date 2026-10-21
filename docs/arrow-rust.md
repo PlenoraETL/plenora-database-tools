@@ -32,3 +32,6 @@ ogni batch attraversa ancora l'IPC una volta. Le versioni qualificate sono nei
 [`requisiti SDK`](../requirements-sdk-tests.txt); i test di interoperabilita
 verificano schema, null e metadati. I vincoli GeoArrow e le capability dei
 provider rimangono quelli del contratto pubblico.
+
+Per il limite dell'identita PostgreSQL quando il commento registrato viene
+rimosso manualmente, vedere [`registered_id`](../crates/plenora-db-postgres/src/field_identity.rs).

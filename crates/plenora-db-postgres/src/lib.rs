@@ -11,6 +11,7 @@ mod connection;
 mod control;
 mod error;
 mod field_contract;
+mod field_identity;
 mod metrics;
 mod parameter_codec;
 mod pool;
