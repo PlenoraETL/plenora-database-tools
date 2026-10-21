@@ -6,7 +6,7 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
-## 8.0.1 — non pubblicata
+## 8.0.1 — 2026-10-21
 
 Patch: quattro correzioni, nessun cambiamento di contratto.
 
