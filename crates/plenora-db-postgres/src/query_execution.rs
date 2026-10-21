@@ -232,7 +232,6 @@ pub async fn query_stream(
         .map(ColumnSpec::from_statement_column)
         .collect::<Result<Vec<_>>>()?;
     mark_query_spatial_columns(operation, &mut columns);
-    let mut columns = without_shared_origins(columns);
     for column in &mut columns {
         if let Some((relation, number)) = column.source {
             let row = client
@@ -248,6 +247,7 @@ pub async fn query_stream(
                 crate::field_identity::registered_id(comment.as_deref())?.map(str::to_owned);
         }
     }
+    let columns = without_shared_origins(columns);
     let mut typed_rows = None;
     if let Some(parameter_types) = typed_parameter_types {
         let typed_parameters = parameter_refs.iter().copied().zip(parameter_types);
@@ -302,33 +302,61 @@ pub async fn query_stream(
     )))
 }
 
-/// Una query che proietta la stessa colonna sorgente piu volte darebbe a
-/// quei campi lo stesso field id. Per loro l'origine non identifica il campo:
-/// l'id si deriva dal nome di uscita, che la query rende distinto.
-///
-/// # Limite dichiarato
-///
-/// L'id di una colonna dipende quindi dalla **composizione** della
-/// proiezione: aggiungere una seconda proiezione della stessa origine — anche
-/// tramite un auto-join — fa passare **entrambe** le colonne all'id derivato
-/// dal nome, compresa quella rimasta invariata. Anche le espressioni hanno
-/// l'id del nome, e una rinomina lo cambia. Per le viste l'equivalenza non e
-/// garantita: il catalogo di una lettura usa `attrelid`/`attnum` della vista,
-/// una query l'origine che il driver riporta. L'unicita e garantita solo
-/// dentro lo schema prodotto; l'hash a 31 bit non e un'identita globale ne
-/// storica (una tabella ricreata ha un'altra origine).
+/// Risolve le proiezioni ripetute solo dopo aver letto e validato i commenti.
+/// Per origini non registrate resta il fallback al nome per tutte le copie.
+/// Per origini registrate la prima conserva l'id, le successive partono
+/// dall'hash del nome di uscita e aggiungono 1 finche trovano un id libero.
+/// Si riservano prima tutti gli id degli altri campi (in forma canonica):
+/// nessuna collisione puo rinumerare un'identita persistita, anche successiva.
+/// L'assegnazione delle copie segue l'ordine della proiezione ed e deterministica
+/// nello stesso schema; non promette stabilita fra proiezioni diverse.
+/// Espressioni e origini non registrate restano dipendenti dal nome; le viste
+/// possono riportare origini diverse fra lettura di catalogo e query.
 fn without_shared_origins(mut columns: Vec<ColumnSpec>) -> Vec<ColumnSpec> {
+    use plenora_database_core::protocol::{canonical_field_id, name_field_id, FIELD_ID};
     let mut counts = std::collections::HashMap::new();
     for source in columns.iter().filter_map(|column| column.source) {
         *counts.entry(source).or_insert(0_usize) += 1;
     }
-    for column in &mut columns {
-        if column
-            .source
-            .is_some_and(|source| counts.get(&source).copied().unwrap_or(0) > 1)
-        {
-            column.source = None;
+    let mut seen = std::collections::HashSet::new();
+    let mut duplicates = Vec::new();
+    for (index, column) in columns.iter_mut().enumerate() {
+        if let Some(source) = column.source {
+            if column.registered_field_id.is_some() {
+                if !seen.insert(source) {
+                    duplicates.push(index);
+                }
+            } else if counts.get(&source).copied().unwrap_or(0) > 1 {
+                column.source = None;
+            }
         }
+    }
+    if duplicates.is_empty() {
+        return columns;
+    }
+    let mut reserved = columns
+        .iter()
+        .map(|column| {
+            column
+                .arrow_field()
+                .metadata()
+                .get(FIELD_ID)
+                .and_then(|id| canonical_field_id(id))
+                .unwrap_or_else(|| name_field_id(&column.name).to_string())
+        })
+        .collect::<std::collections::HashSet<_>>();
+    for index in duplicates {
+        let column = &mut columns[index];
+        let mut candidate = u64::from(name_field_id(&column.name));
+        while !reserved.insert(candidate.to_string()) {
+            candidate += 1;
+        }
+        column.registered_field_id = Some(candidate.to_string());
+        column.source = None;
     }
     columns
 }
+
+#[cfg(test)]
+#[path = "query_execution_tests.rs"]
+mod tests;

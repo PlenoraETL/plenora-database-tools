@@ -11,6 +11,9 @@ const PREFIX: &str = "plenora.field_id.v1:";
 
 /// La prima riga e riservata; il resto del commento resta byte per byte.
 /// Un'intestazione riservata corrotta non diventa un nuovo id di provenienza.
+/// Limite dichiarato: se il commento o il prefisso vengono rimossi a mano,
+/// la colonna equivale a una mai registrata e usa il fallback di provenienza.
+/// Il commento non autentica l'identita e non rileva tale manomissione.
 pub fn registered_id(comment: Option<&str>) -> Result<Option<&str>> {
     let Some(value) = comment.and_then(|text| text.strip_prefix(PREFIX)) else {
         return Ok(None);
