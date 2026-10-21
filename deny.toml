@@ -11,7 +11,14 @@ version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
 yanked = "deny"
-ignore = []
+ignore = [
+    # RUSTSEC-2026-0381 (webpki-roots < 1.0.10): nel grafo la 0.26.11 e' lo
+    # shim di compatibilita' richiesto dal fork oracle-rs e NON porta radici
+    # proprie: le riesporta dalla 1.0.x interna, qui gia' 1.0.10 (corretta).
+    # Rientro: il fork plenora-oracle-rs passa a webpki-roots 1.0 (issue
+    # aperta); l'eccezione copre solo lo shim, non la linea 1.x.
+    { id = "RUSTSEC-2026-0381", reason = "shim 0.26.11 senza radici proprie; radici dalla 1.0.10 interna" },
+]
 # ============================================================================
 #  licenses
 # ============================================================================
