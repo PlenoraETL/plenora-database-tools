@@ -6,6 +6,39 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## 8.0.1 — non pubblicata
+
+Patch: quattro correzioni, nessun cambiamento di contratto.
+
+### Correzioni
+
+- **Il `plenora.field_id` sopravvive al round-trip, su ogni superficie**
+  (#126; rientro dei difetti #124 e #125 trovati dalla matrice interop,
+  secondo la decision 0022 di plenora-contracts). La write registra l'id
+  ricevuto con `COMMENT ON COLUMN` (formato riconoscibile, commenti
+  preesistenti rispettati; serve il privilegio di COMMENT alla prima
+  registrazione) e la read riemette quello, con l'hash di provenienza come
+  assegnazione solo per le colonne nate nello store; un append con id
+  divergente è un conflitto tipizzato. Per la #125, prove di uguaglianza
+  dei metadati fra API Rust e CLI sulla stessa query.
+- **Chiavi JSON duplicate rifiutate su ogni ingresso** (#123): chiusa la
+  classe «chiavi duplicate collassate prima della validazione» su sette
+  ingressi di documenti di controllo, con rifiuto ricorsivo al parse ed
+  errori senza payload; comportamento dichiarato per i valori utente di
+  `ParameterValue::Json`.
+- **SBOM della wheel: la dipendenza runtime entra risolta nel grafo**
+  (#122): `Requires-Dist` si mappa sul pin unico della qualifica, con
+  l'arco verso il componente `pkg:pypi` risolto; le forme non gestite
+  (extras, marker) si rifiutano invece di passare non verificate.
+
+### Dipendenze
+
+- **Advisory webpki** (#128): `rustls-webpki` 0.103.16
+  (RUSTSEC-2026-0382) e `webpki-roots` 1.0.10 (RUSTSEC-2026-0381), lock
+  del fuzz compreso. Lo shim 0.26.11 richiesto dal fork oracle-rs resta
+  con eccezione mirata e motivata in `deny.toml`, rientro tracciato
+  in #127.
+
 ## 8.0.0 — 2026-10-18
 
 Major: l'adozione del catalogo e del profilo database-tools v2 cambia le
