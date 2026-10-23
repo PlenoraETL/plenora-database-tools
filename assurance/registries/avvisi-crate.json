@@ -792,7 +792,7 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.2.2"
     },
-    "ctutils-0.4.2": {
+    "ctutils-0.4.5": {
       "files": [
         {
           "file": "LICENSE-APACHE",
@@ -808,7 +808,7 @@
       "license": "Apache-2.0 OR MIT",
       "name": "ctutils",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.4.2"
+      "version": "0.4.5"
     },
     "der-0.7.10": {
       "files": [
@@ -3015,7 +3015,7 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "1.13.3"
     },
-    "tokio-1.53.1": {
+    "tokio-1.53.3": {
       "files": [
         {
           "file": "LICENSE",
@@ -3026,7 +3026,7 @@
       "license": "MIT",
       "name": "tokio",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "1.53.1"
+      "version": "1.53.3"
     },
     "tokio-postgres-0.7.18": {
       "files": [
@@ -3540,8 +3540,8 @@
     }
   },
   "inputs": {
-    "Cargo.lock": "fc809ea204c26cce0c5098db4b94d59ccf291c9075dc7b22fa0ea14a78f2f22c",
-    "Cargo.toml": "537f799eba25d04e5fec445820396069925e0cf3b88b33d7844d0e018eeb6723",
+    "Cargo.lock": "17dd6af0051a0b391111a599f027ea8cbe258a91197530d9ba32da20d0ff50be",
+    "Cargo.toml": "999ff5aa59e32528d09ee572a4ba75ee0ec9d8ec7087c485b7e2c380cd8bbd76",
     "crates/plenora-database-cli/Cargo.toml": "198763d296693b0e0c5734d85a4e5c7da97e370289548b48a199ffc1d87e30dd",
     "crates/plenora-database-core/Cargo.toml": "334a9af9b7af01236e55cb48a92114c4e60f2a0972f54f586ba495f3c0b02998",
     "crates/plenora-database-engine/Cargo.toml": "3842feb711364c1af54db42be113848c1e8a53ec51f3d50d173fca6eeac73e42",
@@ -3606,7 +3606,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.2",
+        "ctutils-0.4.5",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -3728,7 +3728,7 @@
         "tiberius-ng-0.13.1",
         "tinystr-0.8.4",
         "tinyvec-1.13.3",
-        "tokio-1.53.1",
+        "tokio-1.53.3",
         "tokio-postgres-0.7.18",
         "tokio-postgres-rustls-0.14.0",
         "tokio-rustls-0.26.5",
@@ -3811,7 +3811,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.2",
+        "ctutils-0.4.5",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -3931,7 +3931,7 @@
         "tiberius-ng-0.13.1",
         "tinystr-0.8.4",
         "tinyvec-1.13.3",
-        "tokio-1.53.1",
+        "tokio-1.53.3",
         "tokio-postgres-0.7.18",
         "tokio-postgres-rustls-0.14.0",
         "tokio-rustls-0.26.5",
@@ -3992,7 +3992,7 @@
         "const-oid-0.9.6",
         "cpufeatures-0.3.1",
         "crypto-common-0.2.2",
-        "ctutils-0.4.2",
+        "ctutils-0.4.5",
         "der-0.7.10",
         "digest-0.11.3",
         "fallible-iterator-0.2.0",
@@ -4052,7 +4052,7 @@
         "subtle-2.6.1",
         "thiserror-2.0.21",
         "tinyvec-1.13.3",
-        "tokio-1.53.1",
+        "tokio-1.53.3",
         "tokio-postgres-0.7.18",
         "tokio-postgres-rustls-0.14.0",
         "tokio-rustls-0.26.5",
@@ -4118,7 +4118,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.2",
+        "ctutils-0.4.5",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -4221,7 +4221,7 @@
         "tiberius-ng-0.13.1",
         "tinystr-0.8.4",
         "tinyvec-1.13.3",
-        "tokio-1.53.1",
+        "tokio-1.53.3",
         "tokio-postgres-0.7.18",
         "tokio-postgres-rustls-0.14.0",
         "tokio-rustls-0.26.5",
@@ -4298,7 +4298,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.2",
+        "ctutils-0.4.5",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -4399,7 +4399,7 @@
         "tiberius-ng-0.13.1",
         "tinystr-0.8.4",
         "tinyvec-1.13.3",
-        "tokio-1.53.1",
+        "tokio-1.53.3",
         "tokio-postgres-0.7.18",
         "tokio-postgres-rustls-0.14.0",
         "tokio-rustls-0.26.5",
@@ -4458,7 +4458,7 @@
         "const-oid-0.9.6",
         "cpufeatures-0.3.1",
         "crypto-common-0.2.2",
-        "ctutils-0.4.2",
+        "ctutils-0.4.5",
         "der-0.7.10",
         "digest-0.11.3",
         "fallible-iterator-0.2.0",
@@ -4516,7 +4516,7 @@
         "subtle-2.6.1",
         "thiserror-2.0.21",
         "tinyvec-1.13.3",
-        "tokio-1.53.1",
+        "tokio-1.53.3",
         "tokio-postgres-0.7.18",
         "tokio-postgres-rustls-0.14.0",
         "tokio-rustls-0.26.5",
@@ -4588,7 +4588,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.2",
+        "ctutils-0.4.5",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -4713,7 +4713,7 @@
         "tiberius-ng-0.13.1",
         "tinystr-0.8.4",
         "tinyvec-1.13.3",
-        "tokio-1.53.1",
+        "tokio-1.53.3",
         "tokio-postgres-0.7.18",
         "tokio-postgres-rustls-0.14.0",
         "tokio-rustls-0.26.5",
@@ -4792,7 +4792,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.2",
+        "ctutils-0.4.5",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -4915,7 +4915,7 @@
         "tiberius-ng-0.13.1",
         "tinystr-0.8.4",
         "tinyvec-1.13.3",
-        "tokio-1.53.1",
+        "tokio-1.53.3",
         "tokio-postgres-0.7.18",
         "tokio-postgres-rustls-0.14.0",
         "tokio-rustls-0.26.5",
@@ -4993,7 +4993,7 @@
         "crossbeam-utils-0.8.23",
         "crypto-common-0.1.7",
         "crypto-common-0.2.2",
-        "ctutils-0.4.2",
+        "ctutils-0.4.5",
         "der-0.7.10",
         "digest-0.10.7",
         "digest-0.11.3",
@@ -5115,7 +5115,7 @@
         "tiberius-ng-0.13.1",
         "tinystr-0.8.4",
         "tinyvec-1.13.3",
-        "tokio-1.53.1",
+        "tokio-1.53.3",
         "tokio-postgres-0.7.18",
         "tokio-postgres-rustls-0.14.0",
         "tokio-rustls-0.26.5",
