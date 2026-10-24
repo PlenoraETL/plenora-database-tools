@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 106392,
-  "max_code_lines": 87659,
-  "rationale": "PR #126, decision 0022: field_identity conserva l'identita ricevuta dalla write e la riemette in read/query; e crescita di prodotto richiesta dal contratto. Verifica d'igiene: test gia in file dedicati e costruzione dei metadati query gia accorpata; nessuna ulteriore riduzione utile senza perdere chiarezza. Come nella PR #119, soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 106244 -> 106392 (+148, di cui +29 per il fix della proiezione ripetuta chiesto dal secondo lettore), righe di codice 87543 -> 87659 (+116). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 108326,
+  "max_code_lines": 89099,
+  "rationale": "Adozione di Arrow Geometry Semantics 1.0: crs_definition (identificatori di primo livello e buona forma delle definizioni CRS, GEO-005, portato da IO-tools per dare lo stesso verdetto dell'oracolo), geometry_value (verifica comune dei valori WKB/EWKB, GEO-008/009/011, che sostituisce i controlli divergenti dei cinque adapter) e le classi REJ-001 in field_contract; e crescita di prodotto richiesta dal contratto. Verifica d'igiene: i controlli per provider rimossi a favore di quello comune, test in file dedicati. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 106392 -> 108326 (+1934), righe di codice 87659 -> 89099 (+1440). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

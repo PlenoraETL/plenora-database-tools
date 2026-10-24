@@ -150,10 +150,17 @@ pub async fn write(
                     None,
                 )?);
             }
+            // Lo SRID che la colonna riceverebbe, dichiarato o derivato da
+            // `EPSG:<n>` (GEO-008): un campo senza `srid` ma con `EPSG:4326`
+            // verso una colonna 4326 non perde niente.
+            let derived_srid = plenora_database_core::field_contract::FieldContract::parse(source)?
+                .target_srid()?
+                .map(|srid| srid.to_string());
             let source_srid = source
                 .metadata()
                 .get(protocol::GEOMETRY_SRID)
-                .or_else(|| source.metadata().get("plenora.srid"));
+                .or_else(|| source.metadata().get("plenora.srid"))
+                .or(derived_srid.as_ref());
             let target_srid = target_field
                 .metadata()
                 .get(protocol::GEOMETRY_SRID)
@@ -209,6 +216,8 @@ pub async fn write(
     Ok(report)
 }
 
+// Deviazione dichiarata (REJ-003, contracts/adoption-source.json): i rifiuti decisi
+// leggendo il bersaglio escono con fase `prepare`, non `probe`.
 async fn validate_resolved_crs_against_postgis(
     client: &PooledClient,
     input_schema: &SchemaRef,
@@ -221,15 +230,21 @@ async fn validate_resolved_crs_against_postgis(
         {
             continue;
         }
-        let srid = field
-            .metadata()
-            .get(protocol::GEOMETRY_SRID)
-            .and_then(|value| value.parse::<i32>().ok())
-            .ok_or_else(|| DatabaseError::invalid_plan("CRS resolved senza SRID valido"))?;
-        let declared_id = field
-            .metadata()
-            .get(protocol::GEOMETRY_CRS_ID)
-            .ok_or_else(|| DatabaseError::invalid_plan("CRS resolved senza identificatore"))?;
+        // Lo SRID della colonna, dichiarato o derivato da `EPSG:<n>` (GEO-008);
+        // lo schema e gia stato verificato da `write::prepare_state`, quindi
+        // un CRS senza SRID derivabile qui non arriva.
+        let contract = plenora_database_core::field_contract::FieldContract::parse(field)?;
+        let Some(srid) = contract
+            .target_srid()?
+            .and_then(|srid| i32::try_from(srid).ok())
+        else {
+            continue;
+        };
+        // Una definizione senza identificatore non si confronta con il
+        // catalogo: il campo registra lo SRID che dichiara (GEO-004).
+        let Some(declared_id) = field.metadata().get(protocol::GEOMETRY_CRS_ID) else {
+            continue;
+        };
         let row = client
             .client()?
             .query_opt(

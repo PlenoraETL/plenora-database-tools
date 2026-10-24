@@ -991,6 +991,12 @@ mod tests {
                 protocol::GEOMETRY_AXIS_ORDER.to_owned(),
                 "lon_lat".to_owned(),
             ),
+            // ARROW-VOCABULARY §4: chiavi obbligatorie di un campo geometria.
+            (protocol::FIELD_ID.to_owned(), "0".to_owned()),
+            (
+                protocol::GEOMETRY_PRECISION.to_owned(),
+                "float64".to_owned(),
+            ),
         ]);
         let schema = Arc::new(Schema::new_with_metadata(
             vec![Field::new("geom", DataType::Binary, false).with_metadata(metadata)],

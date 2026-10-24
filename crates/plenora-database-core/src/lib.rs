@@ -7,6 +7,7 @@ pub mod cancellation;
 pub mod capabilities;
 pub mod checkpoint;
 pub mod conformance;
+pub mod crs_definition;
 pub mod ddl_residue;
 pub mod error;
 pub mod ewkb;
@@ -16,6 +17,7 @@ pub mod fingerprint;
 #[cfg(test)]
 mod fingerprint_tests;
 pub mod geometry;
+pub mod geometry_value;
 pub mod graph;
 pub mod identifier;
 pub mod limits;

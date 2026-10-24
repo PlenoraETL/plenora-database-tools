@@ -121,3 +121,75 @@ fn fixed_width_rows_consume_output_and_memory_bytes() {
     let inspection = inspect_row(&batch, 0, &plan, 1024, 1024, 16).expect("fixed-width inspection");
     assert_eq!(inspection.bytes, 12);
 }
+
+/// GEO-011: un valore di un tipo fuori dalla lista dichiarata si rifiuta.
+/// Fino al 24/10 questo percorso confrontava soltanto SRID e dimensioni, e un
+/// poligono in un campo `point` arrivava al server.
+#[test]
+fn geometry_outside_the_declared_types_is_rejected_before_binding() {
+    use plenora_database_core::protocol;
+    use std::collections::HashMap;
+    let field = Field::new("shape", DataType::Binary, true).with_metadata(HashMap::from(
+        [
+            (protocol::GEOARROW_EXTENSION_NAME, "geoarrow.wkb"),
+            (protocol::FIELD_ID, "0"),
+            (protocol::GEOMETRY_ENCODING, "wkb"),
+            (protocol::GEOMETRY_DIMENSIONS, "xy"),
+            (protocol::GEOMETRY_SPATIAL_SEMANTICS, "geometry"),
+            (protocol::GEOMETRY_PRECISION, "float64"),
+            (protocol::GEOMETRY_TYPES_DECLARATION, "exact"),
+            (protocol::GEOMETRY_TYPES, "point"),
+            (protocol::GEOMETRY_SRID, "4326"),
+            (protocol::GEOMETRY_CRS_RESOLUTION, "missing"),
+        ]
+        .map(|(key, value)| (key.to_owned(), value.to_owned())),
+    ));
+    let schema = Arc::new(Schema::new(vec![field]));
+    // Un poligono con un anello chiuso di quattro punti.
+    let mut polygon = vec![1_u8, 3, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0];
+    for value in [0.0_f64, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0] {
+        polygon.extend_from_slice(&value.to_le_bytes());
+    }
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(BinaryArray::from(vec![Some(polygon.as_slice())]))],
+    )
+    .expect("batch geometrico");
+    let plan = WritePlan {
+        input_schema: schema,
+        columns: vec![WriteColumnPlan {
+            input_index: 0,
+            name: "shape".to_owned(),
+            kind: crate::SqlServerColumnKind::Geometry,
+            native_type: "geometry".to_owned(),
+            native_declaration: "geometry".to_owned(),
+            nullable: true,
+            collation: None,
+            spatial_srid: Some(4326),
+        }],
+        mode: WriteMode::Append,
+        row_sql: String::new(),
+        key_input_indices: Vec::new(),
+        bulk_table: String::new(),
+        bulk_columns_aligned: false,
+        lifecycle: TargetLifecycle::Existing {
+            lock_sql: String::new(),
+            truncate_sql: None,
+            add_columns_sql: Vec::new(),
+            schema_fingerprint: String::new(),
+        },
+        schema: "dbo".to_owned(),
+        object: "target".to_owned(),
+        added_columns: Vec::new(),
+        spatial_indexes: Vec::new(),
+    };
+    for error in [
+        inspect_batch(&batch, &plan, 1024, 1024, 16).expect_err("tipo fuori lista"),
+        inspect_row(&batch, 0, &plan, 1024, 1024, 16)
+            .map(|_| ())
+            .expect_err("tipo fuori lista"),
+    ] {
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        assert_eq!(error.phase, ErrorPhase::Write);
+    }
+}

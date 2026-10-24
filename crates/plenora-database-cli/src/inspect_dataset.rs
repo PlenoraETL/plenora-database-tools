@@ -1,9 +1,10 @@
 use crate::CliResult;
 use plenora_database_core::arrow::array::{Array, BinaryArray, LargeBinaryArray, RecordBatch};
 use plenora_database_core::arrow::schema::{DataType, SchemaRef};
-use plenora_database_core::ewkb::{inspect_ewkb_detailed, EwkbInspection};
 use plenora_database_core::field_contract::{validate_schema_contract, FieldContract};
+use plenora_database_core::geometry_value::{verify_value, ValueContract};
 use plenora_database_core::protocol;
+use plenora_database_core::ErrorPhase;
 use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::Path;
@@ -124,9 +125,9 @@ fn inspect_batch(
     contracts: &[(usize, FieldContract<'_>)],
     field_reports: &mut [Map<String, Value>],
     geometry_cells: &mut u64,
-) -> Result<(), String> {
+) -> Result<(), crate::CliError> {
     if batch.schema() != *schema {
-        return Err("schema del RecordBatch divergente dallo schema IPC".to_owned());
+        return Err("schema del RecordBatch divergente dallo schema IPC".into());
     }
     for (field_index, contract) in contracts.iter().filter(|(_, contract)| contract.spatial) {
         reserve_geometry_cells(geometry_cells, batch.num_rows())?;
@@ -154,7 +155,7 @@ fn inspect_batch(
                     .ok_or_else(|| "array geometry LargeBinary incoerente".to_owned())?;
                 inspect_large_binary_values(values, batch_index, contract, cells)?;
             }
-            _ => return Err("tipo Arrow geometrico non binario".to_owned()),
+            _ => return Err("tipo Arrow geometrico non binario".into()),
         }
     }
     Ok(())
@@ -178,7 +179,7 @@ fn inspect_binary_values(
     batch_index: u64,
     contract: &FieldContract<'_>,
     cells: &mut Vec<Value>,
-) -> Result<(), String> {
+) -> Result<(), crate::CliError> {
     for row in 0..values.len() {
         if values.is_null(row) {
             cells.push(json!({"batch": batch_index, "row": row, "status": "null"}));
@@ -194,7 +195,7 @@ fn inspect_large_binary_values(
     batch_index: u64,
     contract: &FieldContract<'_>,
     cells: &mut Vec<Value>,
-) -> Result<(), String> {
+) -> Result<(), crate::CliError> {
     for row in 0..values.len() {
         if values.is_null(row) {
             cells.push(json!({"batch": batch_index, "row": row, "status": "null"}));
@@ -210,15 +211,26 @@ fn inspect_cell(
     batch: u64,
     row: usize,
     contract: &FieldContract<'_>,
-) -> Result<Value, String> {
+) -> Result<Value, crate::CliError> {
     if bytes.len() > MAX_WKB_CELL_BYTES {
-        return Err(format!(
-            "cella geometry batch {batch} riga {row} oltre 64 MiB"
-        ));
+        return Err(format!("cella geometry batch {batch} riga {row} oltre 64 MiB").into());
     }
-    let inspection = inspect_ewkb_detailed(bytes, MAX_GEOMETRY_COMPONENTS, MAX_GEOMETRY_DEPTH)
-        .map_err(|_| format!("geometry non decodificabile: batch {batch}, riga {row}"))?;
-    validate_observed_contract(contract, &inspection, batch, row)?;
+    // La verifica comune di ogni ingresso Arrow (GEO-008, GEO-009, GEO-011):
+    // la categoria e quella della classe del difetto, la fase `read` perche
+    // il valore si incontra leggendo l'ingresso (REJ-003).
+    let inspection = verify_value(
+        ValueContract::of(contract),
+        bytes,
+        MAX_GEOMETRY_COMPONENTS,
+        MAX_GEOMETRY_DEPTH,
+        ErrorPhase::Read,
+    )
+    .map_err(|mut error| {
+        // Le coordinate della cella sono posizione, non contenuto; il
+        // messaggio della verifica e curato e non riporta byte del valore.
+        error.message = format!("geometry batch {batch} riga {row}: {}", error.message);
+        error
+    })?;
     Ok(json!({
         "batch": batch,
         "row": row,
@@ -230,46 +242,6 @@ fn inspect_cell(
         "dimensions": inspection.root.dimensions_label(),
         "embedded_srid": inspection.root.srid
     }))
-}
-
-fn validate_observed_contract(
-    contract: &FieldContract<'_>,
-    inspection: &EwkbInspection,
-    batch: u64,
-    row: usize,
-) -> Result<(), String> {
-    if contract
-        .dimensions
-        .is_some_and(|value| value != "unknown" && value != inspection.root.dimensions_label())
-    {
-        return Err(format!(
-            "geometry batch {batch} riga {row}: dimensioni del payload divergenti dai metadati"
-        ));
-    }
-    if let Some(declared) = contract.geometry_types {
-        let observed = inspection
-            .root
-            .geometry_type_name()
-            .ok_or_else(|| format!("geometry batch {batch} riga {row}: tipo non canonico"))?;
-        if !declared
-            .split(',')
-            .any(|candidate| candidate.eq_ignore_ascii_case(observed))
-        {
-            return Err(format!(
-                "geometry batch {batch} riga {row}: tipo del payload divergente dai metadati"
-            ));
-        }
-    }
-    if contract.encoding == Some("ewkb") {
-        if let Some(embedded) = inspection.root.srid {
-            if contract.srid != Some(embedded) {
-                return Err(format!(
-                    "geometry batch {batch} riga {row}: SRID EWKB divergente dai metadati"
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

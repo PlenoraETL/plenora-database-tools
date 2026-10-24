@@ -190,6 +190,11 @@ def test_arrow_schema_is_explicit_and_geoarrow_is_canonical() -> None:
     assert shape.metadata[b"plenora.geometry.srid"] == b"4326"
     assert shape.metadata[b"plenora.geometry.types"] == b"point"
     assert shape.metadata[b"plenora.geometry.types_declaration"] == b"exact"
+    # ARROW-VOCABULARY §4 e GEO-013: identita del campo e stato del CRS.
+    assert shape.metadata[b"plenora.field_id"] == b"1"
+    assert schema.field("id").metadata[b"plenora.field_id"] == b"0"
+    assert shape.metadata[b"plenora.geometry.crs_resolution"] == b"missing"
+    assert b"plenora.geometry.crs_id" not in shape.metadata
 
 
 def test_geojson_point_becomes_wkb_or_ewkb_only_from_declared_crs() -> None:

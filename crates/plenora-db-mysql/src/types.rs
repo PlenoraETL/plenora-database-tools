@@ -615,6 +615,8 @@ impl MysqlColumnSpec {
                     protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
                     "geometry".to_owned(),
                 ),
+                // Deviazione dichiarata (GEO-014, contracts/adoption-source.json): il server memorizza
+                // binary64, e il contratto vorrebbe `float64`; decisione del titolare.
                 (protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned()),
             ]);
             protocol::insert_declared_crs(&mut metadata, "MYSQL", self.spatial_srid);

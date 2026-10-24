@@ -177,31 +177,29 @@ fn ewkb_header_must_match_spatial_contract() {
     point_z_4326.extend_from_slice(&4326_u32.to_le_bytes());
     point_z_4326.extend_from_slice(&[0_u8; 24]);
     let plan = WriteColumnPlan::compile(&field).expect("spatial plan");
-    let inspection = inspect_ewkb_detailed(&point_z_4326, 10, 1).expect("valid point Z EWKB");
-    validate_ewkb_contract(&inspection, &plan).expect("matching contract");
+    check_value(&plan, &point_z_4326, 1).expect("matching contract");
 
+    // GEO-009: uno SRID diverso da quello del campo contraddice il CRS.
     let mut wrong_srid = point_z_4326.clone();
     wrong_srid[5..9].copy_from_slice(&3857_u32.to_le_bytes());
-    let inspection = inspect_ewkb_detailed(&wrong_srid, 10, 1).expect("valid wrong-SRID EWKB");
     assert_eq!(
-        validate_ewkb_contract(&inspection, &plan)
+        check_value(&plan, &wrong_srid, 1)
             .expect_err("SRID mismatch")
             .category,
-        ErrorCategory::DataMapping
+        ErrorCategory::Crs
     );
 
     let mut point_xy_4326 = vec![1_u8];
     point_xy_4326.extend_from_slice(&0x2000_0001_u32.to_le_bytes());
     point_xy_4326.extend_from_slice(&4326_u32.to_le_bytes());
     point_xy_4326.extend_from_slice(&[0_u8; 16]);
-    let inspection = inspect_ewkb_detailed(&point_xy_4326, 10, 1).expect("valid point XY EWKB");
     assert_eq!(
-        validate_ewkb_contract(&inspection, &plan)
+        check_value(&plan, &point_xy_4326, 1)
             .expect_err("dimension mismatch")
             .category,
         ErrorCategory::DataMapping
     );
-    assert!(inspect_ewkb_detailed(&[2, 0, 0, 0, 1], 10, 1).is_err());
+    assert!(check_value(&plan, &[2, 0, 0, 0, 1], 1).is_err());
 }
 
 #[test]
@@ -422,7 +420,8 @@ fn divergent_canonical_and_legacy_metadata_is_rejected() {
         .collect::<plenora_database_core::arrow::schema::Metadata>(),
     );
     let error = FieldContract::parse(&field).expect_err("metadata divergence");
-    assert_eq!(error.category, ErrorCategory::DataMapping);
+    // REJ-001: metadati contraddittori sono un difetto dello schema.
+    assert_eq!(error.category, ErrorCategory::Schema);
 }
 
 #[test]
@@ -459,7 +458,10 @@ fn incoherent_crs_metadata_is_rejected_before_preflight() {
         .into_iter()
         .collect::<plenora_database_core::arrow::schema::Metadata>(),
     );
-    assert!(FieldContract::parse(&missing_with_srid).is_err());
+    // ARROW-VOCABULARY §4: `missing` vieta identita, definizione e ordine
+    // degli assi, non lo SRID numerico. Fino al 24/10 questo campo conforme
+    // si rifiutava.
+    assert!(FieldContract::parse(&missing_with_srid).is_ok());
 }
 
 /// Un campo geometrico secondo il vocabolario Arrow 1.0.
@@ -498,6 +500,22 @@ fn vocabulary_geometry(encoding: &str, types: &str) -> Field {
     ]))
 }
 
+/// La verifica comune che la scrittura applica a ogni valore geometrico.
+fn check_value(
+    plan: &WriteColumnPlan,
+    value: &[u8],
+    depth: u64,
+) -> plenora_database_core::Result<()> {
+    plenora_database_core::geometry_value::verify_value(
+        plan.value_contract(),
+        value,
+        10,
+        depth,
+        ErrorPhase::Write,
+    )
+    .map(|_| ())
+}
+
 /// WKB ISO little-endian di un punto XY, senza SRID.
 fn iso_point() -> Vec<u8> {
     let mut point = vec![1_u8];
@@ -514,15 +532,14 @@ fn several_declared_geometry_types_are_a_generic_column_checked_per_value() {
     let plan = WriteColumnPlan::compile(&vocabulary_geometry("wkb", "point,polygon"))
         .expect("tipi multipli validi");
     assert_eq!(plan.postgres_type, "geometry(Geometry,4326)");
-    let point = inspect_ewkb_detailed(&iso_point(), 10, 1).expect("punto");
-    validate_ewkb_contract(&point, &plan).expect("point e dichiarato");
+    check_value(&plan, &iso_point(), 1).expect("point e dichiarato");
+    // Una linestring ben formata (GEO-011: zero o almeno due punti).
     let mut line = vec![1_u8];
     line.extend_from_slice(&2_u32.to_le_bytes());
-    line.extend_from_slice(&1_u32.to_le_bytes());
-    line.extend_from_slice(&[0_u8; 16]);
-    let line = inspect_ewkb_detailed(&line, 10, 1).expect("linestring");
+    line.extend_from_slice(&2_u32.to_le_bytes());
+    line.extend_from_slice(&[0_u8; 32]);
     assert_eq!(
-        validate_ewkb_contract(&line, &plan)
+        check_value(&plan, &line, 1)
             .expect_err("linestring non dichiarato")
             .category,
         ErrorCategory::DataMapping
@@ -534,16 +551,14 @@ fn several_declared_geometry_types_are_a_generic_column_checked_per_value() {
 #[test]
 fn iso_wkb_takes_its_srid_from_the_field_metadata() {
     let plan = WriteColumnPlan::compile(&vocabulary_geometry("wkb", "point")).expect("piano WKB");
-    let point = inspect_ewkb_detailed(&iso_point(), 10, 1).expect("punto");
-    validate_ewkb_contract(&point, &plan).expect("WKB ISO con SRID nei metadati");
+    check_value(&plan, &iso_point(), 1).expect("WKB ISO con SRID nei metadati");
 
     let mut with_srid = vec![1_u8];
     with_srid.extend_from_slice(&0x2000_0001_u32.to_le_bytes());
     with_srid.extend_from_slice(&4326_u32.to_le_bytes());
     with_srid.extend_from_slice(&[0_u8; 16]);
-    let embedded = inspect_ewkb_detailed(&with_srid, 10, 1).expect("EWKB");
     assert_eq!(
-        validate_ewkb_contract(&embedded, &plan)
+        check_value(&plan, &with_srid, 1)
             .expect_err("SRID incorporato in un campo wkb")
             .category,
         ErrorCategory::DataMapping
@@ -580,9 +595,9 @@ fn a_nested_srid_contradicting_the_field_is_rejected() {
     for encoding in ["wkb", "ewkb"] {
         let plan = WriteColumnPlan::compile(&vocabulary_geometry(encoding, "geometrycollection"))
             .expect("piano");
-        let inspection = inspect_ewkb_detailed(&collection, 10, 4).expect("collezione");
+        // GEO-009: uno SRID su un membro e malformato, sotto ogni encoding.
         assert_eq!(
-            validate_ewkb_contract(&inspection, &plan)
+            check_value(&plan, &collection, 4)
                 .expect_err("SRID annidato")
                 .category,
             ErrorCategory::DataMapping,
@@ -632,8 +647,7 @@ fn a_geometry_read_without_typmod_can_be_written_back() {
     point_z.extend_from_slice(&0xa000_0001_u32.to_le_bytes());
     point_z.extend_from_slice(&4326_u32.to_le_bytes());
     point_z.extend_from_slice(&[0_u8; 24]);
-    let inspection = inspect_ewkb_detailed(&point_z, 10, 1).expect("punto Z");
-    validate_ewkb_contract(&inspection, &plan).expect("dimensione non dichiarata");
+    check_value(&plan, &point_z, 1).expect("dimensione non dichiarata");
     column.spatial_dimensions = Some("XY".to_owned());
 }
 
@@ -651,10 +665,9 @@ fn a_nested_srid_under_a_correct_ewkb_root_is_rejected() {
     collection.extend_from_slice(&[0_u8; 16]);
     let plan = WriteColumnPlan::compile(&vocabulary_geometry("ewkb", "geometrycollection"))
         .expect("piano");
-    let inspection = inspect_ewkb_detailed(&collection, 10, 4).expect("collezione");
-    assert_eq!(inspection.root.srid, Some(4326));
-    let error = validate_ewkb_contract(&inspection, &plan).expect_err("SRID annidato");
-    assert_eq!(error.message, "SRID EWKB in una geometria annidata");
+    let error = check_value(&plan, &collection, 4).expect_err("SRID annidato");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.message, "SRID su un membro di una geometria");
 }
 
 /// Un budget che basta per il batch ma non per la sua copia EWKB rifiuta il

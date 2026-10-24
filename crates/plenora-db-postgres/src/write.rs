@@ -17,10 +17,10 @@ use bytes::Bytes;
 #[cfg(test)]
 use bytes::BytesMut;
 use futures_util::SinkExt;
-use plenora_database_core::ewkb::{inspect_ewkb_detailed, EwkbInspection};
 use plenora_database_core::field_contract::validate_schema_contract;
 #[cfg(test)]
 use plenora_database_core::geometry::GEOARROW_WKB_EXTENSION_NAME;
+use plenora_database_core::geometry_value::verify_value;
 use plenora_database_core::outcome::{RowCounts, WriteOutcome, WriteStatus};
 use plenora_database_core::plan::{
     ObjectRef, ProviderKind, TransactionProfile, WriteMode, WriteOperation,
@@ -630,8 +630,13 @@ fn enforce_input_limits(
                             "budget componenti geometriche esaurito",
                         ));
                     }
-                    let inspection = inspect_ewkb_detailed(value, remaining, max_geometry_depth)?;
-                    validate_ewkb_contract(&inspection, plan)?;
+                    let inspection = verify_value(
+                        plan.value_contract(),
+                        value,
+                        remaining,
+                        max_geometry_depth,
+                        ErrorPhase::Write,
+                    )?;
                     geometry_components = geometry_components
                         .checked_add(inspection.stats.components)
                         .ok_or_else(|| {
@@ -984,57 +989,15 @@ async fn execute_sql(
         .map_err(|e| classify_error(ErrorPhase::Write, &e))
 }
 
-fn validate_ewkb_contract(inspection: &EwkbInspection, plan: &WriteColumnPlan) -> Result<()> {
-    let metadata = inspection.root;
-    if let Some(expected) = plan
-        .dimensions
-        .as_deref()
-        .filter(|value| *value != "unknown")
-    {
-        if expected != metadata.dimensions_label() {
-            return Err(spatial_mapping_error(
-                "dimensioni EWKB diverse dal contratto Arrow",
-            ));
-        }
-    }
-    let geometry_type = metadata
-        .geometry_type_name()
-        .ok_or_else(|| spatial_mapping_error("tipo geometry EWKB non supportato"))?;
-    let declared = &plan.geometry_types;
-    if !declared.is_empty()
-        && !declared
-            .iter()
-            .any(|expected| expected == "unknown" || expected.eq_ignore_ascii_case(geometry_type))
-    {
-        return Err(spatial_mapping_error(
-            "tipo EWKB diverso dal contratto Arrow",
-        ));
-    }
-    if plan.encoding.as_deref() == Some("wkb") {
-        // WKB ISO: lo SRID e quello dei metadati del campo (ARROW-VOCABULARY
-        // §3), e un valore che ne porta uno proprio — alla radice o in una
-        // geometria annidata — contraddice la dichiarazione.
-        if inspection.has_any_embedded_srid {
-            return Err(spatial_mapping_error(
-                "SRID incorporato in un valore dichiarato wkb",
-            ));
-        }
-        return Ok(());
-    }
-    if let Some(expected) = plan.srid {
-        if expected != 0 && metadata.srid != Some(expected) {
-            return Err(spatial_mapping_error(
-                "SRID EWKB diverso dal contratto Arrow",
-            ));
-        }
-    }
-    // Lo SRID di un EWKB sta sulla radice: uno annidato non e verificabile
-    // (il parser ne conta la presenza, non il valore) e PostGIS non lo
-    // produce. Si rifiuta invece di lasciarlo passare non confrontato.
-    if inspection.embedded_srid_count > u64::from(metadata.srid.is_some()) {
-        return Err(spatial_mapping_error("SRID EWKB in una geometria annidata"));
-    }
-    Ok(())
+/// Il type word della radice porta il flag SRID della forma estesa. Il valore
+/// e gia stato verificato ben formato, quindi i cinque byte ci sono.
+fn root_srid_flag(wkb: &[u8]) -> bool {
+    let word = match (wkb.first(), wkb.get(1..5)) {
+        (Some(1), Some(raw)) => raw.try_into().map(u32::from_le_bytes),
+        (Some(_), Some(raw)) => raw.try_into().map(u32::from_be_bytes),
+        _ => return false,
+    };
+    word.is_ok_and(|word| word & 0x2000_0000 != 0)
 }
 
 /// I valori `wkb` di un campo con SRID dichiarato, riscritti in EWKB.
@@ -1057,7 +1020,7 @@ fn stamp_declared_srid(
     }
     let mut columns = Vec::with_capacity(batch.num_columns());
     for (plan, array) in plans.iter().zip(batch.columns()) {
-        let Some(srid) = plan.srid.filter(|_| plan.needs_srid_stamp()) else {
+        let Some(srid) = plan.target_srid.filter(|_| plan.needs_srid_stamp()) else {
             columns.push(Arc::clone(array));
             continue;
         };
@@ -1068,23 +1031,22 @@ fn stamp_declared_srid(
         let stamped = binary
             .iter()
             .map(|value| {
+                // Un valore EWKB con SRID proprio e gia stato confrontato con
+                // quello del campo (`verify_value`) e resta com'e.
                 value
-                    .map(|wkb| plenora_database_core::ewkb::with_root_srid(wkb, srid, max_depth))
+                    .map(|wkb| {
+                        if root_srid_flag(wkb) {
+                            Ok(wkb.to_vec())
+                        } else {
+                            plenora_database_core::ewkb::with_root_srid(wkb, srid, max_depth)
+                        }
+                    })
                     .transpose()
             })
             .collect::<Result<BinaryArray>>()?;
         columns.push(Arc::new(stamped) as arrow_array::ArrayRef);
     }
     RecordBatch::try_new(batch.schema(), columns).map_err(|_| mapping_error())
-}
-
-fn spatial_mapping_error(message: &str) -> DatabaseError {
-    public_error(
-        ErrorCategory::DataMapping,
-        ErrorPhase::Write,
-        false,
-        message,
-    )
 }
 
 fn mapping_error() -> DatabaseError {

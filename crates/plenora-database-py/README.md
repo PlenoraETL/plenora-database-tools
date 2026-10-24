@@ -443,7 +443,11 @@ GeometryCollection, in XY o XYZ. X/Y/M e X/Y/Z/M restano chiusi perché GeoJSON
 non permette di distinguere in modo affidabile l'asse M. `encoding="wkb"` e
 `encoding="ewkb"` sono scelte esplicite: non tutti i provider qualificano la
 stessa forma spatial in scrittura. I batch portano `geoarrow.wkb`, SRID,
-dimensioni, semantica e dichiarazione del tipo nei metadata canonici.
+dimensioni, semantica e dichiarazione del tipo nei metadata canonici, e un
+`plenora.field_id` per campo, assegnato in ordine da 0 (Arrow Geometry
+Semantics 1.0, GEO-013). Il CRS si dichiara `missing` con lo SRID numerico:
+`JsonGeometry` conosce lo SRID, non l'identità del CRS né l'ordine degli assi
+che `declared_unresolved` richiederebbe.
 
 `JsonInputError` espone un codice stabile, l'indice del record e, quando il
 campo proviene dallo schema, il suo nome. Il messaggio non include mai il

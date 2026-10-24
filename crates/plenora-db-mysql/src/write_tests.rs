@@ -563,21 +563,28 @@ fn compile_rejects_empty_or_unqualified_arrow_schemas() {
 /// essere interpretata e non deve arrivare al server.
 #[test]
 fn compile_rejects_a_foreign_contract_version() {
-    let foreign = Arc::new(Schema::new_with_metadata(
-        vec![Field::new("id", DataType::Int64, false)],
-        HashMap::from([(
-            protocol::CONTRACT_VERSION_KEY.to_owned(),
-            "999.0".to_owned(),
-        )]),
-    ));
-    let error = MysqlWritePlan::compile_with_profile(
-        &foreign,
-        &append_operation(),
-        "warehouse",
-        &crate::profile::MYSQL_PROFILE,
-    )
-    .expect_err("contratto Arrow estraneo");
-    assert_eq!(error.category, ErrorCategory::Unsupported);
+    // REJ-001: una versione ben formata non supportata e `unsupported`, una
+    // malformata (`999.0`) e un difetto dei metadati dello schema.
+    for (version, category) in [
+        ("2", ErrorCategory::Unsupported),
+        ("999.0", ErrorCategory::Schema),
+    ] {
+        let foreign = Arc::new(Schema::new_with_metadata(
+            vec![Field::new("id", DataType::Int64, false)],
+            HashMap::from([(
+                protocol::CONTRACT_VERSION_KEY.to_owned(),
+                version.to_owned(),
+            )]),
+        ));
+        let error = MysqlWritePlan::compile_with_profile(
+            &foreign,
+            &append_operation(),
+            "warehouse",
+            &crate::profile::MYSQL_PROFILE,
+        )
+        .expect_err("contratto Arrow estraneo");
+        assert_eq!(error.category, category, "{version}");
+    }
 }
 
 fn server_column(name: &str, data_type: &str, declaration: &str, nullable: bool) -> MysqlColumn {
@@ -1174,10 +1181,15 @@ fn spatial_column(native_type: &str, srid: u32) -> MysqlColumn {
     column
 }
 
+/// Il campo come lo pubblica la lettura: `contract_schema` gli assegna il
+/// field id, che il vocabolario chiede a ogni campo geometria.
 fn spatial_field(native_type: &str, srid: u32) -> Field {
-    MysqlColumnSpec::from_catalog(&spatial_column(native_type, srid))
+    let field = MysqlColumnSpec::from_catalog(&spatial_column(native_type, srid))
         .expect("colonna spatial qualificata")
-        .arrow_field()
+        .arrow_field();
+    let mut metadata = field.metadata().clone();
+    metadata.insert(protocol::FIELD_ID.to_owned(), "0".to_owned());
+    field.with_metadata(metadata)
 }
 
 fn spatial_operation() -> WriteOperation {

@@ -628,6 +628,8 @@ impl SqlServerColumnSpec {
                 protocol::GEOMETRY_TYPES_DECLARATION.to_owned(),
                 "mixed".to_owned(),
             );
+            // Deviazione dichiarata (GEO-014, contracts/adoption-source.json): il server memorizza
+            // binary64, e il contratto vorrebbe `float64`; decisione del titolare.
             metadata.insert(protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned());
             metadata.insert(
                 protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
@@ -637,7 +639,11 @@ impl SqlServerColumnSpec {
                 }
                 .to_owned(),
             );
-            protocol::insert_declared_crs(&mut metadata, "SQLSERVER", self.spatial_srid);
+            // GEO-020: il nome di catalogo locale che il contratto elenca per SQL
+            // Server e `MSSQL`. Fino al 24/10 si scriveva `SQLSERVER`, che per il
+            // contratto non e un catalogo locale: un consumatore poteva
+            // confrontare come uguali due `SQLSERVER:4326` di due server.
+            protocol::insert_declared_crs(&mut metadata, "MSSQL", self.spatial_srid);
         }
         Field::new(&self.name, data_type, self.nullable).with_metadata(metadata)
     }
