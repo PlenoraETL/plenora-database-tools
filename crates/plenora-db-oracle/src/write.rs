@@ -1131,13 +1131,28 @@ fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
                 ))
             }
         };
-        // Lo SRID dichiarato o derivato da `EPSG:<n>` (GEO-008).
-        let srid = contract.target_srid()?.ok_or_else(|| {
-            prepare_error(
-                ErrorCategory::Crs,
-                "write spatial Oracle richiede SRID dichiarato",
-            )
-        })?;
+        // GEO-001: il bersaglio vuole la longitudine (o l'easting) per prima.
+        contract
+            .ensure_east_first_axis("Oracle")
+            .map_err(|mut error| {
+                error.provider = Some(ProviderKind::Oracle);
+                error
+            })?;
+        // Soltanto lo SRID dichiarato: la derivazione da `EPSG:<n>` (GEO-008)
+        // non si applica dove il catalogo non la verifica (deviazione
+        // dichiarata su `declared_target_srid`).
+        let srid = contract
+            .declared_target_srid("Oracle")
+            .map_err(|mut error| {
+                error.provider = Some(ProviderKind::Oracle);
+                error
+            })?
+            .ok_or_else(|| {
+                prepare_error(
+                    ErrorCategory::Crs,
+                    "write spatial Oracle richiede SRID dichiarato",
+                )
+            })?;
         if srid == 0 || i32::try_from(srid).is_err() {
             return Err(prepare_error(
                 ErrorCategory::Crs,

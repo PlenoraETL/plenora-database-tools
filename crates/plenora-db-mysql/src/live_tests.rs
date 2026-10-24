@@ -3058,13 +3058,19 @@ fn append_spatial_schema(
     use plenora_database_core::protocol;
     use std::collections::HashMap;
 
+    // ARROW-VOCABULARY §4: un campo geometria ha il proprio field id, che la
+    // descrizione di catalogo non assegna (lo fa chi pubblica lo schema).
     let fields = target
         .columns
         .iter()
-        .map(|column| {
-            crate::MysqlColumnSpec::from_catalog(column)
+        .enumerate()
+        .map(|(index, column)| {
+            let field = crate::MysqlColumnSpec::from_catalog(column)
                 .expect("colonna target spatial qualificata")
-                .arrow_field()
+                .arrow_field();
+            let mut metadata = field.metadata().clone();
+            metadata.insert(protocol::FIELD_ID.to_owned(), index.to_string());
+            field.with_metadata(metadata)
         })
         .collect::<Vec<_>>();
     std::sync::Arc::new(Schema::new_with_metadata(
@@ -3521,9 +3527,16 @@ async fn live_append_spatial_xy_preserves_srid_and_coordinates() {
     assert_eq!(outcome.status, WriteStatus::Committed);
     assert_eq!(outcome.rows.confirmed, 2);
 
+    // GEO-001: il WKB scritto ha la longitudine per prima (12.5) e la
+    // latitudine dopo (-7.25). Su un SRS geografico `ST_X`/`ST_Y` seguono
+    // l'ordine del registro (latitudine prima per EPSG:4326), quindi la
+    // verifica legge `ST_Longitude`/`ST_Latitude`, che non dipendono
+    // dall'ordine. Fino al 24/10 questo test leggeva `ST_X`/`ST_Y` e fissava
+    // come giusto il valore memorizzato con gli assi scambiati (latitudine
+    // 12.5).
     let rows: Vec<SpatialObservation> = setup
         .query(format!(
-            "SELECT id, ST_SRID(geom), ST_X(geom), ST_Y(geom) \
+            "SELECT id, ST_SRID(geom), ST_Longitude(geom), ST_Latitude(geom) \
              FROM `{table}` ORDER BY id"
         ))
         .await
@@ -3540,6 +3553,245 @@ async fn live_append_spatial_xy_preserves_srid_and_coordinates() {
         .query_drop(format!("DROP TABLE IF EXISTS `{table}`"))
         .await
         .expect("cleanup del target spatial");
+    drop(setup);
+}
+
+/// GEO-001 e GEO-008 su un SRS geografico, end to end. Un campo `lon_lat` in
+/// EPSG:4326 senza `plenora.geometry.srid` (SRID derivato, verificato nel
+/// catalogo) si memorizza con la longitudine come longitudine, e la lettura
+/// rende lo stesso WKB, longitudine per prima. Fino al 24/10 la scrittura
+/// memorizzava `POINT(12.5 60)` con latitudine 12.5, e la lettura rendeva il
+/// WKB del registro, latitudine per prima. Uno SRID derivato che il catalogo
+/// non registra come `EPSG` si rifiuta `crs` prima di ogni effetto.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito per l'ordine degli assi geografici"]
+#[allow(clippy::too_many_lines)]
+async fn live_geographic_axis_order_round_trips_and_derived_srid_is_verified() {
+    use plenora_database_core::arrow::array::{ArrayRef, BinaryArray, Int64Array};
+    use plenora_database_core::arrow::schema::Schema;
+    use plenora_database_core::arrow::RecordBatch;
+    use plenora_database_core::outcome::WriteStatus;
+    use plenora_database_core::plan::SridPolicy;
+    use plenora_database_core::protocol;
+    use std::sync::Arc;
+
+    let table = "write_axis_probe";
+    let config = live_config();
+    let cancellation = CancellationToken::new();
+    let mut setup = append_setup_connection(&config).await;
+    setup
+        .query_drop(format!("DROP TABLE IF EXISTS `{table}`"))
+        .await
+        .expect("drop del target");
+    setup
+        .query_drop(format!(
+            "CREATE TABLE `{table}` (\
+             id BIGINT NOT NULL PRIMARY KEY, \
+             geom POINT NULL SRID 4326) ENGINE=InnoDB"
+        ))
+        .await
+        .expect("create del target");
+    let mut catalog = MysqlSession::open(&config, &cancellation)
+        .await
+        .expect("sessione catalogo");
+    let target = describe_object(&mut catalog, "dataflow_test", table, &cancellation)
+        .await
+        .expect("descrizione target");
+    drop(catalog);
+    let with_crs = |crs_id: &str| {
+        let base = append_spatial_schema(&target);
+        let fields = base
+            .fields()
+            .iter()
+            .map(|field| {
+                if field.name() != "geom" {
+                    return field.as_ref().clone();
+                }
+                let mut metadata = field.metadata().clone();
+                metadata.remove(protocol::GEOMETRY_SRID);
+                metadata.insert(protocol::GEOMETRY_CRS_ID.to_owned(), crs_id.to_owned());
+                metadata.insert(
+                    protocol::GEOMETRY_AXIS_ORDER.to_owned(),
+                    "lon_lat".to_owned(),
+                );
+                field.as_ref().clone().with_metadata(metadata)
+            })
+            .collect::<Vec<_>>();
+        Arc::new(Schema::new_with_metadata(fields, base.metadata().clone()))
+    };
+    let mut operation = append_operation(table);
+    operation.srid_policy = Some(SridPolicy::RequireMatch);
+    let provider = MysqlProvider::new(config, 2).expect("provider MySQL live");
+    let budget = write_budget();
+
+    // Uno SRID derivato che il catalogo non registra: `crs`, niente scritto.
+    let error = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            with_crs("EPSG:999999"),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .err()
+        .expect("SRID derivato assente dal catalogo");
+    assert_eq!(error.category, ErrorCategory::Crs);
+
+    let schema = with_crs("EPSG:4326");
+    let point = append_point_xy_wkb(12.5, 60.0);
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64])) as ArrayRef,
+            Arc::new(BinaryArray::from_opt_vec(vec![Some(point.as_slice())])) as ArrayRef,
+        ],
+    )
+    .expect("batch");
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("prepare con SRID derivato da EPSG:4326");
+    let outcome = provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(VecBatchStream {
+                schema: Arc::clone(&schema),
+                batches: std::collections::VecDeque::from(vec![batch]),
+            }),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("write");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    let rows: Vec<SpatialObservation> = setup
+        .query(format!(
+            "SELECT id, ST_SRID(geom), ST_Longitude(geom), ST_Latitude(geom) \
+             FROM `{table}` ORDER BY id"
+        ))
+        .await
+        .expect("rilettura server-side");
+    assert_eq!(rows, vec![(1, Some(4_326), Some(12.5), Some(60.0))]);
+
+    let read = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("dataflow_test".to_owned()),
+            object: table.to_owned(),
+        },
+        projection: vec!["geom".to_owned()],
+        order_by: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        filter: None,
+        declared_crs: Vec::new(),
+    };
+    let mut stream = provider
+        .read(
+            &live_secret(),
+            &read,
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("stream");
+    let batch = stream
+        .next_batch(&cancellation)
+        .await
+        .expect("batch")
+        .expect("riga");
+    let wkb = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .expect("WKB")
+        .value(0)
+        .to_vec();
+    assert_eq!(wkb, point, "la lettura rende la longitudine per prima");
+    drop(stream);
+
+    // `x` e `y` del contratto sono la prima e la seconda ordinata del WKB:
+    // longitudine e latitudine, come su PostGIS, anche se `ST_X` di `MySQL`
+    // su EPSG:4326 renderebbe la latitudine.
+    let coordinate = |function| plenora_database_core::query::QueryProjection {
+        expression: plenora_database_core::query::QueryExpression::Spatial {
+            function,
+            arguments: vec![plenora_database_core::query::QueryExpression::Column {
+                column: plenora_database_core::query::ColumnRef {
+                    relation: None,
+                    field: "geom".to_owned(),
+                },
+            }],
+        },
+        alias: None,
+    };
+    let query = plenora_database_core::query::QueryOperation {
+        declared_crs: Vec::new(),
+        common_table_expressions: Vec::new(),
+        source: Some(plenora_database_core::query::QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("dataflow_test".to_owned()),
+                object: table.to_owned(),
+            },
+            alias: None,
+        }),
+        derived_source: None,
+        projection: vec![
+            coordinate(plenora_database_core::query::SpatialFunction::X),
+            coordinate(plenora_database_core::query::SpatialFunction::Y),
+        ],
+        joins: Vec::new(),
+        filter: None,
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+    };
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &query,
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("query X/Y");
+    let batch = stream
+        .next_batch(&cancellation)
+        .await
+        .expect("batch X/Y")
+        .expect("riga X/Y");
+    let value = |index: usize| {
+        batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<plenora_database_core::arrow::array::Float64Array>()
+            .expect("double")
+            .value(0)
+    };
+    assert_eq!((value(0), value(1)), (12.5, 60.0));
+    drop(stream);
+
+    setup
+        .query_drop(format!("DROP TABLE IF EXISTS `{table}`"))
+        .await
+        .expect("cleanup");
     drop(setup);
 }
 

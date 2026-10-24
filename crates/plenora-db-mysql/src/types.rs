@@ -619,7 +619,7 @@ impl MysqlColumnSpec {
                 // binary64, e il contratto vorrebbe `float64`; decisione del titolare.
                 (protocol::GEOMETRY_PRECISION.to_owned(), "native".to_owned()),
             ]);
-            protocol::insert_declared_crs(&mut metadata, "MYSQL", self.spatial_srid);
+            protocol::insert_declared_crs(&mut metadata, keys.crs_authority, self.spatial_srid);
             if self.native_type != "geometry" {
                 metadata.insert(
                     protocol::GEOMETRY_TYPES.to_owned(),

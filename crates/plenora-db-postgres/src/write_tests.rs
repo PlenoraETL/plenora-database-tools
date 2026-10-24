@@ -493,9 +493,11 @@ fn vocabulary_geometry(encoding: &str, types: &str) -> Field {
         ),
         ("plenora.geometry.crs_id".to_owned(), "EPSG:4326".to_owned()),
         ("plenora.geometry.srid".to_owned(), "4326".to_owned()),
+        // L'ordine memorizzato, non quello del registro (GEO-001): `lat_lon`
+        // si rifiuta, perche PostGIS lo scriverebbe con gli assi scambiati.
         (
             "plenora.geometry.axis_order".to_owned(),
-            "lat_lon".to_owned(),
+            "lon_lat".to_owned(),
         ),
     ]))
 }
@@ -710,5 +712,100 @@ fn the_ewkb_rewrite_is_part_of_the_reserved_bytes() {
     assert!(
         reserved >= 2 * original + 16,
         "{reserved} contro {original}"
+    );
+}
+
+/// `vocabulary_geometry` con alcuni metadati sostituiti o tolti, e il tipo
+/// Arrow indicato.
+fn geometry_with(data_type: DataType, changes: &[(&str, Option<&str>)]) -> Field {
+    let base = vocabulary_geometry("wkb", "point");
+    let mut metadata = base.metadata().clone();
+    for &(key, value) in changes {
+        match value {
+            Some(value) => metadata.insert(key.to_owned(), value.to_owned()),
+            None => metadata.remove(key),
+        };
+    }
+    Field::new("geom", data_type, true).with_metadata(metadata)
+}
+
+/// GEO-001: `PostGIS` memorizza la prima ordinata in `x`, cioe longitudine o
+/// easting. Un campo `lat_lon` o `northing_easting` si rifiuta `unsupported`
+/// in compilazione, prima di contattare il server. Fino al 24/10 la
+/// scrittura lo accettava e `POINT(45.46 9.19)` lat/lon finiva in
+/// `geography(Point,4326)` come longitudine 45.46.
+#[test]
+fn axis_orders_the_target_cannot_store_are_unsupported_before_any_effect() {
+    for axis in ["lat_lon", "northing_easting"] {
+        let field = geometry_with(
+            DataType::Binary,
+            &[("plenora.geometry.axis_order", Some(axis))],
+        );
+        let error = WriteColumnPlan::compile(&field).expect_err("ordine non rappresentabile");
+        assert_eq!(error.category, ErrorCategory::Unsupported, "{axis}");
+    }
+    for axis in ["lon_lat", "unknown", "other"] {
+        let field = geometry_with(
+            DataType::Binary,
+            &[("plenora.geometry.axis_order", Some(axis))],
+        );
+        WriteColumnPlan::compile(&field).expect("ordine ammesso");
+    }
+}
+
+/// I limiti di supporto che si decidono dallo schema, prima del server: un
+/// campo `LargeBinary` (fino al 24/10 rifiutato al primo batch con
+/// `data_mapping`), una `geography` senza SRID (`PostGIS` le darebbe 4326) e
+/// una `geography` con un ordine degli assi proiettato (fino al 24/10 un
+/// errore della DDL, `protocol`).
+#[test]
+fn spatial_support_limits_are_decided_from_the_schema() {
+    let large = geometry_with(DataType::LargeBinary, &[]);
+    assert_eq!(
+        WriteColumnPlan::compile(&large)
+            .expect_err("LargeBinary")
+            .category,
+        ErrorCategory::Unsupported
+    );
+    let geography_without_srid = geometry_with(
+        DataType::Binary,
+        &[
+            ("plenora.geometry.spatial_semantics", Some("geography")),
+            ("plenora.geometry.crs_resolution", Some("missing")),
+            ("plenora.geometry.crs_id", None),
+            ("plenora.geometry.srid", None),
+            ("plenora.geometry.axis_order", None),
+        ],
+    );
+    assert_eq!(
+        WriteColumnPlan::compile(&geography_without_srid)
+            .expect_err("geography senza SRID")
+            .category,
+        ErrorCategory::Crs
+    );
+    let projected_geography = geometry_with(
+        DataType::Binary,
+        &[
+            ("plenora.geometry.spatial_semantics", Some("geography")),
+            ("plenora.geometry.crs_id", Some("EPSG:3857")),
+            ("plenora.geometry.srid", Some("3857")),
+            ("plenora.geometry.axis_order", Some("easting_northing")),
+        ],
+    );
+    assert_eq!(
+        WriteColumnPlan::compile(&projected_geography)
+            .expect_err("geography proiettata")
+            .category,
+        ErrorCategory::Unsupported
+    );
+    let geography = geometry_with(
+        DataType::Binary,
+        &[("plenora.geometry.spatial_semantics", Some("geography"))],
+    );
+    assert_eq!(
+        WriteColumnPlan::compile(&geography)
+            .expect("geography 4326")
+            .postgres_type,
+        "geography(point,4326)"
     );
 }

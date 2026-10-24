@@ -229,8 +229,7 @@ impl ColumnSpec {
             collation,
             registered_field_id: crate::field_identity::registered_id(
                 catalog_field::<Option<String>>(row, "column_comment")?.as_deref(),
-            )?
-            .map(str::to_owned),
+            )?,
             source: catalog_field::<Option<u32>>(row, "source_relid")?.zip(catalog_field::<
                 Option<i16>,
             >(

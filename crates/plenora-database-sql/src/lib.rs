@@ -384,7 +384,21 @@ pub struct Renderer {
     /// una colonna di cui non si sa la semantica, e le funzioni che ne hanno
     /// bisogno vengono rifiutate.
     sql_server_spatial_columns: BTreeMap<(Option<String>, String), SpatialSemantics>,
+    /// L'opzione WKB del dialetto `MySQL` che fissa l'ordine degli assi
+    /// (`axis-order=long-lat`), o `None`.
+    ///
+    /// `MySQL` 8+ la vuole su ogni scambio WKB, `MariaDB` (stesso dialetto)
+    /// non la accetta. Il default del dialetto `MySQL` e averla: chi serve
+    /// `MariaDB` la toglie con [`Self::with_wkb_axis_option`]. Dimenticarlo
+    /// su `MariaDB` da un errore del server, dimenticarla su `MySQL` darebbe
+    /// assi scambiati senza errore: il default sta dalla parte che fallisce.
+    wkb_axis_option: Option<&'static str>,
 }
+
+/// L'opzione d'ordine degli assi che `MySQL` 8+ riceve su ogni scambio WKB
+/// (GEO-001): la longitudine o l'easting per prima anche su un SRS
+/// geografico. Su un SRS cartesiano o con SRID 0 non cambia nulla.
+pub const MYSQL_WKB_AXIS_OPTION: &str = "axis-order=long-lat";
 
 impl Renderer {
     #[must_use]
@@ -394,7 +408,25 @@ impl Renderer {
             capabilities,
             sql_server_spatial_parameters: BTreeMap::new(),
             sql_server_spatial_columns: BTreeMap::new(),
+            wkb_axis_option: match dialect {
+                Dialect::Mysql => Some(MYSQL_WKB_AXIS_OPTION),
+                _ => None,
+            },
         }
+    }
+
+    /// L'opzione d'ordine degli assi che il dialetto `MySQL` passa a
+    /// `ST_AsBinary` e `ST_GeomFromWKB` (GEO-001). Una costante del profilo,
+    /// mai un valore del chiamante.
+    #[must_use]
+    pub const fn with_wkb_axis_option(mut self, option: Option<&'static str>) -> Self {
+        self.wkb_axis_option = option;
+        self
+    }
+
+    fn wkb_axis_argument(&self) -> String {
+        self.wkb_axis_option
+            .map_or_else(String::new, |option| format!(", '{option}'"))
     }
 
     #[must_use]
@@ -656,7 +688,9 @@ impl Renderer {
                         // sul path di lettura, e per la stessa ragione: senza
                         // involucro il valore arriva come `MYSQL_TYPE_GEOMETRY`
                         // nel formato interno del prodotto, che non e WKB.
-                        Dialect::Mysql => format!("ST_AsBinary({rendered})"),
+                        Dialect::Mysql => {
+                            format!("ST_AsBinary({rendered}{})", self.wkb_axis_argument())
+                        }
                         Dialect::Oracle => {
                             format!("MDSYS.SDO_UTIL.TO_WKBGEOMETRY({rendered})")
                         }
@@ -1258,7 +1292,7 @@ impl Renderer {
             (Dialect::Mysql, SpatialSemantics::Geometry) => {
                 // Il frame non viaggia in WKB: il chiamante ORM proietta
                 // anche ST_SRID e verifica la coppia prima di idratare.
-                Ok(format!("ST_AsBinary({value})"))
+                Ok(format!("ST_AsBinary({value}{})", self.wkb_axis_argument()))
             }
             (Dialect::SqlServer, _) => Ok(format!("({value}).AsBinaryZM()")),
             (Dialect::Db2, SpatialSemantics::Geometry) => {
@@ -1292,9 +1326,10 @@ impl Renderer {
             (Dialect::Postgres, SpatialSemantics::Geography) => Ok(format!(
                 "(ST_SetSRID(ST_GeomFromEWKB({value}), {srid}))::geography"
             )),
-            (Dialect::Mysql, SpatialSemantics::Geometry) => {
-                Ok(format!("ST_GeomFromWKB(CAST({value} AS BINARY), {srid})"))
-            }
+            (Dialect::Mysql, SpatialSemantics::Geometry) => Ok(format!(
+                "ST_GeomFromWKB(CAST({value} AS BINARY), {srid}{})",
+                self.wkb_axis_argument()
+            )),
             (Dialect::SqlServer, SpatialSemantics::Geometry) => {
                 Ok(format!("geometry::STGeomFromWKB({value}, {srid})"))
             }
@@ -1667,6 +1702,25 @@ impl Renderer {
                 }
             })
             .collect::<Result<Vec<_>>>()?;
+        // GEO-001: su un SRS geografico `ST_X`/`ST_Y` di `MySQL` seguono
+        // l'ordine del registro (`ST_X` e la latitudine per EPSG:4326), mentre
+        // la `x` di questo contratto e la prima ordinata del WKB, longitudine
+        // o easting. `ST_SRID(g, 0)` toglie il sistema di riferimento senza
+        // toccare le coordinate memorizzate, che `MySQL` tiene longitudine
+        // prima: misurato su 9.7.2, `ST_X(ST_SRID(POINT(12.5 60) 4326, 0))` e
+        // 12.5. Su un SRS cartesiano non cambia nulla. Vale dove l'opzione
+        // degli assi c'e, cioe su `MySQL` e non su `MariaDB`.
+        if self.dialect == Dialect::Mysql
+            && self.wkb_axis_option.is_some()
+            && matches!(function, SpatialFunction::X | SpatialFunction::Y)
+        {
+            if let [geometry] = rendered.as_slice() {
+                return Ok(format!(
+                    "{}(ST_SRID({geometry}, 0))",
+                    dialect_spatial_name(self.dialect, function)
+                ));
+            }
+        }
         Ok(format!(
             "{}({})",
             dialect_spatial_name(self.dialect, function),

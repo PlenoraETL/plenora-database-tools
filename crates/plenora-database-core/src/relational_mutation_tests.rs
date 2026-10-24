@@ -114,17 +114,22 @@ fn qualified_spatial_values_keep_payloads_in_named_binds() {
         "{}",
         postgres.sql
     );
-    for provider in [ProviderKind::Mysql, ProviderKind::Mariadb] {
+    // GEO-001: `MySQL` legge il WKB con la longitudine per prima anche su un
+    // SRS geografico; `MariaDB` non ha l'opzione.
+    for (provider, expected) in [
+        (
+            ProviderKind::Mysql,
+            "ST_GeomFromWKB(CAST(? AS BINARY), 4326, 'axis-order=long-lat')",
+        ),
+        (
+            ProviderKind::Mariadb,
+            "ST_GeomFromWKB(CAST(? AS BINARY), 4326))",
+        ),
+    ] {
         let lowered =
             compile_relational_mutation(provider, &operation).expect("bind spatial MySQL/MariaDB");
         assert_eq!(lowered.bind_names, ["shape"]);
-        assert!(
-            lowered
-                .sql
-                .contains("ST_GeomFromWKB(CAST(? AS BINARY), 4326)"),
-            "{}",
-            lowered.sql
-        );
+        assert!(lowered.sql.contains(expected), "{}", lowered.sql);
     }
     let sqlserver = compile_relational_mutation(ProviderKind::Sqlserver, &operation)
         .expect("bind spatial SQL Server");

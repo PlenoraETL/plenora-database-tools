@@ -103,7 +103,7 @@ fn spatial_projection_is_wkb_xy_with_declared_srid() {
     assert_eq!(
         spec.projection(&mysql_renderer(), &crate::profile::MYSQL_PROFILE)
             .expect("projection"),
-        "ST_AsBinary(`geom`) AS `geom`"
+        "ST_AsBinary(`geom`, 'axis-order=long-lat') AS `geom`"
     );
 }
 

@@ -89,6 +89,10 @@ struct TypePatch {
 enum DimensionMode {
     Strict,
     ForceUnmarkedZ,
+    /// Riscrive ogni type code ISO (`+1000`, `+2000`, `+3000`) nella forma
+    /// estesa (flag `0x80000000` e `0x40000000`): la forma che EWKB richiede
+    /// accanto al flag SRID (GEO-009).
+    ExtendedForm,
 }
 
 struct Scanner<'a> {
@@ -180,6 +184,16 @@ impl Scanner<'_> {
                 offset: type_offset,
                 little_endian,
                 type_word: type_word | 0x8000_0000,
+            });
+        }
+        if self.dimension_mode == DimensionMode::ExtendedForm && (iso_z || iso_m) {
+            self.type_patches.push(TypePatch {
+                offset: type_offset,
+                little_endian,
+                type_word: (type_word & 0xf000_0000)
+                    | base_type
+                    | if has_z { 0x8000_0000 } else { 0 }
+                    | if has_m { 0x4000_0000 } else { 0 },
             });
         }
         let srid = has_srid.then(|| self.u32(little_endian)).transpose()?;
@@ -280,7 +294,9 @@ pub fn inspect_ewkb_detailed(
 /// WKB ISO con lo SRID dichiarato altrove: lo stesso valore in EWKB.
 ///
 /// Imposta il flag SRID nel type word della geometria radice e inserisce lo
-/// SRID subito dopo, nel byte order del valore; il resto non cambia. Serve a
+/// SRID subito dopo, nel byte order del valore. Un type code ISO (Z, M, ZM
+/// con `+1000`/`+2000`/`+3000`) passa prima alla forma estesa, in ogni
+/// geometria del valore (GEO-009); le coordinate non cambiano. Serve a
 /// chi riceve `plenora.geometry.encoding=wkb` con lo SRID nei metadati del
 /// campo (ARROW-VOCABULARY §3) e scrive verso un database che vuole EWKB.
 ///
@@ -291,7 +307,7 @@ pub fn inspect_ewkb_detailed(
 /// `wkb` che ne porta uno contraddice il campo, e scriverne solo la radice
 /// lascerebbe il figlio con il suo.
 pub fn with_root_srid(wkb: &[u8], srid: u32, max_depth: u64) -> Result<Vec<u8>> {
-    let (inspection, _) = scan_ewkb(wkb, u64::MAX, max_depth, DimensionMode::Strict)?;
+    let (inspection, patches) = scan_ewkb(wkb, u64::MAX, max_depth, DimensionMode::ExtendedForm)?;
     if inspection.has_any_embedded_srid {
         return Err(mapping_error(
             "SRID incorporato in un valore dichiarato wkb",
@@ -316,16 +332,37 @@ pub fn with_root_srid(wkb: &[u8], srid: u32, max_depth: u64) -> Result<Vec<u8>> 
             "SRID incorporato in un valore dichiarato wkb",
         ));
     }
-    let (type_bytes, srid_bytes) = if little_endian {
-        ((type_word | 0x2000_0000).to_le_bytes(), srid.to_le_bytes())
+    // GEO-009: prima del flag SRID ogni type code ISO passa alla forma
+    // estesa, la radice e i membri; un EWKB con il flag SRID su un codice
+    // ISO e malformato. Le patch non cambiano la lunghezza.
+    let mut extended = wkb.to_vec();
+    for patch in patches {
+        let encoded = if patch.little_endian {
+            patch.type_word.to_le_bytes()
+        } else {
+            patch.type_word.to_be_bytes()
+        };
+        extended[patch.offset..patch.offset + encoded.len()].copy_from_slice(&encoded);
+    }
+    let root: [u8; 4] = extended[1..5]
+        .try_into()
+        .map_err(|_| mapping_error("type word WKB troncato"))?;
+    let root_word = if little_endian {
+        u32::from_le_bytes(root)
     } else {
-        ((type_word | 0x2000_0000).to_be_bytes(), srid.to_be_bytes())
+        u32::from_be_bytes(root)
+    };
+    debug_assert_eq!(root_word & 0x0fff_ffff, (type_word & 0x0fff_ffff) % 1_000);
+    let (type_bytes, srid_bytes) = if little_endian {
+        ((root_word | 0x2000_0000).to_le_bytes(), srid.to_le_bytes())
+    } else {
+        ((root_word | 0x2000_0000).to_be_bytes(), srid.to_be_bytes())
     };
     let mut stamped = Vec::with_capacity(wkb.len() + 4);
     stamped.push(wkb[0]);
     stamped.extend_from_slice(&type_bytes);
     stamped.extend_from_slice(&srid_bytes);
-    stamped.extend_from_slice(&wkb[5..]);
+    stamped.extend_from_slice(&extended[5..]);
     Ok(stamped)
 }
 

@@ -1034,6 +1034,299 @@ mod tests {
         assert_eq!(error.phase, ErrorPhase::Prepare);
     }
 
+    /// Un campo geometria del vocabolario 1.0 con alcuni metadati cambiati.
+    fn vocabulary_geometry_schema(changes: &[(&str, Option<&str>)]) -> SchemaRef {
+        let mut metadata = HashMap::from(
+            [
+                (
+                    protocol::GEOARROW_EXTENSION_NAME,
+                    GEOARROW_WKB_EXTENSION_NAME,
+                ),
+                (protocol::FIELD_ID, "0"),
+                (protocol::GEOMETRY_ENCODING, "wkb"),
+                (protocol::GEOMETRY_DIMENSIONS, "xy"),
+                (protocol::GEOMETRY_TYPES_DECLARATION, "exact"),
+                (protocol::GEOMETRY_TYPES, "point"),
+                (protocol::GEOMETRY_SPATIAL_SEMANTICS, "geometry"),
+                (protocol::GEOMETRY_PRECISION, "float64"),
+                (protocol::GEOMETRY_CRS_RESOLUTION, "declared_unresolved"),
+                (protocol::GEOMETRY_CRS_ID, "EPSG:4326"),
+                (protocol::GEOMETRY_AXIS_ORDER, "unknown"),
+            ]
+            .map(|(key, value)| (key.to_owned(), value.to_owned())),
+        );
+        for &(key, value) in changes {
+            match value {
+                Some(value) => metadata.insert(key.to_owned(), value.to_owned()),
+                None => metadata.remove(key),
+            };
+        }
+        Arc::new(Schema::new_with_metadata(
+            vec![Field::new("geom", DataType::Binary, true).with_metadata(metadata)],
+            HashMap::from([(
+                protocol::CONTRACT_VERSION_KEY.to_owned(),
+                protocol::CONTRACT_VERSION.to_owned(),
+            )]),
+        ))
+    }
+
+    /// GEO-008: uno SRID derivato da `EPSG:<n>` si verifica in
+    /// `spatial_ref_sys` per ogni stato di risoluzione. Fino al 24/10 la
+    /// verifica valeva solo per `resolved`: `EPSG:54009` `declared_unresolved`
+    /// diventava `geometry(Point,54009)`, che in `PostGIS` e `ESRI:54009`, ed
+    /// `EPSG:999999` una colonna con uno SRID assente. Una `geography` con
+    /// uno SRID proiettato si rifiuta `unsupported` invece che dalla DDL come
+    /// `protocol`.
+    #[tokio::test]
+    async fn live_derived_and_geography_srids_are_checked_in_spatial_ref_sys() {
+        let Some(dsn) = live_dsn_or_skip() else {
+            return;
+        };
+        let operation = WriteOperation {
+            target: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "derived_srid_never_created".to_owned(),
+            },
+            mode: WriteMode::Create,
+            mapping_policy: MappingPolicy::Strict,
+            transaction_profile: TransactionProfile::SingleTransaction,
+            keys: Vec::new(),
+            update_columns: Vec::new(),
+            srid_policy: Some(SridPolicy::RequireMatch),
+            create_spatial_index: false,
+            allow_partial: false,
+        };
+        let provider = PostgresProvider::insecure_local();
+        let secret = SecretString::new(dsn);
+        for (changes, category) in [
+            (
+                vec![(protocol::GEOMETRY_CRS_ID, Some("EPSG:54009"))],
+                ErrorCategory::Crs,
+            ),
+            (
+                vec![(protocol::GEOMETRY_CRS_ID, Some("EPSG:999999"))],
+                ErrorCategory::Crs,
+            ),
+            (
+                vec![
+                    (protocol::GEOMETRY_SPATIAL_SEMANTICS, Some("geography")),
+                    (protocol::GEOMETRY_CRS_ID, Some("EPSG:3857")),
+                ],
+                ErrorCategory::Unsupported,
+            ),
+        ] {
+            let error = provider
+                .prepare_write_with_test_budget(
+                    &secret,
+                    &operation,
+                    vocabulary_geometry_schema(&changes),
+                    &CancellationToken::new(),
+                )
+                .await
+                .err()
+                .expect("SRID non registrato come il campo lo dichiara");
+            assert_eq!(error.category, category, "{changes:?}");
+            assert_eq!(error.phase, ErrorPhase::Prepare, "{changes:?}");
+        }
+        // Lo SRID derivato registrato come `EPSG:4326` passa.
+        provider
+            .prepare_write_with_test_budget(
+                &secret,
+                &operation,
+                vocabulary_geometry_schema(&[]),
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("EPSG:4326 derivato e registrato");
+    }
+
+    /// GEO-009 sulle geometrie calcolate: `ST_Centroid` di una colonna in 4326
+    /// pubblica lo SRID 4326 anche quando la query nomina la tabella senza
+    /// schema. La relazione si cerca come la cerca la query, lungo
+    /// `search_path` (`to_regclass`), non in `current_schema()`: con il primo
+    /// schema del percorso esistente e la tabella in uno successivo, il campo
+    /// resterebbe `missing` e i valori si rifiuterebbero. Il caso con il primo
+    /// schema esistente non si costruisce qui: cambierebbe la risoluzione dei
+    /// nomi per le prove che girano in parallelo sullo stesso fixture.
+    #[tokio::test]
+    async fn live_inherited_srid_resolves_the_relation_like_the_query() {
+        let Some(dsn) = live_dsn_or_skip() else {
+            return;
+        };
+        let secret = SecretString::new(dsn);
+        let client = PostgresProvider::connect(&secret).await.expect("client");
+        client
+            .batch_execute(
+                "DROP TABLE IF EXISTS public.plenora_inherited_srid_probe;
+                 CREATE TABLE public.plenora_inherited_srid_probe (
+                     id bigint PRIMARY KEY, geom geometry(Point,4326)
+                 );
+                 INSERT INTO public.plenora_inherited_srid_probe VALUES
+                     (1, ST_GeomFromText('POINT(12.5 41.9)', 4326))",
+            )
+            .await
+            .expect("tabella in public");
+        let operation = QueryOperation {
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: None,
+                    object: "plenora_inherited_srid_probe".to_owned(),
+                },
+                alias: None,
+            }),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function: SpatialFunction::Centroid,
+                    arguments: vec![QueryExpression::Column {
+                        column: ColumnRef {
+                            relation: None,
+                            field: "geom".to_owned(),
+                        },
+                    }],
+                },
+                alias: Some("center".to_owned()),
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            locking: None,
+            declared_crs: Vec::new(),
+        };
+        let result = async {
+            let mut stream = PostgresProvider::insecure_local()
+                .query_with_test_budget(
+                    &secret,
+                    &operation,
+                    &ParameterBag::default(),
+                    &CancellationToken::new(),
+                )
+                .await?;
+            let srid = stream
+                .schema()
+                .field_with_name("center")
+                .ok()
+                .and_then(|field| field.metadata().get(protocol::GEOMETRY_SRID).cloned());
+            let rows = stream
+                .next_batch(&NeverCancelled)
+                .await?
+                .map_or(0, |batch| batch.num_rows());
+            Ok::<_, DatabaseError>((srid, rows))
+        }
+        .await;
+        client
+            .batch_execute("DROP TABLE IF EXISTS public.plenora_inherited_srid_probe")
+            .await
+            .expect("cleanup");
+        let (srid, rows) = result.expect("geometria calcolata con SRID ereditato");
+        assert_eq!(srid.as_deref(), Some("4326"));
+        assert_eq!(rows, 1);
+    }
+
+    /// GEO-009, regola del produttore, sulla lettura: una colonna `geometry`
+    /// senza typmod con valori dotati di SRID si rifiuta `crs` in fase `read`;
+    /// con valori senza SRID si legge `missing`. Fino al 24/10 usciva
+    /// `missing` con valori EWKB in 4326, che la scrittura rifiuta.
+    #[tokio::test]
+    async fn live_typmod_less_geometry_with_srid_values_is_refused_at_read() {
+        let Some(dsn) = live_dsn_or_skip() else {
+            return;
+        };
+        let secret = SecretString::new(dsn);
+        let client = PostgresProvider::connect(&secret).await.expect("client");
+        client
+            .batch_execute(
+                "CREATE SCHEMA IF NOT EXISTS plenora_fixture;
+                 DROP TABLE IF EXISTS plenora_fixture.typmod_less_probe;
+                 CREATE TABLE plenora_fixture.typmod_less_probe (
+                     id bigint PRIMARY KEY, geom geometry, plain geometry
+                 );
+                 INSERT INTO plenora_fixture.typmod_less_probe VALUES
+                     (1, ST_GeomFromText('POINT(12.5 41.9)', 4326),
+                      ST_GeomFromText('POINT(1 2)')),
+                     (2, ST_GeomFromText('POINT(1 2)', 3857), ST_GeomFromText('POINT(3 4)'))",
+            )
+            .await
+            .expect("tabella senza typmod");
+        let provider = PostgresProvider::insecure_local();
+        let read = |column: &str| ReadOperation {
+            source: ObjectRef {
+                catalog: None,
+                schema: Some("plenora_fixture".to_owned()),
+                object: "typmod_less_probe".to_owned(),
+            },
+            projection: vec!["id".to_owned(), column.to_owned()],
+            order_by: Vec::new(),
+            row_limit: None,
+            row_offset: None,
+            filter: None,
+            declared_crs: Vec::new(),
+        };
+        let budget =
+            ResourceBudget::new(plenora_database_core::resource::ResourceLimits::default())
+                .expect("budget");
+        let cancellation = CancellationToken::new();
+        let mut stream = Provider::read(
+            &provider,
+            &secret,
+            &read("geom"),
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("stream");
+        assert_eq!(
+            stream
+                .schema()
+                .field_with_name("geom")
+                .expect("geom")
+                .metadata()[protocol::GEOMETRY_CRS_RESOLUTION],
+            "missing"
+        );
+        let error = stream
+            .next_batch(&NeverCancelled)
+            .await
+            .expect_err("valori con SRID su un campo senza SRID");
+        assert_eq!(error.category, ErrorCategory::Crs);
+        assert_eq!(error.phase, ErrorPhase::Read);
+        drop(stream);
+        let mut stream = Provider::read(
+            &provider,
+            &secret,
+            &read("plain"),
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("stream senza SRID");
+        assert_eq!(
+            stream
+                .next_batch(&NeverCancelled)
+                .await
+                .expect("valori senza SRID")
+                .expect("righe")
+                .num_rows(),
+            2
+        );
+        drop(stream);
+        client
+            .batch_execute("DROP TABLE plenora_fixture.typmod_less_probe")
+            .await
+            .expect("cleanup");
+    }
+
     #[test]
     fn tls_material_is_validated_and_redacted() {
         let config = PostgresTlsConfig::webpki();
@@ -2960,7 +3253,7 @@ mod tests {
         ).await.expect("committed identity").get(0);
         assert_eq!(
             crate::field_identity::registered_id(Some(&comment)).expect("identity"),
-            Some(schema.field(0).metadata()[protocol::FIELD_ID].as_str())
+            Some(schema.field(0).metadata()[protocol::FIELD_ID].clone())
         );
         client
             .batch_execute("DROP TABLE plenora_fixture.write_row_diagnostics_commit_unknown_probe")

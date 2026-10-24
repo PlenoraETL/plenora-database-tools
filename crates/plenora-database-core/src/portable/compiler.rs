@@ -263,8 +263,14 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     // tipizzato. MariaDB rifiuta il placeholder nudo con
                     // 4079; la forma con CAST e stata misurata dalla sonda
                     // `raw.spatial_write_forms` ed e condivisa con il writer
-                    // Arrow dello stesso crate provider.
-                    Ok(format!("ST_GeomFromWKB(CAST({value} AS BINARY), {srid})"))
+                    // Arrow dello stesso crate provider. L'ordine degli assi
+                    // no: `MySQL` legge il WKB di un SRS geografico nell'ordine
+                    // del registro, e il valore ha la longitudine per prima
+                    // (GEO-001).
+                    Ok(format!(
+                        "ST_GeomFromWKB(CAST({value} AS BINARY), {srid}{})",
+                        wkb_axis_argument(ctx.dialect)
+                    ))
                 }
                 DialectKind::SqlServer => {
                     let constructor = match semantics {
@@ -594,6 +600,22 @@ fn compile_spatial_postgres(
     }
 }
 
+/// L'opzione d'ordine degli assi di `ST_GeomFromWKB`, gia preceduta dalla
+/// virgola.
+///
+/// `MySQL` 8+ interpreta il WKB di un SRS geografico nell'ordine del registro
+/// (`srid-defined`, latitudine prima per EPSG:4326); il WKB di questo
+/// componente ha la longitudine o l'easting per prima (GEO-001), quindi passa
+/// `axis-order=long-lat`, che su un SRS cartesiano non cambia nulla. `MariaDB`
+/// non ha semantica geografica ne l'argomento delle opzioni. Lo stesso valore
+/// del profilo del crate provider (`ProductProfile::wkb_axis_option`).
+const fn wkb_axis_argument(dialect: DialectKind) -> &'static str {
+    match dialect {
+        DialectKind::Mysql => ", 'axis-order=long-lat'",
+        _ => "",
+    }
+}
+
 fn compile_spatial_mysql(
     col: &str,
     predicate: &SpatialPredicate,
@@ -622,7 +644,14 @@ fn compile_spatial_mysql(
         ))
     })?;
     let srid_placeholder = ctx.bind(ParameterValue::I32(srid_i32));
-    let geom_expr = format!("ST_GeomFromWKB({geom_placeholder}, {srid_placeholder})");
+    // `CAST(? AS BINARY)`: `MariaDB` rifiuta il segnaposto nudo con 4079
+    // (`raw.spatial_write_forms`), e la forma con il cast e quella che il
+    // valore spatial e il writer Arrow usano gia su entrambi i prodotti
+    // (misurata anche con l'opzione degli assi su `MySQL` 9.7.2).
+    let geom_expr = format!(
+        "ST_GeomFromWKB(CAST({geom_placeholder} AS BINARY), {srid_placeholder}{})",
+        wkb_axis_argument(ctx.dialect)
+    );
     match predicate {
         SpatialPredicate::Intersects => Ok(format!("ST_Intersects({col}, {geom_expr})")),
         SpatialPredicate::Contains => Ok(format!("ST_Contains({col}, {geom_expr})")),

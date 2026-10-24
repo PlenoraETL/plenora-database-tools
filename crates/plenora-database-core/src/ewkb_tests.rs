@@ -128,3 +128,49 @@ fn iso_wkb_gets_the_declared_srid_in_its_byte_order() {
     );
     assert!(with_root_srid(&[1, 1, 0], 4326, 8).is_err(), "troncato");
 }
+
+/// GEO-009: un type code ISO passa alla forma estesa prima del flag SRID, alla
+/// radice e nei membri. Fino al 24/10 il flag si aggiungeva al codice ISO
+/// (`0x2000_03E9` per un punto Z), una forma che il contratto dice malformata.
+#[test]
+fn iso_type_codes_become_extended_before_the_srid_flag() {
+    // POINT Z ISO, little endian.
+    let mut point_z = vec![1_u8];
+    point_z.extend_from_slice(&1_001_u32.to_le_bytes());
+    for ordinate in [9.19_f64, 45.46, 7.0] {
+        point_z.extend_from_slice(&ordinate.to_le_bytes());
+    }
+    let stamped = with_root_srid(&point_z, 4326, 8).expect("punto Z");
+    assert_eq!(&stamped[1..5], &0xA000_0001_u32.to_le_bytes());
+    assert_eq!(&stamped[5..9], &4326_u32.to_le_bytes());
+    assert_eq!(&stamped[9..], &point_z[5..], "coordinate invariate");
+    let inspection = inspect_ewkb_detailed(&stamped, 10, 1).expect("EWKB ben formata");
+    assert!(inspection.root.has_z);
+    assert_eq!(inspection.root.srid, Some(4326));
+
+    // MULTIPOINT M ISO, big endian, con un membro POINT M ISO.
+    let mut multi = vec![0_u8];
+    multi.extend_from_slice(&2_004_u32.to_be_bytes());
+    multi.extend_from_slice(&1_u32.to_be_bytes());
+    multi.push(0);
+    multi.extend_from_slice(&2_001_u32.to_be_bytes());
+    for ordinate in [1.0_f64, 2.0, 3.0] {
+        multi.extend_from_slice(&ordinate.to_be_bytes());
+    }
+    let stamped = with_root_srid(&multi, 3857, 8).expect("multipoint M");
+    assert_eq!(&stamped[1..5], &0x6000_0004_u32.to_be_bytes());
+    assert_eq!(&stamped[5..9], &3857_u32.to_be_bytes());
+    // Il membro: byte order, poi il type word esteso senza SRID.
+    assert_eq!(&stamped[14..18], &0x4000_0001_u32.to_be_bytes());
+    assert_eq!(stamped.len(), multi.len() + 4);
+    let inspection = inspect_ewkb_detailed(&stamped, 10, 2).expect("EWKB ben formata");
+    assert!(inspection.root.has_m && !inspection.root.has_z);
+    assert_eq!(inspection.embedded_srid_count, 1);
+
+    // Un codice gia esteso resta com'e.
+    let mut extended = vec![1_u8];
+    extended.extend_from_slice(&0x8000_0001_u32.to_le_bytes());
+    extended.extend_from_slice(&[0_u8; 24]);
+    let stamped = with_root_srid(&extended, 4326, 8).expect("forma estesa");
+    assert_eq!(&stamped[1..5], &0xA000_0001_u32.to_le_bytes());
+}

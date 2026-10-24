@@ -858,13 +858,20 @@ fn spatial_mysql_geography_is_accepted_as_hint_only() {
         ))
         .into_statement();
     let compiled = compile_portable(ProviderKind::Mysql, &stmt).unwrap();
-    // Nessun cast, solo ST_GeomFromWKB.
-    // MySQL costruisce la geometria passando WKB e SRID separatamente.
-    assert!(compiled
-        .sql
-        .contains("ST_Intersects(`geom`, ST_GeomFromWKB(?, ?))"));
+    // Nessun `::geography`, solo ST_GeomFromWKB.
+    // MySQL costruisce la geometria passando WKB e SRID separatamente, con la
+    // longitudine per prima anche su un SRS geografico (GEO-001).
+    assert!(compiled.sql.contains(
+        "ST_Intersects(`geom`, ST_GeomFromWKB(CAST(? AS BINARY), ?, 'axis-order=long-lat'))"
+    ));
     // Sanity: no `::geography`.
     assert!(!compiled.sql.contains("::geography"));
+    // MariaDB non ha l'argomento delle opzioni ne semantica geografica, e
+    // rifiuta il segnaposto senza cast (4079).
+    let compiled = compile_portable(ProviderKind::Mariadb, &stmt).unwrap();
+    assert!(compiled
+        .sql
+        .contains("ST_Intersects(`geom`, ST_GeomFromWKB(CAST(? AS BINARY), ?))"));
 }
 
 #[test]
@@ -1243,4 +1250,35 @@ fn every_portable_node_refuses_an_unknown_key() {
             "{name}: chiave sconosciuta accettata"
         );
     }
+}
+
+/// GEO-001: il valore spatial di una mutazione `MySQL` si costruisce con la
+/// longitudine per prima (`axis-order=long-lat`), o un SRS geografico
+/// leggerebbe la prima ordinata come latitudine; `MariaDB` resta senza
+/// opzione. Fino al 24/10 entrambi la omettevano.
+#[test]
+fn mysql_spatial_value_fixes_the_axis_order_and_mariadb_has_none() {
+    use crate::geometry::SpatialSemantics;
+    let bytes = ewkb_point_2d(4326);
+    let statement = PortableStatement::Insert(InsertStatement {
+        table: TableRef::new("features"),
+        columns: vec!["shape".to_owned()],
+        values: vec![vec![Expression::SpatialValue {
+            expression: Box::new(Expression::literal(ParameterValue::Bytes(bytes))),
+            srid: 4326,
+            semantics: SpatialSemantics::Geometry,
+        }]],
+        returning: Vec::new(),
+    });
+    let mysql = compile_portable(ProviderKind::Mysql, &statement).expect("valore MySQL");
+    assert_eq!(
+        mysql.sql,
+        "INSERT INTO `features` (`shape`) VALUES \
+         (ST_GeomFromWKB(CAST(? AS BINARY), 4326, 'axis-order=long-lat'))"
+    );
+    let mariadb = compile_portable(ProviderKind::Mariadb, &statement).expect("valore MariaDB");
+    assert_eq!(
+        mariadb.sql,
+        "INSERT INTO `features` (`shape`) VALUES (ST_GeomFromWKB(CAST(? AS BINARY), 4326))"
+    );
 }

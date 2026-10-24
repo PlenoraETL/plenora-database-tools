@@ -487,3 +487,62 @@ fn the_target_srid_is_declared_or_derived_from_epsg_only() {
         None
     );
 }
+
+/// GEO-008: uno SRID derivato porta la propria provenienza, e un bersaglio
+/// senza catalogo in cui verificarlo lo rifiuta `crs`; uno dichiarato passa.
+#[test]
+fn a_derived_srid_is_marked_and_refused_where_unverifiable() {
+    let contract = |changes: &[(&str, Option<&str>)]| {
+        Field::new("geom", DataType::Binary, true).with_metadata(with(changes))
+    };
+    let declared = contract(&[]);
+    let declared = FieldContract::parse(&declared).expect("dichiarato");
+    assert_eq!(
+        declared.target_srid_source().expect("dichiarato"),
+        Some(TargetSrid {
+            srid: 4326,
+            derived: false
+        })
+    );
+    assert_eq!(
+        declared.declared_target_srid("Db2").expect("Db2"),
+        Some(4326)
+    );
+    let derived = contract(&[("plenora.geometry.srid", None)]);
+    let derived = FieldContract::parse(&derived).expect("derivato");
+    assert_eq!(
+        derived.target_srid_source().expect("derivato"),
+        Some(TargetSrid {
+            srid: 4326,
+            derived: true
+        })
+    );
+    let error = derived
+        .declared_target_srid("Db2")
+        .expect_err("derivato senza catalogo");
+    assert_eq!(error.category, ErrorCategory::Crs);
+}
+
+/// GEO-001: solo `lat_lon` e `northing_easting` sono irrappresentabili su un
+/// bersaglio est-primo; `unknown` e `other` passano con l'hazard dichiarato.
+#[test]
+fn only_north_first_axis_orders_are_unrepresentable() {
+    for (axis, representable) in [
+        ("lon_lat", true),
+        ("easting_northing", true),
+        ("unknown", true),
+        ("other", true),
+        ("lat_lon", false),
+        ("northing_easting", false),
+    ] {
+        let field = Field::new("geom", DataType::Binary, true)
+            .with_metadata(with(&[("plenora.geometry.axis_order", Some(axis))]));
+        let result = FieldContract::parse(&field)
+            .expect("campo conforme")
+            .ensure_east_first_axis("PostgreSQL");
+        assert_eq!(result.is_ok(), representable, "{axis}");
+        if let Err(error) = result {
+            assert_eq!(error.category, ErrorCategory::Unsupported);
+        }
+    }
+}

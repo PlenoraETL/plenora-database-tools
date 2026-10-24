@@ -211,8 +211,9 @@ fn the_confirmation_column_renders_as_srid_of_the_source() {
     let (checked, _) =
         append_crs_checks(&query, &resolved, &crate::profile::MYSQL_PROFILE).expect("accodate");
     let sql = mysql_renderer().render_query(&checked).expect("render").sql;
+    // GEO-001: la geometria calcolata esce con la longitudine per prima.
     assert!(
-        sql.contains("ST_AsBinary(ST_Envelope(`geom`)) AS `shape`"),
+        sql.contains("ST_AsBinary(ST_Envelope(`geom`), 'axis-order=long-lat') AS `shape`"),
         "{sql}"
     );
     assert!(sql.contains("ST_SRID(`geom`)"), "{sql}");

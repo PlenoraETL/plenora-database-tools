@@ -529,3 +529,58 @@ fn replace_preserves_composite_primary_key_order() {
     let error = validate_replace_description(&description, &replace).expect_err("reordered PK");
     assert_eq!(error.category, ErrorCategory::Unsupported);
 }
+
+/// `spatial_create_schema` con i metadati di `position` (geography) cambiati.
+fn spatial_create_schema_with(changes: &[(&str, Option<&str>)]) -> SchemaRef {
+    let base = spatial_create_schema();
+    let fields = base
+        .fields()
+        .iter()
+        .map(|field| {
+            if field.name() != "position" {
+                return field.as_ref().clone();
+            }
+            let mut metadata = field.metadata().clone();
+            for &(key, value) in changes {
+                match value {
+                    Some(value) => metadata.insert(key.to_owned(), value.to_owned()),
+                    None => metadata.remove(key),
+                };
+            }
+            field.as_ref().clone().with_metadata(metadata)
+        })
+        .collect::<Vec<_>>();
+    Arc::new(plenora_database_core::arrow::Schema::new_with_metadata(
+        fields,
+        base.metadata().clone(),
+    ))
+}
+
+/// GEO-001 e GEO-008 su SQL Server, prima di ogni effetto: un campo
+/// `lat_lon` e `unsupported` (`geography::STGeomFromWKB` legge la longitudine
+/// in `x`); uno SRID derivato da `EPSG:<n>` e `crs`, perche `geometry` non ha
+/// un catalogo e quello di `geography` non e letto da una prova live. Fino al
+/// 24/10 entrambi passavano.
+#[test]
+fn spatial_create_refuses_north_first_axes_and_derived_srids() {
+    let mut create = operation(WriteMode::Create);
+    create.keys = vec!["id".to_owned()];
+    let lat_lon = spatial_create_schema_with(&[(protocol::GEOMETRY_AXIS_ORDER, Some("lat_lon"))]);
+    assert_eq!(
+        WritePlan::compile_create(&create, lat_lon)
+            .expect_err("lat_lon")
+            .category,
+        ErrorCategory::Unsupported
+    );
+    let derived = spatial_create_schema_with(&[
+        (protocol::GEOMETRY_SRID, None),
+        (protocol::GEOMETRY_CRS_ID, Some("EPSG:4326")),
+        (protocol::GEOMETRY_AXIS_ORDER, Some("lon_lat")),
+    ]);
+    assert_eq!(
+        WritePlan::compile_create(&create, derived)
+            .expect_err("SRID derivato")
+            .category,
+        ErrorCategory::Crs
+    );
+}

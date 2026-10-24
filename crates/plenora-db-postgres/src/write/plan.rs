@@ -2,7 +2,7 @@ use super::sql::{native_declaration_sql, pg_type};
 use crate::field_contract::FieldContract;
 use arrow_schema::{DataType, Field};
 use plenora_database_core::geometry_value::ValueContract;
-use plenora_database_core::Result;
+use plenora_database_core::{ErrorCategory, ErrorPhase, Result};
 
 #[derive(Debug, Clone)]
 pub(super) struct WriteColumnPlan {
@@ -34,6 +34,7 @@ pub(super) enum ColumnSemantics {
 impl WriteColumnPlan {
     pub(super) fn compile(field: &Field) -> Result<Self> {
         let contract = FieldContract::parse(field)?;
+        ensure_spatial_support(&contract)?;
         Ok(Self {
             data_type: field.data_type().clone(),
             postgres_type: pg_type(&contract)?,
@@ -84,4 +85,52 @@ impl WriteColumnPlan {
             ColumnSemantics::Geometry | ColumnSemantics::Geography
         )
     }
+}
+
+/// I limiti di supporto di un campo geometrico che si decidono dallo schema,
+/// prima di ogni effetto (GEO-000, verdetto di supporto) e prima di contattare
+/// il server: un dry run li vede come la scrittura.
+fn ensure_spatial_support(contract: &FieldContract<'_>) -> Result<()> {
+    let canonical = contract.canonical;
+    if !canonical.spatial {
+        return Ok(());
+    }
+    let refuse = |category: ErrorCategory, message: &str| {
+        Err(crate::error::public_error(
+            category,
+            ErrorPhase::Validate,
+            false,
+            message,
+        ))
+    };
+    // Deviazione dichiarata (GEO-000, contracts/adoption-source.json): i codec
+    // di scrittura leggono `Binary`; `LargeBinary`, che il vocabolario ammette,
+    // si rifiuta qui invece che al primo batch con `data_mapping`.
+    if contract.field.data_type() != &DataType::Binary {
+        return refuse(
+            ErrorCategory::Unsupported,
+            "write PostgreSQL di geoarrow.wkb richiede un campo Arrow Binary, non LargeBinary",
+        );
+    }
+    canonical.ensure_east_first_axis("PostgreSQL")?;
+    if canonical.is_geography() {
+        // `geography(..., 0)` non e una colonna senza CRS: PostGIS le assegna
+        // 4326. Scrivere cosi un campo senza SRID inventerebbe il CRS.
+        if contract.target_srid.is_none_or(|srid| srid == 0) {
+            return refuse(
+                ErrorCategory::Crs,
+                "geography PostgreSQL senza SRID: PostGIS assegnerebbe 4326 a un CRS non dichiarato",
+            );
+        }
+        // Un ordine degli assi proiettato contraddice `geography`, che vuole
+        // longitudine e latitudine: lo si sa dallo schema, senza il catalogo
+        // (che `preflight` legge comunque per lo SRID).
+        if matches!(canonical.axis_order, Some("easting_northing" | "other")) {
+            return refuse(
+                ErrorCategory::Unsupported,
+                "geography PostgreSQL richiede un CRS geografico: l'ordine degli assi dichiarato e proiettato",
+            );
+        }
+    }
+    Ok(())
 }

@@ -5,7 +5,12 @@ fn registration_preserves_foreign_comments_and_unbounded_ids() {
     let foreign = "owner's comment\\with\nUnicode: città";
     let id = "0001234567890123456789012345678901234567890";
     let comment = registration(Some(foreign), id).unwrap().unwrap();
-    assert_eq!(registered_id(Some(&comment)).unwrap(), Some(id));
+    // Si registra e si rilegge la forma canonica (GEO-016).
+    let canonical = id.trim_start_matches('0');
+    assert_eq!(
+        registered_id(Some(&comment)).unwrap().as_deref(),
+        Some(canonical)
+    );
     assert!(comment.ends_with(foreign));
     assert!(registration(Some(&comment), id.trim_start_matches('0'))
         .unwrap()
@@ -26,4 +31,22 @@ fn conflicting_and_corrupt_identity_fail_without_payload() {
         assert_eq!(error.category, ErrorCategory::DataMapping);
         assert!(!error.message.contains("secret"));
     }
+}
+
+/// Un commento registrato con zeri iniziali, come le versioni precedenti lo
+/// scrivevano, resta leggibile e si pubblica canonico (deviazione GEO-016).
+/// Fino al 24/10 la lettura lo pubblicava tale e quale, e la verifica dello
+/// schema faceva fallire `query` sulla tabella.
+#[test]
+fn legacy_registered_id_with_leading_zeros_is_read_canonical() {
+    let comment = "plenora.field_id.v1:0042\nowner";
+    assert_eq!(registered_id(Some(comment)).unwrap().as_deref(), Some("42"));
+    assert_eq!(
+        registered_id(Some("plenora.field_id.v1:000\n"))
+            .unwrap()
+            .as_deref(),
+        Some("0")
+    );
+    // Lo stesso id in forma canonica non e un conflitto.
+    assert!(registration(Some(comment), "42").unwrap().is_none());
 }

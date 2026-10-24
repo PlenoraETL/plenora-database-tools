@@ -95,10 +95,28 @@ fn postgres_spatial_output_encodes_a_column_as_ewkb() {
     )
     .render_query(&query)
     .expect("projection WKB MySQL");
+    // GEO-001: il dialetto `MySQL` rende il WKB con la longitudine per prima;
+    // chi serve `MariaDB` toglie l'opzione, che quel prodotto non accetta.
     assert!(
-        mysql.sql.contains("ST_AsBinary(`e`.`shape`) AS `shape`"),
+        mysql
+            .sql
+            .contains("ST_AsBinary(`e`.`shape`, 'axis-order=long-lat') AS `shape`"),
         "{}",
         mysql.sql
+    );
+    let mariadb = Renderer::new(
+        Dialect::Mysql,
+        DialectCapabilities {
+            spatial_intersects: false,
+        },
+    )
+    .with_wkb_axis_option(None)
+    .render_query(&query)
+    .expect("projection WKB MariaDB");
+    assert!(
+        mariadb.sql.contains("ST_AsBinary(`e`.`shape`) AS `shape`"),
+        "{}",
+        mariadb.sql
     );
 
     let sqlserver = Renderer::new(
@@ -158,7 +176,7 @@ fn mysql_spatial_value_uses_the_shared_typed_binary_form() {
     assert!(
         rendered
             .sql
-            .contains("ST_GeomFromWKB(CAST(? AS BINARY), 4326) AS `shape`"),
+            .contains("ST_GeomFromWKB(CAST(? AS BINARY), 4326, 'axis-order=long-lat') AS `shape`"),
         "{}",
         rendered.sql
     );
@@ -1815,4 +1833,46 @@ fn lowered_statement_fingerprint_is_stable_and_bind_sensitive() {
     let mut different_sql = rendered.clone();
     different_sql.sql.push_str(" WHERE active");
     assert_ne!(rendered.fingerprint(), different_sql.fingerprint());
+}
+
+/// GEO-001: la `x` del contratto e la prima ordinata del WKB (longitudine o
+/// easting). Su `MySQL` `ST_X` di un SRS geografico e la latitudine, e il
+/// renderer la legge dopo `ST_SRID(g, 0)`, che non tocca le coordinate;
+/// `MariaDB` (senza l'opzione degli assi) resta `ST_X(g)`. Fino al 24/10 la
+/// stessa query dava la longitudine su `PostGIS` e la latitudine su `MySQL`.
+#[test]
+fn mysql_x_and_y_read_the_stored_first_ordinate() {
+    let mut query = simple_query();
+    query.projection = [SpatialFunction::X, SpatialFunction::Y]
+        .into_iter()
+        .map(|function| QueryProjection {
+            expression: QueryExpression::Spatial {
+                function,
+                arguments: vec![query_column("e", "shape")],
+            },
+            alias: None,
+        })
+        .collect();
+    let capabilities = DialectCapabilities {
+        spatial_intersects: true,
+    };
+    let mysql = Renderer::new(Dialect::Mysql, capabilities)
+        .render_query(&query)
+        .expect("X/Y MySQL");
+    assert!(
+        mysql
+            .sql
+            .contains("ST_X(ST_SRID(`e`.`shape`, 0)), ST_Y(ST_SRID(`e`.`shape`, 0))"),
+        "{}",
+        mysql.sql
+    );
+    let mariadb = Renderer::new(Dialect::Mysql, capabilities)
+        .with_wkb_axis_option(None)
+        .render_query(&query)
+        .expect("X/Y MariaDB");
+    assert!(
+        mariadb.sql.contains("ST_X(`e`.`shape`), ST_Y(`e`.`shape`)"),
+        "{}",
+        mariadb.sql
+    );
 }

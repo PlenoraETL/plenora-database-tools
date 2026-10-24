@@ -52,6 +52,9 @@ pub(crate) struct MetadataKeys {
     pub(crate) native_type: &'static str,
     pub(crate) native_declaration: &'static str,
     pub(crate) collation: &'static str,
+    /// L'autorita del catalogo locale con cui si pubblica lo SRID di una
+    /// colonna (GEO-020: `MYSQL` o `MARIADB`, sempre `declared_unresolved`).
+    pub(crate) crs_authority: &'static str,
 }
 
 /// Classificazione completa di un codice di errore del server.
@@ -65,6 +68,14 @@ pub(crate) struct ServerCodeVerdict {
     /// L'effetto che il codice implica di per se. `None` significa "il
     /// codice non lo determina", non "nessun effetto".
     pub(crate) remote_effect: Option<RemoteEffect>,
+}
+
+/// L'argomento delle opzioni WKB, gia preceduto dalla virgola, o niente.
+///
+/// L'opzione e una costante del profilo, mai un valore del chiamante.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn wkb_axis_argument(option: Option<&'static str>) -> String {
+    option.map_or_else(String::new, |option| format!(", '{option}'"))
 }
 
 /// Le decisioni che cambiano con il prodotto servito dalla connessione.
@@ -180,7 +191,68 @@ pub(crate) trait ProductProfile: Send + Sync {
     fn spatial_requires_declared_srid(&self) -> bool;
 
     /// Come si proietta una colonna geometrica per ottenerne il WKB.
-    fn geometry_projection(&self, quoted: &str) -> String;
+    ///
+    /// Il WKB esce con l'ordine degli assi di [`Self::wkb_axis_option`]:
+    /// lettura e scrittura devono concordare, o un valore riletto avrebbe gli
+    /// assi scambiati rispetto a quello scritto.
+    fn geometry_projection(&self, quoted: &str) -> String {
+        format!(
+            "ST_AsBinary({quoted}{}) AS {quoted}",
+            wkb_axis_argument(self.wkb_axis_option())
+        )
+    }
+
+    /// L'opzione che fissa l'ordine degli assi del WKB scambiato col server,
+    /// o `None` per un prodotto che non ne ha.
+    ///
+    /// `MySQL` 8+ interpreta il WKB di un SRS geografico nell'ordine del
+    /// registro (`axis-order=srid-defined`, il default: latitudine prima per
+    /// EPSG:4326), sia in `ST_GeomFromWKB` sia in `ST_AsBinary`. Il WKB di
+    /// questo componente ha la longitudine (o l'easting) per prima (GEO-001,
+    /// [`FieldContract::ensure_east_first_axis`]), quindi su `MySQL` ogni
+    /// scambio passa `axis-order=long-lat`; su un SRS cartesiano o con SRID 0
+    /// l'opzione e accettata e non cambia nulla (misurato su `MySQL` 9.7.2).
+    /// Senza, `POINT(12.5 60)` in EPSG:4326 si memorizzava con latitudine
+    /// 12.5. `MariaDB` non ha semantica geografica (le coordinate sono
+    /// cartesiane qualunque sia lo SRID) e `ST_AsBinary`/`ST_GeomFromWKB` non
+    /// accettano opzioni.
+    ///
+    /// [`FieldContract::ensure_east_first_axis`]: plenora_database_core::field_contract::FieldContract::ensure_east_first_axis
+    fn wkb_axis_option(&self) -> Option<&'static str>;
+
+    /// L'espressione che costruisce una geometria dal WKB legato a `?`.
+    ///
+    /// `CAST(? AS BINARY)`, e il cast non e prudenza: e la sola
+    /// forma legata che entrambi i prodotti accettano.
+    ///
+    /// Un segnaposto non e un'espressione tipata, e la
+    /// differenza si vede solo su uno dei due. `MariaDB`
+    /// risponde 4079 —
+    /// `ER_ILLEGAL_PARAMETER_DATA_TYPE_FOR_OPERATION` — a
+    /// `ST_GeomFromWKB(?, <n>)` mentre accetta la stessa
+    /// funzione su un valore tipato; `MySQL` accetta entrambe.
+    /// Misurato da `raw.spatial_write_forms` sulle tre varianti:
+    /// nudo, con cast, e senza SRID.
+    ///
+    /// Il cast e condiviso invece di essere una decisione del
+    /// profilo perche una forma sola che vale su tutti e due e
+    /// meglio di due che divergono senza doverlo: l'SRID resta
+    /// memorizzato — 4326 su entrambi — e non c'e niente da
+    /// guadagnare tenendo due rendering. L'ordine degli assi invece e del
+    /// profilo ([`Self::wkb_axis_option`]).
+    fn geometry_from_wkb_sql(&self, srid: u32) -> String {
+        format!(
+            "ST_GeomFromWKB(CAST(? AS BINARY), {srid}{})",
+            wkb_axis_argument(self.wkb_axis_option())
+        )
+    }
+
+    /// Se uno SRID derivato da `EPSG:<n>` si verifica nel catalogo del
+    /// prodotto (`INFORMATION_SCHEMA.ST_SPATIAL_REFERENCE_SYSTEMS`).
+    ///
+    /// `MariaDB` non ha quel catalogo: uno SRID e un'etichetta, e la
+    /// derivazione non si applica (deviazione GEO-008 dichiarata).
+    fn verifies_derived_srid(&self) -> bool;
 
     /// Le funzioni spatial che **questo** prodotto ha attraversato.
     ///
@@ -316,6 +388,11 @@ pub(crate) const INDEX_PART_ALIASES: &[&str] = &[
     "column_name",
     "expression",
 ];
+
+/// Vedi [`SCHEMA_ALIASES`]. La verifica di uno SRID derivato da `EPSG:<n>`
+/// (`catalog::verify_epsg_srid`), che soltanto `MySQL` esegue.
+#[cfg(test)]
+pub(crate) const SRS_ALIASES: &[&str] = &["organization", "organization_coordsys_id"];
 
 /// Il `ProviderKind` con cui firma chi non ha ancora un prodotto sotto.
 ///
@@ -590,6 +667,7 @@ impl ProductProfile for MysqlProfile {
             native_type: protocol::MYSQL_NATIVE_TYPE,
             native_declaration: protocol::MYSQL_NATIVE_DECLARATION,
             collation: protocol::MYSQL_COLLATION,
+            crs_authority: "MYSQL",
         }
     }
 
@@ -612,8 +690,12 @@ impl ProductProfile for MysqlProfile {
         true
     }
 
-    fn geometry_projection(&self, quoted: &str) -> String {
-        format!("ST_AsBinary({quoted}) AS {quoted}")
+    fn wkb_axis_option(&self) -> Option<&'static str> {
+        Some(plenora_database_sql::MYSQL_WKB_AXIS_OPTION)
+    }
+
+    fn verifies_derived_srid(&self) -> bool {
+        true
     }
 
     fn verified_spatial_functions(
@@ -814,6 +896,9 @@ impl ProductProfile for MariadbProfile {
             native_type: protocol::MARIADB_NATIVE_TYPE,
             native_declaration: protocol::MARIADB_NATIVE_DECLARATION,
             collation: protocol::MARIADB_COLLATION,
+            // GEO-020: il catalogo di un'installazione MariaDB e `MARIADB`,
+            // non `MYSQL`. Fino al 24/10 si pubblicava `MYSQL:<srid>`.
+            crs_authority: "MARIADB",
         }
     }
 
@@ -836,11 +921,20 @@ impl ProductProfile for MariadbProfile {
         true
     }
 
-    fn geometry_projection(&self, quoted: &str) -> String {
-        // `raw.spatial_functions` ha misurato lo stesso esito sui tre
-        // riferimenti: `POINT srid=4326`, WKB di 21 byte. Stessa funzione,
-        // stesso dialetto in uscita.
-        MYSQL_PROFILE.geometry_projection(quoted)
+    // `geometry_projection` resta quella di default, senza opzione:
+    // `raw.spatial_functions` ha misurato lo stesso esito sui tre riferimenti
+    // (`POINT srid=4326`, WKB di 21 byte), stessa funzione e stesso dialetto
+    // in uscita. Fino al 24/10 delegava a `MySQL`, la cui proiezione ora porta
+    // un'opzione che `MariaDB` non accetta.
+
+    fn wkb_axis_option(&self) -> Option<&'static str> {
+        // Nessuna semantica geografica: la prima ordinata e `x` qualunque sia
+        // lo SRID, e le funzioni WKB non hanno l'argomento delle opzioni.
+        None
+    }
+
+    fn verifies_derived_srid(&self) -> bool {
+        false
     }
 
     fn verified_spatial_functions(
@@ -1668,6 +1762,14 @@ impl ProductProfile for SecondProductProfile {
 
     fn geometry_projection(&self, quoted: &str) -> String {
         MYSQL_PROFILE.geometry_projection(quoted)
+    }
+
+    fn wkb_axis_option(&self) -> Option<&'static str> {
+        MYSQL_PROFILE.wkb_axis_option()
+    }
+
+    fn verifies_derived_srid(&self) -> bool {
+        MYSQL_PROFILE.verifies_derived_srid()
     }
 
     fn verified_spatial_functions(

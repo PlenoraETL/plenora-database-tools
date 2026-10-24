@@ -1005,14 +1005,31 @@ fn validate_spatial_contract(
             "dimensioni Arrow diverse dai valori esistenti nel target SQL Server",
         ));
     }
-    // Lo SRID dichiarato o derivato da `EPSG:<n>` (GEO-008); senza, il CRS
-    // non si registra e il rifiuto e `crs`.
-    let source_srid = contract.target_srid()?.ok_or_else(|| {
-        plan_error(
-            ErrorCategory::Crs,
-            "SRID Arrow obbligatorio per write spatial SQL Server",
-        )
-    })?;
+    // GEO-001: il bersaglio vuole la longitudine (o l'easting) per prima;
+    // `STGeomFromWKB` legge anche `geography` con la longitudine in `x`.
+    contract
+        .ensure_east_first_axis("SQL Server")
+        .map_err(|mut error| {
+            error.provider = Some(plenora_database_core::plan::ProviderKind::Sqlserver);
+            error
+        })?;
+    // Soltanto lo SRID dichiarato: la derivazione da `EPSG:<n>` (GEO-008) non
+    // si applica, perche `geometry` non ha un catalogo e quello di
+    // `geography` non e letto da una prova live (deviazione dichiarata su
+    // `declared_target_srid`). Senza, il CRS non si registra e il rifiuto e
+    // `crs`.
+    let source_srid = contract
+        .declared_target_srid("SQL Server")
+        .map_err(|mut error| {
+            error.provider = Some(plenora_database_core::plan::ProviderKind::Sqlserver);
+            error
+        })?
+        .ok_or_else(|| {
+            plan_error(
+                ErrorCategory::Crs,
+                "SRID Arrow obbligatorio per write spatial SQL Server",
+            )
+        })?;
     if observed
         .and_then(|value| value.srid)
         .is_some_and(|target_srid| target_srid != source_srid)

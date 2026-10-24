@@ -109,12 +109,15 @@ async fn execute_bulk_write(
     dry_run: bool,
 ) -> CliResult<()> {
     if dry_run {
-        // Emette il piano che sarebbe applicato, senza toccare il DB. Lo
-        // schema si giudica comunque come lo giudicherebbe la scrittura
-        // (REJ-001): un dry run che dice `dry_run` su un ingresso che la
-        // scrittura rifiuterebbe e un'accettazione indebita.
+        // Emette il piano che sarebbe applicato, senza toccare il DB. Il piano
+        // si compila con la stessa funzione della scrittura
+        // (`compile_write_plan`, la prima cosa di `prepare_write`): un dry run
+        // che dice `dry_run` su un ingresso che la scrittura rifiuterebbe
+        // senza contattare il server e un'accettazione indebita. Fino al
+        // 24/10 si giudicava soltanto lo schema, e uno SRID non derivabile
+        // passava il dry run per fallire nella scrittura.
         let schema = stream.schema();
-        plenora_database_core::field_contract::validate_schema_contract(&schema)?;
+        plenora_db_postgres::compile_write_plan(&schema, &operation)?;
         let fields: Vec<serde_json::Value> = schema
             .fields()
             .iter()

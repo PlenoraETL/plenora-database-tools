@@ -1224,7 +1224,7 @@ fn compile_and_preflight_qualify_only_xy_wkb_with_matching_srid() {
     assert_eq!(plan.columns[0].spatial_srid, Some(4_326));
     assert_eq!(
             plan.render_insert(1).expect("insert geometry"),
-            "INSERT INTO `warehouse`.`events` (`geom`) VALUES (ST_GeomFromWKB(CAST(? AS BINARY), 4326));"
+            "INSERT INTO `warehouse`.`events` (`geom`) VALUES (ST_GeomFromWKB(CAST(? AS BINARY), 4326, 'axis-order=long-lat'));"
         );
     assert!(plan
         .preflight(
@@ -1550,4 +1550,94 @@ fn upsert_preflight_accepts_a_redundant_unique_index_on_the_same_keys() {
     assert!(plan
         .preflight(&target, &crate::profile::MYSQL_PROFILE)
         .is_ok());
+}
+
+/// Un campo geometria del catalogo con alcuni metadati sostituiti o tolti.
+fn spatial_field_with(changes: &[(&str, Option<&str>)]) -> Field {
+    let field = spatial_field("point", 4_326);
+    let mut metadata = field.metadata().clone();
+    for &(key, value) in changes {
+        match value {
+            Some(value) => metadata.insert(key.to_owned(), value.to_owned()),
+            None => metadata.remove(key),
+        };
+    }
+    field.with_metadata(metadata)
+}
+
+/// GEO-001: un campo `lat_lon` non si scrive su un bersaglio che vuole la
+/// longitudine per prima, ne su `MySQL` ne su `MariaDB`; il rifiuto e
+/// `unsupported` e arriva dalla compilazione, prima di ogni effetto. Fino al
+/// 24/10 nessun adattatore leggeva `axis_order` in ingresso.
+#[test]
+fn lat_lon_axis_order_is_unsupported_before_any_effect() {
+    let input = schema(vec![spatial_field_with(&[(
+        protocol::GEOMETRY_AXIS_ORDER,
+        Some("lat_lon"),
+    )])]);
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        let error = MysqlWritePlan::compile_with_profile(
+            &input,
+            &spatial_operation(),
+            "warehouse",
+            profile,
+        )
+        .expect_err("lat_lon non rappresentabile");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
+    // `unknown` resta ammesso, con l'hazard dichiarato.
+    let unknown = schema(vec![spatial_field("point", 4_326)]);
+    MysqlWritePlan::compile_with_profile(
+        &unknown,
+        &spatial_operation(),
+        "warehouse",
+        &crate::profile::MYSQL_PROFILE,
+    )
+    .expect("unknown ammesso");
+}
+
+/// GEO-008: uno SRID derivato da `EPSG:<n>` si scrive su `MySQL` solo dopo la
+/// verifica del catalogo (il piano lo segnala), e su `MariaDB`, che un
+/// catalogo non ha, non si deriva. Il rendering di `MariaDB` resta senza
+/// l'opzione degli assi, che non accetta.
+#[test]
+fn derived_srid_is_verified_on_mysql_and_refused_on_mariadb() {
+    let input = schema(vec![spatial_field_with(&[
+        (protocol::GEOMETRY_SRID, None),
+        (protocol::GEOMETRY_CRS_ID, Some("EPSG:4326")),
+        (protocol::GEOMETRY_AXIS_ORDER, Some("lon_lat")),
+    ])]);
+    let plan = MysqlWritePlan::compile_with_profile(
+        &input,
+        &spatial_operation(),
+        "warehouse",
+        &crate::profile::MYSQL_PROFILE,
+    )
+    .expect("SRID derivato su MySQL");
+    assert_eq!(plan.derived_srids(), vec![4_326]);
+    let error = MysqlWritePlan::compile_with_profile(
+        &input,
+        &spatial_operation(),
+        "warehouse",
+        &crate::profile::MARIADB_PROFILE,
+    )
+    .expect_err("SRID derivato su MariaDB");
+    assert_eq!(error.category, ErrorCategory::Crs);
+
+    let declared = schema(vec![spatial_field("point", 4_326)]);
+    let plan = MysqlWritePlan::compile_with_profile(
+        &declared,
+        &spatial_operation(),
+        "warehouse",
+        &crate::profile::MARIADB_PROFILE,
+    )
+    .expect("SRID dichiarato su MariaDB");
+    assert!(plan.derived_srids().is_empty());
+    assert_eq!(
+        plan.render_insert(1).expect("insert geometry"),
+        "INSERT INTO `warehouse`.`events` (`geom`) VALUES (ST_GeomFromWKB(CAST(? AS BINARY), 4326));"
+    );
 }

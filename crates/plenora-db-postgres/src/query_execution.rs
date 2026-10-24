@@ -232,6 +232,36 @@ pub async fn query_stream(
         .map(ColumnSpec::from_statement_column)
         .collect::<Result<Vec<_>>>()?;
     mark_query_spatial_columns(operation, &mut columns);
+    // GEO-009: lo SRID di una geometria calcolata che eredita quello della
+    // colonna d'ingresso, dal catalogo; la lettura lo verifica valore per
+    // valore. Senza, il campo resta `missing`.
+    for inherited in crate::query_plan::inherited_geometries(operation) {
+        // La relazione si risolve come la risolve la query: con lo schema
+        // dichiarato, o lungo `search_path` senza (`to_regclass`). Lo SRID e
+        // quello del typmod della colonna (0 senza typmod), `geometry` o
+        // `geography`.
+        let row = client
+            .client()?
+            .query_opt(
+                "SELECT postgis_typmod_srid(a.atttypmod) \
+                 FROM pg_catalog.pg_attribute a \
+                 WHERE a.attrelid = to_regclass(CASE WHEN $1::text IS NULL \
+                         THEN quote_ident($2::text) \
+                         ELSE quote_ident($1::text) || '.' || quote_ident($2::text) END) \
+                   AND a.attname = $3::text AND a.attnum > 0 AND NOT a.attisdropped \
+                   AND a.atttypid IN ('geometry'::regtype, 'geography'::regtype)",
+                &[&inherited.schema, &inherited.object, &inherited.column],
+            )
+            .await
+            .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
+        let srid = row
+            .and_then(|row| row.get::<_, Option<i32>>(0))
+            .and_then(|srid| u32::try_from(srid).ok())
+            .filter(|srid| *srid > 0);
+        if let Some(column) = columns.get_mut(inherited.position) {
+            column.spatial_srid = srid;
+        }
+    }
     for column in &mut columns {
         if let Some((relation, number)) = column.source {
             let row = client
@@ -243,8 +273,7 @@ pub async fn query_stream(
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
             let comment: Option<String> = row.get(0);
-            column.registered_field_id =
-                crate::field_identity::registered_id(comment.as_deref())?.map(str::to_owned);
+            column.registered_field_id = crate::field_identity::registered_id(comment.as_deref())?;
         }
     }
     let columns = without_shared_origins(columns);

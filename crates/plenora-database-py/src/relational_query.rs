@@ -53,6 +53,13 @@ pub fn compile_relational_query(
             ),
         },
     )
+    // GEO-001: `MySQL` scambia il WKB con la longitudine per prima (default
+    // del dialetto); `MariaDB`, che condivide il dialetto, non ha l'opzione.
+    .with_wkb_axis_option(match provider {
+        ProviderKind::Mariadb => None,
+        _ if dialect == Dialect::Mysql => Some(plenora_database_sql::MYSQL_WKB_AXIS_OPTION),
+        _ => None,
+    })
     .render_query(&query)
     .map_err(crate::errors::to_py_err)?;
     Ok((

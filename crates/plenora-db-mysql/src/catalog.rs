@@ -547,6 +547,58 @@ where
     }
 }
 
+/// Verifica che lo SRID `srid`, derivato da `EPSG:<srid>` (GEO-008), sia nel
+/// catalogo del server come quell'identita: `ORGANIZATION = 'EPSG'` e
+/// `ORGANIZATION_COORDSYS_ID = srid`.
+///
+/// Un SRS definito dall'utente con lo stesso numero e un altro CRS, e uno
+/// SRID assente farebbe fallire la DDL o la scrittura con un errore che non
+/// dice `crs`: si rifiuta qui, prima di ogni effetto.
+///
+/// # Errors
+///
+/// `Crs` per uno SRID assente o registrato con un'altra identita.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn verify_epsg_srid(
+    session: &mut MysqlSession,
+    srid: u32,
+    product: &str,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let rows = session
+        .exec_rows(
+            "SELECT ORGANIZATION AS organization, \
+                    ORGANIZATION_COORDSYS_ID AS organization_coordsys_id \
+             FROM INFORMATION_SCHEMA.ST_SPATIAL_REFERENCE_SYSTEMS WHERE SRS_ID = ?",
+            Params::Positional(vec![Value::from(srid)]),
+            ErrorPhase::Probe,
+            cancellation,
+        )
+        .await?;
+    let registered = match rows.as_slice() {
+        [row] => {
+            let organization: Option<String> = optional(row, "organization", "organization")?;
+            let code: Option<u32> =
+                optional(row, "organization_coordsys_id", "organization_coordsys_id")?;
+            organization.is_some_and(|name| name.eq_ignore_ascii_case("EPSG")) && code == Some(srid)
+        }
+        _ => false,
+    };
+    if registered {
+        Ok(())
+    } else {
+        Err(DatabaseError::new(
+            ErrorCategory::Crs,
+            ErrorPhase::Probe,
+            Some(crate::profile::PROVISIONAL_KIND),
+            format!(
+                "SRID derivato da crs_id EPSG assente dal catalogo {product} o registrato \
+                 con un'altra identita"
+            ),
+        ))
+    }
+}
+
 fn mapping_error(message: impl Into<String>) -> DatabaseError {
     DatabaseError::new(
         ErrorCategory::DataMapping,

@@ -14,13 +14,23 @@ const PREFIX: &str = "plenora.field_id.v1:";
 /// Limite dichiarato: se il commento o il prefisso vengono rimossi a mano,
 /// la colonna equivale a una mai registrata e usa il fallback di provenienza.
 /// Il commento non autentica l'identita e non rileva tale manomissione.
-pub fn registered_id(comment: Option<&str>) -> Result<Option<&str>> {
+///
+/// L'id si restituisce nella forma canonica (GEO-016: senza zeri iniziali).
+///
+/// # Deviazione dichiarata (GEO-016, contracts/adoption-source.json)
+///
+/// Le versioni precedenti registravano l'id cosi come arrivava, e `007` era
+/// un ingresso ammesso: un commento gia scritto in quella forma resta
+/// leggibile e si pubblica canonico (`7`), invece di rendere la tabella
+/// illeggibile. Un ingresso nuovo resta severo: `validate_schema_contract`
+/// rifiuta `007` prima che arrivi alla registrazione. Rientra quando nessun
+/// commento registrato dalle versioni precedenti puo piu essere letto.
+pub fn registered_id(comment: Option<&str>) -> Result<Option<String>> {
     let Some(value) = comment.and_then(|text| text.strip_prefix(PREFIX)) else {
         return Ok(None);
     };
     let (id, _) = value.split_once('\n').ok_or_else(invalid_comment)?;
-    canonical_field_id(id).ok_or_else(invalid_comment)?;
-    Ok(Some(id))
+    canonical_field_id(id).ok_or_else(invalid_comment).map(Some)
 }
 
 fn invalid_comment() -> plenora_database_core::DatabaseError {
@@ -34,7 +44,8 @@ fn invalid_comment() -> plenora_database_core::DatabaseError {
 
 fn registration(comment: Option<&str>, incoming: &str) -> Result<Option<String>> {
     if let Some(existing) = registered_id(comment)? {
-        if canonical_field_id(existing) != canonical_field_id(incoming) {
+        if Some(existing) != canonical_field_id(incoming) {
+            // Entrambi in forma canonica: `7` e `007` sono lo stesso id.
             return Err(public_error(
                 ErrorCategory::Conflict,
                 ErrorPhase::Write,
@@ -44,7 +55,8 @@ fn registration(comment: Option<&str>, incoming: &str) -> Result<Option<String>>
         }
         return Ok(None);
     }
-    canonical_field_id(incoming).ok_or_else(invalid_comment)?;
+    // Si registra la forma canonica, quella che la lettura pubblica.
+    let incoming = canonical_field_id(incoming).ok_or_else(invalid_comment)?;
     Ok(Some(format!(
         "{PREFIX}{incoming}\n{}",
         comment.unwrap_or("")

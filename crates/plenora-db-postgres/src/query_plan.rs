@@ -45,6 +45,123 @@ pub fn mark_query_spatial_columns(operation: &QueryOperation, columns: &mut [Col
     }
 }
 
+/// La colonna da cui una geometria calcolata eredita il frame: una colonna,
+/// o una funzione con regola `preserves` il cui unico argomento geometrico
+/// eredita a sua volta (`Centroid(Centroid(geom))`). La profondita e quella
+/// dell'espressione, gia limitata dalla validazione del piano.
+fn preserved_source(
+    expression: &QueryExpression,
+) -> Option<&plenora_database_core::relational::ColumnRef> {
+    use plenora_database_core::spatial_catalog::CrsRule;
+    match expression {
+        QueryExpression::Column { column } => Some(column),
+        QueryExpression::Spatial {
+            function,
+            arguments,
+        } if function.returns_geometry() && function.crs_rule() == Some(CrsRule::Preserves) => {
+            let geometry_arguments = arguments
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| function.takes_geometry_at(*index))
+                .map(|(_, argument)| argument)
+                .collect::<Vec<_>>();
+            match geometry_arguments.as_slice() {
+                [argument] => preserved_source(argument),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Una geometria calcolata dalla query che eredita il CRS di una colonna
+/// sorgente: la regola della funzione e `preserves` e l'unico argomento
+/// geometrico e quella colonna.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InheritedGeometry {
+    /// La posizione nella lista di selezione.
+    pub position: usize,
+    pub schema: Option<String>,
+    pub object: String,
+    pub column: String,
+}
+
+/// Le geometrie calcolate il cui SRID si legge dal catalogo della colonna
+/// d'ingresso (GEO-009, regola del produttore).
+///
+/// Il risultato di una funzione spatial non ha typmod, e senza uno SRID
+/// dichiarato il campo si pubblicherebbe `missing` con valori EWKB che lo
+/// portano. La regola della funzione dice se il risultato sta nel frame
+/// dell'ingresso; il catalogo dice quale e; la lettura confronta poi lo SRID
+/// di ogni valore con quello dichiarato, e un valore senza SRID o con un
+/// altro si rifiuta: una dichiarazione che passa e vera anche se la
+/// risoluzione avesse sbagliato tabella. In un'unione vale il primo ramo, e
+/// gli altri li verifica la stessa lettura. Cio che non si risolve cosi (piu
+/// argomenti geometrici, un'espressione annidata, una relazione ambigua, una
+/// regola diversa) resta `missing`, e un valore con SRID si rifiuta in
+/// lettura.
+#[must_use]
+pub fn inherited_geometries(operation: &QueryOperation) -> Vec<InheritedGeometry> {
+    let sources = operation
+        .source
+        .iter()
+        .chain(
+            operation
+                .joins
+                .iter()
+                .filter_map(|join| join.source.as_ref()),
+        )
+        .collect::<Vec<_>>();
+    let derived = operation.derived_source.is_some()
+        || operation
+            .joins
+            .iter()
+            .any(|join| join.derived_source.is_some())
+        || !operation.common_table_expressions.is_empty();
+    let mut inherited = Vec::new();
+    for (position, projection) in operation.projection.iter().enumerate() {
+        if !matches!(projection.expression, QueryExpression::Spatial { .. }) {
+            continue;
+        }
+        let Some(column) = preserved_source(&projection.expression) else {
+            continue;
+        };
+        // Una sorgente derivata, una CTE o un'altra query in unione possono
+        // ridefinire il nome: non si indovina quale colonna sia.
+        if derived {
+            continue;
+        }
+        let source = match &column.relation {
+            Some(relation) => {
+                let named = sources
+                    .iter()
+                    .filter(|source| {
+                        source.alias.as_deref().map_or_else(
+                            || source.object.object == *relation,
+                            |alias| alias == relation,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                match named.as_slice() {
+                    [source] => **source,
+                    _ => continue,
+                }
+            }
+            None => match sources.as_slice() {
+                [source] => *source,
+                _ => continue,
+            },
+        };
+        inherited.push(InheritedGeometry {
+            position,
+            schema: source.object.schema.clone(),
+            object: source.object.object.clone(),
+            column: column.field.clone(),
+        });
+    }
+    inherited
+}
+
 fn select_columns(available: &[ColumnSpec], projection: &[String]) -> Result<Vec<ColumnSpec>> {
     select_columns_by_name(
         available,

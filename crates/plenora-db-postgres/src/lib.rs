@@ -32,6 +32,22 @@ pub use connection::{PostgresNetworkOptions, PostgresTlsConfig, PostgresTlsMode}
 pub use metrics::PostgresMetricsSnapshot;
 pub use schema_cache::PostgresSchemaToken;
 
+/// La compilazione offline del piano di scrittura: la prima cosa che
+/// `prepare_write` esegue, senza server.
+///
+/// Giudica lo schema (REJ-001), le chiavi del piano e ogni colonna come la
+/// scrittura (SRID di colonna, limiti di supporto decisi dallo schema). Un dry
+/// run che la salta direbbe `dry_run` su ingressi che la scrittura
+/// rifiuterebbe. Non legge il catalogo del bersaglio: i rifiuti decisi da
+/// `spatial_ref_sys` restano della scrittura (fase `prepare`).
+///
+/// # Errors
+///
+/// Gli stessi di `prepare_write` prima del contatto con il server.
+pub fn compile_write_plan(input_schema: &SchemaRef, operation: &WriteOperation) -> Result<()> {
+    write::prepare_state(input_schema, operation).map(|_| ())
+}
+
 use arrow_schema::SchemaRef;
 #[cfg(test)]
 use arrow_schema::{Field, Schema};
@@ -837,6 +853,8 @@ impl Provider for PostgresProvider {
         Box::pin(async move {
             let control = BudgetCancellation::new(cancellation, budget)?;
             check_cancelled(control.token(), ErrorPhase::Prepare)?;
+            // La stessa compilazione di `compile_write_plan`, che il dry run
+            // della CLI esegue senza server.
             let driver_state = write::prepare_state(&input_schema, operation)?;
             let (operation_lease, columns_lease) =
                 ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();

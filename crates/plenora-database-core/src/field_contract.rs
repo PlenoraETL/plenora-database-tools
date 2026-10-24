@@ -331,6 +331,88 @@ impl<'a> FieldContract<'a> {
         }
     }
 
+    /// Come [`Self::target_srid`], e dice se lo SRID e derivato da
+    /// `EPSG:<n>` invece che dichiarato.
+    ///
+    /// Uno SRID derivato e un'inferenza di questo componente, non una
+    /// dichiarazione del produttore: un bersaglio lo usa soltanto dopo averlo
+    /// verificato nel proprio catalogo (autorita `EPSG`, codice `n`), perche
+    /// lo stesso numero in un'altra installazione puo essere un altro CRS
+    /// (`PostGIS` registra `54009` come `ESRI:54009`).
+    ///
+    /// # Errors
+    ///
+    /// Come [`Self::target_srid`].
+    pub fn target_srid_source(self) -> Result<Option<TargetSrid>> {
+        let derived = self.srid.is_none();
+        Ok(self.target_srid()?.map(|srid| TargetSrid { srid, derived }))
+    }
+
+    /// Lo SRID per un bersaglio che non ha un catalogo in cui verificare uno
+    /// SRID derivato: soltanto quello dichiarato.
+    ///
+    /// # Deviazione dichiarata (GEO-008, contracts/adoption-source.json)
+    ///
+    /// Su MariaDB, SQL Server, Oracle e Db2 la derivazione `EPSG:<n>` -> `n`
+    /// non si applica: il catalogo non c'e (MariaDB, `geometry` di SQL
+    /// Server), i codici sono locali all'installazione (Db2), o la sua
+    /// lettura non e qualificata da una prova live (Oracle, `geography` di SQL
+    /// Server). Un CRS dichiarato senza `plenora.geometry.srid` si rifiuta con
+    /// `crs` prima di ogni effetto. Rientra, per bersaglio, con una verifica
+    /// del catalogo provata live come quella di PostgreSQL e MySQL.
+    ///
+    /// # Errors
+    ///
+    /// `Crs` per un CRS dichiarato senza `plenora.geometry.srid`.
+    pub fn declared_target_srid(self, product: &str) -> Result<Option<u32>> {
+        match self.target_srid_source()? {
+            Some(TargetSrid { derived: true, .. }) => Err(contract_error(
+                ErrorCategory::Crs,
+                format!(
+                    "{product} non verifica uno SRID derivato da crs_id: serve \
+                     plenora.geometry.srid dichiarato"
+                ),
+            )),
+            other => Ok(other.map(|target| target.srid)),
+        }
+    }
+
+    /// Rifiuta un ordine degli assi che un bersaglio con l'ordinata est (o la
+    /// longitudine) per prima non rappresenta (GEO-001, GEO-010).
+    ///
+    /// Ogni bersaglio di questo componente memorizza la prima ordinata del WKB
+    /// come `x`, cioe come easting o longitudine: `PostGIS` (`geometry` e
+    /// `geography`), `MySQL` con `axis-order=long-lat`, `MariaDB`, SQL Server
+    /// (`STGeomFromWKB`), Oracle (`SDO_UTIL.FROM_WKBGEOMETRY`) e Db2. Un campo
+    /// `lat_lon` o `northing_easting` vi finirebbe con gli assi scambiati, e
+    /// questo componente non scambia le ordinate in silenzio: si rifiuta con
+    /// `unsupported` prima di ogni effetto.
+    ///
+    /// # Deviazione dichiarata (GEO-001, contracts/adoption-source.json)
+    ///
+    /// `unknown` e `other` si scrivono come arrivano, prima ordinata in `x`:
+    /// il produttore non garantisce l'ordine (GEO-002) e il contratto non
+    /// chiede di rifiutarlo; l'hazard e che il bersaglio legga gli assi
+    /// scambiati se l'ordine memorizzato non era quello est-primo. Rientra
+    /// quando il contratto chiede di rifiutare `unknown`.
+    ///
+    /// # Errors
+    ///
+    /// `Unsupported` per `lat_lon` e `northing_easting`.
+    pub fn ensure_east_first_axis(self, product: &str) -> Result<()> {
+        if self.spatial && matches!(self.axis_order, Some("lat_lon" | "northing_easting")) {
+            return Err(contract_error(
+                ErrorCategory::Unsupported,
+                format!(
+                    "{product} memorizza l'ordinata est o la longitudine per prima: \
+                     un campo lat_lon o northing_easting non e rappresentabile senza \
+                     scambiare gli assi"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn is_geometry(self) -> bool {
         self.spatial
@@ -492,6 +574,16 @@ impl<'a> FieldContract<'a> {
         }
         Ok(())
     }
+}
+
+/// Lo SRID con cui un bersaglio registra il CRS di un campo, e la sua
+/// provenienza ([`FieldContract::target_srid_source`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TargetSrid {
+    pub srid: u32,
+    /// `true` quando deriva da `crs_id` `EPSG:<n>` e il campo non dichiara
+    /// `plenora.geometry.srid`.
+    pub derived: bool,
 }
 
 /// Verifica la versione a livello schema e tutti i campi.

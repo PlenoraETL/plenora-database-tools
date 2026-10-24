@@ -734,7 +734,12 @@ async fn live_registered_projection_schema_matches_rust_and_cli() {
             .await
             .expect("registered projection");
         let schema = stream.schema();
-        assert_eq!(schema.field(0).metadata()[FIELD_ID], registered);
+        // L'id registrato con zeri iniziali (la forma che le versioni
+        // precedenti scrivevano) si pubblica canonico: deviazione GEO-016.
+        assert_eq!(
+            schema.field(0).metadata()[FIELD_ID],
+            name_field_id("b").to_string()
+        );
         assert_eq!(
             schema.field(1).metadata()[FIELD_ID],
             (u64::from(name_field_id("b")) + 1).to_string()

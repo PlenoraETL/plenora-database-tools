@@ -421,6 +421,24 @@ impl Provider for MysqlProvider {
                 )?;
                 let (operation_lease, columns_lease) =
                     ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
+                // GEO-008: uno SRID derivato da `EPSG:<n>` vale solo se il
+                // catalogo del server lo registra come quell'identita, e lo si
+                // verifica prima di ogni effetto, Create compresa.
+                let derived = plan.derived_srids();
+                if !derived.is_empty() {
+                    let pool = self.pool_for(secret)?;
+                    let mut session = pool.checkout(token).await?;
+                    for srid in derived {
+                        crate::catalog::verify_epsg_srid(
+                            &mut session,
+                            srid,
+                            self.profile.product(),
+                            token,
+                        )
+                        .await?;
+                    }
+                    drop(session);
+                }
                 let loss_report = if matches!(
                     operation.mode,
                     plenora_database_core::plan::WriteMode::Create
