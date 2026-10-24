@@ -466,10 +466,19 @@ pub fn validate_schema_contract(schema: &Schema) -> Result<()> {
         .metadata()
         .get(protocol::CONTRACT_VERSION_KEY)
         .map(String::as_str);
+    // Arrow Geometry Semantics 1.0, REJ-001: una versione assente o malformata
+    // e' un difetto dei metadati dello schema (`schema`); solo una versione ben
+    // formata che il componente non supporta e' `unsupported`.
     if carries_canonical && version.is_none() {
         return Err(contract_error(
-            ErrorCategory::DataMapping,
+            ErrorCategory::Schema,
             "schema con metadati canonici privo di plenora.contract.version",
+        ));
+    }
+    if version.is_some_and(|value| !versione_ben_formata(value)) {
+        return Err(contract_error(
+            ErrorCategory::Schema,
+            "plenora.contract.version non e' un intero positivo",
         ));
     }
     if version.is_some_and(|value| value != protocol::CONTRACT_VERSION) {
@@ -485,6 +494,12 @@ pub fn validate_schema_contract(schema: &Schema) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `[1-9][0-9]*`, la grammatica della versione del contratto.
+fn versione_ben_formata(valore: &str) -> bool {
+    let mut cifre = valore.bytes();
+    matches!(cifre.next(), Some(b'1'..=b'9')) && cifre.all(|b| b.is_ascii_digit())
 }
 
 /// Verifica lo schema che un componente pubblica.
