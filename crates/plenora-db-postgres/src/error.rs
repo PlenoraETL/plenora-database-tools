@@ -118,6 +118,13 @@ pub fn proven_commit_rollback(error: &tokio_postgres::Error) -> Option<DatabaseE
 pub fn classify_error(phase: ErrorPhase, error: &tokio_postgres::Error) -> DatabaseError {
     let sqlstate = error.code().map(tokio_postgres::error::SqlState::code);
     let transport_closed = error.is_closed();
+    if sqlstate == Some("XX000")
+        && error
+            .as_db_error()
+            .is_some_and(|db| mixed_srid_message(db.message()))
+    {
+        return mixed_srid_error(phase);
+    }
     let mapping = resolve_mapping(sqlstate, transport_closed, phase);
     public_error_envelope(
         mapping.category,
@@ -125,6 +132,34 @@ pub fn classify_error(phase: ErrorPhase, error: &tokio_postgres::Error) -> Datab
         mapping.remote_effect,
         mapping.retry,
         mapping.message,
+    )
+}
+
+/// Il rifiuto `PostGIS` di due geometrie in sistemi diversi.
+///
+/// `PostGIS` lo emette con SQLSTATE `XX000` (`internal_error`), lo stesso di
+/// un difetto del server, e la CLI lo pubblicava `internal`, exit 70. Non e un
+/// difetto: e un confronto fra due CRS, e la guardia delle sonde portable e
+/// di `build_spatial_select` lo provoca di proposito quando lo SRID dichiarato
+/// non e quello della colonna. Il testo e quello di `liblwgeom`
+/// (`gserialized_error_if_srid_mismatch`), che `PostGIS` non traduce: il
+/// confronto si fa sulla frase, non sul payload, che non entra nel messaggio
+/// pubblico.
+fn mixed_srid_message(message: &str) -> bool {
+    message.contains("Operation on mixed SRID geometries")
+}
+
+fn mixed_srid_error(phase: ErrorPhase) -> DatabaseError {
+    public_error_envelope(
+        ErrorCategory::Crs,
+        phase,
+        if phase_is_state_mutating(phase) {
+            RemoteEffect::RolledBack
+        } else {
+            RemoteEffect::None
+        },
+        RetryDisposition::Never,
+        "geometrie PostGIS in sistemi di riferimento diversi",
     )
 }
 

@@ -110,7 +110,7 @@ fn qualified_spatial_values_keep_payloads_in_named_binds() {
     assert!(
         postgres
             .sql
-            .contains("ST_SetSRID(ST_GeomFromEWKB($1), 4326)"),
+            .contains(&crate::spatial_probe::postgres_spatial_value("$1", 4_326)),
         "{}",
         postgres.sql
     );

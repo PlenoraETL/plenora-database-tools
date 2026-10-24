@@ -41,6 +41,7 @@ pub mod session_context;
 pub mod spatial_catalog;
 pub mod spatial_policy;
 pub mod spatial_predicate;
+pub mod spatial_probe;
 pub mod strict_json;
 pub mod transaction;
 

@@ -21,6 +21,7 @@ mod query_plan;
 mod read_stream;
 mod schema_cache;
 mod spatial;
+mod spatial_probe;
 mod transaction;
 mod types;
 mod write;

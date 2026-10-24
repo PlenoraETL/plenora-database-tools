@@ -141,6 +141,14 @@ pub async fn read_stream(
     }
     let (available, _schema_token) = provider.cached_columns(&client, &operation.source).await?;
     let plan = plan_read(operation, &available)?;
+    // Ogni sonda spatial porta uno SRID esplicito, quello della colonna
+    // (typmod), e si lega come EWKB con quello SRID.
+    let parameters = &crate::spatial_probe::verify_read_filter(
+        operation.filter.as_ref(),
+        &available,
+        parameters,
+        budget.limits().nesting_depth,
+    )?;
     let columns = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, columns)?;
@@ -201,7 +209,16 @@ pub async fn query_stream(
     validate_stream_configuration(provider)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let rendered = render_query(operation)?;
+    // Le sonde spatial si giudicano prima della connessione; le colonne con
+    // cui si confrontano, sul catalogo prima della query.
+    let probes = crate::spatial_probe::plan_query_probes(
+        operation,
+        parameters,
+        budget.limits().nesting_depth,
+    )?;
+    let parameters = &probes.parameters;
     let mut client = connect_cancel_safe(provider, secret, cancellation).await?;
+    crate::spatial_probe::verify_query_columns(client.client()?, &probes.columns).await?;
     let bind_names = rendered
         .binds
         .iter()

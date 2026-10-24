@@ -121,6 +121,9 @@ impl ReturningForm {
 struct CompileContext {
     params: Vec<ParameterValue>,
     dialect: DialectKind,
+    /// La tabella dello statement, gia quotata: il predicato spatial
+    /// `PostgreSQL` vi legge lo SRID della colonna (`postgres_guarded_probe`).
+    relation: Option<String>,
 }
 
 impl CompileContext {
@@ -128,6 +131,7 @@ impl CompileContext {
         Self {
             params: Vec::new(),
             dialect,
+            relation: None,
         }
     }
 
@@ -247,10 +251,23 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     "valore spatial richiede SRID positivo",
                 ));
             }
+            // Un valore che porta uno SRID proprio deve avere quello
+            // dichiarato: `PostGIS` lo sovrascriverebbe con `ST_SetSRID`, e
+            // gli altri dialetti ignorano il `srid` di `ParameterValue::Wkb`.
+            // Il valore e noto qui; per i bind del path relazionale lo
+            // ripete il server (`postgres_spatial_value`).
+            if let Expression::Literal(literal) = expression.as_ref() {
+                crate::spatial_probe::check_spatial_value(
+                    dialect_provider(ctx.dialect),
+                    literal,
+                    *srid,
+                    u64::MAX,
+                )?;
+            }
             let value = compile_expression(expression, ctx)?;
             match ctx.dialect {
                 DialectKind::Postgres => {
-                    let geometry = format!("ST_SetSRID(ST_GeomFromEWKB({value}), {srid})");
+                    let geometry = crate::spatial_probe::postgres_spatial_value(&value, *srid);
                     Ok(match semantics {
                         SpatialSemantics::Geometry => geometry,
                         SpatialSemantics::Geography => format!("({geometry})::geography"),
@@ -402,7 +419,7 @@ fn compile_spatial(
 ) -> Result<String> {
     let col = quote_identifier(column, ctx.dialect)?;
     match ctx.dialect {
-        DialectKind::Postgres => compile_spatial_postgres(&col, predicate, reference, ctx),
+        DialectKind::Postgres => compile_spatial_postgres(column, &col, predicate, reference, ctx),
         // `ST_GeomFromWKB` e i predicati spatial: nessuna divergenza misurata
         // fra i due prodotti — `raw.spatial_functions` ha registrato lo stesso
         // esito sui tre riferimenti.
@@ -497,6 +514,20 @@ fn compile_spatial_db2(
 /// `geometry` e `geography` sono due tipi, e chiamare il metodo dell'uno su un
 /// valore dell'altro non compila. E' l'unica cosa che il piano deve dire e che
 /// negli altri dialetti non serviva.
+///
+/// # Limite dichiarato
+///
+/// - **Regola.** Lo SRID dichiarato nel riferimento non si confronta con
+///   quello dei valori della colonna prima dell'esecuzione: in SQL Server lo
+///   SRID e del valore, non della colonna, e non c'e un catalogo da leggere.
+/// - **Ambito.** Predicati spatial del compilatore portable verso SQL Server
+///   (`STIntersects`, `STContains`, `STWithin`, bounding box).
+/// - **Hazard.** Con SRID diversi i metodi rendono `NULL` invece di un
+///   errore, e `= 1` esclude la riga: un riferimento in un altro sistema, o
+///   una colonna con valori in piu sistemi, danno meno righe senza errore.
+/// - **Rientro.** Un confronto per valore (`STSrid`) che fallisca invece di
+///   escludere, qualificato sul fixture SQL Server; il path `query` di SQL
+///   Server rifiuta gia un parametro geometry senza tipo e SRID risolti.
 fn compile_spatial_sqlserver(
     col: &str,
     predicate: &SpatialPredicate,
@@ -543,6 +574,7 @@ fn compile_spatial_sqlserver(
 }
 
 fn compile_spatial_postgres(
+    column: &str,
     col: &str,
     predicate: &SpatialPredicate,
     reference: &SpatialReference,
@@ -584,8 +616,29 @@ fn compile_spatial_postgres(
         ))
     })?;
     let srid_placeholder = ctx.bind(ParameterValue::I32(srid_i32));
-    let geom_expr =
-        format!("ST_SetSRID(ST_GeomFromEWKB({geom_placeholder}), {srid_placeholder}){cast}");
+    // Lo SRID dichiarato contro quello della colonna, dal server prima di
+    // ogni riga: senza, `&&` confrontava una sonda 3857 con una colonna 4326
+    // senza errore, e un `ST_*` indicizzato rendeva zero righe quando la
+    // sonda non toccava i candidati dell'indice.
+    let relation = ctx.relation.clone().ok_or_else(|| {
+        DatabaseError::new(
+            crate::ErrorCategory::Internal,
+            crate::ErrorPhase::Prepare,
+            Some(ProviderKind::Postgres),
+            "predicato spatial PostgreSQL senza la tabella dello statement",
+        )
+    })?;
+    let relation = ctx.bind(ParameterValue::String(relation));
+    let column = ctx.bind(ParameterValue::String(column.to_owned()));
+    let geom_expr = format!(
+        "{}{cast}",
+        crate::spatial_probe::postgres_guarded_probe(
+            &geom_placeholder,
+            &format!("{srid_placeholder}::int4"),
+            &format!("{relation}::text"),
+            &format!("{column}::text"),
+        )
+    );
     match predicate {
         SpatialPredicate::Intersects => Ok(format!("ST_Intersects({col_cast}, {geom_expr})")),
         SpatialPredicate::Contains => Ok(format!("ST_Contains({col_cast}, {geom_expr})")),
@@ -854,6 +907,7 @@ fn compile_select(s: &SelectStatement, ctx: &mut CompileContext) -> Result<Strin
         _ => String::new(),
     };
     let mut sql = format!("SELECT {top}{projection} FROM {table}");
+    ctx.relation = Some(table);
     if let Some(filter) = &s.filter {
         let where_sql = compile_predicate(filter, ctx)?;
         push_sql(&mut sql, format_args!(" WHERE {where_sql}"))?;
@@ -943,6 +997,7 @@ fn compile_update(s: &UpdateStatement, ctx: &mut CompileContext) -> Result<Strin
         sets?.join(", "),
         returning.inline()
     );
+    ctx.relation = Some(table);
     if let Some(filter) = &s.filter {
         let where_sql = compile_predicate(filter, ctx)?;
         push_sql(&mut sql, format_args!(" WHERE {where_sql}"))?;
@@ -955,6 +1010,7 @@ fn compile_delete(s: &DeleteStatement, ctx: &mut CompileContext) -> Result<Strin
     let table = qualify_table(&s.table, ctx.dialect)?;
     let returning = compile_returning(&s.returning, ctx.dialect, ReturningForm::Delete)?;
     let mut sql = format!("DELETE FROM {table}{}", returning.inline());
+    ctx.relation = Some(table);
     if let Some(filter) = &s.filter {
         let where_sql = compile_predicate(filter, ctx)?;
         push_sql(&mut sql, format_args!(" WHERE {where_sql}"))?;

@@ -267,8 +267,12 @@ fn spatial_value(
         ));
     };
     bind_names.push(name.clone());
+    // Sentinella non geometrica: il compilatore portable giudica lo SRID di
+    // un letterale geometrico, e questo non e un valore del chiamante.
     Ok(Expression::SpatialValue {
-        expression: Box::new(Expression::Literal(ParameterValue::Bytes(Vec::new()))),
+        expression: Box::new(Expression::Literal(ParameterValue::Null {
+            type_name: "bytea".to_owned(),
+        })),
         srid,
         semantics,
     })

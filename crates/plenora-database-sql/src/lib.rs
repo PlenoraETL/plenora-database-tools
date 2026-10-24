@@ -1328,11 +1328,14 @@ impl Renderer {
     ) -> Result<String> {
         let value = self.render_query_expression(expression, binds)?;
         match (self.dialect, semantics) {
+            // Uno SRID incorporato diverso da quello dichiarato si rifiuta
+            // dal server; `ST_SetSRID` da solo lo sovrascriveva in silenzio.
             (Dialect::Postgres, SpatialSemantics::Geometry) => {
-                Ok(format!("ST_SetSRID(ST_GeomFromEWKB({value}), {srid})"))
+                Ok(plenora_database_core::spatial_probe::postgres_spatial_value(&value, srid))
             }
             (Dialect::Postgres, SpatialSemantics::Geography) => Ok(format!(
-                "(ST_SetSRID(ST_GeomFromEWKB({value}), {srid}))::geography"
+                "({})::geography",
+                plenora_database_core::spatial_probe::postgres_spatial_value(&value, srid)
             )),
             (Dialect::Mysql, SpatialSemantics::Geometry) => Ok(format!(
                 "ST_GeomFromWKB(CAST({value} AS BINARY), {srid}{})",
@@ -1544,6 +1547,9 @@ impl Renderer {
                 expression,
                 QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. }
             ) {
+                // Lo SRID della sonda contro quello dell'altro operando non
+                // si confronta qui: vedi il limite dichiarato sul parametro
+                // geometry `PostgreSQL` in `render_spatial_function`.
                 Ok(format!("ST_GeomFromEWKB({value})"))
             } else {
                 Ok(value)
@@ -1683,6 +1689,19 @@ impl Renderer {
                     )
                 {
                     Ok(match self.dialect {
+                        // Limite dichiarato. Regola: il renderer non vede i
+                        // valori, e lo SRID della sonda contro quello del
+                        // termine con cui si confronta lo decide chi esegue.
+                        // Il provider `PostgreSQL` lo fa prima della query
+                        // (`spatial_probe::plan_query_probes`, catalogo della
+                        // colonna). Ambito: chi esegue questo SQL con valori
+                        // propri senza passare dal provider, cioe il path
+                        // relazionale dello SDK con un `bind()` nudo in
+                        // posizione geometrica (l'ORM usa `SpatialValue`).
+                        // Hazard: una sonda senza SRID o in un altro sistema
+                        // da righe sbagliate senza errore con `&&` e verso
+                        // `geography`. Rientro: lo SDK giudica le sonde con
+                        // la stessa funzione del provider prima di legare.
                         Dialect::Postgres => format!("ST_GeomFromEWKB({value})"),
                         // Un parametro nudo e un WKB senza CRS. `MySQL` lo
                         // leggerebbe con SRID 0 e il predicato contro una

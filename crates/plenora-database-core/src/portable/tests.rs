@@ -576,6 +576,13 @@ fn empty_in_predicate_is_rejected() {
     assert!(compile_portable(ProviderKind::Postgres, &stmt).is_err());
 }
 
+/// La sonda `PostGIS` del predicato portable: lo SRID dichiarato (`$2`)
+/// confrontato dal server con quello della colonna (`$3` relazione, `$4`
+/// colonna) prima di ogni riga.
+fn guarded_probe() -> String {
+    crate::spatial_probe::postgres_guarded_probe("$1", "$2::int4", "$3::text", "$4::text")
+}
+
 #[test]
 fn spatial_predicate_intersects_binds_ewkb() {
     use crate::geometry::{Dimensions, SpatialSemantics};
@@ -593,16 +600,26 @@ fn spatial_predicate_intersects_binds_ewkb() {
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     assert!(
-        compiled
-            .sql
-            .contains(r#"ST_Intersects("geom", ST_SetSRID(ST_GeomFromEWKB($1), $2)::geometry)"#),
+        compiled.sql.contains(&format!(
+            r#"ST_Intersects("geom", {}::geometry)"#,
+            guarded_probe()
+        )),
         "sql inatteso: {}",
         compiled.sql
     );
-    // Il costruttore spaziale occupa due bind: EWKB e SRID.
-    assert_eq!(compiled.params.len(), 2);
+    // Il costruttore spaziale occupa quattro bind: EWKB, SRID, e la tabella
+    // e la colonna di cui il server legge lo SRID.
+    assert_eq!(compiled.params.len(), 4);
     assert!(matches!(&compiled.params[0], ParameterValue::Bytes(b) if b == &ewkb_point_2d(4326)));
     assert!(matches!(&compiled.params[1], ParameterValue::I32(v) if *v == 4326));
+    assert_eq!(
+        compiled.params[2],
+        ParameterValue::String(r#""buildings""#.to_owned())
+    );
+    assert_eq!(
+        compiled.params[3],
+        ParameterValue::String("geom".to_owned())
+    );
 }
 
 #[test]
@@ -624,12 +641,13 @@ fn spatial_predicate_dwithin_binds_distance() {
         ))
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
-    assert!(compiled
-        .sql
-        .contains(r#"ST_DWithin("geom", ST_SetSRID(ST_GeomFromEWKB($1), $2)::geometry, $3)"#));
-    // Il terzo bind è la distanza, dopo EWKB e SRID.
-    assert_eq!(compiled.params.len(), 3);
-    assert!(matches!(&compiled.params[2], ParameterValue::F64(v) if *v == 250.0));
+    assert!(compiled.sql.contains(&format!(
+        r#"ST_DWithin("geom", {}::geometry, $5)"#,
+        guarded_probe()
+    )));
+    // Il quinto bind è la distanza, dopo i quattro della sonda.
+    assert_eq!(compiled.params.len(), 5);
+    assert!(matches!(&compiled.params[4], ParameterValue::F64(v) if *v == 250.0));
 }
 
 #[test]
@@ -673,7 +691,7 @@ fn spatial_bounding_box_uses_index_operator() {
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     assert!(compiled
         .sql
-        .contains(r#""geom" && ST_SetSRID(ST_GeomFromEWKB"#));
+        .contains(&format!(r#""geom" && {}::geometry"#, guarded_probe())));
 }
 
 #[test]
@@ -697,9 +715,9 @@ fn spatial_composes_with_scalar_predicates() {
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     assert!(compiled.sql.contains("ST_Intersects"));
-    // Il predicato scalare segue i due bind del riferimento spaziale.
-    assert!(compiled.sql.contains(r#""status" = $3"#));
-    assert_eq!(compiled.params.len(), 3);
+    // Il predicato scalare segue i quattro bind del riferimento spaziale.
+    assert!(compiled.sql.contains(r#""status" = $5"#));
+    assert_eq!(compiled.params.len(), 5);
 }
 
 // Semantica spaziale e unità di misura di DWithin.
@@ -722,9 +740,10 @@ fn spatial_geography_uses_geography_cast_postgres() {
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     // Fix #4: cast della colonna + del riferimento a geography.
     assert!(
-        compiled.sql.contains(
-            r#"ST_Intersects("geom"::geography, ST_SetSRID(ST_GeomFromEWKB($1), $2)::geography)"#
-        ),
+        compiled.sql.contains(&format!(
+            r#"ST_Intersects("geom"::geography, {}::geography)"#,
+            guarded_probe()
+        )),
         "sql inatteso: {}",
         compiled.sql
     );
@@ -749,11 +768,12 @@ fn spatial_dwithin_geography_wgs84_is_accepted_and_uses_meters() {
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     // Geography su 4326 → cast a geography, DWithin usa metri veri.
-    assert!(compiled.sql.contains(
-        r#"ST_DWithin("geom"::geography, ST_SetSRID(ST_GeomFromEWKB($1), $2)::geography, $3)"#
-    ));
-    // params: [0]=ewkb, [1]=srid, [2]=distance.
-    assert!(matches!(&compiled.params[2], ParameterValue::F64(v) if *v == 500.0));
+    assert!(compiled.sql.contains(&format!(
+        r#"ST_DWithin("geom"::geography, {}::geography, $5)"#,
+        guarded_probe()
+    )));
+    // params: [0]=ewkb, [1]=srid, [2]=tabella, [3]=colonna, [4]=distanza.
+    assert!(matches!(&compiled.params[4], ParameterValue::F64(v) if *v == 500.0));
 }
 
 #[test]
@@ -950,6 +970,55 @@ fn spatial_oracle_geography_value_uses_the_same_sdo_constructor() {
         "INSERT INTO \"features\" (\"shape\") VALUES (MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(TO_BLOB(:1), 4326))"
     );
     assert_eq!(compiled.params, vec![ParameterValue::Bytes(bytes)]);
+}
+
+/// Un letterale con uno SRID proprio diverso da quello del `SpatialValue` si
+/// rifiuta compilando, su ogni dialetto: `PostGIS` lo sovrascriveva con
+/// `ST_SetSRID`, gli altri ignorano il `srid` di `ParameterValue::Wkb`.
+#[test]
+fn spatial_value_with_another_srid_is_refused_on_every_dialect() {
+    use crate::geometry::{Dimensions, SpatialSemantics};
+    let insert = |value: ParameterValue| {
+        PortableStatement::Insert(InsertStatement {
+            table: TableRef::new("features"),
+            columns: vec!["shape".to_owned()],
+            values: vec![vec![Expression::SpatialValue {
+                expression: Box::new(Expression::literal(value)),
+                srid: 4326,
+                semantics: SpatialSemantics::Geometry,
+            }]],
+            returning: Vec::new(),
+        })
+    };
+    let plain = ewkb_point_2d(4326)
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| !(5..9).contains(index))
+        .map(|(index, byte)| if index == 4 { 0 } else { byte })
+        .collect::<Vec<_>>();
+    for kind in [
+        ProviderKind::Postgres,
+        ProviderKind::Mysql,
+        ProviderKind::Mariadb,
+        ProviderKind::Sqlserver,
+        ProviderKind::Oracle,
+        ProviderKind::Db2,
+    ] {
+        for value in [
+            ParameterValue::Bytes(ewkb_point_2d(3857)),
+            ParameterValue::Wkb {
+                bytes: plain.clone(),
+                srid: Some(3857),
+                dimensions: Dimensions::Xy,
+                semantics: SpatialSemantics::Geometry,
+            },
+        ] {
+            let error = compile_portable(kind, &insert(value)).expect_err("SRID divergente");
+            assert_eq!(error.category, crate::ErrorCategory::Crs, "{kind:?}");
+        }
+        compile_portable(kind, &insert(ParameterValue::Bytes(plain.clone())))
+            .expect("WKB senza SRID prende quello dichiarato");
+    }
 }
 
 #[test]
