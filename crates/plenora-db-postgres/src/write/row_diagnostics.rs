@@ -482,12 +482,7 @@ impl RowScopedWriter for PostgresRowWriter<'_, '_> {
             loop {
                 match self.input.next_batch(self.cancellation).await {
                     Ok(Some(batch)) if batch.num_rows() == 0 => {}
-                    Ok(Some(_)) => {
-                        return Err(diagnostic_error(
-                            ErrorCategory::InvalidPlan,
-                            "input PostgreSQL oltre il totale dichiarato",
-                        ));
-                    }
+                    Ok(Some(_)) => return Err(input_beyond_declared_error()),
                     Ok(None) => return Ok(()),
                     Err(error) => return Err(provider_write_error(error)),
                 }
@@ -531,7 +526,7 @@ fn invalid_affected_rows(_affected: u64) -> DatabaseError {
     )
 }
 
-fn short_input_error() -> DatabaseError {
+pub(super) fn short_input_error() -> DatabaseError {
     diagnostic_error(
         ErrorCategory::InvalidPlan,
         "input PostgreSQL esaurito prima delle righe dichiarate",
@@ -542,11 +537,15 @@ fn validate_consumed_batch_end(end: u64, applied: u64) -> Result<()> {
     if end == applied {
         Ok(())
     } else {
-        Err(diagnostic_error(
-            ErrorCategory::InvalidPlan,
-            "input PostgreSQL oltre il totale dichiarato",
-        ))
+        Err(input_beyond_declared_error())
     }
+}
+
+pub(super) fn input_beyond_declared_error() -> DatabaseError {
+    diagnostic_error(
+        ErrorCategory::InvalidPlan,
+        "input PostgreSQL oltre il totale dichiarato",
+    )
 }
 
 fn batch_rows(batch: &RecordBatch) -> Result<u64> {
@@ -567,7 +566,7 @@ fn checked_batch_end(batch_start: u64, rows: u64) -> Result<u64> {
     })
 }
 
-const fn provider_write_error(mut error: DatabaseError) -> DatabaseError {
+pub(super) const fn provider_write_error(mut error: DatabaseError) -> DatabaseError {
     error.phase = ErrorPhase::Write;
     error.provider = Some(ProviderKind::Postgres);
     error

@@ -160,22 +160,35 @@ class Coordinate(unittest.TestCase):
 
 
 class AccordoDryRun(unittest.TestCase):
-    def test_rifiuta_cio_che_la_scrittura_rifiuta_senza_server(self) -> None:
-        scrittura = rifiuto("crs", "validate")
-        self.assertEqual(runner.accordo_dry_run(rifiuto("crs", "validate"), scrittura),
-                         "conforme")
-        self.assertEqual(runner.accordo_dry_run({"exit": 0, "category": None}, scrittura),
-                         "dry-run-accetta")
-        self.assertEqual(runner.accordo_dry_run(rifiuto("schema", "validate"), scrittura),
-                         "dry-run-categoria")
+    ACCETTATO = {"exit": 0, "category": None, "catalog": "performed"}
 
-    def test_accetta_cio_che_decidono_catalogo_e_valori(self) -> None:
-        for scrittura in ({"exit": 0, "category": None}, rifiuto("crs", "prepare"),
+    def test_rifiuta_cio_che_la_scrittura_rifiuta_in_ogni_fase(self) -> None:
+        for scrittura in (rifiuto("crs", "validate"), rifiuto("crs", "prepare"),
                           rifiuto("data_mapping", "write", "rolled_back")):
-            self.assertEqual(runner.accordo_dry_run({"exit": 0, "category": None}, scrittura),
-                             "conforme")
-            self.assertEqual(runner.accordo_dry_run(rifiuto("crs", "validate"), scrittura),
-                             "dry-run-rifiuta")
+            stesso = dict(scrittura, remote_effect="none")
+            self.assertEqual(runner.accordo_dry_run(stesso, scrittura), "conforme")
+            self.assertEqual(runner.accordo_dry_run(self.ACCETTATO, scrittura),
+                             "dry-run-accetta")
+            self.assertEqual(runner.accordo_dry_run(dict(stesso, category="schema"), scrittura),
+                             "dry-run-categoria")
+
+    def test_la_fase_e_gli_assi_devono_coincidere(self) -> None:
+        scrittura = rifiuto("data_mapping", "write", "rolled_back")
+        self.assertEqual(runner.accordo_dry_run(rifiuto("data_mapping", "read"), scrittura),
+                         "dry-run-fase")
+        # Un dry run non ha effetti: `rolled_back` direbbe che ha scritto.
+        self.assertEqual(runner.accordo_dry_run(scrittura, scrittura), "dry-run-assi")
+        self.assertEqual(runner.accordo_dry_run(dict(rifiuto("data_mapping", "write"), exit=1),
+                                                scrittura), "dry-run-exit")
+
+    def test_accetta_solo_cio_che_la_scrittura_accetta_con_il_catalogo(self) -> None:
+        scrittura = {"exit": 0, "category": None}
+        self.assertEqual(runner.accordo_dry_run(self.ACCETTATO, scrittura), "conforme")
+        self.assertEqual(runner.accordo_dry_run(rifiuto("crs", "validate"), scrittura),
+                         "dry-run-rifiuta")
+        for catalogo in ("not_performed", None):
+            self.assertEqual(runner.accordo_dry_run(dict(self.ACCETTATO, catalog=catalogo),
+                                                    scrittura), "dry-run-senza-catalogo")
 
 
 if __name__ == "__main__":

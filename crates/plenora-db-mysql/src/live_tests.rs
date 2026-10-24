@@ -6153,9 +6153,21 @@ async fn live_v12_query_spatial_functions_render_and_execute() {
         .ok();
 }
 
+/// Il predicato spatial in WHERE, letto fino in fondo.
+///
+/// Fino al 24/10 il test chiedeva `ST_Intersects(shape, ST_GeomFromWKB(?))`
+/// e controllava soltanto che `query` restituisse uno stream: il parametro
+/// nudo ha SRID 0, e `MySQL` rifiuta il confronto con la colonna SRID 4326
+/// (3033) solo leggendo, quindi il test passava su una query che non
+/// funziona. Ora: il parametro nudo si rifiuta compilando (`unsupported`,
+/// prima di ogni effetto, vedi `MYSQL_SPATIAL_PARAMETER_REFUSAL`); il
+/// predicato fra due colonne si legge per intero, con un punto asimmetrico
+/// (1 2) e il suo scambio (2 1), cosi che una riga con le coordinate invertite
+/// non possa passare per buona.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_v12_query_spatial_predicate_intersects_in_filter() {
+    use plenora_database_core::arrow::array::Int64Array;
     use plenora_database_core::plan::{ObjectRef, SortDirection};
     use plenora_database_core::provider::{ParameterBag, ParameterValue};
     use plenora_database_core::query::{
@@ -6163,6 +6175,7 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
         SpatialFunction,
     };
     use plenora_database_core::resource::ResourceBudget;
+    use plenora_database_core::{ErrorPhase, RemoteEffect};
     use std::collections::BTreeMap;
 
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");
@@ -6184,35 +6197,36 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
             .unwrap()
             .query_drop(
                 "CREATE TABLE _v12_spatial_pred (id BIGINT PRIMARY KEY, \
-                 shape GEOMETRY NOT NULL SRID 4326) ENGINE=InnoDB",
+                 shape GEOMETRY NOT NULL SRID 4326, \
+                 probe GEOMETRY NOT NULL SRID 4326) ENGINE=InnoDB",
             )
             .await
             .expect("create");
+        // Le coordinate in ordine longitudine-latitudine, come il prodotto le
+        // scambia (GEO-001): senza l'opzione `MySQL` leggerebbe 4326 in
+        // ordine latitudine-longitudine. La riga 2 ha la forma con gli assi
+        // scambiati rispetto alla sonda e non deve intersecarla.
         setup
             .connection_mut()
             .unwrap()
             .query_drop(
                 "INSERT INTO _v12_spatial_pred VALUES \
-                 (1, ST_GeomFromText('POINT(1 1)', 4326)), \
-                 (2, ST_GeomFromText('POINT(10 10)', 4326))",
+                 (1, ST_GeomFromText('POINT(1 2)', 4326, 'axis-order=long-lat'), \
+                     ST_GeomFromText('POINT(1 2)', 4326, 'axis-order=long-lat')), \
+                 (2, ST_GeomFromText('POINT(2 1)', 4326, 'axis-order=long-lat'), \
+                     ST_GeomFromText('POINT(1 2)', 4326, 'axis-order=long-lat'))",
             )
             .await
             .expect("seed");
     }
 
-    // WKB per POINT(1 1) SRID 4326: 25 bytes standard WKB (little-endian).
-    // Header: 01 (LE) + 01000000 (type=Point) + coordinates.
-    // NOTA: MySQL ST_GeomFromWKB nel path portable si aspetta un blob WKB;
-    // il test qui usa una geometry SRID-agnostic (SRID 0 verrebbe fissato
-    // dal SRID column constraint). Se lo storage richiede SRID matching,
-    // usiamo ST_SRID nella query.
-    // WKB POINT(1 1) little-endian: 01 01000000 000000000000F03F 000000000000F03F
-    let wkb_point_1_1: Vec<u8> = vec![
-        0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F,
-    ];
-
-    let operation = QueryOperation {
+    let column = |field: &str| QueryExpression::Column {
+        column: ColumnRef {
+            relation: None,
+            field: field.to_owned(),
+        },
+    };
+    let query = |second: QueryExpression| QueryOperation {
         declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(QuerySource {
@@ -6225,39 +6239,18 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
         }),
         derived_source: None,
         projection: vec![QueryProjection {
-            expression: QueryExpression::Column {
-                column: ColumnRef {
-                    relation: None,
-                    field: "id".to_owned(),
-                },
-            },
+            expression: column("id"),
             alias: None,
         }],
         joins: Vec::new(),
-        // WHERE ST_Intersects(shape, ST_GeomFromWKB(:probe))
         filter: Some(QueryExpression::Spatial {
             function: SpatialFunction::Intersects,
-            arguments: vec![
-                QueryExpression::Column {
-                    column: ColumnRef {
-                        relation: None,
-                        field: "shape".to_owned(),
-                    },
-                },
-                QueryExpression::Parameter {
-                    name: "probe".to_owned(),
-                },
-            ],
+            arguments: vec![column("shape"), second],
         }),
         group_by: Vec::new(),
         having: None,
         order_by: vec![QueryOrdering {
-            expression: QueryExpression::Column {
-                column: ColumnRef {
-                    relation: None,
-                    field: "id".to_owned(),
-                },
-            },
+            expression: column("id"),
             direction: SortDirection::Asc,
         }],
         distinct: false,
@@ -6268,21 +6261,65 @@ async fn live_v12_query_spatial_predicate_intersects_in_filter() {
         locking: None,
     };
 
-    let mut bag_map = BTreeMap::new();
-    bag_map.insert("probe".to_owned(), ParameterValue::Bytes(wkb_point_1_1));
-    let bag = ParameterBag::new(bag_map);
-
-    let result = provider
-        .query(&live_secret(), &operation, &bag, &budget, &cancellation)
+    // Il parametro nudo: WKB POINT(1 2) senza CRS. Rifiutato prima di ogni
+    // effetto, non al primo batch.
+    let wkb_point_1_2: Vec<u8> = vec![
+        0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x40,
+    ];
+    let bag = ParameterBag::new(BTreeMap::from([(
+        "probe".to_owned(),
+        ParameterValue::Bytes(wkb_point_1_2),
+    )]));
+    let refused = provider
+        .query(
+            &live_secret(),
+            &query(QueryExpression::Parameter {
+                name: "probe".to_owned(),
+            }),
+            &bag,
+            &budget,
+            &cancellation,
+        )
         .await;
-    // Se il render + execute passano è sufficient — non asseriamo l'esatto
-    // count (Intersects su POINT(1,1) vs POINT(1,1) del target: match
-    // atteso ma SRID può causare no-match; il test valida solo che il path
-    // spatial in WHERE non fallisce).
-    if let Err(e) = &result {
-        panic!("spatial predicate WHERE fallisce: {e:?}");
+    let Err(error) = refused else {
+        panic!("parametro geometry senza SRID accettato");
+    };
+    assert_eq!(error.category, ErrorCategory::Unsupported, "{error:?}");
+    assert_eq!(error.phase, ErrorPhase::Prepare, "{error:?}");
+    assert_eq!(error.remote_effect, RemoteEffect::None, "{error:?}");
+    assert!(
+        error
+            .message
+            .contains(plenora_database_sql::MYSQL_SPATIAL_PARAMETER_REFUSAL),
+        "{error:?}"
+    );
+
+    // Colonna contro colonna: lo stream si legge fino alla fine e porta la
+    // sola riga 1.
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            &query(column("probe")),
+            &ParameterBag::new(BTreeMap::new()),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("predicato spatial fra colonne");
+    let mut ids = Vec::new();
+    while let Some(batch) = stream
+        .next_batch(&cancellation)
+        .await
+        .expect("batch del predicato spatial")
+    {
+        let column = batch
+            .column_by_name("id")
+            .and_then(|array| array.as_any().downcast_ref::<Int64Array>())
+            .expect("id Int64");
+        ids.extend(column.iter().map(|id| id.expect("id non nullo")));
     }
-    drop(result.unwrap());
+    assert_eq!(ids, vec![1]);
 
     let mut check = MysqlSession::open(&live_config(), &cancellation)
         .await

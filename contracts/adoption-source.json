@@ -484,7 +484,7 @@
       "rule": "REJ-004",
       "status": "implemented",
       "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
-      "evidence": "scripts/vettori_arrow_data.py (arrow-data-v1, inspect-dataset, PostgreSQL write with the written coordinates, and the bulk-write dry run, which must agree with the write); CI job public-contract and the release manifest run it."
+      "evidence": "scripts/vettori_arrow_data.py (arrow-data-v1, inspect-dataset, PostgreSQL write with the written coordinates, and the bulk-write dry run with the DSN, which must agree with the write on every vector: exit, category, phase and retry, remote_effect none, and the target catalog read on acceptance); CI job public-contract and the release manifest run it."
     }
   ],
   "runtime_limits": {

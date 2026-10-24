@@ -22,6 +22,14 @@ const SQL_SERVER_MAX_IDENTIFIER_CHARS: usize = 128;
 const SQL_SERVER_MAX_BIND_PARAMETERS: usize = 2_100;
 const ORACLE_MAX_IDENTIFIER_BYTES: usize = 128;
 
+/// Il rifiuto di un parametro geometry nudo in una funzione spatial
+/// `MySQL`/`MariaDB`: il WKB non porta il CRS, e il path query non ne
+/// qualifica uno dichiarato.
+pub const MYSQL_SPATIAL_PARAMETER_REFUSAL: &str =
+    "parametro geometry MySQL/MariaDB senza SRID: un WKB non porta il CRS, e \
+     confrontarlo con una colonna richiederebbe di supporlo; il path query non \
+     qualifica ancora un valore spatial con SRID e assi dichiarati";
+
 mod filter;
 pub use filter::{
     lower_filter, select_columns_by_name, FilterLowering, CASE_INSENSITIVE_LIKE_REFUSAL,
@@ -1676,7 +1684,26 @@ impl Renderer {
                 {
                     Ok(match self.dialect {
                         Dialect::Postgres => format!("ST_GeomFromEWKB({value})"),
-                        Dialect::Mysql | Dialect::Sqlite | Dialect::Duckdb => {
+                        // Un parametro nudo e un WKB senza CRS. `MySQL` lo
+                        // leggerebbe con SRID 0 e il predicato contro una
+                        // colonna con SRID fallirebbe con 3033 al primo
+                        // batch, dopo aver detto di si al piano; `MariaDB` lo
+                        // confronterebbe nel sistema della colonna senza che
+                        // nessuno l'abbia dichiarato. Dare al parametro lo
+                        // SRID della colonna (`ST_SRID(colonna)`) sarebbe la
+                        // stessa supposizione: una sonda in un altro CRS
+                        // darebbe righe sbagliate senza errore. Si rifiuta
+                        // compilando, prima di ogni effetto, finche il path
+                        // query non qualifica un valore spatial con SRID e
+                        // assi dichiarati (`SpatialValue`).
+                        Dialect::Mysql => {
+                            return Err(DatabaseError::unsupported(
+                                self.provider_kind(),
+                                ErrorPhase::Prepare,
+                                MYSQL_SPATIAL_PARAMETER_REFUSAL,
+                            ));
+                        }
+                        Dialect::Sqlite | Dialect::Duckdb => {
                             format!("ST_GeomFromWKB({value})")
                         }
                         Dialect::SqlServer => {

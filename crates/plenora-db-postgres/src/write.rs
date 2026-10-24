@@ -44,6 +44,7 @@ use tokio_postgres::types::{IsNull, Type};
 use tokio_postgres::Transaction;
 
 pub mod binary_codec;
+mod dry_run;
 mod plan;
 mod prepared_codec;
 mod recovery;
@@ -58,6 +59,7 @@ use binary_codec::{
     decimal_string, encode_numeric_binary, interval_text, parse_numeric_components,
     PostgresIntervalBinary,
 };
+pub use dry_run::{verify_input, InputLimits};
 use plan::WriteColumnPlan;
 use prepared_codec::arrow_value;
 use recovery::{

@@ -48,6 +48,91 @@ pub fn compile_write_plan(input_schema: &SchemaRef, operation: &WriteOperation) 
     write::prepare_state(input_schema, operation).map(|_| ())
 }
 
+/// Che cosa un dry run ha deciso, e che cosa no.
+#[derive(Debug, Clone)]
+pub struct PostgresWriteDryRun {
+    /// Batch dell'ingresso giudicati, ogni valore compreso.
+    pub batches: u64,
+    /// Righe dell'ingresso giudicate.
+    pub rows: u64,
+    /// `Some` se il catalogo del bersaglio e stato letto (con una DSN): il
+    /// `LossReport` che la scrittura avrebbe. `None` se il dry run e
+    /// offline, e le classi che decide il catalogo non sono state decise.
+    pub loss_report: Option<plenora_database_core::loss::LossReport>,
+}
+
+impl PostgresProvider {
+    /// Il dry run della scrittura: decide cio che `prepare_write` e `write`
+    /// deciderebbero sullo stesso ingresso, senza effetti.
+    ///
+    /// Con `secret` esegue `prepare_write` stesso — compilazione del piano e
+    /// letture del catalogo (`spatial_ref_sys`, esistenza del target, colonne,
+    /// perdite di mapping), tutte in sola lettura — e confronta gli id dei
+    /// campi con quelli registrati nel target. Senza `secret` compila soltanto
+    /// il piano: il risultato lo dichiara (`loss_report: None`) e non vale per
+    /// le classi del catalogo. In entrambi i casi legge ogni batch e ne
+    /// giudica ogni valore con le funzioni della scrittura (`write::dry_run`).
+    ///
+    /// Non decide cio che decide il server scrivendo: vincoli del target e
+    /// conversioni della colonna.
+    ///
+    /// # Errors
+    ///
+    /// Il rifiuto che la scrittura darebbe, con categoria e fase della
+    /// scrittura e `remote_effect: none`.
+    pub async fn dry_run_write(
+        &self,
+        secret: Option<&SecretString>,
+        operation: &WriteOperation,
+        mut input: Box<dyn BatchStream>,
+        budget: &ResourceBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<PostgresWriteDryRun> {
+        let schema = input.schema();
+        let (state, loss_report, prepared) = if let Some(secret) = secret {
+            let mut prepared = self
+                .prepare_write(secret, operation, Arc::clone(&schema), budget, cancellation)
+                .await?;
+            let state = prepared
+                .take_driver_state::<write::PreparedPostgresWrite>()
+                .ok_or_else(|| {
+                    DatabaseError::invalid_plan("stato prepared write PostgreSQL assente")
+                })?;
+            // La lettura che la scrittura fa nella transazione prima dei
+            // valori: l'id di ogni campo contro il commento della colonna.
+            let client = self.connect_session(secret).await?;
+            field_identity::check(client.client()?, operation, &schema).await?;
+            drop(client);
+            let report = prepared.loss_report.clone();
+            (state, Some(report), Some(prepared))
+        } else {
+            (write::prepare_state(&schema, operation)?, None, None)
+        };
+        let control = BudgetCancellation::new(cancellation, budget)?;
+        let verified = write::verify_input(
+            &state,
+            operation,
+            input.as_mut(),
+            budget,
+            control.token(),
+            write::InputLimits {
+                insert_mode: self.insert_mode,
+                max_batch_bytes: self.max_batch_bytes,
+                max_wkb_cell_bytes: self.max_wkb_cell_bytes,
+            },
+        )
+        .await?;
+        // Le prenotazioni del piano restano vive mentre si giudica
+        // l'ingresso, come nella scrittura.
+        drop(prepared);
+        Ok(PostgresWriteDryRun {
+            batches: verified.batches,
+            rows: verified.rows,
+            loss_report,
+        })
+    }
+}
+
 use arrow_schema::SchemaRef;
 #[cfg(test)]
 use arrow_schema::{Field, Schema};

@@ -3280,6 +3280,8 @@ fn postgres_usage() -> String {
         "== PostgreSQL: write (Arrow bulk + DML) ==",
         "  bulk-write <dsn-env> <WRITE_OP.json> <INPUT.arrow> [--dry-run]",
         "    esegue WriteOperation plan-based (create/append/replace/upsert/…) su input Arrow IPC",
+        "    --dry-run: decide piano, ogni valore e, se <dsn-env> e impostata, il catalogo del target",
+        "    in sola lettura; senza la variabile checks.catalog=not_performed. Vincoli del server esclusi",
         "  postgres-write-ipc <dsn-env> <schema> <object> <INPUT.arrow> [--mode X] [--keys K1,K2] \
          [--update-columns C1,C2] [--dry-run]",
         "    wrapper high-level di bulk-write; --mode: create|append|replace|truncate-insert|update|upsert|delete-by-keys (default append)",

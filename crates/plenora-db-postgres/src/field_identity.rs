@@ -5,9 +5,14 @@ use plenora_database_core::plan::{WriteMode, WriteOperation};
 use plenora_database_core::protocol::{canonical_field_id, FIELD_ID};
 use plenora_database_core::{ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
-use tokio_postgres::Transaction;
+use tokio_postgres::{Client, Transaction};
 
 const PREFIX: &str = "plenora.field_id.v1:";
+
+const COLUMN_COMMENT: &str = "SELECT col_description(a.attrelid, a.attnum) \
+     FROM pg_catalog.pg_attribute a \
+     WHERE a.attrelid = $1::text::regclass AND a.attname = $2 \
+     AND a.attnum > 0 AND NOT a.attisdropped";
 
 /// La prima riga e riservata; il resto del commento resta byte per byte.
 /// Un'intestazione riservata corrotta non diventa un nuovo id di provenienza.
@@ -76,19 +81,8 @@ pub async fn register(
     {
         return Ok(());
     }
-    let renderer = Renderer::new(
-        Dialect::Postgres,
-        DialectCapabilities {
-            spatial_intersects: true,
-        },
-    );
-    let target = renderer.quote_object(&ObjectName {
-        catalog: None,
-        schema: Some(Identifier::new(
-            operation.target.schema.as_deref().unwrap_or("public"),
-        )?),
-        object: Identifier::new(operation.target.object.clone())?,
-    })?;
+    let renderer = renderer();
+    let target = quoted_target(&renderer, operation)?;
     // Serializza registrazione e confronto anche fra append concorrenti.
     transaction
         .batch_execute(&format!("LOCK TABLE {target} IN SHARE ROW EXCLUSIVE MODE"))
@@ -99,12 +93,7 @@ pub async fn register(
             continue;
         };
         let row = transaction
-            .query_one(
-                "SELECT col_description(a.attrelid, a.attnum) FROM pg_catalog.pg_attribute a \
-             WHERE a.attrelid = $1::text::regclass AND a.attname = $2 \
-             AND a.attnum > 0 AND NOT a.attisdropped",
-                &[&target, field.name()],
-            )
+            .query_one(COLUMN_COMMENT, &[&target, field.name()])
             .await
             .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
         let comment: Option<String> = row.get(0);
@@ -124,6 +113,60 @@ pub async fn register(
         }
     }
     Ok(())
+}
+
+/// La decisione di [`register`] senza registrare, per il dry run: legge i
+/// commenti delle colonne del target e rifiuta come la scrittura un id
+/// divergente o non registrabile. Senza `LOCK`: un dry run e una previsione,
+/// e un append concorrente puo ancora cambiare il commento prima della
+/// scrittura, che resta l'unica a decidere sotto lock.
+pub async fn check(client: &Client, operation: &WriteOperation, schema: &SchemaRef) -> Result<()> {
+    if operation.mode == WriteMode::DeleteByKeys
+        || !schema
+            .fields()
+            .iter()
+            .any(|field| field.metadata().contains_key(FIELD_ID))
+    {
+        return Ok(());
+    }
+    let target = quoted_target(&renderer(), operation)?;
+    for field in schema.fields() {
+        let Some(incoming) = field.metadata().get(FIELD_ID) else {
+            continue;
+        };
+        // Create fabbrica la tabella: nessuna colonna ha ancora un commento.
+        // Una colonna che l'evoluzione dello schema aggiungerebbe, neppure.
+        let comment: Option<String> = if operation.mode == WriteMode::Create {
+            None
+        } else {
+            client
+                .query_opt(COLUMN_COMMENT, &[&target, field.name()])
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Write, &error))?
+                .and_then(|row| row.get(0))
+        };
+        registration(comment.as_deref(), incoming)?;
+    }
+    Ok(())
+}
+
+const fn renderer() -> Renderer {
+    Renderer::new(
+        Dialect::Postgres,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+}
+
+fn quoted_target(renderer: &Renderer, operation: &WriteOperation) -> Result<String> {
+    renderer.quote_object(&ObjectName {
+        catalog: None,
+        schema: Some(Identifier::new(
+            operation.target.schema.as_deref().unwrap_or("public"),
+        )?),
+        object: Identifier::new(operation.target.object.clone())?,
+    })
 }
 
 #[cfg(test)]

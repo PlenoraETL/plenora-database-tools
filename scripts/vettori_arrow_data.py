@@ -34,10 +34,14 @@ GEO-003). Un valore memorizzato con gli assi scambiati ha lo SRID giusto e
 nessun errore: senza questo confronto passerebbe per conforme.
 
 Con `--postgres-env` gira anche `dry-run-postgres`, il dry run di
-`bulk-write`: deve concordare con la scrittura su ogni vettore. Rifiuta, con
-la stessa categoria, cio' che la scrittura rifiuta senza contattare il server
-(fase `validate`); accetta tutto il resto, perche' cio' che decidono il
-catalogo o i valori non e' suo.
+`bulk-write` con la DSN del fixture: deve concordare con la scrittura su ogni
+vettore, senza eccezioni. Stesso exit; su un rifiuto stessa categoria, stessa
+fase e stesso `retry`, con `remote_effect: none` perche' un dry run non ha
+effetti; su un'accettazione la busta deve dire che il catalogo del bersaglio
+e' stato letto (`checks.catalog: performed`), altrimenti il dry run avrebbe
+taciuto le classi che decide `spatial_ref_sys`. Fino al 24/10 il runner
+accettava ogni `dry_run` su cio' che la scrittura rifiutava dopo `validate`, e
+13 vettori invalidi nei valori o nel catalogo passavano il dry run.
 
     python scripts/vettori_arrow_data.py --contracts .plenora-contracts \\
         --cli target/debug/plenora-database --referto vettori-arrow-data.json \\
@@ -108,7 +112,9 @@ def busta(argv: list[str]) -> dict:
         return {"exit": esito.returncode, "category": None, "busta": "illeggibile"}
     errore = documento.get("error") if isinstance(documento, dict) else None
     if not isinstance(errore, dict):
-        return {"exit": esito.returncode, "category": None, "code": None}
+        controlli = documento.get("checks") if isinstance(documento, dict) else None
+        return {"exit": esito.returncode, "category": None, "code": None,
+                "catalog": controlli.get("catalog") if isinstance(controlli, dict) else None}
     retry = errore.get("retry")
     return {"exit": esito.returncode, "category": errore.get("category"),
             "phase": errore.get("phase"), "remote_effect": errore.get("remote_effect"),
@@ -209,8 +215,9 @@ class Postgres:
         return json.loads(esito.stdout)["value"]["value"]
 
     def dry_run(self, nome: str, ingresso: Path) -> dict:
-        """Il dry run di `bulk-write` sullo stesso ingresso e con la stessa
-        operazione della scrittura: non contatta il server."""
+        """Il dry run di `bulk-write` sullo stesso ingresso, con la stessa
+        operazione e la stessa DSN della scrittura: legge il catalogo, non
+        scrive."""
         operazione = self.lavoro / f"{nome}-write.json"
         return busta([str(self.cli), "bulk-write", self.variabile, str(operazione),
                       str(ingresso), "--dry-run"])
@@ -354,18 +361,27 @@ def verdetto(operazione: str, vettore: dict, osservato: dict, oracolo,
 
 
 def accordo_dry_run(dry_run: dict, scrittura: dict) -> str:
-    """Il dry run concorda con la scrittura: rifiuta con la stessa categoria
-    cio' che la scrittura rifiuta senza server (fase `validate`), e accetta
-    tutto il resto. Un dry run che accetta cio' che la scrittura rifiuta in
-    `validate` e' un'accettazione indebita; uno che rifiuta cio' che la
-    scrittura accetta, o rifiuta dopo, un rifiuto indebito."""
-    if scrittura["exit"] != 0 and scrittura.get("phase") == "validate":
-        if dry_run["exit"] == 0:
-            return "dry-run-accetta"
-        if dry_run["category"] != scrittura["category"]:
-            return "dry-run-categoria"
-        return "conforme"
-    return "conforme" if dry_run["exit"] == 0 else "dry-run-rifiuta"
+    """Il dry run concorda con la scrittura su ogni vettore: stesso exit; su
+    un rifiuto stessa categoria, stessa fase e stesso `retry`, senza effetti
+    (`remote_effect: none`); su un'accettazione con il catalogo del bersaglio
+    letto. Un dry run che accetta cio' che la scrittura rifiuta, in qualunque
+    fase, e' un'accettazione indebita: chi lo usa per decidere se scrivere
+    scriverebbe e fallirebbe, o peggio non saprebbe perche'."""
+    if scrittura["exit"] == 0:
+        if dry_run["exit"] != 0:
+            return "dry-run-rifiuta"
+        return "conforme" if dry_run.get("catalog") == "performed" else "dry-run-senza-catalogo"
+    if dry_run["exit"] == 0:
+        return "dry-run-accetta"
+    if dry_run["exit"] != scrittura["exit"]:
+        return "dry-run-exit"
+    if dry_run["category"] != scrittura["category"]:
+        return "dry-run-categoria"
+    if dry_run.get("phase") != scrittura.get("phase"):
+        return "dry-run-fase"
+    if dry_run.get("retry") != scrittura.get("retry") or dry_run.get("remote_effect") != "none":
+        return "dry-run-assi"
+    return "conforme"
 
 
 def main() -> int:

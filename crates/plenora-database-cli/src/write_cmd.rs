@@ -109,15 +109,44 @@ async fn execute_bulk_write(
     dry_run: bool,
 ) -> CliResult<()> {
     if dry_run {
-        // Emette il piano che sarebbe applicato, senza toccare il DB. Il piano
-        // si compila con la stessa funzione della scrittura
-        // (`compile_write_plan`, la prima cosa di `prepare_write`): un dry run
-        // che dice `dry_run` su un ingresso che la scrittura rifiuterebbe
-        // senza contattare il server e un'accettazione indebita. Fino al
-        // 24/10 si giudicava soltanto lo schema, e uno SRID non derivabile
-        // passava il dry run per fallire nella scrittura.
+        // Il dry run decide cio che la scrittura deciderebbe, senza effetti
+        // (`PostgresProvider::dry_run_write`): compila il piano, legge il
+        // catalogo del bersaglio in sola lettura se la variabile DSN e
+        // impostata, e giudica ogni valore di ogni batch con le funzioni
+        // della scrittura. Fino al 24/10 compilava soltanto il piano: 13
+        // vettori arrow-data-v1 che la scrittura rifiuta (valori, catalogo)
+        // passavano il dry run con exit 0.
+        //
+        // Senza la variabile il dry run resta offline, e lo dice in
+        // `checks.catalog`: le classi che decide `spatial_ref_sys` o il
+        // target non sono state decise, e `dry_run` non le copre.
         let schema = stream.schema();
-        plenora_db_postgres::compile_write_plan(&schema, &operation)?;
+        let secret = std::env::var_os(dsn_env)
+            .is_some()
+            .then(|| secret_from_env(dsn_env))
+            .transpose()?;
+        let provider = postgres_provider_for_pfm()?;
+        let budget = pfm_budget()?;
+        let cancel = CancellationToken::new();
+        let decided = provider
+            .dry_run_write(secret.as_ref(), &operation, stream, &budget, &cancel)
+            .await?;
+        let loss_report = decided
+            .loss_report
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| {
+                CliError::from(format!(
+                    "loss report non serializzabile: {}",
+                    error.classify() as u8
+                ))
+            })?;
+        let catalog = if loss_report.is_some() {
+            "performed"
+        } else {
+            "not_performed"
+        };
         let fields: Vec<serde_json::Value> = schema
             .fields()
             .iter()
@@ -133,6 +162,16 @@ async fn execute_bulk_write(
             "status": "dry_run",
             "operation": operation,
             "input_schema": { "fields": fields },
+            "input": { "batches": decided.batches, "rows": decided.rows },
+            // Che cosa il dry run ha deciso. `server` resta della scrittura:
+            // vincoli del target e conversioni della colonna.
+            "checks": {
+                "plan": "performed",
+                "values": "performed",
+                "catalog": catalog,
+                "server": "not_performed",
+            },
+            "loss_report": loss_report,
         }))?;
         return Ok(());
     }

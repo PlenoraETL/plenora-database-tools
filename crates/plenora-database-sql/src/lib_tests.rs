@@ -730,6 +730,56 @@ fn sqlserver_spatial_ast_fails_without_resolved_type_and_srid() {
     );
 }
 
+/// Un parametro geometry nudo non porta il CRS: su `MySQL` diventava
+/// `ST_GeomFromWKB(?)`, SRID 0, e il predicato contro una colonna con SRID
+/// falliva con 3033 al primo batch dopo che il piano era stato accettato.
+/// Ora si rifiuta compilando, su `MySQL` e su `MariaDB` (stesso dialetto, con
+/// o senza l'opzione degli assi), in ogni posizione geometrica; una colonna
+/// contro una colonna resta ammessa.
+#[test]
+fn mysql_spatial_ast_refuses_a_bare_geometry_parameter() {
+    for axis_option in [Some("'axis-order=long-lat'"), None] {
+        let renderer = Renderer::new(
+            Dialect::Mysql,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        .with_wkb_axis_option(axis_option);
+        let probe = || QueryExpression::Parameter {
+            name: "probe".to_owned(),
+        };
+        for arguments in [
+            vec![query_column("e", "shape"), probe()],
+            vec![probe(), query_column("e", "shape")],
+        ] {
+            let mut query = simple_query();
+            query.filter = Some(QueryExpression::Spatial {
+                function: SpatialFunction::Intersects,
+                arguments,
+            });
+            let error = renderer
+                .render_query(&query)
+                .expect_err("parametro geometry senza SRID");
+            assert_eq!(
+                error.category,
+                plenora_database_core::ErrorCategory::Unsupported
+            );
+            assert_eq!(error.phase, ErrorPhase::Prepare);
+            assert!(error.message.contains(MYSQL_SPATIAL_PARAMETER_REFUSAL));
+        }
+        let mut query = simple_query();
+        query.filter = Some(QueryExpression::Spatial {
+            function: SpatialFunction::Intersects,
+            arguments: vec![query_column("e", "shape"), query_column("e", "probe")],
+        });
+        let sql = renderer
+            .render_query(&query)
+            .expect("colonna contro colonna");
+        assert!(sql.sql.contains("ST_Intersects(`e`.`shape`, `e`.`probe`)"));
+    }
+}
+
 #[test]
 fn sqlserver_spatial_ast_uses_typed_wkb_constructor_and_bound_value() {
     let mut query = simple_query();

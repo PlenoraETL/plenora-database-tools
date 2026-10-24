@@ -476,6 +476,11 @@ fn f5_13_bulk_write_dry_run_does_not_touch_db() {
     ]);
     assert_eq!(out["status"], "dry_run");
     assert!(out["input_schema"]["fields"].is_array());
+    // Con la DSN il dry run legge il catalogo e giudica ogni riga.
+    assert_eq!(out["checks"]["catalog"], "performed");
+    assert_eq!(out["checks"]["values"], "performed");
+    assert_eq!(out["input"]["rows"], 1);
+    assert!(out["loss_report"].is_object());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
