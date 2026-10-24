@@ -39,6 +39,25 @@ pub struct InputLimits {
     pub max_wkb_cell_bytes: u64,
 }
 
+/// I rifiuti del target che la scrittura darebbe preparando lo statement e
+/// alla prima riga eseguita (`target::inspect`): il dry run li riporta nello
+/// stesso punto, dopo i valori che la scrittura avrebbe gia giudicato.
+#[derive(Debug, Default)]
+pub struct StatementGate {
+    pub at_statement: Option<DatabaseError>,
+    pub at_first_row: Option<DatabaseError>,
+}
+
+impl StatementGate {
+    fn statement(&mut self) -> Result<()> {
+        self.at_statement.take().map_or(Ok(()), Err)
+    }
+
+    fn first_row(&mut self) -> Result<()> {
+        self.at_first_row.take().map_or(Ok(()), Err)
+    }
+}
+
 /// Quanto ingresso il dry run ha giudicato.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VerifiedInput {
@@ -66,8 +85,9 @@ pub async fn verify_input(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
     limits: InputLimits,
+    gate: StatementGate,
 ) -> Result<VerifiedInput> {
-    verify(state, operation, input, budget, cancellation, limits)
+    verify(state, operation, input, budget, cancellation, limits, gate)
         .await
         .map_err(without_effect)
 }
@@ -79,6 +99,7 @@ async fn verify(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
     limits: InputLimits,
+    mut gate: StatementGate,
 ) -> Result<VerifiedInput> {
     let schema = input.schema();
     let plans = &state.column_plans;
@@ -105,6 +126,7 @@ async fn verify(
                 cancellation,
                 limits,
                 total,
+                gate,
             )
             .await;
         }
@@ -156,6 +178,9 @@ async fn verify(
         if rows == 0 {
             continue;
         }
+        // La scrittura apre `COPY` o prepara lo statement al primo batch non
+        // vuoto, dopo averne giudicato i valori.
+        gate.statement()?;
         match encoding {
             Encoding::CopyText => {
                 copy_buffer(&batch, plans)?;
@@ -163,7 +188,10 @@ async fn verify(
             Encoding::Parameters => {
                 let (_, indexes) =
                     statement(operation, &operation.target, batch.schema_ref(), plans)?;
-                encode_parameters(&batch, plans, &indexes, 0..batch.num_rows())?;
+                let first = batch.num_rows().min(1);
+                encode_parameters(&batch, plans, &indexes, 0..first)?;
+                gate.first_row()?;
+                encode_parameters(&batch, plans, &indexes, first..batch.num_rows())?;
             }
         }
         resources.commit()?;
@@ -184,9 +212,12 @@ async fn verify_row_scoped(
     cancellation: &CancellationToken,
     limits: InputLimits,
     declared: u64,
+    mut gate: StatementGate,
 ) -> Result<VerifiedInput> {
     let plans = &state.column_plans;
     let (_, indexes) = statement(operation, &operation.target, schema, plans)?;
+    // L'INSERT diagnostico si prepara prima di leggere l'ingresso.
+    gate.statement()?;
     let mut verified = VerifiedInput::default();
     loop {
         let batch = input
@@ -218,7 +249,10 @@ async fn verify_row_scoped(
         // si ferma al totale e rifiuta cio che resta.
         let applicable = usize::try_from(declared.saturating_sub(verified.rows).min(rows))
             .map_err(|_| DatabaseError::resource_limit("batch oltre il conteggio supportato"))?;
-        encode_parameters(&batch, plans, &indexes, 0..applicable)?;
+        let first = applicable.min(1);
+        encode_parameters(&batch, plans, &indexes, 0..first)?;
+        gate.first_row()?;
+        encode_parameters(&batch, plans, &indexes, first..applicable)?;
         if u64::try_from(applicable).unwrap_or(u64::MAX) < rows {
             return Err(row_diagnostics::input_beyond_declared_error());
         }

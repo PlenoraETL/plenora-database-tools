@@ -56,7 +56,7 @@ async fn dry_run_rejects_a_schema_the_write_would_reject() {
         "UNUSED_DSN",
         operation(),
         Box::new(SchemaOnly(schema)),
-        true,
+        DryRun::Offline,
     )
     .await
     .expect_err("schema non conforme in dry run");
@@ -98,7 +98,7 @@ async fn dry_run_compiles_the_plan_like_the_write() {
         "UNUSED_DSN",
         operation(),
         Box::new(SchemaOnly(Arc::clone(&schema))),
-        true,
+        DryRun::Offline,
     )
     .await
     .expect_err("SRID non derivabile in dry run");
@@ -217,7 +217,7 @@ async fn dry_run_judges_every_value_like_the_write() {
         UNSET_DSN,
         create(),
         stream(&schema, &[&truncated], None),
-        true,
+        DryRun::Offline,
     )
     .await
     .expect_err("valore troncato in dry run");
@@ -242,7 +242,7 @@ async fn dry_run_compares_the_value_srid_like_the_write() {
         UNSET_DSN,
         create(),
         stream(&schema, &[&other_srid], None),
-        true,
+        DryRun::Offline,
     )
     .await
     .expect_err("SRID del valore diverso in dry run");
@@ -251,6 +251,51 @@ async fn dry_run_compares_the_value_srid_like_the_write() {
         error.database_error().phase,
         plenora_database_core::ErrorPhase::Write
     );
+}
+
+/// Il dry run con il catalogo non ricade in offline: una variabile DSN
+/// nominata ma assente o vuota e un errore di configurazione, prima
+/// dell'ingresso. Fino al 25/10 diventava un dry run offline con exit 0.
+#[tokio::test]
+async fn catalog_dry_run_without_the_dsn_is_a_configuration_error() {
+    let schema = point_4326("wkb", None);
+    let truncated = hex(TRUNCATED);
+    // Il valore troncato non si legge: la configurazione si rifiuta prima.
+    let error = execute_bulk_write(
+        UNSET_DSN,
+        create(),
+        stream(&schema, &[&truncated], None),
+        DryRun::Catalog,
+    )
+    .await
+    .expect_err("DSN assente");
+    let error = error.database_error();
+    assert_eq!(error.category, ErrorCategory::InvalidConfiguration);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Validate);
+    let empty = require_dsn(Some(std::ffi::OsStr::new(""))).expect_err("DSN vuota");
+    assert_eq!(
+        empty.database_error().category,
+        ErrorCategory::InvalidConfiguration
+    );
+    require_dsn(Some(std::ffi::OsStr::new("host=x"))).expect("DSN presente");
+}
+
+/// Offline solo se chiesto, e `--offline` senza `--dry-run` non vale.
+#[test]
+fn offline_is_an_explicit_flag_of_the_dry_run() {
+    let parse = |args: &[&str]| parse_dry_run(&mut args.iter().map(|arg| (*arg).to_owned()));
+    assert_eq!(parse(&[]).expect("nessuno"), DryRun::No);
+    assert_eq!(parse(&["--dry-run"]).expect("catalogo"), DryRun::Catalog);
+    assert_eq!(
+        parse(&["--dry-run", "--offline"]).expect("offline"),
+        DryRun::Offline
+    );
+    assert_eq!(
+        parse(&["--offline", "--dry-run"]).expect("offline"),
+        DryRun::Offline
+    );
+    assert!(parse(&["--offline"]).is_err());
+    assert!(parse(&["--dry-run", "--altro"]).is_err());
 }
 
 /// Un valore ben formato passa; il dry run offline lo dichiara (il catalogo
@@ -285,7 +330,7 @@ async fn dry_run_follows_the_row_scoped_path() {
         UNSET_DSN,
         operation(),
         stream(&schema, &[&point], Some(2)),
-        true,
+        DryRun::Offline,
     )
     .await
     .expect_err("ingresso piu corto del dichiarato");
@@ -295,7 +340,7 @@ async fn dry_run_follows_the_row_scoped_path() {
         UNSET_DSN,
         operation(),
         stream(&schema, &[&point, &truncated], Some(2)),
-        true,
+        DryRun::Offline,
     )
     .await
     .expect_err("valore troncato sul percorso row-scoped");

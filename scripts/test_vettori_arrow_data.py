@@ -191,5 +191,41 @@ class AccordoDryRun(unittest.TestCase):
                                                     scrittura), "dry-run-senza-catalogo")
 
 
+class ScenariDelTarget(unittest.TestCase):
+    """Gli scenari del target si giudicano con `accordo_dry_run`; qui si
+    prova che siano ben formati e che la DSN del ruolo ristretto cambi solo
+    l'utente."""
+
+    MODE = {"append", "create", "create-altrove", "replace", "truncate_insert", "update",
+            "delete_by_keys", "upsert"}
+
+    def test_ogni_scenario_e_ben_formato(self) -> None:
+        nomi = [scenario[0] for scenario in runner.SCENARI]
+        self.assertEqual(len(nomi), len(set(nomi)))
+        for nome, preparazione, mode, campi, chiavi, policy, utente in runner.SCENARI:
+            self.assertIn(mode, self.MODE, nome)
+            self.assertTrue(set(chiavi) <= {campo.removesuffix("+field_id") for campo in campi})
+            self.assertIn(policy, {"strict", "lossy"}, nome)
+            self.assertIn(utente, {"lettore", "proprietario"}, nome)
+            # Il ruolo ristretto ha i privilegi che lo scenario gli concede.
+            self.assertEqual(utente == "lettore", "{r}" in preparazione or mode == "create", nome)
+
+    def test_le_classi_della_rilettura_ci_sono(self) -> None:
+        nomi = {scenario[0] for scenario in runner.SCENARI}
+        self.assertTrue({"privilegi-append", "privilegi-create", "schema-assente",
+                         "upsert-senza-unique", "lossy-colonna-assente"} <= nomi)
+
+    def test_la_dsn_del_ruolo_cambia_solo_l_utente(self) -> None:
+        self.assertEqual(
+            runner.dsn_con_utente("host=h port=5432 user=a password=b dbname=d", "u", "p"),
+            "host=h port=5432   dbname=d user=u password=p")
+        self.assertEqual(
+            runner.dsn_con_utente("host=h user='a b' password='x\\'y' dbname=d", "u", "p"),
+            "host=h   dbname=d user=u password=p")
+        self.assertEqual(
+            runner.dsn_con_utente("postgresql://a:b@h:5432/d?sslmode=disable", "u", "p"),
+            "postgresql://u:p@h:5432/d?sslmode=disable")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -51,6 +51,7 @@ mod recovery;
 mod resources;
 mod row_diagnostics;
 mod sql;
+pub mod target;
 mod value_codec;
 
 use binary_codec::binary_copy_value;
@@ -59,7 +60,7 @@ use binary_codec::{
     decimal_string, encode_numeric_binary, interval_text, parse_numeric_components,
     PostgresIntervalBinary,
 };
-pub use dry_run::{verify_input, InputLimits};
+pub use dry_run::{verify_input, InputLimits, StatementGate};
 use plan::WriteColumnPlan;
 use prepared_codec::arrow_value;
 use recovery::{

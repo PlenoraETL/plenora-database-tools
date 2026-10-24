@@ -43,6 +43,15 @@ taciuto le classi che decide `spatial_ref_sys`. Fino al 24/10 il runner
 accettava ogni `dry_run` su cio' che la scrittura rifiutava dopo `validate`, e
 13 vettori invalidi nei valori o nel catalogo passavano il dry run.
 
+Con `--postgres-env` girano anche gli scenari del target (`SCENARI`,
+`dry-run-postgres-target`): ingressi validi verso bersagli che la scrittura
+rifiuta per cio' che chiede al target e non per i valori — privilegi (un ruolo
+creato per il gate, con i soli privilegi dello scenario), schema assente,
+upsert senza indice unico immediato, mapping `lossy` con una colonna assente,
+registrazione dell'id del campo senza LOCK o senza proprieta' — e i controlli
+positivi. Il dry run deve concordare con la scrittura come sui vettori. Fino al
+25/10 il dry run diceva `dry_run` su ciascuno di questi rifiuti.
+
     python scripts/vettori_arrow_data.py --contracts .plenora-contracts \\
         --cli target/debug/plenora-database --referto vettori-arrow-data.json \\
         [--postgres-env PLENORA_TEST_POSTGRES_DSN]
@@ -384,6 +393,169 @@ def accordo_dry_run(dry_run: dict, scrittura: dict) -> str:
     return "conforme"
 
 
+def dsn_con_utente(dsn: str, utente: str, password: str) -> str:
+    """La stessa DSN con un altro utente: forma URL o `chiave=valore`."""
+    import re
+    from urllib.parse import quote, urlsplit, urlunsplit
+
+    if "://" in dsn:
+        parti = urlsplit(dsn)
+        host = parti.netloc.rsplit("@", 1)[-1]
+        return urlunsplit(parti._replace(netloc=f"{quote(utente)}:{quote(password)}@{host}"))
+    resto = re.sub(r"(^|\s)(user|password)=('(?:[^'\\]|\\.)*'|\S*)", " ", dsn).strip()
+    return f"{resto} user={utente} password={password}"
+
+
+# Gli scenari del target: cio che la scrittura chiede al bersaglio oltre ai
+# valori (privilegi, schema, colonne, indice unico dell'upsert). Fino al
+# 25/10 il dry run con la DSN diceva `dry_run` su ciascuno dei rifiuti, e il
+# runner non li provava. Ogni scenario ha la preparazione del bersaglio, la
+# mode, i campi dell'ingresso (`id` int64, `v` utf8), le chiavi, la policy di
+# mapping e l'utente: `lettore` e un ruolo creato qui con i soli privilegi
+# dello scenario. I controlli positivi tengono il runner onesto: un dry run
+# che rifiutasse tutto non concorderebbe.
+SCENARI = (
+    ("privilegi-append", "CREATE TABLE {t} (id bigint); GRANT SELECT ON {t} TO {r}",
+     "append", ("id",), (), "strict", "lettore"),
+    ("privilegi-append-concessi", "CREATE TABLE {t} (id bigint); GRANT SELECT, INSERT ON {t} TO {r}",
+     "append", ("id",), (), "strict", "lettore"),
+    ("privilegi-create", "", "create", ("id",), (), "strict", "lettore"),
+    ("schema-assente", "", "create-altrove", ("id",), (), "strict", "proprietario"),
+    ("replace-senza-delete", "CREATE TABLE {t} (id bigint); GRANT SELECT, INSERT ON {t} TO {r}",
+     "replace", ("id",), (), "strict", "lettore"),
+    # Un rifiuto all'apertura di `COPY` (Replace con DELETE senza INSERT) non
+    # c'e: dopo un `copy_in` fallito `tokio-postgres` 0.7.18 chiude la
+    # connessione (`UnexpectedMessage`), il ROLLBACK non si conferma e la
+    # scrittura esce in fase `rollback` con effetto ignoto, che nessun dry run
+    # puo' prevedere. Difetto della busta della scrittura, non silenzioso,
+    # segnalato a parte.
+    ("truncate-senza-truncate", "CREATE TABLE {t} (id bigint); GRANT SELECT, INSERT ON {t} TO {r}",
+     "truncate_insert", ("id",), (), "strict", "lettore"),
+    ("update-senza-update",
+     "CREATE TABLE {t} (id bigint PRIMARY KEY, v text); GRANT SELECT, INSERT ON {t} TO {r}",
+     "update", ("id", "v"), ("id",), "strict", "lettore"),
+    ("delete-senza-delete", "CREATE TABLE {t} (id bigint PRIMARY KEY); GRANT SELECT ON {t} TO {r}",
+     "delete_by_keys", ("id",), ("id",), "strict", "lettore"),
+    ("upsert-senza-unique", "CREATE TABLE {t} (id bigint, v text)",
+     "upsert", ("id", "v"), ("id",), "strict", "proprietario"),
+    ("upsert-con-unique", "CREATE TABLE {t} (id bigint UNIQUE, v text)",
+     "upsert", ("id", "v"), ("id",), "strict", "proprietario"),
+    ("upsert-unique-differibile",
+     "CREATE TABLE {t} (id bigint, v text, UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)",
+     "upsert", ("id", "v"), ("id",), "strict", "proprietario"),
+    ("lossy-colonna-assente", "CREATE TABLE {t} (id bigint)",
+     "append", ("id", "v"), (), "lossy", "proprietario"),
+    ("lossy-colonne-presenti", "CREATE TABLE {t} (id bigint, v text)",
+     "append", ("id", "v"), (), "lossy", "proprietario"),
+    # La registrazione dell'id del campo prende un LOCK (UPDATE, DELETE o
+    # TRUNCATE) e scrive COMMENT ON COLUMN (proprieta' della tabella).
+    ("registrazione-id-senza-lock", "CREATE TABLE {t} (id bigint); GRANT SELECT, INSERT ON {t} TO {r}",
+     "append", ("id+field_id",), (), "strict", "lettore"),
+    ("registrazione-id-senza-proprieta",
+     "CREATE TABLE {t} (id bigint); GRANT SELECT, INSERT, UPDATE ON {t} TO {r}",
+     "append", ("id+field_id",), (), "strict", "lettore"),
+)
+
+
+SCENARI_DEL_TARGET = "dry-run-postgres-target"
+
+
+class Scenari:
+    """Gli scenari del target: la scrittura e il dry run, stesso ingresso e
+    stessa DSN, devono concordare come sui vettori (`accordo_dry_run`)."""
+
+    RUOLO = "vad_lettore_dry_run"
+    SCHEMA_ASSENTE = "vad_schema_assente"
+
+    def __init__(self, postgres: Postgres) -> None:
+        import secrets
+
+        self.postgres = postgres
+        self.password = secrets.token_hex(16)
+        self.lettore = postgres.variabile + "_VAD_LETTORE"
+        os.environ[self.lettore] = dsn_con_utente(
+            os.environ[postgres.variabile], self.RUOLO, self.password)
+
+    def ddl(self, sql: str) -> None:
+        esito = busta([str(self.postgres.cli), "database-execute-ddl", "postgres",
+                       self.postgres.variabile, sql])
+        if esito["exit"] != 0:
+            raise SystemExit("preparazione di uno scenario del target fallita: il gate non si "
+                             "puo' eseguire")
+
+    def ruolo(self, presente: bool) -> None:
+        if self.esiste_il_ruolo():
+            self.ddl(f"DROP OWNED BY {self.RUOLO}")
+            self.ddl(f"DROP ROLE {self.RUOLO}")
+        if presente:
+            self.ddl(f"CREATE ROLE {self.RUOLO} LOGIN PASSWORD '{self.password}'")
+
+    def esiste_il_ruolo(self) -> bool:
+        return self.postgres.scalare("SELECT count(*)::int4 FROM pg_roles "
+                                     f"WHERE rolname = '{self.RUOLO}'") != 0
+
+    def ingresso(self, nome: str, campi: tuple[str, ...]) -> Path:
+        import pyarrow as pa
+        import pyarrow.ipc as ipc
+
+        # `id` non nullable: verso una chiave primaria, un campo nullable e'
+        # una perdita di nullability che la policy strict rifiuta prima del
+        # target, e lo scenario non proverebbe i privilegi.
+        colonne = {"id": (pa.field("id", pa.int64(), nullable=False), pa.array([1, 2], pa.int64())),
+                   "v": (pa.field("v", pa.utf8()), pa.array(["a", "b"], pa.utf8()))}
+        # `id+field_id`: il campo porta `plenora.field_id`, che la scrittura
+        # registra nel commento della colonna.
+        con_id = [campo.endswith("+field_id") for campo in campi]
+        nomi = [campo.removesuffix("+field_id") for campo in campi]
+        campi_arrow = [colonne[nome][0].with_metadata({b"plenora.field_id": b"0"}) if marcato
+                       else colonne[nome][0] for nome, marcato in zip(nomi, con_id)]
+        t = pa.Table.from_arrays(
+            [colonne[nome][1] for nome in nomi],
+            schema=pa.schema(campi_arrow,
+                             metadata={b"plenora.contract.version": b"1"} if any(con_id) else None))
+        percorso = self.postgres.lavoro / f"scenario-{nome}.arrow"
+        with pa.OSFile(str(percorso), "wb") as f, ipc.new_file(f, t.schema) as w:
+            w.write_table(t)
+        return percorso
+
+    def esegui(self) -> list[dict]:
+        righe = []
+        self.ruolo(True)
+        try:
+            for nome, preparazione, mode, campi, chiavi, policy, utente in SCENARI:
+                tabella = self.postgres.tabella("scenario-" + nome)
+                schema = self.SCHEMA_ASSENTE if mode == "create-altrove" else "public"
+                self.ddl(f"DROP SCHEMA IF EXISTS {self.SCHEMA_ASSENTE} CASCADE")
+                self.postgres.cancella(tabella)
+                if preparazione:
+                    self.ddl(preparazione.format(t=f"public.{tabella}", r=self.RUOLO))
+                operazione = self.postgres.lavoro / f"scenario-{nome}-write.json"
+                operazione.write_text(json.dumps({
+                    "target": {"schema": schema, "object": tabella},
+                    "mode": "create" if mode == "create-altrove" else mode,
+                    "mapping_policy": policy, "keys": list(chiavi),
+                    "update_columns": ["v"] if mode == "update" else [],
+                    "transaction_profile": "single_transaction"}), encoding="utf-8")
+                variabile = self.lettore if utente == "lettore" else self.postgres.variabile
+                richiesta = self.postgres.lavoro / f"scenario-{nome}-request.json"
+                richiesta.write_text(json.dumps({
+                    "provider": "postgres", "secret_environment": variabile,
+                    "operation_path": str(operazione)}), encoding="utf-8")
+                dati = self.ingresso(nome, campi)
+                # Il dry run prima: la scrittura, se riesce, cambia il target.
+                dry_run = busta([str(self.postgres.cli), "bulk-write", variabile,
+                                 str(operazione), str(dati), "--dry-run"])
+                scrittura = busta([str(self.postgres.cli), "write", "--input", str(richiesta),
+                                   "--data", str(dati)])
+                righe.append({"scenario": nome, "scrittura": scrittura, "dry_run": dry_run,
+                              "verdetto": accordo_dry_run(dry_run, scrittura)})
+                self.postgres.cancella(tabella)
+        finally:
+            self.ddl(f"DROP SCHEMA IF EXISTS {self.SCHEMA_ASSENTE} CASCADE")
+            self.ruolo(False)
+        return righe
+
+
 def main() -> int:
     argomenti = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     argomenti.add_argument("--contracts", type=Path, required=True)
@@ -434,13 +606,21 @@ def main() -> int:
                 righe.append({"vettore": percorso.stem, "operazione": operazione,
                               "atteso": vettore["expect"], "categoria_attesa": vettore.get("category"),
                               "osservato": osservato, "verdetto": v})
+        scenari = Scenari(postgres).esegui() if postgres else []
+        for riga in scenari:
+            conteggi.setdefault(SCENARI_DEL_TARGET, {})
+            conteggi[SCENARI_DEL_TARGET][riga["verdetto"]] = (
+                conteggi[SCENARI_DEL_TARGET].get(riga["verdetto"], 0) + 1)
     opzioni.referto.write_text(json.dumps({"schema_version": 1, "vettori": len(vettori),
                                            "operazioni": operazioni, "conteggi": conteggi,
-                                           "esiti": righe},
+                                           "esiti": righe, "scenari_del_target": scenari},
                                           ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     for operazione in operazioni:
         print(f"vettori arrow-data-v1, {operazione}: {len(vettori)} esiti: "
               + ", ".join(f"{k} {v}" for k, v in sorted(conteggi[operazione].items())))
+    if scenari:
+        print(f"{SCENARI_DEL_TARGET}: {len(scenari)} esiti: "
+              + ", ".join(f"{k} {v}" for k, v in sorted(conteggi[SCENARI_DEL_TARGET].items())))
     if "write-postgres" not in operazioni:
         print("write-postgres non eseguito: serve --postgres-env con un fixture healthy")
     buoni = {"conforme", "rifiuto-di-supporto"}

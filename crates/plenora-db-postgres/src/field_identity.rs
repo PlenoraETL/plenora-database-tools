@@ -120,7 +120,19 @@ pub async fn register(
 /// divergente o non registrabile. Senza `LOCK`: un dry run e una previsione,
 /// e un append concorrente puo ancora cambiare il commento prima della
 /// scrittura, che resta l'unica a decidere sotto lock.
-pub async fn check(client: &Client, operation: &WriteOperation, schema: &SchemaRef) -> Result<()> {
+///
+/// `may_lock` dice se l'utente puo prendere il `LOCK` di [`register`]
+/// (`UPDATE`, `DELETE` o `TRUNCATE` sulla tabella), `owner` se puo scrivere
+/// `COMMENT ON COLUMN` (la proprieta della tabella): senza, la scrittura
+/// fallisce `authorization` in fase `write`, e il dry run lo dice nello
+/// stesso punto.
+pub async fn check(
+    client: &Client,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+    may_lock: bool,
+    owner: bool,
+) -> Result<()> {
     if operation.mode == WriteMode::DeleteByKeys
         || !schema
             .fields()
@@ -128,6 +140,17 @@ pub async fn check(client: &Client, operation: &WriteOperation, schema: &SchemaR
             .any(|field| field.metadata().contains_key(FIELD_ID))
     {
         return Ok(());
+    }
+    let denied = || {
+        public_error(
+            ErrorCategory::Authorization,
+            ErrorPhase::Write,
+            false,
+            "permesso PostgreSQL insufficiente",
+        )
+    };
+    if !may_lock {
+        return Err(denied());
     }
     let target = quoted_target(&renderer(), operation)?;
     for field in schema.fields() {
@@ -145,7 +168,9 @@ pub async fn check(client: &Client, operation: &WriteOperation, schema: &SchemaR
                 .map_err(|error| classify_error(ErrorPhase::Write, &error))?
                 .and_then(|row| row.get(0))
         };
-        registration(comment.as_deref(), incoming)?;
+        if registration(comment.as_deref(), incoming)?.is_some() && !owner {
+            return Err(denied());
+        }
     }
     Ok(())
 }

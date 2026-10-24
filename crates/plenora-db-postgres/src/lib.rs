@@ -1,4 +1,4 @@
-//! Driver pilota PostgreSQL/PostGIS.
+//! Driver pilota PostgreSQL/`PostGIS`.
 //!
 //! Il driver di riferimento copre connessione, capability, introspezione, read
 //! batch-bounded verso Arrow/GeoArrow-WKB e tutte le modalità di scrittura
@@ -68,14 +68,18 @@ impl PostgresProvider {
     ///
     /// Con `secret` esegue `prepare_write` stesso — compilazione del piano e
     /// letture del catalogo (`spatial_ref_sys`, esistenza del target, colonne,
-    /// perdite di mapping), tutte in sola lettura — e confronta gli id dei
-    /// campi con quelli registrati nel target. Senza `secret` compila soltanto
-    /// il piano: il risultato lo dichiara (`loss_report: None`) e non vale per
-    /// le classi del catalogo. In entrambi i casi legge ogni batch e ne
-    /// giudica ogni valore con le funzioni della scrittura (`write::dry_run`).
+    /// perdite di mapping), tutte in sola lettura — poi legge sul catalogo
+    /// cio che la scrittura chiede al target (`write::target`: schema,
+    /// privilegi, proprieta, colonne dello statement, indice unico
+    /// dell'upsert) e confronta gli id dei campi con quelli registrati. Ogni
+    /// rifiuto esce nel punto in cui la scrittura lo darebbe. Senza `secret`
+    /// compila soltanto il piano: il risultato lo dichiara (`loss_report:
+    /// None`) e non vale per le classi del catalogo. In entrambi i casi legge
+    /// ogni batch e ne giudica ogni valore con le funzioni della scrittura
+    /// (`write::dry_run`).
     ///
-    /// Non decide cio che decide il server scrivendo: vincoli del target e
-    /// conversioni della colonna.
+    /// Non decide cio che decide il server scrivendo: vincoli e trigger sui
+    /// valori, conversioni della colonna, timeout e lock concorrenti.
     ///
     /// # Errors
     ///
@@ -90,6 +94,7 @@ impl PostgresProvider {
         cancellation: &CancellationToken,
     ) -> Result<PostgresWriteDryRun> {
         let schema = input.schema();
+        let mut gate = write::StatementGate::default();
         let (state, loss_report, prepared) = if let Some(secret) = secret {
             let mut prepared = self
                 .prepare_write(secret, operation, Arc::clone(&schema), budget, cancellation)
@@ -99,11 +104,36 @@ impl PostgresProvider {
                 .ok_or_else(|| {
                     DatabaseError::invalid_plan("stato prepared write PostgreSQL assente")
                 })?;
-            // La lettura che la scrittura fa nella transazione prima dei
-            // valori: l'id di ogni campo contro il commento della colonna.
+            // Cio che la scrittura chiede al target, sul catalogo e nel suo
+            // ordine: DDL e svuotamento, poi la registrazione degli id dei
+            // campi, poi lo statement e la prima riga (`gate`).
             let client = self.connect_session(secret).await?;
-            field_identity::check(client.client()?, operation, &schema).await?;
+            let row_scoped = operation.mode == plenora_database_core::plan::WriteMode::Append
+                && operation.transaction_profile
+                    == plenora_database_core::plan::TransactionProfile::SingleTransaction
+                && input.declared_input_rows().is_some();
+            let verdict = write::target::inspect(
+                client.client()?,
+                operation,
+                &schema,
+                write::target::WritePath::of(operation, row_scoped, self.insert_mode),
+                self.schema_evolution,
+            )
+            .await?;
+            if let Some(error) = verdict.before_input {
+                return Err(error);
+            }
+            field_identity::check(
+                client.client()?,
+                operation,
+                &schema,
+                verdict.may_lock,
+                verdict.owner,
+            )
+            .await?;
             drop(client);
+            gate.at_statement = verdict.at_statement;
+            gate.at_first_row = verdict.at_first_row;
             let report = prepared.loss_report.clone();
             (state, Some(report), Some(prepared))
         } else {
@@ -121,6 +151,7 @@ impl PostgresProvider {
                 max_batch_bytes: self.max_batch_bytes,
                 max_wkb_cell_bytes: self.max_wkb_cell_bytes,
             },
+            gate,
         )
         .await?;
         // Le prenotazioni del piano restano vive mentre si giudica

@@ -482,6 +482,52 @@ fn f5_13_bulk_write_dry_run_does_not_touch_db() {
     assert_eq!(out["input"]["rows"], 1);
     assert!(out["loss_report"].is_object());
 
+    // Offline soltanto se chiesto, e lo dice lo stato. Una variabile DSN
+    // nominata ma assente e un errore di configurazione: fino al 25/10
+    // diventava un dry run offline con exit 0.
+    let offline = run_json(&[
+        "bulk-write",
+        "PLENORA_F5_13_UNSET_DSN",
+        op_path.to_str().unwrap(),
+        input_path.to_str().unwrap(),
+        "--dry-run",
+        "--offline",
+    ]);
+    assert_eq!(offline["status"], "dry_run_offline");
+    assert_eq!(offline["checks"]["catalog"], "not_performed");
+    let output = cli(&[
+        "bulk-write",
+        "PLENORA_F5_13_UNSET_DSN",
+        op_path.to_str().unwrap(),
+        input_path.to_str().unwrap(),
+        "--dry-run",
+    ])
+    .output()
+    .expect("spawn CLI");
+    assert_eq!(output.status.code(), Some(2));
+    let refused: Value = serde_json::from_slice(&output.stdout).expect("busta JSON");
+    assert_eq!(refused["error"]["category"], "invalid_configuration");
+
+    // Uno schema che non esiste: la scrittura fallisce `not_found` in fase
+    // `write` al CREATE TABLE, il dry run lo dice leggendo il catalogo.
+    let mut missing_schema = write_op;
+    missing_schema["target"]["schema"] = Value::from("plenora_f5_13_schema_assente");
+    std::fs::write(
+        &op_path,
+        serde_json::to_vec_pretty(&missing_schema).unwrap(),
+    )
+    .unwrap();
+    let refused = run_json_err(&[
+        "bulk-write",
+        "PG_DSN",
+        op_path.to_str().unwrap(),
+        input_path.to_str().unwrap(),
+        "--dry-run",
+    ]);
+    assert_eq!(refused["error"]["category"], "not_found");
+    assert_eq!(refused["error"]["phase"], "write");
+    assert_eq!(refused["error"]["remote_effect"], "none");
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

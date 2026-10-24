@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 109568,
-  "max_code_lines": 89892,
-  "rationale": "Dry run della scrittura PostgreSQL concorde con la scrittura su ogni vettore arrow-data-v1: il dry run legge ogni batch e giudica ogni valore con le funzioni della scrittura (verify_value, SRID di colonna, codifica COPY o parametri, percorso row-scoped), legge il catalogo del target in sola lettura con la DSN (prepare_write e identita dei campi) e dichiara checks.catalog quando e offline; parametro geometry nudo MySQL/MariaDB rifiutato compilando; test in file dedicati. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 109080 -> 109568 (+488), righe di codice 89527 -> 89892 (+365). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 111055,
+  "max_code_lines": 90933,
+  "rationale": "Sonde spatial PostgreSQL con SRID esplicito confrontato con la colonna prima dell'esecuzione (core spatial_probe, provider spatial_probe per read e query, guardia PostGIS del compilatore portable e di build_spatial_select, SpatialValue che non sovrascrive uno SRID incorporato, mixed SRID pubblicato crs); dry run della scrittura PostgreSQL che legge sul catalogo cio che la scrittura chiede al target (write::target: schema, privilegi, proprieta, colonne, indice unico dell'upsert) nel punto in cui la scrittura lo rifiuterebbe, e offline soltanto con --offline; test in file dedicati. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 109568 -> 111055 (+1487), righe di codice 89892 -> 90933 (+1041). Conteggio e perimetro invariati, nessun margine aggiunto."
 }
