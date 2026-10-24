@@ -211,6 +211,18 @@ fn encoded_query_spatial_output_requires_and_applies_an_explicit_contract() {
     );
     assert_eq!(field.metadata()[protocol::GEOMETRY_DIMENSIONS], "xyzm");
     assert_eq!(field.metadata()[protocol::GEOMETRY_SRID], "4326");
+    // GEO-020: lo SRID di catalogo si dichiara con il nome di catalogo locale
+    // che il contratto elenca per SQL Server, `MSSQL`, mai risolto. Fino al
+    // 24/10 era `SQLSERVER:4326`, che per il contratto non e un catalogo
+    // locale.
+    assert_eq!(field.metadata()[protocol::GEOMETRY_CRS_ID], "MSSQL:4326");
+    assert_eq!(
+        field.metadata()[protocol::GEOMETRY_CRS_RESOLUTION],
+        "declared_unresolved"
+    );
+    assert!(plenora_database_core::crs_definition::is_local_authority(
+        &field.metadata()[protocol::GEOMETRY_CRS_ID]
+    ));
     assert_eq!(
         plan.columns[0].wire_encoding,
         SqlServerWireEncoding::Projected

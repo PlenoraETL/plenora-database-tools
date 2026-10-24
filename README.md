@@ -350,6 +350,8 @@ python scripts\avvisi_crate.py             # avvisi Rust e grafi di release, off
 python scripts\test_avvisi_crate.py        # regressioni del confezionamento e del gate
 python scripts\check_test_layout.py         # test Rust separati dal prodotto
 python scripts\check_cargo_deny.py          # supply chain in Docker, tool fissato
+python scriptsettori_arrow_data.py --contracts .plenora-contracts --cli target\debug\plenora-database.exe --referto vettori.json
+                                            # vettori arrow-data-v1 (Geometry Semantics); --postgres-env VAR anche in scrittura
 python scripts\check_mysql_reference.py --static
 python scripts\check_mysql_reference.py     # gate MySQL live
 python scripts\check_postgres_reference.py  # gate PostgreSQL live

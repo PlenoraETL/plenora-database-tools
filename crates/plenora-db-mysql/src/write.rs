@@ -22,6 +22,7 @@ use plenora_database_core::arrow::array::{
 use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit};
 use plenora_database_core::arrow::RecordBatch;
 use plenora_database_core::field_contract::FieldContract;
+use plenora_database_core::geometry_value::{verify_value, ValueContract};
 use plenora_database_core::loss::{LossReport, MappingPolicy};
 use plenora_database_core::outcome::{
     CertainPhase, Recovery, RowCounts, WriteOutcome, WriteStatus,
@@ -86,6 +87,7 @@ fn compile_write_column(
             ));
         }
         if !contract.is_geometry()
+            // Deviazione dichiarata (GEO-007, contracts/adoption-source.json): solo WKB ISO.
             || contract.encoding != Some("wkb")
             || field.data_type() != &DataType::Binary
         {
@@ -107,7 +109,8 @@ fn compile_write_column(
                 "write spatial {product} qualifica soltanto geometrie XY"
             )));
         }
-        let srid = contract.srid.ok_or_else(|| {
+        // Lo SRID dichiarato o derivato da `EPSG:<n>` (GEO-008).
+        let srid = contract.target_srid()?.ok_or_else(|| {
             crs_error(format!("write spatial {product} richiede SRID dichiarato"))
         })?;
         let exact = match contract.types_declaration {
@@ -693,18 +696,24 @@ impl MysqlWritePlan {
                         "array geometry incoerente con il piano",
                     )
                 })?;
+            // La verifica comune di ogni valore Arrow (GEO-008, GEO-009,
+            // GEO-011), con il contratto letto una volta per colonna.
+            let schema = batch.schema();
+            let contract = FieldContract::parse(schema.field(index))?;
+            let value_contract = ValueContract::of(&contract);
             for row in 0..batch.num_rows() {
                 if values.is_null(row) {
                     continue;
                 }
                 let remaining = budget.remaining(ResourceKind::GeometryComponents);
-                let inspection = plenora_database_core::ewkb::inspect_ewkb_detailed(
+                let inspection = verify_value(
+                    value_contract,
                     values.value(row),
                     remaining,
                     budget.limits().nesting_depth,
+                    ErrorPhase::Write,
                 )
                 .map_err(|mut error| {
-                    error.phase = ErrorPhase::Write;
                     error.provider = Some(crate::profile::PROVISIONAL_KIND);
                     error
                 })?;

@@ -72,7 +72,19 @@ fn point_xy() -> Vec<u8> {
 
 fn schema(crs_id: &str, srid: Option<&str>, axis: Option<&str>) -> SchemaRef {
     let mut metadata = HashMap::from([
+        (
+            protocol::GEOARROW_EXTENSION_NAME.to_owned(),
+            "geoarrow.wkb".to_owned(),
+        ),
         (protocol::FIELD_ID.to_owned(), "7".to_owned()),
+        (
+            protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
+            "geometry".to_owned(),
+        ),
+        (
+            protocol::GEOMETRY_PRECISION.to_owned(),
+            "float64".to_owned(),
+        ),
         (protocol::GEOMETRY_ENCODING.to_owned(), "wkb".to_owned()),
         (protocol::GEOMETRY_DIMENSIONS.to_owned(), "xy".to_owned()),
         (

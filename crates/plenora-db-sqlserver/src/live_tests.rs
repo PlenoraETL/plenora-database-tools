@@ -8392,6 +8392,17 @@ fn spatial_write_schema(semantics: &str, dimensions: &str) -> SchemaRef {
             protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
             "declared_unresolved".to_owned(),
         ),
+        // ARROW-VOCABULARY §4: un CRS dichiarato ha identita e ordine degli
+        // assi, e un campo geometria ha il proprio field id.
+        (
+            protocol::GEOMETRY_CRS_ID.to_owned(),
+            "MSSQL:4326".to_owned(),
+        ),
+        (
+            protocol::GEOMETRY_AXIS_ORDER.to_owned(),
+            "unknown".to_owned(),
+        ),
+        (protocol::FIELD_ID.to_owned(), "0".to_owned()),
     ]);
     Arc::new(Schema::new_with_metadata(
         vec![Field::new("shape", DataType::Binary, true).with_metadata(metadata)],

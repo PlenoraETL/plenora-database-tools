@@ -191,7 +191,8 @@ pub(super) fn pg_type(contract: &FieldContract<'_>) -> Result<String> {
             "geometry"
         };
         // Piu tipi dichiarati (ARROW-VOCABULARY §3) chiedono una colonna
-        // generica: il controllo per valore sta in `validate_ewkb_contract`.
+        // generica: il controllo per valore sta in
+        // `plenora_database_core::geometry_value`.
         let geometry_type = contract
             .geometry_type
             .filter(|types| !types.contains(','))
@@ -218,7 +219,7 @@ pub(super) fn pg_type(contract: &FieldContract<'_>) -> Result<String> {
                 ));
             }
         };
-        let srid = contract.srid.unwrap_or(0);
+        let srid = contract.target_srid.unwrap_or(0);
         return Ok(format!("{base}({geometry_type}{dimensions},{srid})"));
     }
     Ok(match contract.field.data_type() {

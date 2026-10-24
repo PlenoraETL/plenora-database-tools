@@ -7,6 +7,7 @@ use plenora_database_core::arrow::array::Array;
 use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit};
 use plenora_database_core::arrow::RecordBatch;
 use plenora_database_core::field_contract::{validate_schema_contract, FieldContract};
+use plenora_database_core::geometry_value::{verify_value, ValueContract};
 use plenora_database_core::loss::{LossReport, MappingPolicy};
 use plenora_database_core::outcome::{RowCounts, WriteOutcome, WriteStatus};
 use plenora_database_core::plan::{
@@ -220,6 +221,11 @@ impl Db2WritePlan {
                 continue;
             };
             let array = batch.column(index);
+            // La verifica comune di ogni valore Arrow (GEO-008, GEO-009,
+            // GEO-011), con il contratto letto una volta per colonna.
+            let schema = batch.schema();
+            let field_contract = FieldContract::parse(schema.field(index))?;
+            let value_contract = ValueContract::of(&field_contract);
             for row in 0..batch.num_rows() {
                 if array.is_null(row) {
                     continue;
@@ -234,13 +240,14 @@ impl Db2WritePlan {
                 let remaining = budget
                     .remaining(ResourceKind::GeometryComponents)
                     .saturating_sub(components);
-                let inspection = plenora_database_core::ewkb::inspect_ewkb_detailed(
+                let inspection = verify_value(
+                    value_contract,
                     bytes,
                     remaining,
                     budget.limits().nesting_depth,
+                    ErrorPhase::Write,
                 )
                 .map_err(|mut error| {
-                    error.phase = ErrorPhase::Write;
                     error.provider = Some(ProviderKind::Db2);
                     error
                 })?;
@@ -262,6 +269,8 @@ impl Db2WritePlan {
                         "tipo geometry WKB non qualificato per Db2",
                     )
                 })?;
+                // Deviazione dichiarata (GEO-010, contracts/adoption-source.json): un tipo che Db2
+                // non scrive si rifiuta per valore, dentro la transazione annullata.
                 if !geometry_type_is_writable(geometry_type)
                     || contract
                         .exact_geometry_type
@@ -1036,6 +1045,8 @@ fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
                 "semantica geography Db2 non qualificata",
             ));
         }
+        // Deviazione dichiarata (GEO-007, contracts/adoption-source.json): solo WKB ISO,
+        // `ewkb` e un limite di supporto rifiutato prima di ogni effetto.
         if contract.encoding != Some("wkb") {
             return Err(prepare_error(
                 ErrorCategory::Unsupported,
@@ -1052,7 +1063,8 @@ fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
                 ));
             }
         };
-        let srid = contract.srid.ok_or_else(|| {
+        // Lo SRID dichiarato o derivato da `EPSG:<n>` (GEO-008).
+        let srid = contract.target_srid()?.ok_or_else(|| {
             prepare_error(
                 ErrorCategory::Crs,
                 "write spatial Db2 richiede SRID dichiarato",

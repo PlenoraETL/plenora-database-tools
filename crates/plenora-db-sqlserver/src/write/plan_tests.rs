@@ -27,7 +27,7 @@ fn operation(mode: WriteMode) -> WriteOperation {
 }
 
 fn spatial_create_schema() -> SchemaRef {
-    fn spatial_field(name: &str, semantics: &str, native_type: &str) -> Field {
+    fn spatial_field(name: &str, semantics: &str, native_type: &str, field_id: &str) -> Field {
         Field::new(name, DataType::Binary, true).with_metadata(HashMap::from([
             (
                 protocol::GEOARROW_EXTENSION_NAME.to_owned(),
@@ -49,6 +49,17 @@ fn spatial_create_schema() -> SchemaRef {
                 protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
                 "declared_unresolved".to_owned(),
             ),
+            // ARROW-VOCABULARY §4: un CRS dichiarato ha identita e ordine
+            // degli assi, e un campo geometria ha il proprio field id.
+            (
+                protocol::GEOMETRY_CRS_ID.to_owned(),
+                "MSSQL:4326".to_owned(),
+            ),
+            (
+                protocol::GEOMETRY_AXIS_ORDER.to_owned(),
+                "unknown".to_owned(),
+            ),
+            (protocol::FIELD_ID.to_owned(), field_id.to_owned()),
             (
                 protocol::SQLSERVER_NATIVE_TYPE.to_owned(),
                 native_type.to_owned(),
@@ -62,8 +73,8 @@ fn spatial_create_schema() -> SchemaRef {
     Arc::new(plenora_database_core::arrow::Schema::new_with_metadata(
         vec![
             Field::new("id", DataType::Int32, false),
-            spatial_field("shape", "geometry", "geometry"),
-            spatial_field("position", "geography", "geography"),
+            spatial_field("shape", "geometry", "geometry", "1"),
+            spatial_field("position", "geography", "geography", "2"),
         ],
         HashMap::from([(
             protocol::CONTRACT_VERSION_KEY.to_owned(),

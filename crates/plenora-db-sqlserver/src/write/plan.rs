@@ -951,16 +951,27 @@ fn validate_spatial_contract(
         return Ok(None);
     };
     let contract = CanonicalFieldContract::parse(field)?;
+    // REJ-001: un campo che non porta la geometria che il target vuole e
+    // della classe dello schema dell'operazione.
     if field
         .metadata()
         .get(protocol::GEOARROW_EXTENSION_NAME)
         .map(String::as_str)
         != Some("geoarrow.wkb")
-        || contract.encoding != Some("wkb")
     {
         return Err(plan_error(
-            ErrorCategory::DataMapping,
+            ErrorCategory::Schema,
             "colonna spatial Arrow priva del contratto GeoArrow WKB",
+        ));
+    }
+    // Deviazione dichiarata (GEO-007, contracts/adoption-source.json): il
+    // percorso SQL Server scrive soltanto WKB ISO e rifiuta `ewkb` come limite
+    // di supporto, prima di ogni effetto. Rientra con una conversione EWKB ->
+    // WKB senza perdita qualificata dal gate live.
+    if contract.encoding != Some("wkb") {
+        return Err(plan_error(
+            ErrorCategory::Unsupported,
+            "write spatial SQL Server qualifica soltanto plenora.geometry.encoding=wkb",
         ));
     }
     let expected_semantics = match semantics {
@@ -969,7 +980,7 @@ fn validate_spatial_contract(
     };
     if contract.spatial_semantics != Some(expected_semantics) {
         return Err(plan_error(
-            ErrorCategory::DataMapping,
+            ErrorCategory::Schema,
             "semantica geometry/geography Arrow incompatibile col target",
         ));
     }
@@ -980,7 +991,7 @@ fn validate_spatial_contract(
         Some("xyzm") => Dimensions::Xyzm,
         _ => {
             return Err(plan_error(
-                ErrorCategory::DataMapping,
+                ErrorCategory::Unsupported,
                 "write spatial SQL Server richiede dimensioni WKB esplicite",
             ));
         }
@@ -990,13 +1001,15 @@ fn validate_spatial_contract(
         .is_some_and(|target_dimensions| target_dimensions != source_dimensions)
     {
         return Err(plan_error(
-            ErrorCategory::DataMapping,
+            ErrorCategory::Schema,
             "dimensioni Arrow diverse dai valori esistenti nel target SQL Server",
         ));
     }
-    let source_srid = contract.srid.ok_or_else(|| {
+    // Lo SRID dichiarato o derivato da `EPSG:<n>` (GEO-008); senza, il CRS
+    // non si registra e il rifiuto e `crs`.
+    let source_srid = contract.target_srid()?.ok_or_else(|| {
         plan_error(
-            ErrorCategory::DataMapping,
+            ErrorCategory::Crs,
             "SRID Arrow obbligatorio per write spatial SQL Server",
         )
     })?;
@@ -1005,7 +1018,7 @@ fn validate_spatial_contract(
         .is_some_and(|target_srid| target_srid != source_srid)
     {
         return Err(plan_error(
-            ErrorCategory::DataMapping,
+            ErrorCategory::Crs,
             "SRID Arrow diverso dai valori esistenti nel target SQL Server",
         ));
     }

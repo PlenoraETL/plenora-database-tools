@@ -72,6 +72,13 @@ fn spatial_schema(
                 protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
                 "declared_unresolved".to_owned(),
             ),
+            // ARROW-VOCABULARY §4: un CRS dichiarato ha identita e ordine
+            // degli assi.
+            (protocol::GEOMETRY_CRS_ID.to_owned(), "DB2:4326".to_owned()),
+            (
+                protocol::GEOMETRY_AXIS_ORDER.to_owned(),
+                "unknown".to_owned(),
+            ),
             (
                 protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
                 "geometry".to_owned(),

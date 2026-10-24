@@ -33,6 +33,8 @@ pub const CONTRACT_VERSION_KEY: &str = "plenora.contract.version";
 /// due campi hanno lo stesso id — nomi ripetuti, collisione dell'hash, id
 /// dichiarati uguali (anche con zeri iniziali diversi): l'unicita non si
 /// ripara rinumerando.
+// Deviazione dichiarata (GEO-013, contracts/adoption-source.json): l'id generato viene
+// dall'origine o dal nome, non dal piu piccolo intero libero.
 pub fn contract_schema(fields: Vec<Field>) -> crate::Result<SchemaRef> {
     let mut seen = std::collections::HashSet::new();
     let fields = fields

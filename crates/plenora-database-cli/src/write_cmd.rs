@@ -109,8 +109,12 @@ async fn execute_bulk_write(
     dry_run: bool,
 ) -> CliResult<()> {
     if dry_run {
-        // Emette il piano che sarebbe applicato, senza toccare il DB.
+        // Emette il piano che sarebbe applicato, senza toccare il DB. Lo
+        // schema si giudica comunque come lo giudicherebbe la scrittura
+        // (REJ-001): un dry run che dice `dry_run` su un ingresso che la
+        // scrittura rifiuterebbe e un'accettazione indebita.
         let schema = stream.schema();
+        plenora_database_core::field_contract::validate_schema_contract(&schema)?;
         let fields: Vec<serde_json::Value> = schema
             .fields()
             .iter()
@@ -193,3 +197,7 @@ fn parse_dry_run(args: &mut impl Iterator<Item = String>) -> CliResult<bool> {
 fn ensure_end_local(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     ensure_end(args)
 }
+
+#[cfg(test)]
+#[path = "write_cmd_tests.rs"]
+mod tests;

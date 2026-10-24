@@ -735,6 +735,10 @@ def validate_adoption_source() -> int:
     required = {"CAT-001", "CAT-002", "CAT-003", "DB-ABS-001", "DB-ABS-002", "DB-ABS-003", "DB-RT-003", "ERR-016"}
     required.update(f"RT-{number:03d}" for number in range(16, 28))
     required.update(f"INTEROP-{number:03d}" for number in range(1, 6))
+    # Arrow Geometry Semantics 1.0 e reclamato: ogni sua regola ha uno stato.
+    if "plenora-arrow-geometry-semantics-v1" in selected:
+        required.update(f"GEO-{number:03d}" for number in range(0, 21))
+        required.update(f"REJ-{number:03d}" for number in range(1, 5))
     seen = set()
     for item in requirements:
         if not isinstance(item, dict) or item.get("status") not in {"implemented", "deviation", "not_applicable"}:

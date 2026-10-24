@@ -6,8 +6,7 @@ use plenora_database_core::arrow::array::{
     TimestampMicrosecondArray, UInt8Array,
 };
 use plenora_database_core::arrow::RecordBatch;
-use plenora_database_core::ewkb::inspect_ewkb_detailed;
-use plenora_database_core::protocol;
+use plenora_database_core::geometry_value::verify_field_value;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use tiberius::{IntoSql, Query, TokenRow};
 
@@ -73,24 +72,17 @@ pub(super) fn inspect_row(
                 } else {
                     let value = binary.value(row);
                     enforce_cell(value.len(), cell_limit)?;
-                    let inspection = inspect_ewkb_detailed(value, component_limit, nesting_depth)?;
-                    if inspection.root.srid.is_some() {
-                        return Err(mapping_error(
-                            "write SQL Server richiede WKB senza SRID embedded",
-                        ));
-                    }
-                    let expected_dimensions = plan
-                        .input_schema
-                        .field(column.input_index)
-                        .metadata()
-                        .get(protocol::GEOMETRY_DIMENSIONS)
-                        .map(String::as_str)
-                        .ok_or_else(|| {
-                            mapping_error("dimensioni spatial assenti dal piano Arrow")
-                        })?;
-                    if inspection.root.dimensions_label() != expected_dimensions {
-                        return Err(mapping_error("dimensioni WKB diverse dal contratto Arrow"));
-                    }
+                    // La verifica comune (GEO-008, GEO-009, GEO-011): fino al
+                    // 24/10 qui non si confrontava il tipo del valore con la
+                    // lista dichiarata, e un poligono in un campo `point`
+                    // passava.
+                    let inspection = verify_field_value(
+                        plan.input_schema.field(column.input_index),
+                        value,
+                        component_limit,
+                        nesting_depth,
+                        ErrorPhase::Write,
+                    )?;
                     geometry_components = geometry_components
                         .checked_add(inspection.stats.components)
                         .ok_or_else(|| {
@@ -192,24 +184,17 @@ pub(super) fn inspect_batch(
                             "budget componenti geometriche esaurito",
                         ));
                     }
-                    let inspection = inspect_ewkb_detailed(value, remaining, nesting_depth)?;
-                    if inspection.root.srid.is_some() {
-                        return Err(mapping_error(
-                            "write SQL Server richiede WKB senza SRID embedded",
-                        ));
-                    }
-                    let expected_dimensions = plan
-                        .input_schema
-                        .field(column.input_index)
-                        .metadata()
-                        .get(protocol::GEOMETRY_DIMENSIONS)
-                        .map(String::as_str)
-                        .ok_or_else(|| {
-                            mapping_error("dimensioni spatial assenti dal piano Arrow")
-                        })?;
-                    if inspection.root.dimensions_label() != expected_dimensions {
-                        return Err(mapping_error("dimensioni WKB diverse dal contratto Arrow"));
-                    }
+                    // La verifica comune (GEO-008, GEO-009, GEO-011): fino al
+                    // 24/10 qui non si confrontava il tipo del valore con la
+                    // lista dichiarata, e un poligono in un campo `point`
+                    // passava.
+                    let inspection = verify_field_value(
+                        plan.input_schema.field(column.input_index),
+                        value,
+                        remaining,
+                        nesting_depth,
+                        ErrorPhase::Write,
+                    )?;
                     geometry_components = geometry_components
                         .checked_add(inspection.stats.components)
                         .ok_or_else(|| {
