@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 108326,
-  "max_code_lines": 89099,
-  "rationale": "Adozione di Arrow Geometry Semantics 1.0: crs_definition (identificatori di primo livello e buona forma delle definizioni CRS, GEO-005, portato da IO-tools per dare lo stesso verdetto dell'oracolo), geometry_value (verifica comune dei valori WKB/EWKB, GEO-008/009/011, che sostituisce i controlli divergenti dei cinque adapter) e le classi REJ-001 in field_contract; e crescita di prodotto richiesta dal contratto. Verifica d'igiene: i controlli per provider rimossi a favore di quello comune, test in file dedicati. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 106392 -> 108326 (+1934), righe di codice 87659 -> 89099 (+1440). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 109080,
+  "max_code_lines": 89527,
+  "rationale": "Rilettura indipendente dell'adozione di Arrow Geometry Semantics 1.0: ordine degli assi rappresentabile per ogni adapter (GEO-001) e axis-order=long-lat nei percorsi MySQL (scrittura, lettura, query, mutazioni, x/y), SRID derivato verificato nei cataloghi PostgreSQL e MySQL o non derivato (GEO-008), regola del produttore di GEO-009 in lettura PostgreSQL con lo SRID ereditato dalle geometrie calcolate, dry run con la stessa compilazione del piano della scrittura, limiti di supporto decisi dallo schema, EWKB in forma estesa; e crescita di prodotto richiesta dal contratto. Verifica d'igiene: le regole stanno nel contratto comune (FieldContract) e nel profilo del prodotto invece che ripetute negli adapter, test in file dedicati. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 108326 -> 109080 (+754), righe di codice 89099 -> 89527 (+428). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

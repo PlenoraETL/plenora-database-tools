@@ -19,11 +19,25 @@ file e passa dagli ingressi Arrow della CLI:
 Un vettore valido rifiutato per un limite del bersaglio e' il verdetto di
 **supporto** di GEO-000 (un componente puo' rifiutare un ingresso conforme che
 il suo bersaglio non rappresenta): si conta a parte, ed e' ammesso solo per i
-limiti che il manifesto dichiara, con la loro categoria. L'unico oggi e' della
+limiti che il manifesto dichiara, con la loro categoria. Oggi sono due, della
 scrittura PostgreSQL: un CRS che `spatial_ref_sys` del bersaglio non conosce
 non si puo' registrare (la colonna lo avrebbe con SRID 0, cioe' senza CRS), e
-si rifiuta con `crs` leggendo il catalogo. Su un vettore invalido nei valori
-REJ-002 riporta il limite prima del valore, e vale lo stesso.
+si rifiuta con `crs` leggendo il catalogo; un ordine degli assi `lat_lon` o
+`northing_easting` non si memorizza in una colonna PostGIS, che vuole la
+longitudine o l'easting in `x` (GEO-001), e si rifiuta con `unsupported`. Su
+un vettore invalido nei valori REJ-002 riporta il limite prima del valore, e
+vale lo stesso.
+
+Un'accettazione si verifica anche nelle coordinate: le ordinate rilette con
+`ST_AsBinary` devono essere quelle scritte, nello stesso ordine (GEO-001,
+GEO-003). Un valore memorizzato con gli assi scambiati ha lo SRID giusto e
+nessun errore: senza questo confronto passerebbe per conforme.
+
+Con `--postgres-env` gira anche `dry-run-postgres`, il dry run di
+`bulk-write`: deve concordare con la scrittura su ogni vettore. Rifiuta, con
+la stessa categoria, cio' che la scrittura rifiuta senza contattare il server
+(fase `validate`); accetta tutto il resto, perche' cio' che decidono il
+catalogo o i valori non e' suo.
 
     python scripts/vettori_arrow_data.py --contracts .plenora-contracts \\
         --cli target/debug/plenora-database --referto vettori-arrow-data.json \\
@@ -162,6 +176,62 @@ class Postgres:
                                      f"WHERE ST_SRID({colonna}::geometry) <> {int(atteso)}")
         return difformi
 
+    def coordinate_difformi(self, tabella: str, vettore: dict) -> int:
+        """Le righe la cui geometria riletta non ha le ordinate scritte, nello
+        stesso ordine. `ST_AsBinary` rende WKB ISO senza SRID: si confrontano
+        tipo, dimensioni e coordinate, non i byte, che cambiano con il byte
+        order e con la forma del type code."""
+        difformi = 0
+        righe = sorted(vettore["rows"], key=lambda riga: riga["id"])
+        for campo in vettore["fields"]:
+            md = campo.get("metadata") or {}
+            if md.get("ARROW:extension:name") != "geoarrow.wkb":
+                continue
+            colonna = '"' + campo["name"].replace('"', '""') + '"'
+            testo = self.testo(
+                f"SELECT string_agg(coalesce(encode(ST_AsBinary({colonna}::geometry), 'hex'), "
+                f"'NULL'), ',' ORDER BY id) FROM public.{tabella}")
+            riletti = (testo or "").split(",") if righe else []
+            attesi = [riga.get(campo["name"]) for riga in righe]
+            if len(riletti) != len(attesi):
+                return max(len(attesi), 1)
+            for atteso, riletto in zip(attesi, riletti):
+                if (atteso is None) != (riletto == "NULL"):
+                    difformi += 1
+                elif atteso is not None and (coordinate(bytes.fromhex(atteso))
+                                             != coordinate(bytes.fromhex(riletto))):
+                    difformi += 1
+        return difformi
+
+    def testo(self, sql: str) -> str | None:
+        argv = [str(self.cli), "database-execute-scalar", "postgres", self.variabile, sql]
+        esito = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+        return json.loads(esito.stdout)["value"]["value"]
+
+    def dry_run(self, nome: str, ingresso: Path) -> dict:
+        """Il dry run di `bulk-write` sullo stesso ingresso e con la stessa
+        operazione della scrittura: non contatta il server."""
+        operazione = self.lavoro / f"{nome}-write.json"
+        return busta([str(self.cli), "bulk-write", self.variabile, str(operazione),
+                      str(ingresso), "--dry-run"])
+
+    def limiti(self, vettore: dict) -> set[str]:
+        """Le categorie dei limiti dichiarati che il vettore tocca."""
+        limiti = self.limiti_degli_assi(vettore)
+        if self.crs_sconosciuto(vettore):
+            limiti.add("crs")
+        return limiti
+
+    @staticmethod
+    def limiti_degli_assi(vettore: dict) -> set[str]:
+        limiti = set()
+        for campo in vettore["fields"]:
+            md = campo.get("metadata") or {}
+            if (md.get("ARROW:extension:name") == "geoarrow.wkb"
+                    and md.get("plenora.geometry.axis_order") in ASSI_NON_RAPPRESENTABILI):
+                limiti.add("unsupported")
+        return limiti
+
     def scrivi(self, nome: str, ingresso: Path, vettore: dict) -> dict:
         tabella = self.tabella(nome)
         self.cancella(tabella)
@@ -181,8 +251,67 @@ class Postgres:
             osservato["tabella_rimasta"] = self.esiste(tabella)
         else:
             osservato["srid_difformi"] = self.srid_difformi(tabella, vettore)
+            osservato["coordinate_difformi"] = self.coordinate_difformi(tabella, vettore)
+            # Un campo `lat_lon` accettato finisce in `x` come longitudine: gli
+            # assi sono scambiati anche se le ordinate rilette sono quelle
+            # scritte (GEO-001).
+            osservato["assi_scambiati"] = int("unsupported" in self.limiti_degli_assi(vettore))
         self.cancella(tabella)
         return osservato
+
+
+# GEO-001: PostGIS memorizza la longitudine o l'easting in `x`.
+ASSI_NON_RAPPRESENTABILI = {"lat_lon", "northing_easting"}
+
+
+def coordinate(wkb: bytes) -> list:
+    """Tipo, dimensioni e ordinate di un WKB o EWKB, in ordine di lettura.
+
+    Il valore e' gia' stato accettato dalla scrittura: qui non si giudica la
+    buona forma, si legge soltanto."""
+    import struct
+
+    posizione = 0
+
+    def prendi(formato: str, ordine: str) -> tuple:
+        nonlocal posizione
+        valori = struct.unpack_from(ordine + formato, wkb, posizione)
+        posizione += struct.calcsize(ordine + formato)
+        return valori
+
+    def geometria() -> list:
+        ordine = "<" if wkb[posizione] == 1 else ">"
+        prendi("B", ordine)
+        (codice,) = prendi("I", ordine)
+        z = bool(codice & 0x80000000)
+        m = bool(codice & 0x40000000)
+        if codice & 0x20000000:
+            prendi("I", ordine)
+        migliaia, tipo = divmod(codice & 0x0FFFFFFF, 1000)
+        if migliaia:
+            z, m = {1: (True, False), 2: (False, True), 3: (True, True)}[migliaia]
+        larghezza = 2 + z + m
+        uscita: list = [tipo, z, m]
+
+        def punti(numero: int) -> None:
+            # Un NaN non e uguale a se stesso: le ordinate di `POINT EMPTY`
+            # si confrontano come segnaposto, non come numeri.
+            uscita.append(tuple("NaN" if valore != valore else valore
+                                for valore in prendi("d" * (numero * larghezza), ordine)))
+
+        if tipo == 1:
+            punti(1)
+        elif tipo in (2, 8):
+            punti(prendi("I", ordine)[0])
+        elif tipo in (3, 17):
+            for _ in range(prendi("I", ordine)[0]):
+                punti(prendi("I", ordine)[0])
+        else:
+            for _ in range(prendi("I", ordine)[0]):
+                uscita.append(geometria())
+        return uscita
+
+    return geometria()
 
 
 def rej_003(operazione: str, osservato: dict, di_valore: bool) -> bool:
@@ -198,14 +327,18 @@ def rej_003(operazione: str, osservato: dict, di_valore: bool) -> bool:
             and osservato.get("remote_effect") == "none")
 
 
-def verdetto(operazione: str, vettore: dict, osservato: dict, oracolo, limite: str | None) -> str:
-    """`limite` e' la categoria del limite dichiarato che il vettore tocca
-    nell'operazione, o `None`."""
+def verdetto(operazione: str, vettore: dict, osservato: dict, oracolo,
+             limite: str | set[str] | None) -> str:
+    """`limite` e' la categoria, o l'insieme delle categorie, dei limiti
+    dichiarati che il vettore tocca nell'operazione, o `None`."""
+    limiti = {limite} if isinstance(limite, str) else set(limite or ())
     accettato = osservato["exit"] == 0
-    supporto = limite is not None and osservato["category"] == limite
+    supporto = osservato["category"] in limiti
     if vettore["expect"] == "valid":
         if accettato:
-            return "accettazione-difforme" if osservato.get("srid_difformi") else "conforme"
+            difforme = (osservato.get("srid_difformi") or osservato.get("coordinate_difformi")
+                        or osservato.get("assi_scambiati"))
+            return "accettazione-difforme" if difforme else "conforme"
         if not supporto:
             return "rifiuto-indebito"
         return "rifiuto-di-supporto" if rej_003(operazione, osservato, False) else "assi-del-rifiuto"
@@ -218,6 +351,21 @@ def verdetto(operazione: str, vettore: dict, osservato: dict, oracolo, limite: s
         return "categoria-sbagliata"
     di_valore = oracolo.schema_verdict(vettore) is None
     return "conforme" if rej_003(operazione, osservato, di_valore) else "assi-del-rifiuto"
+
+
+def accordo_dry_run(dry_run: dict, scrittura: dict) -> str:
+    """Il dry run concorda con la scrittura: rifiuta con la stessa categoria
+    cio' che la scrittura rifiuta senza server (fase `validate`), e accetta
+    tutto il resto. Un dry run che accetta cio' che la scrittura rifiuta in
+    `validate` e' un'accettazione indebita; uno che rifiuta cio' che la
+    scrittura accetta, o rifiuta dopo, un rifiuto indebito."""
+    if scrittura["exit"] != 0 and scrittura.get("phase") == "validate":
+        if dry_run["exit"] == 0:
+            return "dry-run-accetta"
+        if dry_run["category"] != scrittura["category"]:
+            return "dry-run-categoria"
+        return "conforme"
+    return "conforme" if dry_run["exit"] == 0 else "dry-run-rifiuta"
 
 
 def main() -> int:
@@ -246,22 +394,25 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="vettori-arrow-data-") as lavoro:
         lavoro = Path(lavoro)
         postgres = Postgres(opzioni.cli, opzioni.postgres_env, lavoro) if opzioni.postgres_env else None
-        operazioni = ["inspect-dataset"] + (["write-postgres"] if postgres else [])
+        operazioni = ["inspect-dataset"] + (["write-postgres", "dry-run-postgres"]
+                                            if postgres else [])
         for percorso in vettori:
             vettore = json.loads(percorso.read_text(encoding="utf-8"))
             ingresso = lavoro / f"{percorso.stem}.arrow"
             t = tabella(vettore)
             with pa.OSFile(str(ingresso), "wb") as f, ipc.new_file(f, t.schema) as w:
                 w.write_table(t)
+            scrittura: dict = {}
             for operazione in operazioni:
-                limite = None
                 if operazione == "inspect-dataset":
                     osservato = busta([str(opzioni.cli), "inspect-dataset", str(ingresso)])
+                    v = verdetto(operazione, vettore, osservato, oracolo, None)
+                elif operazione == "write-postgres":
+                    osservato = scrittura = postgres.scrivi(percorso.stem, ingresso, vettore)
+                    v = verdetto(operazione, vettore, osservato, oracolo, postgres.limiti(vettore))
                 else:
-                    osservato = postgres.scrivi(percorso.stem, ingresso, vettore)
-                    if postgres.crs_sconosciuto(vettore):
-                        limite = "crs"
-                v = verdetto(operazione, vettore, osservato, oracolo, limite)
+                    osservato = postgres.dry_run(percorso.stem, ingresso)
+                    v = accordo_dry_run(osservato, scrittura)
                 conteggi.setdefault(operazione, {})
                 conteggi[operazione][v] = conteggi[operazione].get(v, 0) + 1
                 righe.append({"vettore": percorso.stem, "operazione": operazione,

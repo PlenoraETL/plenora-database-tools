@@ -104,6 +104,79 @@ class Verdetti(unittest.TestCase):
         self.assertEqual(self.verdetto(DI_VALORE, rifiuto("crs", "prepare"), limite="crs"),
                          "rifiuto-di-supporto")
 
+    def test_piu_limiti_dichiarati_ammettono_ciascuna_categoria(self) -> None:
+        for categoria in ("crs", "unsupported"):
+            self.assertEqual(
+                self.verdetto(VALIDO, rifiuto(categoria, "validate"),
+                              limite={"crs", "unsupported"}),
+                "rifiuto-di-supporto",
+            )
+        self.assertEqual(
+            self.verdetto(VALIDO, rifiuto("schema", "validate"), limite={"crs", "unsupported"}),
+            "rifiuto-indebito",
+        )
+
+    def test_coordinate_scambiate_sono_un_accettazione_difforme(self) -> None:
+        # GEO-001: lo SRID giusto non basta, servono le ordinate scritte.
+        self.assertEqual(
+            self.verdetto(VALIDO, {"exit": 0, "category": None, "srid_difformi": 0,
+                                   "coordinate_difformi": 1}),
+            "accettazione-difforme",
+        )
+        # Un campo `lat_lon` accettato da PostGIS ha gli assi scambiati anche
+        # con le ordinate rilette identiche.
+        self.assertEqual(
+            self.verdetto(VALIDO, {"exit": 0, "category": None, "assi_scambiati": 1}),
+            "accettazione-difforme",
+        )
+
+
+class Coordinate(unittest.TestCase):
+    def test_byte_order_e_forma_del_codice_non_contano(self) -> None:
+        # POINT Z(1 2 3): ISO little endian, esteso big endian con SRID 4326.
+        iso = bytes.fromhex("01e9030000" "000000000000f03f" "0000000000000040"
+                            "0000000000000840")
+        esteso = bytes.fromhex("00a0000001" "000010e6" "3ff0000000000000"
+                               "4000000000000000" "4008000000000000")
+        self.assertEqual(runner.coordinate(iso), runner.coordinate(esteso))
+
+    def test_gli_assi_scambiati_si_vedono(self) -> None:
+        punto = bytes.fromhex("0101000000" "0000000000002940" "0000000000004e40")
+        scambiato = bytes.fromhex("0101000000" "0000000000004e40" "0000000000002940")
+        self.assertNotEqual(runner.coordinate(punto), runner.coordinate(scambiato))
+
+    def test_un_punto_vuoto_e_uguale_a_se_stesso(self) -> None:
+        # POINT EMPTY: ordinate NaN, con due rappresentazioni diverse del NaN.
+        vuoto = bytes.fromhex("0101000000" "000000000000f87f" "000000000000f87f")
+        altro_nan = bytes.fromhex("0101000000" "010000000000f87f" "000000000000f8ff")
+        self.assertEqual(runner.coordinate(vuoto), runner.coordinate(vuoto))
+        self.assertEqual(runner.coordinate(vuoto), runner.coordinate(altro_nan))
+
+    def test_le_collezioni_si_leggono_per_membro(self) -> None:
+        multi = bytes.fromhex("010400000002000000" "0101000000" + "00" * 16
+                              + "0101000000" + "000000000000f03f" * 2)
+        self.assertEqual(runner.coordinate(multi)[0], 4)
+        self.assertEqual(len(runner.coordinate(multi)), 5)
+
+
+class AccordoDryRun(unittest.TestCase):
+    def test_rifiuta_cio_che_la_scrittura_rifiuta_senza_server(self) -> None:
+        scrittura = rifiuto("crs", "validate")
+        self.assertEqual(runner.accordo_dry_run(rifiuto("crs", "validate"), scrittura),
+                         "conforme")
+        self.assertEqual(runner.accordo_dry_run({"exit": 0, "category": None}, scrittura),
+                         "dry-run-accetta")
+        self.assertEqual(runner.accordo_dry_run(rifiuto("schema", "validate"), scrittura),
+                         "dry-run-categoria")
+
+    def test_accetta_cio_che_decidono_catalogo_e_valori(self) -> None:
+        for scrittura in ({"exit": 0, "category": None}, rifiuto("crs", "prepare"),
+                          rifiuto("data_mapping", "write", "rolled_back")):
+            self.assertEqual(runner.accordo_dry_run({"exit": 0, "category": None}, scrittura),
+                             "conforme")
+            self.assertEqual(runner.accordo_dry_run(rifiuto("crs", "validate"), scrittura),
+                             "dry-run-rifiuta")
+
 
 if __name__ == "__main__":
     unittest.main()

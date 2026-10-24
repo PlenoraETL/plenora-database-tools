@@ -318,8 +318,13 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "live_tests::live_verified_tls_rejects_a_hostname_mismatch",
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
         )
-        # Le prove concorrenti verificano il recupero delle connessioni e del pool.
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 35)
+        # Le prove concorrenti verificano il recupero delle connessioni e del pool;
+        # l'ultima aggiunta e l'ordine degli assi geografici (GEO-001).
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 36)
+        self.assertIn(
+            "live_tests::live_geographic_axis_order_round_trips_and_derived_srid_is_verified",
+            gate.EXPECTED_LIVE_REFERENCE_TESTS,
+        )
 
     def test_gate_pins_the_query_operation_live_test_by_name(self) -> None:
         for name in (
