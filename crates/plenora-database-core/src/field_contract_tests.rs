@@ -36,8 +36,23 @@ fn current_schema(field: Field) -> Schema {
 #[test]
 fn current_contract_requires_schema_version() {
     let schema = Schema::new(vec![spatial_field(&[])]);
-    assert!(validate_schema_contract(&schema).is_err());
+    let error = validate_schema_contract(&schema).expect_err("versione assente");
+    // REJ-001: un difetto dei metadati dello schema, non di un valore.
+    assert_eq!(error.category, ErrorCategory::Schema);
     assert!(validate_schema_contract(&current_schema(spatial_field(&[]))).is_ok());
+}
+
+#[test]
+fn malformed_contract_version_is_a_schema_defect() {
+    for malformata in ["", "01", "0", "1.0", "v1", " 1", "-1"] {
+        let mut schema = current_schema(spatial_field(&[]));
+        schema.metadata.insert(
+            protocol::CONTRACT_VERSION_KEY.to_owned(),
+            malformata.to_owned(),
+        );
+        let error = validate_schema_contract(&schema).expect_err("versione malformata");
+        assert_eq!(error.category, ErrorCategory::Schema, "{malformata:?}");
+    }
 }
 
 #[test]
