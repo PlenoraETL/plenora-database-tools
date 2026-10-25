@@ -1555,12 +1555,19 @@ impl Renderer {
     /// al 25/10 il renderer guardava soltanto gli operandi di un operatore non
     /// spatial, e una sonda nella projection di una subquery `IN` o di una
     /// sorgente derivata nominata per alias rendeva zero righe senza errore.
+    ///
+    /// Poi la regola degli operandi geometrici, nella parte che non chiede un
+    /// catalogo (`spatial_operand::scalar_operands`): una funzione spatial che
+    /// rende una geometria o un valore spatial sotto un operatore non spatial
+    /// si rifiuta qui, per ogni dialetto; le colonne le giudica il provider.
     fn judge_probe_positions(&self, query: &QueryOperation) -> Result<()> {
         plenora_database_core::spatial_probe::judge_probe_positions(
             self.provider_kind(),
             self.probe_evidence,
             query,
-        )
+        )?;
+        plenora_database_core::spatial_operand::scalar_operands(self.provider_kind(), query)
+            .map(|_| ())
     }
 
     fn render_predicate_expression(

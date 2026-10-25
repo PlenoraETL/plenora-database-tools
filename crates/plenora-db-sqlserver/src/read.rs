@@ -151,6 +151,7 @@ pub async fn read_query_operation(
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;
     let internal = budget_cancellation.token().clone();
     let mut pooled = pool.checkout(&internal).await?;
+    crate::query::verify_scalar_operands(pooled.session_mut()?, operation, &internal).await?;
     let spatial_validation = validate_spatial_inputs(
         pooled.session_mut()?,
         operation,

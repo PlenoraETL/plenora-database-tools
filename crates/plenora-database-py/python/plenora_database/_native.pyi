@@ -18,9 +18,15 @@ def geometry_wkb(ewkb: bytes) -> bytes: ...
 
 def validate_ewkb_reference(ewkb: bytes, srid: int, dimensions: str) -> None: ...
 
-def compile_relational_query(ast_json: str, provider_name: str) -> tuple[str, list[str]]: ...
+def compile_relational_query(
+    ast_json: str,
+    provider_name: str,
+    geometry_columns: list[tuple[str | None, str, str]] | None = None,
+) -> tuple[str, list[str]]: ...
 def compile_relational_mutation(
-    ast_json: str, provider_name: str
+    ast_json: str,
+    provider_name: str,
+    geometry_columns: list[tuple[str | None, str, str]] | None = None,
 ) -> tuple[str, list[str], bool]: ...
 
 def create_engine(

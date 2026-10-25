@@ -40,6 +40,7 @@ pub mod row_diagnostics;
 pub mod row_visibility;
 pub mod session_context;
 pub mod spatial_catalog;
+pub mod spatial_operand;
 pub mod spatial_policy;
 pub mod spatial_predicate;
 pub mod spatial_probe;

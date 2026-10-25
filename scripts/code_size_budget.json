@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 114397,
-  "max_code_lines": 92960,
-  "rationale": "Regola P a mondo chiuso (core spatial_probe::judge_probe_positions: in ogni nodo spatial ogni argomento geometrico si classifica in positivo come colonna di relazione, seguita attraverso sorgenti derivate, CTE e rami di set operation fino alla tabella, funzione spatial o sonda diretta, e il resto si rifiuta con GEOMETRY_ARGUMENT_UNCLASSIFIED; judge_probe_predicate per render_filter), test live SQL Server adeguati alla regola P, sonde SRID MariaDB per versione. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 113949 -> 114397 (+448), righe di codice 92654 -> 92960 (+306). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 115573,
+  "max_code_lines": 93851,
+  "rationale": "Regola degli operandi geometrici (core spatial_operand::scalar_operands: una colonna geometrica, una funzione spatial che rende una geometria o un SpatialValue sotto un operatore non spatial si rifiuta prima dell'esecuzione; il renderer decide la parte statica, i provider le colonne sul catalogo: MySQL/MariaDB INFORMATION_SCHEMA.COLUMNS, PostgreSQL pg_attribute, SQL Server sys.columns, e i path read di ogni provider sulla descrizione gia letta; lo SDK con le colonne Geometry del mapping ORM o della reflection), con le prove offline, live MySQL/MariaDB e PostgreSQL e SDK. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 114397 -> 115573 (+1176), righe di codice 92960 -> 93851 (+891). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

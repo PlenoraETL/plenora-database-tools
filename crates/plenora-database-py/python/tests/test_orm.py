@@ -2339,6 +2339,78 @@ def test_geometry_type_and_spatial_query_nodes() -> None:
     orm.rollback()
 
 
+# Il motivo del rifiuto, come lo scrive il core (`GEOMETRY_SCALAR_OPERAND`).
+_GEOMETRY_SCALAR_OPERAND = "operando geometrico sotto un operatore non spatial"
+_RELATIONAL_PROVIDERS = ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2")
+
+
+def test_geometry_attribute_under_scalar_operator_is_refused_compiling() -> None:
+    """Un attributo ``Geometry`` sotto un operatore non spatial non compila.
+
+    Fino al 25/10 ``Place.shape == bind(..., BINARY)`` diventava
+    ``shape = CAST(? AS BINARY)``: `MySQL` e `MariaDB` confrontano il proprio
+    formato interno con il valore legato e rendevano zero righe (``<>``
+    tutte) senza errore. Il mapping sa che la colonna e geometrica, e la
+    compilazione la rifiuta con il motivo del core su ogni provider; le
+    stesse forme su una colonna scalare restano.
+    """
+
+    from plenora_database.expression import (
+        _compile_mutation_statement,
+        _compile_statement,
+    )
+
+    shape = p.bind("shape", p.BindType.BINARY)
+    aliased = Place.__table__.alias("x")
+    derived = p.select(Place.shape.label("s")).subquery("d", "s")
+    refused = {
+        "=": p.select(Place.id).where(Place.shape == shape),
+        "<>": p.select(Place.id).where(Place.shape != shape),
+        "IN": p.select(Place.id).where(Place.shape.in_(shape)),
+        "BETWEEN": p.select(Place.id).where(Place.shape.between(shape, shape)),
+        "LIKE su CAST": p.select(Place.id).where(
+            Place.shape.cast(p.BindType.STRING).like(p.bind("shape", p.BindType.STRING))
+        ),
+        "ORDER BY": p.select(Place.id).order_by(Place.shape),
+        "GROUP BY": p.select(Place.id).group_by(Place.shape),
+        "alias": p.select(aliased.c.id).where(aliased.c.shape == shape),
+        "sorgente derivata": p.select(derived.c.s).where(derived.c.s == shape),
+    }
+    for provider in _RELATIONAL_PROVIDERS:
+        for form, statement in refused.items():
+            with pytest.raises(p.PlenoraUnsupportedError) as caught:
+                _compile_statement(statement, {"shape": b""}, provider)
+            assert _GEOMETRY_SCALAR_OPERAND in str(caught.value), (provider, form)
+        for mutation in (
+            p.delete(Place.__table__).where(Place.shape == shape),
+            p.update(Place.__table__)
+            .values(id=p.bind("id", p.BindType.BIG_INTEGER))
+            .where(Place.shape == shape),
+        ):
+            with pytest.raises(p.PlenoraUnsupportedError) as caught:
+                _compile_mutation_statement(
+                    mutation, {"shape": b"", "id": 1}, provider
+                )
+            assert _GEOMETRY_SCALAR_OPERAND in str(caught.value), provider
+
+    # Nessun falso rifiuto.
+    for provider in _RELATIONAL_PROVIDERS:
+        _compile_statement(
+            p.select(Place.id).where(Place.id == p.bind("id", p.BindType.BIG_INTEGER)),
+            {"id": 1},
+            provider,
+        )
+        _compile_statement(
+            p.select(Place.id).where(Place.shape.is_not_null()), {}, provider
+        )
+    # Il limite dichiarato: una tabella con soli nomi non porta tipi, e la
+    # colonna non si giudica.
+    untyped = p.table("orm_places", "id", "shape")
+    _compile_statement(
+        p.select(untyped.c.id).where(untyped.c.shape == shape), {"shape": b""}, "mysql"
+    )
+
+
 @pytest.mark.asyncio
 async def test_async_orm_reuses_mapping_uow_and_relationship_planner() -> None:
     transaction = _AsyncFakeTransaction([{"id": 91, "created_by": "database"}])

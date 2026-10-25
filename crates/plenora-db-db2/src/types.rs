@@ -284,6 +284,7 @@ impl Db2ReadPlan {
             .iter()
             .map(|column| column.name.as_str())
             .collect::<BTreeSet<_>>();
+        ensure_scalar_fields(description, operation)?;
         let bind_names = if let Some((filter_sql, filter_binds)) =
             render_filter(&renderer, operation.filter.as_ref(), &available_names)?
         {
@@ -450,6 +451,25 @@ fn canonical_geometry_type(native_type: &str) -> Option<&'static str> {
         "ST_GEOMCOLLECTION" => Some("geometrycollection"),
         _ => None,
     }
+}
+
+/// Un campo geometrico sotto un operatore non spatial o in ORDER BY
+/// confronterebbe il formato interno del server con il valore legato
+/// (`spatial_operand`).
+fn ensure_scalar_fields(
+    description: &Db2ObjectDescription,
+    operation: &ReadOperation,
+) -> Result<()> {
+    plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+        plenora_database_core::plan::ProviderKind::Db2,
+        operation.filter.as_ref(),
+        &operation.order_by,
+        |field| {
+            description.columns.iter().any(|column| {
+                column.name == field && is_spatial_type(&column.data_type.to_ascii_uppercase())
+            })
+        },
+    )
 }
 
 fn render_filter(

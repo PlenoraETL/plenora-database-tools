@@ -450,6 +450,9 @@ class MappedColumn(Generic[T]):
     def _bind(self, name: str, column: Column) -> None:
         self.name = name
         self.column = column
+        # Un attributo `Geometry` e geometrico per la compilazione: sotto un
+        # operatore non spatial si rifiuta (`expression._geometry_columns`).
+        object.__setattr__(column, "_geometry", isinstance(self.type_, Geometry))
 
     def _clone(self) -> MappedColumn[Any]:
         return MappedColumn(

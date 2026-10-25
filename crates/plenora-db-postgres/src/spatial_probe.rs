@@ -509,6 +509,62 @@ pub async fn verify_query_columns(
     Ok(())
 }
 
+/// La regola degli operandi geometrici sul catalogo
+/// (`plenora_database_core::spatial_operand`): le colonne che il piano usa
+/// sotto un operatore non spatial non sono `geometry` o `geography` (anche
+/// attraverso un dominio).
+///
+/// `PostGIS` rifiuta da se `geometry = bytea` e `geometry = text` («operator
+/// is not unique», misurato su 3.6 il 25/10), ma ordina per geometria, la
+/// confronta con un bind non tipizzato e accetta `CAST(g AS TEXT) LIKE`: il
+/// rifiuto e lo stesso degli altri provider, prima della query. Il tipo si
+/// riconosce per nome e non con `'geometry'::regtype`, che senza `PostGIS`
+/// farebbe fallire ogni query.
+///
+/// # Errors
+///
+/// `unsupported` per una colonna geometrica; gli errori del catalogo in fase
+/// `prepare`.
+pub async fn verify_scalar_operands(
+    client: &tokio_postgres::Client,
+    operands: &plenora_database_core::spatial_operand::ScalarOperands,
+) -> Result<()> {
+    if operands.is_empty() {
+        return Ok(());
+    }
+    let mut geometric = Vec::new();
+    for (schema, object) in operands.relations() {
+        let rows = client
+            .query(
+                "SELECT a.attname::text \
+                 FROM pg_catalog.pg_attribute a \
+                 JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+                 LEFT JOIN pg_catalog.pg_type b ON b.oid = t.typbasetype \
+                 WHERE a.attrelid = to_regclass(CASE WHEN $1::text IS NULL \
+                         THEN quote_ident($2::text) \
+                         ELSE quote_ident($1::text) || '.' || quote_ident($2::text) END) \
+                   AND a.attnum > 0 AND NOT a.attisdropped \
+                   AND (t.typname IN ('geometry', 'geography') \
+                        OR b.typname IN ('geometry', 'geography'))",
+                &[schema, object],
+            )
+            .await
+            .map_err(|error| crate::error::classify_error(ErrorPhase::Prepare, &error))?;
+        for row in rows {
+            geometric.push(BaseColumn {
+                schema: schema.clone(),
+                object: object.clone(),
+                column: row.get(0),
+            });
+        }
+    }
+    operands.judge(
+        PROVIDER,
+        |column| geometric.contains(column),
+        |name| geometric.iter().any(|candidate| candidate.column == name),
+    )
+}
+
 #[cfg(test)]
 #[path = "spatial_probe_tests.rs"]
 mod tests;

@@ -200,6 +200,19 @@ impl MysqlReadPlan {
             renderer.quote_object(&object)?
         );
         let mut bind_names = Vec::new();
+        // Un campo geometrico sotto un operatore non spatial o in ORDER BY
+        // confronterebbe il formato interno del server con il valore legato
+        // (`spatial_operand`).
+        plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+            profile.kind(),
+            operation.filter.as_ref(),
+            &operation.order_by,
+            |field| {
+                available
+                    .iter()
+                    .any(|column| column.name == field && column.kind == MysqlColumnKind::Geometry)
+            },
+        )?;
         if let Some(filter) = &operation.filter {
             ensure_filter_columns(filter, &available)?;
             let rendered_filter = renderer.render_filter(&convert_filter(filter)?)?;

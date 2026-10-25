@@ -662,6 +662,66 @@ pub(crate) async fn verify_declared_column_srids(
     Ok(())
 }
 
+/// Le colonne geometriche delle relazioni `relations` (schema, oggetto; lo
+/// schema assente e `database`), dal catalogo: la regola degli operandi
+/// geometrici (`spatial_operand`) le giudica prima di preparare una query.
+///
+/// Il nome della tabella si confronta senza distinguere maiuscole, come le
+/// colonne: un'omonimia di sole maiuscole puo soltanto aggiungere colonne da
+/// giudicare, e la decisione resta dalla parte del rifiuto. Una relazione che
+/// il catalogo non conosce non porta colonne: la query fallira sul server.
+///
+/// # Errors
+///
+/// Gli errori del catalogo.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn geometry_columns(
+    session: &mut MysqlSession,
+    profile: &dyn crate::profile::ProductProfile,
+    database: &str,
+    relations: &[(Option<String>, String)],
+    cancellation: &CancellationToken,
+) -> Result<Vec<plenora_database_core::spatial_probe::BaseColumn>> {
+    if relations.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut sql = String::from(
+        "SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name, \
+                COLUMN_NAME AS column_name, DATA_TYPE AS data_type \
+         FROM INFORMATION_SCHEMA.COLUMNS WHERE ",
+    );
+    let mut parameters = Vec::with_capacity(relations.len() * 2);
+    for (position, (schema, object)) in relations.iter().enumerate() {
+        if position > 0 {
+            sql.push_str(" OR ");
+        }
+        sql.push_str("(TABLE_SCHEMA = ? AND LOWER(TABLE_NAME) = LOWER(?))");
+        parameters.push(Value::from(schema.as_deref().unwrap_or(database)));
+        parameters.push(Value::from(object.as_str()));
+    }
+    let rows = session
+        .exec_rows(
+            &sql,
+            Params::Positional(parameters),
+            ErrorPhase::Prepare,
+            cancellation,
+        )
+        .await?;
+    let mut columns = Vec::new();
+    for row in &rows {
+        let data_type: String = required(row, "data_type", "data_type")?;
+        if !profile.is_spatial_native_type(&data_type.to_ascii_lowercase()) {
+            continue;
+        }
+        columns.push(plenora_database_core::spatial_probe::BaseColumn {
+            schema: Some(required(row, "table_schema", "table_schema")?),
+            object: required(row, "table_name", "table_name")?,
+            column: required(row, "column_name", "column_name")?,
+        });
+    }
+    Ok(columns)
+}
+
 fn mapping_error(message: impl Into<String>) -> DatabaseError {
     DatabaseError::new(
         ErrorCategory::DataMapping,

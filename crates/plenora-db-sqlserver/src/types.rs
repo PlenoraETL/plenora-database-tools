@@ -190,6 +190,7 @@ impl SqlServerReadPlan {
         sql.push_str(&renderer.quote_object(&object)?);
 
         let mut bind_names = Vec::new();
+        ensure_scalar_fields(operation, &available)?;
         if let Some(filter) = &operation.filter {
             ensure_filter_columns(filter, &available)?;
             let rendered_filter = renderer.render_filter(&convert_filter(filter)?)?;
@@ -372,6 +373,26 @@ fn convert_filter(expression: &FilterExpression) -> Result<Expression> {
             spatial: false,
         },
         sql_server_identifier,
+    )
+}
+
+/// Un campo geometrico sotto un operatore non spatial o in ORDER BY
+/// confronterebbe il formato interno del server con il valore legato
+/// (`spatial_operand`).
+fn ensure_scalar_fields(operation: &ReadOperation, columns: &[SqlServerColumnSpec]) -> Result<()> {
+    plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+        plenora_database_core::plan::ProviderKind::Sqlserver,
+        operation.filter.as_ref(),
+        &operation.order_by,
+        |field| {
+            columns.iter().any(|column| {
+                column.name == field
+                    && matches!(
+                        column.kind,
+                        SqlServerColumnKind::Geometry | SqlServerColumnKind::Geography
+                    )
+            })
+        },
     )
 }
 

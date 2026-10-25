@@ -8088,3 +8088,245 @@ async fn live_caller_query_decode_failure_requires_recovery() {
     );
     tx.rollback(&cancellation).await.expect("rollback");
 }
+
+/// Il provider dei test sugli operandi geometrici: `MySQL`, o `MariaDB` con
+/// `PLENORA_MYSQL_PRODUCT=mariadb` contro una fixture `MariaDB`.
+fn geometry_operand_provider() -> Box<dyn Provider> {
+    if environment("PLENORA_MYSQL_PRODUCT", "mysql") == "mariadb" {
+        Box::new(crate::MariadbProvider::new(live_config(), 2).expect("provider MariaDB"))
+    } else {
+        Box::new(MysqlProvider::new(live_config(), 2).expect("provider MySQL"))
+    }
+}
+
+/// Una query sulla tabella degli operandi geometrici, da JSON: `id` in
+/// projection, il resto dal chiamante.
+fn geometry_operand_query(
+    extra: &serde_json::Value,
+) -> plenora_database_core::query::QueryOperation {
+    let mut operation = serde_json::json!({
+        "source": {
+            "object": {"catalog": null, "schema": "dataflow_test", "object": "_geo_operando"},
+            "alias": "t"
+        },
+        "projection": [{
+            "expression": {"kind": "column", "column": {"relation": null, "field": "id"}},
+            "alias": null
+        }],
+        "filter": null,
+        "having": null,
+        "row_limit": null
+    });
+    for (key, value) in extra.as_object().expect("oggetto") {
+        operation[key] = value.clone();
+    }
+    serde_json::from_value(operation).expect("query degli operandi")
+}
+
+async fn geometry_operand_rows(
+    provider: &dyn Provider,
+    operation: &plenora_database_core::query::QueryOperation,
+    parameters: &ParameterBag,
+) -> plenora_database_core::Result<usize> {
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut stream = provider
+        .query(
+            &live_secret(),
+            operation,
+            parameters,
+            &budget,
+            &cancellation,
+        )
+        .await?;
+    let mut rows = 0;
+    while let Some(batch) = stream.next_batch(&cancellation).await? {
+        rows += batch.num_rows();
+    }
+    Ok(rows)
+}
+
+/// Una colonna geometrica sotto un operatore che non e spatial si rifiuta
+/// prima dell'esecuzione, su `MySQL` e su `MariaDB`.
+///
+/// Fino al 25/10 `t.g = CAST(? AS BINARY)` arrivava al server: il server
+/// confronta il proprio formato interno (SRID e WKB) con il valore legato, e
+/// `=` rendeva zero righe, `<>` una, `IN` zero, senza errore, per byte WKB,
+/// formato interno e testo WKT. Ora il provider legge i tipi delle colonne
+/// dal catalogo e rifiuta (`unsupported`, `GEOMETRY_SCALAR_OPERAND`). Le
+/// stesse forme su colonne binarie e testuali restano come prima.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_geometry_column_under_scalar_operator_is_refused() {
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::{ErrorPhase, RemoteEffect};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().unwrap();
+        connection
+            .query_drop("DROP TABLE IF EXISTS _geo_operando")
+            .await
+            .ok();
+        connection
+            .query_drop(
+                "CREATE TABLE _geo_operando (id BIGINT PRIMARY KEY, g POINT NOT NULL, \
+                 b VARBINARY(64) NOT NULL, s VARCHAR(64) NOT NULL) ENGINE=InnoDB",
+            )
+            .await
+            .expect("create");
+        connection
+            .query_drop(
+                "INSERT INTO _geo_operando VALUES (1, ST_GeomFromText('POINT(1 2)', 3857), \
+                 ST_AsBinary(ST_GeomFromText('POINT(1 2)')), 'POINT(1 2)')",
+            )
+            .await
+            .expect("seed");
+    }
+    let provider = geometry_operand_provider();
+    let provider = provider.as_ref();
+    let wkb: Vec<u8> = vec![
+        0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x40,
+    ];
+    let mut internal = vec![0x11, 0x0F, 0x00, 0x00];
+    internal.extend_from_slice(&wkb);
+    let column = |relation: Option<&str>, field: &str| json!({"kind": "column", "column": {"relation": relation, "field": field}});
+    let binary =
+        |name: &str| json!({"kind": "typed_parameter", "name": name, "parameter_type": "binary"});
+    let text =
+        |name: &str| json!({"kind": "typed_parameter", "name": name, "parameter_type": "string"});
+    let compare = |left: serde_json::Value, operator: &str, right: serde_json::Value| json!({"kind": "compare", "left": left, "operator": operator, "right": right});
+    let bag = |name: &str, value: ParameterValue| {
+        ParameterBag::new(BTreeMap::from([(name.to_owned(), value)]))
+    };
+    let g = column(Some("t"), "g");
+
+    // Ogni forma, con ogni rappresentazione del valore legato.
+    let refused: Vec<(&str, serde_json::Value, ParameterBag)> = vec![
+        (
+            "= WKB",
+            json!({"filter": compare(g.clone(), "eq", binary("p"))}),
+            bag("p", ParameterValue::Bytes(wkb.clone())),
+        ),
+        (
+            "= formato interno 3857",
+            json!({"filter": compare(g.clone(), "eq", binary("p"))}),
+            bag("p", ParameterValue::Bytes(internal.clone())),
+        ),
+        (
+            "<> WKB",
+            json!({"filter": compare(g.clone(), "ne", binary("p"))}),
+            bag("p", ParameterValue::Bytes(wkb.clone())),
+        ),
+        (
+            "= WKT",
+            json!({"filter": compare(column(None, "g"), "eq", text("p"))}),
+            bag("p", ParameterValue::String("POINT(1 2)".to_owned())),
+        ),
+        (
+            "IN",
+            json!({"filter": {"kind": "in_list", "expression": g.clone(), "values": [binary("p")]}}),
+            bag("p", ParameterValue::Bytes(wkb.clone())),
+        ),
+        (
+            "BETWEEN",
+            json!({"filter": {
+                "kind": "between", "expression": g.clone(), "lower": binary("p"), "upper": binary("p")
+            }}),
+            bag("p", ParameterValue::Bytes(wkb.clone())),
+        ),
+        (
+            "LIKE su CAST",
+            json!({"filter": {
+                "kind": "like",
+                "expression": {"kind": "cast", "expression": g.clone(), "target_type": "string"},
+                "pattern": text("p")
+            }}),
+            bag("p", ParameterValue::String("%".to_owned())),
+        ),
+        (
+            "ORDER BY",
+            json!({"order_by": [{"expression": g.clone(), "direction": "asc"}]}),
+            ParameterBag::new(BTreeMap::new()),
+        ),
+    ];
+    for (form, extra, parameters) in refused {
+        let operation = geometry_operand_query(&extra);
+        let outcome = geometry_operand_rows(provider, &operation, &parameters).await;
+        let Err(error) = outcome else {
+            panic!("{form}: operando geometrico accettato ({outcome:?} righe)");
+        };
+        assert_eq!(
+            error.category,
+            ErrorCategory::Unsupported,
+            "{form}: {error:?}"
+        );
+        assert_eq!(error.phase, ErrorPhase::Prepare, "{form}: {error:?}");
+        assert_eq!(error.remote_effect, RemoteEffect::None, "{form}: {error:?}");
+        assert!(
+            error
+                .message
+                .contains(plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND),
+            "{form}: {error:?}"
+        );
+    }
+
+    // Nessun falso rifiuto: le stesse forme su colonne non geometriche.
+    let accepted: Vec<(&str, serde_json::Value, ParameterBag, usize)> = vec![
+        (
+            "binaria =",
+            json!({"filter": compare(column(Some("t"), "b"), "eq", binary("p"))}),
+            bag("p", ParameterValue::Bytes(wkb.clone())),
+            1,
+        ),
+        (
+            "binaria <>",
+            json!({"filter": compare(column(Some("t"), "b"), "ne", binary("p"))}),
+            bag("p", ParameterValue::Bytes(wkb.clone())),
+            0,
+        ),
+        (
+            "binaria IN",
+            json!({"filter": {
+                "kind": "in_list", "expression": column(Some("t"), "b"), "values": [binary("p")]
+            }}),
+            bag("p", ParameterValue::Bytes(wkb.clone())),
+            1,
+        ),
+        (
+            "testo =",
+            json!({"filter": compare(column(None, "s"), "eq", json!({"kind": "parameter", "name": "p"}))}),
+            bag("p", ParameterValue::String("POINT(1 2)".to_owned())),
+            1,
+        ),
+        (
+            "geometria IS NOT NULL",
+            json!({"filter": {"kind": "is_null", "expression": g.clone(), "negated": true}}),
+            ParameterBag::new(BTreeMap::new()),
+            1,
+        ),
+    ];
+    for (form, extra, parameters, expected) in accepted {
+        let operation = geometry_operand_query(&extra);
+        let rows = geometry_operand_rows(provider, &operation, &parameters)
+            .await
+            .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(rows, expected, "{form}");
+    }
+
+    let mut cleanup = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("cleanup");
+    cleanup
+        .connection_mut()
+        .unwrap()
+        .query_drop("DROP TABLE _geo_operando")
+        .await
+        .ok();
+}

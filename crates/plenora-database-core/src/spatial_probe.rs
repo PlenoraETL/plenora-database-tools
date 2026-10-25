@@ -325,13 +325,26 @@ pub enum ProbeUse {
     /// Un valore scritto in una colonna: `INSERT ... VALUES`, `UPDATE ...
     /// SET`.
     WriteValue,
-    /// L'operando di un operatore che non e spatial (`=`, `<>`, `<`, `IN`,
-    /// `BETWEEN`, `LIKE`, `IS NULL`, `IN (subquery)`), a qualunque
-    /// profondita e attraverso qualunque funzione: nessuno confronta lo SRID
-    /// della sonda con quello della colonna (un `PostGIS` `=` fra sistemi
-    /// diversi e falso senza errore, anche come `g = ST_Centroid(sonda)`).
-    /// Nessun prodotto ha una guardia, e nessun catalogo la sostituisce: si
-    /// rifiuta sempre ([`SPATIAL_VALUE_OUTSIDE_SPATIAL`]).
+    /// Una sonda — un `SpatialValue`, o un bind sotto una funzione spatial
+    /// che ne conserva il frame — come operando di un operatore che non e
+    /// spatial (`=`, `<>`, `<`, `IN`, `BETWEEN`, `LIKE`, `IS NULL`, `IN
+    /// (subquery)`), a qualunque profondita e attraverso qualunque funzione:
+    /// nessuno confronta lo SRID della sonda con quello della colonna (un
+    /// `PostGIS` `=` fra sistemi diversi e falso senza errore, anche come `g
+    /// = ST_Centroid(sonda)`). Nessun prodotto ha una guardia, e nessun
+    /// catalogo la sostituisce: si rifiuta sempre
+    /// ([`SPATIAL_VALUE_OUTSIDE_SPATIAL`]).
+    ///
+    /// Un bind **nudo** sotto un operatore non spatial non e una sonda: il
+    /// piano non dice che e una geometria, e questa regola non lo giudica.
+    /// Cio che rende `t.g = :p` non eseguibile e l'altro operando, la colonna
+    /// geometrica: la regola degli operandi geometrici
+    /// ([`crate::spatial_operand`], [`GEOMETRY_SCALAR_OPERAND`]) la rifiuta
+    /// dove il tipo e noto — dal catalogo nei path read e query dei provider,
+    /// dal mapping ORM o dalla reflection nello SDK — e il suo limite
+    /// dichiarato dice dove non lo e. Fino al 25/10 questa riga diceva «si
+    /// rifiuta sempre» anche per quel bind, e `t.g = CAST(:p AS BINARY)`
+    /// rendeva zero righe senza errore su `MySQL` e `MariaDB`.
     ScalarOperand,
 }
 
@@ -423,6 +436,14 @@ pub const VALUE_SRID_UNPROVEN: &str =
 /// funzione o da un operatore spatial.
 pub const SPATIAL_VALUE_OUTSIDE_SPATIAL: &str =
     "valore spatial confrontato fuori da una funzione o da un operatore spatial";
+
+/// Motivo stabile del rifiuto di un operando geometrico sotto un operatore
+/// che non e spatial (`crate::spatial_operand`).
+///
+/// L'operando e una colonna che il catalogo o il mapping dicono geometrica,
+/// una funzione spatial che rende una geometria o un valore spatial.
+pub const GEOMETRY_SCALAR_OPERAND: &str =
+    "operando geometrico sotto un operatore non spatial (confronto, IN, BETWEEN, LIKE, aritmetica, ordinamento, raggruppamento, MIN/MAX): il server confronterebbe il proprio formato interno con il valore legato senza errore; il confronto fra geometrie si esprime con un predicato spatial";
 
 /// La regola delle sonde.
 ///
@@ -993,7 +1014,7 @@ fn relation_output_is_column<'a>(
 /// `operation`, con il nome della CTE; senza qualificazione, soltanto se la
 /// FROM ha una relazione sola. Una tabella di base, o un nome che non si
 /// risolve: `None`.
-fn named_relation<'a>(
+pub(crate) fn named_relation<'a>(
     operation: &'a QueryOperation,
     visible: &[&'a CommonTableExpression],
     relation: Option<&str>,
@@ -1440,6 +1461,9 @@ fn judge<'a>(
                 }
                 let visible = || blocks[index].common_tables.clone();
                 match expression {
+                    // Un bind fuori da una posizione geometrica non e una
+                    // sonda; una colonna geometrica confrontata con lui la
+                    // rifiuta la regola degli operandi (`spatial_operand`).
                     QueryExpression::Wildcard { .. }
                     | QueryExpression::Column { .. }
                     | QueryExpression::Parameter { .. }

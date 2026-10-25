@@ -282,6 +282,19 @@ impl OracleReadPlan {
             .iter()
             .map(|column| column.name.as_str())
             .collect::<BTreeSet<_>>();
+        // Un campo geometrico sotto un operatore non spatial o in ORDER BY
+        // confronterebbe il formato interno del server con il valore legato
+        // (`spatial_operand`).
+        plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+            ProviderKind::Oracle,
+            operation.filter.as_ref(),
+            &operation.order_by,
+            |field| {
+                description.columns.iter().any(|column| {
+                    column.name == field && column.data_type.eq_ignore_ascii_case("SDO_GEOMETRY")
+                })
+            },
+        )?;
         let bind_names = if let Some(filter) = &operation.filter {
             if !filter.all_fields(&|name| available.contains(name)) {
                 return Err(prepare_error(

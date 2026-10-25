@@ -1488,3 +1488,188 @@ async fn live_a_probe_hidden_by_a_wrapper_is_refused_before_the_server() {
     );
     drop_fixture(&dsn, table).await;
 }
+
+/// Una colonna geometrica sotto un operatore che non e spatial si rifiuta
+/// prima del server, come sugli altri provider
+/// (`plenora_database_core::spatial_operand`).
+///
+/// `PostGIS` rifiuta da se `g = $1::bytea` e `g = $1::text` («operator is
+/// not unique»), ma ordina per geometria e accetta `CAST(g AS TEXT) LIKE`;
+/// ora il rifiuto e `unsupported`, uguale per ogni forma e su ogni path. Le
+/// stesse forme sulla colonna intera restano.
+#[tokio::test]
+async fn live_a_geometry_column_under_a_scalar_operator_is_refused_before_the_server() {
+    use plenora_database_core::plan::{ComparisonOperator, OrderBy, SortDirection};
+    use plenora_database_core::relational::{QueryOrdering, QueryParameterType};
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let table = "plenora_scalar_geometry_operand";
+    fixture(&dsn, table).await;
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.clone());
+    let cancel = CancellationToken::new();
+    let budget = budget();
+    let typed = |parameter_type| QueryExpression::TypedParameter {
+        name: "p".to_owned(),
+        parameter_type,
+    };
+    let equals = |left: QueryExpression, right: QueryExpression| QueryExpression::Compare {
+        left: Box::new(left),
+        operator: ComparisonOperator::Eq,
+        right: Box::new(right),
+    };
+    let unsupported = |observed: Result<usize, DatabaseError>, case: &str| match observed {
+        Err(error) => {
+            assert_eq!(
+                error.category,
+                ErrorCategory::Unsupported,
+                "{case}: {error:?}"
+            );
+            assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{case}: {error:?}");
+        }
+        Ok(rows) => panic!("{case}: accettato con {rows} righe"),
+    };
+    let bytes = probe(ParameterValue::Bytes(ewkb_point(4326, 1.0, 1.0)));
+    let text = probe(ParameterValue::String("SRID=4326;POINT(1 1)".to_owned()));
+    for (case, filter, parameters) in [
+        (
+            "= bytea",
+            equals(column("g"), typed(QueryParameterType::Binary)),
+            &bytes,
+        ),
+        (
+            "= text",
+            equals(column("g"), typed(QueryParameterType::String)),
+            &text,
+        ),
+        ("= non tipizzato", equals(column("g"), parameter()), &text),
+        (
+            "geography =",
+            equals(column("h"), typed(QueryParameterType::Binary)),
+            &bytes,
+        ),
+        (
+            "LIKE su CAST",
+            QueryExpression::Like {
+                expression: Box::new(QueryExpression::Cast {
+                    expression: Box::new(column("g")),
+                    target_type: QueryParameterType::String,
+                }),
+                pattern: Box::new(typed(QueryParameterType::String)),
+                case_insensitive: false,
+                negated: false,
+            },
+            &text,
+        ),
+    ] {
+        unsupported(
+            rows(
+                provider
+                    .query(&secret, &query(table, filter), parameters, &budget, &cancel)
+                    .await,
+            )
+            .await,
+            case,
+        );
+    }
+    let mut ordered = query(
+        table,
+        QueryExpression::IsNull {
+            expression: Box::new(column("g")),
+            negated: true,
+        },
+    );
+    ordered.order_by = vec![QueryOrdering {
+        expression: column("g"),
+        direction: SortDirection::Asc,
+    }];
+    unsupported(
+        rows(
+            provider
+                .query(
+                    &secret,
+                    &ordered,
+                    &ParameterBag::default(),
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await,
+        "ORDER BY",
+    );
+    let mut read_eq = read(table, "g");
+    read_eq.filter = Some(FilterExpression::Eq {
+        field: "g".to_owned(),
+        parameter: "p".to_owned(),
+    });
+    unsupported(
+        rows(
+            provider
+                .read(&secret, &read_eq, &bytes, &budget, &cancel)
+                .await,
+        )
+        .await,
+        "lettura =",
+    );
+    let mut read_order = read(table, "g");
+    read_order.filter = None;
+    read_order.order_by = vec![OrderBy {
+        field: "g".to_owned(),
+        direction: SortDirection::Asc,
+    }];
+    unsupported(
+        rows(
+            provider
+                .read(
+                    &secret,
+                    &read_order,
+                    &ParameterBag::default(),
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await,
+        "lettura ORDER BY",
+    );
+
+    // Nessun falso rifiuto: la colonna intera, e la geometria sotto IS NULL.
+    let id = query(
+        table,
+        equals(column("id"), typed(QueryParameterType::Integer)),
+    );
+    let one = probe(ParameterValue::I32(1));
+    assert_eq!(
+        rows(provider.query(&secret, &id, &one, &budget, &cancel).await)
+            .await
+            .expect("id ="),
+        1
+    );
+    let not_null = query(
+        table,
+        QueryExpression::IsNull {
+            expression: Box::new(column("g")),
+            negated: true,
+        },
+    );
+    assert_eq!(
+        rows(
+            provider
+                .query(
+                    &secret,
+                    &not_null,
+                    &ParameterBag::default(),
+                    &budget,
+                    &cancel
+                )
+                .await
+        )
+        .await
+        .expect("IS NOT NULL"),
+        2000
+    );
+    drop_fixture(&dsn, table).await;
+}

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from collections.abc import Iterator
 from enum import Enum
 from typing import Any, Iterable, Mapping
@@ -154,6 +154,9 @@ class Column(Expression):
     table: Relation
     name: str
     metadata: Any | None = None
+    # Dichiarata ``Geometry`` dal mapping ORM o dalla reflection: sotto un
+    # operatore non spatial la compilazione la rifiuta (`_geometry_columns`).
+    _geometry: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _identifier(self.name))
@@ -582,6 +585,7 @@ class Table:
         object.__setattr__(aliased, "metadata", self.metadata)
         for source, destination in zip(self.columns, aliased.columns, strict=True):
             object.__setattr__(destination, "metadata", source.metadata)
+            object.__setattr__(destination, "_geometry", source._geometry)
         return aliased
 
     def _source_ast(self) -> dict[str, Any]:
@@ -1361,6 +1365,45 @@ class FunctionNamespace:
 func = FunctionNamespace()
 
 
+def _geometry_columns(statement: Any) -> list[tuple[str | None, str, str]]:
+    """Le colonne ``Geometry`` delle tabelle che lo statement nomina.
+
+    Lo SDK compila senza catalogo: le sole colonne di cui sa il tipo sono
+    quelle che il mapping ORM o la reflection dichiarano ``Geometry``. Il
+    compilatore nativo le rifiuta sotto un operatore non spatial
+    (``spatial_operand`` nel core), con la stessa regola dei provider. Una
+    tabella dichiarata con soli nomi (``table("t", "g")``) non porta tipi:
+    e il limite dichiarato della regola.
+    """
+
+    found: list[tuple[str | None, str, str]] = []
+    seen: set[int] = set()
+    stack: list[Any] = [statement]
+    while stack:
+        item = stack.pop()
+        if item is None or isinstance(item, (str, int, float, bool, bytes, Enum)):
+            continue
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, Column):
+            if item._geometry and isinstance(item.table, Table):
+                key = (item.table.schema, item.table.name, item.name)
+                if key not in found:
+                    found.append(key)
+            stack.append(item.table)
+            continue
+        if isinstance(item, (tuple, list)):
+            stack.extend(item)
+        elif isinstance(item, Mapping):
+            stack.extend(item.values())
+        elif isinstance(item, ColumnCollection):
+            stack.extend(iter(item))
+        elif is_dataclass(item) and not isinstance(item, type):
+            stack.extend(getattr(item, entry.name, None) for entry in fields(item))
+    return found
+
+
 def _compile_statement(
     statement: SelectStatement,
     parameters: Mapping[str, Any] | None,
@@ -1375,7 +1418,9 @@ def _compile_statement(
     values = {} if parameters is None else dict(parameters)
     if not all(isinstance(name, str) for name in values):
         raise TypeError("i nomi dei bind devono essere stringhe")
-    sql, bind_names = compile_relational_query(statement.to_json(), provider)
+    sql, bind_names = compile_relational_query(
+        statement.to_json(), provider, _geometry_columns(statement)
+    )
     if set(values) != set(bind_names):
         raise ValueError("insieme dei bind incompatibile con lo statement")
     return sql, [values[name] for name in bind_names]
@@ -1398,7 +1443,7 @@ def _compile_mutation_statement(
     if not all(isinstance(name, str) for name in values):
         raise TypeError("i nomi dei bind devono essere stringhe")
     sql, bind_names, returns_rows = compile_relational_mutation(
-        statement.to_json(), provider
+        statement.to_json(), provider, _geometry_columns(statement)
     )
     if set(values) != set(bind_names):
         raise ValueError("insieme dei bind incompatibile con lo statement")

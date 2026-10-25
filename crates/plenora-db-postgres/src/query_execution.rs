@@ -217,8 +217,13 @@ pub async fn query_stream(
         budget.limits().nesting_depth,
     )?;
     let parameters = &probes.parameters;
+    let operands = plenora_database_core::spatial_operand::scalar_operands(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        operation,
+    )?;
     let mut client = connect_cancel_safe(provider, secret, cancellation).await?;
     crate::spatial_probe::verify_query_columns(client.client()?, &probes.columns).await?;
+    crate::spatial_probe::verify_scalar_operands(client.client()?, &operands).await?;
     let bind_names = rendered
         .binds
         .iter()

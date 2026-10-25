@@ -1207,6 +1207,57 @@ fn resolve_spatial_source_parts<'a>(
     ))
 }
 
+/// La regola degli operandi geometrici sul catalogo
+/// (`plenora_database_core::spatial_operand`): le colonne che il piano usa
+/// sotto un operatore non spatial non sono `geometry` o `geography`.
+///
+/// SQL Server rifiuta da se il confronto e l'ordinamento di un tipo CLR, ma
+/// converte una geometria in testo (`CAST(g AS NVARCHAR) LIKE`): il rifiuto e
+/// lo stesso degli altri provider, prima della descrizione. Una relazione
+/// senza schema si risolve come la risolve la query, con lo schema di default
+/// dell'utente (`OBJECT_ID`).
+///
+/// # Errors
+///
+/// `unsupported` per una colonna geometrica; gli errori del catalogo.
+pub async fn verify_scalar_operands(
+    session: &mut SqlServerSession,
+    operation: &QueryOperation,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let operands = plenora_database_core::spatial_operand::scalar_operands(
+        ProviderKind::Sqlserver,
+        operation,
+    )?;
+    if operands.is_empty() {
+        return Ok(());
+    }
+    let mut geometric = Vec::new();
+    for (schema, object) in operands.relations() {
+        let mut query = Query::new(
+            "SELECT c.name FROM sys.columns c              WHERE c.object_id = OBJECT_ID(CASE WHEN @P1 = N'' THEN QUOTENAME(@P2)                    ELSE QUOTENAME(@P1) + N'.' + QUOTENAME(@P2) END)                AND TYPE_NAME(c.user_type_id) IN (N'geometry', N'geography');",
+        );
+        query.bind(schema.clone().unwrap_or_default());
+        query.bind(object.clone());
+        let results = session
+            .execute_query(query, ErrorPhase::Prepare, cancellation)
+            .await?;
+        for row in results.iter().flatten() {
+            let column: &str = required(row, 0, "colonna geometrica")?;
+            geometric.push(plenora_database_core::spatial_probe::BaseColumn {
+                schema: schema.clone(),
+                object: object.clone(),
+                column: column.to_owned(),
+            });
+        }
+    }
+    operands.judge(
+        ProviderKind::Sqlserver,
+        |column| geometric.contains(column),
+        |name| geometric.iter().any(|candidate| candidate.column == name),
+    )
+}
+
 async fn observe_spatial_srid(
     session: &mut SqlServerSession,
     source: &SpatialPhysicalSource,
