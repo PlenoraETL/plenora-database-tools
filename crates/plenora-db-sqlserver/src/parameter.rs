@@ -72,27 +72,20 @@ pub fn bind_parameter(query: &mut Query<'static>, value: &ParameterValue) -> Res
             query.bind(*value);
         }
         ParameterValue::String(value) => query.bind(value.clone()),
-        ParameterValue::Date(value) => {
-            validate_date(value)?;
-            query.bind(value.clone());
-        }
-        ParameterValue::Timestamp(value) => {
-            validate_timestamp(value)?;
-            query.bind(value.clone());
-        }
-        ParameterValue::TimestampTz(value) => {
-            validate_timestamp_tz(value)?;
-            query.bind(value.clone());
-        }
+        // I temporali e gli UUID si legano nel proprio tipo: in `nvarchar` il
+        // server li convertiva nel tipo dell'operando, e `date = @P1` con
+        // `2024-02-29T10:00:00` ritrovava la riga del 29, un
+        // `smalldatetime` arrotondava i secondi al minuto e ritrovava
+        // `10:20:29` cercando `10:20`.
+        ParameterValue::Date(value) => query.bind(validate_date(value)?),
+        ParameterValue::Timestamp(value) => query.bind(validate_timestamp(value)?),
+        ParameterValue::TimestampTz(value) => query.bind(validate_timestamp_tz(value)?),
         // Un decimale in testo veniva convertito dal server nel tipo della
         // colonna con cui lo si confrontava: `12345.67890001` diventava
         // `12345.6789` e `col = @P1` ritrovava la riga. Si lega come
         // `decimal` nativo, con la propria scala.
         ParameterValue::Decimal(value) => query.bind(decimal(value)?),
-        ParameterValue::Uuid(value) => {
-            validate_uuid(value)?;
-            query.bind(value.clone());
-        }
+        ParameterValue::Uuid(value) => query.bind(validate_uuid(value)?),
         ParameterValue::Bytes(value) => query.bind(value.clone()),
         ParameterValue::Json(value) => {
             let encoded = serde_json::to_string(value)
@@ -119,26 +112,18 @@ fn parameter_type(value: &ParameterValue) -> Result<String> {
         } else {
             "varbinary(max)"
         }),
-        ParameterValue::Date(value) => {
-            validate_date(value)?;
-            fixed(string_parameter_type(value))
-        }
+        ParameterValue::Date(value) => validate_date(value).map(|_| "date".to_owned()),
         ParameterValue::Timestamp(value) => {
-            validate_timestamp(value)?;
-            fixed(string_parameter_type(value))
+            validate_timestamp(value).map(|_| "datetime2(7)".to_owned())
         }
         ParameterValue::TimestampTz(value) => {
-            validate_timestamp_tz(value)?;
-            fixed(string_parameter_type(value))
+            validate_timestamp_tz(value).map(|_| "datetimeoffset(7)".to_owned())
         }
         ParameterValue::Decimal(value) => {
             let numeric = decimal(value)?;
             Ok(format!("decimal({DECIMAL_PRECISION}, {})", numeric.scale()))
         }
-        ParameterValue::Uuid(value) => {
-            validate_uuid(value)?;
-            fixed(string_parameter_type(value))
-        }
+        ParameterValue::Uuid(value) => validate_uuid(value).map(|_| "uniqueidentifier".to_owned()),
         ParameterValue::Json(value) => {
             let encoded = serde_json::to_string(value)
                 .map_err(|_| parameter_error("parametro JSON SQL Server non serializzabile"))?;
@@ -213,23 +198,20 @@ const fn string_parameter_type(value: &str) -> &'static str {
     }
 }
 
-fn validate_date(value: &str) -> Result<()> {
+fn validate_date(value: &str) -> Result<chrono::NaiveDate> {
     chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .map(|_| ())
         .map_err(|_| parameter_error("parametro date SQL Server non valido"))
 }
 
-fn validate_timestamp(value: &str) -> Result<()> {
+fn validate_timestamp(value: &str) -> Result<chrono::NaiveDateTime> {
     reject_sub_microsecond(ProviderKind::Sqlserver, value)?;
     chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
-        .map(|_| ())
         .map_err(|_| parameter_error("parametro timestamp SQL Server non valido"))
 }
 
-fn validate_timestamp_tz(value: &str) -> Result<()> {
+fn validate_timestamp_tz(value: &str) -> Result<chrono::DateTime<chrono::FixedOffset>> {
     reject_sub_microsecond(ProviderKind::Sqlserver, value)?;
     chrono::DateTime::parse_from_rfc3339(value)
-        .map(|_| ())
         .map_err(|_| parameter_error("parametro datetimeoffset SQL Server non valido"))
 }
 
@@ -256,7 +238,7 @@ fn validate_decimal(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_uuid(value: &str) -> Result<()> {
+fn validate_uuid(value: &str) -> Result<tiberius::Uuid> {
     let bytes = value.as_bytes();
     if bytes.len() != 36
         || ![8, 13, 18, 23]
@@ -269,7 +251,8 @@ fn validate_uuid(value: &str) -> Result<()> {
     {
         return Err(parameter_error("parametro UUID SQL Server non valido"));
     }
-    Ok(())
+    tiberius::Uuid::parse_str(value)
+        .map_err(|_| parameter_error("parametro UUID SQL Server non valido"))
 }
 
 fn parameter_error(message: &'static str) -> DatabaseError {

@@ -787,10 +787,15 @@ impl<'a> ExecuteMessage<'a> {
                 buf.write_u8(if *b { 0x01 } else { 0x00 })?;
             }
             Value::Timestamp(ts) => {
-                // Write as Oracle timestamp
+                // Senza frazione si scrive la forma a 7 byte, come fa il
+                // driver di riferimento (python-oracledb): misurato su Oracle
+                // 23ai, gli 11 byte con i nanosecondi a zero non sono uguali
+                // in un confronto al valore senza frazione (`TS = :1` non
+                // ritrovava la riga), pur assegnandosi esatti.
                 let bytes = ts.to_oracle_bytes();
-                buf.write_u8(bytes.len() as u8)?;
-                buf.write_bytes(&bytes)?;
+                let length = if ts.microsecond == 0 { 7 } else { bytes.len() };
+                buf.write_u8(length as u8)?;
+                buf.write_bytes(&bytes[..length])?;
             }
             Value::Date(d) => {
                 // Write as Oracle date (7 bytes)

@@ -118,11 +118,35 @@ pub async fn read_operation(
             "schema SQL Server cambiato durante la preparazione",
         ));
     }
+    // La regola dei parametri che incontrano un operando
+    // (`operand_admission`): ogni parametro del filtro si ammette contro il
+    // tipo del campo, letto dal catalogo con precisione e scala.
+    let admitted = if operation.filter.is_some() {
+        let relation = (Some(schema.to_owned()), operation.source.object.clone());
+        let types = crate::query::column_types(pooled.session_mut()?, &relation, &internal)
+            .await?
+            .unwrap_or_default();
+        plenora_database_core::operand_admission::admit_filter(
+            plenora_database_core::plan::ProviderKind::Sqlserver,
+            operation.filter.as_ref(),
+            parameters,
+            |field| {
+                types.get(field).map(|catalog| {
+                    plenora_database_core::operand_admission::operand_type(
+                        plenora_database_core::plan::ProviderKind::Sqlserver,
+                        catalog,
+                    )
+                })
+            },
+        )?
+    } else {
+        parameters.clone()
+    };
 
     start_plan_stream(
         pooled,
         plan,
-        parameters,
+        &admitted,
         batch_rows,
         budget,
         internal,
@@ -146,6 +170,12 @@ pub async fn read_query_operation(
 ) -> Result<Box<dyn BatchStream>> {
     validate_batch_rows(batch_rows)?;
     validate_query_sources(operation, database)?;
+    // I parametri tipati contro il loro CAST (`operand_admission`).
+    let parameters = &plenora_database_core::operand_admission::admit_typed_parameters(
+        plenora_database_core::plan::ProviderKind::Sqlserver,
+        operation,
+        parameters,
+    )?;
     budget.ensure_active()?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;

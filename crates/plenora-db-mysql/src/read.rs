@@ -86,7 +86,28 @@ pub(crate) async fn read_operation_with_profile(
         DatabaseError::resource_limit(format!("numero colonne {product} non rappresentabile"))
     })?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
-    let parameters = bind_parameters(&plan.bind_names, parameters, profile.kind())?;
+    // La regola dei parametri che incontrano un operando
+    // (`operand_admission`): ogni parametro del filtro si ammette contro il
+    // tipo del campo, letto dal catalogo con precisione e scala.
+    let admitted = if operation.filter.is_some() {
+        let relation = (Some(schema.to_owned()), operation.source.object.clone());
+        let types = crate::catalog::transaction_column_types(&mut session, &relation, &internal)
+            .await?
+            .unwrap_or_default();
+        plenora_database_core::operand_admission::admit_filter(
+            profile.kind(),
+            operation.filter.as_ref(),
+            parameters,
+            |field| {
+                types.get(field).map(|catalog| {
+                    plenora_database_core::operand_admission::operand_type(profile.kind(), catalog)
+                })
+            },
+        )?
+    } else {
+        parameters.clone()
+    };
+    let parameters = bind_parameters(&plan.bind_names, &admitted, profile.kind())?;
     let confirmation = crate::catalog::describe_object_with_profile(
         &mut session,
         schema,
@@ -169,6 +190,12 @@ pub(crate) async fn query_operation_with_profile(
 ) -> Result<Box<dyn BatchStream>> {
     let product = profile.product();
     validate_batch_rows(batch_rows)?;
+    // I parametri tipati contro il loro CAST (`operand_admission`).
+    let parameters = &plenora_database_core::operand_admission::admit_typed_parameters(
+        profile.kind(),
+        operation,
+        parameters,
+    )?;
     if cancellation.is_cancelled() {
         return Err(interruption_error(
             profile,

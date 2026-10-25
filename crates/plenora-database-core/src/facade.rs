@@ -249,9 +249,33 @@ pub async fn execute_portable(
             "execute_portable non accetta statement con RETURNING: usa execute_portable_returning",
         ));
     }
-    let compiled = compile_portable(tx.provider_kind(), statement)?;
+    compile_portable(tx.provider_kind(), statement)?;
     verify_operands(tx, &OperandPlan::Portable(statement), cancellation).await?;
+    let compiled = admitted(tx, statement, cancellation).await?;
     tx.execute(&compiled, cancellation).await
+}
+
+/// Lo statement compilato dopo l'ammissione dei letterali sul tipo delle
+/// colonne che incontrano (`operand_admission`), letto dal catalogo della
+/// transazione.
+///
+/// # Errors
+///
+/// Quelli della lettura del catalogo, di `admit_portable` e della
+/// compilazione.
+pub async fn admitted(
+    tx: &mut dyn TransactionScope,
+    statement: &PortableStatement,
+    cancellation: &CancellationToken,
+) -> Result<Statement> {
+    let provider = tx.provider_kind();
+    let relation = crate::operand_admission::statement_relation(statement);
+    let types = tx
+        .column_types(&relation, cancellation)
+        .await?
+        .unwrap_or_default();
+    let statement = crate::operand_admission::admit_portable(provider, statement, &types)?;
+    compile_portable(provider, &statement)
 }
 
 /// Il giudizio degli operandi geometrici di `plan`, prima di eseguirne lo SQL.
@@ -348,8 +372,9 @@ pub async fn execute_portable_returning(
             "execute_portable_returning richiede RETURNING (o SELECT)",
         ));
     }
-    let compiled = compile_portable(tx.provider_kind(), statement)?;
+    compile_portable(tx.provider_kind(), statement)?;
     verify_operands(tx, &OperandPlan::Portable(statement), cancellation).await?;
+    let compiled = admitted(tx, statement, cancellation).await?;
     tx.query(&compiled, cancellation).await
 }
 

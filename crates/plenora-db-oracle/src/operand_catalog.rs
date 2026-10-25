@@ -347,6 +347,80 @@ impl<'c> ConnectionCatalog<'c> {
     }
 }
 
+const COLUMN_TYPES_SQL: &str = "SELECT COLUMN_NAME, DATA_TYPE, TO_CHAR(CHAR_LENGTH), \
+    TO_CHAR(DATA_LENGTH), TO_CHAR(DATA_PRECISION), TO_CHAR(DATA_SCALE) FROM ALL_TAB_COLUMNS \
+    WHERE OWNER = :1 AND TABLE_NAME = :2 ORDER BY COLUMN_ID";
+const COLUMN_TYPES_CURRENT_SQL: &str = "SELECT COLUMN_NAME, DATA_TYPE, TO_CHAR(CHAR_LENGTH), \
+    TO_CHAR(DATA_LENGTH), TO_CHAR(DATA_PRECISION), TO_CHAR(DATA_SCALE) FROM ALL_TAB_COLUMNS \
+    WHERE OWNER = SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') AND TABLE_NAME = :1 \
+    ORDER BY COLUMN_ID";
+
+impl ConnectionCatalog<'_> {
+    /// I tipi delle colonne di una relazione (`ALL_TAB_COLUMNS`), con
+    /// lunghezza, precisione e scala, per l'ammissione dei letterali e dei
+    /// filtri (`plenora_database_core::operand_admission`). `None` per una
+    /// relazione che il catalogo non conosce.
+    ///
+    /// # Errors
+    ///
+    /// Gli errori del catalogo.
+    pub async fn column_types(
+        &self,
+        owner: Option<&str>,
+        name: &str,
+    ) -> Result<Option<plenora_database_core::operand_admission::RelationTypes>> {
+        use plenora_database_core::operand_admission::CatalogType;
+        let rows = match owner {
+            Some(owner) => self.rows(COLUMN_TYPES_SQL, &[owner, name]).await?,
+            None => self.rows(COLUMN_TYPES_CURRENT_SQL, &[name]).await?,
+        };
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let number = |row, index| -> Result<Option<u64>> {
+            text(row, index)?
+                .map(|value| {
+                    value
+                        .trim()
+                        .parse::<u64>()
+                        .map_err(|_| malformed("lunghezza del catalogo Oracle non numerica"))
+                })
+                .transpose()
+        };
+        rows.iter()
+            .map(|row| {
+                let data_type = required(row, 1, "colonna Oracle senza tipo")?;
+                let raw = data_type.eq_ignore_ascii_case("RAW");
+                let length = if raw {
+                    number(row, 3)?
+                } else {
+                    number(row, 2)?
+                };
+                let scale = text(row, 5)?
+                    .map(|value| {
+                        value
+                            .trim()
+                            .parse::<i64>()
+                            .map_err(|_| malformed("scala del catalogo Oracle non numerica"))
+                    })
+                    .transpose()?;
+                Ok((
+                    required(row, 0, "colonna Oracle senza nome")?,
+                    CatalogType {
+                        name: data_type,
+                        declaration: None,
+                        length,
+                        precision: number(row, 4)?,
+                        scale,
+                        datetime_precision: None,
+                    },
+                ))
+            })
+            .collect::<Result<_>>()
+            .map(Some)
+    }
+}
+
 fn text(row: &plenora_database_core::row::Row, index: usize) -> Result<Option<String>> {
     use plenora_database_core::provider::ParameterValue;
     match row.get_index(index) {

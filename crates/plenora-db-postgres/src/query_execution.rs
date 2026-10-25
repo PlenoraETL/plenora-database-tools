@@ -170,6 +170,8 @@ pub async fn read_stream(
         parameters,
         budget.limits().nesting_depth,
     )?;
+    let admitted = admit_read_filter(client.client()?, operation, parameters).await?;
+    let parameters = &admitted;
     let columns = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, columns)?;
@@ -230,6 +232,12 @@ pub async fn query_stream(
     validate_stream_configuration(provider)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let rendered = render_query(operation)?;
+    // I parametri tipati contro il loro CAST (`operand_admission`).
+    let parameters = &plenora_database_core::operand_admission::admit_typed_parameters(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        operation,
+        parameters,
+    )?;
     // Le sonde spatial si giudicano prima della connessione; le colonne con
     // cui si confrontano, sul catalogo prima della query.
     let probes = crate::spatial_probe::plan_query_probes(
@@ -427,6 +435,38 @@ fn without_shared_origins(mut columns: Vec<ColumnSpec>) -> Vec<ColumnSpec> {
         column.source = None;
     }
     columns
+}
+
+/// La regola dei parametri che incontrano un operando (`operand_admission`):
+/// ogni parametro del filtro si ammette contro il tipo del campo, con il
+/// typmod letto dal catalogo.
+async fn admit_read_filter(
+    client: &tokio_postgres::Client,
+    operation: &plenora_database_core::plan::ReadOperation,
+    parameters: &ParameterBag,
+) -> Result<ParameterBag> {
+    use plenora_database_core::operand_admission::{admit_filter, operand_type};
+    use plenora_database_core::plan::ProviderKind;
+    if operation.filter.is_none() {
+        return Ok(parameters.clone());
+    }
+    let types = crate::column_types::column_types(
+        client,
+        operation.source.schema.as_deref(),
+        &operation.source.object,
+    )
+    .await?
+    .unwrap_or_default();
+    admit_filter(
+        ProviderKind::Postgres,
+        operation.filter.as_ref(),
+        parameters,
+        |field| {
+            types
+                .get(field)
+                .map(|catalog| operand_type(ProviderKind::Postgres, catalog))
+        },
+    )
 }
 
 #[cfg(test)]

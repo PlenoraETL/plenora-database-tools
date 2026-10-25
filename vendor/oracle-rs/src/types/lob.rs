@@ -314,7 +314,9 @@ impl LobValue {
         match self {
             Self::Null => Ok(None),
             Self::Empty => Ok(Some(String::new())),
-            Self::Inline(data) => Ok(Some(String::from_utf8_lossy(data).to_string())),
+            Self::Inline(data) => String::from_utf8(data.to_vec()).map(Some).map_err(|_| {
+                Error::DataConversionError("CLOB inline Oracle non UTF-8".to_string())
+            }),
             Self::Locator(_) => Err(Error::Protocol(
                 "LOB data requires explicit read operation".to_string(),
             )),

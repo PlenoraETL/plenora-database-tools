@@ -743,6 +743,58 @@ pub(crate) async fn transaction_operand_catalog(
     relation_columns(session, profile, &database, relations, cancellation).await
 }
 
+/// I tipi delle colonne di una relazione, con precisione, scala, lunghezza e
+/// precisione temporale (`information_schema.COLUMNS`), per l'ammissione dei
+/// letterali portable (`plenora_database_core::operand_admission`). `None`
+/// per una relazione che il catalogo non conosce.
+///
+/// # Errors
+///
+/// Gli errori del catalogo in fase `prepare`.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn transaction_column_types(
+    session: &mut MysqlSession,
+    relation: &(Option<String>, String),
+    cancellation: &CancellationToken,
+) -> Result<Option<plenora_database_core::operand_admission::RelationTypes>> {
+    use plenora_database_core::operand_admission::CatalogType;
+    let rows = session
+        .exec_rows(
+            session.profile().column_types_query(),
+            mysql_async::Params::Positional(vec![
+                relation
+                    .0
+                    .as_ref()
+                    .map_or(mysql_async::Value::NULL, |schema| {
+                        mysql_async::Value::Bytes(schema.as_bytes().to_vec())
+                    }),
+                mysql_async::Value::Bytes(relation.1.as_bytes().to_vec()),
+            ]),
+            ErrorPhase::Prepare,
+            cancellation,
+        )
+        .await?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    rows.iter()
+        .map(|row| {
+            let name = optional::<String, _>(row, 0, "COLUMN_NAME")?
+                .ok_or_else(|| mapping_error("campo catalogo COLUMN_NAME nullo".to_owned()))?;
+            let catalog = CatalogType {
+                name: optional::<String, _>(row, 1, "DATA_TYPE")?.unwrap_or_default(),
+                declaration: optional::<String, _>(row, 2, "COLUMN_TYPE")?,
+                length: optional::<u64, _>(row, 3, "CHARACTER_MAXIMUM_LENGTH")?,
+                precision: optional::<u64, _>(row, 4, "NUMERIC_PRECISION")?,
+                scale: optional::<i64, _>(row, 5, "NUMERIC_SCALE")?,
+                datetime_precision: optional::<u64, _>(row, 6, "DATETIME_PRECISION")?,
+            };
+            Ok((name, catalog))
+        })
+        .collect::<Result<_>>()
+        .map(Some)
+}
+
 /// I tipi binari di `SHOW COLUMNS` (il nome prima della lunghezza): un
 /// `CHAR` o `VARCHAR` con `CHARACTER SET binary` si descrive `binary` o
 /// `varbinary`.

@@ -203,10 +203,25 @@ fn text_binds_only_on_text_markers() {
         assert_eq!(refused(&text, &described), ErrorCategory::DataMapping);
     }
     assert!(bind(&ParameterValue::Bool(true), &DataType::Bit).is_ok());
+    // Un booleano in un intero e 0 o 1, esatto.
+    assert!(bind(&ParameterValue::Bool(true), &DataType::Integer).is_ok());
     assert_eq!(
-        refused(&ParameterValue::Bool(true), &DataType::Integer),
+        refused(&ParameterValue::Bool(true), &DataType::Date),
         ErrorCategory::DataMapping
     );
+}
+
+#[test]
+fn zero_fits_a_pure_fraction_decimal() {
+    // Il caso non silenzioso del secondo giro: `checked_ilog10(0)`.
+    assert!(bind(
+        &ParameterValue::I64(0),
+        &DataType::Decimal {
+            precision: 5,
+            scale: 5
+        }
+    )
+    .is_ok());
 }
 
 #[test]

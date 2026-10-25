@@ -507,7 +507,9 @@ impl<'a> RowDataDecoder<'a> {
 
         // Read the column data based on type
         match column.oracle_type {
-            OracleType::Varchar | OracleType::Char | OracleType::Long => self.decode_string(buf),
+            OracleType::Varchar | OracleType::Char | OracleType::Long => {
+                self.decode_string(buf, column)
+            }
             OracleType::Number | OracleType::BinaryInteger => self.decode_number(buf),
             OracleType::Date => self.decode_date(buf),
             OracleType::Timestamp | OracleType::TimestampLtz => self.decode_timestamp(buf, false),
@@ -569,14 +571,12 @@ impl<'a> RowDataDecoder<'a> {
     }
 
     /// Decode a string value
-    fn decode_string(&self, buf: &mut ReadBuffer) -> Result<Value> {
+    fn decode_string(&self, buf: &mut ReadBuffer, column: &ColumnInfo) -> Result<Value> {
         match self.read_oracle_slice(buf)? {
             None => Ok(Value::Null),
             Some(data) => {
-                let s = String::from_utf8(data).map_err(|e| {
-                    Error::DataConversionError(format!("Invalid UTF-8 in string: {}", e))
-                })?;
-                Ok(Value::String(s))
+                crate::connection::decode_column_text(&data, column.csfrm, column.charset_id)
+                    .map(Value::String)
             }
         }
     }
@@ -688,7 +688,9 @@ impl<'a> RowDataDecoder<'a> {
                     Ok(Value::RowId(rowid))
                 } else {
                     // Logical ROWID - return as string (base64 encoded)
-                    let s = String::from_utf8_lossy(&data[1..]).to_string();
+                    let s = String::from_utf8(data[1..].to_vec()).map_err(|_| {
+                        Error::DataConversionError("ROWID logico Oracle non UTF-8".to_string())
+                    })?;
                     Ok(Value::String(s))
                 }
             }
@@ -842,6 +844,7 @@ mod tests {
             scale: 0,
             nullable: true,
             csfrm: 0,
+            charset_id: 0,
             type_schema: None,
             type_name: None,
             domain_schema: None,

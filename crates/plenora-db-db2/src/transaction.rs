@@ -191,7 +191,9 @@ impl Db2Transaction {
                 "parameter-array Db2 con arita incoerente",
             ));
         }
-        let encoded = ArrayColumns::encode(&rows, columns)?;
+        // Forma e dominio prima di ogni connessione; l'ammissione sul tipo
+        // descritto di ogni segnaposto avviene dopo la preparazione.
+        ArrayColumns::encode(&rows, columns)?;
         let expected = u64::try_from(rows.len()).map_err(|_| {
             transaction_error(
                 ErrorCategory::ResourceLimit,
@@ -209,6 +211,13 @@ impl Db2Transaction {
                 prepared
                     .set_query_timeout_sec(timeout)
                     .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
+                // La regola dei parametri che incontrano un operando
+                // (`operand_admission`): ogni valore si ammette contro il tipo
+                // che `SQLDescribeParam` da al suo segnaposto, precisione
+                // temporale e scala comprese. Il testo legato senza tipo
+                // lasciava al server la conversione: un timestamp
+                // `.654321` in un TIMESTAMP(0) si conservava `.00`.
+                let encoded = ArrayColumns::encode(&admit_rows(&mut prepared, &rows)?, columns)?;
                 let mut inserter = prepared
                     .into_column_inserter(encoded.rows, encoded.descriptions())
                     .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
@@ -483,6 +492,40 @@ fn array_text(value: &ParameterValue) -> Result<Option<String>> {
             "valore senza forma testuale esatta nel parameter-array Db2",
         )),
     }
+}
+
+/// Le righe del parameter-array ammesse contro il tipo descritto di ogni
+/// segnaposto e riscritte nel suo tipo.
+fn admit_rows(
+    prepared: &mut Prepared<odbc_api::handles::StatementImpl<'_>>,
+    rows: &[Vec<ParameterValue>],
+) -> Result<Vec<Vec<ParameterValue>>> {
+    let count = prepared
+        .num_params()
+        .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
+    let operands = (1..=count)
+        .map(|index| {
+            prepared
+                .describe_param(index)
+                .map(|described| described.data_type)
+                .map_err(|error| driver_error(&error, ErrorPhase::Prepare))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    rows.iter()
+        .map(|row| {
+            if row.len() != operands.len() {
+                return Err(transaction_error(
+                    ErrorCategory::InvalidPlan,
+                    ErrorPhase::Prepare,
+                    "numero di parametri Db2 diverso dai segnaposto",
+                ));
+            }
+            row.iter()
+                .zip(&operands)
+                .map(|(value, described)| crate::parameter::admit_described(value, described))
+                .collect()
+        })
+        .collect()
 }
 
 /// Lo statement preparato con ogni parametro legato sul tipo che il server
@@ -1008,6 +1051,25 @@ impl TransactionScope for Db2Transaction {
                         &mut crate::operand_catalog::OdbcCatalog::new(connection, timeout),
                         &relations,
                     )
+                },
+            )
+            .await
+        })
+    }
+
+    fn column_types<'a>(
+        &'a mut self,
+        relation: &'a (Option<String>, String),
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<plenora_database_core::operand_admission::RelationTypes>> {
+        Box::pin(async move {
+            let relation = relation.clone();
+            self.run(
+                ErrorPhase::Prepare,
+                cancellation,
+                move |connection, timeout| {
+                    crate::operand_catalog::OdbcCatalog::new(connection, timeout)
+                        .column_types(relation.0.as_deref(), &relation.1)
                 },
             )
             .await

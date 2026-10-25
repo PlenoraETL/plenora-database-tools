@@ -207,6 +207,10 @@ fn bind_parameter(value: &ParameterValue) -> Result<Value> {
         ParameterValue::Bool(value) => Ok(Value::Integer(i64::from(*value))),
         ParameterValue::I32(value) => Ok(Value::Integer(i64::from(*value))),
         ParameterValue::I64(value) => Ok(Value::Integer(*value)),
+        // Misurato: Oracle conserva `-0.0` in un BINARY_DOUBLE come `+0.0`.
+        ParameterValue::F64(value) if value.to_bits() == (-0.0_f64).to_bits() => Err(
+            mapping_error("parametro double -0.0: Oracle conserva lo zero senza segno"),
+        ),
         ParameterValue::F64(value) if value.is_finite() => Ok(Value::Float(*value)),
         ParameterValue::F64(_) => Err(mapping_error("parametro float Oracle non finito")),
         ParameterValue::String(value) | ParameterValue::Enum { label: value, .. } => {

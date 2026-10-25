@@ -25,17 +25,35 @@
 //!   ([`reject_sub_microsecond`]) invece di essere arrotondata dal server.
 //!   Rientro: un tipo temporale a nanosecondi nel contratto, con decoder che
 //!   lo rileggono.
-//! - **Assegnazione a una colonna piu stretta.** Il binding garantisce il
-//!   valore che il server riceve, non quello che una colonna di tipo diverso
-//!   conserva: un `F64` in un `REAL`, un decimale con piu cifre della scala
-//!   di un `DECIMAL(p, s)`, un testo in un `CHAR(n)` che lo completa con
-//!   spazi seguono le regole di assegnazione del server. Ambito: lo statement
-//!   del chiamante sui provider che non descrivono il segnaposto (`MySQL`,
-//!   `MariaDB`, SQL Server, Oracle). PostgreSQL e Db2 descrivono il tipo del
-//!   segnaposto e rifiutano un valore che non vi entra esatto. Hazard: il
-//!   valore conservato puo differire da quello bindato. Rientro: la
-//!   descrizione dei segnaposto (`sp_describe_undeclared_parameters`, il
-//!   describe di `MySQL` e Oracle) anche su quei provider.
+//! - **Lo SQL del chiamante non conosce l'operando.** La regola unica dei
+//!   parametri che incontrano un operando (`operand_admission`: ammessi
+//!   soltanto se esatti nel tipo dell'operando, con typmod, precisione e
+//!   scala) vale dove l'operando e noto: AST portable, filtro della lettura,
+//!   `CAST` dei parametri tipati relazionali, parameter-array e SQL del
+//!   chiamante su Db2 (`SQLDescribeParam`). Ambito della deviazione: lo SQL
+//!   del chiamante di PostgreSQL (il segnaposto e descritto senza typmod: un
+//!   `numeric(12, 4)`, un `timestamp(0)` arrotondano l'assegnazione),
+//!   `MySQL`, `MariaDB`, SQL Server e Oracle (nessuna descrizione), i
+//!   parametri senza tipo delle `QueryOperation` relazionali e le mutazioni
+//!   relazionali dello SDK. Hazard: il valore arriva esatto nel proprio tipo,
+//!   ma l'assegnazione a una colonna piu stretta e il confronto fra tipi
+//!   diversi (un `BIGINT` con un `DOUBLE`, un `DOUBLE` con un `DECIMAL`)
+//!   seguono le regole del server, che arrotonda o converte. Rientro: la
+//!   descrizione dei segnaposto con il tipo completo
+//!   (`sp_describe_undeclared_parameters`, il typmod del bersaglio su
+//!   PostgreSQL) e il catalogo per le mutazioni dello SDK; chi vuole la
+//!   garanzia usa l'AST portable.
+//! - **Collation e padding.** Gli spazi finali e le maiuscole di un testo, e
+//!   su SQL Server gli zeri finali di un binario (`0xAB01 = 0xAB0100` e vero,
+//!   misurato), si confrontano con le regole di padding e di collation della
+//!   colonna; un testo piu corto di un `CHAR(n)` si completa con spazi.
+//!   Ambito: ogni percorso. Hazard: una chiave che differisce soltanto per
+//!   spazi, maiuscole o zeri finali ritrova la riga. Rientro: un confronto
+//!   binario esplicito (`DATALENGTH`, `COLLATE` binaria) nei renderer.
+//! - **Valori che il server normalizza.** `-0.0` si rifiuta dove il server lo
+//!   conserva come `+0.0` (Db2, `MariaDB`, Oracle `BINARY_DOUBLE`, misurato);
+//!   i double subnormali dove Db2 li rifiuta; `''` e un `RAW` vuoto su Oracle,
+//!   che li conserva come `NULL`.
 //! - **Decimali con esponente.** `Decimal` si accetta soltanto in notazione
 //!   posizionale (`[+-]cifre[.cifre]`, [`DecimalLiteral`]) dove il binding ne
 //!   ricava precisione e scala; Oracle, che lo binda come `NUMBER` nativo,

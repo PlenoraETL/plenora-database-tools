@@ -54,7 +54,25 @@ pub async fn read_operation(
         .map_err(|_| read_error(ErrorCategory::Protocol, "catalogo Db2 non deserializzabile"))?;
     let plan = Db2ReadPlan::compile(&description, operation, budget.limits().cell_bytes)?;
     verify_scalar_fields(config, secret, &description, operation, cancellation).await?;
-    let bound = bind_parameters(&plan.bind_names, parameters)?;
+    let types = column_types(config, secret, &description, cancellation).await?;
+    refuse_bit_data(&plan, &description, &types)?;
+    // La regola dei parametri che incontrano un operando
+    // (`operand_admission`): ogni parametro del filtro si ammette contro il
+    // tipo del campo, con lunghezza, scala e `FOR BIT DATA` del catalogo.
+    let admitted = plenora_database_core::operand_admission::admit_filter(
+        plenora_database_core::plan::ProviderKind::Db2,
+        operation.filter.as_ref(),
+        parameters,
+        |field| {
+            types.get(field).map(|catalog| {
+                plenora_database_core::operand_admission::operand_type(
+                    plenora_database_core::plan::ProviderKind::Db2,
+                    catalog,
+                )
+            })
+        },
+    )?;
+    let bound = bind_parameters(&plan.bind_names, &admitted)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let column_count = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne Db2 non rappresentabile"))?;
@@ -95,6 +113,60 @@ pub async fn read_operation(
         _columns_lease: columns_lease,
         finished: false,
     }))
+}
+
+/// I tipi delle colonne dell'oggetto letto dal catalogo, con `FOR BIT DATA`
+/// (`CODEPAGE` 0), che la descrizione non porta.
+async fn column_types(
+    config: &Db2Config,
+    secret: &SecretString,
+    description: &Db2ObjectDescription,
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::operand_admission::RelationTypes> {
+    let config = config.clone();
+    let secret = secret.clone();
+    let (schema, object) = (description.schema.clone(), description.name.clone());
+    let mut task = tokio::task::spawn_blocking(move || {
+        with_connection(&config, &secret, |connection, timeout| {
+            crate::operand_catalog::OdbcCatalog::new(connection, timeout)
+                .column_types(Some(&schema), &object)
+        })
+    });
+    let types = tokio::select! {
+        outcome = &mut task => outcome.map_err(|_| task_error(ErrorPhase::Prepare))??,
+        _ = cancellation.cancelled() => {
+            return Err(interruption_error(cancellation, ErrorPhase::Prepare));
+        }
+    };
+    Ok(types.unwrap_or_default())
+}
+
+/// Una colonna `FOR BIT DATA` proiettata: il driver la rende come testo
+/// esadecimale (misurato, `0xAB01` letto `"AB01"`), e la lettura Arrow la
+/// dichiarava `Utf8`. Come `BINARY` e `VARBINARY` non e qualificata.
+fn refuse_bit_data(
+    plan: &Db2ReadPlan,
+    description: &Db2ObjectDescription,
+    types: &plenora_database_core::operand_admission::RelationTypes,
+) -> Result<()> {
+    let bit_data = |name: &str| {
+        let declared = description
+            .columns
+            .iter()
+            .find(|column| column.name == name)
+            .map(|column| column.data_type.to_ascii_uppercase());
+        let catalog = types.get(name).map(|catalog| catalog.name.as_str());
+        matches!(declared.as_deref(), Some("CHARACTER" | "CHAR" | "VARCHAR"))
+            && matches!(catalog, Some("BINARY" | "VARBINARY"))
+    };
+    if plan.columns.iter().any(|column| bit_data(&column.name)) {
+        return Err(DatabaseError::unsupported(
+            plenora_database_core::plan::ProviderKind::Db2,
+            ErrorPhase::Prepare,
+            "colonna FOR BIT DATA Db2 non ancora qualificata per Arrow",
+        ));
+    }
+    Ok(())
 }
 
 /// I campi del filtro e dell'ordinamento giudicati sul catalogo

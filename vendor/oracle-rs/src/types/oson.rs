@@ -234,7 +234,9 @@ impl OsonDecoder {
             let name_start = offset as usize;
             let name_len = field_names_data[name_start] as usize;
             let name_bytes = &field_names_data[name_start + 1..name_start + 1 + name_len];
-            let name = String::from_utf8_lossy(name_bytes).to_string();
+            let name = String::from_utf8(name_bytes.to_vec()).map_err(|_| {
+                Error::DataConversionError("nome di campo OSON non UTF-8".to_string())
+            })?;
             names.push(name);
         }
 
@@ -275,7 +277,9 @@ impl OsonDecoder {
                 field_names_data[name_start + 1],
             ]) as usize;
             let name_bytes = &field_names_data[name_start + 2..name_start + 2 + name_len];
-            let name = String::from_utf8_lossy(name_bytes).to_string();
+            let name = String::from_utf8(name_bytes.to_vec()).map_err(|_| {
+                Error::DataConversionError("nome di campo OSON non UTF-8".to_string())
+            })?;
             names.push(name);
         }
 
@@ -644,7 +648,8 @@ impl OsonDecoder {
 
     fn read_string(&mut self, len: usize) -> Result<String> {
         let bytes = self.read_bytes(len)?;
-        Ok(String::from_utf8_lossy(&bytes).to_string())
+        String::from_utf8(bytes)
+            .map_err(|_| Error::DataConversionError("stringa OSON non UTF-8".to_string()))
     }
 }
 

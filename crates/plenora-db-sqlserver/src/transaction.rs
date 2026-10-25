@@ -331,6 +331,13 @@ fn decode_cell(
             .map_or_else(
                 || Ok(null_value(kind)),
                 |value| {
+                    // `datetime` e `smalldatetime` legacy: la regola
+                    // dichiarata su `arrow::canonical_legacy_datetime`.
+                    let value = if kind == Ct::Datetime2 {
+                        value
+                    } else {
+                        crate::arrow::canonical_legacy_datetime(value)?
+                    };
                     microsecond_exact(chrono::Timelike::nanosecond(&value), index)?;
                     Ok(ParameterValue::Timestamp(
                         value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string(),
@@ -669,6 +676,17 @@ impl TransactionScope for SqlServerTransaction {
             self.ensure_open(ErrorPhase::Prepare)?;
             crate::query::operand_catalog(self.session.session_mut()?, relations, cancellation)
                 .await
+        })
+    }
+
+    fn column_types<'a>(
+        &'a mut self,
+        relation: &'a (Option<String>, String),
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<plenora_database_core::operand_admission::RelationTypes>> {
+        Box::pin(async move {
+            self.ensure_open(ErrorPhase::Prepare)?;
+            crate::query::column_types(self.session.session_mut()?, relation, cancellation).await
         })
     }
 

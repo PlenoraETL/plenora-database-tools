@@ -64,7 +64,8 @@ pub async fn read_operation(
         validate_spatial_filter(&description, filter, parameters)?;
     }
     let plan = OracleReadPlan::compile(&description, operation)?;
-    let parameter_values = named_parameters(&plan.bind_names, parameters)?;
+    let admitted = admit_read_filter(&description, operation, parameters)?;
+    let parameter_values = named_parameters(&plan.bind_names, &admitted)?;
     let leases = ContractLeases::acquire(budget, plan.columns.len())?;
     let (operation_lease, columns_lease) = leases.into_parts();
     let mut deadline = DeadlineGuard::new(cancellation, budget)?;
@@ -282,6 +283,49 @@ const fn oracle_read_error(mut error: DatabaseError) -> DatabaseError {
     error.phase = ErrorPhase::Prepare;
     error.provider = Some(ProviderKind::Oracle);
     error
+}
+
+/// La regola dei parametri che incontrano un operando (`operand_admission`):
+/// ogni parametro del filtro si ammette contro il tipo del campo, con
+/// lunghezza, precisione e scala della descrizione.
+fn admit_read_filter(
+    description: &OracleObjectDescription,
+    operation: &ReadOperation,
+    parameters: &ParameterBag,
+) -> Result<ParameterBag> {
+    use plenora_database_core::operand_admission::{admit_filter, operand_type};
+    use plenora_database_core::plan::ProviderKind;
+    admit_filter(
+        ProviderKind::Oracle,
+        operation.filter.as_ref(),
+        parameters,
+        |field| {
+            description
+                .columns
+                .iter()
+                .find(|column| column.name == field)
+                .map(|column| operand_type(ProviderKind::Oracle, &column_catalog_type(column)))
+        },
+    )
+}
+
+/// Il tipo del catalogo di una colonna descritta: la lunghezza in caratteri
+/// dei testi, in byte di `RAW`.
+fn column_catalog_type(
+    column: &crate::catalog::OracleColumn,
+) -> plenora_database_core::operand_admission::CatalogType {
+    plenora_database_core::operand_admission::CatalogType {
+        name: column.data_type.clone(),
+        declaration: None,
+        length: Some(if column.data_type.eq_ignore_ascii_case("RAW") {
+            column.data_length
+        } else {
+            column.char_length
+        }),
+        precision: column.precision,
+        scale: column.scale,
+        datetime_precision: None,
+    }
 }
 
 fn named_parameters(names: &[String], parameters: &ParameterBag) -> Result<Vec<ParameterValue>> {

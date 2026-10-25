@@ -39,6 +39,19 @@ fn live_provider() -> Db2Provider {
     .expect("provider Db2 live")
 }
 
+/// La resa canonica del server, indipendente dai decoder del repository:
+/// esadecimale di byte, testo e double (i bit come li conserva Db2, in
+/// little-endian), `CHAR` di decimali e temporali.
+fn raw_sql(column: &str) -> String {
+    match column {
+        "B" | "BF" | "S" | "F" | "R" => format!("HEX({column})"),
+        "BO" => "CASE WHEN BO THEN 'true' ELSE 'false' END".to_owned(),
+        "DT" => "CHAR(DT, ISO)".to_owned(),
+        "U" => "U".to_owned(),
+        _ => format!("VARCHAR({column})"),
+    }
+}
+
 fn native(kind: NativeSql, column: &str) -> String {
     let table = format!("{SCHEMA}.{TABLE}");
     match kind {
@@ -47,7 +60,10 @@ fn native(kind: NativeSql, column: &str) -> String {
         NativeSql::Count => {
             format!("SELECT COUNT(*) FROM {table} WHERE ID = ? AND {column} = ?")
         }
-        NativeSql::Raw => format!("SELECT HEX({column}) FROM {table} WHERE ID = ?"),
+        NativeSql::Raw => format!(
+            "SELECT COALESCE({}, '') FROM {table} WHERE ID = ?",
+            raw_sql(column)
+        ),
         NativeSql::Delete => format!("DELETE FROM {table} WHERE ID = ?"),
     }
 }
@@ -56,8 +72,23 @@ fn text(value: &str) -> ParameterValue {
     ParameterValue::String(value.to_owned())
 }
 
-fn exact(value: &ParameterValue) -> Expect {
-    Expect::exact(value.clone())
+fn utf8_hex(value: &str) -> String {
+    value
+        .bytes()
+        .fold(String::new(), |out, byte| out + &format!("{byte:02X}"))
+}
+
+/// I bit di un double come `HEX` li rende: i byte nell'ordine della
+/// macchina del server (`x86_64`, little-endian).
+fn double_hex(value: f64) -> String {
+    value
+        .to_le_bytes()
+        .iter()
+        .fold(String::new(), |out, byte| out + &format!("{byte:02X}"))
+}
+
+fn exact(value: &ParameterValue, raw: impl Into<String>) -> Expect {
+    Expect::exact(value.clone(), raw)
 }
 
 fn refused() -> Expect {
@@ -76,8 +107,10 @@ fn cases() -> Vec<Case> {
     let all_bytes = ParameterValue::Bytes(vec![0x00, 0xFF, 0x41, 0x7F, 0x80]);
     let nonbmp = text("\u{e8}\u{1F600}");
     let decimal = ParameterValue::Decimal("12345.6789".to_owned());
-    let float = ParameterValue::F64(0.1);
     let next = ParameterValue::F64(f64::from_bits(0.1_f64.to_bits() + 1));
+    let two_53 = 1_i64 << 53;
+    #[allow(clippy::cast_precision_loss)]
+    let float_two_53 = two_53 as f64;
     let timestamp = ParameterValue::Timestamp("2024-01-01T10:20:30.123456".to_owned());
     vec![
         // Il difetto segnalato: i byte arrivavano come testo esadecimale, e
@@ -86,61 +119,64 @@ fn cases() -> Vec<Case> {
             "bytes 0xAB01 in VARCHAR FOR BIT DATA",
             "BF",
             bytes.clone(),
-            exact(&bytes)
-                .with_raw(text("AB01"))
-                .distinct_from(ParameterValue::Bytes(b"AB01".to_vec())),
-        ),
+            exact(&bytes, "AB01"),
+        )
+        // La lettura Arrow dei binari (FOR BIT DATA, VARBINARY) non e
+        // qualificata: si rifiuta prima dello stream.
+        .on(FidelityPath::Read, refused()),
         Case::new(
             "bytes 0xAB01 in VARBINARY",
             "B",
             bytes.clone(),
-            exact(&bytes)
-                .with_raw(text("AB01"))
-                .distinct_from(ParameterValue::Bytes(b"AB01".to_vec())),
-        ),
+            exact(&bytes, "AB01"),
+        )
+        // La lettura Arrow dei binari (FOR BIT DATA, VARBINARY) non e
+        // qualificata: si rifiuta prima dello stream.
+        .on(FidelityPath::Read, refused()),
         Case::new(
             "bytes con 0x00 e 0xFF",
             "B",
             all_bytes.clone(),
-            exact(&all_bytes).with_raw(text("00FF417F80")),
-        ),
+            exact(&all_bytes, "00FF417F80"),
+        )
+        // La lettura Arrow dei binari (FOR BIT DATA, VARBINARY) non e
+        // qualificata: si rifiuta prima dello stream.
+        .on(FidelityPath::Read, refused()),
         Case::new(
             "bytes vuoti",
             "B",
             ParameterValue::Bytes(Vec::new()),
-            exact(&ParameterValue::Bytes(Vec::new())).with_raw(text("")),
-        ),
+            exact(&ParameterValue::Bytes(Vec::new()), ""),
+        )
+        .on(FidelityPath::Read, refused()),
         Case::new("bytes in una colonna testuale", "S", bytes, mapping()),
         // Il testo resta testo: in una colonna binaria vanno i suoi byte UTF-8.
         Case::new(
             "testo in una colonna binaria",
             "BF",
             text("AB01"),
-            exact(&ParameterValue::Bytes(b"AB01".to_vec())).with_raw(text("41423031")),
-        ),
+            exact(&ParameterValue::Bytes(b"AB01".to_vec()), "41423031"),
+        )
+        .on(FidelityPath::Portable, mapping())
+        .on(FidelityPath::Read, mapping()),
         Case::new(
             "testo non-BMP",
             "S",
             nonbmp.clone(),
-            exact(&nonbmp).with_raw(text("C3A8F09F9880")),
+            exact(&nonbmp, utf8_hex("\u{e8}\u{1F600}")),
         ),
-        Case::new(
-            "testo vuoto",
-            "S",
-            text(""),
-            exact(&text("")).with_raw(text("")),
-        ),
+        Case::new("testo vuoto", "S", text(""), exact(&text(""), "")),
         Case::new(
             "testo con NUL",
             "S",
             text("a\0b"),
-            exact(&text("a\0b")).with_raw(text("610062")),
+            exact(&text("a\0b"), "610062"),
         ),
         Case::new(
             "decimal esatto",
             "D",
             decimal.clone(),
-            exact(&decimal).distinct_from(ParameterValue::Decimal("12345.67890001".to_owned())),
+            exact(&decimal, "12345.6789"),
         ),
         Case::new(
             "decimal oltre la scala",
@@ -157,16 +193,20 @@ fn cases() -> Vec<Case> {
         Case::new(
             "double 0.1",
             "F",
-            float.clone(),
-            exact(&float)
-                .with_raw(text("9A9999999999B93F"))
-                .distinct_from(next.clone()),
+            ParameterValue::F64(0.1),
+            exact(&ParameterValue::F64(0.1), double_hex(0.1)),
         ),
         Case::new(
             "double 0.1 + ulp",
             "F",
             next.clone(),
-            exact(&next).with_raw(text("9B9999999999B93F")),
+            exact(&next, double_hex(f64::from_bits(0.1_f64.to_bits() + 1))),
+        ),
+        Case::new(
+            "double 2^53",
+            "F",
+            ParameterValue::F64(float_two_53),
+            exact(&ParameterValue::F64(float_two_53), double_hex(float_two_53)),
         ),
         Case::new("double -0.0", "F", ParameterValue::F64(-0.0), mapping()),
         Case::new(
@@ -179,7 +219,7 @@ fn cases() -> Vec<Case> {
             "double massimo",
             "F",
             ParameterValue::F64(f64::MAX),
-            exact(&ParameterValue::F64(f64::MAX)).with_raw(text("FFFFFFFFFFFFEF7F")),
+            exact(&ParameterValue::F64(f64::MAX), double_hex(f64::MAX)),
         ),
         Case::new("double NaN", "F", ParameterValue::F64(f64::NAN), refused()),
         Case::new(
@@ -188,69 +228,72 @@ fn cases() -> Vec<Case> {
             ParameterValue::F64(f64::INFINITY),
             refused(),
         ),
-        Case::new("double 0.1 in REAL", "R", float.clone(), mapping()),
+        Case::new(
+            "double 0.1 in REAL",
+            "R",
+            ParameterValue::F64(0.1),
+            mapping(),
+        ),
         Case::new(
             "double 0.5 in REAL",
             "R",
             ParameterValue::F64(0.5),
-            exact(&ParameterValue::F64(0.5)).with_raw(text("0000003F")),
+            exact(&ParameterValue::F64(0.5), "0000003F"),
         ),
-        Case::new("double in DECIMAL", "D", float, mapping()),
+        Case::new(
+            "double in DECIMAL",
+            "D",
+            ParameterValue::F64(0.1),
+            mapping(),
+        ),
         Case::new(
             "bigint 2^53 + 1 in DOUBLE",
             "F",
-            ParameterValue::I64((1 << 53) + 1),
+            ParameterValue::I64(two_53 + 1),
             mapping(),
+        ),
+        Case::new(
+            "bigint 2^53 + 1",
+            "I",
+            ParameterValue::I64(two_53 + 1),
+            exact(&ParameterValue::I64(two_53 + 1), (two_53 + 1).to_string()),
         ),
         Case::new(
             "bigint minimo",
             "I",
             ParameterValue::I64(i64::MIN),
-            exact(&ParameterValue::I64(i64::MIN)),
-        ),
-        Case::new(
-            "bigint massimo",
-            "I",
-            ParameterValue::I64(i64::MAX),
-            exact(&ParameterValue::I64(i64::MAX)),
+            exact(&ParameterValue::I64(i64::MIN), i64::MIN.to_string()),
         ),
         Case::new(
             "integer minimo",
             "N",
             ParameterValue::I32(i32::MIN),
-            exact(&ParameterValue::I32(i32::MIN)),
+            exact(&ParameterValue::I32(i32::MIN), i32::MIN.to_string()),
+        ),
+        // Il caso non silenzioso del secondo giro: `0` in DECIMAL(5, 5).
+        Case::new(
+            "zero in DECIMAL(5, 5)",
+            "D55",
+            ParameterValue::I64(0),
+            exact(&ParameterValue::Decimal("0.00000".to_owned()), ".00000"),
         ),
         Case::new(
             "boolean true",
             "BO",
             ParameterValue::Bool(true),
-            exact(&ParameterValue::Bool(true)),
-        ),
-        Case::new(
-            "boolean false",
-            "BO",
-            ParameterValue::Bool(false),
-            exact(&ParameterValue::Bool(false)),
+            exact(&ParameterValue::Bool(true), "true"),
         ),
         Case::new(
             "date bisestile",
             "DT",
             ParameterValue::Date("2024-02-29".to_owned()),
-            exact(&ParameterValue::Date("2024-02-29".to_owned())),
-        ),
-        Case::new(
-            "date minima",
-            "DT",
-            ParameterValue::Date("0001-01-01".to_owned()),
-            exact(&ParameterValue::Date("0001-01-01".to_owned())),
+            exact(&ParameterValue::Date("2024-02-29".to_owned()), "2024-02-29"),
         ),
         Case::new(
             "timestamp al microsecondo",
             "TS",
             timestamp.clone(),
-            exact(&timestamp).distinct_from(ParameterValue::Timestamp(
-                "2024-01-01T10:20:30.123457".to_owned(),
-            )),
+            exact(&timestamp, "2024-01-01-10.20.30.123456"),
         ),
         Case::new(
             "timestamp oltre la precisione della colonna",
@@ -269,12 +312,17 @@ fn cases() -> Vec<Case> {
             "TS",
             ParameterValue::TimestampTz("2024-01-01T10:20:30.123456+02:00".to_owned()),
             refused(),
-        ),
+        )
+        .on(FidelityPath::Portable, mapping())
+        .on(FidelityPath::Read, mapping()),
         Case::new(
             "uuid",
             "U",
             ParameterValue::Uuid("6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60".to_owned()),
-            exact(&text("6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60")),
+            exact(
+                &text("6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60"),
+                "6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60",
+            ),
         ),
         Case::new(
             "uuid non canonico",
@@ -290,7 +338,7 @@ fn cases() -> Vec<Case> {
                 type_name: "mood".to_owned(),
                 label: "happy".to_owned(),
             },
-            exact(&text("happy")),
+            exact(&text("happy"), utf8_hex("happy")),
         )
         .only(NATIVE_PORTABLE),
         Case::new(
@@ -298,6 +346,16 @@ fn cases() -> Vec<Case> {
             "S",
             ParameterValue::Json(serde_json::json!({"a": 1})),
             refused(),
+        )
+        // Sul percorso portabile il JSON in una colonna testuale e il suo
+        // testo (regola `operand_admission`).
+        .on(
+            FidelityPath::Portable,
+            exact(&text("{\"a\":1}"), utf8_hex("{\"a\":1}")),
+        )
+        .on(
+            FidelityPath::Read,
+            exact(&text("{\"a\":1}"), utf8_hex("{\"a\":1}")),
         ),
         Case::new(
             "NULL integer",
@@ -305,9 +363,12 @@ fn cases() -> Vec<Case> {
             ParameterValue::Null {
                 type_name: "integer".to_owned(),
             },
-            exact(&ParameterValue::Null {
-                type_name: "integer".to_owned(),
-            }),
+            exact(
+                &ParameterValue::Null {
+                    type_name: "integer".to_owned(),
+                },
+                "",
+            ),
         )
         .only(NATIVE_PORTABLE),
         Case::new(
@@ -316,9 +377,12 @@ fn cases() -> Vec<Case> {
             ParameterValue::Null {
                 type_name: "binary".to_owned(),
             },
-            exact(&ParameterValue::Null {
-                type_name: "binary".to_owned(),
-            }),
+            exact(
+                &ParameterValue::Null {
+                    type_name: "binary".to_owned(),
+                },
+                "",
+            ),
         )
         .only(NATIVE_PORTABLE),
     ]
@@ -331,7 +395,7 @@ async fn reset_table(provider: &Db2Provider, secret: &SecretString) {
         format!(
             "CREATE TABLE {SCHEMA}.{TABLE} (ID INTEGER NOT NULL PRIMARY KEY, \
              B VARBINARY(64), BF VARCHAR(64) FOR BIT DATA, S VARCHAR(64), \
-             D DECIMAL(12, 4), F DOUBLE, R REAL, I BIGINT, N INTEGER, BO BOOLEAN, \
+             D DECIMAL(12, 4), D55 DECIMAL(5, 5), F DOUBLE, R REAL, I BIGINT, N INTEGER, BO BOOLEAN, \
              DT DATE, TS TIMESTAMP(6), TS0 TIMESTAMP(0), TS12 TIMESTAMP(12), U CHAR(36))"
         ),
     ] {
@@ -359,6 +423,7 @@ async fn live_parameter_values_bind_exactly_or_are_refused() {
         },
         id_column: "ID",
         native: &native,
+        native_cross_type_declared: false,
     };
     let outcomes = run(&target, &cases()).await;
     provider

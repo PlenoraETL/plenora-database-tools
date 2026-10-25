@@ -84,6 +84,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_parameter_values_bind_exactly_or_are_refused",
         "live_arrow_read_returns_floating_point_values_exactly",
         "live_sub_microsecond_timestamps_are_refused_on_read",
+        "live_parameter_array_refuses_timestamps_beyond_the_column_precision",
     }
 )
 

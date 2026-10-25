@@ -968,6 +968,25 @@ impl TransactionScope for MysqlTransaction {
         })
     }
 
+    fn column_types<'a>(
+        &'a mut self,
+        relation: &'a (Option<String>, String),
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<plenora_database_core::operand_admission::RelationTypes>> {
+        Box::pin(async move {
+            let kind = self.session.kind();
+            let outcome = async move {
+                if !self.open {
+                    return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
+                }
+                crate::catalog::transaction_column_types(&mut self.session, relation, cancellation)
+                    .await
+            }
+            .await;
+            crate::profile::attributed_kind(kind, outcome)
+        })
+    }
+
     fn execute_conditional_update<'a>(
         &'a mut self,
         request: ConditionalUpdate<'a>,

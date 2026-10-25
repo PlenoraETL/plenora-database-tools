@@ -8981,12 +8981,13 @@ async fn live_binary_columns_of_views_are_judged_geometric() {
 // ---------------------------------------------------------------------------
 // Fedelta dei parametri `MySQL` e `MariaDB`: ogni variante di `ParameterValue`
 // o arriva al server esatta, o e rifiutata prima dell'invio
-// (`plenora_database_testkit::parameter_fidelity`). Il prodotto si sceglie con
+// (`plenora_database_testkit::parameter_fidelity`, con l'oracolo della resa
+// del server e i vicini generati per famiglia). Il prodotto si sceglie con
 // `PLENORA_MYSQL_PRODUCT`, come per gli altri test live del crate.
 // ---------------------------------------------------------------------------
 
 use crate::MariadbProvider;
-use plenora_database_core::provider::ParameterValue;
+use plenora_database_core::provider::ParameterValue as FidelityValue;
 use plenora_database_testkit::parameter_fidelity::{
     report as fidelity_report, run as fidelity_run, Case as FidelityCase, Expect as FidelityExpect,
     FidelityPath, NativeSql as FidelitySql, Target as FidelityTarget,
@@ -8998,228 +8999,270 @@ fn fidelity_mariadb() -> bool {
     environment("PLENORA_MYSQL_PRODUCT", "mysql") == "mariadb"
 }
 
-fn fidelity_native(kind: FidelitySql, column: &str) -> String {
-    match kind {
-        FidelitySql::Insert => format!("INSERT INTO {FIDELITY_TABLE} (ID, {column}) VALUES (?, ?)"),
-        FidelitySql::Select => format!("SELECT {column} FROM {FIDELITY_TABLE} WHERE ID = ?"),
-        FidelitySql::Count => {
-            format!("SELECT COUNT(*) FROM {FIDELITY_TABLE} WHERE ID = ? AND {column} = ?")
-        }
-        FidelitySql::Raw if column == "F" => {
-            format!("SELECT CAST(F AS CHAR) FROM {FIDELITY_TABLE} WHERE ID = ?")
-        }
-        FidelitySql::Raw => format!("SELECT HEX({column}) FROM {FIDELITY_TABLE} WHERE ID = ?"),
-        FidelitySql::Delete => format!("DELETE FROM {FIDELITY_TABLE} WHERE ID = ?"),
+/// La resa canonica del server, indipendente dai decoder del repository.
+fn fidelity_raw(column: &str) -> String {
+    match column {
+        "B" | "S" => format!("HEX({column})"),
+        "TS" | "TS0" | "TZ" => format!("DATE_FORMAT({column}, '%Y-%m-%dT%H:%i:%s.%f')"),
+        _ => format!("CAST({column} AS CHAR)"),
     }
 }
 
-fn fidelity_text(value: &str) -> ParameterValue {
-    ParameterValue::String(value.to_owned())
+fn fidelity_native(kind: FidelitySql, column: &str) -> String {
+    let table = FIDELITY_TABLE;
+    match kind {
+        FidelitySql::Insert => format!("INSERT INTO {table} (ID, {column}) VALUES (?, ?)"),
+        FidelitySql::Select => format!("SELECT {column} FROM {table} WHERE ID = ?"),
+        FidelitySql::Count => {
+            format!("SELECT COUNT(*) FROM {table} WHERE ID = ? AND {column} = ?")
+        }
+        FidelitySql::Raw => format!(
+            "SELECT COALESCE({}, '') FROM {table} WHERE ID = ?",
+            fidelity_raw(column)
+        ),
+        FidelitySql::Delete => format!("DELETE FROM {table} WHERE ID = ?"),
+    }
 }
 
-fn fidelity_exact(value: &ParameterValue) -> FidelityExpect {
-    FidelityExpect::exact(value.clone())
+fn fidelity_text(value: &str) -> FidelityValue {
+    FidelityValue::String(value.to_owned())
+}
+
+fn fidelity_exact(value: &FidelityValue, raw: impl Into<String>) -> FidelityExpect {
+    FidelityExpect::exact(value.clone(), raw)
 }
 
 #[allow(clippy::too_many_lines)]
 fn fidelity_cases() -> Vec<FidelityCase> {
-    let bytes = ParameterValue::Bytes(vec![0xAB, 0x01]);
+    use FidelityValue as V;
+    let mariadb = fidelity_mariadb();
+    let mapping = FidelityExpect::Refused(ErrorCategory::DataMapping);
+    let unsupported = FidelityExpect::Refused(ErrorCategory::Unsupported);
+    let bytes = V::Bytes(vec![0xAB, 0x01]);
     let nonbmp = fidelity_text("\u{e8}\u{1F600}");
-    let float = ParameterValue::F64(0.1);
-    let timestamp = ParameterValue::Timestamp("2024-01-01T10:20:30.123456".to_owned());
+    let two_53 = 1_i64 << 53;
+    #[allow(clippy::cast_precision_loss)]
+    let float_two_53 = two_53 as f64;
+    let timestamp = V::Timestamp("2024-01-01T10:20:30.123456".to_owned());
+    let decimal = V::Decimal("12345.6789".to_owned());
+    let integer = |value: i64| V::I64(value);
     vec![
         FidelityCase::new(
             "bytes 0xAB01 in VARBINARY",
             "B",
             bytes.clone(),
-            fidelity_exact(&bytes)
-                .with_raw(fidelity_text("AB01"))
-                .distinct_from(ParameterValue::Bytes(b"AB01".to_vec())),
+            fidelity_exact(&bytes, "AB01"),
         ),
         FidelityCase::new(
             "bytes vuoti",
             "B",
-            ParameterValue::Bytes(Vec::new()),
-            fidelity_exact(&ParameterValue::Bytes(Vec::new())).with_raw(fidelity_text("")),
+            V::Bytes(Vec::new()),
+            fidelity_exact(&V::Bytes(Vec::new()), ""),
         ),
         FidelityCase::new(
             "testo non-BMP",
             "S",
             nonbmp.clone(),
-            fidelity_exact(&nonbmp).with_raw(fidelity_text("C3A8F09F9880")),
+            fidelity_exact(&nonbmp, "C3A8F09F9880"),
         ),
         FidelityCase::new(
             "testo vuoto",
             "S",
             fidelity_text(""),
-            fidelity_exact(&fidelity_text("")),
+            fidelity_exact(&fidelity_text(""), ""),
         ),
-        FidelityCase::new(
-            "testo con NUL",
-            "S",
-            fidelity_text("a\0b"),
-            FidelityExpect::Refused(ErrorCategory::DataMapping),
-        ),
+        FidelityCase::new("testo con NUL", "S", fidelity_text("a\0b"), mapping.clone()),
         FidelityCase::new(
             "decimal esatto",
             "D",
-            ParameterValue::Decimal("12345.6789".to_owned()),
-            fidelity_exact(&fidelity_text("12345.6789"))
-                .distinct_from(ParameterValue::Decimal("12345.67890001".to_owned())),
+            decimal,
+            fidelity_exact(&fidelity_text("12345.6789"), "12345.6789"),
+        )
+        // Il decoder transazionale rende il DECIMAL come testo, quello Arrow
+        // come Decimal128: lo stesso valore.
+        .on(
+            FidelityPath::Read,
+            fidelity_exact(&V::Decimal("12345.6789".to_owned()), "12345.6789"),
+        ),
+        FidelityCase::new(
+            "decimal oltre la scala della colonna",
+            "D",
+            V::Decimal("12345.67890001".to_owned()),
+            FidelityExpect::Assigned {
+                read: fidelity_text("12345.6789"),
+                raw: "12345.6789".to_owned(),
+            },
+        )
+        .on(FidelityPath::Portable, mapping.clone())
+        .on(FidelityPath::Read, mapping.clone()),
+        FidelityCase::new(
+            "decimal con esponente",
+            "D",
+            V::Decimal("1.5E2".to_owned()),
+            mapping.clone(),
         ),
         FidelityCase::new(
             "double 0.1",
             "F",
-            float.clone(),
-            fidelity_exact(&float)
-                .with_raw(fidelity_text("0.1"))
-                .distinct_from(ParameterValue::F64(f64::from_bits(0.1_f64.to_bits() + 1))),
+            V::F64(0.1),
+            fidelity_exact(&V::F64(0.1), "0.1"),
+        ),
+        FidelityCase::new(
+            "double 2^53",
+            "F",
+            V::F64(float_two_53),
+            fidelity_exact(&V::F64(float_two_53), "9.007199254740992e15"),
         ),
         // Misurato: MariaDB conserva -0.0 come +0.0.
         FidelityCase::new(
             "double -0.0",
             "F",
-            ParameterValue::F64(-0.0),
-            if fidelity_mariadb() {
-                FidelityExpect::Refused(ErrorCategory::DataMapping)
+            V::F64(-0.0),
+            if mariadb {
+                mapping.clone()
             } else {
-                fidelity_exact(&ParameterValue::F64(-0.0)).with_raw(fidelity_text("-0"))
+                fidelity_exact(&V::F64(-0.0), "-0")
             },
         ),
+        FidelityCase::new("double NaN", "F", V::F64(f64::NAN), mapping.clone()),
         FidelityCase::new(
-            "double massimo",
-            "F",
-            ParameterValue::F64(f64::MAX),
-            fidelity_exact(&ParameterValue::F64(f64::MAX)),
-        ),
-        FidelityCase::new(
-            "double NaN",
-            "F",
-            ParameterValue::F64(f64::NAN),
-            FidelityExpect::Refused(ErrorCategory::DataMapping),
+            "bigint 2^53 + 1",
+            "I",
+            integer(two_53 + 1),
+            fidelity_exact(&integer(two_53 + 1), (two_53 + 1).to_string()),
         ),
         FidelityCase::new(
             "bigint minimo",
             "I",
-            ParameterValue::I64(i64::MIN),
-            fidelity_exact(&ParameterValue::I64(i64::MIN)),
-        ),
-        FidelityCase::new(
-            "bigint massimo",
-            "I",
-            ParameterValue::I64(i64::MAX),
-            fidelity_exact(&ParameterValue::I64(i64::MAX)),
+            V::I64(i64::MIN),
+            fidelity_exact(&V::I64(i64::MIN), i64::MIN.to_string()),
         ),
         FidelityCase::new(
             "boolean true",
             "BO",
-            ParameterValue::Bool(true),
-            fidelity_exact(&ParameterValue::I64(1)),
-        ),
+            V::Bool(true),
+            fidelity_exact(&V::I64(1), "1"),
+        )
+        .on(FidelityPath::Read, fidelity_exact(&V::Bool(true), "1")),
         FidelityCase::new(
             "date",
             "DT",
-            ParameterValue::Date("2024-02-29".to_owned()),
-            fidelity_exact(&ParameterValue::Date("2024-02-29".to_owned())),
+            V::Date("2024-02-29".to_owned()),
+            fidelity_exact(&V::Date("2024-02-29".to_owned()), "2024-02-29"),
         ),
         FidelityCase::new(
             "timestamp al microsecondo",
             "TS",
             timestamp.clone(),
-            fidelity_exact(&timestamp).distinct_from(ParameterValue::Timestamp(
-                "2024-01-01T10:20:30.123457".to_owned(),
-            )),
+            fidelity_exact(&timestamp, "2024-01-01T10:20:30.123456"),
         ),
+        FidelityCase::new(
+            "timestamp oltre la precisione della colonna",
+            "TS0",
+            V::Timestamp("2024-01-01T10:20:30.4".to_owned()),
+            FidelityExpect::Assigned {
+                read: V::Timestamp("2024-01-01T10:20:30".to_owned()),
+                raw: "2024-01-01T10:20:30.000000".to_owned(),
+            },
+        )
+        .on(FidelityPath::Portable, mapping.clone())
+        .on(FidelityPath::Read, mapping.clone()),
         FidelityCase::new(
             "timestamp sotto il microsecondo",
             "TS",
-            ParameterValue::Timestamp("2024-01-01T10:20:30.1234567".to_owned()),
-            FidelityExpect::Refused(ErrorCategory::DataMapping),
+            V::Timestamp("2024-01-01T10:20:30.1234567".to_owned()),
+            mapping.clone(),
         ),
-        // Misurato: MariaDB non legge l'offset (1292 in scrittura, troncato
-        // con un warning in un confronto).
+        // Su MySQL lo SQL del chiamante converte l'offset nel fuso della
+        // sessione (limite dichiarato); il portable non ha un tipo con fuso in
+        // cui ammetterlo. MariaDB non legge l'offset.
         FidelityCase::new(
             "timestamptz in TIMESTAMP",
             "TZ",
-            ParameterValue::TimestampTz("2024-01-01T10:20:30.123456+02:00".to_owned()),
-            if fidelity_mariadb() {
-                FidelityExpect::Refused(ErrorCategory::Unsupported)
+            V::TimestampTz("2024-01-01T10:20:30.123456+02:00".to_owned()),
+            if mariadb {
+                unsupported.clone()
             } else {
-                fidelity_exact(&ParameterValue::Timestamp(
-                    "2024-01-01T08:20:30.123456".to_owned(),
-                ))
+                FidelityExpect::Assigned {
+                    read: V::Timestamp("2024-01-01T08:20:30.123456".to_owned()),
+                    raw: "2024-01-01T08:20:30.123456".to_owned(),
+                }
             },
-        ),
-        FidelityCase::new(
-            "decimal con esponente",
-            "D",
-            ParameterValue::Decimal("1.5E2".to_owned()),
-            FidelityExpect::Refused(ErrorCategory::DataMapping),
+        )
+        .on(FidelityPath::Portable, mapping.clone())
+        .on(
+            FidelityPath::Read,
+            if mariadb {
+                unsupported.clone()
+            } else {
+                mapping.clone()
+            },
         ),
         FidelityCase::new(
             "date inesistente",
             "DT",
-            ParameterValue::Date("2024-02-30".to_owned()),
-            FidelityExpect::Refused(ErrorCategory::DataMapping),
-        ),
-        FidelityCase::new(
-            "uuid non canonico",
-            "U",
-            ParameterValue::Uuid("6f1c2a2e7-d3b-4c55-9a1e-0b2c3d4e5f60".to_owned()),
-            FidelityExpect::Refused(ErrorCategory::DataMapping),
+            V::Date("2024-02-30".to_owned()),
+            mapping.clone(),
         ),
         FidelityCase::new(
             "uuid",
             "U",
-            ParameterValue::Uuid("6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60".to_owned()),
-            fidelity_exact(&fidelity_text("6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60")),
+            V::Uuid("6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60".to_owned()),
+            fidelity_exact(
+                &fidelity_text("6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60"),
+                "6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60",
+            ),
+        ),
+        FidelityCase::new(
+            "uuid non canonico",
+            "U",
+            V::Uuid("6f1c2a2e7-d3b-4c55-9a1e-0b2c3d4e5f60".to_owned()),
+            mapping,
         ),
         FidelityCase::new(
             "enum",
             "S",
-            ParameterValue::Enum {
+            V::Enum {
                 type_name: "mood".to_owned(),
                 label: "happy".to_owned(),
             },
-            fidelity_exact(&fidelity_text("happy")),
+            fidelity_exact(&fidelity_text("happy"), "6861707079"),
         )
         .only(&[FidelityPath::Native, FidelityPath::Portable]),
-        // Misurato: su MySQL un JSON spedito come stringa non ritrova il
-        // documento con `col = ?`. Nello SQL del chiamante e nel filtro si
-        // rifiuta; il portable lo scrive `CAST(? AS JSON)`.
+        // Su MySQL un JSON nudo resta una stringa: si rifiuta nello SQL del
+        // chiamante e nel filtro, il portable lo scrive `CAST(? AS JSON)`.
         FidelityCase::new(
-            "json nello SQL del chiamante",
+            "json",
             "J",
-            ParameterValue::Json(serde_json::json!({"a": 1})),
-            if fidelity_mariadb() {
-                fidelity_exact(&fidelity_text("{\"a\":1}"))
+            V::Json(serde_json::json!({"a": 1})),
+            if mariadb {
+                fidelity_exact(&fidelity_text("{\"a\":1}"), "{\"a\":1}")
             } else {
-                FidelityExpect::Refused(ErrorCategory::Unsupported)
+                unsupported
             },
         )
-        .only(&[FidelityPath::Native, FidelityPath::Read]),
-        FidelityCase::new(
-            "json portable",
-            "J",
-            ParameterValue::Json(serde_json::json!({"a": 1})),
-            fidelity_exact(&fidelity_text(if fidelity_mariadb() {
-                "{\"a\":1}"
+        .on(
+            FidelityPath::Portable,
+            if mariadb {
+                fidelity_exact(&fidelity_text("{\"a\":1}"), "{\"a\":1}")
             } else {
-                "{\"a\": 1}"
-            })),
-        )
-        .only(&[FidelityPath::Portable]),
+                fidelity_exact(&fidelity_text("{\"a\": 1}"), "{\"a\": 1}")
+            },
+        ),
         FidelityCase::new(
             "NULL integer",
             "N",
-            ParameterValue::Null {
+            V::Null {
                 type_name: "integer".to_owned(),
             },
-            fidelity_exact(&ParameterValue::Null {
-                type_name: "unknown".to_owned(),
-            }),
+            fidelity_exact(
+                &V::Null {
+                    type_name: "unknown".to_owned(),
+                },
+                "",
+            ),
         )
-        .only(&[FidelityPath::Native, FidelityPath::Portable]),
+        .only(&[FidelityPath::Native]),
     ]
 }
 
@@ -9243,8 +9286,8 @@ async fn live_parameter_values_bind_exactly_or_are_refused() {
         format!(
             "CREATE TABLE {FIDELITY_TABLE} (ID INT NOT NULL PRIMARY KEY, B VARBINARY(64), \
              S VARCHAR(64) CHARACTER SET utf8mb4, D DECIMAL(12, 4), F DOUBLE, \
-             I BIGINT, N INT, BO BOOLEAN, DT DATE, TS DATETIME(6), TZ TIMESTAMP(6) NULL, \
-             U CHAR(36), J {json})"
+             I BIGINT, N INT, BO BOOLEAN, DT DATE, TS DATETIME(6), TS0 DATETIME(0), \
+             TZ TIMESTAMP(6) NULL, U CHAR(36), J {json})"
         ),
     ] {
         provider
@@ -9263,6 +9306,7 @@ async fn live_parameter_values_bind_exactly_or_are_refused() {
         },
         id_column: "ID",
         native: &fidelity_native,
+        native_cross_type_declared: true,
     };
     let outcomes = fidelity_run(&target, &fidelity_cases()).await;
     provider

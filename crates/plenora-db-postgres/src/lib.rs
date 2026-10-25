@@ -7,6 +7,7 @@
 mod age;
 mod arrow;
 mod catalog;
+mod column_types;
 mod connection;
 mod control;
 mod error;

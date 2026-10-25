@@ -402,6 +402,86 @@ impl<'c, 'e> OdbcCatalog<'c, 'e> {
     }
 }
 
+const COLUMN_TYPES_SQL: &str = "SELECT COLNAME, TYPENAME, VARCHAR(LENGTH), VARCHAR(SCALE), \
+    VARCHAR(CODEPAGE) FROM SYSCAT.COLUMNS WHERE TABSCHEMA = ? AND TABNAME = ? ORDER BY COLNO";
+
+impl OdbcCatalog<'_, '_> {
+    /// I tipi delle colonne di una relazione (`SYSCAT.COLUMNS`), con
+    /// lunghezza, scala e `FOR BIT DATA`, per l'ammissione dei letterali
+    /// portable (`plenora_database_core::operand_admission`). `None` per una
+    /// relazione che il catalogo non conosce.
+    ///
+    /// # Errors
+    ///
+    /// Gli errori del catalogo.
+    pub fn column_types(
+        &mut self,
+        schema: Option<&str>,
+        name: &str,
+    ) -> Result<Option<plenora_database_core::operand_admission::RelationTypes>> {
+        let schema = match schema {
+            Some(schema) => schema.to_owned(),
+            None => self.current_schema()?,
+        };
+        let rows = self.rows(COLUMN_TYPES_SQL, &[&schema, name], 5)?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let number = |row: &[Option<String>], index: usize| -> Result<u64> {
+            cell(row, index)
+                .map(str::trim)
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| malformed("numero del catalogo Db2 non leggibile"))
+        };
+        rows.iter()
+            .map(|row| {
+                let column = cell(row, 0)
+                    .ok_or_else(|| malformed("colonna Db2 senza nome"))?
+                    .to_owned();
+                let type_name = cell(row, 1)
+                    .ok_or_else(|| malformed("colonna Db2 senza tipo"))?
+                    .trim_end()
+                    .to_owned();
+                Ok((
+                    column,
+                    catalog_type(
+                        &type_name,
+                        number(row, 2)?,
+                        i64::try_from(number(row, 3)?).unwrap_or(i64::MAX),
+                        number(row, 4)? == 0,
+                    ),
+                ))
+            })
+            .collect::<Result<_>>()
+            .map(Some)
+    }
+}
+
+/// Il tipo del catalogo Db2: `LENGTH` e la precisione dei decimali e la
+/// lunghezza dei testi e dei binari, `SCALE` la scala o le cifre frazionarie
+/// di `TIMESTAMP`; un testo con `CODEPAGE` 0 e `FOR BIT DATA`, cioe binario.
+#[must_use]
+pub fn catalog_type(
+    type_name: &str,
+    length: u64,
+    scale: i64,
+    bit_data: bool,
+) -> plenora_database_core::operand_admission::CatalogType {
+    let name = match (type_name.to_ascii_uppercase().as_str(), bit_data) {
+        ("CHARACTER" | "CHAR", true) => "BINARY".to_owned(),
+        ("VARCHAR", true) => "VARBINARY".to_owned(),
+        (name, _) => name.to_owned(),
+    };
+    plenora_database_core::operand_admission::CatalogType {
+        name,
+        declaration: None,
+        length: Some(length),
+        precision: Some(length),
+        scale: Some(scale),
+        datetime_precision: None,
+    }
+}
+
 /// Le righe il cui nome (le prime due colonne) e quello esatto.
 fn exact<'r>(
     rows: &'r [Vec<Option<String>>],

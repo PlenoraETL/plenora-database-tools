@@ -24,6 +24,7 @@
 use odbc_api::parameter::InputParameter;
 use odbc_api::sys::SqlDataType;
 use odbc_api::{DataType, IntoParameter};
+use plenora_database_core::operand_admission::{admit, OperandType};
 use plenora_database_core::parameter_fidelity::{
     canonical_uuid, exact_f32, reject_sub_microsecond, DecimalLiteral,
 };
@@ -36,9 +37,7 @@ const PROVIDER: ProviderKind = ProviderKind::Db2;
 const SQL_BLOB: SqlDataType = SqlDataType(-98);
 const SQL_CLOB: SqlDataType = SqlDataType(-99);
 const SQL_DBCLOB: SqlDataType = SqlDataType(-350);
-// Il massimo intero che un double, o un real, rappresentano senza buchi.
-const DOUBLE_EXACT_INTEGER: u64 = 1 << 53;
-const REAL_EXACT_INTEGER: u64 = 1 << 24;
+const SQL_DECFLOAT: SqlDataType = SqlDataType(-360);
 
 pub type Bound = Box<dyn InputParameter>;
 
@@ -102,22 +101,6 @@ fn timestamp(value: &str) -> Result<chrono::NaiveDateTime> {
         .map_err(|_| mapping("parametro timestamp Db2 non valido"))
 }
 
-const fn is_text(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Char { .. }
-            | DataType::WChar { .. }
-            | DataType::Varchar { .. }
-            | DataType::WVarchar { .. }
-            | DataType::LongVarchar { .. }
-            | DataType::WLongVarchar { .. }
-            | DataType::Other {
-                data_type: SQL_CLOB | SQL_DBCLOB,
-                ..
-            }
-    )
-}
-
 const fn is_binary(data_type: &DataType) -> bool {
     matches!(
         data_type,
@@ -135,7 +118,105 @@ fn text(value: String) -> Bound {
     Box::new(value.into_parameter())
 }
 
-/// Il binding di un valore gia validato sul tipo descritto del segnaposto.
+/// Il tipo dell'operando descritto da `SQLDescribeParam`, per la regola
+/// unica (`plenora_database_core::operand_admission`).
+#[must_use]
+pub fn operand_of(described: &DataType) -> OperandType {
+    let length = |length: &Option<std::num::NonZeroUsize>| {
+        length.and_then(|length| u64::try_from(length.get()).ok())
+    };
+    let integer = |min: i128, max: i128| OperandType::Integer { min, max };
+    match described {
+        DataType::Bit => OperandType::Boolean,
+        DataType::TinyInt => integer(i128::from(i8::MIN), i128::from(i8::MAX)),
+        DataType::SmallInt => integer(i128::from(i16::MIN), i128::from(i16::MAX)),
+        DataType::Integer => integer(i128::from(i32::MIN), i128::from(i32::MAX)),
+        DataType::BigInt => integer(i128::from(i64::MIN), i128::from(i64::MAX)),
+        DataType::Real => OperandType::Float { mantissa_bits: 24 },
+        DataType::Float { precision } if *precision <= 24 => {
+            OperandType::Float { mantissa_bits: 24 }
+        }
+        DataType::Float { .. } | DataType::Double => OperandType::Float { mantissa_bits: 53 },
+        DataType::Decimal { precision, scale } | DataType::Numeric { precision, scale } => {
+            match (u32::try_from(*precision), u32::try_from(*scale)) {
+                (Ok(precision), Ok(scale)) => OperandType::Decimal { precision, scale },
+                _ => OperandType::Unknown,
+            }
+        }
+        DataType::Date => OperandType::Date,
+        DataType::Timestamp { precision } => u32::try_from(*precision)
+            .map_or(OperandType::Unknown, |fraction_digits| {
+                OperandType::Timestamp { fraction_digits }
+            }),
+        DataType::Char { length: size } | DataType::WChar { length: size } => OperandType::Text {
+            length: length(size),
+            padded: true,
+        },
+        DataType::Varchar { length: size }
+        | DataType::WVarchar { length: size }
+        | DataType::LongVarchar { length: size }
+        | DataType::WLongVarchar { length: size } => OperandType::Text {
+            length: length(size),
+            padded: false,
+        },
+        DataType::Binary { length: size } => OperandType::Binary {
+            length: length(size),
+            padded: true,
+        },
+        DataType::Varbinary { length: size } | DataType::LongVarbinary { length: size } => {
+            OperandType::Binary {
+                length: length(size),
+                padded: false,
+            }
+        }
+        DataType::Other {
+            data_type: SQL_BLOB,
+            ..
+        } => OperandType::Binary {
+            length: None,
+            padded: false,
+        },
+        DataType::Other {
+            data_type: SQL_CLOB | SQL_DBCLOB,
+            ..
+        } => OperandType::Text {
+            length: None,
+            padded: false,
+        },
+        DataType::Other {
+            data_type: SQL_DECFLOAT,
+            column_size,
+            ..
+        } => OperandType::UnboundedDecimal {
+            digits: column_size
+                .and_then(|size| u32::try_from(size.get()).ok())
+                .unwrap_or(34),
+        },
+        _ => OperandType::Unknown,
+    }
+}
+
+/// Il valore che un segnaposto descritto riceve, per il binding a colonne dei
+/// parameter array: la stessa regola di [`bind`]. Un testo su un segnaposto
+/// binario (`HEXTORAW(?)` del WKB, una colonna `FOR BIT DATA`) resta testo,
+/// e arriva come i suoi byte UTF-8; ogni altro valore passa da [`admit`]
+/// sul tipo descritto, con precisione e scala.
+///
+/// # Errors
+///
+/// `DataMapping` in fase `Prepare` se il tipo descritto non riceve il valore
+/// esatto.
+pub fn admit_described(value: &ParameterValue, described: &DataType) -> Result<ParameterValue> {
+    validate_one(value)?;
+    if matches!(value, ParameterValue::String(_)) && is_binary(described) {
+        return Ok(value.clone());
+    }
+    admit(PROVIDER, value, &operand_of(described))
+}
+
+/// Il binding di un valore sul tipo descritto del segnaposto: prima la regola
+/// unica ([`admit`], che lo riscrive nel tipo dell'operando o lo rifiuta),
+/// poi il tipo C esatto del valore ammesso.
 ///
 /// # Errors
 ///
@@ -143,171 +224,56 @@ fn text(value: String) -> Bound {
 /// esatto.
 pub fn bind(value: &ParameterValue, described: &DataType) -> Result<Bound> {
     validate_one(value)?;
-    match value {
+    // Un testo su un segnaposto binario (una colonna FOR BIT DATA, un `LIKE`
+    // su un CAST di una geometria) arriva come i suoi byte UTF-8, che la
+    // codepage verificata alla connessione garantisce: e il valore del testo.
+    if let (
+        ParameterValue::String(text_value)
+        | ParameterValue::Uuid(text_value)
+        | ParameterValue::Enum {
+            label: text_value, ..
+        },
+        true,
+    ) = (value, is_binary(described))
+    {
+        return Ok(text(text_value.clone()));
+    }
+    let admitted = admit(PROVIDER, value, &operand_of(described))?;
+    match admitted {
         ParameterValue::Null { .. } => Ok(if is_binary(described) {
             Box::new(Option::<Vec<u8>>::None.into_parameter())
         } else {
             Box::new(Option::<String>::None.into_parameter())
         }),
-        ParameterValue::Bool(value) => match described {
-            DataType::Bit => Ok(text(value.to_string())),
-            _ => Err(mapping("boolean su un segnaposto Db2 non BOOLEAN")),
+        ParameterValue::Bool(flag) => Ok(text(flag.to_string())),
+        ParameterValue::I32(number) => Ok(Box::new(i64::from(number))),
+        ParameterValue::I64(number) => Ok(Box::new(number)),
+        ParameterValue::F64(number) => match described {
+            DataType::Real => narrow(number),
+            DataType::Float { precision } if *precision <= 24 => narrow(number),
+            _ => Ok(Box::new(number)),
         },
-        ParameterValue::I32(value) => integer(i64::from(*value), described),
-        ParameterValue::I64(value) => integer(*value, described),
-        ParameterValue::F64(value) => double(*value, described),
-        ParameterValue::Decimal(value) => decimal(value, described),
-        ParameterValue::Date(value) => match described {
-            DataType::Date => Ok(text(value.clone())),
-            data_type if is_text(data_type) => Ok(text(value.clone())),
-            _ => Err(mapping("date su un segnaposto Db2 non DATE")),
-        },
-        ParameterValue::Timestamp(value) => timestamp_parameter(value, described),
-        // Su un segnaposto binario (una colonna FOR BIT DATA, un `LIKE` su un
-        // CAST di una geometria) il testo arriva come i suoi byte UTF-8, che
-        // la codepage verificata alla connessione garantisce: e il valore del
-        // testo, non una sua conversione.
-        ParameterValue::String(value)
-        | ParameterValue::Uuid(value)
-        | ParameterValue::Enum { label: value, .. } => {
-            if is_text(described) || is_binary(described) {
-                Ok(text(value.clone()))
-            } else {
-                Err(mapping(
-                    "testo su un segnaposto Db2 non testuale: usare il tipo del valore",
-                ))
-            }
-        }
-        ParameterValue::Bytes(value) => {
-            if is_binary(described) {
-                Ok(Box::new(value.clone().into_parameter()))
-            } else {
-                Err(mapping("byte su un segnaposto Db2 non binario"))
-            }
-        }
-        ParameterValue::Json(_) | ParameterValue::TimestampTz(_) | ParameterValue::Wkb { .. } => {
-            Err(DatabaseError::unsupported(
-                PROVIDER,
-                ErrorPhase::Prepare,
-                "tipo parametro transazionale Db2 non ancora qualificato",
-            ))
-        }
-    }
-}
-
-fn integer(value: i64, described: &DataType) -> Result<Bound> {
-    match described {
-        DataType::SmallInt | DataType::Integer | DataType::BigInt | DataType::TinyInt => {
-            Ok(Box::new(value))
-        }
-        DataType::Decimal { precision, scale } | DataType::Numeric { precision, scale } => {
-            let digits = value
-                .unsigned_abs()
-                .checked_ilog10()
-                .map_or(1, |log| log + 1);
-            let integer_digits = precision.saturating_sub(usize::try_from(*scale).unwrap_or(0));
-            if usize::try_from(digits).unwrap_or(usize::MAX) > integer_digits {
-                return Err(mapping(
-                    "intero oltre la precisione del segnaposto DECIMAL Db2",
-                ));
-            }
-            Ok(Box::new(value))
-        }
-        DataType::Double | DataType::Float { .. } | DataType::Real => {
-            let limit = if matches!(described, DataType::Real)
-                || matches!(described, DataType::Float { precision } if *precision <= 24)
-            {
-                REAL_EXACT_INTEGER
-            } else {
-                DOUBLE_EXACT_INTEGER
-            };
-            if value.unsigned_abs() > limit {
-                return Err(mapping(
-                    "intero non rappresentabile esatto nel floating point del segnaposto Db2",
-                ));
-            }
-            Ok(Box::new(value))
-        }
-        data_type if is_text(data_type) => Ok(text(value.to_string())),
-        _ => Err(mapping("intero su un segnaposto Db2 non numerico")),
-    }
-}
-
-fn double(value: f64, described: &DataType) -> Result<Bound> {
-    match described {
-        DataType::Double => Ok(Box::new(value)),
-        DataType::Float { precision } if *precision > 24 => Ok(Box::new(value)),
-        DataType::Real | DataType::Float { .. } => exact_f32(value)
-            .map(|narrow| Box::new(narrow) as Bound)
-            .ok_or_else(|| mapping("double non rappresentabile esatto nel REAL Db2")),
-        _ => Err(mapping(
-            "double su un segnaposto Db2 non floating point: la conversione lo arrotonderebbe",
+        ParameterValue::Decimal(literal) => Ok(text(literal)),
+        ParameterValue::Date(date) => Ok(text(date)),
+        ParameterValue::Timestamp(stamp) => Ok(text(
+            timestamp(&stamp)?
+                .format("%Y-%m-%d-%H.%M.%S%.6f")
+                .to_string(),
+        )),
+        ParameterValue::String(text_value) => Ok(text(text_value)),
+        ParameterValue::Bytes(bytes) => Ok(Box::new(bytes.into_parameter())),
+        _ => Err(DatabaseError::unsupported(
+            PROVIDER,
+            ErrorPhase::Prepare,
+            "tipo parametro transazionale Db2 non ancora qualificato",
         )),
     }
 }
 
-fn decimal(value: &str, described: &DataType) -> Result<Bound> {
-    let literal = DecimalLiteral::parse(PROVIDER, value)?;
-    let canonical = format!(
-        "{}{}.{}",
-        if literal.negative { "-" } else { "" },
-        if literal.integer.is_empty() {
-            "0"
-        } else {
-            &literal.integer
-        },
-        if literal.fraction.is_empty() {
-            "0"
-        } else {
-            &literal.fraction
-        },
-    );
-    match described {
-        DataType::Decimal { precision, scale } | DataType::Numeric { precision, scale } => {
-            if literal.fits(*precision, usize::try_from(*scale).unwrap_or(0)) {
-                Ok(text(canonical))
-            } else {
-                Err(mapping(
-                    "decimal oltre precisione o scala del segnaposto Db2: il server lo arrotonderebbe",
-                ))
-            }
-        }
-        DataType::SmallInt | DataType::Integer | DataType::BigInt
-            if literal.significant_fraction().is_empty() =>
-        {
-            Ok(text(canonical))
-        }
-        data_type if is_text(data_type) => Ok(text(value.to_owned())),
-        _ => Err(mapping(
-            "decimal su un segnaposto Db2 non decimale: la conversione lo arrotonderebbe",
-        )),
-    }
-}
-
-fn timestamp_parameter(value: &str, described: &DataType) -> Result<Bound> {
-    let parsed = timestamp(value)?;
-    match described {
-        DataType::Timestamp { precision } => {
-            let micros = chrono::Timelike::nanosecond(&parsed) / 1_000;
-            let digits = if micros == 0 {
-                0
-            } else {
-                6 - format!("{micros:06}")
-                    .bytes()
-                    .rev()
-                    .take_while(|b| *b == b'0')
-                    .count()
-            };
-            if i16::try_from(digits).unwrap_or(i16::MAX) > *precision {
-                return Err(mapping(
-                    "timestamp oltre la precisione del segnaposto Db2: il server lo troncherebbe",
-                ));
-            }
-            Ok(text(parsed.format("%Y-%m-%d-%H.%M.%S%.6f").to_string()))
-        }
-        data_type if is_text(data_type) => Ok(text(value.to_owned())),
-        _ => Err(mapping("timestamp su un segnaposto Db2 non TIMESTAMP")),
-    }
+fn narrow(value: f64) -> Result<Bound> {
+    exact_f32(value)
+        .map(|narrow| Box::new(narrow) as Bound)
+        .ok_or_else(|| mapping("double non rappresentabile esatto nel REAL Db2"))
 }
 
 #[cfg(test)]
