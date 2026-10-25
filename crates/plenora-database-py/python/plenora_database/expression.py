@@ -1368,12 +1368,14 @@ func = FunctionNamespace()
 def _geometry_columns(statement: Any) -> list[tuple[str | None, str, str]]:
     """Le colonne ``Geometry`` delle tabelle che lo statement nomina.
 
-    Lo SDK compila senza catalogo: le sole colonne di cui sa il tipo sono
-    quelle che il mapping ORM o la reflection dichiarano ``Geometry``. Il
-    compilatore nativo le rifiuta sotto un operatore non spatial
-    (``spatial_operand`` nel core), con la stessa regola dei provider. Una
-    tabella dichiarata con soli nomi (``table("t", "g")``) non porta tipi:
-    e il limite dichiarato della regola.
+    La compilazione non legge il catalogo: le sole colonne di cui sa il tipo
+    sono quelle che il mapping ORM o la reflection dichiarano ``Geometry``, e
+    il compilatore nativo le rifiuta gia compilando. Non e il giudizio che
+    conta: l'esecuzione (``_execute_statement``) passa l'IR alla
+    transazione, che giudica ogni colonna di ogni relazione sul catalogo letto
+    dal provider (``spatial_operand`` nel core), anche quelle di una tabella
+    dichiarata con soli nomi (``table("t", "g")``) o non mappate. Lo SQL che
+    ``compile`` rende senza eseguire non ha avuto quel giudizio.
     """
 
     found: list[tuple[str | None, str, str]] = []
@@ -1460,13 +1462,15 @@ def _execute_statement(
 
     if isinstance(statement, SelectStatement):
         sql, values = _compile_statement(statement, parameters, provider)
-        return Result(native.execute_returning_rows(sql, values))
+        plan = ("query", statement.to_json())
+        return Result(native.execute_returning_rows(sql, values, relational=plan))
     sql, values, returns_rows = _compile_mutation_statement(
         statement, parameters, provider
     )
+    plan = ("mutation", statement.to_json())
     if returns_rows:
-        return Result(native.execute_returning_rows(sql, values))
-    affected = native.execute(sql, values)
+        return Result(native.execute_returning_rows(sql, values, relational=plan))
+    affected = native.execute(sql, values, relational=plan)
     operation = type(statement).__name__.removesuffix("Statement").lower()
     known_count = None if isinstance(statement, UpsertStatement) and provider == "sqlserver" else affected
     return MutationResult(operation, provider, known_count)
@@ -1482,13 +1486,19 @@ async def _execute_statement_async(
 
     if isinstance(statement, SelectStatement):
         sql, values = _compile_statement(statement, parameters, provider)
-        return Result(await native.execute_returning_rows(sql, values))
+        plan = ("query", statement.to_json())
+        return Result(
+            await native.execute_returning_rows(sql, values, relational=plan)
+        )
     sql, values, returns_rows = _compile_mutation_statement(
         statement, parameters, provider
     )
+    plan = ("mutation", statement.to_json())
     if returns_rows:
-        return Result(await native.execute_returning_rows(sql, values))
-    affected = await native.execute(sql, values)
+        return Result(
+            await native.execute_returning_rows(sql, values, relational=plan)
+        )
+    affected = await native.execute(sql, values, relational=plan)
     operation = type(statement).__name__.removesuffix("Statement").lower()
     known_count = None if isinstance(statement, UpsertStatement) and provider == "sqlserver" else affected
     return MutationResult(operation, provider, known_count)

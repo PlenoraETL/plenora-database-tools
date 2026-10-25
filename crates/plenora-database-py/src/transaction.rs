@@ -81,13 +81,16 @@ impl Transaction {
         py: Python<'_>,
         sql: &str,
         params: Option<Bound<'_, PyList>>,
+        relational: Option<(String, String)>,
     ) -> PyResult<Vec<Row>> {
         let statement = statement_from_python(sql, params.as_ref())?;
+        let plan = crate::relational_query::relational_plan(relational)?;
         let tx = self.tx_mut()?;
         py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
-                tx.query(&statement, &cancel).await
+                crate::relational_query::query_rows(tx.as_mut(), &statement, plan.as_ref(), &cancel)
+                    .await
             })
         })
         .map_err(to_py_err)
@@ -103,19 +106,22 @@ impl Transaction {
     }
 
     /// Esegue uno statement DML/DDL nella transazione. Ritorna affected_rows.
-    #[pyo3(signature = (sql, params=None))]
+    #[pyo3(signature = (sql, params=None, *, relational=None))]
     fn execute(
         &mut self,
         py: Python<'_>,
         sql: &str,
         params: Option<Bound<'_, PyList>>,
+        relational: Option<(String, String)>,
     ) -> PyResult<u64> {
         let statement = statement_from_python(sql, params.as_ref())?;
+        let plan = crate::relational_query::relational_plan(relational)?;
         let tx = self.tx_mut()?;
         py.detach(|| {
             runtime().block_on(async move {
                 let cancel = CancellationToken::new();
-                tx.execute(&statement, &cancel).await
+                crate::relational_query::execute(tx.as_mut(), &statement, plan.as_ref(), &cancel)
+                    .await
             })
         })
         .map_err(to_py_err)
@@ -133,20 +139,21 @@ impl Transaction {
         sql: &str,
         params: Option<Bound<'_, PyList>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let rows = self.query_rows(py, sql, params)?;
+        let rows = self.query_rows(py, sql, params, None)?;
         scalar_to_python(py, rows)
     }
 
     /// Esegue una query nella transazione e ritorna tutte le righe come
     /// `list[dict]`.
-    #[pyo3(signature = (sql, params=None))]
+    #[pyo3(signature = (sql, params=None, *, relational=None))]
     fn execute_returning_rows<'py>(
         &mut self,
         py: Python<'py>,
         sql: &str,
         params: Option<Bound<'_, PyList>>,
+        relational: Option<(String, String)>,
     ) -> PyResult<Bound<'py, PyList>> {
-        let rows = self.query_rows(py, sql, params)?;
+        let rows = self.query_rows(py, sql, params, relational)?;
         rows_to_pylist(py, rows)
     }
 

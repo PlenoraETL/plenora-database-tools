@@ -138,6 +138,17 @@ fn every_scalar_position_of_a_geometry_column_is_refused() {
     }
 }
 
+/// Una subquery su `s.t` (alias `i`, distinto da quello esterno, colonne
+/// qualificate) con `extra` sopra.
+fn inner(extra: &Value) -> QueryOperation {
+    let mut operation = serde_json::to_value(query(extra)).expect("json");
+    operation["source"] = source("t", Some("i"));
+    if extra.get("projection").is_none() {
+        operation["projection"] = json!([{"expression": column(Some("i"), "id"), "alias": null}]);
+    }
+    serde_json::from_value(operation).expect("query")
+}
+
 /// Ogni clausola che ordina, raggruppa o confronta righe, con la colonna
 /// geometrica: si rifiuta.
 #[test]
@@ -183,19 +194,23 @@ fn every_ordering_and_grouping_position_of_a_geometry_column_is_refused() {
             json!({"filter": {
                 "kind": "in_subquery",
                 "expression": bind(),
-                "query": query(&json!({"projection": [{"expression": g, "alias": null}]}))
+                "query": inner(&json!({"projection": [{"expression": column(Some("i"), "g"), "alias": null}]}))
             }}),
         ),
         (
             "subquery scalare",
             json!({"filter": compare(
-                &json!({"kind": "scalar_subquery", "query": query(&json!({"projection": [{"expression": g, "alias": null}]}))}),
+                &json!({"kind": "scalar_subquery", "query": inner(&json!({"projection": [{"expression": column(Some("i"), "g"), "alias": null}]}))}),
                 &bind()
             )}),
         ),
         (
             "nella subquery EXISTS",
-            json!({"filter": {"kind": "exists", "query": query(&json!({"filter": compare(&column(Some("t"), "g"), &bind())}))}}),
+            json!({"filter": {"kind": "exists", "query": inner(&json!({"filter": compare(&column(Some("i"), "g"), &bind())}))}}),
+        ),
+        (
+            "correlata nella subquery EXISTS",
+            json!({"filter": {"kind": "exists", "query": inner(&json!({"filter": compare(&column(Some("t"), "g"), &bind())}))}}),
         ),
         (
             "UNION",
@@ -382,6 +397,12 @@ fn read_filters_refuse_geometry_fields_under_scalar_operators() {
     }
 }
 
+fn assert_ambiguous(outcome: Result<()>, form: &str) {
+    let error = outcome.expect_err(form);
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported, "{form}");
+    assert_eq!(error.message, AMBIGUOUS_NAME_SHAPE, "{form}");
+}
+
 fn assert_unresolved(outcome: Result<()>, form: &str) {
     let error = outcome.expect_err(form);
     assert_eq!(error.category, crate::ErrorCategory::Unsupported, "{form}");
@@ -486,17 +507,34 @@ fn the_six_unresolved_shapes_are_refused() {
     assert_refused(judged(&distinct), "DISTINCT *");
     let distinct_table = query(&json!({"projection": [item(&star(), None)], "distinct": true}));
     assert_refused(judged(&distinct_table), "DISTINCT * della tabella");
-    // 4. Nomi piegati: SQL Server e MySQL non distinguono le maiuscole.
-    for provider in [ProviderKind::Sqlserver, MYSQL, ProviderKind::Mariadb] {
+    // 4. Nomi che differiscono soltanto per le maiuscole: `MySQL` e
+    // `MariaDB` non le distinguono nei nomi di colonna (la colonna e la
+    // geometria); SQL Server dipende dalla collation e `PostgreSQL` le
+    // distingue: la forma si rifiuta (regola N). Un qualificatore che
+    // incontra la relazione soltanto senza maiuscole si rifiuta ovunque.
+    for provider in [
+        ProviderKind::Sqlserver,
+        MYSQL,
+        ProviderKind::Mariadb,
+        ProviderKind::Postgres,
+    ] {
+        let folded = matches!(provider, ProviderKind::Mysql | ProviderKind::Mariadb);
+        let expected = |outcome: Result<()>, form: &str| {
+            if folded {
+                assert_refused(outcome, form);
+            } else {
+                assert_ambiguous(outcome, form);
+            }
+        };
         let upper = query(&json!({"filter": like(&cast(&column(Some("t"), "G")))}));
-        assert_refused(judged_as(provider, &upper), "colonna G");
+        expected(judged_as(provider, &upper), "colonna G");
         let alias = over_derived(
             &query(&json!({"projection": [item(&g, Some("X"))]})),
             &json!({"filter": compare(&column(Some("d"), "x"), &bind())}),
         );
-        assert_refused(judged_as(provider, &alias), "alias X");
+        expected(judged_as(provider, &alias), "alias X");
         let relation = query(&json!({"filter": compare(&column(Some("T"), "g"), &bind())}));
-        assert_refused(judged_as(provider, &relation), "relazione T");
+        assert_ambiguous(judged_as(provider, &relation), "relazione T");
     }
     // 5. Una relazione di cui il catalogo non legge le colonne (sinonimo).
     let synonym: QueryOperation = serde_json::from_value(json!({
@@ -530,12 +568,18 @@ fn the_six_unresolved_shapes_are_refused() {
     assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND);
 }
 
-/// `PostgreSQL` quota ogni identificatore: `G` non e `g`, e non si risolve.
-/// Un nome che non si risolve in un piano con geometrie si rifiuta.
+/// `PostgreSQL` quota ogni identificatore: `G` non e `g`, e un nome che
+/// incontra la colonna soltanto senza maiuscole si rifiuta (regola N). Un
+/// nome che non si risolve in un piano con geometrie si rifiuta.
 #[test]
 fn postgres_names_are_exact_and_unresolved_names_are_refused() {
     let upper = query(&json!({"filter": like(&cast(&column(Some("t"), "G")))}));
-    assert_unresolved(judged_as(ProviderKind::Postgres, &upper), "G su PostgreSQL");
+    assert_ambiguous(judged_as(ProviderKind::Postgres, &upper), "G su PostgreSQL");
+    let absent = query(&json!({"filter": like(&cast(&column(Some("t"), "q")))}));
+    assert_unresolved(
+        judged_as(ProviderKind::Postgres, &absent),
+        "q su PostgreSQL",
+    );
     for (form, extra) in [
         (
             "colonna assente",
@@ -654,4 +698,104 @@ fn generated_names_of_produced_geometries_are_refused_without_a_catalog() {
     );
     let error = scalar_operands(MYSQL, &operation).expect_err("st_centroid");
     assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND);
+}
+
+/// Seconda lettura della regola N (25/10), forme silenziose del primo
+/// disegno, ognuna ammessa prima della correzione:
+///
+/// 1. la stessa colonna di uscita nominata qualificata (`t.b`, per la
+///    colonna della projection) e senza qualificatore (`b`, per nome) in
+///    una set operation: la seconda si dava per gia seguita;
+/// 2. un corpo di CTE che nomina se stessa senza `recursive`, o una CTE
+///    successiva: il server la lega alla tabella o la rifiuta;
+/// 3. la visibilita di una CTE presa dal blocco che la nomina e non da
+///    dove e definita: una CTE omonima di una sorgente derivata nascondeva
+///    la tabella;
+/// 4. una relazione di un altro catalogo letta come quella del database
+///    corrente.
+#[test]
+fn second_reading_shapes_are_refused() {
+    let g = column(Some("t"), "g");
+    let b = column(Some("t"), "b");
+    // 1.
+    let union = query(&json!({
+        "projection": [item(&g, Some("b")), item(&b, Some("c"))],
+        "filter": compare(&b, &bind()),
+        "set_operations": [{"operator": "union", "all": true,
+            "query": query(&json!({"projection": [item(&g, None), item(&b, None)]}))}],
+        "order_by": order(&column(None, "b"))
+    }));
+    assert_refused(judged(&union), "t.b e b nella stessa set operation");
+    // 2.
+    let cte = |name: &str, recursive: bool, body: &QueryOperation| json!({"name": name, "recursive": recursive, "query": body});
+    let plain_source = |object: &str, alias: &str| json!({"object": {"catalog": null, "schema": null, "object": object}, "alias": alias});
+    let body = |object: &str| -> QueryOperation {
+        serde_json::from_value(json!({
+            "source": plain_source(object, "x"),
+            "projection": [item(&column(Some("x"), "g"), Some("g"))],
+            "filter": null, "having": null, "row_limit": null
+        }))
+        .expect("corpo")
+    };
+    let main = |ctes: Value| -> QueryOperation {
+        serde_json::from_value(json!({
+            "common_table_expressions": ctes,
+            "source": plain_source("a", "m"),
+            "projection": [item(&column(Some("m"), "g"), Some("g"))],
+            "filter": null, "having": null, "row_limit": null
+        }))
+        .expect("query")
+    };
+    let own = main(json!([cte("a", false, &body("a"))]));
+    assert_ambiguous(judged(&own), "CTE che nomina se stessa senza recursive");
+    let forward = main(json!([
+        cte("a", false, &body("b")),
+        cte("b", false, &body("t"))
+    ]));
+    assert_ambiguous(judged(&forward), "CTE che nomina la successiva");
+    let earlier = main(json!([
+        cte("b", false, &body("t")),
+        cte("a", false, &body("b"))
+    ]));
+    judged(&earlier).expect("una CTE che nomina la precedente resta");
+    // 3. `a` legge la tabella `t` (senza schema); una derivata definisce
+    // la propria CTE `t` e seleziona da `a`.
+    let mut with_base_t = catalog(MYSQL);
+    with_base_t.insert(
+        None,
+        "t".to_owned(),
+        RelationColumns::Known(vec![("id".to_owned(), false), ("g".to_owned(), true)]),
+    );
+    let inner_t: QueryOperation = serde_json::from_value(json!({
+        "projection": [item(&bind(), Some("g"))],
+        "filter": null, "having": null, "row_limit": null
+    }))
+    .expect("t interna");
+    let leak: QueryOperation = serde_json::from_value(json!({
+        "common_table_expressions": [cte("a", false, &body("t"))],
+        "derived_source": {"alias": "d", "query": {
+            "common_table_expressions": [cte("t", false, &inner_t)],
+            "source": plain_source("a", "y"),
+            "projection": [item(&column(Some("y"), "g"), Some("g"))],
+            "filter": null, "having": null, "row_limit": null
+        }},
+        "projection": [item(&column(Some("d"), "g"), Some("w"))],
+        "order_by": order(&column(Some("d"), "g")),
+        "filter": null, "having": null, "row_limit": null
+    }))
+    .expect("query");
+    let error = scalar_operands(MYSQL, &leak)
+        .expect("operandi")
+        .judge(&with_base_t)
+        .expect_err("la CTE vede la tabella t dove e definita");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND);
+    // 4.
+    let foreign: QueryOperation = serde_json::from_value(json!({
+        "source": {"object": {"catalog": "altro", "schema": "s", "object": "plain"}, "alias": "t"},
+        "projection": [item(&column(Some("t"), "id"), None)],
+        "filter": like(&cast(&column(Some("t"), "name"))),
+        "having": null, "row_limit": null
+    }))
+    .expect("query");
+    assert_unresolved(judged(&foreign), "relazione di un altro catalogo");
 }

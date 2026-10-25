@@ -362,6 +362,25 @@ pub trait TransactionScope: Send {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()>;
 
+    /// Le colonne delle relazioni (schema, oggetto) come il piano le nomina,
+    /// lette dal catalogo del provider nella transazione: il giudizio degli
+    /// operandi geometrici (`spatial_operand::ScalarOperands::judge`) dei
+    /// percorsi che eseguono SQL compilato (SDK, ORM, facade e CLI portable).
+    /// Non e SQL del chiamante: non tocca il marcatore di
+    /// [`Self::begin_caller_sql`].
+    ///
+    /// Il default non legge niente: un catalogo vuoto, in cui ogni relazione
+    /// e `Unknown`. A mondo chiuso, un riferimento in posizione di operando su
+    /// una relazione che non si conosce si rifiuta.
+    fn operand_catalog<'a>(
+        &'a mut self,
+        _relations: &'a [(Option<String>, String)],
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, crate::spatial_operand::OperandCatalog> {
+        let provider = self.provider_kind();
+        Box::pin(async move { Ok(crate::spatial_operand::OperandCatalog::new(provider)) })
+    }
+
     fn commit(
         self: Box<Self>,
         cancellation: &CancellationToken,

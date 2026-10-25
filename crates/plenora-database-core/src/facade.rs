@@ -7,6 +7,7 @@
 use crate::portable::{compile_portable, PortableStatement};
 use crate::provider::ParameterValue;
 use crate::row::Row;
+use crate::spatial_operand::OperandPlan;
 use crate::transaction::{Statement, TransactionScope};
 use crate::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 
@@ -249,7 +250,74 @@ pub async fn execute_portable(
         ));
     }
     let compiled = compile_portable(tx.provider_kind(), statement)?;
+    verify_operands(tx, &OperandPlan::Portable(statement), cancellation).await?;
     tx.execute(&compiled, cancellation).await
+}
+
+/// Il giudizio degli operandi geometrici di `plan`, prima di eseguirne lo SQL.
+///
+/// Il catalogo e quello che il provider legge nella transazione
+/// ([`TransactionScope::operand_catalog`]); il giudizio e la stessa
+/// [`ScalarOperands::judge`](crate::spatial_operand::ScalarOperands::judge)
+/// dei provider, per ogni relazione nominata, con le colonne del catalogo e
+/// non con quelle che il chiamante dichiara. Un provider che non legge il
+/// catalogo rende ogni relazione sconosciuta: un riferimento in posizione di
+/// operando si rifiuta.
+///
+/// # Errors
+///
+/// `unsupported` per un operando geometrico, un riferimento non risolto in
+/// un piano che puo contenere una geometria, una forma di nomi ambigua; gli
+/// errori della lettura del catalogo.
+pub async fn verify_operands(
+    tx: &mut dyn TransactionScope,
+    plan: &OperandPlan<'_>,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let operands = plan.operands(tx.provider_kind())?;
+    if operands.is_empty() {
+        return Ok(());
+    }
+    let catalog = tx
+        .operand_catalog(operands.relations(), cancellation)
+        .await?;
+    operands.judge(&catalog)
+}
+
+/// Esegue lo SQL compilato da `plan` che rende righe, dopo
+/// [`verify_operands`]. `plan` assente: SQL del chiamante, senza giudizio.
+///
+/// # Errors
+///
+/// Quelli di [`verify_operands`] e del driver.
+pub async fn query_judged(
+    tx: &mut dyn TransactionScope,
+    statement: &Statement,
+    plan: Option<&OperandPlan<'_>>,
+    cancellation: &CancellationToken,
+) -> Result<Vec<Row>> {
+    if let Some(plan) = plan {
+        verify_operands(tx, plan, cancellation).await?;
+    }
+    tx.query(statement, cancellation).await
+}
+
+/// Esegue lo SQL compilato da `plan` che rende un conteggio, dopo
+/// [`verify_operands`]. `plan` assente: SQL del chiamante, senza giudizio.
+///
+/// # Errors
+///
+/// Quelli di [`verify_operands`] e del driver.
+pub async fn execute_judged(
+    tx: &mut dyn TransactionScope,
+    statement: &Statement,
+    plan: Option<&OperandPlan<'_>>,
+    cancellation: &CancellationToken,
+) -> Result<u64> {
+    if let Some(plan) = plan {
+        verify_operands(tx, plan, cancellation).await?;
+    }
+    tx.execute(statement, cancellation).await
 }
 
 /// Compila ed esegue un `PortableStatement` che restituisce righe:
@@ -277,6 +345,7 @@ pub async fn execute_portable_returning(
         ));
     }
     let compiled = compile_portable(tx.provider_kind(), statement)?;
+    verify_operands(tx, &OperandPlan::Portable(statement), cancellation).await?;
     tx.query(&compiled, cancellation).await
 }
 

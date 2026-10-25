@@ -663,17 +663,17 @@ pub(crate) async fn verify_declared_column_srids(
 }
 
 /// Le colonne delle relazioni `relations` (schema, oggetto; lo schema
-/// assente e `database`), dal catalogo, nell'ordine di `ORDINAL_POSITION` e
-/// con il flag geometrico: la regola degli operandi geometrici
-/// (`spatial_operand`) le giudica a mondo chiuso prima di preparare una
-/// query.
+/// assente e `database`), nell'ordine della tabella e con il flag
+/// geometrico: la regola degli operandi geometrici (`spatial_operand`) le
+/// giudica a mondo chiuso prima di preparare una query.
 ///
-/// Schema e tabella si confrontano senza distinguere maiuscole: due tabelle
-/// che differiscono soltanto per le maiuscole non si distinguono, e la
-/// relazione non si conosce (nessun riferimento si risolve). Una relazione
-/// che `INFORMATION_SCHEMA` non elenca (una tabella `TEMPORARY`) si legge con
-/// `SHOW COLUMNS`, che per una tabella assente fallisce come fallirebbe la
-/// query.
+/// Si leggono con `SHOW COLUMNS`, che risolve il nome come lo risolve la
+/// query: una tabella `TEMPORARY` della sessione che ne nasconde una di base
+/// omonima, e le maiuscole secondo `lower_case_table_names`. Fino al 25/10 si
+/// leggeva `INFORMATION_SCHEMA.COLUMNS`, che elenca la tabella di base: con
+/// `t(g INT)` e una `TEMPORARY t(g POINT)`, `ORDER BY t.g` si giudicava sulla
+/// colonna intera e il server ordinava la geometria. Una tabella assente
+/// fallisce come fallirebbe la query.
 ///
 /// # Errors
 ///
@@ -686,72 +686,64 @@ pub(crate) async fn relation_columns(
     relations: &[(Option<String>, String)],
     cancellation: &CancellationToken,
 ) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
-    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
+    use plenora_database_core::spatial_operand::OperandCatalog;
     let mut catalog = OperandCatalog::new(profile.kind());
-    if relations.is_empty() {
-        return Ok(catalog);
-    }
-    let mut sql = String::from(
-        "SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name, \
-                COLUMN_NAME AS column_name, DATA_TYPE AS data_type \
-         FROM INFORMATION_SCHEMA.COLUMNS WHERE ",
-    );
-    let mut parameters = Vec::with_capacity(relations.len() * 2);
-    for (position, (schema, object)) in relations.iter().enumerate() {
-        if position > 0 {
-            sql.push_str(" OR ");
-        }
-        sql.push_str("(LOWER(TABLE_SCHEMA) = LOWER(?) AND LOWER(TABLE_NAME) = LOWER(?))");
-        parameters.push(Value::from(schema.as_deref().unwrap_or(database)));
-        parameters.push(Value::from(object.as_str()));
-    }
-    sql.push_str(" ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION");
-    let rows = session
-        .exec_rows(
-            &sql,
-            Params::Positional(parameters),
-            ErrorPhase::Prepare,
-            cancellation,
-        )
-        .await?;
-    let mut listed = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let schema: String = required(row, "table_schema", "table_schema")?;
-        let table: String = required(row, "table_name", "table_name")?;
-        let column: String = required(row, "column_name", "column_name")?;
-        let data_type: String = required(row, "data_type", "data_type")?;
-        let geometric = profile.is_spatial_native_type(&data_type.to_ascii_lowercase());
-        listed.push((schema, table, column, geometric));
-    }
     for (schema, object) in relations {
         let wanted_schema = schema.as_deref().unwrap_or(database);
-        let matching = listed
-            .iter()
-            .filter(|(listed_schema, table, _, _)| {
-                listed_schema.to_lowercase() == wanted_schema.to_lowercase()
-                    && table.to_lowercase() == object.to_lowercase()
-            })
-            .collect::<Vec<_>>();
-        let identities = matching
-            .iter()
-            .map(|(listed_schema, table, _, _)| (listed_schema, table))
-            .collect::<std::collections::BTreeSet<_>>();
-        let columns = match identities.len() {
-            0 => show_columns(session, profile, wanted_schema, object, cancellation).await?,
-            1 => RelationColumns::Known(
-                matching
-                    .iter()
-                    .map(|(_, _, column, geometric)| (column.clone(), *geometric))
-                    .collect(),
-            ),
-            _ => RelationColumns::Unknown,
-        };
+        let columns = show_columns(session, profile, wanted_schema, object, cancellation).await?;
         catalog.insert(schema.clone(), object.clone(), columns);
     }
     Ok(catalog)
 }
 
-/// `SHOW COLUMNS` di una relazione che `INFORMATION_SCHEMA` non elenca.
+/// Il catalogo di [`relation_columns`] dentro una transazione: il database
+/// di default e quello della connessione (`DATABASE()`), letto soltanto se
+/// una relazione non nomina lo schema. Senza database di default una
+/// relazione senza schema non si conosce, e nessun suo riferimento si
+/// risolve. E la lettura di `TransactionScope::operand_catalog`.
+///
+/// # Errors
+///
+/// Gli errori del catalogo.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn transaction_operand_catalog(
+    session: &mut MysqlSession,
+    relations: &[(Option<String>, String)],
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
+    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
+    let profile = session.profile();
+    let database = if relations.iter().any(|(schema, _)| schema.is_none()) {
+        let rows = session
+            .query_rows("SELECT DATABASE()", ErrorPhase::Prepare, cancellation)
+            .await?;
+        match rows.first() {
+            Some(row) => optional::<String, _>(row, 0, "DATABASE()")?,
+            None => None,
+        }
+    } else {
+        None
+    };
+    let Some(database) = database else {
+        let qualified = relations
+            .iter()
+            .filter(|(schema, _)| schema.is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut catalog = if qualified.is_empty() {
+            OperandCatalog::new(profile.kind())
+        } else {
+            relation_columns(session, profile, "", &qualified, cancellation).await?
+        };
+        for (schema, object) in relations.iter().filter(|(schema, _)| schema.is_none()) {
+            catalog.insert(schema.clone(), object.clone(), RelationColumns::Unknown);
+        }
+        return Ok(catalog);
+    };
+    relation_columns(session, profile, &database, relations, cancellation).await
+}
+
+/// `SHOW COLUMNS` di una relazione, risolta come la risolve la query.
 async fn show_columns(
     session: &mut MysqlSession,
     profile: &dyn crate::profile::ProductProfile,

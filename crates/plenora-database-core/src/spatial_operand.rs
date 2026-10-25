@@ -29,21 +29,67 @@
 //! Con il catalogo ([`OperandCatalog`]) ogni riferimento in posizione di
 //! operando — colonna, alias, colonna di uscita di una sorgente derivata o di
 //! una CTE, nome generato dal server, colonna di un `*`, posizione di un ramo
-//! di set operation — deve essere **provato** non geometrico: si risolve con
-//! le regole di nome del dialetto ([`NameRule`]) fino a una colonna di base di
-//! cui il catalogo dice il tipo, o fino a un'espressione che si giudica a sua
-//! volta. Cio che non si risolve si rifiuta, `unsupported` con
-//! [`GEOMETRY_OPERAND_UNRESOLVED`], quando il piano puo contenere una
-//! geometria: una relazione nominata ha una colonna geometrica (o il catalogo
-//! non ne legge le colonne), oppure il piano contiene un nodo spatial. Su un
-//! piano senza geometrie un riferimento non risolto non puo essere
-//! geometrico, e arriva al server come prima.
+//! di set operation — deve essere **provato** non geometrico: si risolve fino
+//! a una colonna di base di cui il catalogo dice il tipo, o fino a
+//! un'espressione che si giudica a sua volta. Cio che non si risolve si
+//! rifiuta, `unsupported` con [`GEOMETRY_OPERAND_UNRESOLVED`], quando il piano
+//! puo contenere una geometria: una relazione nominata ha una colonna
+//! geometrica (o il catalogo non ne legge le colonne), oppure il piano
+//! contiene un nodo spatial. Su un piano senza geometrie un riferimento non
+//! risolto non puo essere geometrico, e arriva al server come prima.
 //!
 //! Un'espressione senza alias che non e una colonna, nella projection di una
 //! sorgente derivata o di una CTE, prende dal server un nome che il piano non
 //! dice (`st_centroid`, `coalesce`, `case`, la colonna dentro un `CAST` su
 //! `PostgreSQL`; il testo dell'espressione su `MySQL`). Un riferimento che non
 //! trova un nome esplicito si giudica contro tutte queste espressioni.
+//!
+//! # Regola N: forme di nomi chiuse
+//!
+//! Il giudizio non emula il legame dei nomi di ogni dialetto: rifiuta le forme
+//! in cui il legame dipende dal dialetto, `unsupported` con
+//! [`AMBIGUOUS_NAME_SHAPE`], su ogni piano e su ogni dialetto (rendendo, e nel
+//! giudizio sul catalogo):
+//!
+//! - (a) due nomi di relazione (alias o nome) visibili insieme — nello stesso
+//!   blocco o in blocchi annidati — uguali senza maiuscole e senza spazi
+//!   finali, anche uguali per byte; due CTE visibili uguali allo stesso modo;
+//!   un qualificatore o una relazione senza schema che incontra un nome
+//!   soltanto senza maiuscole; un corpo di CTE che nomina una CTE successiva
+//!   dello stesso `WITH`, o se stessa senza `recursive` (il dialetto la lega
+//!   alla tabella o la rifiuta);
+//! - (b) due nomi di uscita della stessa projection uguali senza maiuscole
+//!   (alias, o il nome di una colonna senza alias);
+//! - (c) un riferimento di colonna senza qualificatore in un blocco annidato
+//!   (subquery, `LATERAL`) quando un blocco esterno ha relazioni;
+//! - (d) sul catalogo, un nome di colonna o di uscita che incontra il nome
+//!   nominato soltanto senza maiuscole dove il dialetto le distingue o puo
+//!   distinguerle ([`NameRule::Exact`]: `PostgreSQL`, Oracle, Db2, SQL Server
+//!   con qualunque collation);
+//! - (e) sul catalogo, in un piano con geometrie su SQL Server, `MySQL` e
+//!   `MariaDB`, un nome non ASCII (relazione, CTE, uscita, colonna): la
+//!   collation puo uguagliare nomi che la piegatura distingue.
+//!
+//! Con queste forme rifiutate il legame di ogni nome e lo stesso sotto ogni
+//! regola, e il giudizio risolve una volta sola: relazioni e alias per byte,
+//! una CTE con le CTE che vede dove e definita, un riferimento senza
+//! qualificatore nel solo blocco che lo contiene, i nomi di colonna con la
+//! regola del dialetto ([`NameRule`]) soltanto contro il catalogo e i nomi di
+//! uscita. Una relazione nominata con il catalogo (un altro database) non si
+//! conosce: i suoi riferimenti non si risolvono, e il piano puo contenere una
+//! geometria.
+//!
+//! # Regola S: l'esecuzione giudica sul catalogo
+//!
+//! Lo SDK, l'ORM, la facade portable e la CLI portable eseguono SQL
+//! compilato. Prima di eseguirlo passano il piano ([`OperandPlan`]) alla
+//! transazione, che legge dal catalogo del provider le colonne di ogni
+//! relazione nominata (`TransactionScope::operand_catalog`) e lo giudica con
+//! la stessa [`ScalarOperands::judge`] dei provider
+//! (`facade::verify_operands`): le colonne non dichiarate o non mappate si
+//! giudicano dal catalogo, non dal mapping del chiamante. Un provider che non
+//! legge il catalogo rende ogni relazione sconosciuta: un riferimento in
+//! posizione di operando si rifiuta.
 //!
 //! # Perche
 //!
@@ -57,44 +103,62 @@
 //! # Chi decide
 //!
 //! Una visita sola, [`scalar_operands`]: senza catalogo decide la parte che
-//! non ne ha bisogno (una funzione spatial che rende una geometria, un
-//! `SpatialValue`), ed e quella che chiede il renderer relazionale per ogni
-//! dialetto; elenca le relazioni di base nominate. Il provider ne legge le
-//! colonne ([`RelationColumns`]) e la stessa visita le giudica
+//! non ne ha bisogno (la regola N strutturale, una funzione spatial che rende
+//! una geometria, un `SpatialValue`), ed e quella che chiede il renderer
+//! relazionale per ogni dialetto; elenca le relazioni di base nominate. Il
+//! provider, o la transazione per lo SQL compilato, ne legge le colonne
+//! ([`RelationColumns`]) e la stessa visita le giudica
 //! ([`ScalarOperands::judge`]). Una lettura (`ReadOperation`) nomina campi di
 //! una sola relazione, gia descritta dal provider:
 //! [`ensure_scalar_filter_fields`].
 //!
-//! # Limite dichiarato
+//! # Limiti dichiarati
 //!
-//! - **Regola.** Mondo chiuso sui riferimenti: senza la lista delle colonne di
-//!   una relazione non si prova niente.
-//! - **Ambito.** Il compilatore senza catalogo (SDK con tabelle non tipizzate,
-//!   facade, CLI portable) non sa quali colonne sono geometriche: rifiuta le
-//!   funzioni spatial e i `SpatialValue`, e le colonne soltanto dove il
-//!   mapping ORM o la reflection le dichiarano `Geometry`
-//!   ([`RelationColumns::Declared`]): una colonna non dichiarata di una
-//!   relazione dichiarata si assume scalare, e un `*` di quella relazione in
-//!   posizione di operando non si espande.
-//! - **Hazard.** Su quel percorso `t.g = :p` su una colonna geometrica non
-//!   dichiarata arriva al server come prima: `MySQL` e `MariaDB` rendono un
-//!   risultato vuoto o pieno senza errore; `PostgreSQL`, SQL Server, Oracle
-//!   e Db2 rifiutano il confronto fra un tipo geometrico e un binario o un
-//!   testo, ma non e una garanzia di questo repository.
-//! - **Rientro.** Quando il compilatore riceve i tipi delle colonne (un
-//!   catalogo o un mapping per ogni relazione nominata), la stessa
-//!   [`ScalarOperands::judge`] li giudica anche li.
+//! - **Regola.** Mondo chiuso: senza le colonne di una relazione non si prova
+//!   niente.
+//! - **Ambito.** I provider che non leggono il catalogo nella transazione
+//!   (Oracle, Db2: il default di `TransactionScope::operand_catalog`), sullo
+//!   SDK, la facade e la CLI portable.
+//! - **Hazard.** Nessun passaggio silenzioso: ogni riferimento in posizione
+//!   di operando (`WHERE id = ?`, `ORDER BY id`) si rifiuta, anche su colonne
+//!   scalari. Il costo e il rifiuto di query ordinarie su quei provider.
+//! - **Rientro.** Quando Oracle e Db2 leggono il catalogo nella transazione,
+//!   con le loro prove live.
 //!
-//! - **Regola.** Le regole di nome di [`NameRule::Folded`] confrontano senza
-//!   maiuscole e senza spazi finali; le collation di SQL Server insensibili
-//!   agli accenti o che espandono (`ß`/`ss`) non sono modellate.
-//! - **Ambito.** SQL Server, `MySQL`, `MariaDB`.
-//! - **Hazard.** Nessun passaggio silenzioso: un nome che la piegatura non
-//!   trova non si risolve, e in un piano con geometrie si rifiuta; un nome
-//!   senza qualificazione che esce da un blocco con colonne non ASCII per
-//!   cercare in un blocco esterno non si risolve. Il costo e un rifiuto in
-//!   piu.
-//! - **Rientro.** Quando la piegatura segue la collation letta dal catalogo.
+//! - **Regola.** La compilazione senza esecuzione non legge il catalogo.
+//! - **Ambito.** `compile_relational_query` e `compile_relational_mutation`
+//!   dello SDK, `portable-compile` della CLI, il renderer relazionale.
+//! - **Hazard.** Lo SQL reso ha avuto la regola N e il rifiuto delle
+//!   geometrie che il piano dice da se (funzioni spatial, `SpatialValue`, le
+//!   colonne dichiarate `Geometry` dallo SDK), non il giudizio sulle colonne:
+//!   chi lo esegue fuori da questo repository esegue SQL del chiamante.
+//! - **Rientro.** Nessuno: chi esegue passa dall'esecuzione, che giudica.
+//!
+//! - **Regola.** Il catalogo si legge prima di eseguire, con un'istruzione
+//!   separata.
+//! - **Ambito.** Ogni provider, nel path query e nella transazione.
+//! - **Hazard.** Un `ALTER TABLE` concorrente fra la lettura e l'esecuzione
+//!   che rende geometrica una colonna giudicata scalare: la lettura non
+//!   prende lock sulla relazione.
+//! - **Rientro.** Quando il giudizio e l'esecuzione condividono un lock o una
+//!   versione del catalogo.
+//!
+//! - **Regola.** La regola N (d) giudica soltanto i riferimenti in posizione
+//!   di operando; un nome di colonna in projection o in un predicato `IS NULL`
+//!   non si confronta con il catalogo.
+//! - **Ambito.** Ogni dialetto.
+//! - **Hazard.** Nessuno geometrico: quei nomi non sono operandi; un nome
+//!   sbagliato arriva al server, che lo rifiuta o lo lega con le proprie
+//!   regole.
+//! - **Rientro.** Non serve.
+//!
+//! - **Regola.** SQL Server confronta per byte ([`NameRule::Exact`]) senza
+//!   leggere la collation.
+//! - **Ambito.** SQL Server, anche con collation `CI`.
+//! - **Hazard.** Nessun passaggio silenzioso: un nome che incontra una
+//!   colonna o un alias soltanto senza maiuscole si rifiuta anche dove il
+//!   server lo legherebbe. Il costo e un rifiuto in piu.
+//! - **Rientro.** Quando il giudizio legge la collation del database.
 
 use crate::plan::{FilterExpression, OrderBy, ProviderKind};
 use crate::relational::{
@@ -110,20 +174,39 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const GEOMETRY_OPERAND_UNRESOLVED: &str =
     "riferimento di colonna non risolto in un piano con geometrie: sotto un operatore non spatial ogni colonna, alias, colonna di sorgente derivata o di CTE, nome generato dal server, colonna di un * o di un ramo di set operation deve risolversi in una colonna non geometrica del catalogo; si nomini la colonna con un alias esplicito";
 
+/// Motivo stabile del rifiuto di una forma di nomi il cui legame dipende
+/// dalle regole di nome del dialetto (regola N).
+pub const AMBIGUOUS_NAME_SHAPE: &str =
+    "forma di nomi ambigua: gli alias e i nomi di relazione visibili insieme devono essere distinti anche senza maiuscole, i nomi di uscita di una projection distinti anche senza maiuscole, ogni colonna di una subquery con relazioni esterne qualificata, ogni identificatore uguale per byte al nome che nomina nel piano o nel catalogo";
+
 /// Profondita massima di un'espansione di `*` attraverso sorgenti derivate:
 /// oltre, l'espansione non si conosce e il riferimento non si risolve.
 const MAX_EXPANSION_DEPTH: usize = 64;
 
-/// Come il dialetto confronta i nomi di colonne, alias e relazioni.
+/// Come il dialetto confronta un nome di colonna del piano con il nome del
+/// catalogo o con un nome di uscita.
+///
+/// I nomi di relazione e gli alias si confrontano sempre per byte: la regola
+/// N rifiuta le forme in cui la differenza conterebbe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NameRule {
-    /// Il renderer quota ogni identificatore: il nome e quello esatto
-    /// (`PostgreSQL`, Oracle, Db2).
+    /// Il nome e quello esatto; un nome che differisce soltanto per le
+    /// maiuscole si rifiuta ([`AMBIGUOUS_NAME_SHAPE`]): `PostgreSQL`, Oracle e
+    /// Db2 quotano ogni identificatore, SQL Server dipende dalla collation
+    /// del database (`CS` o `CI`), che il giudizio non legge.
     Exact,
-    /// Senza maiuscole e senza spazi finali: SQL Server con le collation
-    /// insensibili alle maiuscole, i nomi di colonna di `MySQL` e `MariaDB`.
-    /// Due nomi uguali per la piegatura si giudicano entrambi.
+    /// Senza maiuscole e senza spazi finali: i nomi di colonna e gli alias di
+    /// colonna di `MySQL` e `MariaDB`, che non distinguono le maiuscole su
+    /// nessuna piattaforma.
     Folded,
+}
+
+/// Come un nome del piano incontra un nome nominato.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NameMatch {
+    Same,
+    CaseOnly,
+    Different,
 }
 
 impl NameRule {
@@ -131,17 +214,30 @@ impl NameRule {
     #[must_use]
     pub const fn of(provider: ProviderKind) -> Self {
         match provider {
-            ProviderKind::Sqlserver | ProviderKind::Mysql | ProviderKind::Mariadb => Self::Folded,
+            ProviderKind::Mysql | ProviderKind::Mariadb => Self::Folded,
             _ => Self::Exact,
         }
     }
 
-    /// I due nomi possono nominare la stessa colonna.
+    /// I due nomi possono nominare la stessa colonna: per byte con
+    /// [`Self::Exact`], senza maiuscole con [`Self::Folded`].
     #[must_use]
     pub fn matches(self, left: &str, right: &str) -> bool {
         match self {
             Self::Exact => left == right,
             Self::Folded => fold(left) == fold(right),
+        }
+    }
+
+    fn compare(self, plan: &str, named: &str) -> NameMatch {
+        if plan == named {
+            NameMatch::Same
+        } else if fold(plan) != fold(named) {
+            NameMatch::Different
+        } else if self == Self::Folded {
+            NameMatch::Same
+        } else {
+            NameMatch::CaseOnly
         }
     }
 }
@@ -162,7 +258,9 @@ pub enum RelationColumns {
     /// Tutte le colonne, nell'ordine del catalogo: nome, geometrica.
     Known(Vec<(String, bool)>),
     /// Soltanto le colonne dichiarate geometriche (mapping ORM, reflection):
-    /// le altre si assumono scalari.
+    /// le altre si assumono scalari. Lo usa soltanto la compilazione dello
+    /// SDK, come rifiuto anticipato; l'esecuzione giudica sul catalogo
+    /// (regola S).
     Declared(Vec<String>),
 }
 
@@ -252,6 +350,10 @@ fn unresolved_refusal(provider: ProviderKind) -> DatabaseError {
     DatabaseError::unsupported(provider, ErrorPhase::Prepare, GEOMETRY_OPERAND_UNRESOLVED)
 }
 
+fn ambiguous_refusal(provider: ProviderKind) -> DatabaseError {
+    DatabaseError::unsupported(provider, ErrorPhase::Prepare, AMBIGUOUS_NAME_SHAPE)
+}
+
 /// Il piano visitato senza catalogo: la parte statica decisa, le relazioni
 /// e i riferimenti raccolti.
 ///
@@ -308,11 +410,214 @@ pub fn scalar_operands_of_predicate(
     scalar_operands(provider, &operation)
 }
 
+/// La stessa visita per uno statement portable (`PortableStatement`).
+///
+/// Vale anche per le mutazioni relazionali che il core abbassa in uno
+/// statement portable: le colonne confrontate dal `WHERE` e quelle di
+/// `ORDER BY` sono operandi della tabella dello statement; le assegnazioni,
+/// `IS NULL` e i predicati spatial no.
+///
+/// # Errors
+///
+/// Quelli di [`scalar_operands`].
+pub fn scalar_operands_of_portable(
+    provider: ProviderKind,
+    statement: &crate::portable::PortableStatement,
+) -> Result<ScalarOperands> {
+    use crate::portable::PortableStatement;
+    let (table, filter, order_by) = match statement {
+        PortableStatement::Select(select) => (
+            &select.table,
+            select.filter.as_ref(),
+            select.order_by.as_slice(),
+        ),
+        PortableStatement::Update(update) => (&update.table, update.filter.as_ref(), &[][..]),
+        PortableStatement::Delete(delete) => (&delete.table, delete.filter.as_ref(), &[][..]),
+        PortableStatement::Insert(insert) => (&insert.table, None, &[][..]),
+        PortableStatement::Upsert(upsert) => (&upsert.table, None, &[][..]),
+    };
+    // La chiave di conflitto di un upsert si confronta (`ON CONFLICT`, il
+    // `ON` di un `MERGE`).
+    let conflict = match statement {
+        PortableStatement::Upsert(upsert) => upsert.conflict_target.as_slice(),
+        _ => &[],
+    };
+    let operands = portable_operands(conflict, filter);
+    let column = unqualified_column;
+    let operation = QueryOperation {
+        declared_crs: Vec::new(),
+        common_table_expressions: Vec::new(),
+        source: Some(crate::relational::QuerySource {
+            object: crate::plan::ObjectRef {
+                catalog: None,
+                schema: table.schema.clone(),
+                object: table.name.clone(),
+            },
+            alias: None,
+        }),
+        derived_source: None,
+        projection: Vec::new(),
+        joins: Vec::new(),
+        filter: (!operands.is_empty()).then_some(QueryExpression::And {
+            arguments: operands,
+        }),
+        group_by: Vec::new(),
+        having: None,
+        order_by: order_by
+            .iter()
+            .map(|order| crate::relational::QueryOrdering {
+                expression: column(&order.column),
+                direction: crate::plan::SortDirection::Asc,
+            })
+            .collect(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+    };
+    scalar_operands(provider, &operation)
+}
+
+/// Una colonna senza qualificatore, della sola relazione dello statement.
+fn unqualified_column(field: &str) -> QueryExpression {
+    QueryExpression::Column {
+        column: ColumnRef {
+            relation: None,
+            field: field.to_owned(),
+        },
+    }
+}
+
+/// Le colonne confrontate da uno statement portable, ciascuna come operando
+/// (`col IN (valori)`): la chiave di conflitto e ogni colonna di un
+/// confronto, di `IN`, `BETWEEN` o `LIKE`, anche quella a destra.
+fn portable_operands(
+    conflict: &[String],
+    filter: Option<&crate::portable::Predicate>,
+) -> Vec<QueryExpression> {
+    use crate::portable::Predicate;
+    let column = unqualified_column;
+    let value = |expression: &crate::portable::Expression| match expression {
+        crate::portable::Expression::Column(field) => column(field),
+        _ => QueryExpression::Parameter {
+            name: "p".to_owned(),
+        },
+    };
+    let mut operands = conflict
+        .iter()
+        .map(|field| QueryExpression::InList {
+            expression: Box::new(column(field)),
+            values: Vec::new(),
+            negated: false,
+        })
+        .collect::<Vec<_>>();
+    let mut stack = filter.into_iter().collect::<Vec<_>>();
+    while let Some(predicate) = stack.pop() {
+        let (field, values): (&str, Vec<&crate::portable::Expression>) = match predicate {
+            Predicate::And { predicates } | Predicate::Or { predicates } => {
+                stack.extend(predicates);
+                continue;
+            }
+            Predicate::Not { predicate } => {
+                stack.push(predicate);
+                continue;
+            }
+            Predicate::IsNull { .. } | Predicate::IsNotNull { .. } | Predicate::Spatial { .. } => {
+                continue;
+            }
+            Predicate::Eq { column, value }
+            | Predicate::Ne { column, value }
+            | Predicate::Lt { column, value }
+            | Predicate::Lte { column, value }
+            | Predicate::Gt { column, value }
+            | Predicate::Gte { column, value }
+            | Predicate::Like {
+                column,
+                pattern: value,
+            } => (column, vec![value]),
+            Predicate::In { column, values } => (column, values.iter().collect()),
+            Predicate::Between { column, low, high } => (column, vec![low, high]),
+        };
+        operands.push(QueryExpression::InList {
+            expression: Box::new(column(field)),
+            values: values.into_iter().map(value).collect(),
+            negated: false,
+        });
+    }
+    operands
+}
+
+/// Il piano che un percorso di esecuzione giudica sul catalogo del provider.
+///
+/// Lo SDK, l'ORM, la facade portable e la CLI portable eseguono SQL
+/// compilato, e prima di eseguirlo ne passano il piano alla transazione
+/// (`TransactionScope::operand_catalog`).
+#[derive(Debug, Clone, Copy)]
+pub enum OperandPlan<'a> {
+    /// Una query relazionale (`QueryOperation`).
+    Query(&'a QueryOperation),
+    /// Una mutazione relazionale (`MutationOperation`).
+    Mutation(&'a crate::relational::MutationOperation),
+    /// Uno statement portable.
+    Portable(&'a crate::portable::PortableStatement),
+}
+
+impl OperandPlan<'_> {
+    /// La visita senza catalogo del piano.
+    ///
+    /// # Errors
+    ///
+    /// Quelli di [`scalar_operands`].
+    pub fn operands(&self, provider: ProviderKind) -> Result<ScalarOperands> {
+        use crate::relational::MutationOperation;
+        match *self {
+            Self::Query(query) => scalar_operands(provider, query),
+            Self::Portable(statement) => scalar_operands_of_portable(provider, statement),
+            Self::Mutation(mutation) => {
+                let (target, filter) = match mutation {
+                    MutationOperation::Update(update) => (&update.target, update.filter.clone()),
+                    MutationOperation::Delete(delete) => (&delete.target, delete.filter.clone()),
+                    MutationOperation::Insert(insert) => (&insert.target, None),
+                    // La chiave di conflitto si confronta.
+                    MutationOperation::Upsert(upsert) => (
+                        &upsert.target,
+                        Some(QueryExpression::And {
+                            arguments: upsert
+                                .conflict_target
+                                .iter()
+                                .map(|field| QueryExpression::InList {
+                                    expression: Box::new(QueryExpression::Column {
+                                        column: ColumnRef {
+                                            relation: None,
+                                            field: field.clone(),
+                                        },
+                                    }),
+                                    values: Vec::new(),
+                                    negated: false,
+                                })
+                                .collect(),
+                        }),
+                    ),
+                };
+                let always = QueryExpression::And {
+                    arguments: Vec::new(),
+                };
+                scalar_operands_of_predicate(provider, target, filter.as_ref().unwrap_or(&always))
+            }
+        }
+    }
+}
+
 /// Che cosa una relazione della FROM puo essere.
 #[derive(Clone)]
 enum RelationKind<'a> {
     /// Una tabella o una vista del catalogo.
     Base(Option<String>, String),
+    /// Una relazione nominata con il catalogo (un altro database): il
+    /// provider legge le colonne del proprio, e queste non si conoscono.
+    Foreign,
     /// Una sorgente derivata o una CTE: la sua query, le CTE che vede, il
     /// blocco che la contiene se e `LATERAL`.
     Query(
@@ -322,11 +627,12 @@ enum RelationKind<'a> {
     ),
 }
 
-/// Una relazione della FROM: il nome con cui il blocco la nomina e cio che
-/// puo essere (una CTE omonima per la sola piegatura e anche la tabella).
+/// Una relazione della FROM: il nome con cui il blocco la nomina e che cosa
+/// e. Il nome di una CTE si incontra per byte: un nome che la incontra
+/// soltanto senza maiuscole e la forma che la regola N rifiuta.
 struct FromRelation<'a> {
     name: String,
-    kinds: Vec<RelationKind<'a>>,
+    kind: RelationKind<'a>,
 }
 
 /// Un blocco: la sua operazione, il blocco che lo contiene, le CTE visibili
@@ -396,6 +702,9 @@ enum Candidate<'a> {
     Geometry,
     Scalar,
     Unresolved,
+    /// Il nome incontra il nome nominato soltanto senza maiuscole, dove il
+    /// dialetto le distingue o puo distinguerle.
+    Ambiguous,
     /// Si giudica l'item.
     Follow(Item<'a>),
 }
@@ -414,12 +723,24 @@ struct Walk<'a, 'c> {
     entries: BTreeMap<usize, Entries<'a>>,
     expanding: BTreeSet<usize>,
     followed: BTreeSet<(usize, Option<usize>, usize)>,
-    aliased: BTreeSet<(usize, String)>,
+    aliased: BTreeSet<(usize, usize)>,
+    cte_scopes: BTreeMap<usize, Vec<&'a CommonTableExpression>>,
     stack: Vec<Item<'a>>,
     relations: Vec<(Option<String>, String)>,
     references: bool,
+    seen: Seen,
+}
+
+/// Cio che la visita ha incontrato e che decide il giudizio finale.
+#[derive(Default)]
+struct Seen {
+    /// Un riferimento che non si risolve.
     unresolved: bool,
-    spatial: bool,
+    /// Un nodo spatial, o una relazione di un altro catalogo.
+    geometric: bool,
+    /// Un nome di relazione, di CTE, di uscita o un riferimento di colonna
+    /// con caratteri non ASCII.
+    foreign: bool,
 }
 
 fn walk(
@@ -437,21 +758,31 @@ fn walk(
         expanding: BTreeSet::new(),
         followed: BTreeSet::new(),
         aliased: BTreeSet::new(),
+        cte_scopes: BTreeMap::new(),
         stack: vec![Item::Operation(operation, Vec::new(), None, false)],
         relations: Vec::new(),
         references: false,
-        unresolved: false,
-        spatial: false,
+        seen: Seen::default(),
     };
     while let Some(item) = state.stack.pop() {
         state.step(item)?;
     }
     if let Some(catalog) = catalog {
-        let geometric = state.spatial
+        let geometric = state.seen.geometric
             || state.relations.iter().any(|(schema, object)| {
                 catalog.columns(schema.as_ref(), object).may_hold_geometry()
             });
-        if state.unresolved && geometric {
+        // Le collation di SQL Server, `MySQL` e `MariaDB` possono uguagliare
+        // nomi non ASCII che la piegatura distingue (accenti, `ß`/`ss`): in
+        // un piano con geometrie un nome non ASCII non si confronta.
+        let collated = matches!(
+            provider,
+            ProviderKind::Sqlserver | ProviderKind::Mysql | ProviderKind::Mariadb
+        );
+        if state.seen.foreign && collated && geometric {
+            return Err(ambiguous_refusal(provider));
+        }
+        if state.seen.unresolved && geometric {
             return Err(unresolved_refusal(provider));
         }
     }
@@ -465,11 +796,15 @@ fn address(operation: &QueryOperation) -> usize {
     std::ptr::from_ref(operation) as usize
 }
 
+fn identity(cte: &CommonTableExpression) -> usize {
+    std::ptr::from_ref(cte) as usize
+}
+
 impl<'a> Walk<'a, '_> {
     fn step(&mut self, item: Item<'a>) -> Result<()> {
         match item {
             Item::Operation(operation, visible, parent, operand) => {
-                self.visit_operation(operation, visible, parent, operand);
+                self.visit_operation(operation, visible, parent, operand)?;
             }
             Item::Expression(expression, operand, index) => {
                 self.visit_expression(expression, operand, index)?;
@@ -488,22 +823,28 @@ impl<'a> Walk<'a, '_> {
         visible: Vec<&'a CommonTableExpression>,
         parent: Option<usize>,
         operand: bool,
-    ) {
+    ) -> Result<()> {
         let index = self.open_block(operation, visible, parent);
+        self.check_names(index)?;
         let inner = self.blocks[index].visible.clone();
         for relation in &self.blocks[index].from {
-            for kind in &relation.kinds {
-                if let RelationKind::Base(schema, object) = kind {
+            match &relation.kind {
+                RelationKind::Base(schema, object) => {
                     let key = (schema.clone(), object.clone());
                     if !self.relations.contains(&key) {
                         self.relations.push(key);
                     }
                 }
+                // Le colonne di un altro database non si leggono: il piano
+                // puo contenere una geometria.
+                RelationKind::Foreign => self.seen.geometric = true,
+                RelationKind::Query(..) => {}
             }
         }
         for cte in &operation.common_table_expressions {
+            let scope = self.scope_of(cte, &inner);
             self.stack
-                .push(Item::Operation(&cte.query, inner.clone(), None, false));
+                .push(Item::Operation(&cte.query, scope, None, false));
         }
         if let Some(source) = &operation.derived_source {
             self.stack
@@ -554,6 +895,116 @@ impl<'a> Walk<'a, '_> {
         {
             self.stack.push(Item::Expression(predicate, false, index));
         }
+        Ok(())
+    }
+
+    /// La regola N sul blocco, senza catalogo: (a) i nomi di relazione del
+    /// blocco e dei blocchi che lo contengono sono distinti anche senza
+    /// maiuscole (due nomi uguali per byte in ambiti annidati compresi); le
+    /// CTE visibili altrettanto, e una relazione senza schema che incontra
+    /// una CTE soltanto senza maiuscole si rifiuta; (b) i nomi di uscita della
+    /// projection sono distinti anche senza maiuscole.
+    fn check_names(&mut self, index: usize) -> Result<()> {
+        let foreign = self.blocks[index]
+            .from
+            .iter()
+            .map(|from| from.name.as_str())
+            .chain(
+                self.blocks[index]
+                    .visible
+                    .iter()
+                    .map(|cte| cte.name.as_str()),
+            )
+            .chain(
+                self.blocks[index]
+                    .operation
+                    .projection
+                    .iter()
+                    .filter_map(|item| item.alias.as_deref()),
+            )
+            .any(|name| !name.is_ascii());
+        self.seen.foreign |= foreign;
+        let refused = || Err(ambiguous_refusal(self.provider));
+        let mut names = BTreeSet::new();
+        let mut current = Some(index);
+        while let Some(block) = current {
+            for from in &self.blocks[block].from {
+                if !names.insert(fold(&from.name)) {
+                    return refused();
+                }
+            }
+            current = self.blocks[block].parent;
+        }
+        let block = &self.blocks[index];
+        let mut ctes: BTreeMap<String, usize> = BTreeMap::new();
+        for cte in &block.visible {
+            let own = identity(cte);
+            if ctes
+                .insert(fold(&cte.name), own)
+                .is_some_and(|other| other != own)
+            {
+                return refused();
+            }
+        }
+        let operation = block.operation;
+        if refers_forward(&operation.common_table_expressions) {
+            return refused();
+        }
+        let sources = operation.source.iter().chain(
+            operation
+                .joins
+                .iter()
+                .filter_map(|join| join.source.as_ref()),
+        );
+        for source in sources {
+            let object = &source.object;
+            if object.schema.is_none()
+                && block.visible.iter().any(|cte| {
+                    NameRule::Exact.compare(&object.object, &cte.name) == NameMatch::CaseOnly
+                })
+            {
+                return refused();
+            }
+        }
+        let mut outputs = BTreeSet::new();
+        for item in &operation.projection {
+            let name = item.alias.as_deref().or(match &item.expression {
+                QueryExpression::Column { column } => Some(column.field.as_str()),
+                _ => None,
+            });
+            if name.is_some_and(|name| !outputs.insert(fold(name))) {
+                return refused();
+            }
+        }
+        Ok(())
+    }
+
+    /// La regola N su un riferimento di colonna, in ogni posizione: (a) il
+    /// qualificatore e uguale per byte alla relazione che incontra senza
+    /// maiuscole; (c) senza qualificatore, il blocco non ha blocchi esterni
+    /// con relazioni (subquery, `LATERAL`).
+    fn check_reference(&mut self, relation: Option<&str>, index: usize) -> Result<()> {
+        self.seen.foreign |= relation.is_some_and(|relation| !relation.is_ascii());
+        // Con il qualificatore si guarda il blocco e quelli esterni; senza,
+        // soltanto quelli esterni.
+        let mut current = if relation.is_some() {
+            Some(index)
+        } else {
+            self.blocks[index].parent
+        };
+        while let Some(block) = current {
+            let from = &self.blocks[block].from;
+            let refused = relation.map_or(!from.is_empty(), |relation| {
+                from.iter().any(|from| {
+                    NameRule::Exact.compare(relation, &from.name) == NameMatch::CaseOnly
+                })
+            });
+            if refused {
+                return Err(ambiguous_refusal(self.provider));
+            }
+            current = self.blocks[block].parent;
+        }
+        Ok(())
     }
 
     /// Il blocco di `operation` con `parent`, aperto una volta sola.
@@ -566,6 +1017,14 @@ impl<'a> Walk<'a, '_> {
         let key = (address(operation), parent);
         if let Some(index) = self.opened.get(&key) {
             return *index;
+        }
+        for (position, cte) in operation.common_table_expressions.iter().enumerate() {
+            let mut scope = visible.clone();
+            scope.extend(operation.common_table_expressions[..position].iter());
+            if cte.recursive {
+                scope.push(cte);
+            }
+            self.cte_scopes.entry(identity(cte)).or_insert(scope);
         }
         let mut inner = visible;
         inner.extend(operation.common_table_expressions.iter());
@@ -593,11 +1052,11 @@ impl<'a> Walk<'a, '_> {
             if let Some(derived) = derived {
                 from.push(FromRelation {
                     name: derived.alias.clone(),
-                    kinds: vec![RelationKind::Query(
+                    kind: RelationKind::Query(
                         &derived.query,
                         inner.clone(),
                         lateral.then_some(index),
-                    )],
+                    ),
                 });
             }
         }
@@ -611,9 +1070,9 @@ impl<'a> Walk<'a, '_> {
         index
     }
 
-    /// Una relazione nominata: una CTE visibile con lo stesso nome (la piu
-    /// interna), la tabella del catalogo altrimenti; per la sola piegatura,
-    /// entrambe.
+    /// Una relazione nominata: la CTE visibile con lo stesso nome per byte,
+    /// con le CTE che vede dove e definita; la tabella del catalogo
+    /// altrimenti; una relazione di un altro catalogo non si conosce.
     fn named_source(
         &self,
         source: &crate::relational::QuerySource,
@@ -624,29 +1083,34 @@ impl<'a> Walk<'a, '_> {
             .alias
             .clone()
             .unwrap_or_else(|| object.object.clone());
-        let base = RelationKind::Base(object.schema.clone(), object.object.clone());
-        if object.schema.is_some() {
+        if object.catalog.is_some() {
             return FromRelation {
                 name,
-                kinds: vec![base],
+                kind: RelationKind::Foreign,
             };
         }
         let cte = visible
             .iter()
             .rev()
-            .find(|cte| self.rule.matches(&cte.name, &object.object));
-        let kinds = match cte {
-            Some(cte) => {
-                let query = RelationKind::Query(&cte.query, visible.to_vec(), None);
-                if cte.name == object.object {
-                    vec![query]
-                } else {
-                    vec![query, base]
-                }
-            }
-            None => vec![base],
-        };
-        FromRelation { name, kinds }
+            .find(|cte| object.schema.is_none() && cte.name == object.object);
+        let kind = cte.map_or_else(
+            || RelationKind::Base(object.schema.clone(), object.object.clone()),
+            |cte| RelationKind::Query(&cte.query, self.scope_of(cte, visible), None),
+        );
+        FromRelation { name, kind }
+    }
+
+    /// Le CTE che il corpo di `cte` vede: quelle visibili dove e definita e
+    /// le precedenti dello stesso `WITH`, se stessa soltanto se ricorsiva.
+    fn scope_of(
+        &self,
+        cte: &'a CommonTableExpression,
+        fallback: &[&'a CommonTableExpression],
+    ) -> Vec<&'a CommonTableExpression> {
+        self.cte_scopes
+            .get(&identity(cte))
+            .cloned()
+            .unwrap_or_else(|| fallback.to_vec())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -660,18 +1124,23 @@ impl<'a> Walk<'a, '_> {
         let mut children: Vec<(&'a QueryExpression, bool)> = Vec::new();
         match expression {
             QueryExpression::Column { column } => {
+                self.seen.foreign |= !column.field.is_ascii();
+                self.check_reference(column.relation.as_deref(), index)?;
                 if operand {
                     self.stack.push(Item::Reference(column.clone(), index));
                 }
             }
             QueryExpression::Wildcard { relation } => {
+                if let Some(relation) = relation {
+                    self.check_reference(Some(relation), index)?;
+                }
                 if operand {
                     self.wildcard(relation.as_deref(), index)?;
                 }
             }
             QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. } => {}
             QueryExpression::SpatialValue { expression, .. } => {
-                self.spatial = true;
+                self.seen.geometric = true;
                 if operand {
                     return Err(refusal(provider));
                 }
@@ -681,7 +1150,7 @@ impl<'a> Walk<'a, '_> {
                 function,
                 arguments,
             } => {
-                self.spatial = true;
+                self.seen.geometric = true;
                 if operand && function.returns_geometry() {
                     return Err(refusal(provider));
                 }
@@ -694,7 +1163,7 @@ impl<'a> Walk<'a, '_> {
                 order_by,
                 ..
             } => {
-                self.spatial = true;
+                self.seen.geometric = true;
                 if operand && function.returns_geometry() {
                     return Err(refusal(provider));
                 }
@@ -707,12 +1176,12 @@ impl<'a> Walk<'a, '_> {
                 );
             }
             QueryExpression::SpatialOperator { left, right, .. } => {
-                self.spatial = true;
+                self.seen.geometric = true;
                 children.push((left, false));
                 children.push((right, false));
             }
             QueryExpression::SpatialOutput { expression, .. } => {
-                self.spatial = true;
+                self.seen.geometric = true;
                 children.push((expression, operand));
             }
             QueryExpression::Cast { expression, .. }
@@ -816,104 +1285,110 @@ impl<'a> Walk<'a, '_> {
 
     fn apply(&mut self, candidates: Vec<Candidate<'a>>) -> Result<()> {
         if candidates.is_empty() {
-            self.unresolved = true;
+            self.seen.unresolved = true;
         }
         for candidate in candidates {
             match candidate {
                 Candidate::Geometry => return Err(refusal(self.provider)),
+                Candidate::Ambiguous => return Err(ambiguous_refusal(self.provider)),
                 Candidate::Scalar => {}
-                Candidate::Unresolved => self.unresolved = true,
+                Candidate::Unresolved => self.seen.unresolved = true,
                 Candidate::Follow(item) => self.stack.push(item),
             }
         }
         Ok(())
     }
 
-    /// Un riferimento di colonna in posizione di operando: le colonne che
-    /// puo nominare nella FROM del blocco (o, correlato, di un blocco
-    /// esterno), e i nomi di uscita del blocco stesso (`ORDER BY`,
-    /// `GROUP BY`, `HAVING` per alias o per nome), in ogni ramo di set
-    /// operation.
+    /// Un riferimento di colonna in posizione di operando: la colonna che
+    /// nomina nella FROM del blocco (qualificato, anche di un blocco esterno),
+    /// e i nomi di uscita del blocco stesso (`ORDER BY`, `GROUP BY`, `HAVING`
+    /// per alias o per nome), in ogni ramo di set operation.
     fn reference(&mut self, column: &ColumnRef, index: usize) -> Result<()> {
         self.references = true;
         let mut candidates = match &column.relation {
             Some(relation) => self.qualified(relation, &column.field, index),
             None => self.unqualified(&column.field, index),
         };
-        let own = self.output_positions(index, column);
-        let key = (index, fold(&column.field));
-        if !own.is_empty() && self.aliased.insert(key) {
-            let block = &self.blocks[index];
-            let (operation, visible, parent) =
-                (block.operation, block.visible.clone(), block.parent);
-            for position in own {
+        let Ok(own) = self.output_positions(index, column) else {
+            return Err(ambiguous_refusal(self.provider));
+        };
+        // Ogni colonna di uscita si segue una volta sola (due alias che si
+        // nominano a vicenda), per posizione: un riferimento qualificato e
+        // uno senza qualificatore possono nominarne di diverse.
+        let block = &self.blocks[index];
+        let (operation, visible, parent) = (block.operation, block.visible.clone(), block.parent);
+        for position in own {
+            if self.aliased.insert((index, position)) {
                 candidates.push(Candidate::Follow(Item::Position(
                     operation,
                     visible.clone(),
                     parent,
                     position,
                 )));
+            } else {
+                candidates.push(Candidate::Scalar);
             }
-        } else if !own.is_empty() {
-            candidates.push(Candidate::Scalar);
         }
         self.apply(candidates)
     }
 
     /// Le posizioni delle colonne di uscita del blocco che `column` nomina:
     /// per nome se non e qualificata, per la stessa colonna della projection
-    /// se lo e.
-    fn output_positions(&mut self, index: usize, column: &ColumnRef) -> Vec<usize> {
+    /// se lo e. `Err`: un nome di uscita la incontra soltanto senza
+    /// maiuscole.
+    fn output_positions(
+        &mut self,
+        index: usize,
+        column: &ColumnRef,
+    ) -> std::result::Result<Vec<usize>, ()> {
         let (entries, _) = self.entries_of(index, 0);
         let operation = self.blocks[index].operation;
         let rule = self.rule;
-        entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| {
-                column.relation.as_deref().map_or_else(
-                    || {
-                        entry
-                            .name
-                            .as_deref()
-                            .is_some_and(|name| rule.matches(name, &column.field))
-                    },
-                    |relation| {
-                        !operation.set_operations.is_empty()
-                            && matches!(
-                                entry.source,
-                                EntrySource::Projection(position)
-                                    if matches!(
-                                        &operation.projection[position].expression,
-                                        QueryExpression::Column { column: own }
-                                            if own.relation.as_deref().is_some_and(|own| rule.matches(own, relation))
-                                                && rule.matches(&own.field, &column.field)
-                                    )
-                            )
-                    },
-                )
-            })
-            .map(|(position, _)| position)
-            .collect()
+        let mut positions = Vec::new();
+        for (position, entry) in entries.iter().enumerate() {
+            let found = column.relation.as_deref().map_or_else(
+                || {
+                    entry.name.as_deref().map_or(NameMatch::Different, |name| {
+                        rule.compare(&column.field, name)
+                    })
+                },
+                |relation| match entry.source {
+                    EntrySource::Projection(item) if !operation.set_operations.is_empty() => {
+                        match &operation.projection[item].expression {
+                            QueryExpression::Column { column: own }
+                                if own.relation.as_deref() == Some(relation) =>
+                            {
+                                rule.compare(&column.field, &own.field)
+                            }
+                            _ => NameMatch::Different,
+                        }
+                    }
+                    _ => NameMatch::Different,
+                },
+            );
+            match found {
+                NameMatch::Same => positions.push(position),
+                NameMatch::CaseOnly => return Err(()),
+                NameMatch::Different => {}
+            }
+        }
+        Ok(positions)
     }
 
-    /// `relation.field`: la relazione piu interna con quel nome.
+    /// `relation.field`: la relazione con quel nome per byte, nel blocco o
+    /// in un blocco esterno (la regola N ne lascia una sola).
     fn qualified(&mut self, relation: &str, field: &str, index: usize) -> Vec<Candidate<'a>> {
         let mut current = Some(index);
         while let Some(block) = current {
             let named = self.blocks[block]
                 .from
                 .iter()
-                .filter(|from| self.rule.matches(&from.name, relation))
-                .flat_map(|from| from.kinds.clone())
-                .collect::<Vec<_>>();
-            if !named.is_empty() {
-                let mut candidates = Vec::new();
-                for kind in named {
-                    candidates.extend(self.in_relation(&kind, field).0);
-                }
+                .find(|from| from.name == relation)
+                .map(|from| from.kind.clone());
+            if let Some(kind) = named {
+                let candidates = self.in_relation(&kind, field);
                 if candidates.is_empty() {
-                    candidates.push(Candidate::Unresolved);
+                    return vec![Candidate::Unresolved];
                 }
                 return candidates;
             }
@@ -922,83 +1397,69 @@ impl<'a> Walk<'a, '_> {
         vec![Candidate::Unresolved]
     }
 
-    /// `field` senza qualificazione: ogni relazione della FROM che la puo
-    /// avere, nel blocco piu interno che ne ha almeno una.
+    /// `field` senza qualificazione: le relazioni della FROM del blocco. La
+    /// regola N rifiuta un riferimento senza qualificazione in un blocco con
+    /// blocchi esterni che hanno relazioni: il dialetto lo cercherebbe fuori,
+    /// con le proprie regole di nome.
     fn unqualified(&mut self, field: &str, index: usize) -> Vec<Candidate<'a>> {
+        let kinds = self.blocks[index]
+            .from
+            .iter()
+            .map(|from| from.kind.clone())
+            .collect::<Vec<_>>();
         let mut candidates = Vec::new();
-        let mut current = Some(index);
-        while let Some(block) = current {
-            let kinds = self.blocks[block]
-                .from
-                .iter()
-                .flat_map(|from| from.kinds.clone())
-                .collect::<Vec<_>>();
-            let mut stops = false;
-            let mut non_ascii = false;
-            for kind in kinds {
-                let (found, definite, foreign) = self.in_relation(&kind, field);
-                stops |= definite;
-                non_ascii |= foreign;
-                candidates.extend(found);
-            }
-            if stops {
-                return candidates;
-            }
-            if non_ascii && self.rule == NameRule::Folded {
-                // La collation puo uguagliare `field` a una colonna non ASCII
-                // di questo blocco che la piegatura non uguaglia.
-                candidates.push(Candidate::Unresolved);
-                return candidates;
-            }
-            current = self.blocks[block].parent;
+        for kind in kinds {
+            candidates.extend(self.in_relation(&kind, field));
         }
         candidates
     }
 
-    /// Le colonne di `kind` che `field` puo nominare; `bool`: la relazione ha
-    /// la colonna (o non si sa, e il riferimento non si risolve), e la
-    /// ricerca si ferma; `bool`: la relazione ha colonne con nomi non ASCII.
-    fn in_relation(
-        &mut self,
-        kind: &RelationKind<'a>,
-        field: &str,
-    ) -> (Vec<Candidate<'a>>, bool, bool) {
+    /// Le colonne di `kind` che `field` nomina, con la regola del dialetto;
+    /// vuoto se nessuna.
+    fn in_relation(&mut self, kind: &RelationKind<'a>, field: &str) -> Vec<Candidate<'a>> {
         match kind {
             RelationKind::Base(schema, object) => {
                 let Some(catalog) = self.catalog else {
-                    return (vec![Candidate::Scalar], true, false);
+                    return vec![Candidate::Scalar];
                 };
                 match catalog.columns(schema.as_ref(), object) {
-                    RelationColumns::Absent => (Vec::new(), false, false),
-                    RelationColumns::Unknown => (vec![Candidate::Unresolved], true, false),
+                    RelationColumns::Absent => Vec::new(),
+                    RelationColumns::Unknown => vec![Candidate::Unresolved],
                     RelationColumns::Declared(geometric) => {
-                        if geometric.iter().any(|name| self.rule.matches(name, field)) {
-                            (vec![Candidate::Geometry], true, false)
+                        // Dichiarate dal chiamante: un nome che incontra una
+                        // colonna geometrica anche soltanto senza maiuscole
+                        // si giudica geometrico.
+                        if geometric.iter().any(|name| fold(name) == fold(field)) {
+                            vec![Candidate::Geometry]
                         } else {
-                            (vec![Candidate::Scalar], false, false)
+                            vec![Candidate::Scalar]
                         }
                     }
                     RelationColumns::Known(columns) => {
-                        let foreign = columns.iter().any(|(name, _)| !name.is_ascii());
-                        let matching = columns
-                            .iter()
-                            .filter(|(name, _)| self.rule.matches(name, field))
-                            .collect::<Vec<_>>();
-                        if matching.is_empty() {
-                            (Vec::new(), false, foreign)
-                        } else if matching.iter().any(|(_, geometric)| *geometric) {
-                            (vec![Candidate::Geometry], true, foreign)
-                        } else {
-                            (vec![Candidate::Scalar], true, foreign)
+                        let mut found: Option<bool> = None;
+                        let mut case_only = false;
+                        for (name, geometric) in columns {
+                            match self.rule.compare(field, name) {
+                                NameMatch::Same => {
+                                    found = Some(found.unwrap_or(false) || *geometric);
+                                }
+                                NameMatch::CaseOnly => case_only = true,
+                                NameMatch::Different => {}
+                            }
+                        }
+                        match found {
+                            Some(true) => vec![Candidate::Geometry],
+                            Some(false) => vec![Candidate::Scalar],
+                            None if case_only => vec![Candidate::Ambiguous],
+                            None => Vec::new(),
                         }
                     }
                 }
             }
             RelationKind::Query(query, visible, parent) => {
-                let candidates = self.output_by_name(query, visible, *parent, field);
-                let definite = !candidates.is_empty();
-                (candidates, definite, false)
+                self.output_by_name(query, visible, *parent, field)
             }
+            RelationKind::Foreign => vec![Candidate::Unresolved],
         }
     }
 
@@ -1015,17 +1476,18 @@ impl<'a> Walk<'a, '_> {
         let index = self.open_block(query, visible.to_vec(), parent);
         let (entries, complete) = self.entries_of(index, 0);
         let rule = self.rule;
-        let mut positions = entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| {
-                entry
-                    .name
-                    .as_deref()
-                    .is_some_and(|name| rule.matches(name, field))
-            })
-            .map(|(position, _)| position)
-            .collect::<Vec<_>>();
+        let mut positions = Vec::new();
+        for (position, entry) in entries.iter().enumerate() {
+            match entry
+                .name
+                .as_deref()
+                .map_or(NameMatch::Different, |name| rule.compare(field, name))
+            {
+                NameMatch::Same => positions.push(position),
+                NameMatch::CaseOnly => return vec![Candidate::Ambiguous],
+                NameMatch::Different => {}
+            }
+        }
         if positions.is_empty() {
             positions = entries
                 .iter()
@@ -1078,16 +1540,12 @@ impl<'a> Walk<'a, '_> {
                 complete = false;
                 break;
             }
-            for (name, kinds) in from {
-                let [kind] = kinds.as_slice() else {
-                    complete = false;
-                    break 'projection;
-                };
+            for (name, kind) in from {
                 match kind {
                     RelationKind::Base(schema, object) => {
                         let columns = self
                             .catalog
-                            .map(|catalog| catalog.columns(schema.as_ref(), object));
+                            .map(|catalog| catalog.columns(schema.as_ref(), &object));
                         let Some(RelationColumns::Known(columns)) = columns else {
                             complete = false;
                             break 'projection;
@@ -1102,8 +1560,12 @@ impl<'a> Walk<'a, '_> {
                             });
                         }
                     }
+                    RelationKind::Foreign => {
+                        complete = false;
+                        break 'projection;
+                    }
                     RelationKind::Query(query, visible, parent) => {
-                        let inner = self.open_block(query, visible.clone(), *parent);
+                        let inner = self.open_block(query, visible.clone(), parent);
                         let (nested, nested_complete) = self.entries_of(inner, depth + 1);
                         for (position, entry) in nested.into_iter().enumerate() {
                             entries.push(Entry {
@@ -1111,7 +1573,7 @@ impl<'a> Walk<'a, '_> {
                                 source: EntrySource::Position(
                                     query,
                                     visible.clone(),
-                                    *parent,
+                                    parent,
                                     position,
                                 ),
                             });
@@ -1130,17 +1592,17 @@ impl<'a> Walk<'a, '_> {
         result
     }
 
-    /// Le relazioni della FROM del blocco che un `*` nomina.
+    /// Le relazioni della FROM del blocco che un `*` nomina, per byte.
     fn relations_named(
         &self,
         index: usize,
         relation: Option<&str>,
-    ) -> Vec<(String, Vec<RelationKind<'a>>)> {
+    ) -> Vec<(String, RelationKind<'a>)> {
         self.blocks[index]
             .from
             .iter()
-            .filter(|from| relation.is_none_or(|relation| self.rule.matches(&from.name, relation)))
-            .map(|from| (from.name.clone(), from.kinds.clone()))
+            .filter(|from| relation.is_none_or(|relation| from.name == relation))
+            .map(|from| (from.name.clone(), from.kind.clone()))
             .collect()
     }
 
@@ -1154,48 +1616,47 @@ impl<'a> Walk<'a, '_> {
         if from.is_empty() {
             candidates.push(Candidate::Unresolved);
         }
-        for (name, kinds) in from {
-            for kind in kinds {
-                match kind {
-                    RelationKind::Base(schema, object) => {
-                        let Some(catalog) = self.catalog else {
-                            continue;
-                        };
-                        match catalog.columns(schema.as_ref(), &object) {
-                            RelationColumns::Known(columns) => {
-                                for (field, _) in columns {
-                                    candidates.push(Candidate::Follow(Item::Reference(
-                                        ColumnRef {
-                                            relation: Some(name.clone()),
-                                            field: field.clone(),
-                                        },
-                                        index,
-                                    )));
-                                }
-                            }
-                            RelationColumns::Declared(geometric) if geometric.is_empty() => {
-                                candidates.push(Candidate::Scalar);
-                            }
-                            RelationColumns::Declared(_) => candidates.push(Candidate::Geometry),
-                            RelationColumns::Absent | RelationColumns::Unknown => {
-                                candidates.push(Candidate::Unresolved);
+        for (name, kind) in from {
+            match kind {
+                RelationKind::Base(schema, object) => {
+                    let Some(catalog) = self.catalog else {
+                        continue;
+                    };
+                    match catalog.columns(schema.as_ref(), &object) {
+                        RelationColumns::Known(columns) => {
+                            for (field, _) in columns {
+                                candidates.push(Candidate::Follow(Item::Reference(
+                                    ColumnRef {
+                                        relation: Some(name.clone()),
+                                        field: field.clone(),
+                                    },
+                                    index,
+                                )));
                             }
                         }
-                    }
-                    RelationKind::Query(query, visible, parent) => {
-                        let inner = self.open_block(query, visible.clone(), parent);
-                        let (entries, complete) = self.entries_of(inner, 0);
-                        for position in 0..entries.len() {
-                            candidates.push(Candidate::Follow(Item::Position(
-                                query,
-                                visible.clone(),
-                                parent,
-                                position,
-                            )));
+                        RelationColumns::Declared(geometric) if geometric.is_empty() => {
+                            candidates.push(Candidate::Scalar);
                         }
-                        if !complete {
+                        RelationColumns::Declared(_) => candidates.push(Candidate::Geometry),
+                        RelationColumns::Absent | RelationColumns::Unknown => {
                             candidates.push(Candidate::Unresolved);
                         }
+                    }
+                }
+                RelationKind::Foreign => candidates.push(Candidate::Unresolved),
+                RelationKind::Query(query, visible, parent) => {
+                    let inner = self.open_block(query, visible.clone(), parent);
+                    let (entries, complete) = self.entries_of(inner, 0);
+                    for position in 0..entries.len() {
+                        candidates.push(Candidate::Follow(Item::Position(
+                            query,
+                            visible.clone(),
+                            parent,
+                            position,
+                        )));
+                    }
+                    if !complete {
+                        candidates.push(Candidate::Unresolved);
                     }
                 }
             }
@@ -1254,6 +1715,38 @@ impl<'a> Walk<'a, '_> {
         }
         self.apply(candidates)
     }
+}
+
+/// Un corpo di CTE che nomina senza schema, anche soltanto senza maiuscole,
+/// una CTE dello stesso `WITH` che non vede: una successiva, o se stessa non
+/// ricorsiva. Il legame dipende dal dialetto (`PostgreSQL` lo lega alla
+/// tabella senza `RECURSIVE` e alla CTE con, SQL Server rifiuta il nome in
+/// avanti): la regola N lo rifiuta.
+fn refers_forward(ctes: &[CommonTableExpression]) -> bool {
+    use crate::relational::{walk_query, QueryWalkControl, QueryWalkNode};
+    ctes.iter().enumerate().any(|(position, cte)| {
+        let hidden = ctes
+            .iter()
+            .enumerate()
+            .filter(|(other, sibling)| {
+                *other > position || (*other == position && !sibling.recursive)
+            })
+            .map(|(_, sibling)| fold(&sibling.name))
+            .collect::<BTreeSet<_>>();
+        if hidden.is_empty() {
+            return false;
+        }
+        !walk_query(&cte.query, |node| match node {
+            QueryWalkNode::Source(source)
+                if source.object.schema.is_none()
+                    && source.object.catalog.is_none()
+                    && hidden.contains(&fold(&source.object.object)) =>
+            {
+                QueryWalkControl::Break
+            }
+            _ => QueryWalkControl::Continue,
+        })
+    })
 }
 
 /// Gli argomenti di una funzione scalare sono operandi se la funzione li

@@ -29,8 +29,9 @@ type DeclaredGeometry = Vec<(Option<String>, String, String)>;
 /// relazione del piano ha le colonne dichiarate per lei
 /// (`RelationColumns::Declared`): le altre colonne si assumono scalari, e
 /// un riferimento che non si risolve (alias, nome generato, `*`) in un piano
-/// con geometrie si rifiuta. Senza dichiarazioni la colonna non si giudica:
-/// e il limite dichiarato in `spatial_operand`.
+/// con geometrie si rifiuta. E un rifiuto anticipato, non il giudizio: lo
+/// fa l'esecuzione sul catalogo del provider (`relational_plan`,
+/// `facade::verify_operands`), anche senza dichiarazioni.
 fn judge_declared_geometry(
     provider: ProviderKind,
     operands: &plenora_database_core::spatial_operand::ScalarOperands,
@@ -61,10 +62,89 @@ fn judge_declared_geometry(
     operands.judge(&catalog).map_err(crate::errors::to_py_err)
 }
 
+/// Il piano relazionale che accompagna lo SQL compilato dallo SDK fino
+/// all'esecuzione: la transazione lo giudica sul catalogo del provider
+/// (`facade::verify_operands`) prima di eseguire.
+pub enum RelationalPlan {
+    Query(Box<QueryOperation>),
+    Mutation(Box<MutationOperation>),
+}
+
+impl RelationalPlan {
+    /// Il piano come lo giudica il core.
+    #[must_use]
+    pub const fn as_plan(&self) -> plenora_database_core::spatial_operand::OperandPlan<'_> {
+        use plenora_database_core::spatial_operand::OperandPlan;
+        match self {
+            Self::Query(query) => OperandPlan::Query(query),
+            Self::Mutation(mutation) => OperandPlan::Mutation(mutation),
+        }
+    }
+}
+
+/// Il piano di `relational` (`("query" | "mutation", IR JSON)`), passato
+/// dallo SDK a `execute` ed `execute_returning_rows` insieme allo SQL che ne
+/// ha compilato. Il piano non si confronta con lo SQL: chi chiama il metodo
+/// nativo con uno SQL diverso esegue SQL del chiamante, come senza piano; lo
+/// SDK li compila dallo stesso statement (`expression._execute_statement`).
+///
+/// # Errors
+///
+/// Rifiuta un tipo o un IR non validi senza il contenuto ricevuto.
+pub fn relational_plan(relational: Option<(String, String)>) -> PyResult<Option<RelationalPlan>> {
+    let Some((kind, ast_json)) = relational else {
+        return Ok(None);
+    };
+    match kind.as_str() {
+        "query" => serde_json::from_str(&ast_json)
+            .map(|query| Some(RelationalPlan::Query(Box::new(query))))
+            .map_err(|_| PyValueError::new_err("IR relazionale non valido")),
+        "mutation" => serde_json::from_str(&ast_json)
+            .map(|mutation| Some(RelationalPlan::Mutation(Box::new(mutation))))
+            .map_err(|_| PyValueError::new_err("mutazione relazionale non valida")),
+        _ => Err(PyValueError::new_err(
+            "tipo di piano relazionale non valido",
+        )),
+    }
+}
+
+/// `query` di una transazione con il giudizio del piano, se c'e.
+///
+/// # Errors
+///
+/// Quelli di `facade::query_judged`.
+pub async fn query_rows(
+    tx: &mut dyn plenora_database_core::transaction::TransactionScope,
+    statement: &plenora_database_core::transaction::Statement,
+    plan: Option<&RelationalPlan>,
+    cancellation: &plenora_database_core::CancellationToken,
+) -> plenora_database_core::Result<Vec<plenora_database_core::row::Row>> {
+    let plan = plan.map(RelationalPlan::as_plan);
+    plenora_database_core::facade::query_judged(tx, statement, plan.as_ref(), cancellation).await
+}
+
+/// `execute` di una transazione con il giudizio del piano, se c'e.
+///
+/// # Errors
+///
+/// Quelli di `facade::execute_judged`.
+pub async fn execute(
+    tx: &mut dyn plenora_database_core::transaction::TransactionScope,
+    statement: &plenora_database_core::transaction::Statement,
+    plan: Option<&RelationalPlan>,
+    cancellation: &plenora_database_core::CancellationToken,
+) -> plenora_database_core::Result<u64> {
+    let plan = plan.map(RelationalPlan::as_plan);
+    plenora_database_core::facade::execute_judged(tx, statement, plan.as_ref(), cancellation).await
+}
+
 /// Compila uno statement senza ricevere o restituire valori applicativi.
 ///
-/// `geometry_columns` sono le colonne che il mapping ORM o la reflection
-/// dichiarano `Geometry`: sotto un operatore non spatial si rifiutano.
+/// Non esegue e non legge il catalogo: il giudizio degli operandi geometrici
+/// su ogni colonna lo fa l'esecuzione, con il catalogo del provider letto
+/// nella transazione. Qui si rifiutano soltanto le forme che il piano dice da
+/// se (regola N, funzioni spatial che rendono una geometria) e le colonne che
+/// il mapping ORM o la reflection dichiarano `Geometry` (`geometry_columns`).
 ///
 /// # Errors
 ///

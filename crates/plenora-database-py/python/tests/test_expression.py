@@ -384,9 +384,12 @@ def test_result_cardinality_and_rows_are_immutable() -> None:
 
 def test_sync_execution_uses_compiled_sql_and_ordered_binds() -> None:
     class Native:
-        def execute_returning_rows(self, sql, values):
+        def execute_returning_rows(self, sql, values, *, relational=None):
             assert "$1" in sql
             assert values == [7]
+            # La regola S: l'IR accompagna lo SQL fino alla transazione, che
+            # lo giudica sul catalogo del provider prima di eseguire.
+            assert relational == ("query", statement.to_json())
             return [{"answer": values[0]}]
 
     statement = p.select(p.bind("answer", p.BindType.INTEGER).label("answer"))
@@ -395,12 +398,44 @@ def test_sync_execution_uses_compiled_sql_and_ordered_binds() -> None:
     ).one().as_dict() == {"answer": 7}
 
 
+def test_every_execution_passes_the_plan_to_the_transaction() -> None:
+    """Regola S: nessuna esecuzione dello SDK manda lo SQL senza il piano.
+
+    Su d11a957 `_execute_statement` chiamava `execute_returning_rows(sql,
+    values)` ed `execute(sql, values)`: la transazione non riceveva l'IR, e
+    una tabella non tipizzata o una colonna non mappata non si giudicavano.
+    """
+    calls: list[tuple[str, object]] = []
+
+    class Native:
+        def execute_returning_rows(self, sql, values, *, relational=None):
+            calls.append(("rows", relational))
+            return []
+
+        def execute(self, sql, values, *, relational=None):
+            calls.append(("count", relational))
+            return 1
+
+    items = p.table("items", "id", "g", "h", schema="public")
+    query = p.select(items.c.id).order_by(items.c.g)
+    update = p.update(items).values(id=p.bind("v", p.BindType.INTEGER)).where(
+        items.c.id == p.bind("k", p.BindType.INTEGER)
+    )
+    _execute_statement(Native(), query, None, "postgres")
+    _execute_statement(Native(), update, {"v": 1, "k": 2}, "postgres")
+    assert calls == [
+        ("rows", ("query", query.to_json())),
+        ("count", ("mutation", update.to_json())),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_async_execution_uses_the_same_compiler_and_result() -> None:
     class Native:
-        async def execute_returning_rows(self, sql, values):
+        async def execute_returning_rows(self, sql, values, *, relational=None):
             assert "@p1" in sql
             assert values == [8]
+            assert relational == ("query", statement.to_json())
             return [{"answer": values[0]}]
 
     statement = p.select(p.bind("answer", p.BindType.INTEGER).label("answer"))

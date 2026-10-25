@@ -535,12 +535,28 @@ pub async fn verify_scalar_operands(
     client: &tokio_postgres::Client,
     operands: &plenora_database_core::spatial_operand::ScalarOperands,
 ) -> Result<()> {
-    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
     if operands.is_empty() {
         return Ok(());
     }
+    let catalog = operand_catalog(client, operands.relations()).await?;
+    operands.judge(&catalog)
+}
+
+/// Il catalogo delle relazioni (schema, oggetto) per il giudizio degli
+/// operandi geometrici: le colonne di [`relation_columns`], `Absent` per una
+/// relazione che `to_regclass` non trova. E la lettura del path query e di
+/// `TransactionScope::operand_catalog`.
+///
+/// # Errors
+///
+/// Gli errori del catalogo in fase `prepare`.
+pub async fn operand_catalog(
+    client: &tokio_postgres::Client,
+    relations: &[(Option<String>, String)],
+) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
+    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
     let mut catalog = OperandCatalog::new(PROVIDER);
-    for (schema, object) in operands.relations() {
+    for (schema, object) in relations {
         let columns = relation_columns(client, schema.as_deref(), object).await?;
         let columns = if columns.is_empty() {
             RelationColumns::Absent
@@ -549,7 +565,7 @@ pub async fn verify_scalar_operands(
         };
         catalog.insert(schema.clone(), object.clone(), columns);
     }
-    operands.judge(&catalog)
+    Ok(catalog)
 }
 
 /// Le colonne di una relazione, con il flag geometrico di
@@ -575,7 +591,11 @@ pub async fn relation_columns(
 
 /// Le colonne di una relazione (schema, oggetto) nell'ordine di `attnum`, e
 /// se il loro tipo contiene una geometria: la chiusura di `typbasetype`,
-/// `typelem`, gli attributi di `typrelid` e `rngsubtype`.
+/// `typelem`, gli attributi di `typrelid`, `rngsubtype` e, per un
+/// multirange, il suo range (`rngmultitypid`, da `PostgreSQL` 14). La colonna
+/// `rngmultitypid` si legge da `to_jsonb` della riga di `pg_range`: prima del
+/// 14 non esiste, e non esistono multirange da seguire. Fino al 25/10 il
+/// multirange di un range di geometrie non si riconosceva.
 const RELATION_COLUMNS_SQL: &str = "\
 WITH RECURSIVE columns AS ( \
     SELECT a.attnum, a.attname::text AS name, a.atttypid \
@@ -597,6 +617,8 @@ WITH RECURSIVE columns AS ( \
             WHERE t.typrelid <> 0 AND a.attrelid = t.typrelid \
               AND a.attnum > 0 AND NOT a.attisdropped \
         UNION ALL SELECT g.rngsubtype FROM pg_catalog.pg_range g WHERE g.rngtypid = t.oid \
+        UNION ALL SELECT g.rngtypid FROM pg_catalog.pg_range g \
+            WHERE t.typtype = 'm' AND (to_jsonb(g) ->> 'rngmultitypid')::oid = t.oid \
     ) n \
     WHERE n.oid <> 0 \
 ) \

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 116337,
-  "max_code_lines": 94397,
-  "rationale": "Regola degli operandi geometrici a mondo chiuso (core spatial_operand: ogni riferimento in posizione di operando, alias, colonna di sorgente derivata o CTE, nome generato dal server, * espanso, rami di set operation, si prova non geometrico sul catalogo con le regole di nome del dialetto, altrimenti GEOMETRY_OPERAND_UNRESOLVED; PostgreSQL tipi che contengono una geometria, SQL Server sinonimi e tempdb, MySQL/MariaDB SHOW COLUMNS), con le prove offline e live PostgreSQL, SQL Server, MySQL e MariaDB. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 115573 -> 116337 (+764), righe di codice 93851 -> 94397 (+546). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 117187,
+  "max_code_lines": 94971,
+  "rationale": "Regole N e S degli operandi geometrici (core spatial_operand: forme di nomi chiuse, AMBIGUOUS_NAME_SHAPE, risoluzione unica per byte; TransactionScope::operand_catalog e facade::verify_operands per SDK, ORM, facade e CLI portable con il catalogo letto dal provider; PostgreSQL multirange, MySQL SHOW COLUMNS), con le prove offline e live PostgreSQL, SQL Server CS, MySQL e MariaDB. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 116337 -> 117187 (+850), righe di codice 94397 -> 94971 (+574). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

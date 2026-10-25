@@ -52,10 +52,13 @@ pub(crate) fn execute_with_backend(
     py: Python<'_>,
     backend: TransactionBackend,
     statement: Statement,
+    plan: Option<crate::relational_query::RelationalPlan>,
 ) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         run_with_backend(backend, move |tx, cancel| {
-            Box::pin(async move { tx.execute(&statement, cancel).await })
+            Box::pin(async move {
+                crate::relational_query::execute(tx, &statement, plan.as_ref(), cancel).await
+            })
         })
         .await
         .map_err(to_py_err)
@@ -81,10 +84,13 @@ pub(crate) fn execute_rows_with_backend(
     py: Python<'_>,
     backend: TransactionBackend,
     statement: Statement,
+    plan: Option<crate::relational_query::RelationalPlan>,
 ) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let rows = run_with_backend(backend, move |tx, cancel| {
-            Box::pin(async move { tx.query(&statement, cancel).await })
+            Box::pin(async move {
+                crate::relational_query::query_rows(tx, &statement, plan.as_ref(), cancel).await
+            })
         })
         .await
         .map_err(to_py_err)?;

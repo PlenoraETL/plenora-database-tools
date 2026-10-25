@@ -1967,3 +1967,277 @@ async fn live_unresolved_geometry_operands_are_refused_before_the_server() {
         .await
         .expect("pulizia");
 }
+
+/// Decima rilettura (25/10, d11a957), sul `PostGIS` reale: le forme ammesse
+/// e rese dal server senza errore, ora rifiutate prima di ogni riga.
+///
+/// - R1: due alias che differiscono soltanto per le maiuscole (`"k"`, `"K"`,
+///   il secondo la geometria in WKB), `ORDER BY "K", "k"`: ordinava per byte;
+/// - R2: alias di relazione `t` esterno e `T` interno in un `EXISTS`;
+/// - R3: il multirange di un range di geometrie (`rngmultitypid`) non era
+///   riconosciuto, e `ORDER BY` lo ordinava;
+/// - R4: lo SQL compilato dallo SDK si eseguiva senza il catalogo: una
+///   colonna geometrica di una tabella non tipizzata o non mappata
+///   (`ORDER BY g`, `ORDER BY h`) ordinava per byte. Ora la transazione la
+///   giudica sul catalogo (`TransactionScope::operand_catalog`) prima di
+///   eseguire, e non esegue niente se la rifiuta.
+///
+/// I controlli (alias distinti, riferimenti qualificati, colonne scalari,
+/// geometrie nei nodi spatial, un `UPDATE` filtrato per chiave) restano, con
+/// le righe attese.
+#[tokio::test]
+async fn live_name_shapes_multiranges_and_the_transaction_catalog_are_judged() {
+    use plenora_database_core::facade::{execute_judged, query_judged};
+    use plenora_database_core::relational::MutationOperation;
+    use plenora_database_core::spatial_operand::{OperandPlan, AMBIGUOUS_NAME_SHAPE};
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    use serde_json::{json, Value};
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let table = "plenora_nomi_r10";
+    let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .expect("connessione di setup");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+        .batch_execute(&format!(
+            "DROP TABLE IF EXISTS public.{table};
+             DROP TABLE IF EXISTS public.{table}_u;
+             DROP TYPE IF EXISTS public.{table}_range;
+             CREATE TYPE public.{table}_range AS RANGE (subtype = geometry);
+             CREATE TABLE public.{table} (
+                 id int PRIMARY KEY,
+                 g geometry(Point, 4326),
+                 h geometry(Point, 4326),
+                 name text,
+                 gm public.{table}_multirange
+             );
+             INSERT INTO public.{table}
+                 SELECT i, ST_SetSRID(ST_MakePoint(4 - i, 4 - i), 4326),
+                        ST_SetSRID(ST_MakePoint(i, i), 4326), 'riga-' || i,
+                        public.{table}_multirange(public.{table}_range(
+                            ST_MakePoint(i, i), ST_MakePoint(i + 1, i + 1)))
+                 FROM generate_series(1, 3) i;
+             CREATE TABLE public.{table}_u (id int PRIMARY KEY, g bytea);
+             INSERT INTO public.{table}_u VALUES (1, decode('00', 'hex'));"
+        ))
+        .await
+        .expect("fixture");
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.clone());
+    let cancel = CancellationToken::new();
+    let budget = budget();
+    let column = |relation: Option<&str>, field: &str| json!({"kind": "column", "column": {"relation": relation, "field": field}});
+    let item =
+        |expression: &Value, alias: Option<&str>| json!({"expression": expression, "alias": alias});
+    let order = |expressions: &[Value]| {
+        Value::Array(
+            expressions
+                .iter()
+                .map(|expression| json!({"expression": expression, "direction": "asc"}))
+                .collect(),
+        )
+    };
+    let block = |object: &str, alias: Option<&str>, extra: &Value| {
+        let name = alias.unwrap_or(object);
+        let mut operation = json!({
+            "source": {"object": {"catalog": null, "schema": "public", "object": object}, "alias": alias},
+            "projection": [item(&column(Some(name), "id"), Some("id"))],
+            "filter": null, "having": null, "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        operation
+    };
+    let plan = |value: Value| -> QueryOperation { serde_json::from_value(value).expect("piano") };
+    let binary = probe(ParameterValue::Bytes(vec![0]));
+    let none = ParameterBag::default();
+    let output = json!({"kind": "spatial_output", "expression": column(Some("t"), "g"), "semantics": "geometry"});
+    let u = format!("{table}_u");
+    let refused = [
+        (
+            "R1 alias k e K, ORDER BY K, k",
+            block(
+                table,
+                Some("t"),
+                &json!({"projection": [item(&column(Some("t"), "id"), Some("k")), item(&output, Some("K"))],
+                    "order_by": order(&[column(None, "K"), column(None, "k")])}),
+            ),
+            none.clone(),
+            AMBIGUOUS_NAME_SHAPE,
+        ),
+        (
+            "R2 t esterno, T interno",
+            block(
+                table,
+                Some("t"),
+                &json!({"filter": {"kind": "exists", "query": block(&u, Some("T"), &json!({
+                    "projection": [item(&column(Some("T"), "id"), None)],
+                    "filter": {"kind": "compare",
+                        "left": {"kind": "cast", "expression": column(Some("t"), "g"), "target_type": "binary"},
+                        "operator": "eq",
+                        "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "binary"}}
+                }))}}),
+            ),
+            binary.clone(),
+            AMBIGUOUS_NAME_SHAPE,
+        ),
+        (
+            "R3 ORDER BY multirange di geometrie",
+            block(
+                table,
+                Some("t"),
+                &json!({"order_by": order(&[column(Some("t"), "gm")])}),
+            ),
+            none.clone(),
+            GEOMETRY_SCALAR_OPERAND,
+        ),
+    ];
+    let mut accepted = Vec::new();
+    for (form, operation, parameters, reason) in &refused {
+        match rows(
+            provider
+                .query(
+                    &secret,
+                    &plan(operation.clone()),
+                    parameters,
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await
+        {
+            Err(error) => {
+                assert_eq!(
+                    error.category,
+                    ErrorCategory::Unsupported,
+                    "{form}: {error:?}"
+                );
+                assert_eq!(&error.message, reason, "{form}: {error:?}");
+            }
+            Ok(count) => accepted.push(format!("{form}: {count} righe")),
+        }
+    }
+    assert!(accepted.is_empty(), "ammesse: {accepted:?}");
+    // R4: il percorso dello SDK, nella transazione, con il piano.
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("transazione");
+    let statement = Statement::new(format!("SELECT id FROM public.{table} ORDER BY g"));
+    let untyped = plan(block(
+        table,
+        None,
+        &json!({"order_by": order(&[column(Some(table), "g")])}),
+    ));
+    let unmapped = plan(block(
+        table,
+        None,
+        &json!({"order_by": order(&[column(None, "h")])}),
+    ));
+    for (form, operation) in [
+        ("ORDER BY g non tipizzata", &untyped),
+        ("ORDER BY h non mappata", &unmapped),
+    ] {
+        let error = query_judged(
+            tx.as_mut(),
+            &statement,
+            Some(&OperandPlan::Query(operation)),
+            &cancel,
+        )
+        .await
+        .expect_err(form);
+        assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{form}: {error:?}");
+    }
+    let portable: plenora_database_core::portable::PortableStatement =
+        serde_json::from_value(json!({
+            "type": "select",
+            "table": {"schema": "public", "name": table},
+            "projection": {"kind": "columns", "value": ["id"]},
+            "order_by": [{"column": "g", "direction": "asc"}]
+        }))
+        .expect("portable");
+    let error =
+        plenora_database_core::facade::execute_portable_returning(tx.as_mut(), &portable, &cancel)
+            .await
+            .expect_err("portable ORDER BY g");
+    assert_eq!(
+        error.message, GEOMETRY_SCALAR_OPERAND,
+        "portable: {error:?}"
+    );
+    // I controlli nella stessa transazione: una query scalare con una
+    // geometria in un nodo spatial e un UPDATE filtrato per chiave.
+    let ordered = plan(block(
+        table,
+        None,
+        &json!({"order_by": order(&[column(Some(table), "id")]),
+            "filter": {"kind": "spatial", "function": "intersects",
+                "arguments": [column(Some(table), "g"), column(Some(table), "g")]}}),
+    ));
+    let rows_seen = query_judged(
+        tx.as_mut(),
+        &Statement::new(format!(
+            "SELECT id FROM public.{table} WHERE ST_Intersects(g, g) ORDER BY id"
+        )),
+        Some(&OperandPlan::Query(&ordered)),
+        &cancel,
+    )
+    .await
+    .expect("controllo scalare");
+    assert_eq!(rows_seen.len(), 3);
+    let update: MutationOperation = serde_json::from_value(json!({
+        "type": "update",
+        "target": {"schema": "public", "object": table},
+        "assignments": [{"column": "name", "value": {"kind": "parameter", "name": "v"}}],
+        "filter": {"kind": "compare", "left": column(None, "id"), "operator": "eq",
+            "right": {"kind": "parameter", "name": "k"}}
+    }))
+    .expect("update");
+    let affected = execute_judged(
+        tx.as_mut(),
+        &Statement::new(format!("UPDATE public.{table} SET name = $1 WHERE id = $2")).with_params(
+            vec![
+                ParameterValue::String("nuovo".to_owned()),
+                ParameterValue::I32(2),
+            ],
+        ),
+        Some(&OperandPlan::Mutation(&update)),
+        &cancel,
+    )
+    .await
+    .expect("UPDATE per chiave");
+    assert_eq!(affected, 1);
+    tx.rollback(&cancel).await.expect("rollback");
+    // Il controllo di R1 e R2 con alias distinti e riferimenti qualificati.
+    let admitted = block(
+        table,
+        Some("t"),
+        &json!({"projection": [item(&column(Some("t"), "id"), Some("k")), item(&output, Some("w"))],
+            "order_by": order(&[column(None, "k")]),
+            "filter": {"kind": "exists", "query": block(&u, Some("x"), &json!({
+                "projection": [item(&column(Some("x"), "id"), None)],
+                "filter": {"kind": "compare", "left": column(Some("x"), "id"), "operator": "eq",
+                    "right": column(Some("t"), "id")}}))}}),
+    );
+    let count = rows(
+        provider
+            .query(&secret, &plan(admitted), &none, &budget, &cancel)
+            .await,
+    )
+    .await
+    .expect("controllo alias distinti");
+    assert_eq!(count, 1);
+    client
+        .batch_execute(&format!(
+            "DROP TABLE IF EXISTS public.{table};
+             DROP TABLE IF EXISTS public.{table}_u;
+             DROP TYPE IF EXISTS public.{table}_range;"
+        ))
+        .await
+        .expect("pulizia");
+}

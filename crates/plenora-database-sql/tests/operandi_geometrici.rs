@@ -13,7 +13,8 @@
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::spatial_operand::{
-    scalar_operands, OperandCatalog, RelationColumns, GEOMETRY_OPERAND_UNRESOLVED,
+    scalar_operands, OperandCatalog, RelationColumns, AMBIGUOUS_NAME_SHAPE,
+    GEOMETRY_OPERAND_UNRESOLVED,
 };
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::ErrorCategory;
@@ -244,11 +245,12 @@ fn sei_forme(prodotto: ProviderKind) -> Vec<(&'static str, QueryOperation, &'sta
     };
     let centroide_senza_alias = generata(&centroide());
     let testo_senza_alias = generata(&testo(&g));
+    // `MySQL` e `MariaDB` non distinguono le maiuscole nei nomi di colonna:
+    // `G` e la geometria. Altrove (SQL Server secondo la collation) la forma
+    // si rifiuta per la regola N.
     let piegata = match prodotto {
-        ProviderKind::Sqlserver | ProviderKind::Mysql | ProviderKind::Mariadb => {
-            GEOMETRY_SCALAR_OPERAND
-        }
-        _ => GEOMETRY_OPERAND_UNRESOLVED,
+        ProviderKind::Mysql | ProviderKind::Mariadb => GEOMETRY_SCALAR_OPERAND,
+        _ => AMBIGUOUS_NAME_SHAPE,
     };
     vec![
         ("1 ORDER BY k su UNION ALL", union, GEOMETRY_SCALAR_OPERAND),

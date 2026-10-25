@@ -100,20 +100,24 @@ impl AsyncTransaction {
         })
     }
 
-    #[pyo3(signature = (sql, params=None))]
+    #[pyo3(signature = (sql, params=None, *, relational=None))]
     fn execute<'py>(
         &self,
         py: Python<'py>,
         sql: &str,
         params: Option<Bound<'_, PyList>>,
+        relational: Option<(String, String)>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let statement = statement_from_python(sql, params.as_ref())?;
+        let plan = crate::relational_query::relational_plan(relational)?;
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let mut guard = locked_tx(&inner).await?;
             let tx = guard.as_mut().ok_or_else(tx_closed_error)?;
             let cancel = CancellationToken::new();
-            tx.execute(&statement, &cancel).await.map_err(to_py_err)
+            crate::relational_query::execute(tx.as_mut(), &statement, plan.as_ref(), &cancel)
+                .await
+                .map_err(to_py_err)
         })
     }
 
@@ -141,21 +145,25 @@ impl AsyncTransaction {
         })
     }
 
-    #[pyo3(signature = (sql, params=None))]
+    #[pyo3(signature = (sql, params=None, *, relational=None))]
     fn execute_returning_rows<'py>(
         &self,
         py: Python<'py>,
         sql: &str,
         params: Option<Bound<'_, PyList>>,
+        relational: Option<(String, String)>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let statement = statement_from_python(sql, params.as_ref())?;
+        let plan = crate::relational_query::relational_plan(relational)?;
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let rows: Vec<Row> = {
                 let mut guard = locked_tx(&inner).await?;
                 let tx = guard.as_mut().ok_or_else(tx_closed_error)?;
                 let cancel = CancellationToken::new();
-                tx.query(&statement, &cancel).await.map_err(to_py_err)?
+                crate::relational_query::query_rows(tx.as_mut(), &statement, plan.as_ref(), &cancel)
+                    .await
+                    .map_err(to_py_err)?
             };
             crate::async_session_ops::rows_to_pyobject(rows)
         })

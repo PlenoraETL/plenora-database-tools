@@ -8469,3 +8469,246 @@ async fn live_unresolved_geometry_operands_are_refused_before_the_server() {
         connection.query_drop(statement).await.expect("drop");
     }
 }
+
+/// Decima rilettura (25/10, d11a957), su `MySQL` e `MariaDB`
+/// (`PLENORA_MYSQL_PRODUCT`).
+///
+/// - R2: lo SDK eseguiva `SELECT t.id FROM r AS t WHERE EXISTS (SELECT T.id
+///   FROM u AS T WHERE t.g = CAST(? AS BINARY))`: con
+///   `lower_case_table_names=0` il server lega `t` al blocco esterno, e il
+///   giudizio piegato cercava `t` nel blocco interno. Ora la forma si
+///   rifiuta (regola N) nella transazione, prima del catalogo.
+/// - R4: lo SQL compilato si eseguiva senza catalogo; una colonna geometrica
+///   di una tabella non tipizzata, anche nominata senza schema (il database
+///   della connessione), ordinava per byte. Ora la transazione la giudica sul
+///   catalogo prima di eseguire.
+/// - R1: due alias uguali senza maiuscole, sul path query del provider.
+///
+/// I controlli (alias distinti, colonne scalari, un `UPDATE` per chiave)
+/// restano, con le righe attese.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_name_shapes_and_the_transaction_catalog_are_judged() {
+    use plenora_database_core::facade::{execute_judged, query_judged};
+    use plenora_database_core::spatial_operand::{OperandPlan, AMBIGUOUS_NAME_SHAPE};
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use serde_json::{json, Value};
+
+    let cancellation = CancellationToken::new();
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione");
+        for statement in [
+            "DROP TABLE IF EXISTS _nomi_r10",
+            "DROP TABLE IF EXISTS _nomi_r10_u",
+            "CREATE TABLE _nomi_r10 (id BIGINT PRIMARY KEY, g POINT NOT NULL, \
+             name VARCHAR(40) NOT NULL) ENGINE=InnoDB",
+            "INSERT INTO _nomi_r10 VALUES \
+             (1, ST_GeomFromText('POINT(3 3)'), 'a'), (2, ST_GeomFromText('POINT(1 1)'), 'b')",
+            "CREATE TABLE _nomi_r10_u (id BIGINT PRIMARY KEY, g VARBINARY(64)) ENGINE=InnoDB",
+            "INSERT INTO _nomi_r10_u VALUES (1, 0x00)",
+            "DROP TABLE IF EXISTS _nomi_r10_s",
+            "CREATE TABLE _nomi_r10_s (id BIGINT PRIMARY KEY, g INT NOT NULL) ENGINE=InnoDB",
+        ] {
+            connection.query_drop(statement).await.expect("fixture");
+        }
+    }
+    let provider = geometry_operand_provider();
+    let provider = provider.as_ref();
+    let database = environment("PLENORA_MYSQL_DATABASE", "dataflow_test");
+    let column = |relation: Option<&str>, field: &str| json!({"kind": "column", "column": {"relation": relation, "field": field}});
+    let item =
+        |expression: &Value, alias: Option<&str>| json!({"expression": expression, "alias": alias});
+    let order = |expressions: &[Value]| {
+        Value::Array(
+            expressions
+                .iter()
+                .map(|expression| json!({"expression": expression, "direction": "asc"}))
+                .collect(),
+        )
+    };
+    let block = |schema: Option<&str>, object: &str, alias: Option<&str>, extra: &Value| {
+        let name = alias.unwrap_or(object);
+        let mut operation = json!({
+            "source": {"object": {"catalog": null, "schema": schema, "object": object}, "alias": alias},
+            "projection": [item(&column(Some(name), "id"), Some("id"))],
+            "filter": null, "having": null, "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        operation
+    };
+    let plan = |value: Value| -> plenora_database_core::query::QueryOperation {
+        serde_json::from_value(value).expect("piano")
+    };
+    let none = ParameterBag::default();
+    // R1 sul path query del provider.
+    let r1 = plan(block(
+        Some(&database),
+        "_nomi_r10",
+        Some("t"),
+        &json!({"projection": [item(&column(Some("t"), "id"), Some("k")), item(&column(Some("t"), "name"), Some("K"))],
+            "order_by": order(&[column(None, "K")])}),
+    ));
+    match geometry_operand_rows(provider, &r1, &none).await {
+        Err(error) => {
+            assert_eq!(error.category, ErrorCategory::Unsupported, "{error:?}");
+            assert_eq!(error.message, AMBIGUOUS_NAME_SHAPE, "{error:?}");
+        }
+        Ok(rows) => panic!("R1: accettata con {rows} righe"),
+    }
+    // R2 e R4 nella transazione, con il piano.
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let r2 = plan(block(
+        Some(&database),
+        "_nomi_r10",
+        Some("t"),
+        &json!({"filter": {"kind": "exists", "query": block(Some(&database), "_nomi_r10_u", Some("T"), &json!({
+            "projection": [item(&column(Some("T"), "id"), None)],
+            "filter": {"kind": "compare",
+                "left": {"kind": "cast", "expression": column(Some("t"), "g"), "target_type": "binary"},
+                "operator": "eq",
+                "right": {"kind": "typed_parameter", "name": "w", "parameter_type": "binary"}}
+        }))}}),
+    ));
+    let untyped = plan(block(
+        None,
+        "_nomi_r10",
+        None,
+        &json!({"order_by": order(&[column(Some("_nomi_r10"), "g")])}),
+    ));
+    let statement = Statement::new("SELECT id FROM _nomi_r10 ORDER BY g");
+    for (form, operation, reason) in [
+        ("R2 t esterno, T interno", &r2, AMBIGUOUS_NAME_SHAPE),
+        (
+            "R4 ORDER BY g, tabella senza schema",
+            &untyped,
+            GEOMETRY_SCALAR_OPERAND,
+        ),
+    ] {
+        let error = query_judged(
+            tx.as_mut(),
+            &statement,
+            Some(&OperandPlan::Query(operation)),
+            &cancellation,
+        )
+        .await
+        .expect_err(form);
+        assert_eq!(
+            error.category,
+            ErrorCategory::Unsupported,
+            "{form}: {error:?}"
+        );
+        assert_eq!(error.message, reason, "{form}: {error:?}");
+    }
+    // I controlli nella stessa transazione.
+    let ordered = plan(block(
+        None,
+        "_nomi_r10",
+        None,
+        &json!({"order_by": order(&[column(Some("_nomi_r10"), "name")])}),
+    ));
+    let rows = query_judged(
+        tx.as_mut(),
+        &Statement::new("SELECT id FROM _nomi_r10 ORDER BY name"),
+        Some(&OperandPlan::Query(&ordered)),
+        &cancellation,
+    )
+    .await
+    .expect("ORDER BY name");
+    assert_eq!(rows.len(), 2);
+    let correlated = plan(block(
+        Some(&database),
+        "_nomi_r10",
+        Some("t"),
+        &json!({"filter": {"kind": "exists", "query": block(Some(&database), "_nomi_r10_u", Some("x"), &json!({
+            "projection": [item(&column(Some("x"), "id"), None)],
+            "filter": {"kind": "compare", "left": column(Some("x"), "id"), "operator": "eq",
+                "right": column(Some("t"), "id")}}))}}),
+    ));
+    let rows = query_judged(
+        tx.as_mut(),
+        &Statement::new(format!(
+            "SELECT t.id FROM {database}._nomi_r10 AS t WHERE EXISTS \
+             (SELECT x.id FROM {database}._nomi_r10_u AS x WHERE x.id = t.id)"
+        )),
+        Some(&OperandPlan::Query(&correlated)),
+        &cancellation,
+    )
+    .await
+    .expect("EXISTS con alias distinti");
+    assert_eq!(rows.len(), 1);
+    let update: plenora_database_core::relational::MutationOperation =
+        serde_json::from_value(json!({
+            "type": "update",
+            "target": {"schema": null, "object": "_nomi_r10"},
+            "assignments": [{"column": "name", "value": {"kind": "parameter", "name": "v"}}],
+            "filter": {"kind": "compare", "left": column(None, "id"), "operator": "eq",
+                "right": {"kind": "parameter", "name": "k"}}
+        }))
+        .expect("update");
+    let affected = execute_judged(
+        tx.as_mut(),
+        &Statement {
+            sql: "UPDATE _nomi_r10 SET name = ? WHERE id = ?".to_owned(),
+            params: vec![
+                plenora_database_core::provider::ParameterValue::String("z".to_owned()),
+                plenora_database_core::provider::ParameterValue::I64(2),
+            ],
+        },
+        Some(&OperandPlan::Mutation(&update)),
+        &cancellation,
+    )
+    .await
+    .expect("UPDATE per chiave");
+    assert_eq!(affected, 1);
+    // Una tabella TEMPORARY della sessione che nasconde una di base omonima:
+    // il catalogo la legge come la legge la query (`SHOW COLUMNS`). Fino al
+    // 25/10 `INFORMATION_SCHEMA` elencava la tabella di base (`g` intera) e
+    // `ORDER BY g` sulla geometria temporanea passava.
+    for ddl in [
+        "CREATE TEMPORARY TABLE _nomi_r10_s (id BIGINT PRIMARY KEY, g POINT NOT NULL)",
+        "INSERT INTO _nomi_r10_s VALUES (1, ST_GeomFromText('POINT(1 1)'))",
+    ] {
+        tx.execute(&Statement::new(ddl), &cancellation)
+            .await
+            .expect("tabella temporanea");
+    }
+    let shadowed = plan(block(
+        None,
+        "_nomi_r10_s",
+        None,
+        &json!({"order_by": order(&[column(Some("_nomi_r10_s"), "g")])}),
+    ));
+    let error = query_judged(
+        tx.as_mut(),
+        &Statement::new("SELECT id FROM _nomi_r10_s ORDER BY g"),
+        Some(&OperandPlan::Query(&shadowed)),
+        &cancellation,
+    )
+    .await
+    .expect_err("ORDER BY g sulla tabella temporanea");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{error:?}");
+    tx.rollback(&cancellation).await.expect("rollback");
+    let mut cleanup = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("pulizia");
+    let connection = cleanup.connection_mut().expect("connessione");
+    connection
+        .query_drop("DROP TABLE IF EXISTS _nomi_r10, _nomi_r10_u, _nomi_r10_s")
+        .await
+        .ok();
+}

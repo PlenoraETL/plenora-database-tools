@@ -1209,8 +1209,10 @@ fn resolve_spatial_source_parts<'a>(
 
 /// La regola degli operandi geometrici sul catalogo
 /// (`plenora_database_core::spatial_operand`), a mondo chiuso: ogni colonna
-/// di ogni relazione nominata, con il flag geometrico, e i nomi confrontati
-/// senza maiuscole come li confronta una collation `CI`.
+/// di ogni relazione nominata, con il flag geometrico. I nomi si confrontano
+/// per byte (`NameRule::Exact`): la collation del database puo distinguere le
+/// maiuscole (`CS`) o no (`CI`), e un nome che incontra una colonna soltanto
+/// senza maiuscole si rifiuta invece di presumere `CI`.
 ///
 /// SQL Server rifiuta da se il confronto e l'ordinamento di un tipo CLR, ma
 /// converte una geometria in testo (`CAST(g AS NVARCHAR) LIKE`): il rifiuto e
@@ -1230,7 +1232,6 @@ pub async fn verify_scalar_operands(
     operation: &QueryOperation,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
     let operands = plenora_database_core::spatial_operand::scalar_operands(
         ProviderKind::Sqlserver,
         operation,
@@ -1238,8 +1239,25 @@ pub async fn verify_scalar_operands(
     if operands.is_empty() {
         return Ok(());
     }
+    let catalog = operand_catalog(session, operands.relations(), cancellation).await?;
+    operands.judge(&catalog)
+}
+
+/// Il catalogo delle relazioni (schema, oggetto) per il giudizio degli
+/// operandi geometrici, con [`RELATION_COLUMNS_SQL`]: la lettura del path
+/// query e di `TransactionScope::operand_catalog`.
+///
+/// # Errors
+///
+/// Gli errori del catalogo.
+pub async fn operand_catalog(
+    session: &mut SqlServerSession,
+    relations: &[(Option<String>, String)],
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
+    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
     let mut catalog = OperandCatalog::new(ProviderKind::Sqlserver);
-    for (schema, object) in operands.relations() {
+    for (schema, object) in relations {
         let mut query = Query::new(RELATION_COLUMNS_SQL);
         query.bind(schema.clone().unwrap_or_default());
         query.bind(object.clone());
@@ -1263,7 +1281,7 @@ pub async fn verify_scalar_operands(
         };
         catalog.insert(schema.clone(), object.clone(), columns);
     }
-    operands.judge(&catalog)
+    Ok(catalog)
 }
 
 /// Le colonne di una relazione (`@P1` schema, vuoto se assente; `@P2`

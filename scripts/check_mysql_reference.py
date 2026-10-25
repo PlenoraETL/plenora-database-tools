@@ -301,6 +301,7 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_native_query_policy_deny_rejects_conditional_update_ddl",
     "live_tests::live_native_query_policy_deny_rejects_ddl",
     "live_tests::live_native_query_policy_deny_rejects_ddl_via_query",
+    "live_tests::live_name_shapes_and_the_transaction_catalog_are_judged",
     "live_tests::live_native_query_policy_deny_rejects_session_control",
     "live_tests::live_unresolved_geometry_operands_are_refused_before_the_server",
     "live_tests::live_v12_capabilities_publish_verified_spatial_functions",
