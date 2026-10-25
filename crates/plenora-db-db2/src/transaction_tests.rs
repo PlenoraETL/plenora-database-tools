@@ -1,6 +1,6 @@
 use crate::transaction::{
-    canonical_timestamp, db2_statement_requires_row_count, decode_value, encode_parameters,
-    isolation_statement, validate_options,
+    canonical_timestamp, db2_statement_requires_row_count, decode_value, isolation_statement,
+    validate_options, ArrayColumns,
 };
 use odbc_api::DataType;
 use plenora_database_core::provider::ParameterValue;
@@ -51,24 +51,37 @@ fn unsupported_transaction_options_fail_before_the_network() {
     );
 }
 
+/// Il parameter-array non ha una forma testuale esatta per i byte: le
+/// colonne spatial arrivano gia esadecimali per `HEXTORAW(?)`, ogni altro
+/// binario si rifiuta invece di diventare il testo delle sue cifre.
 #[test]
-fn binary_parameters_are_encoded_as_uppercase_hex() {
+fn parameter_arrays_refuse_bytes_and_mixed_double_columns() {
+    let bytes = vec![vec![ParameterValue::Bytes(vec![0xde, 0xad])]];
     assert_eq!(
-        encode_parameters(&[ParameterValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef])])
-            .expect("binary bind Db2"),
-        vec![Some("DEADBEEF".to_owned())]
+        ArrayColumns::encode(&bytes, 1)
+            .err()
+            .map(|error| error.category),
+        Some(ErrorCategory::DataMapping)
     );
-}
-
-#[test]
-fn null_parameters_remain_null_instead_of_becoming_text() {
+    let mixed = vec![
+        vec![ParameterValue::F64(0.5)],
+        vec![ParameterValue::String("0.5".to_owned())],
+    ];
     assert_eq!(
-        encode_parameters(&[ParameterValue::Null {
-            type_name: "varchar".to_owned(),
-        }])
-        .expect("bind NULL Db2"),
-        vec![None]
+        ArrayColumns::encode(&mixed, 1)
+            .err()
+            .map(|error| error.category),
+        Some(ErrorCategory::DataMapping)
     );
+    let negative_zero = vec![vec![ParameterValue::F64(-0.0)]];
+    assert!(ArrayColumns::encode(&negative_zero, 1).is_err());
+    let doubles = vec![
+        vec![ParameterValue::F64(0.1)],
+        vec![ParameterValue::Null {
+            type_name: "Float64".to_owned(),
+        }],
+    ];
+    assert!(ArrayColumns::encode(&doubles, 1).is_ok());
 }
 
 #[test]

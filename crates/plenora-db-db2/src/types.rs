@@ -244,11 +244,7 @@ impl Db2ReadPlan {
             .iter()
             .map(|column| {
                 let quoted = renderer.quote_identifier(&Identifier::new(column.name.clone())?)?;
-                if column.kind == Db2ColumnKind::Geometry {
-                    Ok(format!("ST_ASBINARY({quoted}) AS {quoted}"))
-                } else {
-                    Ok(quoted)
-                }
+                Ok(projection(&column.kind, quoted))
             })
             .collect::<Result<Vec<_>>>()?;
         let spatial_checks = columns
@@ -344,6 +340,21 @@ impl Db2ReadPlan {
             .collect::<Vec<_>>();
         capacities.extend(std::iter::repeat_n(16, self.spatial_checks.len() * 2));
         capacities
+    }
+}
+
+/// La colonna come la legge il result set testuale della lettura.
+///
+/// Il testo del driver per un DOUBLE ha 15 cifre significative e per un REAL
+/// 7: non rileggerebbe il valore. `DECFLOAT(34)` ne porta abbastanza per ogni
+/// double (regola di `plenora_database_core::parameter_fidelity`).
+fn projection(kind: &Db2ColumnKind, quoted: String) -> String {
+    match kind {
+        Db2ColumnKind::Geometry => format!("ST_ASBINARY({quoted}) AS {quoted}"),
+        Db2ColumnKind::F32 | Db2ColumnKind::F64 => {
+            format!("CAST({quoted} AS DECFLOAT(34)) AS {quoted}")
+        }
+        _ => quoted,
     }
 }
 

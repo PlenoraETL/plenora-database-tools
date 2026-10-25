@@ -2,8 +2,10 @@ use crate::connection::open_connection;
 use crate::error::{driver_error, interruption_error, task_error};
 use crate::read::decode_hex_binary;
 use crate::Db2Config;
-use odbc_api::buffers::TextRowSet;
-use odbc_api::{sys::SqlDataType, Connection, Cursor, DataType, IntoParameter, ResultSetMetadata};
+use odbc_api::buffers::{BufferDesc, ColumnarDynBuffer};
+use odbc_api::{
+    sys::SqlDataType, BindParamDesc, Connection, Cursor, DataType, Prepared, ResultSetMetadata,
+};
 use plenora_database_core::caller_sql::SendMarker;
 use plenora_database_core::native_query_policy::{
     enforce_policy, statement_head, NativeQueryPolicy,
@@ -189,11 +191,8 @@ impl Db2Transaction {
                 "parameter-array Db2 con arita incoerente",
             ));
         }
-        let encoded = rows
-            .iter()
-            .map(|row| encode_parameters(row))
-            .collect::<Result<Vec<_>>>()?;
-        let expected = u64::try_from(encoded.len()).map_err(|_| {
+        let encoded = ArrayColumns::encode(&rows, columns)?;
+        let expected = u64::try_from(rows.len()).map_err(|_| {
             transaction_error(
                 ErrorCategory::ResourceLimit,
                 ErrorPhase::Write,
@@ -210,22 +209,11 @@ impl Db2Transaction {
                 prepared
                     .set_query_timeout_sec(timeout)
                     .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
-                let lengths = (0..columns).map(|column| {
-                    encoded
-                        .iter()
-                        .filter_map(|row| row[column].as_ref().map(String::len))
-                        .max()
-                        .unwrap_or(1)
-                        .max(1)
-                });
                 let mut inserter = prepared
-                    .into_text_inserter(encoded.len(), lengths)
+                    .into_column_inserter(encoded.rows, encoded.descriptions())
                     .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
-                for row in &encoded {
-                    inserter
-                        .append(row.iter().map(|value| value.as_deref().map(str::as_bytes)))
-                        .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
-                }
+                inserter.set_num_rows(encoded.rows);
+                encoded.fill(&mut inserter)?;
                 if inserter
                     .execute()
                     .map_err(|error| driver_error(&error, ErrorPhase::Write))?
@@ -364,39 +352,165 @@ pub fn isolation_statement(options: &TransactionOptions) -> Option<&'static str>
     })
 }
 
-pub fn encode_parameters(values: &[ParameterValue]) -> Result<Vec<Option<String>>> {
-    values
-        .iter()
-        .map(|value| match value {
-            ParameterValue::Bool(value) => Ok(Some(value.to_string())),
-            ParameterValue::I32(value) => Ok(Some(value.to_string())),
-            ParameterValue::I64(value) => Ok(Some(value.to_string())),
-            ParameterValue::F64(value) if value.is_finite() => Ok(Some(value.to_string())),
-            ParameterValue::String(value)
-            | ParameterValue::Date(value)
-            | ParameterValue::Timestamp(value)
-            | ParameterValue::Decimal(value)
-            | ParameterValue::Uuid(value) => Ok(Some(value.clone())),
-            ParameterValue::Enum { label, .. } => Ok(Some(label.clone())),
-            ParameterValue::Bytes(value) => Ok(Some(hex_encode(value))),
-            ParameterValue::Null { .. } => Ok(None),
-            _ => Err(DatabaseError::unsupported(
-                ProviderKind::Db2,
-                ErrorPhase::Prepare,
-                "tipo parametro transazionale Db2 non ancora qualificato",
-            )),
-        })
-        .collect()
+/// Le colonne di un parameter-array, ciascuna con il tipo C del proprio
+/// binding: `f64` per i double, che in testo perderebbero il valore, testo
+/// per il resto. Le righe arrivano dalla write Arrow, il cui piano ha gia
+/// confrontato i tipi con la tabella: qui si sceglie soltanto la forma esatta.
+pub struct ArrayColumns {
+    rows: usize,
+    columns: Vec<ArrayColumn>,
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+enum ArrayColumn {
+    Double(Vec<Option<f64>>),
+    Text(Vec<Option<String>>),
+}
+
+impl ArrayColumns {
+    /// # Errors
+    ///
+    /// I rifiuti di `crate::parameter::validate`, e `DataMapping` per una
+    /// colonna che mescola double e altri tipi o per byte non esadecimali.
+    pub fn encode(rows: &[Vec<ParameterValue>], columns: usize) -> Result<Self> {
+        for row in rows {
+            crate::parameter::validate(row)?;
+        }
+        let columns = (0..columns)
+            .map(|column| {
+                let doubles = rows
+                    .iter()
+                    .any(|row| matches!(row[column], ParameterValue::F64(_)));
+                if doubles {
+                    rows.iter()
+                        .map(|row| match &row[column] {
+                            ParameterValue::F64(value) => Ok(Some(*value)),
+                            ParameterValue::Null { .. } => Ok(None),
+                            _ => Err(array_error("colonna parameter-array Db2 con tipi misti")),
+                        })
+                        .collect::<Result<Vec<_>>>()
+                        .map(ArrayColumn::Double)
+                } else {
+                    rows.iter()
+                        .map(|row| array_text(&row[column]))
+                        .collect::<Result<Vec<_>>>()
+                        .map(ArrayColumn::Text)
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            rows: rows.len(),
+            columns,
+        })
     }
-    encoded
+
+    fn descriptions(&self) -> Vec<BindParamDesc> {
+        self.columns
+            .iter()
+            .map(|column| match column {
+                ArrayColumn::Double(_) => BindParamDesc {
+                    buffer_desc: BufferDesc::F64 { nullable: true },
+                    data_type: DataType::Double,
+                },
+                ArrayColumn::Text(values) => BindParamDesc::text(
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_ref().map(String::len))
+                        .max()
+                        .unwrap_or(1)
+                        .max(1),
+                ),
+            })
+            .collect()
+    }
+
+    fn fill<S>(
+        &self,
+        inserter: &mut odbc_api::ColumnarBulkInserter<
+            S,
+            odbc_api::parameter::WithDataType<odbc_api::buffers::BoxColumnBuffer>,
+        >,
+    ) -> Result<()>
+    where
+        S: odbc_api::handles::AsStatementRef,
+    {
+        for (index, column) in self.columns.iter().enumerate() {
+            match column {
+                ArrayColumn::Double(values) => {
+                    let mut slice = inserter
+                        .column_mut(index)
+                        .as_nullable_slice::<f64>()
+                        .ok_or_else(|| array_error("buffer double Db2 non disponibile"))?;
+                    for (row, value) in values.iter().enumerate() {
+                        slice.set_cell(row, *value);
+                    }
+                }
+                ArrayColumn::Text(values) => {
+                    let mut slice = inserter
+                        .column_mut(index)
+                        .as_text()
+                        .ok_or_else(|| array_error("buffer testo Db2 non disponibile"))?;
+                    for (row, value) in values.iter().enumerate() {
+                        slice.set_cell(row, value.as_deref().map(str::as_bytes));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn array_error(message: &'static str) -> DatabaseError {
+    transaction_error(ErrorCategory::DataMapping, ErrorPhase::Write, message)
+}
+
+/// Il testo di un valore del parameter-array, gia validato. I byte non hanno
+/// una forma testuale esatta: le colonne spatial arrivano gia come testo
+/// esadecimale per `HEXTORAW(?)`, e una colonna binaria scalare non e
+/// ammessa dal piano.
+fn array_text(value: &ParameterValue) -> Result<Option<String>> {
+    match value {
+        ParameterValue::Null { .. } => Ok(None),
+        ParameterValue::Bool(value) => Ok(Some(value.to_string())),
+        ParameterValue::I32(value) => Ok(Some(value.to_string())),
+        ParameterValue::I64(value) => Ok(Some(value.to_string())),
+        ParameterValue::String(value)
+        | ParameterValue::Date(value)
+        | ParameterValue::Timestamp(value)
+        | ParameterValue::Decimal(value)
+        | ParameterValue::Uuid(value)
+        | ParameterValue::Enum { label: value, .. } => Ok(Some(value.clone())),
+        _ => Err(array_error(
+            "valore senza forma testuale esatta nel parameter-array Db2",
+        )),
+    }
+}
+
+/// Lo statement preparato con ogni parametro legato sul tipo che il server
+/// descrive per il suo segnaposto (`crate::parameter::bind`).
+pub fn bind_described(
+    prepared: &mut Prepared<odbc_api::handles::StatementImpl<'_>>,
+    values: &[ParameterValue],
+) -> Result<Vec<crate::parameter::Bound>> {
+    let count = prepared
+        .num_params()
+        .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
+    if usize::from(count) != values.len() {
+        return Err(transaction_error(
+            ErrorCategory::InvalidPlan,
+            ErrorPhase::Prepare,
+            "numero di parametri Db2 diverso dai segnaposto",
+        ));
+    }
+    values
+        .iter()
+        .zip(1_u16..)
+        .map(|(value, index)| {
+            let described = prepared
+                .describe_param(index)
+                .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
+            crate::parameter::bind(value, &described.data_type)
+        })
+        .collect()
 }
 
 fn execute_control(
@@ -422,23 +536,20 @@ fn execute_statement(
     connection: &Connection<'_>,
     timeout: usize,
     sql: &str,
-    parameters: &[Option<String>],
+    values: &[ParameterValue],
     requires_row_count: bool,
     sent: &SendMarker,
 ) -> Result<u64> {
-    let parameters: Vec<_> = parameters
-        .iter()
-        .map(|parameter| parameter.as_deref().into_parameter())
-        .collect();
     let mut statement = connection
-        .preallocate()
-        .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
+        .prepare(sql)
+        .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
+    let parameters = bind_described(&mut statement, values)?;
     statement
         .set_query_timeout_sec(timeout)
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
     sent.mark_sent();
     let has_cursor = statement
-        .execute(sql, parameters.as_slice())
+        .execute(parameters.as_slice())
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?
         .is_some();
     if has_cursor {
@@ -473,16 +584,19 @@ fn query_rows(
     connection: &Connection<'_>,
     timeout: usize,
     sql: &str,
-    parameters: &[Option<String>],
+    values: &[ParameterValue],
     sent: &SendMarker,
 ) -> Result<Vec<Row>> {
-    let parameters: Vec<_> = parameters
-        .iter()
-        .map(|parameter| parameter.as_deref().into_parameter())
-        .collect();
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
+    let parameters = bind_described(&mut statement, values)?;
+    statement
+        .set_query_timeout_sec(timeout)
+        .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
     sent.mark_sent();
-    let mut cursor = connection
-        .execute(sql, parameters.as_slice(), Some(timeout))
+    let mut cursor = statement
+        .execute(parameters.as_slice())
         .map_err(|error| driver_error(&error, ErrorPhase::Read))?
         .ok_or_else(|| {
             transaction_error(
@@ -525,9 +639,18 @@ fn query_rows(
         );
     }
     let columns: Arc<[String]> = names.into();
-    let buffer = TextRowSet::from_max_str_lens(
+    // I floating point si leggono nel loro tipo C: il testo del driver ha
+    // 15 cifre significative per un DOUBLE e 7 per un REAL, e ne perdeva il
+    // valore esatto (regola di `plenora_database_core::parameter_fidelity`).
+    let buffer = ColumnarDynBuffer::try_from_descs(
         QUERY_BATCH_ROWS,
-        std::iter::repeat_n(QUERY_CELL_BYTES, column_count),
+        types.iter().map(|data_type| match floating(*data_type) {
+            Some(Floating::Double) => BufferDesc::F64 { nullable: true },
+            Some(Floating::Real) => BufferDesc::F32 { nullable: true },
+            None => BufferDesc::Text {
+                max_str_len: QUERY_CELL_BYTES,
+            },
+        }),
     )
     .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
     let mut blocks = cursor
@@ -542,24 +665,78 @@ fn query_rows(
             let values = types
                 .iter()
                 .enumerate()
-                .map(|(column, data_type)| {
-                    if batch
-                        .indicator_at(column, row_index)
-                        .is_truncated(batch.max_len(column))
-                    {
-                        return Err(transaction_error(
-                            ErrorCategory::ResourceLimit,
-                            ErrorPhase::Read,
-                            "cella query Db2 oltre il limite transazionale",
-                        ));
-                    }
-                    decode_value(batch.at(column, row_index), *data_type)
-                })
+                .map(|(column, data_type)| decode_cell(batch.column(column), row_index, *data_type))
                 .collect::<Result<Vec<_>>>()?;
             rows.push(Row::try_new(Arc::clone(&columns), values)?);
         }
     }
     Ok(rows)
+}
+
+#[derive(Clone, Copy)]
+enum Floating {
+    Double,
+    Real,
+}
+
+const fn floating(data_type: DataType) -> Option<Floating> {
+    match data_type {
+        DataType::Double => Some(Floating::Double),
+        DataType::Float { precision } if precision > 24 => Some(Floating::Double),
+        DataType::Real | DataType::Float { .. } => Some(Floating::Real),
+        _ => None,
+    }
+}
+
+fn decode_cell(
+    column: odbc_api::buffers::AnyColumnBufferSlice<'_>,
+    row: usize,
+    data_type: DataType,
+) -> Result<ParameterValue> {
+    let unavailable = || {
+        transaction_error(
+            ErrorCategory::Internal,
+            ErrorPhase::Read,
+            "buffer query Db2 di tipo inatteso",
+        )
+    };
+    let float = |value: f64| {
+        if value.is_finite() {
+            Ok(ParameterValue::F64(value))
+        } else {
+            Err(transaction_error(
+                ErrorCategory::DataMapping,
+                ErrorPhase::Read,
+                "float query Db2 non finito",
+            ))
+        }
+    };
+    match floating(data_type) {
+        Some(Floating::Double) => {
+            let slice = column.as_nullable_slice::<f64>().ok_or_else(unavailable)?;
+            slice
+                .get(row)
+                .map_or_else(|| decode_value(None, data_type), |value| float(*value))
+        }
+        Some(Floating::Real) => {
+            let slice = column.as_nullable_slice::<f32>().ok_or_else(unavailable)?;
+            slice.get(row).map_or_else(
+                || decode_value(None, data_type),
+                |value| float(f64::from(*value)),
+            )
+        }
+        None => {
+            let slice = column.as_text().ok_or_else(unavailable)?;
+            if slice.has_truncated_values().is_some() {
+                return Err(transaction_error(
+                    ErrorCategory::ResourceLimit,
+                    ErrorPhase::Read,
+                    "cella query Db2 oltre il limite transazionale",
+                ));
+            }
+            decode_value(slice.get(row), data_type)
+        }
+    }
 }
 
 pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<ParameterValue> {
@@ -627,6 +804,15 @@ pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<Paramet
 }
 
 pub fn canonical_timestamp(value: &str) -> Result<String> {
+    // Il canone e il microsecondo: un TIMESTAMP(9) o (12) con cifre oltre si
+    // rifiuta, invece di troncarle nella formattazione.
+    if plenora_database_core::parameter_fidelity::has_sub_microsecond(value) {
+        return Err(transaction_error(
+            ErrorCategory::DataMapping,
+            ErrorPhase::Read,
+            "timestamp query Db2 oltre il microsecondo",
+        ));
+    }
     chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
         .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d-%H.%M.%S%.f"))
         .map(|value| value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string())
@@ -694,7 +880,8 @@ impl TransactionScope for Db2Transaction {
         Box::pin(async move {
             enforce_policy(self.native_query_policy, &statement.sql)?;
             let sql = statement.sql.clone();
-            let parameters = encode_parameters(&statement.params)?;
+            crate::parameter::validate(&statement.params)?;
+            let parameters = statement.params.clone();
             let requires_row_count = db2_statement_requires_row_count(&sql);
             let sent = self.sent.clone();
             self.run(
@@ -723,7 +910,8 @@ impl TransactionScope for Db2Transaction {
         Box::pin(async move {
             enforce_policy(self.native_query_policy, &statement.sql)?;
             let sql = statement.sql.clone();
-            let parameters = encode_parameters(&statement.params)?;
+            crate::parameter::validate(&statement.params)?;
+            let parameters = statement.params.clone();
             let sent = self.sent.clone();
             self.run(
                 ErrorPhase::Read,

@@ -4,7 +4,7 @@ use crate::error::{driver_error, interruption_error, task_error};
 use crate::{Db2ColumnKind, Db2Config, Db2ObjectDescription, Db2ReadPlan};
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use odbc_api::buffers::TextRowSet;
-use odbc_api::{Cursor, IntoParameter};
+use odbc_api::Cursor;
 use plenora_database_core::arrow::array::builder::{BinaryBuilder, StringBuilder};
 use plenora_database_core::arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array,
@@ -142,7 +142,10 @@ async fn verify_scalar_fields(
     )
 }
 
-pub fn bind_parameters(names: &[String], parameters: &ParameterBag) -> Result<Vec<String>> {
+/// I valori del filtro nell'ordine dei segnaposto, gia validati: il binding
+/// sul tipo descritto avviene sulla connessione della lettura
+/// (`crate::parameter`).
+pub fn bind_parameters(names: &[String], parameters: &ParameterBag) -> Result<Vec<ParameterValue>> {
     let unique = names.iter().collect::<BTreeSet<_>>();
     if unique.len() != parameters.len() {
         return Err(read_error(
@@ -160,21 +163,17 @@ pub fn bind_parameters(names: &[String], parameters: &ParameterBag) -> Result<Ve
                 )
             })?;
             match value {
-                ParameterValue::Bool(value) => Ok(value.to_string()),
-                ParameterValue::I32(value) => Ok(value.to_string()),
-                ParameterValue::I64(value) => Ok(value.to_string()),
-                ParameterValue::F64(value) if value.is_finite() => Ok(value.to_string()),
-                ParameterValue::String(value)
-                | ParameterValue::Date(value)
-                | ParameterValue::Timestamp(value)
-                | ParameterValue::Decimal(value)
-                | ParameterValue::Uuid(value) => Ok(value.clone()),
-                ParameterValue::Enum { label, .. } => Ok(label.clone()),
-                _ => Err(DatabaseError::unsupported(
+                // Il NULL non ritrova nessuna riga con `=`: si rifiuta come
+                // prima, invece di un filtro vuoto che sembri una risposta.
+                ParameterValue::Null { .. } => Err(DatabaseError::unsupported(
                     plenora_database_core::plan::ProviderKind::Db2,
                     ErrorPhase::Prepare,
                     "tipo parametro Db2 non ancora qualificato",
                 )),
+                value => {
+                    crate::parameter::validate(std::slice::from_ref(value))?;
+                    Ok(value.clone())
+                }
             }
         })
         .collect()
@@ -185,7 +184,7 @@ fn pump_rows(
     config: &Db2Config,
     secret: &SecretString,
     plan: &Db2ReadPlan,
-    parameters: &[String],
+    parameters: &[ParameterValue],
     cancellation: &CancellationToken,
     mut demands: mpsc::Receiver<ReadDemand>,
     results: &mpsc::Sender<Result<Option<RecordBatch>>>,
@@ -199,13 +198,16 @@ fn pump_rows(
                 "schema Db2 cambiato durante la preparazione",
             ));
         }
-        let parameters: Vec<_> = parameters
-            .iter()
-            .map(|parameter| parameter.as_str().into_parameter())
-            .collect();
+        let mut statement = connection
+            .prepare(&plan.sql)
+            .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
+        let bound = crate::transaction::bind_described(&mut statement, parameters)?;
+        statement
+            .set_query_timeout_sec(timeout)
+            .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
         let mut cursor = Some(
-            connection
-                .execute(&plan.sql, parameters.as_slice(), Some(timeout))
+            statement
+                .execute(bound.as_slice())
                 .map_err(|error| driver_error(&error, ErrorPhase::Read))?
                 .ok_or_else(|| {
                     read_error(ErrorCategory::Protocol, "lettura Db2 senza result set")
@@ -572,6 +574,11 @@ pub fn parse_date(value: &str) -> Result<i32> {
 }
 
 pub fn parse_timestamp(value: &str) -> Result<i64> {
+    // Arrow porta il microsecondo: le cifre oltre si rifiutano, non si
+    // troncano.
+    if plenora_database_core::parameter_fidelity::has_sub_microsecond(value) {
+        return Err(mapping("TIMESTAMP Db2 oltre il microsecondo"));
+    }
     let timestamp = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
         .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d-%H.%M.%S%.f"))
         .map_err(|_| mapping("TIMESTAMP Db2 non rappresentabile"))?;
