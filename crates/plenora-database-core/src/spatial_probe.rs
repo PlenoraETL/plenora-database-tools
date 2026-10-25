@@ -323,6 +323,14 @@ pub enum ProbeUse {
     /// Un valore scritto in una colonna: `INSERT ... VALUES`, `UPDATE ...
     /// SET`.
     WriteValue,
+    /// L'operando di un operatore che non e spatial (`=`, `<>`, `<`, `IN`,
+    /// `BETWEEN`, `LIKE`, `IS NULL`, `IN (subquery)`), a qualunque
+    /// profondita e attraverso qualunque funzione: nessuno confronta lo SRID
+    /// della sonda con quello della colonna (un `PostGIS` `=` fra sistemi
+    /// diversi e falso senza errore, anche come `g = ST_Centroid(sonda)`).
+    /// Nessun prodotto ha una guardia, e nessun catalogo la sostituisce: si
+    /// rifiuta sempre ([`SPATIAL_VALUE_OUTSIDE_SPATIAL`]).
+    ScalarOperand,
 }
 
 /// Lo SRID della sonda come lo vede chi compila.
@@ -384,6 +392,7 @@ pub enum Admission {
 #[must_use]
 pub const fn server_guard(provider: ProviderKind, probe_use: ProbeUse) -> Option<ServerGuard> {
     match (provider, probe_use) {
+        (_, ProbeUse::ScalarOperand) => None,
         (ProviderKind::Postgres, ProbeUse::Function | ProbeUse::BoundingBox) => {
             Some(ServerGuard::PostgresColumnTypmod)
         }
@@ -451,6 +460,16 @@ pub fn admit_probe(
     probe_use: ProbeUse,
     frame: ProbeFrame,
 ) -> Result<Admission> {
+    // Un operatore che non confronta gli SRID non li confronta con nessuna
+    // prova: ne il catalogo ne una guardia del server stanno fra la sonda e
+    // il risultato.
+    if probe_use == ProbeUse::ScalarOperand {
+        return Err(DatabaseError::unsupported(
+            provider,
+            ErrorPhase::Prepare,
+            SPATIAL_VALUE_OUTSIDE_SPATIAL,
+        ));
+    }
     if frame == ProbeFrame::Missing {
         return Err(crs(provider, PROBE_WITHOUT_SRID));
     }
@@ -722,6 +741,131 @@ pub fn contains_geometry_probe(expression: &QueryExpression) -> bool {
         }
     });
     found
+}
+
+/// Un'espressione contiene una sonda che nessun nodo spatial giudica.
+///
+/// Una sonda e un `SpatialValue`, o un bind in posizione geometrica, che non sta in una
+/// posizione geometrica di un nodo con almeno due geometrie (dove la regola la
+/// confronta con l'altra) ne di un operatore spatial. Una funzione con una
+/// sola geometria (`ST_Centroid`, `ST_Area`, `ST_Buffer`) non giudica la
+/// propria: il risultato porta il frame della sonda a chi lo riceve, e se chi
+/// lo riceve non e spatial nessuno lo confronta.
+///
+/// La visita scende in ogni figlio, query annidate comprese; dei nodi che
+/// giudicano visita soltanto gli argomenti non geometrici (una distanza
+/// calcolata da una sonda, per esempio).
+#[must_use]
+pub fn contains_unjudged_probe(expression: &QueryExpression) -> bool {
+    let mut found = false;
+    crate::relational::walk_query_expression(expression, |node| {
+        use crate::relational::{QueryWalkControl, QueryWalkNode};
+        let QueryWalkNode::Expression(node) = node else {
+            return QueryWalkControl::Continue;
+        };
+        match node {
+            QueryExpression::SpatialValue { .. } => {
+                found = true;
+                QueryWalkControl::Break
+            }
+            QueryExpression::Spatial {
+                function,
+                arguments,
+            }
+            | QueryExpression::SpatialWindow {
+                function,
+                arguments,
+                ..
+            } => {
+                let geometric = |index: usize| function.takes_geometry_at(index);
+                let judges = arguments
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| geometric(*index))
+                    .count()
+                    >= 2;
+                found = if judges {
+                    arguments.iter().enumerate().any(|(index, argument)| {
+                        !geometric(index) && contains_unjudged_probe(argument)
+                    })
+                } else {
+                    arguments.iter().enumerate().any(|(index, argument)| {
+                        geometric(index)
+                            && matches!(
+                                argument,
+                                QueryExpression::Parameter { .. }
+                                    | QueryExpression::TypedParameter { .. }
+                            )
+                    })
+                };
+                match (found, judges) {
+                    (true, _) => QueryWalkControl::Break,
+                    (false, true) => QueryWalkControl::Skip,
+                    (false, false) => QueryWalkControl::Continue,
+                }
+            }
+            QueryExpression::SpatialOperator { .. } => QueryWalkControl::Skip,
+            _ => QueryWalkControl::Continue,
+        }
+    });
+    found
+}
+
+/// Gli operandi di un nodo che non e spatial e che confronta o trasforma i
+/// propri operandi: `Compare`, `InList`, `Between`, `Like`, `IsNull`,
+/// `InSubquery`. Vuoto per ogni altro nodo.
+#[must_use]
+pub fn scalar_operands(expression: &QueryExpression) -> Vec<&QueryExpression> {
+    match expression {
+        QueryExpression::Compare { left, right, .. } => vec![left, right],
+        QueryExpression::InList {
+            expression, values, ..
+        } => std::iter::once(expression.as_ref()).chain(values).collect(),
+        QueryExpression::Between {
+            expression,
+            lower,
+            upper,
+            ..
+        } => vec![expression, lower, upper],
+        QueryExpression::Like {
+            expression,
+            pattern,
+            ..
+        } => vec![expression, pattern],
+        QueryExpression::IsNull { expression, .. }
+        | QueryExpression::InSubquery { expression, .. } => vec![expression],
+        _ => Vec::new(),
+    }
+}
+
+/// La regola delle sonde sugli operandi di un operatore che non e spatial.
+///
+/// Gli operandi sono quelli di [`scalar_operands`]: un operando che contiene una sonda non giudicata
+/// ([`contains_unjudged_probe`]) passa da [`admit_probe`] con
+/// [`ProbeUse::ScalarOperand`], che la rifiuta. E la stessa chiamata per il
+/// renderer relazionale e per il provider `PostgreSQL` che giudica il piano
+/// sul catalogo.
+///
+/// # Errors
+///
+/// `unsupported` ([`SPATIAL_VALUE_OUTSIDE_SPATIAL`]) per il primo operando
+/// con una sonda non giudicata.
+pub fn judge_scalar_operands(
+    provider: ProviderKind,
+    evidence: ProbeEvidence,
+    expression: &QueryExpression,
+) -> Result<()> {
+    for operand in scalar_operands(expression) {
+        if contains_unjudged_probe(operand) {
+            admit_probe(
+                provider,
+                evidence,
+                ProbeUse::ScalarOperand,
+                ProbeFrame::Unbound,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

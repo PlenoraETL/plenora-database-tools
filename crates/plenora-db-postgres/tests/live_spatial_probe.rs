@@ -975,3 +975,107 @@ async fn live_spatial_value_keeps_or_refuses_the_embedded_srid() {
     }
     drop_fixture(&dsn, table).await;
 }
+
+/// La regola P sul `PostGIS` reale: `g = ST_Centroid(sonda 3857)` su
+/// `geometry(Point,4326)`. Su 14960f9 rendeva zero righe senza errore su tre
+/// strade (rilettura del 25/10): il renderer dello SDK
+/// (`compile_relational_query`), `PostgresProvider::query` con un
+/// `SpatialValue` e con un bind nudo EWKB 3857. `=` non confronta gli SRID, e
+/// `ST_Centroid` ha una sola geometria: nessuno giudicava la sonda. Ora e
+/// `unsupported` prima del server, sulle tre strade.
+#[tokio::test]
+async fn live_a_probe_under_a_scalar_comparison_is_refused_before_the_server() {
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let table = "plenora_probe_scalar";
+    fixture(&dsn, table).await;
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.clone());
+    let cancel = CancellationToken::new();
+    let budget = budget();
+    let centroid_equals = |probe: QueryExpression| QueryExpression::Compare {
+        left: Box::new(column("g")),
+        operator: plenora_database_core::plan::ComparisonOperator::Eq,
+        right: Box::new(QueryExpression::Spatial {
+            function: SpatialFunction::Centroid,
+            arguments: vec![probe],
+        }),
+    };
+    let declared = || QueryExpression::SpatialValue {
+        expression: Box::new(parameter()),
+        srid: 3857,
+        semantics: SpatialSemantics::Geometry,
+    };
+    let refused = |observed: Result<usize, DatabaseError>, case: &str| match observed {
+        Err(error) => {
+            assert_eq!(
+                error.category,
+                ErrorCategory::Unsupported,
+                "{case}: {error:?}"
+            );
+            assert_eq!(
+                error.message,
+                plenora_database_core::spatial_probe::SPATIAL_VALUE_OUTSIDE_SPATIAL,
+                "{case}"
+            );
+        }
+        Ok(rows) => panic!("{case}: accettato con {rows} righe"),
+    };
+    // Lo SDK: il renderer relazionale senza catalogo.
+    let sdk = plenora_database_sql::Renderer::new(
+        plenora_database_sql::Dialect::Postgres,
+        plenora_database_sql::DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .with_provider(plenora_database_core::plan::ProviderKind::Postgres);
+    refused(
+        sdk.render_query(&query(table, centroid_equals(declared())))
+            .map(|_| 0),
+        "SDK, SpatialValue 3857",
+    );
+    // Il provider, che giudica il piano sul catalogo.
+    for (case, filter, value) in [
+        (
+            "query, SpatialValue 3857",
+            centroid_equals(declared()),
+            ParameterValue::Bytes(wkb_point(1.0, 1.0)),
+        ),
+        (
+            "query, bind nudo EWKB 3857",
+            centroid_equals(parameter()),
+            ParameterValue::Bytes(ewkb_point(3857, 1.0, 1.0)),
+        ),
+    ] {
+        let operation = query(table, filter);
+        let parameters = probe(value);
+        refused(
+            rows(
+                provider
+                    .query(&secret, &operation, &parameters, &budget, &cancel)
+                    .await,
+            )
+            .await,
+            case,
+        );
+    }
+    // Il controllo positivo: la stessa sonda in un nodo con due geometrie e
+    // giudicata li, e lo SRID diverso e `crs`.
+    crs(
+        rows(
+            provider
+                .query(
+                    &secret,
+                    &query(table, spatial(SpatialFunction::Intersects, "g", declared())),
+                    &probe(ParameterValue::Bytes(wkb_point(1.0, 1.0))),
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await,
+        "ST_Intersects(g, SpatialValue 3857)",
+    );
+    drop_fixture(&dsn, table).await;
+}

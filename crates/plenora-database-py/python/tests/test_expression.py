@@ -442,3 +442,39 @@ def test_an_unknown_key_in_a_window_frame_bound_is_refused() -> None:
     bounds[0]["negate"] = True
     with pytest.raises(ValueError, match="IR relazionale non valido"):
         compile_relational_query(json.dumps(document), "postgres")
+
+
+def test_a_probe_under_a_scalar_comparison_is_refused_by_the_compiler() -> None:
+    """La regola P allo SDK: `g = ST_Centroid(sonda)` non si compila.
+
+    `=` non confronta gli SRID e `ST_Centroid` ha una sola geometria: fino
+    al 25/10 nessuno giudicava la sonda, e su una colonna 4326 una sonda 3857
+    rendeva zero righe senza errore. Ora il compilatore la rifiuta su ogni
+    dialetto, come `SpatialValue` e come bind nudo; la stessa sonda dentro
+    `ST_Intersects` resta ammessa su PostgreSQL, con la guardia sul typmod.
+    """
+    from plenora_database.expression import (
+        _spatial_function,
+        _spatial_predicate,
+        _spatial_value,
+    )
+
+    features = p.table("features", "id", "g", schema="public")
+
+    def declared() -> p.Expression:
+        return _spatial_value(p.bind("sonda", p.BindType.BINARY), 3857, "geometry")
+
+    for probe in (declared(), p.bind("sonda", p.BindType.BINARY)):
+        statement = p.select(features.c.id).where(
+            features.c.g == _spatial_function("centroid", probe)
+        )
+        for provider in ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"):
+            with pytest.raises(p.PlenoraUnsupportedError):
+                compile_relational_query(statement.to_json(), provider)
+    judged = p.select(features.c.id).where(
+        _spatial_predicate(
+            "intersects", features.c.g, _spatial_function("centroid", declared())
+        )
+    )
+    sql, _ = compile_relational_query(judged.to_json(), "postgres")
+    assert "postgis_typmod_srid" in sql

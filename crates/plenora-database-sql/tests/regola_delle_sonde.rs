@@ -465,3 +465,224 @@ fn un_valore_spatial_fuori_da_un_nodo_spatial_si_rifiuta() {
         }
     }
 }
+
+fn colonna() -> QueryExpression {
+    QueryExpression::Column {
+        column: ColumnRef {
+            relation: None,
+            field: "shape".to_owned(),
+        },
+    }
+}
+
+fn parametro(name: &str) -> QueryExpression {
+    QueryExpression::Parameter {
+        name: name.to_owned(),
+    }
+}
+
+const fn funzione(function: SpatialFunction, arguments: Vec<QueryExpression>) -> QueryExpression {
+    QueryExpression::Spatial {
+        function,
+        arguments,
+    }
+}
+
+fn confronto(
+    left: QueryExpression,
+    operator: plenora_database_core::plan::ComparisonOperator,
+    right: QueryExpression,
+) -> QueryExpression {
+    QueryExpression::Compare {
+        left: Box::new(left),
+        operator,
+        right: Box::new(right),
+    }
+}
+
+/// Le forme in cui una sonda arriva sotto un operatore che non e spatial: la
+/// sonda la costruisce `sonda` (un `SpatialValue` 3857, o un bind nudo in
+/// posizione geometrica).
+#[allow(clippy::too_many_lines)]
+fn sonde_annidate(sonda: &dyn Fn() -> QueryExpression) -> Vec<(&'static str, QueryExpression)> {
+    use plenora_database_core::plan::ComparisonOperator::{Eq, Gt, Ne};
+    use SpatialFunction::{Area, Buffer, Centroid, Transform};
+    vec![
+        // L'ingresso della rilettura: `g = ST_Centroid(SpatialValue 3857)` su
+        // una colonna 4326 rendeva zero righe senza errore.
+        (
+            "g = ST_Centroid(sonda)",
+            confronto(colonna(), Eq, funzione(Centroid, vec![sonda()])),
+        ),
+        (
+            "ST_Centroid(sonda) = g",
+            confronto(funzione(Centroid, vec![sonda()]), Eq, colonna()),
+        ),
+        (
+            "g diverso da ST_Buffer(ST_Centroid(sonda), d)",
+            confronto(
+                colonna(),
+                Ne,
+                funzione(
+                    Buffer,
+                    vec![funzione(Centroid, vec![sonda()]), parametro("d")],
+                ),
+            ),
+        ),
+        (
+            "ST_Area(sonda) > a",
+            confronto(funzione(Area, vec![sonda()]), Gt, parametro("a")),
+        ),
+        (
+            "ST_Area(sonda) + 1 > a",
+            confronto(
+                QueryExpression::Arithmetic {
+                    left: Box::new(funzione(Area, vec![sonda()])),
+                    operator: plenora_database_core::relational::ArithmeticOperator::Add,
+                    right: Box::new(parametro("uno")),
+                },
+                Gt,
+                parametro("a"),
+            ),
+        ),
+        (
+            "ST_Area(ST_Transform(sonda, s)) > a",
+            confronto(
+                funzione(
+                    Area,
+                    vec![funzione(Transform, vec![sonda(), parametro("s")])],
+                ),
+                Gt,
+                parametro("a"),
+            ),
+        ),
+        (
+            "g IN (ST_Centroid(sonda))",
+            QueryExpression::InList {
+                expression: Box::new(colonna()),
+                values: vec![funzione(Centroid, vec![sonda()])],
+                negated: false,
+            },
+        ),
+        (
+            "ST_Area(sonda) BETWEEN a AND b",
+            QueryExpression::Between {
+                expression: Box::new(funzione(Area, vec![sonda()])),
+                lower: Box::new(parametro("a")),
+                upper: Box::new(parametro("b")),
+                negated: false,
+            },
+        ),
+        (
+            "ST_Centroid(sonda) IS NULL",
+            QueryExpression::IsNull {
+                expression: Box::new(funzione(Centroid, vec![sonda()])),
+                negated: false,
+            },
+        ),
+        (
+            "NOT (g = ST_Centroid(sonda))",
+            QueryExpression::Not {
+                expression: Box::new(confronto(colonna(), Eq, funzione(Centroid, vec![sonda()]))),
+            },
+        ),
+        (
+            "CASE WHEN ST_Centroid(sonda) = g THEN 1 END = 1",
+            confronto(
+                QueryExpression::Case {
+                    branches: vec![plenora_database_core::relational::QueryCaseBranch {
+                        when: confronto(funzione(Centroid, vec![sonda()]), Eq, colonna()),
+                        then: parametro("uno"),
+                    }],
+                    else_expression: None,
+                },
+                Eq,
+                parametro("uno"),
+            ),
+        ),
+    ]
+}
+
+/// La regola P: una sonda sotto un operatore che non e spatial si rifiuta su
+/// ogni dialetto e ogni percorso, a qualunque profondita e attraverso
+/// qualunque funzione. La decisione e `admit_probe` con
+/// `ProbeUse::ScalarOperand`, quindi il motivo e lo stesso ovunque.
+#[test]
+fn una_sonda_sotto_un_operatore_non_spatial_si_rifiuta_a_ogni_profondita() {
+    let sv = || QueryExpression::SpatialValue {
+        expression: Box::new(QueryExpression::TypedParameter {
+            name: "sonda".to_owned(),
+            parameter_type: QueryParameterType::Binary,
+        }),
+        srid: 3_857,
+        semantics: SpatialSemantics::Geometry,
+    };
+    let bind = || parametro("sonda");
+    let forme: [(&str, &dyn Fn() -> QueryExpression); 2] = [("sv", &sv), ("bind", &bind)];
+    let mut difformi = Vec::new();
+    for (sonda, forma) in forme {
+        for (nome, filtro) in sonde_annidate(forma) {
+            let mut operation = query(spatial_value(4_326), Funzione);
+            operation.filter = Some(filtro);
+            for prodotto in PRODOTTI {
+                for percorso in [Sdk, Provider] {
+                    let osservato = renderer(prodotto, percorso).render_query(&operation);
+                    let conforme = osservato.as_ref().is_err_and(|error| {
+                        error.category == Unsupported
+                            && error.message
+                                == plenora_database_core::spatial_probe::SPATIAL_VALUE_OUTSIDE_SPATIAL
+                    });
+                    if !conforme {
+                        difformi.push(format!(
+                            "{sonda} {nome} {prodotto:?} {percorso:?}: {:?}",
+                            osservato.map(|rendered| rendered.sql)
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// I controlli positivi della regola P: una sonda dentro un nodo spatial con
+/// due geometrie e giudicata li, anche attraverso una funzione che conserva
+/// il frame e anche quando il risultato del nodo e confrontato con `<`.
+#[test]
+fn una_sonda_giudicata_da_un_nodo_spatial_resta_ammessa() {
+    use plenora_database_core::plan::ComparisonOperator::Lt;
+    let filtri = [
+        (
+            "ST_Distance(g, sonda) < d",
+            confronto(
+                funzione(
+                    SpatialFunction::Distance,
+                    vec![colonna(), spatial_value(3_857)],
+                ),
+                Lt,
+                parametro("d"),
+            ),
+        ),
+        (
+            "ST_Intersects(g, ST_Centroid(sonda))",
+            funzione(
+                SpatialFunction::Intersects,
+                vec![
+                    colonna(),
+                    funzione(SpatialFunction::Centroid, vec![spatial_value(3_857)]),
+                ],
+            ),
+        ),
+    ];
+    for (nome, filtro) in filtri {
+        let mut operation = query(spatial_value(4_326), Funzione);
+        operation.filter = Some(filtro);
+        let sdk = renderer(Postgres, Sdk)
+            .render_query(&operation)
+            .unwrap_or_else(|error| panic!("{nome}: {error:?}"));
+        assert!(ha_la_guardia(&sdk.sql), "{nome}: {}", sdk.sql);
+        renderer(Postgres, Provider)
+            .render_query(&operation)
+            .unwrap_or_else(|error| panic!("{nome}: {error:?}"));
+    }
+}

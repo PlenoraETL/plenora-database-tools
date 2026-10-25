@@ -46,8 +46,9 @@ use plenora_database_core::relational::{
     QueryWalkNode, SpatialFunction,
 };
 use plenora_database_core::spatial_probe::{
-    check_spatial_value, compare_frames, contains_geometry_probe, stamped_probe, term_frame,
-    BaseColumn, RelationScope, TermFrame, PROBE_PEER_WITHOUT_SRID, PROBE_SRID_MISMATCH,
+    check_spatial_value, compare_frames, contains_geometry_probe, judge_scalar_operands,
+    stamped_probe, term_frame, BaseColumn, ProbeEvidence, RelationScope, TermFrame,
+    PROBE_PEER_WITHOUT_SRID, PROBE_SRID_MISMATCH,
 };
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -386,6 +387,11 @@ fn judge_node(
     max_depth: u64,
     columns: &mut Vec<ColumnFrame>,
 ) -> Result<()> {
+    // Una sonda sotto un operatore che non e spatial (`=`, `IN`, ...), a
+    // qualunque profondita: nessuno la confronta con la colonna, nemmeno
+    // questo catalogo. Fino al 25/10 il giudizio guardava soltanto i nodi
+    // spatial con due geometrie, e `g = ST_Centroid(sonda 3857)` passava.
+    judge_scalar_operands(PROVIDER, ProbeEvidence::Catalog, expression)?;
     if let QueryExpression::SpatialValue {
         expression, srid, ..
     } = expression

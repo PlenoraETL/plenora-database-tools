@@ -1288,12 +1288,15 @@ impl Renderer {
                 self.render_query_inner(query, binds, false)?
             )),
             QueryExpression::InSubquery {
-                expression,
+                expression: operand,
                 query,
                 negated,
             } => Ok(format!(
                 "{} {}IN ({})",
-                self.render_query_expression(expression, binds)?,
+                {
+                    self.refuse_spatial_value_operand(expression)?;
+                    self.render_query_expression(operand, binds)?
+                },
                 if *negated { "NOT " } else { "" },
                 self.render_query_inner(query, binds, false)?
             )),
@@ -1545,35 +1548,20 @@ impl Renderer {
         }
     }
 
-    /// Un valore spatial confrontato con `=`, `IN`, `BETWEEN`: nessuno di
-    /// questi confronta gli SRID (un `PostGIS` `=` fra sistemi diversi e
-    /// falso senza errore), e la regola delle sonde vale soltanto dentro una
-    /// funzione o un operatore spatial.
+    /// Una sonda confrontata con `=`, `<>`, `IN`, `BETWEEN`, `LIKE`, `IS
+    /// NULL`, `IN (subquery)`: nessuno di questi confronta gli SRID (un
+    /// `PostGIS` `=` fra sistemi diversi e falso senza errore), e la regola
+    /// delle sonde la rifiuta (`spatial_probe::judge_scalar_operands`), a
+    /// qualunque profondita dell'operando e attraverso qualunque funzione
+    /// (`g = ST_Centroid(sonda)`). Fino al 25/10 si guardava soltanto un
+    /// `SpatialValue` operando diretto, e `g = ST_Centroid(SpatialValue 3857)`
+    /// su una colonna 4326 rendeva zero righe senza errore.
     fn refuse_spatial_value_operand(&self, expression: &QueryExpression) -> Result<()> {
-        let operands: Vec<&QueryExpression> = match expression {
-            QueryExpression::Compare { left, right, .. } => vec![left, right],
-            QueryExpression::InList {
-                expression, values, ..
-            } => std::iter::once(expression.as_ref()).chain(values).collect(),
-            QueryExpression::Between {
-                expression,
-                lower,
-                upper,
-                ..
-            } => vec![expression, lower, upper],
-            _ => Vec::new(),
-        };
-        if operands
-            .iter()
-            .any(|operand| matches!(operand, QueryExpression::SpatialValue { .. }))
-        {
-            return Err(DatabaseError::unsupported(
-                self.provider_kind(),
-                ErrorPhase::Prepare,
-                plenora_database_core::spatial_probe::SPATIAL_VALUE_OUTSIDE_SPATIAL,
-            ));
-        }
-        Ok(())
+        plenora_database_core::spatial_probe::judge_scalar_operands(
+            self.provider_kind(),
+            self.probe_evidence,
+            expression,
+        )
     }
 
     fn render_predicate_expression(
