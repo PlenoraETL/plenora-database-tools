@@ -617,9 +617,39 @@ pub async fn relation_columns(
                 }
             };
             let origin = ColumnOrigin::of(row.get::<_, bool>(2), row.get::<_, bool>(3));
-            Ok(CatalogColumn::new(row.get::<_, String>(0), origin, family))
+            let catalog = catalog_type(&row.get::<_, String>(4), row.get::<_, i32>(5));
+            Ok(CatalogColumn::new(row.get::<_, String>(0), origin, family)
+                .with_type(catalog, &row.get::<_, String>(6)))
         })
         .collect()
+}
+
+/// Il tipo del catalogo dal nome del tipo base e dal typmod: precisione e
+/// scala di `numeric`, lunghezza di `varchar` e `bpchar`, precisione di
+/// `timestamp` (la stessa lettura dell'ammissione dei parametri della PR
+/// #135, `column_types::catalog_type`).
+#[must_use]
+pub fn catalog_type(name: &str, typmod: i32) -> plenora_database_core::cast_table::CatalogType {
+    let mut catalog = plenora_database_core::cast_table::CatalogType {
+        name: name.to_owned(),
+        ..plenora_database_core::cast_table::CatalogType::default()
+    };
+    if typmod < 0 {
+        return catalog;
+    }
+    match name {
+        "numeric" => {
+            let packed = typmod - 4;
+            catalog.precision = u64::try_from((packed >> 16) & 0xffff).ok();
+            // La scala e un intero a 11 bit con segno (PostgreSQL 15).
+            let scale = packed & 0x7ff;
+            catalog.scale = Some(i64::from(if scale > 1023 { scale - 2048 } else { scale }));
+        }
+        "varchar" | "bpchar" => catalog.length = u64::try_from(typmod - 4).ok(),
+        "timestamp" | "timestamptz" => catalog.datetime_precision = u64::try_from(typmod).ok(),
+        _ => {}
+    }
+    catalog
 }
 
 /// Le colonne di una relazione (schema, oggetto) nell'ordine di `attnum`; la
@@ -645,6 +675,12 @@ pub async fn relation_columns(
 /// della sola relazione nominata, e su `PostgreSQL` 14 e 15 (il 16 rifiuta
 /// lo schema) `p.w = :wkb` su un padre con una figlia o una partizione dalla
 /// colonna binaria generata rendeva una riga su due.
+///
+/// Le ultime tre colonne sono il tipo per la regola C e l'identita per la
+/// regola B: il nome del tipo base (`enum` per un enumerato, il tipo di un
+/// dominio), il typmod (del dominio, se la colonna e di un dominio) e
+/// `format_type` della colonna (il nome completo: un dominio o un enumerato
+/// con il proprio nome).
 const RELATION_COLUMNS_SQL: &str = "\
 WITH RECURSIVE named AS ( \
     SELECT to_regclass(CASE WHEN $1::text IS NULL \
@@ -655,7 +691,7 @@ WITH RECURSIVE named AS ( \
     UNION \
     SELECT i.inhrelid FROM pg_catalog.pg_inherits i JOIN tree t ON i.inhparent = t.oid \
 ), columns AS ( \
-    SELECT a.attnum, a.attname::text AS name, a.atttypid, \
+    SELECT a.attnum, a.attname::text AS name, a.atttypid, a.atttypmod, \
         EXISTS (SELECT 1 FROM tree t JOIN pg_catalog.pg_class k ON k.oid = t.oid \
             WHERE k.relkind IN ('v', 'm', 'f')) AS derived, \
         EXISTS (SELECT 1 FROM tree t JOIN pg_catalog.pg_attribute d ON d.attrelid = t.oid \
@@ -692,7 +728,14 @@ SELECT c.name, CASE WHEN EXISTS ( \
     SELECT CASE t.typcategory WHEN 'N' THEN 'numeric' WHEN 'B' THEN 'numeric' \
         WHEN 'S' THEN 'text' WHEN 'D' THEN 'temporal' ELSE 'other' END \
     FROM pg_catalog.pg_type t WHERE t.oid = c.atttypid \
-) END, c.derived, c.generated \
+) END, c.derived, c.generated, \
+    (SELECT CASE WHEN b.typtype = 'e' THEN 'enum' ELSE b.typname::text END \
+     FROM pg_catalog.pg_type t JOIN pg_catalog.pg_type b \
+       ON b.oid = CASE WHEN t.typbasetype <> 0 THEN t.typbasetype ELSE t.oid END \
+     WHERE t.oid = c.atttypid), \
+    (SELECT CASE WHEN t.typbasetype <> 0 THEN t.typtypmod ELSE c.atttypmod END \
+     FROM pg_catalog.pg_type t WHERE t.oid = c.atttypid), \
+    pg_catalog.format_type(c.atttypid, c.atttypmod) \
 FROM columns c ORDER BY c.attnum";
 
 #[cfg(test)]

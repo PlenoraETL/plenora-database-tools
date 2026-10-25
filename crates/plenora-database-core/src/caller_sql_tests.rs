@@ -465,7 +465,8 @@ fn the_default_operand_catalog_knows_no_relation() {
     let operands = crate::spatial_operand::scalar_operands(ProviderKind::Postgres, &operation)
         .expect("operandi");
     let mut scope = FakeScope(Scenario::Validation, SendMarker::default());
-    let catalog = block_on(scope.operand_catalog(&relations, &cancellation)).expect("catalogo");
+    let catalog =
+        block_on(scope.operand_catalog(&relations, &[], &cancellation)).expect("catalogo");
     let error = operands.judge(&catalog).expect_err("sconosciuta");
     assert_eq!(
         error.message,
@@ -475,6 +476,7 @@ fn the_default_operand_catalog_knows_no_relation() {
         Scenario::Validation,
         SendMarker::default(),
     )));
-    let catalog = block_on(wrapped.operand_catalog(&relations, &cancellation)).expect("catalogo");
+    let catalog =
+        block_on(wrapped.operand_catalog(&relations, &[], &cancellation)).expect("catalogo");
     assert!(operands.judge(&catalog).is_err());
 }

@@ -5,6 +5,7 @@
 pub mod caller_sql;
 pub mod cancellation;
 pub mod capabilities;
+pub mod cast_table;
 pub mod checkpoint;
 pub mod conformance;
 pub mod crs_definition;

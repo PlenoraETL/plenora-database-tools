@@ -45,13 +45,21 @@
 //! argomento di un nodo spatial (la geometria che il renderer costruisce) il
 //! parametro e l'input del costruttore.
 //!
-//! Il `CAST` non deve perdere il valore: dove il tipo reso ha un limite, un
-//! valore oltre il limite si rifiuta nelle posizioni rese con il `CAST`
-//! ([`TYPED_PARAMETER_MISMATCH`]): un `decimal` oltre `DECIMAL(38, 10)` (piu
-//! di 28 cifre intere o di 10 decimali significative, o in notazione
-//! esponenziale), un `string` oltre 4000 byte su Oracle (`VARCHAR2(4000)`) o
-//! 32672 su Db2 (`VARCHAR(32672)`), un `binary` oltre 2000 byte su Oracle
-//! (`RAW(2000)`) o 32672 su Db2.
+//! Il `CAST` non deve perdere il valore (regola C, [`crate::cast_table`]):
+//! nelle posizioni rese con il `CAST` ogni valore legato deve stare esatto nel
+//! tipo reso ([`crate::cast_table::rendered_target`],
+//! [`crate::cast_table::value_fits`]), altrimenti si rifiuta
+//! ([`TYPED_PARAMETER_MISMATCH`]): un `decimal` oltre `DECIMAL(38, 10)` (oltre
+//! `DECIMAL(31, 10)` su Db2, che non ha precisione oltre 31), un `string`
+//! oltre 4000 byte su Oracle (`VARCHAR2(4000)`) o 32672 su Db2
+//! (`VARCHAR(32672)`), un `binary` oltre 2000 byte su Oracle (`RAW(2000)`) o
+//! 32672 su Db2, un `timestamp` oltre le cifre frazionarie del tipo reso, un
+//! `timestamp_tz` su `MariaDB` (`DATETIME(6)` scarta l'offset, misurato il
+//! 25/10: `2024-01-01 10:00:00+02:00` diventa `10:00`) e su Db2 (che non ha
+//! `TIMESTAMP WITH TIME ZONE`). Fino alla quindicesima lettura del 25/10 il
+//! `timestamp_tz` di `MariaDB` si rendeva senza giudizio e ritrovava la riga
+//! sbagliata, e il `decimal` di Db2 si rendeva `DECIMAL(38, 10)`, che il
+//! server rifiuta.
 //!
 //! # Limiti dichiarati
 //!
@@ -71,6 +79,7 @@
 //! - **Rientro.** La regola di fedelta dei parametri (PR #135), che rifiuta le
 //!   frazioni oltre il microsecondo sul testo del valore.
 
+use crate::cast_table::ValueFact;
 use crate::plan::ProviderKind;
 use crate::provider::ParameterValue;
 use crate::relational::{
@@ -82,7 +91,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Motivo stabile del rifiuto di un valore che non e del tipo dichiarato del
 /// suo parametro (regola T).
-pub const TYPED_PARAMETER_MISMATCH: &str = "valore di un parametro tipizzato fuori dal suo tipo: un bind dichiarato accetta soltanto i valori del proprio tipo (un intero anche per decimal e, se a 32 bit, per float), entro i limiti del CAST che lo rende (decimal fino a DECIMAL(38, 10), string fino a 4000 byte su Oracle e 32672 su Db2, binary fino a 2000 byte su Oracle e 32672 su Db2); il server non converte mai da se";
+pub const TYPED_PARAMETER_MISMATCH: &str = "valore di un parametro tipizzato fuori dal suo tipo: un bind dichiarato accetta soltanto i valori del proprio tipo (un intero anche per decimal e, se a 32 bit, per float), entro i limiti del CAST che lo rende (decimal fino a DECIMAL(38, 10), DECIMAL(31, 10) su Db2, string fino a 4000 byte su Oracle e 32672 su Db2, binary fino a 2000 byte su Oracle e 32672 su Db2, timestamp entro le cifre frazionarie del tipo reso, nessun timestamp_tz su MariaDB e Db2); il server non converte mai da se";
 
 /// Il dialetto di cui [`CastDialect::render`] rende un parametro tipizzato:
 /// i dialetti del renderer delle query.
@@ -166,8 +175,10 @@ impl CastDialect {
                 Self::Oracle | Self::Db2 => "TIMESTAMP WITH TIME ZONE",
                 Self::Mysql => "DATETIME(6)",
             },
+            // Db2 non ha precisione oltre 31 (la query fallisce, misurato il 25/10).
             QueryParameterType::Decimal => match self {
                 Self::Oracle => "NUMBER(38, 10)",
+                Self::Db2 => "DECIMAL(31, 10)",
                 _ => "DECIMAL(38, 10)",
             },
             QueryParameterType::Uuid => match self {
@@ -216,24 +227,6 @@ impl CastDialect {
         }
         format!("CAST({placeholder} AS {})", self.type_name(parameter_type))
     }
-
-    /// I byte che il tipo testo reso tiene.
-    const fn text_limit(self) -> Option<usize> {
-        match self {
-            Self::Oracle => Some(4000),
-            Self::Db2 => Some(32672),
-            _ => None,
-        }
-    }
-
-    /// I byte che il tipo binario reso tiene.
-    const fn binary_limit(self) -> Option<usize> {
-        match self {
-            Self::Oracle => Some(2000),
-            Self::Db2 => Some(32672),
-            _ => None,
-        }
-    }
 }
 
 /// Il genere di un valore legato, un bit per variante.
@@ -254,6 +247,31 @@ mod kind {
     pub const WKB: u16 = 1 << 13;
 }
 
+/// Il genere `Uuid` di un valore legato.
+pub const UUID_KIND: u16 = kind::UUID;
+/// Il genere `Json` di un valore legato.
+pub const JSON_KIND: u16 = kind::JSON;
+
+/// La famiglia di ogni genere di valore che non dipende dal provider
+/// (`Uuid` e `Json` ne dipendono: `spatial_operand::ParameterFamilies`).
+pub const KIND_FAMILIES: [(u16, crate::spatial_operand::OperandFamily); 12] = {
+    use crate::spatial_operand::OperandFamily as F;
+    [
+        (kind::BOOL, F::Numeric),
+        (kind::I32, F::Numeric),
+        (kind::I64, F::Numeric),
+        (kind::F64, F::Numeric),
+        (kind::DECIMAL, F::Numeric),
+        (kind::STRING, F::Text),
+        (kind::ENUM, F::Text),
+        (kind::BYTES, F::Binary),
+        (kind::DATE, F::Temporal),
+        (kind::TIMESTAMP, F::Temporal),
+        (kind::TIMESTAMP_TZ, F::Temporal),
+        (kind::WKB, F::Geometry),
+    ]
+};
+
 /// I generi che un tipo dichiarato ammette (la tabella del modulo).
 const fn admitted(parameter_type: QueryParameterType) -> u16 {
     match parameter_type {
@@ -271,15 +289,12 @@ const fn admitted(parameter_type: QueryParameterType) -> u16 {
     }
 }
 
-/// Cio che serve sapere dei valori legati a un nome: i generi, la
-/// lunghezza massima in byte del testo e dei byte, un decimale oltre
-/// `DECIMAL(38, 10)`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Cio che serve sapere dei valori legati a un nome: i generi e, per la
+/// regola C, i fatti di ogni valore ([`ValueFact`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoundValue {
     kinds: u16,
-    text_bytes: usize,
-    binary_bytes: usize,
-    wide_decimal: bool,
+    facts: Vec<ValueFact>,
 }
 
 impl BoundValue {
@@ -290,51 +305,47 @@ impl BoundValue {
             ParameterValue::I32(_) => kind::I32,
             ParameterValue::I64(_) => kind::I64,
             ParameterValue::F64(_) => kind::F64,
-            ParameterValue::Decimal(text) => {
-                self.wide_decimal |= !decimal_fits(text);
-                kind::DECIMAL
-            }
-            ParameterValue::String(text) => {
-                self.text_bytes = self.text_bytes.max(text.len());
-                kind::STRING
-            }
-            ParameterValue::Enum { label, .. } => {
-                self.text_bytes = self.text_bytes.max(label.len());
-                kind::ENUM
-            }
-            ParameterValue::Bytes(bytes) => {
-                self.binary_bytes = self.binary_bytes.max(bytes.len());
-                kind::BYTES
-            }
+            ParameterValue::Decimal(_) => kind::DECIMAL,
+            ParameterValue::String(_) => kind::STRING,
+            ParameterValue::Enum { .. } => kind::ENUM,
+            ParameterValue::Bytes(_) => kind::BYTES,
             ParameterValue::Date(_) => kind::DATE,
             ParameterValue::Timestamp(_) => kind::TIMESTAMP,
             ParameterValue::TimestampTz(_) => kind::TIMESTAMP_TZ,
             ParameterValue::Uuid(_) => kind::UUID,
             ParameterValue::Json(_) => kind::JSON,
-            ParameterValue::Wkb { bytes, .. } => {
-                self.binary_bytes = self.binary_bytes.max(bytes.len());
-                kind::WKB
-            }
+            ParameterValue::Wkb { .. } => kind::WKB,
             ParameterValue::Null { .. } => 0,
         };
         self.kinds |= bit;
+        let fact = ValueFact::of(value);
+        if !self.facts.contains(&fact) {
+            self.facts.push(fact);
+        }
     }
-}
 
-/// Un decimale che `DECIMAL(38, 10)` tiene esatto: segno facoltativo, al piu
-/// 28 cifre intere e 10 decimali significative (gli zeri finali della parte
-/// decimale non contano). Ogni altra forma (esponente, spazi) no.
-fn decimal_fits(text: &str) -> bool {
-    let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
-    let (integer, fraction) = digits.split_once('.').unwrap_or((digits, ""));
-    let all_digits = |part: &str| part.bytes().all(|byte| byte.is_ascii_digit());
-    if (integer.is_empty() && fraction.is_empty()) || !all_digits(integer) || !all_digits(fraction)
-    {
-        return false;
+    /// Ogni valore legato sta esatto nel tipo reso (regola C).
+    #[must_use]
+    pub fn fits(&self, provider: ProviderKind, target: &crate::cast_table::OperandType) -> bool {
+        self.facts
+            .iter()
+            .all(|fact| crate::cast_table::value_fits(provider, fact, target))
     }
-    let integer = integer.trim_start_matches('0');
-    let fraction = fraction.trim_end_matches('0');
-    integer.len() <= 28 && fraction.len() <= 10
+
+    /// I generi dei valori legati.
+    #[must_use]
+    pub const fn kinds(&self) -> u16 {
+        self.kinds
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.kinds |= other.kinds;
+        for fact in &other.facts {
+            if !self.facts.contains(fact) {
+                self.facts.push(fact.clone());
+            }
+        }
+    }
 }
 
 /// La posizione di un parametro tipizzato: come lo rende il renderer.
@@ -364,7 +375,7 @@ fn judge(
     provider: ProviderKind,
     parameter_type: QueryParameterType,
     slot: Slot,
-    bound: BoundValue,
+    bound: &BoundValue,
 ) -> Result<()> {
     let mut allowed = admitted(parameter_type);
     if slot == Slot::Spatial && parameter_type == QueryParameterType::Binary {
@@ -373,21 +384,30 @@ fn judge(
     if bound.kinds & !allowed != 0 {
         return Err(mismatch(provider));
     }
-    if slot == Slot::Cast {
-        let dialect = CastDialect::of(provider);
-        let over = |limit: Option<usize>, length: usize| limit.is_some_and(|limit| length > limit);
-        let lossy = match parameter_type {
-            QueryParameterType::Decimal => bound.wide_decimal,
-            QueryParameterType::String => over(dialect.text_limit(), bound.text_bytes),
-            QueryParameterType::Binary => over(dialect.binary_limit(), bound.binary_bytes),
-            _ => false,
-        };
-        if lossy {
-            return Err(mismatch(provider));
-        }
+    // Regola C: il valore sta esatto nel tipo reso. Su `MySQL` e `MariaDB`
+    // un `string` e un `uuid` si rendono senza `CAST` ([`CastDialect::render`]).
+    let bare = matches!(provider, ProviderKind::Mysql | ProviderKind::Mariadb)
+        && matches!(
+            parameter_type,
+            QueryParameterType::String | QueryParameterType::Uuid
+        );
+    if slot == Slot::Cast
+        && !bare
+        && !bound.fits(
+            provider,
+            &crate::cast_table::rendered_target(provider, parameter_type),
+        )
+    {
+        return Err(mismatch(provider));
     }
     Ok(())
 }
+
+/// Nessun valore legato.
+static NO_VALUES: BoundValue = BoundValue {
+    kinds: 0,
+    facts: Vec::new(),
+};
 
 /// I valori legati ai parametri di un piano, per nome.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -399,8 +419,17 @@ impl BoundValues {
         self.0.entry(name.to_owned()).or_default().add(value);
     }
 
-    fn get(&self, name: &str) -> BoundValue {
-        self.0.get(name).copied().unwrap_or_default()
+    /// I valori di `other` in piu.
+    pub fn merge(&mut self, other: &Self) {
+        for (name, value) in &other.0 {
+            self.0.entry(name.clone()).or_default().merge(value);
+        }
+    }
+
+    /// I valori legati al nome; nessuno se il nome non e legato.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&BoundValue> {
+        self.0.get(name)
     }
 
     /// La regola T su ogni parametro tipizzato di una query.
@@ -499,7 +528,12 @@ impl BoundValues {
                 } else {
                     slot
                 };
-                if let Err(error) = judge(provider, *parameter_type, slot, self.get(name)) {
+                if let Err(error) = judge(
+                    provider,
+                    *parameter_type,
+                    slot,
+                    self.get(name).unwrap_or(&NO_VALUES),
+                ) {
                     *outcome = Err(error);
                     return QueryWalkControl::Break;
                 }

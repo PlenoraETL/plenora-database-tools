@@ -9582,3 +9582,240 @@ async fn live_typed_parameters_refuse_values_of_another_type() {
     let connection = teardown.connection_mut().expect("connessione");
     connection.query_drop(cleanup).await.expect("pulizia");
 }
+
+/// Quindicesima lettura del 25/10 su `MySQL` e `MariaDB`
+/// (`PLENORA_MYSQL_PRODUCT`), le tre regole che tolgono emulazione.
+///
+/// - **Regola C.** `CAST(? AS DATETIME(6))` con
+///   `2024-01-01T10:00:00+02:00`: `MySQL` lo converte nel fuso della
+///   sessione (08:00 in UTC), `MariaDB` scarta l'offset (10:00) e ritrova le
+///   righe sbagliate; `CAST(? AS DECIMAL(38, 10))` arrotonda
+///   `0.12345678901` a `0.1234567890` e ritrova `0.123456789000`. Il
+///   `timestamp_tz` si rifiuta su `MariaDB`, il decimale oltre la scala resa
+///   e la colonna `DECIMAL(30, 12)` sotto `CAST(... AS decimal)` ovunque.
+/// - **Regola B.** `n INT = ?` con un uuid rende `n = 1` per conversione
+///   implicita; il parametro tipizzato `uuid` (reso senza `CAST`, un testo) e
+///   un `Uuid` legato si rifiutano (`OPERAND_FAMILY_MISMATCH`).
+/// - **Regola A.** Il nome lo lega il server: `t.ñame` lega `Ñame` (il prepare
+///   lo dice) e si giudica; `t.e` non lega `é` (1054), anche se
+///   `INFORMATION_SCHEMA` li uguaglia, e si rifiuta (`NAME_UNRESOLVED`).
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_rilettura_quindici_fuso_uuid_nomi_e_cast() {
+    use plenora_database_core::cast_table::CAST_NOT_EXACT;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::spatial_operand::{NAME_UNRESOLVED, OPERAND_FAMILY_MISMATCH};
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    let mariadb = environment("PLENORA_MYSQL_PRODUCT", "mysql") == "mariadb";
+    let cleanup = "DROP TABLE IF EXISTS _r15_t";
+    let uuid = "00000001-0000-0000-0000-000000000000";
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione");
+        connection.query_drop(cleanup).await.expect("pulizia");
+        connection
+            .query_drop(
+                "CREATE TABLE _r15_t (id BIGINT PRIMARY KEY, n INT NOT NULL, \
+                 ts DATETIME(6) NOT NULL, d DECIMAL(30, 12) NOT NULL, \
+                 `Ñame` INT NOT NULL, `é` INT NOT NULL) ENGINE=InnoDB",
+            )
+            .await
+            .expect("tabella");
+        connection
+            .query_drop(
+                "INSERT INTO _r15_t VALUES \
+                 (1, 1, '2024-01-01 08:00:00', 0.123456789000, 1, 1), \
+                 (2, 2, '2024-01-01 10:00:00', 0.5, 2, 2), \
+                 (3, 3, '2024-01-01 10:00:00', 0.5, 3, 3)",
+            )
+            .await
+            .expect("righe");
+        connection
+            .query_drop("SET time_zone = '+00:00'")
+            .await
+            .expect("fuso");
+        // La tabella del modulo `cast_table`, rimisurata.
+        let fuso: Vec<i64> = connection
+            .exec(
+                "SELECT id FROM _r15_t WHERE ts = CAST(? AS DATETIME(6)) ORDER BY id",
+                ("2024-01-01T10:00:00+02:00",),
+            )
+            .await
+            .expect("timestamp con fuso");
+        if mariadb {
+            assert_eq!(fuso, vec![2, 3], "MariaDB scarta l'offset");
+        } else {
+            assert_eq!(fuso, vec![1], "MySQL converte nel fuso della sessione");
+        }
+        let uuid_n: Vec<i64> = connection
+            .exec("SELECT id FROM _r15_t WHERE n = ?", (uuid,))
+            .await
+            .expect("uuid e intero");
+        assert_eq!(uuid_n, vec![1], "il server converte l'uuid in numero");
+        let arrotondato: Vec<String> = connection
+            .exec(
+                "SELECT CAST(CAST(? AS DECIMAL(38, 10)) AS CHAR)",
+                ("0.12345678901",),
+            )
+            .await
+            .expect("decimale");
+        assert_eq!(arrotondato, vec!["0.1234567890".to_owned()]);
+        let ritrovato: Vec<i64> = connection
+            .exec(
+                "SELECT id FROM _r15_t WHERE d = CAST(? AS DECIMAL(38, 10))",
+                ("0.12345678901",),
+            )
+            .await
+            .expect("decimale arrotondato");
+        assert_eq!(ritrovato, vec![1], "il CAST arrotonda e ritrova la riga");
+        let e_non_lega = connection
+            .exec_drop("SELECT `e` FROM _r15_t", ())
+            .await
+            .expect_err("e non lega é");
+        assert!(format!("{e_non_lega:?}").contains("1054"), "{e_non_lega:?}");
+        let i_s: Vec<String> = connection
+            .exec(
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS \
+                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '_r15_t' AND COLUMN_NAME = 'e'",
+                (),
+            )
+            .await
+            .expect("INFORMATION_SCHEMA");
+        assert_eq!(
+            i_s.len(),
+            usize::from(mariadb),
+            "la collation di INFORMATION_SCHEMA"
+        );
+    }
+    let database = environment("PLENORA_MYSQL_DATABASE", "dataflow_test");
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let typed = |parameter_type: &str| json!({"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type});
+    let compare = |left: Value, right: Value| json!({"kind": "compare", "left": left, "operator": "eq", "right": right});
+    let plan = |filter: Value| -> plenora_database_core::query::QueryOperation {
+        serde_json::from_value(json!({
+            "source": {"object": {"catalog": null, "schema": database, "object": "_r15_t"}, "alias": "t"},
+            "projection": [{"expression": column("id"), "alias": "id"}],
+            "filter": filter, "having": null, "row_limit": null
+        }))
+        .expect("piano")
+    };
+    let cast = |expression: Value, target: &str| json!({"kind": "cast", "expression": expression, "target_type": target});
+    let bag = |value: ParameterValue| ParameterBag::new(BTreeMap::from([("p".to_owned(), value)]));
+    let provider = geometry_operand_provider();
+    let provider = provider.as_ref();
+    let tz = bag(ParameterValue::TimestampTz(
+        "2024-01-01T10:00:00+02:00".to_owned(),
+    ));
+    let fuso = geometry_operand_rows(
+        provider,
+        &plan(compare(column("ts"), typed("timestamp_tz"))),
+        &tz,
+    )
+    .await;
+    if mariadb {
+        let error = fuso.expect_err("timestamp_tz su MariaDB");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan, "{error:?}");
+        assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    } else {
+        assert_eq!(fuso.expect("timestamp_tz su MySQL"), 1);
+    }
+    let refused = [
+        (
+            "n = uuid tipizzato",
+            plan(compare(column("n"), typed("uuid"))),
+            bag(ParameterValue::Uuid(uuid.to_owned())),
+            OPERAND_FAMILY_MISMATCH,
+        ),
+        (
+            "n = Uuid legato",
+            plan(compare(
+                column("n"),
+                json!({"kind": "parameter", "name": "p"}),
+            )),
+            bag(ParameterValue::Uuid(uuid.to_owned())),
+            OPERAND_FAMILY_MISMATCH,
+        ),
+        (
+            "d = CAST(? AS decimal) oltre la scala",
+            plan(compare(
+                column("d"),
+                cast(json!({"kind": "parameter", "name": "p"}), "decimal"),
+            )),
+            bag(ParameterValue::Decimal("0.12345678901".to_owned())),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "d = CAST(F64 AS decimal)",
+            plan(compare(
+                column("d"),
+                cast(json!({"kind": "parameter", "name": "p"}), "decimal"),
+            )),
+            bag(ParameterValue::F64(0.123_456_789_01)),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "CAST(d DECIMAL(30, 12) AS decimal) = ?",
+            plan(compare(cast(column("d"), "decimal"), typed("decimal"))),
+            bag(ParameterValue::Decimal("0.123456789".to_owned())),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "t.ñame = testo, legato dal server",
+            plan(compare(column("ñame"), typed("string"))),
+            bag(ParameterValue::String("01".to_owned())),
+            OPERAND_FAMILY_MISMATCH,
+        ),
+        (
+            "t.e non lega é",
+            plan(compare(column("e"), typed("integer"))),
+            bag(ParameterValue::I32(1)),
+            NAME_UNRESOLVED,
+        ),
+    ];
+    for (form, operation, parameters, message) in refused {
+        let error = geometry_operand_rows(provider, &operation, &parameters)
+            .await
+            .expect_err(form);
+        assert_eq!(
+            error.category,
+            ErrorCategory::InvalidPlan,
+            "{form}: {error:?}"
+        );
+        assert_eq!(error.message, message, "{form}: {error:?}");
+    }
+    let admitted = [
+        (
+            "t.ñame = intero, legato dal server",
+            plan(compare(column("ñame"), typed("integer"))),
+            bag(ParameterValue::I32(1)),
+            1,
+        ),
+        (
+            "d = CAST(? AS decimal) entro la scala",
+            plan(compare(
+                column("d"),
+                cast(json!({"kind": "parameter", "name": "p"}), "decimal"),
+            )),
+            bag(ParameterValue::Decimal("0.5".to_owned())),
+            2,
+        ),
+    ];
+    for (form, operation, parameters, expected) in admitted {
+        let count = geometry_operand_rows(provider, &operation, &parameters)
+            .await
+            .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(count, expected, "{form}");
+    }
+    let mut teardown = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("pulizia");
+    let connection = teardown.connection_mut().expect("connessione");
+    connection.query_drop(cleanup).await.expect("pulizia");
+}

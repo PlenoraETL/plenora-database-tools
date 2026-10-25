@@ -104,7 +104,7 @@ fn catalogo(prodotto: ProviderKind) -> OperandCatalog {
         RelationColumns::Known(
             columns
                 .iter()
-                .map(|(name, geometric)| CatalogColumn::from_flag(*name, *geometric))
+                .map(|(name, geometric)| colonna_di_prova(name, *geometric))
                 .collect(),
         )
     };
@@ -293,7 +293,7 @@ fn ogni_forma_di_nomi_ambigua_si_rifiuta_sul_catalogo_su_ogni_dialetto() {
     for (prodotto, _) in PRODOTTI {
         for (forma, operation) in forme() {
             let error = scalar_operands(prodotto, &operation)
-                .and_then(|operands| operands.judge(&catalogo(prodotto)))
+                .and_then(|operands| operands.judge(&come_il_server(&operands, catalogo(prodotto))))
                 .err()
                 .unwrap_or_else(|| panic!("{prodotto:?} {forma}: ammessa"));
             rifiuto_della_regola(&error, &format!("{prodotto:?} {forma}"));
@@ -328,7 +328,7 @@ fn le_forme_di_nomi_senza_geometrie_restano_ammesse() {
                     "plain2",
                     "s",
                     &json!({"projection": [voce(&json!({"kind": "typed_parameter", "name": "uno", "parameter_type": "integer"}), Some("uno"))],
-                        "filter": confronto(&colonna(None, "id"), &json!({"kind": "typed_parameter", "name": "w", "parameter_type": "integer"}))}),
+                        "filter": confronto(&colonna(None, "id"), &json!({"kind": "typed_parameter", "name": "w", "parameter_type": "binary"}))}),
                 )),
             )),
         ),
@@ -369,9 +369,41 @@ fn le_forme_di_nomi_senza_geometrie_restano_ammesse() {
             renderer(prodotto, dialect)
                 .render_query(operation)
                 .unwrap_or_else(|error| panic!("{prodotto:?} {forma} resa: {error:?}"));
-            scalar_operands(prodotto, operation)
-                .and_then(|operands| operands.judge(&catalogo(prodotto)))
-                .unwrap_or_else(|error| panic!("{prodotto:?} {forma}: {error:?}"));
+            let outcome = scalar_operands(prodotto, operation).and_then(|operands| {
+                operands.judge(&come_il_server(&operands, catalogo(prodotto)))
+            });
+            // Regola A (quindicesima lettura del 25/10): su SQL Server `K` e
+            // `k` sono lo stesso nome o due secondo la collation, e il nome
+            // non si lega anche senza geometrie.
+            // Dove ogni identificatore e quotato `t.NAME` non nomina `name`:
+            // il server rifiuterebbe la query, il giudizio la rifiuta prima.
+            let quotato = matches!(
+                prodotto,
+                ProviderKind::Postgres | ProviderKind::Oracle | ProviderKind::Db2
+            );
+            // `MySQL` e `MariaDB` uguagliano `k` e `K`: `ORDER BY K` ordina un
+            // binario e un testo.
+            if matches!(prodotto, ProviderKind::Mysql | ProviderKind::Mariadb)
+                && forma.starts_with("alias k e K")
+            {
+                let error = outcome.expect_err(forma);
+                assert_eq!(
+                    error.message,
+                    plenora_database_core::spatial_operand::OPERAND_FAMILY_MISMATCH
+                );
+                continue;
+            }
+            if (prodotto == ProviderKind::Sqlserver && forma.starts_with("alias k e K"))
+                || (quotato && forma.starts_with("colonna NAME"))
+            {
+                let error = outcome.expect_err(forma);
+                assert_eq!(
+                    error.message,
+                    plenora_database_core::spatial_operand::NAME_UNRESOLVED
+                );
+                continue;
+            }
+            outcome.unwrap_or_else(|error| panic!("{prodotto:?} {forma}: {error:?}"));
         }
     }
 }
@@ -390,11 +422,15 @@ fn un_nome_diverso_dal_catalogo_soltanto_per_le_maiuscole_si_rifiuta_dove_conta(
     ));
     for (prodotto, _) in PRODOTTI {
         let error = scalar_operands(prodotto, &operation)
-            .and_then(|operands| operands.judge(&catalogo(prodotto)))
+            .and_then(|operands| operands.judge(&come_il_server(&operands, catalogo(prodotto))))
             .err()
             .unwrap_or_else(|| panic!("{prodotto:?}: ammessa"));
+        // Il catalogo di prova lega i nomi come un database `CI` dove il
+        // server li lega (regola A): `G` e la geometria.
         let atteso = match prodotto {
-            ProviderKind::Mysql | ProviderKind::Mariadb => GEOMETRY_SCALAR_OPERAND,
+            ProviderKind::Mysql | ProviderKind::Mariadb | ProviderKind::Sqlserver => {
+                GEOMETRY_SCALAR_OPERAND
+            }
             _ => AMBIGUOUS_NAME_SHAPE,
         };
         assert_eq!(error.message, atteso, "{prodotto:?}");
@@ -479,7 +515,7 @@ fn le_forme_ordinarie_restano_ammesse() {
                 .render_query(operation)
                 .unwrap_or_else(|error| panic!("{prodotto:?} {forma} resa: {error:?}"));
             scalar_operands(prodotto, operation)
-                .and_then(|operands| operands.judge(&catalogo(prodotto)))
+                .and_then(|operands| operands.judge(&come_il_server(&operands, catalogo(prodotto))))
                 .unwrap_or_else(|error| panic!("{prodotto:?} {forma}: {error:?}"));
         }
     }
@@ -504,7 +540,7 @@ fn un_nome_non_ascii_si_rifiuta_dove_la_collation_puo_uguagliarlo() {
     ));
     for (prodotto, _) in PRODOTTI {
         let outcome = scalar_operands(prodotto, &geometrica)
-            .and_then(|operands| operands.judge(&catalogo(prodotto)));
+            .and_then(|operands| operands.judge(&come_il_server(&operands, catalogo(prodotto))));
         match prodotto {
             ProviderKind::Sqlserver | ProviderKind::Mysql | ProviderKind::Mariadb => {
                 let error = outcome
@@ -515,7 +551,60 @@ fn un_nome_non_ascii_si_rifiuta_dove_la_collation_puo_uguagliarlo() {
             _ => outcome.unwrap_or_else(|error| panic!("{prodotto:?}: {error:?}")),
         }
         scalar_operands(prodotto, &scalare)
-            .and_then(|operands| operands.judge(&catalogo(prodotto)))
+            .and_then(|operands| operands.judge(&come_il_server(&operands, catalogo(prodotto))))
             .unwrap_or_else(|error| panic!("{prodotto:?} senza geometrie: {error:?}"));
     }
+}
+
+/// Dove il server lega i nomi (regola A, `server_resolves_names`) il
+/// catalogo di prova fa da server: un database che non distingue le
+/// maiuscole lega ogni nome del piano alle colonne che incontra.
+fn come_il_server(
+    operands: &plenora_database_core::spatial_operand::ScalarOperands,
+    mut catalogo: OperandCatalog,
+) -> OperandCatalog {
+    if !plenora_database_core::spatial_operand::server_resolves_names(prodotto_di(operands)) {
+        return catalogo;
+    }
+    for (schema, object) in operands.relations() {
+        let Some(RelationColumns::Known(columns)) =
+            catalogo.relation(schema.as_ref(), object).cloned()
+        else {
+            continue;
+        };
+        for name in operands.names() {
+            let bound = columns
+                .iter()
+                .filter(|column| column.name.to_lowercase() == name.to_lowercase())
+                .map(|column| column.name.clone())
+                .collect();
+            catalogo.insert_resolution(schema.clone(), object.clone(), name, bound);
+        }
+    }
+    catalogo
+}
+
+const fn prodotto_di(
+    operands: &plenora_database_core::spatial_operand::ScalarOperands,
+) -> ProviderKind {
+    operands.provider()
+}
+
+/// Una colonna di prova: geometrica; testo `name` e `label`; ogni altra
+/// binaria memorizzata (si confronta con i parametri binari delle prove).
+fn colonna_di_prova(name: &str, geometric: bool) -> CatalogColumn {
+    use plenora_database_core::spatial_operand::OperandFamily;
+    if geometric {
+        return CatalogColumn::from_flag(name, true);
+    }
+    let family = if matches!(name, "name" | "label") {
+        OperandFamily::Text
+    } else {
+        OperandFamily::Binary
+    };
+    CatalogColumn::new(
+        name,
+        plenora_database_core::spatial_operand::ColumnOrigin::Stored,
+        family,
+    )
 }

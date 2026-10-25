@@ -302,8 +302,10 @@ pub async fn verify_operands_bound(
     if operands.is_empty() {
         return Ok(());
     }
+    // Regola A: ogni nome del piano va al server, che lega le colonne.
+    let names = operands.names().into_iter().collect::<Vec<_>>();
     let catalog = tx
-        .operand_catalog(operands.relations(), cancellation)
+        .operand_catalog(operands.relations(), &names, cancellation)
         .await?;
     operands.judge_bound(&catalog, parameters)
 }

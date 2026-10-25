@@ -36,14 +36,21 @@ fn query(extra: &Value) -> QueryOperation {
 }
 
 /// Il catalogo di prova: `s.t(id, g geometrica, b)`, `s.u(id, g scalare)`,
-/// `s.plain(id, name)` senza geometrie.
+/// `s.plain(id, name)` senza geometrie. Le colonne scalari sono binarie
+/// memorizzate: si confrontano con i parametri binari delle prove.
 fn catalog(provider: ProviderKind) -> OperandCatalog {
     let mut catalog = OperandCatalog::new(provider);
     let known = |columns: &[(&str, bool)]| {
         RelationColumns::Known(
             columns
                 .iter()
-                .map(|(name, geometric)| CatalogColumn::from_flag(*name, *geometric))
+                .map(|(name, geometric)| {
+                    if *geometric {
+                        CatalogColumn::from_flag(*name, true)
+                    } else {
+                        CatalogColumn::new(*name, ColumnOrigin::Stored, OperandFamily::Binary)
+                    }
+                })
                 .collect(),
         )
     };
@@ -65,9 +72,32 @@ fn catalog(provider: ProviderKind) -> OperandCatalog {
     catalog
 }
 
-/// Il giudizio con il catalogo di prova.
+/// Il giudizio con il catalogo di prova. Dove il server lega i nomi
+/// (regola A) il catalogo di prova fa da server: lega un nome alle colonne
+/// che incontra senza maiuscole (un database `CI`).
 fn judged_as(provider: ProviderKind, operation: &QueryOperation) -> Result<()> {
-    scalar_operands(provider, operation)?.judge(&catalog(provider))
+    let operands = scalar_operands(provider, operation)?;
+    let mut catalog = catalog(provider);
+    if server_resolves_names(provider) {
+        for (schema, object) in operands.relations() {
+            let Some(RelationColumns::Known(columns)) = catalog
+                .relations
+                .get(&(schema.clone(), object.clone()))
+                .cloned()
+            else {
+                continue;
+            };
+            for name in operands.names() {
+                let bound = columns
+                    .iter()
+                    .filter(|column| column.name.to_lowercase() == name.to_lowercase())
+                    .map(|column| column.name.clone())
+                    .collect();
+                catalog.insert_resolution(schema.clone(), object.clone(), name, bound);
+            }
+        }
+    }
+    operands.judge(&catalog)
 }
 
 fn judged(operation: &QueryOperation) -> Result<()> {
@@ -525,7 +555,8 @@ fn the_six_unresolved_shapes_are_refused() {
         ProviderKind::Mariadb,
         ProviderKind::Postgres,
     ] {
-        let folded = matches!(provider, ProviderKind::Mysql | ProviderKind::Mariadb);
+        // Il catalogo di prova lega i nomi come un database `CI`.
+        let folded = server_resolves_names(provider);
         let expected = |outcome: Result<()>, form: &str| {
             if folded {
                 assert_refused(outcome, form);
@@ -535,11 +566,21 @@ fn the_six_unresolved_shapes_are_refused() {
         };
         let upper = query(&json!({"filter": like(&cast(&column(Some("t"), "G")))}));
         expected(judged_as(provider, &upper), "colonna G");
+        // I nomi del piano si confrontano fra loro senza il server: le
+        // maiuscole di un alias le piegano soltanto `MySQL` e `MariaDB`.
         let alias = over_derived(
             &query(&json!({"projection": [item(&g, Some("X"))]})),
             &json!({"filter": compare(&column(Some("d"), "x"), &bind())}),
         );
-        expected(judged_as(provider, &alias), "alias X");
+        // Dove gli identificatori sono quotati `x` e `X` sono due nomi: il
+        // riferimento non si lega.
+        match provider {
+            ProviderKind::Mysql | ProviderKind::Mariadb => {
+                assert_refused(judged_as(provider, &alias), "alias X");
+            }
+            ProviderKind::Postgres => assert_unresolved(judged_as(provider, &alias), "alias X"),
+            _ => assert_ambiguous(judged_as(provider, &alias), "alias X"),
+        }
         let relation = query(&json!({"filter": compare(&column(Some("T"), "g"), &bind())}));
         assert_ambiguous(judged_as(provider, &relation), "relazione T");
     }
@@ -683,16 +724,20 @@ fn scalar_references_and_plans_without_geometry_are_admitted() {
             json!({"projection": [item(&star(), None)], "distinct": true}),
         ),
         (
-            "ORDER BY non risolto",
-            json!({"order_by": order(&column(None, "missing"))}),
-        ),
-        (
-            "GROUP BY NAME piegato",
+            "GROUP BY NAME legato dal server",
             json!({"group_by": [column(None, "NAME")]}),
         ),
     ] {
         judged(&plain(&extra)).unwrap_or_else(|error| panic!("{form}: {error:?}"));
     }
+    // Regola A (quindicesima lettura del 25/10): un riferimento che non si
+    // lega si rifiuta anche in un piano senza geometrie.
+    let error = judged(&plain(
+        &json!({"order_by": order(&column(None, "missing"))}),
+    ))
+    .expect_err("ORDER BY non risolto");
+    assert_eq!(error.message, NAME_UNRESOLVED);
+    assert_eq!(error.category, crate::ErrorCategory::InvalidPlan);
 }
 
 /// Senza catalogo la visita rifiuta soltanto cio che sa geometrico da se,
@@ -846,61 +891,44 @@ fn a_binary_column_is_geometric_only_when_derived() {
     }
 }
 
-/// Regola C (quattordicesima lettura del 25/10): una lettura risolve un nome
-/// di colonna come il server: il nome esatto, altrimenti l'unico che lo
-/// incontra senza maiuscole; con piu candidati e nessun nome esatto si
-/// rifiuta. Prima la lettura di SQL Server prendeva il primo: con `W
-/// varbinary` e `w nvarchar`, `w = Bytes` passava.
+/// Regola A (quindicesima lettura del 25/10): una lettura risolve un nome di
+/// colonna soltanto per byte ([`exact_column`]); un nome che il server
+/// legherebbe con la collation non si piega dal lato del client, e la lettura
+/// lo rifiuta come colonna assente. Fino alla quattordicesima lettura si
+/// prendeva il primo che lo incontrava senza maiuscole, poi l'unico.
 #[test]
-fn un_nome_si_risolve_come_lo_risolve_il_server() {
-    let columns = [
-        "W".to_owned(),
-        "w".to_owned(),
-        "id".to_owned(),
-        "Ab".to_owned(),
-        "aB".to_owned(),
-    ];
-    for (field, expected) in [("w", Some(1)), ("W", Some(0)), ("ID", Some(2)), ("x", None)] {
+fn un_nome_si_risolve_soltanto_per_byte() {
+    let columns = ["W".to_owned(), "w".to_owned(), "id".to_owned()];
+    for (field, expected) in [("w", Some(1)), ("W", Some(0)), ("ID", None), ("x", None)] {
         assert_eq!(
-            folded_column(ProviderKind::Sqlserver, &columns, String::as_str, field)
-                .expect("risolto"),
+            exact_column(&columns, String::as_str, field),
             expected.map(|index| &columns[index]),
             "{field}"
         );
     }
-    let error = folded_column(ProviderKind::Sqlserver, &columns, String::as_str, "ab")
-        .expect_err("due colonne, nessun nome esatto");
-    assert_eq!(error.message, AMBIGUOUS_NAME_SHAPE);
-    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
     let family = |field: &str| {
-        Ok(
-            folded_column(ProviderKind::Sqlserver, &columns, String::as_str, field)?.map(
-                |column| {
-                    if column == "W" {
-                        OperandFamily::Binary
-                    } else {
-                        OperandFamily::Text
-                    }
-                },
-            ),
-        )
+        Ok(exact_column(&columns, String::as_str, field).map(|column| {
+            if column == "W" {
+                (OperandFamily::Binary, None)
+            } else {
+                (OperandFamily::Text, None)
+            }
+        }))
     };
     let mut bytes = ParameterFamilies::default();
     bytes.insert("p", OperandFamily::Binary);
-    for (field, message) in [("w", OPERAND_FAMILY_MISMATCH), ("ab", AMBIGUOUS_NAME_SHAPE)] {
-        let filter = FilterExpression::Eq {
-            field: field.to_owned(),
-            parameter: "p".to_owned(),
-        };
-        let error = ensure_scalar_filter_fields(
-            ProviderKind::Sqlserver,
-            Some(&filter),
-            &[],
-            |_| false,
-            family,
-            &bytes,
-        )
-        .expect_err(field);
-        assert_eq!(error.message, message, "{field}");
-    }
+    let filter = FilterExpression::Eq {
+        field: "w".to_owned(),
+        parameter: "p".to_owned(),
+    };
+    let error = ensure_scalar_filter_fields(
+        ProviderKind::Sqlserver,
+        Some(&filter),
+        &[],
+        |_| false,
+        family,
+        &bytes,
+    )
+    .expect_err("w");
+    assert_eq!(error.message, OPERAND_FAMILY_MISMATCH);
 }

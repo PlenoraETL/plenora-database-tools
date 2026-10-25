@@ -155,7 +155,7 @@ async fn verify_scalar_fields(
                 .iter()
                 .flatten()
                 .find(|column| column.name == field)
-                .map(|column| column.column_type.family))
+                .map(plenora_database_core::spatial_operand::CatalogColumn::field_family))
         },
         &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
     )

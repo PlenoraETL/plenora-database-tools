@@ -243,6 +243,16 @@ fn i_limiti_del_cast_valgono_soltanto_dove_si_rende() {
 
 #[test]
 fn i_decimali_che_decimal_38_10_tiene() {
+    let decimal_fits = |text: &str| {
+        crate::cast_table::value_fits(
+            ProviderKind::Postgres,
+            &crate::cast_table::ValueFact::of(&ParameterValue::Decimal(text.to_owned())),
+            &crate::cast_table::rendered_target(
+                ProviderKind::Postgres,
+                QueryParameterType::Decimal,
+            ),
+        )
+    };
     for (text, fits) in [
         ("0", true),
         ("-1.5", true),

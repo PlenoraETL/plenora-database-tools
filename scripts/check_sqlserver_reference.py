@@ -147,6 +147,7 @@ def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
         environment.setdefault("PLENORA_SQLSERVER_HOST", "127.0.0.1")
         environment.setdefault("PLENORA_SQLSERVER_DATABASE", "dataflow_test")
         environment.setdefault("PLENORA_SQLSERVER_CS_DATABASE", "dataflow_cs")
+        environment.setdefault("PLENORA_SQLSERVER_AI_DATABASE", "dataflow_ai")
         environment.setdefault("PLENORA_SQLSERVER_USER", "dataflow")
         environment.setdefault("PLENORA_SQLSERVER_PASSWORD", DEFAULT_PASSWORD)
         environment["PLENORA_SQLSERVER_PRIVATE_CA"] = str(PRIVATE_CA)
@@ -175,6 +176,10 @@ def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
         # Il database CS di docker/sqlserver/init/002: senza, i due test live
         # sulle regole di nome di un database case sensitive fallirebbero.
         "PLENORA_SQLSERVER_CS_DATABASE=dataflow_cs",
+        "-e",
+        # Il database CI_AI di docker/sqlserver/init/003: il legame dei nomi
+        # del server con la collation (regola A).
+        "PLENORA_SQLSERVER_AI_DATABASE=dataflow_ai",
         "-e",
         "PLENORA_SQLSERVER_USER=dataflow",
         "-e",

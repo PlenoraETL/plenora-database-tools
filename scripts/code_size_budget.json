@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 120839,
-  "max_code_lines": 97292,
-  "rationale": "Quattordicesima lettura del 25/10: regola T (typed_parameter.rs: un parametro tipizzato accetta soltanto i valori del suo tipo, una sola forma resa per query e predicati delle mutazioni), regola B sui discendenti (PostgreSQL pg_inherits, tabelle esterne; MySQL MERGE/FEDERATED/CONNECT/SPIDER), nomi di colonna risolti come il server (folded_column), bind posizionali allineati; prove offline e live per provider. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 120171 -> 120839 (+668), righe di codice 96893 -> 97292 (+399). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 122878,
+  "max_code_lines": 98771,
+  "rationale": "Quindicesima lettura del 25/10: regola A (i nomi di colonna li lega il server: SQL Server con COLUMNPROPERTY e la collation del database, MySQL/MariaDB con i metadati del prepare; un riferimento non risolto si rifiuta in ogni piano), regola B del mondo chiuso (la famiglia «altra» con l'identita del tipo), regola C (cast_table.rs: la tabella dei CAST resi per dialetto, valori e colonne ammessi soltanto esatti, Db2 DECIMAL(31, 10)); i tipi del catalogo in ogni provider; prove offline e live per provider. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 120839 -> 122878 (+2039), righe di codice 97292 -> 98771 (+1479). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

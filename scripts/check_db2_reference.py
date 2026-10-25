@@ -69,6 +69,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_binary_columns_of_derived_relations_are_judged_geometric",
         "live_server_computed_binary_columns_are_judged_geometric",
         "live_typed_parameters_refuse_values_of_another_type",
+        "live_rilettura_quindici_cast_e_nomi",
     }
 )
 

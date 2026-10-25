@@ -105,11 +105,14 @@ const CURRENT_SCHEMA_SQL: &str = "SELECT CURRENT SCHEMA FROM SYSIBM.SYSDUMMY1";
 const RELATION_SQL: &str = "SELECT TABSCHEMA, TABNAME, TYPE, BASE_TABSCHEMA, BASE_TABNAME \
     FROM SYSCAT.TABLES WHERE TABSCHEMA = ? AND TABNAME = ?";
 
-/// Le colonne, con `FOR BIT DATA` (`CODEPAGE` 0) e la colonna generata
-/// (`GENERATED` `A` o `D`; vuoto, uno spazio, se non lo e).
+/// Le colonne, con `FOR BIT DATA` (`CODEPAGE` 0), la colonna generata
+/// (`GENERATED` `A` o `D`; vuoto, uno spazio, se non lo e), la lunghezza
+/// (la precisione di un decimale) e la scala (le cifre frazionarie di un
+/// timestamp) per la regola C (`plenora_database_core::cast_table`).
 const COLUMNS_SQL: &str = "SELECT TABSCHEMA, TABNAME, COLNAME, TYPESCHEMA, TYPENAME, \
     CASE WHEN CODEPAGE = 0 THEN 'Y' ELSE 'N' END, \
-    CASE WHEN GENERATED IN ('A', 'D') THEN 'Y' ELSE 'N' END \
+    CASE WHEN GENERATED IN ('A', 'D') THEN 'Y' ELSE 'N' END, \
+    VARCHAR(LENGTH), VARCHAR(SCALE) \
     FROM SYSCAT.COLUMNS WHERE TABSCHEMA = ? AND TABNAME = ? ORDER BY COLNO";
 
 const DATATYPE_SQL: &str = "SELECT TYPESCHEMA, TYPENAME, METATYPE, SOURCESCHEMA, SOURCENAME, \
@@ -161,6 +164,9 @@ pub struct ColumnRow {
     pub type_name: QualifiedName,
     pub bit_data: bool,
     pub generated: bool,
+    /// `LENGTH` e `SCALE` di `SYSCAT.COLUMNS`.
+    pub length: Option<u64>,
+    pub scale: Option<i64>,
 }
 
 /// Un tipo dell'utente di `SYSCAT.DATATYPES`: il metatipo e, per un tipo
@@ -324,11 +330,38 @@ fn relation_columns(
     let mut columns = Vec::with_capacity(rows.len());
     for column in rows {
         let family = types.family(catalog, &column.type_name, column.bit_data)?;
-        columns.push(CatalogColumn::new(
-            column.name,
-            ColumnOrigin::of(derived, column.generated),
-            family,
-        ));
+        // Il tipo per la regola C: un tipo di `SYSIBM` per nome, con la
+        // lunghezza (la precisione di un decimale) e la scala; un tipo
+        // dell'utente non si classifica (nessun `CAST` si prova). L'identita e il nome qualificato (regola B).
+        let system = column.type_name.0.trim_end() == "SYSIBM";
+        let decimal = matches!(
+            column.type_name.1.as_str(),
+            "DECIMAL" | "NUMERIC" | "DECFLOAT"
+        );
+        let catalog_type = plenora_database_core::cast_table::CatalogType {
+            // Un `CHAR`/`VARCHAR FOR BIT DATA` e un binario della sua
+            // lunghezza (`CODEPAGE` e 0 anche per i tipi non carattere:
+            // conta soltanto per i caratteri).
+            name: match (system, column.bit_data, column.type_name.1.as_str()) {
+                (true, true, "CHARACTER") => "binary".to_owned(),
+                (true, true, "VARCHAR") => "varbinary".to_owned(),
+                (true, _, name) => name.to_ascii_lowercase(),
+                _ => String::new(),
+            },
+            length: column.length.filter(|_| !decimal),
+            precision: column.length.filter(|_| decimal),
+            scale: column.scale,
+            ..plenora_database_core::cast_table::CatalogType::default()
+        };
+        let identity = format!("{}.{}", column.type_name.0.trim_end(), column.type_name.1);
+        columns.push(
+            CatalogColumn::new(
+                column.name,
+                ColumnOrigin::of(derived, column.generated),
+                family,
+            )
+            .with_type(catalog_type, &identity),
+        );
     }
     Ok(RelationColumns::Known(columns))
 }
@@ -478,6 +511,18 @@ fn flag(row: &[Option<String>], index: usize, message: &'static str) -> Result<b
     }
 }
 
+/// Un numero del catalogo reso come testo; `None` per un `NULL`.
+fn number<T: std::str::FromStr>(row: &[Option<String>], index: usize) -> Result<Option<T>> {
+    cell(row, index)
+        .map(|value| {
+            value
+                .trim()
+                .parse()
+                .map_err(|_| malformed("numero del catalogo Db2 non valido"))
+        })
+        .transpose()
+}
+
 fn malformed(message: &'static str) -> DatabaseError {
     DatabaseError::new(
         ErrorCategory::Protocol,
@@ -525,7 +570,7 @@ impl Db2Catalog for OdbcCatalog<'_, '_> {
     }
 
     fn columns(&mut self, schema: &str, name: &str) -> Result<Vec<ColumnRow>> {
-        let rows = self.rows(COLUMNS_SQL, &[schema, name], 7)?;
+        let rows = self.rows(COLUMNS_SQL, &[schema, name], 9)?;
         exact(&rows, schema, name)
             .map(|row| {
                 Ok(ColumnRow {
@@ -536,6 +581,8 @@ impl Db2Catalog for OdbcCatalog<'_, '_> {
                         .ok_or_else(|| malformed("colonna Db2 senza tipo"))?,
                     bit_data: flag(row, 5, "colonna Db2 senza CODEPAGE")?,
                     generated: flag(row, 6, "colonna Db2 senza GENERATED")?,
+                    length: number(row, 7)?,
+                    scale: number(row, 8)?,
                 })
             })
             .collect()

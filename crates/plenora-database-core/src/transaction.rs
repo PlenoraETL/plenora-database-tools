@@ -369,12 +369,18 @@ pub trait TransactionScope: Send {
     /// Non e SQL del chiamante: non tocca il marcatore di
     /// [`Self::begin_caller_sql`].
     ///
+    /// `names` sono i nomi di colonna che il piano scrive
+    /// (`spatial_operand::ScalarOperands::names`): dove il server lega i nomi
+    /// con regole proprie (`spatial_operand::server_resolves_names`) il
+    /// provider li manda al server e registra le colonne che lega (regola A).
+    ///
     /// Il default non legge niente: un catalogo vuoto, in cui ogni relazione
     /// e `Unknown`. A mondo chiuso, un riferimento in posizione di operando su
     /// una relazione che non si conosce si rifiuta.
     fn operand_catalog<'a>(
         &'a mut self,
         _relations: &'a [(Option<String>, String)],
+        _names: &'a [String],
         _cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, crate::spatial_operand::OperandCatalog> {
         let provider = self.provider_kind();

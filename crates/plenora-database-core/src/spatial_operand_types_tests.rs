@@ -102,8 +102,15 @@ fn i_valori_posizionali_si_legano_ai_nomi() {
     ];
     let families = ParameterFamilies::from_positional(ProviderKind::Postgres, &names, &values)
         .expect("legame");
-    assert_eq!(families.get("a"), Some(OperandFamily::Numeric));
-    assert_eq!(families.get("b"), Some(OperandFamily::Text));
+    let postgres = ProviderKind::Postgres;
+    assert_eq!(
+        families.get(postgres, "a"),
+        Some((OperandFamily::Numeric, None))
+    );
+    assert_eq!(
+        families.get(postgres, "b"),
+        Some((OperandFamily::Text, None))
+    );
     let conflicting = ParameterFamilies::from_positional(
         ProviderKind::Postgres,
         &names,
@@ -114,8 +121,11 @@ fn i_valori_posizionali_si_legano_ai_nomi() {
         ],
     )
     .expect("legame");
-    assert_eq!(conflicting.get("a"), None);
-    assert_eq!(conflicting.get("b"), Some(OperandFamily::Text));
+    assert_eq!(conflicting.get(postgres, "a"), None);
+    assert_eq!(
+        conflicting.get(postgres, "b"),
+        Some((OperandFamily::Text, None))
+    );
     // Un valore in meno o in piu non si lega: si rifiuta, anche dove il
     // driver accetterebbe un parametro in piu (`sp_executesql`).
     for values in [
@@ -137,29 +147,68 @@ fn catalogo(prodotto: ProviderKind) -> OperandCatalog {
     use ColumnOrigin::{Derived, Stored};
     use OperandFamily::{Binary, Numeric, Other, Temporal, Text};
     let mut catalogo = OperandCatalog::new(prodotto);
+    let colonna = |name: &str, origin, family| {
+        let (catalog, identity) = tipo(prodotto, family);
+        CatalogColumn::new(name, origin, family).with_type(catalog, &identity)
+    };
     catalogo.insert(
         Some("s".to_owned()),
         "f".to_owned(),
         RelationColumns::Known(vec![
-            CatalogColumn::new("id", Stored, Numeric),
-            CatalogColumn::new("name", Stored, Text),
-            CatalogColumn::new("b", Stored, Binary),
-            CatalogColumn::new("w", Derived, Binary),
-            CatalogColumn::new("ts", Stored, Temporal),
-            CatalogColumn::new("u", Stored, Other),
-            CatalogColumn::new("wt", Derived, Text),
+            colonna("id", Stored, Numeric),
+            colonna("name", Stored, Text),
+            colonna("b", Stored, Binary),
+            colonna("w", Derived, Binary),
+            colonna("ts", Stored, Temporal),
+            colonna("u", Stored, Other),
+            colonna("wt", Derived, Text),
         ]),
     );
     catalogo.insert(
         Some("s".to_owned()),
         "v".to_owned(),
         RelationColumns::Known(vec![
-            CatalogColumn::new("id", Derived, Numeric),
-            CatalogColumn::new("x", Derived, Text),
-            CatalogColumn::new("vb", Derived, Binary),
+            colonna("id", Derived, Numeric),
+            colonna("x", Derived, Text),
+            colonna("vb", Derived, Binary),
         ]),
     );
     catalogo
+}
+
+/// Il tipo del catalogo di prova per famiglia, con il nome del provider:
+/// un intero a 64 bit, un testo, un binario e un timestamp senza limiti,
+/// un uuid.
+fn tipo(prodotto: ProviderKind, family: OperandFamily) -> (crate::cast_table::CatalogType, String) {
+    use ProviderKind as P;
+    let name = match (family, prodotto) {
+        (OperandFamily::Numeric, P::Oracle) => "number",
+        (OperandFamily::Numeric, P::Postgres) => "int8",
+        (OperandFamily::Numeric, _) => "bigint",
+        (OperandFamily::Text, P::Postgres | P::Mysql | P::Mariadb) => "text",
+        (OperandFamily::Text, P::Sqlserver) => "nvarchar",
+        (OperandFamily::Text, P::Db2) => "varchar",
+        (OperandFamily::Text, _) => "varchar2",
+        (OperandFamily::Binary, P::Postgres) => "bytea",
+        (OperandFamily::Binary, P::Oracle) => "raw",
+        (OperandFamily::Binary, _) => "varbinary",
+        (OperandFamily::Temporal, P::Sqlserver) => "datetime2",
+        (OperandFamily::Temporal, P::Mysql | P::Mariadb) => "datetime",
+        (OperandFamily::Temporal, _) => "timestamp",
+        (OperandFamily::Other, P::Sqlserver) => "uniqueidentifier",
+        _ => "uuid",
+    };
+    let catalog = crate::cast_table::CatalogType {
+        name: name.to_owned(),
+        precision: (name == "number").then_some(19),
+        scale: (name == "number").then_some(0),
+        length: matches!(prodotto, P::Oracle | P::Db2)
+            .then_some(16)
+            .filter(|_| family != OperandFamily::Numeric),
+        datetime_precision: Some(6),
+        ..crate::cast_table::CatalogType::default()
+    };
+    (catalog, name.to_owned())
 }
 
 fn colonna(relation: &str, field: &str) -> Value {
@@ -200,6 +249,7 @@ fn valori() -> ParameterFamilies {
             ("d", ParameterValue::Decimal("1.5".to_owned())),
             ("s", ParameterValue::String("a".to_owned())),
             ("y", ParameterValue::Bytes(vec![1])),
+            ("e", ParameterValue::Decimal("0.12345678901".to_owned())),
             ("t", ParameterValue::Date("2026-10-25".to_owned())),
             (
                 "z",
@@ -229,8 +279,8 @@ fn giudica(prodotto: ProviderKind, operation: &QueryOperation) -> Result<()> {
     scalar_operands(prodotto, operation)?.judge_bound(&catalogo(prodotto), &valori())
 }
 
-/// Dentro una famiglia il confronto resta ammesso; la famiglia «altra» e un
-/// parametro senza valore noto non si giudicano.
+/// Dentro una famiglia il confronto resta ammesso; un parametro senza valore
+/// noto non si giudica.
 #[test]
 fn i_confronti_dentro_una_famiglia_sono_ammessi() {
     let f = |field| colonna("f", field);
@@ -244,8 +294,8 @@ fn i_confronti_dentro_una_famiglia_sono_ammessi() {
             json!({"filter": uguale(&f("id"), &parametro("d"))}),
         ),
         (
-            "intero e CAST float",
-            json!({"filter": uguale(&f("id"), &cast(&parametro("s"), "float"))}),
+            "intero e CAST float di un intero",
+            json!({"filter": uguale(&f("id"), &cast(&parametro("i"), "float"))}),
         ),
         (
             "testo e testo",
@@ -264,16 +314,8 @@ fn i_confronti_dentro_una_famiglia_sono_ammessi() {
             json!({"filter": uguale(&f("b"), &parametro("y"))}),
         ),
         (
-            "binario memorizzato e CAST binario di un parametro",
-            json!({"filter": uguale(&f("b"), &cast(&parametro("s"), "binary"))}),
-        ),
-        (
-            "altra e testo",
-            json!({"filter": uguale(&f("u"), &parametro("q"))}),
-        ),
-        (
-            "altra e byte",
-            json!({"filter": uguale(&f("u"), &parametro("y"))}),
+            "binario memorizzato e CAST binario di un parametro binario",
+            json!({"filter": uguale(&f("b"), &cast(&parametro("y"), "binary"))}),
         ),
         (
             "parametro senza valore",
@@ -304,8 +346,8 @@ fn i_confronti_dentro_una_famiglia_sono_ammessi() {
             json!({"filter": uguale(&f("wt"), &parametro("s"))}),
         ),
         (
-            "CAST a testo di un binario derivato, in projection",
-            json!({"projection": [{"expression": cast(&f("w"), "string"), "alias": "w"}]}),
+            "CAST a testo di un testo, in projection",
+            json!({"projection": [{"expression": cast(&f("name"), "string"), "alias": "w"}]}),
         ),
     ];
     for prodotto in PRODOTTI {
@@ -602,9 +644,9 @@ fn i_letterali_portable_hanno_la_loro_famiglia() {
 fn la_lettura_giudica_le_famiglie_dei_campi() {
     let family = |field: &str| {
         Ok(match field {
-            "id" => Some(OperandFamily::Numeric),
-            "name" => Some(OperandFamily::Text),
-            "u" => Some(OperandFamily::Other),
+            "id" => Some((OperandFamily::Numeric, None)),
+            "name" => Some((OperandFamily::Text, None)),
+            "u" => Some((OperandFamily::Other, Some("uuid".to_owned()))),
             _ => None,
         })
     };
@@ -629,7 +671,10 @@ fn la_lettura_giudica_le_famiglie_dei_campi() {
     };
     judged(eq("id", "d")).expect("intero e decimale");
     judged(eq("name", "s")).expect("testo e testo");
-    judged(eq("u", "y")).expect("altra");
+    // Regola B (quindicesima lettura del 25/10): «altra» con un'altra
+    // famiglia si rifiuta, anche nella lettura.
+    assert_conversione(judged(eq("u", "y")), "altra e byte");
+    assert_conversione(judged(eq("u", "i")), "altra e numero");
     judged(like("name")).expect("LIKE su testo");
     assert_conversione(judged(eq("name", "y")), "testo e byte");
     assert_conversione(judged(eq("id", "s")), "numero e testo");
@@ -654,7 +699,7 @@ fn un_nome_legato_a_famiglie_diverse_si_rifiuta() {
     ];
     let families = ParameterFamilies::from_positional(ProviderKind::Postgres, &names, &values)
         .expect("legame");
-    assert_eq!(families.get("p"), None);
+    assert_eq!(families.get(ProviderKind::Postgres, "p"), None);
     let operation = piano(
         "f",
         &json!({"filter": {"kind": "or", "arguments": [
@@ -703,5 +748,95 @@ fn st_relate_a_due_argomenti_e_un_testo_derivato() {
             ),
         )
         .unwrap_or_else(|error| panic!("{prodotto:?} ST_Relate e testo: {error:?}"));
+    }
+}
+
+/// Regola B (quindicesima lettura del 25/10): «altra» con un'altra famiglia
+/// si rifiuta; con «altra» soltanto se l'identita e la stessa. Un uuid e
+/// della famiglia «altra» dove il provider lo lega nel tipo uuid
+/// (`PostgreSQL`, SQL Server), un testo altrove.
+#[test]
+fn la_famiglia_altra_si_confronta_soltanto_con_la_stessa_identita() {
+    let f = |field| colonna("f", field);
+    for prodotto in PRODOTTI {
+        let uuid_bound_as_uuid =
+            matches!(prodotto, ProviderKind::Postgres | ProviderKind::Sqlserver);
+        let uuid = giudica(
+            prodotto,
+            &piano("f", &json!({"filter": uguale(&f("u"), &parametro("q"))})),
+        );
+        if uuid_bound_as_uuid {
+            uuid.unwrap_or_else(|error| panic!("{prodotto:?}: {error:?}"));
+        } else {
+            assert_conversione(uuid, "uuid legato come testo e colonna uuid");
+        }
+        for (form, extra) in [
+            (
+                "altra e byte",
+                json!({"filter": uguale(&f("u"), &parametro("y"))}),
+            ),
+            (
+                "altra e numero",
+                json!({"filter": uguale(&f("u"), &parametro("i"))}),
+            ),
+            (
+                "numero e uuid",
+                json!({"filter": uguale(&f("id"), &parametro("q"))}),
+            ),
+            (
+                "numero e uuid tipizzato",
+                json!({"filter": uguale(&f("id"), &json!({"kind": "typed_parameter", "name": "q", "parameter_type": "uuid"}))}),
+            ),
+        ] {
+            assert_conversione(
+                giudica(prodotto, &piano("f", &extra)),
+                &format!("{prodotto:?} {form}"),
+            );
+        }
+    }
+}
+
+/// Regola C (quindicesima lettura del 25/10): un `CAST` reso dalla libreria
+/// si ammette soltanto esatto; un testo a numero, un binario a testo, un
+/// testo a binario non si provano.
+#[test]
+fn un_cast_che_non_si_prova_esatto_si_rifiuta() {
+    let f = |field| colonna("f", field);
+    for prodotto in PRODOTTI {
+        for (form, extra) in [
+            (
+                "testo a float",
+                json!({"filter": uguale(&f("id"), &cast(&parametro("s"), "float"))}),
+            ),
+            (
+                "testo a binario",
+                json!({"filter": uguale(&f("b"), &cast(&parametro("s"), "binary"))}),
+            ),
+            (
+                "binario a testo in projection",
+                json!({"projection": [{"expression": cast(&f("b"), "string"), "alias": "w"}]}),
+            ),
+            (
+                "timestamp a data",
+                json!({"filter": uguale(&cast(&f("ts"), "date"), &parametro("t"))}),
+            ),
+            (
+                "decimale oltre la scala",
+                json!({"filter": uguale(&f("id"), &cast(&parametro("e"), "decimal"))}),
+            ),
+        ] {
+            let error =
+                giudica(prodotto, &piano("f", &extra)).expect_err(&format!("{prodotto:?} {form}"));
+            assert_eq!(
+                error.message,
+                crate::cast_table::CAST_NOT_EXACT,
+                "{prodotto:?} {form}"
+            );
+            assert_eq!(
+                error.category,
+                ErrorCategory::InvalidPlan,
+                "{prodotto:?} {form}"
+            );
+        }
     }
 }

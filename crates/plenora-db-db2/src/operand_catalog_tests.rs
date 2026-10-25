@@ -69,6 +69,8 @@ impl Finto {
                     type_name: name(type_schema, type_name),
                     bit_data: false,
                     generated: false,
+                    length: None,
+                    scale: None,
                 })
                 .collect(),
         );
@@ -561,6 +563,8 @@ fn ogni_tipo_binario_calcolato_da_una_vista_si_giudica_geometrico() {
                     type_name: name(schema, type_name),
                     bit_data: *bit_data,
                     generated: false,
+                    length: None,
+                    scale: None,
                 })
                 .collect(),
         );

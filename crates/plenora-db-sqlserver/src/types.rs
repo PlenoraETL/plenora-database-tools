@@ -387,14 +387,14 @@ fn ensure_scalar_fields(
     columns: &[SqlServerColumnSpec],
     description: &SqlServerObjectDescription,
 ) -> Result<()> {
-    use plenora_database_core::spatial_operand::{catalog_column_is_geometric, NameRule};
+    use plenora_database_core::spatial_operand::catalog_column_is_geometric;
     plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
         plenora_database_core::plan::ProviderKind::Sqlserver,
         operation.filter.as_ref(),
         &operation.order_by,
         |field| {
             columns.iter().any(|column| {
-                NameRule::Folded.matches(&column.name, field)
+                column.name == field
                     && match column.kind {
                         SqlServerColumnKind::Geometry | SqlServerColumnKind::Geography => true,
                         _ => description
@@ -459,20 +459,21 @@ pub fn ensure_read_families(
     operation: &ReadOperation,
     parameters: &plenora_database_core::provider::ParameterBag,
 ) -> Result<()> {
-    use plenora_database_core::spatial_operand::{folded_column, ParameterFamilies};
+    use plenora_database_core::spatial_operand::{exact_column, ParameterFamilies};
     plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
         plenora_database_core::plan::ProviderKind::Sqlserver,
         operation.filter.as_ref(),
         &operation.order_by,
         |_| false,
         |field| {
-            Ok(folded_column(
-                plenora_database_core::plan::ProviderKind::Sqlserver,
-                &description.columns,
-                |column| &column.name,
-                field,
-            )?
-            .map(read_family))
+            Ok(
+                exact_column(&description.columns, |column| &column.name, field).map(|column| {
+                    (
+                        read_family(column),
+                        Some(column.native_type.to_ascii_lowercase()),
+                    )
+                }),
+            )
         },
         &ParameterFamilies::from_bag(parameters),
     )

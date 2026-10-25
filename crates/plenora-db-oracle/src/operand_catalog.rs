@@ -113,7 +113,10 @@ macro_rules! relation_sql {
             "SELECT O.OWNER, O.OBJECT_TYPE, C.COLUMN_NAME, C.DATA_TYPE, ",
             "COALESCE((SELECT S.TABLE_OWNER FROM ALL_SYNONYMS S WHERE S.OWNER = C.DATA_TYPE_OWNER ",
             "AND S.SYNONYM_NAME = C.DATA_TYPE AND S.TABLE_NAME = C.DATA_TYPE AND S.DB_LINK IS NULL), ",
-            "C.DATA_TYPE_OWNER), C.VIRTUAL_COLUMN ",
+            "C.DATA_TYPE_OWNER), C.VIRTUAL_COLUMN, ",
+            "TO_CHAR(CASE WHEN C.DATA_TYPE = 'RAW' THEN C.DATA_LENGTH ",
+            "WHEN C.CHAR_LENGTH > 0 THEN C.CHAR_LENGTH END), ",
+            "TO_CHAR(C.DATA_PRECISION), TO_CHAR(C.DATA_SCALE) ",
             "FROM ALL_OBJECTS O LEFT JOIN ALL_TAB_COLS C ON O.OBJECT_TYPE IN ('TABLE', 'VIEW') ",
             "AND C.OWNER = O.OWNER AND C.TABLE_NAME = O.OBJECT_NAME AND C.USER_GENERATED = 'YES' ",
             "WHERE O.OWNER = ",
@@ -150,13 +153,18 @@ pub struct SynonymRow {
 }
 
 /// Una colonna di `ALL_TAB_COLS`: nome, tipo, proprietario risolto del
-/// tipo, colonna virtuale.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// tipo, colonna virtuale; la lunghezza (in caratteri per un testo, in byte
+/// per un `RAW`), la precisione e la scala per la regola C
+/// (`plenora_database_core::cast_table`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ColumnRow {
     pub name: String,
     pub data_type: String,
     pub data_type_owner: Option<String>,
     pub virtual_column: bool,
+    pub length: Option<u64>,
+    pub precision: Option<u64>,
+    pub scale: Option<i64>,
 }
 
 /// Una riga di [`RELATION_SQL`]: il proprietario, il tipo di oggetto
@@ -238,7 +246,7 @@ pub async fn ensure_scalar_read_fields(
             RelationColumns::Known(_) => column(field).is_some_and(CatalogColumn::is_geometric),
             _ => true,
         },
-        |field| Ok(column(field).map(|column| column.column_type.family)),
+        |field| Ok(column(field).map(CatalogColumn::field_family)),
         &ParameterFamilies::from_bag(parameters),
     )
 }
@@ -327,11 +335,25 @@ fn known_columns(rows: &[ObjectRow]) -> RelationColumns {
         .iter()
         .filter_map(|row| row.column.as_ref())
         .map(|column| {
+            // L'identita: il tipo con il suo proprietario, per un tipo
+            // dell'utente; il nome predefinito altrimenti (regola B).
+            let identity = column.data_type_owner.as_deref().map_or_else(
+                || column.data_type.clone(),
+                |owner| format!("{owner}.{}", column.data_type),
+            );
+            let catalog = plenora_database_core::cast_table::CatalogType {
+                name: column.data_type.clone(),
+                length: column.length,
+                precision: column.precision,
+                scale: column.scale,
+                ..plenora_database_core::cast_table::CatalogType::default()
+            };
             CatalogColumn::new(
                 column.name.clone(),
                 ColumnOrigin::of(derived, column.virtual_column),
                 column_family(&column.data_type, column.data_type_owner.as_deref()),
             )
+            .with_type(catalog, &identity)
         })
         .collect();
     if columns.is_empty() {
@@ -421,6 +443,21 @@ fn required(
     text(row, index)?.ok_or_else(|| malformed(message))
 }
 
+/// Un numero del catalogo reso con `TO_CHAR`; `None` per un `NULL`.
+fn number<T: std::str::FromStr>(
+    row: &plenora_database_core::row::Row,
+    index: usize,
+) -> Result<Option<T>> {
+    text(row, index)?
+        .map(|value| {
+            value
+                .trim()
+                .parse()
+                .map_err(|_| malformed("numero del catalogo Oracle non valido"))
+        })
+        .transpose()
+}
+
 fn malformed(message: &'static str) -> DatabaseError {
     DatabaseError::new(
         ErrorCategory::Protocol,
@@ -454,6 +491,9 @@ impl OracleCatalog for ConnectionCatalog<'_> {
                             "NO" => false,
                             _ => return Err(malformed("VIRTUAL_COLUMN Oracle non riconosciuta")),
                         },
+                        length: number(row, 6)?,
+                        precision: number(row, 7)?,
+                        scale: number(row, 8)?,
                     }),
                     None => None,
                 };

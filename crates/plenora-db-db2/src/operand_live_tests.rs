@@ -1235,3 +1235,195 @@ async fn live_typed_parameters_refuse_values_of_another_type() {
         .await
         .expect("pulizia regola T Db2");
 }
+
+/// Quindicesima lettura del 25/10 sul Db2 reale, regole C e A.
+///
+/// - **Regola C.** Db2 non ha `DECIMAL(38, 10)` (precisione massima 31,
+///   `CAST(? AS DECIMAL(38, 10))` fallisce, misurato): la libreria rende
+///   `DECIMAL(31, 10)`, che arrotonda `0.12345678901` e ritrova
+///   `DECIMAL(30, 12)` `0.123456789` (misurato). `D = CAST(:p AS decimal)`
+///   oltre la scala e il `CAST` di una colonna `DECIMAL(30, 12)` si rifiutano
+///   (`CAST_NOT_EXACT`); entro la scala e da `DECIMAL(20, 4)` restano.
+///   `CAST(C AS VARCHAR(32672))` di un `CLOB` di 40000 caratteri tronca senza
+///   errore (misurato): il `CAST` a `string` di un `CLOB` si
+///   rifiuta. `TIMESTAMP WITH TIME ZONE` non esiste (la query fallisce, misurato): un
+///   `timestamp_tz` tipizzato si rifiuta (`TYPED_PARAMETER_MISMATCH`).
+/// - **Regola A.** Il server ignora gli spazi finali di un identificatore:
+///   `T.M` lega la colonna `"M "` (misurato), e su f4989dc il riferimento non
+///   si giudicava in un piano senza geometrie (`T.M = '01'` rendeva la riga
+///   per conversione); ora si rifiuta (`NAME_UNRESOLVED`), come `T."k"` per
+///   la colonna `K`.
+#[tokio::test]
+#[ignore = "richiede Db2 live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_rilettura_quindici_cast_e_nomi() {
+    use plenora_database_core::cast_table::CAST_NOT_EXACT;
+    use plenora_database_core::spatial_operand::NAME_UNRESOLVED;
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    let provider = provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let _ = provider
+        .run_ddl(&secret, "DROP TABLE PLENORA.R15_T", &cancellation)
+        .await;
+    for sql in [
+        "CREATE TABLE PLENORA.R15_T (ID INTEGER NOT NULL PRIMARY KEY, D DECIMAL(30, 12) NOT NULL, \
+         E DECIMAL(20, 4) NOT NULL, C CLOB(100K) NOT NULL, \"M \" INTEGER NOT NULL, \
+         K INTEGER NOT NULL, TS TIMESTAMP NOT NULL)",
+        "INSERT INTO PLENORA.R15_T VALUES \
+         (1, 0.123456789, 1.5, REPEAT(CAST('a' AS CLOB(100K)), 40000), 1, 1, '2024-01-01-08.00.00'), \
+         (2, 0.5, 2.5, 'b', 2, 2, '2024-01-01-10.00.00')",
+    ] {
+        provider
+            .run_ddl(&secret, sql, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("preparazione Db2: {error}"));
+    }
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    // La tabella del modulo `cast_table`, rimisurata.
+    let wide = transaction
+        .query(
+            &Statement::new("SELECT ID FROM PLENORA.R15_T WHERE D = CAST(? AS DECIMAL(38, 10))")
+                .with_params(vec![ParameterValue::String("0.5".to_owned())]),
+            &cancellation,
+        )
+        .await
+        .expect_err("DECIMAL(38, 10) su Db2");
+    // L'errore del server, non un rifiuto del giudizio.
+    assert_ne!(wide.category, ErrorCategory::InvalidPlan, "{wide:?}");
+    let rounded = transaction
+        .query(
+            &Statement::new("SELECT ID FROM PLENORA.R15_T WHERE D = CAST(? AS DECIMAL(31, 10))")
+                .with_params(vec![ParameterValue::String("0.12345678901".to_owned())]),
+            &cancellation,
+        )
+        .await
+        .expect("DECIMAL(31, 10)");
+    assert_eq!(
+        identificativi(&rounded),
+        vec!["1".to_owned()],
+        "il CAST arrotonda"
+    );
+    let truncated = transaction
+        .query(
+            &Statement::new(
+                "SELECT LENGTH(CAST(C AS VARCHAR(32672))) AS V FROM PLENORA.R15_T WHERE ID = 1",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("CLOB troncato senza errore");
+    assert_eq!(identificativi(&truncated), vec!["32672".to_owned()]);
+    transaction
+        .query(
+            &Statement::new(
+                "SELECT ID FROM PLENORA.R15_T WHERE TS = CAST(? AS TIMESTAMP WITH TIME ZONE)",
+            )
+            .with_params(vec![ParameterValue::String(
+                "2024-01-01T10:00:00+02:00".to_owned(),
+            )]),
+            &cancellation,
+        )
+        .await
+        .expect_err("TIMESTAMP WITH TIME ZONE su Db2");
+    let trailing = transaction
+        .query(
+            &Statement::new("SELECT ID FROM PLENORA.R15_T WHERE \"M\" = ?")
+                .with_params(vec![ParameterValue::String("01".to_owned())]),
+            &cancellation,
+        )
+        .await
+        .expect("\"M\" lega \"M \"");
+    assert_eq!(identificativi(&trailing), vec!["1".to_owned()]);
+    let _ = transaction.rollback(&cancellation).await;
+
+    let typed = |parameter_type: &str| json!({"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type});
+    let parameter = || json!({"kind": "parameter", "name": "p"});
+    let cast = |expression: Value, target: &str| json!({"kind": "cast", "expression": expression, "target_type": target});
+    let compare = |left: Value, right: Value| json!({"filter": {"kind": "compare", "left": left, "operator": "eq", "right": right}});
+    let plan = |left: Value, right: Value| su(Some("PLENORA"), "R15_T", &compare(left, right));
+    let refused = [
+        (
+            "D = CAST(:p AS decimal) oltre la scala",
+            plan(colonna("T", "D"), cast(parameter(), "decimal")),
+            ParameterValue::Decimal("0.12345678901".to_owned()),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "CAST(D DECIMAL(30, 12) AS decimal) = ?",
+            plan(cast(colonna("T", "D"), "decimal"), typed("decimal")),
+            ParameterValue::Decimal("0.5".to_owned()),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "CAST(C CLOB AS string) = ?",
+            plan(cast(colonna("T", "C"), "string"), typed("string")),
+            ParameterValue::String("b".to_owned()),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "TS = timestamp_tz tipizzato",
+            plan(colonna("T", "TS"), typed("timestamp_tz")),
+            ParameterValue::TimestampTz("2024-01-01T10:00:00+02:00".to_owned()),
+            TYPED_PARAMETER_MISMATCH,
+        ),
+        (
+            "T.M lega \"M \" soltanto per il server",
+            plan(colonna("T", "M"), typed("string")),
+            ParameterValue::String("01".to_owned()),
+            NAME_UNRESOLVED,
+        ),
+        (
+            "T.\"k\" non lega K",
+            plan(colonna("T", "k"), typed("integer")),
+            ParameterValue::I32(1),
+            NAME_UNRESOLVED,
+        ),
+    ];
+    for (form, plan, value, message) in refused {
+        let (sql, judged, _) =
+            esegui(&provider, &secret, &plan, Some(&[value]), &cancellation).await;
+        let error = judged.expect_err(form);
+        assert_eq!(
+            error.category,
+            ErrorCategory::InvalidPlan,
+            "{form} ({sql}): {error:?}"
+        );
+        assert_eq!(error.message, message, "{form} ({sql}): {error:?}");
+    }
+    let admitted = [
+        (
+            "D = CAST(:p AS decimal) entro la scala",
+            plan(colonna("T", "D"), cast(parameter(), "decimal")),
+            ParameterValue::Decimal("0.5".to_owned()),
+            "2",
+        ),
+        (
+            "CAST(E DECIMAL(20, 4) AS decimal) = ?",
+            plan(cast(colonna("T", "E"), "decimal"), typed("decimal")),
+            ParameterValue::Decimal("2.5".to_owned()),
+            "2",
+        ),
+    ];
+    for (form, plan, value, id) in admitted {
+        let (sql, judged, _) =
+            esegui(&provider, &secret, &plan, Some(&[value]), &cancellation).await;
+        assert_eq!(
+            judged.unwrap_or_else(|error| panic!("{form} ({sql}): {error:?}")),
+            vec![id.to_owned()],
+            "{form}"
+        );
+    }
+    provider
+        .run_ddl(&secret, "DROP TABLE PLENORA.R15_T", &cancellation)
+        .await
+        .expect("pulizia");
+}

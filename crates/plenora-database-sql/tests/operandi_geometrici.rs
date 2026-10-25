@@ -166,9 +166,9 @@ fn catalogo(prodotto: ProviderKind) -> OperandCatalog {
         public(),
         "features".to_owned(),
         RelationColumns::Known(vec![
-            CatalogColumn::from_flag("id", false),
+            colonna_di_prova("id", false),
             CatalogColumn::from_flag("g", true),
-            CatalogColumn::from_flag("b", false),
+            colonna_di_prova("b", false),
             CatalogColumn::from_flag("ga", true),
         ]),
     );
@@ -176,8 +176,8 @@ fn catalogo(prodotto: ProviderKind) -> OperandCatalog {
         public(),
         "plain".to_owned(),
         RelationColumns::Known(vec![
-            CatalogColumn::from_flag("id", false),
-            CatalogColumn::from_flag("name", false),
+            colonna_di_prova("id", false),
+            colonna_di_prova("name", false),
         ]),
     );
     catalogo.insert(public(), "syn".to_owned(), RelationColumns::Unknown);
@@ -248,11 +248,13 @@ fn sei_forme(prodotto: ProviderKind) -> Vec<(&'static str, QueryOperation, &'sta
     };
     let centroide_senza_alias = generata(&centroide());
     let testo_senza_alias = generata(&testo(&g));
-    // `MySQL` e `MariaDB` non distinguono le maiuscole nei nomi di colonna:
-    // `G` e la geometria. Altrove (SQL Server secondo la collation) la forma
-    // si rifiuta per la regola N.
+    // Dove il server lega i nomi (regola A) il catalogo di prova lo fa come
+    // un database `CI`: `G` e la geometria. Altrove ogni identificatore e
+    // quotato, e la forma si rifiuta per la regola N.
     let piegata = match prodotto {
-        ProviderKind::Mysql | ProviderKind::Mariadb => GEOMETRY_SCALAR_OPERAND,
+        ProviderKind::Mysql | ProviderKind::Mariadb | ProviderKind::Sqlserver => {
+            GEOMETRY_SCALAR_OPERAND
+        }
         _ => AMBIGUOUS_NAME_SHAPE,
     };
     vec![
@@ -313,8 +315,9 @@ fn sei_forme(prodotto: ProviderKind) -> Vec<(&'static str, QueryOperation, &'sta
 fn le_sei_forme_non_risolte_si_rifiutano_su_ogni_dialetto() {
     for (prodotto, _) in PRODOTTI {
         for (forma, operation, motivo) in sei_forme(prodotto) {
-            let outcome = scalar_operands(prodotto, &operation)
-                .and_then(|operands| operands.judge(&catalogo(prodotto)));
+            let outcome = scalar_operands(prodotto, &operation).and_then(|operands| {
+                operands.judge(&come_il_server(&operands, catalogo(prodotto)))
+            });
             let error = outcome
                 .err()
                 .unwrap_or_else(|| panic!("{prodotto:?} {forma}: ammessa"));
@@ -386,10 +389,6 @@ fn colonne_scalari_e_tabelle_senza_geometrie_restano_ammesse() {
             ),
         ),
         (
-            "plain ORDER BY nome assente",
-            su("plain", &json!({"order_by": ordine(&colonna("missing"))})),
-        ),
-        (
             "plain d.lower generato",
             su_derivata(
                 &su(
@@ -400,10 +399,23 @@ fn colonne_scalari_e_tabelle_senza_geometrie_restano_ammesse() {
             ),
         ),
     ];
+    // Regola A (quindicesima lettura del 25/10): un nome che non si lega si
+    // rifiuta anche senza geometrie, prima del server.
+    let assente = su("plain", &json!({"order_by": ordine(&colonna("missing"))}));
+    for (prodotto, _) in PRODOTTI {
+        let error = scalar_operands(prodotto, &assente)
+            .and_then(|operands| operands.judge(&come_il_server(&operands, catalogo(prodotto))))
+            .expect_err("nome assente");
+        assert_eq!(
+            error.message,
+            plenora_database_core::spatial_operand::NAME_UNRESOLVED,
+            "{prodotto:?}"
+        );
+    }
     for (prodotto, dialect) in PRODOTTI {
         for (forma, operation) in &ammesse {
             scalar_operands(prodotto, operation)
-                .and_then(|operands| operands.judge(&catalogo(prodotto)))
+                .and_then(|operands| operands.judge(&come_il_server(&operands, catalogo(prodotto))))
                 .unwrap_or_else(|error| panic!("{prodotto:?} {forma}: {error:?}"));
             renderer(prodotto, dialect)
                 .render_query(operation)
@@ -562,4 +574,57 @@ fn la_guardia_del_server_e_dove_ogni_forma_misurata_e_rifiutata() {
             assert!(operand_server_guard(prodotto).is_none(), "{prodotto:?}");
         }
     }
+}
+
+/// Dove il server lega i nomi (regola A, `server_resolves_names`) il
+/// catalogo di prova fa da server: un database che non distingue le
+/// maiuscole lega ogni nome del piano alle colonne che incontra.
+fn come_il_server(
+    operands: &plenora_database_core::spatial_operand::ScalarOperands,
+    mut catalogo: OperandCatalog,
+) -> OperandCatalog {
+    if !plenora_database_core::spatial_operand::server_resolves_names(prodotto_di(operands)) {
+        return catalogo;
+    }
+    for (schema, object) in operands.relations() {
+        let Some(RelationColumns::Known(columns)) =
+            catalogo.relation(schema.as_ref(), object).cloned()
+        else {
+            continue;
+        };
+        for name in operands.names() {
+            let bound = columns
+                .iter()
+                .filter(|column| column.name.to_lowercase() == name.to_lowercase())
+                .map(|column| column.name.clone())
+                .collect();
+            catalogo.insert_resolution(schema.clone(), object.clone(), name, bound);
+        }
+    }
+    catalogo
+}
+
+const fn prodotto_di(
+    operands: &plenora_database_core::spatial_operand::ScalarOperands,
+) -> ProviderKind {
+    operands.provider()
+}
+
+/// Una colonna di prova: geometrica; testo `name` e `label`; ogni altra
+/// binaria memorizzata (si confronta con i parametri binari delle prove).
+fn colonna_di_prova(name: &str, geometric: bool) -> CatalogColumn {
+    use plenora_database_core::spatial_operand::OperandFamily;
+    if geometric {
+        return CatalogColumn::from_flag(name, true);
+    }
+    let family = if matches!(name, "name" | "label") {
+        OperandFamily::Text
+    } else {
+        OperandFamily::Binary
+    };
+    CatalogColumn::new(
+        name,
+        plenora_database_core::spatial_operand::ColumnOrigin::Stored,
+        family,
+    )
 }

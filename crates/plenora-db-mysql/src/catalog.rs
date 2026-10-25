@@ -675,6 +675,12 @@ pub(crate) async fn verify_declared_column_srids(
 /// colonna intera e il server ordinava la geometria. Una tabella assente
 /// fallisce come fallirebbe la query.
 ///
+/// I nomi `names` del piano che non sono uguali per byte a una colonna li
+/// lega il server (regola A, [`resolve_names`]): misurato su `MariaDB` 12.3
+/// il 25/10, `INFORMATION_SCHEMA.COLUMNS` uguaglia `e` a una colonna `é`, che
+/// la query non lega (1054), e `ñAME` lega `Ñame`; il giudizio non piega i
+/// nomi (fino alla quindicesima lettura li piegava senza maiuscole).
+///
 /// # Errors
 ///
 /// Gli errori del catalogo.
@@ -684,16 +690,79 @@ pub(crate) async fn relation_columns(
     profile: &dyn crate::profile::ProductProfile,
     database: &str,
     relations: &[(Option<String>, String)],
+    names: &[String],
     cancellation: &CancellationToken,
 ) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
-    use plenora_database_core::spatial_operand::OperandCatalog;
+    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
     let mut catalog = OperandCatalog::new(profile.kind());
     for (schema, object) in relations {
         let wanted_schema = schema.as_deref().unwrap_or(database);
         let columns = show_columns(session, profile, wanted_schema, object, cancellation).await?;
+        if let RelationColumns::Known(known) = &columns {
+            let unbound = names
+                .iter()
+                .filter(|name| !known.iter().any(|column| column.name == **name))
+                .collect::<Vec<_>>();
+            let bound =
+                resolve_names(session, wanted_schema, object, &unbound, cancellation).await?;
+            for (name, matched) in unbound.into_iter().zip(bound) {
+                catalog.insert_resolution(schema.clone(), object.clone(), name.clone(), matched);
+            }
+        }
         catalog.insert(schema.clone(), object.clone(), columns);
     }
     Ok(catalog)
+}
+
+/// Le colonne che il server lega a ogni nome nella relazione: il prepare di
+/// `SELECT nome FROM relazione` (senza eseguire) e l'`org_name` dei suoi
+/// metadati, la colonna del catalogo. Prima tutti i nomi insieme; se il
+/// server non ne lega uno, uno per uno: un nome che il server non lega non
+/// lega niente.
+async fn resolve_names(
+    session: &mut MysqlSession,
+    schema: &str,
+    object: &str,
+    names: &[&String],
+    cancellation: &CancellationToken,
+) -> Result<Vec<Vec<String>>> {
+    use plenora_database_core::identifier::{quote_identifier, IdentifierDialect};
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let relation = format!(
+        "{}.{}",
+        quote_identifier(IdentifierDialect::Mysql, schema)?,
+        quote_identifier(IdentifierDialect::Mysql, object)?
+    );
+    let select = |names: &[&String]| -> Result<String> {
+        let projection = names
+            .iter()
+            .map(|name| quote_identifier(IdentifierDialect::Mysql, name))
+            .collect::<Result<Vec<_>>>()?
+            .join(", ");
+        Ok(format!("SELECT {projection} FROM {relation}"))
+    };
+    if let Some(origins) = session
+        .prepared_column_origins(&select(names)?, cancellation)
+        .await?
+    {
+        if origins.len() == names.len() {
+            return Ok(origins.into_iter().map(|origin| vec![origin]).collect());
+        }
+        return Err(mapping_error(
+            "metadati del prepare MySQL diversi dai nomi della projection",
+        ));
+    }
+    let mut bound = Vec::with_capacity(names.len());
+    for name in names {
+        let origins = session
+            .prepared_column_origins(&select(&[name])?, cancellation)
+            .await?
+            .unwrap_or_default();
+        bound.push(origins);
+    }
+    Ok(bound)
 }
 
 /// Il catalogo di [`relation_columns`] dentro una transazione: il database
@@ -709,6 +778,7 @@ pub(crate) async fn relation_columns(
 pub(crate) async fn transaction_operand_catalog(
     session: &mut MysqlSession,
     relations: &[(Option<String>, String)],
+    names: &[String],
     cancellation: &CancellationToken,
 ) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
     use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
@@ -733,14 +803,14 @@ pub(crate) async fn transaction_operand_catalog(
         let mut catalog = if qualified.is_empty() {
             OperandCatalog::new(profile.kind())
         } else {
-            relation_columns(session, profile, "", &qualified, cancellation).await?
+            relation_columns(session, profile, "", &qualified, names, cancellation).await?
         };
         for (schema, object) in relations.iter().filter(|(schema, _)| schema.is_none()) {
             catalog.insert(schema.clone(), object.clone(), RelationColumns::Unknown);
         }
         return Ok(catalog);
     };
-    relation_columns(session, profile, &database, relations, cancellation).await
+    relation_columns(session, profile, &database, relations, names, cancellation).await
 }
 
 /// I tipi binari di `SHOW COLUMNS` (il nome prima della lunghezza): un
@@ -825,6 +895,43 @@ pub(crate) fn type_family(
     } else {
         OperandFamily::Other
     }
+}
+
+/// Il tipo per la regola C (`plenora_database_core::cast_table`) dal `Type`
+/// di `SHOW COLUMNS` (`decimal(30,12)`, `varchar(10)`, `int unsigned`,
+/// `datetime(6)`): il nome prima della lunghezza, la dichiarazione intera
+/// (che dice `unsigned`), la lunghezza di un testo o binario, precisione e
+/// scala di un decimale, le cifre frazionarie di un temporale.
+#[must_use]
+pub fn catalog_type(declared: &str) -> plenora_database_core::cast_table::CatalogType {
+    let name = base_type(declared);
+    let arguments = declared
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(arguments, _)| {
+            arguments
+                .split(',')
+                .map(|argument| argument.trim().parse::<u64>().ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let first = arguments.first().copied().flatten();
+    let second = arguments.get(1).copied().flatten();
+    let mut catalog = plenora_database_core::cast_table::CatalogType {
+        name: name.clone(),
+        declaration: Some(declared.to_ascii_lowercase()),
+        ..plenora_database_core::cast_table::CatalogType::default()
+    };
+    match name.as_str() {
+        "decimal" | "numeric" | "dec" | "fixed" => {
+            catalog.precision = first;
+            catalog.scale = second.and_then(|scale| i64::try_from(scale).ok());
+        }
+        "char" | "varchar" | "binary" | "varbinary" => catalog.length = first,
+        "datetime" | "timestamp" | "time" => catalog.datetime_precision = first,
+        _ => {}
+    }
+    catalog
 }
 
 /// La colonna la calcola il server (regola B per colonna): `Extra` dice
@@ -929,11 +1036,14 @@ async fn show_columns(
         let computed = is_computed_column(&extra, "")
             || (profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb
                 && mariadb_default_may_compute(default.as_deref()));
-        columns.push(CatalogColumn::new(
-            column,
-            ColumnOrigin::of(derived, computed),
-            type_family(&declared, profile),
-        ));
+        columns.push(
+            CatalogColumn::new(
+                column,
+                ColumnOrigin::of(derived, computed),
+                type_family(&declared, profile),
+            )
+            .with_type(catalog_type(&declared), &declared),
+        );
     }
     Ok(if columns.is_empty() {
         plenora_database_core::spatial_operand::RelationColumns::Absent

@@ -19,7 +19,7 @@ use plenora_database_core::relational::{MutationOperation, QueryOperation};
 use plenora_database_core::row::Row;
 use plenora_database_core::spatial_operand::{
     CatalogColumn, OperandCatalog, OperandPlan, RelationColumns, AMBIGUOUS_NAME_SHAPE,
-    GEOMETRY_OPERAND_UNRESOLVED,
+    GEOMETRY_OPERAND_UNRESOLVED, NAME_UNRESOLVED, OPERAND_FAMILY_MISMATCH,
 };
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::transaction::{
@@ -124,6 +124,7 @@ impl TransactionScope for Finta {
     fn operand_catalog<'a>(
         &'a mut self,
         relations: &'a [(Option<String>, String)],
+        names: &'a [String],
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, OperandCatalog> {
         let _ = cancellation;
@@ -141,11 +142,30 @@ impl TransactionScope for Finta {
                     RelationColumns::Known(
                         colonne
                             .iter()
-                            .map(|(nome, geometrica)| CatalogColumn::from_flag(nome, *geometrica))
+                            .map(|(nome, geometrica)| colonna_finta(nome, *geometrica))
                             .collect(),
                     )
                 },
             );
+            // Dove il server lega i nomi (regola A) il finto fa da server:
+            // un database che non distingue le maiuscole.
+            if plenora_database_core::spatial_operand::server_resolves_names(self.prodotto) {
+                if let RelationColumns::Known(known) = &colonne {
+                    for name in names {
+                        let legate = known
+                            .iter()
+                            .filter(|column| column.name.to_lowercase() == name.to_lowercase())
+                            .map(|column| column.name.clone())
+                            .collect();
+                        catalogo.insert_resolution(
+                            schema.clone(),
+                            object.clone(),
+                            name.clone(),
+                            legate,
+                        );
+                    }
+                }
+            }
             catalogo.insert(schema.clone(), object.clone(), colonne);
         }
         Box::pin(async move { Ok(catalogo) })
@@ -162,6 +182,21 @@ impl TransactionScope for Finta {
     fn rollback(self: Box<Self>, _cancellation: &CancellationToken) -> ProviderFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
+}
+
+/// Una colonna del catalogo finto: geometrica, oppure `id` numerica e ogni
+/// altra testo (regola F con famiglie note, regola B senza «altra»).
+fn colonna_finta(nome: &str, geometrica: bool) -> CatalogColumn {
+    use plenora_database_core::spatial_operand::{ColumnOrigin, OperandFamily};
+    if geometrica {
+        return CatalogColumn::from_flag(nome, true);
+    }
+    let famiglia = if nome == "id" {
+        OperandFamily::Numeric
+    } else {
+        OperandFamily::Text
+    };
+    CatalogColumn::new(nome, ColumnOrigin::Stored, famiglia)
 }
 
 /// Il catalogo del server: `r10g(id, g geometrica, h geometrica)` e
@@ -424,7 +459,8 @@ fn le_colonne_scalari_restano_ammesse() {
         "type": "update",
         "target": {"schema": "public", "object": "r10g"},
         "assignments": [{"column": "g", "value": {"kind": "parameter", "name": "v"}}],
-        "filter": {"kind": "compare", "left": colonna(None, "id"), "operator": "eq", "right": bind()}
+        "filter": {"kind": "compare", "left": colonna(None, "id"), "operator": "eq",
+            "right": {"kind": "typed_parameter", "name": "w", "parameter_type": "integer"}}
     }));
     let inserisci = mutazione(&json!({
         "type": "insert",
@@ -520,11 +556,29 @@ fn la_regola_dei_nomi_vale_in_esecuzione_soltanto_con_geometrie() {
             OperandPlan::Query(&geometrica),
             AMBIGUOUS_NAME_SHAPE,
         );
-        ammessa(
-            prodotto,
-            "alias k e K senza geometrie",
-            OperandPlan::Query(&scalare),
-        );
+        // Senza geometrie il legame conta per la regola F (quindicesima
+        // lettura del 25/10): dove gli identificatori sono quotati `K` e `k`
+        // sono due nomi; `MySQL` e `MariaDB` li uguagliano, e `ORDER BY K`
+        // confronta un intero e un testo; SQL Server dipende dalla collation,
+        // e il nome non si lega.
+        let (outcome, eseguite) = esito(prodotto, OperandPlan::Query(&scalare));
+        match prodotto {
+            ProviderKind::Mysql | ProviderKind::Mariadb => {
+                let error = outcome.expect_err("k e K uguagliati");
+                assert_eq!(error.message, OPERAND_FAMILY_MISMATCH, "{prodotto:?}");
+                assert_eq!(eseguite, 0);
+            }
+            ProviderKind::Sqlserver => {
+                let error = outcome.expect_err("k e K secondo la collation");
+                assert_eq!(error.message, NAME_UNRESOLVED, "{prodotto:?}");
+                assert_eq!(error.category, ErrorCategory::InvalidPlan);
+                assert_eq!(eseguite, 0);
+            }
+            _ => {
+                outcome.unwrap_or_else(|error| panic!("{prodotto:?}: {error:?}"));
+                assert_eq!(eseguite, 1);
+            }
+        }
     }
 }
 

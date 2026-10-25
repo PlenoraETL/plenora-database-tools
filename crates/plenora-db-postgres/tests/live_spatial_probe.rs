@@ -3082,3 +3082,173 @@ async fn live_typed_parameters_refuse_values_of_another_type() {
     );
     client.batch_execute(cleanup).await.expect("pulizia");
 }
+
+/// Quindicesima lettura del 25/10 sul `PostgreSQL` reale.
+///
+/// - **Regola C.** `CAST($1 AS DECIMAL(38, 10))` arrotonda `0.12345678901` a
+///   `0.1234567890` e ritrova `numeric(30, 12)` `0.123456789000` (misurato;
+///   anche con un `float8`). `t.d = CAST(:p AS decimal)` oltre la scala, con
+///   un `Decimal` o un `F64`, e il `CAST` di una colonna `numeric(30, 12)` si
+///   rifiutano (`CAST_NOT_EXACT`); entro la scala e da `numeric(20, 4)`
+///   restano.
+/// - **Regola B.** Un uuid legato e del tipo `uuid`: con la colonna `uuid` si
+///   confronta, con un intero si rifiuta (`OPERAND_FAMILY_MISMATCH`).
+/// - **Regola A.** Ogni identificatore e quotato: `t.k` non lega la colonna
+///   `"K"`, e si rifiuta anche senza geometrie (`NAME_UNRESOLVED`).
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_rilettura_quindici_cast_altra_e_nomi() {
+    use plenora_database_core::cast_table::CAST_NOT_EXACT;
+    use plenora_database_core::spatial_operand::{NAME_UNRESOLVED, OPERAND_FAMILY_MISMATCH};
+    use serde_json::{json, Value};
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .expect("connessione di setup");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let cleanup = "DROP TABLE IF EXISTS public.plenora_r15;";
+    client
+        .batch_execute(cleanup)
+        .await
+        .expect("pulizia iniziale");
+    client
+        .batch_execute(
+            "CREATE TABLE public.plenora_r15 (id int PRIMARY KEY, d numeric(30, 12) NOT NULL,
+                 e numeric(20, 4) NOT NULL, u uuid NOT NULL, \"K\" int NOT NULL);
+             INSERT INTO public.plenora_r15 VALUES
+                 (1, 0.123456789000, 1.5, '00000001-0000-0000-0000-000000000000', 1),
+                 (2, 0.5, 2.5, '00000002-0000-0000-0000-000000000000', 2);",
+        )
+        .await
+        .expect("fixture");
+    // La tabella del modulo `cast_table`, rimisurata.
+    let rounded: String = client
+        .query_one(
+            "SELECT CAST($1::text AS DECIMAL(38, 10))::text",
+            &[&"0.12345678901"],
+        )
+        .await
+        .expect("decimale")
+        .get(0);
+    assert_eq!(rounded, "0.1234567890");
+    let found: Vec<i32> = client
+        .query(
+            "SELECT id FROM public.plenora_r15 WHERE d = CAST($1::float8 AS DECIMAL(38, 10))",
+            &[&0.123_456_789_01_f64],
+        )
+        .await
+        .expect("float8")
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(
+        found,
+        vec![1],
+        "il CAST arrotonda il float8 e ritrova la riga"
+    );
+
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let typed = |parameter_type: &str| json!({"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type});
+    let parameter = || json!({"kind": "parameter", "name": "p"});
+    let cast = |expression: Value| json!({"kind": "cast", "expression": expression, "target_type": "decimal"});
+    let plan = |left: Value, right: Value| -> QueryOperation {
+        serde_json::from_value(json!({
+            "source": {"object": {"catalog": null, "schema": "public", "object": "plenora_r15"}, "alias": "t"},
+            "projection": [{"expression": column("id"), "alias": "id"}],
+            "filter": {"kind": "compare", "left": left, "operator": "eq", "right": right},
+            "having": null, "row_limit": null
+        }))
+        .expect("piano")
+    };
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.clone());
+    let cancel = CancellationToken::new();
+    let budget = budget();
+    let uuid = || ParameterValue::Uuid("00000001-0000-0000-0000-000000000000".to_owned());
+    let refused = [
+        (
+            "d = CAST(:p AS decimal) oltre la scala",
+            plan(column("d"), cast(parameter())),
+            ParameterValue::Decimal("0.12345678901".to_owned()),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "d = CAST(F64 AS decimal)",
+            plan(column("d"), cast(parameter())),
+            ParameterValue::F64(0.123_456_789_01),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "CAST(d numeric(30, 12) AS decimal) = ?",
+            plan(cast(column("d")), typed("decimal")),
+            ParameterValue::Decimal("0.5".to_owned()),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "id = uuid",
+            plan(column("id"), parameter()),
+            uuid(),
+            OPERAND_FAMILY_MISMATCH,
+        ),
+        (
+            "t.k non lega \"K\"",
+            plan(column("k"), typed("integer")),
+            ParameterValue::I32(1),
+            NAME_UNRESOLVED,
+        ),
+    ];
+    for (form, operation, value, message) in refused {
+        let error = rows(
+            provider
+                .query(&secret, &operation, &probe(value), &budget, &cancel)
+                .await,
+        )
+        .await
+        .expect_err(form);
+        assert_eq!(
+            error.category,
+            ErrorCategory::InvalidPlan,
+            "{form}: {error:?}"
+        );
+        assert_eq!(error.message, message, "{form}: {error:?}");
+    }
+    let admitted = [
+        (
+            "d = CAST(:p AS decimal) entro la scala",
+            plan(column("d"), cast(parameter())),
+            ParameterValue::Decimal("0.5".to_owned()),
+        ),
+        (
+            "CAST(e numeric(20, 4) AS decimal) = ?",
+            plan(cast(column("e")), typed("decimal")),
+            ParameterValue::Decimal("2.5".to_owned()),
+        ),
+        ("u = uuid legato", plan(column("u"), parameter()), uuid()),
+        (
+            "u = uuid tipizzato",
+            plan(column("u"), typed("uuid")),
+            uuid(),
+        ),
+        (
+            "t.K = intero",
+            plan(column("K"), typed("integer")),
+            ParameterValue::I32(1),
+        ),
+    ];
+    for (form, operation, value) in admitted {
+        let count = rows(
+            provider
+                .query(&secret, &operation, &probe(value), &budget, &cancel)
+                .await,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(count, 1, "{form}");
+    }
+    client.batch_execute(cleanup).await.expect("pulizia");
+}

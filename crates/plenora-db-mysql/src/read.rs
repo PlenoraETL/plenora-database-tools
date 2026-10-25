@@ -209,11 +209,13 @@ pub(crate) async fn query_operation_with_profile(
     let operands =
         plenora_database_core::spatial_operand::scalar_operands(profile.kind(), operation)?;
     if !operands.is_empty() {
+        let names = operands.names().into_iter().collect::<Vec<_>>();
         let catalog = crate::catalog::relation_columns(
             &mut session,
             profile,
             database,
             operands.relations(),
+            &names,
             &internal,
         )
         .await?;

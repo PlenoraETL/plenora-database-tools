@@ -44,7 +44,19 @@
 //! | testo | i tipi carattere e i loro LOB; `ENUM` e `SET` di `MySQL`; un bind `String` o `Enum` |
 //! | numerica | interi, decimali, virgola mobile, `money`, `bit`, `boolean` (un booleano e un intero su `MySQL`, SQL Server, Oracle prima della 23); un bind `Bool`, `I32`, `I64`, `F64`, `Decimal` |
 //! | temporale | data, ora, timestamp con e senza fuso; un bind `Date`, `Timestamp`, `TimestampTz` |
-//! | altra | tutto il resto (uuid, json, xml, intervalli, enumerazioni e tipi composti di `PostgreSQL`, tipi dell'utente): non si giudica |
+//! | altra | tutto il resto (uuid, json, xml, intervalli, enumerazioni e tipi composti di `PostgreSQL`, tipi dell'utente), con l'identita del tipo; un bind `Uuid` o `Json` dove il provider lo lega nel suo tipo (`uuid` e `jsonb` su `PostgreSQL`, `uniqueidentifier` su SQL Server, `JSON` su Oracle; un testo altrove) |
+//!
+//! # Regola B del mondo chiuso: «altra»
+//!
+//! La famiglia «altra» si giudica come le altre: con un'altra famiglia si
+//! rifiuta; con «altra» soltanto se l'identita del tipo e la stessa (il nome
+//! completo del catalogo, `uuid`, `jsonb`, un dominio o un tipo dell'utente
+//! con il proprio nome), e un'identita che non si conosce non e uguale a
+//! nessuna. Fino alla quindicesima lettura del 25/10 «altra» non si
+//! giudicava: `n INT = typed_parameter(uuid)` rendeva `n = 1` su `MySQL` e
+//! `MariaDB`. La famiglia di un parametro tipizzato e di un `CAST` e quella
+//! del tipo che il renderer scrive (`rendered_family`): un `uuid` reso
+//! `CHAR(36)` o senza `CAST` e un testo.
 //!
 //! Dentro una famiglia il server converte senza perdere il confronto (un
 //! intero con un decimale, una data con un timestamp): resta ammesso.
@@ -86,16 +98,20 @@
 //!   senza errore.
 //! - **Rientro.** Nessuno: i byte e il testo li sceglie il chiamante.
 //!
-//! - **Regola.** La regola F giudica soltanto le famiglie che conosce.
-//! - **Ambito.** Un operando della famiglia «altra»; un parametro senza
-//!   valore noto (la compilazione senza esecuzione, un `Null`); un
-//!   riferimento che non si risolve in un piano senza geometrie (una
-//!   relazione di un altro database, un sinonimo verso un database link, un
-//!   `*` non espanso), che il mondo chiuso lascia al server.
-//! - **Hazard.** Un uuid confrontato con un testo, un json con un testo, un
-//!   intervallo con un numero: la conversione la decide il server.
-//! - **Rientro.** Quando la tabella delle famiglie distingue quei tipi su
-//!   ogni provider.
+//! - **Regola.** La regola F non giudica un parametro senza valore noto.
+//! - **Ambito.** La compilazione senza esecuzione, un `Null`, uno statement
+//!   portable eseguito senza valori legati.
+//! - **Hazard.** Nessuno nell'esecuzione: un `Null` non confronta niente, e
+//!   ogni percorso che esegue un piano lega i valori.
+//! - **Rientro.** Non serve.
+//!
+//! - **Regola.** Un uuid legato come testo (`MySQL`, `MariaDB`, Oracle, Db2)
+//!   e un testo: con una colonna `UUID` di `MariaDB` si rifiuta.
+//! - **Ambito.** `MariaDB` (il tipo `UUID`).
+//! - **Hazard.** Nessun passaggio silenzioso: il costo e il rifiuto di un
+//!   confronto che il server converte esatto.
+//! - **Rientro.** Quando il binding lega un uuid nel tipo `UUID` di
+//!   `MariaDB`.
 //!
 //! - **Regola.** `sql_variant` di SQL Server e della famiglia binaria.
 //! - **Ambito.** SQL Server.
@@ -227,8 +243,13 @@ impl OperandFamily {
     }
 }
 
-/// I bit delle famiglie che la regola F giudica: tutte tranne «altra».
-const JUDGED: u8 = 31;
+/// I bit delle famiglie che la regola F giudica: tutte, «altra» compresa
+/// (regola B del mondo chiuso: fino alla quindicesima lettura del 25/10
+/// «altra» non si giudicava, e un uuid confrontato con un intero passava).
+const JUDGED: u8 = 63;
+
+/// L'identita di un tipo «altra» che non si conosce: non e uguale a nessuna.
+const UNKNOWN_IDENTITY: u16 = u16::MAX;
 
 /// Da dove viene il valore di una colonna del catalogo (regola B).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,22 +298,35 @@ pub const fn catalog_column_is_geometric(origin: ColumnOrigin, family: OperandFa
     }
 }
 
-/// Il tipo di una colonna del catalogo: origine e famiglia.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Il tipo di una colonna del catalogo.
+///
+/// Origine, famiglia e, dove il
+/// catalogo lo dice, il tipo con precisione, scala e lunghezza (regola C,
+/// [`crate::cast_table`]) e l'identita del tipo (il nome completo che il
+/// catalogo da: per la famiglia «altra» due tipi si confrontano soltanto se
+/// l'identita e la stessa, regola B).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnType {
     pub origin: ColumnOrigin,
     pub family: OperandFamily,
+    pub catalog: Option<crate::cast_table::CatalogType>,
+    pub identity: Option<String>,
 }
 
 impl ColumnType {
     #[must_use]
     pub const fn new(origin: ColumnOrigin, family: OperandFamily) -> Self {
-        Self { origin, family }
+        Self {
+            origin,
+            family,
+            catalog: None,
+            identity: None,
+        }
     }
 
     /// La regola B sulla colonna.
     #[must_use]
-    pub const fn is_geometric(self) -> bool {
+    pub const fn is_geometric(&self) -> bool {
         catalog_column_is_geometric(self.origin, self.family)
     }
 }
@@ -314,8 +348,8 @@ impl CatalogColumn {
     }
 
     /// Una colonna di cui si sa soltanto se e geometrica (un mapping, un
-    /// catalogo di prova): memorizzata, geometrica o della famiglia «altra»,
-    /// che la regola F non giudica.
+    /// catalogo di prova): memorizzata, geometrica o della famiglia «altra»
+    /// con un'identita sola, `mapping`.
     #[must_use]
     pub fn from_flag(name: impl Into<String>, geometric: bool) -> Self {
         let family = if geometric {
@@ -323,13 +357,33 @@ impl CatalogColumn {
         } else {
             OperandFamily::Other
         };
-        Self::new(name, ColumnOrigin::Stored, family)
+        let mut column = Self::new(name, ColumnOrigin::Stored, family);
+        // Un'identita sola per le colonne non geometriche di un mapping:
+        // si confrontano fra loro, non con valori di un'altra famiglia.
+        column.column_type.identity = (!geometric).then(|| "mapping".to_owned());
+        column
     }
 
     /// La regola B sulla colonna.
     #[must_use]
     pub const fn is_geometric(&self) -> bool {
         self.column_type.is_geometric()
+    }
+
+    /// La famiglia e l'identita della colonna, per la regola F di una lettura
+    /// (`spatial_operand::ensure_scalar_filter_fields`).
+    #[must_use]
+    pub fn field_family(&self) -> super::FieldFamily {
+        (self.column_type.family, self.column_type.identity.clone())
+    }
+
+    /// La colonna con il tipo del catalogo ([`crate::cast_table::CatalogType`])
+    /// e la sua identita (il nome completo del tipo, senza maiuscole).
+    #[must_use]
+    pub fn with_type(mut self, catalog: crate::cast_table::CatalogType, identity: &str) -> Self {
+        self.column_type.catalog = Some(catalog);
+        self.column_type.identity = Some(identity.to_lowercase());
+        self
     }
 }
 
@@ -398,8 +452,69 @@ const fn spatial_result(
     })
 }
 
-/// Le famiglie dei parametri per nome, come le dice il valore legato, e i
-/// valori stessi per la regola T ([`crate::typed_parameter`]).
+/// La famiglia e l'identita di un tipo reso dalla libreria.
+///
+/// Un parametro tipizzato o un `CAST` hanno quelle del tipo che il renderer scrive
+/// ([`crate::cast_table::rendered_target`]), non del tipo dichiarato. Un
+/// `uuid` reso `CHAR(36)` e un testo, un `json` reso `NVARCHAR(MAX)` o
+/// `CLOB` anche; `UUID` e `JSONB` di `PostgreSQL`, `UNIQUEIDENTIFIER` di SQL
+/// Server e `JSON` di `MySQL` sono della famiglia «altra», con la loro
+/// identita.
+#[must_use]
+pub fn rendered_family(
+    provider: crate::plan::ProviderKind,
+    parameter_type: QueryParameterType,
+) -> (OperandFamily, Option<&'static str>) {
+    use crate::cast_table::OperandType as O;
+    use crate::plan::ProviderKind as P;
+    match crate::cast_table::rendered_target(provider, parameter_type) {
+        O::Text { .. } | O::Enumeration => (OperandFamily::Text, None),
+        O::Binary { .. } => (OperandFamily::Binary, None),
+        O::Uuid => (
+            OperandFamily::Other,
+            Some(if provider == P::Sqlserver {
+                "uniqueidentifier"
+            } else {
+                "uuid"
+            }),
+        ),
+        O::Json => (
+            OperandFamily::Other,
+            Some(if provider == P::Postgres {
+                "jsonb"
+            } else {
+                "json"
+            }),
+        ),
+        _ => (query_parameter_family(parameter_type), None),
+    }
+}
+
+/// La famiglia e l'identita di un valore legato `Uuid` o `Json`, come il
+/// provider lo lega: un uuid e un `uuid` su `PostgreSQL`, un testo che il
+/// server converte esatto in `uniqueidentifier` su SQL Server, un testo
+/// altrove; un json e un `jsonb` su `PostgreSQL`, un `JSON` su Oracle, un
+/// testo su SQL Server e Db2, e su `MySQL` e `MariaDB` un testo che il server
+/// confronta con un `JSON` come stringa JSON: «altra» senza identita, che non
+/// si confronta con niente.
+const fn bound_other(
+    provider: crate::plan::ProviderKind,
+    json: bool,
+) -> (OperandFamily, Option<&'static str>, bool) {
+    use crate::plan::ProviderKind as P;
+    match (json, provider) {
+        (false, P::Postgres) => (OperandFamily::Other, Some("uuid"), false),
+        (false, P::Sqlserver) => (OperandFamily::Other, Some("uniqueidentifier"), false),
+        (true, P::Postgres) => (OperandFamily::Other, Some("jsonb"), false),
+        (true, P::Oracle) => (OperandFamily::Other, Some("json"), false),
+        (true, P::Mysql | P::Mariadb) => (OperandFamily::Other, None, true),
+        _ => (OperandFamily::Text, None, false),
+    }
+}
+
+/// Le famiglie dei parametri per nome, come le dice il valore legato sul
+/// provider, e i valori stessi per le regole T e C
+/// ([`crate::typed_parameter`], [`crate::cast_table`]).
 ///
 /// I bit di ogni famiglia vista per quel nome (piu d'una se lo stesso nome e legato
 /// a valori di famiglie diverse, e allora ogni suo uso si rifiuta).
@@ -407,13 +522,18 @@ const fn spatial_result(
 pub struct ParameterFamilies {
     families: BTreeMap<String, u8>,
     bound: crate::typed_parameter::BoundValues,
+    /// I valori sono quelli che l'esecuzione lega: la regola C li giudica.
+    values_known: bool,
 }
 
 impl ParameterFamilies {
     /// Da un `ParameterBag` (i path query e lettura dei provider).
     #[must_use]
     pub fn from_bag(bag: &ParameterBag) -> Self {
-        let mut families = Self::default();
+        let mut families = Self {
+            values_known: true,
+            ..Self::default()
+        };
         for (name, value) in bag.iter() {
             families.bind(name, value);
         }
@@ -446,17 +566,19 @@ impl ParameterFamilies {
                 BIND_LAYOUT_MISMATCH,
             ));
         }
-        let mut families = Self::default();
+        let mut families = Self {
+            values_known: true,
+            ..Self::default()
+        };
         for (name, value) in names.iter().zip(values) {
             families.bind(name, value);
         }
         Ok(families)
     }
 
-    fn bind(&mut self, name: &str, value: &ParameterValue) {
-        if let Some(family) = parameter_family(value) {
-            self.insert(name, family);
-        }
+    /// Un valore legato al nome: la sua famiglia la decide il provider
+    /// ([`Self::get`]).
+    pub(super) fn bind(&mut self, name: &str, value: &ParameterValue) {
         self.bound.add(name, value);
     }
 
@@ -466,10 +588,16 @@ impl ParameterFamilies {
         *self.families.entry(name.into()).or_insert(0) |= family.bit();
     }
 
-    /// La famiglia del parametro, se e una sola.
+    /// La famiglia del parametro sul provider, se e una sola, con l'identita
+    /// di un tipo «altra» (`None` se non si conosce).
     #[must_use]
-    pub fn get(&self, name: &str) -> Option<OperandFamily> {
-        let bits = self.bits(name);
+    pub fn get(
+        &self,
+        provider: crate::plan::ProviderKind,
+        name: &str,
+    ) -> Option<(OperandFamily, Option<&'static str>)> {
+        let (bits, identity, unknown) = self.resolved(provider, name);
+        let identity = if unknown { None } else { identity };
         [
             OperandFamily::Geometry,
             OperandFamily::Binary,
@@ -480,6 +608,46 @@ impl ParameterFamilies {
         ]
         .into_iter()
         .find(|family| family.bit() == bits)
+        .map(|family| (family, identity))
+    }
+
+    /// I bit delle famiglie del nome, l'identita «altra» e se un'identita
+    /// «altra» non si conosce o ce n'e piu d'una.
+    pub(super) fn resolved(
+        &self,
+        provider: crate::plan::ProviderKind,
+        name: &str,
+    ) -> (u8, Option<&'static str>, bool) {
+        let mut bits = self.families.get(name).copied().unwrap_or(0);
+        // Una famiglia «altra» inserita senza valore non ha identita.
+        let mut unknown = bits & OperandFamily::Other.bit() != 0;
+        let mut identity: Option<&'static str> = None;
+        if let Some(bound) = self.bound.get(name) {
+            let kinds = bound.kinds();
+            for (kind, family) in crate::typed_parameter::KIND_FAMILIES {
+                if kinds & kind != 0 {
+                    bits |= family.bit();
+                }
+            }
+            for (kind, json) in [
+                (crate::typed_parameter::UUID_KIND, false),
+                (crate::typed_parameter::JSON_KIND, true),
+            ] {
+                if kinds & kind == 0 {
+                    continue;
+                }
+                let (family, other, nameless) = bound_other(provider, json);
+                bits |= family.bit();
+                unknown |= nameless;
+                if let Some(other) = other {
+                    if identity.is_some_and(|seen| seen != other) {
+                        unknown = true;
+                    }
+                    identity = Some(other);
+                }
+            }
+        }
+        (bits, identity, unknown)
     }
 
     /// La regola T ([`crate::typed_parameter`]) sui parametri tipizzati del
@@ -502,8 +670,14 @@ impl ParameterFamilies {
         }
     }
 
-    fn bits(&self, name: &str) -> u8 {
-        self.families.get(name).copied().unwrap_or(0)
+    /// I valori legati al nome (regola C); vale soltanto se l'esecuzione li
+    /// conosce ([`Self::values_known`]).
+    pub(super) fn values(&self, name: &str) -> Option<&crate::typed_parameter::BoundValue> {
+        self.bound.get(name)
+    }
+
+    pub(super) const fn values_known(&self) -> bool {
+        self.values_known
     }
 
     pub(super) fn merged(&self, other: &Self) -> Self {
@@ -511,6 +685,8 @@ impl ParameterFamilies {
         for (name, bits) in &other.families {
             *merged.families.entry(name.clone()).or_insert(0) |= bits;
         }
+        merged.bound.merge(&other.bound);
+        merged.values_known |= other.values_known;
         merged
     }
 }
@@ -523,6 +699,12 @@ pub(super) struct Typed {
     families: u8,
     derived: bool,
     parameter: bool,
+    /// L'identita del tipo «altra» (regola B): `0` senza «altra»,
+    /// [`UNKNOWN_IDENTITY`] se non si conosce, altrimenti l'indice piu uno
+    /// nel registro della visita.
+    other: u16,
+    /// Due identita «altra» diverse (o una non nota) si sono incontrate.
+    conflict: bool,
 }
 
 impl Typed {
@@ -530,6 +712,8 @@ impl Typed {
         families: 0,
         derived: false,
         parameter: false,
+        other: 0,
+        conflict: false,
     };
 
     const fn of(family: OperandFamily, derived: bool) -> Self {
@@ -537,7 +721,21 @@ impl Typed {
             families: family.bit(),
             derived,
             parameter: false,
+            other: if matches!(family, OperandFamily::Other) {
+                UNKNOWN_IDENTITY
+            } else {
+                0
+            },
+            conflict: false,
         }
+    }
+
+    /// Con l'identita «altra» `other` (se la famiglia e «altra»).
+    const fn with_other(mut self, other: u16) -> Self {
+        if self.families & OperandFamily::Other.bit() != 0 {
+            self.other = other;
+        }
+        self
     }
 
     const fn parameter(families: u8) -> Self {
@@ -545,6 +743,12 @@ impl Typed {
             families,
             derived: false,
             parameter: true,
+            other: if families & OperandFamily::Other.bit() != 0 {
+                UNKNOWN_IDENTITY
+            } else {
+                0
+            },
+            conflict: false,
         }
     }
 
@@ -561,17 +765,29 @@ impl Typed {
         self.has(OperandFamily::Geometry) || (self.has(OperandFamily::Binary) && self.derived)
     }
 
-    /// Piu d'una famiglia giudicata.
+    /// Piu d'una famiglia giudicata, o due tipi «altra» che non si provano
+    /// uguali.
     const fn mixed(self) -> bool {
-        self.judged().count_ones() > 1
+        self.judged().count_ones() > 1 || self.conflict
     }
 
-    /// L'unione: ogni famiglia di entrambi.
+    /// L'unione: ogni famiglia di entrambi; due identita «altra» si
+    /// uniscono soltanto se sono la stessa e nota.
     const fn union(self, other: Self) -> Self {
+        let both_other = self.other != 0 && other.other != 0;
+        let conflict = self.conflict
+            || other.conflict
+            || (both_other && (self.other != other.other || self.other == UNKNOWN_IDENTITY));
         Self {
             families: self.families | other.families,
             derived: self.derived || other.derived,
             parameter: self.parameter && other.parameter,
+            other: if self.other != 0 {
+                self.other
+            } else {
+                other.other
+            },
+            conflict,
         }
     }
 
@@ -602,6 +818,8 @@ fn too_deep(provider: crate::plan::ProviderKind) -> DatabaseError {
 /// Lo stato della regola F in una visita.
 #[derive(Default)]
 pub(super) struct Typing {
+    /// Il registro delle identita «altra» della visita (regola B).
+    identities: Vec<String>,
     expressions: BTreeMap<(usize, usize), Typed>,
     positions: BTreeMap<(usize, Option<usize>, usize), Typed>,
     in_progress: std::collections::BTreeSet<(usize, Option<usize>, usize)>,
@@ -610,6 +828,31 @@ pub(super) struct Typing {
     /// visita, dopo i rifiuti della regola degli operandi geometrici, che
     /// dicono di piu.
     pub(super) mismatch: Option<DatabaseError>,
+    /// Il primo `CAST` che non si prova esatto (regola C): si rende dopo le
+    /// conversioni implicite.
+    pub(super) cast: Option<DatabaseError>,
+}
+
+impl Typing {
+    /// L'indice (piu uno) dell'identita nel registro.
+    fn identity(&mut self, identity: Option<&str>) -> u16 {
+        let Some(identity) = identity else {
+            return UNKNOWN_IDENTITY;
+        };
+        let identity = identity.to_lowercase();
+        let position = self
+            .identities
+            .iter()
+            .position(|seen| *seen == identity)
+            .unwrap_or_else(|| {
+                self.identities.push(identity);
+                self.identities.len() - 1
+            });
+        u16::try_from(position + 1)
+            .ok()
+            .filter(|id| *id != UNKNOWN_IDENTITY)
+            .unwrap_or(UNKNOWN_IDENTITY)
+    }
 }
 
 /// Una conversione implicita si annota e la visita continua; ogni altro
@@ -635,6 +878,24 @@ impl<'a> Walk<'a, '_> {
         operand: bool,
         index: usize,
     ) -> Result<()> {
+        // Regola C: un `CAST` che la libreria rende si ammette soltanto se e
+        // esatto, in ogni posizione, quando l'esecuzione conosce i valori.
+        if let QueryExpression::Cast {
+            expression: inner,
+            target_type,
+        } = expression
+        {
+            if self.parameters.values_known() {
+                let target = crate::cast_table::rendered_target(self.provider, *target_type);
+                self.cast_progress.clear();
+                if !self.cast_exact(inner, &target, index, 0)? {
+                    let provider = self.provider;
+                    self.typing
+                        .cast
+                        .get_or_insert_with(|| crate::cast_table::cast_refusal(provider));
+                }
+            }
+        }
         let outcome = self.type_of(expression, index);
         let Some(typed) = deferred(&mut self.typing, outcome)? else {
             return Ok(());
@@ -650,6 +911,163 @@ impl<'a> Walk<'a, '_> {
             }
         }
         Ok(())
+    }
+
+    /// Il valore di `inner` sta esatto in `target` (regola C): un parametro
+    /// con i suoi valori legati, una colonna con il tipo del catalogo (anche
+    /// attraverso una sorgente derivata, in ogni ramo), un altro `CAST` con il
+    /// tipo che rende. Ogni altra espressione non si prova.
+    fn cast_exact(
+        &mut self,
+        inner: &'a QueryExpression,
+        target: &crate::cast_table::OperandType,
+        index: usize,
+        depth: usize,
+    ) -> Result<bool> {
+        if depth >= MAX_TYPING_DEPTH {
+            return Err(too_deep(self.provider));
+        }
+        let provider = self.provider;
+        Ok(match inner {
+            QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. } => {
+                self.parameters.values_known()
+                    && self
+                        .parameters
+                        .values(name)
+                        .is_some_and(|bound| bound.fits(provider, target))
+            }
+            QueryExpression::Cast { target_type, .. } => crate::cast_table::widens(
+                provider,
+                &crate::cast_table::rendered_target(provider, *target_type),
+                "",
+                target,
+            ),
+            QueryExpression::NullsOrder { expression, .. } => {
+                self.cast_exact(expression, target, index, depth + 1)?
+            }
+            QueryExpression::Column { column } => {
+                self.column_exact(column, target, index, depth)?
+            }
+            _ => false,
+        })
+    }
+
+    /// Ogni colonna che il riferimento puo nominare sta esatta in `target`.
+    fn column_exact(
+        &mut self,
+        column: &ColumnRef,
+        target: &crate::cast_table::OperandType,
+        index: usize,
+        depth: usize,
+    ) -> Result<bool> {
+        let provider = self.provider;
+        let mut candidates = match &column.relation {
+            Some(relation) => self.qualified(relation, &column.field, index),
+            None => self.unqualified(&column.field, index),
+        };
+        let Ok(own) = self.output_positions(index, column) else {
+            return Ok(false);
+        };
+        let block = &self.blocks[index];
+        let (operation, visible, parent) = (block.operation, block.visible.clone(), block.parent);
+        for position in own {
+            candidates.push(Candidate::Follow(Item::Position(
+                operation,
+                visible.clone(),
+                parent,
+                position,
+            )));
+        }
+        if candidates.is_empty() {
+            return Ok(false);
+        }
+        for candidate in candidates {
+            let exact = match candidate {
+                Candidate::Typed(column) => column.catalog.as_ref().is_some_and(|catalog| {
+                    crate::cast_table::widens(
+                        provider,
+                        &crate::cast_table::operand_type(provider, catalog),
+                        &catalog.name,
+                        target,
+                    )
+                }),
+                Candidate::Follow(Item::Position(query, visible, parent, position)) => {
+                    self.position_exact(query, visible, parent, position, target, depth + 1)?
+                }
+                Candidate::Follow(Item::Reference(column, index)) => {
+                    self.column_exact(&column, target, index, depth + 1)?
+                }
+                Candidate::Follow(Item::Expression(expression, _, index)) => {
+                    self.cast_exact(expression, target, index, depth + 1)?
+                }
+                _ => false,
+            };
+            if !exact {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// La colonna di uscita in posizione `position` di `query`, in ogni ramo
+    /// di set operation, sta esatta in `target`.
+    fn position_exact(
+        &mut self,
+        query: &'a QueryOperation,
+        visible: Vec<&'a CommonTableExpression>,
+        parent: Option<usize>,
+        position: usize,
+        target: &crate::cast_table::OperandType,
+        depth: usize,
+    ) -> Result<bool> {
+        // Una CTE ricorsiva che si nomina non si prova.
+        if !self
+            .cast_progress
+            .insert((address(query), parent, position))
+        {
+            return Ok(false);
+        }
+        let first = self.open_block(query, visible, parent);
+        let mut branches = vec![first];
+        let mut cursor = 0;
+        while let Some(branch) = branches.get(cursor).copied() {
+            let block = &self.blocks[branch];
+            let (operation, inner) = (block.operation, block.visible.clone());
+            for set in &operation.set_operations {
+                branches.push(self.open_block(&set.query, inner.clone(), parent));
+            }
+            cursor += 1;
+        }
+        for branch in branches {
+            let (entries, _) = self.entries_of(branch, 0);
+            let Some(entry) = entries.get(position) else {
+                return Ok(false);
+            };
+            let operation = self.blocks[branch].operation;
+            let exact = match &entry.source {
+                EntrySource::Projection(item) => self.cast_exact(
+                    &operation.projection[*item].expression,
+                    target,
+                    branch,
+                    depth + 1,
+                )?,
+                EntrySource::Column(column) => {
+                    self.column_exact(column, target, branch, depth + 1)?
+                }
+                EntrySource::Position(query, visible, parent, position) => self.position_exact(
+                    query,
+                    visible.clone(),
+                    *parent,
+                    *position,
+                    target,
+                    depth + 1,
+                )?,
+            };
+            if !exact {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Le posizioni di uscita dei rami di una set operation che confronta
@@ -729,16 +1147,24 @@ impl<'a> Walk<'a, '_> {
         Ok(match expression {
             QueryExpression::Wildcard { .. } => Typed::UNKNOWN,
             QueryExpression::Column { column } => self.reference_type(column, index)?,
-            QueryExpression::Parameter { name } => Typed::parameter(self.parameters.bits(name)),
+            QueryExpression::Parameter { name } => {
+                let (bits, identity, unknown) = self.parameters.resolved(self.provider, name);
+                let identity = if unknown { None } else { identity };
+                let other = self.typing.identity(identity);
+                Typed::parameter(bits).with_other(other)
+            }
             QueryExpression::TypedParameter { parameter_type, .. } => {
-                Typed::parameter(query_parameter_family(*parameter_type).bit())
+                let (family, identity) = rendered_family(self.provider, *parameter_type);
+                let other = self.typing.identity(identity);
+                Typed::parameter(family.bit()).with_other(other)
             }
             QueryExpression::Cast {
                 expression,
                 target_type,
             } => {
                 let inner = self.type_of(expression, index)?;
-                let family = query_parameter_family(*target_type);
+                let (family, identity) = rendered_family(self.provider, *target_type);
+                let other = self.typing.identity(identity);
                 let derived = if family == F::Binary {
                     // Il binario di un testo, di un valore derivato o di un
                     // valore che non si conosce: un binario derivato. Il
@@ -747,7 +1173,7 @@ impl<'a> Walk<'a, '_> {
                 } else {
                     inner.derived
                 };
-                Typed::of(family, derived)
+                Typed::of(family, derived).with_other(other)
             }
             QueryExpression::NullsOrder { expression, .. } => self.type_of(expression, index)?,
             QueryExpression::Case {
@@ -943,10 +1369,14 @@ impl<'a> Walk<'a, '_> {
         for candidate in candidates {
             let typed = match candidate {
                 Candidate::Geometry => Typed::of(OperandFamily::Geometry, false),
-                Candidate::Typed(column) => Typed::of(
-                    column.family,
-                    matches!(column.origin, ColumnOrigin::Derived),
-                ),
+                Candidate::Typed(column) => {
+                    let other = self.typing.identity(column.identity.as_deref());
+                    Typed::of(
+                        column.family,
+                        matches!(column.origin, ColumnOrigin::Derived),
+                    )
+                    .with_other(other)
+                }
                 Candidate::Scalar | Candidate::Unresolved | Candidate::Ambiguous => continue,
                 Candidate::Follow(item) => match item {
                     Item::Position(query, visible, parent, position) => {

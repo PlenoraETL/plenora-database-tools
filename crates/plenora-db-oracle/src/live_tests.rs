@@ -3876,3 +3876,185 @@ async fn live_typed_parameters_refuse_values_of_another_type() {
         .await
         .expect("pulizia regola T Oracle");
 }
+
+/// Quindicesima lettura del 25/10 sull'Oracle reale, regole C e A.
+///
+/// - **Regola C.** `CAST(:1 AS NUMBER(38, 10))` arrotonda `0.12345678901` e
+///   ritrova `NUMBER(30, 12)` `0.123456789` (misurato, anche con un
+///   `BINARY_DOUBLE`). `D = CAST(:p AS decimal)` oltre la scala, con un
+///   `Decimal` o un `F64`, e il `CAST` di una colonna `NUMBER(30, 12)` si
+///   rifiutano (`CAST_NOT_EXACT`) nel percorso giudicato (`query_judged`, lo
+///   SDK); entro la scala e da `NUMBER(20, 4)` restano.
+/// - **Regola A.** Il renderer quota: `"k"` non lega la colonna `"K"`, e si
+///   rifiuta anche senza geometrie (`NAME_UNRESOLVED`).
+#[tokio::test]
+#[ignore = "richiede Oracle live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_rilettura_quindici_cast_e_nomi() {
+    use plenora_database_core::cast_table::CAST_NOT_EXACT;
+    use plenora_database_core::facade::query_judged;
+    use plenora_database_core::spatial_operand::{OperandPlan, NAME_UNRESOLVED};
+    use serde_json::{json, Value};
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let _ = provider
+        .execute_ddl(&secret, "DROP TABLE R15_T PURGE", &cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            "CREATE TABLE R15_T (ID NUMBER(10) PRIMARY KEY, D NUMBER(30, 12) NOT NULL, \
+             E NUMBER(20, 4) NOT NULL, K NUMBER(10) NOT NULL)",
+            &cancellation,
+        )
+        .await
+        .expect("tabella");
+    let mut setup = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione preparazione");
+    for sql in [
+        "INSERT INTO R15_T VALUES (1, 0.123456789, 1.5, 1)",
+        "INSERT INTO R15_T VALUES (2, 0.5, 2.5, 2)",
+    ] {
+        setup
+            .execute(&Statement::new(sql), &cancellation)
+            .await
+            .expect("riga");
+    }
+    setup.commit(&cancellation).await.expect("commit");
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    // La tabella del modulo `cast_table`, rimisurata.
+    for value in [
+        ParameterValue::String("0.12345678901".to_owned()),
+        ParameterValue::F64(0.123_456_789_01),
+    ] {
+        let silent = tx
+            .query(
+                &Statement::new("SELECT ID FROM R15_T WHERE D = CAST(:1 AS NUMBER(38, 10))")
+                    .with_params(vec![value.clone()]),
+                &cancellation,
+            )
+            .await
+            .expect("senza giudizio");
+        assert_eq!(guard_ids(&silent), vec!["1".to_owned()], "{value:?}");
+    }
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let typed = |parameter_type: &str| json!({"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type});
+    let parameter = || json!({"kind": "parameter", "name": "p"});
+    let cast = |expression: Value| json!({"kind": "cast", "expression": expression, "target_type": "decimal"});
+    let plan = |left: Value, right: Value| -> QueryOperation {
+        serde_json::from_value(json!({
+            "source": {"object": {"catalog": null, "schema": "PLENORA", "object": "R15_T"}, "alias": "t"},
+            "projection": [{"expression": column("ID"), "alias": "ID"}],
+            "filter": {"kind": "compare", "left": left, "operator": "eq", "right": right},
+            "having": null, "row_limit": null
+        }))
+        .expect("piano")
+    };
+    let renderer = Renderer::new(
+        Dialect::Oracle,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .with_provider(ProviderKind::Oracle);
+    let refused = [
+        (
+            "D = CAST(:p AS decimal) oltre la scala",
+            plan(column("D"), cast(parameter())),
+            ParameterValue::Decimal("0.12345678901".to_owned()),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "D = CAST(F64 AS decimal)",
+            plan(column("D"), cast(parameter())),
+            ParameterValue::F64(0.123_456_789_01),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "CAST(D NUMBER(30, 12) AS decimal) = ?",
+            plan(cast(column("D")), typed("decimal")),
+            ParameterValue::Decimal("0.5".to_owned()),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "\"k\" non lega \"K\"",
+            plan(column("k"), typed("integer")),
+            ParameterValue::I32(1),
+            NAME_UNRESOLVED,
+        ),
+    ];
+    let admitted = [
+        (
+            "D = CAST(:p AS decimal) entro la scala",
+            plan(column("D"), cast(parameter())),
+            ParameterValue::Decimal("0.5".to_owned()),
+        ),
+        (
+            "CAST(E NUMBER(20, 4) AS decimal) = ?",
+            plan(cast(column("E")), typed("decimal")),
+            ParameterValue::Decimal("2.5".to_owned()),
+        ),
+    ];
+    for (form, operation, value, message) in refused {
+        let resa = renderer.render_query(&operation).expect("resa");
+        let names = resa
+            .binds
+            .iter()
+            .map(|bind| bind.name.clone())
+            .collect::<Vec<_>>();
+        let error = query_judged(
+            tx.as_mut(),
+            &Statement::new(resa.sql.clone()).with_params(vec![value; names.len()]),
+            Some(&OperandPlan::Query(&operation)),
+            &names,
+            &cancellation,
+        )
+        .await
+        .expect_err(form);
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::InvalidPlan,
+            "{form}: {error:?}"
+        );
+        assert_eq!(error.message, message, "{form}: {error:?}");
+    }
+    for (form, operation, value) in admitted {
+        let resa = renderer.render_query(&operation).expect("resa");
+        let names = resa
+            .binds
+            .iter()
+            .map(|bind| bind.name.clone())
+            .collect::<Vec<_>>();
+        let rows = query_judged(
+            tx.as_mut(),
+            &Statement::new(resa.sql.clone()).with_params(vec![value; names.len()]),
+            Some(&OperandPlan::Query(&operation)),
+            &names,
+            &cancellation,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(rows.len(), 1, "{form}");
+    }
+    let _ = tx.rollback(&cancellation).await;
+    let _ = provider
+        .execute_ddl(&secret, "DROP TABLE R15_T PURGE", &cancellation)
+        .await;
+}

@@ -214,8 +214,7 @@ impl MysqlReadPlan {
                     .iter()
                     .zip(&description.columns)
                     .any(|(column, catalog)| {
-                        plenora_database_core::spatial_operand::NameRule::Folded
-                            .matches(&column.name, field)
+                        column.name == field
                             && (column.kind == MysqlColumnKind::Geometry
                                 || read_column_type(description, catalog, profile).is_geometric())
                     })
@@ -798,20 +797,21 @@ pub fn ensure_read_families(
     parameters: &plenora_database_core::provider::ParameterBag,
     profile: &dyn crate::profile::ProductProfile,
 ) -> Result<()> {
-    use plenora_database_core::spatial_operand::{folded_column, ParameterFamilies};
+    use plenora_database_core::spatial_operand::{exact_column, ParameterFamilies};
     plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
         profile.kind(),
         operation.filter.as_ref(),
         &operation.order_by,
         |_| false,
         |field| {
-            Ok(folded_column(
-                profile.kind(),
-                &description.columns,
-                |column| &column.name,
-                field,
-            )?
-            .map(|column| read_column_type(description, column, profile).family))
+            Ok(
+                exact_column(&description.columns, |column| &column.name, field).map(|column| {
+                    (
+                        read_column_type(description, column, profile).family,
+                        Some(column.native_declaration.to_ascii_lowercase()),
+                    )
+                }),
+            )
         },
         &ParameterFamilies::from_bag(parameters),
     )

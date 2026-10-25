@@ -55,6 +55,7 @@ impl Finto {
                     data_type: (*data_type).to_owned(),
                     data_type_owner: owner.map(str::to_owned),
                     virtual_column: false,
+                    ..ColumnRow::default()
                 })
                 .collect(),
         );
