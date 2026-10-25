@@ -37,6 +37,7 @@ pub mod relational_mutation;
 pub mod resource;
 pub mod row;
 pub mod row_diagnostics;
+pub mod row_visibility;
 pub mod session_context;
 pub mod spatial_catalog;
 pub mod spatial_policy;

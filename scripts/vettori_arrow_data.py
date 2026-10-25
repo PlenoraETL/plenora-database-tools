@@ -55,7 +55,11 @@ rilettura ha aggiunto row-level security, colonne generate e IDENTITY ALWAYS,
 SELECT sulle colonne che un upsert legge, viste non aggiornabili, NOT NULL
 senza default assenti dall'ingresso, schema senza USAGE e un `COPY` rifiutato
 all'apertura dopo il DELETE di Replace; un rifiuto che cambia le righe del
-bersaglio e' `rifiuto-con-effetto`. `--solo-scenari` salta i vettori.
+bersaglio e' `rifiuto-con-effetto`. La regola R ha aggiunto le scritture
+distruttive che non vedono tutte le righe (policy RLS anche restrittive,
+regole `ON DELETE`, trigger `BEFORE DELETE`, una vista sopra RLS): rifiutate
+prima di ogni effetto, nella scrittura e nel dry run. `--solo-scenari` salta i
+vettori.
 
     python scripts/vettori_arrow_data.py --contracts .plenora-contracts \\
         --cli target/debug/plenora-database --referto vettori-arrow-data.json \\
@@ -556,6 +560,62 @@ SCENARI = (
      "CREATE TABLE {t} (id bigint); INSERT INTO {t} VALUES (7), (8), (9); "
      "GRANT SELECT, DELETE ON {t} TO {r}",
      "replace", ("id",), (), "strict", "lettore"),
+    # La regola R (25/10): uno statement distruttivo che non vede tutte le
+    # righe si rifiuta prima di ogni effetto, nella scrittura e nel dry run.
+    # Fino ad allora Replace con una policy `USING (v = 'a')` confermava e
+    # lasciava la riga 2 accanto alle nuove; `DO INSTEAD NOTHING` confermava
+    # senza sostituire niente; un `BEFORE DELETE` che restituisce NULL salvava
+    # la riga; DeleteByKeys e Update pubblicavano `skipped` per la chiave
+    # nascosta. Il controllo positivo: un trigger AFTER, che non sopprime
+    # righe. (Append su una vista sopra RLS, che il dry run dichiara
+    # `not_performed`, passa dal percorso preparato: la CLI scrive con `COPY`,
+    # che una vista rifiuta; la prova e nella suite live del provider.)
+    ("regola-r-rls-replace",
+     "CREATE TABLE {t} (id bigint, v text); INSERT INTO {t} VALUES (1, 'a'), (2, 'b'), (3, 'a'); "
+     "ALTER TABLE {t} ENABLE ROW LEVEL SECURITY; GRANT ALL ON {t} TO {r}; "
+     "CREATE POLICY vad_vede_a ON {t} USING (v = 'a') WITH CHECK (true)",
+     "replace", ("id", "v"), (), "strict", "lettore"),
+    ("regola-r-rls-restrittiva-replace",
+     "CREATE TABLE {t} (id bigint, v text); INSERT INTO {t} VALUES (1, 'a'), (2, 'b'), (3, 'a'); "
+     "ALTER TABLE {t} ENABLE ROW LEVEL SECURITY; GRANT ALL ON {t} TO {r}; "
+     "CREATE POLICY vad_tutto ON {t} USING (true) WITH CHECK (true); "
+     "CREATE POLICY vad_cancella_a ON {t} AS RESTRICTIVE FOR DELETE USING (v = 'a')",
+     "replace", ("id", "v"), (), "strict", "lettore"),
+    ("regola-r-rls-delete",
+     "CREATE TABLE {t} (id bigint PRIMARY KEY, v text); "
+     "INSERT INTO {t} VALUES (1, 'a'), (2, 'b'), (3, 'a'); "
+     "ALTER TABLE {t} ENABLE ROW LEVEL SECURITY; GRANT ALL ON {t} TO {r}; "
+     "CREATE POLICY vad_vede_a ON {t} USING (v = 'a') WITH CHECK (true)",
+     "delete_by_keys", ("id",), ("id",), "strict", "lettore"),
+    ("regola-r-rls-update",
+     "CREATE TABLE {t} (id bigint PRIMARY KEY, v text); "
+     "INSERT INTO {t} VALUES (1, 'a'), (2, 'b'), (3, 'a'); "
+     "ALTER TABLE {t} ENABLE ROW LEVEL SECURITY; GRANT ALL ON {t} TO {r}; "
+     "CREATE POLICY vad_vede_a ON {t} USING (v = 'a') WITH CHECK (true)",
+     "update", ("id", "v"), ("id",), "strict", "lettore"),
+    ("regola-r-rule-replace",
+     "CREATE TABLE {t} (id bigint); INSERT INTO {t} VALUES (7), (8), (9); "
+     "CREATE RULE vad_niente AS ON DELETE TO {t} DO INSTEAD NOTHING",
+     "replace", ("id",), (), "strict", "proprietario"),
+    ("regola-r-trigger-replace",
+     "CREATE TABLE {t} (id bigint); INSERT INTO {t} VALUES (1), (2), (3); "
+     "CREATE OR REPLACE FUNCTION {b}_salva() RETURNS trigger LANGUAGE plpgsql AS "
+     "$$ BEGIN IF OLD.id = 2 THEN RETURN NULL; END IF; RETURN OLD; END $$; "
+     "CREATE TRIGGER vad_salva BEFORE DELETE ON {t} FOR EACH ROW EXECUTE FUNCTION {b}_salva()",
+     "replace", ("id",), (), "strict", "proprietario"),
+    ("regola-r-trigger-after-replace",
+     "CREATE TABLE {t} (id bigint); INSERT INTO {t} VALUES (1), (2), (3); "
+     "CREATE OR REPLACE FUNCTION {b}_nota() RETURNS trigger LANGUAGE plpgsql AS "
+     "$$ BEGIN RETURN NULL; END $$; "
+     "CREATE TRIGGER vad_nota AFTER DELETE ON {t} FOR EACH ROW EXECUTE FUNCTION {b}_nota()",
+     "replace", ("id",), (), "strict", "proprietario"),
+    ("regola-r-vista-rls-delete",
+     "CREATE TABLE {b} (id bigint PRIMARY KEY, v text); "
+     "INSERT INTO {b} VALUES (1, 'a'), (2, 'b'); ALTER TABLE {b} ENABLE ROW LEVEL SECURITY; "
+     "CREATE POLICY vad_vede_a ON {b} USING (v = 'a') WITH CHECK (true); "
+     "CREATE VIEW {t} WITH (security_invoker = true) AS SELECT id, v FROM {b}; "
+     "GRANT ALL ON {b} TO {r}; GRANT ALL ON {t} TO {r}",
+     "delete_by_keys", ("id",), ("id",), "strict", "lettore"),
 )
 
 # Gli scenari in cui RLS si applica con una policy: l'esito dipende dai
@@ -690,6 +750,9 @@ class Scenari:
                                f"WHERE oid = to_regclass('public.{tabella}')), '-')") == "v":
             self.ddl(f"DROP VIEW public.{tabella}")
         self.ddl(f"DROP TABLE IF EXISTS public.{self.AUSILIARIO} CASCADE")
+        # Le funzioni dei trigger della regola R.
+        for funzione in ("salva", "nota"):
+            self.ddl(f"DROP FUNCTION IF EXISTS public.{self.AUSILIARIO}_{funzione}() CASCADE")
         self.postgres.cancella(tabella)
 
     def righe(self, tabella: str, schema: str) -> int:

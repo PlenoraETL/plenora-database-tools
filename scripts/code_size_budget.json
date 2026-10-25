@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 112638,
-  "max_code_lines": 91878,
-  "rationale": "Regola unica delle sonde spatial (core spatial_probe: admit_probe, server_guard, term_frame e RelationScope condivisi dal compilatore portable, dal renderer relazionale con lo stato di resa e dal provider PostgreSQL; guardia PostGIS sul typmod anche nello SDK; MySQL 3033/3643 crs; MariaDB REF_SYSTEM_ID confrontato in scrittura); sonde live dei server (scripts/sonde_srid_server.py); test in file dedicati. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 111598 -> 112638 (+1040), righe di codice 91248 -> 91878 (+630). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 113665,
+  "max_code_lines": 92425,
+  "rationale": "Regola R (core row_visibility: una scrittura distruttiva che non vede tutte le righe si rifiuta prima di ogni effetto; fatti dal catalogo in PostgreSQL write::visibility sulla chiusura del target, nella scrittura con il lock preso e nel dry run, SQL Server lifecycle::validate_row_visibility, Oracle e Db2 row_visibility) e regola P (core spatial_probe: contains_unjudged_probe, judge_scalar_operands e ProbeUse::ScalarOperand nel renderer e nel giudizio PostgreSQL del piano); deleted non pubblicato per Replace; test in file dedicati, scenari del runner. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 112638 -> 113665 (+1027), righe di codice 91878 -> 92425 (+547). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

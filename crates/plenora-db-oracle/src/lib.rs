@@ -18,6 +18,7 @@ mod parameter;
 mod pool;
 mod provider;
 mod read;
+mod row_visibility;
 mod transaction;
 mod types;
 mod write;

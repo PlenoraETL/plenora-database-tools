@@ -29,10 +29,23 @@
 //! 7. colonne `NOT NULL` senza default (ne identita ne generate) assenti
 //!    dall'ingresso, nelle mode che inseriscono;
 //! 8. l'indice unico immediato che arbitra `ON CONFLICT`;
-//! 9. colonne che lo statement nomina, presenti nel target.
+//! 9. colonne che lo statement nomina, presenti nel target;
+//! 10. la regola R (`plenora_database_core::row_visibility`, fatti in
+//!     `super::visibility`): Replace, Update e `DeleteByKeys` si rifiutano
+//!     prima dell'ingresso se una policy RLS, una regola, un trigger di riga
+//!     `BEFORE`/`INSTEAD OF`, una tabella esterna (o, per Replace, una vista)
+//!     possono nascondere righe allo statement distruttivo — la stessa
+//!     funzione e la stessa lettura della scrittura, nello stesso punto.
+//!
+//! Sotto una vista la row-level security delle tabelle di base decide un
+//! INSERT con il ruolo del proprietario della vista (o dell'invocante, con
+//! `security_invoker`): il dry run non lo decide e lo dichiara
+//! ([`RowSecurity::NotPerformed`]). Fino al 25/10 diceva `not_applicable`,
+//! perche guardava soltanto la vista.
 //!
 //! Resta della scrittura, e il dry run lo dichiara (`checks.server:
-//! not_performed`), cio che il catalogo non decide: trigger, vincoli `CHECK`
+//! not_performed`), cio che il catalogo non decide: i trigger fuori dalla
+//! regola R (quelli delle mode che inseriscono, gli `AFTER`), vincoli `CHECK`
 //! ed esclusioni, unicita e foreign key sui valori, vincoli differiti,
 //! conversioni della colonna, timeout e lock concorrenti, le colonne `NOT
 //! NULL` di una tabella sotto una vista.
@@ -51,6 +64,7 @@ use crate::error::{classify_error, public_error};
 use crate::{PostgresInsertMode, PostgresSchemaEvolution};
 use arrow_schema::SchemaRef;
 use plenora_database_core::plan::{WriteMode, WriteOperation};
+use plenora_database_core::row_visibility::{destructive_event, DestructiveEvent};
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::BTreeMap;
 use tokio_postgres::Client;
@@ -490,27 +504,43 @@ pub async fn inspect(
         operation.mode,
         WriteMode::Replace | WriteMode::TruncateInsert
     );
-    verdict.before_input =
-        if (!table.schema_usage && (evolves || empties)) || (evolves && !table.owner) {
-            Some(denied(ErrorPhase::Write))
-        } else {
-            // La riscrittura del DELETE (vista non aggiornabile) precede il
-            // controllo dei privilegi dell'esecutore; `TRUNCATE` controlla il
-            // tipo della relazione prima dei privilegi.
-            match operation.mode {
-                WriteMode::Replace if !table.updatable.delete => {
-                    Some(server("55000", ErrorPhase::Write))
-                }
-                WriteMode::Replace if !table.emptying.delete => Some(denied(ErrorPhase::Write)),
-                WriteMode::TruncateInsert if !table.truncate_target() => {
-                    Some(server("42809", ErrorPhase::Write))
-                }
-                WriteMode::TruncateInsert if !table.emptying.truncate => {
-                    Some(denied(ErrorPhase::Write))
-                }
-                _ => None,
+    // La regola R legge la stessa chiusura del target che legge la
+    // scrittura; per le mode che inseriscono serve a sapere se sotto una
+    // vista una policy decide l'INSERT.
+    let facts = super::visibility::facts(
+        client,
+        &operation.target,
+        destructive_event(operation.mode).unwrap_or(DestructiveEvent::Delete),
+        ErrorPhase::Prepare,
+    )
+    .await?;
+    // Nell'ordine di `execute`: l'ALTER dell'evoluzione (del proprietario,
+    // con USAGE), poi la regola R, poi lo svuotamento o lo statement.
+    let rule_r = super::visibility::refusal(operation, facts);
+    verdict.before_input = if evolves && (!table.schema_usage || !table.owner) {
+        Some(denied(ErrorPhase::Write))
+    } else if rule_r.is_some() {
+        rule_r
+    } else if !table.schema_usage && empties {
+        Some(denied(ErrorPhase::Write))
+    } else {
+        // La riscrittura del DELETE (vista non aggiornabile) precede il
+        // controllo dei privilegi dell'esecutore; `TRUNCATE` controlla il
+        // tipo della relazione prima dei privilegi.
+        match operation.mode {
+            WriteMode::Replace if !table.updatable.delete => {
+                Some(server("55000", ErrorPhase::Write))
             }
-        };
+            WriteMode::Replace if !table.emptying.delete => Some(denied(ErrorPhase::Write)),
+            WriteMode::TruncateInsert if !table.truncate_target() => {
+                Some(server("42809", ErrorPhase::Write))
+            }
+            WriteMode::TruncateInsert if !table.emptying.truncate => {
+                Some(denied(ErrorPhase::Write))
+            }
+            _ => None,
+        }
+    };
     let columns = statement_columns(operation, schema);
     // Lo statement si prepara (o `COPY` si apre) dopo l'ingresso letto: lo
     // schema senza USAGE e il primo rifiuto, alla risoluzione del nome.
@@ -584,7 +614,9 @@ pub async fn inspect(
         WriteMode::Append | WriteMode::TruncateInsert
     ) || (operation.mode == WriteMode::Replace && path != WritePath::Parameters);
     let row_security_refuses = table.row_security && insert_only && !table.insert_policy;
-    if table.row_security && !(path == WritePath::Copy || row_security_refuses) {
+    if (table.row_security && !(path == WritePath::Copy || row_security_refuses))
+        || facts.view_base_row_security
+    {
         verdict.row_security = RowSecurity::NotPerformed;
     }
     match path {

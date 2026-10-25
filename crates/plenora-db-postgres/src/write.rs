@@ -53,6 +53,7 @@ mod row_diagnostics;
 mod sql;
 pub mod target;
 mod value_codec;
+pub mod visibility;
 
 use binary_codec::binary_copy_value;
 #[cfg(test)]
@@ -502,9 +503,13 @@ fn committed_outcome(
     confirmed: u64,
 ) -> WriteOutcome {
     let (inserted, updated, deleted) = match mode {
-        WriteMode::Create | WriteMode::Append | WriteMode::Replace | WriteMode::TruncateInsert => {
-            (Some(confirmed), Some(0), Some(0))
-        }
+        WriteMode::Create | WriteMode::Append => (Some(confirmed), Some(0), Some(0)),
+        // Lo svuotamento di Replace (`DELETE`) e di `TruncateInsert`
+        // (`TRUNCATE`) toglie righe che non sono dell'ingresso: il contratto
+        // non le conta fra le confermate (le mutazioni non possono superarle),
+        // quindi il conteggio delle cancellate non si pubblica, come fa SQL
+        // Server. Fino al 25/10 era `Some(0)` anche con righe cancellate.
+        WriteMode::Replace | WriteMode::TruncateInsert => (Some(confirmed), Some(0), None),
         WriteMode::Update => (Some(0), Some(confirmed), Some(0)),
         // PostgreSQL does not report whether an ON CONFLICT row was inserted or
         // updated without adding observable side effects to the statement.
@@ -665,7 +670,14 @@ fn enforce_input_limits(
 /// riporta indietro anche le righe cancellate.
 ///
 /// `TruncateInsert` conserva `TRUNCATE`: su `PostgreSQL` e transazionale, quindi
-/// rollback-safe quanto il `DELETE` di Replace ma piu economico.
+/// rollback-safe quanto il `DELETE` di Replace ma piu economico, e non passa
+/// da policy RLS, regole o trigger di riga.
+///
+/// Replace, Update e `DeleteByKeys` passano dalla regola R
+/// (`plenora_database_core::row_visibility`, fatti in [`visibility`]): se una
+/// policy, una regola, un trigger di riga, una vista o una tabella esterna
+/// possono nascondere righe allo statement distruttivo, la scrittura si
+/// rifiuta prima di ogni effetto.
 async fn prepare_target(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
@@ -683,13 +695,19 @@ async fn prepare_target(
             )
             .await
         }
-        WriteMode::Replace => execute_sql(
-            transaction,
-            &format!("DELETE FROM {}", quote_object(&operation.target)?),
-            &[],
-        )
-        .await
-        .map(|_| ()),
+        // La regola R prima del `DELETE`, e di nuovo con il suo lock preso
+        // (`visibility::enforce`): un `DELETE` che non vede tutte le righe
+        // lascerebbe righe vecchie accanto alle nuove, con un COMMIT riuscito.
+        WriteMode::Replace => {
+            visibility::enforce(transaction, operation).await?;
+            execute_sql(
+                transaction,
+                &format!("DELETE FROM {}", quote_object(&operation.target)?),
+                &[],
+            )
+            .await?;
+            visibility::enforce(transaction, operation).await
+        }
         WriteMode::TruncateInsert => execute_sql(
             transaction,
             &format!("TRUNCATE TABLE {}", quote_object(&operation.target)?),
@@ -697,9 +715,12 @@ async fn prepare_target(
         )
         .await
         .map(|_| ()),
-        WriteMode::Append | WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys => {
-            Ok(())
+        // Prima dell'ingresso, con lo stesso esito del dry run; di nuovo a
+        // ogni statement preparato (`write_batch`), con il lock preso.
+        WriteMode::Update | WriteMode::DeleteByKeys => {
+            visibility::enforce(transaction, operation).await
         }
+        WriteMode::Append | WriteMode::Upsert => Ok(()),
     }
 }
 
@@ -802,6 +823,9 @@ async fn write_batch(
         .prepare(&sql)
         .await
         .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
+    // La preparazione ha preso il lock del target: la regola R si rilegge
+    // qui, dove un DDL concorrente non puo piu cambiarla fino al COMMIT.
+    visibility::enforce(transaction, operation).await?;
     let mut affected = 0;
     for row in 0..batch.num_rows() {
         let values = indexes

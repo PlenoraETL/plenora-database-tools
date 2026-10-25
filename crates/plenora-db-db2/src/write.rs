@@ -38,6 +38,9 @@ static EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 pub struct Db2WritePlan {
     mode: WriteMode,
     target: String,
+    /// Schema e nome del target come li legge il catalogo, per la regola R.
+    schema_name: String,
+    object_name: String,
     columns: Vec<WriteColumn>,
     keys: Vec<usize>,
     updates: Vec<usize>,
@@ -75,7 +78,7 @@ impl Db2WritePlan {
             .unwrap_or_else(|| config.username().to_ascii_uppercase());
         let target = renderer.quote_object(&ObjectName {
             catalog: None,
-            schema: Some(Identifier::new(schema_name)?),
+            schema: Some(Identifier::new(schema_name.clone())?),
             object: Identifier::new(operation.target.object.clone())?,
         })?;
         let columns = schema
@@ -132,6 +135,8 @@ impl Db2WritePlan {
         Ok(Self {
             mode: operation.mode,
             target,
+            schema_name,
+            object_name: operation.target.object.clone(),
             columns,
             keys,
             updates,
@@ -713,6 +718,16 @@ async fn execute_input(
     cancellation: &CancellationToken,
     declared_rows: u64,
 ) -> Result<(u64, u64)> {
+    // La regola R prima di ogni statement distruttivo: il DELETE di Replace,
+    // gli UPDATE e DELETE per chiave.
+    crate::row_visibility::enforce(
+        transaction,
+        &plan.schema_name,
+        &plan.object_name,
+        plan.mode,
+        cancellation,
+    )
+    .await?;
     if let Some(sql) = &plan.create_sql {
         transaction
             .execute_control_statement(sql.clone(), cancellation)
@@ -863,6 +878,11 @@ fn committed_outcome(
 ) -> Result<WriteOutcome> {
     let skipped = received.saturating_sub(affected.min(received));
     let (confirmed, inserted, updated, deleted) = match plan.mutation_columns() {
+        // Replace svuota il target con un DELETE le cui righe non sono
+        // dell'ingresso: il conteggio delle cancellate non si pubblica, come
+        // su SQL Server, PostgreSQL, MySQL e Oracle. Fino al 25/10 era
+        // `Some(0)`.
+        "inserted" if plan.mode == WriteMode::Replace => (received, Some(received), Some(0), None),
         "inserted" => (received, Some(received), Some(0), Some(0)),
         "updated" => (affected, Some(0), Some(affected), Some(0)),
         "deleted" => (affected, Some(0), Some(0), Some(affected)),

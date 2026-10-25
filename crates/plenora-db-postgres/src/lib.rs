@@ -82,8 +82,12 @@ impl PostgresProvider {
     /// ogni batch e ne giudica ogni valore con le funzioni della scrittura
     /// (`write::dry_run`).
     ///
+    /// Decide la regola R come la scrittura (`write::visibility`): Replace,
+    /// Update e `DeleteByKeys` che non vedrebbero tutte le righe si
+    /// rifiutano qui, con lo stesso errore.
+    ///
     /// Non decide cio che decide il server scrivendo (l'elenco chiuso e in
-    /// `write::target`): trigger, vincoli `CHECK` ed esclusioni, unicita e
+    /// `write::target`): gli altri trigger, vincoli `CHECK` ed esclusioni, unicita e
     /// foreign key sui valori, vincoli differiti, conversioni della colonna,
     /// timeout e lock concorrenti; e, dove una policy RLS decide sui valori,
     /// l'esito della policy (`row_security: NotPerformed`).
@@ -1157,3 +1161,7 @@ fn parse_decimal128(value: &str, scale: i8) -> Result<i128> {
 
 #[cfg(test)]
 mod test_suite;
+
+#[cfg(test)]
+#[path = "write_visibility_live_tests.rs"]
+mod write_visibility_live_tests;

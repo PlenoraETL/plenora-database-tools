@@ -1,4 +1,5 @@
 use crate::SqlServerSession;
+use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
 use tiberius::{FromSql, Query, Row};
@@ -103,6 +104,120 @@ pub(super) async fn validate_replace_external_state(
     }
     Ok(())
 }
+
+/// La regola R su SQL Server (`plenora_database_core::row_visibility`) per
+/// `Update` e `DeleteByKeys`: le chiavi che lo statement non vede si
+/// pubblicano `skipped`, indistinguibili da chiavi assenti, se un predicato
+/// di filtro RLS o un trigger `INSTEAD OF` le nasconde. Replace qui non
+/// passa: pubblica uno staging con lo swap e non cancella righe, e le sue
+/// condizioni sono in [`validate_replace_external_state`].
+///
+/// I fatti si leggono sulla chiusura del target: il target e, se e una
+/// vista, gli oggetti da cui dipende (`sys.sql_expression_dependencies`,
+/// ricorsivamente). Una dipendenza non risolta o un oggetto che non e una
+/// tabella o una vista (funzione, sinonimo, tabella esterna) sono opachi.
+///
+/// # Limite dichiarato
+///
+/// - **Regola.** La visibilita dei metadati di SQL Server nasconde una
+///   security policy a chi non ha permessi su di essa: senza `VIEW
+///   DEFINITION` sul database il catalogo non prova l'assenza di filtri, e la
+///   regola rifiuta (`unreadable`).
+/// - **Ambito.** `Update` e `DeleteByKeys` SQL Server.
+/// - **Hazard.** Un ruolo senza quel permesso non puo usare le due mode.
+/// - **Rientro.** Una prova dell'assenza di policy che non dipenda dalla
+///   visibilita dei metadati.
+pub(super) async fn validate_row_visibility(
+    session: &mut SqlServerSession,
+    schema: &str,
+    object: &str,
+    mode: plenora_database_core::plan::WriteMode,
+    phase: ErrorPhase,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    use plenora_database_core::row_visibility::{
+        destructive_event, refuse_filtered_rows, DestructiveEvent, RowFilters,
+    };
+    let event = match (mode, destructive_event(mode)) {
+        (plenora_database_core::plan::WriteMode::Replace, _) | (_, None) => return Ok(()),
+        (_, Some(DestructiveEvent::Delete)) => "DELETE",
+        (_, Some(DestructiveEvent::Update)) => "UPDATE",
+    };
+    let mut query = Query::new(ROW_VISIBILITY_SQL);
+    query.bind(schema.to_owned());
+    query.bind(object.to_owned());
+    query.bind(event.to_owned());
+    let row = one_row(
+        session.execute_query(query, phase, cancellation).await?,
+        "visibilita delle righe",
+        phase,
+    )?;
+    let fact = |index: usize, name: &str| -> Result<bool> {
+        Ok(required::<i64>(&row, index, name, phase)? > 0)
+    };
+    if !fact(0, "target risolto")? {
+        return Ok(());
+    }
+    refuse_filtered_rows(
+        ProviderKind::Sqlserver,
+        mode,
+        phase,
+        RowFilters {
+            unreadable: !fact(1, "permesso VIEW DEFINITION")?,
+            row_security: fact(2, "predicati di filtro")?,
+            rewrite_rule: false,
+            row_trigger: fact(3, "trigger INSTEAD OF")?,
+            opaque_relation: fact(4, "dipendenze opache")?,
+            view: fact(5, "vista")?,
+        },
+    )
+}
+
+const ROW_VISIBILITY_SQL: &str = r"
+DECLARE @object_id int =
+(
+    SELECT o.object_id
+    FROM sys.objects AS o
+    JOIN sys.schemas AS s ON s.schema_id = o.schema_id
+    WHERE s.name = @P1 AND o.name = @P2
+);
+DECLARE @closure TABLE (object_id int PRIMARY KEY);
+WITH closure AS
+(
+    SELECT @object_id AS object_id
+    UNION ALL
+    SELECT d.referenced_id
+    FROM closure AS c
+    JOIN sys.objects AS v ON v.object_id = c.object_id AND v.type = 'V'
+    JOIN sys.sql_expression_dependencies AS d ON d.referencing_id = c.object_id
+    WHERE d.referenced_id IS NOT NULL
+)
+INSERT INTO @closure (object_id)
+SELECT DISTINCT object_id FROM closure WHERE object_id IS NOT NULL;
+SELECT
+    CAST(CASE WHEN @object_id IS NULL THEN 0 ELSE 1 END AS bigint),
+    CAST(ISNULL(HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DEFINITION'), 0) AS bigint),
+    (SELECT COUNT_BIG(*)
+       FROM sys.security_predicates AS p
+       JOIN sys.security_policies AS sp ON sp.object_id = p.object_id
+      WHERE p.target_object_id IN (SELECT object_id FROM @closure)
+        AND sp.is_enabled = 1 AND p.predicate_type = 0),
+    (SELECT COUNT_BIG(*)
+       FROM sys.triggers AS t
+       JOIN sys.trigger_events AS e ON e.object_id = t.object_id
+      WHERE t.parent_id IN (SELECT object_id FROM @closure)
+        AND t.is_instead_of_trigger = 1 AND t.is_disabled = 0 AND e.type_desc = @P3),
+    (SELECT COUNT_BIG(*)
+       FROM @closure AS c
+       LEFT JOIN sys.objects AS o ON o.object_id = c.object_id
+      WHERE o.object_id IS NULL OR o.type NOT IN ('U', 'V'))
+    + (SELECT COUNT_BIG(*)
+         FROM sys.sql_expression_dependencies AS d
+         JOIN sys.objects AS v ON v.object_id = d.referencing_id AND v.type = 'V'
+        WHERE d.referencing_id IN (SELECT object_id FROM @closure)
+          AND d.referenced_id IS NULL),
+    (SELECT COUNT_BIG(*) FROM sys.objects WHERE object_id = @object_id AND type = 'V');
+";
 
 fn replace_external_state_sql(has_ledger: bool, has_xml_compression: bool) -> String {
     let ledger = if has_ledger {
@@ -307,12 +422,7 @@ fn lifecycle_error(
     phase: ErrorPhase,
     message: impl Into<String>,
 ) -> DatabaseError {
-    DatabaseError::new(
-        category,
-        phase,
-        Some(plenora_database_core::plan::ProviderKind::Sqlserver),
-        message,
-    )
+    DatabaseError::new(category, phase, Some(ProviderKind::Sqlserver), message)
 }
 
 #[cfg(test)]

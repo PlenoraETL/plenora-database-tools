@@ -9185,3 +9185,134 @@ async fn live_caller_stream_cancellation_requires_recovery() {
         plenora_database_core::RetryDisposition::RequiresRecovery
     );
 }
+
+/// La regola R su SQL Server: un predicato di filtro RLS o un trigger
+/// `INSTEAD OF DELETE` nascondono righe a `DeleteByKeys`, che fino al 25/10
+/// pubblicava `skipped` per una chiave presente (la 2, che il filtro
+/// nasconde) come per una assente. Ora si rifiuta prima di ogni effetto.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta fixture DML isolate"]
+#[allow(clippy::too_many_lines)]
+async fn live_regola_r_rifiuta_delete_e_update_con_righe_nascoste() {
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("admin");
+    let statements = [
+        "IF OBJECT_ID(N'[plenora_test].[regola_r_policy]', N'SP') IS NOT NULL \
+         DROP SECURITY POLICY [plenora_test].[regola_r_policy];",
+        "DROP FUNCTION IF EXISTS [plenora_test].[regola_r_filtro]; \
+         DROP TABLE IF EXISTS [plenora_test].[regola_r]; \
+         CREATE TABLE [plenora_test].[regola_r] \
+         ([id] int NOT NULL PRIMARY KEY, [label] nvarchar(100) NOT NULL); \
+         INSERT INTO [plenora_test].[regola_r] VALUES (1, N'a'), (2, N'b'), (3, N'a');",
+        "EXEC(N'CREATE FUNCTION [plenora_test].[regola_r_filtro](@label nvarchar(100)) \
+         RETURNS TABLE WITH SCHEMABINDING AS RETURN SELECT 1 AS ok WHERE @label = N''a'';');",
+        "CREATE SECURITY POLICY [plenora_test].[regola_r_policy] \
+         ADD FILTER PREDICATE [plenora_test].[regola_r_filtro]([label]) \
+         ON [plenora_test].[regola_r] WITH (STATE = ON);",
+    ];
+    for (index, sql) in statements.into_iter().enumerate() {
+        admin
+            .execute_query(Query::new(sql), ErrorPhase::Write, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("fixture regola R {index}: {error:?}"));
+    }
+    let pool = SqlServerPool::new(config.clone(), 2).expect("pool");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("label", DataType::Utf8, false),
+    ]));
+    let keys = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let attempt = |mode: WriteMode| {
+        let pool = &pool;
+        let cancellation = &cancellation;
+        let input = if mode == WriteMode::DeleteByKeys {
+            Arc::clone(&keys)
+        } else {
+            Arc::clone(&schema)
+        };
+        async move {
+            let mut operation = write_operation("regola_r", mode);
+            operation.srid_policy = None;
+            operation.keys = vec!["id".to_owned()];
+            if mode == WriteMode::Update {
+                operation.update_columns = vec!["label".to_owned()];
+            }
+            let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+            let prepared =
+                prepare_write(pool, &operation, Arc::clone(&input), &budget, cancellation).await?;
+            let mut columns: Vec<Arc<dyn Array>> = vec![Arc::new(Int32Array::from(vec![2]))];
+            if mode == WriteMode::Update {
+                columns.push(Arc::new(StringArray::from(vec!["z"])));
+            }
+            let batch = RecordBatch::try_new(Arc::clone(&input), columns).expect("batch");
+            write_prepared(
+                prepared,
+                Box::new(VecBatchStream {
+                    schema: input,
+                    batches: VecDeque::from([batch]),
+                }),
+                cancellation,
+            )
+            .await
+        }
+    };
+    let refused = |result: plenora_database_core::Result<_>, reason: &str| {
+        let error = result.expect_err("regola R");
+        assert_eq!(
+            error.category,
+            ErrorCategory::Unsupported,
+            "{}",
+            error.message
+        );
+        assert!(error.message.ends_with(reason), "{}", error.message);
+    };
+    refused(
+        attempt(WriteMode::DeleteByKeys).await,
+        plenora_database_core::row_visibility::HIDDEN_BY_ROW_SECURITY,
+    );
+    refused(
+        attempt(WriteMode::Update).await,
+        plenora_database_core::row_visibility::HIDDEN_BY_ROW_SECURITY,
+    );
+    for sql in [
+        "DROP SECURITY POLICY [plenora_test].[regola_r_policy];",
+        "EXEC(N'CREATE TRIGGER [plenora_test].[regola_r_instead] ON [plenora_test].[regola_r] \
+         INSTEAD OF DELETE AS BEGIN SET NOCOUNT ON; END;');",
+    ] {
+        admin
+            .execute_query(Query::new(sql), ErrorPhase::Write, &cancellation)
+            .await
+            .expect("fixture regola R");
+    }
+    refused(
+        attempt(WriteMode::DeleteByKeys).await,
+        plenora_database_core::row_visibility::HIDDEN_BY_TRIGGER,
+    );
+    // Il controllo positivo: senza filtri la chiave 2 si cancella.
+    admin
+        .execute_query(
+            Query::new("DROP TRIGGER [plenora_test].[regola_r_instead];"),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("fixture regola R");
+    let outcome = attempt(WriteMode::DeleteByKeys)
+        .await
+        .expect("delete senza filtri");
+    assert_eq!((outcome.rows.deleted, outcome.rows.skipped), (Some(1), 0));
+    admin
+        .execute_query(
+            Query::new(
+                "DROP FUNCTION IF EXISTS [plenora_test].[regola_r_filtro]; \
+                 DROP TABLE IF EXISTS [plenora_test].[regola_r];",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("pulizia regola R");
+}

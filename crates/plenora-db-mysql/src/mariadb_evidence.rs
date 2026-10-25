@@ -4808,8 +4808,9 @@ async fn replace_probes(
 
     // 1. Il target viene svuotato e riempito nella stessa transazione: cio che
     //    resta sono **solo** le righe in ingresso. Il conteggio delle
-    //    cancellate resta zero, e la sonda lo pretende invece di ignorarlo: e
-    //    cio che il contratto dichiara, e un valore diverso vorrebbe dire che
+    //    cancellate non si pubblica (`None`): le righe svuotate non sono
+    //    dell'ingresso, e uno zero direbbe che non ce n'erano. La sonda lo
+    //    pretende invece di ignorarlo: un valore diverso vorrebbe dire che
     //    l'esito ha cambiato significato.
     reset_scratch(connection, SCRATCH_REPLACE, "", &seed).await;
     let question = "svuota il target e ci mette le righe in ingresso, nella stessa transazione";
@@ -4819,7 +4820,7 @@ async fn replace_probes(
         confirmed: 2,
         inserted: Some(2),
         updated: Some(0),
-        deleted: Some(0),
+        deleted: None,
         skipped: 0,
     };
     match scripted_write(

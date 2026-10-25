@@ -1014,11 +1014,16 @@ pub fn committed_outcome_for_mode(
             // Replace: il target e stato svuotato dal DELETE nella stessa
             // transazione, quindi le righe input sono esattamente le righe
             // finali. affected_or_inserted = righe inserite = received.
+            // Le righe che il DELETE ha tolto non sono dell'ingresso e il
+            // contratto non le conta fra le confermate: il conteggio delle
+            // cancellate non si pubblica (`None`), come SQL Server e
+            // PostgreSQL. Fino al 25/10 era `Some(0)` anche con righe
+            // cancellate.
             received,
             confirmed: received,
             inserted: Some(received),
             updated: Some(0),
-            deleted: Some(0),
+            deleted: None,
             failed: 0,
             skipped: 0,
         },

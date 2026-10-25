@@ -10,6 +10,7 @@ mod error;
 mod provider;
 mod read;
 mod row_diagnostics;
+mod row_visibility;
 mod transaction;
 mod types;
 mod write;

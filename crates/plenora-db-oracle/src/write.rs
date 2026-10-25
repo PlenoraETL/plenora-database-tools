@@ -739,6 +739,16 @@ async fn execute_input(
     transaction
         .set_response_byte_limit(budget.limits().memory_bytes)
         .await?;
+    // La regola R prima di ogni statement distruttivo: il DELETE di Replace,
+    // gli UPDATE e DELETE per chiave.
+    crate::row_visibility::enforce(
+        transaction,
+        &plan.schema_name,
+        &plan.object_name,
+        plan.mode,
+        cancellation,
+    )
+    .await?;
     if plan.mode == WriteMode::Replace {
         transaction
             .execute(
@@ -1420,6 +1430,10 @@ fn committed_outcome(
 ) -> Result<WriteOutcome> {
     let skipped = received.saturating_sub(affected.min(received));
     let (confirmed, inserted, updated, deleted) = match plan.mutation_kind() {
+        // Replace svuota il target con un DELETE le cui righe non sono
+        // dell'ingresso: il conteggio delle cancellate non si pubblica, come
+        // su SQL Server, PostgreSQL e MySQL. Fino al 25/10 era `Some(0)`.
+        "inserted" if plan.mode == WriteMode::Replace => (received, Some(received), Some(0), None),
         "inserted" => (received, Some(received), Some(0), Some(0)),
         "updated" => (affected, Some(0), Some(affected), Some(0)),
         "deleted" => (affected, Some(0), Some(0), Some(affected)),
