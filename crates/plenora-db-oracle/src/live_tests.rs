@@ -34,7 +34,7 @@ use plenora_database_sql::{
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
-fn fixture() -> (OracleProvider, SecretString) {
+pub fn fixture() -> (OracleProvider, SecretString) {
     let (config, secret) = fixture_config();
     (
         OracleProvider::new(config).expect("config fixture Oracle"),
@@ -310,14 +310,14 @@ async fn qualify_spatial_surface(
         .expect("rollback censimento Spatial Oracle");
 }
 
-struct VecBatchStream {
+pub struct VecBatchStream {
     schema: SchemaRef,
     batches: VecDeque<RecordBatch>,
     rows: u64,
 }
 
 impl VecBatchStream {
-    fn new(batches: Vec<RecordBatch>) -> Self {
+    pub fn new(batches: Vec<RecordBatch>) -> Self {
         let schema = batches
             .first()
             .expect("almeno un batch Oracle live")

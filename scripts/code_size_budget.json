@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 106392,
+  "max_physical_lines": 106396,
   "max_code_lines": 87659,
-  "rationale": "PR #126, decision 0022: field_identity conserva l'identita ricevuta dalla write e la riemette in read/query; e crescita di prodotto richiesta dal contratto. Verifica d'igiene: test gia in file dedicati e costruzione dei metadati query gia accorpata; nessuna ulteriore riduzione utile senza perdere chiarezza. Come nella PR #119, soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 106244 -> 106392 (+148, di cui +29 per il fix della proiezione ripetuta chiesto dal secondo lettore), righe di codice 87543 -> 87659 (+116). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "rationale": "fix/oracle-number-modulo: il codec NUMBER del fork oracle-rs (vendor/, fuori dal perimetro) allinea l'esponente con rem_euclid; nel perimetro entrano solo le 4 righe fisiche di lib.rs che agganciano i due moduli #[cfg(test)] dell'oracolo NUMBER (unitario e live), escluse dalle righe di codice. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 106392 -> 106396 (+4), righe di codice 87659 invariate. Conteggio e perimetro invariati, nessun margine aggiunto."
 }
