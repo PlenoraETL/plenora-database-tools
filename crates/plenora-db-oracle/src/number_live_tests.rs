@@ -1139,6 +1139,10 @@ async fn live_number_float_columns_read_and_write_exactly_or_fail() {
         "12345678901234567890123",
         "123456789.123456789",
         "1/3",
+        // Distinti da 0.1 e da 1.0000000000000002 ma con gli stessi bit: una
+        // conversione non iniettiva li renderebbe uguali.
+        "0.10000000000000001",
+        "1.0000000000000002220446049250313080847",
     ] {
         reset_floats(&provider, &secret).await;
         execute_sql(
@@ -1221,6 +1225,100 @@ async fn live_number_float_columns_read_and_write_exactly_or_fail() {
             other => misses.push(format!("{column} {value:e}: {other:?}")),
         }
     }
+
+    // 5. -0.0 non e conservabile da Oracle (misurato: +0 in BINARY_FLOAT,
+    //    FLOAT e NUMBER, byte non canonici in BINARY_DOUBLE): ogni write lo
+    //    rifiuta per mappatura, Float64 su FLOAT/BINARY_DOUBLE e Float32 su
+    //    BINARY_FLOAT, e cosi il bind di uno statement nativo.
+    for column in ["F", "BD"] {
+        reset_floats(&provider, &secret).await;
+        let outcome = arrow_write(
+            &provider,
+            &secret,
+            &write_operation(FLOATS, WriteMode::Append, &[], &[]),
+            float_batch(&[column], vec![1], &[vec![-0.0]]),
+        )
+        .await;
+        match outcome {
+            Err(error) if error.contains("DataMapping") => {}
+            other => misses.push(format!("{column} -0.0: {other:?}")),
+        }
+    }
+    reset_floats(&provider, &secret).await;
+    let float32 = RecordBatch::try_new(
+        contract_schema(vec![
+            Field::new("ID", DataType::Int32, false),
+            Field::new("BF", DataType::Float32, false),
+        ])
+        .expect("schema"),
+        vec![
+            Arc::new(Int32Array::from(vec![1])),
+            Arc::new(Float32Array::from(vec![-0.0_f32])),
+        ],
+    )
+    .expect("batch Float32");
+    match arrow_write(
+        &provider,
+        &secret,
+        &write_operation(FLOATS, WriteMode::Append, &[], &[]),
+        float32,
+    )
+    .await
+    {
+        Err(error) if error.contains("DataMapping") => {}
+        other => misses.push(format!("BF -0.0: {other:?}")),
+    }
+    let mut transaction = begin(&provider, &secret).await;
+    let outcome = transaction
+        .execute(
+            &Statement::new(format!("INSERT INTO {FLOATS} (ID, BD) VALUES (1, :1)"))
+                .with_params(vec![ParameterValue::F64(-0.0)]),
+            &CancellationToken::new(),
+        )
+        .await;
+    let _ = transaction.rollback(&CancellationToken::new()).await;
+    if let Some(miss) = expect_data_mapping("-0.0", "bind nativo", outcome) {
+        misses.push(miss);
+    }
+
+    // 6. Un -0.0 gia salvato dalle versioni precedenti (byte 7f ff ...,
+    //    scritto qui con il driver senza il provider): la read lo rifiuta
+    //    invece di renderlo +0.
+    reset_floats(&provider, &secret).await;
+    legacy_negative_zero().await;
+    let outcome = arrow_read_floats(&provider, &secret, &["BD"]).await;
+    if let Some(miss) = expect_data_mapping("-0.0 non canonico", "read BINARY_DOUBLE", outcome) {
+        misses.push(miss);
+    }
     drop_table(&provider, &secret, FLOATS).await;
-    assert!(report("colonne FLOAT", &misses, 12), "{misses:?}");
+    assert!(report("colonne FLOAT", &misses, 18), "{misses:?}");
+}
+
+/// Scrive con il driver, senza il provider, il -0.0 che le versioni fino ad
+/// a6f07e2 legavano: Oracle lo conserva con byte non canonici.
+async fn legacy_negative_zero() {
+    let port = std::env::var("PLENORA_ORACLE_PORT").unwrap_or_else(|_| "1521".to_owned());
+    let host = std::env::var("PLENORA_ORACLE_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
+    let service = std::env::var("PLENORA_ORACLE_SERVICE").unwrap_or_else(|_| "FREEPDB1".to_owned());
+    let user = std::env::var("PLENORA_ORACLE_USER").unwrap_or_else(|_| "plenora".to_owned());
+    let password =
+        std::env::var("PLENORA_ORACLE_PASSWORD").unwrap_or_else(|_| "Plenora_Test_2026".to_owned());
+    let connection =
+        oracle_rs::Connection::connect(&format!("{host}:{port}/{service}"), &user, &password)
+            .await
+            .expect("connessione driver");
+    connection
+        .execute(
+            &format!("INSERT INTO {FLOATS} (ID, BD) VALUES (1, :1)"),
+            &[oracle_rs::Value::Float(-0.0)],
+        )
+        .await
+        .expect("insert -0.0 legacy");
+    connection.commit().await.expect("commit legacy");
+    let dump = connection
+        .query(&format!("SELECT DUMP(BD) FROM {FLOATS}"), &[])
+        .await
+        .expect("DUMP legacy");
+    eprintln!("NUMBER Oracle: -0.0 legacy -> {:?}", dump.rows.first());
+    let _ = connection.close().await;
 }

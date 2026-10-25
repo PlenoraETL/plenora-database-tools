@@ -243,16 +243,14 @@ impl OracleReadPlan {
                     Ok(format!(
                         "CASE WHEN {source} THEN 1 WHEN NOT {source} THEN 0 END AS {quoted}"
                     ))
-                } else if column.native_type == "BINARY_FLOAT" {
-                    // I byte IEEE del server: `CAST(... AS NUMBER)` arrotondava
-                    // e azzerava in silenzio ogni |x| < 1e-130.
-                    Ok(format!(
-                        "UTL_RAW.CAST_FROM_BINARY_FLOAT({source}) AS {quoted}"
-                    ))
-                } else if column.native_type == "BINARY_DOUBLE" {
-                    Ok(format!(
-                        "UTL_RAW.CAST_FROM_BINARY_DOUBLE({source}) AS {quoted}"
-                    ))
+                } else if matches!(
+                    column.native_type.as_str(),
+                    "BINARY_FLOAT" | "BINARY_DOUBLE"
+                ) {
+                    // I byte salvati, da `DUMP()`: `CAST(... AS NUMBER)`
+                    // azzerava ogni |x| < 1e-130 e `UTL_RAW.CAST_FROM_BINARY_*`
+                    // rendeva +0 per un -0.0 salvato non canonico.
+                    Ok(format!("DUMP({source}) AS {quoted}"))
                 } else {
                     Ok(format!("{source} AS {quoted}"))
                 }

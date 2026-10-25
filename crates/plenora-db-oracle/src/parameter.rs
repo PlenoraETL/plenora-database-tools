@@ -179,6 +179,14 @@ fn bind_parameter(value: &ParameterValue) -> Result<Value> {
         ParameterValue::Bool(value) => Ok(Value::Integer(i64::from(*value))),
         ParameterValue::I32(value) => Ok(Value::Integer(i64::from(*value))),
         ParameterValue::I64(value) => Ok(Value::Integer(*value)),
+        // Oracle non conserva -0.0: lo normalizza a +0 in BINARY_FLOAT,
+        // FLOAT e NUMBER, e in BINARY_DOUBLE il driver lo salva con byte non
+        // canonici (`7f ff ...`) che il server non trova uguali a 0. Il segno
+        // si perderebbe o il valore diventerebbe inconfrontabile: la write
+        // Oracle qualifica solo `MappingPolicy::Strict`, e Strict non perde.
+        ParameterValue::F64(value) if value.to_bits() == (-0.0_f64).to_bits() => Err(
+            mapping_error("parametro float Oracle -0.0 non rappresentabile"),
+        ),
         ParameterValue::F64(value) if value.is_finite() => Ok(Value::Float(*value)),
         ParameterValue::F64(_) => Err(mapping_error("parametro float Oracle non finito")),
         ParameterValue::String(value)

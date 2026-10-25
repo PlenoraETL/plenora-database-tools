@@ -169,6 +169,7 @@ fn float64_into_a_decimal_float_target_binds_the_shortest_exact_decimal() {
     assert!(float_as_decimal(0.1234, 4).is_ok());
     assert!(float_as_decimal(0.12345, 4).is_err());
     assert!(float_as_decimal(f64::NAN, 38).is_err());
+    assert!(float_as_decimal(-0.0, 38).is_err());
     assert!(float_as_decimal(f64::INFINITY, 38).is_err());
     // Il testo legato e un decimale che il codec NUMBER accetta, o rifiuta
     // fuori dominio invece di azzerarlo.

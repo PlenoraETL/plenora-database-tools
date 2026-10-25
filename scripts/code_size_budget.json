@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 106530,
-  "max_code_lines": 87749,
-  "rationale": "fix/oracle-number-modulo (PR #136): il codec NUMBER del fork oracle-rs (vendor/, fuori dal perimetro) allinea l'esponente con rem_euclid e rifiuta infiniti e cifre fuori dominio. Nel perimetro: lib.rs aggancia i moduli #[cfg(test)] dell'oracolo NUMBER; read.rs rifiuta il testo senza cifre e le cifre oltre la precisione Decimal128 (secondo giro), legge BINARY_FLOAT/BINARY_DOUBLE dai byte IEEE e converte FLOAT(b) in Float64 solo se il valore e ricostruibile (terzo giro); write.rs lega un Float64 diretto a FLOAT(b) come decimale piu breve, o lo rifiuta. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 106392 -> 106530 (+138), righe di codice 87659 -> 87749 (+90). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 106596,
+  "max_code_lines": 87782,
+  "rationale": "fix/oracle-number-modulo (PR #136): il codec NUMBER del fork oracle-rs (vendor/, fuori dal perimetro) allinea l'esponente con rem_euclid e rifiuta infiniti e cifre fuori dominio. Nel perimetro: lib.rs aggancia i moduli #[cfg(test)] dell'oracolo NUMBER; read.rs rifiuta il testo senza cifre e le cifre oltre la precisione Decimal128 (secondo giro), legge BINARY_FLOAT/BINARY_DOUBLE dai byte IEEE e converte FLOAT(b) in Float64 solo se il valore e ricostruibile (terzo giro); write.rs lega un Float64 diretto a FLOAT(b) come decimale piu breve, o lo rifiuta; quarto giro: criterio iniettivo per FLOAT(b), BINARY_* letti da DUMP() con rifiuto del -0.0 non canonico, -0.0 rifiutato a ogni bind. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 106392 -> 106596 (+204), righe di codice 87659 -> 87782 (+123). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

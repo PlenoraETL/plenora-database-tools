@@ -494,15 +494,12 @@ fn decimal_text_without_digits_or_beyond_precision_is_not_read_as_a_value() {
 }
 
 #[test]
-fn a_decimal_float_becomes_f64_only_when_the_value_is_recoverable() {
+fn a_decimal_float_becomes_f64_only_when_it_is_the_shortest_form_of_its_f64() {
     use crate::read::decimal_as_f64;
     for (text, expected) in [
         ("0.1", 0.1_f64),
-        (".10000000000000001", 0.1),
-        (
-            "0.1000000000000000055511151231257827021181583404541015625",
-            0.1,
-        ),
+        ("1.0000000000000002", 1.000_000_000_000_000_2),
+        ("100", 100.0),
         ("9007199254740992", 9_007_199_254_740_992.0),
         ("123456789.12345679", 123_456_789.123_456_79),
         ("-1.5", -1.5),
@@ -516,8 +513,13 @@ fn a_decimal_float_becomes_f64_only_when_the_value_is_recoverable() {
             "{text}"
         );
     }
-    // Gli esempi del secondo lettore: f64 renderebbe un altro numero.
+    // Gli esempi del secondo lettore: f64 renderebbe un altro numero. Poi
+    // quelli del terzo: decimali distinti con gli stessi bit di uno sopra,
+    // che la conversione renderebbe uguali (non iniettiva).
     for text in [
+        ".10000000000000001",
+        "0.1000000000000000055511151231257827021181583404541015625",
+        "1.0000000000000002220446049250313080847",
         "12345678901234567890123",
         "9007199254740993",
         "123456789.123456789",
@@ -529,4 +531,42 @@ fn a_decimal_float_becomes_f64_only_when_the_value_is_recoverable() {
     ] {
         assert!(decimal_as_f64(text).is_err(), "{text}");
     }
+}
+
+#[test]
+fn binary_floats_are_decoded_from_the_stored_bytes_and_negative_zero_is_refused() {
+    use crate::read::{binary_double_from_dump, binary_float_from_dump};
+    for (dump, expected) in [
+        ("Typ=101 Len=8: 128,0,0,0,0,0,0,0", Some(0.0_f64)),
+        ("Typ=101 Len=8: 191,248,0,0,0,0,0,0", Some(1.5)),
+        ("Typ=101 Len=8: 64,7,255,255,255,255,255,255", Some(-1.5)),
+        ("NULL", None),
+    ] {
+        assert_eq!(
+            binary_double_from_dump(dump)
+                .expect("BINARY_DOUBLE valido")
+                .map(f64::to_bits),
+            expected.map(f64::to_bits),
+            "{dump}"
+        );
+    }
+    // -0.0 salvato non canonico dalle versioni precedenti, non finiti,
+    // DUMP di un altro tipo o malformato.
+    for dump in [
+        "Typ=101 Len=8: 127,255,255,255,255,255,255,255",
+        "Typ=101 Len=8: 255,240,0,0,0,0,0,0",
+        "Typ=100 Len=4: 128,0,0,0",
+        "Typ=101 Len=8: 128,0,0",
+        "Typ=101 Len=8: 128,0,0,0,0,0,0,x",
+        "",
+    ] {
+        assert!(binary_double_from_dump(dump).is_err(), "{dump}");
+    }
+    assert_eq!(
+        binary_float_from_dump("Typ=100 Len=4: 191,192,0,0")
+            .expect("BINARY_FLOAT valido")
+            .map(f32::to_bits),
+        Some(1.5_f32.to_bits())
+    );
+    assert!(binary_float_from_dump("Typ=100 Len=4: 127,255,255,255").is_err());
 }

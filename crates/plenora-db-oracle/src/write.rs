@@ -983,7 +983,8 @@ fn float_as_decimal(value: f64, digits: usize) -> Result<String> {
         .filter(u8::is_ascii_digit)
         .skip_while(|digit| *digit == b'0')
         .count();
-    if !value.is_finite() || significant > digits {
+    // -0.0 diventerebbe lo zero di NUMBER: il segno si perde.
+    if !value.is_finite() || significant > digits || value.to_bits() == (-0.0_f64).to_bits() {
         return Err(write_error(
             ErrorCategory::DataMapping,
             "Float64 non rappresentabile nel FLOAT Oracle di destinazione",
