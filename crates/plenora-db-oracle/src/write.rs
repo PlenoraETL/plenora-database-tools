@@ -224,8 +224,11 @@ impl OracleWritePlan {
             WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys
         ) && !target_has_unique_key(target, &self.keys, &self.columns)
         {
+            // La regola K (`plenora_database_core::write_keys`), con la
+            // categoria di SQL Server e degli altri provider (`schema`; fino
+            // al 25/10 qui era `unsupported`).
             return Err(prepare_error(
-                ErrorCategory::Unsupported,
+                ErrorCategory::Schema,
                 "le chiavi Oracle devono corrispondere a un indice univoco",
             ));
         }
@@ -980,6 +983,7 @@ fn validate_operation(
     schema: &SchemaRef,
     operation: &WriteOperation,
 ) -> Result<()> {
+    plenora_database_core::write_keys::refuse_key_in_update_columns(operation)?;
     if operation
         .target
         .catalog

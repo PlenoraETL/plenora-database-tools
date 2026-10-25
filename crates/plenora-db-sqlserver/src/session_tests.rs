@@ -41,3 +41,22 @@ fn options_check_requires_every_pinned_bit() {
         assert!(!options_pinned(pinned | bit), "{bit}");
     }
 }
+
+/// Ogni livello del contratto ha il suo batch e il valore di
+/// `transaction_isolation_level` che la verifica pretende.
+#[test]
+fn ogni_livello_di_isolamento_ha_batch_e_valore_atteso() {
+    use plenora_database_core::transaction::IsolationLevel;
+    for (level, words, expected) in [
+        (IsolationLevel::ReadUncommitted, "READ UNCOMMITTED", 1),
+        (IsolationLevel::ReadCommitted, "READ COMMITTED", 2),
+        (IsolationLevel::RepeatableRead, "REPEATABLE READ", 3),
+        (IsolationLevel::Serializable, "SERIALIZABLE", 4),
+    ] {
+        let (batch, value) = isolation_batch(level);
+        assert_eq!(batch, format!("SET TRANSACTION ISOLATION LEVEL {words};"));
+        assert_eq!(value, expected, "{level:?}");
+    }
+    assert!(ISOLATION_LEVEL_SQL.contains("sys.dm_exec_sessions"));
+    assert!(ISOLATION_LEVEL_SQL.contains("@@SPID"));
+}

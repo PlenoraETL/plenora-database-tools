@@ -234,10 +234,15 @@ pub trait RowStream: Send {
 /// Richiesta di update ottimistico condizionato.
 ///
 /// `update` è lo statement `UPDATE ... WHERE key = ... AND version = ...` che
-/// deve applicare esattamente `expected_affected_rows` righe (tipicamente 1).
+/// deve **trovare** esattamente `expected_affected_rows` righe (tipicamente
+/// 1). Le righe si contano come le conta il `WHERE`, cambiate o no, in ogni
+/// provider: PostgreSQL, SQL Server, Oracle e Db2 di natura, `MySQL`/`MariaDB`
+/// con `CLIENT_FOUND_ROWS` (dal 25/10; prima `MySQL` contava le righe
+/// cambiate). Un UPDATE che riscrive gli stessi valori riesce; una versione
+/// diversa non trova la riga e diventa `ConcurrentModification`.
 ///
 /// `key_probe`, se presente, è un `SELECT 1 FROM ... WHERE key = ... LIMIT 1`
-/// eseguito **solo** quando l'update non ha modificato la riga attesa: serve
+/// eseguito **solo** quando l'update non ha trovato la riga attesa: serve
 /// a distinguere `ConcurrentModification` (chiave esiste ma versione diversa)
 /// da `NotFound` (chiave assente). Se `key_probe` è `None`, il default
 /// conservativo classifica il fallimento come `ConcurrentModification`.

@@ -94,6 +94,13 @@ pub(super) struct PostgresIntervalBinary {
     pub(super) months: i32,
 }
 
+/// Il testo di un intervallo con il segno esplicito su ogni campo (regola V).
+///
+/// Con `IntervalStyle = sql_standard` il server applica il segno del primo
+/// campo a ogni campo che non ne ha uno: fino al 25/10 `-1 mons 2 days
+/// 03:00:00` (`MonthDayNano` -1 mese, 2 giorni, 3 ore) diventava -1 mese -2
+/// giorni -3 ore con `CopyText`. Con un segno su ogni campo la lettura non
+/// dipende dalla sessione.
 pub(super) fn interval_text(value: &PostgresIntervalBinary) -> String {
     const MICROS_PER_SECOND: u64 = 1_000_000;
     const MICROS_PER_MINUTE: u64 = 60 * MICROS_PER_SECOND;
@@ -106,10 +113,10 @@ pub(super) fn interval_text(value: &PostgresIntervalBinary) -> String {
     let seconds = (absolute % MICROS_PER_MINUTE) / MICROS_PER_SECOND;
     let microseconds = absolute % MICROS_PER_SECOND;
     format!(
-        "{} mons {} days {}{hours:02}:{minutes:02}:{seconds:02}.{microseconds:06}",
+        "{:+} mons {:+} days {}{hours:02}:{minutes:02}:{seconds:02}.{microseconds:06}",
         value.months,
         value.days,
-        if negative { "-" } else { "" }
+        if negative { "-" } else { "+" }
     )
 }
 
@@ -405,6 +412,9 @@ pub(super) fn binary_copy_value(
     target_type: &Type,
     row: usize,
 ) -> Result<Box<dyn ToSql + Sync + Send>> {
+    if !array.is_null(row) {
+        super::canonical::check(plan, array, row)?;
+    }
     if matches!(plan.data_type, DataType::Struct(_)) && plan.semantics == ColumnSemantics::Composite
     {
         let typed = array

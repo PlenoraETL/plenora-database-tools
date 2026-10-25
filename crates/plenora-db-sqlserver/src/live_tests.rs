@@ -54,6 +54,7 @@ fn live_config(policy: CertificatePolicy) -> SqlServerConfig {
     let password = std::env::var("PLENORA_SQLSERVER_PASSWORD")
         .unwrap_or_else(|_| "DataFlow_Test_2026!".to_owned());
     SqlServerConfig::new(host, database, username, SecretString::new(password))
+        .with_port(live_port())
         .with_certificate_policy(policy)
 }
 
@@ -101,7 +102,16 @@ fn live_admin_config() -> SqlServerConfig {
     let password = std::env::var("PLENORA_SQLSERVER_SA_PASSWORD")
         .unwrap_or_else(|_| "DataFlow_Test_2026!".to_owned());
     SqlServerConfig::new(host, database, "sa", SecretString::new(password))
+        .with_port(live_port())
         .with_certificate_policy(CertificatePolicy::TrustServerCertificate)
+}
+
+/// La porta del fixture: 1433 sulla rete dei container, quella pubblicata
+/// sull'host quando le prove girano fuori.
+fn live_port() -> u16 {
+    std::env::var("PLENORA_SQLSERVER_PORT")
+        .ok()
+        .map_or(1_433, |port| port.parse().expect("porta SQL Server"))
 }
 
 struct TcpCutProxy {

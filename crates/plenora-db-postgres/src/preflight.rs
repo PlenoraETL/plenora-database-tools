@@ -237,6 +237,8 @@ async fn validate_resolved_crs_against_postgis(
 ) -> Result<()> {
     let crs_error =
         |message: &str| public_error(ErrorCategory::Crs, ErrorPhase::Prepare, false, message);
+    // `spatial_ref_sys` dello schema di PostGIS (regola Q), letto una volta.
+    let mut postgis: Option<String> = None;
     for field in input_schema.fields() {
         let contract = plenora_database_core::field_contract::FieldContract::parse(field)?;
         if !contract.spatial {
@@ -255,14 +257,26 @@ async fn validate_resolved_crs_against_postgis(
         if srid == 0 || !(target.derived || resolved || geography) {
             continue;
         }
+        let qualifier = if let Some(qualifier) = &postgis {
+            qualifier.clone()
+        } else {
+            let qualifier =
+                crate::postgis_schema::qualifier(client.client()?, ErrorPhase::Prepare).await?;
+            postgis = Some(qualifier.clone());
+            qualifier
+        };
         let row = client
             .client()?
             .query_opt(
-                "SELECT auth_name, auth_srid, \
-                        (srtext LIKE 'GEOGCS%' OR srtext LIKE 'GEOGCRS%' \
-                         OR proj4text LIKE '%+proj=longlat%' \
-                         OR proj4text LIKE '%+proj=latlong%') \
-                 FROM spatial_ref_sys WHERE srid = $1",
+                &crate::postgis_schema::qualify(
+                    "SELECT auth_name, auth_srid, \
+                        (srtext::pg_catalog.text LIKE 'GEOGCS%' \
+                         OR srtext::pg_catalog.text LIKE 'GEOGCRS%' \
+                         OR proj4text::pg_catalog.text LIKE '%+proj=longlat%' \
+                         OR proj4text::pg_catalog.text LIKE '%+proj=latlong%') \
+                     FROM spatial_ref_sys WHERE srid = $1",
+                    &qualifier,
+                ),
                 &[&srid],
             )
             .await

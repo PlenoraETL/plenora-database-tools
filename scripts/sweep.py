@@ -174,6 +174,7 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
         [sys.executable, "scripts/test_check_dependency_pins.py"],
     ),
     ("check_comments.py", [sys.executable, "scripts/check_comments.py"]),
+    ("check_mojibake.py", [sys.executable, "scripts/check_mojibake.py"]),
     ("test_check_coverage.py", [sys.executable, "scripts/test_check_coverage.py"]),
     ("check_test_layout.py", [sys.executable, "scripts/check_test_layout.py"]),
     ("check_relational_ir.py", [sys.executable, "scripts/check_relational_ir.py"]),

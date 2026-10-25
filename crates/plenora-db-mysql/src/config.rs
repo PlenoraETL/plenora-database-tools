@@ -336,6 +336,14 @@ impl MysqlConfig {
             // `skipped` come se mancasse (misurato il 25/10); e un UPDATE
             // condizionale che riscrive lo stesso valore risultava una
             // modifica concorrente. PostgreSQL e SQL Server contano gia cosi.
+            //
+            // Vale per **ogni** statement della connessione, anche lo SQL
+            // del chiamante: `TransactionScope::execute` di un UPDATE
+            // restituisce le righe che il `WHERE` trova, cambiate o no;
+            // `execute_conditional_update` confronta `expected_affected_rows`
+            // con le righe trovate, quindi un UPDATE che riscrive gli stessi
+            // valori riesce; un `INSERT ... ON DUPLICATE KEY UPDATE` che trova
+            // la riga e non la cambia conta 1 (non 0), che la cambi 2.
             .client_found_rows(true)
             .ssl_opts(Some(ssl))
             .setup(vec![crate::SESSION_BOOTSTRAP_SQL]);

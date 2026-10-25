@@ -40,6 +40,7 @@ pub(super) fn encode_copy_value(
     plan: &WriteColumnPlan,
     row: usize,
 ) -> Result<()> {
+    super::canonical::check(plan, array, row)?;
     macro_rules! typed {
         ($array:ty) => {
             array

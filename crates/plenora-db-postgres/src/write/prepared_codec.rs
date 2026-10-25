@@ -11,16 +11,75 @@ use arrow_array::{
     Time64MicrosecondArray, TimestampMicrosecondArray,
 };
 use arrow_schema::{DataType, IntervalUnit, TimeUnit};
+use bytes::BytesMut;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use plenora_database_core::Result;
-use tokio_postgres::types::ToSql;
+use tokio_postgres::types::{IsNull, Kind, ToSql, Type};
 
-#[allow(clippy::too_many_lines)]
+/// Il parametro di uno statement preparato per il valore di `array` alla riga
+/// `row`, che attraversa i domini ([`ThroughDomains`]).
+///
+/// # Errors
+///
+/// `data_mapping` per un valore che il piano non codifica, o non canonico
+/// (regola V).
 pub(super) fn arrow_value(
     array: &dyn Array,
     plan: &WriteColumnPlan,
     row: usize,
 ) -> Result<Box<dyn ToSql + Sync + Send>> {
+    Ok(Box::new(ThroughDomains(typed_value(array, plan, row)?)))
+}
+
+/// Un parametro che il server ha tipizzato con un dominio si codifica come il
+/// tipo base del dominio: e il formato binario che il server legge.
+///
+/// Fino al 25/10 il percorso preparato rifiutava ogni valore diretto a una
+/// colonna con un dominio (`protocol`: i codec del driver riconoscono il tipo
+/// base, non il dominio), mentre `COPY` lo scriveva; i vincoli del dominio li
+/// applica comunque il server.
+#[derive(Debug)]
+struct ThroughDomains(Box<dyn ToSql + Sync + Send>);
+
+fn base_type(target_type: &Type) -> &Type {
+    let mut current = target_type;
+    while let Kind::Domain(base) = current.kind() {
+        current = base;
+    }
+    current
+}
+
+impl ToSql for ThroughDomains {
+    fn to_sql(
+        &self,
+        target_type: &Type,
+        output: &mut BytesMut,
+    ) -> std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        self.0.to_sql_checked(base_type(target_type), output)
+    }
+
+    fn accepts(_target_type: &Type) -> bool {
+        true
+    }
+
+    fn to_sql_checked(
+        &self,
+        target_type: &Type,
+        output: &mut BytesMut,
+    ) -> std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        self.0.to_sql_checked(base_type(target_type), output)
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn typed_value(
+    array: &dyn Array,
+    plan: &WriteColumnPlan,
+    row: usize,
+) -> Result<Box<dyn ToSql + Sync + Send>> {
+    if !array.is_null(row) {
+        super::canonical::check(plan, array, row)?;
+    }
     macro_rules! scalar {
         ($array:ty, $value:expr) => {{
             let typed = array

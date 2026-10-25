@@ -141,6 +141,45 @@ impl SqlServerSession {
         ))
     }
 
+    /// Fissa il livello di isolamento sulla sessione, fuori da una
+    /// transazione, e lo rilegge da `sys.dm_exec_sessions`
+    /// ([`crate::session::isolation_batch`]).
+    ///
+    /// # Errors
+    ///
+    /// `unsupported` (la sessione si scarta) se il livello in vigore non e
+    /// quello chiesto o non si legge; l'errore del batch o della lettura
+    /// altrimenti.
+    pub(crate) async fn pin_isolation(
+        &mut self,
+        level: plenora_database_core::transaction::IsolationLevel,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.require_state(SessionState::Ready, ErrorPhase::Prepare)?;
+        let (batch, expected) = crate::session::isolation_batch(level);
+        self.run_control(batch, ErrorPhase::Prepare, RemoteEffect::None, cancellation)
+            .await?;
+        let effective = self
+            .execute_query(
+                tiberius::Query::new(crate::session::ISOLATION_LEVEL_SQL),
+                ErrorPhase::Prepare,
+                cancellation,
+            )
+            .await?
+            .first()
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.try_get::<i32, _>(0).ok().flatten());
+        if effective == Some(expected) {
+            return Ok(());
+        }
+        self.quarantine();
+        Err(DatabaseError::unsupported(
+            plenora_database_core::plan::ProviderKind::Sqlserver,
+            ErrorPhase::Prepare,
+            "livello di isolamento SQL Server chiesto non verificato sulla sessione",
+        ))
+    }
+
     #[must_use]
     pub const fn state(&self) -> SessionState {
         self.transaction.state()

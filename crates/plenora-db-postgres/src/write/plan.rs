@@ -20,6 +20,14 @@ pub(super) struct WriteColumnPlan {
     /// Lo SRID della colonna, che riceve un valore senza SRID proprio.
     pub(super) target_srid: Option<u32>,
     pub(super) semantics: ColumnSemantics,
+    /// Il prefisso dello schema di `PostGIS` (`"public".`) con cui lo SQL
+    /// della scrittura nomina `ST_GeomFromEWKB`, `geometry` e `geography`
+    /// (regola Q): vuoto finche la transazione della scrittura non lo legge
+    /// da `pg_extension` ([`Self::qualify_postgis`]).
+    pub(super) postgis: String,
+    /// La regola V della colonna del target (`super::canonical`), letta dal
+    /// catalogo nella transazione della scrittura o nel dry run con la DSN.
+    pub(super) session_rule: Option<super::canonical::SessionRule>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +64,19 @@ impl WriteColumnPlan {
             } else {
                 ColumnSemantics::Scalar
             },
+            postgis: String::new(),
+            session_rule: None,
         })
+    }
+
+    /// Qualifica i nomi di `PostGIS` del piano con `qualifier` (regola Q):
+    /// il tipo della colonna (`CREATE TABLE`, `ADD COLUMN`) e, attraverso
+    /// [`Self::postgis`], le funzioni dei segnaposto.
+    pub(super) fn qualify_postgis(&mut self, qualifier: &str) {
+        if self.is_spatial() && self.postgis.is_empty() && !qualifier.is_empty() {
+            self.postgres_type = format!("{qualifier}{}", self.postgres_type);
+            qualifier.clone_into(&mut self.postgis);
+        }
     }
 
     /// Un campo con SRID di colonna: i suoi valori senza SRID proprio si

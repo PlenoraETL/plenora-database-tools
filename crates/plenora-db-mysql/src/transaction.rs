@@ -62,6 +62,54 @@ impl Drop for MysqlTransaction {
     }
 }
 
+/// Rilegge l'isolamento della sessione dopo `SET SESSION TRANSACTION
+/// ISOLATION LEVEL`: la transazione che `START TRANSACTION` apre lo prende da
+/// li. Un valore diverso da quello chiesto (un proxy che riscrive o ignora lo
+/// statement, un server che lo mappa altrove) non si scopre altrimenti:
+/// la transazione girerebbe con un isolamento piu debole e nessun errore.
+/// `MariaDB` pubblica la variabile come `tx_isolation` in ogni versione
+/// supportata (`transaction_isolation` soltanto dalla 11.1).
+///
+/// # Errors
+///
+/// `unsupported` se il valore riletto non e quello chiesto; l'errore della
+/// lettura altrimenti.
+async fn verify_isolation(
+    session: &mut MysqlSession,
+    isolation: plenora_database_core::transaction::IsolationLevel,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    use plenora_database_core::transaction::IsolationLevel;
+    let expected = match isolation {
+        IsolationLevel::ReadUncommitted => "READ-UNCOMMITTED",
+        IsolationLevel::ReadCommitted => "READ-COMMITTED",
+        IsolationLevel::RepeatableRead => "REPEATABLE-READ",
+        IsolationLevel::Serializable => "SERIALIZABLE",
+    };
+    let sql = if session.kind() == ProviderKind::Mariadb {
+        "SELECT @@session.tx_isolation"
+    } else {
+        "SELECT @@session.transaction_isolation"
+    };
+    let rows = session
+        .query_rows(sql, ErrorPhase::Prepare, cancellation)
+        .await?;
+    let observed = rows
+        .first()
+        .and_then(|row| row.get_opt::<String, _>(0))
+        .and_then(std::result::Result::ok);
+    if observed.as_deref() == Some(expected) {
+        Ok(())
+    } else {
+        Err(DatabaseError::new(
+            ErrorCategory::Unsupported,
+            ErrorPhase::Prepare,
+            Some(session.kind()),
+            "isolamento richiesto non applicato dalla sessione",
+        ))
+    }
+}
+
 impl MysqlTransaction {
     /// Apre la transazione emettendo `START TRANSACTION` con opzioni.
     ///
@@ -106,6 +154,7 @@ impl MysqlTransaction {
                 }
             };
             raw_exec(&mut session, iso_sql, ErrorPhase::Prepare, cancellation).await?;
+            verify_isolation(&mut session, isolation, cancellation).await?;
         }
 
         // 2. Statement timeout: quale variabile, e in quale unita, lo decide

@@ -469,9 +469,10 @@ impl Provider for MysqlProvider {
                     .await?;
                     drop(session);
                 }
-                // La regola R prima di ogni effetto, per le mode con un evento
-                // distruttivo; la scrittura la rilegge sulla propria sessione.
-                refuse_unfaithful_destructive_write(self, secret, operation, token).await?;
+                // Le regole R (mode con un evento distruttivo) e K (Update,
+                // `DeleteByKeys`) prima di ogni effetto; la scrittura le
+                // rilegge sulla propria sessione.
+                refuse_before_effects(self, secret, operation, token).await?;
                 let loss_report = if matches!(
                     operation.mode,
                     plenora_database_core::plan::WriteMode::Create
@@ -638,6 +639,14 @@ async fn execute_mysql_write(
             DatabaseError::invalid_plan("stato prepared write MySQL assente o incompatibile")
         })?;
     let operation = &prepared.operation;
+    // La regola K, condizione 2: una chiave ripetuta nell'ingresso rifiuta la
+    // scrittura, prima che lo stream arrivi al server.
+    let input = plenora_database_core::write_keys::guard_input_keys(
+        operation.mode,
+        &operation.keys,
+        input,
+        budget,
+    )?;
     let effective_cancellation = crate::read::BudgetCancellation::new(cancellation, budget)?;
     let token = effective_cancellation.token();
     let pool = provider.pool_for(secret)?;
@@ -724,6 +733,56 @@ async fn execute_mysql_write(
     result
 }
 
+/// Le regole R e K in `prepare_write`, prima di ogni effetto.
+async fn refuse_before_effects(
+    provider: &MysqlProvider,
+    secret: &SecretString,
+    operation: &WriteOperation,
+    token: &CancellationToken,
+) -> Result<()> {
+    refuse_unfaithful_destructive_write(provider, secret, operation, token).await?;
+    refuse_keys_without_unique_index(provider, secret, operation, token).await
+}
+
+/// La regola K in `prepare_write`, per Update e `DeleteByKeys`: le chiavi
+/// coincidono con un indice unico del target (`write::validate_unique_keys`),
+/// letto con una sessione del pool.
+async fn refuse_keys_without_unique_index(
+    provider: &MysqlProvider,
+    secret: &SecretString,
+    operation: &WriteOperation,
+    token: &CancellationToken,
+) -> Result<()> {
+    if !matches!(
+        operation.mode,
+        plenora_database_core::plan::WriteMode::Update
+            | plenora_database_core::plan::WriteMode::DeleteByKeys
+    ) {
+        return Ok(());
+    }
+    let pool = provider.pool_for(secret)?;
+    let mut session = pool.checkout(token).await?;
+    let target = crate::catalog::describe_object_with_profile(
+        &mut session,
+        operation
+            .target
+            .schema
+            .as_deref()
+            .unwrap_or_else(|| provider.config.database()),
+        &operation.target.object,
+        provider.profile,
+        token,
+    )
+    .await?;
+    drop(session);
+    crate::write::validate_unique_keys(
+        &target,
+        operation,
+        provider.profile.kind(),
+        ErrorPhase::Prepare,
+    )
+}
+
 /// La regola R in `prepare_write`, per le mode con un evento distruttivo: i
 /// fatti di `catalog::row_filters`, letti con una sessione del pool.
 async fn refuse_unfaithful_destructive_write(
@@ -789,6 +848,14 @@ async fn execute_mysql_write_after_ddl(
         token,
     )
     .await?;
+    // La regola K di nuovo sulla sessione della scrittura, prima della
+    // transazione.
+    crate::write::validate_unique_keys(
+        &target,
+        operation,
+        provider.profile.kind(),
+        ErrorPhase::Prepare,
+    )?;
     // La regola R di nuovo sulla sessione della scrittura, prima della
     // transazione.
     let filters = crate::catalog::row_filters(
@@ -857,6 +924,7 @@ async fn execute_mysql_write_after_ddl(
             &staging_name,
             provider.config.database(),
             provider.profile,
+            &target,
         )?;
         session
             .exec_control(&staging_ddl, ErrorPhase::Prepare, token)
@@ -956,6 +1024,25 @@ async fn execute_mysql_write_after_ddl(
     let mut final_affected = progress.inserted;
     if operation.mode == plenora_database_core::plan::WriteMode::Update {
         if let Some(staging) = update_staging_quoted.as_deref() {
+            // Le coppie prima dello `UPDATE`, nella stessa transazione: il
+            // confronto con le righe trovate scopre le chiavi uguali per la
+            // collation del target che il core non vede ripetute.
+            let pairs = match session
+                .query_rows(
+                    &plan.render_staging_pairs(staging),
+                    ErrorPhase::Write,
+                    token,
+                )
+                .await
+            {
+                Ok(rows) => rows
+                    .first()
+                    .and_then(|row| row.get_opt::<u64, _>(0))
+                    .and_then(std::result::Result::ok),
+                Err(error) => {
+                    return Err(rollback_after_failure(session, error, &execution_id).await);
+                }
+            };
             let update_sql = plan.render_update_from_staging(staging);
             match session
                 .exec_write(
@@ -966,8 +1053,20 @@ async fn execute_mysql_write_after_ddl(
                 )
                 .await
             {
-                Ok(updated) => {
+                Ok(updated) if Some(updated) == pairs => {
                     final_affected = updated;
+                }
+                Ok(_) => {
+                    let refused = DatabaseError::new(
+                        ErrorCategory::DataMapping,
+                        ErrorPhase::Write,
+                        Some(session.kind()),
+                        format!(
+                            "scrittura rifiutata: {}",
+                            plenora_database_core::write_keys::DUPLICATE_INPUT_KEYS
+                        ),
+                    );
+                    return Err(rollback_after_failure(session, refused, &execution_id).await);
                 }
                 Err(error) => {
                     return Err(rollback_after_failure(session, error, &execution_id).await);

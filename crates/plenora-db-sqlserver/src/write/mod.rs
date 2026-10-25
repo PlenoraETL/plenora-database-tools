@@ -423,7 +423,7 @@ pub async fn write_prepared_with_fault(
 #[allow(clippy::too_many_lines, clippy::significant_drop_tightening)]
 async fn write_prepared_inner(
     prepared: PreparedSqlServerWrite,
-    mut input: Box<dyn BatchStream>,
+    input: Box<dyn BatchStream>,
     cancellation: &CancellationToken,
     fault: Option<WriteFaultPoint>,
 ) -> Result<WriteOutcome> {
@@ -435,6 +435,15 @@ async fn write_prepared_inner(
             "schema input diverso da prepare_write SQL Server",
         ));
     }
+    // La regola K, condizione 2: una chiave ripetuta nell'ingresso di una
+    // mode per chiavi rifiuta la scrittura prima del COMMIT. Fino al 25/10
+    // Update `[(1,x),(1,y)]` dava `confirmed 2`, vince l'ultima.
+    let mut input = plenora_database_core::write_keys::guard_input_keys(
+        prepared.operation.mode,
+        &prepared.operation.keys,
+        input,
+        &prepared.budget,
+    )?;
     let diagnostic_input = input
         .declared_input_rows()
         .map(|input_total| {
@@ -456,6 +465,15 @@ async fn write_prepared_inner(
     );
     let mut pooled = prepared.pool.checkout(control.token()).await?;
     pooled.disallow_reuse();
+    // La scrittura gira `READ COMMITTED`, fissato e verificato: il livello
+    // non dipende da cio che la sessione ha fatto prima.
+    pooled
+        .session_mut()?
+        .pin_isolation(
+            plenora_database_core::transaction::IsolationLevel::ReadCommitted,
+            control.token(),
+        )
+        .await?;
     pooled.session_mut()?.begin(control.token()).await?;
     if let Err(error) = prepare_transaction_target(
         &mut pooled,
@@ -1112,10 +1130,13 @@ fn row_mutation(
         ));
     }
     let Some(row) = results[0].first() else {
+        // Update e `DeleteByKeys` senza azione: la chiave non c'e. Upsert ne
+        // lascia sempre una (anche 0, con le sole chiavi): senza, l'INSERT e
+        // stato scartato senza errore (`IGNORE_DUP_KEY`), e si rifiuta come
+        // in Append.
         if matches!(
             mode,
             plenora_database_core::plan::WriteMode::Update
-                | plenora_database_core::plan::WriteMode::Upsert
                 | plenora_database_core::plan::WriteMode::DeleteByKeys
         ) {
             return Ok(MutationCounts::default());
@@ -1164,6 +1185,9 @@ fn row_mutation(
             updated: 1,
             deleted: 0,
         }),
+        // Upsert con le sole chiavi su una chiave gia presente: niente da
+        // scrivere, la riga e `skipped`.
+        (plenora_database_core::plan::WriteMode::Upsert, Some(0)) => Ok(MutationCounts::default()),
         (plenora_database_core::plan::WriteMode::DeleteByKeys, Some(3)) => Ok(MutationCounts {
             confirmed: 1,
             inserted: 0,

@@ -69,6 +69,7 @@ EXPECTED_UNIT_TESTS = {
     "catalog::tests::a_functional_index_is_described_where_the_product_publishes_its_parts",
     "catalog::tests::a_part_without_a_column_is_refused_where_the_product_cannot_describe_it",
     "catalog::tests::schema_token_is_stable_and_sensitive",
+    "catalog::tests::le_relazioni_di_catalogo_sono_qualificate",
     "config::tests::debug_redacts_credentials",
     "config::tests::driver_opts_require_tls_even_for_explicit_trust_opt_out",
     "config::tests::in_memory_private_ca_reaches_the_driver_without_a_path",
@@ -253,6 +254,7 @@ EXPECTED_UNIT_TESTS = {
     "types::tests::spatial_projection_is_wkb_xy_with_declared_srid",
     "types::tests::the_window_renders_with_and_without_a_ceiling",
     "write::tests::a_created_table_survives_the_rollback_and_every_outcome_says_so",
+    "write::tests::la_regola_k_vuole_un_indice_unico_sulle_chiavi",
     "write::tests::a_declared_deadlock_stays_rolled_back_instead_of_unknown",
     "write::tests::a_spatial_index_belongs_to_the_create_ddl_and_wants_a_non_null_column",
     "write::tests::an_already_quarantined_error_stays_non_retryable_when_rollback_is_unobservable",
@@ -382,6 +384,16 @@ EXPECTED_LIVE_REFERENCE_TESTS = {
     "live_tests::live_regola_r_before_sull_evento_distruttivo_rifiuta",
     "live_tests::live_update_conta_le_righe_trovate_non_soltanto_quelle_cambiate",
     "live_tests::live_w2_foreign_key_checks_fissato_anche_con_il_globale_spento",
+    # La seconda rilettura del 25/10: regole K e V, NO_AUTO_VALUE_ON_ZERO,
+    # isolamento verificato, CLIENT_FOUND_ROWS nello SQL del chiamante.
+    "live_tests::live_s6_zero_in_auto_increment_resta_zero",
+    "live_tests::live_regola_k_chiavi_senza_indice_unico_rifiutano",
+    "live_tests::live_chiavi_ripetute_nell_ingresso_rifiutano",
+    "live_tests::live_chiavi_uguali_per_la_collation_rifiutano",
+    "live_tests::live_staging_di_update_confronta_con_la_collation_del_target",
+    "live_tests::live_w2_sessione_della_scrittura_fissa_fuso_e_charset",
+    "live_tests::live_isolamento_richiesto_e_quello_effettivo",
+    "live_tests::live_update_condizionale_conta_le_righe_trovate",
 }
 
 

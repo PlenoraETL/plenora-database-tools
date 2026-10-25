@@ -101,13 +101,13 @@ fn compile_write_column(
                 "write spatial {product} richiede geometry GeoArrow WKB Binary"
             )));
         }
-        // XY Ã¨ l'unico profilo dimensionale misurato per questi motori:
+        // XY è l'unico profilo dimensionale misurato per questi motori:
         // `raw.geometry_dimensions` ha chiesto al
         // **parser** `POINT Z(1 2 3)` nelle due sintassi WKT, e `MySQL` risponde
-        // 3037 â€” WKT non valido â€” mentre `MariaDB` lo parsa a `NULL`. Anche
+        // 3037 — WKT non valido — mentre `MariaDB` lo parsa a `NULL`. Anche
         // `ST_Z` e `ST_M` sono assenti da entrambi.
         //
-        // La chiusura smette percio di essere Â«non qualificataÂ» e diventa un
+        // La chiusura smette percio di essere «non qualificata» e diventa un
         // fatto del prodotto: non c'e una Z da scrivere, non che non sia stata
         // provata.
         if contract.dimensions != Some("xy") {
@@ -312,7 +312,7 @@ impl MysqlWritePlan {
                     return Err(prepare_error(
                         ErrorCategory::InvalidPlan,
                         format!(
-                            "DeleteByKeys: colonna '{}' non Ã¨ una key â€” schema Arrow \
+                            "DeleteByKeys: colonna '{}' non è una key — schema Arrow \
  deve contenere solo le colonne key",
                             col.name
                         ),
@@ -331,7 +331,7 @@ impl MysqlWritePlan {
         };
         // Key columns dell'Upsert: nomi grezzi (per il match con gli unique
         // index del target) e quoted (per la clausola ON DUPLICATE no-op dei
-        // keys-only). La presenza di ogni key nello schema Ã¨ giÃ  verificata
+        // keys-only). La presenza di ogni key nello schema è già verificata
         // sopra per Upsert/DeleteByKeys.
         let (upsert_keys, upsert_keys_quoted) = if operation.mode == WriteMode::Upsert {
             let quoted: Vec<String> = operation
@@ -427,7 +427,7 @@ impl MysqlWritePlan {
     ///
     /// TEMPORARY table MySQL sono session-scoped; il naming deve solo
     /// evitare collision col target reale. Prefix `__pln_stg_` +
-    /// short target hash Ã¨ unica per sessione.
+    /// short target hash è unica per sessione.
     #[must_use]
     pub(super) fn staging_temp_name(&self, execution_id: &str) -> String {
         format!(
@@ -459,6 +459,26 @@ impl MysqlWritePlan {
         )
     }
 
+    /// Le coppie (riga del target, riga dello staging) che lo `UPDATE ...
+    /// JOIN` vede. Con la regola K ogni riga dello staging trova al piu una
+    /// riga del target; se piu righe dello staging trovano la stessa, lo
+    /// `UPDATE` ne applica una sola e conta la riga del target una volta: le
+    /// righe trovate (`CLIENT_FOUND_ROWS`) sono meno delle coppie, e la
+    /// scrittura si rifiuta come per una chiave ripetuta nell'ingresso.
+    #[must_use]
+    pub(super) fn render_staging_pairs(&self, staging_quoted: &str) -> String {
+        let on_clause = self
+            .update_key_columns
+            .iter()
+            .map(|k| format!("t.{k} = s.{k}"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        format!(
+            "SELECT COUNT(*) FROM {} AS t JOIN {staging_quoted} AS s ON {on_clause}",
+            self.quoted_target
+        )
+    }
+
     /// Renderizza INSERT verso una staging table (target diverso dal target
     /// reale, senza clausola ON DUPLICATE KEY). Usato per Update via staging.
     ///
@@ -470,7 +490,7 @@ impl MysqlWritePlan {
         staging_quoted: &str,
         rows: usize,
     ) -> Result<String> {
-        // Staging INSERT: mai ON DUPLICATE KEY (la staging Ã¨ vuota e senza
+        // Staging INSERT: mai ON DUPLICATE KEY (la staging è vuota e senza
         // vincoli in conflitto; il merge avviene dopo con UPDATE JOIN).
         self.render_insert_generic(staging_quoted, rows, None)
     }
@@ -479,7 +499,7 @@ impl MysqlWritePlan {
     /// target reale, oppure `None` per le altre mode.
     ///
     /// - Upsert con colonne non-key: `col=VALUES(col), ...`.
-    /// - Upsert **keys-only** (schema di sole key): `k0=k0` â€” un update no-op
+    /// - Upsert **keys-only** (schema di sole key): `k0=k0` — un update no-op
     ///   che rende l'INSERT idempotente (insert-or-ignore) invece di fallire
     ///   con duplicate key. Senza questa clausola un Upsert keys-only
     ///   diventerebbe un INSERT nudo che erra sul primo conflitto.
@@ -787,7 +807,7 @@ impl MysqlWritePlan {
     /// richiediamo, prima di aprire la transazione:
     ///
     /// 1. esiste un PK/UNIQUE index le cui colonne coincidono (come insieme)
-    ///    con le keys â€” l'ancora che rende deterministico il match;
+    ///    con le keys — l'ancora che rende deterministico il match;
     /// 2. **nessun altro** PK/UNIQUE index con un insieme di colonne diverso;
     /// 3. nessun unique index funzionale (espressione) non confrontabile.
     ///
@@ -797,7 +817,7 @@ impl MysqlWritePlan {
         use std::collections::BTreeSet;
         let key_set: BTreeSet<&str> = self.upsert_keys.iter().map(String::as_str).collect();
         if key_set.is_empty() {
-            // validate_operation garantisce keys non vuote; difesa in profonditÃ .
+            // validate_operation garantisce keys non vuote; difesa in profondità.
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
                 "Upsert richiede almeno una key column",
@@ -812,7 +832,7 @@ impl MysqlWritePlan {
                 return Err(unsupported(format!(
                     "Upsert non qualificato: la tabella '{}' ha un unique \
  index funzionale/espressione ('{}') non confrontabile con \
- le keys â€” ON DUPLICATE KEY UPDATE potrebbe aggiornare la \
+ le keys — ON DUPLICATE KEY UPDATE potrebbe aggiornare la \
  riga sbagliata",
                     target.name, index.name
                 )));
@@ -823,7 +843,7 @@ impl MysqlWritePlan {
             } else {
                 return Err(unsupported(format!(
                     "Upsert non sicuro: keys={:?} ma la tabella '{}' ha un \
- altro PK/UNIQUE index ('{}' su {:?}) â€” ON DUPLICATE KEY \
+ altro PK/UNIQUE index ('{}' su {:?}) — ON DUPLICATE KEY \
  UPDATE potrebbe collidere su quell'indice e aggiornare la \
  riga sbagliata. Rimuovere l'indice in conflitto o usare \
  WriteMode::Update esplicito.",
@@ -911,8 +931,8 @@ impl MysqlWritePlan {
             // L'SRID del contratto Arrow **e** la dichiarazione, su questo
             // percorso. Costruire la spec senza passarlo faceva rifiutare ogni
             // colonna geometrica di un prodotto il cui catalogo tace: il
-            // rifiuto arrivava dalla regola della lettura â€” Â«il catalogo tace e
-            // il piano non lo dichiaraÂ» â€” applicata a un piano che lo dichiara
+            // rifiuto arrivava dalla regola della lettura — «il catalogo tace e
+            // il piano non lo dichiara» — applicata a un piano che lo dichiara
             // eccome, solo altrove.
             let spec =
                 MysqlColumnSpec::from_catalog_declaring(server, profile, column.spatial_srid)?;
@@ -926,7 +946,7 @@ impl MysqlWritePlan {
                 // domanda sui due prodotti: dove la colonna e vincolata il
                 // catalogo deve portare **quell'**SRID, dove non puo esserlo il
                 // catalogo tace e non c'e niente da confrontare. La
-                // compatibilitÃ  non puÃ² quindi essere un semplice confronto
+                // compatibilità non può quindi essere un semplice confronto
                 // tra `Option`.
                 let declared = column.spatial_srid.ok_or_else(|| {
                     crs_error(format!("write spatial {product} senza SRID dichiarato"))
@@ -985,9 +1005,56 @@ impl MysqlWritePlan {
     }
 }
 
+/// La regola K (`plenora_database_core::write_keys`) per Update e
+/// `DeleteByKeys`: le chiavi coincidono, come insieme, con le colonne di un
+/// `PRIMARY KEY` o di un indice `UNIQUE` del target fatto di sole colonne (un
+/// indice funzionale non e confrontabile). `MySQL` e `MariaDB` non hanno
+/// indici parziali ne vincoli unici differibili; un indice `UNIQUE` su un
+/// prefisso della colonna vincola gia la colonna intera, e un indice
+/// invisibile resta applicato.
+///
+/// Senza, una chiave tocca piu righe e un'altra nessuna, e i conteggi si
+/// compensano: misurato il 25/10 (seconda rilettura), con `(1,a),(1,b),(2,c)`
+/// e `KEY (id)`, Update di `(1,z),(99,q)` pubblicava `confirmed 2 skipped 0`
+/// con la chiave 99 assente, e `DeleteByKeys` di `1, 99` lo stesso. Upsert ha
+/// la sua ancora (`validate_upsert_target_indexes`), piu stretta.
+///
+/// # Errors
+///
+/// `schema` con `KEYS_WITHOUT_UNIQUE_INDEX`, come SQL Server.
+pub(crate) fn validate_unique_keys(
+    target: &MysqlObjectDescription,
+    operation: &WriteOperation,
+    kind: plenora_database_core::plan::ProviderKind,
+    phase: ErrorPhase,
+) -> Result<()> {
+    use std::collections::BTreeSet;
+    if !matches!(operation.mode, WriteMode::Update | WriteMode::DeleteByKeys) {
+        return Ok(());
+    }
+    let keys: BTreeSet<&str> = operation.keys.iter().map(String::as_str).collect();
+    let covered = !keys.is_empty()
+        && target.indexes.iter().any(|index| {
+            index.unique
+                && index.column_backed
+                && index
+                    .columns
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<_>>()
+                    == keys
+        });
+    if covered {
+        Ok(())
+    } else {
+        Err(plenora_database_core::write_keys::keys_without_unique_index(kind, phase))
+    }
+}
+
 /// La regola W2 sulla sessione della scrittura: rilegge le impostazioni che
-/// il bootstrap fissa (`crate::SESSION_BOOTSTRAP_SQL`) e, su `MariaDB`, fissa
-/// `check_constraint_checks = 1`.
+/// il bootstrap fissa (`crate::SESSION_BOOTSTRAP_SQL`, `NO_AUTO_VALUE_ON_ZERO`
+/// compreso), il fuso `+00:00` e il charset `utf8mb4` di client e connessione
+/// (regola V) e, su `MariaDB`, fissa `check_constraint_checks = 1`.
 ///
 /// `MariaDB` ha un interruttore in piu: `check_constraint_checks = 0` spegne
 /// i vincoli `CHECK`. Non sta nel bootstrap perche `MySQL` non lo conosce, e
@@ -1011,11 +1078,19 @@ pub(crate) async fn verify_write_session(
             )
             .await?;
     }
+    // Il fuso e il charset della connessione decidono come il server legge
+    // i valori: un `DATETIME` del protocollo binario finisce in una colonna
+    // `TIMESTAMP` convertito dal fuso della sessione, il testo dal charset
+    // del client. Il bootstrap fissa il fuso, l'handshake del driver il
+    // charset; qui si rilegge che lo siano ancora (regola V).
     let sql = if mariadb {
         "SELECT @@session.foreign_key_checks, @@session.unique_checks, @@session.sql_mode, \
-         @@session.check_constraint_checks"
+         @@session.check_constraint_checks, @@session.time_zone, \
+         @@session.character_set_client, @@session.character_set_connection"
     } else {
-        "SELECT @@session.foreign_key_checks, @@session.unique_checks, @@session.sql_mode, 1"
+        "SELECT @@session.foreign_key_checks, @@session.unique_checks, @@session.sql_mode, 1, \
+         @@session.time_zone, @@session.character_set_client, \
+         @@session.character_set_connection"
     };
     let rows = session.query_rows(sql, ErrorPhase::Prepare, token).await?;
     let pinned = rows.first().is_some_and(|row| {
@@ -1026,8 +1101,21 @@ pub(crate) async fn verify_write_session(
         let strict = row
             .get_opt::<String, _>(2)
             .and_then(std::result::Result::ok)
-            .is_some_and(|mode| mode.split(',').any(|part| part == "STRICT_TRANS_TABLES"));
-        flag(0) == Some(1) && flag(1) == Some(1) && flag(3) == Some(1) && strict
+            .is_some_and(|mode| {
+                let parts = mode.split(',').collect::<Vec<_>>();
+                parts.contains(&"STRICT_TRANS_TABLES") && parts.contains(&"NO_AUTO_VALUE_ON_ZERO")
+            });
+        let text = |index: usize| {
+            row.get_opt::<String, _>(index)
+                .and_then(std::result::Result::ok)
+        };
+        flag(0) == Some(1)
+            && flag(1) == Some(1)
+            && flag(3) == Some(1)
+            && strict
+            && text(4).as_deref() == Some("+00:00")
+            && text(5).as_deref() == Some("utf8mb4")
+            && text(6).as_deref() == Some("utf8mb4")
     });
     if pinned {
         Ok(())
@@ -1256,8 +1344,8 @@ pub fn rolled_back_error(
 ///
 /// Senza residuo il valore passa invariato.
 ///
-/// Su errore: `RolledBack` e `None` diventano `Partial` â€” righe annullate o
-/// mai scritte, schema persistito â€” con recupero richiesto. `Unknown` resta
+/// Su errore: `RolledBack` e `None` diventano `Partial` — righe annullate o
+/// mai scritte, schema persistito — con recupero richiesto. `Unknown` resta
 /// `Unknown`: non sapere se le righe siano sparite e piu grave che sapere che
 /// lo schema e rimasto. Una sessione gia quarantinata non viene declassata.
 ///
@@ -1469,6 +1557,7 @@ fn write_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseE
 }
 
 fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> {
+    plenora_database_core::write_keys::refuse_key_in_update_columns(operation)?;
     // `Replace` e qualificata come DELETE FROM + bulk insert nella stessa
     // transazione InnoDB: nessun DDL, quindi nessuna perdita di indici, FK,
     // trigger, check, default, grant o AUTO_INCREMENT, e rollback pieno se
@@ -1477,7 +1566,7 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
     // `TruncateInsert` resta fail-closed. Su MySQL `TRUNCATE TABLE` e DDL con
     // commit implicito: le righe sparirebbero prima dell'INSERT e nessun
     // rollback le riporterebbe indietro. Emularla con `DELETE FROM` sarebbe
-    // peggio di rifiutarla â€” il consumer chiederebbe TRUNCATE (reset di
+    // peggio di rifiutarla — il consumer chiederebbe TRUNCATE (reset di
     // AUTO_INCREMENT, nessun trigger, nessun log riga per riga) e ne
     // otterrebbe un'altra cosa con lo stesso nome. Chi vuole svuotare e
     // riempire in transazione ha `Replace`, che dichiara esattamente questo.
@@ -1547,7 +1636,7 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
     {
         // Restano Append e Replace: nessuna delle due ha semantica di chiave.
         // Il messaggio nomina la mode effettiva, e la categoria e
-        // `InvalidPlan` â€” il piano descrive qualcosa che la mode non
+        // `InvalidPlan` — il piano descrive qualcosa che la mode non
         // significa, non una funzione che il provider non implementa.
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
@@ -1716,7 +1805,7 @@ fn unsupported(message: impl Into<String>) -> DatabaseError {
 /// Genera la dichiarazione MySQL per un tipo di colonna.
 ///
 /// La forma della colonna geometrica la decide il **profilo**: `MySQL` la
-/// vincola a un SRID, `MariaDB` non puo â€” e il CRS gli viaggia dentro i valori.
+/// vincola a un SRID, `MariaDB` non puo — e il CRS gli viaggia dentro i valori.
 /// Sceglierla qui avrebbe messo una divergenza di prodotto dentro una tabella
 /// di tipi, che e l'ultimo posto dove qualcuno la cercherebbe.
 fn mysql_column_ddl(
@@ -1737,8 +1826,8 @@ fn mysql_column_ddl(
         MysqlColumnKind::U64 => "BIGINT UNSIGNED".to_owned(),
         MysqlColumnKind::F32 => "FLOAT".to_owned(),
         MysqlColumnKind::F64 => "DOUBLE".to_owned(),
-        // TEXT senza length hint: general-purpose (no VARCHAR(N) perchÃ©
-        // il Arrow schema non porta max length). Consumer puÃ² ALTER
+        // TEXT senza length hint: general-purpose (no VARCHAR(N) perché
+        // il Arrow schema non porta max length). Consumer può ALTER
         // dopo il create se serve VARCHAR indexed.
         MysqlColumnKind::Utf8 => "TEXT".to_owned(),
         MysqlColumnKind::Binary => "BLOB".to_owned(),
@@ -1754,7 +1843,7 @@ fn mysql_column_ddl(
         // usare `GEOMETRY` accetterebbe forme che il piano dichiara vietate.
         //
         // `raw.exact_geometry_column` ha misurato che entrambi i prodotti
-        // reggono la colonna tipata e **rifiutano** il tipo sbagliato â€” 1366 su
+        // reggono la colonna tipata e **rifiutano** il tipo sbagliato — 1366 su
         // `MariaDB`, 1416 su `MySQL`.
         MysqlColumnKind::Geometry => {
             let base = exact_geometry_type.map_or("GEOMETRY", |exact| match exact {
@@ -1765,8 +1854,8 @@ fn mysql_column_ddl(
                 "multilinestring" => "MULTILINESTRING",
                 "multipolygon" => "MULTIPOLYGON",
                 "geometrycollection" => "GEOMETRYCOLLECTION",
-                // Il piano ammette solo i sette di sopra â€” lo decide
-                // `writable_geometry_type` â€” e un nome fuori da quell'insieme
+                // Il piano ammette solo i sette di sopra — lo decide
+                // `writable_geometry_type` — e un nome fuori da quell'insieme
                 // non arriva qui. Se ci arrivasse, la colonna generica e
                 // l'unica scelta che non inventa un tipo SQL.
                 _ => "GEOMETRY",
@@ -1850,7 +1939,7 @@ pub(crate) fn build_create_table_sql(
             // `NOT NULL` non e una raccomandazione: entrambi i motori
             // rifiutano un indice spaziale su una colonna nullable, e
             // scoprirlo dal server significherebbe averlo scoperto dopo aver
-            // creato la tabella â€” che qui fa commit implicito e non torna
+            // creato la tabella — che qui fa commit implicito e non torna
             // indietro.
             if column.nullable {
                 return Err(unsupported(format!(
@@ -1881,6 +1970,7 @@ pub(crate) fn build_temp_staging_sql(
     staging_name: &str,
     database: &str,
     profile: &dyn crate::profile::ProductProfile,
+    target: &MysqlObjectDescription,
 ) -> Result<String> {
     let renderer = mysql_renderer();
     let staging_ident = mysql_identifier(staging_name)?;
@@ -1906,7 +1996,36 @@ pub(crate) fn build_temp_staging_sql(
                 profile,
             );
             let null = if c.nullable { "NULL" } else { "NOT NULL" };
-            format!("    {} {} {}", c.quoted, ty, null)
+            // Le colonne testuali dello staging hanno charset e collation
+            // della colonna del target: lo `UPDATE ... JOIN` confronta le
+            // chiavi come le confronta il target, e due valori che il target
+            // tratta come una chiave sola (`'a'` e `'A'` sotto una collation
+            // `_ci`) si vedono uguali anche nel conteggio delle coppie
+            // (`render_staging_pairs`). Charset e collation vengono dal
+            // catalogo, che li rilegge da `information_schema.COLUMNS`: nomi
+            // di soli `[A-Za-z0-9_]`, controllati prima di entrare nel DDL.
+            let collation = target
+                .columns
+                .iter()
+                .find(|column| column.name == c.name)
+                .and_then(|column| {
+                    column
+                        .character_set
+                        .as_deref()
+                        .zip(column.collation.as_deref())
+                })
+                .filter(|(charset, collation)| {
+                    c.kind == MysqlColumnKind::Utf8
+                        && [charset, collation].iter().all(|name| {
+                            !name.is_empty()
+                                && name
+                                    .bytes()
+                                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                        })
+                })
+                .map(|(charset, collation)| format!(" CHARACTER SET {charset} COLLATE {collation}"))
+                .unwrap_or_default();
+            format!("    {} {ty}{collation} {null}", c.quoted)
         })
         .collect();
     Ok(format!(

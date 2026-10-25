@@ -137,6 +137,14 @@ impl Provider for Db2Provider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, WriteOutcome> {
         Box::pin(async move {
+            // La regola K: una chiave ripetuta nell'ingresso di una mode per
+            // chiavi rifiuta la scrittura prima del COMMIT.
+            let input = plenora_database_core::write_keys::guard_input_keys(
+                prepared.operation.mode,
+                &prepared.operation.keys,
+                input,
+                budget,
+            )?;
             crate::write::execute_write(&self.config, secret, prepared, input, budget, cancellation)
                 .await
         })

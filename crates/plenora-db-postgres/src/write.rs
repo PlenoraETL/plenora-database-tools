@@ -44,6 +44,7 @@ use tokio_postgres::types::{IsNull, Type};
 use tokio_postgres::Transaction;
 
 pub mod binary_codec;
+mod canonical;
 mod dry_run;
 mod plan;
 mod prepared_codec;
@@ -119,6 +120,7 @@ fn compile_schema_plan(
         ));
     }
     validate_schema_contract(schema)?;
+    plenora_database_core::write_keys::refuse_key_in_update_columns(operation)?;
     for field in schema.fields() {
         Identifier::new(field.name().clone())?;
     }
@@ -167,7 +169,7 @@ pub async fn execute(
         .ok_or_else(|| {
             DatabaseError::invalid_plan("stato prepared write PostgreSQL assente o incompatibile")
         })?;
-    let column_plans = prepared_state.column_plans;
+    let mut column_plans = prepared_state.column_plans;
     // Row-scoped diagnostics è supportata solo per Append + SingleTransaction
     // (l'unico scenario dove ha senso quarantinare righe: il target esiste
     // già e si stanno aggiungendo N righe di cui alcune possono fallire).
@@ -259,14 +261,43 @@ pub async fn execute(
         execution_id: &execution_id,
     };
     let operation = &prepared.operation;
-    // La regola W2: la sessione applica trigger e foreign key del target
-    // (`session_replication_role = origin`), o la scrittura non parte.
+    // La regola Q (guardia del `search_path`) e la regola W2: la sessione
+    // applica trigger e foreign key del target (`session_replication_role =
+    // origin`), o la scrittura non parte.
     match select_with_cancellation(visibility::pin_session(&transaction), cancellation).await {
         Some(Ok(())) => {}
         Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
         None => return Err(recovery.rollback_cancellation(transaction).await),
     }
+    // La regola Q per i nomi di PostGIS dello SQL della scrittura: lo schema
+    // dell'estensione, da `pg_extension`, prima di ogni statement.
+    if column_plans.iter().any(WriteColumnPlan::is_spatial) {
+        let qualifier = match select_with_cancellation(
+            crate::postgis_schema::qualifier(&transaction, ErrorPhase::Write),
+            cancellation,
+        )
+        .await
+        {
+            Some(Ok(qualifier)) => qualifier,
+            Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+            None => return Err(recovery.rollback_cancellation(transaction).await),
+        };
+        for plan in &mut column_plans {
+            plan.qualify_postgis(&qualifier);
+        }
+    }
     if let Some(diagnostic_input) = diagnostic_input {
+        // La regola V sulle colonne del target, prima di ogni valore.
+        match select_with_cancellation(
+            assign_session_rules(&transaction, operation, &schema, &mut column_plans),
+            cancellation,
+        )
+        .await
+        {
+            Some(Ok(())) => {}
+            Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+            None => return Err(recovery.rollback_cancellation(transaction).await),
+        }
         // La regola R prima di ogni effetto, come nel percorso ordinario; di
         // nuovo dopo la preparazione dell'INSERT (`row_diagnostics`). Il
         // percorso row-scoped e un INSERT preparato: niente `COPY`.
@@ -351,6 +382,18 @@ pub async fn execute(
         }
     } else {
         return Err(recovery.rollback_cancellation(transaction).await);
+    }
+    // La regola V sulle colonne del target (per Create, quelle appena
+    // create), prima del primo valore.
+    match select_with_cancellation(
+        assign_session_rules(&transaction, operation, &schema, &mut column_plans),
+        cancellation,
+    )
+    .await
+    {
+        Some(Ok(())) => {}
+        Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+        None => return Err(recovery.rollback_cancellation(transaction).await),
     }
     let mut received = 0_u64;
     let mut confirmed = 0_u64;
@@ -519,6 +562,46 @@ pub async fn execute(
     // di distinguerlo da una scrittura mai avvenuta.
     runtime.metrics.write_committed(confirmed);
     Ok(outcome)
+}
+
+/// La regola V (`canonical`) per ogni colonna dell'ingresso, dal catalogo
+/// del target letto da `client`.
+async fn assign_session_rules<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+    plans: &mut [WriteColumnPlan],
+) -> Result<()> {
+    let rules = canonical::rules(client, operation, schema, ErrorPhase::Write).await?;
+    canonical::assign(plans, schema, &rules);
+    Ok(())
+}
+
+/// La regola V per il dry run: dal catalogo se c'e una sessione e il target
+/// esiste, altrimenti quella che il piano dichiara (`canonical::declared`).
+///
+/// # Errors
+///
+/// L'errore classificato della lettura del catalogo.
+pub async fn assign_dry_run_session_rules(
+    client: Option<&tokio_postgres::Client>,
+    state: &mut PreparedPostgresWrite,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+) -> Result<()> {
+    canonical::assign_declared(&mut state.column_plans);
+    if let (Some(client), false) = (client, operation.mode == WriteMode::Create) {
+        let rules = canonical::rules(client, operation, schema, ErrorPhase::Write).await?;
+        canonical::assign(&mut state.column_plans, schema, &rules);
+    }
+    Ok(())
+}
+
+/// Il motivo pubblico del rifiuto della regola V (`canonical`).
+#[cfg(test)]
+#[must_use]
+pub const fn canonical_reason() -> &'static str {
+    canonical::NOT_CANONICAL
 }
 
 /// Il documento di un write andato a buon fine, per mode.

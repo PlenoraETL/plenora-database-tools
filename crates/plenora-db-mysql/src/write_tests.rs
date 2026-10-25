@@ -1641,3 +1641,63 @@ fn derived_srid_is_verified_on_mysql_and_refused_on_mariadb() {
         "INSERT INTO `warehouse`.`events` (`geom`) VALUES (ST_GeomFromWKB(CAST(? AS BINARY), 4326));"
     );
 }
+
+/// La regola K: Update e `DeleteByKeys` vogliono un indice unico fatto di
+/// sole colonne, con le colonne uguali (come insieme) alle chiavi.
+#[test]
+fn la_regola_k_vuole_un_indice_unico_sulle_chiavi() {
+    let kind = plenora_database_core::plan::ProviderKind::Mysql;
+    let functional = crate::MysqlIndex {
+        name: "uq_expr".to_owned(),
+        unique: true,
+        column_backed: false,
+        columns: vec!["id".to_owned()],
+    };
+    let non_unique = crate::MysqlIndex {
+        name: "idx_id".to_owned(),
+        unique: false,
+        column_backed: true,
+        columns: vec!["id".to_owned()],
+    };
+    for mode in [WriteMode::Update, WriteMode::DeleteByKeys] {
+        let mut operation = append_operation();
+        operation.mode = mode;
+        operation.keys = vec!["id".to_owned()];
+        for (name, indexes, admitted) in [
+            ("primaria", vec![unique_index("PRIMARY", &["id"])], true),
+            ("non unico", vec![non_unique.clone()], false),
+            ("funzionale", vec![functional.clone()], false),
+            (
+                "piu largo",
+                vec![unique_index("uq", &["id", "label"])],
+                false,
+            ),
+            ("nessuno", Vec::new(), false),
+        ] {
+            let target = base_table_with_indexes(identity_target(), indexes);
+            let outcome =
+                super::validate_unique_keys(&target, &operation, kind, ErrorPhase::Prepare);
+            assert_eq!(outcome.is_ok(), admitted, "{mode:?} {name}");
+            if let Err(error) = outcome {
+                assert_eq!(error.category, ErrorCategory::Schema);
+                assert!(error
+                    .message
+                    .ends_with(plenora_database_core::write_keys::KEYS_WITHOUT_UNIQUE_INDEX));
+            }
+        }
+    }
+    let mut composite = append_operation();
+    composite.mode = WriteMode::Update;
+    composite.keys = vec!["label".to_owned(), "id".to_owned()];
+    let target = base_table_with_indexes(
+        identity_target(),
+        vec![unique_index("uq", &["id", "label"])],
+    );
+    assert!(super::validate_unique_keys(&target, &composite, kind, ErrorPhase::Prepare).is_ok());
+    let target = base_table_with_indexes(identity_target(), Vec::new());
+    assert!(
+        super::validate_unique_keys(&target, &append_operation(), kind, ErrorPhase::Prepare)
+            .is_ok(),
+        "Append non e una mode della regola K"
+    );
+}

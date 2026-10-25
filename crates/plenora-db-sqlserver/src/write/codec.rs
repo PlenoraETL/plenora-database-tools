@@ -301,8 +301,15 @@ pub(super) fn bind_row(
                 query.bind(value);
             }
             crate::SqlServerColumnKind::TimestampTz => {
+                // Il testo si valida RFC 3339 come nel bulk e viaggia come
+                // `datetimeoffset` tipizzato. Fino al 25/10 viaggiava com'era,
+                // e `CONVERT(datetimeoffset(n), @P)` lo leggeva con la lingua
+                // della sessione: `01/02/2026` era il due gennaio per
+                // `us_english`, il primo febbraio per un login `Italiano`.
                 let values = downcast::<StringArray>(array.as_ref())?;
-                let value = (!values.is_null(row)).then(|| values.value(row).to_owned());
+                let value = (!values.is_null(row))
+                    .then(|| datetimeoffset(values.value(row)))
+                    .transpose()?;
                 query.bind(value);
             }
             crate::SqlServerColumnKind::Decimal { scale, .. } => {

@@ -278,7 +278,10 @@ fn prepared_placeholders_accept_canonical_native_metadata() {
         )]),
     );
     let jsonb_plan = WriteColumnPlan::compile(&jsonb).expect("JSONB plan");
-    assert_eq!(placeholder_expression(&jsonb_plan, 1), "$1::text::jsonb");
+    assert_eq!(
+        placeholder_expression(&jsonb_plan, 1),
+        "$1::pg_catalog.text::jsonb"
+    );
 
     let domain =
         Field::new("code", DataType::Utf8, true).with_metadata(std::collections::HashMap::from([
@@ -291,7 +294,7 @@ fn prepared_placeholders_accept_canonical_native_metadata() {
     let domain_plan = WriteColumnPlan::compile(&domain).expect("domain plan");
     assert_eq!(
         placeholder_expression(&domain_plan, 2),
-        "$2::text::\"public\".\"safe_code\""
+        "$2::pg_catalog.text::\"public\".\"safe_code\""
     );
 }
 
@@ -328,7 +331,7 @@ fn interval_text_is_portable_across_postgres_versions() {
             days: 2,
             microseconds: 11_045_000_000,
         }),
-        "0 mons 2 days 03:04:05.000000"
+        "+0 mons +2 days +03:04:05.000000"
     );
     assert_eq!(
         interval_text(&PostgresIntervalBinary {
@@ -336,7 +339,17 @@ fn interval_text_is_portable_across_postgres_versions() {
             days: 0,
             microseconds: -3_723_000_004,
         }),
-        "-1 mons 0 days -01:02:03.000004"
+        "-1 mons +0 days -01:02:03.000004"
+    );
+    // S2 della rilettura del 25/10: senza segni espliciti `sql_standard`
+    // leggeva -1 mese -2 giorni -3 ore.
+    assert_eq!(
+        interval_text(&PostgresIntervalBinary {
+            months: -1,
+            days: 2,
+            microseconds: 10_800_000_000,
+        }),
+        "-1 mons +2 days +03:00:00.000000"
     );
 }
 

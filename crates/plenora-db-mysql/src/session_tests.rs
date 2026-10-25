@@ -5,6 +5,7 @@ fn bootstrap_is_explicit_and_deterministic() {
     assert!(SESSION_BOOTSTRAP_SQL.contains("autocommit = 1"));
     assert!(SESSION_BOOTSTRAP_SQL.contains("time_zone = '+00:00'"));
     assert!(SESSION_BOOTSTRAP_SQL.contains("STRICT_TRANS_TABLES"));
+    assert!(SESSION_BOOTSTRAP_SQL.contains("NO_AUTO_VALUE_ON_ZERO"));
     assert!(SESSION_BOOTSTRAP_SQL.contains("foreign_key_checks = 1"));
     assert!(SESSION_BOOTSTRAP_SQL.contains("unique_checks = 1"));
     assert!(SESSION_BOOTSTRAP_SQL.contains("sql_select_limit = 18446744073709551615"));

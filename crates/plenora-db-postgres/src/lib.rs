@@ -15,6 +15,7 @@ mod field_identity;
 mod metrics;
 mod parameter_codec;
 mod pool;
+mod postgis_schema;
 mod preflight;
 mod query_execution;
 mod query_plan;
@@ -102,7 +103,7 @@ impl PostgresProvider {
         &self,
         secret: Option<&SecretString>,
         operation: &WriteOperation,
-        mut input: Box<dyn BatchStream>,
+        input: Box<dyn BatchStream>,
         budget: &ResourceBudget,
         cancellation: &CancellationToken,
     ) -> Result<PostgresWriteDryRun> {
@@ -113,7 +114,7 @@ impl PostgresProvider {
             let mut prepared = self
                 .prepare_write(secret, operation, Arc::clone(&schema), budget, cancellation)
                 .await?;
-            let state = prepared
+            let mut state = prepared
                 .take_driver_state::<write::PreparedPostgresWrite>()
                 .ok_or_else(|| {
                     DatabaseError::invalid_plan("stato prepared write PostgreSQL assente")
@@ -159,6 +160,15 @@ impl PostgresProvider {
                 verdict.owner,
             )
             .await?;
+            // La regola V come la scrittura: le colonne del target che il
+            // server legge secondo la sessione.
+            write::assign_dry_run_session_rules(
+                Some(client.client()?),
+                &mut state,
+                operation,
+                &schema,
+            )
+            .await?;
             drop(client);
             gate.at_statement = verdict.at_statement;
             gate.at_first_row = verdict.at_first_row;
@@ -166,8 +176,18 @@ impl PostgresProvider {
             let report = prepared.loss_report.clone();
             (state, Some(report), Some(prepared))
         } else {
-            (write::prepare_state(&schema, operation)?, None, None)
+            let mut state = write::prepare_state(&schema, operation)?;
+            write::assign_dry_run_session_rules(None, &mut state, operation, &schema).await?;
+            (state, None, None)
         };
+        // La regola K come la scrittura, nello stesso punto (dopo il
+        // prepare): una chiave ripetuta si rifiuta leggendo il batch.
+        let mut input = plenora_database_core::write_keys::guard_input_keys(
+            operation.mode,
+            &operation.keys,
+            input,
+            budget,
+        )?;
         let control = BudgetCancellation::new(cancellation, budget)?;
         let verified = write::verify_input(
             &state,
@@ -400,7 +420,7 @@ impl PostgresProvider {
         client
             .client()?
             .execute(
-                "SELECT set_config('search_path', $1, false)",
+                "SELECT pg_catalog.set_config('search_path', $1, false)",
                 &[&"ag_catalog,\"$user\",public"],
             )
             .await
@@ -422,7 +442,7 @@ impl PostgresProvider {
         let mut client = self.qualified_age_session(secret, cancellation).await?;
         let Some(result) = control::select_with_cancellation(
             client.client()?.query(
-                "SELECT name::text FROM ag_catalog.ag_graph ORDER BY name",
+                "SELECT name::pg_catalog.text FROM ag_catalog.ag_graph ORDER BY name",
                 &[],
             ),
             cancellation,
@@ -459,9 +479,10 @@ impl PostgresProvider {
         validate_graph_name(graph)?;
         let mut client = self.qualified_age_session(secret, cancellation).await?;
         let Some(result) = control::select_with_cancellation(
-            client
-                .client()?
-                .query("SELECT ag_catalog.create_graph($1::name)", &[&graph]),
+            client.client()?.query(
+                "SELECT ag_catalog.create_graph($1::pg_catalog.name)",
+                &[&graph],
+            ),
             cancellation,
         )
         .await
@@ -502,7 +523,7 @@ impl PostgresProvider {
         let mut client = self.qualified_age_session(secret, cancellation).await?;
         let Some(result) = control::select_with_cancellation(
             client.client()?.query(
-                "SELECT ag_catalog.drop_graph($1::name, $2)",
+                "SELECT ag_catalog.drop_graph($1::pg_catalog.name, $2)",
                 &[&graph, &cascade],
             ),
             cancellation,
@@ -732,7 +753,23 @@ impl PostgresProvider {
         open_connection(secret).await
     }
 
+    /// Una sessione per lo SQL della libreria: introspezione, letture,
+    /// preflight e dry run delle scritture, transazioni applicative.
+    ///
+    /// Dopo il `DISCARD ALL` del riuso passa dalla guardia della regola Q
+    /// (`write::visibility::guard_search_path`): con uno schema che oscura
+    /// `pg_catalog` nel `search_path` del ruolo lo SQL della libreria non e
+    /// piu quello scritto, e l'operazione si rifiuta prima di ogni lettura.
     async fn connect_session(&self, secret: &SecretString) -> Result<PooledClient> {
+        let client = self.connect_caller_session(secret).await?;
+        write::visibility::guard_search_path(client.client()?, ErrorPhase::Connect).await?;
+        Ok(client)
+    }
+
+    /// Una sessione per lo SQL del chiamante (`run_ddl`), senza la guardia:
+    /// il `search_path` del ruolo e quello che lo SQL del chiamante si
+    /// aspetta.
+    async fn connect_caller_session(&self, secret: &SecretString) -> Result<PooledClient> {
         let mut client = self
             .pool
             .checkout(
@@ -901,7 +938,8 @@ impl Provider for PostgresProvider {
             let row = client
                 .client()?
                 .query_one(
-                    "SELECT current_setting('server_version'), current_database(), current_user",
+                    "SELECT pg_catalog.current_setting('server_version'), \
+                     pg_catalog.current_database(), current_user",
                     &[],
                 )
                 .await
@@ -1030,6 +1068,14 @@ impl Provider for PostgresProvider {
             validate_prepared_budget(&prepared.budget, budget)?;
             let control = BudgetCancellation::new(cancellation, budget)?;
             let target = prepared.operation.target.clone();
+            // La regola K: una chiave ripetuta nell'ingresso di una mode per
+            // chiavi rifiuta la scrittura prima del COMMIT.
+            let input = plenora_database_core::write_keys::guard_input_keys(
+                prepared.operation.mode,
+                &prepared.operation.keys,
+                input,
+                budget,
+            )?;
             let result = write::execute(
                 secret,
                 prepared,
@@ -1089,7 +1135,7 @@ impl Provider for PostgresProvider {
         plenora_database_core::caller_sql::run_ddl(self.kind(), cancellation, {
             Box::pin(async move {
                 error::check_cancelled(cancellation, ErrorPhase::Prepare)?;
-                let mut client = self.connect_session(secret).await?;
+                let mut client = self.connect_caller_session(secret).await?;
                 let result = client
                     .client_mut()?
                     .batch_execute(sql)
@@ -1185,3 +1231,11 @@ mod write_visibility_live_tests;
 #[cfg(test)]
 #[path = "write_semantics_live_tests.rs"]
 mod write_semantics_live_tests;
+
+#[cfg(test)]
+#[path = "write_r2_live_tests.rs"]
+mod write_r2_live_tests;
+
+#[cfg(test)]
+#[path = "sql_qualification_tests.rs"]
+mod sql_qualification_tests;

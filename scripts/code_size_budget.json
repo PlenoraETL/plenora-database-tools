@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 114901,
-  "max_code_lines": 93078,
-  "rationale": "Regole W1 (fedelta del percorso: COPY di PostgreSQL e IDENTITY ALWAYS, bulk TDS e Replace di SQL Server con regole e default legati) e W2 (sessione fissata: session_replication_role di PostgreSQL, foreign_key_checks/unique_checks/sql_select_limit/CLIENT_FOUND_ROWS di MySQL, check_constraint_checks di MariaDB, @@OPTIONS e ROWCOUNT di SQL Server), regola R per i trigger BEFORE di MySQL/MariaDB, OUTPUT ... INTO di SQL Server, skipped nel percorso row-scoped di PostgreSQL; prove live per provider. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 114300 -> 114901 (+601), righe di codice 92807 -> 93078 (+271). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 116824,
+  "max_code_lines": 94273,
+  "rationale": "Regole Q (SQL della libreria qualificato con pg_catalog e con lo schema di PostGIS, guardia del search_path di PostgreSQL), V (valori testuali canonici: intervalli con segno su ogni campo, limiti di range e testo libero verso i tipi della sessione, datetimeoffset preparato di SQL Server validato e tipizzato) e K (chiavi su un indice unico per Update e DeleteByKeys, chiavi ripetute nell'ingresso rifiutate dal core per ogni provider); domini nel percorso preparato di PostgreSQL, NO_AUTO_VALUE_ON_ZERO e staging con la collation del target in MySQL/MariaDB, isolamento fissato e verificato su SQL Server, PostgreSQL e MySQL/MariaDB, IGNORE_DUP_KEY in Upsert di SQL Server. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 114901 -> 116824 (+1923: PostgreSQL, core con il modulo write_keys, MySQL, SQL Server, Oracle e Db2), righe di codice 93078 -> 94273 (+1195). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

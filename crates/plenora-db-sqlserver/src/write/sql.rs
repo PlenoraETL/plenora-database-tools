@@ -141,25 +141,37 @@ pub(super) fn compile_row_statement(
         )),
         WriteMode::Upsert => {
             let assignments = assignments()?;
-            let update = if assignments.is_empty() {
-                format!(
-                    "IF NOT EXISTS (SELECT 1 FROM {quoted_object} WITH \
-                     (UPDLOCK, HOLDLOCK) WHERE {}) BEGIN ",
-                    predicates()?
+            // Ogni riga dell'ingresso lascia un'azione: 2 aggiornata, 1
+            // inserita, 0 (soltanto con le sole chiavi) gia presente. Una
+            // riga senza azione e un INSERT che il server ha scartato senza
+            // errore (un indice unico `IGNORE_DUP_KEY = ON` su altre colonne)
+            // e si rifiuta come in Append (`row_mutation`): fino al 25/10
+            // usciva `skipped` con il COMMIT.
+            let (update, otherwise) = if assignments.is_empty() {
+                (
+                    format!(
+                        "IF NOT EXISTS (SELECT 1 FROM {quoted_object} WITH \
+                         (UPDLOCK, HOLDLOCK) WHERE {}) BEGIN ",
+                        predicates()?
+                    ),
+                    " ELSE INSERT INTO @plenora_actions ([action]) VALUES (0);",
                 )
             } else {
-                format!(
-                    "UPDATE {quoted_object} WITH (UPDLOCK, HOLDLOCK) SET {} \
-                     OUTPUT 2 INTO @plenora_actions ([action]) WHERE {}; \
-                     IF @@ROWCOUNT = 0 BEGIN ",
-                    assignments.join(", "),
-                    predicates()?
+                (
+                    format!(
+                        "UPDATE {quoted_object} WITH (UPDLOCK, HOLDLOCK) SET {} \
+                         OUTPUT 2 INTO @plenora_actions ([action]) WHERE {}; \
+                         IF @@ROWCOUNT = 0 BEGIN ",
+                        assignments.join(", "),
+                        predicates()?
+                    ),
+                    "",
                 )
             };
             format!(
                 "DECLARE @plenora_actions TABLE ([action] int NOT NULL); \
                  {update}INSERT INTO {quoted_object} ({}) \
-                 OUTPUT 1 INTO @plenora_actions ([action]) VALUES ({}); END; \
+                 OUTPUT 1 INTO @plenora_actions ([action]) VALUES ({}); END;{otherwise} \
                  SELECT [action] AS [plenora_action] FROM @plenora_actions;",
                 quoted_columns.join(", "),
                 insert_expressions.join(", ")

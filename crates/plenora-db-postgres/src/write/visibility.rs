@@ -34,7 +34,11 @@
 //!
 //! E la regola W2 (sessione fissata): [`pin_session`] riporta
 //! `session_replication_role` a `origin` nella transazione della scrittura,
-//! o la rifiuta.
+//! o la rifiuta, dopo la guardia della regola Q ([`guard_search_path`]).
+//!
+//! La regola K (`plenora_database_core::write_keys`): per Update e
+//! `DeleteByKeys` le chiavi coincidono con un indice unico, non parziale e
+//! immediato del target (`keys_unique`), letto con gli altri fatti.
 //!
 //! # La regola W1 per `COPY`
 //!
@@ -64,20 +68,22 @@
 
 use super::target::WritePath;
 use crate::error::classify_error;
-use plenora_database_core::plan::{ObjectRef, ProviderKind, WriteMode, WriteOperation};
+use plenora_database_core::plan::{ProviderKind, WriteMode, WriteOperation};
 use plenora_database_core::row_visibility::{
     destructive_event, mode_events, refuse_unfaithful_write, DestructiveEvent, RowFilters,
     WriteEvent, SESSION_WITHOUT_GUARANTEES,
 };
+use plenora_database_core::write_keys::keys_without_unique_index;
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use tokio_postgres::GenericClient;
 
 const FACTS_SQL: &str = "\
 WITH RECURSIVE target AS (
-    SELECT CASE WHEN $1::text IS NULL THEN to_regclass(quote_ident($2::text))::oid
+    SELECT CASE WHEN $1::pg_catalog.text IS NULL
+                THEN pg_catalog.to_regclass(pg_catalog.quote_ident($2::pg_catalog.text))::pg_catalog.oid
            ELSE (SELECT c.oid FROM pg_catalog.pg_class c
                  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                 WHERE n.nspname = $1::text AND c.relname = $2::text) END AS oid
+                 WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text) END AS oid
 ), closure(oid, via_view) AS (
     SELECT oid, false FROM target WHERE oid IS NOT NULL
     UNION
@@ -85,8 +91,8 @@ WITH RECURSIVE target AS (
         SELECT d.refobjid AS child, true AS via_view
           FROM pg_catalog.pg_rewrite r
           JOIN pg_catalog.pg_depend d
-            ON d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.objid = r.oid
-           AND d.refclassid = 'pg_catalog.pg_class'::regclass AND d.refobjid <> cl.oid
+            ON d.classid = 'pg_catalog.pg_rewrite'::pg_catalog.regclass AND d.objid = r.oid
+           AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.refobjid <> cl.oid
          WHERE r.ev_class = cl.oid AND r.ev_type = '1'
         UNION ALL
         SELECT i.inhrelid, cl.via_view FROM pg_catalog.pg_inherits i WHERE i.inhparent = cl.oid
@@ -94,14 +100,14 @@ WITH RECURSIVE target AS (
 )
 SELECT
     EXISTS (SELECT 1 FROM target WHERE oid IS NOT NULL),
-    coalesce((SELECT c.relkind::text FROM pg_catalog.pg_class c JOIN target t ON c.oid = t.oid), ''),
-    coalesce((SELECT row_security_active(t.oid) FROM target t WHERE t.oid IS NOT NULL), false),
+    coalesce((SELECT c.relkind::pg_catalog.text FROM pg_catalog.pg_class c JOIN target t ON c.oid = t.oid), ''),
+    coalesce((SELECT pg_catalog.row_security_active(t.oid) FROM target t WHERE t.oid IS NOT NULL), false),
     EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_class c ON c.oid = cl.oid
              WHERE cl.oid <> (SELECT oid FROM target) AND c.relrowsecurity),
     EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_class c ON c.oid = cl.oid
              WHERE cl.via_view AND c.relrowsecurity),
     EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_rewrite r ON r.ev_class = cl.oid
-             WHERE r.ev_type::text = ANY ($3::text[]) AND r.ev_enabled <> 'D'),
+             WHERE r.ev_type::pg_catalog.text = ANY ($3::pg_catalog.text[]) AND r.ev_enabled <> 'D'),
     EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_trigger g ON g.tgrelid = cl.oid
              WHERE NOT g.tgisinternal AND g.tgenabled <> 'D'
                AND (g.tgtype::int & $4::int) <> 0
@@ -113,7 +119,68 @@ SELECT
              WHERE c.relkind = 'f'),
     EXISTS (SELECT 1 FROM target t JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid
              WHERE a.attnum > 0 AND NOT a.attisdropped AND a.attidentity = 'a'
-               AND a.attname::text = ANY ($6::text[]))";
+               AND a.attname::pg_catalog.text = ANY ($6::pg_catalog.text[])),
+    EXISTS (SELECT 1 FROM target t
+              JOIN pg_catalog.pg_class c ON c.oid = t.oid
+              JOIN pg_catalog.pg_index i ON i.indrelid = t.oid
+             WHERE i.indisunique AND i.indimmediate AND i.indisvalid AND i.indislive
+               AND i.indpred IS NULL AND i.indexprs IS NULL
+               AND (c.relkind = 'p'
+                    OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhparent = t.oid))
+               AND (SELECT pg_catalog.array_agg(DISTINCT a.attname::pg_catalog.text
+                                                ORDER BY a.attname::pg_catalog.text)
+                      FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) WITH ORDINALITY AS k(attnum, position)
+                      JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+                     WHERE k.position <= i.indnkeyatts)
+                   OPERATOR(pg_catalog.=) (SELECT pg_catalog.array_agg(DISTINCT key ORDER BY key)
+                        FROM pg_catalog.unnest($7::pg_catalog.text[]) key))";
+
+/// La guardia del `search_path` (regola Q): uno schema che precede
+/// `pg_catalog` nel percorso effettivo (`current_schemas(true)`) e contiene
+/// una funzione, un operatore o un tipo con il nome di uno di `pg_catalog`.
+///
+/// E scritta come ogni SQL della libreria (funzioni, relazioni e tipi
+/// qualificati) e in piu con gli operatori qualificati. Copre gli operatori
+/// non qualificati con operandi dello **stesso tipo esatto** di quelli di
+/// `pg_catalog` (`oid = oid`, `name = text`): la corrispondenza esatta si
+/// cerca lungo il percorso, e `pg_catalog` per primo la trova. Non copre un
+/// operatore polimorfico (`anyarray = anyarray`) o raggiunto con un cast
+/// implicito: un `public."="(text[], text[])` esatto vincerebbe anche dopo
+/// `pg_catalog`. Quelli, nello SQL della libreria, sono qualificati con
+/// `OPERATOR(pg_catalog.=)` o hanno gli operandi portati al tipo esatto
+/// (seconda rilettura del 25/10). Gli statement sul target (`WHERE "id" =
+/// $1`) restano risolti dal `search_path` della sessione, che i trigger del
+/// target vedono: e il limite dichiarato qui sotto.
+/// `11` e l'oid fisso di `pg_catalog` (`PG_CATALOG_NAMESPACE`).
+const SEARCH_PATH_GUARD_SQL: &str = "\
+SELECT EXISTS (
+    SELECT 1
+      FROM pg_catalog.unnest(pg_catalog.current_schemas(true)) WITH ORDINALITY AS s(name, position)
+      JOIN pg_catalog.pg_namespace n ON n.nspname OPERATOR(pg_catalog.=) s.name
+     WHERE n.oid OPERATOR(pg_catalog.<>) 11::pg_catalog.oid
+       AND s.position OPERATOR(pg_catalog.<) (
+           SELECT p.position
+             FROM pg_catalog.unnest(pg_catalog.current_schemas(true)) WITH ORDINALITY AS p(name, position)
+            WHERE p.name OPERATOR(pg_catalog.=) 'pg_catalog'::pg_catalog.name)
+       AND (EXISTS (SELECT 1 FROM pg_catalog.pg_proc f
+                     WHERE f.pronamespace OPERATOR(pg_catalog.=) n.oid
+                       AND EXISTS (SELECT 1 FROM pg_catalog.pg_proc c
+                                    WHERE c.pronamespace OPERATOR(pg_catalog.=) 11::pg_catalog.oid
+                                      AND c.proname OPERATOR(pg_catalog.=) f.proname))
+            OR EXISTS (SELECT 1 FROM pg_catalog.pg_operator o
+                        WHERE o.oprnamespace OPERATOR(pg_catalog.=) n.oid
+                          AND EXISTS (SELECT 1 FROM pg_catalog.pg_operator c
+                                       WHERE c.oprnamespace OPERATOR(pg_catalog.=) 11::pg_catalog.oid
+                                         AND c.oprname OPERATOR(pg_catalog.=) o.oprname))
+            OR EXISTS (SELECT 1 FROM pg_catalog.pg_type y
+                        WHERE y.typnamespace OPERATOR(pg_catalog.=) n.oid
+                          AND EXISTS (SELECT 1 FROM pg_catalog.pg_type c
+                                       WHERE c.typnamespace OPERATOR(pg_catalog.=) 11::pg_catalog.oid
+                                         AND c.typname OPERATOR(pg_catalog.=) y.typname))))";
+
+/// Il motivo pubblico della guardia del `search_path` (regola Q).
+pub const SEARCH_PATH_SHADOWS_CATALOG: &str = "il search_path della sessione mette prima di \
+     pg_catalog uno schema con funzioni, operatori o tipi omonimi di quelli di pg_catalog";
 
 /// I fatti del catalogo sul target, per gli eventi di una mode.
 #[allow(clippy::struct_excessive_bools)]
@@ -141,6 +208,11 @@ pub struct TargetFacts {
     /// IDENTITY` del target: `COPY` scrive il valore dell'ingresso, l'INSERT
     /// lo rifiuta.
     pub copy_identity_always: bool,
+    /// La regola K: le chiavi coincidono con le colonne di un indice unico,
+    /// immediato, valido, senza predicato ne espressioni, e il target non ha
+    /// figli di ereditarieta fuori da quell'indice (una tabella partizionata
+    /// si: l'indice unico vale su ogni partizione).
+    pub keys_unique: bool,
 }
 
 impl TargetFacts {
@@ -177,11 +249,12 @@ const fn event_codes(event: WriteEvent) -> (i32, &'static str) {
 /// errori del catalogo escono in `phase`.
 pub async fn facts<C: GenericClient + Sync>(
     client: &C,
-    target: &ObjectRef,
-    mode: WriteMode,
+    operation: &WriteOperation,
     copied: &[String],
     phase: ErrorPhase,
 ) -> Result<TargetFacts> {
+    let target = &operation.target;
+    let mode = operation.mode;
     let events = mode_events(mode);
     let rules = events
         .iter()
@@ -205,6 +278,7 @@ pub async fn facts<C: GenericClient + Sync>(
                 &destructive,
                 &instead,
                 &copied,
+                &operation.keys,
             ],
         )
         .await
@@ -221,23 +295,42 @@ pub async fn facts<C: GenericClient + Sync>(
         instead_trigger: row.get(7),
         foreign_relation: row.get(8),
         copy_identity_always: row.get(9),
+        keys_unique: row.get(10),
     })
 }
 
-/// Il rifiuto della regola R per `operation` sui fatti gia letti, nella
-/// fase della scrittura.
+/// Il rifiuto della regola R, e poi della regola K
+/// (`plenora_database_core::write_keys`), per `operation` sui fatti gia
+/// letti, nella fase della scrittura.
+///
+/// La regola K vale per Update e `DeleteByKeys`: senza un indice unico sulle
+/// chiavi una chiave tocca piu righe e un'altra nessuna, e i conteggi si
+/// compensano (fino al 25/10, con `(1,a),(1,b),(2,c)` e un Update di
+/// `(1,z),(99,q)`, `confirmed 2 skipped 0` con la 99 assente). Upsert ha gia
+/// il suo arbitro: `ON CONFLICT` senza un indice unico immediato sulle chiavi
+/// e rifiutato dal server (42P10, 55000). La regola R precede: una vista, che
+/// un indice non ha, si rifiuta con il motivo della regola R quando ne ha uno.
+///
+/// Comportamento piu stretto, dichiarato: Update e `DeleteByKeys` su una
+/// vista aggiornabile semplice, che la regola R ammetteva, ora si rifiutano
+/// sempre (`schema`), perche il catalogo non prova l'unicita delle chiavi
+/// attraverso la vista. Rientro: risolvere le colonne della vista fino alla
+/// tabella di base e leggerne gli indici.
 #[must_use]
 pub fn refusal(operation: &WriteOperation, facts: TargetFacts) -> Option<DatabaseError> {
     if !facts.exists {
         return None;
     }
-    refuse_unfaithful_write(
+    if let Err(error) = refuse_unfaithful_write(
         ProviderKind::Postgres,
         operation.mode,
         ErrorPhase::Write,
         facts.filters(),
-    )
-    .err()
+    ) {
+        return Some(error);
+    }
+    (matches!(operation.mode, WriteMode::Update | WriteMode::DeleteByKeys) && !facts.keys_unique)
+        .then(|| keys_without_unique_index(ProviderKind::Postgres, ErrorPhase::Write))
 }
 
 /// La regola R nella transazione della scrittura: legge i fatti e rifiuta.
@@ -268,14 +361,7 @@ pub async fn enforce<C: GenericClient + Sync>(
     if mode_events(operation.mode).is_empty() {
         return Ok(());
     }
-    let facts = facts(
-        client,
-        &operation.target,
-        operation.mode,
-        copied,
-        ErrorPhase::Write,
-    )
-    .await?;
+    let facts = facts(client, operation, copied, ErrorPhase::Write).await?;
     refusal(operation, facts).map_or(Ok(()), Err)
 }
 
@@ -292,6 +378,56 @@ pub fn copied_columns(schema: &arrow_schema::SchemaRef, path: WritePath) -> Vec<
     } else {
         Vec::new()
     }
+}
+
+/// La regola Q su una sessione della libreria: il `search_path` non mette
+/// prima di `pg_catalog` uno schema che ne oscura funzioni, operatori o tipi
+/// ([`SEARCH_PATH_GUARD_SQL`]).
+///
+/// Fino al 25/10 un ruolo con `search_path = <schema>, pg_catalog, public` e
+/// una `<schema>.current_setting(text)` che rispondeva `origin` faceva
+/// passare la regola W2 a una sessione `replica`: dry run `ok`, orfano
+/// committato. Lo SQL della libreria ora qualifica funzioni, relazioni e
+/// tipi di `pg_catalog`; gli operatori e gli statement sul target non si
+/// possono qualificare senza cambiare la semantica dei tipi del target (un
+/// `=` di `citext` non e quello di `pg_catalog`), e la guardia li copre.
+///
+/// # Limite dichiarato
+///
+/// - **Regola**: nessuno schema prima di `pg_catalog` nel percorso effettivo
+///   contiene un nome di funzione, operatore o tipo di `pg_catalog`.
+/// - **Ambito**: ogni sessione della libreria (`connect_session`: letture,
+///   introspezione, preflight, dry run, transazioni applicative) e la
+///   transazione della scrittura; non `run_ddl`, che e SQL del chiamante.
+/// - **Hazard**: il confronto e per nome, non per firma: si rifiuta anche chi
+///   non oscura (uno schema con `PostGIS` messo prima di `pg_catalog`
+///   definisce `text(geometry)` e `box(...)`). Una funzione o un operatore
+///   creati da un'altra sessione dopo la guardia e prima di uno statement
+///   della stessa transazione non si vedono (`READ COMMITTED`).
+/// - **Rientro**: un confronto per firma e la guardia ripetuta dopo ogni lock
+///   preso, se servisse un `search_path` con `pg_catalog` dopo altri schemi.
+///
+/// # Errors
+///
+/// `unsupported` con [`SEARCH_PATH_SHADOWS_CATALOG`] nella fase `phase`;
+/// l'errore classificato della lettura.
+pub async fn guard_search_path<C: GenericClient + Sync>(
+    client: &C,
+    phase: ErrorPhase,
+) -> Result<()> {
+    let shadowed: bool = client
+        .query_one(SEARCH_PATH_GUARD_SQL, &[])
+        .await
+        .map_err(|error| classify_error(phase, &error))?
+        .get(0);
+    if shadowed {
+        return Err(DatabaseError::unsupported(
+            ProviderKind::Postgres,
+            phase,
+            format!("operazione rifiutata: {SEARCH_PATH_SHADOWS_CATALOG}"),
+        ));
+    }
+    Ok(())
 }
 
 /// La regola W2 su PostgreSQL: la sessione della scrittura applica i trigger
@@ -318,9 +454,13 @@ pub fn copied_columns(schema: &arrow_schema::SchemaRef, path: WritePath) -> Vec<
 /// rifiuto del `set_config` interrompe la transazione: il chiamante la
 /// annulla.
 pub async fn pin_session<C: GenericClient + Sync>(client: &C) -> Result<()> {
+    guard_search_path(client, ErrorPhase::Write).await?;
     let read = |error: tokio_postgres::Error| classify_error(ErrorPhase::Write, &error);
     let current: String = client
-        .query_one("SELECT current_setting('session_replication_role')", &[])
+        .query_one(
+            "SELECT pg_catalog.current_setting('session_replication_role')",
+            &[],
+        )
         .await
         .map_err(read)?
         .get(0);
@@ -336,7 +476,7 @@ pub async fn pin_session<C: GenericClient + Sync>(client: &C) -> Result<()> {
     };
     match client
         .query_one(
-            "SELECT set_config('session_replication_role', 'origin', true)",
+            "SELECT pg_catalog.set_config('session_replication_role', 'origin', true)",
             &[],
         )
         .await

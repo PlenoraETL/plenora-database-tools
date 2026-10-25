@@ -262,29 +262,29 @@ async fn table(client: &Client, schema: &str, object: &str) -> Result<Option<Tab
     let read = |error: tokio_postgres::Error| classify_error(ErrorPhase::Prepare, &error);
     let Some(row) = client
         .query_opt(
-            "SELECT c.oid, pg_has_role(c.relowner, 'USAGE'), \
-                    has_table_privilege(c.oid, 'DELETE'), \
-                    has_table_privilege(c.oid, 'TRUNCATE'), \
-                    has_table_privilege(c.oid, 'UPDATE') \
-                    OR has_table_privilege(c.oid, 'DELETE') \
-                    OR has_table_privilege(c.oid, 'TRUNCATE') \
-                    OR CASE WHEN current_setting('server_version_num')::int >= 170000 \
-                       THEN has_table_privilege(c.oid, 'MAINTAIN') ELSE false END, \
-                    has_schema_privilege(n.oid, 'USAGE'), \
-                    c.relkind::text, \
-                    row_security_active(c.oid), \
+            "SELECT c.oid, pg_catalog.pg_has_role(c.relowner, 'USAGE'), \
+                    pg_catalog.has_table_privilege(c.oid, 'DELETE'), \
+                    pg_catalog.has_table_privilege(c.oid, 'TRUNCATE'), \
+                    pg_catalog.has_table_privilege(c.oid, 'UPDATE') \
+                    OR pg_catalog.has_table_privilege(c.oid, 'DELETE') \
+                    OR pg_catalog.has_table_privilege(c.oid, 'TRUNCATE') \
+                    OR CASE WHEN pg_catalog.current_setting('server_version_num')::int >= 170000 \
+                       THEN pg_catalog.has_table_privilege(c.oid, 'MAINTAIN') ELSE false END, \
+                    pg_catalog.has_schema_privilege(n.oid, 'USAGE'), \
+                    c.relkind::pg_catalog.text, \
+                    pg_catalog.row_security_active(c.oid), \
                     EXISTS (SELECT 1 FROM pg_catalog.pg_policy p \
                             WHERE p.polrelid = c.oid AND p.polpermissive \
                               AND p.polcmd IN ('a', '*') \
-                              AND (0::oid = ANY (p.polroles) \
-                                   OR EXISTS (SELECT 1 FROM unnest(p.polroles) r \
-                                              WHERE r <> 0 AND pg_has_role(r, 'USAGE')))), \
+                              AND (0::pg_catalog.oid = ANY (p.polroles) \
+                                   OR EXISTS (SELECT 1 FROM pg_catalog.unnest(p.polroles) r \
+                                              WHERE r <> 0::pg_catalog.oid AND pg_catalog.pg_has_role(r, 'USAGE')))), \
                     EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t \
                             WHERE t.tgrelid = c.oid AND NOT t.tgisinternal \
                               AND t.tgenabled <> 'D' \
                               AND (t.tgtype & 64) <> 0 AND (t.tgtype & 4) <> 0 \
                               AND (t.tgtype & 1) <> 0), \
-                    pg_relation_is_updatable(c.oid, true) \
+                    pg_catalog.pg_relation_is_updatable(c.oid, true) \
              FROM pg_catalog.pg_class c \
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
              WHERE n.nspname = $1 AND c.relname = $2",
@@ -298,10 +298,10 @@ async fn table(client: &Client, schema: &str, object: &str) -> Result<Option<Tab
     let oid: u32 = row.get(0);
     let columns = client
         .query(
-            "SELECT a.attname::text, \
-                    has_column_privilege(a.attrelid, a.attnum, 'INSERT'), \
-                    has_column_privilege(a.attrelid, a.attnum, 'UPDATE'), \
-                    has_column_privilege(a.attrelid, a.attnum, 'SELECT'), \
+            "SELECT a.attname::pg_catalog.text, \
+                    pg_catalog.has_column_privilege(a.attrelid, a.attnum, 'INSERT'), \
+                    pg_catalog.has_column_privilege(a.attrelid, a.attnum, 'UPDATE'), \
+                    pg_catalog.has_column_privilege(a.attrelid, a.attnum, 'SELECT'), \
                     a.attgenerated = 's', \
                     a.attidentity = 'a', \
                     a.attnotnull AND NOT a.atthasdef AND a.attidentity = '' \
@@ -371,16 +371,16 @@ enum Arbiter {
 async fn arbiter(client: &Client, oid: u32, keys: &[String]) -> Result<Arbiter> {
     let row = client
         .query_one(
-            "SELECT bool_or(i.indimmediate), count(*) > 0 \
+            "SELECT pg_catalog.bool_or(i.indimmediate), pg_catalog.count(*) > 0 \
              FROM pg_catalog.pg_index i \
              WHERE i.indrelid = $1 AND i.indisunique AND i.indisvalid \
                AND i.indpred IS NULL AND i.indexprs IS NULL \
-               AND (SELECT array_agg(DISTINCT a.attname::text ORDER BY a.attname::text) \
-                    FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, position) \
+               AND (SELECT pg_catalog.array_agg(DISTINCT a.attname::pg_catalog.text ORDER BY a.attname::pg_catalog.text) \
+                    FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) WITH ORDINALITY AS k(attnum, position) \
                     JOIN pg_catalog.pg_attribute a \
                       ON a.attrelid = i.indrelid AND a.attnum = k.attnum \
                     WHERE k.position <= i.indnkeyatts) \
-                   = (SELECT array_agg(DISTINCT key ORDER BY key) FROM unnest($2::text[]) key)",
+                   OPERATOR(pg_catalog.=) (SELECT pg_catalog.array_agg(DISTINCT key ORDER BY key) FROM pg_catalog.unnest($2::pg_catalog.text[]) key)",
             &[&oid, &keys],
         )
         .await
@@ -465,7 +465,7 @@ pub async fn inspect(
         // La tabella nuova e di chi la crea: il resto non chiede privilegi.
         let row = client
             .query_opt(
-                "SELECT has_schema_privilege(n.oid, 'CREATE') \
+                "SELECT pg_catalog.has_schema_privilege(n.oid, 'CREATE') \
                  FROM pg_catalog.pg_namespace n WHERE n.nspname = $1",
                 &[&schema_name],
             )
@@ -513,8 +513,7 @@ pub async fn inspect(
     // vista una policy decide l'INSERT.
     let facts = super::visibility::facts(
         client,
-        &operation.target,
-        operation.mode,
+        operation,
         &super::visibility::copied_columns(schema, path),
         ErrorPhase::Prepare,
     )

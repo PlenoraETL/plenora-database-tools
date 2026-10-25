@@ -635,3 +635,8 @@ async fn bound_links(admin: &mut SqlServerSession) -> i64 {
         .and_then(|row| row.try_get::<i64, _>(0).ok().flatten())
         .unwrap_or_default()
 }
+
+// La seconda rilettura del 25/10 (regole K, V, isolamento, IGNORE_DUP_KEY).
+#[cfg(test)]
+#[path = "write_semantics_r2_live_tests.rs"]
+mod r2;

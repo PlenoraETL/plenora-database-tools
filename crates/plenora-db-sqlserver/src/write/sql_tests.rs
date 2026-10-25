@@ -82,3 +82,26 @@ fn keyed_statements_are_bound_and_never_use_merge() {
     assert!(delete.sql.contains("OUTPUT 3"));
     assert!(delete.sql.contains("WHERE [id] = @P1"));
 }
+
+/// Upsert lascia un'azione per ogni riga: con le sole chiavi, una chiave gia
+/// presente lascia 0, cosi una riga senza azione resta soltanto l'INSERT che
+/// il server ha scartato (`IGNORE_DUP_KEY`), e `row_mutation` la rifiuta.
+#[test]
+fn upsert_lascia_un_azione_per_ogni_riga() {
+    let renderer = renderer();
+    let keys_only = compile_row_statement(
+        &operation(WriteMode::Upsert),
+        &columns()[..1],
+        &renderer,
+        "[t]",
+    )
+    .expect("upsert sole chiavi");
+    assert!(keys_only
+        .sql
+        .contains("END; ELSE INSERT INTO @plenora_actions ([action]) VALUES (0);"));
+    let full = compile_row_statement(&operation(WriteMode::Upsert), &columns(), &renderer, "[t]")
+        .expect("upsert");
+    assert!(!full.sql.contains("VALUES (0)"));
+    assert!(full.sql.contains("OUTPUT 2 INTO @plenora_actions"));
+    assert!(full.sql.contains("OUTPUT 1 INTO @plenora_actions"));
+}

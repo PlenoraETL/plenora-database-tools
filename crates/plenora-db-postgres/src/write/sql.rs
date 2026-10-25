@@ -139,16 +139,19 @@ pub(super) fn statement(
 
 pub(super) fn placeholder_expression(plan: &WriteColumnPlan, ordinal: usize) -> String {
     if plan.semantics == ColumnSemantics::Geometry {
-        format!("ST_GeomFromEWKB(${ordinal})")
+        format!("{}ST_GeomFromEWKB(${ordinal})", plan.postgis)
     } else if plan.semantics == ColumnSemantics::Geography {
-        format!("ST_GeomFromEWKB(${ordinal})::geography")
+        format!(
+            "{postgis}ST_GeomFromEWKB(${ordinal})::{postgis}geography",
+            postgis = plan.postgis
+        )
     } else if matches!(plan.data_type, DataType::Decimal128(_, _)) {
-        format!("${ordinal}::text::numeric")
+        format!("${ordinal}::pg_catalog.text::numeric")
     } else if matches!(plan.data_type, DataType::Utf8)
         && matches!(plan.native_type.as_deref(), Some("json" | "jsonb" | "uuid"))
     {
         format!(
-            "${ordinal}::text::{}",
+            "${ordinal}::pg_catalog.text::{}",
             plan.native_type.as_deref().unwrap_or("text")
         )
     } else if matches!(
@@ -161,7 +164,7 @@ pub(super) fn placeholder_expression(plan: &WriteColumnPlan, ordinal: usize) -> 
                 if declaration == "text" {
                     format!("${ordinal}")
                 } else {
-                    format!("${ordinal}::text::{declaration}")
+                    format!("${ordinal}::pg_catalog.text::{declaration}")
                 }
             },
         )
