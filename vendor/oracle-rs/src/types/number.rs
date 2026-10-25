@@ -94,17 +94,19 @@ pub fn decode_oracle_number(data: &[u8]) -> Result<OracleNumber> {
 
     let mut decimal_point_index = (exponent * 2 + 2) as i32;
 
-    // Special case: single byte means zero (positive) or -1e126 (negative)
+    // Special case: a single byte is zero (0x80) or -infinity (0x00).
+    //
+    // Plenora fork: upstream returned -infinity as an empty value flagged
+    // `is_max_negative`, which callers reading `value` saw as "" and then as
+    // 0. Infinity is not a decimal number, and any other single byte is not an
+    // Oracle NUMBER: both are refused.
     if data.len() == 1 {
-        if is_positive {
+        if exponent_byte == 128 {
             return Ok(OracleNumber::new("0"));
-        } else {
-            return Ok(OracleNumber {
-                value: String::new(),
-                is_integer: false,
-                is_max_negative: true,
-            });
         }
+        return Err(Error::DataConversionError(
+            "Oracle NUMBER infinity or invalid single byte".to_string(),
+        ));
     }
 
     // Check for trailing 102 byte in negative numbers
@@ -128,12 +130,14 @@ pub fn decode_oracle_number(data: &[u8]) -> Result<OracleNumber> {
     let mut digits = Vec::with_capacity(MAX_DIGITS);
     for i in 0..mantissa_len {
         let byte = data[i + 1];
-        // Plenora fork: positive digits are stored as 1..=100 and negative
-        // ones as 1..=101 (value 100 is the upstream overflow case). Any other
-        // byte used to wrap around and print a non-digit character.
+        // Plenora fork: a base-100 digit is 0..=99, stored as 1..=100 when
+        // positive and 2..=101 when negative. Upstream also took the value
+        // 100 (positive 101, negative 1) as an "overflow" digit: that is how
+        // +infinity ([255, 101]) decoded to a finite 1e126 and [193, 2, 101]
+        // to 11. Any other byte used to wrap around and print a non-digit.
         let value = match (is_positive, byte) {
-            (true, 1..=101) => byte - 1,
-            (false, 1..=101) => 101 - byte,
+            (true, 1..=100) => byte - 1,
+            (false, 2..=101) => 101 - byte,
             _ => {
                 return Err(Error::DataConversionError(
                     "Invalid Oracle NUMBER mantissa byte".to_string(),
@@ -146,11 +150,6 @@ pub fn decode_oracle_number(data: &[u8]) -> Result<OracleNumber> {
         // Handle leading zeros
         if digit1 == 0 && digits.is_empty() {
             decimal_point_index -= 1;
-        } else if digit1 == 10 {
-            // Overflow case
-            digits.push(1);
-            digits.push(0);
-            decimal_point_index += 1;
         } else if digit1 != 0 || !digits.is_empty() {
             digits.push(digit1);
         }
@@ -213,6 +212,55 @@ pub fn decode_oracle_number(data: &[u8]) -> Result<OracleNumber> {
         is_integer,
         is_max_negative: false,
     })
+}
+
+/// Plenora fork: true when two decimal texts (plain or with an exponent)
+/// denote the same value. Used to refuse a lossy `f64` instead of returning
+/// it as if it were the stored NUMBER.
+pub(crate) fn same_decimal_value(left: &str, right: &str) -> bool {
+    match (canonical_decimal(left), canonical_decimal(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Sign, significant digits and the decimal exponent of their first digit;
+/// zero is `(false, [], 0)`. `None` for text that is not a finite decimal.
+fn canonical_decimal(text: &str) -> Option<(bool, Vec<u8>, i64)> {
+    let (negative, unsigned) = match text.as_bytes().first()? {
+        b'-' => (true, &text[1..]),
+        b'+' => (false, &text[1..]),
+        _ => (false, text),
+    };
+    let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
+        Some(index) => (
+            &unsigned[..index],
+            unsigned[index + 1..].parse::<i64>().ok()?,
+        ),
+        None => (unsigned, 0),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if whole.is_empty() && fraction.is_empty() {
+        return None;
+    }
+    let mut digits = Vec::with_capacity(whole.len() + fraction.len());
+    for byte in whole.bytes().chain(fraction.bytes()) {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        digits.push(byte - b'0');
+    }
+    let mut point = i64::try_from(whole.len()).ok()?.checked_add(exponent)?;
+    let leading = digits.iter().take_while(|digit| **digit == 0).count();
+    digits.drain(..leading);
+    point -= i64::try_from(leading).ok()?;
+    while digits.last() == Some(&0) {
+        digits.pop();
+    }
+    if digits.is_empty() {
+        return Some((false, digits, 0));
+    }
+    Some((negative, digits, point))
 }
 
 /// Encode a number string to Oracle NUMBER wire format
@@ -739,11 +787,39 @@ mod tests {
             &[193, 102],
             &[62, 102],
             &[62, 0, 102],
+            // -infinity, +infinity, the old "overflow" digit anywhere.
+            &[0],
+            &[255, 101],
+            &[193, 2, 101],
+            &[193, 101],
+            &[62, 1, 102],
+            &[62, 100, 1, 102],
+            // A single byte other than zero.
+            &[129],
+            &[127],
             &[
                 193, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
             ],
         ] {
             assert!(decode_oracle_number(bytes).is_err(), "{bytes:?}");
         }
+    }
+
+    #[test]
+    fn plenora_fork_same_decimal_value_compares_by_value() {
+        assert!(same_decimal_value("0.05", "5e-2"));
+        assert!(same_decimal_value("-0.0", "0"));
+        assert!(same_decimal_value(
+            "1.2345678901234568e29",
+            "123456789012345680000000000000"
+        ));
+        assert!(!same_decimal_value(
+            "1.2345678901234568e29",
+            "123456789012345678901234567890"
+        ));
+        assert!(!same_decimal_value("0.5", "0.05"));
+        assert!(!same_decimal_value("-1", "1"));
+        assert!(!same_decimal_value("", "0"));
+        assert!(!same_decimal_value("-", "0"));
     }
 }

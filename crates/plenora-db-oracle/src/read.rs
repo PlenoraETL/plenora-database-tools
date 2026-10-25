@@ -492,11 +492,11 @@ impl Values {
             (Self::F64(values), ParameterValue::I64(value)) => {
                 values.push(Some(i64_to_f64(*value)));
             }
-            (Self::Decimal(values, _, scale), ParameterValue::Decimal(value)) => {
-                values.push(Some(parse_decimal(value, *scale)?));
+            (Self::Decimal(values, precision, scale), ParameterValue::Decimal(value)) => {
+                values.push(Some(parse_decimal(value, *precision, *scale)?));
             }
-            (Self::Decimal(values, _, 0), ParameterValue::I64(value)) => {
-                values.push(Some(i128::from(*value)));
+            (Self::Decimal(values, precision, 0), ParameterValue::I64(value)) => {
+                values.push(Some(parse_decimal(&value.to_string(), *precision, 0)?));
             }
             (Self::Utf8(values), ParameterValue::String(value)) => values.push(Some(value.clone())),
             (Self::Utf8(values), ParameterValue::Json(value)) => values.push(Some(
@@ -781,15 +781,28 @@ fn parse_tz_timestamp(value: &str) -> Result<i64> {
         .map_err(|_| mapping("timestamp con fuso Oracle non rappresentabile"))
 }
 
-fn parse_decimal(value: &str, scale: i8) -> Result<i128> {
+/// Testo decimale del driver nel valore intero di un `Decimal128(precision,
+/// scale)`.
+///
+/// Un testo senza cifre (`""`, `"-"`, `"."`) era letto come 0: il decoder
+/// rendeva `""` per -infinito. Ora e un errore, come le cifre oltre la
+/// precisione dichiarata, che `with_precision_and_scale` non controlla sui
+/// valori.
+pub fn parse_decimal(value: &str, precision: u8, scale: i8) -> Result<i128> {
     let negative = value.starts_with('-');
     let unsigned = value.strip_prefix(['+', '-']).unwrap_or(value);
     let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
-    if !whole.bytes().all(|byte| byte.is_ascii_digit())
+    if (whole.is_empty() && fraction.is_empty())
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
         || !fraction.bytes().all(|byte| byte.is_ascii_digit())
         || fraction.len() > usize::try_from(scale).unwrap_or(0)
     {
         return Err(mapping("NUMBER Oracle non rappresentabile in Decimal128"));
+    }
+    // La frazione sta gia nella scala: la parte intera deve stare nel resto.
+    let integer_digits = usize::from(precision).saturating_sub(usize::try_from(scale).unwrap_or(0));
+    if whole.trim_start_matches('0').len() > integer_digits {
+        return Err(mapping("NUMBER Oracle oltre la precisione Decimal128"));
     }
     let mut digits = String::with_capacity(whole.len() + usize::try_from(scale).unwrap_or(0));
     digits.push_str(if whole.is_empty() { "0" } else { whole });

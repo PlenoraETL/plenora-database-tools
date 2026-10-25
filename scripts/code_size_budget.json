@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 106396,
-  "max_code_lines": 87659,
-  "rationale": "fix/oracle-number-modulo: il codec NUMBER del fork oracle-rs (vendor/, fuori dal perimetro) allinea l'esponente con rem_euclid; nel perimetro entrano solo le 4 righe fisiche di lib.rs che agganciano i due moduli #[cfg(test)] dell'oracolo NUMBER (unitario e live), escluse dalle righe di codice. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 106392 -> 106396 (+4), righe di codice 87659 invariate. Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 106409,
+  "max_code_lines": 87664,
+  "rationale": "fix/oracle-number-modulo (PR #136): il codec NUMBER del fork oracle-rs (vendor/, fuori dal perimetro) allinea l'esponente con rem_euclid e rifiuta infiniti e cifre fuori dominio; nel perimetro entrano le righe di lib.rs che agganciano i moduli #[cfg(test)] dell'oracolo NUMBER e, nel secondo giro, parse_decimal di read.rs che rifiuta il testo senza cifre (prima letto come 0) e le cifre oltre la precisione Decimal128. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 106392 -> 106409 (+17), righe di codice 87659 -> 87664 (+5). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

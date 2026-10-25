@@ -546,21 +546,31 @@ impl OsonDecoder {
 
     fn decode_oracle_number(&mut self, len: usize) -> Result<serde_json::Value> {
         let bytes = self.read_bytes(len)?;
-        // Use our existing Oracle number decoder
-        match crate::types::decode_oracle_number(&bytes) {
-            Ok(num) => {
-                // Try to parse as integer first, then float
-                if let Ok(i) = num.value.parse::<i64>() {
-                    Ok(serde_json::json!(i))
-                } else if let Ok(f) = num.value.parse::<f64>() {
-                    Ok(serde_json::json!(f))
-                } else {
-                    // Return as string if parsing fails
-                    Ok(serde_json::Value::String(num.value))
-                }
-            }
-            Err(_) => Ok(serde_json::Value::Null),
+        // Plenora fork: upstream turned an undecodable NUMBER into JSON null,
+        // a non-number into a JSON string, and any non-integer into the
+        // nearest f64 even when that changed the value
+        // (123456789012345678901234567890 read back as 1.2345678901234568e29).
+        // Without serde_json's arbitrary precision the exact value is kept
+        // only when an integer or an f64 represents it; otherwise the read
+        // fails instead of returning a different number.
+        let num = crate::types::decode_oracle_number(&bytes)?;
+        if let Ok(integer) = num.value.parse::<i64>() {
+            return Ok(serde_json::Value::from(integer));
         }
+        if let Ok(integer) = num.value.parse::<u64>() {
+            return Ok(serde_json::Value::from(integer));
+        }
+        let exact = num
+            .value
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .filter(|number| super::number::same_decimal_value(&number.to_string(), &num.value));
+        exact.map(serde_json::Value::Number).ok_or_else(|| {
+            Error::DataConversionError(
+                "Oracle NUMBER in JSON not representable exactly".to_string(),
+            )
+        })
     }
 
     fn decode_oracle_date(&self, bytes: &[u8]) -> Result<String> {

@@ -426,9 +426,23 @@ async fn seed_keys(provider: &OracleProvider, secret: &SecretString) {
         .expect("commit chiavi NUMBER Oracle");
 }
 
-async fn arrow_create_path(provider: &OracleProvider, secret: &SecretString) -> bool {
+/// Scrittura Arrow `Decimal128(38, 20)` con `mode` (create, o append su una
+/// tabella creata dal DDL), verifica lato server e rilettura Arrow.
+async fn arrow_write_path(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    mode: WriteMode,
+) -> bool {
     let cancellation = CancellationToken::new();
     drop_table(provider, secret, ARROW).await;
+    if mode == WriteMode::Append {
+        create_table(
+            provider,
+            secret,
+            &format!("CREATE TABLE {ARROW} (ID NUMBER(10) PRIMARY KEY, D NUMBER(38, 20))"),
+        )
+        .await;
+    }
     let values = generated(&[1, 2, 3, 38], 2)
         .into_iter()
         .filter_map(|value| arrow_decimal(&value).map(|decimal| (value, decimal)))
@@ -445,11 +459,20 @@ async fn arrow_create_path(provider: &OracleProvider, secret: &SecretString) -> 
     let written = arrow_write(
         provider,
         secret,
-        &write_operation(ARROW, WriteMode::Create, &["ID"], &[]),
+        &write_operation(
+            ARROW,
+            mode,
+            if mode == WriteMode::Append {
+                &[]
+            } else {
+                &["ID"]
+            },
+            &[],
+        ),
         batch,
     )
     .await
-    .expect("create Arrow NUMBER Oracle");
+    .expect("scrittura Arrow NUMBER Oracle");
     assert_eq!(written, u64::try_from(values.len()).expect("righe"));
     let expected = ids
         .iter()
@@ -457,10 +480,82 @@ async fn arrow_create_path(provider: &OracleProvider, secret: &SecretString) -> 
         .map(|(id, (value, _))| (i64::from(*id), value.clone()))
         .collect::<BTreeMap<_, _>>();
     let mut transaction = begin(provider, secret).await;
-    let mismatches = server_mismatches(transaction.as_mut(), ARROW, &expected).await;
+    let mut mismatches = server_mismatches(transaction.as_mut(), ARROW, &expected).await;
     transaction.rollback(&cancellation).await.expect("rollback");
+    // Rilettura Arrow: lo stesso Decimal128 scritto, riga per riga.
+    let read_back = arrow_read_decimals(provider, secret, ARROW).await;
+    let written = ids
+        .iter()
+        .zip(&values)
+        .map(|(id, (_, decimal))| (i64::from(*id), *decimal))
+        .collect::<Vec<_>>();
+    if read_back != written {
+        let differing = read_back
+            .iter()
+            .zip(&written)
+            .filter(|(left, right)| left != right)
+            .count();
+        mismatches.push(format!(
+            "read Arrow: {} righe, {differing} diverse",
+            read_back.len()
+        ));
+    }
     drop_table(provider, secret, ARROW).await;
-    report("Arrow Decimal128 create", &mismatches, expected.len())
+    let label = if mode == WriteMode::Append {
+        "Arrow Decimal128 append + read"
+    } else {
+        "Arrow Decimal128 create + read"
+    };
+    report(label, &mismatches, expected.len())
+}
+
+fn read_operation(table: &str) -> ReadOperation {
+    ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: table.to_owned(),
+        },
+        projection: vec!["ID".to_owned(), "D".to_owned()],
+        filter: None,
+        order_by: vec![plenora_database_core::plan::OrderBy {
+            field: "ID".to_owned(),
+            direction: plenora_database_core::plan::SortDirection::Asc,
+        }],
+        row_limit: None,
+        row_offset: None,
+        declared_crs: Vec::new(),
+    }
+}
+
+/// (ID, D) letti dal provider come Arrow, con D `Decimal128`.
+async fn arrow_read_decimals(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    table: &str,
+) -> Vec<(i64, i128)> {
+    let cancellation = CancellationToken::new();
+    let mut stream = provider
+        .read(
+            secret,
+            &read_operation(table),
+            &ParameterBag::default(),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("read Arrow NUMBER Oracle");
+    let mut rows = Vec::new();
+    while let Some(batch) = stream.next_batch(&cancellation).await.expect("batch") {
+        let ids = arrow_integers(batch.column(0).as_ref());
+        let decimals = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .expect("D come Decimal128");
+        rows.extend(ids.into_iter().zip(decimals.values().iter().copied()));
+    }
+    rows
 }
 
 async fn portable_select_path(provider: &OracleProvider, secret: &SecretString) -> bool {
@@ -703,7 +798,10 @@ async fn float_control_path(provider: &OracleProvider, secret: &SecretString) ->
 #[ignore = "richiede Oracle Free live esplicito"]
 async fn live_number_every_public_bind_path_is_exact() {
     let (provider, secret) = fixture();
-    let mut verdicts = vec![arrow_create_path(&provider, &secret).await];
+    let mut verdicts = vec![
+        arrow_write_path(&provider, &secret, WriteMode::Create).await,
+        arrow_write_path(&provider, &secret, WriteMode::Append).await,
+    ];
     seed_keys(&provider, &secret).await;
     verdicts.push(portable_select_path(&provider, &secret).await);
     verdicts.push(read_filter_path(&provider, &secret).await);
@@ -713,4 +811,174 @@ async fn live_number_every_public_bind_path_is_exact() {
     verdicts.push(json_parameter_path(&provider, &secret).await);
     verdicts.push(float_control_path(&provider, &secret).await);
     assert!(verdicts.iter().all(|ok| *ok), "{verdicts:?}");
+}
+
+/// Valori che il server conserva ma che non sono decimali, scritti con
+/// `UTL_RAW.CAST_TO_NUMBER`: -infinito, +infinito e (se il server lo accetta)
+/// la cifra 100 dopo la prima posizione. Ogni lettura deve fallire: prima
+/// rendevano `""` (e 0 in Arrow), 1e126 e 11.
+const INVALID: [(&str, &str); 3] = [
+    ("00", "-infinito"),
+    ("FF65", "+infinito"),
+    ("C10265", "cifra 100"),
+];
+const INVALID_TABLE: &str = "PLENORA_ORACLE_NUMBER_INVALID";
+
+async fn arrow_read_by_id(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    id: i64,
+) -> plenora_database_core::Result<usize> {
+    let cancellation = CancellationToken::new();
+    let mut operation = read_operation(INVALID_TABLE);
+    operation.filter = Some(FilterExpression::Eq {
+        field: "ID".to_owned(),
+        parameter: "id".to_owned(),
+    });
+    let parameters =
+        ParameterBag::new(BTreeMap::from([("id".to_owned(), ParameterValue::I64(id))]));
+    let mut stream = provider
+        .read(secret, &operation, &parameters, &budget(), &cancellation)
+        .await?;
+    let mut rows = 0;
+    while let Some(batch) = stream.next_batch(&cancellation).await? {
+        rows += batch.num_rows();
+    }
+    Ok(rows)
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_number_infinities_and_invalid_bytes_fail_every_read() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    drop_table(&provider, &secret, INVALID_TABLE).await;
+    create_table(
+        &provider,
+        &secret,
+        &format!("CREATE TABLE {INVALID_TABLE} (ID NUMBER(10) PRIMARY KEY, D NUMBER)"),
+    )
+    .await;
+    let mut stored = Vec::new();
+    let mut transaction = begin(&provider, &secret).await;
+    for (index, (raw, label)) in INVALID.iter().enumerate() {
+        let id = probe_id(index);
+        let sql = format!(
+            "INSERT INTO {INVALID_TABLE} (ID, D) \
+             VALUES ({id}, UTL_RAW.CAST_TO_NUMBER(HEXTORAW('{raw}')))"
+        );
+        match transaction
+            .execute(&Statement::new(sql), &cancellation)
+            .await
+        {
+            Ok(_) => stored.push((id, *label)),
+            Err(error) => eprintln!("NUMBER Oracle: il server non conserva {label}: {error:?}"),
+        }
+    }
+    transaction.commit(&cancellation).await.expect("commit");
+    // -infinito e +infinito sono quelli osservati dal secondo lettore.
+    assert!(stored.len() >= 2, "{stored:?}");
+
+    let mut misses = Vec::new();
+    // Un errore di decodifica a meta risposta lascia la sessione inservibile:
+    // ogni lettura che deve fallire ha la propria transazione.
+    for (id, label) in &stored {
+        let mut transaction = begin(&provider, &secret).await;
+        let dump = transaction
+            .query(
+                &Statement::new(format!(
+                    "SELECT DUMP(D) AS DMP FROM {INVALID_TABLE} WHERE ID = {id}"
+                )),
+                &cancellation,
+            )
+            .await
+            .expect("DUMP del valore non decimale");
+        eprintln!(
+            "NUMBER Oracle: {label} -> {:?}",
+            optional_text(&dump[0], "DMP")
+        );
+        // Query di riga: decoder del driver.
+        if let Ok(rows) = transaction
+            .query(
+                &Statement::new(format!("SELECT D FROM {INVALID_TABLE} WHERE ID = {id}")),
+                &cancellation,
+            )
+            .await
+        {
+            misses.push(format!("{label}: query resa {:?}", rows[0].get("D")));
+        }
+        let _ = transaction.rollback(&cancellation).await;
+    }
+    // Read Arrow: Decimal128(38, 0) sulla colonna NUMBER libera.
+    for (id, label) in &stored {
+        if let Ok(rows) = arrow_read_by_id(&provider, &secret, *id).await {
+            misses.push(format!("{label}: read Arrow resa {rows} righe"));
+        }
+    }
+    drop_table(&provider, &secret, INVALID_TABLE).await;
+    assert!(
+        report("letture di valori non decimali", &misses, stored.len()),
+        "{misses:?}"
+    );
+}
+
+/// Un numero dentro un documento JSON costruito dal server, letto in una
+/// transazione propria (una lettura che fallisce chiude la sessione).
+async fn json_number(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    text: &str,
+) -> plenora_database_core::Result<Option<ParameterValue>> {
+    let mut transaction = begin(provider, secret).await;
+    let rows = transaction
+        .query(
+            &Statement::new(format!(
+                "SELECT JSON_OBJECT('x' VALUE TO_NUMBER('{text}') RETURNING JSON) AS DOC \
+                 FROM DUAL"
+            )),
+            &CancellationToken::new(),
+        )
+        .await;
+    let _ = transaction.rollback(&CancellationToken::new()).await;
+    Ok(rows?[0].get("DOC").cloned())
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_number_inside_json_reads_back_exactly_or_fails() {
+    let (provider, secret) = fixture();
+    let mut misses = Vec::new();
+    // Rappresentabili esattamente da i64, u64 o f64: devono tornare uguali.
+    let exact = PROBES
+        .iter()
+        .copied()
+        .chain([
+            "-9223372036854775808",
+            "18446744073709551615",
+            "1e-130",
+            "1.5e125",
+        ])
+        .collect::<Vec<_>>();
+    for probe in &exact {
+        match json_number(&provider, &secret, probe).await {
+            Ok(Some(ParameterValue::Json(document))) => {
+                let text = document["x"].to_string();
+                if parse_canon(&text) != parse_canon(probe) {
+                    misses.push(format!("{probe}: JSON {text}"));
+                }
+            }
+            other => misses.push(format!("{probe}: {other:?}")),
+        }
+    }
+    // Non rappresentabili senza perdita: la lettura deve fallire, non rendere
+    // il double piu vicino.
+    for probe in ["123456789012345678901234567890", "0.12345678901234567891"] {
+        if let Ok(value) = json_number(&provider, &secret, probe).await {
+            misses.push(format!("{probe}: reso {value:?}"));
+        }
+    }
+    assert!(
+        report("numeri dentro JSON", &misses, exact.len() + 2),
+        "{misses:?}"
+    );
 }

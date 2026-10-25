@@ -432,3 +432,63 @@ fn the_reference_is_itself_checked_against_known_dumps() {
         assert_eq!(reference_bytes(&canon), parse_dump(dump), "{text}");
     }
 }
+
+#[test]
+fn infinities_and_the_overflow_digit_are_refused_by_the_decoder() {
+    // -infinito ([0], DUMP `Typ=2 Len=1: 0`), +infinito ([255, 101], TO_CHAR
+    // `~`), la cifra 100 fuori e dentro la prima posizione: prima erano "",
+    // 1e126 e "11".
+    for bytes in [
+        &[0_u8][..],
+        &[255, 101],
+        &[193, 2, 101],
+        &[193, 101],
+        &[62, 1, 102],
+        &[62, 100, 1, 102],
+        &[129],
+    ] {
+        assert!(decode_oracle_number(bytes).is_err(), "{bytes:?}");
+    }
+    assert_eq!(decode_oracle_number(&[128]).expect("zero").value, "0");
+}
+
+#[test]
+fn decimal_text_without_digits_or_beyond_precision_is_not_read_as_a_value() {
+    use crate::read::parse_decimal;
+    for (text, precision, scale) in [
+        ("", 38, 0),
+        ("-", 38, 0),
+        (".", 38, 2),
+        ("-.", 38, 2),
+        ("1e3", 38, 0),
+        ("0.5", 38, 0),
+        ("123", 2, 0),
+        ("10.5", 2, 1),
+        ("1000000000000000000000000000000000000000", 38, 0),
+    ] {
+        assert!(
+            parse_decimal(text, precision, scale).is_err(),
+            "{text} ({precision}, {scale})"
+        );
+    }
+    for (text, precision, scale, expected) in [
+        ("0", 38, 0, 0_i128),
+        ("-0.5", 38, 1, -5),
+        ("99", 2, 0, 99),
+        ("1.5", 2, 1, 15),
+        ("0.05", 2, 2, 5),
+        (".05", 2, 2, 5),
+        (
+            "-12345678901234567890123456789012345678",
+            38,
+            0,
+            -12_345_678_901_234_567_890_123_456_789_012_345_678,
+        ),
+    ] {
+        assert_eq!(
+            parse_decimal(text, precision, scale).expect("decimale valido"),
+            expected,
+            "{text}"
+        );
+    }
+}
