@@ -665,3 +665,255 @@ async fn live_operand_catalog_judges_geometry_and_admits_scalars() {
 
     pulisci(&provider, &secret, &cancellation).await;
 }
+
+/// `T.<campo> = CAST(? AS VARCHAR(32672) FOR BIT DATA)`: il bind binario
+/// tipato, come le forme del fixture.
+fn uguale_binario(field: &str) -> Value {
+    json!({"filter": {"kind": "compare", "left": colonna("T", field), "operator": "eq",
+        "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "binary"}}})
+}
+
+/// La preparazione della regola B: due poligoni uguali per `ST_EQUALS` con i
+/// vertici in ordine diverso, e una vista che li rende binari in ogni forma
+/// misurata il 25/10 (`CAST(G AS VARCHAR FOR BIT DATA)`, `CAST(G AS
+/// VARBINARY)`, `CAST(ST_ASBINARY(G) AS VARCHAR FOR BIT DATA)`, un tipo
+/// distinto su `VARBINARY`, il `BLOB` di `ST_CENTROID`), una colonna `FOR BIT
+/// DATA` che ripete quella della tabella, il WKT.
+const PREPARAZIONE_DERIVATE: [&str; 5] = [
+    "CREATE DISTINCT TYPE SONDE_DERIVATE_T.WKB AS VARBINARY(4000) WITH COMPARISONS",
+    "CREATE TABLE PLENORA.SONDE_DERIVATE (ID INTEGER, B VARCHAR(16) FOR BIT DATA, \
+     G ST_GEOMETRY) IN PLENORA_TS8K",
+    "INSERT INTO PLENORA.SONDE_DERIVATE VALUES \
+     (3, BX'03', ST_GEOMETRY('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 4326)), \
+     (4, BX'04', ST_GEOMETRY('POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))', 4326))",
+    "CREATE VIEW PLENORA.SONDE_DERIVATE_V AS SELECT ID, \
+     CAST(G AS VARCHAR(4000) FOR BIT DATA) AS CVB, CAST(G AS VARBINARY(4000)) AS VB, \
+     CAST(ST_ASBINARY(G) AS VARCHAR(4000) FOR BIT DATA) AS WKBV, \
+     SONDE_DERIVATE_T.WKB(CAST(ST_ASBINARY(G) AS VARBINARY(4000))) AS DT, \
+     ST_CENTROID(G) AS C, B, ST_ASTEXT(G) AS X FROM PLENORA.SONDE_DERIVATE",
+    "CREATE ALIAS PLENORA.SONDE_DERIVATE_A FOR PLENORA.SONDE_DERIVATE_V",
+];
+
+const PULIZIA_DERIVATE: [&str; 5] = [
+    "DROP ALIAS PLENORA.SONDE_DERIVATE_A",
+    "DROP VIEW PLENORA.SONDE_DERIVATE_V",
+    "DROP TABLE PLENORA.SONDE_DERIVATE",
+    "DROP TYPE SONDE_DERIVATE_T.WKB",
+    "DROP SCHEMA SONDE_DERIVATE_T RESTRICT",
+];
+
+/// Regola B (`spatial_operand::catalog_column_is_geometric`), rilettura del
+/// 25/10 (F2): fino a 1bda911 il catalogo diceva geometriche soltanto le
+/// colonne `SYSIBM.BLOB` calcolate di una vista; `VARCHAR FOR BIT DATA`,
+/// `VARBINARY` e un tipo distinto che vi arriva si giudicavano scalari, e
+/// `=`, `ORDER BY`, `DISTINCT` ne confrontavano i byte. Lo SQL senza giudizio
+/// `WKBV = ?` con il WKB del primo poligono rende soltanto il primo, mentre
+/// `ST_EQUALS` dice uguali i due. Ora si rifiutano prima del server, anche
+/// attraverso un alias e nella lettura del provider; la colonna `FOR BIT
+/// DATA` della tabella, l'id e il WKT della vista restano.
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_binary_columns_of_derived_relations_are_judged_geometric() {
+    let provider = provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    for sql in PULIZIA_DERIVATE {
+        let _ = provider.run_ddl(&secret, sql, &cancellation).await;
+    }
+    for (index, sql) in PREPARAZIONE_DERIVATE.iter().enumerate() {
+        provider
+            .run_ddl(&secret, sql, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("preparazione regola B Db2 {index}: {error}"));
+    }
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("transazione regola B Db2");
+    let equal = transaction
+        .query(
+            &Statement::new(
+                "SELECT A.ID FROM PLENORA.SONDE_DERIVATE A, PLENORA.SONDE_DERIVATE B \
+                 WHERE A.ID = 3 AND B.ID = 4 AND ST_EQUALS(A.G, B.G) = 1",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("ST_EQUALS regola B Db2");
+    assert_eq!(identificativi(&equal), vec!["3".to_owned()]);
+    // F2: lo SQL senza giudizio confronta i byte (il WKB del primo poligono,
+    // dalla stessa vista: il secondo, uguale, manca); il giudizio lo rifiuta.
+    let silent = transaction
+        .query(
+            &Statement::new(
+                "SELECT T.ID FROM PLENORA.SONDE_DERIVATE_V T WHERE T.WKBV = \
+                 (SELECT U.WKBV FROM PLENORA.SONDE_DERIVATE_V U WHERE U.ID = 3)",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("senza giudizio regola B Db2");
+    assert_eq!(
+        identificativi(&silent),
+        vec!["3".to_owned()],
+        "il server confronta i byte: il secondo poligono, uguale, manca"
+    );
+    let _ = transaction.rollback(&cancellation).await;
+    let bytes = vec![ParameterValue::Bytes(vec![1])];
+    let tabella = Some("PLENORA");
+    let (_, judged, _) = esegui(
+        &provider,
+        &secret,
+        &su(tabella, "SONDE_DERIVATE_V", &uguale_binario("WKBV")),
+        Some(&bytes),
+        &cancellation,
+    )
+    .await;
+    let error = judged.expect_err("WKBV = ? giudicato");
+    assert!(
+        rifiuto_del_giudizio(&error, GEOMETRY_SCALAR_OPERAND),
+        "{error}"
+    );
+
+    let distinct = |field: &str| {
+        json!({"distinct": true,
+            "projection": [{"expression": colonna("T", field), "alias": "V"}]})
+    };
+    let rifiutati = [
+        (
+            "CVB = ?",
+            su(tabella, "SONDE_DERIVATE_V", &uguale_binario("CVB")),
+            bytes.clone(),
+        ),
+        (
+            "VB = ?",
+            su(tabella, "SONDE_DERIVATE_V", &uguale_binario("VB")),
+            bytes.clone(),
+        ),
+        (
+            "DT = ? (distinto su VARBINARY)",
+            su(tabella, "SONDE_DERIVATE_V", &uguale_binario("DT")),
+            bytes.clone(),
+        ),
+        (
+            "C = ? (BLOB di ST_CENTROID)",
+            su(tabella, "SONDE_DERIVATE_V", &uguale_binario("C")),
+            bytes.clone(),
+        ),
+        (
+            "B della vista = ?",
+            su(tabella, "SONDE_DERIVATE_V", &uguale_binario("B")),
+            bytes.clone(),
+        ),
+        (
+            "ORDER BY CVB",
+            su(tabella, "SONDE_DERIVATE_V", &ordinato("CVB", "asc")),
+            Vec::new(),
+        ),
+        (
+            "ORDER BY WKBV",
+            su(tabella, "SONDE_DERIVATE_V", &ordinato("WKBV", "asc")),
+            Vec::new(),
+        ),
+        (
+            "DISTINCT VB",
+            su(tabella, "SONDE_DERIVATE_V", &distinct("VB")),
+            Vec::new(),
+        ),
+        (
+            "WKBV = ? sull'alias",
+            su(tabella, "SONDE_DERIVATE_A", &uguale_binario("WKBV")),
+            bytes.clone(),
+        ),
+    ];
+    for (nome, piano, valori) in rifiutati {
+        let (_, judged, _) = esegui(&provider, &secret, &piano, Some(&valori), &cancellation).await;
+        let error = judged.expect_err(nome);
+        assert!(
+            rifiuto_del_giudizio(&error, GEOMETRY_SCALAR_OPERAND),
+            "{nome}: {error}"
+        );
+    }
+    // La colonna FOR BIT DATA della tabella resta scalare: il giudizio la
+    // ammette e lo SQL arriva al server.
+    let (_, judged, direct) = esegui(
+        &provider,
+        &secret,
+        &su(tabella, "SONDE_DERIVATE", &uguale_binario("B")),
+        Some(&bytes),
+        &cancellation,
+    )
+    .await;
+    let rows = judged.unwrap_or_else(|error| panic!("B = ? sulla tabella: {error}"));
+    assert_eq!(Ok(rows), direct, "B = ? sulla tabella");
+    let ammessi = [
+        (
+            "ID = ? sulla vista",
+            su(tabella, "SONDE_DERIVATE_V", &uguale("ID")),
+            vec![ParameterValue::I32(3)],
+            vec!["3"],
+        ),
+        (
+            "ORDER BY ID DESC sull'alias",
+            su(tabella, "SONDE_DERIVATE_A", &ordinato("ID", "desc")),
+            Vec::new(),
+            vec!["4", "3"],
+        ),
+    ];
+    for (nome, piano, valori, attese) in ammessi {
+        let (_, judged, direct) =
+            esegui(&provider, &secret, &piano, Some(&valori), &cancellation).await;
+        let rows = judged.unwrap_or_else(|error| panic!("{nome}: {error}"));
+        assert_eq!(rows, attese, "{nome}");
+        assert_eq!(Ok(rows), direct, "{nome}");
+    }
+
+    // La lettura del provider: la colonna FOR BIT DATA e il tipo distinto
+    // della vista si rifiutano, con il giudizio sul catalogo.
+    let lettura = |field: &str| ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: "SONDE_DERIVATE_V".to_owned(),
+        },
+        projection: vec!["ID".to_owned()],
+        order_by: vec![OrderBy {
+            field: "ID".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: None,
+        row_offset: None,
+        filter: Some(FilterExpression::Eq {
+            field: field.to_owned(),
+            parameter: "p".to_owned(),
+        }),
+        declared_crs: Vec::new(),
+    };
+    let parametri = ParameterBag::new(BTreeMap::from([("p".to_owned(), bytes[0].clone())]));
+    for field in ["WKBV", "CVB", "VB"] {
+        let error = provider
+            .read(
+                &secret,
+                &lettura(field),
+                &parametri,
+                &budget(),
+                &cancellation,
+            )
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("lettura {field} ammessa"));
+        assert!(
+            rifiuto_del_giudizio(&error, GEOMETRY_SCALAR_OPERAND),
+            "lettura {field}: {error}"
+        );
+    }
+    for sql in PULIZIA_DERIVATE {
+        let _ = provider.run_ddl(&secret, sql, &cancellation).await;
+    }
+}

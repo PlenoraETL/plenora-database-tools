@@ -202,17 +202,35 @@ impl MysqlReadPlan {
         let mut bind_names = Vec::new();
         // Un campo geometrico sotto un operatore non spatial o in ORDER BY
         // confronterebbe il formato interno del server con il valore legato
-        // (`spatial_operand`).
+        // (`spatial_operand`); un campo binario di una vista si giudica
+        // geometrico (regola B, `catalog_column_is_geometric`).
+        let origin = if matches!(description.kind.as_str(), "VIEW" | "SYSTEM VIEW") {
+            plenora_database_core::spatial_operand::RelationOrigin::Derived
+        } else {
+            plenora_database_core::spatial_operand::RelationOrigin::Base
+        };
         plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
             profile.kind(),
             operation.filter.as_ref(),
             &operation.order_by,
             |field| {
-                available.iter().any(|column| {
-                    plenora_database_core::spatial_operand::NameRule::Folded
-                        .matches(&column.name, field)
-                        && column.kind == MysqlColumnKind::Geometry
-                })
+                available
+                    .iter()
+                    .zip(&description.columns)
+                    .any(|(column, catalog)| {
+                        let carrier = if column.kind == MysqlColumnKind::Geometry {
+                            plenora_database_core::spatial_operand::ColumnCarrier::Geometry
+                        } else if crate::catalog::is_binary_type(&catalog.data_type) {
+                            plenora_database_core::spatial_operand::ColumnCarrier::Binary
+                        } else {
+                            plenora_database_core::spatial_operand::ColumnCarrier::Scalar
+                        };
+                        plenora_database_core::spatial_operand::NameRule::Folded
+                            .matches(&column.name, field)
+                            && plenora_database_core::spatial_operand::catalog_column_is_geometric(
+                                origin, carrier,
+                            )
+                    })
             },
         )?;
         if let Some(filter) = &operation.filter {

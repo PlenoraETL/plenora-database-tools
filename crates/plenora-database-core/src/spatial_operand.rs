@@ -97,15 +97,25 @@
 //! relazioni resta. Il nativo dello SDK rende lo SQL dal piano e lo confronta
 //! con quello ricevuto: uno SQL diverso si rifiuta.
 //!
-//! Oracle non legge il catalogo: la guardia del server
-//! ([`operand_server_guard`], misurata) rifiuta ogni operatore scalare su
-//! `MDSYS.SDO_GEOMETRY`, e l'esecuzione giudica soltanto la parte senza
-//! catalogo, che rifiuta cio che la guardia non protegge. Db2 non ha guardia
-//! (misurato: `SYSIBM.ST_GEOMETRY` e un tipo distinto su `BLOB`, e il server
-//! ne confronta i byte) e legge il catalogo nella transazione come
-//! `PostgreSQL`, `MySQL` e SQL Server (`SYSCAT.TABLES`, `SYSCAT.COLUMNS`,
-//! `SYSCAT.DATATYPES`, `SYSCAT.HIERARCHIES`; le regole nel modulo
-//! `operand_catalog` del provider).
+//! Ogni provider legge il catalogo nella transazione. Oracle ha anche la
+//! guardia del server ([`operand_server_guard`], misurata), che rifiuta ogni
+//! operatore scalare su `MDSYS.SDO_GEOMETRY`, ma non protegge la geometria
+//! resa binaria da una vista (`SDO_UTIL.TO_WKBGEOMETRY(G)` e un `BLOB`, e
+//! `CAST(V.W AS RAW(2000)) = ?` ne confronta i byte, misurato il 25/10): il
+//! giudizio legge `ALL_OBJECTS`, `ALL_SYNONYMS` e `ALL_TAB_COLUMNS` (il
+//! modulo `operand_catalog` del provider). Db2 non ha guardia (misurato:
+//! `SYSIBM.ST_GEOMETRY` e un tipo distinto su `BLOB`, e il server ne
+//! confronta i byte) e legge `SYSCAT.TABLES`, `SYSCAT.COLUMNS`,
+//! `SYSCAT.DATATYPES`, `SYSCAT.HIERARCHIES`.
+//!
+//! # Regola B: le colonne binarie delle relazioni derivate
+//!
+//! Ogni catalogo classifica le colonne con la stessa
+//! [`catalog_column_is_geometric`]: geometrico il tipo geometrico, e il tipo
+//! binario (o un dominio, tipo distinto, tipo alias che vi arriva) di una
+//! vista, vista materializzata o MQT. Una vista puo rendere una geometria in
+//! WKB o nel formato interno sotto un tipo binario, e il catalogo non dice da
+//! quale espressione viene la colonna.
 //!
 //! # Perche
 //!
@@ -131,29 +141,56 @@
 //!
 //! # Limiti dichiarati
 //!
+//! - **Regola.** Colonne binarie delle relazioni derivate (regola B): una
+//!   colonna binaria o LOB binario di una vista, vista materializzata o MQT
+//!   si giudica geometrica, e un confronto, un ordinamento, un raggruppamento
+//!   o un `DISTINCT` su di essa si rifiuta
+//!   ([`GEOMETRY_SCALAR_OPERAND`]); la colonna binaria di una tabella resta
+//!   scalare.
+//! - **Ambito.** Ogni provider: l'esecuzione giudicata (SDK, ORM, facade,
+//!   CLI portable), il path query e la lettura del provider. Nessun
+//!   provider prova che la colonna della vista ripete una colonna binaria di
+//!   una tabella: la prova non e ne esatta ne economica su ogni dialetto.
+//! - **Hazard.** Il costo e il rifiuto dei filtri e degli ordinamenti
+//!   scalari sulle colonne binarie delle viste che non portano geometrie
+//!   (un hash, un `bytea` copiato da una tabella). Restano scalari, e un
+//!   confronto ne confronta i byte senza errore: la colonna binaria di una
+//!   tabella riempita con il WKB di una geometria dal chiamante
+//!   (`INSERT ... SELECT ST_AsBinary(g)`; la libreria non scrive geometrie in
+//!   colonne binarie); una tabella esterna o remota che la dichiara binaria;
+//!   una geometria resa testo da una vista (`ST_AsText`, `GeoJSON`), che il
+//!   catalogo non distingue da un altro testo.
+//! - **Rientro.** Per le viste, quando il catalogo del dialetto dice quale
+//!   espressione rende la colonna (la dipendenza di colonna di una vista
+//!   verso una colonna binaria di tabella); per le tabelle, nessuno: i byte
+//!   li sceglie il chiamante.
+//!
 //! - **Regola.** La guardia del server sugli operandi scalari di Oracle
 //!   ([`operand_server_guard`]) vale per le forme misurate
 //!   (`tests/fixtures/operandi_server_guard.json`, misurate da
 //!   `scripts/sonde_operandi_server.py` e dal live test Oracle), non per
-//!   ogni forma che il piano puo esprimere.
-//! - **Ambito.** Oracle, sullo SDK, la facade e la CLI portable: le colonne
-//!   non si giudicano sul catalogo.
+//!   ogni forma che il piano puo esprimere: dal 25/10 e una difesa in
+//!   profondita, e l'esecuzione giudica anche su Oracle sul catalogo.
+//! - **Ambito.** Oracle, dove il giudizio non arriva: lo SQL reso dalla
+//!   compilazione senza esecuzione e il SQL del chiamante.
 //! - **Hazard.** Una forma non misurata in cui il server convertisse la
 //!   geometria prima dell'operatore confronterebbe senza errore; su
 //!   un'immagine diversa da quella qualificata il tipo potrebbe avere un
 //!   `MAP`/`ORDER`. Un operatore su una colonna di una sorgente derivata che
 //!   la query non legge mai passa senza errore (misurato: il server elimina
 //!   la colonna prima di controllarne il tipo); nessuna riga ne dipende.
-//! - **Rientro.** Quando Oracle legge il catalogo nella transazione; fino ad
-//!   allora ogni forma nuova del renderer entra nel fixture e si misura.
+//! - **Rientro.** Ogni forma nuova del renderer entra nel fixture e si
+//!   misura.
 //!
 //! - **Regola.** Mondo chiuso: senza le colonne di una relazione non si prova
 //!   niente.
-//! - **Ambito.** Un provider senza `operand_catalog` e senza guardia: i finti
-//!   di prova. Su Db2 (dal 25/10, con `operand_catalog`): le relazioni che il
-//!   catalogo non descrive (nickname, alias che non arrivano a una
-//!   relazione, lo schema `SESSION` delle tabelle temporanee dichiarate, un
-//!   nome che il server uguaglia soltanto con gli spazi finali).
+//! - **Ambito.** Un provider senza `operand_catalog`: i finti di prova. Su
+//!   Db2 (dal 25/10, con `operand_catalog`): le relazioni che il catalogo non
+//!   descrive (nickname, alias che non arrivano a una relazione, lo schema
+//!   `SESSION` delle tabelle temporanee dichiarate, un nome che il server
+//!   uguaglia soltanto con gli spazi finali). Su Oracle (dal 25/10): un
+//!   sinonimo verso un database link o che non arriva a una relazione, una
+//!   catena di sinonimi oltre il limite.
 //! - **Hazard.** Nessun passaggio silenzioso: un riferimento in posizione di
 //!   operando su una relazione che puo contenere una geometria si rifiuta,
 //!   anche su colonne scalari. Il costo e il rifiuto di query ordinarie su
@@ -162,20 +199,6 @@
 //!   avere anche tabelle persistenti).
 //! - **Rientro.** Per `SESSION`, quando il giudizio legge le colonne delle
 //!   tabelle temporanee dichiarate della connessione.
-//!
-//! - **Regola.** Su Db2 una colonna `BLOB` di una vista, di una MQT o di una
-//!   vista tipizzata si giudica geometrica; una colonna `BLOB` di una tabella
-//!   no.
-//! - **Ambito.** Db2, nella transazione e nella lettura del provider.
-//! - **Hazard.** Il catalogo dice `BLOB` per una colonna resa da una funzione
-//!   spatial (misurato: `ST_CENTROID(G)` in una vista porta il formato interno
-//!   della geometria, e `V.C = T.G` passa). Una tabella riempita da una tale
-//!   colonna (`INSERT ... SELECT`) ha un `BLOB` che il giudizio dice scalare:
-//!   un confronto ne confronta i byte, come un `bytea` con un WKB su
-//!   `PostgreSQL`. Nelle viste il costo e il rifiuto dei confronti su
-//!   colonne `BLOB` che non sono geometrie.
-//! - **Rientro.** Quando il catalogo dice il tipo della funzione che rende la
-//!   colonna.
 //!
 //! - **Regola.** La compilazione senza esecuzione non legge il catalogo.
 //! - **Ambito.** `compile_relational_query` e `compile_relational_mutation`
@@ -259,6 +282,11 @@ const MAX_EXPANSION_DEPTH: usize = 64;
 /// errore, confrontando i byte del formato interno (misurato con lo stesso
 /// fixture). Db2 giudica sul catalogo, come i provider senza guardia.
 ///
+/// Dal 25/10 anche Oracle giudica sul catalogo
+/// (`facade::verify_operands`): la guardia non vede una geometria che una
+/// vista rende binaria (regola B), e resta una difesa in profondita per lo
+/// SQL che il giudizio non raggiunge.
+///
 /// Il renderer applica l'operatore direttamente alla colonna (provato
 /// offline in `operandi_geometrici.rs` sullo stesso fixture): nessuna
 /// conversione implicita sta fra la colonna e l'operatore. Le forme che il
@@ -341,6 +369,67 @@ impl NameRule {
 
 fn fold(name: &str) -> String {
     name.trim_end_matches(' ').to_lowercase()
+}
+
+/// Da dove vengono i valori di una relazione del catalogo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationOrigin {
+    /// Una tabella (anche temporanea, partizionata, esterna o remota
+    /// dichiarata con le proprie colonne): i valori li scrive chi la riempie.
+    Base,
+    /// Una relazione derivata, le cui colonne sono espressioni su altre
+    /// relazioni: vista (anche tipizzata, di oggetti, editioning), vista
+    /// materializzata o MQT.
+    Derived,
+}
+
+/// Il tipo di una colonna come lo classifica il catalogo del provider,
+/// seguito fino al tipo di sistema da cui deriva (dominio, tipo distinto,
+/// tipo alias).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnCarrier {
+    /// Un tipo geometrico del provider.
+    Geometry,
+    /// Un tipo binario o LOB binario: `bytea`; `BINARY`, `VARBINARY`,
+    /// `*BLOB`; `binary`, `varbinary`, `image`, `sql_variant`; `BLOB`, `RAW`,
+    /// `LONG RAW`; `BLOB`, `BINARY`, `VARBINARY`, `CHAR`/`VARCHAR FOR BIT
+    /// DATA`.
+    Binary,
+    /// Ogni altro tipo.
+    Scalar,
+}
+
+/// La regola delle colonne derivate binarie, la stessa per ogni provider:
+/// una colonna e geometrica, sotto un operatore non spatial, se il suo tipo
+/// e geometrico, o se e binaria in una relazione derivata.
+///
+/// Una vista porta una geometria sotto un tipo binario quando la colonna e
+/// resa da `ST_AsBinary(g)`, `g::bytea`, `ST_AsWKB(g)`, `CAST(g AS BINARY)`,
+/// `g.STAsBinary()`, `CAST(g AS varbinary(max))`, `SDO_UTIL.TO_WKBGEOMETRY(g)`,
+/// `g.GET_WKB()`, `ST_ASBINARY(G)`, `CAST(G AS VARBINARY)`, o da una funzione
+/// spatial che il catalogo descrive con il tipo binario di cui la geometria e
+/// un tipo distinto (Db2, `ST_CENTROID(G)` e `BLOB`). Il catalogo non dice la
+/// funzione che rende la colonna: a mondo chiuso, la colonna binaria di una
+/// relazione derivata non si prova non geometrica, e confrontarne i byte rende
+/// un risultato sbagliato senza errore (misurato: due poligoni uguali con i
+/// vertici in ordine diverso hanno WKB diversi). Il binario e la forma in cui
+/// la geometria viaggia nel contratto (WKB, EWKB, il bind binario,
+/// `SpatialOutput`): un confronto binario su una colonna derivata non si
+/// distingue da quello che la regola rifiuta su una colonna geometrica. Il
+/// testo (`ST_AsText`, `GeoJSON`) non sta in questa regola: il contratto non
+/// porta geometrie come testo, il catalogo non distingue un WKT da un altro
+/// testo, e rifiutare ogni testo delle viste rifiuterebbe le query ordinarie;
+/// resta nel limite dichiarato.
+///
+/// Limite dichiarato: vedi il modulo, «colonne binarie delle relazioni
+/// derivate».
+#[must_use]
+pub const fn catalog_column_is_geometric(origin: RelationOrigin, carrier: ColumnCarrier) -> bool {
+    match carrier {
+        ColumnCarrier::Geometry => true,
+        ColumnCarrier::Binary => matches!(origin, RelationOrigin::Derived),
+        ColumnCarrier::Scalar => false,
+    }
 }
 
 /// Le colonne di una relazione di base, come le dice il catalogo.

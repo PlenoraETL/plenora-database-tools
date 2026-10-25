@@ -799,3 +799,24 @@ fn second_reading_shapes_are_refused() {
     .expect("query");
     assert_unresolved(judged(&foreign), "relazione di un altro catalogo");
 }
+
+/// Regola B: la tabella della verita della regola condivisa dai cataloghi.
+#[test]
+fn a_binary_column_is_geometric_only_in_a_derived_relation() {
+    use ColumnCarrier::{Binary, Geometry, Scalar};
+    use RelationOrigin::{Base, Derived};
+    for (origin, carrier, expected) in [
+        (Base, Geometry, true),
+        (Derived, Geometry, true),
+        (Base, Binary, false),
+        (Derived, Binary, true),
+        (Base, Scalar, false),
+        (Derived, Scalar, false),
+    ] {
+        assert_eq!(
+            catalog_column_is_geometric(origin, carrier),
+            expected,
+            "{origin:?} {carrier:?}"
+        );
+    }
+}

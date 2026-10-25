@@ -14,6 +14,7 @@ mod config;
 mod connection;
 mod decode;
 mod error;
+mod operand_catalog;
 mod parameter;
 mod pool;
 mod provider;
@@ -44,6 +45,10 @@ mod parameter_tests;
 #[cfg(test)]
 #[path = "types_tests.rs"]
 mod types_tests;
+
+#[cfg(test)]
+#[path = "operand_catalog_tests.rs"]
+mod operand_catalog_tests;
 
 #[cfg(test)]
 #[path = "live_tests.rs"]

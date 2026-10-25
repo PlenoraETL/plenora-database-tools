@@ -569,7 +569,11 @@ pub async fn operand_catalog(
 }
 
 /// Le colonne di una relazione, con il flag geometrico di
-/// [`verify_scalar_operands`]; vuote se `to_regclass` non la trova.
+/// [`verify_scalar_operands`]; vuote se `to_regclass` non la trova. Il flag e
+/// la regola condivisa dei cataloghi
+/// (`spatial_operand::catalog_column_is_geometric`): un tipo che contiene una
+/// geometria, o un tipo che contiene `bytea` in una vista o in una vista
+/// materializzata (`ST_AsBinary(g)`, `g::bytea`, un dominio su `bytea`).
 ///
 /// # Errors
 ///
@@ -579,27 +583,50 @@ pub async fn relation_columns(
     schema: Option<&str>,
     object: &str,
 ) -> Result<Vec<(String, bool)>> {
+    use plenora_database_core::spatial_operand::{
+        catalog_column_is_geometric, ColumnCarrier, RelationOrigin,
+    };
     let rows = client
         .query(RELATION_COLUMNS_SQL, &[&schema, &object])
         .await
         .map_err(|error| crate::error::classify_error(ErrorPhase::Prepare, &error))?;
     Ok(rows
         .iter()
-        .map(|row| (row.get::<_, String>(0), row.get::<_, bool>(1)))
+        .map(|row| {
+            let carrier = if row.get::<_, bool>(1) {
+                ColumnCarrier::Geometry
+            } else if row.get::<_, bool>(2) {
+                ColumnCarrier::Binary
+            } else {
+                ColumnCarrier::Scalar
+            };
+            let origin = if row.get::<_, bool>(3) {
+                RelationOrigin::Derived
+            } else {
+                RelationOrigin::Base
+            };
+            (
+                row.get::<_, String>(0),
+                catalog_column_is_geometric(origin, carrier),
+            )
+        })
         .collect())
 }
 
-/// Le colonne di una relazione (schema, oggetto) nell'ordine di `attnum`, e
-/// se il loro tipo contiene una geometria: la chiusura di `typbasetype`,
-/// `typelem`, gli attributi di `typrelid`, `rngsubtype` e, per un
-/// multirange, il suo range (`rngmultitypid`, da `PostgreSQL` 14). La colonna
-/// `rngmultitypid` si legge da `to_jsonb` della riga di `pg_range`: prima del
-/// 14 non esiste, e non esistono multirange da seguire. Fino al 25/10 il
-/// multirange di un range di geometrie non si riconosceva.
+/// Le colonne di una relazione (schema, oggetto) nell'ordine di `attnum`; se
+/// il loro tipo contiene una geometria o `bytea`: la chiusura di
+/// `typbasetype`, `typelem`, gli attributi di `typrelid`, `rngsubtype` e, per
+/// un multirange, il suo range (`rngmultitypid`, da `PostgreSQL` 14); se la
+/// relazione e una vista o una vista materializzata (`relkind` `v`, `m`). La
+/// colonna `rngmultitypid` si legge da `to_jsonb` della riga di `pg_range`:
+/// prima del 14 non esiste, e non esistono multirange da seguire. Fino al
+/// 25/10 il multirange di un range di geometrie non si riconosceva.
 const RELATION_COLUMNS_SQL: &str = "\
 WITH RECURSIVE columns AS ( \
-    SELECT a.attnum, a.attname::text AS name, a.atttypid \
+    SELECT a.attnum, a.attname::text AS name, a.atttypid, \
+        k.relkind IN ('v', 'm') AS derived \
     FROM pg_catalog.pg_attribute a \
+    JOIN pg_catalog.pg_class k ON k.oid = a.attrelid \
     WHERE a.attrelid = to_regclass(CASE WHEN $1::text IS NULL \
             THEN quote_ident($2::text) \
             ELSE quote_ident($1::text) || '.' || quote_ident($2::text) END) \
@@ -625,7 +652,10 @@ WITH RECURSIVE columns AS ( \
 SELECT c.name, EXISTS ( \
     SELECT 1 FROM reach r JOIN pg_catalog.pg_type t ON t.oid = r.oid \
     WHERE r.attnum = c.attnum AND t.typname IN ('geometry', 'geography') \
-) \
+), EXISTS ( \
+    SELECT 1 FROM reach r \
+    WHERE r.attnum = c.attnum AND r.oid = 'pg_catalog.bytea'::pg_catalog.regtype \
+), c.derived \
 FROM columns c ORDER BY c.attnum";
 
 #[cfg(test)]

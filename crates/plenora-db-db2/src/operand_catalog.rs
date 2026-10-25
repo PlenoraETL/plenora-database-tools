@@ -41,15 +41,22 @@
 //!   descrive, o una catena oltre [`MAX_TYPE_DEPTH`], si giudica geometrico:
 //!   a mondo chiuso non si prova scalare;
 //! - **la colonna calcolata.** In una vista, una MQT o una vista tipizzata
-//!   una colonna `BLOB` si giudica geometrica: il catalogo dice `BLOB` per
-//!   una colonna resa da una funzione spatial (misurato: `ST_CENTROID(G)`
-//!   in una vista e `SYSIBM.BLOB`, porta il formato interno della geometria e
-//!   `V.C = T.G` passa senza errore), e per il WKB di `ST_ASBINARY`, che la
-//!   regola rifiuta comunque sotto un operatore.
+//!   una colonna binaria si giudica geometrica (la regola B,
+//!   `spatial_operand::catalog_column_is_geometric`): `BLOB`, `BINARY`,
+//!   `VARBINARY`, `CHAR`/`VARCHAR`/`LONG VARCHAR FOR BIT DATA`
+//!   (`CODEPAGE` 0), o un tipo distinto la cui catena di fonti vi arriva. Il
+//!   catalogo dice `BLOB` per una colonna resa da una funzione spatial
+//!   (misurato: `ST_CENTROID(G)` in una vista e `SYSIBM.BLOB`, porta il
+//!   formato interno della geometria e `V.C = T.G` passa senza errore), e
+//!   `VARCHAR FOR BIT DATA` o `VARBINARY` per `CAST(G AS ...)` e
+//!   `CAST(ST_ASBINARY(G) AS ...)` (misurato il 25/10: due poligoni uguali con
+//!   i vertici in ordine diverso non sono uguali sotto `=`).
 
 use crate::connection::query_text;
 use plenora_database_core::plan::ProviderKind;
-use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
+use plenora_database_core::spatial_operand::{
+    catalog_column_is_geometric, ColumnCarrier, OperandCatalog, RelationColumns, RelationOrigin,
+};
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::BTreeMap;
 
@@ -84,12 +91,17 @@ const CURRENT_SCHEMA_SQL: &str = "SELECT CURRENT SCHEMA FROM SYSIBM.SYSDUMMY1";
 const RELATION_SQL: &str = "SELECT TABSCHEMA, TABNAME, TYPE, BASE_TABSCHEMA, BASE_TABNAME \
     FROM SYSCAT.TABLES WHERE TABSCHEMA = ? AND TABNAME = ?";
 
-const COLUMNS_SQL: &str = "SELECT TABSCHEMA, TABNAME, COLNAME, TYPESCHEMA, TYPENAME \
+const COLUMNS_SQL: &str = "SELECT TABSCHEMA, TABNAME, COLNAME, TYPESCHEMA, TYPENAME, \
+    CASE WHEN CODEPAGE = 0 THEN 'Y' ELSE 'N' END \
     FROM SYSCAT.COLUMNS WHERE TABSCHEMA = ? AND TABNAME = ? ORDER BY COLNO";
 
 const DATATYPE_SQL: &str = "SELECT TYPESCHEMA, TYPENAME, METATYPE, SOURCESCHEMA, SOURCENAME, \
-    SOURCEMODULENAME FROM SYSCAT.DATATYPES \
+    SOURCEMODULENAME, CASE WHEN CODEPAGE = 0 THEN 'Y' ELSE 'N' END FROM SYSCAT.DATATYPES \
     WHERE TYPESCHEMA = ? AND TYPENAME = ? AND TYPEMODULENAME IS NULL";
+
+/// I tipi binari di `SYSIBM`; i tipi carattere lo sono con `FOR BIT DATA`.
+const BINARY_TYPES: [&str; 3] = ["BLOB", "BINARY", "VARBINARY"];
+const BIT_DATA_TYPES: [&str; 3] = ["CHARACTER", "VARCHAR", "LONG VARCHAR"];
 
 const SUPERTYPE_SQL: &str = "SELECT SUB_SCHEMA, SUB_NAME, SUPER_SCHEMA, SUPER_NAME \
     FROM SYSCAT.HIERARCHIES WHERE METATYPE = 'R' AND SUB_SCHEMA = ? AND SUB_NAME = ?";
@@ -104,20 +116,24 @@ pub struct RelationRow {
     pub base: Option<QualifiedName>,
 }
 
-/// Una colonna di `SYSCAT.COLUMNS`: nome e tipo.
+/// Una colonna di `SYSCAT.COLUMNS`: nome, tipo e `FOR BIT DATA`
+/// (`CODEPAGE` 0).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnRow {
     pub name: String,
     pub type_name: QualifiedName,
+    pub bit_data: bool,
 }
 
 /// Un tipo dell'utente di `SYSCAT.DATATYPES`: il metatipo e, per un tipo
-/// distinto, la fonte; `source_module`: la fonte e di un modulo.
+/// distinto, la fonte; `source_module`: la fonte e di un modulo;
+/// `bit_data`: la fonte e `FOR BIT DATA` (`CODEPAGE` 0).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeRow {
     pub metatype: String,
     pub source: Option<QualifiedName>,
     pub source_module: bool,
+    pub bit_data: bool,
 }
 
 /// Le letture del catalogo su cui si regge il giudizio. Ogni nome si
@@ -266,60 +282,79 @@ fn relation_columns(
         return Ok(RelationColumns::Unknown);
     }
     // Vista, MQT, vista tipizzata: colonne calcolate.
-    let computed = matches!(kind, "V" | "S" | "W");
+    let origin = if matches!(kind, "V" | "S" | "W") {
+        RelationOrigin::Derived
+    } else {
+        RelationOrigin::Base
+    };
     let rows = catalog.columns(&name.0, &name.1)?;
     if rows.is_empty() {
         return Ok(RelationColumns::Unknown);
     }
     let mut columns = Vec::with_capacity(rows.len());
     for column in rows {
-        let geometric = (computed && is_blob(&column.type_name))
-            || types.geometric(catalog, &column.type_name)?;
-        columns.push((column.name, geometric));
+        let carrier = types.carrier(catalog, &column.type_name, column.bit_data)?;
+        columns.push((column.name, catalog_column_is_geometric(origin, carrier)));
     }
     Ok(RelationColumns::Known(columns))
-}
-
-fn is_blob(type_name: &QualifiedName) -> bool {
-    type_name.0.trim_end() == "SYSIBM" && type_name.1 == "BLOB"
 }
 
 /// Il giudizio del tipo di una colonna, con i tipi gia giudicati.
 #[derive(Default)]
 struct TypeJudge {
-    judged: BTreeMap<QualifiedName, bool>,
+    judged: BTreeMap<(QualifiedName, bool), ColumnCarrier>,
 }
 
 impl TypeJudge {
-    fn geometric(&mut self, catalog: &mut dyn Db2Catalog, start: &QualifiedName) -> Result<bool> {
-        if let Some(judged) = self.judged.get(start) {
+    /// Il tipo, seguito fino a un tipo di `SYSIBM` o spatial: geometrico,
+    /// binario (anche `FOR BIT DATA`), scalare. Un tipo che il catalogo non
+    /// descrive, o una catena oltre [`MAX_TYPE_DEPTH`], e geometrico: a mondo
+    /// chiuso non si prova scalare.
+    fn carrier(
+        &mut self,
+        catalog: &mut dyn Db2Catalog,
+        start: &QualifiedName,
+        bit_data: bool,
+    ) -> Result<ColumnCarrier> {
+        let key = (start.clone(), bit_data);
+        if let Some(judged) = self.judged.get(&key) {
             return Ok(*judged);
         }
         let mut current = start.clone();
-        let mut verdict = true;
+        let mut bit_data = bit_data;
+        let mut verdict = ColumnCarrier::Geometry;
         for _ in 0..=MAX_TYPE_DEPTH {
             let (schema, name) = (current.0.trim_end(), current.1.as_str());
             if SPATIAL_SCHEMAS.contains(&schema) && name.starts_with("ST_") {
-                verdict = true;
+                verdict = ColumnCarrier::Geometry;
                 break;
             }
             if schema == "SYSIBM" {
-                verdict = false;
+                verdict = if BINARY_TYPES.contains(&name)
+                    || (bit_data && BIT_DATA_TYPES.contains(&name))
+                {
+                    ColumnCarrier::Binary
+                } else {
+                    ColumnCarrier::Scalar
+                };
                 break;
             }
             let Some(row) = catalog.data_type(schema, name)? else {
                 break;
             };
             let next = match row.metatype.trim_end() {
-                // Distinto: la sua fonte.
-                "T" if !row.source_module => row.source,
+                // Distinto: la sua fonte, con il suo `FOR BIT DATA`.
+                "T" if !row.source_module => {
+                    bit_data = row.bit_data;
+                    row.source
+                }
                 // Strutturato: il supertipo (la fonte di un tipo strutturato e
                 // la rappresentazione del riferimento, non un supertipo);
                 // senza supertipo, un tipo dell'utente che non arriva a una
                 // geometria.
                 "R" => {
                     let Some(supertype) = catalog.supertype(schema, name)? else {
-                        verdict = false;
+                        verdict = ColumnCarrier::Scalar;
                         break;
                     };
                     Some(supertype)
@@ -331,7 +366,7 @@ impl TypeJudge {
             };
             current = next;
         }
-        self.judged.insert(start.clone(), verdict);
+        self.judged.insert(key, verdict);
         Ok(verdict)
     }
 }
@@ -390,6 +425,16 @@ fn qualified(row: &[Option<String>], schema: usize, name: usize) -> Option<Quali
     ))
 }
 
+/// Un flag `Y`/`N` reso dal catalogo; un altro valore e un catalogo che non
+/// si riconosce.
+fn flag(row: &[Option<String>], index: usize, message: &'static str) -> Result<bool> {
+    match cell(row, index).map(str::trim_end) {
+        Some("Y") => Ok(true),
+        Some("N") => Ok(false),
+        _ => Err(malformed(message)),
+    }
+}
+
 fn malformed(message: &'static str) -> DatabaseError {
     DatabaseError::new(
         ErrorCategory::Protocol,
@@ -437,7 +482,7 @@ impl Db2Catalog for OdbcCatalog<'_, '_> {
     }
 
     fn columns(&mut self, schema: &str, name: &str) -> Result<Vec<ColumnRow>> {
-        let rows = self.rows(COLUMNS_SQL, &[schema, name], 5)?;
+        let rows = self.rows(COLUMNS_SQL, &[schema, name], 6)?;
         exact(&rows, schema, name)
             .map(|row| {
                 Ok(ColumnRow {
@@ -446,13 +491,14 @@ impl Db2Catalog for OdbcCatalog<'_, '_> {
                         .to_owned(),
                     type_name: qualified(row, 3, 4)
                         .ok_or_else(|| malformed("colonna Db2 senza tipo"))?,
+                    bit_data: flag(row, 5, "colonna Db2 senza CODEPAGE")?,
                 })
             })
             .collect()
     }
 
     fn data_type(&mut self, schema: &str, name: &str) -> Result<Option<TypeRow>> {
-        let rows = self.rows(DATATYPE_SQL, &[schema, name], 6)?;
+        let rows = self.rows(DATATYPE_SQL, &[schema, name], 7)?;
         let mut found = exact(&rows, schema, name);
         let row = found.next();
         if found.next().is_some() {
@@ -465,6 +511,7 @@ impl Db2Catalog for OdbcCatalog<'_, '_> {
                     .to_owned(),
                 source: qualified(row, 3, 4),
                 source_module: cell(row, 5).is_some(),
+                bit_data: flag(row, 6, "tipo Db2 senza CODEPAGE")?,
             })
         })
         .transpose()

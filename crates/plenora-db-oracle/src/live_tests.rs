@@ -2560,17 +2560,37 @@ fn guard_bind(piano: &serde_json::Value, name: &str) -> ParameterValue {
     panic!("bind {name} assente dal piano");
 }
 
+/// Le righe come elenco ordinato della colonna `ID`.
+fn guard_ids(rows: &[plenora_database_core::Row]) -> Vec<String> {
+    let mut ids: Vec<String> = rows
+        .iter()
+        .map(|row| match row.get("ID") {
+            Some(ParameterValue::I64(value)) => value.to_string(),
+            Some(ParameterValue::I32(value)) => value.to_string(),
+            Some(ParameterValue::Decimal(value) | ParameterValue::String(value)) => value.clone(),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
 /// Esegue il piano reso dal renderer del repository attraverso il percorso
 /// giudicato dell'esecuzione (`facade::query_judged`, come lo SDK, la
-/// facade e la CLI portable): sotto la guardia del server il giudizio non
-/// legge il catalogo e lo SQL arriva al server.
+/// facade e la CLI portable), e lo stesso SQL senza giudizio, nella stessa
+/// transazione. `values`: i valori dei bind, altrimenti quelli del fixture.
 async fn run_guard_plan(
     provider: &OracleProvider,
     secret: &SecretString,
     budget: &ResourceBudget,
     plan: &serde_json::Value,
+    values: Option<&[ParameterValue]>,
     cancellation: &CancellationToken,
-) -> (String, plenora_database_core::Result<Vec<String>>) {
+) -> (
+    String,
+    plenora_database_core::Result<Vec<String>>,
+    plenora_database_core::Result<Vec<String>>,
+) {
     let operation: QueryOperation = serde_json::from_value(plan.clone()).expect("piano");
     let rendered = Renderer::new(
         Dialect::Oracle,
@@ -2581,17 +2601,22 @@ async fn run_guard_plan(
     .with_provider(ProviderKind::Oracle)
     .render_query(&operation)
     .expect("resa Oracle");
-    let values = rendered
-        .binds
-        .iter()
-        .map(|bind| guard_bind(plan, &bind.name))
-        .collect();
+    let values = values.map_or_else(
+        || {
+            rendered
+                .binds
+                .iter()
+                .map(|bind| guard_bind(plan, &bind.name))
+                .collect()
+        },
+        <[ParameterValue]>::to_vec,
+    );
     let statement = Statement::new(rendered.sql.clone()).with_params(values);
     let mut transaction = provider
         .begin_transaction(secret, &TransactionOptions::default(), budget, cancellation)
         .await
         .expect("transazione guardia Oracle");
-    let outcome = plenora_database_core::facade::query_judged(
+    let judged = plenora_database_core::facade::query_judged(
         transaction.as_mut(),
         &statement,
         Some(&plenora_database_core::spatial_operand::OperandPlan::Query(
@@ -2600,26 +2625,33 @@ async fn run_guard_plan(
         cancellation,
     )
     .await
-    .map(|rows| {
-        let mut ids: Vec<String> = rows
-            .iter()
-            .map(|row| format!("{:?}", row.get("ID")))
-            .collect();
-        ids.sort();
-        ids
-    });
+    .map(|rows| guard_ids(&rows));
+    let direct = transaction
+        .query(&statement, cancellation)
+        .await
+        .map(|rows| guard_ids(&rows));
     let _ = transaction.rollback(cancellation).await;
-    (rendered.sql, outcome)
+    (rendered.sql, judged, direct)
+}
+
+/// Il rifiuto del giudizio, prima del server: `unsupported`, fase di
+/// preparazione, con uno dei motivi del giudizio.
+fn judgement_refusal(error: &plenora_database_core::DatabaseError, reason: &str) -> bool {
+    error.category == plenora_database_core::ErrorCategory::Unsupported
+        && error.phase == plenora_database_core::ErrorPhase::Prepare
+        && error.message == reason
 }
 
 /// La guardia del server sugli operandi scalari
-/// (`spatial_operand::operand_server_guard`), misurata sul server: per ogni
-/// forma del fixture lo SQL reso dal renderer del repository, eseguito dal
-/// percorso giudicato, e rifiutato dal server con uno dei codici misurati;
-/// la stessa forma su una colonna non geometrica passa; le forme che la
-/// regola ammette passano; un operatore su una colonna derivata mai letta
-/// passa e rende le stesse righe del controllo. Il catalogo dice
-/// `MDSYS.SDO_GEOMETRY`, proprietario compreso.
+/// (`spatial_operand::operand_server_guard`), misurata sul server, e il
+/// giudizio sul catalogo che dal 25/10 la precede: per ogni forma del
+/// fixture lo SQL reso dal renderer del repository, eseguito senza giudizio,
+/// e rifiutato dal server con uno dei codici misurati (le forme che la regola
+/// ammette e quelle su una colonna derivata mai letta passano); attraverso il
+/// percorso giudicato si rifiuta prima del server, o dove il giudizio non la
+/// dice un operando dal server con il codice misurato; la stessa forma su una
+/// colonna non geometrica arriva al server e rende le righe dello SQL senza
+/// giudizio. Il catalogo dice `MDSYS.SDO_GEOMETRY`, proprietario compreso.
 #[tokio::test]
 #[ignore = "richiede Oracle Spatial live esplicito"]
 #[allow(clippy::too_many_lines)]
@@ -2696,53 +2728,506 @@ async fn live_operand_server_guard_rejects_every_measured_form() {
         serde_json::from_str(FIXTURE_GUARDIA).expect("fixture della guardia");
     let forms = fixture["forme"].as_array().expect("forme");
     assert!(!forms.is_empty());
+    let reasons = [
+        plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND,
+        plenora_database_core::spatial_operand::GEOMETRY_OPERAND_UNRESOLVED,
+    ];
     for form in forms {
+        // Una sessione per forma: il driver non chiude i cursori, e una
+        // sessione arriva a ORA-01000 dopo `open_cursors` istruzioni (il
+        // limite dichiarato in `operand_catalog`).
+        let (provider, secret) = self::fixture();
         let name = form["forma"].as_str().expect("nome della forma");
         let plan = guard_plan(&form["piano"]);
-        let (sql, outcome) =
-            run_guard_plan(&provider, &secret, &budget, &plan, &cancellation).await;
+        let (sql, judged, direct) =
+            run_guard_plan(&provider, &secret, &budget, &plan, None, &cancellation).await;
         assert_eq!(
             sql,
             form["sql"]["oracle"]["sql"].as_str().expect("sql"),
             "{name}"
         );
+        let codes: Vec<&str> = form["esito"]["oracle"]["errore"]
+            .as_array()
+            .map(|codes| {
+                codes
+                    .iter()
+                    .map(|code| code.as_str().expect("codice"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Lo SQL senza giudizio fa cio che il server ha misurato: la guardia.
+        match &direct {
+            Err(error) => assert!(
+                codes.iter().any(|code| error.message.contains(code)),
+                "{name}: {}",
+                error.message
+            ),
+            Ok(_) => assert!(codes.is_empty(), "{name}: il server non ha rifiutato"),
+        }
         let control = match form["controllo"].as_str() {
             Some(column) => {
-                let (_, control) = run_guard_plan(
+                let (_, judged, direct) = run_guard_plan(
                     &provider,
                     &secret,
                     &budget,
                     &guard_control(&plan, column),
+                    None,
                     &cancellation,
                 )
                 .await;
-                Some(control.unwrap_or_else(|error| panic!("{name} controllo: {error}")))
+                let rows = judged.unwrap_or_else(|error| panic!("{name} controllo: {error}"));
+                assert_eq!(Ok(rows.clone()), direct, "{name} controllo");
+                Some(rows)
             }
             None => None,
         };
-        let expected = &form["esito"]["oracle"];
-        if let Some(codes) = expected.get("errore") {
-            let error = outcome.expect_err(name);
+        if form.get("ammessa").is_some() {
+            let rows = judged.unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(Ok(rows), direct, "{name}");
+        } else {
+            let error = judged.expect_err(name);
             assert!(
-                codes
-                    .as_array()
-                    .expect("codici")
+                reasons
                     .iter()
-                    .any(|code| error.message.contains(code.as_str().expect("codice"))),
+                    .any(|reason| judgement_refusal(&error, reason))
+                    || codes.iter().any(|code| error.message.contains(code)),
                 "{name}: {}",
                 error.message
             );
-        } else {
-            let rows = outcome.unwrap_or_else(|error| panic!("{name}: {error}"));
-            if form.get("colonna_mai_letta").is_some() {
-                // Il server elimina la colonna prima di controllarne il tipo:
-                // nessuna riga ne dipende.
-                assert_eq!(Some(rows), control, "{name}");
-            }
+        }
+        if form.get("colonna_mai_letta").is_some() {
+            // Il server elimina la colonna prima di controllarne il tipo:
+            // nessuna riga ne dipende.
+            assert_eq!(direct.ok(), control, "{name}");
         }
     }
     provider
         .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
         .await
         .expect("pulizia guardia Oracle");
+}
+
+/// La relazione di base della regola B: `G` dichiarata `SDO_GEOMETRY` senza
+/// schema (proprietario `PUBLIC` nel catalogo, il sinonimo pubblico), due
+/// poligoni uguali per `SDO_GEOM.RELATE` con i vertici in ordine diverso.
+const DERIVED_TABLE: &str = "SONDE_DERIVATE";
+
+/// La vista: WKB (`BLOB`), `GET_WKB` (`BLOB`), il WKB in `RAW`, una colonna
+/// `RAW` che ripete quella della tabella, il WKT (`CLOB`).
+const DERIVED_VIEW_SQL: &str = "CREATE OR REPLACE VIEW SONDE_DERIVATE_V AS SELECT T.ID AS ID, \
+    SDO_UTIL.TO_WKBGEOMETRY(T.G) AS W, T.G.GET_WKB() AS W2, \
+    DBMS_LOB.SUBSTR(SDO_UTIL.TO_WKBGEOMETRY(T.G), 2000, 1) AS R, T.B AS B, \
+    SDO_UTIL.TO_WKTGEOMETRY(T.G) AS X FROM SONDE_DERIVATE T";
+
+async fn drop_derived(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    cancellation: &CancellationToken,
+) {
+    for sql in [
+        "DROP SYNONYM SONDE_DERIVATE_S",
+        "DROP MATERIALIZED VIEW SONDE_DERIVATE_MV",
+        "DROP VIEW SONDE_DERIVATE_V",
+        "DROP TABLE SONDE_DERIVATE PURGE",
+    ] {
+        let _ = provider.execute_ddl(secret, sql, cancellation).await;
+    }
+}
+
+/// `SELECT V.ID FROM PLENORA.<object> V` con `extra`.
+fn derived_plan(object: &str, extra: &serde_json::Value) -> serde_json::Value {
+    let mut operation = serde_json::json!({
+        "source": {"object": {"catalog": null, "schema": "PLENORA", "object": object}, "alias": "V"},
+        "projection": [{"expression": {"kind": "column", "column": {"relation": "V", "field": "ID"}}, "alias": "ID"}],
+        "filter": null,
+        "having": null,
+        "row_limit": null
+    });
+    for (key, value) in extra.as_object().expect("extra") {
+        operation[key] = value.clone();
+    }
+    operation
+}
+
+fn derived_column(field: &str) -> serde_json::Value {
+    serde_json::json!({"kind": "column", "column": {"relation": "V", "field": field}})
+}
+
+fn derived_binary(expression: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"kind": "cast", "expression": expression, "target_type": "binary"})
+}
+
+fn derived_equal(left: &serde_json::Value, parameter_type: &str) -> serde_json::Value {
+    serde_json::json!({"filter": {"kind": "compare", "left": left, "operator": "eq",
+        "right": {"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type}}})
+}
+
+/// Regola B (`spatial_operand::catalog_column_is_geometric`) e il
+/// proprietario risolto di `SDO_GEOMETRY`, sul server. Rilettura del 25/10:
+/// - F1: la guardia del server non vede la geometria che una vista rende
+///   binaria. Lo SQL senza giudizio di `CAST(V.W AS RAW(2000)) = ?` con il
+///   WKB del primo poligono rende soltanto il primo, mentre
+///   `SDO_GEOM.RELATE` dice uguali i due: un risultato sbagliato senza
+///   errore. Il giudizio lo rifiuta prima del server, con `ORDER BY`, il
+///   `RAW` di `DBMS_LOB.SUBSTR`, `GET_WKB`, un sinonimo e una vista
+///   materializzata; la colonna `RAW` della tabella resta scalare, quella
+///   della vista che la ripete si rifiuta (il costo dichiarato);
+/// - F3: `G SDO_GEOMETRY` senza schema ha `DATA_TYPE_OWNER` `PUBLIC`; la
+///   descrizione lo risolve in `MDSYS`, la lettura proietta `G` e `G = ?` si
+///   rifiuta al giudizio, non in esecuzione.
+#[tokio::test]
+#[ignore = "richiede Oracle Spatial live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_operand_catalog_refuses_derived_binary_and_resolves_public_sdo_geometry() {
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget regola B Oracle");
+    drop_derived(&provider, &secret, &cancellation).await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!(
+                "CREATE TABLE {DERIVED_TABLE} (ID NUMBER(10), NAME VARCHAR2(20), B RAW(16), G SDO_GEOMETRY)"
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("tabella regola B Oracle");
+    let mut setup = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione preparazione regola B Oracle");
+    for sql in [
+        format!("DELETE FROM USER_SDO_GEOM_METADATA WHERE TABLE_NAME = '{DERIVED_TABLE}'"),
+        format!(
+            "INSERT INTO USER_SDO_GEOM_METADATA (TABLE_NAME, COLUMN_NAME, DIMINFO, SRID) VALUES ('{DERIVED_TABLE}', 'G', MDSYS.SDO_DIM_ARRAY(MDSYS.SDO_DIM_ELEMENT('X', -180, 180, 0.005), MDSYS.SDO_DIM_ELEMENT('Y', -90, 90, 0.005)), 4326)"
+        ),
+        format!("INSERT INTO {DERIVED_TABLE} VALUES (3, 'p', HEXTORAW('03'), SDO_UTIL.FROM_WKTGEOMETRY('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 4326))"),
+        format!("INSERT INTO {DERIVED_TABLE} VALUES (4, 'q', HEXTORAW('04'), SDO_UTIL.FROM_WKTGEOMETRY('POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))', 4326))"),
+    ] {
+        setup
+            .execute(&Statement::new(sql), &cancellation)
+            .await
+            .expect("preparazione regola B Oracle");
+    }
+    // I due poligoni sono la stessa geometria per il server.
+    let equal = setup
+        .query(
+            &Statement::new(format!(
+                "SELECT A.ID FROM {DERIVED_TABLE} A, {DERIVED_TABLE} B WHERE A.ID = 3 AND B.ID = 4 \
+                 AND SDO_GEOM.RELATE(A.G, 'EQUAL', B.G, 0.005) = 'EQUAL'"
+            )),
+            &cancellation,
+        )
+        .await
+        .expect("RELATE regola B Oracle");
+    assert_eq!(guard_ids(&equal), vec!["3".to_owned()]);
+    // Il WKB del primo poligono, come lo rende il server.
+    let wkb = setup
+        .query(
+            &Statement::new(format!(
+                "SELECT DBMS_LOB.SUBSTR(SDO_UTIL.TO_WKBGEOMETRY(G), 2000, 1) AS W \
+                 FROM {DERIVED_TABLE} WHERE ID = 3"
+            )),
+            &cancellation,
+        )
+        .await
+        .expect("WKB regola B Oracle");
+    let wkb = match wkb.first().and_then(|row| row.get("W")) {
+        Some(ParameterValue::Bytes(bytes)) => bytes.clone(),
+        other => panic!("WKB regola B Oracle: {other:?}"),
+    };
+    setup
+        .commit(&cancellation)
+        .await
+        .expect("commit preparazione regola B Oracle");
+    provider
+        .execute_ddl(&secret, DERIVED_VIEW_SQL, &cancellation)
+        .await
+        .expect("vista regola B Oracle");
+    provider
+        .execute_ddl(
+            &secret,
+            "CREATE SYNONYM SONDE_DERIVATE_S FOR SONDE_DERIVATE_V",
+            &cancellation,
+        )
+        .await
+        .expect("sinonimo regola B Oracle");
+    provider
+        .execute_ddl(
+            &secret,
+            "CREATE MATERIALIZED VIEW SONDE_DERIVATE_MV AS SELECT ID, \
+             DBMS_LOB.SUBSTR(SDO_UTIL.TO_WKBGEOMETRY(G), 2000, 1) AS R FROM SONDE_DERIVATE",
+            &cancellation,
+        )
+        .await
+        .expect("vista materializzata regola B Oracle");
+
+    // F1: il risultato sbagliato senza giudizio, il rifiuto con il giudizio.
+    let bytes = [ParameterValue::Bytes(wkb.clone())];
+    let cast_equal = derived_plan(
+        "SONDE_DERIVATE_V",
+        &derived_equal(&derived_binary(&derived_column("W")), "binary"),
+    );
+    let (sql, judged, direct) = run_guard_plan(
+        &provider,
+        &secret,
+        &budget,
+        &cast_equal,
+        Some(&bytes),
+        &cancellation,
+    )
+    .await;
+    assert!(
+        sql.contains("CAST(\"V\".\"W\" AS RAW(2000)) = CAST(:1 AS RAW(2000))"),
+        "{sql}"
+    );
+    assert_eq!(
+        direct.expect("senza giudizio"),
+        vec!["3".to_owned()],
+        "il server confronta i byte: il secondo poligono, uguale, manca"
+    );
+    let error = judged.expect_err("CAST(W) = ? giudicato");
+    assert!(
+        judgement_refusal(&error, GEOMETRY_SCALAR_OPERAND),
+        "{error}"
+    );
+
+    let order = |object: &str, expression: serde_json::Value| {
+        derived_plan(
+            object,
+            &serde_json::json!({"order_by": [{"expression": expression, "direction": "asc"}]}),
+        )
+    };
+    let distinct = serde_json::json!({"distinct": true,
+        "projection": [{"expression": derived_column("R"), "alias": "R"}]});
+    let refused = [
+        (
+            "ORDER BY CAST(W)",
+            order("SONDE_DERIVATE_V", derived_binary(&derived_column("W"))),
+            Some(&bytes[..0]),
+        ),
+        (
+            "R = ?",
+            derived_plan(
+                "SONDE_DERIVATE_V",
+                &derived_equal(&derived_column("R"), "binary"),
+            ),
+            Some(&bytes[..]),
+        ),
+        (
+            "ORDER BY R",
+            order("SONDE_DERIVATE_V", derived_column("R")),
+            Some(&bytes[..0]),
+        ),
+        (
+            "DISTINCT R",
+            derived_plan("SONDE_DERIVATE_V", &distinct),
+            Some(&bytes[..0]),
+        ),
+        (
+            "CAST(W2) = ?",
+            derived_plan(
+                "SONDE_DERIVATE_V",
+                &derived_equal(&derived_binary(&derived_column("W2")), "binary"),
+            ),
+            Some(&bytes[..]),
+        ),
+        (
+            "B della vista = ?",
+            derived_plan(
+                "SONDE_DERIVATE_V",
+                &derived_equal(&derived_column("B"), "binary"),
+            ),
+            None,
+        ),
+        (
+            "R = ? sul sinonimo",
+            derived_plan(
+                "SONDE_DERIVATE_S",
+                &derived_equal(&derived_column("R"), "binary"),
+            ),
+            Some(&bytes[..]),
+        ),
+        (
+            "R = ? sulla vista materializzata",
+            derived_plan(
+                "SONDE_DERIVATE_MV",
+                &derived_equal(&derived_column("R"), "binary"),
+            ),
+            Some(&bytes[..]),
+        ),
+        (
+            "G = ? sulla tabella (SDO_GEOMETRY senza schema)",
+            derived_plan(
+                DERIVED_TABLE,
+                &derived_equal(&derived_column("G"), "binary"),
+            ),
+            Some(&bytes[..]),
+        ),
+        (
+            "ORDER BY G sulla tabella",
+            order(DERIVED_TABLE, derived_column("G")),
+            Some(&bytes[..0]),
+        ),
+    ];
+    for (name, plan, values) in refused {
+        let (_, judged, _) =
+            run_guard_plan(&provider, &secret, &budget, &plan, values, &cancellation).await;
+        let error = judged.expect_err(name);
+        assert!(
+            judgement_refusal(&error, GEOMETRY_SCALAR_OPERAND),
+            "{name}: {error}"
+        );
+    }
+    let admitted = [
+        (
+            "B = ? sulla tabella",
+            derived_plan(
+                DERIVED_TABLE,
+                &derived_equal(&derived_column("B"), "binary"),
+            ),
+            vec![ParameterValue::Bytes(vec![4])],
+            vec!["4"],
+        ),
+        (
+            "ID = ? sulla vista",
+            derived_plan(
+                "SONDE_DERIVATE_V",
+                &derived_equal(&derived_column("ID"), "integer"),
+            ),
+            vec![ParameterValue::I64(3)],
+            vec!["3"],
+        ),
+        (
+            "ID = ? sul sinonimo",
+            derived_plan(
+                "SONDE_DERIVATE_S",
+                &derived_equal(&derived_column("ID"), "integer"),
+            ),
+            vec![ParameterValue::I64(4)],
+            vec!["4"],
+        ),
+        (
+            "ORDER BY ID sulla vista materializzata",
+            order("SONDE_DERIVATE_MV", derived_column("ID")),
+            Vec::new(),
+            vec!["3", "4"],
+        ),
+    ];
+    for (name, plan, values, expected) in admitted {
+        let (_, judged, direct) = run_guard_plan(
+            &provider,
+            &secret,
+            &budget,
+            &plan,
+            Some(&values),
+            &cancellation,
+        )
+        .await;
+        let rows = judged.unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(rows, expected, "{name}");
+        assert_eq!(Ok(rows), direct, "{name}");
+    }
+
+    // F3: la descrizione risolve il proprietario, la lettura proietta G.
+    let description = provider
+        .inspect(
+            &secret,
+            &Operation::DatabaseDescribeObject {
+                source: ObjectRef {
+                    catalog: None,
+                    schema: Some("PLENORA".to_owned()),
+                    object: DERIVED_TABLE.to_owned(),
+                },
+            },
+            &cancellation,
+        )
+        .await
+        .expect("catalogo regola B Oracle");
+    let description: crate::OracleObjectDescription =
+        serde_json::from_value(description.document).expect("documento regola B Oracle");
+    let geometry = description
+        .columns
+        .iter()
+        .find(|column| column.name == "G")
+        .expect("colonna G");
+    assert_eq!(geometry.data_type_owner.as_deref(), Some("MDSYS"));
+    assert!(geometry.is_sdo_geometry());
+    assert_eq!(geometry.spatial_srid, Some(4326));
+    let read = |object: &str, projection: &[&str], filter: Option<&str>| ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: object.to_owned(),
+        },
+        projection: projection.iter().map(|field| (*field).to_owned()).collect(),
+        order_by: vec![OrderBy {
+            field: "ID".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: None,
+        row_offset: None,
+        filter: filter.map(|field| FilterExpression::Eq {
+            field: field.to_owned(),
+            parameter: "p".to_owned(),
+        }),
+        declared_crs: Vec::new(),
+    };
+    let no_parameters = ParameterBag::default();
+    let mut stream = provider
+        .read(
+            &secret,
+            &read(DERIVED_TABLE, &["ID", "G"], None),
+            &no_parameters,
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("lettura di G senza schema");
+    let mut rows = 0;
+    while let Some(batch) = stream
+        .next_batch(&cancellation)
+        .await
+        .expect("lettura di G senza schema")
+    {
+        rows += batch.num_rows();
+    }
+    assert_eq!(rows, 2);
+    drop(stream);
+    // La lettura del provider: la colonna binaria della vista e della vista
+    // materializzata si rifiuta.
+    let binary = ParameterBag::new(BTreeMap::from([(
+        "p".to_owned(),
+        ParameterValue::Bytes(wkb),
+    )]));
+    for (object, field) in [
+        ("SONDE_DERIVATE_V", "R"),
+        ("SONDE_DERIVATE_V", "W2"),
+        ("SONDE_DERIVATE_MV", "R"),
+        (DERIVED_TABLE, "G"),
+    ] {
+        let error = provider
+            .read(
+                &secret,
+                &read(object, &["ID"], Some(field)),
+                &binary,
+                &budget,
+                &cancellation,
+            )
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("lettura {object}.{field} ammessa"));
+        assert!(
+            judgement_refusal(&error, GEOMETRY_SCALAR_OPERAND),
+            "{object}.{field}: {error}"
+        );
+    }
+    drop_derived(&provider, &secret, &cancellation).await;
 }

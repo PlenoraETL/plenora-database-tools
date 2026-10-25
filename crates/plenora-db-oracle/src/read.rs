@@ -73,6 +73,20 @@ pub async fn read_operation(
     let mut connection = pool.checkout(&internal).await?;
     connection.disallow_reuse();
     let raw = connection.connection()?;
+    // La regola dei cataloghi (`crate::operand_catalog`): la descrizione non
+    // distingue una vista materializzata da una tabella, e la colonna binaria
+    // di una vista puo portare una geometria.
+    crate::operand_catalog::ensure_scalar_read_fields(
+        &mut crate::operand_catalog::ConnectionCatalog::new(
+            raw,
+            config.operation_timeout(),
+            &internal,
+        ),
+        &plan.schema_name,
+        &plan.object_name,
+        operation,
+    )
+    .await?;
     raw.set_response_byte_limit(
         usize::try_from(budget.limits().memory_bytes).unwrap_or(usize::MAX),
     )

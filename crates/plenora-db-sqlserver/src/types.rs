@@ -190,7 +190,7 @@ impl SqlServerReadPlan {
         sql.push_str(&renderer.quote_object(&object)?);
 
         let mut bind_names = Vec::new();
-        ensure_scalar_fields(operation, &available)?;
+        ensure_scalar_fields(operation, &available, description.kind == "VIEW")?;
         if let Some(filter) = &operation.filter {
             ensure_filter_columns(filter, &available)?;
             let rendered_filter = renderer.render_filter(&convert_filter(filter)?)?;
@@ -378,20 +378,37 @@ fn convert_filter(expression: &FilterExpression) -> Result<Expression> {
 
 /// Un campo geometrico sotto un operatore non spatial o in ORDER BY
 /// confronterebbe il formato interno del server con il valore legato
-/// (`spatial_operand`).
-fn ensure_scalar_fields(operation: &ReadOperation, columns: &[SqlServerColumnSpec]) -> Result<()> {
+/// (`spatial_operand`); un campo binario di una vista si giudica geometrico
+/// (regola B, `catalog_column_is_geometric`).
+fn ensure_scalar_fields(
+    operation: &ReadOperation,
+    columns: &[SqlServerColumnSpec],
+    view: bool,
+) -> Result<()> {
+    use plenora_database_core::spatial_operand::{
+        catalog_column_is_geometric, ColumnCarrier, RelationOrigin,
+    };
+    let origin = if view {
+        RelationOrigin::Derived
+    } else {
+        RelationOrigin::Base
+    };
     plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
         plenora_database_core::plan::ProviderKind::Sqlserver,
         operation.filter.as_ref(),
         &operation.order_by,
         |field| {
             columns.iter().any(|column| {
+                let carrier = match column.kind {
+                    SqlServerColumnKind::Geometry | SqlServerColumnKind::Geography => {
+                        ColumnCarrier::Geometry
+                    }
+                    SqlServerColumnKind::Binary => ColumnCarrier::Binary,
+                    _ => ColumnCarrier::Scalar,
+                };
                 plenora_database_core::spatial_operand::NameRule::Folded
                     .matches(&column.name, field)
-                    && matches!(
-                        column.kind,
-                        SqlServerColumnKind::Geometry | SqlServerColumnKind::Geography
-                    )
+                    && catalog_column_is_geometric(origin, carrier)
             })
         },
     )

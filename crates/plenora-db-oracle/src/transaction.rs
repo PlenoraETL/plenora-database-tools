@@ -503,6 +503,25 @@ impl TransactionScope for OracleTransaction {
         })
     }
 
+    /// Le colonne delle relazioni nominate, con il giudizio del tipo
+    /// (`crate::operand_catalog`), lette sulla connessione della transazione:
+    /// lo schema corrente e quello con cui il server risolvera la query. Non
+    /// e SQL del chiamante: non tocca il marcatore di invio.
+    fn operand_catalog<'a>(
+        &'a mut self,
+        relations: &'a [(Option<String>, String)],
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, plenora_database_core::spatial_operand::OperandCatalog> {
+        Box::pin(async move {
+            let mut catalog = crate::operand_catalog::ConnectionCatalog::new(
+                self.connection.connection()?,
+                self.operation_timeout,
+                cancellation,
+            );
+            crate::operand_catalog::operand_catalog(&mut catalog, relations).await
+        })
+    }
+
     fn execute_conditional_update<'a>(
         &'a mut self,
         request: ConditionalUpdate<'a>,

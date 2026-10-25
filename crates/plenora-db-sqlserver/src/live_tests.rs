@@ -10058,3 +10058,298 @@ async fn live_name_shapes_and_the_transaction_catalog_on_a_case_sensitive_databa
         .await
         .expect("pulizia");
 }
+
+/// Regola B (`spatial_operand::catalog_column_is_geometric`), rilettura del
+/// 25/10, sul SQL Server reale: una vista rende la geometria binaria
+/// (`g.STAsBinary()`, il WKB; `CAST(g AS varbinary(max))`, il formato
+/// interno; un `sql_variant` che porta un `varbinary`) e il server ne
+/// confronta i byte. Due poligoni uguali per `STEquals` con i vertici in
+/// ordine diverso: lo SQL senza giudizio `w = ?` con il WKB del primo rende
+/// soltanto il primo, un risultato sbagliato senza errore. Il giudizio
+/// rifiuta la colonna binaria della vista (anche quella che ripete una
+/// colonna `varbinary` o di tipo alias della tabella: il costo dichiarato)
+/// nel path query, nella transazione e nella lettura; la colonna binaria
+/// della tabella, l'id e il testo WKT della vista restano.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "richiede SQL Server live esplicito per la regola degli operandi geometrici"]
+#[allow(clippy::too_many_lines)]
+async fn live_binary_columns_of_views_are_judged_geometric() {
+    use plenora_database_core::facade::query_judged;
+    use plenora_database_core::relational::QueryOperation;
+    use plenora_database_core::spatial_operand::OperandPlan;
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use serde_json::{json, Value};
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("sessione di setup");
+    let cleanup = "DROP VIEW IF EXISTS [plenora_test].[derivate_b_v]; \
+         DROP VIEW IF EXISTS [plenora_test].[derivate_b_r]; \
+         DROP TABLE IF EXISTS [plenora_test].[derivate_b]; \
+         IF TYPE_ID(N'plenora_test.derivate_b_wkb') IS NOT NULL \
+             DROP TYPE [plenora_test].[derivate_b_wkb];";
+    admin
+        .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("pulizia iniziale");
+    for sql in [
+        "CREATE TYPE [plenora_test].[derivate_b_wkb] FROM varbinary(8000);",
+        "CREATE TABLE [plenora_test].[derivate_b] ([id] int NOT NULL PRIMARY KEY, \
+         [b] varbinary(16) NOT NULL, [a] [plenora_test].[derivate_b_wkb] NOT NULL, \
+         [g] geometry NOT NULL); \
+         INSERT INTO [plenora_test].[derivate_b] VALUES \
+         (3, 0x03, 0x03, geometry::STGeomFromText('POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))', 0)), \
+         (4, 0x04, 0x04, geometry::STGeomFromText('POLYGON((1 0, 1 1, 0 1, 0 0, 1 0))', 0));",
+        "EXEC(N'CREATE VIEW [plenora_test].[derivate_b_v] AS SELECT [id], \
+         [g].STAsBinary() AS [w], CAST([g] AS varbinary(max)) AS [c], \
+         CAST(CAST([g].STAsBinary() AS varbinary(8000)) AS sql_variant) AS [s], \
+         [b], [a], [g].STAsText() AS [x] FROM [plenora_test].[derivate_b]');",
+        // La lettura del provider non qualifica `sql_variant`: una vista
+        // senza.
+        "EXEC(N'CREATE VIEW [plenora_test].[derivate_b_r] AS SELECT [id], \
+         [g].STAsBinary() AS [w], [b] FROM [plenora_test].[derivate_b]');",
+    ] {
+        admin
+            .execute_query(Query::new(sql), ErrorPhase::Write, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("fixture {sql}: {error}"));
+    }
+    let equal = admin
+        .execute_query(
+            Query::new(
+                "SELECT COUNT_BIG(*) FROM [plenora_test].[derivate_b] a, [plenora_test].[derivate_b] b \
+                 WHERE a.[id] = 3 AND b.[id] = 4 AND a.[g].STEquals(b.[g]) = 1;",
+            ),
+            ErrorPhase::Read,
+            &cancellation,
+        )
+        .await
+        .expect("STEquals");
+    assert_eq!(equal[0][0].try_get::<i64, _>(0).unwrap(), Some(1));
+    let wkb = admin
+        .execute_query(
+            Query::new("SELECT [g].STAsBinary() FROM [plenora_test].[derivate_b] WHERE [id] = 3;"),
+            ErrorPhase::Read,
+            &cancellation,
+        )
+        .await
+        .expect("WKB");
+    let wkb: Vec<u8> = wkb[0][0]
+        .try_get::<&[u8], _>(0)
+        .unwrap()
+        .expect("WKB")
+        .to_vec();
+    let mut silent =
+        Query::new("SELECT [id] FROM [plenora_test].[derivate_b_v] WHERE [w] = @P1 ORDER BY [id];");
+    silent.bind(wkb.clone());
+    let silent = admin
+        .execute_query(silent, ErrorPhase::Read, &cancellation)
+        .await
+        .expect("senza giudizio");
+    let ids: Vec<i32> = silent
+        .iter()
+        .flatten()
+        .map(|row| row.try_get::<i32, _>(0).unwrap().expect("id"))
+        .collect();
+    assert_eq!(ids, vec![3], "il server confronta i byte");
+
+    let provider = SqlServerProvider::new(config.clone(), 1024, 4).expect("provider");
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let over = |object: &str, extra: &Value| -> QueryOperation {
+        let mut operation = json!({
+            "source": {"object": {"catalog": null, "schema": "plenora_test", "object": object}, "alias": "t"},
+            "projection": [{"expression": column("id"), "alias": "id"}],
+            "filter": null, "having": null, "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        serde_json::from_value(operation).expect("piano")
+    };
+    let equal_to = |field: &str, parameter_type: &str| {
+        json!({"filter": {"kind": "compare", "left": column(field), "operator": "eq",
+            "right": {"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type}}})
+    };
+    let ordered =
+        |field: &str| json!({"order_by": [{"expression": column(field), "direction": "asc"}]});
+    let bag = |value: ParameterValue| ParameterBag::new(BTreeMap::from([("p".to_owned(), value)]));
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let rows = |operation: QueryOperation, parameters: ParameterBag| {
+        let provider = &provider;
+        let budget = &budget;
+        let cancellation = &cancellation;
+        async move {
+            let mut stream = provider
+                .query(
+                    &live_secret(),
+                    &operation,
+                    &parameters,
+                    budget,
+                    cancellation,
+                )
+                .await?;
+            let mut total = 0;
+            while let Some(batch) = stream.next_batch(cancellation).await? {
+                total += batch.num_rows();
+            }
+            Ok::<usize, plenora_database_core::DatabaseError>(total)
+        }
+    };
+    let view = "derivate_b_v";
+    let bytes = bag(ParameterValue::Bytes(wkb.clone()));
+    let none = ParameterBag::default();
+    let refused = [
+        (
+            "w = ? sulla vista",
+            over(view, &equal_to("w", "binary")),
+            bytes.clone(),
+        ),
+        (
+            "ORDER BY w sulla vista",
+            over(view, &ordered("w")),
+            none.clone(),
+        ),
+        (
+            "DISTINCT c sulla vista",
+            over(
+                view,
+                &json!({"distinct": true, "projection": [{"expression": column("c"), "alias": "c"}]}),
+            ),
+            none.clone(),
+        ),
+        (
+            "c (CAST AS varbinary) = ?",
+            over(view, &equal_to("c", "binary")),
+            bytes.clone(),
+        ),
+        (
+            "s (sql_variant) = ?",
+            over(view, &equal_to("s", "binary")),
+            bytes.clone(),
+        ),
+        (
+            "b della vista = ?",
+            over(view, &equal_to("b", "binary")),
+            bytes.clone(),
+        ),
+        (
+            "a (tipo alias) della vista = ?",
+            over(view, &equal_to("a", "binary")),
+            bytes.clone(),
+        ),
+    ];
+    for (form, operation, parameters) in refused {
+        let error = rows(operation, parameters).await.expect_err(form);
+        assert_eq!(
+            error.category,
+            ErrorCategory::Unsupported,
+            "{form}: {error:?}"
+        );
+        assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{form}: {error:?}");
+    }
+    let admitted = [
+        (
+            "b = ? sulla tabella",
+            over("derivate_b", &equal_to("b", "binary")),
+            bag(ParameterValue::Bytes(vec![4])),
+            1,
+        ),
+        (
+            "a (tipo alias) = ? sulla tabella",
+            over("derivate_b", &equal_to("a", "binary")),
+            bag(ParameterValue::Bytes(vec![3])),
+            1,
+        ),
+        (
+            "id = ? sulla vista",
+            over(view, &equal_to("id", "integer")),
+            bag(ParameterValue::I32(3)),
+            1,
+        ),
+        (
+            "x LIKE ? sulla vista (testo)",
+            over(
+                view,
+                &json!({"filter": {"kind": "like", "expression": column("x"),
+                    "pattern": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}}}),
+            ),
+            bag(ParameterValue::String("POLYGON%".to_owned())),
+            2,
+        ),
+    ];
+    for (form, operation, parameters, expected) in admitted {
+        let count = rows(operation, parameters)
+            .await
+            .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(count, expected, "{form}");
+    }
+    // La transazione (SDK, facade, CLI portable).
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let judged = over(view, &equal_to("w", "binary"));
+    let error = query_judged(
+        tx.as_mut(),
+        &Statement::new(
+            "SELECT [t].[id] FROM [plenora_test].[derivate_b_v] AS [t] WHERE [t].[w] = @P1",
+        )
+        .with_params(vec![ParameterValue::Bytes(wkb.clone())]),
+        Some(&OperandPlan::Query(&judged)),
+        &cancellation,
+    )
+    .await
+    .expect_err("w = ? nella transazione");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{error:?}");
+    let _ = tx.rollback(&cancellation).await;
+    // La lettura del provider.
+    let reading = |field: &str| plenora_database_core::plan::ReadOperation {
+        source: plenora_database_core::plan::ObjectRef {
+            catalog: None,
+            schema: Some("plenora_test".to_owned()),
+            object: "derivate_b_r".to_owned(),
+        },
+        projection: vec!["id".to_owned()],
+        order_by: vec![plenora_database_core::plan::OrderBy {
+            field: "id".to_owned(),
+            direction: plenora_database_core::plan::SortDirection::Asc,
+        }],
+        row_limit: None,
+        row_offset: None,
+        filter: Some(plenora_database_core::plan::FilterExpression::Eq {
+            field: field.to_owned(),
+            parameter: "p".to_owned(),
+        }),
+        declared_crs: Vec::new(),
+    };
+    for field in ["w", "b"] {
+        let error = provider
+            .read(
+                &live_secret(),
+                &reading(field),
+                &bytes,
+                &budget,
+                &cancellation,
+            )
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("lettura {field} ammessa"));
+        assert_eq!(
+            error.message, GEOMETRY_SCALAR_OPERAND,
+            "lettura {field}: {error:?}"
+        );
+    }
+    admin
+        .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("pulizia");
+}

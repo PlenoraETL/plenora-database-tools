@@ -51,6 +51,8 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_closed_capabilities_fail_closed_and_match_ddl_semantics",
         "live_xyz_wkb_roundtrip_matches_declared_dimension",
         "live_every_declared_spatial_function_executes_on_geometry_and_geography",
+        "live_operand_server_guard_rejects_every_measured_form",
+        "live_operand_catalog_refuses_derived_binary_and_resolves_public_sdo_geometry",
     }
 )
 PYTHON_LIVE_EXPECTED = 6

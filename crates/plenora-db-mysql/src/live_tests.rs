@@ -8718,3 +8718,262 @@ async fn live_name_shapes_and_the_transaction_catalog_are_judged() {
         .await
         .ok();
 }
+
+/// Regola B (`spatial_operand::catalog_column_is_geometric`), rilettura del
+/// 25/10, su `MySQL` e `MariaDB` (`PLENORA_MYSQL_PRODUCT`): una vista rende la
+/// geometria binaria (`ST_AsBinary(g)`, il WKB; `CAST(g AS BINARY)`, il
+/// formato interno) e il server ne confronta i byte. Due poligoni uguali per
+/// `ST_Equals` con i vertici in ordine diverso: lo SQL senza giudizio
+/// `w = ?` con il WKB del primo rende soltanto il primo, un risultato
+/// sbagliato senza errore. Il giudizio rifiuta la colonna binaria della vista
+/// (anche quella che ripete una colonna `VARBINARY` della tabella: il costo
+/// dichiarato) nel path query, nella transazione e nella lettura; la colonna
+/// binaria della tabella, l'id e il testo WKT della vista restano.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_binary_columns_of_views_are_judged_geometric() {
+    use plenora_database_core::facade::query_judged;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::spatial_operand::OperandPlan;
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    let cleanup = [
+        "DROP VIEW IF EXISTS _derivate_b_v",
+        "DROP TABLE IF EXISTS _derivate_b",
+    ];
+    let wkb: Vec<u8>;
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione");
+        for statement in cleanup {
+            connection.query_drop(statement).await.expect("pulizia");
+        }
+        for statement in [
+            "CREATE TABLE _derivate_b (id BIGINT PRIMARY KEY, b VARBINARY(16) NOT NULL, \
+             g POLYGON NOT NULL) ENGINE=InnoDB",
+            "INSERT INTO _derivate_b VALUES \
+             (3, 0x03, ST_GeomFromText('POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))')), \
+             (4, 0x04, ST_GeomFromText('POLYGON((1 0, 1 1, 0 1, 0 0, 1 0))'))",
+            "CREATE VIEW _derivate_b_v AS SELECT id, ST_AsBinary(g) AS w, \
+             CAST(g AS BINARY) AS c, b, ST_AsText(g) AS x FROM _derivate_b",
+        ] {
+            connection.query_drop(statement).await.expect("fixture");
+        }
+        let equal: Option<i64> = connection
+            .query_first(
+                "SELECT COUNT(*) FROM _derivate_b a, _derivate_b b \
+                 WHERE a.id = 3 AND b.id = 4 AND ST_Equals(a.g, b.g)",
+            )
+            .await
+            .expect("ST_Equals");
+        assert_eq!(equal, Some(1), "i due poligoni sono la stessa geometria");
+        wkb = connection
+            .query_first("SELECT ST_AsBinary(g) FROM _derivate_b WHERE id = 3")
+            .await
+            .expect("WKB")
+            .expect("riga");
+        let silent: Vec<i64> = connection
+            .exec(
+                "SELECT id FROM _derivate_b_v WHERE w = ? ORDER BY id",
+                (wkb.clone(),),
+            )
+            .await
+            .expect("senza giudizio");
+        assert_eq!(silent, vec![3], "il server confronta i byte");
+    }
+    let provider = geometry_operand_provider();
+    let provider = provider.as_ref();
+    let database = environment("PLENORA_MYSQL_DATABASE", "dataflow_test");
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let over = |object: &str, extra: &Value| {
+        let mut operation = json!({
+            "source": {"object": {"catalog": null, "schema": database, "object": object}, "alias": "t"},
+            "projection": [{"expression": column("id"), "alias": "id"}],
+            "filter": null, "having": null, "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        serde_json::from_value::<plenora_database_core::query::QueryOperation>(operation)
+            .expect("piano")
+    };
+    let equal_to = |field: &str, parameter_type: &str| {
+        json!({"filter": {"kind": "compare", "left": column(field), "operator": "eq",
+            "right": {"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type}}})
+    };
+    let ordered =
+        |field: &str| json!({"order_by": [{"expression": column(field), "direction": "asc"}]});
+    let bag = |value: ParameterValue| ParameterBag::new(BTreeMap::from([("p".to_owned(), value)]));
+    let bytes = bag(ParameterValue::Bytes(wkb.clone()));
+    let none = ParameterBag::default();
+    let view = "_derivate_b_v";
+    let refused = [
+        (
+            "w = ? sulla vista",
+            over(view, &equal_to("w", "binary")),
+            bytes.clone(),
+        ),
+        (
+            "ORDER BY w sulla vista",
+            over(view, &ordered("w")),
+            none.clone(),
+        ),
+        (
+            "DISTINCT w sulla vista",
+            over(
+                view,
+                &json!({"distinct": true, "projection": [{"expression": column("w"), "alias": "w"}]}),
+            ),
+            none.clone(),
+        ),
+        (
+            "c (CAST AS BINARY) = ?",
+            over(view, &equal_to("c", "binary")),
+            bytes.clone(),
+        ),
+        (
+            "ORDER BY c sulla vista",
+            over(view, &ordered("c")),
+            none.clone(),
+        ),
+        (
+            "b della vista = ?",
+            over(view, &equal_to("b", "binary")),
+            bytes.clone(),
+        ),
+    ];
+    for (form, operation, parameters) in &refused {
+        let error = geometry_operand_rows(provider, operation, parameters)
+            .await
+            .expect_err(form);
+        assert_eq!(
+            error.category,
+            ErrorCategory::Unsupported,
+            "{form}: {error:?}"
+        );
+        assert!(
+            error.message.contains(GEOMETRY_SCALAR_OPERAND),
+            "{form}: {error:?}"
+        );
+    }
+    let admitted = [
+        (
+            "b = ? sulla tabella",
+            over("_derivate_b", &equal_to("b", "binary")),
+            bag(ParameterValue::Bytes(vec![4])),
+            1,
+        ),
+        (
+            "id = ? sulla vista",
+            over(view, &equal_to("id", "integer")),
+            bag(ParameterValue::I64(3)),
+            1,
+        ),
+        (
+            "x LIKE ? sulla vista (testo)",
+            over(
+                view,
+                &json!({"filter": {"kind": "like", "expression": column("x"),
+                    "pattern": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}}}),
+            ),
+            bag(ParameterValue::String("POLYGON%".to_owned())),
+            2,
+        ),
+    ];
+    for (form, operation, parameters, expected) in admitted {
+        let rows = geometry_operand_rows(provider, &operation, &parameters)
+            .await
+            .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(rows, expected, "{form}");
+    }
+    // La transazione (SDK, facade, CLI portable).
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let judged = over(view, &equal_to("w", "binary"));
+    let error = query_judged(
+        tx.as_mut(),
+        &Statement::new("SELECT t.id FROM _derivate_b_v AS t WHERE t.w = ?")
+            .with_params(vec![ParameterValue::Bytes(wkb.clone())]),
+        Some(&OperandPlan::Query(&judged)),
+        &cancellation,
+    )
+    .await
+    .expect_err("w = ? nella transazione");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{error:?}");
+    let _ = tx.rollback(&cancellation).await;
+    // La lettura del provider.
+    let reading = |field: &str| ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some(database.clone()),
+            object: view.to_owned(),
+        },
+        projection: vec!["id".to_owned()],
+        order_by: vec![plenora_database_core::plan::OrderBy {
+            field: "id".to_owned(),
+            direction: plenora_database_core::plan::SortDirection::Asc,
+        }],
+        row_limit: None,
+        row_offset: None,
+        filter: Some(plenora_database_core::plan::FilterExpression::Eq {
+            field: field.to_owned(),
+            parameter: "p".to_owned(),
+        }),
+        declared_crs: Vec::new(),
+    };
+    for field in ["w", "c", "b"] {
+        let error = provider
+            .read(
+                &live_secret(),
+                &reading(field),
+                &bytes,
+                &budget,
+                &cancellation,
+            )
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("lettura {field} ammessa"));
+        assert!(
+            error.message.contains(GEOMETRY_SCALAR_OPERAND),
+            "lettura {field}: {error:?}"
+        );
+    }
+    let mut stream = provider
+        .read(
+            &live_secret(),
+            &reading("id"),
+            &bag(ParameterValue::I64(4)),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("lettura id");
+    let mut rows = 0;
+    while let Some(batch) = stream.next_batch(&cancellation).await.expect("lettura id") {
+        rows += batch.num_rows();
+    }
+    assert_eq!(rows, 1);
+    drop(stream);
+    let mut teardown = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("pulizia");
+    let connection = teardown.connection_mut().expect("connessione");
+    for statement in cleanup {
+        connection.query_drop(statement).await.expect("pulizia");
+    }
+}

@@ -1255,7 +1255,9 @@ pub async fn operand_catalog(
     relations: &[(Option<String>, String)],
     cancellation: &CancellationToken,
 ) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
-    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
+    use plenora_database_core::spatial_operand::{
+        catalog_column_is_geometric, ColumnCarrier, OperandCatalog, RelationColumns, RelationOrigin,
+    };
     let mut catalog = OperandCatalog::new(ProviderKind::Sqlserver);
     for (schema, object) in relations {
         let mut query = Query::new(RELATION_COLUMNS_SQL);
@@ -1270,8 +1272,22 @@ pub async fn operand_catalog(
             let row_state: &str = required(row, 0, "stato relazione")?;
             state = Some(row_state.to_owned());
             if let Some(column) = optional::<&str>(row, 1, "colonna")? {
-                let geometric: bool = required(row, 2, "colonna geometrica")?;
-                columns.push((column.to_owned(), geometric));
+                let carrier = if required(row, 2, "colonna geometrica")? {
+                    ColumnCarrier::Geometry
+                } else if required(row, 3, "colonna binaria")? {
+                    ColumnCarrier::Binary
+                } else {
+                    ColumnCarrier::Scalar
+                };
+                let origin = if required(row, 4, "relazione derivata")? {
+                    RelationOrigin::Derived
+                } else {
+                    RelationOrigin::Base
+                };
+                columns.push((
+                    column.to_owned(),
+                    catalog_column_is_geometric(origin, carrier),
+                ));
             }
         }
         let columns = match state.as_deref() {
@@ -1290,7 +1306,11 @@ pub async fn operand_catalog(
 /// sinonimo verso un altro database o un oggetto che non si risolve). Una
 /// colonna e geometrica se il suo tipo e `geometry` o `geography`: un alias
 /// di tipo su `geometry` il server non lo ammette («not a valid base type for
-/// the alias data type», misurato su SQL Server 2022 il 25/10).
+/// the alias data type», misurato su SQL Server 2022 il 25/10). Per la regola
+/// B (`spatial_operand::catalog_column_is_geometric`) la colonna dice anche se
+/// il suo tipo di sistema (`system_type_id`, che un tipo alias eredita) e
+/// binario (`image` 34, `sql_variant` 98, che porta anche un `varbinary`,
+/// `varbinary` 165, `binary` 173) e se la relazione e una vista (`V`).
 const RELATION_COLUMNS_SQL: &str = "\
 SET NOCOUNT ON; \
 DECLARE @name nvarchar(300) = CASE WHEN @P1 = N'' THEN QUOTENAME(@P2) \
@@ -1319,16 +1339,22 @@ BEGIN \
     END; \
 END; \
 IF @state <> N'known' \
-    SELECT @state, CAST(NULL AS nvarchar(128)), CAST(NULL AS bit); \
+    SELECT @state, CAST(NULL AS nvarchar(128)), CAST(NULL AS bit), CAST(NULL AS bit), \
+        CAST(NULL AS bit); \
 ELSE IF @temp = 1 \
     SELECT @state, CAST(c.name AS nvarchar(128)), \
-        CAST(CASE WHEN ty.name IN (N'geometry', N'geography') THEN 1 ELSE 0 END AS bit) \
+        CAST(CASE WHEN ty.name IN (N'geometry', N'geography') THEN 1 ELSE 0 END AS bit), \
+        CAST(CASE WHEN c.system_type_id IN (34, 98, 165, 173) THEN 1 ELSE 0 END AS bit), \
+        CAST(0 AS bit) \
     FROM tempdb.sys.columns c JOIN tempdb.sys.types ty ON ty.user_type_id = c.user_type_id \
     WHERE c.object_id = @id ORDER BY c.column_id; \
 ELSE \
     SELECT @state, CAST(c.name AS nvarchar(128)), \
-        CAST(CASE WHEN ty.name IN (N'geometry', N'geography') THEN 1 ELSE 0 END AS bit) \
+        CAST(CASE WHEN ty.name IN (N'geometry', N'geography') THEN 1 ELSE 0 END AS bit), \
+        CAST(CASE WHEN c.system_type_id IN (34, 98, 165, 173) THEN 1 ELSE 0 END AS bit), \
+        CAST(CASE WHEN o.type = 'V' THEN 1 ELSE 0 END AS bit) \
     FROM sys.columns c JOIN sys.types ty ON ty.user_type_id = c.user_type_id \
+    JOIN sys.objects o ON o.object_id = c.object_id \
     WHERE c.object_id = @id ORDER BY c.column_id;";
 
 async fn observe_spatial_srid(

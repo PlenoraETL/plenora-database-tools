@@ -296,6 +296,7 @@ EXPECTED_UNIT_TESTS = {
     "write::tests::upsert_renders_on_duplicate_update_for_non_key_columns",
 }
 EXPECTED_LIVE_DEFAULT_TESTS = {
+    "live_tests::live_binary_columns_of_views_are_judged_geometric",
     "live_tests::live_geometry_column_under_scalar_operator_is_refused",
     "live_tests::live_native_query_policy_allow_permits_ddl",
     "live_tests::live_native_query_policy_deny_rejects_conditional_update_ddl",

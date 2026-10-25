@@ -284,16 +284,29 @@ impl OracleReadPlan {
             .collect::<BTreeSet<_>>();
         // Un campo geometrico sotto un operatore non spatial o in ORDER BY
         // confronterebbe il formato interno del server con il valore legato
-        // (`spatial_operand`).
+        // (`spatial_operand`); un campo binario di una vista si giudica
+        // geometrico (regola B). La lettura giudica poi sul catalogo, che
+        // distingue anche le viste materializzate
+        // (`operand_catalog::ensure_scalar_read_fields`).
+        let origin = if description.kind == "VIEW" {
+            plenora_database_core::spatial_operand::RelationOrigin::Derived
+        } else {
+            plenora_database_core::spatial_operand::RelationOrigin::Base
+        };
         plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
             ProviderKind::Oracle,
             operation.filter.as_ref(),
             &operation.order_by,
             |field| {
-                description
-                    .columns
-                    .iter()
-                    .any(|column| column.name == field && column.is_sdo_geometry())
+                description.columns.iter().any(|column| {
+                    column.name == field
+                        && (column.is_sdo_geometry()
+                            || crate::operand_catalog::column_is_geometric(
+                                origin,
+                                &column.data_type,
+                                column.data_type_owner.as_deref(),
+                            ))
+                })
             },
         )?;
         let bind_names = if let Some(filter) = &operation.filter {

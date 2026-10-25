@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 117949,
-  "max_code_lines": 95426,
-  "rationale": "Db2 legge il catalogo degli operandi geometrici nella transazione e nella lettura del provider (crates/plenora-db-db2/src/operand_catalog.rs: SYSCAT.TABLES, COLUMNS, DATATYPES, HIERARCHIES; alias, alias pubblici, viste con BLOB calcolati, tipi distinti e strutturati), con le prove offline sul catalogo finto, il live test live_operand_catalog_judges_geometry_and_admits_scalars e i fatti di SYSCAT in scripts/sonde_operandi_server.py. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 117358 -> 117949 (+591), righe di codice 95044 -> 95426 (+382). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 118713,
+  "max_code_lines": 95910,
+  "rationale": "Regola B degli operandi geometrici (spatial_operand::catalog_column_is_geometric): la colonna binaria di una vista, vista materializzata o MQT si giudica geometrica su ogni provider; Oracle legge il catalogo nella transazione e nella lettura (crates/plenora-db-oracle/src/operand_catalog.rs: ALL_OBJECTS, ALL_TAB_COLUMNS, ALL_SYNONYMS, proprietario di SDO_GEOMETRY risolto attraverso il sinonimo pubblico), Db2 riconosce BINARY, VARBINARY, FOR BIT DATA e i tipi distinti, PostgreSQL, MySQL/MariaDB e SQL Server leggono l'origine della relazione e il tipo binario; prove offline sui cataloghi finti e live test per provider. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 117949 -> 118713 (+764), righe di codice 95426 -> 95910 (+484). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

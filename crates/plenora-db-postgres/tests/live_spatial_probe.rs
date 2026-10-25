@@ -2248,3 +2248,264 @@ async fn live_name_shapes_multiranges_and_the_transaction_catalog_are_judged() {
         .await
         .expect("pulizia");
 }
+
+/// Regola B (`spatial_operand::catalog_column_is_geometric`), rilettura del
+/// 25/10, sul `PostGIS` reale: una vista rende la geometria come `bytea`
+/// (`ST_AsBinary(g)`, `g::bytea`, un dominio su `bytea`) e il server ne
+/// confronta i byte. Due poligoni uguali per `ST_Equals` con i vertici in
+/// ordine diverso: lo SQL senza giudizio `w = ST_AsBinary(...)` rende soltanto
+/// il primo, un risultato sbagliato senza errore. Il giudizio rifiuta la
+/// colonna `bytea` di una vista e di una vista materializzata (anche quella
+/// che ripete una colonna `bytea` della tabella: il costo dichiarato), nel
+/// path query, nella transazione e nella lettura; la colonna `bytea` della
+/// tabella, l'id e il testo WKT della vista restano.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_binary_columns_of_derived_relations_are_judged_geometric() {
+    use plenora_database_core::facade::query_judged;
+    use plenora_database_core::plan::{OrderBy, SortDirection};
+    use plenora_database_core::spatial_operand::OperandPlan;
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    use serde_json::{json, Value};
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let table = "plenora_derivate_b";
+    let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .expect("connessione di setup");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let cleanup = format!(
+        "DROP MATERIALIZED VIEW IF EXISTS public.{table}_mv;
+         DROP VIEW IF EXISTS public.{table}_v;
+         DROP TABLE IF EXISTS public.{table};
+         DROP DOMAIN IF EXISTS public.{table}_wkb;"
+    );
+    client
+        .batch_execute(&cleanup)
+        .await
+        .expect("pulizia iniziale");
+    client
+        .batch_execute(&format!(
+            "CREATE DOMAIN public.{table}_wkb AS bytea;
+             CREATE TABLE public.{table} (id int PRIMARY KEY, b bytea, g geometry(Polygon, 4326));
+             INSERT INTO public.{table} VALUES
+                 (3, decode('03', 'hex'), ST_GeomFromText('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 4326)),
+                 (4, decode('04', 'hex'), ST_GeomFromText('POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))', 4326));
+             CREATE VIEW public.{table}_v AS SELECT id, ST_AsBinary(g) AS w, g::bytea AS e,
+                 ST_AsBinary(g)::public.{table}_wkb AS d, b, ST_AsText(g) AS x
+                 FROM public.{table};
+             CREATE MATERIALIZED VIEW public.{table}_mv AS SELECT id, ST_AsBinary(g) AS w
+                 FROM public.{table};"
+        ))
+        .await
+        .expect("fixture");
+    // I due poligoni sono la stessa geometria; i loro WKB no.
+    let equal: i64 = client
+        .query_one(
+            &format!(
+                "SELECT count(*) FROM public.{table} a, public.{table} b \
+                 WHERE a.id = 3 AND b.id = 4 AND ST_Equals(a.g, b.g)"
+            ),
+            &[],
+        )
+        .await
+        .expect("ST_Equals")
+        .get(0);
+    assert_eq!(equal, 1);
+    let wkb: Vec<u8> = client
+        .query_one(
+            &format!("SELECT ST_AsBinary(g) FROM public.{table} WHERE id = 3"),
+            &[],
+        )
+        .await
+        .expect("WKB")
+        .get(0);
+    let silent: Vec<i32> = client
+        .query(
+            &format!("SELECT id FROM public.{table}_v WHERE w = $1 ORDER BY id"),
+            &[&wkb],
+        )
+        .await
+        .expect("senza giudizio")
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(silent, vec![3], "il server confronta i byte");
+
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.clone());
+    let cancel = CancellationToken::new();
+    let budget = budget();
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let over = |object: &str, extra: &Value| {
+        let mut operation = json!({
+            "source": {"object": {"catalog": null, "schema": "public", "object": object}, "alias": "t"},
+            "projection": [{"expression": column("id"), "alias": "id"}],
+            "filter": null, "having": null, "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        operation
+    };
+    let equal_to = |field: &str, parameter_type: &str| {
+        json!({"filter": {"kind": "compare", "left": column(field), "operator": "eq",
+            "right": {"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type}}})
+    };
+    let ordered =
+        |field: &str| json!({"order_by": [{"expression": column(field), "direction": "asc"}]});
+    let plan = |value: Value| -> QueryOperation { serde_json::from_value(value).expect("piano") };
+    let view = format!("{table}_v");
+    let materialized = format!("{table}_mv");
+    let bytes = probe(ParameterValue::Bytes(wkb.clone()));
+    let none = ParameterBag::default();
+    let refused = [
+        (
+            "w = ? sulla vista",
+            over(&view, &equal_to("w", "binary")),
+            bytes.clone(),
+        ),
+        (
+            "ORDER BY w sulla vista",
+            over(&view, &ordered("w")),
+            none.clone(),
+        ),
+        (
+            "DISTINCT w sulla vista",
+            over(
+                &view,
+                &json!({"distinct": true, "projection": [{"expression": column("w"), "alias": "w"}]}),
+            ),
+            none.clone(),
+        ),
+        (
+            "e (g::bytea) = ?",
+            over(&view, &equal_to("e", "binary")),
+            bytes.clone(),
+        ),
+        (
+            "d (dominio su bytea) = ?",
+            over(&view, &equal_to("d", "binary")),
+            bytes.clone(),
+        ),
+        (
+            "b della vista = ?",
+            over(&view, &equal_to("b", "binary")),
+            bytes.clone(),
+        ),
+        (
+            "w = ? sulla vista materializzata",
+            over(&materialized, &equal_to("w", "binary")),
+            bytes.clone(),
+        ),
+    ];
+    for (form, operation, parameters) in &refused {
+        let error = rows(
+            provider
+                .query(
+                    &secret,
+                    &plan(operation.clone()),
+                    parameters,
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await
+        .expect_err(form);
+        assert_eq!(
+            error.category,
+            ErrorCategory::Unsupported,
+            "{form}: {error:?}"
+        );
+        assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{form}: {error:?}");
+    }
+    let admitted = [
+        (
+            "b = ? sulla tabella",
+            over(table, &equal_to("b", "binary")),
+            probe(ParameterValue::Bytes(vec![4])),
+            1,
+        ),
+        (
+            "id = ? sulla vista",
+            over(&view, &equal_to("id", "integer")),
+            probe(ParameterValue::I32(3)),
+            1,
+        ),
+        (
+            "x LIKE ? sulla vista (testo)",
+            over(
+                &view,
+                &json!({"filter": {"kind": "like", "expression": column("x"),
+                    "pattern": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}}}),
+            ),
+            probe(ParameterValue::String("POLYGON%".to_owned())),
+            2,
+        ),
+        (
+            "ORDER BY id sulla vista materializzata",
+            over(&materialized, &ordered("id")),
+            none.clone(),
+            2,
+        ),
+    ];
+    for (form, operation, parameters, expected) in admitted {
+        let count = rows(
+            provider
+                .query(&secret, &plan(operation), &parameters, &budget, &cancel)
+                .await,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(count, expected, "{form}");
+    }
+    // La transazione (SDK, facade, CLI portable): lo stesso giudizio.
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("transazione");
+    let judged = plan(over(&view, &equal_to("w", "binary")));
+    let error = query_judged(
+        tx.as_mut(),
+        &Statement::new(format!("SELECT t.id FROM public.{view} t WHERE t.w = $1"))
+            .with_params(vec![ParameterValue::Bytes(wkb)]),
+        Some(&OperandPlan::Query(&judged)),
+        &cancel,
+    )
+    .await
+    .expect_err("w = ? nella transazione");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{error:?}");
+    tx.rollback(&cancel).await.expect("rollback");
+    // La lettura del provider.
+    let mut reading = read(&view, "w");
+    reading.filter = None;
+    reading.order_by = vec![OrderBy {
+        field: "w".to_owned(),
+        direction: SortDirection::Asc,
+    }];
+    let error = rows(
+        provider
+            .read(&secret, &reading, &none, &budget, &cancel)
+            .await,
+    )
+    .await
+    .expect_err("lettura ORDER BY w");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "lettura: {error:?}");
+    reading.order_by[0].field = "id".to_owned();
+    assert_eq!(
+        rows(
+            provider
+                .read(&secret, &reading, &none, &budget, &cancel)
+                .await
+        )
+        .await
+        .expect("lettura ORDER BY id"),
+        2
+    );
+    client.batch_execute(&cleanup).await.expect("pulizia");
+}

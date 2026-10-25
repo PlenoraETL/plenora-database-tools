@@ -18,8 +18,7 @@ use plenora_database_core::provider::ProviderFuture;
 use plenora_database_core::relational::{MutationOperation, QueryOperation};
 use plenora_database_core::row::Row;
 use plenora_database_core::spatial_operand::{
-    operand_server_guard, OperandCatalog, OperandPlan, RelationColumns, AMBIGUOUS_NAME_SHAPE,
-    GEOMETRY_OPERAND_UNRESOLVED,
+    OperandCatalog, OperandPlan, RelationColumns, AMBIGUOUS_NAME_SHAPE, GEOMETRY_OPERAND_UNRESOLVED,
 };
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::transaction::{
@@ -340,13 +339,9 @@ fn le_colonne_non_dichiarate_si_giudicano_sul_catalogo_della_transazione() {
                 OperandPlan::Portable(&cancella_portable),
             ),
         ] {
-            if operand_server_guard(prodotto).is_some() {
-                // Oracle: il server rifiuta l'operatore scalare sul tipo
-                // oggetto (misurato); lo SQL arriva al server.
-                ammessa(prodotto, forma, plan);
-            } else {
-                rifiutata(prodotto, forma, plan, GEOMETRY_SCALAR_OPERAND);
-            }
+            // Anche Oracle, con la guardia del server: il giudizio legge il
+            // catalogo (regola B, 25/10).
+            rifiutata(prodotto, forma, plan, GEOMETRY_SCALAR_OPERAND);
         }
     }
 }
@@ -467,13 +462,8 @@ fn senza_catalogo_un_riferimento_si_rifiuta_dove_puo_essere_geometrico() {
             &OperandPlan::Query(&filtrata),
             &cancel,
         ));
-        if operand_server_guard(prodotto).is_some() {
-            // La guardia del server: il catalogo non serve.
-            outcome.unwrap_or_else(|error| panic!("{prodotto:?}: {error:?}"));
-        } else {
-            let error = outcome.expect_err("riferimento senza catalogo");
-            assert_eq!(error.message, GEOMETRY_OPERAND_UNRESOLVED, "{prodotto:?}");
-        }
+        let error = outcome.expect_err("riferimento senza catalogo");
+        assert_eq!(error.message, GEOMETRY_OPERAND_UNRESOLVED, "{prodotto:?}");
         // Un piano che non nomina relazioni non tocca colonne sconosciute.
         let senza_relazioni: QueryOperation = serde_json::from_value(json!({
             "projection": [{"expression": bind(), "alias": "k"}],
@@ -511,20 +501,12 @@ fn la_regola_dei_nomi_vale_in_esecuzione_soltanto_con_geometrie() {
     let geometrica = alias("r10g");
     let scalare = alias("plain");
     for prodotto in PRODOTTI {
-        if operand_server_guard(prodotto).is_some() {
-            ammessa(
-                prodotto,
-                "alias k e K, guardia del server",
-                OperandPlan::Query(&geometrica),
-            );
-        } else {
-            rifiutata(
-                prodotto,
-                "alias k e K su una tabella con geometrie",
-                OperandPlan::Query(&geometrica),
-                AMBIGUOUS_NAME_SHAPE,
-            );
-        }
+        rifiutata(
+            prodotto,
+            "alias k e K su una tabella con geometrie",
+            OperandPlan::Query(&geometrica),
+            AMBIGUOUS_NAME_SHAPE,
+        );
         ammessa(
             prodotto,
             "alias k e K senza geometrie",

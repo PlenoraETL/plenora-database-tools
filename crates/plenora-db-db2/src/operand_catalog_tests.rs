@@ -52,6 +52,7 @@ impl Finto {
                 .map(|(column, type_schema, type_name)| ColumnRow {
                     name: (*column).to_owned(),
                     type_name: name(type_schema, type_name),
+                    bit_data: false,
                 })
                 .collect(),
         );
@@ -74,6 +75,7 @@ impl Finto {
                 metatype: "T".to_owned(),
                 source: Some(name(source.0, source.1)),
                 source_module: false,
+                bit_data: false,
             },
         );
     }
@@ -85,6 +87,7 @@ impl Finto {
                 metatype: "R".to_owned(),
                 source: None,
                 source_module: false,
+                bit_data: false,
             },
         );
         if let Some((super_schema, super_name)) = supertype {
@@ -246,6 +249,7 @@ fn un_tipo_che_il_catalogo_non_descrive_si_giudica_geometrico() {
             metatype: "A".to_owned(),
             source: None,
             source_module: false,
+            bit_data: false,
         },
     );
     finto.types.insert(
@@ -254,6 +258,7 @@ fn un_tipo_che_il_catalogo_non_descrive_si_giudica_geometrico() {
             metatype: "T".to_owned(),
             source: Some(name("M", "X")),
             source_module: true,
+            bit_data: false,
         },
     );
     finto.table(
@@ -485,5 +490,76 @@ fn un_blob_calcolato_da_una_vista_si_giudica_geometrico() {
             Ok(()),
             "{kind}"
         );
+    }
+}
+
+/// Regola B (`spatial_operand::catalog_column_is_geometric`), rilettura del
+/// 25/10: non soltanto `BLOB`. Misurato: `CAST(G AS VARCHAR(4000) FOR BIT
+/// DATA)`, `CAST(G AS VARBINARY(4000))`, `CAST(ST_ASBINARY(G) AS VARCHAR FOR
+/// BIT DATA)` e un tipo distinto su `BLOB` in una vista portano i byte di una
+/// geometria; fino al 25/10 si giudicavano scalari, e `=`, `ORDER BY`,
+/// `DISTINCT` ne confrontavano i byte. In una tabella restano scalari.
+#[test]
+fn ogni_tipo_binario_calcolato_da_una_vista_si_giudica_geometrico() {
+    let mut finto = Finto::new();
+    finto.distinct("M", "DBLOB", ("SYSIBM", "BLOB"));
+    finto.distinct("M", "DDBLOB", ("M", "DBLOB"));
+    finto.types.insert(
+        name("M", "DBIT"),
+        TypeRow {
+            metatype: "T".to_owned(),
+            source: Some(name("SYSIBM", "VARCHAR")),
+            source_module: false,
+            bit_data: true,
+        },
+    );
+    finto.distinct("M", "DTESTO", ("SYSIBM", "VARCHAR"));
+    for kind in ["T", "V", "S", "W"] {
+        let derived = kind != "T";
+        let columns = [
+            ("ID", "SYSIBM", "INTEGER", false),
+            ("B", "SYSIBM", "BINARY", false),
+            ("VB", "SYSIBM", "VARBINARY", false),
+            ("C", "SYSIBM", "CHARACTER", true),
+            ("VC", "SYSIBM", "VARCHAR", true),
+            ("LV", "SYSIBM", "LONG VARCHAR", true),
+            ("DB", "M", "DBLOB", false),
+            ("DDB", "M", "DDBLOB", false),
+            ("DBIT", "M", "DBIT", false),
+            ("TESTO", "SYSIBM", "VARCHAR", false),
+            ("DT", "M", "DTESTO", false),
+        ];
+        finto.relations.insert(
+            name("PLENORA", kind),
+            RelationRow {
+                kind: kind.to_owned(),
+                base: None,
+            },
+        );
+        finto.columns.insert(
+            name("PLENORA", kind),
+            columns
+                .iter()
+                .map(|(column, schema, type_name, bit_data)| ColumnRow {
+                    name: (*column).to_owned(),
+                    type_name: name(schema, type_name),
+                    bit_data: *bit_data,
+                })
+                .collect(),
+        );
+        for campo in ["B", "VB", "C", "VC", "LV", "DB", "DDB", "DBIT"] {
+            assert_eq!(
+                geometrica(&mut finto, "PLENORA", kind, campo),
+                derived,
+                "{kind}.{campo}"
+            );
+        }
+        for campo in ["ID", "TESTO", "DT"] {
+            assert_eq!(
+                giudizio(&mut finto, Some("PLENORA"), kind, campo),
+                Ok(()),
+                "{kind}.{campo}"
+            );
+        }
     }
 }

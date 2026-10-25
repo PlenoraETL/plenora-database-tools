@@ -33,9 +33,9 @@ class Db2ReferenceGateTests(unittest.TestCase):
             ),
         )
 
-    def test_inventory_has_all_seventeen_named_live_tests(self) -> None:
+    def test_inventory_has_all_eighteen_named_live_tests(self) -> None:
         inventory = gate.live_test_inventory()
-        self.assertEqual(len(inventory), 17)
+        self.assertEqual(len(inventory), 18)
         self.assertLessEqual(gate.REQUIRED_LIVE_TESTS, inventory)
 
     def test_complete_named_run_passes(self) -> None:

@@ -743,6 +743,35 @@ pub(crate) async fn transaction_operand_catalog(
     relation_columns(session, profile, &database, relations, cancellation).await
 }
 
+/// I tipi binari di `SHOW COLUMNS` (il nome prima della lunghezza): un
+/// `CHAR` o `VARCHAR` con `CHARACTER SET binary` si descrive `binary` o
+/// `varbinary`.
+const BINARY_TYPES: [&str; 6] = [
+    "binary",
+    "varbinary",
+    "tinyblob",
+    "blob",
+    "mediumblob",
+    "longblob",
+];
+
+/// Il tipo (il nome prima della lunghezza, senza maiuscole) e binario.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn is_binary_type(data_type: &str) -> bool {
+    let base = data_type
+        .split(|character: char| !character.is_ascii_alphabetic())
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    BINARY_TYPES.contains(&base.as_str())
+}
+
+/// Una vista con quel nome, senza maiuscole (`lower_case_table_names` decide
+/// se il server le distingue; senza, il giudizio e piu severo, non meno).
+const VIEW_SQL: &str = "SELECT 1 FROM INFORMATION_SCHEMA.TABLES \
+    WHERE LOWER(TABLE_SCHEMA) = LOWER(?) AND LOWER(TABLE_NAME) = LOWER(?) \
+    AND TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW')";
+
 /// `SHOW COLUMNS` di una relazione, risolta come la risolve la query.
 async fn show_columns(
     session: &mut MysqlSession,
@@ -752,6 +781,9 @@ async fn show_columns(
     cancellation: &CancellationToken,
 ) -> Result<plenora_database_core::spatial_operand::RelationColumns> {
     use plenora_database_core::identifier::{quote_identifier, IdentifierDialect};
+    use plenora_database_core::spatial_operand::{
+        catalog_column_is_geometric, ColumnCarrier, RelationOrigin,
+    };
     let sql = format!(
         "SHOW COLUMNS FROM {}.{}",
         quote_identifier(IdentifierDialect::Mysql, schema)?,
@@ -760,6 +792,27 @@ async fn show_columns(
     let rows = session
         .query_rows(&sql, ErrorPhase::Prepare, cancellation)
         .await?;
+    // La regola B (`spatial_operand::catalog_column_is_geometric`): una vista
+    // del nome, anche soltanto senza maiuscole. `SHOW COLUMNS` legge una
+    // tabella `TEMPORARY` che ne nasconde una omonima, che `TABLES` non
+    // elenca: una vista omonima la fa giudicare derivata, un rifiuto in piu.
+    let origin = if rows.is_empty() {
+        RelationOrigin::Base
+    } else {
+        let views = session
+            .exec_rows(
+                VIEW_SQL,
+                Params::Positional(vec![Value::from(schema), Value::from(object)]),
+                ErrorPhase::Prepare,
+                cancellation,
+            )
+            .await?;
+        if views.is_empty() {
+            RelationOrigin::Base
+        } else {
+            RelationOrigin::Derived
+        }
+    };
     let mut columns = Vec::with_capacity(rows.len());
     for row in &rows {
         let column: String = required(row, 0, "Field")?;
@@ -769,7 +822,14 @@ async fn show_columns(
             .next()
             .unwrap_or_default()
             .to_ascii_lowercase();
-        columns.push((column, profile.is_spatial_native_type(&base)));
+        let carrier = if profile.is_spatial_native_type(&base) {
+            ColumnCarrier::Geometry
+        } else if is_binary_type(&base) {
+            ColumnCarrier::Binary
+        } else {
+            ColumnCarrier::Scalar
+        };
+        columns.push((column, catalog_column_is_geometric(origin, carrier)));
     }
     Ok(if columns.is_empty() {
         plenora_database_core::spatial_operand::RelationColumns::Absent
