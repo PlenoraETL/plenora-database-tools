@@ -286,7 +286,7 @@ impl ReadBuffer {
     /// - If length is 1: read 1 byte
     /// - If length is 2: read 2 bytes as big-endian u16
     pub fn read_ub2(&mut self) -> Result<u16> {
-        let len = self.read_ub_length()?;
+        let len = self.read_unsigned_length()?;
         match len {
             0 => Ok(0),
             1 => Ok(self.read_u8()? as u16),
@@ -298,14 +298,23 @@ impl ReadBuffer {
     /// Read a TNS SB2 (signed 2-byte, variable length encoded)
     ///
     /// Same encoding as UB2 but returns signed i16
+    ///
+    /// Plenora fork: as in python-oracledb `_read_integer`, the sign is the
+    /// high bit of the length byte and the bytes are the magnitude. The
+    /// upstream reader ignored the sign bit and reinterpreted the magnitude
+    /// as two's complement, so -5 read as 5 and 200 as -56.
     pub fn read_sb2(&mut self) -> Result<i16> {
-        let len = self.read_ub_length()?;
-        match len {
-            0 => Ok(0),
-            1 => Ok(self.read_u8()? as i8 as i16),
-            2 => Ok(self.read_i16_be()?),
-            _ => Err(Error::InvalidLengthIndicator(len)),
-        }
+        let len_byte = self.read_u8()?;
+        let negative = len_byte & 0x80 != 0;
+        let len = len_byte & 0x7F;
+        let magnitude: i32 = match len {
+            0 => 0,
+            1 => i32::from(self.read_u8()?),
+            2 => i32::from(self.read_u16_be()?),
+            _ => return Err(Error::InvalidLengthIndicator(len)),
+        };
+        let value = if negative { -magnitude } else { magnitude };
+        i16::try_from(value).map_err(|_| Error::InvalidLengthIndicator(len))
     }
 
     /// Read a TNS UB4 (unsigned 4-byte, variable length encoded)
@@ -318,7 +327,7 @@ impl ReadBuffer {
     /// - If length is 3: read 3 bytes
     /// - If length is 4: read 4 bytes as big-endian u32
     pub fn read_ub4(&mut self) -> Result<u32> {
-        let len = self.read_ub_length()?;
+        let len = self.read_unsigned_length()?;
         match len {
             0 => Ok(0),
             1 => Ok(self.read_u8()? as u32),
@@ -338,7 +347,7 @@ impl ReadBuffer {
     /// - First byte is the length (0-8)
     /// - Read that many bytes and interpret as big-endian integer
     pub fn read_ub8(&mut self) -> Result<u64> {
-        let len = self.read_ub_length()?;
+        let len = self.read_unsigned_length()?;
         match len {
             0 => Ok(0),
             1 => Ok(self.read_u8()? as u64),
@@ -365,6 +374,20 @@ impl ReadBuffer {
     fn read_ub_length(&mut self) -> Result<u8> {
         let len = self.read_u8()?;
         Ok(len & 0x7F) // Mask off high bit (sign indicator)
+    }
+
+    /// Plenora fork: the length byte of an unsigned integer. A set sign bit
+    /// is a negative value where none can be (python-oracledb raises
+    /// `ERR_UNEXPECTED_NEGATIVE_INTEGER`); the upstream reader masked it off
+    /// and returned the magnitude as a positive length or count.
+    fn read_unsigned_length(&mut self) -> Result<u8> {
+        let len = self.read_u8()?;
+        if len & 0x80 != 0 {
+            return Err(Error::Protocol(
+                "negative value for an unsigned integer".to_string(),
+            ));
+        }
+        Ok(len)
     }
 
     /// Read a TNS length-prefixed byte sequence
@@ -462,10 +485,12 @@ impl ReadBuffer {
             value = (value << 8) | (self.read_u8()? as u64);
         }
 
+        // Plenora fork: checked, a magnitude beyond i64 used to wrap.
+        let overflow = || Error::DataConversionError("integer too large".to_string());
         if is_negative {
-            Ok(-(value as i64))
+            0_i64.checked_sub_unsigned(value).ok_or_else(overflow)
         } else {
-            Ok(value as i64)
+            i64::try_from(value).map_err(|_| overflow())
         }
     }
 

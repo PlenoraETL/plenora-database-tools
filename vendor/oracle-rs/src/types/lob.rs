@@ -146,6 +146,22 @@ impl LobLocator {
         }
     }
 
+    /// Plenora fork: the CLOB amount of `text`, in the unit the server counts
+    /// offsets and lengths in. With a variable-length character set the CLOB
+    /// travels as AL16UTF16 and Oracle counts UTF-16 code units, so a
+    /// character outside the BMP counts two; counting code points instead
+    /// placed the next chunk of a multi-chunk write one unit too early per
+    /// such character, overwriting the previous one.
+    pub fn clob_amount(&self, text: &str) -> u64 {
+        let units = if self.uses_var_length_charset() {
+            text.encode_utf16().count()
+        } else {
+            text.chars().count()
+        };
+        // usize is at most 64 bits on every supported target.
+        units as u64
+    }
+
     /// Check if the LOB uses a variable-length character set (like UTF-16)
     pub fn uses_var_length_charset(&self) -> bool {
         // Check offset 6 (FLAG_3) for the var length charset flag
@@ -213,10 +229,12 @@ impl LobLocator {
             return None;
         }
 
-        // Read directory name
-        let dir_name =
-            String::from_utf8_lossy(&self.locator[dir_name_offset..dir_name_offset + dir_name_len])
-                .to_string();
+        // Read directory name. Plenora fork: a name that is not UTF-8 makes
+        // the locator unreadable (`None`) instead of being replaced.
+        let dir_name = String::from_utf8(
+            self.locator[dir_name_offset..dir_name_offset + dir_name_len].to_vec(),
+        )
+        .ok()?;
 
         // Read file name length (big-endian uint16)
         let file_name_len = u16::from_be_bytes([
@@ -231,10 +249,10 @@ impl LobLocator {
         }
 
         // Read file name
-        let file_name = String::from_utf8_lossy(
-            &self.locator[file_name_offset..file_name_offset + file_name_len],
+        let file_name = String::from_utf8(
+            self.locator[file_name_offset..file_name_offset + file_name_len].to_vec(),
         )
-        .to_string();
+        .ok()?;
 
         Some((dir_name, file_name))
     }

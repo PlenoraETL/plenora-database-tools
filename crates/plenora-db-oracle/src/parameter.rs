@@ -128,8 +128,12 @@ impl LobIo<'_> {
             )
             .await
             .map_err(|error| lob_error(error, "scrittura temporary CLOB Oracle fallita"))?;
+            // L'offset del CLOB conta le unita del server (UTF-16 con il
+            // charset a lunghezza variabile), non i caratteri: con i
+            // caratteri fuori dal BMP il pezzo successivo sovrascriveva la
+            // coda del precedente.
             character_offset = character_offset
-                .checked_add(u64::try_from(chunk.chars().count()).unwrap_or(u64::MAX))
+                .checked_add(cache[index].clob_amount(chunk))
                 .ok_or_else(|| {
                     DatabaseError::resource_limit("offset temporary CLOB Oracle in overflow")
                 })?;
@@ -205,8 +209,10 @@ fn bind_parameter(value: &ParameterValue) -> Result<Value> {
             validate_decimal(value)?;
             Ok(Value::Number(OracleNumber::new(value.clone())))
         }
-        ParameterValue::Date(value) => parse_date(value).map(Value::Date),
-        ParameterValue::Timestamp(value) => parse_timestamp(value).map(Value::Timestamp),
+        ParameterValue::Date(value) => parse_date(value).and_then(gregorian_date).map(Value::Date),
+        ParameterValue::Timestamp(value) => parse_timestamp(value)
+            .and_then(gregorian_timestamp)
+            .map(Value::Timestamp),
         ParameterValue::TimestampTz(value) => parse_timestamp_tz(value).map(Value::String),
         ParameterValue::Null { .. } => Ok(Value::Null),
         ParameterValue::Wkb { bytes, .. } => Ok(Value::Bytes(bytes.clone())),
@@ -302,6 +308,24 @@ fn parse_timestamp(value: &str) -> Result<OracleTimestamp> {
             .map_err(|_| mapping_error("secondo Oracle non rappresentabile"))?,
         chrono::Timelike::nanosecond(&timestamp) / 1_000,
     ))
+}
+
+/// Una data si lega soltanto dove il calendario di chrono (gregoriano
+/// prolettico, anno astronomico) e quello di Oracle coincidono: vedi
+/// [`crate::decode::require_gregorian`].
+fn gregorian_date(date: OracleDate) -> Result<OracleDate> {
+    crate::decode::require_gregorian(date.year, date.month, date.day, ErrorPhase::Prepare)?;
+    Ok(date)
+}
+
+fn gregorian_timestamp(timestamp: OracleTimestamp) -> Result<OracleTimestamp> {
+    crate::decode::require_gregorian(
+        timestamp.year,
+        timestamp.month,
+        timestamp.day,
+        ErrorPhase::Prepare,
+    )?;
+    Ok(timestamp)
 }
 
 fn mapping_error(message: &'static str) -> DatabaseError {
