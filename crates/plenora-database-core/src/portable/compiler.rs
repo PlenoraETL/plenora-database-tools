@@ -144,6 +144,15 @@ impl CompileContext {
     fn bind(&mut self, value: ParameterValue) -> String {
         let oracle_timestamp_tz =
             self.dialect == DialectKind::Oracle && matches!(&value, ParameterValue::TimestampTz(_));
+        // Un JSON spedito come stringa su `MySQL` resta una stringa, e
+        // `col_json = ?` non ritrova il documento: il testo si lega dentro un
+        // cast esplicito (regola di `crate::parameter_fidelity`). Il provider
+        // rifiuta il JSON nudo nello SQL del chiamante.
+        if let (DialectKind::Mysql, ParameterValue::Json(document)) = (self.dialect, &value) {
+            self.params
+                .push(ParameterValue::String(document.to_string()));
+            return "CAST(? AS JSON)".to_owned();
+        }
         self.params.push(value);
         let placeholder = match self.dialect {
             DialectKind::Postgres => format!("${}", self.params.len()),
@@ -185,6 +194,17 @@ fn push_sql(sql: &mut String, args: std::fmt::Arguments<'_>) -> Result<()> {
             "composizione dello statement SQL fallita",
         )
     })
+}
+
+/// L'esadecimale maiuscolo che `HEXTORAW` di Db2 legge.
+fn hex_upper(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 /// Il provider di un dialetto, totale: ogni dialetto ne ha uno.
@@ -290,7 +310,18 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                 crate::spatial_probe::ProbeUse::WriteValue,
                 crate::spatial_probe::ProbeFrame::Declared(*srid),
             )?;
-            let value = compile_expression(expression, ctx)?;
+            let value = match (ctx.dialect, expression.as_ref()) {
+                // `HEXTORAW(?)` legge testo esadecimale: il WKB si lega come
+                // tale, perche il provider Db2 lega i `Bytes` come binario
+                // vero (regola di `crate::parameter_fidelity`).
+                (
+                    DialectKind::Db2,
+                    Expression::Literal(
+                        ParameterValue::Bytes(bytes) | ParameterValue::Wkb { bytes, .. },
+                    ),
+                ) => ctx.bind(ParameterValue::String(hex_upper(bytes))),
+                _ => compile_expression(expression, ctx)?,
+            };
             match ctx.dialect {
                 DialectKind::Postgres => {
                     let geometry = crate::spatial_probe::postgres_spatial_value(&value, *srid);
@@ -534,7 +565,8 @@ fn compile_spatial_db2(
 ) -> Result<String> {
     reference.validate()?;
     spatial_policy::validate_predicate(ProviderKind::Db2, predicate, reference)?;
-    let geometry = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
+    // `HEXTORAW(?)` legge testo esadecimale, non i byte (vedi sopra).
+    let geometry = ctx.bind(ParameterValue::String(hex_upper(&reference.ewkb)));
     let srid = i32::try_from(reference.srid).map_err(|_| {
         DatabaseError::invalid_plan(format!(
             "SRID {} eccede il range i32 supportato da Db2 (max {})",

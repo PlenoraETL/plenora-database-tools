@@ -25,6 +25,7 @@ pub mod loss;
 pub mod metrics_recorder;
 pub mod native_query_policy;
 pub mod outcome;
+pub mod parameter_fidelity;
 pub mod plan;
 pub mod portable;
 pub mod primary_key;

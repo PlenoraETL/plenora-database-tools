@@ -1,6 +1,7 @@
 //! Supporto di conformità indipendente dai database reali.
 
 mod conformance;
+pub mod parameter_fidelity;
 pub mod row_diagnostics;
 
 pub use conformance::{
