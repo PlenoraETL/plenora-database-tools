@@ -184,11 +184,11 @@ MySQL e MariaDB condividono un crate e restano quindi una riga sola.
 
 | provider | test Rust |
 | --- | --- |
-| PostgreSQL | 405 |
-| MySQL + MariaDB | 333 |
-| SQL Server | 192 |
-| Oracle Database Free | 62 |
-| IBM Db2 LUW | 71 |
+| PostgreSQL | 407 |
+| MySQL + MariaDB | 334 |
+| SQL Server | 193 |
+| Oracle Database Free | 65 |
+| IBM Db2 LUW | 74 |
 
 ### Famiglie del gate MySQL
 
@@ -197,5 +197,5 @@ Le tre famiglie che il gate MySQL distingue, contate sulla sorgente.
 | famiglia | test |
 | --- | --- |
 | `live_default` | 40 |
-| `live_reference` | 51 |
+| `live_reference` | 52 |
 | `unit` | 240 |

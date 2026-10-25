@@ -271,3 +271,29 @@ fn spatial_plan_refuses_north_first_axes_and_derived_srids() {
         Some(plenora_database_core::plan::ProviderKind::Db2)
     );
 }
+
+#[test]
+fn varchar2_compat_si_legge_o_la_regola_s_non_e_provata() {
+    use crate::write::parse_varchar2_compat;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::row::Row;
+    let row = |value: ParameterValue| {
+        Row::try_new(Arc::from(vec!["VALUE".to_owned()]), vec![value]).expect("riga")
+    };
+    let text = |value: &str| row(ParameterValue::String(value.to_owned()));
+    assert!(!parse_varchar2_compat(&[text("OFF")]).expect("OFF"));
+    assert!(parse_varchar2_compat(&[text("ON ")]).expect("ON"));
+    assert!(parse_varchar2_compat(&[text("OFF"), text("ON")]).expect("un membro ON"));
+    for unproven in [
+        Vec::new(),
+        vec![text("")],
+        vec![text("YES")],
+        vec![row(ParameterValue::Null {
+            type_name: "VARCHAR".to_owned(),
+        })],
+        vec![text("ON"), row(ParameterValue::I32(1))],
+    ] {
+        let error = parse_varchar2_compat(&unproven).expect_err("non provata");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
+}

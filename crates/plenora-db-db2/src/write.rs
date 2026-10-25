@@ -16,6 +16,7 @@ use plenora_database_core::plan::{
 use plenora_database_core::primary_key::validate_create_primary_key;
 use plenora_database_core::provider::{BatchStream, ParameterValue, PreparedWrite, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
+use plenora_database_core::store_rewrite::{ColumnRewrites, RewriteGuard, StoreRewrite};
 use plenora_database_core::transaction::{
     CommitOutcome, Statement, TransactionOptions, TransactionScope,
 };
@@ -45,6 +46,11 @@ pub struct Db2WritePlan {
     keys: Vec<usize>,
     updates: Vec<usize>,
     create_sql: Option<String>,
+    /// Il tipo nativo e la lunghezza del target per ogni colonna, per la
+    /// regola S (`plenora_database_core::store_rewrite`): dal catalogo nel
+    /// preflight, dai tipi di Create.
+    targets: Vec<(String, u64)>,
+    policy: MappingPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +138,17 @@ impl Db2WritePlan {
         let create_sql = (operation.mode == WriteMode::Create)
             .then(|| create_table_sql(&target, &columns, &keys))
             .transpose()?;
+        // Create: i tipi di `native_type` (`CLOB(2G)`, `DOUBLE`, ...); per un
+        // target esistente li sostituisce il preflight.
+        let targets = columns
+            .iter()
+            .map(|column| {
+                column.native_type().map(|native| {
+                    let base = native.split('(').next().unwrap_or_default().to_owned();
+                    (base, u64::MAX)
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             mode: operation.mode,
             target,
@@ -141,10 +158,27 @@ impl Db2WritePlan {
             keys,
             updates,
             create_sql,
+            targets,
+            policy: operation.mapping_policy,
         })
     }
 
-    fn preflight(&self, target: &Db2ObjectDescription) -> Result<LossReport> {
+    /// Le riscritture al salvataggio del target (regola S), con la
+    /// semantica `VARCHAR2` letta nella transazione della scrittura.
+    fn rewrites(&self, varchar2: bool) -> Vec<ColumnRewrites> {
+        self.columns
+            .iter()
+            .zip(&self.targets)
+            .enumerate()
+            .map(|(index, (column, (native, length)))| ColumnRewrites {
+                field: index,
+                target_type: native.clone(),
+                rewrites: store_rewrites(column, native, *length, varchar2),
+            })
+            .collect()
+    }
+
+    fn preflight(&mut self, target: &Db2ObjectDescription) -> Result<LossReport> {
         if target.kind != "TABLE" {
             return Err(prepare_error(
                 ErrorCategory::Unsupported,
@@ -211,9 +245,24 @@ impl Db2WritePlan {
                 "le chiavi Db2 devono corrispondere a un indice univoco",
             ));
         }
+        self.targets = self
+            .columns
+            .iter()
+            .map(|column| {
+                target
+                    .columns
+                    .iter()
+                    .find(|candidate| candidate.name == column.name)
+                    .map(|server| (server.data_type.to_ascii_uppercase(), server.length))
+                    .unwrap_or_default()
+            })
+            .collect();
+        // La politica e quella richiesta (fino al 25/10 sempre `Strict`);
+        // `validate_operation` ammette soltanto `Strict`, e la regola S
+        // rifiuta il valore invece di dichiararlo.
         Ok(LossReport {
             schema_version: 2,
-            policy: MappingPolicy::Strict,
+            policy: self.policy,
             losses: Vec::new(),
         })
     }
@@ -484,12 +533,15 @@ pub async fn prepare_write(
     let plan = Db2WritePlan::compile(config, &input_schema, operation)?;
     let (operation_lease, columns_lease) =
         ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
-    let loss_report = if operation.mode == WriteMode::Create {
-        LossReport {
-            schema_version: 2,
-            policy: MappingPolicy::Strict,
-            losses: Vec::new(),
-        }
+    let (loss_report, plan) = if operation.mode == WriteMode::Create {
+        (
+            LossReport {
+                schema_version: 2,
+                policy: operation.mapping_policy,
+                losses: Vec::new(),
+            },
+            plan,
+        )
     } else {
         let config = config.clone();
         let secret = secret.clone();
@@ -499,11 +551,12 @@ pub async fn prepare_write(
             .clone()
             .unwrap_or_else(|| config.username().to_ascii_uppercase());
         let object = operation.target.object.clone();
-        let plan_for_probe = plan.clone();
+        let mut plan_for_probe = plan;
         let task = tokio::task::spawn_blocking(move || {
             let (connection, timeout) = open_connection(&config, &secret)?;
             let target = describe_object(&connection, timeout, &schema, &object)?;
-            plan_for_probe.preflight(&target)
+            let report = plan_for_probe.preflight(&target)?;
+            Ok::<_, DatabaseError>((report, plan_for_probe))
         });
         task.await.map_err(|_| task_error(ErrorPhase::Prepare))??
     };
@@ -523,7 +576,7 @@ pub async fn execute_write(
     config: &Db2Config,
     secret: &SecretString,
     mut prepared: PreparedWrite,
-    mut input: Box<dyn BatchStream>,
+    input: Box<dyn BatchStream>,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<WriteOutcome> {
@@ -557,6 +610,23 @@ pub async fn execute_write(
         cancellation,
     )
     .await?;
+    // La regola S nella transazione della scrittura, con la semantica
+    // `VARCHAR2` del database letta qui: un valore che Db2 riscriverebbe al
+    // salvataggio si rifiuta prima del primo statement che lo lega.
+    let guard = match varchar2_compat(&mut transaction, cancellation)
+        .await
+        .and_then(|varchar2| {
+            RewriteGuard::new(
+                ProviderKind::Db2,
+                &prepared.input_schema,
+                &prepared.operation,
+                plan.rewrites(varchar2),
+            )
+        }) {
+        Ok(guard) => guard,
+        Err(error) => return Err(rollback_and_shape(Box::new(transaction), error).await),
+    };
+    let mut input = plenora_database_core::store_rewrite::guard_input(input, guard);
     let execution_id = format!(
         "db2-write-{}",
         EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
@@ -1254,6 +1324,106 @@ fn native_type_matches(column: &WriteColumn, server: &crate::Db2Column) -> bool 
         DataType::Date32 => native == "DATE",
         DataType::Timestamp(TimeUnit::Microsecond, None) => native == "TIMESTAMP",
         _ => false,
+    }
+}
+
+/// La semantica `VARCHAR2` del database (`varchar2_compat`), letta nella
+/// transazione della scrittura da `SYSIBMADM.DBCFG`: il parametro si fissa
+/// alla creazione del database con `DB2_COMPATIBILITY_VECTOR=ORA`, e da
+/// allora il testo vuoto si salva come `NULL`. Fino al 25/10 il provider non
+/// lo leggeva.
+///
+/// # Errors
+///
+/// `unsupported` (fase `write`) se il parametro non si legge o non ha la
+/// forma attesa: la regola S non e provata, e la scrittura non parte.
+/// Cancellazione e timeout restano tali.
+async fn varchar2_compat(
+    transaction: &mut Db2Transaction,
+    cancellation: &CancellationToken,
+) -> Result<bool> {
+    let statement = Statement::new(VARCHAR2_COMPAT_SQL);
+    let rows = match transaction.query(&statement, cancellation).await {
+        Ok(rows) => rows,
+        Err(error)
+            if matches!(
+                error.category,
+                ErrorCategory::Cancelled | ErrorCategory::Timeout
+            ) =>
+        {
+            return Err(error);
+        }
+        Err(_) => return Err(varchar2_unproven()),
+    };
+    parse_varchar2_compat(&rows)
+}
+
+/// La lettura di `varchar2_compat`: una riga per membro.
+pub const VARCHAR2_COMPAT_SQL: &str =
+    "SELECT VARCHAR(VALUE, 16) FROM SYSIBMADM.DBCFG WHERE NAME = 'varchar2_compat'";
+
+/// `ON` in almeno un membro e la semantica attiva; ogni riga e `ON` o `OFF`,
+/// e almeno una riga c'e.
+pub fn parse_varchar2_compat(rows: &[plenora_database_core::row::Row]) -> Result<bool> {
+    if rows.is_empty() {
+        return Err(varchar2_unproven());
+    }
+    let mut active = false;
+    for row in rows {
+        match row.get_index(0) {
+            Some(ParameterValue::String(value)) if value.trim().eq_ignore_ascii_case("ON") => {
+                active = true;
+            }
+            Some(ParameterValue::String(value)) if value.trim().eq_ignore_ascii_case("OFF") => {}
+            _ => return Err(varchar2_unproven()),
+        }
+    }
+    Ok(active)
+}
+
+fn varchar2_unproven() -> DatabaseError {
+    write_error(
+        ErrorCategory::Unsupported,
+        "semantica VARCHAR2 di Db2 (varchar2_compat) non letta: la regola S non e provata",
+    )
+}
+
+/// Le riscritture al salvataggio di Db2 per una colonna (regola S,
+/// `plenora_database_core::store_rewrite`), misurate il 25/10 su Db2 12.1.5:
+///
+/// - con `varchar2_compat` attivo il testo vuoto diventa `NULL` in ogni tipo
+///   di testo;
+/// - `CHAR(n)` completa con spazi un testo piu corto;
+/// - `CHAR(n)` e `VARCHAR(n)` troncano in silenzio gli spazi finali oltre la
+///   lunghezza (`'abc   '` verso `VARCHAR(3)` diventava `'abc'`): la
+///   lunghezza e in byte (`string_units = SYSTEM`), e si rifiuta ogni testo
+///   piu lungo in byte che finisce con uno spazio;
+/// - `DOUBLE` e `REAL` salvano `-0.0` come `0`.
+fn store_rewrites(
+    column: &WriteColumn,
+    native: &str,
+    length: u64,
+    varchar2: bool,
+) -> Vec<StoreRewrite> {
+    if column.spatial.is_some() {
+        return Vec::new();
+    }
+    match column.data_type {
+        DataType::Utf8 | DataType::LargeUtf8 => {
+            let mut rewrites = Vec::new();
+            if varchar2 {
+                rewrites.push(StoreRewrite::EmptyToNull);
+            }
+            if matches!(native, "CHARACTER" | "CHAR") {
+                rewrites.push(StoreRewrite::PadText { chars: length });
+            }
+            if matches!(native, "CHARACTER" | "CHAR" | "VARCHAR") {
+                rewrites.push(StoreRewrite::ExcessSpaces { bytes: length });
+            }
+            rewrites
+        }
+        DataType::Float32 | DataType::Float64 => vec![StoreRewrite::NegativeZero],
+        _ => Vec::new(),
     }
 }
 

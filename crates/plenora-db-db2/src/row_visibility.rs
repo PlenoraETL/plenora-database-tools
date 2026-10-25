@@ -45,9 +45,16 @@ use plenora_database_core::{CancellationToken, ErrorCategory, ErrorPhase, Result
 /// distruttivo, trigger `INSTEAD OF` per gli eventi della mode. Un target
 /// assente rende `-` come tipo; un evento che la mode non ha si passa come
 /// [`NO_EVENT`].
+///
+/// Il controllo di accesso assente si legge `-`, non come testo vuoto: con la
+/// semantica `VARCHAR2` (`varchar2_compat`) il testo vuoto e `NULL`, e fino al
+/// 25/10 la colonna tornava `NULL` per ogni tabella senza controllo, la
+/// regola R leggeva un catalogo illeggibile e ogni scrittura si rifiutava (la
+/// stessa classe della regola S, `crate::write`).
 pub const FACTS_SQL: &str = "SELECT \
     COALESCE((SELECT TRIM(TYPE) FROM SYSCAT.TABLES WHERE TABSCHEMA = ? AND TABNAME = ?), '-'), \
-    COALESCE((SELECT TRIM(CONTROL) FROM SYSCAT.TABLES WHERE TABSCHEMA = ? AND TABNAME = ?), ''), \
+    COALESCE((SELECT NULLIF(TRIM(CONTROL), '') FROM SYSCAT.TABLES \
+      WHERE TABSCHEMA = ? AND TABNAME = ?), '-'), \
     CASE WHEN EXISTS (SELECT 1 FROM SYSCAT.TRIGGERS \
       WHERE TABSCHEMA = ? AND TABNAME = ? AND TRIGEVENT IN (?, 'M')) THEN 'Y' ELSE 'N' END, \
     CASE WHEN EXISTS (SELECT 1 FROM SYSCAT.TRIGGERS \

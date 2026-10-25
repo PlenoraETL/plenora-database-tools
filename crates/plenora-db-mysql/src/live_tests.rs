@@ -9309,3 +9309,134 @@ async fn live_t_target_senza_schema_si_risolve_nel_database_della_sessione() {
     assert_eq!(after, ["1:a", "2:b", "3:a", "7:t"]);
     assert_eq!(ids, [1, 2, 3, 7]);
 }
+
+/// La regola S e gli spazi finali delle chiavi (sesta rilettura del 25/10):
+/// sotto una collation `PAD SPACE` (`utf8mb4_general_ci`) `'x'` e `'x '` sono
+/// la stessa voce dell'indice, e l'Upsert di entrambe confermava 2 con una
+/// sola riga; il core confronta ora le chiavi senza gli spazi finali e
+/// rifiuta. Il `DOUBLE` di `MySQL` conserva `-0.0` (quello di `MariaDB` lo
+/// salva come `0`, e la regola S lo rifiuta) e il testo conserva il carattere
+/// NUL; `CHAR`, `BINARY`, `ENUM` e `SET` non sono tipi scrivibili.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+#[allow(clippy::too_many_lines)]
+async fn live_s_spazi_finali_delle_chiavi_e_meno_zero() {
+    use plenora_database_core::arrow::array::{Array, Float64Array, StringArray};
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let setup = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (code VARCHAR(16) NOT NULL PRIMARY KEY, \
+             label VARCHAR(64) NULL, d DOUBLE NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 \
+             COLLATE utf8mb4_general_ci"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES ('x', 'prima', NULL)"),
+    ];
+    let setup: Vec<&str> = setup.iter().map(String::as_str).collect();
+    semantica_prepare(&mut connection, &setup).await;
+    let metadata = std::collections::HashMap::from([(
+        plenora_database_core::protocol::CONTRACT_VERSION_KEY.to_owned(),
+        plenora_database_core::protocol::CONTRACT_VERSION.to_owned(),
+    )]);
+    let schema = std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("code", DataType::Utf8, false),
+            Field::new("label", DataType::Utf8, true),
+        ],
+        metadata.clone(),
+    ));
+    let batch = |codes: Vec<&str>, labels: Vec<&str>| {
+        plenora_database_core::arrow::RecordBatch::try_new(
+            std::sync::Arc::clone(&schema),
+            vec![
+                std::sync::Arc::new(StringArray::from(codes)) as std::sync::Arc<dyn Array>,
+                std::sync::Arc::new(StringArray::from(labels)),
+            ],
+        )
+        .expect("batch")
+    };
+    let mut difformi = Vec::new();
+    for mode in [
+        plenora_database_core::plan::WriteMode::Upsert,
+        plenora_database_core::plan::WriteMode::Update,
+    ] {
+        let mut operation = semantica_operation(mode);
+        operation.keys = vec!["code".to_owned()];
+        operation.update_columns = Vec::new();
+        let written =
+            semantica_write_batch(&operation, batch(vec!["x", "x "], vec!["uno", "due"])).await;
+        let refused = written.as_ref().err().is_some_and(|error| {
+            error.category == ErrorCategory::DataMapping
+                && error
+                    .message
+                    .ends_with(plenora_database_core::write_keys::DUPLICATE_INPUT_KEYS)
+        });
+        if !refused {
+            difformi.push(format!(
+                "{mode:?}: {:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    // Il NUL e -0.0 si conservano.
+    let append = semantica_operation(plenora_database_core::plan::WriteMode::Append);
+    if let Err(error) = semantica_write_batch(&append, batch(vec!["n"], vec!["a\0b"])).await {
+        difformi.push(format!("NUL: {error:?}"));
+    }
+    let floats = std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("code", DataType::Utf8, false),
+            Field::new("d", DataType::Float64, true),
+        ],
+        metadata,
+    ));
+    let zero = plenora_database_core::arrow::RecordBatch::try_new(
+        floats,
+        vec![
+            std::sync::Arc::new(StringArray::from(vec!["z"])) as std::sync::Arc<dyn Array>,
+            std::sync::Arc::new(Float64Array::from(vec![-0.0])),
+        ],
+    )
+    .expect("batch");
+    // `MariaDB` salva -0.0 come 0 (anche da uno statement preparato): la
+    // regola S lo rifiuta. `MySQL` lo conserva.
+    let written = semantica_write_batch(&append, zero).await;
+    let zero_row = if semantica_mariadb() {
+        let refused = written.as_ref().is_err_and(|error| {
+            error.category == ErrorCategory::DataMapping
+                && error
+                    .message
+                    .contains(plenora_database_core::store_rewrite::REWRITTEN_VALUE)
+        });
+        if !refused {
+            difformi.push(format!(
+                "-0.0 MariaDB: {:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+        None
+    } else {
+        if let Err(error) = written {
+            difformi.push(format!("-0.0: {error:?}"));
+        }
+        Some("z:-:-0")
+    };
+    let after = connection
+        .query::<String, _>(format!(
+            "SELECT CONCAT(code, ':', IFNULL(label, '-'), ':', IFNULL(CONCAT(d), '-')) \
+             FROM `{SEMANTICA_TABLE}` ORDER BY code"
+        ))
+        .await
+        .expect("righe");
+    semantica_cleanup(&mut connection).await;
+    let expected: Vec<&str> = ["n:a\0b:-", "x:prima:-"]
+        .into_iter()
+        .chain(zero_row)
+        .collect();
+    if after != expected {
+        difformi.push(format!("righe {after:?}"));
+    }
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}

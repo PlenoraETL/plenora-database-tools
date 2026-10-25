@@ -632,6 +632,7 @@ async fn assign_session_rules<C: tokio_postgres::GenericClient + Sync>(
 ) -> Result<()> {
     let rules = canonical::rules(client, operation, schema, ErrorPhase::Write).await?;
     canonical::assign(plans, schema, &rules);
+    canonical::mark_keys(plans, schema, operation);
     canonical::refuse_lossy(plans)
 }
 
@@ -652,6 +653,7 @@ pub async fn assign_dry_run_session_rules(
         let rules = canonical::rules(client, operation, schema, ErrorPhase::Write).await?;
         canonical::assign(&mut state.column_plans, schema, &rules);
     }
+    canonical::mark_keys(&mut state.column_plans, schema, operation);
     canonical::refuse_lossy(&state.column_plans)
 }
 

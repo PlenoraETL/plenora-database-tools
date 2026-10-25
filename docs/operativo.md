@@ -60,3 +60,24 @@ esplicita della campagna.
 L'immagine Community non assume la presenza di `SYSTOOLSPACE`: il reset usa DDL
 esplicito e verificato. Questo rende il secondo avvio una parte della prova di
 idempotenza, non una condizione lasciata alla storia del volume locale.
+
+## Db2 con la semantica VARCHAR2
+
+La regola S (`plenora_database_core::store_rewrite`) legge `varchar2_compat`
+da `SYSIBMADM.DBCFG` nella transazione di ogni scrittura Db2: con `ON` il testo
+vuoto si salva come `NULL` e si rifiuta. Il parametro si fissa alla creazione
+del database, e il fixture del gate non ne crea uno con la semantica attiva.
+La prova `write_rewrite_ora_tests::db2_ora_s_testo_vuoto_con_varchar2_compat_non_diventa_null`
+non e quindi nel gate (il suo nome non contiene il prefisso dei test live) e si
+esegue a mano, nel container del fixture:
+
+```sh
+su - db2inst1 -c "db2set DB2_COMPATIBILITY_VECTOR=ORA && db2stop force && db2start \
+  && db2 create database PLNORA && db2set DB2_COMPATIBILITY_VECTOR= \
+  && db2stop force && db2start"
+PLENORA_DB2_ORA_DATABASE=plnora cargo test --locked -p plenora-db-db2 --lib \
+  db2_ora_s -- --ignored
+```
+
+Il vettore si toglie subito dopo la creazione: `varchar2_compat` resta `ON` nel
+nuovo database e `OFF` in `plenora`.

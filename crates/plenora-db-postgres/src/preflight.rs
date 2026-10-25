@@ -110,6 +110,9 @@ pub async fn write(
             .is_some_and(|losses| losses.contains(&loss))
     };
     let strict = operation.mapping_policy == MappingPolicy::Strict;
+    // In una chiave un valore riscritto si rifiuta con ogni politica (regola
+    // S): non e una perdita da dichiarare.
+    let is_key = |name: &str| operation.keys.iter().any(|key| key == name);
     let mut losses = Vec::new();
     if exists && operation.mode != WriteMode::Create {
         let (target_columns, _schema_token) =
@@ -200,6 +203,25 @@ pub async fn write(
                 || leaf(source.name(), LeafLoss::Bounded);
             if bounded && !strict {
                 losses.push(bounded_loss(
+                    field_id,
+                    source,
+                    target.native_declaration.clone(),
+                )?);
+            }
+            // La regola S: `char(n)` completa con spazi un testo piu corto.
+            // Con `Strict` la scrittura lo rifiuta valore per valore (e in una
+            // chiave con ogni politica); con le altre politiche si dichiara.
+            let padded = target
+                .native_declaration
+                .as_deref()
+                .or(target.domain_base_type.as_deref())
+                .is_some_and(|declaration| {
+                    let base = declaration.trim_end_matches("[]");
+                    base.starts_with("character(") && base.ends_with(')')
+                })
+                || leaf(source.name(), LeafLoss::Padded);
+            if padded && !strict && !is_key(source.name()) {
+                losses.push(padded_loss(
                     field_id,
                     source,
                     target.native_declaration.clone(),
@@ -316,6 +338,9 @@ pub async fn write(
             }
             if leaf(name, LeafLoss::Bounded) {
                 losses.push(bounded_loss(field_id, source, declared.clone())?);
+            }
+            if leaf(name, LeafLoss::Padded) && !is_key(name) {
+                losses.push(padded_loss(field_id, source, declared.clone())?);
             }
             if leaf(name, LeafLoss::Rounding) {
                 losses.push(rounding_loss(field_id, source, declared.clone())?);
@@ -490,6 +515,26 @@ fn bounded_loss(
         category: LossCategory::Precision,
         severity: LossSeverity::Warning,
         reason: "gli spazi finali oltre la lunghezza della colonna si troncherebbero".to_owned(),
+        source_type: Some(source.data_type().to_string()),
+        target_type,
+    })
+}
+
+/// `char(n)` completa con spazi un testo piu corto (regola S,
+/// `plenora_database_core::store_rewrite`), anche dentro un dominio, un array
+/// o un composto.
+fn padded_loss(
+    field_id: usize,
+    source: &arrow_schema::Field,
+    target_type: Option<String>,
+) -> Result<MappingLoss> {
+    Ok(MappingLoss {
+        field_id: field_number(field_id)?,
+        category: LossCategory::NativeType,
+        severity: LossSeverity::DataLoss,
+        reason: plenora_database_core::store_rewrite::StoreRewrite::PadText { chars: 0 }
+            .reason()
+            .to_owned(),
         source_type: Some(source.data_type().to_string()),
         target_type,
     })

@@ -43,6 +43,7 @@ pub mod spatial_catalog;
 pub mod spatial_policy;
 pub mod spatial_predicate;
 pub mod spatial_probe;
+pub mod store_rewrite;
 pub mod strict_json;
 pub mod transaction;
 pub mod write_keys;

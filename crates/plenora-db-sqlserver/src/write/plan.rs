@@ -11,6 +11,7 @@ use plenora_database_core::loss::{
 };
 use plenora_database_core::plan::{TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::protocol;
+use plenora_database_core::store_rewrite::{ColumnRewrites, StoreRewrite};
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
 use std::collections::{HashMap, HashSet};
@@ -25,6 +26,9 @@ pub(super) struct WriteColumnPlan {
     pub(super) nullable: bool,
     pub(super) collation: Option<String>,
     pub(super) spatial_srid: Option<u32>,
+    /// Le riscritture al salvataggio della colonna del target (regola S,
+    /// [`store_rewrites`]).
+    pub(super) rewrites: Vec<StoreRewrite>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +106,7 @@ impl WritePlan {
         input_schema: SchemaRef,
         observed_spatial: &HashMap<String, ObservedSpatialContract>,
         schema_evolution: super::SqlServerSchemaEvolution,
+        ansi_padding: &HashMap<String, bool>,
     ) -> Result<Self> {
         validate_operation(operation)?;
         if input_schema.fields().is_empty() {
@@ -179,6 +184,14 @@ impl WritePlan {
                     source_type: field.data_type().to_string(),
                     native_declaration: target_spec.native_declaration.clone(),
                 });
+                // La colonna aggiunta nasce con `ANSI_PADDING ON`, quello della
+                // sessione (`crate::session`).
+                let rewrites = store_rewrites(
+                    &target_spec.native_type,
+                    &target_spec.native_declaration,
+                    true,
+                    true,
+                );
                 columns.push(WriteColumnPlan {
                     input_index,
                     name: field.name().clone(),
@@ -188,6 +201,7 @@ impl WritePlan {
                     nullable: true,
                     collation: target_spec.collation,
                     spatial_srid,
+                    rewrites,
                 });
                 continue;
             };
@@ -201,6 +215,13 @@ impl WritePlan {
             validate_arrow_type(field, &target_spec)?;
             let spatial_srid =
                 validate_spatial_contract(field, &target_spec, observed_spatial.get(&target.name))?;
+            let rewrites = store_rewrites(
+                &target_spec.native_type,
+                &target_spec.native_declaration,
+                target.nullable,
+                // Assente: senza riempimento, la lettura piu stretta.
+                ansi_padding.get(&target.name).copied().unwrap_or(false),
+            );
             columns.push(WriteColumnPlan {
                 input_index,
                 name: target.name.clone(),
@@ -210,6 +231,7 @@ impl WritePlan {
                 nullable: target.nullable,
                 collation: target.collation.clone(),
                 spatial_srid,
+                rewrites,
             });
         }
         for (column, field) in columns.iter().zip(input_schema.fields()) {
@@ -331,6 +353,7 @@ const fn supports_additive_evolution(mode: WriteMode) -> bool {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn compile_new_target(
     operation: &WriteOperation,
     input_schema: SchemaRef,
@@ -379,6 +402,13 @@ fn compile_new_target(
                 ));
             }
         }
+        // Create e Replace creano la tabella con `ANSI_PADDING ON`.
+        let rewrites = store_rewrites(
+            &spec.native_type,
+            &spec.native_declaration,
+            field.is_nullable(),
+            true,
+        );
         columns.push(WriteColumnPlan {
             input_index,
             name: field.name().clone(),
@@ -388,6 +418,7 @@ fn compile_new_target(
             nullable: field.is_nullable(),
             collation: spec.collation,
             spatial_srid,
+            rewrites,
         });
     }
     let mut precision_losses = Vec::new();
@@ -1307,9 +1338,9 @@ pub(super) fn offset_scale(native_type: &str, declaration: &str) -> Option<u32> 
 ///   (`Latin1_General_*`, `SQL_Latin1_General_CP1_*`); verso ogni altra
 ///   collation che non e `_UTF8` si ammette soltanto ASCII, anche dove la
 ///   code page rappresenterebbe il carattere.
-///   `char(n)` e `nchar(n)` completano con spazi i valori piu corti: e la
-///   semantica del tipo, che li confronta senza gli spazi finali, e non si
-///   rifiuta. `xml` normalizza la forma del documento (dichiarazione, apici,
+///   `char(n)` e `nchar(n)` completano con spazi i valori piu corti: dal
+///   25/10 (sesta rilettura) e la regola S ([`store_rewrites`]), non piu
+///   «semantica del tipo». `xml` normalizza la forma del documento (dichiarazione, apici,
 ///   elementi vuoti, CDATA, riferimenti ai caratteri) anche con `Strict`:
 ///   chi confronta il testo e non l'infoset vede un valore diverso.
 /// - **Rientro**: la code page dal catalogo (`COLLATIONPROPERTY(...,
@@ -1382,7 +1413,69 @@ fn rule_p(
             "le cifre frazionarie oltre la scala della colonna si arrotonderebbero",
         ));
     }
+    // La regola S: in una chiave un valore riscritto si rifiuta con ogni
+    // politica, e non e una perdita da dichiarare.
+    if !operation.keys.contains(&column.name) {
+        losses.extend(
+            plenora_database_core::store_rewrite::RewriteGuard::new(
+                plenora_database_core::plan::ProviderKind::Sqlserver,
+                &std::sync::Arc::new(plenora_database_core::arrow::schema::Schema::new(vec![
+                    field.clone(),
+                ])),
+                operation,
+                vec![ColumnRewrites {
+                    field: 0,
+                    target_type: column.native_declaration.clone(),
+                    rewrites: column.rewrites.clone(),
+                }],
+            )?
+            .losses()
+            .into_iter()
+            .map(|mut rewrite| {
+                rewrite.field_id = field_id;
+                rewrite.source_type = Some(field.data_type().to_string());
+                rewrite
+            }),
+        );
+    }
     Ok(())
+}
+
+/// Le riscritture al salvataggio di SQL Server per una colonna (regola S,
+/// `plenora_database_core::store_rewrite`), misurate il 25/10 su SQL Server
+/// 2022:
+///
+/// - `char(n)` e `nchar(n)` completano con spazi un testo piu corto (`'a'`
+///   verso `char(3)` torna `'a  '`), `binary(n)` con `0x00` un binario piu
+///   corto (`0x01` verso `binary(3)` torna `0x010000`);
+/// - una colonna creata con `ANSI_PADDING OFF` (`sys.columns.is_ansi_padded =
+///   0`) toglie gli spazi finali da `varchar(n)` e da `char(n)` nullable, e gli
+///   `0x00` finali da `varbinary(n)` e da `binary(n)` nullable (`'a  '`
+///   tornava `'a'`, `0x0100` tornava `0x01`). L'impostazione non tocca
+///   `nchar`, `nvarchar` e i tipi `max`. La sessione la fissa a `ON` soltanto
+///   per le colonne che crea.
+///
+/// Fino al 25/10 il riempimento di `char(n)` era dichiarato «semantica del
+/// tipo» e si scriveva con `Strict`; `ANSI_PADDING OFF` non si leggeva.
+pub(super) fn store_rewrites(
+    native_type: &str,
+    declaration: &str,
+    nullable: bool,
+    ansi_padded: bool,
+) -> Vec<StoreRewrite> {
+    let length = declaration_argument(declaration).and_then(|value| value.parse::<u64>().ok());
+    let Some(length) = length else {
+        return Vec::new();
+    };
+    match native_type {
+        "nchar" => vec![StoreRewrite::PadText { chars: length }],
+        "char" if ansi_padded || !nullable => vec![StoreRewrite::PadText { chars: length }],
+        "binary" if ansi_padded || !nullable => vec![StoreRewrite::PadBinary { bytes: length }],
+        "char" | "varchar" | "binary" | "varbinary" if !ansi_padded => {
+            vec![StoreRewrite::StripTrailing]
+        }
+        _ => Vec::new(),
+    }
 }
 
 pub(super) fn plan_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {

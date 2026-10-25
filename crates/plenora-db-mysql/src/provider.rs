@@ -650,6 +650,45 @@ async fn execute_mysql_write(
         // `NULL`: due chiavi con un `NULL` non sono la stessa voce.
         plenora_database_core::write_keys::NullKeys::Distinct,
     )?;
+    // La regola S: `MariaDB` salva `-0.0` come `0` in `DOUBLE` e `FLOAT`
+    // (`ProductProfile::keeps_negative_zero`). Gli altri tipi scrivibili non
+    // riscrivono (`CHAR`, `BINARY`, `ENUM` e `SET` non sono ammessi, la
+    // sessione fissa `sql_mode`), e la scrittura e soltanto `Strict`.
+    let input = if provider.profile.keeps_negative_zero() {
+        input
+    } else {
+        let schema = input.schema();
+        let floats = schema
+            .fields()
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| {
+                matches!(
+                    field.data_type(),
+                    plenora_database_core::arrow::schema::DataType::Float32
+                        | plenora_database_core::arrow::schema::DataType::Float64
+                )
+            })
+            .map(
+                |(index, field)| plenora_database_core::store_rewrite::ColumnRewrites {
+                    field: index,
+                    target_type: field.data_type().to_string(),
+                    rewrites: vec![
+                        plenora_database_core::store_rewrite::StoreRewrite::NegativeZero,
+                    ],
+                },
+            )
+            .collect();
+        plenora_database_core::store_rewrite::guard_input(
+            input,
+            plenora_database_core::store_rewrite::RewriteGuard::new(
+                provider.profile.kind(),
+                &schema,
+                operation,
+                floats,
+            )?,
+        )
+    };
     let effective_cancellation = crate::read::BudgetCancellation::new(cancellation, budget)?;
     let token = effective_cancellation.token();
     let pool = provider.pool_for(secret)?;

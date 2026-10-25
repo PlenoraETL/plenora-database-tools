@@ -319,3 +319,51 @@ fn update_non_aggiorna_una_chiave() {
         .expect("colonna non chiave");
     refuse_key_in_update_columns(&operation(WriteMode::Upsert, &[])).expect("altre mode");
 }
+
+#[test]
+fn gli_spazi_finali_non_distinguono_due_chiavi() {
+    let budget = budget();
+    let mut seen =
+        UniqueInputKeys::new(&schema(), &keys(&["label"]), NullKeys::Distinct).expect("chiavi");
+    let error = seen
+        .admit(
+            &batch(&[Some(1), Some(2)], &[Some("a"), Some("a  ")]),
+            &budget,
+        )
+        .expect_err("stessa voce dell'indice con il riempimento");
+    assert!(error.message.contains(DUPLICATE_INPUT_KEYS));
+    let mut seen =
+        UniqueInputKeys::new(&schema(), &keys(&["label"]), NullKeys::Distinct).expect("chiavi");
+    // Gli spazi iniziali e gli altri caratteri bianchi distinguono ancora.
+    seen.admit(
+        &batch(
+            &[Some(1), Some(2), Some(3)],
+            &[Some("a"), Some(" a"), Some("a\t")],
+        ),
+        &budget,
+    )
+    .expect("distinte");
+}
+
+#[test]
+fn gli_zeri_finali_non_distinguono_due_chiavi_binarie() {
+    use arrow_array::BinaryArray;
+    let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Binary, true)]));
+    let batch = |values: Vec<&[u8]>| {
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(BinaryArray::from(values)) as ArrayRef],
+        )
+        .expect("batch")
+    };
+    let mut seen =
+        UniqueInputKeys::new(&schema, &keys(&["k"]), NullKeys::Distinct).expect("chiavi");
+    let error = seen
+        .admit(&batch(vec![b"\x01", b"\x01\x00"]), &budget())
+        .expect_err("SQL Server confronta 0x01 = 0x0100");
+    assert!(error.message.contains(DUPLICATE_INPUT_KEYS));
+    let mut seen =
+        UniqueInputKeys::new(&schema, &keys(&["k"]), NullKeys::Distinct).expect("chiavi");
+    seen.admit(&batch(vec![b"\x01", b"\x00\x01", b""]), &budget())
+        .expect("gli zeri iniziali distinguono");
+}

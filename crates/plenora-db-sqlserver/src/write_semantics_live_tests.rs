@@ -650,3 +650,8 @@ mod r3;
 #[cfg(test)]
 #[path = "write_semantics_r4_live_tests.rs"]
 mod r4;
+
+// La sesta rilettura del 25/10 (regola S).
+#[cfg(test)]
+#[path = "write_semantics_r7_live_tests.rs"]
+mod r7;

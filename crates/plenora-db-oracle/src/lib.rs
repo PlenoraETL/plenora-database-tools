@@ -48,3 +48,7 @@ mod types_tests;
 #[cfg(test)]
 #[path = "live_tests.rs"]
 mod live_tests;
+
+#[cfg(test)]
+#[path = "write_rewrite_live_tests.rs"]
+mod write_rewrite_live_tests;

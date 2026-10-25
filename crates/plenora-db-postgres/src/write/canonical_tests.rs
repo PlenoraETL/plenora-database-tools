@@ -161,6 +161,11 @@ fn la_classe_viene_dalla_funzione_d_ingresso() {
         classify(Some("bpcharin"), -1),
         LeafClass::Text { max_chars: None }
     );
+    // `char(3)` ha typmod 7 e completa con spazi (regola S).
+    assert_eq!(
+        classify(Some("bpcharin"), 7),
+        LeafClass::Padded { chars: 3 }
+    );
     // Mondo chiuso: una funzione in C, `xml_in`, `charin`, `regclassin`.
     for symbol in [
         None,
@@ -319,6 +324,7 @@ fn le_perdite_vengono_dalle_foglie() {
             })
             .collect(),
         strict: false,
+        key: false,
     };
     let text = DataType::Utf8;
     let list = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
@@ -366,4 +372,48 @@ fn le_perdite_vengono_dalle_foglie() {
         &text
     )
     .is_empty());
+}
+
+/// Regola S: `char(n)` completa con spazi un testo piu corto. Con `Strict`
+/// si rifiuta; con le altre politiche passa (la perdita e nel `LossReport`),
+/// tranne in una chiave, dove si rifiuta con ogni politica.
+#[test]
+fn char_n_completa_e_la_regola_s_lo_rifiuta() {
+    use arrow_array::StringArray;
+    let rule = |strict: bool, key: bool| SessionRule {
+        leaves: vec![Leaf {
+            class: LeafClass::Padded { chars: 3 },
+            shape: SessionShape::Scalar,
+        }],
+        strict,
+        key,
+    };
+    let values = StringArray::from(vec!["abc", "ab", "", "abcd"]);
+    let check =
+        |rule: &SessionRule, row: usize| super::check_text(rule, Some(3), Some(3), &values, row);
+    let strict = rule(true, false);
+    check(&strict, 0).expect("lunghezza piena");
+    for row in [1, 2] {
+        let error = check(&strict, row).expect_err("completato");
+        assert!(error
+            .message
+            .contains(plenora_database_core::store_rewrite::REWRITTEN_VALUE));
+    }
+    assert!(check(&strict, 3).is_err(), "regola P: oltre la lunghezza");
+    let lenient = rule(false, false);
+    for row in 0..4 {
+        check(&lenient, row).expect("dichiarato nel LossReport");
+    }
+    let key = rule(false, true);
+    check(&key, 0).expect("chiave piena");
+    for row in [1, 2, 3] {
+        let error = check(&key, row).expect_err("chiave riscritta");
+        assert!(error
+            .message
+            .contains(plenora_database_core::store_rewrite::REWRITTEN_KEY));
+    }
+    assert_eq!(
+        leaf_losses(&strict, &DataType::Utf8),
+        std::iter::once(LeafLoss::Padded).collect()
+    );
 }

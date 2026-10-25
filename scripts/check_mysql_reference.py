@@ -405,6 +405,8 @@ EXPECTED_LIVE_REFERENCE_TESTS = {
     # e la regola T (target senza schema nel database della sessione).
     "live_tests::live_s6_upsert_rifiuta_un_indice_unico_che_non_e_la_chiave",
     "live_tests::live_t_target_senza_schema_si_risolve_nel_database_della_sessione",
+    # La sesta rilettura del 25/10: regola S e gli spazi finali delle chiavi.
+    "live_tests::live_s_spazi_finali_delle_chiavi_e_meno_zero",
 }
 
 

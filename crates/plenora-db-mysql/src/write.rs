@@ -1115,6 +1115,8 @@ impl MysqlWritePlan {
                 )));
             }
         }
+        // `Strict` e la politica richiesta: `validate_operation` rifiuta ogni
+        // altra prima del preflight.
         Ok(LossReport {
             schema_version: 2,
             policy: MappingPolicy::Strict,

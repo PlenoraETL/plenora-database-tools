@@ -16,6 +16,7 @@ use plenora_database_core::plan::{
 use plenora_database_core::primary_key::validate_create_primary_key;
 use plenora_database_core::provider::{BatchStream, ParameterValue, PreparedWrite};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
+use plenora_database_core::store_rewrite::{ColumnRewrites, RewriteGuard, StoreRewrite};
 use plenora_database_core::transaction::{CommitOutcome, Statement, TransactionScope};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
@@ -44,6 +45,10 @@ pub struct OracleWritePlan {
     updates: Vec<usize>,
     create_sql: Option<String>,
     create_spatial_index: bool,
+    /// Le riscritture al salvataggio del target (regola S,
+    /// `plenora_database_core::store_rewrite`), dal catalogo nel preflight o
+    /// dai tipi di Create.
+    rewrites: Vec<ColumnRewrites>,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +137,20 @@ impl OracleWritePlan {
         let create_sql = (operation.mode == WriteMode::Create)
             .then(|| create_table_sql(&target, &columns, &keys))
             .transpose()?;
+        // Create: i tipi sono quelli di `native_type` (CLOB, BLOB,
+        // BINARY_DOUBLE). Per un target esistente li sostituisce il preflight.
+        let rewrites = columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| {
+                let native = column.native_type()?;
+                Ok(ColumnRewrites {
+                    field: index,
+                    rewrites: store_rewrites(column, &native, None),
+                    target_type: native,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             mode: operation.mode,
             target,
@@ -142,10 +161,15 @@ impl OracleWritePlan {
             updates,
             create_sql,
             create_spatial_index: operation.create_spatial_index,
+            rewrites,
         })
     }
 
-    fn preflight(&self, target: &OracleObjectDescription) -> Result<LossReport> {
+    fn preflight(
+        &mut self,
+        target: &OracleObjectDescription,
+        policy: MappingPolicy,
+    ) -> Result<LossReport> {
         if target.kind != "TABLE" {
             return Err(prepare_error(
                 ErrorCategory::Unsupported,
@@ -176,6 +200,19 @@ impl OracleWritePlan {
                 return Err(prepare_error(
                     ErrorCategory::DataMapping,
                     "tipo Arrow incompatibile con il target Oracle",
+                ));
+            }
+            // La regola P: `FLOAT(p)` e un `NUMBER` con `p` bit di
+            // precisione, e sotto 126 arrotonda un float (`FLOAT(1)` salva
+            // 1.23 come 1). La scrittura Oracle e soltanto `Strict`.
+            if column.data_type == DataType::Float64
+                && column.spatial.is_none()
+                && server.data_type.eq_ignore_ascii_case("FLOAT")
+                && server.precision != Some(126)
+            {
+                return Err(prepare_error(
+                    ErrorCategory::DataMapping,
+                    "FLOAT Oracle con meno di 126 bit di precisione arrotonderebbe un float",
                 ));
             }
             if let Some(spatial) = &column.spatial {
@@ -232,11 +269,33 @@ impl OracleWritePlan {
                 "le chiavi Oracle devono corrispondere a un indice univoco",
             ));
         }
+        self.rewrites = self.target_rewrites(target);
+        // La politica e quella richiesta: fino al 25/10 il report diceva
+        // sempre `Strict` (`validate_operation` ammette soltanto `Strict`).
         Ok(LossReport {
             schema_version: 2,
-            policy: MappingPolicy::Strict,
+            policy,
             losses: Vec::new(),
         })
+    }
+
+    /// La regola S con i tipi del target ([`store_rewrites`]).
+    fn target_rewrites(&self, target: &OracleObjectDescription) -> Vec<ColumnRewrites> {
+        self.columns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, column)| {
+                let server = target
+                    .columns
+                    .iter()
+                    .find(|candidate| candidate.name == column.name)?;
+                Some(ColumnRewrites {
+                    field: index,
+                    rewrites: store_rewrites(column, &server.data_type, Some(server.char_length)),
+                    target_type: server.data_type.clone(),
+                })
+            })
+            .collect()
     }
 
     fn insert_statement(&self, row: &[ParameterValue]) -> Statement {
@@ -423,13 +482,13 @@ pub async fn prepare_write(
             ErrorPhase::Prepare,
         ));
     }
-    let plan = OracleWritePlan::compile(config, &input_schema, operation)?;
+    let mut plan = OracleWritePlan::compile(config, &input_schema, operation)?;
     let (operation_lease, columns_lease) =
         ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
-    let loss_report = if operation.mode == WriteMode::Create {
+    let mut loss_report = if operation.mode == WriteMode::Create {
         LossReport {
             schema_version: 2,
-            policy: MappingPolicy::Strict,
+            policy: operation.mapping_policy,
             losses: Vec::new(),
         }
     } else {
@@ -444,8 +503,20 @@ pub async fn prepare_write(
         .await?;
         connection.allow_reuse();
         drop(connection);
-        plan.preflight(&target)?
+        plan.preflight(&target, operation.mapping_policy)?
     };
+    // La regola S: con una politica non stretta le riscritture sono perdite
+    // dichiarate (oggi `validate_operation` ammette soltanto `Strict`, e la
+    // lista resta vuota).
+    loss_report.losses.extend(
+        RewriteGuard::new(
+            ProviderKind::Oracle,
+            &input_schema,
+            operation,
+            plan.rewrites.clone(),
+        )?
+        .losses(),
+    );
     loss_report.validate()?;
     Ok(PreparedWrite::new(
         operation.clone(),
@@ -492,6 +563,19 @@ pub async fn execute_write(
     let plan = prepared
         .take_driver_state::<OracleWritePlan>()
         .ok_or_else(|| write_error(ErrorCategory::InvalidPlan, "piano preparato Oracle assente"))?;
+    // La regola S: un valore che Oracle riscriverebbe al salvataggio (il
+    // testo vuoto e il binario vuoto come `NULL`, `CHAR(n)` completato con
+    // spazi, un float sotto il minimo di `FLOAT`) si rifiuta con `Strict`, e
+    // in una chiave con ogni politica, prima del COMMIT.
+    let input = plenora_database_core::store_rewrite::guard_input(
+        input,
+        RewriteGuard::new(
+            ProviderKind::Oracle,
+            &prepared.input_schema,
+            &prepared.operation,
+            plan.rewrites.clone(),
+        )?,
+    );
     if plan.create_sql.is_none() {
         return Box::pin(load_target(
             config,
@@ -1336,6 +1420,46 @@ fn native_type_matches(column: &WriteColumn, server: &crate::OracleColumn) -> bo
             native.starts_with("TIMESTAMP") && native.contains("TIME ZONE")
         }
         _ => false,
+    }
+}
+
+/// Le riscritture al salvataggio di Oracle per una colonna (regola S,
+/// `plenora_database_core::store_rewrite`), dal tipo nativo del target:
+///
+/// - ogni testo e ogni binario: un bind di lunghezza zero e `NULL`, verso
+///   qualunque tipo (`VARCHAR2`, `CHAR`, `CLOB`, `JSON`, `RAW`, `BLOB`);
+/// - `CHAR(n)` e `NCHAR(n)`: un testo con meno di `n` caratteri si completa
+///   con spazi (`char_length`, la lunghezza in caratteri del catalogo), e il
+///   confronto con un bind `VARCHAR2` non lo ritrova;
+/// - `FLOAT` (un `NUMBER`): un float non nullo sotto `1e-130` diventa `0`
+///   (soglia per eccesso `1e-129`) e `-0.0` diventa `0`.
+///
+/// Una colonna spatial ha la verifica propria del WKB.
+fn store_rewrites(
+    column: &WriteColumn,
+    native: &str,
+    char_length: Option<u64>,
+) -> Vec<StoreRewrite> {
+    if column.spatial.is_some() {
+        return Vec::new();
+    }
+    let native = native.to_ascii_uppercase();
+    match column.data_type {
+        DataType::Utf8 | DataType::LargeUtf8 => {
+            let mut rewrites = vec![StoreRewrite::EmptyToNull];
+            if matches!(native.as_str(), "CHAR" | "NCHAR") {
+                rewrites.push(StoreRewrite::PadText {
+                    chars: char_length.unwrap_or(u64::MAX),
+                });
+            }
+            rewrites
+        }
+        DataType::Binary | DataType::LargeBinary => vec![StoreRewrite::EmptyToNull],
+        DataType::Float64 if native == "FLOAT" => vec![
+            StoreRewrite::Underflow { min_abs: 1e-129 },
+            StoreRewrite::NegativeZero,
+        ],
+        _ => Vec::new(),
     }
 }
 

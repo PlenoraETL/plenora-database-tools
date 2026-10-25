@@ -28,6 +28,9 @@ COMPOSE_FILE = ROOT / "docker-compose.oracle.yml"
 REFERENCE_FILE = ROOT / "docker" / "oracle" / "references.json"
 MYSQL_REFERENCE_FILE = ROOT / "docker" / "mysql" / "references.json"
 LIVE_SOURCE = ROOT / "crates" / "plenora-db-oracle" / "src" / "live_tests.rs"
+REWRITE_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-oracle" / "src" / "write_rewrite_live_tests.rs"
+)
 PYTHON_TESTS = ROOT / "crates" / "plenora-database-py" / "python" / "tests"
 RESULT = ROOT / "assurance-results" / "oracle-reference.json"
 TIMEOUT = 30 * 60
@@ -129,7 +132,7 @@ def reference_contract() -> dict[str, str]:
 
 def live_source_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE], keep=lambda name: name.startswith("live_")
+        [LIVE_SOURCE, REWRITE_LIVE_SOURCE], keep=lambda name: name.startswith("live_")
     )
 
 

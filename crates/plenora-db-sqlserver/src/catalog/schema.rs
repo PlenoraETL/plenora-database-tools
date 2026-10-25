@@ -914,6 +914,45 @@ pub async fn resolve_schema(
         })
 }
 
+/// `sys.columns.is_ansi_padded` per ogni colonna del target, per la regola S
+/// della scrittura (`crate::write::plan::store_rewrites`): una colonna creata
+/// con `ANSI_PADDING OFF` toglie gli spazi e gli `0x00` finali. Non entra nel
+/// documento di describe ne nel token strutturale; una colonna assente dalla
+/// mappa si legge senza riempimento, la lettura piu stretta.
+///
+/// # Errors
+///
+/// Gli errori della lettura del catalogo.
+pub async fn load_ansi_padding(
+    session: &mut SqlServerSession,
+    schema: &str,
+    object: &str,
+    cancellation: &CancellationToken,
+) -> Result<std::collections::HashMap<String, bool>> {
+    let rows = execute_bound(
+        session,
+        r"
+SELECT c.name, c.is_ansi_padded
+FROM sys.objects AS o
+JOIN sys.schemas AS s ON s.schema_id = o.schema_id
+JOIN sys.columns AS c ON c.object_id = o.object_id
+WHERE s.name = @P1 AND o.name = @P2;
+",
+        schema,
+        object,
+        cancellation,
+    )
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok((
+                text(row, 0, "column_name")?,
+                required(row, 1, "is_ansi_padded")?,
+            ))
+        })
+        .collect()
+}
+
 async fn execute_bound(
     session: &mut SqlServerSession,
     sql: &'static str,

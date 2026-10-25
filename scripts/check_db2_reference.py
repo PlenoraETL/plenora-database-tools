@@ -26,6 +26,9 @@ LIVE_SOURCE = ROOT / "crates" / "plenora-db-db2" / "src" / "live_tests.rs"
 SPATIAL_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-db2" / "src" / "spatial_live_tests.rs"
 )
+REWRITE_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-db2" / "src" / "write_rewrite_live_tests.rs"
+)
 PYTHON_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-database-py" / "python" / "tests" / "test_db2_session.py"
 )
@@ -101,7 +104,7 @@ def compose_exec(arguments: list[str], environment: dict[str, str]) -> str:
 
 def live_test_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE, SPATIAL_LIVE_SOURCE], keep=lambda name: name.startswith("live_")
+        [LIVE_SOURCE, SPATIAL_LIVE_SOURCE, REWRITE_LIVE_SOURCE], keep=lambda name: name.startswith("live_")
     )
 
 

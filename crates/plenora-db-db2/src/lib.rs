@@ -59,3 +59,11 @@ mod live_tests;
 #[cfg(test)]
 #[path = "spatial_live_tests.rs"]
 mod spatial_live_tests;
+
+#[cfg(test)]
+#[path = "write_rewrite_live_tests.rs"]
+mod write_rewrite_live_tests;
+
+#[cfg(test)]
+#[path = "write_rewrite_ora_tests.rs"]
+mod write_rewrite_ora_tests;

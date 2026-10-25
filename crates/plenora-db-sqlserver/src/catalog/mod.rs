@@ -2,6 +2,7 @@ mod probe;
 mod schema;
 
 pub use probe::{list_objects, list_schemas, probe_server, SqlServerObjectSummary, SqlServerProbe};
+pub use schema::load_ansi_padding;
 pub use schema::{
     describe_object, resolve_schema, SqlServerColumn, SqlServerConstraint,
     SqlServerExternalTableMetadata, SqlServerGraphKind, SqlServerIndex, SqlServerObjectDescription,

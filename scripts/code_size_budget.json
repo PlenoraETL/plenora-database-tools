@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 119913,
-  "max_code_lines": 96120,
-  "rationale": "Regole T (il catalog del target e quello della connessione, in ogni operazione PostgreSQL), K (i NULL delle chiavi come li tratta l'indice che le prova: NULLS NOT DISTINCT di PostgreSQL, SQL Server, Oracle, Db2), P con le politiche non strette (le perdite delle foglie del tipo dichiarate nel LossReport, anche per i tipi dell'utente di Create) e J negli array (gli elementi di un letterale di jsonb[] verificati uno per uno, la forma ristretta). Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 119202 -> 119913 (+711), righe di codice 95697 -> 96120 (+423). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 121099,
+  "max_code_lines": 96905,
+  "rationale": "Regola S (un valore che il server riscrive al salvataggio e una perdita: rifiutato con Strict, dichiarato con le altre politiche, mai una chiave): il modulo store_rewrite del core, il testo e il binario vuoti di Oracle, CHAR(n) completato su Oracle, PostgreSQL, SQL Server e Db2, binary(n) e ANSI_PADDING OFF su SQL Server, gli spazi oltre la lunghezza e la semantica VARCHAR2 di Db2 lette nella transazione, FLOAT di Oracle, -0.0 di Db2 e MariaDB; gli spazi e gli 0x00 finali delle chiavi nella regola K; le prove live. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 119913 -> 121099 (+1186), righe di codice 96120 -> 96905 (+785). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

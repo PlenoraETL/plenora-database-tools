@@ -1333,3 +1333,7 @@ mod write_r4_live_tests;
 #[cfg(test)]
 #[path = "write_r5_live_tests.rs"]
 mod write_r5_live_tests;
+
+#[cfg(test)]
+#[path = "write_r7_live_tests.rs"]
+mod write_r7_live_tests;

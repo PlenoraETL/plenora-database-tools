@@ -102,8 +102,10 @@
 //!   il nome del mese; `infinity`, che un valore Arrow non sa portare: oggi
 //!   non si scrive). Un tipo di un'estensione con una funzione d'ingresso in
 //!   C (`hstore`, `ltree`) non riceve valori. `char(n)` completa con spazi i
-//!   valori piu corti: e la semantica del tipo, che li confronta senza gli
-//!   spazi finali, e non si rifiuta. Allo stesso modo `jsonb` riordina le
+//!   valori piu corti: dal 25/10 (sesta rilettura) e la regola S
+//!   (`plenora_database_core::store_rewrite`), rifiutata con `Strict` e in
+//!   una chiave con ogni politica, dichiarata con le altre (fino ad allora
+//!   era «semantica del tipo» e si scriveva). `jsonb` invece riordina le
 //!   chiavi, toglie gli spazi e scrive i numeri nella forma di `numeric`
 //!   (`1.50` resta `1.50`, `1e2` diventa `100`, `-0` diventa `0`): semantica
 //!   del tipo, ammessa con `Strict` e dichiarata con le altre politiche nel
@@ -161,8 +163,12 @@ pub(super) enum SessionShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LeafClass {
     /// Una lettura che non dipende dalla sessione ([`TEXT_INPUTS`]), con la
-    /// lunghezza massima in caratteri di `varchar(n)` e `char(n)`.
+    /// lunghezza massima in caratteri di `varchar(n)`.
     Text { max_chars: Option<usize> },
+    /// `char(n)`: un testo come [`Self::Text`] con la lunghezza `chars`, che
+    /// il server completa con spazi se e piu corto (regola S,
+    /// `plenora_database_core::store_rewrite`).
+    Padded { chars: usize },
     /// Un tipo temporale o `money`, con le cifre frazionarie dei secondi che
     /// conserva e se la precisione e ridotta (typmod).
     Session {
@@ -197,6 +203,9 @@ pub(super) struct SessionRule {
     pub(super) leaves: Vec<Leaf>,
     /// La politica di mapping e `Strict` (regola P).
     pub(super) strict: bool,
+    /// La colonna e una chiave dell'operazione (regola S: un valore che il
+    /// server riscriverebbe non e mai una chiave). La segna [`mark_keys`].
+    pub(super) key: bool,
 }
 
 impl SessionRule {
@@ -294,8 +303,15 @@ pub(super) fn classify(symbol: Option<&str>, typmod: i32) -> LeafClass {
         }
     };
     match symbol {
-        "varcharin" | "bpcharin" => LeafClass::Text {
-            // `VARHDRSZ` (4) piu la lunghezza in caratteri.
+        // `VARHDRSZ` (4) piu la lunghezza in caratteri; `bpchar` senza
+        // lunghezza non completa.
+        "bpcharin" => usize::try_from(typmod)
+            .ok()
+            .and_then(|typmod| typmod.checked_sub(4))
+            .map_or(LeafClass::Text { max_chars: None }, |chars| {
+                LeafClass::Padded { chars }
+            }),
+        "varcharin" => LeafClass::Text {
             max_chars: usize::try_from(typmod)
                 .ok()
                 .and_then(|typmod| typmod.checked_sub(4)),
@@ -510,6 +526,7 @@ fn collect_rules(rows: &[tokio_postgres::Row], strict: bool) -> BTreeMap<String,
             .or_insert_with(|| SessionRule {
                 leaves: Vec::new(),
                 strict,
+                key: false,
             })
             .leaves
             .push(Leaf { class, shape });
@@ -538,6 +555,21 @@ pub(super) fn assign_declared(plans: &mut [WriteColumnPlan], operation: &WriteOp
     let strict = operation.mapping_policy == MappingPolicy::Strict;
     for plan in plans {
         plan.session_rule = declared(plan, strict);
+    }
+}
+
+/// Segna le regole delle colonne di `operation.keys` (regola S): con ogni
+/// politica un valore che il server riscriverebbe al salvataggio non e una
+/// chiave. Da chiamare dopo [`assign`] o [`assign_declared`].
+pub(super) fn mark_keys(
+    plans: &mut [WriteColumnPlan],
+    schema: &SchemaRef,
+    operation: &WriteOperation,
+) {
+    for (plan, field) in plans.iter_mut().zip(schema.fields()) {
+        if let Some(rule) = plan.session_rule.as_mut() {
+            rule.key = operation.keys.iter().any(|key| key == field.name());
+        }
     }
 }
 
@@ -583,6 +615,8 @@ pub enum LeafLoss {
     /// Una precisione temporale sotto il microsecondo, o un `interval` con
     /// campi.
     ReducedTemporal,
+    /// `char(n)` completa con spazi un testo piu corto (regola S).
+    Padded,
 }
 
 /// Le perdite delle foglie di `rule` per un valore Arrow di tipo
@@ -602,6 +636,7 @@ pub(super) fn leaf_losses(
         .filter_map(|leaf| match leaf.class {
             LeafClass::Rounding if text_bearing(data_type) => Some(LeafLoss::Rounding),
             LeafClass::Text { max_chars: Some(_) } => Some(LeafLoss::Bounded),
+            LeafClass::Padded { .. } => Some(LeafLoss::Padded),
             LeafClass::Jsonb => Some(LeafLoss::Jsonb),
             LeafClass::Session { reduced: true, .. } => Some(LeafLoss::ReducedTemporal),
             _ => None,
@@ -668,6 +703,35 @@ pub(super) fn declared(plan: &WriteColumnPlan, strict: bool) -> Option<SessionRu
                     },
                 }],
                 strict,
+                key: false,
+            });
+        }
+        // `character(n)` e `character varying(n)`: la lunghezza e, per il
+        // primo, il riempimento (regola S), anche per Create e per il dry run
+        // senza DSN.
+        _ if base.ends_with(')')
+            && (base.starts_with("character(") || base.starts_with("character varying(")) =>
+        {
+            let chars = base
+                .rsplit_once('(')
+                .and_then(|(_, digits)| digits.trim_end_matches(')').parse::<usize>().ok())?;
+            return Some(SessionRule {
+                leaves: vec![Leaf {
+                    class: if base.starts_with("character(") {
+                        LeafClass::Padded { chars }
+                    } else {
+                        LeafClass::Text {
+                            max_chars: Some(chars),
+                        }
+                    },
+                    shape: if array {
+                        SessionShape::Array
+                    } else {
+                        SessionShape::Scalar
+                    },
+                }],
+                strict,
+                key: false,
             });
         }
         _ => return None,
@@ -684,6 +748,7 @@ pub(super) fn declared(plan: &WriteColumnPlan, strict: bool) -> Option<SessionRu
             shape,
         }],
         strict,
+        key: false,
     })
 }
 
@@ -715,7 +780,7 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
         // e con `Strict` senza lunghezze massime da verificare per campo.
         let text_only = rule.leaves.iter().all(|leaf| match leaf.class {
             LeafClass::Text { max_chars } => !(rule.strict && max_chars.is_some()),
-            LeafClass::Jsonb | LeafClass::Rounding => !rule.strict,
+            LeafClass::Padded { .. } | LeafClass::Jsonb | LeafClass::Rounding => !rule.strict,
             _ => false,
         });
         return if text_only {
@@ -723,7 +788,10 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
         } else if rule.leaves.iter().all(|leaf| {
             matches!(
                 leaf.class,
-                LeafClass::Text { .. } | LeafClass::Jsonb | LeafClass::Rounding
+                LeafClass::Text { .. }
+                    | LeafClass::Padded { .. }
+                    | LeafClass::Jsonb
+                    | LeafClass::Rounding
             )
         }) {
             Err(lossy())
@@ -732,7 +800,8 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
         };
     };
     match leaf.class {
-        LeafClass::Text { max_chars } => check_text(rule.strict, max_chars, array, row),
+        LeafClass::Text { max_chars } => check_text(rule, max_chars, None, array, row),
+        LeafClass::Padded { chars } => check_text(rule, Some(chars), Some(chars), array, row),
         LeafClass::Jsonb => check_jsonb(plan, rule.strict, leaf.shape, array, row),
         // Un valore Arrow tipizzato si converte da se, esatto o rifiutato
         // dal preflight; un testo con `Strict` no, nemmeno nei limiti di un
@@ -753,14 +822,38 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
     }
 }
 
-/// Una foglia di testo: con `Strict`, la lunghezza massima.
-fn check_text(strict: bool, max_chars: Option<usize>, array: &dyn Array, row: usize) -> Result<()> {
-    let Some(limit) = max_chars.filter(|_| strict) else {
+/// Una foglia di testo: con `Strict`, la lunghezza massima (regola P) e,
+/// per `char(n)`, la lunghezza piena (regola S: un testo piu corto si
+/// completerebbe con spazi). In una chiave, con ogni politica: un testo che
+/// il server troncherebbe o completerebbe non e una chiave.
+fn check_text(
+    rule: &SessionRule,
+    max_chars: Option<usize>,
+    padded_to: Option<usize>,
+    array: &dyn Array,
+    row: usize,
+) -> Result<()> {
+    if !(rule.strict || rule.key) {
+        return Ok(());
+    }
+    let Some(limit) = max_chars else {
         return Ok(());
     };
-    let fits = |text: &str| text.chars().count() <= limit;
-    let accepted = match array.data_type() {
-        DataType::Utf8 => fits(string(array, row)?),
+    // Piu lungo: la regola P (il server tronca gli spazi in eccesso);
+    // piu corto di `char(n)`: la regola S (il server completa). In una
+    // chiave entrambi sono la regola S.
+    let verdict = |text: &str| {
+        let chars = text.chars().count();
+        if chars > limit {
+            Some(if rule.key { rewritten(true) } else { lossy() })
+        } else if padded_to.is_some_and(|full| chars < full) {
+            Some(rewritten(rule.key))
+        } else {
+            None
+        }
+    };
+    let refused = match array.data_type() {
+        DataType::Utf8 => verdict(string(array, row)?),
         DataType::List(_) => {
             let list = array
                 .as_any()
@@ -770,17 +863,30 @@ fn check_text(strict: bool, max_chars: Option<usize>, array: &dyn Array, row: us
             values
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .is_none_or(|items| {
-                    (0..items.len()).all(|index| items.is_null(index) || fits(items.value(index)))
+                .and_then(|items| {
+                    (0..items.len())
+                        .filter(|index| !items.is_null(*index))
+                        .find_map(|index| verdict(items.value(index)))
                 })
         }
-        _ => true,
+        _ => None,
     };
-    if accepted {
-        Ok(())
-    } else {
-        Err(lossy())
-    }
+    refused.map_or(Ok(()), Err)
+}
+
+/// Il rifiuto della regola S: un valore che il server riscriverebbe al
+/// salvataggio, con `Strict` o in una chiave.
+fn rewritten(key: bool) -> DatabaseError {
+    use plenora_database_core::store_rewrite::{REWRITTEN_KEY, REWRITTEN_VALUE};
+    public_error(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Write,
+        false,
+        &format!(
+            "scrittura rifiutata: {}",
+            if key { REWRITTEN_KEY } else { REWRITTEN_VALUE }
+        ),
+    )
 }
 
 /// Un valore che arriva al server come testo: una stringa, un array (che la

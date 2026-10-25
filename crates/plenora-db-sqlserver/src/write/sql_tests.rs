@@ -32,6 +32,7 @@ fn columns() -> Vec<WriteColumnPlan> {
             nullable: false,
             collation: None,
             spatial_srid: None,
+            rewrites: Vec::new(),
         },
         WriteColumnPlan {
             input_index: 1,
@@ -42,6 +43,7 @@ fn columns() -> Vec<WriteColumnPlan> {
             nullable: false,
             collation: None,
             spatial_srid: None,
+            rewrites: Vec::new(),
         },
     ]
 }

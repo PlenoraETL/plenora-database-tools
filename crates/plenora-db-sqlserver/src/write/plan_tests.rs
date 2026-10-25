@@ -238,6 +238,7 @@ fn bulk_profile_is_explicit_and_rejects_ambiguous_columns_or_spatial() {
             nullable: false,
             collation: None,
             spatial_srid: None,
+            rewrites: Vec::new(),
         }],
         mode: WriteMode::Append,
         row_sql: String::new(),
@@ -417,6 +418,7 @@ fn additive_schema_evolution_is_explicit_nullable_and_transaction_planned() {
         Arc::clone(&schema),
         &HashMap::new(),
         SqlServerSchemaEvolution::Disabled,
+        &HashMap::new(),
     )
     .is_err());
     let plan = WritePlan::compile_existing(
@@ -425,6 +427,7 @@ fn additive_schema_evolution_is_explicit_nullable_and_transaction_planned() {
         Arc::clone(&schema),
         &HashMap::new(),
         SqlServerSchemaEvolution::AddNullableColumns,
+        &HashMap::new(),
     )
     .expect("add nullable column");
     let TargetLifecycle::Existing {
@@ -453,6 +456,7 @@ fn additive_schema_evolution_is_explicit_nullable_and_transaction_planned() {
         non_nullable,
         &HashMap::new(),
         SqlServerSchemaEvolution::AddNullableColumns,
+        &HashMap::new(),
     )
     .is_err());
 }

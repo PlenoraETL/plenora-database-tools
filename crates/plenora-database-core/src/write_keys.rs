@@ -28,7 +28,8 @@
 //! # Che cosa e una chiave ripetuta
 //!
 //! Lo stesso valore Arrow in ogni colonna chiave, confrontato per valore: le
-//! stringhe e i binari byte per byte, gli interi, le date, i tempi e i
+//! stringhe byte per byte senza gli spazi finali, i binari byte per byte senza
+//! gli `0x00` finali, gli interi, le date, i tempi e i
 //! decimali per valore (lo schema fissa unita e scala della colonna), i
 //! float con `-0.0` uguale a `0.0` e ogni `NaN` uguale a ogni altro, come li
 //! confronta `PostgreSQL`.
@@ -92,6 +93,31 @@
 //! - **Rientro**: il confronto sotto la collation della colonna in ogni
 //!   provider e per ogni mode per chiavi (per `MySQL` con lo staging di
 //!   Update).
+//!
+//! # Gli spazi finali delle chiavi
+//!
+//! Due chiavi di testo che differiscono soltanto per gli spazi finali
+//! (U+0020) sono la stessa chiave per la condizione 2. SQL Server e Db2
+//! confrontano il testo completando con spazi il piu corto, `MariaDB` e
+//! `MySQL` fanno lo stesso con le collation `PAD SPACE`, PostgreSQL con
+//! `char(n)`: `'a'` e `'a '` sono la stessa voce dell'indice. Allo stesso
+//! modo SQL Server confronta i binari senza gli `0x00` finali (`0x01 =
+//! 0x0100`, misurato il 25/10 su SQL Server 2022). La condizione 2
+//! confrontava byte per byte e non vedeva la chiave ripetuta (sesta rilettura
+//! indipendente, la stessa classe della regola S, `crate::store_rewrite`).
+//!
+//! ## Limite dichiarato: gli spazi finali
+//!
+//! - **Regola**: gli spazi finali non distinguono due chiavi di testo, gli
+//!   `0x00` finali due chiavi binarie.
+//! - **Ambito**: ogni provider e ogni mode per chiavi.
+//! - **Hazard**: piu stretto dove gli spazi finali contano (`text` e
+//!   `varchar` di PostgreSQL, `VARCHAR2` di Oracle, le collation `NO PAD` di
+//!   `MySQL`) e gli `0x00` finali (`bytea`, `RAW`, `varbinary` di `MySQL`):
+//!   due chiavi `'a'` e `'a '`, o `0x01` e `0x0100`, si rifiutano anche se il
+//!   target le distingue.
+//! - **Rientro**: la semantica degli spazi del confronto della colonna,
+//!   provider per provider.
 //!
 //! La memoria delle chiavi viste si prenota dal budget dell'operazione
 //! (`MemoryBytes`) prima di crescere e si restituisce alla fine dello stream.
@@ -358,6 +384,15 @@ fn push_len(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
+/// Un binario senza gli `0x00` finali.
+fn trim_zeros(bytes: &[u8]) -> &[u8] {
+    let end = bytes
+        .iter()
+        .rposition(|byte| *byte != 0)
+        .map_or(0, |last| last + 1);
+    &bytes[..end]
+}
+
 /// `-0.0` e `0.0` sono la stessa chiave, e ogni `NaN` e la stessa chiave.
 fn float_bits(value: f64) -> u64 {
     if value.is_nan() {
@@ -394,11 +429,31 @@ fn encode(array: &dyn Array, row: usize, out: &mut Vec<u8>) -> Result<()> {
         DataType::Float64 => out.extend_from_slice(
             &float_bits(array.as_primitive::<Float64Type>().value(row)).to_le_bytes(),
         ),
-        DataType::Utf8 => push_len(out, array.as_string::<i32>().value(row).as_bytes()),
-        DataType::LargeUtf8 => push_len(out, array.as_string::<i64>().value(row).as_bytes()),
-        DataType::Binary => push_len(out, array.as_binary::<i32>().value(row)),
-        DataType::LargeBinary => push_len(out, array.as_binary::<i64>().value(row)),
-        DataType::FixedSizeBinary(_) => push_len(out, array.as_fixed_size_binary().value(row)),
+        // Gli spazi finali non distinguono due chiavi (vedi «Gli spazi finali
+        // delle chiavi» nella documentazione del modulo).
+        DataType::Utf8 => push_len(
+            out,
+            array
+                .as_string::<i32>()
+                .value(row)
+                .trim_end_matches(' ')
+                .as_bytes(),
+        ),
+        DataType::LargeUtf8 => push_len(
+            out,
+            array
+                .as_string::<i64>()
+                .value(row)
+                .trim_end_matches(' ')
+                .as_bytes(),
+        ),
+        // Gli `0x00` finali non distinguono due chiavi binarie (SQL Server
+        // confronta `0x01 = 0x0100` come vero).
+        DataType::Binary => push_len(out, trim_zeros(array.as_binary::<i32>().value(row))),
+        DataType::LargeBinary => push_len(out, trim_zeros(array.as_binary::<i64>().value(row))),
+        DataType::FixedSizeBinary(_) => {
+            push_len(out, trim_zeros(array.as_fixed_size_binary().value(row)));
+        }
         DataType::Date32 => fixed!(Date32Type),
         DataType::Date64 => fixed!(Date64Type),
         DataType::Time32(TimeUnit::Second) => fixed!(Time32SecondType),

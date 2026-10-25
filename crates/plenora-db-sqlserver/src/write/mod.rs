@@ -383,12 +383,21 @@ async fn compile_write_plan(
             let observed_spatial =
                 inspect_target_spatial_contracts(pooled.session_mut()?, &description, cancellation)
                     .await?;
+            // La regola S: le colonne create con `ANSI_PADDING OFF`.
+            let ansi_padding = crate::catalog::load_ansi_padding(
+                pooled.session_mut()?,
+                schema,
+                &operation.target.object,
+                cancellation,
+            )
+            .await?;
             WritePlan::compile_existing(
                 &description,
                 operation,
                 input_schema,
                 &observed_spatial,
                 schema_evolution,
+                &ansi_padding,
             )
         }
     }
@@ -438,7 +447,7 @@ async fn write_prepared_inner(
     // La regola K, condizione 2: una chiave ripetuta nell'ingresso di una
     // mode per chiavi rifiuta la scrittura prima del COMMIT. Fino al 25/10
     // Update `[(1,x),(1,y)]` dava `confirmed 2`, vince l'ultima.
-    let mut input = plenora_database_core::write_keys::guard_input_keys(
+    let input = plenora_database_core::write_keys::guard_input_keys(
         prepared.operation.mode,
         &prepared.operation.keys,
         input,
@@ -448,6 +457,30 @@ async fn write_prepared_inner(
         // voce.
         plenora_database_core::write_keys::NullKeys::Equal,
     )?;
+    // La regola S: un valore che SQL Server riscriverebbe al salvataggio
+    // (`char(n)` e `binary(n)` completati, gli spazi e gli `0x00` finali tolti
+    // da una colonna `ANSI_PADDING OFF`) si rifiuta con `Strict`, e in una
+    // chiave con ogni politica, prima del COMMIT.
+    let mut input = plenora_database_core::store_rewrite::guard_input(
+        input,
+        plenora_database_core::store_rewrite::RewriteGuard::new(
+            plenora_database_core::plan::ProviderKind::Sqlserver,
+            &prepared.plan.input_schema,
+            &prepared.operation,
+            prepared
+                .plan
+                .columns
+                .iter()
+                .map(
+                    |column| plenora_database_core::store_rewrite::ColumnRewrites {
+                        field: column.input_index,
+                        target_type: column.native_declaration.clone(),
+                        rewrites: column.rewrites.clone(),
+                    },
+                )
+                .collect(),
+        )?,
+    );
     let diagnostic_input = input
         .declared_input_rows()
         .map(|input_total| {

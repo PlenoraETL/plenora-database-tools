@@ -323,7 +323,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         # delle regole W1/W2 e della regola R sulla scrittura, e le otto della
         # seconda rilettura (regole K e V, sessione, isolamento), e le due
         # della terza (regole P e K2), e le due della quarta (S6 e regola T).
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 51)
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 52)
         self.assertIn(
             "live_tests::live_geographic_axis_order_round_trips_and_derived_srid_is_verified",
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
