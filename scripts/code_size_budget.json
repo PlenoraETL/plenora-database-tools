@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 117187,
-  "max_code_lines": 94971,
-  "rationale": "Regole N e S degli operandi geometrici (core spatial_operand: forme di nomi chiuse, AMBIGUOUS_NAME_SHAPE, risoluzione unica per byte; TransactionScope::operand_catalog e facade::verify_operands per SDK, ORM, facade e CLI portable con il catalogo letto dal provider; PostgreSQL multirange, MySQL SHOW COLUMNS), con le prove offline e live PostgreSQL, SQL Server CS, MySQL e MariaDB. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 116337 -> 117187 (+850), righe di codice 94397 -> 94971 (+574). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 117335,
+  "max_code_lines": 95042,
+  "rationale": "Regole N e S degli operandi geometrici ristrette ai piani che possono contenere geometrie; guardia del server sugli operandi scalari di Oracle e Db2 (operand_server_guard), SpatialOutput sotto un operatore rifiutato senza catalogo, SQL dello SDK reso dal piano nel nativo; prove offline e live PostgreSQL, SQL Server CS, MySQL e MariaDB. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 117187 -> 117335 (+148), righe di codice 94971 -> 95042 (+71). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

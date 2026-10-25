@@ -3525,7 +3525,14 @@ async fn live_unresolved_geometry_operands_are_refused_before_the_server() {
                     ErrorCategory::Unsupported,
                     "{form}: {error:?}"
                 );
-                assert_eq!(error.message, reason, "{form}: {error:?}");
+                // Una forma di nomi su una relazione con geometrie si rifiuta come forma o
+                // come operando geometrico, che la stessa visita puo trovare prima.
+                assert!(
+                    error.message == reason
+                        || (reason == AMBIGUOUS_NAME_SHAPE
+                            && error.message == GEOMETRY_SCALAR_OPERAND),
+                    "{form}: {error:?}"
+                );
             }
             Ok(rows) => panic!("{form}: accettata con {rows} righe"),
         }
@@ -9942,7 +9949,14 @@ async fn live_name_shapes_and_the_transaction_catalog_on_a_case_sensitive_databa
                     ErrorCategory::Unsupported,
                     "{form}: {error:?}"
                 );
-                assert_eq!(error.message, reason, "{form}: {error:?}");
+                // Una forma di nomi su una relazione con geometrie si rifiuta come forma o
+                // come operando geometrico, che la stessa visita puo trovare prima.
+                assert!(
+                    error.message == reason
+                        || (reason == AMBIGUOUS_NAME_SHAPE
+                            && error.message == GEOMETRY_SCALAR_OPERAND),
+                    "{form}: {error:?}"
+                );
             }
             Ok(rows) => panic!("{form}: accettata con {rows} righe"),
         }

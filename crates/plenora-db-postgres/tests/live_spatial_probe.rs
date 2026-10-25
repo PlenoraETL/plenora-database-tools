@@ -2118,7 +2118,14 @@ async fn live_name_shapes_multiranges_and_the_transaction_catalog_are_judged() {
                     ErrorCategory::Unsupported,
                     "{form}: {error:?}"
                 );
-                assert_eq!(&error.message, reason, "{form}: {error:?}");
+                // Una forma di nomi su una relazione con geometrie si rifiuta come forma o
+                // come operando geometrico, che la stessa visita puo trovare prima.
+                assert!(
+                    error.message == *reason
+                        || (*reason == AMBIGUOUS_NAME_SHAPE
+                            && error.message == GEOMETRY_SCALAR_OPERAND),
+                    "{form}: {error:?}"
+                );
             }
             Ok(count) => accepted.push(format!("{form}: {count} righe")),
         }

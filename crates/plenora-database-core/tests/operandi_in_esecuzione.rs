@@ -18,7 +18,8 @@ use plenora_database_core::provider::ProviderFuture;
 use plenora_database_core::relational::{MutationOperation, QueryOperation};
 use plenora_database_core::row::Row;
 use plenora_database_core::spatial_operand::{
-    OperandCatalog, OperandPlan, RelationColumns, AMBIGUOUS_NAME_SHAPE, GEOMETRY_OPERAND_UNRESOLVED,
+    operand_server_guard, OperandCatalog, OperandPlan, RelationColumns, AMBIGUOUS_NAME_SHAPE,
+    GEOMETRY_OPERAND_UNRESOLVED,
 };
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::transaction::{
@@ -339,7 +340,58 @@ fn le_colonne_non_dichiarate_si_giudicano_sul_catalogo_della_transazione() {
                 OperandPlan::Portable(&cancella_portable),
             ),
         ] {
-            rifiutata(prodotto, forma, plan, GEOMETRY_SCALAR_OPERAND);
+            if operand_server_guard(prodotto).is_some() {
+                // Oracle e Db2: il server rifiuta l'operatore scalare sul
+                // tipo oggetto o strutturato; lo SQL arriva al server.
+                ammessa(prodotto, forma, plan);
+            } else {
+                rifiutata(prodotto, forma, plan, GEOMETRY_SCALAR_OPERAND);
+            }
+        }
+    }
+}
+
+/// Oracle e Db2: cio che la guardia del server non protegge resta
+/// rifiutato senza catalogo, prima di eseguire: il binario canonico di una
+/// geometria (`SpatialOutput`, un `BLOB` WKB) e una funzione spatial che
+/// rende una geometria sotto un operatore scalare.
+#[test]
+fn su_oracle_e_db2_resta_rifiutato_cio_che_il_server_non_protegge() {
+    let output = json!({"kind": "spatial_output", "expression": colonna(Some("r10g"), "g"), "semantics": "geometry"});
+    let centroid = json!({"kind": "spatial", "function": "centroid", "arguments": [colonna(Some("r10g"), "g")]});
+    let binario = |expression: &Value| json!({"kind": "cast", "expression": expression, "target_type": "binary"});
+    let forme = [
+        (
+            "CAST(WKB AS binario) = ?",
+            query(
+                "r10g",
+                &json!({"filter": {"kind": "compare", "left": binario(&output), "operator": "eq", "right": bind()}}),
+            ),
+        ),
+        (
+            "ORDER BY per alias di WKB",
+            query(
+                "r10g",
+                &json!({"projection": [{"expression": output, "alias": "w"}],
+                    "order_by": ordine(&colonna(None, "w"))}),
+            ),
+        ),
+        (
+            "ST_Centroid = ?",
+            query(
+                "r10g",
+                &json!({"filter": {"kind": "compare", "left": centroid, "operator": "eq", "right": bind()}}),
+            ),
+        ),
+    ];
+    for prodotto in [ProviderKind::Oracle, ProviderKind::Db2] {
+        for (forma, operation) in &forme {
+            rifiutata(
+                prodotto,
+                forma,
+                OperandPlan::Query(operation),
+                GEOMETRY_SCALAR_OPERAND,
+            );
         }
     }
 }
@@ -399,7 +451,7 @@ fn le_colonne_scalari_restano_ammesse() {
 /// riferimento in posizione di operando si rifiuta, una query senza
 /// riferimenti resta.
 #[test]
-fn senza_catalogo_ogni_riferimento_in_posizione_di_operando_si_rifiuta() {
+fn senza_catalogo_un_riferimento_si_rifiuta_dove_puo_essere_geometrico() {
     let filtrata = query(
         "plain",
         &json!({"filter": {"kind": "compare", "left": colonna(Some("plain"), "id"), "operator": "eq", "right": bind()}}),
@@ -409,13 +461,31 @@ fn senza_catalogo_ogni_riferimento_in_posizione_di_operando_si_rifiuta() {
         let cancel = CancellationToken::new();
         let mut tx = finta(prodotto);
         tx.catalogo = None;
-        let error = block_on(verify_operands(
+        let outcome = block_on(verify_operands(
             &mut tx,
             &OperandPlan::Query(&filtrata),
             &cancel,
+        ));
+        if operand_server_guard(prodotto).is_some() {
+            // La guardia del server: il catalogo non serve.
+            outcome.unwrap_or_else(|error| panic!("{prodotto:?}: {error:?}"));
+        } else {
+            let error = outcome.expect_err("riferimento senza catalogo");
+            assert_eq!(error.message, GEOMETRY_OPERAND_UNRESOLVED, "{prodotto:?}");
+        }
+        // Un piano che non nomina relazioni non tocca colonne sconosciute.
+        let senza_relazioni: QueryOperation = serde_json::from_value(json!({
+            "projection": [{"expression": bind(), "alias": "k"}],
+            "order_by": ordine(&colonna(None, "k")),
+            "filter": null, "having": null, "row_limit": null
+        }))
+        .expect("query");
+        block_on(verify_operands(
+            &mut tx,
+            &OperandPlan::Query(&senza_relazioni),
+            &cancel,
         ))
-        .expect_err("riferimento senza catalogo");
-        assert_eq!(error.message, GEOMETRY_OPERAND_UNRESOLVED, "{prodotto:?}");
+        .unwrap_or_else(|error| panic!("{prodotto:?} senza relazioni: {error:?}"));
         block_on(verify_operands(
             &mut tx,
             &OperandPlan::Query(&semplice),
@@ -427,20 +497,37 @@ fn senza_catalogo_ogni_riferimento_in_posizione_di_operando_si_rifiuta() {
 
 /// La regola N vale anche in esecuzione, prima di leggere il catalogo.
 #[test]
-fn la_regola_dei_nomi_vale_in_esecuzione() {
-    let alias = query(
-        "r10g",
-        &json!({"projection": [
-            {"expression": colonna(Some("r10g"), "id"), "alias": "k"},
-            {"expression": colonna(Some("r10g"), "name"), "alias": "K"}
-        ]}),
-    );
+fn la_regola_dei_nomi_vale_in_esecuzione_soltanto_con_geometrie() {
+    let alias = |object: &str| {
+        query(
+            object,
+            &json!({"projection": [
+                {"expression": colonna(Some(object), "id"), "alias": "k"},
+                {"expression": colonna(Some(object), "name"), "alias": "K"}
+            ], "order_by": ordine(&colonna(None, "K"))}),
+        )
+    };
+    let geometrica = alias("r10g");
+    let scalare = alias("plain");
     for prodotto in PRODOTTI {
-        rifiutata(
+        if operand_server_guard(prodotto).is_some() {
+            ammessa(
+                prodotto,
+                "alias k e K, guardia del server",
+                OperandPlan::Query(&geometrica),
+            );
+        } else {
+            rifiutata(
+                prodotto,
+                "alias k e K su una tabella con geometrie",
+                OperandPlan::Query(&geometrica),
+                AMBIGUOUS_NAME_SHAPE,
+            );
+        }
+        ammessa(
             prodotto,
-            "alias k e K",
-            OperandPlan::Query(&alias),
-            AMBIGUOUS_NAME_SHAPE,
+            "alias k e K senza geometrie",
+            OperandPlan::Query(&scalare),
         );
     }
 }

@@ -124,6 +124,11 @@ fn catalogo(prodotto: ProviderKind) -> OperandCatalog {
         "plain".to_owned(),
         colonne(&[("id", false), ("name", false)]),
     );
+    catalogo.insert(
+        public(),
+        "plain2".to_owned(),
+        colonne(&[("id", false), ("label", false)]),
+    );
     catalogo
 }
 
@@ -180,7 +185,7 @@ fn forme() -> Vec<(&'static str, QueryOperation)> {
         (
             "(a) qualificatore T per l'alias t",
             query(blocco(
-                "r10u",
+                "r10g",
                 "t",
                 &json!({"filter": confronto(&colonna(Some("T"), "g"), &bind())}),
             )),
@@ -241,27 +246,48 @@ fn forme() -> Vec<(&'static str, QueryOperation)> {
     ]
 }
 
-/// Ogni forma si rifiuta rendendo, su ogni dialetto.
+/// Un nodo spatial nel piano: senza catalogo e l'unico segno che il piano
+/// puo contenere geometrie.
+fn con_nodo_spatial(operation: &QueryOperation) -> bool {
+    serde_json::to_string(operation)
+        .expect("json")
+        .contains("\"kind\":\"spatial")
+}
+
+/// Un rifiuto della regola: la forma di nomi, o l'operando geometrico che
+/// la stessa visita trova prima.
+fn rifiuto_della_regola(error: &plenora_database_core::DatabaseError, caso: &str) {
+    assert_eq!(error.category, ErrorCategory::Unsupported, "{caso}");
+    assert!(
+        error.message == AMBIGUOUS_NAME_SHAPE || error.message == GEOMETRY_SCALAR_OPERAND,
+        "{caso}: {}",
+        error.message
+    );
+}
+
+/// Rendendo, senza catalogo, la forma si rifiuta se il piano ha un nodo
+/// spatial; altrimenti la decide il giudizio sul catalogo, e il renderer la
+/// rende.
 #[test]
-fn ogni_forma_di_nomi_ambigua_si_rifiuta_rendendo_su_ogni_dialetto() {
+fn rendendo_si_rifiutano_le_forme_dei_piani_con_un_nodo_spatial() {
     for (prodotto, dialect) in PRODOTTI {
         for (forma, operation) in forme() {
-            let error = renderer(prodotto, dialect)
-                .render_query(&operation)
-                .err()
-                .unwrap_or_else(|| panic!("{prodotto:?} {forma}: resa"));
-            assert_eq!(
-                error.category,
-                ErrorCategory::Unsupported,
-                "{prodotto:?} {forma}"
-            );
-            assert_eq!(error.message, AMBIGUOUS_NAME_SHAPE, "{prodotto:?} {forma}");
+            let outcome = renderer(prodotto, dialect).render_query(&operation);
+            if con_nodo_spatial(&operation) {
+                let error = outcome
+                    .err()
+                    .unwrap_or_else(|| panic!("{prodotto:?} {forma}: resa"));
+                rifiuto_della_regola(&error, &format!("{prodotto:?} {forma}"));
+            } else if !(forma.contains("LATERAL") && prodotto != ProviderKind::Postgres) {
+                // `LATERAL` lo rende soltanto il renderer `PostgreSQL`.
+                outcome.unwrap_or_else(|error| panic!("{prodotto:?} {forma}: {error:?}"));
+            }
         }
     }
 }
 
-/// Ogni forma si rifiuta anche nel giudizio sul catalogo che i provider e
-/// l'esecuzione dello SDK chiedono al core.
+/// Ogni forma, su relazioni con geometrie, si rifiuta nel giudizio sul
+/// catalogo che i provider e l'esecuzione dello SDK chiedono al core.
 #[test]
 fn ogni_forma_di_nomi_ambigua_si_rifiuta_sul_catalogo_su_ogni_dialetto() {
     for (prodotto, _) in PRODOTTI {
@@ -270,7 +296,82 @@ fn ogni_forma_di_nomi_ambigua_si_rifiuta_sul_catalogo_su_ogni_dialetto() {
                 .and_then(|operands| operands.judge(&catalogo(prodotto)))
                 .err()
                 .unwrap_or_else(|| panic!("{prodotto:?} {forma}: ammessa"));
-            assert_eq!(error.message, AMBIGUOUS_NAME_SHAPE, "{prodotto:?} {forma}");
+            rifiuto_della_regola(&error, &format!("{prodotto:?} {forma}"));
+        }
+    }
+}
+
+/// Le stesse forme su relazioni senza geometrie restano ammesse, rendendo e
+/// sul catalogo: la regola N vale soltanto per i piani che possono
+/// contenere geometrie. Su d9894ef si rifiutavano su ogni dialetto.
+#[test]
+fn le_forme_di_nomi_senza_geometrie_restano_ammesse() {
+    let ammesse = [
+        (
+            "SELECT t.id, u.id",
+            query(blocco(
+                "plain",
+                "t",
+                &json!({
+                    "joins": [{"kind": "cross", "source": sorgente("plain2", "u"), "on": null}],
+                    "projection": [voce(&colonna(Some("t"), "id"), None), voce(&colonna(Some("u"), "id"), None)],
+                    "order_by": ordine(&[colonna(Some("t"), "id")])
+                }),
+            )),
+        ),
+        (
+            "EXISTS (SELECT 1 FROM s WHERE id = ?)",
+            query(blocco(
+                "plain",
+                "t",
+                &esiste(&blocco(
+                    "plain2",
+                    "s",
+                    &json!({"projection": [voce(&json!({"kind": "typed_parameter", "name": "uno", "parameter_type": "integer"}), Some("uno"))],
+                        "filter": confronto(&colonna(None, "id"), &json!({"kind": "typed_parameter", "name": "w", "parameter_type": "integer"}))}),
+                )),
+            )),
+        ),
+        (
+            "stesso alias dentro e fuori",
+            query(blocco(
+                "plain",
+                "t",
+                &esiste(&blocco(
+                    "plain2",
+                    "t",
+                    &json!({"filter": confronto(&colonna(Some("t"), "id"), &bind())}),
+                )),
+            )),
+        ),
+        (
+            "alias k e K, ORDER BY K",
+            query(blocco(
+                "plain",
+                "t",
+                &json!({
+                    "projection": [voce(&colonna(Some("t"), "id"), Some("k")), voce(&colonna(Some("t"), "name"), Some("K"))],
+                    "order_by": ordine(&[colonna(None, "K")])
+                }),
+            )),
+        ),
+        (
+            "colonna NAME per name",
+            query(blocco(
+                "plain",
+                "t",
+                &json!({"order_by": ordine(&[colonna(Some("t"), "NAME")])}),
+            )),
+        ),
+    ];
+    for (prodotto, dialect) in PRODOTTI {
+        for (forma, operation) in &ammesse {
+            renderer(prodotto, dialect)
+                .render_query(operation)
+                .unwrap_or_else(|error| panic!("{prodotto:?} {forma} resa: {error:?}"));
+            scalar_operands(prodotto, operation)
+                .and_then(|operands| operands.judge(&catalogo(prodotto)))
+                .unwrap_or_else(|error| panic!("{prodotto:?} {forma}: {error:?}"));
         }
     }
 }

@@ -80,13 +80,55 @@ impl RelationalPlan {
             Self::Mutation(mutation) => OperandPlan::Mutation(mutation),
         }
     }
+
+    /// Lo SQL che il piano rende per il provider della transazione: lo stesso
+    /// renderer di `compile_relational_query` e `compile_relational_mutation`.
+    fn sql(&self, provider: ProviderKind) -> plenora_database_core::Result<String> {
+        match self {
+            Self::Query(query) => {
+                render_query(dialect_of(provider), provider, query).map(|r| r.sql)
+            }
+            Self::Mutation(mutation) => {
+                plenora_database_core::compile_relational_mutation(provider, mutation)
+                    .map(|lowered| lowered.sql)
+            }
+        }
+    }
+
+    /// Lo SQL ricevuto e quello che il piano rende: altrimenti il giudizio
+    /// sarebbe di un piano e l'esecuzione di un altro.
+    fn ensure_renders(
+        &self,
+        provider: ProviderKind,
+        statement: &plenora_database_core::transaction::Statement,
+    ) -> plenora_database_core::Result<()> {
+        if self.sql(provider)? == statement.sql {
+            Ok(())
+        } else {
+            Err(plenora_database_core::DatabaseError::invalid_plan(
+                "lo SQL ricevuto non e quello che il piano relazionale rende",
+            ))
+        }
+    }
+}
+
+/// Il dialetto del renderer per il provider.
+const fn dialect_of(provider: ProviderKind) -> Dialect {
+    match provider {
+        ProviderKind::Mysql | ProviderKind::Mariadb => Dialect::Mysql,
+        ProviderKind::Sqlserver => Dialect::SqlServer,
+        ProviderKind::Db2 => Dialect::Db2,
+        ProviderKind::Oracle => Dialect::Oracle,
+        _ => Dialect::Postgres,
+    }
 }
 
 /// Il piano di `relational` (`("query" | "mutation", IR JSON)`), passato
 /// dallo SDK a `execute` ed `execute_returning_rows` insieme allo SQL che ne
-/// ha compilato. Il piano non si confronta con lo SQL: chi chiama il metodo
-/// nativo con uno SQL diverso esegue SQL del chiamante, come senza piano; lo
-/// SDK li compila dallo stesso statement (`expression._execute_statement`).
+/// ha compilato. Prima di eseguire il nativo rende lo SQL dal piano per il
+/// provider della transazione e lo confronta con quello ricevuto: uno SQL
+/// diverso si rifiuta (`invalid_plan`), e cio che si esegue e sempre lo SQL
+/// del piano giudicato.
 ///
 /// # Errors
 ///
@@ -119,6 +161,9 @@ pub async fn query_rows(
     plan: Option<&RelationalPlan>,
     cancellation: &plenora_database_core::CancellationToken,
 ) -> plenora_database_core::Result<Vec<plenora_database_core::row::Row>> {
+    if let Some(plan) = plan {
+        plan.ensure_renders(tx.provider_kind(), statement)?;
+    }
     let plan = plan.map(RelationalPlan::as_plan);
     plenora_database_core::facade::query_judged(tx, statement, plan.as_ref(), cancellation).await
 }
@@ -134,34 +179,20 @@ pub async fn execute(
     plan: Option<&RelationalPlan>,
     cancellation: &plenora_database_core::CancellationToken,
 ) -> plenora_database_core::Result<u64> {
+    if let Some(plan) = plan {
+        plan.ensure_renders(tx.provider_kind(), statement)?;
+    }
     let plan = plan.map(RelationalPlan::as_plan);
     plenora_database_core::facade::execute_judged(tx, statement, plan.as_ref(), cancellation).await
 }
 
-/// Compila uno statement senza ricevere o restituire valori applicativi.
-///
-/// Non esegue e non legge il catalogo: il giudizio degli operandi geometrici
-/// su ogni colonna lo fa l'esecuzione, con il catalogo del provider letto
-/// nella transazione. Qui si rifiutano soltanto le forme che il piano dice da
-/// se (regola N, funzioni spatial che rendono una geometria) e le colonne che
-/// il mapping ORM o la reflection dichiarano `Geometry` (`geometry_columns`).
-///
-/// # Errors
-///
-/// Rifiuta provider, JSON o IR non validi con messaggi privi del contenuto
-/// ricevuto. Le differenze di dialetto restano nel renderer canonico Rust.
-#[pyfunction]
-#[pyo3(signature = (ast_json, provider_name, geometry_columns = None))]
-pub fn compile_relational_query(
-    ast_json: &str,
-    provider_name: &str,
-    geometry_columns: Option<DeclaredGeometry>,
-) -> PyResult<(String, Vec<String>)> {
-    let (dialect, provider) = provider(provider_name)
-        .ok_or_else(|| PyValueError::new_err("provider relazionale non supportato"))?;
-    let query: QueryOperation = serde_json::from_str(ast_json)
-        .map_err(|_| PyValueError::new_err("IR relazionale non valido"))?;
-    let rendered = Renderer::new(
+/// La query resa dal renderer canonico con la configurazione dello SDK.
+fn render_query(
+    dialect: Dialect,
+    provider: ProviderKind,
+    query: &QueryOperation,
+) -> plenora_database_core::Result<plenora_database_sql::RenderedSql> {
+    Renderer::new(
         dialect,
         DialectCapabilities {
             // L'ORM verifica ogni nome contro `capabilities.spatial.functions`
@@ -194,8 +225,33 @@ pub fn compile_relational_query(
     // (`spatial_probe::server_guard`): PostgreSQL con la guardia sul typmod,
     // MySQL.
     .with_provider(provider)
-    .render_query(&query)
-    .map_err(crate::errors::to_py_err)?;
+    .render_query(query)
+}
+
+/// Compila uno statement senza ricevere o restituire valori applicativi.
+///
+/// Non esegue e non legge il catalogo: il giudizio degli operandi geometrici
+/// su ogni colonna lo fa l'esecuzione, con il catalogo del provider letto
+/// nella transazione. Qui si rifiutano soltanto le forme che il piano dice da
+/// se (regola N, funzioni spatial che rendono una geometria) e le colonne che
+/// il mapping ORM o la reflection dichiarano `Geometry` (`geometry_columns`).
+///
+/// # Errors
+///
+/// Rifiuta provider, JSON o IR non validi con messaggi privi del contenuto
+/// ricevuto. Le differenze di dialetto restano nel renderer canonico Rust.
+#[pyfunction]
+#[pyo3(signature = (ast_json, provider_name, geometry_columns = None))]
+pub fn compile_relational_query(
+    ast_json: &str,
+    provider_name: &str,
+    geometry_columns: Option<DeclaredGeometry>,
+) -> PyResult<(String, Vec<String>)> {
+    let (dialect, provider) = provider(provider_name)
+        .ok_or_else(|| PyValueError::new_err("provider relazionale non supportato"))?;
+    let query: QueryOperation = serde_json::from_str(ast_json)
+        .map_err(|_| PyValueError::new_err("IR relazionale non valido"))?;
+    let rendered = render_query(dialect, provider, &query).map_err(crate::errors::to_py_err)?;
     let declared = geometry_columns.unwrap_or_default();
     if !declared.is_empty() {
         let operands = plenora_database_core::spatial_operand::scalar_operands(provider, &query)

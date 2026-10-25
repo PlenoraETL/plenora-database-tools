@@ -408,3 +408,90 @@ fn colonne_scalari_e_tabelle_senza_geometrie_restano_ammesse() {
         }
     }
 }
+
+/// L'evidenza offline della guardia del server su Oracle e Db2
+/// (`spatial_operand::operand_server_guard`): in ogni posizione di operando
+/// scalare il renderer applica l'operatore, il `CAST` o la funzione
+/// direttamente alla colonna, senza conversioni fra la colonna e
+/// l'operatore. Su `SDO_GEOMETRY` e `DB2GSE.ST_GEOMETRY` il server rifiuta
+/// quelle forme (dalla documentazione; non misurato live).
+#[test]
+fn su_oracle_e_db2_l_operatore_scalare_cade_sulla_colonna_geometrica() {
+    let g = colonna("g");
+    let stringa = json!({"kind": "typed_parameter", "name": "p", "parameter_type": "string"});
+    let forme = [
+        (
+            "=",
+            json!({"filter": {"kind": "compare", "left": g, "operator": "eq", "right": bind()}}),
+            "\"t\".\"g\" = ",
+        ),
+        (
+            "<>",
+            json!({"filter": {"kind": "compare", "left": g, "operator": "ne", "right": bind()}}),
+            "\"t\".\"g\" <> ",
+        ),
+        (
+            "<",
+            json!({"filter": {"kind": "compare", "left": g, "operator": "lt", "right": bind()}}),
+            "\"t\".\"g\" < ",
+        ),
+        (
+            "IN",
+            json!({"filter": {"kind": "in_list", "expression": g, "values": [bind()]}}),
+            "\"t\".\"g\" IN (",
+        ),
+        (
+            "BETWEEN",
+            json!({"filter": {"kind": "between", "expression": g, "lower": bind(), "upper": bind()}}),
+            "\"t\".\"g\" BETWEEN ",
+        ),
+        (
+            "LIKE su CAST",
+            json!({"filter": {"kind": "like", "expression": testo(&g), "pattern": stringa}}),
+            "CAST(\"t\".\"g\" AS VARCHAR",
+        ),
+        (
+            "LOWER",
+            json!({"filter": {"kind": "compare", "left": {"kind": "scalar", "function": "lower", "arguments": [g]}, "operator": "eq", "right": stringa}}),
+            "LOWER(\"t\".\"g\")",
+        ),
+        (
+            "ORDER BY",
+            json!({"order_by": ordine(&g)}),
+            "ORDER BY \"t\".\"g\"",
+        ),
+        ("GROUP BY", json!({"group_by": [g]}), "GROUP BY \"t\".\"g\""),
+        (
+            "DISTINCT",
+            json!({"projection": [voce(&g, Some("g"))], "distinct": true}),
+            "DISTINCT \"t\".\"g\"",
+        ),
+        (
+            "MAX",
+            json!({"projection": [voce(&json!({"kind": "scalar", "function": "maximum", "arguments": [g]}), Some("m"))]}),
+            "MAX(\"t\".\"g\")",
+        ),
+        (
+            "UNION",
+            json!({"projection": [voce(&g, Some("g"))],
+                "set_operations": [{"operator": "union", "all": false, "query": query(&json!({"projection": [voce(&g, Some("g"))]}))}]}),
+            " UNION ",
+        ),
+    ];
+    for (prodotto, dialect) in [
+        (ProviderKind::Oracle, Dialect::Oracle),
+        (ProviderKind::Db2, Dialect::Db2),
+    ] {
+        for (forma, extra, atteso) in &forme {
+            let sql = renderer(prodotto, dialect)
+                .render_query(&query(extra))
+                .unwrap_or_else(|error| panic!("{prodotto:?} {forma}: {error:?}"))
+                .sql;
+            assert!(sql.contains(atteso), "{prodotto:?} {forma}: {sql}");
+            assert!(
+                !sql.contains("SDO_UTIL") && !sql.contains("ST_As"),
+                "{prodotto:?} {forma}: conversione implicita in {sql}"
+            );
+        }
+    }
+}

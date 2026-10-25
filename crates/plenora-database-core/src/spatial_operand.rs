@@ -48,8 +48,12 @@
 //!
 //! Il giudizio non emula il legame dei nomi di ogni dialetto: rifiuta le forme
 //! in cui il legame dipende dal dialetto, `unsupported` con
-//! [`AMBIGUOUS_NAME_SHAPE`], su ogni piano e su ogni dialetto (rendendo, e nel
-//! giudizio sul catalogo):
+//! [`AMBIGUOUS_NAME_SHAPE`], su ogni dialetto, **soltanto in un piano che puo
+//! contenere una geometria** (lo stesso criterio del mondo chiuso: una
+//! relazione con una colonna geometrica o con colonne che il catalogo non
+//! legge, un nodo spatial; rendendo, senza catalogo, soltanto il nodo
+//! spatial). Su un piano senza geometrie il legame di un nome non puo far
+//! confrontare una geometria, e le forme arrivano al server come prima:
 //!
 //! - (a) due nomi di relazione (alias o nome) visibili insieme — nello stesso
 //!   blocco o in blocchi annidati — uguali senza maiuscole e senza spazi
@@ -89,7 +93,14 @@
 //! (`facade::verify_operands`): le colonne non dichiarate o non mappate si
 //! giudicano dal catalogo, non dal mapping del chiamante. Un provider che non
 //! legge il catalogo rende ogni relazione sconosciuta: un riferimento in
-//! posizione di operando si rifiuta.
+//! posizione di operando su una relazione si rifiuta; un piano che non nomina
+//! relazioni resta. Il nativo dello SDK rende lo SQL dal piano e lo confronta
+//! con quello ricevuto: uno SQL diverso si rifiuta.
+//!
+//! Oracle e Db2 non leggono il catalogo: la guardia del server
+//! ([`operand_server_guard`]) rifiuta ogni operatore scalare su
+//! `SDO_GEOMETRY` e `DB2GSE.ST_GEOMETRY`, e l'esecuzione giudica soltanto la
+//! parte senza catalogo, che rifiuta cio che la guardia non protegge.
 //!
 //! # Perche
 //!
@@ -103,8 +114,9 @@
 //! # Chi decide
 //!
 //! Una visita sola, [`scalar_operands`]: senza catalogo decide la parte che
-//! non ne ha bisogno (la regola N strutturale, una funzione spatial che rende
-//! una geometria, un `SpatialValue`), ed e quella che chiede il renderer
+//! non ne ha bisogno (la regola N in un piano con un nodo spatial, una
+//! funzione spatial che rende una geometria, un `SpatialValue`, il binario
+//! canonico di una geometria, `SpatialOutput`, sotto un operatore), ed e quella che chiede il renderer
 //! relazionale per ogni dialetto; elenca le relazioni di base nominate. Il
 //! provider, o la transazione per lo SQL compilato, ne legge le colonne
 //! ([`RelationColumns`]) e la stessa visita le giudica
@@ -114,23 +126,34 @@
 //!
 //! # Limiti dichiarati
 //!
+//! - **Regola.** La guardia del server sugli operandi scalari di Oracle e Db2
+//!   ([`operand_server_guard`]) e letta dalla documentazione dei prodotti,
+//!   non misurata live; il renderer e provato offline (l'operatore cade
+//!   sulla colonna).
+//! - **Ambito.** Oracle e Db2, sullo SDK, la facade e la CLI portable: le
+//!   colonne non si giudicano sul catalogo.
+//! - **Hazard.** Se un server accettasse una forma che la documentazione
+//!   dice rifiutata (un `MAP`/`ORDER` aggiunto al tipo, una conversione
+//!   implicita), quella forma confronterebbe il formato interno senza errore.
+//! - **Rientro.** Le sonde live della guardia su Oracle Database Free e Db2
+//!   LUW, come `sonde_srid_server.py`, o la lettura del catalogo nella
+//!   transazione.
+//!
 //! - **Regola.** Mondo chiuso: senza le colonne di una relazione non si prova
 //!   niente.
-//! - **Ambito.** I provider che non leggono il catalogo nella transazione
-//!   (Oracle, Db2: il default di `TransactionScope::operand_catalog`), sullo
-//!   SDK, la facade e la CLI portable.
-//! - **Hazard.** Nessun passaggio silenzioso: ogni riferimento in posizione
-//!   di operando (`WHERE id = ?`, `ORDER BY id`) si rifiuta, anche su colonne
-//!   scalari. Il costo e il rifiuto di query ordinarie su quei provider.
-//! - **Rientro.** Quando Oracle e Db2 leggono il catalogo nella transazione,
-//!   con le loro prove live.
+//! - **Ambito.** Un provider senza `operand_catalog` e senza guardia (oggi
+//!   nessuno dei provider del repository; i finti di prova).
+//! - **Hazard.** Nessun passaggio silenzioso: un riferimento in posizione di
+//!   operando su una relazione si rifiuta, anche su colonne scalari.
+//! - **Rientro.** Quando il provider legge il catalogo.
 //!
 //! - **Regola.** La compilazione senza esecuzione non legge il catalogo.
 //! - **Ambito.** `compile_relational_query` e `compile_relational_mutation`
 //!   dello SDK, `portable-compile` della CLI, il renderer relazionale.
-//! - **Hazard.** Lo SQL reso ha avuto la regola N e il rifiuto delle
-//!   geometrie che il piano dice da se (funzioni spatial, `SpatialValue`, le
-//!   colonne dichiarate `Geometry` dallo SDK), non il giudizio sulle colonne:
+//! - **Hazard.** Lo SQL reso ha avuto il rifiuto delle geometrie che il
+//!   piano dice da se (funzioni spatial, `SpatialValue`, `SpatialOutput`, la
+//!   regola N con un nodo spatial, le colonne dichiarate `Geometry` dallo
+//!   SDK), non il giudizio sulle colonne:
 //!   chi lo esegue fuori da questo repository esegue SQL del chiamante.
 //! - **Rientro.** Nessuno: chi esegue passa dall'esecuzione, che giudica.
 //!
@@ -182,6 +205,50 @@ pub const AMBIGUOUS_NAME_SHAPE: &str =
 /// Profondita massima di un'espansione di `*` attraverso sorgenti derivate:
 /// oltre, l'espansione non si conosce e il riferimento non si risolve.
 const MAX_EXPANSION_DEPTH: usize = 64;
+
+/// La guardia del server sugli operandi geometrici scalari: dove il tipo
+/// geometrico e un tipo oggetto o strutturato, il server rifiuta ogni
+/// operatore scalare su una colonna geometrica.
+///
+/// Letta dalla documentazione dei prodotti, non misurata live (limite
+/// dichiarato nel modulo):
+///
+/// - Oracle, `MDSYS.SDO_GEOMETRY`: confronto con `RAW` o `VARCHAR2`,
+///   `CAST` a `VARCHAR2` o `RAW`, `LOWER`/`UPPER`, aritmetica:
+///   ORA-00932; `=`, `<>`, `IN` fra oggetti con attributi `VARRAY`:
+///   ORA-22901; `<`, `BETWEEN`, `ORDER BY`, `GROUP BY`, `DISTINCT`, set
+///   operation che confrontano righe, `MIN`/`MAX`, `PARTITION BY` su un
+///   oggetto senza metodo `MAP` o `ORDER`: ORA-22950;
+/// - Db2 LUW, `DB2GSE.ST_GEOMETRY` e sottotipi (tipi strutturati senza
+///   `ORDERING`): confronto con un binario o un testo: SQL0401N;
+///   `CAST` a `VARCHAR` (anche `FOR BIT DATA`): SQL0461N; funzioni
+///   stringa: SQL0440N; `ORDER BY`, `GROUP BY`, `DISTINCT`, set operation
+///   che confrontano righe, `MIN`/`MAX` su un tipo strutturato senza
+///   ordinamento: SQLSTATE 42818/42907.
+///
+/// Il renderer applica l'operatore direttamente alla colonna su entrambi i
+/// dialetti (provato offline in `operandi_geometrici.rs`): nessuna
+/// conversione implicita sta fra la colonna e l'operatore. Le forme che il
+/// server non protegge restano rifiutate senza catalogo: una funzione
+/// spatial che rende una geometria, un `SpatialValue`, il binario canonico
+/// (`SpatialOutput`, un `BLOB` WKB) sotto un operatore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperandServerGuard {
+    /// Oracle, `SDO_GEOMETRY`.
+    OracleObjectType,
+    /// Db2 LUW, `DB2GSE.ST_GEOMETRY`.
+    Db2StructuredType,
+}
+
+/// La guardia del server sugli operandi scalari del prodotto, se c'e.
+#[must_use]
+pub const fn operand_server_guard(provider: ProviderKind) -> Option<OperandServerGuard> {
+    match provider {
+        ProviderKind::Oracle => Some(OperandServerGuard::OracleObjectType),
+        ProviderKind::Db2 => Some(OperandServerGuard::Db2StructuredType),
+        _ => None,
+    }
+}
 
 /// Come il dialetto confronta un nome di colonna del piano con il nome del
 /// catalogo o con un nome di uscita.
@@ -731,11 +798,15 @@ struct Walk<'a, 'c> {
     seen: Seen,
 }
 
-/// Cio che la visita ha incontrato e che decide il giudizio finale.
+/// Cio che la visita ha incontrato e che decide il giudizio finale: quattro
+/// fatti indipendenti, non uno stato.
 #[derive(Default)]
+#[allow(clippy::struct_excessive_bools)]
 struct Seen {
     /// Un riferimento che non si risolve.
     unresolved: bool,
+    /// Una forma della regola N.
+    ambiguous: bool,
     /// Un nodo spatial, o una relazione di un altro catalogo.
     geometric: bool,
     /// Un nome di relazione, di CTE, di uscita o un riferimento di colonna
@@ -779,12 +850,17 @@ fn walk(
             provider,
             ProviderKind::Sqlserver | ProviderKind::Mysql | ProviderKind::Mariadb
         );
-        if state.seen.foreign && collated && geometric {
+        if (state.seen.ambiguous || (state.seen.foreign && collated)) && geometric {
             return Err(ambiguous_refusal(provider));
         }
         if state.seen.unresolved && geometric {
             return Err(unresolved_refusal(provider));
         }
+    } else if state.seen.ambiguous && state.seen.geometric {
+        // Senza catalogo si sa geometrico soltanto un piano con un nodo
+        // spatial (o una relazione di un altro catalogo): il resto lo decide
+        // il giudizio sul catalogo.
+        return Err(ambiguous_refusal(provider));
     }
     Ok(Outcome {
         relations: state.relations,
@@ -804,7 +880,7 @@ impl<'a> Walk<'a, '_> {
     fn step(&mut self, item: Item<'a>) -> Result<()> {
         match item {
             Item::Operation(operation, visible, parent, operand) => {
-                self.visit_operation(operation, visible, parent, operand)?;
+                self.visit_operation(operation, visible, parent, operand);
             }
             Item::Expression(expression, operand, index) => {
                 self.visit_expression(expression, operand, index)?;
@@ -823,9 +899,9 @@ impl<'a> Walk<'a, '_> {
         visible: Vec<&'a CommonTableExpression>,
         parent: Option<usize>,
         operand: bool,
-    ) -> Result<()> {
+    ) {
         let index = self.open_block(operation, visible, parent);
-        self.check_names(index)?;
+        self.check_names(index);
         let inner = self.blocks[index].visible.clone();
         for relation in &self.blocks[index].from {
             match &relation.kind {
@@ -895,7 +971,6 @@ impl<'a> Walk<'a, '_> {
         {
             self.stack.push(Item::Expression(predicate, false, index));
         }
-        Ok(())
     }
 
     /// La regola N sul blocco, senza catalogo: (a) i nomi di relazione del
@@ -904,7 +979,7 @@ impl<'a> Walk<'a, '_> {
     /// CTE visibili altrettanto, e una relazione senza schema che incontra
     /// una CTE soltanto senza maiuscole si rifiuta; (b) i nomi di uscita della
     /// projection sono distinti anche senza maiuscole.
-    fn check_names(&mut self, index: usize) -> Result<()> {
+    fn check_names(&mut self, index: usize) {
         let foreign = self.blocks[index]
             .from
             .iter()
@@ -924,7 +999,14 @@ impl<'a> Walk<'a, '_> {
             )
             .any(|name| !name.is_ascii());
         self.seen.foreign |= foreign;
-        let refused = || Err(ambiguous_refusal(self.provider));
+        if self.ambiguous_names(index) {
+            self.seen.ambiguous = true;
+        }
+    }
+
+    /// Le forme (a) e (b) della regola N nel blocco.
+    fn ambiguous_names(&self, index: usize) -> bool {
+        let refused = || true;
         let mut names = BTreeSet::new();
         let mut current = Some(index);
         while let Some(block) = current {
@@ -976,14 +1058,14 @@ impl<'a> Walk<'a, '_> {
                 return refused();
             }
         }
-        Ok(())
+        false
     }
 
     /// La regola N su un riferimento di colonna, in ogni posizione: (a) il
     /// qualificatore e uguale per byte alla relazione che incontra senza
     /// maiuscole; (c) senza qualificatore, il blocco non ha blocchi esterni
     /// con relazioni (subquery, `LATERAL`).
-    fn check_reference(&mut self, relation: Option<&str>, index: usize) -> Result<()> {
+    fn check_reference(&mut self, relation: Option<&str>, index: usize) {
         self.seen.foreign |= relation.is_some_and(|relation| !relation.is_ascii());
         // Con il qualificatore si guarda il blocco e quelli esterni; senza,
         // soltanto quelli esterni.
@@ -1000,11 +1082,11 @@ impl<'a> Walk<'a, '_> {
                 })
             });
             if refused {
-                return Err(ambiguous_refusal(self.provider));
+                self.seen.ambiguous = true;
+                break;
             }
             current = self.blocks[block].parent;
         }
-        Ok(())
     }
 
     /// Il blocco di `operation` con `parent`, aperto una volta sola.
@@ -1125,14 +1207,14 @@ impl<'a> Walk<'a, '_> {
         match expression {
             QueryExpression::Column { column } => {
                 self.seen.foreign |= !column.field.is_ascii();
-                self.check_reference(column.relation.as_deref(), index)?;
+                self.check_reference(column.relation.as_deref(), index);
                 if operand {
                     self.stack.push(Item::Reference(column.clone(), index));
                 }
             }
             QueryExpression::Wildcard { relation } => {
                 if let Some(relation) = relation {
-                    self.check_reference(Some(relation), index)?;
+                    self.check_reference(Some(relation), index);
                 }
                 if operand {
                     self.wildcard(relation.as_deref(), index)?;
@@ -1181,8 +1263,13 @@ impl<'a> Walk<'a, '_> {
                 children.push((right, false));
             }
             QueryExpression::SpatialOutput { expression, .. } => {
+                // Il binario canonico di una geometria: sotto un operatore
+                // confronta byte, non geometrie, su ogni dialetto.
                 self.seen.geometric = true;
-                children.push((expression, operand));
+                if operand {
+                    return Err(refusal(provider));
+                }
+                children.push((expression, false));
             }
             QueryExpression::Cast { expression, .. }
             | QueryExpression::NullsOrder { expression, .. } => {
@@ -1290,7 +1377,7 @@ impl<'a> Walk<'a, '_> {
         for candidate in candidates {
             match candidate {
                 Candidate::Geometry => return Err(refusal(self.provider)),
-                Candidate::Ambiguous => return Err(ambiguous_refusal(self.provider)),
+                Candidate::Ambiguous => self.seen.ambiguous = true,
                 Candidate::Scalar => {}
                 Candidate::Unresolved => self.seen.unresolved = true,
                 Candidate::Follow(item) => self.stack.push(item),
@@ -1309,9 +1396,10 @@ impl<'a> Walk<'a, '_> {
             Some(relation) => self.qualified(relation, &column.field, index),
             None => self.unqualified(&column.field, index),
         };
-        let Ok(own) = self.output_positions(index, column) else {
-            return Err(ambiguous_refusal(self.provider));
-        };
+        let own = self.output_positions(index, column).unwrap_or_else(|()| {
+            self.seen.ambiguous = true;
+            Vec::new()
+        });
         // Ogni colonna di uscita si segue una volta sola (due alias che si
         // nominano a vicenda), per posizione: un riferimento qualificato e
         // uno senza qualificatore possono nominarne di diverse.
