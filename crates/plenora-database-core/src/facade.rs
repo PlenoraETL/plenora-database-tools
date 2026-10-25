@@ -279,7 +279,8 @@ pub async fn verify_operands(
     // Oracle: il server rifiuta ogni operatore scalare su una colonna
     // geometrica (`spatial_operand::operand_server_guard`, misurato); il
     // giudizio senza catalogo ha gia rifiutato cio che il server non
-    // protegge. Db2 non ha guardia e passa dal catalogo (mondo chiuso).
+    // protegge. Db2 non ha guardia e passa dal catalogo, che legge nella
+    // transazione come gli altri provider.
     if operands.is_empty() || crate::spatial_operand::operand_server_guard(provider).is_some() {
         return Ok(());
     }

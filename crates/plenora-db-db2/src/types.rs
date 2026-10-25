@@ -456,17 +456,29 @@ fn canonical_geometry_type(native_type: &str) -> Option<&'static str> {
 /// Un campo geometrico sotto un operatore non spatial o in ORDER BY
 /// confronterebbe il formato interno del server con il valore legato
 /// (`spatial_operand`).
+///
+/// Sul nome del tipo della descrizione, senza schema: ogni tipo `ST_` (anche
+/// `ST_SURFACE`, `ST_CURVE`, `ST_MULTICURVE`, `ST_MULTISURFACE`,
+/// `ST_RASTER`, che la lettura non mappa: fino al 25/10 un filtro su quelle
+/// colonne passava), e un `BLOB` di una vista, che puo essere una geometria
+/// resa da una funzione spatial (`crate::operand_catalog`). Il nome non dice
+/// lo schema: un omonimo `ST_` di un altro schema si rifiuta anche se e
+/// scalare. La lettura poi giudica gli stessi campi sul catalogo, con lo
+/// schema e la fonte del tipo.
 fn ensure_scalar_fields(
     description: &Db2ObjectDescription,
     operation: &ReadOperation,
 ) -> Result<()> {
+    let computed = description.kind == "VIEW";
     plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
         plenora_database_core::plan::ProviderKind::Db2,
         operation.filter.as_ref(),
         &operation.order_by,
         |field| {
             description.columns.iter().any(|column| {
-                column.name == field && is_spatial_type(&column.data_type.to_ascii_uppercase())
+                let native = column.data_type.to_ascii_uppercase();
+                column.name == field
+                    && (native.starts_with("ST_") || (computed && native == "BLOB"))
             })
         },
     )

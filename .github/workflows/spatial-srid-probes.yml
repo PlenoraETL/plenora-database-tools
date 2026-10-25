@@ -6,7 +6,9 @@ name: spatial-srid-probes
 # una sonda senza catalogo soltanto dove queste misure dicono «guardia».
 # Il job `operandi` misura la guardia del server sugli operandi scalari
 # geometrici (`spatial_operand::operand_server_guard`) su Oracle e Db2, con lo
-# SQL del renderer di `tests/fixtures/operandi_server_guard.json`.
+# SQL del renderer di `tests/fixtures/operandi_server_guard.json`, e su Db2 i
+# fatti di SYSCAT su cui si regge il giudizio del catalogo
+# (`crates/plenora-db-db2/src/operand_catalog.rs`).
 #
 # Questo file non contiene logica di qualifica: un'invocazione per prodotto.
 # Le immagini vengono, per digest, da `docker/<prodotto>/references.json` e
@@ -26,6 +28,7 @@ on:
       - "scripts/sonde_srid_server.py"
       - "scripts/sonde_operandi_server.py"
       - "crates/plenora-database-core/src/spatial_operand.rs"
+      - "crates/plenora-db-db2/src/operand_catalog.rs"
       - "tests/fixtures/operandi_server_guard.json"
       - "docker-compose.oracle.yml"
       - "docker/db2-client/Dockerfile"

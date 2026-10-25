@@ -27,7 +27,13 @@ semantica, dove il server rifiuta i tipi.
 
 Si misura anche il catalogo su cui si regge il riconoscimento del tipo: il
 proprietario del tipo della colonna (`ALL_TAB_COLUMNS.DATA_TYPE_OWNER`,
-`SYSCAT.COLUMNS.TYPESCHEMA`).
+`SYSCAT.COLUMNS.TYPESCHEMA`). Su Db2, che giudica gli operandi sul catalogo
+(`crates/plenora-db-db2/src/operand_catalog.rs`), anche i fatti di `SYSCAT`
+su cui il giudizio si regge (`GIUDIZIO_DEL_CATALOGO`): i tipi spatial
+distinti su `BLOB`, i tipi dell'utente che il server non crea su una
+geometria, la colonna `BLOB` di una vista resa da `ST_CENTROID`, la base di
+un alias, gli spazi finali di un identificatore, le tabelle temporanee
+dichiarate senza geometrie.
 
     python scripts/sonde_operandi_server.py --server oracle --riferimenti --docker "wsl docker"
     python scripts/sonde_operandi_server.py --server db2 --container NOME --referto db2.json
@@ -81,6 +87,10 @@ PREPARAZIONE = {
     ),
     "db2": (
         "BEGIN DECLARE CONTINUE HANDLER FOR SQLSTATE '42704' BEGIN END; "
+        "EXECUTE IMMEDIATE 'DROP ALIAS PLENORA.SONDE_OPERANDI_A'; END",
+        "BEGIN DECLARE CONTINUE HANDLER FOR SQLSTATE '42704' BEGIN END; "
+        "EXECUTE IMMEDIATE 'DROP VIEW PLENORA.SONDE_OPERANDI_V'; END",
+        "BEGIN DECLARE CONTINUE HANDLER FOR SQLSTATE '42704' BEGIN END; "
         "EXECUTE IMMEDIATE 'DROP TABLE PLENORA.SONDE_OPERANDI'; END",
         # Una riga con un tipo spatial non sta in una pagina da 4K (SQL0286N).
         "BEGIN DECLARE CONTINUE HANDLER FOR SQLSTATE '42710' BEGIN END; "
@@ -100,7 +110,45 @@ PREPARAZIONE = {
         "INSERT INTO PLENORA.SONDE_OPERANDI VALUES "
         "(1, 'a', BX'01', ST_GEOMETRY('POINT (1 2)', 4326)), "
         "(2, 'b', BX'02', ST_GEOMETRY('POINT (1 2)', 4326))",
+        # Le relazioni su cui si regge il giudizio del catalogo
+        # (`crates/plenora-db-db2/src/operand_catalog.rs`).
+        "CREATE VIEW PLENORA.SONDE_OPERANDI_V AS "
+        "SELECT ID, ST_CENTROID(G) AS C FROM PLENORA.SONDE_OPERANDI",
+        "CREATE ALIAS PLENORA.SONDE_OPERANDI_A FOR PLENORA.SONDE_OPERANDI",
         "COMMIT",
+    ),
+}
+
+# I fatti del catalogo su cui si regge il giudizio degli operandi di Db2
+# (`crates/plenora-db-db2/src/operand_catalog.rs`), che legge SYSCAT nella
+# transazione: sonda, istruzione, esito atteso.
+GIUDIZIO_DEL_CATALOGO = {
+    "db2": (
+        ("i tipi spatial di SYSIBM sono distinti su BLOB",
+         "SELECT COUNT(*) FROM SYSCAT.DATATYPES WHERE TYPESCHEMA = 'SYSIBM' "
+         "AND LEFT(TYPENAME, 3) = 'ST_' AND (METATYPE <> 'T' OR SOURCENAME <> 'BLOB')",
+         {"valore": "0"}),
+        ("un tipo distinto su ST_GEOMETRY si rifiuta",
+         "CREATE DISTINCT TYPE PLENORA.SONDE_DGEO AS ST_GEOMETRY", {"errore": ["SQL20441N"]}),
+        ("un tipo strutturato UNDER ST_GEOMETRY si rifiuta",
+         "CREATE TYPE PLENORA.SONDE_SGEO UNDER ST_GEOMETRY AS (X INTEGER) MODE DB2SQL",
+         {"errore": ["SQL20026N"]}),
+        ("una colonna di vista resa da ST_CENTROID e SYSIBM.BLOB",
+         "SELECT RTRIM(TYPESCHEMA) || '.' || TYPENAME FROM SYSCAT.COLUMNS "
+         "WHERE TABSCHEMA = 'PLENORA' AND TABNAME = 'SONDE_OPERANDI_V' AND COLNAME = 'C'",
+         {"valore": "SYSIBM.BLOB"}),
+        ("la colonna BLOB della vista si confronta con la geometria senza errore",
+         "SELECT COUNT(*) FROM PLENORA.SONDE_OPERANDI_V V, PLENORA.SONDE_OPERANDI T "
+         "WHERE V.C = T.G", {"ok": True}),
+        ("un alias porta il tipo A e la sua base",
+         "SELECT TYPE || ' ' || RTRIM(BASE_TABSCHEMA) || '.' || BASE_TABNAME FROM SYSCAT.TABLES "
+         "WHERE TABSCHEMA = 'PLENORA' AND TABNAME = 'SONDE_OPERANDI_A'",
+         {"valore": "A PLENORA.SONDE_OPERANDI"}),
+        ("il server ignora gli spazi finali di un identificatore",
+         "SELECT COUNT(*) FROM PLENORA.\"SONDE_OPERANDI \"", {"valore": "2"}),
+        ("una tabella temporanea dichiarata non ha colonne ST_GEOMETRY",
+         "DECLARE GLOBAL TEMPORARY TABLE SESSION.SONDE_OPERANDI (G ST_GEOMETRY) "
+         "ON COMMIT PRESERVE ROWS NOT LOGGED", {"errore": ["SQL0350N"]}),
     ),
 }
 
@@ -258,10 +306,26 @@ def pronto(docker: Docker, server: str) -> bool:
         (completato.stdout or "") + (completato.stderr or ""))
 
 
-def attendi(docker: Docker, server: str, secondi: int) -> None:
+# Il setup dell'immagine Db2 risponde a una query prima di aver finito:
+# riavvia l'istanza dopo la creazione del database, e un'istruzione in quel
+# momento esce con 4 senza codice (osservato il 25/10 sulla seconda istruzione
+# della preparazione). Il container avviato dallo script si attende fino a
+# questa riga del suo log.
+SETUP_COMPLETO = {"db2": "Setup has completed"}
+
+
+def setup_completo(docker: Docker, server: str) -> bool:
+    riga = SETUP_COMPLETO.get(server)
+    if riga is None:
+        return True
+    log = docker.run(["logs", docker.container], timeout=120)
+    return riga in (log.stdout or "") + (log.stderr or "")
+
+
+def attendi(docker: Docker, server: str, secondi: int, avviato: bool = False) -> None:
     limite = time.monotonic() + secondi
     while time.monotonic() < limite:
-        if pronto(docker, server):
+        if (not avviato or setup_completo(docker, server)) and pronto(docker, server):
             return
         time.sleep(5)
     raise SystemExit(f"il server {server} non risponde: il gate non si puo' eseguire")
@@ -281,6 +345,12 @@ def misura(docker: Docker, server: str, fixture: dict) -> list[dict]:
     esiti.append({"sonda": "tipo della colonna G nel catalogo", "prova": "catalogo",
                   "atteso": {"valore": atteso_catalogo}, "osservato": osservato,
                   "conforme": osservato == {"valore": atteso_catalogo}})
+    for sonda, sql, atteso in GIUDIZIO_DEL_CATALOGO.get(server, ()):
+        osservato = esegui(docker, server, sql)
+        conforme = (osservato == atteso if "valore" in atteso
+                    else verdetto(atteso, osservato))
+        esiti.append({"sonda": sonda, "prova": "catalogo", "atteso": atteso,
+                      "osservato": osservato, "conforme": conforme})
     for forma in fixture["forme"]:
         resa = forma["sql"][server]
         tipi = bind_tipati(forma["piano"])
@@ -349,7 +419,7 @@ def main() -> int:
                   file=sys.stderr)
             return 2
     try:
-        attendi(docker, opzioni.server, opzioni.attesa)
+        attendi(docker, opzioni.server, opzioni.attesa, avviato=immagine is not None)
         prepara(docker, opzioni.server)
         esiti = misura(docker, opzioni.server, fixture)
     finally:

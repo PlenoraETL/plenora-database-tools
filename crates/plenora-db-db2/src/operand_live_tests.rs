@@ -1,0 +1,667 @@
+//! Il giudizio degli operandi geometrici sul catalogo di Db2
+//! (`crate::operand_catalog`), sul server: le forme della guardia misurate
+//! (`tests/fixtures/operandi_server_guard.json`), che su Db2 passano e
+//! confrontano i byte, si rifiutano prima del server; le stesse forme su una
+//! colonna non geometrica arrivano al server e rendono le righe dello SQL
+//! eseguito senza giudizio; i filtri e gli ordinamenti scalari rendono le
+//! righe attese, anche attraverso viste, alias, alias di alias e alias
+//! pubblici; le geometrie si rifiutano attraverso le stesse relazioni, con
+//! i sottotipi spatial e la colonna `BLOB` calcolata di una vista.
+
+use crate::{Db2Config, Db2Provider, Db2TlsMode};
+use plenora_database_core::plan::{
+    FilterExpression, ObjectRef, OrderBy, ProviderKind, ReadOperation, SortDirection,
+};
+use plenora_database_core::portable::{eq, select, Direction};
+use plenora_database_core::provider::{ParameterBag, ParameterValue, Provider, SecretString};
+use plenora_database_core::relational::QueryOperation;
+use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+use plenora_database_core::spatial_operand::{
+    OperandPlan, AMBIGUOUS_NAME_SHAPE, GEOMETRY_OPERAND_UNRESOLVED,
+};
+use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+use plenora_database_core::transaction::{Statement, TransactionOptions};
+use plenora_database_core::{CancellationToken, ErrorCategory, ErrorPhase};
+use plenora_database_sql::{Dialect, DialectCapabilities, Renderer};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+
+const FIXTURE_GUARDIA: &str = include_str!("../../../tests/fixtures/operandi_server_guard.json");
+
+const TABELLA: &str = "SONDE_OPERANDI";
+
+/// Un budget per ogni operazione: la durata del budget e quella di una
+/// operazione, non dell'intero test.
+fn budget() -> ResourceBudget {
+    ResourceBudget::new(ResourceLimits::default()).expect("budget operandi Db2")
+}
+
+fn environment(name: &str, fallback: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| fallback.to_owned())
+}
+
+fn provider() -> Db2Provider {
+    Db2Provider::new(
+        Db2Config::new(
+            environment("PLENORA_DB2_HOST", "db2"),
+            environment("PLENORA_DB2_DATABASE", "plenora"),
+            environment("PLENORA_DB2_USER", "db2inst1"),
+        )
+        .with_port(
+            environment("PLENORA_DB2_PORT", "50000")
+                .parse()
+                .expect("porta Db2 operandi live"),
+        )
+        .with_tls_mode(Db2TlsMode::Disable),
+    )
+    .expect("provider Db2 operandi live")
+}
+
+/// La preparazione, su una connessione in autocommit: la tabella del fixture, una tabella con i sottotipi
+/// spatial e un omonimo di `ST_GEOMETRY` di un altro schema, una vista con
+/// una colonna resa da `ST_CENTROID`, alias, alias di alias, un alias
+/// pubblico e un alias verso un oggetto assente.
+const PREPARAZIONE: [&str; 12] = [
+    // Le tabelle temporanee di una subquery con una colonna spatial non
+    // stanno nello spazio temporaneo da 4K (SQL1585N).
+    "BEGIN DECLARE CONTINUE HANDLER FOR SQLSTATE '42710' BEGIN END; \
+     EXECUTE IMMEDIATE 'CREATE SYSTEM TEMPORARY TABLESPACE PLENORA_TMP32K PAGESIZE 32K \
+     BUFFERPOOL PLENORA_BP32K'; END",
+    "CREATE TABLE PLENORA.SONDE_OPERANDI (ID INTEGER, NAME VARCHAR(20), \
+     B VARCHAR(16) FOR BIT DATA, G ST_GEOMETRY) IN PLENORA_TS8K",
+    "INSERT INTO PLENORA.SONDE_OPERANDI VALUES \
+     (1, 'a', BX'01', ST_GEOMETRY('POINT (1 2)', 4326)), \
+     (2, 'b', BX'02', ST_GEOMETRY('POINT (3 4)', 4326))",
+    "CREATE DISTINCT TYPE SONDE_TIPI.ST_GEOMETRY AS INTEGER WITH COMPARISONS",
+    "CREATE TABLE PLENORA.SONDE_OPERANDI_TIPI (ID INTEGER, P ST_POINT, S ST_SURFACE, \
+     X SONDE_TIPI.ST_GEOMETRY) IN PLENORA_TS32K",
+    "INSERT INTO PLENORA.SONDE_OPERANDI_TIPI VALUES \
+     (1, ST_POINT('POINT (1 2)', 4326), NULL, SONDE_TIPI.ST_GEOMETRY(10)), \
+     (2, ST_POINT('POINT (3 4)', 4326), NULL, SONDE_TIPI.ST_GEOMETRY(20))",
+    "CREATE VIEW PLENORA.SONDE_OPERANDI_V AS \
+     SELECT ID, NAME, G, ST_CENTROID(G) AS C FROM PLENORA.SONDE_OPERANDI",
+    "CREATE ALIAS PLENORA.SONDE_OPERANDI_A FOR PLENORA.SONDE_OPERANDI",
+    "CREATE ALIAS PLENORA.SONDE_OPERANDI_AA FOR PLENORA.SONDE_OPERANDI_A",
+    "CREATE ALIAS PLENORA.SONDE_OPERANDI_AV FOR PLENORA.SONDE_OPERANDI_V",
+    "CREATE ALIAS PLENORA.SONDE_OPERANDI_AX FOR PLENORA.SONDE_OPERANDI_ASSENTE",
+    "CREATE PUBLIC ALIAS SONDE_OPERANDI_PA FOR PLENORA.SONDE_OPERANDI",
+];
+
+const PULIZIA: [&str; 10] = [
+    "DROP PUBLIC ALIAS SONDE_OPERANDI_PA",
+    "DROP ALIAS PLENORA.SONDE_OPERANDI_AX",
+    "DROP ALIAS PLENORA.SONDE_OPERANDI_AV",
+    "DROP ALIAS PLENORA.SONDE_OPERANDI_AA",
+    "DROP ALIAS PLENORA.SONDE_OPERANDI_A",
+    "DROP VIEW PLENORA.SONDE_OPERANDI_V",
+    "DROP TABLE PLENORA.SONDE_OPERANDI_TIPI",
+    "DROP TABLE PLENORA.SONDE_OPERANDI",
+    "DROP TYPE SONDE_TIPI.ST_GEOMETRY",
+    "DROP SCHEMA SONDE_TIPI RESTRICT",
+];
+
+async fn pulisci(provider: &Db2Provider, secret: &SecretString, cancellation: &CancellationToken) {
+    // Una pulizia di un'esecuzione precedente: gli oggetti possono mancare.
+    for sql in PULIZIA {
+        let _ = provider.run_ddl(secret, sql, cancellation).await;
+    }
+}
+
+/// `SELECT T.ID FROM PLENORA.SONDE_OPERANDI T` con il piano della forma sopra.
+fn piano_della_forma(piano: &Value) -> Value {
+    let mut operation = json!({
+        "source": {"object": {"catalog": null, "schema": "PLENORA", "object": TABELLA}, "alias": "T"},
+        "projection": [{"expression": {"kind": "column", "column": {"relation": "T", "field": "ID"}}, "alias": "ID"}],
+        "filter": null,
+        "having": null,
+        "row_limit": null
+    });
+    for (key, value) in piano.as_object().expect("piano") {
+        operation[key] = value.clone();
+    }
+    operation
+}
+
+/// Il piano con `G` (e il suo alias di uscita) sostituita da `colonna`.
+fn con_colonna(value: &Value, colonna: &str) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, inner)| {
+                    let sostituito = (key == "field" || key == "alias") && inner == "G";
+                    let inner = if sostituito {
+                        Value::String(colonna.to_owned())
+                    } else {
+                        con_colonna(inner, colonna)
+                    };
+                    (key.clone(), inner)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| con_colonna(item, colonna))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Il valore di un bind tipato del piano: binario, testo, intero.
+fn valore_del_bind(piano: &Value, name: &str) -> ParameterValue {
+    let mut stack = vec![piano];
+    while let Some(node) = stack.pop() {
+        match node {
+            Value::Object(map) => {
+                if map.get("kind").and_then(Value::as_str) == Some("typed_parameter")
+                    && map.get("name").and_then(Value::as_str) == Some(name)
+                {
+                    return match map["parameter_type"].as_str() {
+                        Some("binary") => ParameterValue::Bytes(vec![1]),
+                        Some("string") => ParameterValue::String("a".to_owned()),
+                        Some("integer") => ParameterValue::I64(1),
+                        other => panic!("tipo di bind del fixture {other:?}"),
+                    };
+                }
+                stack.extend(map.values());
+            }
+            Value::Array(items) => stack.extend(items),
+            _ => {}
+        }
+    }
+    panic!("bind {name} assente dal piano");
+}
+
+/// Lo SQL che il renderer del repository rende per il piano, con i valori.
+fn resa(plan: &Value, valori: Option<&[ParameterValue]>) -> (QueryOperation, String, Statement) {
+    let operation: QueryOperation = serde_json::from_value(plan.clone()).expect("piano");
+    let rendered = Renderer::new(
+        Dialect::Db2,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .with_provider(ProviderKind::Db2)
+    .render_query(&operation)
+    .expect("resa Db2");
+    let values = valori.map_or_else(
+        || {
+            rendered
+                .binds
+                .iter()
+                .map(|bind| valore_del_bind(plan, &bind.name))
+                .collect()
+        },
+        <[ParameterValue]>::to_vec,
+    );
+    let statement = Statement::new(rendered.sql.clone()).with_params(values);
+    (operation, rendered.sql, statement)
+}
+
+/// Le righe come elenco della colonna `ID` (o `V`, l'uscita delle forme
+/// che non proiettano `ID`), nell'ordine reso.
+fn identificativi(rows: &[plenora_database_core::Row]) -> Vec<String> {
+    rows.iter()
+        .map(|row| match row.get("ID").or_else(|| row.get("V")) {
+            Some(ParameterValue::I32(value)) => value.to_string(),
+            Some(ParameterValue::I64(value)) => value.to_string(),
+            other => format!("{other:?}"),
+        })
+        .collect()
+}
+
+/// Esegue il piano attraverso il percorso giudicato dell'esecuzione
+/// (`facade::query_judged`, come lo SDK, la facade e la CLI portable), e
+/// lo stesso SQL senza giudizio, nella stessa transazione.
+async fn esegui(
+    provider: &Db2Provider,
+    secret: &SecretString,
+    plan: &Value,
+    valori: Option<&[ParameterValue]>,
+    cancellation: &CancellationToken,
+) -> (
+    String,
+    plenora_database_core::Result<Vec<String>>,
+    plenora_database_core::Result<Vec<String>>,
+) {
+    let (operation, sql, statement) = resa(plan, valori);
+    let mut transaction = provider
+        .begin_transaction(
+            secret,
+            &TransactionOptions::default(),
+            &budget(),
+            cancellation,
+        )
+        .await
+        .expect("transazione operandi Db2");
+    let judged = plenora_database_core::facade::query_judged(
+        transaction.as_mut(),
+        &statement,
+        Some(&OperandPlan::Query(&operation)),
+        cancellation,
+    )
+    .await
+    .map(|rows| identificativi(&rows));
+    let direct = transaction
+        .query(&statement, cancellation)
+        .await
+        .map(|rows| identificativi(&rows));
+    let _ = transaction.rollback(cancellation).await;
+    (sql, judged, direct)
+}
+
+/// Il rifiuto del giudizio, prima del server: `unsupported`, fase di
+/// preparazione, con uno dei motivi del giudizio.
+fn rifiuto_del_giudizio(error: &plenora_database_core::DatabaseError, motivo: &str) -> bool {
+    error.category == ErrorCategory::Unsupported
+        && error.phase == ErrorPhase::Prepare
+        && error.message == motivo
+}
+
+/// Il codice del driver di un codice misurato dal client del server:
+/// `SQL0440N` e `codice -440` nel messaggio redatto del provider.
+fn codice_del_driver(codice: &Value) -> Option<String> {
+    let numero = codice.as_str()?.strip_prefix("SQL")?.strip_suffix('N')?;
+    Some(format!("codice -{}", numero.trim_start_matches('0')))
+}
+
+fn colonna(relation: &str, field: &str) -> Value {
+    json!({"kind": "column", "column": {"relation": relation, "field": field}})
+}
+
+/// `SELECT T.ID FROM <schema>.<object> T` con `extra`.
+fn su(schema: Option<&str>, object: &str, extra: &Value) -> Value {
+    let mut operation = json!({
+        "source": {"object": {"catalog": null, "schema": schema, "object": object}, "alias": "T"},
+        "projection": [{"expression": colonna("T", "ID"), "alias": "ID"}],
+        "filter": null,
+        "having": null,
+        "row_limit": null
+    });
+    for (key, value) in extra.as_object().expect("extra") {
+        operation[key] = value.clone();
+    }
+    operation
+}
+
+fn uguale(field: &str) -> Value {
+    json!({"filter": {"kind": "compare", "left": colonna("T", field), "operator": "eq", "right": {"kind": "parameter", "name": "p"}}})
+}
+
+fn ordinato(field: &str, direction: &str) -> Value {
+    json!({"order_by": [{"expression": colonna("T", field), "direction": direction}]})
+}
+
+/// Un caso esplicito: il piano, i valori e l'esito atteso (le righe, o il
+/// motivo del rifiuto del giudizio).
+struct Caso {
+    nome: &'static str,
+    piano: Value,
+    valori: Vec<ParameterValue>,
+    atteso: Result<Vec<i64>, &'static str>,
+}
+
+#[allow(clippy::too_many_lines)]
+fn casi() -> Vec<Caso> {
+    let uno = || vec![ParameterValue::I32(1)];
+    let byte = || vec![ParameterValue::Bytes(vec![1])];
+    let caso = |nome, piano, valori, atteso| Caso {
+        nome,
+        piano,
+        valori,
+        atteso,
+    };
+    let tabella = Some("PLENORA");
+    vec![
+        caso(
+            "ID = ? sulla tabella",
+            su(tabella, TABELLA, &uguale("ID")),
+            uno(),
+            Ok(vec![1]),
+        ),
+        caso(
+            "ORDER BY ID DESC sulla tabella",
+            su(tabella, TABELLA, &ordinato("ID", "desc")),
+            Vec::new(),
+            Ok(vec![2, 1]),
+        ),
+        caso(
+            "ORDER BY NAME sulla tabella",
+            su(tabella, TABELLA, &ordinato("NAME", "asc")),
+            Vec::new(),
+            Ok(vec![1, 2]),
+        ),
+        caso(
+            "NAME LIKE ? sulla tabella",
+            su(
+                tabella,
+                TABELLA,
+                &json!({"filter": {"kind": "like", "expression": colonna("T", "NAME"), "pattern": {"kind": "parameter", "name": "p"}, "negated": false, "case_insensitive": false}}),
+            ),
+            vec![ParameterValue::String("b%".to_owned())],
+            Ok(vec![2]),
+        ),
+        caso(
+            "G = ? sulla tabella",
+            su(tabella, TABELLA, &uguale("G")),
+            byte(),
+            Err(GEOMETRY_SCALAR_OPERAND),
+        ),
+        caso(
+            "id = ? (soltanto senza maiuscole) sulla tabella",
+            su(tabella, TABELLA, &uguale("id")),
+            uno(),
+            Err(AMBIGUOUS_NAME_SHAPE),
+        ),
+        caso(
+            "ID = ? sulla vista",
+            su(tabella, "SONDE_OPERANDI_V", &uguale("ID")),
+            uno(),
+            Ok(vec![1]),
+        ),
+        caso(
+            "ORDER BY ID DESC sulla vista",
+            su(tabella, "SONDE_OPERANDI_V", &ordinato("ID", "desc")),
+            Vec::new(),
+            Ok(vec![2, 1]),
+        ),
+        caso(
+            "G = ? sulla vista",
+            su(tabella, "SONDE_OPERANDI_V", &uguale("G")),
+            byte(),
+            Err(GEOMETRY_SCALAR_OPERAND),
+        ),
+        caso(
+            "C (BLOB di ST_CENTROID) = ? sulla vista",
+            su(tabella, "SONDE_OPERANDI_V", &uguale("C")),
+            byte(),
+            Err(GEOMETRY_SCALAR_OPERAND),
+        ),
+        caso(
+            "ID = ? sull'alias",
+            su(tabella, "SONDE_OPERANDI_A", &uguale("ID")),
+            uno(),
+            Ok(vec![1]),
+        ),
+        caso(
+            "ORDER BY ID DESC sull'alias di alias",
+            su(tabella, "SONDE_OPERANDI_AA", &ordinato("ID", "desc")),
+            Vec::new(),
+            Ok(vec![2, 1]),
+        ),
+        caso(
+            "G = ? sull'alias",
+            su(tabella, "SONDE_OPERANDI_A", &uguale("G")),
+            byte(),
+            Err(GEOMETRY_SCALAR_OPERAND),
+        ),
+        caso(
+            "G = ? sull'alias di alias",
+            su(tabella, "SONDE_OPERANDI_AA", &uguale("G")),
+            byte(),
+            Err(GEOMETRY_SCALAR_OPERAND),
+        ),
+        caso(
+            "C = ? sull'alias della vista",
+            su(tabella, "SONDE_OPERANDI_AV", &uguale("C")),
+            byte(),
+            Err(GEOMETRY_SCALAR_OPERAND),
+        ),
+        caso(
+            "ID = ? sull'alias pubblico, senza schema",
+            su(None, "SONDE_OPERANDI_PA", &uguale("ID")),
+            uno(),
+            Ok(vec![1]),
+        ),
+        caso(
+            "G = ? sull'alias pubblico, senza schema",
+            su(None, "SONDE_OPERANDI_PA", &uguale("G")),
+            byte(),
+            Err(GEOMETRY_SCALAR_OPERAND),
+        ),
+        caso(
+            "ID = ? su un alias verso un oggetto assente",
+            su(tabella, "SONDE_OPERANDI_AX", &uguale("ID")),
+            uno(),
+            Err(GEOMETRY_OPERAND_UNRESOLVED),
+        ),
+        caso(
+            "P (ST_POINT) = ?",
+            su(tabella, "SONDE_OPERANDI_TIPI", &uguale("P")),
+            byte(),
+            Err(GEOMETRY_SCALAR_OPERAND),
+        ),
+        caso(
+            "S (ST_SURFACE) = ?",
+            su(tabella, "SONDE_OPERANDI_TIPI", &uguale("S")),
+            byte(),
+            Err(GEOMETRY_SCALAR_OPERAND),
+        ),
+        caso(
+            "ORDER BY X (omonimo di ST_GEOMETRY su INTEGER) DESC",
+            su(tabella, "SONDE_OPERANDI_TIPI", &ordinato("X", "desc")),
+            Vec::new(),
+            Ok(vec![2, 1]),
+        ),
+        caso(
+            "ID = ? sulla tabella dei sottotipi",
+            su(tabella, "SONDE_OPERANDI_TIPI", &uguale("ID")),
+            vec![ParameterValue::I32(2)],
+            Ok(vec![2]),
+        ),
+    ]
+}
+
+/// Il giudizio degli operandi sul catalogo Db2 nella transazione
+/// (`TransactionScope::operand_catalog`) e nella lettura del provider.
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_operand_catalog_judges_geometry_and_admits_scalars() {
+    let provider = provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    pulisci(&provider, &secret, &cancellation).await;
+    for (index, sql) in PREPARAZIONE.iter().enumerate() {
+        provider
+            .run_ddl(&secret, sql, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("preparazione operandi Db2 {index}: {error}"));
+    }
+
+    // Le forme della guardia: rifiutate prima del server; i controlli
+    // arrivano al server e rendono le righe dello SQL senza giudizio.
+    let fixture: Value = serde_json::from_str(FIXTURE_GUARDIA).expect("fixture della guardia");
+    let forms = fixture["forme"].as_array().expect("forme");
+    assert!(!forms.is_empty());
+    let ragioni = [GEOMETRY_SCALAR_OPERAND, GEOMETRY_OPERAND_UNRESOLVED];
+    for form in forms {
+        let name = form["forma"].as_str().expect("nome della forma");
+        let plan = piano_della_forma(&form["piano"]);
+        let (sql, judged, direct) = esegui(&provider, &secret, &plan, None, &cancellation).await;
+        assert_eq!(
+            sql,
+            form["sql"]["db2"]["sql"].as_str().expect("sql"),
+            "{name}"
+        );
+        // Lo SQL senza giudizio fa cio che il server ha misurato.
+        assert_eq!(
+            direct.is_ok(),
+            form["esito"]["db2"].get("errore").is_none(),
+            "{name}: {direct:?}"
+        );
+        if form.get("ammessa").is_some() {
+            let rows = judged.unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(Ok(rows), direct, "{name}");
+        } else {
+            // Rifiutata dal giudizio prima del server, o, dove il giudizio
+            // non la dice un operando (`UPPER(G)` in una projection che non
+            // si confronta), dal server con uno dei codici misurati.
+            let error = judged.expect_err(name);
+            let misurati = form["esito"]["db2"]["errore"]
+                .as_array()
+                .map(|codici| {
+                    codici
+                        .iter()
+                        .filter_map(codice_del_driver)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            assert!(
+                ragioni
+                    .iter()
+                    .any(|motivo| rifiuto_del_giudizio(&error, motivo))
+                    || misurati.iter().any(|codice| error.message.contains(codice)),
+                "{name}: {error}"
+            );
+        }
+        if let Some(column) = form["controllo"].as_str() {
+            let control = con_colonna(&plan, column);
+            let (_, judged, direct) =
+                esegui(&provider, &secret, &control, None, &cancellation).await;
+            let rows = judged.unwrap_or_else(|error| panic!("{name} su {column}: {error}"));
+            assert_eq!(Ok(rows), direct, "{name} su {column}");
+        }
+    }
+
+    // I casi espliciti: righe attese e rifiuti, attraverso viste e alias.
+    for caso in casi() {
+        let (_, judged, _) = esegui(
+            &provider,
+            &secret,
+            &caso.piano,
+            Some(&caso.valori),
+            &cancellation,
+        )
+        .await;
+        match caso.atteso {
+            Ok(rows) => assert_eq!(
+                judged.unwrap_or_else(|error| panic!("{}: {error}", caso.nome)),
+                rows.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "{}",
+                caso.nome
+            ),
+            Err(motivo) => {
+                let error = judged.expect_err(caso.nome);
+                assert!(
+                    rifiuto_del_giudizio(&error, motivo),
+                    "{}: {error}",
+                    caso.nome
+                );
+            }
+        }
+    }
+
+    // Lo statement portable (facade, CLI portable).
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("transazione portable operandi Db2");
+    let scalare = select(TABELLA, vec!["ID"])
+        .schema("PLENORA")
+        .where_(eq("ID", ParameterValue::I32(2)))
+        .order_by("ID", Direction::Asc)
+        .into_statement();
+    let rows = plenora_database_core::facade::execute_portable_returning(
+        transaction.as_mut(),
+        &scalare,
+        &cancellation,
+    )
+    .await
+    .expect("portable scalare Db2");
+    assert_eq!(identificativi(&rows), vec!["2".to_owned()]);
+    let geometrico = select(TABELLA, vec!["ID"])
+        .schema("PLENORA")
+        .where_(eq("G", ParameterValue::Bytes(vec![1])))
+        .into_statement();
+    let error = plenora_database_core::facade::execute_portable_returning(
+        transaction.as_mut(),
+        &geometrico,
+        &cancellation,
+    )
+    .await
+    .expect_err("portable geometrico Db2");
+    assert!(
+        rifiuto_del_giudizio(&error, GEOMETRY_SCALAR_OPERAND),
+        "{error}"
+    );
+    let _ = transaction.rollback(&cancellation).await;
+
+    // La lettura del provider: un filtro su un sottotipo spatial e sulla
+    // colonna BLOB calcolata di una vista si rifiuta; sull'ID passa.
+    let lettura = |object: &str, field: &str| ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: object.to_owned(),
+        },
+        projection: vec!["ID".to_owned()],
+        order_by: vec![OrderBy {
+            field: "ID".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: None,
+        row_offset: None,
+        filter: Some(FilterExpression::Eq {
+            field: field.to_owned(),
+            parameter: "p".to_owned(),
+        }),
+        declared_crs: Vec::new(),
+    };
+    let bytes = ParameterBag::new(BTreeMap::from([(
+        "p".to_owned(),
+        ParameterValue::Bytes(vec![1]),
+    )]));
+    for (object, field) in [
+        ("SONDE_OPERANDI_TIPI", "S"),
+        ("SONDE_OPERANDI_TIPI", "P"),
+        ("SONDE_OPERANDI_V", "C"),
+        ("SONDE_OPERANDI_V", "G"),
+    ] {
+        let error = provider
+            .read(
+                &secret,
+                &lettura(object, field),
+                &bytes,
+                &budget(),
+                &cancellation,
+            )
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("lettura {object}.{field} ammessa"));
+        assert!(
+            rifiuto_del_giudizio(&error, GEOMETRY_SCALAR_OPERAND),
+            "{object}.{field}: {error}"
+        );
+    }
+    let id_uno = ParameterBag::new(BTreeMap::from([("p".to_owned(), ParameterValue::I32(1))]));
+    for object in [TABELLA, "SONDE_OPERANDI_V", "SONDE_OPERANDI_TIPI"] {
+        let mut stream = provider
+            .read(
+                &secret,
+                &lettura(object, "ID"),
+                &id_uno,
+                &budget(),
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("lettura {object}.ID: {error}"));
+        let mut rows = 0;
+        while let Some(batch) = stream
+            .next_batch(&cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("lettura {object}.ID: {error}"))
+        {
+            rows += batch.num_rows();
+        }
+        assert_eq!(rows, 1, "{object}");
+    }
+
+    pulisci(&provider, &secret, &cancellation).await;
+}

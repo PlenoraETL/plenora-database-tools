@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 117358,
-  "max_code_lines": 95044,
-  "rationale": "Guardia del server sugli operandi scalari misurata live: Oracle (MDSYS.SDO_GEOMETRY, ogni forma rifiutata) resta con la guardia, Db2 (SYSIBM.ST_GEOMETRY confronta i byte) torna a mondo chiuso; il riconoscimento di SDO_GEOMETRY Oracle chiede il proprietario MDSYS (DATA_TYPE_OWNER). Prove: fixture tests/fixtures/operandi_server_guard.json, scripts/sonde_operandi_server.py, live test Oracle. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 117335 -> 117358 (+23), righe di codice 95042 -> 95044 (+2). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 117949,
+  "max_code_lines": 95426,
+  "rationale": "Db2 legge il catalogo degli operandi geometrici nella transazione e nella lettura del provider (crates/plenora-db-db2/src/operand_catalog.rs: SYSCAT.TABLES, COLUMNS, DATATYPES, HIERARCHIES; alias, alias pubblici, viste con BLOB calcolati, tipi distinti e strutturati), con le prove offline sul catalogo finto, il live test live_operand_catalog_judges_geometry_and_admits_scalars e i fatti di SYSCAT in scripts/sonde_operandi_server.py. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 117358 -> 117949 (+591), righe di codice 95044 -> 95426 (+382). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

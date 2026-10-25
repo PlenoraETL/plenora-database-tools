@@ -100,9 +100,12 @@
 //! Oracle non legge il catalogo: la guardia del server
 //! ([`operand_server_guard`], misurata) rifiuta ogni operatore scalare su
 //! `MDSYS.SDO_GEOMETRY`, e l'esecuzione giudica soltanto la parte senza
-//! catalogo, che rifiuta cio che la guardia non protegge. Db2 non legge il
-//! catalogo e non ha guardia (misurato: `SYSIBM.ST_GEOMETRY` e un tipo
-//! distinto su `BLOB`, e il server ne confronta i byte): mondo chiuso.
+//! catalogo, che rifiuta cio che la guardia non protegge. Db2 non ha guardia
+//! (misurato: `SYSIBM.ST_GEOMETRY` e un tipo distinto su `BLOB`, e il server
+//! ne confronta i byte) e legge il catalogo nella transazione come
+//! `PostgreSQL`, `MySQL` e SQL Server (`SYSCAT.TABLES`, `SYSCAT.COLUMNS`,
+//! `SYSCAT.DATATYPES`, `SYSCAT.HIERARCHIES`; le regole nel modulo
+//! `operand_catalog` del provider).
 //!
 //! # Perche
 //!
@@ -146,16 +149,33 @@
 //!
 //! - **Regola.** Mondo chiuso: senza le colonne di una relazione non si prova
 //!   niente.
-//! - **Ambito.** Un provider senza `operand_catalog` e senza guardia: Db2
-//!   (misurato senza guardia: `=`, `<>`, `<`, `IN`, `BETWEEN`, `CAST`,
-//!   `COALESCE` su `SYSIBM.ST_GEOMETRY` passano e confrontano i byte del
-//!   `BLOB`), sullo SDK, la facade e la CLI portable; i finti di prova.
+//! - **Ambito.** Un provider senza `operand_catalog` e senza guardia: i finti
+//!   di prova. Su Db2 (dal 25/10, con `operand_catalog`): le relazioni che il
+//!   catalogo non descrive (nickname, alias che non arrivano a una
+//!   relazione, lo schema `SESSION` delle tabelle temporanee dichiarate, un
+//!   nome che il server uguaglia soltanto con gli spazi finali).
 //! - **Hazard.** Nessun passaggio silenzioso: un riferimento in posizione di
 //!   operando su una relazione che puo contenere una geometria si rifiuta,
-//!   anche su colonne scalari (`WHERE id = ?`, `ORDER BY id`). Il costo e il
-//!   rifiuto di query ordinarie su Db2.
-//! - **Rientro.** Quando Db2 legge il catalogo nella transazione
-//!   (`TransactionScope::operand_catalog`), con le sue prove live.
+//!   anche su colonne scalari. Il costo e il rifiuto di query ordinarie su
+//!   quelle relazioni (misurato: una tabella temporanea dichiarata non puo
+//!   avere una colonna `ST_GEOMETRY`, SQL0350N, ma lo schema `SESSION` puo
+//!   avere anche tabelle persistenti).
+//! - **Rientro.** Per `SESSION`, quando il giudizio legge le colonne delle
+//!   tabelle temporanee dichiarate della connessione.
+//!
+//! - **Regola.** Su Db2 una colonna `BLOB` di una vista, di una MQT o di una
+//!   vista tipizzata si giudica geometrica; una colonna `BLOB` di una tabella
+//!   no.
+//! - **Ambito.** Db2, nella transazione e nella lettura del provider.
+//! - **Hazard.** Il catalogo dice `BLOB` per una colonna resa da una funzione
+//!   spatial (misurato: `ST_CENTROID(G)` in una vista porta il formato interno
+//!   della geometria, e `V.C = T.G` passa). Una tabella riempita da una tale
+//!   colonna (`INSERT ... SELECT`) ha un `BLOB` che il giudizio dice scalare:
+//!   un confronto ne confronta i byte, come un `bytea` con un WKB su
+//!   `PostgreSQL`. Nelle viste il costo e il rifiuto dei confronti su
+//!   colonne `BLOB` che non sono geometrie.
+//! - **Rientro.** Quando il catalogo dice il tipo della funzione che rende la
+//!   colonna.
 //!
 //! - **Regola.** La compilazione senza esecuzione non legge il catalogo.
 //! - **Ambito.** `compile_relational_query` e `compile_relational_mutation`
@@ -237,7 +257,7 @@ const MAX_EXPANSION_DEPTH: usize = 64;
 /// `BETWEEN` con un bind binario, `=` fra geometrie, `IN` subquery, `CAST` a
 /// testo o binario, `COALESCE`, una colonna di CTE sotto `=` passano senza
 /// errore, confrontando i byte del formato interno (misurato con lo stesso
-/// fixture). Db2 resta a mondo chiuso.
+/// fixture). Db2 giudica sul catalogo, come i provider senza guardia.
 ///
 /// Il renderer applica l'operatore direttamente alla colonna (provato
 /// offline in `operandi_geometrici.rs` sullo stesso fixture): nessuna
