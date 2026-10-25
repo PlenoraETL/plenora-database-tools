@@ -160,7 +160,8 @@ class Coordinate(unittest.TestCase):
 
 
 class AccordoDryRun(unittest.TestCase):
-    ACCETTATO = {"exit": 0, "category": None, "catalog": "performed"}
+    ACCETTATO = {"exit": 0, "category": None, "catalog": "performed",
+                 "row_security": "not_applicable"}
 
     def test_rifiuta_cio_che_la_scrittura_rifiuta_in_ogni_fase(self) -> None:
         for scrittura in (rifiuto("crs", "validate"), rifiuto("crs", "prepare"),
@@ -190,14 +191,23 @@ class AccordoDryRun(unittest.TestCase):
             self.assertEqual(runner.accordo_dry_run(dict(self.ACCETTATO, catalog=catalogo),
                                                     scrittura), "dry-run-senza-catalogo")
 
+    def test_row_security_si_dichiara_solo_dove_si_applica(self) -> None:
+        scrittura = {"exit": 0, "category": None}
+        dichiarata = dict(self.ACCETTATO, row_security="not_performed")
+        self.assertEqual(runner.accordo_dry_run(dichiarata, scrittura, True), "conforme")
+        self.assertEqual(runner.accordo_dry_run(self.ACCETTATO, scrittura, True), "dry-run-rls")
+        self.assertEqual(runner.accordo_dry_run(dichiarata, scrittura), "dry-run-rls")
+        self.assertEqual(runner.accordo_dry_run(dict(self.ACCETTATO, row_security=None),
+                                                scrittura), "dry-run-rls")
+
 
 class ScenariDelTarget(unittest.TestCase):
     """Gli scenari del target si giudicano con `accordo_dry_run`; qui si
     prova che siano ben formati e che la DSN del ruolo ristretto cambi solo
     l'utente."""
 
-    MODE = {"append", "create", "create-altrove", "replace", "truncate_insert", "update",
-            "delete_by_keys", "upsert"}
+    MODE = {"append", "append-altrove", "create", "create-altrove", "replace",
+            "truncate_insert", "update", "delete_by_keys", "upsert"}
 
     def test_ogni_scenario_e_ben_formato(self) -> None:
         nomi = [scenario[0] for scenario in runner.SCENARI]
@@ -214,6 +224,15 @@ class ScenariDelTarget(unittest.TestCase):
         nomi = {scenario[0] for scenario in runner.SCENARI}
         self.assertTrue({"privilegi-append", "privilegi-create", "schema-assente",
                          "upsert-senza-unique", "lossy-colonna-assente"} <= nomi)
+        # La quarta rilettura: ogni classe del dry run chiuso ha uno scenario.
+        self.assertTrue({"rls-senza-policy-append", "rls-senza-policy-truncate",
+                         "rls-forzata-al-proprietario", "rls-con-policy-append",
+                         "generata-append", "generata-truncate", "identita-always-append",
+                         "upsert-senza-select", "upsert-select-solo-chiavi",
+                         "vista-non-aggiornabile-append", "vista-aggiornabile-replace",
+                         "not-null-assente-append", "not-null-assente-truncate",
+                         "schema-senza-usage", "replace-senza-insert"} <= nomi)
+        self.assertTrue(runner.SCENARI_RLS_DICHIARATA <= nomi)
 
     def test_la_dsn_del_ruolo_cambia_solo_l_utente(self) -> None:
         self.assertEqual(

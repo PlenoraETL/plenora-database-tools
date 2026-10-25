@@ -213,14 +213,20 @@ async fn execute_bulk_write(
             "operation": operation,
             "input_schema": { "fields": fields },
             "input": { "batches": decided.batches, "rows": decided.rows },
-            // Che cosa il dry run ha deciso. `catalog` comprende cio che la
-            // scrittura chiede al target (schema, privilegi, colonne, indice
-            // unico dell'upsert); `server` resta della scrittura: vincoli e
-            // trigger sui valori, conversioni della colonna, timeout e lock.
+            // Che cosa il dry run ha deciso. `catalog` comprende l'elenco
+            // chiuso di cio che la scrittura chiede al target (schema,
+            // privilegi, row-level security, colonne generate e identita,
+            // viste, NOT NULL senza default, indice unico dell'upsert;
+            // `plenora_db_postgres::write::target`); `row_security` dice se
+            // una policy RLS decide sui valori (`not_performed`) o no;
+            // `server` resta della scrittura: trigger, CHECK ed esclusioni,
+            // unicita e foreign key sui valori, vincoli differiti,
+            // conversioni della colonna, timeout e lock.
             "checks": {
                 "plan": "performed",
                 "values": "performed",
                 "catalog": catalog,
+                "row_security": decided.row_security.as_str(),
                 "server": "not_performed",
             },
             "loss_report": loss_report,

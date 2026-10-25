@@ -50,7 +50,12 @@ creato per il gate, con i soli privilegi dello scenario), schema assente,
 upsert senza indice unico immediato, mapping `lossy` con una colonna assente,
 registrazione dell'id del campo senza LOCK o senza proprieta' — e i controlli
 positivi. Il dry run deve concordare con la scrittura come sui vettori. Fino al
-25/10 il dry run diceva `dry_run` su ciascuno di questi rifiuti.
+25/10 il dry run diceva `dry_run` su ciascuno di questi rifiuti. La quarta
+rilettura ha aggiunto row-level security, colonne generate e IDENTITY ALWAYS,
+SELECT sulle colonne che un upsert legge, viste non aggiornabili, NOT NULL
+senza default assenti dall'ingresso, schema senza USAGE e un `COPY` rifiutato
+all'apertura dopo il DELETE di Replace; un rifiuto che cambia le righe del
+bersaglio e' `rifiuto-con-effetto`. `--solo-scenari` salta i vettori.
 
     python scripts/vettori_arrow_data.py --contracts .plenora-contracts \\
         --cli target/debug/plenora-database --referto vettori-arrow-data.json \\
@@ -122,8 +127,10 @@ def busta(argv: list[str]) -> dict:
     errore = documento.get("error") if isinstance(documento, dict) else None
     if not isinstance(errore, dict):
         controlli = documento.get("checks") if isinstance(documento, dict) else None
+        controlli = controlli if isinstance(controlli, dict) else {}
         return {"exit": esito.returncode, "category": None, "code": None,
-                "catalog": controlli.get("catalog") if isinstance(controlli, dict) else None}
+                "catalog": controlli.get("catalog"),
+                "row_security": controlli.get("row_security")}
     retry = errore.get("retry")
     return {"exit": esito.returncode, "category": errore.get("category"),
             "phase": errore.get("phase"), "remote_effect": errore.get("remote_effect"),
@@ -369,17 +376,25 @@ def verdetto(operazione: str, vettore: dict, osservato: dict, oracolo,
     return "conforme" if rej_003(operazione, osservato, di_valore) else "assi-del-rifiuto"
 
 
-def accordo_dry_run(dry_run: dict, scrittura: dict) -> str:
+def accordo_dry_run(dry_run: dict, scrittura: dict, rls_dichiarata: bool = False) -> str:
     """Il dry run concorda con la scrittura su ogni vettore: stesso exit; su
     un rifiuto stessa categoria, stessa fase e stesso `retry`, senza effetti
     (`remote_effect: none`); su un'accettazione con il catalogo del bersaglio
     letto. Un dry run che accetta cio' che la scrittura rifiuta, in qualunque
     fase, e' un'accettazione indebita: chi lo usa per decidere se scrivere
-    scriverebbe e fallirebbe, o peggio non saprebbe perche'."""
+    scriverebbe e fallirebbe, o peggio non saprebbe perche'.
+
+    Su un'accettazione `checks.row_security` dice se una policy RLS decide
+    sui valori: `not_performed` solo dove lo scenario lo attende
+    (`rls_dichiarata`), `not_applicable` altrove. Tacerlo, o dichiararlo dove
+    RLS non si applica, e' un dry run che non dice che cosa ha deciso."""
     if scrittura["exit"] == 0:
         if dry_run["exit"] != 0:
             return "dry-run-rifiuta"
-        return "conforme" if dry_run.get("catalog") == "performed" else "dry-run-senza-catalogo"
+        if dry_run.get("catalog") != "performed":
+            return "dry-run-senza-catalogo"
+        atteso = "not_performed" if rls_dichiarata else "not_applicable"
+        return "conforme" if dry_run.get("row_security") == atteso else "dry-run-rls"
     if dry_run["exit"] == 0:
         return "dry-run-accetta"
     if dry_run["exit"] != scrittura["exit"]:
@@ -423,12 +438,6 @@ SCENARI = (
     ("schema-assente", "", "create-altrove", ("id",), (), "strict", "proprietario"),
     ("replace-senza-delete", "CREATE TABLE {t} (id bigint); GRANT SELECT, INSERT ON {t} TO {r}",
      "replace", ("id",), (), "strict", "lettore"),
-    # Un rifiuto all'apertura di `COPY` (Replace con DELETE senza INSERT) non
-    # c'e: dopo un `copy_in` fallito `tokio-postgres` 0.7.18 chiude la
-    # connessione (`UnexpectedMessage`), il ROLLBACK non si conferma e la
-    # scrittura esce in fase `rollback` con effetto ignoto, che nessun dry run
-    # puo' prevedere. Difetto della busta della scrittura, non silenzioso,
-    # segnalato a parte.
     ("truncate-senza-truncate", "CREATE TABLE {t} (id bigint); GRANT SELECT, INSERT ON {t} TO {r}",
      "truncate_insert", ("id",), (), "strict", "lettore"),
     ("update-senza-update",
@@ -454,7 +463,104 @@ SCENARI = (
     ("registrazione-id-senza-proprieta",
      "CREATE TABLE {t} (id bigint); GRANT SELECT, INSERT, UPDATE ON {t} TO {r}",
      "append", ("id+field_id",), (), "strict", "lettore"),
+    # La quarta rilettura (25/10): classi che il dry run accettava e la
+    # scrittura rifiutava. Row-level security: senza policy di INSERT per il
+    # ruolo ogni riga e rifiutata (INSERT) e `COPY FROM` non e ammesso affatto;
+    # con una policy l'esito dipende dai valori, e il dry run lo dichiara
+    # (`checks.row_security: not_performed`) invece di dire che e tutto
+    # deciso. Il proprietario la salta, se non e forzata.
+    ("rls-senza-policy-append",
+     "CREATE TABLE {t} (id bigint); ALTER TABLE {t} ENABLE ROW LEVEL SECURITY; "
+     "GRANT SELECT, INSERT ON {t} TO {r}",
+     "append", ("id",), (), "strict", "lettore"),
+    ("rls-senza-policy-truncate",
+     "CREATE TABLE {t} (id bigint); ALTER TABLE {t} ENABLE ROW LEVEL SECURITY; "
+     "GRANT SELECT, INSERT, TRUNCATE ON {t} TO {r}",
+     "truncate_insert", ("id",), (), "strict", "lettore"),
+    ("rls-forzata-al-proprietario",
+     "CREATE TABLE {t} (id bigint); ALTER TABLE {t} OWNER TO {r}; "
+     "ALTER TABLE {t} ENABLE ROW LEVEL SECURITY; ALTER TABLE {t} FORCE ROW LEVEL SECURITY",
+     "append", ("id",), (), "strict", "lettore"),
+    ("rls-proprietario-non-forzata",
+     "CREATE TABLE {t} (id bigint); ALTER TABLE {t} OWNER TO {r}; "
+     "ALTER TABLE {t} ENABLE ROW LEVEL SECURITY",
+     "append", ("id",), (), "strict", "lettore"),
+    ("rls-con-policy-append",
+     "CREATE TABLE {t} (id bigint); ALTER TABLE {t} ENABLE ROW LEVEL SECURITY; "
+     "GRANT SELECT, INSERT ON {t} TO {r}; "
+     "CREATE POLICY vad_inserisce ON {t} FOR INSERT TO {r} WITH CHECK (true)",
+     "append", ("id",), (), "strict", "lettore"),
+    # Colonne che non ricevono valori: GENERATED ALWAYS ... STORED rifiuta
+    # INSERT e COPY; IDENTITY ALWAYS rifiuta INSERT, mentre COPY lo scavalca
+    # e scrive il valore dell'ingresso (controllo positivo).
+    ("generata-append",
+     "CREATE TABLE {t} (id bigint, v text GENERATED ALWAYS AS ('x') STORED)",
+     "append", ("id", "v"), (), "strict", "proprietario"),
+    ("generata-truncate",
+     "CREATE TABLE {t} (id bigint, v text GENERATED ALWAYS AS ('x') STORED)",
+     "truncate_insert", ("id", "v"), (), "strict", "proprietario"),
+    ("identita-always-append",
+     "CREATE TABLE {t} (id bigint GENERATED ALWAYS AS IDENTITY, v text)",
+     "append", ("id", "v"), (), "strict", "proprietario"),
+    ("identita-always-truncate",
+     "CREATE TABLE {t} (id bigint GENERATED ALWAYS AS IDENTITY, v text)",
+     "truncate_insert", ("id", "v"), (), "strict", "proprietario"),
+    # `ON CONFLICT ... DO UPDATE SET v = EXCLUDED.v` legge le chiavi e le
+    # colonne aggiornate: senza SELECT su ciascuna la prima riga e rifiutata.
+    ("upsert-senza-select",
+     "CREATE TABLE {t} (id bigint PRIMARY KEY, v text); GRANT INSERT, UPDATE ON {t} TO {r}",
+     "upsert", ("id", "v"), ("id",), "strict", "lettore"),
+    ("upsert-select-solo-chiavi",
+     "CREATE TABLE {t} (id bigint PRIMARY KEY, v text); GRANT INSERT, UPDATE ON {t} TO {r}; "
+     "GRANT SELECT (id) ON {t} TO {r}",
+     "upsert", ("id", "v"), ("id",), "strict", "lettore"),
+    ("upsert-privilegi-concessi",
+     "CREATE TABLE {t} (id bigint PRIMARY KEY, v text); GRANT SELECT, INSERT, UPDATE ON {t} TO {r}",
+     "upsert", ("id", "v"), ("id",), "strict", "lettore"),
+    # Una vista che non si aggiorna da sola: INSERT, DELETE e TRUNCATE la
+    # rifiutano; una vista aggiornabile accetta il DELETE di Replace ma non
+    # `COPY`.
+    ("vista-non-aggiornabile-append",
+     "CREATE TABLE {b} (id bigint); CREATE VIEW {t} AS SELECT DISTINCT id FROM {b}",
+     "append", ("id",), (), "strict", "proprietario"),
+    ("vista-non-aggiornabile-truncate",
+     "CREATE TABLE {b} (id bigint); CREATE VIEW {t} AS SELECT DISTINCT id FROM {b}",
+     "truncate_insert", ("id",), (), "strict", "proprietario"),
+    ("vista-non-aggiornabile-delete",
+     "CREATE TABLE {b} (id bigint PRIMARY KEY); CREATE VIEW {t} AS SELECT DISTINCT id FROM {b}",
+     "delete_by_keys", ("id",), ("id",), "strict", "proprietario"),
+    ("vista-aggiornabile-replace",
+     "CREATE TABLE {b} (id bigint); CREATE VIEW {t} AS SELECT id FROM {b}",
+     "replace", ("id",), (), "strict", "proprietario"),
+    ("vista-aggiornabile-append",
+     "CREATE TABLE {b} (id bigint); CREATE VIEW {t} AS SELECT id FROM {b}",
+     "append", ("id",), (), "strict", "proprietario"),
+    # Una colonna NOT NULL senza default che l'ingresso non porta: la prima
+    # riga la lascia nulla. Con un default, o nullable, passa.
+    ("not-null-assente-append", "CREATE TABLE {t} (id bigint, w text NOT NULL)",
+     "append", ("id",), (), "strict", "proprietario"),
+    ("not-null-assente-truncate", "CREATE TABLE {t} (id bigint, w text NOT NULL)",
+     "truncate_insert", ("id",), (), "strict", "proprietario"),
+    ("not-null-con-default", "CREATE TABLE {t} (id bigint, w text NOT NULL DEFAULT 'x')",
+     "append", ("id",), (), "strict", "proprietario"),
+    # Lo schema senza USAGE: ogni statement sulla tabella e rifiutato.
+    ("schema-senza-usage",
+     "CREATE SCHEMA {b}; CREATE TABLE {b}.{t} (id bigint); GRANT SELECT, INSERT ON {b}.{t} TO {r}",
+     "append-altrove", ("id",), (), "strict", "lettore"),
+    # Replace con DELETE e senza INSERT: `COPY` e rifiutato all'apertura,
+    # dopo il DELETE e prima di ogni COMMIT. Fino al 25/10 la scrittura usciva
+    # in fase `rollback` con effetto ignoto: `tokio-postgres` chiude la
+    # connessione e il ROLLBACK non si conferma, ma il server scarta da se'
+    # una transazione mai confermata.
+    ("replace-senza-insert",
+     "CREATE TABLE {t} (id bigint); INSERT INTO {t} VALUES (7), (8), (9); "
+     "GRANT SELECT, DELETE ON {t} TO {r}",
+     "replace", ("id",), (), "strict", "lettore"),
 )
+
+# Gli scenari in cui RLS si applica con una policy: l'esito dipende dai
+# valori, e il dry run deve dirlo invece di tacerlo.
+SCENARI_RLS_DICHIARATA = {"rls-con-policy-append"}
 
 
 SCENARI_DEL_TARGET = "dry-run-postgres-target"
@@ -466,6 +572,9 @@ class Scenari:
 
     RUOLO = "vad_lettore_dry_run"
     SCHEMA_ASSENTE = "vad_schema_assente"
+    # L'oggetto ausiliario di uno scenario (`{b}`): la tabella sotto una
+    # vista, o lo schema di `append-altrove`.
+    AUSILIARIO = "vad_ausiliario"
 
     def __init__(self, postgres: Postgres) -> None:
         import secrets
@@ -524,15 +633,22 @@ class Scenari:
         try:
             for nome, preparazione, mode, campi, chiavi, policy, utente in SCENARI:
                 tabella = self.postgres.tabella("scenario-" + nome)
-                schema = self.SCHEMA_ASSENTE if mode == "create-altrove" else "public"
-                self.ddl(f"DROP SCHEMA IF EXISTS {self.SCHEMA_ASSENTE} CASCADE")
-                self.postgres.cancella(tabella)
+                schema = {"create-altrove": self.SCHEMA_ASSENTE,
+                          "append-altrove": self.AUSILIARIO}.get(mode, "public")
+                self.pulisci(tabella)
                 if preparazione:
-                    self.ddl(preparazione.format(t=f"public.{tabella}", r=self.RUOLO))
+                    # `{t}` e' l'oggetto della scrittura; in `append-altrove`
+                    # `{b}` e' il suo schema e `{t}` il nome nudo.
+                    self.ddl(preparazione.format(
+                        t=tabella if mode == "append-altrove" else f"public.{tabella}",
+                        b=self.AUSILIARIO if mode == "append-altrove"
+                        else f"public.{self.AUSILIARIO}",
+                        r=self.RUOLO))
                 operazione = self.postgres.lavoro / f"scenario-{nome}-write.json"
                 operazione.write_text(json.dumps({
                     "target": {"schema": schema, "object": tabella},
-                    "mode": "create" if mode == "create-altrove" else mode,
+                    "mode": {"create-altrove": "create",
+                             "append-altrove": "append"}.get(mode, mode),
                     "mapping_policy": policy, "keys": list(chiavi),
                     "update_columns": ["v"] if mode == "update" else [],
                     "transaction_profile": "single_transaction"}), encoding="utf-8")
@@ -542,18 +658,46 @@ class Scenari:
                     "provider": "postgres", "secret_environment": variabile,
                     "operation_path": str(operazione)}), encoding="utf-8")
                 dati = self.ingresso(nome, campi)
+                prima = self.righe(tabella, schema) if preparazione else 0
                 # Il dry run prima: la scrittura, se riesce, cambia il target.
                 dry_run = busta([str(self.postgres.cli), "bulk-write", variabile,
                                  str(operazione), str(dati), "--dry-run"])
                 scrittura = busta([str(self.postgres.cli), "write", "--input", str(richiesta),
                                    "--data", str(dati)])
                 righe.append({"scenario": nome, "scrittura": scrittura, "dry_run": dry_run,
-                              "verdetto": accordo_dry_run(dry_run, scrittura)})
-                self.postgres.cancella(tabella)
+                              "verdetto": accordo_dry_run(
+                                  dry_run, scrittura, nome in SCENARI_RLS_DICHIARATA)})
+                # Un rifiuto non ha effetti: il bersaglio ha le righe di prima.
+                if scrittura["exit"] != 0 and preparazione:
+                    scrittura["righe"] = [prima, self.righe(tabella, schema)]
+                    if prima != scrittura["righe"][1]:
+                        righe[-1]["verdetto"] = "rifiuto-con-effetto"
+                self.pulisci(tabella)
         finally:
             self.ddl(f"DROP SCHEMA IF EXISTS {self.SCHEMA_ASSENTE} CASCADE")
+            self.ddl(f"DROP SCHEMA IF EXISTS {self.AUSILIARIO} CASCADE")
             self.ruolo(False)
         return righe
+
+    def pulisci(self, tabella: str) -> None:
+        """Il bersaglio di uno scenario e cio che gli sta intorno: vista,
+        tabella sotto la vista, schemi."""
+        self.ddl(f"DROP SCHEMA IF EXISTS {self.SCHEMA_ASSENTE} CASCADE")
+        self.ddl(f"DROP SCHEMA IF EXISTS {self.AUSILIARIO} CASCADE")
+        # `DROP VIEW` su una tabella (o il contrario) e' un errore: prima il
+        # tipo dell'oggetto.
+        if self.postgres.testo("SELECT coalesce((SELECT relkind::text FROM pg_class "
+                               f"WHERE oid = to_regclass('public.{tabella}')), '-')") == "v":
+            self.ddl(f"DROP VIEW public.{tabella}")
+        self.ddl(f"DROP TABLE IF EXISTS public.{self.AUSILIARIO} CASCADE")
+        self.postgres.cancella(tabella)
+
+    def righe(self, tabella: str, schema: str) -> int:
+        """Le righe del bersaglio, prima della scrittura e dopo un suo
+        rifiuto. Uno schema assente non ne ha."""
+        if schema == self.SCHEMA_ASSENTE:
+            return 0
+        return self.postgres.scalare(f"SELECT count(*)::int4 FROM {schema}.{tabella}")
 
 
 def main() -> int:
@@ -562,7 +706,12 @@ def main() -> int:
     argomenti.add_argument("--cli", type=Path, required=True)
     argomenti.add_argument("--referto", type=Path, required=True)
     argomenti.add_argument("--postgres-env", help="variabile d'ambiente con la DSN del fixture PostgreSQL")
+    argomenti.add_argument("--solo-scenari", action="store_true",
+                           help="soltanto gli scenari del target (richiede --postgres-env)")
     opzioni = argomenti.parse_args()
+    if opzioni.solo_scenari and not opzioni.postgres_env:
+        print("--solo-scenari richiede --postgres-env", file=sys.stderr)
+        return 2
 
     sys.path.insert(0, str(opzioni.contracts / "tools"))
     import arrow_data as oracolo
@@ -584,6 +733,8 @@ def main() -> int:
         postgres = Postgres(opzioni.cli, opzioni.postgres_env, lavoro) if opzioni.postgres_env else None
         operazioni = ["inspect-dataset"] + (["write-postgres", "dry-run-postgres"]
                                             if postgres else [])
+        if opzioni.solo_scenari:
+            operazioni, vettori = [], []
         for percorso in vettori:
             vettore = json.loads(percorso.read_text(encoding="utf-8"))
             ingresso = lavoro / f"{percorso.stem}.arrow"
@@ -621,7 +772,9 @@ def main() -> int:
     if scenari:
         print(f"{SCENARI_DEL_TARGET}: {len(scenari)} esiti: "
               + ", ".join(f"{k} {v}" for k, v in sorted(conteggi[SCENARI_DEL_TARGET].items())))
-    if "write-postgres" not in operazioni:
+    if opzioni.solo_scenari:
+        print("vettori arrow-data-v1 non eseguiti: --solo-scenari")
+    elif "write-postgres" not in operazioni:
         print("write-postgres non eseguito: serve --postgres-env con un fixture healthy")
     buoni = {"conforme", "rifiuto-di-supporto"}
     return 0 if all(set(c) <= buoni for c in conteggi.values()) else 1

@@ -163,6 +163,35 @@ fn mixed_srid_error(phase: ErrorPhase) -> DatabaseError {
     )
 }
 
+/// L'errore che `classify_error` pubblica per lo SQLSTATE `code` in
+/// `phase`, senza un errore del driver.
+///
+/// Serve al dry run, che decide sul catalogo un rifiuto che la scrittura
+/// riceverebbe dal server: con la stessa tabella, categoria, effetto, retry e
+/// messaggio sono quelli della scrittura per costruzione. Un codice fuori
+/// tabella e un difetto di chi chiama, e diventa `internal`.
+pub fn sqlstate_error(code: &str, phase: ErrorPhase) -> DatabaseError {
+    mapping_for_sqlstate(code).map_or_else(
+        || {
+            public_error(
+                ErrorCategory::Internal,
+                phase,
+                false,
+                "SQLSTATE PostgreSQL senza voce nella tabella del provider",
+            )
+        },
+        |mapping| {
+            public_error_envelope(
+                mapping.category,
+                phase,
+                mapping.remote_effect,
+                mapping.retry,
+                mapping.message,
+            )
+        },
+    )
+}
+
 pub fn public_error(
     category: ErrorCategory,
     phase: ErrorPhase,
@@ -455,11 +484,34 @@ fn mapping_for_sqlstate(code: &str) -> Option<Mapping> {
             remote_effect: RemoteEffect::None,
             message: "definizione tabella PostgreSQL non valida",
         },
+        // Una colonna che non riceve valori nominata dall'ingresso: generata
+        // (`GENERATED ALWAYS ... STORED`) o `IDENTITY ALWAYS` in un INSERT o
+        // in un UPDATE. Era `conflict`, che dice «vincolo violato dai dati»:
+        // qui nessun dato e in gioco, il piano nomina una colonna che non lo
+        // ammette, e lo stesso piano fallirebbe con ogni ingresso.
         "428C9" => Mapping {
-            category: ErrorCategory::Conflict,
+            category: ErrorCategory::InvalidPlan,
             retry: RetryDisposition::Never,
             remote_effect: RemoteEffect::RolledBack,
             message: "colonna generata (GENERATED ALWAYS) non scrivibile: escludila dalla lista colonne dell'INSERT/UPDATE",
+        },
+        // `ON CONFLICT` senza un vincolo unico che arbitri le chiavi, o una
+        // colonna generata nella lista di `COPY`: il piano nomina colonne che
+        // non si possono usare cosi. Senza voce era `protocol`.
+        "42P10" => Mapping {
+            category: ErrorCategory::InvalidPlan,
+            retry: RetryDisposition::Never,
+            remote_effect: RemoteEffect::None,
+            message: "colonne del piano non utilizzabili dal target PostgreSQL: chiavi senza vincolo unico che le arbitri o colonna generata",
+        },
+        // Il target non ammette il comando: una vista non aggiornabile
+        // (55000, «cannot insert into view»), `COPY` o `TRUNCATE` su una
+        // vista (42809). Senza voce era `protocol`.
+        "55000" | "42809" => Mapping {
+            category: ErrorCategory::Unsupported,
+            retry: RetryDisposition::Never,
+            remote_effect: RemoteEffect::None,
+            message: "oggetto PostgreSQL che non ammette l'operazione di scrittura",
         },
 
         // Class 53 — insufficient resources

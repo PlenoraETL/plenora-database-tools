@@ -15,20 +15,25 @@
 
 use super::recovery::{interruption_category, interruption_message, resource_write_error};
 use super::resources::reserve_batch_within;
+use super::target::FirstRow;
 use super::{
     arrow_value, copy_buffer, row_diagnostics, stamp_declared_srid, statement,
     validate_batch_schema, PreparedPostgresWrite,
 };
-use crate::error::public_error;
+use crate::error::{public_error, sqlstate_error};
 use crate::PostgresInsertMode;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use plenora_database_core::plan::{ProviderKind, TransactionProfile, WriteMode, WriteOperation};
 use plenora_database_core::provider::BatchStream;
 use plenora_database_core::resource::ResourceBudget;
+use plenora_database_core::row_diagnostics::{
+    diagnose_row_scoped_write, RowApplication, RowDiagnosticsPolicy, RowRejection, RowScopedWriter,
+    RowWriteFuture, WriteDiagnosticsTracker, CAUSE_CONSTRAINT_VIOLATION,
+};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
-    RetryDisposition,
+    RetryDisposition, RollbackEvidence,
 };
 
 /// I limiti del provider che la scrittura applica a ogni batch.
@@ -45,7 +50,7 @@ pub struct InputLimits {
 #[derive(Debug, Default)]
 pub struct StatementGate {
     pub at_statement: Option<DatabaseError>,
-    pub at_first_row: Option<DatabaseError>,
+    pub at_first_row: Option<FirstRow>,
 }
 
 impl StatementGate {
@@ -53,8 +58,69 @@ impl StatementGate {
         self.at_statement.take().map_or(Ok(()), Err)
     }
 
+    /// La prima riga di `COPY` o di uno statement preparato: una violazione
+    /// NOT NULL e quella che il server riporta (23502).
     fn first_row(&mut self) -> Result<()> {
-        self.at_first_row.take().map_or(Ok(()), Err)
+        match self.at_first_row.take() {
+            None => Ok(()),
+            Some(FirstRow::Error(error)) => Err(error),
+            Some(FirstRow::NotNullViolation) => Err(sqlstate_error("23502", ErrorPhase::Write)),
+        }
+    }
+
+    /// La prima riga del percorso row-scoped: una violazione di vincolo e una
+    /// riga rifiutata, con la diagnostica che la scrittura pubblicherebbe,
+    /// costruita dalla stessa contabilita (`diagnose_row_scoped_write`).
+    async fn first_row_scoped(
+        &mut self,
+        declared: u64,
+        policy: &RowDiagnosticsPolicy,
+    ) -> Result<()> {
+        match self.at_first_row.take() {
+            None => Ok(()),
+            Some(FirstRow::Error(error)) => Err(error),
+            Some(FirstRow::NotNullViolation) => {
+                let mut tracker = WriteDiagnosticsTracker::new(declared, policy.clone())?;
+                let mut writer = FirstRowRejected {
+                    column: policy.constraint_column.clone(),
+                };
+                match diagnose_row_scoped_write(&mut writer, &mut tracker).await? {
+                    Some(outcome) => Err(outcome.into_error(Some(ProviderKind::Postgres), None)?),
+                    None => Err(DatabaseError::new(
+                        ErrorCategory::Internal,
+                        ErrorPhase::Write,
+                        Some(ProviderKind::Postgres),
+                        "dry run row-scoped senza la riga rifiutata attesa",
+                    )),
+                }
+            }
+        }
+    }
+}
+
+/// La scrittura row-scoped vista dal dry run quando la prima riga viola un
+/// vincolo: la rifiuta come la rifiuterebbe il server, e il rollback e
+/// confermato perche niente e stato scritto.
+struct FirstRowRejected {
+    column: Option<String>,
+}
+
+impl RowScopedWriter for FirstRowRejected {
+    fn apply_row(&mut self, _source_index: u64) -> RowWriteFuture<'_, Result<RowApplication>> {
+        Box::pin(async move {
+            Ok(RowApplication::Rejected(RowRejection {
+                cause: CAUSE_CONSTRAINT_VIOLATION.to_owned(),
+                column: self.column.clone(),
+            }))
+        })
+    }
+
+    fn finish_declared_input(&mut self) -> RowWriteFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn rollback(&mut self) -> RowWriteFuture<'_, RollbackEvidence> {
+        Box::pin(async { RollbackEvidence::Confirmed })
     }
 }
 
@@ -117,6 +183,7 @@ async fn verify(
                 total,
                 input.row_diagnostics_policy(),
             )?;
+            let policy = input.row_diagnostics_policy();
             return verify_row_scoped(
                 state,
                 operation,
@@ -125,7 +192,7 @@ async fn verify(
                 budget,
                 cancellation,
                 limits,
-                total,
+                (total, &policy),
                 gate,
             )
             .await;
@@ -184,6 +251,9 @@ async fn verify(
         match encoding {
             Encoding::CopyText => {
                 copy_buffer(&batch, plans)?;
+                // Il server giudica i vincoli delle righe ricevute alla
+                // chiusura di `COPY`.
+                gate.first_row()?;
             }
             Encoding::Parameters => {
                 let (_, indexes) =
@@ -211,7 +281,7 @@ async fn verify_row_scoped(
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
     limits: InputLimits,
-    declared: u64,
+    (declared, policy): (u64, &RowDiagnosticsPolicy),
     mut gate: StatementGate,
 ) -> Result<VerifiedInput> {
     let plans = &state.column_plans;
@@ -251,7 +321,9 @@ async fn verify_row_scoped(
             .map_err(|_| DatabaseError::resource_limit("batch oltre il conteggio supportato"))?;
         let first = applicable.min(1);
         encode_parameters(&batch, plans, &indexes, 0..first)?;
-        gate.first_row()?;
+        if first > 0 {
+            gate.first_row_scoped(declared, policy).await?;
+        }
         encode_parameters(&batch, plans, &indexes, first..applicable)?;
         if u64::try_from(applicable).unwrap_or(u64::MAX) < rows {
             return Err(row_diagnostics::input_beyond_declared_error());

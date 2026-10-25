@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 111055,
-  "max_code_lines": 90933,
-  "rationale": "Sonde spatial PostgreSQL con SRID esplicito confrontato con la colonna prima dell'esecuzione (core spatial_probe, provider spatial_probe per read e query, guardia PostGIS del compilatore portable e di build_spatial_select, SpatialValue che non sovrascrive uno SRID incorporato, mixed SRID pubblicato crs); dry run della scrittura PostgreSQL che legge sul catalogo cio che la scrittura chiede al target (write::target: schema, privilegi, proprieta, colonne, indice unico dell'upsert) nel punto in cui la scrittura lo rifiuterebbe, e offline soltanto con --offline; test in file dedicati. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 109568 -> 111055 (+1487), righe di codice 89892 -> 90933 (+1041). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 111598,
+  "max_code_lines": 91248,
+  "rationale": "Dry run della scrittura PostgreSQL con un elenco chiuso di condizioni del target decise in sola lettura dal catalogo (write::target: schema e USAGE, privilegi compreso SELECT sulle colonne lette dall'upsert, row-level security, colonne generate e IDENTITY ALWAYS, viste non aggiornabili, NOT NULL senza default assenti, arbitro dell'upsert) con la categoria e la fase della scrittura costruite dalla stessa tabella degli SQLSTATE (sqlstate_error); 42P10, 428C9, 55000 e 42809 con una categoria che li nomina; COPY rifiutato all'apertura senza effetto ignoto (BatchFailure, Rollback); test in file dedicati. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 111055 -> 111598 (+543), righe di codice 90933 -> 91248 (+315). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

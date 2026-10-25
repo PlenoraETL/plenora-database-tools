@@ -334,7 +334,7 @@ async fn live_generated_column_write_428c9_is_conflict() {
     assert_eq!(state(&raw), Some("428C9"));
 
     let mapped = classify_error(ErrorPhase::Write, &raw);
-    assert_eq!(mapped.category, ErrorCategory::Conflict);
+    assert_eq!(mapped.category, ErrorCategory::InvalidPlan);
     assert_eq!(mapped.remote_effect, RemoteEffect::RolledBack);
     assert!(
         mapped.message.contains("generat"),

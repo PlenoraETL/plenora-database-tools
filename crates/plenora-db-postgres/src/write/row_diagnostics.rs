@@ -260,16 +260,25 @@ async fn rollback_error(
     mut error: DatabaseError,
     execution_id: &str,
 ) -> DatabaseError {
-    let confirmed = transaction.rollback().await.is_ok();
+    let rollback = super::recovery::Rollback::of(transaction).await;
     error.provider = Some(ProviderKind::Postgres);
     error.execution_id = Some(execution_id.to_owned());
-    if confirmed {
-        error.remote_effect = RemoteEffect::RolledBack;
-        error.retry = RetryDisposition::Never;
-    } else {
-        error.phase = ErrorPhase::Rollback;
-        error.remote_effect = RemoteEffect::Unknown;
-        error.retry = RetryDisposition::Quarantine;
+    match rollback {
+        super::recovery::Rollback::Confirmed => {
+            error.remote_effect = RemoteEffect::RolledBack;
+            error.retry = RetryDisposition::Never;
+        }
+        // La sessione chiusa prima del COMMIT scarta la transazione: la
+        // stessa regola del percorso ordinario (`never_committed`).
+        super::recovery::Rollback::SessionClosed => {
+            error = super::recovery::never_committed(error);
+            error.retry = RetryDisposition::Never;
+        }
+        super::recovery::Rollback::Unconfirmed => {
+            error.phase = ErrorPhase::Rollback;
+            error.remote_effect = RemoteEffect::Unknown;
+            error.retry = RetryDisposition::Quarantine;
+        }
     }
     error
 }

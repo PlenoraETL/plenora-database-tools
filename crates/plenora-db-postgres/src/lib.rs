@@ -60,6 +60,10 @@ pub struct PostgresWriteDryRun {
     /// `LossReport` che la scrittura avrebbe. `None` se il dry run e
     /// offline, e le classi che decide il catalogo non sono state decise.
     pub loss_report: Option<plenora_database_core::loss::LossReport>,
+    /// Se una policy di row-level security decide sull'ingresso: in quel
+    /// caso il dry run non decide l'esito, e lo dice. Offline e
+    /// `NotPerformed`: il catalogo non e stato letto.
+    pub row_security: write::target::RowSecurity,
 }
 
 impl PostgresProvider {
@@ -78,8 +82,11 @@ impl PostgresProvider {
     /// ogni batch e ne giudica ogni valore con le funzioni della scrittura
     /// (`write::dry_run`).
     ///
-    /// Non decide cio che decide il server scrivendo: vincoli e trigger sui
-    /// valori, conversioni della colonna, timeout e lock concorrenti.
+    /// Non decide cio che decide il server scrivendo (l'elenco chiuso e in
+    /// `write::target`): trigger, vincoli `CHECK` ed esclusioni, unicita e
+    /// foreign key sui valori, vincoli differiti, conversioni della colonna,
+    /// timeout e lock concorrenti; e, dove una policy RLS decide sui valori,
+    /// l'esito della policy (`row_security: NotPerformed`).
     ///
     /// # Errors
     ///
@@ -95,6 +102,7 @@ impl PostgresProvider {
     ) -> Result<PostgresWriteDryRun> {
         let schema = input.schema();
         let mut gate = write::StatementGate::default();
+        let mut row_security = write::target::RowSecurity::NotPerformed;
         let (state, loss_report, prepared) = if let Some(secret) = secret {
             let mut prepared = self
                 .prepare_write(secret, operation, Arc::clone(&schema), budget, cancellation)
@@ -134,6 +142,7 @@ impl PostgresProvider {
             drop(client);
             gate.at_statement = verdict.at_statement;
             gate.at_first_row = verdict.at_first_row;
+            row_security = verdict.row_security;
             let report = prepared.loss_report.clone();
             (state, Some(report), Some(prepared))
         } else {
@@ -161,6 +170,7 @@ impl PostgresProvider {
             batches: verified.batches,
             rows: verified.rows,
             loss_report,
+            row_security,
         })
     }
 }

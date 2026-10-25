@@ -379,7 +379,10 @@ pub async fn execute(
         {
             match result {
                 Ok(written) => written,
-                Err(error) => {
+                Err(BatchFailure::ServerAborted(error)) => {
+                    return Err(recovery.rollback_aborted(transaction, error).await);
+                }
+                Err(BatchFailure::Other(error)) => {
                     return Err(recovery.rollback_error(transaction, error).await);
                 }
             }
@@ -741,6 +744,34 @@ async fn create_table(
     Ok(())
 }
 
+/// Perche un batch non e stato scritto.
+enum BatchFailure {
+    /// Il server ha risposto con un errore (uno SQLSTATE) a uno statement
+    /// della transazione esplicita: PostgreSQL l'ha abortita, e nessun COMMIT
+    /// potra piu renderne visibile un effetto, che il ROLLBACK si confermi o
+    /// no (vedi `recovery::PreCommitRecovery::rollback_aborted`).
+    ServerAborted(DatabaseError),
+    /// Ogni altro rifiuto: del provider, o del canale.
+    Other(DatabaseError),
+}
+
+impl From<DatabaseError> for BatchFailure {
+    fn from(error: DatabaseError) -> Self {
+        Self::Other(error)
+    }
+}
+
+/// L'errore del driver di uno statement del batch, classificato nella fase
+/// `phase`: un rifiuto del server abortisce la transazione.
+fn batch_failure(phase: ErrorPhase, error: &tokio_postgres::Error) -> BatchFailure {
+    let classified = classify_error(phase, error);
+    if error.as_db_error().is_some() {
+        BatchFailure::ServerAborted(classified)
+    } else {
+        BatchFailure::Other(classified)
+    }
+}
+
 async fn write_batch(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
@@ -748,7 +779,7 @@ async fn write_batch(
     batch: &RecordBatch,
     plans: &[WriteColumnPlan],
     insert_mode: PostgresInsertMode,
-) -> Result<u64> {
+) -> std::result::Result<u64, BatchFailure> {
     if matches!(
         operation.mode,
         WriteMode::Create | WriteMode::Append | WriteMode::Replace | WriteMode::TruncateInsert
@@ -770,7 +801,7 @@ async fn write_batch(
     let statement = transaction
         .prepare(&sql)
         .await
-        .map_err(|e| classify_error(ErrorPhase::Prepare, &e))?;
+        .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
     let mut affected = 0;
     for row in 0..batch.num_rows() {
         let values = indexes
@@ -784,7 +815,7 @@ async fn write_batch(
         affected += transaction
             .execute(&statement, &refs)
             .await
-            .map_err(|e| classify_error(ErrorPhase::Write, &e))?;
+            .map_err(|e| batch_failure(ErrorPhase::Write, &e))?;
     }
     Ok(affected)
 }
@@ -794,7 +825,7 @@ async fn copy_binary_batch(
     target: &ObjectRef,
     batch: &RecordBatch,
     plans: &[WriteColumnPlan],
-) -> Result<u64> {
+) -> std::result::Result<u64, BatchFailure> {
     let renderer = renderer();
     let columns = batch
         .schema()
@@ -812,7 +843,7 @@ async fn copy_binary_batch(
             quote_object(target)?
         ))
         .await
-        .map_err(|e| classify_error(ErrorPhase::Prepare, &e))?;
+        .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
     let types = type_probe
         .columns()
         .iter()
@@ -825,7 +856,7 @@ async fn copy_binary_batch(
             columns.join(", ")
         ))
         .await
-        .map_err(|e| classify_error(ErrorPhase::Prepare, &e))?;
+        .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
     let writer = BinaryCopyInWriter::new(sink, &types);
     futures_util::pin_mut!(writer);
     for row in 0..batch.num_rows() {
@@ -846,13 +877,13 @@ async fn copy_binary_batch(
             .as_mut()
             .write(&refs)
             .await
-            .map_err(|e| classify_error(ErrorPhase::Write, &e))?;
+            .map_err(|e| batch_failure(ErrorPhase::Write, &e))?;
     }
     writer
         .as_mut()
         .finish()
         .await
-        .map_err(|e| classify_error(ErrorPhase::Write, &e))
+        .map_err(|e| batch_failure(ErrorPhase::Write, &e))
 }
 
 async fn copy_batch(
@@ -860,7 +891,7 @@ async fn copy_batch(
     target: &ObjectRef,
     batch: &RecordBatch,
     plans: &[WriteColumnPlan],
-) -> Result<u64> {
+) -> std::result::Result<u64, BatchFailure> {
     let renderer = renderer();
     let columns = batch
         .schema()
@@ -876,19 +907,23 @@ async fn copy_batch(
         quote_object(target)?,
         columns.join(", ")
     );
+    // Un `copy_in` rifiutato all'apertura lascia `tokio-postgres` 0.7.18 con
+    // la risposta del `CopyFail` che segue fuori sequenza: il ROLLBACK
+    // successivo fallisce con `UnexpectedMessage`. Il rifiuto del server ha
+    // gia abortito la transazione (`BatchFailure::ServerAborted`).
     let sink = transaction
         .copy_in(&sql)
         .await
-        .map_err(|e| classify_error(ErrorPhase::Prepare, &e))?;
+        .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
     futures_util::pin_mut!(sink);
     sink.as_mut()
         .send(Bytes::from(copy_buffer(batch, plans)?))
         .await
-        .map_err(|e| classify_error(ErrorPhase::Write, &e))?;
+        .map_err(|e| batch_failure(ErrorPhase::Write, &e))?;
     sink.as_mut()
         .finish()
         .await
-        .map_err(|e| classify_error(ErrorPhase::Write, &e))
+        .map_err(|e| batch_failure(ErrorPhase::Write, &e))
 }
 
 async fn create_spatial_indexes(

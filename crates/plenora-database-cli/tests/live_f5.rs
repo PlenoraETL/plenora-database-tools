@@ -479,6 +479,10 @@ fn f5_13_bulk_write_dry_run_does_not_touch_db() {
     // Con la DSN il dry run legge il catalogo e giudica ogni riga.
     assert_eq!(out["checks"]["catalog"], "performed");
     assert_eq!(out["checks"]["values"], "performed");
+    // Un target nuovo non ha row-level security; i vincoli sui valori restano
+    // della scrittura.
+    assert_eq!(out["checks"]["row_security"], "not_applicable");
+    assert_eq!(out["checks"]["server"], "not_performed");
     assert_eq!(out["input"]["rows"], 1);
     assert!(out["loss_report"].is_object());
 
@@ -495,6 +499,7 @@ fn f5_13_bulk_write_dry_run_does_not_touch_db() {
     ]);
     assert_eq!(offline["status"], "dry_run_offline");
     assert_eq!(offline["checks"]["catalog"], "not_performed");
+    assert_eq!(offline["checks"]["row_security"], "not_performed");
     let output = cli(&[
         "bulk-write",
         "PLENORA_F5_13_UNSET_DSN",

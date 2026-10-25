@@ -55,12 +55,56 @@ fn duplicate_table_is_conflict() {
     assert_eq!(m.category, ErrorCategory::Conflict);
 }
 
+/// Una colonna generata o `IDENTITY ALWAYS` nell'ingresso e un piano che
+/// nessun ingresso rende eseguibile: `invalid_plan`, non `conflict` (fino al
+/// 25/10).
 #[test]
-fn generated_column_write_is_conflict_rolled_back() {
+fn generated_column_write_is_invalid_plan_rolled_back() {
     let m = map("428C9", ErrorPhase::Write);
-    assert_eq!(m.category, ErrorCategory::Conflict);
+    assert_eq!(m.category, ErrorCategory::InvalidPlan);
     assert_eq!(m.remote_effect, RemoteEffect::RolledBack);
     assert!(matches!(m.retry, RetryDisposition::Never));
+}
+
+/// 42P10 (nessun arbitro di `ON CONFLICT`, colonna generata in `COPY`) e
+/// 55000/42809 (vista non aggiornabile, `COPY` o `TRUNCATE` su una vista)
+/// erano senza voce, quindi `protocol`.
+#[test]
+fn target_rejections_have_a_category_that_names_them() {
+    let m = map("42P10", ErrorPhase::Write);
+    assert_eq!(m.category, ErrorCategory::InvalidPlan);
+    for code in ["55000", "42809"] {
+        let m = map(code, ErrorPhase::Prepare);
+        assert_eq!(m.category, ErrorCategory::Unsupported, "{code}");
+        assert!(matches!(m.retry, RetryDisposition::Never), "{code}");
+    }
+}
+
+/// Il dry run costruisce i rifiuti del target dalla stessa tabella: stessi
+/// assi e stesso messaggio della scrittura.
+#[test]
+fn sqlstate_error_is_the_classification_without_a_driver_error() {
+    for (code, phase) in [
+        ("42501", ErrorPhase::Write),
+        ("42P10", ErrorPhase::Prepare),
+        ("428C9", ErrorPhase::Prepare),
+        ("55000", ErrorPhase::Prepare),
+        ("42809", ErrorPhase::Write),
+        ("0A000", ErrorPhase::Prepare),
+        ("23502", ErrorPhase::Write),
+    ] {
+        let built = super::sqlstate_error(code, phase);
+        let mapped = map(code, phase);
+        assert_eq!(built.category, mapped.category, "{code}");
+        assert_eq!(built.remote_effect, mapped.remote_effect, "{code}");
+        assert_eq!(built.retry, mapped.retry, "{code}");
+        assert_eq!(built.message, mapped.message, "{code}");
+        assert_eq!(built.phase, phase, "{code}");
+    }
+    assert_eq!(
+        super::sqlstate_error("99999", ErrorPhase::Write).category,
+        ErrorCategory::Internal
+    );
 }
 
 #[test]
