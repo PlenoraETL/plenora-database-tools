@@ -1673,3 +1673,297 @@ async fn live_a_geometry_column_under_a_scalar_operator_is_refused_before_the_se
     );
     drop_fixture(&dsn, table).await;
 }
+
+/// La regola degli operandi geometrici a mondo chiuso, sul `PostGIS` reale.
+///
+/// Le forme della nona rilettura (25/10), ammesse su cf49fa0 e rese dal
+/// server senza errore: `ORDER BY k` di una `UNION ALL` il cui secondo ramo e
+/// l'EWKB di una geometria; una colonna senza alias di una sorgente derivata
+/// nominata con il nome che le da il server (`st_centroid`, `g` per un
+/// `CAST(t.g AS text)`) in `ORDER BY`, `GROUP BY`, `LIKE`; `DISTINCT *` di
+/// una geometria in testo; `ORDER BY` di un `geometry[]`, di un dominio su
+/// `geometry[]`, di un composito con una geometria, di un array di compositi;
+/// la lettura con `ORDER BY` di un `geometry[]`. Ora si rifiutano prima del
+/// server; le colonne scalari della stessa tabella restano, con le righe
+/// attese.
+#[tokio::test]
+async fn live_unresolved_geometry_operands_are_refused_before_the_server() {
+    use plenora_database_core::plan::{OrderBy, SortDirection};
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    use serde_json::{json, Value};
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let table = "plenora_operandi_r9";
+    let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .expect("connessione di setup");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+        .batch_execute(&format!(
+            "DROP TABLE IF EXISTS public.{table};
+             DROP TABLE IF EXISTS public.{table}_scalari;
+             DROP DOMAIN IF EXISTS public.{table}_dominio;
+             DROP TYPE IF EXISTS public.{table}_coppia;
+             CREATE TYPE public.{table}_coppia AS (label text, shape geometry);
+             CREATE DOMAIN public.{table}_dominio AS geometry[];
+             CREATE TABLE public.{table} (
+                 id int PRIMARY KEY,
+                 g geometry(Point, 4326),
+                 name text,
+                 ga geometry[],
+                 gd public.{table}_dominio,
+                 gc public.{table}_coppia,
+                 gca public.{table}_coppia[]
+             );
+             INSERT INTO public.{table}
+                 SELECT i, ST_SetSRID(ST_MakePoint(i, i), 4326), 'riga-' || i,
+                        ARRAY[ST_MakePoint(i, i)], ARRAY[ST_MakePoint(i, i)],
+                        ROW('c'::text, ST_MakePoint(i, i))::public.{table}_coppia, ARRAY[ROW('c'::text, ST_MakePoint(i, i))::public.{table}_coppia]
+                 FROM generate_series(1, 3) i;
+             CREATE TABLE public.{table}_scalari (id int PRIMARY KEY, name text);
+             INSERT INTO public.{table}_scalari VALUES (1, 'uno'), (2, 'uno');"
+        ))
+        .await
+        .expect("fixture");
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.clone());
+    let cancel = CancellationToken::new();
+    let budget = budget();
+    let column = |relation: Option<&str>, field: &str| json!({"kind": "column", "column": {"relation": relation, "field": field}});
+    let item =
+        |expression: &Value, alias: Option<&str>| json!({"expression": expression, "alias": alias});
+    let text = |expression: &Value| json!({"kind": "cast", "expression": expression, "target_type": "string"});
+    let order = |expression: &Value| json!([{"expression": expression, "direction": "desc"}]);
+    let like = |expression: &Value| {
+        json!({"kind": "like", "expression": expression,
+            "pattern": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}})
+    };
+    let over = |object: &str, extra: &Value| {
+        let mut operation = json!({
+            "source": {"object": {"catalog": null, "schema": "public", "object": object}, "alias": "t"},
+            "projection": [item(&column(Some("t"), "id"), Some("id"))],
+            "filter": null, "having": null, "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        operation
+    };
+    let over_derived = |inner: &Value, extra: &Value| {
+        let mut operation = json!({
+            "source": null,
+            "derived_source": {"query": inner, "alias": "d"},
+            "projection": [item(&json!({"kind": "wildcard", "relation": null}), None)],
+            "filter": null, "having": null, "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        operation
+    };
+    let plan = |value: Value| -> QueryOperation { serde_json::from_value(value).expect("piano") };
+    let g = column(Some("t"), "g");
+    let id = column(Some("t"), "id");
+    let count = json!({"kind": "scalar", "function": "count", "arguments": [{"kind": "wildcard", "relation": null}]});
+    let output = json!({"kind": "spatial_output", "expression": g, "semantics": "geometry"});
+    let centroid = json!({"kind": "spatial", "function": "centroid", "arguments": [g]});
+    let generated = |expression: &Value| {
+        over(
+            table,
+            &json!({"projection": [item(&id, None), item(expression, None)]}),
+        )
+    };
+    let k = column(None, "k");
+    let pattern = probe(ParameterValue::String("0101%".to_owned()));
+    let none = ParameterBag::default();
+    let binary = probe(ParameterValue::Bytes(vec![0]));
+    let mut refused = vec![
+        (
+            "ORDER BY k su UNION ALL".to_owned(),
+            over(
+                table,
+                &json!({
+                    "projection": [item(&json!({"kind": "typed_parameter", "name": "p", "parameter_type": "binary"}), Some("k"))],
+                    "set_operations": [{"operator": "union", "all": true,
+                        "query": over(table, &json!({"projection": [item(&output, Some("k"))]}))}],
+                    "order_by": order(&k)
+                }),
+            ),
+            binary.clone(),
+        ),
+        (
+            "ORDER BY d.st_centroid".to_owned(),
+            over_derived(
+                &generated(&centroid),
+                &json!({
+                    "projection": [item(&column(Some("d"), "id"), Some("id"))],
+                    "order_by": order(&column(Some("d"), "st_centroid")), "row_limit": 1
+                }),
+            ),
+            none.clone(),
+        ),
+        (
+            "GROUP BY d.st_centroid".to_owned(),
+            over_derived(
+                &generated(&centroid),
+                &json!({
+                    "projection": [item(&count, Some("n"))],
+                    "group_by": [column(Some("d"), "st_centroid")]
+                }),
+            ),
+            none.clone(),
+        ),
+        (
+            "d.g LIKE su CAST senza alias".to_owned(),
+            over_derived(
+                &generated(&text(&g)),
+                &json!({
+                    "projection": [item(&column(Some("d"), "id"), Some("id"))],
+                    "filter": like(&column(Some("d"), "g"))
+                }),
+            ),
+            pattern.clone(),
+        ),
+        (
+            "DISTINCT * su una geometria in testo".to_owned(),
+            over_derived(
+                &over(table, &json!({"projection": [item(&text(&g), Some("c"))]})),
+                &json!({"distinct": true}),
+            ),
+            none.clone(),
+        ),
+    ];
+    for field in ["ga", "gd", "gc", "gca"] {
+        refused.push((
+            format!("ORDER BY t.{field}"),
+            over(
+                table,
+                &json!({"order_by": order(&column(Some("t"), field)), "row_limit": 1}),
+            ),
+            none.clone(),
+        ));
+    }
+    let mut accepted = Vec::new();
+    for (form, operation, parameters) in &refused {
+        match rows(
+            provider
+                .query(
+                    &secret,
+                    &plan(operation.clone()),
+                    parameters,
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await
+        {
+            Err(error) => {
+                assert_eq!(
+                    error.category,
+                    ErrorCategory::Unsupported,
+                    "{form}: {error:?}"
+                );
+                assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{form}: {error:?}");
+            }
+            Ok(count) => accepted.push(format!("{form}: {count} righe")),
+        }
+    }
+    let mut read_array = read(table, "g");
+    read_array.filter = None;
+    read_array.order_by = vec![OrderBy {
+        field: "ga".to_owned(),
+        direction: SortDirection::Desc,
+    }];
+    match rows(
+        provider
+            .read(&secret, &read_array, &none, &budget, &cancel)
+            .await,
+    )
+    .await
+    {
+        Err(error) => assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "lettura: {error:?}"),
+        Ok(count) => accepted.push(format!("lettura ORDER BY ga: {count} righe")),
+    }
+    assert!(accepted.is_empty(), "ammesse: {accepted:?}");
+    // I controlli: le colonne scalari della stessa tabella e una tabella
+    // senza geometrie, con le righe attese.
+    let name = column(Some("t"), "name");
+    let admitted = [
+        (
+            "ORDER BY k su UNION ALL scalare",
+            over(
+                table,
+                &json!({
+                    "projection": [item(&id, Some("k"))],
+                    "set_operations": [{"operator": "union", "all": true,
+                        "query": over(table, &json!({"projection": [item(&id, Some("k"))]}))}],
+                    "order_by": order(&k)
+                }),
+            ),
+            none.clone(),
+            6,
+        ),
+        (
+            "ORDER BY d.id con una geometria senza alias",
+            over_derived(
+                &generated(&centroid),
+                &json!({
+                    "projection": [item(&column(Some("d"), "id"), Some("id"))],
+                    "order_by": order(&column(Some("d"), "id"))
+                }),
+            ),
+            none.clone(),
+            3,
+        ),
+        (
+            "DISTINCT * scalare",
+            over_derived(
+                &over(table, &json!({"projection": [item(&name, Some("c"))]})),
+                &json!({"distinct": true}),
+            ),
+            none.clone(),
+            3,
+        ),
+        (
+            "LIKE su una colonna scalare",
+            over(table, &json!({"filter": like(&name)})),
+            probe(ParameterValue::String("riga-%".to_owned())),
+            3,
+        ),
+        (
+            "tabella senza geometrie, DISTINCT *",
+            over_derived(
+                &over(
+                    &format!("{table}_scalari"),
+                    &json!({"projection": [item(&name, Some("c"))]}),
+                ),
+                &json!({"distinct": true}),
+            ),
+            none.clone(),
+            1,
+        ),
+    ];
+    for (form, operation, parameters, expected) in admitted {
+        let count = rows(
+            provider
+                .query(&secret, &plan(operation), &parameters, &budget, &cancel)
+                .await,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(count, expected, "{form}");
+    }
+    client
+        .batch_execute(&format!(
+            "DROP TABLE IF EXISTS public.{table};
+             DROP TABLE IF EXISTS public.{table}_scalari;
+             DROP DOMAIN IF EXISTS public.{table}_dominio;
+             DROP TYPE IF EXISTS public.{table}_coppia;"
+        ))
+        .await
+        .expect("pulizia");
+}

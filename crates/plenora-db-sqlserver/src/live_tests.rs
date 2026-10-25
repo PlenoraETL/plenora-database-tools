@@ -3298,6 +3298,301 @@ async fn live_spatial_join_resolves_columns_and_guards_every_source() {
         .expect("cleanup spatial join fixtures");
 }
 
+/// La regola degli operandi geometrici a mondo chiuso, sul SQL Server reale.
+///
+/// Le forme della nona rilettura (25/10), ammesse su cf49fa0 e rese dal
+/// server senza errore: `ORDER BY k` di una `UNION ALL` il cui secondo ramo
+/// e una geometria, `DISTINCT *` di una sorgente derivata con una geometria
+/// in testo, `CAST(t.G AS NVARCHAR) LIKE` (la colonna `g` nominata con
+/// un'altra maiuscola), lo stesso su un sinonimo. Ora si rifiutano prima del
+/// server; le stesse forme su colonne scalari e su una tabella senza
+/// geometrie restano, con le righe attese.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "richiede SQL Server live esplicito per la regola degli operandi geometrici"]
+#[allow(clippy::too_many_lines)]
+async fn live_unresolved_geometry_operands_are_refused_before_the_server() {
+    use plenora_database_core::relational::QueryOperation;
+    use plenora_database_core::spatial_operand::GEOMETRY_OPERAND_UNRESOLVED;
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    use plenora_database_core::DatabaseError;
+    use serde_json::{json, Value};
+
+    fn column(relation: Option<&str>, field: &str) -> Value {
+        json!({"kind": "column", "column": {"relation": relation, "field": field}})
+    }
+
+    fn item(expression: &Value, alias: Option<&str>) -> Value {
+        json!({"expression": expression, "alias": alias})
+    }
+
+    fn text(expression: &Value) -> Value {
+        json!({"kind": "cast", "expression": expression, "target_type": "string"})
+    }
+
+    fn like(expression: &Value) -> Value {
+        json!({"kind": "like", "expression": expression,
+            "pattern": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}})
+    }
+
+    fn order(expression: &Value) -> Value {
+        json!([{"expression": expression, "direction": "desc"}])
+    }
+
+    /// `SELECT t.id FROM plenora_test.<object> t` con `extra` sopra.
+    fn over(object: &str, extra: &Value) -> Value {
+        let mut operation = json!({
+            "source": {"object": {"catalog": null, "schema": "plenora_test", "object": object}, "alias": "t"},
+            "projection": [item(&column(Some("t"), "id"), Some("id"))],
+            "filter": null,
+            "having": null,
+            "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        operation
+    }
+
+    /// `SELECT d.<projection> FROM (inner) d` con `extra` sopra.
+    fn over_derived(inner: &Value, extra: &Value) -> Value {
+        let mut operation = json!({
+            "source": null,
+            "derived_source": {"query": inner, "alias": "d"},
+            "projection": [item(&json!({"kind": "wildcard", "relation": null}), None)],
+            "filter": null,
+            "having": null,
+            "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        operation
+    }
+
+    fn plan(value: Value) -> QueryOperation {
+        serde_json::from_value(value).expect("piano")
+    }
+
+    fn bag(value: ParameterValue) -> ParameterBag {
+        ParameterBag::new(BTreeMap::from([("p".to_owned(), value)]))
+    }
+
+    async fn count(
+        provider: &SqlServerProvider,
+        operation: &QueryOperation,
+        parameters: &ParameterBag,
+    ) -> Result<usize, DatabaseError> {
+        let cancellation = CancellationToken::new();
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let mut stream = provider
+            .query(
+                &live_secret(),
+                operation,
+                parameters,
+                &budget,
+                &cancellation,
+            )
+            .await?;
+        let mut total = 0;
+        while let Some(batch) = stream.next_batch(&cancellation).await? {
+            total += batch.num_rows();
+        }
+        Ok(total)
+    }
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("sessione di setup");
+    admin
+        .execute_query(
+            Query::new(
+                "DROP SYNONYM IF EXISTS [plenora_test].[operandi_r9_sinonimo]; \
+                 DROP TABLE IF EXISTS [plenora_test].[operandi_r9]; \
+                 DROP TABLE IF EXISTS [plenora_test].[operandi_r9_scalari]; \
+                 CREATE TABLE [plenora_test].[operandi_r9] \
+                 ([id] int NOT NULL PRIMARY KEY, [g] geometry NULL, [name] nvarchar(40) NULL); \
+                 INSERT INTO [plenora_test].[operandi_r9] VALUES \
+                 (1, geometry::STGeomFromText('POINT (1 2)', 4326), N'uno'), \
+                 (2, geometry::STGeomFromText('POINT (3 4)', 4326), N'due'); \
+                 CREATE SYNONYM [plenora_test].[operandi_r9_sinonimo] FOR [plenora_test].[operandi_r9]; \
+                 CREATE TABLE [plenora_test].[operandi_r9_scalari] \
+                 ([id] int NOT NULL PRIMARY KEY, [name] nvarchar(40) NULL); \
+                 INSERT INTO [plenora_test].[operandi_r9_scalari] VALUES (1, N'uno'), (2, N'uno');",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("fixture");
+    let provider = SqlServerProvider::new(config, 4, 1).expect("provider");
+    let point = bag(ParameterValue::String("POINT (1 2)".to_owned()));
+    let uno = bag(ParameterValue::String("uno".to_owned()));
+    let none = ParameterBag::default();
+    let g = column(Some("t"), "g");
+    let output = json!({"kind": "spatial_output", "expression": g, "semantics": "geometry"});
+    let k = column(None, "k");
+    let refused = [
+        (
+            "ORDER BY k su UNION ALL",
+            over(
+                "operandi_r9",
+                &json!({
+                    "projection": [item(&json!({"kind": "typed_parameter", "name": "p", "parameter_type": "binary"}), Some("k"))],
+                    "set_operations": [{"operator": "union", "all": true,
+                        "query": over("operandi_r9", &json!({"projection": [item(&output, Some("k"))]}))}],
+                    "order_by": order(&k)
+                }),
+            ),
+            bag(ParameterValue::Bytes(vec![0])),
+            GEOMETRY_SCALAR_OPERAND,
+        ),
+        (
+            "DISTINCT * su una geometria in testo",
+            over_derived(
+                &over(
+                    "operandi_r9",
+                    &json!({"projection": [item(&text(&g), Some("c"))]}),
+                ),
+                &json!({"distinct": true}),
+            ),
+            none.clone(),
+            GEOMETRY_SCALAR_OPERAND,
+        ),
+        (
+            "CAST(t.G) LIKE",
+            over(
+                "operandi_r9",
+                &json!({"filter": like(&text(&column(Some("t"), "G")))}),
+            ),
+            point.clone(),
+            GEOMETRY_SCALAR_OPERAND,
+        ),
+        (
+            "alias X nominato x",
+            over_derived(
+                &over(
+                    "operandi_r9",
+                    &json!({"projection": [item(&column(Some("t"), "id"), Some("id")), item(&g, Some("X"))]}),
+                ),
+                &json!({
+                    "projection": [item(&column(Some("d"), "id"), Some("id"))],
+                    "filter": like(&text(&column(Some("d"), "x")))
+                }),
+            ),
+            point.clone(),
+            GEOMETRY_SCALAR_OPERAND,
+        ),
+        (
+            "sinonimo",
+            over(
+                "operandi_r9_sinonimo",
+                &json!({"filter": like(&text(&column(Some("t"), "g")))}),
+            ),
+            point.clone(),
+            GEOMETRY_SCALAR_OPERAND,
+        ),
+        (
+            "colonna assente in un piano con geometrie",
+            over(
+                "operandi_r9",
+                &json!({"filter": like(&text(&column(Some("t"), "missing")))}),
+            ),
+            point.clone(),
+            GEOMETRY_OPERAND_UNRESOLVED,
+        ),
+    ];
+    for (form, operation, parameters, reason) in refused {
+        match count(&provider, &plan(operation), &parameters).await {
+            Err(error) => {
+                assert_eq!(
+                    error.category,
+                    ErrorCategory::Unsupported,
+                    "{form}: {error:?}"
+                );
+                assert_eq!(error.message, reason, "{form}: {error:?}");
+            }
+            Ok(rows) => panic!("{form}: accettata con {rows} righe"),
+        }
+    }
+    // I controlli: le stesse forme su colonne scalari, le righe attese.
+    let name = column(Some("t"), "name");
+    let admitted = [
+        (
+            "ORDER BY k su UNION ALL scalare",
+            over(
+                "operandi_r9",
+                &json!({
+                    "projection": [item(&column(Some("t"), "id"), Some("k"))],
+                    "set_operations": [{"operator": "union", "all": true,
+                        "query": over("operandi_r9", &json!({"projection": [item(&column(Some("t"), "id"), Some("k"))]}))}],
+                    "order_by": order(&k)
+                }),
+            ),
+            none.clone(),
+            4,
+        ),
+        (
+            "DISTINCT * scalare",
+            over_derived(
+                &over(
+                    "operandi_r9",
+                    &json!({"projection": [item(&name, Some("c"))]}),
+                ),
+                &json!({"distinct": true}),
+            ),
+            none.clone(),
+            2,
+        ),
+        (
+            "CAST(t.NAME) LIKE",
+            over(
+                "operandi_r9",
+                &json!({"filter": like(&text(&column(Some("t"), "NAME")))}),
+            ),
+            uno.clone(),
+            1,
+        ),
+        (
+            "sinonimo, colonna scalare",
+            over("operandi_r9_sinonimo", &json!({"filter": like(&name)})),
+            uno.clone(),
+            1,
+        ),
+        (
+            "tabella senza geometrie, DISTINCT *",
+            over_derived(
+                &over(
+                    "operandi_r9_scalari",
+                    &json!({"projection": [item(&name, Some("c"))]}),
+                ),
+                &json!({"distinct": true}),
+            ),
+            none.clone(),
+            1,
+        ),
+    ];
+    for (form, operation, parameters, expected) in admitted {
+        let rows = count(&provider, &plan(operation), &parameters)
+            .await
+            .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(rows, expected, "{form}");
+    }
+    admin
+        .execute_query(
+            Query::new(
+                "DROP SYNONYM IF EXISTS [plenora_test].[operandi_r9_sinonimo]; \
+                 DROP TABLE IF EXISTS [plenora_test].[operandi_r9]; \
+                 DROP TABLE IF EXISTS [plenora_test].[operandi_r9_scalari];",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("pulizia");
+}
+
 #[tokio::test]
 #[ignore = "richiede SQL Server live esplicito per scope spatial CTE, derived e subquery"]
 #[allow(clippy::too_many_lines)]

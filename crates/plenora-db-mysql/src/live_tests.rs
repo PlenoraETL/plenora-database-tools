@@ -8330,3 +8330,142 @@ async fn live_geometry_column_under_scalar_operator_is_refused() {
         .await
         .ok();
 }
+
+/// La regola degli operandi geometrici a mondo chiuso, su `MySQL` e
+/// `MariaDB`.
+///
+/// La forma della nona rilettura (25/10) ammessa su cf49fa0 e resa da
+/// `MySQL` senza errore: un alias `X` di una geometria in testo nominato `x`
+/// in `ORDER BY` (`MySQL` non distingue le maiuscole nei nomi di colonna, e
+/// il confronto esatto dell'alias la perdeva; `MariaDB` rifiuta da se il
+/// `CAST` con 4079). Ora si rifiuta prima del server; le stesse forme su
+/// colonne scalari e su una tabella senza geometrie restano, con le righe
+/// attese. Il path query `MySQL` non qualifica ancora set operation,
+/// sorgenti derivate, CTE e subquery, e non proietta una geometria senza
+/// involucro: le altre forme le provano i test offline.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_unresolved_geometry_operands_are_refused_before_the_server() {
+    use serde_json::{json, Value};
+
+    let cancellation = CancellationToken::new();
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione");
+        for statement in [
+            "DROP TABLE IF EXISTS _geo_operandi_r9",
+            "DROP TABLE IF EXISTS _geo_operandi_r9_scalari",
+            "CREATE TABLE _geo_operandi_r9 (id BIGINT PRIMARY KEY, g POINT NOT NULL, \
+             name VARCHAR(40) NOT NULL) ENGINE=InnoDB",
+            "INSERT INTO _geo_operandi_r9 VALUES \
+             (1, ST_GeomFromText('POINT(1 2)'), 'uno'), (2, ST_GeomFromText('POINT(3 4)'), 'due')",
+            "CREATE TABLE _geo_operandi_r9_scalari (id BIGINT PRIMARY KEY, \
+             name VARCHAR(40) NOT NULL) ENGINE=InnoDB",
+            "INSERT INTO _geo_operandi_r9_scalari VALUES (1, 'uno'), (2, 'uno')",
+        ] {
+            connection.query_drop(statement).await.expect("fixture");
+        }
+    }
+    let provider = geometry_operand_provider();
+    let provider = provider.as_ref();
+    let database = environment("PLENORA_MYSQL_DATABASE", "dataflow_test");
+    let column = |relation: Option<&str>, field: &str| json!({"kind": "column", "column": {"relation": relation, "field": field}});
+    let item =
+        |expression: &Value, alias: Option<&str>| json!({"expression": expression, "alias": alias});
+    let order = |expression: &Value| json!([{"expression": expression, "direction": "desc"}]);
+    let over = |object: &str, extra: &Value| {
+        let mut operation = json!({
+            "source": {"object": {"catalog": null, "schema": database, "object": object}, "alias": "t"},
+            "projection": [item(&column(Some("t"), "id"), Some("id"))],
+            "filter": null,
+            "having": null,
+            "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        serde_json::from_value::<plenora_database_core::query::QueryOperation>(operation)
+            .expect("piano")
+    };
+    let table = "_geo_operandi_r9";
+    let text =
+        json!({"kind": "cast", "expression": column(Some("t"), "g"), "target_type": "string"});
+    let id = column(Some("t"), "id");
+    let name = column(Some("t"), "name");
+    let none = ParameterBag::default();
+    let refused = over(
+        table,
+        &json!({
+            "projection": [item(&id, Some("id")), item(&text, Some("X"))],
+            "order_by": order(&column(None, "x"))
+        }),
+    );
+    match geometry_operand_rows(provider, &refused, &none).await {
+        Err(error) => {
+            assert_eq!(error.category, ErrorCategory::Unsupported, "{error:?}");
+            assert!(
+                error
+                    .message
+                    .contains(plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND),
+                "{error:?}"
+            );
+        }
+        Ok(rows) => panic!("ORDER BY alias X nominato x: accettata con {rows} righe"),
+    }
+    let star = json!({"kind": "wildcard", "relation": null});
+    let admitted = [
+        (
+            "DISTINCT della colonna scalare",
+            over(
+                table,
+                &json!({"projection": [item(&name, Some("name"))], "distinct": true}),
+            ),
+            2,
+        ),
+        (
+            "ORDER BY alias NAME nominato name",
+            over(
+                table,
+                &json!({
+                    "projection": [item(&id, Some("id")), item(&name, Some("NAME"))],
+                    "order_by": order(&column(None, "name"))
+                }),
+            ),
+            2,
+        ),
+        (
+            "ORDER BY di una colonna scalare nominata NAME",
+            over(
+                table,
+                &json!({"order_by": order(&column(Some("t"), "NAME"))}),
+            ),
+            2,
+        ),
+        (
+            "tabella senza geometrie, DISTINCT *",
+            over(
+                "_geo_operandi_r9_scalari",
+                &json!({"projection": [item(&star, None)], "distinct": true}),
+            ),
+            2,
+        ),
+    ];
+    for (form, operation, expected) in admitted {
+        let rows = geometry_operand_rows(provider, &operation, &none)
+            .await
+            .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(rows, expected, "{form}");
+    }
+    let mut cleanup = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("pulizia");
+    let connection = cleanup.connection_mut().expect("connessione");
+    for statement in [
+        "DROP TABLE IF EXISTS _geo_operandi_r9",
+        "DROP TABLE IF EXISTS _geo_operandi_r9_scalari",
+    ] {
+        connection.query_drop(statement).await.expect("drop");
+    }
+}

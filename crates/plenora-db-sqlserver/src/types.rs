@@ -386,7 +386,8 @@ fn ensure_scalar_fields(operation: &ReadOperation, columns: &[SqlServerColumnSpe
         &operation.order_by,
         |field| {
             columns.iter().any(|column| {
-                column.name == field
+                plenora_database_core::spatial_operand::NameRule::Folded
+                    .matches(&column.name, field)
                     && matches!(
                         column.kind,
                         SqlServerColumnKind::Geometry | SqlServerColumnKind::Geography

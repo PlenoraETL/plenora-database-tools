@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 115573,
-  "max_code_lines": 93851,
-  "rationale": "Regola degli operandi geometrici (core spatial_operand::scalar_operands: una colonna geometrica, una funzione spatial che rende una geometria o un SpatialValue sotto un operatore non spatial si rifiuta prima dell'esecuzione; il renderer decide la parte statica, i provider le colonne sul catalogo: MySQL/MariaDB INFORMATION_SCHEMA.COLUMNS, PostgreSQL pg_attribute, SQL Server sys.columns, e i path read di ogni provider sulla descrizione gia letta; lo SDK con le colonne Geometry del mapping ORM o della reflection), con le prove offline, live MySQL/MariaDB e PostgreSQL e SDK. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 114397 -> 115573 (+1176), righe di codice 92960 -> 93851 (+891). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 116337,
+  "max_code_lines": 94397,
+  "rationale": "Regola degli operandi geometrici a mondo chiuso (core spatial_operand: ogni riferimento in posizione di operando, alias, colonna di sorgente derivata o CTE, nome generato dal server, * espanso, rami di set operation, si prova non geometrico sul catalogo con le regole di nome del dialetto, altrimenti GEOMETRY_OPERAND_UNRESOLVED; PostgreSQL tipi che contengono una geometria, SQL Server sinonimi e tempdb, MySQL/MariaDB SHOW COLUMNS), con le prove offline e live PostgreSQL, SQL Server, MySQL e MariaDB. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 115573 -> 116337 (+764), righe di codice 93851 -> 94397 (+546). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

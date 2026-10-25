@@ -25,25 +25,40 @@ type DeclaredGeometry = Vec<(Option<String>, String, String)>;
 /// La regola degli operandi geometrici con i tipi che il chiamante conosce
 /// (`spatial_operand::ScalarOperands::judge`): lo SDK compila senza
 /// catalogo, e una colonna dichiarata `Geometry` sotto un operatore non
-/// spatial si rifiuta come la rifiuterebbe un provider sul catalogo. Senza
-/// dichiarazioni la colonna non si giudica: e il limite dichiarato in
-/// `spatial_operand`.
+/// spatial si rifiuta come la rifiuterebbe un provider sul catalogo. Ogni
+/// relazione del piano ha le colonne dichiarate per lei
+/// (`RelationColumns::Declared`): le altre colonne si assumono scalari, e
+/// un riferimento che non si risolve (alias, nome generato, `*`) in un piano
+/// con geometrie si rifiuta. Senza dichiarazioni la colonna non si giudica:
+/// e il limite dichiarato in `spatial_operand`.
 fn judge_declared_geometry(
     provider: ProviderKind,
     operands: &plenora_database_core::spatial_operand::ScalarOperands,
     declared: &DeclaredGeometry,
 ) -> PyResult<()> {
-    operands
-        .judge(
-            provider,
-            |column| {
-                declared.iter().any(|(schema, object, name)| {
-                    *schema == column.schema && *object == column.object && *name == column.column
-                })
-            },
-            |field| declared.iter().any(|(_, _, name)| name == field),
-        )
-        .map_err(crate::errors::to_py_err)
+    use plenora_database_core::spatial_operand::{NameRule, OperandCatalog, RelationColumns};
+    let rule = NameRule::of(provider);
+    let mut catalog = OperandCatalog::new(provider);
+    for (schema, object) in operands.relations() {
+        let columns = declared
+            .iter()
+            .filter(|(declared_schema, declared_object, _)| {
+                let same_schema = match (declared_schema.as_deref(), schema.as_deref()) {
+                    (None, None) => true,
+                    (Some(declared_schema), Some(schema)) => rule.matches(schema, declared_schema),
+                    _ => false,
+                };
+                same_schema && rule.matches(declared_object, object)
+            })
+            .map(|(_, _, name)| name.clone())
+            .collect();
+        catalog.insert(
+            schema.clone(),
+            object.clone(),
+            RelationColumns::Declared(columns),
+        );
+    }
+    operands.judge(&catalog).map_err(crate::errors::to_py_err)
 }
 
 /// Compila uno statement senza ricevere o restituire valori applicativi.

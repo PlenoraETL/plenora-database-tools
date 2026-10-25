@@ -202,7 +202,7 @@ pub(crate) async fn query_operation_with_profile(
     let operands =
         plenora_database_core::spatial_operand::scalar_operands(profile.kind(), operation)?;
     if !operands.is_empty() {
-        let geometric = crate::catalog::geometry_columns(
+        let catalog = crate::catalog::relation_columns(
             &mut session,
             profile,
             database,
@@ -210,22 +210,7 @@ pub(crate) async fn query_operation_with_profile(
             &internal,
         )
         .await?;
-        operands.judge(
-            profile.kind(),
-            |column| {
-                geometric.iter().any(|candidate| {
-                    candidate.schema.as_deref().is_some_and(|schema| {
-                        schema.eq_ignore_ascii_case(column.schema.as_deref().unwrap_or(database))
-                    }) && candidate.object.eq_ignore_ascii_case(&column.object)
-                        && candidate.column.eq_ignore_ascii_case(&column.column)
-                })
-            },
-            |name| {
-                geometric
-                    .iter()
-                    .any(|candidate| candidate.column.eq_ignore_ascii_case(name))
-            },
-        )?;
+        operands.judge(&catalog)?;
     }
     let statement = session.prepare_statement(&rendered.sql, &internal).await?;
     if usize::from(statement.num_params()) != bind_names.len() {

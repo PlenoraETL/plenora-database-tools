@@ -1208,23 +1208,29 @@ fn resolve_spatial_source_parts<'a>(
 }
 
 /// La regola degli operandi geometrici sul catalogo
-/// (`plenora_database_core::spatial_operand`): le colonne che il piano usa
-/// sotto un operatore non spatial non sono `geometry` o `geography`.
+/// (`plenora_database_core::spatial_operand`), a mondo chiuso: ogni colonna
+/// di ogni relazione nominata, con il flag geometrico, e i nomi confrontati
+/// senza maiuscole come li confronta una collation `CI`.
 ///
 /// SQL Server rifiuta da se il confronto e l'ordinamento di un tipo CLR, ma
 /// converte una geometria in testo (`CAST(g AS NVARCHAR) LIKE`): il rifiuto e
 /// lo stesso degli altri provider, prima della descrizione. Una relazione
 /// senza schema si risolve come la risolve la query, con lo schema di default
-/// dell'utente (`OBJECT_ID`).
+/// dell'utente (`OBJECT_ID`); una tabella temporanea (`#t`) in `tempdb`; un
+/// sinonimo nel suo oggetto di base, se e nello stesso database (altrimenti
+/// le colonne non si leggono e nessun riferimento si risolve). Fino al 25/10
+/// un sinonimo non portava colonne e `CAST(s.g AS NVARCHAR) LIKE` passava.
 ///
 /// # Errors
 ///
-/// `unsupported` per una colonna geometrica; gli errori del catalogo.
+/// `unsupported` per un operando geometrico o non risolto; gli errori del
+/// catalogo.
 pub async fn verify_scalar_operands(
     session: &mut SqlServerSession,
     operation: &QueryOperation,
     cancellation: &CancellationToken,
 ) -> Result<()> {
+    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
     let operands = plenora_database_core::spatial_operand::scalar_operands(
         ProviderKind::Sqlserver,
         operation,
@@ -1232,31 +1238,80 @@ pub async fn verify_scalar_operands(
     if operands.is_empty() {
         return Ok(());
     }
-    let mut geometric = Vec::new();
+    let mut catalog = OperandCatalog::new(ProviderKind::Sqlserver);
     for (schema, object) in operands.relations() {
-        let mut query = Query::new(
-            "SELECT c.name FROM sys.columns c              WHERE c.object_id = OBJECT_ID(CASE WHEN @P1 = N'' THEN QUOTENAME(@P2)                    ELSE QUOTENAME(@P1) + N'.' + QUOTENAME(@P2) END)                AND TYPE_NAME(c.user_type_id) IN (N'geometry', N'geography');",
-        );
+        let mut query = Query::new(RELATION_COLUMNS_SQL);
         query.bind(schema.clone().unwrap_or_default());
         query.bind(object.clone());
         let results = session
             .execute_query(query, ErrorPhase::Prepare, cancellation)
             .await?;
+        let mut state = None;
+        let mut columns = Vec::new();
         for row in results.iter().flatten() {
-            let column: &str = required(row, 0, "colonna geometrica")?;
-            geometric.push(plenora_database_core::spatial_probe::BaseColumn {
-                schema: schema.clone(),
-                object: object.clone(),
-                column: column.to_owned(),
-            });
+            let row_state: &str = required(row, 0, "stato relazione")?;
+            state = Some(row_state.to_owned());
+            if let Some(column) = optional::<&str>(row, 1, "colonna")? {
+                let geometric: bool = required(row, 2, "colonna geometrica")?;
+                columns.push((column.to_owned(), geometric));
+            }
         }
+        let columns = match state.as_deref() {
+            Some("known") if !columns.is_empty() => RelationColumns::Known(columns),
+            None | Some("absent" | "known") => RelationColumns::Absent,
+            Some(_) => RelationColumns::Unknown,
+        };
+        catalog.insert(schema.clone(), object.clone(), columns);
     }
-    operands.judge(
-        ProviderKind::Sqlserver,
-        |column| geometric.contains(column),
-        |name| geometric.iter().any(|candidate| candidate.column == name),
-    )
+    operands.judge(&catalog)
 }
+
+/// Le colonne di una relazione (`@P1` schema, vuoto se assente; `@P2`
+/// oggetto) nell'ordine di `column_id`, con lo stato: `known`, `absent`
+/// (`OBJECT_ID` non la trova: la query fallira sul server) o `unknown` (un
+/// sinonimo verso un altro database o un oggetto che non si risolve). Una
+/// colonna e geometrica se il suo tipo e `geometry` o `geography`: un alias
+/// di tipo su `geometry` il server non lo ammette («not a valid base type for
+/// the alias data type», misurato su SQL Server 2022 il 25/10).
+const RELATION_COLUMNS_SQL: &str = "\
+SET NOCOUNT ON; \
+DECLARE @name nvarchar(300) = CASE WHEN @P1 = N'' THEN QUOTENAME(@P2) \
+    ELSE QUOTENAME(@P1) + N'.' + QUOTENAME(@P2) END; \
+DECLARE @id int = OBJECT_ID(@name); \
+DECLARE @temp bit = 0; \
+DECLARE @state nvarchar(16) = N'known'; \
+IF @id IS NULL AND @P1 = N'' AND LEFT(@P2, 1) = N'#' \
+BEGIN \
+    SET @id = OBJECT_ID(N'tempdb..' + QUOTENAME(@P2)); \
+    SET @temp = 1; \
+END; \
+IF @id IS NULL SET @state = N'absent'; \
+ELSE IF @temp = 0 AND EXISTS (SELECT 1 FROM sys.synonyms s WHERE s.object_id = @id) \
+BEGIN \
+    DECLARE @base nvarchar(1035) = \
+        (SELECT s.base_object_name FROM sys.synonyms s WHERE s.object_id = @id); \
+    IF PARSENAME(@base, 4) IS NOT NULL \
+        OR (PARSENAME(@base, 3) IS NOT NULL AND PARSENAME(@base, 3) <> DB_NAME()) \
+        SET @state = N'unknown'; \
+    ELSE \
+    BEGIN \
+        SET @id = OBJECT_ID(@base); \
+        IF @id IS NULL OR EXISTS (SELECT 1 FROM sys.synonyms s WHERE s.object_id = @id) \
+            SET @state = N'unknown'; \
+    END; \
+END; \
+IF @state <> N'known' \
+    SELECT @state, CAST(NULL AS nvarchar(128)), CAST(NULL AS bit); \
+ELSE IF @temp = 1 \
+    SELECT @state, CAST(c.name AS nvarchar(128)), \
+        CAST(CASE WHEN ty.name IN (N'geometry', N'geography') THEN 1 ELSE 0 END AS bit) \
+    FROM tempdb.sys.columns c JOIN tempdb.sys.types ty ON ty.user_type_id = c.user_type_id \
+    WHERE c.object_id = @id ORDER BY c.column_id; \
+ELSE \
+    SELECT @state, CAST(c.name AS nvarchar(128)), \
+        CAST(CASE WHEN ty.name IN (N'geometry', N'geography') THEN 1 ELSE 0 END AS bit) \
+    FROM sys.columns c JOIN sys.types ty ON ty.user_type_id = c.user_type_id \
+    WHERE c.object_id = @id ORDER BY c.column_id;";
 
 async fn observe_spatial_srid(
     session: &mut SqlServerSession,

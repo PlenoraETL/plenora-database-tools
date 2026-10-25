@@ -35,22 +35,43 @@ fn query(extra: &Value) -> QueryOperation {
     serde_json::from_value(operation).expect("query")
 }
 
-fn base(object: &str, field: &str) -> BaseColumn {
-    BaseColumn {
-        schema: Some("s".to_owned()),
-        object: object.to_owned(),
-        column: field.to_owned(),
-    }
+/// Il catalogo di prova: `s.t(id, g geometrica, b)`, `s.u(id, g scalare)`,
+/// `s.plain(id, name)` senza geometrie.
+fn catalog(provider: ProviderKind) -> OperandCatalog {
+    let mut catalog = OperandCatalog::new(provider);
+    let known = |columns: &[(&str, bool)]| {
+        RelationColumns::Known(
+            columns
+                .iter()
+                .map(|(name, geometric)| ((*name).to_owned(), *geometric))
+                .collect(),
+        )
+    };
+    catalog.insert(
+        Some("s".to_owned()),
+        "t".to_owned(),
+        known(&[("id", false), ("g", true), ("b", false)]),
+    );
+    catalog.insert(
+        Some("s".to_owned()),
+        "u".to_owned(),
+        known(&[("id", false), ("g", false)]),
+    );
+    catalog.insert(
+        Some("s".to_owned()),
+        "plain".to_owned(),
+        known(&[("id", false), ("name", false)]),
+    );
+    catalog
 }
 
-/// Il giudizio con un catalogo in cui la sola colonna geometrica e `s.t.g`.
+/// Il giudizio con il catalogo di prova.
+fn judged_as(provider: ProviderKind, operation: &QueryOperation) -> Result<()> {
+    scalar_operands(provider, operation)?.judge(&catalog(provider))
+}
+
 fn judged(operation: &QueryOperation) -> Result<()> {
-    let operands = scalar_operands(MYSQL, operation)?;
-    operands.judge(
-        MYSQL,
-        |column| *column == base("t", "g"),
-        |name| name == "g",
-    )
+    judged_as(MYSQL, operation)
 }
 
 fn assert_refused(outcome: Result<()>, form: &str) {
@@ -359,4 +380,278 @@ fn read_filters_refuse_geometry_fields_under_scalar_operators() {
     ] {
         ensure_scalar_filter_fields(MYSQL, Some(&filter), &[], geometric).expect("ammesso");
     }
+}
+
+fn assert_unresolved(outcome: Result<()>, form: &str) {
+    let error = outcome.expect_err(form);
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported, "{form}");
+    assert_eq!(error.message, GEOMETRY_OPERAND_UNRESOLVED, "{form}");
+}
+
+fn string_bind() -> Value {
+    json!({"kind": "typed_parameter", "name": "p", "parameter_type": "string"})
+}
+
+fn cast(expression: &Value) -> Value {
+    json!({"kind": "cast", "expression": expression, "target_type": "string"})
+}
+
+fn like(expression: &Value) -> Value {
+    json!({"kind": "like", "expression": expression, "pattern": string_bind()})
+}
+
+fn order(expression: &Value) -> Value {
+    json!([{"expression": expression, "direction": "desc"}])
+}
+
+fn item(expression: &Value, alias: Option<&str>) -> Value {
+    json!({"expression": expression, "alias": alias})
+}
+
+fn star() -> Value {
+    json!({"kind": "wildcard", "relation": null})
+}
+
+/// `FROM (inner) d` con `extra` sopra.
+fn over_derived(inner: &QueryOperation, extra: &Value) -> QueryOperation {
+    let mut operation = json!({
+        "source": null,
+        "derived_source": {"query": inner, "alias": "d"},
+        "projection": [item(&column(Some("d"), "id"), None)],
+        "filter": null,
+        "having": null,
+        "row_limit": null
+    });
+    for (key, value) in extra.as_object().expect("oggetto") {
+        operation[key] = value.clone();
+    }
+    serde_json::from_value(operation).expect("query")
+}
+
+/// Le sei forme della nona rilettura (25/10), ognuna ammessa prima di questa
+/// regola: ORDER BY di una set operation per nome di uscita, nomi generati
+/// dal server in una sorgente derivata, `*` in posizione di operando, nomi
+/// piegati di SQL Server e `MySQL`, sinonimi non risolti, colonne il cui
+/// tipo contiene una geometria.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn the_six_unresolved_shapes_are_refused() {
+    let g = column(Some("t"), "g");
+    let output = json!({"kind": "spatial_output", "expression": g, "semantics": "geometry"});
+    // 1. ORDER BY k su UNION ALL: k e la geometria del secondo ramo.
+    let union = query(&json!({
+        "projection": [item(&bind(), Some("k"))],
+        "set_operations": [{"operator": "union", "all": true,
+            "query": query(&json!({"projection": [item(&output, Some("k"))]}))}],
+        "order_by": order(&column(None, "k"))
+    }));
+    assert_refused(judged(&union), "ORDER BY di UNION ALL per nome");
+    let centroid = json!({"kind": "spatial", "function": "centroid", "arguments": [g]});
+    let generated = |expression: &Value| {
+        query(
+            &json!({"projection": [item(&column(Some("t"), "id"), None), item(expression, None)]}),
+        )
+    };
+    // 2. Nomi generati dal server.
+    for (form, inner, field) in [
+        ("st_centroid", generated(&centroid), "st_centroid"),
+        ("CAST senza alias", generated(&cast(&g)), "g"),
+        (
+            "coalesce",
+            generated(&json!({"kind": "scalar", "function": "coalesce", "arguments": [g, bind()]})),
+            "coalesce",
+        ),
+        (
+            "case",
+            generated(
+                &json!({"kind": "case", "branches": [{"when": {"kind": "is_null", "expression": g, "negated": true}, "then": g}]}),
+            ),
+            "case",
+        ),
+    ] {
+        for extra in [
+            json!({"order_by": order(&column(Some("d"), field))}),
+            json!({"group_by": [column(Some("d"), field)]}),
+            json!({"filter": like(&cast(&column(Some("d"), field)))}),
+        ] {
+            assert_refused(judged(&over_derived(&inner, &extra)), form);
+        }
+    }
+    // 3. DISTINCT * di una sorgente derivata con una geometria.
+    let text = query(&json!({"projection": [item(&cast(&g), Some("c"))]}));
+    let distinct = over_derived(
+        &text,
+        &json!({"projection": [item(&star(), None)], "distinct": true}),
+    );
+    assert_refused(judged(&distinct), "DISTINCT *");
+    let distinct_table = query(&json!({"projection": [item(&star(), None)], "distinct": true}));
+    assert_refused(judged(&distinct_table), "DISTINCT * della tabella");
+    // 4. Nomi piegati: SQL Server e MySQL non distinguono le maiuscole.
+    for provider in [ProviderKind::Sqlserver, MYSQL, ProviderKind::Mariadb] {
+        let upper = query(&json!({"filter": like(&cast(&column(Some("t"), "G")))}));
+        assert_refused(judged_as(provider, &upper), "colonna G");
+        let alias = over_derived(
+            &query(&json!({"projection": [item(&g, Some("X"))]})),
+            &json!({"filter": compare(&column(Some("d"), "x"), &bind())}),
+        );
+        assert_refused(judged_as(provider, &alias), "alias X");
+        let relation = query(&json!({"filter": compare(&column(Some("T"), "g"), &bind())}));
+        assert_refused(judged_as(provider, &relation), "relazione T");
+    }
+    // 5. Una relazione di cui il catalogo non legge le colonne (sinonimo).
+    let synonym: QueryOperation = serde_json::from_value(json!({
+        "source": source("syn", Some("s")),
+        "projection": [item(&column(Some("s"), "id"), None)],
+        "filter": like(&cast(&column(Some("s"), "g"))),
+        "having": null,
+        "row_limit": null
+    }))
+    .expect("query");
+    assert_unresolved(judged(&synonym), "sinonimo");
+    // 6. Una colonna il cui tipo contiene una geometria (array, composito):
+    // il catalogo del provider la dice geometrica.
+    let mut array = catalog(ProviderKind::Postgres);
+    array.insert(
+        Some("s".to_owned()),
+        "a".to_owned(),
+        RelationColumns::Known(vec![("id".to_owned(), false), ("ga".to_owned(), true)]),
+    );
+    let ordered: QueryOperation = serde_json::from_value(json!({
+        "source": source("a", Some("a")),
+        "projection": [item(&column(Some("a"), "id"), None)],
+        "filter": null, "having": null, "row_limit": null,
+        "order_by": order(&column(Some("a"), "ga"))
+    }))
+    .expect("query");
+    let error = scalar_operands(ProviderKind::Postgres, &ordered)
+        .expect("operandi")
+        .judge(&array)
+        .expect_err("geometry[]");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND);
+}
+
+/// `PostgreSQL` quota ogni identificatore: `G` non e `g`, e non si risolve.
+/// Un nome che non si risolve in un piano con geometrie si rifiuta.
+#[test]
+fn postgres_names_are_exact_and_unresolved_names_are_refused() {
+    let upper = query(&json!({"filter": like(&cast(&column(Some("t"), "G")))}));
+    assert_unresolved(judged_as(ProviderKind::Postgres, &upper), "G su PostgreSQL");
+    for (form, extra) in [
+        (
+            "colonna assente",
+            json!({"order_by": order(&column(None, "missing"))}),
+        ),
+        (
+            "relazione assente",
+            json!({"order_by": order(&column(Some("x"), "id"))}),
+        ),
+        (
+            "riga intera",
+            json!({"order_by": order(&column(None, "t"))}),
+        ),
+    ] {
+        assert_unresolved(judged(&query(&extra)), form);
+    }
+}
+
+/// Nessun falso rifiuto: le colonne scalari di una tabella con geometrie, e
+/// ogni forma su una tabella senza geometrie, anche quelle che non si
+/// risolvono.
+#[test]
+fn scalar_references_and_plans_without_geometry_are_admitted() {
+    let g = column(Some("t"), "g");
+    let id = column(Some("t"), "id");
+    let area = json!({"kind": "spatial", "function": "area", "arguments": [g]});
+    let derived = query(&json!({"projection": [item(&id, None), item(&area, None)]}));
+    let union = query(&json!({
+        "projection": [item(&id, Some("k"))],
+        "set_operations": [{"operator": "union", "all": true,
+            "query": query(&json!({"projection": [item(&column(Some("t"), "b"), Some("k"))]}))}],
+        "order_by": order(&column(None, "k"))
+    }));
+    let scalar_star =
+        query(&json!({"projection": [item(&id, None), item(&column(Some("t"), "b"), None)]}));
+    let admitted = [
+        ("ORDER BY t.id", query(&json!({"order_by": order(&id)}))),
+        (
+            "GROUP BY id",
+            query(&json!({"group_by": [column(None, "id")]})),
+        ),
+        (
+            "ORDER BY alias",
+            query(
+                &json!({"projection": [item(&area, Some("a"))], "order_by": order(&column(None, "a"))}),
+            ),
+        ),
+        ("DISTINCT t.id", query(&json!({"distinct": true}))),
+        ("UNION ALL scalare per nome", union),
+        (
+            "colonna derivata per nome",
+            over_derived(
+                &derived,
+                &json!({"order_by": order(&column(Some("d"), "id"))}),
+            ),
+        ),
+        (
+            "nome generato di uno scalare",
+            over_derived(
+                &derived,
+                &json!({"order_by": order(&column(Some("d"), "st_area"))}),
+            ),
+        ),
+        (
+            "DISTINCT * di colonne scalari",
+            over_derived(
+                &scalar_star,
+                &json!({"projection": [item(&star(), None)], "distinct": true}),
+            ),
+        ),
+        (
+            "* della tabella nella projection",
+            query(&json!({"projection": [item(&star(), None)], "order_by": order(&id)})),
+        ),
+    ];
+    for (form, operation) in admitted {
+        judged(&operation).unwrap_or_else(|error| panic!("{form}: {error:?}"));
+    }
+    let plain = |extra: &Value| {
+        let mut operation = serde_json::to_value(query(extra)).expect("json");
+        operation["source"] = source("plain", Some("t"));
+        serde_json::from_value::<QueryOperation>(operation).expect("query")
+    };
+    for (form, extra) in [
+        (
+            "ORDER BY colonna",
+            json!({"order_by": order(&column(Some("t"), "name"))}),
+        ),
+        (
+            "DISTINCT *",
+            json!({"projection": [item(&star(), None)], "distinct": true}),
+        ),
+        (
+            "ORDER BY non risolto",
+            json!({"order_by": order(&column(None, "missing"))}),
+        ),
+        (
+            "GROUP BY NAME piegato",
+            json!({"group_by": [column(None, "NAME")]}),
+        ),
+    ] {
+        judged(&plain(&extra)).unwrap_or_else(|error| panic!("{form}: {error:?}"));
+    }
+}
+
+/// Senza catalogo la visita rifiuta soltanto cio che sa geometrico da se,
+/// anche attraverso un nome generato dal server.
+#[test]
+fn generated_names_of_produced_geometries_are_refused_without_a_catalog() {
+    let centroid =
+        json!({"kind": "spatial", "function": "centroid", "arguments": [column(Some("t"), "g")]});
+    let inner = query(&json!({"projection": [item(&centroid, None)]}));
+    let operation = over_derived(
+        &inner,
+        &json!({"order_by": order(&column(Some("d"), "st_centroid"))}),
+    );
+    let error = scalar_operands(MYSQL, &operation).expect_err("st_centroid");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND);
 }

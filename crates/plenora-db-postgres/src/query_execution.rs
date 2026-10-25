@@ -140,6 +140,27 @@ pub async fn read_stream(
         }
     }
     let (available, _schema_token) = provider.cached_columns(&client, &operation.source).await?;
+    // La regola degli operandi geometrici sul tipo che contiene una
+    // geometria (array, dominio, composito, range), non soltanto sul tipo
+    // descritto: `geometry[]` si descrive come testo.
+    if operation.filter.is_some() || !operation.order_by.is_empty() {
+        let geometric = crate::spatial_probe::relation_columns(
+            client.client()?,
+            operation.source.schema.as_deref(),
+            &operation.source.object,
+        )
+        .await?;
+        plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+            plenora_database_core::plan::ProviderKind::Postgres,
+            operation.filter.as_ref(),
+            &operation.order_by,
+            |field| {
+                geometric
+                    .iter()
+                    .any(|(name, geometric)| *geometric && name == field)
+            },
+        )?;
+    }
     let plan = plan_read(operation, &available)?;
     // Ogni sonda spatial porta uno SRID esplicito, quello della colonna
     // (typmod), e si lega come EWKB con quello SRID.

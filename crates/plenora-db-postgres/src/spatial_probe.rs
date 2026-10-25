@@ -510,60 +510,101 @@ pub async fn verify_query_columns(
 }
 
 /// La regola degli operandi geometrici sul catalogo
-/// (`plenora_database_core::spatial_operand`): le colonne che il piano usa
-/// sotto un operatore non spatial non sono `geometry` o `geography` (anche
-/// attraverso un dominio).
+/// (`plenora_database_core::spatial_operand`), a mondo chiuso: ogni colonna
+/// di ogni relazione nominata, con il flag geometrico.
+///
+/// Una colonna e geometrica se il suo tipo **contiene** `geometry` o
+/// `geography`: il tipo stesso, un dominio, un array (`typelem`), un tipo
+/// composito (gli attributi di `typrelid`), un range (`rngsubtype`), a ogni
+/// profondita. Fino al 25/10 si guardavano soltanto il tipo e il dominio, e
+/// `ORDER BY t.ga` su un `geometry[]` ordinava per byte.
 ///
 /// `PostGIS` rifiuta da se `geometry = bytea` e `geometry = text` («operator
 /// is not unique», misurato su 3.6 il 25/10), ma ordina per geometria, la
 /// confronta con un bind non tipizzato e accetta `CAST(g AS TEXT) LIKE`: il
 /// rifiuto e lo stesso degli altri provider, prima della query. Il tipo si
 /// riconosce per nome e non con `'geometry'::regtype`, che senza `PostGIS`
-/// farebbe fallire ogni query.
+/// farebbe fallire ogni query. Una relazione che `to_regclass` non trova e
+/// assente: la query fallira sul server.
 ///
 /// # Errors
 ///
-/// `unsupported` per una colonna geometrica; gli errori del catalogo in fase
-/// `prepare`.
+/// `unsupported` per un operando geometrico o non risolto; gli errori del
+/// catalogo in fase `prepare`.
 pub async fn verify_scalar_operands(
     client: &tokio_postgres::Client,
     operands: &plenora_database_core::spatial_operand::ScalarOperands,
 ) -> Result<()> {
+    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
     if operands.is_empty() {
         return Ok(());
     }
-    let mut geometric = Vec::new();
+    let mut catalog = OperandCatalog::new(PROVIDER);
     for (schema, object) in operands.relations() {
-        let rows = client
-            .query(
-                "SELECT a.attname::text \
-                 FROM pg_catalog.pg_attribute a \
-                 JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
-                 LEFT JOIN pg_catalog.pg_type b ON b.oid = t.typbasetype \
-                 WHERE a.attrelid = to_regclass(CASE WHEN $1::text IS NULL \
-                         THEN quote_ident($2::text) \
-                         ELSE quote_ident($1::text) || '.' || quote_ident($2::text) END) \
-                   AND a.attnum > 0 AND NOT a.attisdropped \
-                   AND (t.typname IN ('geometry', 'geography') \
-                        OR b.typname IN ('geometry', 'geography'))",
-                &[schema, object],
-            )
-            .await
-            .map_err(|error| crate::error::classify_error(ErrorPhase::Prepare, &error))?;
-        for row in rows {
-            geometric.push(BaseColumn {
-                schema: schema.clone(),
-                object: object.clone(),
-                column: row.get(0),
-            });
-        }
+        let columns = relation_columns(client, schema.as_deref(), object).await?;
+        let columns = if columns.is_empty() {
+            RelationColumns::Absent
+        } else {
+            RelationColumns::Known(columns)
+        };
+        catalog.insert(schema.clone(), object.clone(), columns);
     }
-    operands.judge(
-        PROVIDER,
-        |column| geometric.contains(column),
-        |name| geometric.iter().any(|candidate| candidate.column == name),
-    )
+    operands.judge(&catalog)
 }
+
+/// Le colonne di una relazione, con il flag geometrico di
+/// [`verify_scalar_operands`]; vuote se `to_regclass` non la trova.
+///
+/// # Errors
+///
+/// Gli errori del catalogo in fase `prepare`.
+pub async fn relation_columns(
+    client: &tokio_postgres::Client,
+    schema: Option<&str>,
+    object: &str,
+) -> Result<Vec<(String, bool)>> {
+    let rows = client
+        .query(RELATION_COLUMNS_SQL, &[&schema, &object])
+        .await
+        .map_err(|error| crate::error::classify_error(ErrorPhase::Prepare, &error))?;
+    Ok(rows
+        .iter()
+        .map(|row| (row.get::<_, String>(0), row.get::<_, bool>(1)))
+        .collect())
+}
+
+/// Le colonne di una relazione (schema, oggetto) nell'ordine di `attnum`, e
+/// se il loro tipo contiene una geometria: la chiusura di `typbasetype`,
+/// `typelem`, gli attributi di `typrelid` e `rngsubtype`.
+const RELATION_COLUMNS_SQL: &str = "\
+WITH RECURSIVE columns AS ( \
+    SELECT a.attnum, a.attname::text AS name, a.atttypid \
+    FROM pg_catalog.pg_attribute a \
+    WHERE a.attrelid = to_regclass(CASE WHEN $1::text IS NULL \
+            THEN quote_ident($2::text) \
+            ELSE quote_ident($1::text) || '.' || quote_ident($2::text) END) \
+      AND a.attnum > 0 AND NOT a.attisdropped \
+), reach(attnum, oid) AS ( \
+    SELECT attnum, atttypid FROM columns \
+    UNION \
+    SELECT r.attnum, n.oid \
+    FROM reach r \
+    JOIN pg_catalog.pg_type t ON t.oid = r.oid \
+    CROSS JOIN LATERAL ( \
+        SELECT t.typbasetype AS oid \
+        UNION ALL SELECT t.typelem \
+        UNION ALL SELECT a.atttypid FROM pg_catalog.pg_attribute a \
+            WHERE t.typrelid <> 0 AND a.attrelid = t.typrelid \
+              AND a.attnum > 0 AND NOT a.attisdropped \
+        UNION ALL SELECT g.rngsubtype FROM pg_catalog.pg_range g WHERE g.rngtypid = t.oid \
+    ) n \
+    WHERE n.oid <> 0 \
+) \
+SELECT c.name, EXISTS ( \
+    SELECT 1 FROM reach r JOIN pg_catalog.pg_type t ON t.oid = r.oid \
+    WHERE r.attnum = c.attnum AND t.typname IN ('geometry', 'geography') \
+) \
+FROM columns c ORDER BY c.attnum";
 
 #[cfg(test)]
 #[path = "spatial_probe_tests.rs"]

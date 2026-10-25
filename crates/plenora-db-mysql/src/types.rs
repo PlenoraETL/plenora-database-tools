@@ -208,9 +208,11 @@ impl MysqlReadPlan {
             operation.filter.as_ref(),
             &operation.order_by,
             |field| {
-                available
-                    .iter()
-                    .any(|column| column.name == field && column.kind == MysqlColumnKind::Geometry)
+                available.iter().any(|column| {
+                    plenora_database_core::spatial_operand::NameRule::Folded
+                        .matches(&column.name, field)
+                        && column.kind == MysqlColumnKind::Geometry
+                })
             },
         )?;
         if let Some(filter) = &operation.filter {

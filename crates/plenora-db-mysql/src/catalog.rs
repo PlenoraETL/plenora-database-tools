@@ -662,28 +662,34 @@ pub(crate) async fn verify_declared_column_srids(
     Ok(())
 }
 
-/// Le colonne geometriche delle relazioni `relations` (schema, oggetto; lo
-/// schema assente e `database`), dal catalogo: la regola degli operandi
-/// geometrici (`spatial_operand`) le giudica prima di preparare una query.
+/// Le colonne delle relazioni `relations` (schema, oggetto; lo schema
+/// assente e `database`), dal catalogo, nell'ordine di `ORDINAL_POSITION` e
+/// con il flag geometrico: la regola degli operandi geometrici
+/// (`spatial_operand`) le giudica a mondo chiuso prima di preparare una
+/// query.
 ///
-/// Il nome della tabella si confronta senza distinguere maiuscole, come le
-/// colonne: un'omonimia di sole maiuscole puo soltanto aggiungere colonne da
-/// giudicare, e la decisione resta dalla parte del rifiuto. Una relazione che
-/// il catalogo non conosce non porta colonne: la query fallira sul server.
+/// Schema e tabella si confrontano senza distinguere maiuscole: due tabelle
+/// che differiscono soltanto per le maiuscole non si distinguono, e la
+/// relazione non si conosce (nessun riferimento si risolve). Una relazione
+/// che `INFORMATION_SCHEMA` non elenca (una tabella `TEMPORARY`) si legge con
+/// `SHOW COLUMNS`, che per una tabella assente fallisce come fallirebbe la
+/// query.
 ///
 /// # Errors
 ///
 /// Gli errori del catalogo.
 #[allow(clippy::redundant_pub_crate)]
-pub(crate) async fn geometry_columns(
+pub(crate) async fn relation_columns(
     session: &mut MysqlSession,
     profile: &dyn crate::profile::ProductProfile,
     database: &str,
     relations: &[(Option<String>, String)],
     cancellation: &CancellationToken,
-) -> Result<Vec<plenora_database_core::spatial_probe::BaseColumn>> {
+) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
+    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
+    let mut catalog = OperandCatalog::new(profile.kind());
     if relations.is_empty() {
-        return Ok(Vec::new());
+        return Ok(catalog);
     }
     let mut sql = String::from(
         "SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS table_name, \
@@ -695,10 +701,11 @@ pub(crate) async fn geometry_columns(
         if position > 0 {
             sql.push_str(" OR ");
         }
-        sql.push_str("(TABLE_SCHEMA = ? AND LOWER(TABLE_NAME) = LOWER(?))");
+        sql.push_str("(LOWER(TABLE_SCHEMA) = LOWER(?) AND LOWER(TABLE_NAME) = LOWER(?))");
         parameters.push(Value::from(schema.as_deref().unwrap_or(database)));
         parameters.push(Value::from(object.as_str()));
     }
+    sql.push_str(" ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION");
     let rows = session
         .exec_rows(
             &sql,
@@ -707,19 +714,76 @@ pub(crate) async fn geometry_columns(
             cancellation,
         )
         .await?;
-    let mut columns = Vec::new();
+    let mut listed = Vec::with_capacity(rows.len());
     for row in &rows {
+        let schema: String = required(row, "table_schema", "table_schema")?;
+        let table: String = required(row, "table_name", "table_name")?;
+        let column: String = required(row, "column_name", "column_name")?;
         let data_type: String = required(row, "data_type", "data_type")?;
-        if !profile.is_spatial_native_type(&data_type.to_ascii_lowercase()) {
-            continue;
-        }
-        columns.push(plenora_database_core::spatial_probe::BaseColumn {
-            schema: Some(required(row, "table_schema", "table_schema")?),
-            object: required(row, "table_name", "table_name")?,
-            column: required(row, "column_name", "column_name")?,
-        });
+        let geometric = profile.is_spatial_native_type(&data_type.to_ascii_lowercase());
+        listed.push((schema, table, column, geometric));
     }
-    Ok(columns)
+    for (schema, object) in relations {
+        let wanted_schema = schema.as_deref().unwrap_or(database);
+        let matching = listed
+            .iter()
+            .filter(|(listed_schema, table, _, _)| {
+                listed_schema.to_lowercase() == wanted_schema.to_lowercase()
+                    && table.to_lowercase() == object.to_lowercase()
+            })
+            .collect::<Vec<_>>();
+        let identities = matching
+            .iter()
+            .map(|(listed_schema, table, _, _)| (listed_schema, table))
+            .collect::<std::collections::BTreeSet<_>>();
+        let columns = match identities.len() {
+            0 => show_columns(session, profile, wanted_schema, object, cancellation).await?,
+            1 => RelationColumns::Known(
+                matching
+                    .iter()
+                    .map(|(_, _, column, geometric)| (column.clone(), *geometric))
+                    .collect(),
+            ),
+            _ => RelationColumns::Unknown,
+        };
+        catalog.insert(schema.clone(), object.clone(), columns);
+    }
+    Ok(catalog)
+}
+
+/// `SHOW COLUMNS` di una relazione che `INFORMATION_SCHEMA` non elenca.
+async fn show_columns(
+    session: &mut MysqlSession,
+    profile: &dyn crate::profile::ProductProfile,
+    schema: &str,
+    object: &str,
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::spatial_operand::RelationColumns> {
+    use plenora_database_core::identifier::{quote_identifier, IdentifierDialect};
+    let sql = format!(
+        "SHOW COLUMNS FROM {}.{}",
+        quote_identifier(IdentifierDialect::Mysql, schema)?,
+        quote_identifier(IdentifierDialect::Mysql, object)?
+    );
+    let rows = session
+        .query_rows(&sql, ErrorPhase::Prepare, cancellation)
+        .await?;
+    let mut columns = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let column: String = required(row, 0, "Field")?;
+        let declared: String = required(row, 1, "Type")?;
+        let base = declared
+            .split(|character: char| !character.is_ascii_alphabetic())
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        columns.push((column, profile.is_spatial_native_type(&base)));
+    }
+    Ok(if columns.is_empty() {
+        plenora_database_core::spatial_operand::RelationColumns::Absent
+    } else {
+        plenora_database_core::spatial_operand::RelationColumns::Known(columns)
+    })
 }
 
 fn mapping_error(message: impl Into<String>) -> DatabaseError {
