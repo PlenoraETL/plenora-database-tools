@@ -152,31 +152,40 @@ fn postgres_spatial_output_encodes_a_column_as_ewkb() {
     assert!(!db2.sql.contains("HEX("), "{}", db2.sql);
 }
 
+/// Un `SpatialValue` sulla colonna `e.shape`, nel `WHERE` di un
+/// `ST_Intersects`: l'unica posizione in cui la regola P ammette una sonda.
+fn query_with_spatial_value() -> QueryOperation {
+    let mut query = simple_query();
+    query.filter = Some(QueryExpression::Spatial {
+        function: SpatialFunction::Intersects,
+        arguments: vec![
+            query_column("e", "shape"),
+            QueryExpression::SpatialValue {
+                expression: Box::new(QueryExpression::Parameter {
+                    name: "shape".to_owned(),
+                }),
+                srid: 4_326,
+                semantics: SpatialSemantics::Geometry,
+            },
+        ],
+    });
+    query
+}
+
 #[test]
 fn mysql_spatial_value_uses_the_shared_typed_binary_form() {
-    let mut query = simple_query();
-    query.projection = vec![QueryProjection {
-        expression: QueryExpression::SpatialValue {
-            expression: Box::new(QueryExpression::Parameter {
-                name: "shape".to_owned(),
-            }),
-            srid: 4_326,
-            semantics: SpatialSemantics::Geometry,
-        },
-        alias: Some("shape".to_owned()),
-    }];
     let rendered = Renderer::new(
         Dialect::Mysql,
         DialectCapabilities {
             spatial_intersects: true,
         },
     )
-    .render_query(&query)
+    .render_query(&query_with_spatial_value())
     .expect("bind WKB MySQL");
     assert!(
         rendered
             .sql
-            .contains("ST_GeomFromWKB(CAST(? AS BINARY), 4326, 'axis-order=long-lat') AS `shape`"),
+            .contains("ST_GeomFromWKB(CAST(? AS BINARY), 4326, 'axis-order=long-lat'))"),
         "{}",
         rendered.sql
     );
@@ -185,6 +194,30 @@ fn mysql_spatial_value_uses_the_shared_typed_binary_form() {
 
 #[test]
 fn sqlserver_and_db2_spatial_values_keep_the_frame_outside_the_bind() {
+    for (dialect, fragment) in [
+        (Dialect::SqlServer, "geometry::STGeomFromWKB(@p1, 4326)"),
+        (Dialect::Db2, "ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)"),
+    ] {
+        let rendered = Renderer::new(
+            dialect,
+            DialectCapabilities {
+                spatial_intersects: true,
+            },
+        )
+        // Come il provider, che ha confrontato le sonde con il catalogo.
+        .with_spatial_probes_verified()
+        .render_query(&query_with_spatial_value())
+        .expect("bind WKB qualificato");
+        assert!(rendered.sql.contains(fragment), "{}", rendered.sql);
+        assert_eq!(rendered.binds[0].name, "shape");
+    }
+}
+
+/// La regola P: un valore spatial nella projection non lo confronta nessuno,
+/// e chi nomina la colonna per alias non vede la sonda. Si rifiuta su ogni
+/// dialetto, con o senza catalogo.
+#[test]
+fn a_spatial_value_in_the_projection_is_refused_on_every_dialect() {
     let mut query = simple_query();
     query.projection = vec![QueryProjection {
         expression: QueryExpression::SpatialValue {
@@ -196,26 +229,34 @@ fn sqlserver_and_db2_spatial_values_keep_the_frame_outside_the_bind() {
         },
         alias: Some("shape".to_owned()),
     }];
-    for (dialect, fragment) in [
-        (
-            Dialect::SqlServer,
-            "geometry::STGeomFromWKB(@p1, 4326) AS [shape]",
-        ),
-        (
-            Dialect::Db2,
-            "ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326) AS \"shape\"",
-        ),
+    for dialect in [
+        Dialect::Postgres,
+        Dialect::Mysql,
+        Dialect::SqlServer,
+        Dialect::Oracle,
+        Dialect::Db2,
     ] {
-        let rendered = Renderer::new(
-            dialect,
-            DialectCapabilities {
-                spatial_intersects: true,
-            },
-        )
-        .render_query(&query)
-        .expect("bind WKB qualificato");
-        assert!(rendered.sql.contains(fragment), "{}", rendered.sql);
-        assert_eq!(rendered.binds[0].name, "shape");
+        let renderer = || {
+            Renderer::new(
+                dialect,
+                DialectCapabilities {
+                    spatial_intersects: true,
+                },
+            )
+        };
+        for renderer in [renderer(), renderer().with_spatial_probes_verified()] {
+            let error = renderer
+                .render_query(&query)
+                .expect_err("valore spatial nella projection");
+            assert_eq!(
+                error.category,
+                plenora_database_core::ErrorCategory::Unsupported
+            );
+            assert_eq!(
+                error.message,
+                plenora_database_core::spatial_probe::PROBE_OUTSIDE_PREDICATE
+            );
+        }
     }
 }
 
@@ -607,19 +648,24 @@ fn a_column_in_a_geometry_position_is_not_typed_by_the_renderer() {
     assert!(!sql.contains("ST_GeomFromEWKB"), "{sql}");
 
     // Con un `Parameter` nella stessa posizione il wrapping c'e, e la
-    // forma diventa senza ambiguita quella scalare.
-    query.projection = vec![QueryProjection {
-        expression: QueryExpression::Spatial {
-            function: SpatialFunction::Union,
-            arguments: vec![
-                query_column("e", "geom"),
-                QueryExpression::Parameter {
-                    name: "other".to_owned(),
-                },
-            ],
-        },
-        alias: None,
-    }];
+    // forma diventa senza ambiguita quella scalare. La sonda sta in un
+    // predicato: nella projection la regola P la rifiuta.
+    query.projection = simple_query().projection;
+    query.filter = Some(QueryExpression::Spatial {
+        function: SpatialFunction::Intersects,
+        arguments: vec![
+            query_column("e", "geom"),
+            QueryExpression::Spatial {
+                function: SpatialFunction::Union,
+                arguments: vec![
+                    query_column("e", "geom"),
+                    QueryExpression::Parameter {
+                        name: "other".to_owned(),
+                    },
+                ],
+            },
+        ],
+    });
     let sql = Renderer::new(
         Dialect::Postgres,
         DialectCapabilities {
@@ -631,7 +677,10 @@ fn a_column_in_a_geometry_position_is_not_typed_by_the_renderer() {
     .render_query_with_spatial_encoding(&query, false)
     .expect("render")
     .sql;
-    assert!(sql.contains("ST_GeomFromEWKB"), "{sql}");
+    assert!(
+        sql.contains("ST_Union(\"e\".\"geom\", ST_GeomFromEWKB($1))"),
+        "{sql}"
+    );
 }
 
 #[test]
@@ -891,16 +940,13 @@ fn sqlserver_renders_only_the_verified_native_scalar_spatial_subset() {
         (SpatialFunction::SymDifference, "STSymDifference"),
         (SpatialFunction::Union, "STUnion"),
     ] {
+        // Nella projection, fra due colonne: la regola P non ammette una
+        // sonda fuori da un predicato.
         let mut query = simple_query();
         query.projection[0] = QueryProjection {
             expression: QueryExpression::Spatial {
                 function,
-                arguments: vec![
-                    query_column("e", "shape"),
-                    QueryExpression::Parameter {
-                        name: "needle".to_owned(),
-                    },
-                ],
+                arguments: vec![query_column("e", "shape"), query_column("e", "other")],
             },
             alias: Some("value".to_owned()),
         };
@@ -908,15 +954,53 @@ fn sqlserver_renders_only_the_verified_native_scalar_spatial_subset() {
             .render_query(&query)
             .expect("binary spatial method");
         assert!(
-            rendered_sql.sql.contains(&format!(
-                "[e].[shape].{method}(geography::STGeomFromWKB(@p1, 4326))"
-            )),
-            "{function:?}"
+            rendered_sql
+                .sql
+                .contains(&format!("[e].[shape].{method}([e].[other])")),
+            "{function:?}: {}",
+            rendered_sql.sql
         );
         if function.returns_boolean(2) {
             assert!(!rendered_sql.sql.contains("CASE WHEN"));
             assert!(!rendered_sql.sql.contains(" = 1) AS [value]"));
         }
+        // Con la sonda, nel `WHERE`.
+        let call = QueryExpression::Spatial {
+            function,
+            arguments: vec![
+                query_column("e", "shape"),
+                QueryExpression::Parameter {
+                    name: "needle".to_owned(),
+                },
+            ],
+        };
+        let mut query = simple_query();
+        query.filter = Some(if function.returns_boolean(2) {
+            call
+        } else if function.returns_geometry() {
+            QueryExpression::Spatial {
+                function: SpatialFunction::Intersects,
+                arguments: vec![query_column("e", "shape"), call],
+            }
+        } else {
+            QueryExpression::Compare {
+                left: Box::new(call),
+                operator: plenora_database_core::plan::ComparisonOperator::Lt,
+                right: Box::new(QueryExpression::Parameter {
+                    name: "limit".to_owned(),
+                }),
+            }
+        });
+        let rendered_sql = renderer
+            .render_query(&query)
+            .unwrap_or_else(|error| panic!("{function:?}: {error:?}"));
+        assert!(
+            rendered_sql.sql.contains(&format!(
+                "[e].[shape].{method}(geography::STGeomFromWKB(@p1, 4326))"
+            )),
+            "{function:?}: {}",
+            rendered_sql.sql
+        );
         assert_eq!(rendered_sql.binds[0].name, "needle");
     }
     for (function, method, parameter) in [
@@ -981,18 +1065,16 @@ fn oracle_renderer_and_qualified_spatial_table_are_the_same_surface() {
         };
         let mut arguments = vec![query_column("e", "shape")];
         match shape {
+            // La seconda geometria e una colonna: nella projection la regola
+            // P non ammette una sonda.
             OracleSpatialShape::Relate(_)
             | OracleSpatialShape::Disjoint
             | OracleSpatialShape::BinaryGeometry(_)
             | OracleSpatialShape::BinaryMeasure { .. } => {
-                arguments.push(QueryExpression::Parameter {
-                    name: "geometry".to_owned(),
-                });
+                arguments.push(query_column("e", "other"));
             }
             OracleSpatialShape::DWithin => {
-                arguments.push(QueryExpression::Parameter {
-                    name: "geometry".to_owned(),
-                });
+                arguments.push(query_column("e", "other"));
                 arguments.push(QueryExpression::Parameter {
                     name: "distance".to_owned(),
                 });
@@ -1543,7 +1625,7 @@ fn query_ast_renders_cte_join_group_having_and_stable_binds() {
 
 #[test]
 fn postgres_renders_index_aware_spatial_query() {
-    let query = QueryOperation {
+    let mut query = QueryOperation {
         declared_crs: Vec::new(),
         common_table_expressions: Vec::new(),
         source: Some(query_source("events", "e")),
@@ -1579,29 +1661,45 @@ fn postgres_renders_index_aware_spatial_query() {
         row_offset: None,
         locking: None,
     };
-    let rendered = Renderer::new(
+    let verified = Renderer::new(
         Dialect::Postgres,
         DialectCapabilities {
             spatial_intersects: true,
         },
     )
     // Come il provider, che ha confrontato le sonde con il catalogo.
-    .with_spatial_probes_verified()
-    .render_query(&query)
-    .expect("index-aware spatial query");
+    .with_spatial_probes_verified();
+    // La regola P: una sonda nell'`ORDER BY` (la ricerca KNN) non e in un
+    // predicato, e si rifiuta anche col catalogo (limite dichiarato).
+    let error = verified
+        .render_query(&query)
+        .expect_err("sonda nell'ORDER BY");
+    assert_eq!(
+        error.message,
+        plenora_database_core::spatial_probe::PROBE_OUTSIDE_PREDICATE
+    );
+    // L'ordinamento KNN fra colonne resta, e la sonda del `WHERE` passa.
+    query.order_by[0].expression = QueryExpression::SpatialOperator {
+        operator: SpatialOperator::KnnDistance,
+        left: Box::new(query_column("e", "geom")),
+        right: Box::new(query_column("e", "anchor")),
+    };
+    let rendered = verified
+        .render_query(&query)
+        .expect("index-aware spatial query");
     assert!(rendered
         .sql
         .contains("\"e\".\"geom\" && ST_GeomFromEWKB($1)"));
     assert!(rendered
         .sql
-        .contains("\"e\".\"geom\" <-> ST_GeomFromEWKB($2) ASC"));
+        .contains("\"e\".\"geom\" <-> \"e\".\"anchor\" ASC"));
     assert_eq!(
         rendered
             .binds
             .iter()
             .map(|bind| bind.name.as_str())
             .collect::<Vec<_>>(),
-        ["probe", "probe"]
+        ["probe"]
     );
 }
 

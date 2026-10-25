@@ -743,126 +743,409 @@ pub fn contains_geometry_probe(expression: &QueryExpression) -> bool {
     found
 }
 
-/// Un'espressione contiene una sonda che nessun nodo spatial giudica.
-///
-/// Una sonda e un `SpatialValue`, o un bind in posizione geometrica, che non sta in una
-/// posizione geometrica di un nodo con almeno due geometrie (dove la regola la
-/// confronta con l'altra) ne di un operatore spatial. Una funzione con una
-/// sola geometria (`ST_Centroid`, `ST_Area`, `ST_Buffer`) non giudica la
-/// propria: il risultato porta il frame della sonda a chi lo riceve, e se chi
-/// lo riceve non e spatial nessuno lo confronta.
-///
-/// La visita scende in ogni figlio, query annidate comprese; dei nodi che
-/// giudicano visita soltanto gli argomenti non geometrici (una distanza
-/// calcolata da una sonda, per esempio).
-#[must_use]
-pub fn contains_unjudged_probe(expression: &QueryExpression) -> bool {
-    let mut found = false;
-    crate::relational::walk_query_expression(expression, |node| {
-        use crate::relational::{QueryWalkControl, QueryWalkNode};
-        let QueryWalkNode::Expression(node) = node else {
-            return QueryWalkControl::Continue;
-        };
-        match node {
-            QueryExpression::SpatialValue { .. } => {
-                found = true;
-                QueryWalkControl::Break
-            }
-            QueryExpression::Spatial {
-                function,
-                arguments,
-            }
-            | QueryExpression::SpatialWindow {
-                function,
-                arguments,
-                ..
-            } => {
-                let geometric = |index: usize| function.takes_geometry_at(index);
-                let judges = arguments
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| geometric(*index))
-                    .count()
-                    >= 2;
-                found = if judges {
-                    arguments.iter().enumerate().any(|(index, argument)| {
-                        !geometric(index) && contains_unjudged_probe(argument)
-                    })
-                } else {
-                    arguments.iter().enumerate().any(|(index, argument)| {
-                        geometric(index)
-                            && matches!(
-                                argument,
-                                QueryExpression::Parameter { .. }
-                                    | QueryExpression::TypedParameter { .. }
-                            )
-                    })
-                };
-                match (found, judges) {
-                    (true, _) => QueryWalkControl::Break,
-                    (false, true) => QueryWalkControl::Skip,
-                    (false, false) => QueryWalkControl::Continue,
-                }
-            }
-            QueryExpression::SpatialOperator { .. } => QueryWalkControl::Skip,
-            _ => QueryWalkControl::Continue,
-        }
-    });
-    found
+// ---------------------------------------------------------------------------
+// La regola P: dove una sonda puo stare nel piano.
+// ---------------------------------------------------------------------------
+
+/// Motivo stabile del rifiuto di una sonda fuori da un predicato.
+pub const PROBE_OUTSIDE_PREDICATE: &str =
+    "sonda spatial fuori da un predicato WHERE, ON o HAVING: e ammessa soltanto come argomento di una funzione o di un operatore spatial";
+
+/// Motivo stabile del rifiuto di una sonda confrontata con un termine che non
+/// e una colonna del proprio blocco.
+pub const PROBE_PEER_OUTSIDE_BLOCK: &str =
+    "sonda spatial confrontata con un termine che non e una colonna di una tabella nella FROM dello stesso blocco";
+
+/// La clausola in cui sta un'espressione.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Clause {
+    /// `WHERE`, `ON`, `HAVING`.
+    Predicate,
+    /// Projection, `ORDER BY`, `GROUP BY`, `DISTINCT ON`, finestre.
+    Elsewhere,
 }
 
-/// Gli operandi di un nodo che non e spatial e che confronta o trasforma i
-/// propri operandi: `Compare`, `InList`, `Between`, `Like`, `IsNull`,
-/// `InSubquery`. Vuoto per ogni altro nodo.
-#[must_use]
-pub fn scalar_operands(expression: &QueryExpression) -> Vec<&QueryExpression> {
-    match expression {
-        QueryExpression::Compare { left, right, .. } => vec![left, right],
-        QueryExpression::InList {
-            expression, values, ..
-        } => std::iter::once(expression.as_ref()).chain(values).collect(),
-        QueryExpression::Between {
-            expression,
-            lower,
-            upper,
-            ..
-        } => vec![expression, lower, upper],
-        QueryExpression::Like {
-            expression,
-            pattern,
-            ..
-        } => vec![expression, pattern],
-        QueryExpression::IsNull { expression, .. }
-        | QueryExpression::InSubquery { expression, .. } => vec![expression],
-        _ => Vec::new(),
+enum ProbeItem<'a> {
+    /// Un blocco, con le CTE visibili da li.
+    Operation(&'a QueryOperation, BTreeSet<String>),
+    /// Un'espressione nella clausola indicata, nello scope `usize`.
+    Expression(&'a QueryExpression, Clause, usize),
+    /// L'argomento geometrico di un nodo che giudica le proprie geometrie, in
+    /// un predicato.
+    Geometry(&'a QueryExpression, usize),
+}
+
+const fn is_bind(expression: &QueryExpression) -> bool {
+    matches!(
+        expression,
+        QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. }
+    )
+}
+
+/// L'unico argomento geometrico di una funzione che restituisce una geometria
+/// nel frame di quell'argomento (`CrsRule::Preserves`): `ST_Centroid`,
+/// `ST_Buffer`. E il passo che [`term_frame`] attraversa.
+fn preserved_argument(expression: &QueryExpression) -> Option<(usize, &QueryExpression)> {
+    let QueryExpression::Spatial {
+        function,
+        arguments,
+    } = expression
+    else {
+        return None;
+    };
+    if !function.returns_geometry() || function.crs_rule() != Some(CrsRule::Preserves) {
+        return None;
+    }
+    let geometric = arguments
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| function.takes_geometry_at(*index))
+        .collect::<Vec<_>>();
+    match geometric.as_slice() {
+        [(index, argument)] => Some((*index, *argument)),
+        _ => None,
     }
 }
 
-/// La regola delle sonde sugli operandi di un operatore che non e spatial.
+/// Un termine che e una sonda: un `SpatialValue`, un bind, o una funzione che
+/// conserva il frame di una sonda.
+fn is_probe_term(expression: &QueryExpression) -> bool {
+    let mut current = expression;
+    loop {
+        if is_bind(current) || matches!(current, QueryExpression::SpatialValue { .. }) {
+            return true;
+        }
+        match preserved_argument(current) {
+            Some((_, argument)) => current = argument,
+            None => return false,
+        }
+    }
+}
+
+/// La regola P, per un piano intero.
 ///
-/// Gli operandi sono quelli di [`scalar_operands`]: un operando che contiene una sonda non giudicata
-/// ([`contains_unjudged_probe`]) passa da [`admit_probe`] con
-/// [`ProbeUse::ScalarOperand`], che la rifiuta. E la stessa chiamata per il
-/// renderer relazionale e per il provider `PostgreSQL` che giudica il piano
-/// sul catalogo.
+/// Una sonda — un `SpatialValue`, o un bind in posizione geometrica di un
+/// nodo spatial — e ammessa soltanto come argomento geometrico, diretto o
+/// attraverso funzioni che ne conservano il frame (`ST_Centroid(sonda)`), di
+/// un nodo che confronta due geometrie (una funzione con due argomenti
+/// geometrici, un operatore spatial), in un `WHERE`, `ON` o `HAVING`, e
+/// confrontata con una colonna di una tabella nella FROM dello stesso blocco
+/// (o con un'altra sonda). Li, e soltanto li, [`admit_probe`] la giudica
+/// contro la colonna. Ogni altra posizione si rifiuta compilando, con
+/// `unsupported`:
+///
+/// - fuori da un predicato — ogni projection, anche di una sorgente derivata,
+///   di una CTE, di una subquery o di un ramo di set operation; `ORDER BY`,
+///   `GROUP BY`, `DISTINCT ON`, finestre: [`PROBE_OUTSIDE_PREDICATE`]. La
+///   colonna della projection porta il frame della sonda a chi la nomina per
+///   alias, e chi la nomina non la vede (`JOIN (SELECT sonda AS s) d ON t.g =
+///   d.s`, `g IN (SELECT sonda)`: 0 righe senza errore su d30d1d2);
+/// - in un predicato, sotto un nodo che non la giudica — un operatore non
+///   spatial (`=`, `IN`, `BETWEEN`, ...), una funzione con una sola geometria
+///   (`ST_Area(sonda)`, `ST_Transform(sonda, n)`), un involucro che la
+///   nasconde al nodo spatial (`CASE`, `COALESCE`, `CAST`):
+///   [`admit_probe`] con [`ProbeUse::ScalarOperand`],
+///   [`SPATIAL_VALUE_OUTSIDE_SPATIAL`];
+/// - confrontata con un termine che non si risolve in una colonna della FROM
+///   del blocco — un riferimento correlato a una query esterna, una colonna
+///   di una sorgente derivata o di una CTE, una funzione che cambia frame:
+///   [`PROBE_PEER_OUTSIDE_BLOCK`].
+///
+/// La visita e iterativa e copre ogni blocco: CTE, sorgenti derivate, join,
+/// subquery di ogni tipo, set operation. E l'unica: la chiedono il renderer
+/// relazionale per ogni dialetto, con o senza catalogo, e il provider
+/// `PostgreSQL` sul piano che giudica.
+///
+/// # Limite dichiarato
+///
+/// - **Regola.** Una sonda nell'`ORDER BY` (`ORDER BY g <-> sonda`, la
+///   ricerca KNN indicizzata) o nella projection (`SELECT ST_Distance(g,
+///   sonda)`) non e ammessa, anche dove il catalogo o la guardia del server
+///   la proverebbero.
+/// - **Ambito.** Ogni query relazionale, su ogni dialetto e percorso.
+/// - **Hazard.** Nessuno di correttezza: e una forma rifiutata, non un
+///   risultato sbagliato. Il chiamante calcola la distanza o l'ordinamento
+///   dopo la lettura, o filtra con un predicato.
+/// - **Rientro.** Una posizione si riammette quando il valore che la sonda
+///   produce non lascia il blocco (non e una colonna di uscita nominabile per
+///   alias) e la prova live su `PostGIS` e `MySQL` mostra che una sonda in un
+///   altro sistema e rifiutata prima di ogni riga anche li.
 ///
 /// # Errors
 ///
-/// `unsupported` ([`SPATIAL_VALUE_OUTSIDE_SPATIAL`]) per il primo operando
-/// con una sonda non giudicata.
-pub fn judge_scalar_operands(
+/// `unsupported` con uno dei tre motivi sopra, per la prima sonda fuori
+/// posto in ordine di visita.
+#[allow(clippy::too_many_lines)]
+pub fn judge_probe_positions(
     provider: ProviderKind,
     evidence: ProbeEvidence,
-    expression: &QueryExpression,
+    operation: &QueryOperation,
 ) -> Result<()> {
-    for operand in scalar_operands(expression) {
-        if contains_unjudged_probe(operand) {
-            admit_probe(
-                provider,
-                evidence,
-                ProbeUse::ScalarOperand,
-                ProbeFrame::Unbound,
-            )?;
+    let unsupported =
+        |message: &str| DatabaseError::unsupported(provider, ErrorPhase::Prepare, message);
+    let refuse = |clause: Clause| match clause {
+        Clause::Predicate => admit_probe(
+            provider,
+            evidence,
+            ProbeUse::ScalarOperand,
+            ProbeFrame::Unbound,
+        )
+        .err()
+        .unwrap_or_else(|| unsupported(SPATIAL_VALUE_OUTSIDE_SPATIAL)),
+        Clause::Elsewhere => unsupported(PROBE_OUTSIDE_PREDICATE),
+    };
+    let mut scopes: Vec<RelationScope> = Vec::new();
+    let mut stack = vec![ProbeItem::Operation(operation, BTreeSet::new())];
+    while let Some(item) = stack.pop() {
+        match item {
+            ProbeItem::Operation(operation, visible) => {
+                let scope = RelationScope::of(operation, &visible);
+                let inner = scope.common_tables().clone();
+                let index = scopes.len();
+                scopes.push(scope);
+                let blocks = operation
+                    .common_table_expressions
+                    .iter()
+                    .map(|cte| cte.query.as_ref())
+                    .chain(
+                        operation
+                            .derived_source
+                            .iter()
+                            .chain(
+                                operation
+                                    .joins
+                                    .iter()
+                                    .filter_map(|join| join.derived_source.as_ref()),
+                            )
+                            .map(|source| source.query.as_ref()),
+                    )
+                    .chain(
+                        operation
+                            .set_operations
+                            .iter()
+                            .map(|set| set.query.as_ref()),
+                    );
+                for block in blocks {
+                    stack.push(ProbeItem::Operation(block, inner.clone()));
+                }
+                let elsewhere = operation
+                    .projection
+                    .iter()
+                    .map(|item| &item.expression)
+                    .chain(&operation.distinct_on)
+                    .chain(&operation.group_by)
+                    .chain(operation.order_by.iter().map(|order| &order.expression));
+                for expression in elsewhere {
+                    stack.push(ProbeItem::Expression(expression, Clause::Elsewhere, index));
+                }
+                let predicates = operation
+                    .filter
+                    .iter()
+                    .chain(operation.joins.iter().filter_map(|join| join.on.as_ref()))
+                    .chain(operation.having.iter());
+                for expression in predicates {
+                    stack.push(ProbeItem::Expression(expression, Clause::Predicate, index));
+                }
+            }
+            ProbeItem::Geometry(argument, index) => match argument {
+                QueryExpression::SpatialValue { expression, .. } => {
+                    stack.push(ProbeItem::Expression(expression, Clause::Predicate, index));
+                }
+                QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. } => {}
+                QueryExpression::Spatial { arguments, .. } => {
+                    if let Some((preserved, _)) = preserved_argument(argument) {
+                        for (position, child) in arguments.iter().enumerate() {
+                            stack.push(if position == preserved {
+                                ProbeItem::Geometry(child, index)
+                            } else {
+                                ProbeItem::Expression(child, Clause::Predicate, index)
+                            });
+                        }
+                    } else {
+                        stack.push(ProbeItem::Expression(argument, Clause::Predicate, index));
+                    }
+                }
+                _ => stack.push(ProbeItem::Expression(argument, Clause::Predicate, index)),
+            },
+            ProbeItem::Expression(expression, clause, index) => {
+                // I nodi che confrontano due geometrie, in un predicato: qui
+                // una sonda si giudica.
+                let judging = match expression {
+                    QueryExpression::Spatial {
+                        function,
+                        arguments,
+                    } if clause == Clause::Predicate
+                        && (0..arguments.len())
+                            .filter(|index| function.takes_geometry_at(*index))
+                            .count()
+                            >= 2 =>
+                    {
+                        Some(
+                            arguments
+                                .iter()
+                                .enumerate()
+                                .map(|(position, argument)| {
+                                    (argument, function.takes_geometry_at(position))
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    }
+                    QueryExpression::SpatialOperator { left, right, .. }
+                        if clause == Clause::Predicate =>
+                    {
+                        Some(vec![(left.as_ref(), true), (right.as_ref(), true)])
+                    }
+                    _ => None,
+                };
+                if let Some(arguments) = judging {
+                    let probes = arguments
+                        .iter()
+                        .any(|(argument, geometric)| *geometric && is_probe_term(argument));
+                    for (argument, geometric) in arguments {
+                        if !geometric {
+                            stack.push(ProbeItem::Expression(argument, Clause::Predicate, index));
+                            continue;
+                        }
+                        if probes
+                            && !is_probe_term(argument)
+                            && !matches!(term_frame(argument, &scopes[index]), TermFrame::Column(_))
+                        {
+                            return Err(unsupported(PROBE_PEER_OUTSIDE_BLOCK));
+                        }
+                        stack.push(ProbeItem::Geometry(argument, index));
+                    }
+                    continue;
+                }
+                let visible = || scopes[index].common_tables().clone();
+                match expression {
+                    QueryExpression::Wildcard { .. }
+                    | QueryExpression::Column { .. }
+                    | QueryExpression::Parameter { .. }
+                    | QueryExpression::TypedParameter { .. } => {}
+                    QueryExpression::SpatialValue { .. } => return Err(refuse(clause)),
+                    QueryExpression::Spatial {
+                        function,
+                        arguments,
+                    } => {
+                        if arguments.iter().enumerate().any(|(position, argument)| {
+                            function.takes_geometry_at(position) && is_bind(argument)
+                        }) {
+                            return Err(refuse(clause));
+                        }
+                        for argument in arguments {
+                            stack.push(ProbeItem::Expression(argument, clause, index));
+                        }
+                    }
+                    QueryExpression::SpatialOperator { left, right, .. } => {
+                        if is_bind(left) || is_bind(right) {
+                            return Err(refuse(clause));
+                        }
+                        stack.push(ProbeItem::Expression(left, clause, index));
+                        stack.push(ProbeItem::Expression(right, clause, index));
+                    }
+                    QueryExpression::SpatialWindow {
+                        function,
+                        arguments,
+                        partition_by,
+                        order_by,
+                        ..
+                    } => {
+                        if arguments.iter().enumerate().any(|(position, argument)| {
+                            function.takes_geometry_at(position) && is_bind(argument)
+                        }) {
+                            return Err(refuse(Clause::Elsewhere));
+                        }
+                        for child in arguments
+                            .iter()
+                            .chain(partition_by)
+                            .chain(order_by.iter().map(|order| &order.expression))
+                        {
+                            stack.push(ProbeItem::Expression(child, Clause::Elsewhere, index));
+                        }
+                    }
+                    QueryExpression::Window {
+                        arguments,
+                        partition_by,
+                        order_by,
+                        ..
+                    } => {
+                        for child in arguments
+                            .iter()
+                            .chain(partition_by)
+                            .chain(order_by.iter().map(|order| &order.expression))
+                        {
+                            stack.push(ProbeItem::Expression(child, Clause::Elsewhere, index));
+                        }
+                    }
+                    QueryExpression::ScalarSubquery { query }
+                    | QueryExpression::Exists { query, .. } => {
+                        stack.push(ProbeItem::Operation(query, visible()));
+                    }
+                    QueryExpression::InSubquery {
+                        expression, query, ..
+                    } => {
+                        stack.push(ProbeItem::Expression(expression, clause, index));
+                        stack.push(ProbeItem::Operation(query, visible()));
+                    }
+                    QueryExpression::Arithmetic { left, right, .. }
+                    | QueryExpression::Compare { left, right, .. } => {
+                        stack.push(ProbeItem::Expression(left, clause, index));
+                        stack.push(ProbeItem::Expression(right, clause, index));
+                    }
+                    QueryExpression::Cast { expression, .. }
+                    | QueryExpression::NullsOrder { expression, .. }
+                    | QueryExpression::SpatialOutput { expression, .. }
+                    | QueryExpression::Not { expression }
+                    | QueryExpression::IsNull { expression, .. } => {
+                        stack.push(ProbeItem::Expression(expression, clause, index));
+                    }
+                    QueryExpression::Case {
+                        branches,
+                        else_expression,
+                    } => {
+                        for branch in branches {
+                            stack.push(ProbeItem::Expression(&branch.when, clause, index));
+                            stack.push(ProbeItem::Expression(&branch.then, clause, index));
+                        }
+                        if let Some(otherwise) = else_expression {
+                            stack.push(ProbeItem::Expression(otherwise, clause, index));
+                        }
+                    }
+                    QueryExpression::Scalar { arguments, .. }
+                    | QueryExpression::And { arguments }
+                    | QueryExpression::Or { arguments } => {
+                        for argument in arguments {
+                            stack.push(ProbeItem::Expression(argument, clause, index));
+                        }
+                    }
+                    QueryExpression::InList {
+                        expression, values, ..
+                    } => {
+                        stack.push(ProbeItem::Expression(expression, clause, index));
+                        for value in values {
+                            stack.push(ProbeItem::Expression(value, clause, index));
+                        }
+                    }
+                    QueryExpression::Between {
+                        expression,
+                        lower,
+                        upper,
+                        ..
+                    } => {
+                        for child in [expression, lower, upper] {
+                            stack.push(ProbeItem::Expression(child, clause, index));
+                        }
+                    }
+                    QueryExpression::Like {
+                        expression,
+                        pattern,
+                        ..
+                    } => {
+                        stack.push(ProbeItem::Expression(expression, clause, index));
+                        stack.push(ProbeItem::Expression(pattern, clause, index));
+                    }
+                }
+            }
         }
     }
     Ok(())

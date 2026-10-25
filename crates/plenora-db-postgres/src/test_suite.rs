@@ -1627,7 +1627,7 @@ mod tests {
             3
         );
 
-        let indexed_query = QueryOperation {
+        let mut indexed_query = QueryOperation {
             declared_crs: Vec::new(),
             common_table_expressions: Vec::new(),
             source: Some(QuerySource {
@@ -1716,6 +1716,26 @@ mod tests {
                 semantics: SpatialSemantics::Geometry,
             },
         )]));
+        // La regola P: la sonda nell'`ORDER BY` KNN non e in un predicato, e
+        // si rifiuta prima della connessione anche col catalogo (limite
+        // dichiarato in `spatial_probe::judge_probe_positions`).
+        let Err(refused) = provider
+            .query_with_test_budget(&secret, &indexed_query, &indexed_parameters, &cancellation)
+            .await
+        else {
+            panic!("sonda nell'ORDER BY KNN accettata");
+        };
+        assert_eq!(refused.category, ErrorCategory::Unsupported, "{refused:?}");
+        assert_eq!(
+            refused.message,
+            plenora_database_core::spatial_probe::PROBE_OUTSIDE_PREDICATE
+        );
+        indexed_query.order_by[0].expression = QueryExpression::Column {
+            column: ColumnRef {
+                relation: Some("e".to_owned()),
+                field: "event_id".to_owned(),
+            },
+        };
         let mut indexed_stream = provider
             .query_with_test_budget(&secret, &indexed_query, &indexed_parameters, &cancellation)
             .await

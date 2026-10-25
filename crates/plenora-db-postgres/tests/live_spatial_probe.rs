@@ -20,8 +20,8 @@ use plenora_database_core::plan::{FilterExpression, ObjectRef, ReadOperation};
 use plenora_database_core::portable::{select as p_select, spatial as p_spatial};
 use plenora_database_core::provider::{ParameterBag, ParameterValue, Provider, SecretString};
 use plenora_database_core::relational::{
-    ColumnRef, QueryExpression, QueryOperation, QueryProjection, QuerySource, SpatialFunction,
-    SpatialOperator,
+    ColumnRef, CommonTableExpression, JoinKind, QueryDerivedSource, QueryExpression, QueryJoin,
+    QueryOperation, QueryProjection, QuerySource, SpatialFunction, SpatialOperator,
 };
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::{Statement, TransactionOptions};
@@ -1078,4 +1078,248 @@ async fn live_a_probe_under_a_scalar_comparison_is_refused_before_the_server() {
         "ST_Intersects(g, SpatialValue 3857)",
     );
     drop_fixture(&dsn, table).await;
+}
+
+/// Un blocco `SELECT projection [FROM source] [WHERE filter]`.
+fn block(
+    source: Option<QuerySource>,
+    projection: Vec<(QueryExpression, &str)>,
+    filter: Option<QueryExpression>,
+) -> QueryOperation {
+    QueryOperation {
+        common_table_expressions: Vec::new(),
+        source,
+        derived_source: None,
+        projection: projection
+            .into_iter()
+            .map(|(expression, alias)| QueryProjection {
+                expression,
+                alias: Some(alias.to_owned()),
+            })
+            .collect(),
+        joins: Vec::new(),
+        filter,
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+        declared_crs: Vec::new(),
+    }
+}
+
+fn qualified(relation: &str, field: &str) -> QueryExpression {
+    QueryExpression::Column {
+        column: ColumnRef {
+            relation: Some(relation.to_owned()),
+            field: field.to_owned(),
+        },
+    }
+}
+
+fn derived_join(query: QueryOperation, alias: &str, on: QueryExpression) -> QueryJoin {
+    QueryJoin {
+        kind: JoinKind::Inner,
+        source: None,
+        derived_source: Some(QueryDerivedSource {
+            query: Box::new(query),
+            alias: alias.to_owned(),
+        }),
+        lateral: false,
+        on: Some(on),
+    }
+}
+
+/// La regola P strutturale sul `PostGIS` reale, le forme P1 e P2 della
+/// rilettura del 25/10 su d30d1d2: una sonda 3857 nella projection di una
+/// subquery `IN` (`g IN (SELECT sonda)`, `g IN (SELECT ST_Centroid(sonda))`)
+/// e una sonda nominata per alias (`JOIN (SELECT sonda AS s) d ON t.g =
+/// d.s`, la stessa come CTE e dentro `EXISTS`, `ON ST_Intersects(t.g, d.s)`
+/// con una sonda lontana) su `geometry(Point,4326)` rendevano zero righe
+/// senza errore, dallo SDK e da `PostgresProvider::query`. Nessun nodo
+/// spatial vedeva la sonda: la colonna della projection ne portava il frame a
+/// chi la nominava. Ora sono `unsupported` prima del server su entrambe le
+/// strade.
+#[tokio::test]
+async fn live_a_probe_outside_a_spatial_predicate_of_its_block_is_refused() {
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let table = "plenora_probe_position";
+    fixture(&dsn, table).await;
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.clone());
+    let cancel = CancellationToken::new();
+    let budget = budget();
+    let source = || QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: Some("public".to_owned()),
+            object: table.to_owned(),
+        },
+        alias: Some("t".to_owned()),
+    };
+    let base = || block(Some(source()), vec![(qualified("t", "id"), "id")], None);
+    let sv = || QueryExpression::SpatialValue {
+        expression: Box::new(parameter()),
+        srid: 3857,
+        semantics: SpatialSemantics::Geometry,
+    };
+    let centroid = |argument: QueryExpression| QueryExpression::Spatial {
+        function: SpatialFunction::Centroid,
+        arguments: vec![argument],
+    };
+    let tg = || qualified("t", "g");
+    let equals = |left: QueryExpression, right: QueryExpression| QueryExpression::Compare {
+        left: Box::new(left),
+        operator: plenora_database_core::plan::ComparisonOperator::Eq,
+        right: Box::new(right),
+    };
+    let projected = |probe: QueryExpression| block(None, vec![(probe, "s")], None);
+    let near = wkb_point(1.0, 1.0);
+    let far = wkb_point(100_000.0, 100_000.0);
+
+    let mut cases = Vec::new();
+    for (name, probe) in [("sonda", sv()), ("ST_Centroid(sonda)", centroid(sv()))] {
+        let mut operation = base();
+        operation.filter = Some(QueryExpression::InSubquery {
+            expression: Box::new(tg()),
+            query: Box::new(projected(probe)),
+            negated: false,
+        });
+        cases.push((format!("P1 g IN (SELECT {name})"), operation, near.clone()));
+    }
+    let mut operation = base();
+    operation.joins = vec![derived_join(
+        projected(sv()),
+        "d",
+        equals(tg(), qualified("d", "s")),
+    )];
+    cases.push((
+        "P2 JOIN (SELECT sonda AS s) d ON t.g = d.s".to_owned(),
+        operation,
+        near.clone(),
+    ));
+    let mut operation = base();
+    operation.common_table_expressions = vec![CommonTableExpression {
+        name: "p".to_owned(),
+        recursive: false,
+        query: Box::new(projected(sv())),
+    }];
+    operation.joins = vec![QueryJoin {
+        kind: JoinKind::Inner,
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: None,
+                object: "p".to_owned(),
+            },
+            alias: None,
+        }),
+        derived_source: None,
+        lateral: false,
+        on: Some(equals(tg(), qualified("p", "s"))),
+    }];
+    cases.push((
+        "P2 WITH p AS (SELECT sonda AS s) JOIN p ON t.g = p.s".to_owned(),
+        operation,
+        near.clone(),
+    ));
+    let mut exists = block(
+        None,
+        vec![(qualified("d", "s"), "s")],
+        Some(equals(tg(), qualified("d", "s"))),
+    );
+    exists.derived_source = Some(QueryDerivedSource {
+        query: Box::new(projected(sv())),
+        alias: "d".to_owned(),
+    });
+    let mut operation = base();
+    operation.filter = Some(QueryExpression::Exists {
+        query: Box::new(exists),
+        negated: false,
+    });
+    cases.push((
+        "P2 EXISTS (SELECT d.s FROM (SELECT sonda AS s) d WHERE t.g = d.s)".to_owned(),
+        operation,
+        near.clone(),
+    ));
+    let mut operation = base();
+    operation.joins = vec![derived_join(
+        projected(sv()),
+        "d",
+        QueryExpression::Spatial {
+            function: SpatialFunction::Intersects,
+            arguments: vec![tg(), qualified("d", "s")],
+        },
+    )];
+    cases.push((
+        "P2 JOIN (SELECT sonda AS s) d ON ST_Intersects(t.g, d.s), sonda lontana".to_owned(),
+        operation,
+        far,
+    ));
+
+    let sdk = plenora_database_sql::Renderer::new(
+        plenora_database_sql::Dialect::Postgres,
+        plenora_database_sql::DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .with_provider(plenora_database_core::plan::ProviderKind::Postgres);
+    let refused = |error: &DatabaseError| {
+        error.category == ErrorCategory::Unsupported
+            && error.message == plenora_database_core::spatial_probe::PROBE_OUTSIDE_PREDICATE
+    };
+    let mut accepted = Vec::new();
+    for (name, operation, bound) in &cases {
+        // Lo SDK: il renderer relazionale senza catalogo. Se rendesse, lo
+        // statement si esegue per misurare che cosa il chiamante riceverebbe.
+        match sdk.render_query(operation) {
+            Err(error) if refused(&error) => {}
+            Err(error) => accepted.push(format!("SDK {name}: {error:?}")),
+            Ok(rendered) => {
+                let statement = Statement {
+                    sql: rendered.sql,
+                    params: rendered
+                        .binds
+                        .iter()
+                        .map(|_| ParameterValue::Bytes(bound.clone()))
+                        .collect(),
+                };
+                let mut transaction = provider
+                    .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+                    .await
+                    .expect("begin");
+                let result = transaction.query(&statement, &cancel).await;
+                let _ = transaction.rollback(&cancel).await;
+                accepted.push(format!(
+                    "SDK {name}: accettato, {:?}",
+                    result.map(|rows| rows.len())
+                ));
+            }
+        }
+        // Il provider, che giudica il piano sul catalogo.
+        match rows(
+            provider
+                .query(
+                    &secret,
+                    operation,
+                    &probe(ParameterValue::Bytes(bound.clone())),
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await
+        {
+            Err(error) if refused(&error) => {}
+            other => accepted.push(format!("query {name}: {other:?}")),
+        }
+    }
+    drop_fixture(&dsn, table).await;
+    assert!(accepted.is_empty(), "{}", accepted.join("\n"));
 }

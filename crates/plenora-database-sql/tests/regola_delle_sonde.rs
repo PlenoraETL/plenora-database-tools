@@ -29,11 +29,13 @@
 //! e la suite delle sonde del provider `PostgreSQL`) o il rifiuto.
 
 use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
-use plenora_database_core::plan::{ObjectRef, ProviderKind};
+use plenora_database_core::plan::{ObjectRef, ProviderKind, SortDirection};
 use plenora_database_core::portable::{compile_portable, select, spatial};
 use plenora_database_core::relational::{
-    ColumnRef, InsertOperation, MutationOperation, QueryExpression, QueryOperation,
-    QueryParameterType, QueryProjection, QuerySource, SpatialFunction, SpatialOperator,
+    ColumnRef, CommonTableExpression, InsertOperation, JoinKind, MutationOperation,
+    QueryDerivedSource, QueryExpression, QueryJoin, QueryOperation, QueryOrdering,
+    QueryParameterType, QueryProjection, QuerySetOperation, QuerySetOperator, QuerySource,
+    SpatialFunction, SpatialOperator,
 };
 use plenora_database_core::{
     compile_relational_mutation, ErrorCategory, SpatialPredicate, SpatialReference,
@@ -685,4 +687,568 @@ fn una_sonda_giudicata_da_un_nodo_spatial_resta_ammessa() {
             .render_query(&operation)
             .unwrap_or_else(|error| panic!("{nome}: {error:?}"));
     }
+}
+
+// ---------------------------------------------------------------------------
+// La regola P strutturale: dove una sonda puo stare.
+// ---------------------------------------------------------------------------
+
+fn colonna_di(relation: &str, field: &str) -> QueryExpression {
+    QueryExpression::Column {
+        column: ColumnRef {
+            relation: Some(relation.to_owned()),
+            field: field.to_owned(),
+        },
+    }
+}
+
+fn sorgente(object: &str, alias: &str) -> QuerySource {
+    QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: Some("public".to_owned()),
+            object: object.to_owned(),
+        },
+        alias: Some(alias.to_owned()),
+    }
+}
+
+fn proiezione(expression: QueryExpression, alias: &str) -> QueryProjection {
+    QueryProjection {
+        expression,
+        alias: Some(alias.to_owned()),
+    }
+}
+
+/// Un blocco `SELECT projection [FROM source] [WHERE filter]`.
+const fn blocco(
+    source: Option<QuerySource>,
+    projection: Vec<QueryProjection>,
+    filter: Option<QueryExpression>,
+) -> QueryOperation {
+    QueryOperation {
+        declared_crs: Vec::new(),
+        common_table_expressions: Vec::new(),
+        source,
+        derived_source: None,
+        projection,
+        joins: Vec::new(),
+        filter,
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+    }
+}
+
+/// `SELECT t.id FROM public.features t`.
+fn base() -> QueryOperation {
+    blocco(
+        Some(sorgente("features", "t")),
+        vec![proiezione(colonna_di("t", "id"), "id")],
+        None,
+    )
+}
+
+/// `(SELECT sonda AS s)`, senza FROM.
+fn sonda_proiettata(sonda: QueryExpression) -> QueryOperation {
+    blocco(None, vec![proiezione(sonda, "s")], None)
+}
+
+fn interseca(left: QueryExpression, right: QueryExpression) -> QueryExpression {
+    funzione(SpatialFunction::Intersects, vec![left, right])
+}
+
+fn join_derivata(query: QueryOperation, alias: &str, on: QueryExpression) -> QueryJoin {
+    QueryJoin {
+        kind: JoinKind::Inner,
+        source: None,
+        derived_source: Some(QueryDerivedSource {
+            query: Box::new(query),
+            alias: alias.to_owned(),
+        }),
+        lateral: false,
+        on: Some(on),
+    }
+}
+
+const fn ordinamento(expression: QueryExpression) -> QueryOrdering {
+    QueryOrdering {
+        expression,
+        direction: SortDirection::Asc,
+    }
+}
+
+/// Dove la sonda sta: fuori da ogni predicato (`Fuori`), dentro un predicato
+/// ma non argomento di un nodo spatial che la giudica (`NonGiudicata`), o
+/// argomento di un nodo che la confronta con un termine che non e una
+/// colonna della FROM dello stesso blocco (`FuoriDalBlocco`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Posizione {
+    Fuori,
+    NonGiudicata,
+    FuoriDalBlocco,
+}
+
+/// Le forme della regola P strutturale, per una sonda costruita da `sonda`.
+#[allow(clippy::too_many_lines)]
+fn sonde_fuori_posto(
+    sonda: &dyn Fn() -> QueryExpression,
+) -> Vec<(&'static str, QueryOperation, Posizione)> {
+    use plenora_database_core::plan::ComparisonOperator::{Eq, Lt};
+    use Posizione::{Fuori, FuoriDalBlocco, NonGiudicata};
+    let tg = || colonna_di("t", "shape");
+    let mut forme = Vec::new();
+
+    // P1: la sonda nella projection di una subquery `IN`. Su d30d1d2 0 righe
+    // senza errore su PostGIS.
+    let mut operation = base();
+    operation.filter = Some(QueryExpression::InSubquery {
+        expression: Box::new(tg()),
+        query: Box::new(sonda_proiettata(sonda())),
+        negated: false,
+    });
+    forme.push(("g IN (SELECT sonda)", operation, Fuori));
+
+    // P2: la sonda attraverso un alias.
+    let mut operation = base();
+    operation.joins = vec![join_derivata(
+        sonda_proiettata(sonda()),
+        "d",
+        confronto(tg(), Eq, colonna_di("d", "s")),
+    )];
+    forme.push(("JOIN (SELECT sonda AS s) d ON t.g = d.s", operation, Fuori));
+
+    let mut operation = base();
+    operation.joins = vec![join_derivata(
+        sonda_proiettata(sonda()),
+        "d",
+        interseca(tg(), colonna_di("d", "s")),
+    )];
+    forme.push((
+        "JOIN (SELECT sonda AS s) d ON ST_Intersects(t.g, d.s)",
+        operation,
+        Fuori,
+    ));
+
+    let mut operation = base();
+    operation.common_table_expressions = vec![CommonTableExpression {
+        name: "p".to_owned(),
+        recursive: false,
+        query: Box::new(sonda_proiettata(sonda())),
+    }];
+    operation.joins = vec![QueryJoin {
+        kind: JoinKind::Inner,
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: None,
+                object: "p".to_owned(),
+            },
+            alias: None,
+        }),
+        derived_source: None,
+        lateral: false,
+        on: Some(confronto(tg(), Eq, colonna_di("p", "s"))),
+    }];
+    forme.push((
+        "WITH p AS (SELECT sonda AS s) JOIN p ON t.g = p.s",
+        operation,
+        Fuori,
+    ));
+
+    let mut operation = base();
+    let mut esiste = blocco(
+        None,
+        vec![proiezione(colonna_di("d", "s"), "s")],
+        Some(confronto(tg(), Eq, colonna_di("d", "s"))),
+    );
+    esiste.derived_source = Some(QueryDerivedSource {
+        query: Box::new(sonda_proiettata(sonda())),
+        alias: "d".to_owned(),
+    });
+    operation.filter = Some(QueryExpression::Exists {
+        query: Box::new(esiste),
+        negated: false,
+    });
+    forme.push((
+        "EXISTS (SELECT d.s FROM (SELECT sonda AS s) d WHERE t.g = d.s)",
+        operation,
+        Fuori,
+    ));
+
+    // Una subquery scalare come argomento di un nodo spatial.
+    let mut operation = base();
+    operation.filter = Some(interseca(
+        tg(),
+        QueryExpression::ScalarSubquery {
+            query: Box::new(sonda_proiettata(sonda())),
+        },
+    ));
+    forme.push(("ST_Intersects(t.g, (SELECT sonda))", operation, Fuori));
+
+    // Le clausole che non sono predicati.
+    let mut operation = base();
+    operation.projection.push(proiezione(
+        funzione(SpatialFunction::Distance, vec![tg(), sonda()]),
+        "m",
+    ));
+    forme.push(("SELECT ST_Distance(t.g, sonda)", operation, Fuori));
+
+    let mut operation = base();
+    operation.projection.push(proiezione(sonda(), "s"));
+    forme.push(("SELECT sonda", operation, Fuori));
+
+    let mut operation = base();
+    operation.order_by = vec![ordinamento(funzione(
+        SpatialFunction::Distance,
+        vec![tg(), sonda()],
+    ))];
+    forme.push(("ORDER BY ST_Distance(t.g, sonda)", operation, Fuori));
+
+    let mut operation = base();
+    operation.order_by = vec![ordinamento(QueryExpression::SpatialOperator {
+        operator: SpatialOperator::KnnDistance,
+        left: Box::new(tg()),
+        right: Box::new(sonda()),
+    })];
+    forme.push(("ORDER BY t.g <-> sonda", operation, Fuori));
+
+    let mut operation = base();
+    operation.group_by = vec![colonna_di("t", "id"), interseca(tg(), sonda())];
+    forme.push(("GROUP BY ST_Intersects(t.g, sonda)", operation, Fuori));
+
+    let mut operation = base();
+    operation.projection.push(proiezione(
+        QueryExpression::Window {
+            function: plenora_database_core::relational::ScalarFunction::RowNumber,
+            arguments: Vec::new(),
+            partition_by: vec![interseca(tg(), sonda())],
+            order_by: Vec::new(),
+            frame: None,
+        },
+        "n",
+    ));
+    forme.push((
+        "ROW_NUMBER() OVER (PARTITION BY ST_Intersects(t.g, sonda))",
+        operation,
+        Fuori,
+    ));
+
+    let mut operation = base();
+    operation.set_operations = vec![QuerySetOperation {
+        operator: QuerySetOperator::Union,
+        all: true,
+        query: Box::new(blocco(
+            Some(sorgente("features", "u")),
+            vec![proiezione(sonda(), "id")],
+            None,
+        )),
+    }];
+    forme.push(("UNION ALL (SELECT sonda FROM features u)", operation, Fuori));
+
+    let mut operation = base();
+    operation.joins = vec![join_derivata(
+        blocco(
+            Some(sorgente("features", "u")),
+            vec![
+                proiezione(colonna_di("u", "id"), "id"),
+                proiezione(
+                    funzione(
+                        SpatialFunction::Distance,
+                        vec![colonna_di("u", "shape"), sonda()],
+                    ),
+                    "m",
+                ),
+            ],
+            None,
+        ),
+        "d",
+        confronto(colonna_di("d", "m"), Lt, parametro("soglia")),
+    )];
+    forme.push((
+        "JOIN (SELECT ST_Distance(u.g, sonda) AS m FROM features u) d ON d.m < soglia",
+        operation,
+        Fuori,
+    ));
+
+    // Gli involucri che nascondono la sonda al nodo spatial, nel WHERE.
+    let mut operation = base();
+    operation.filter = Some(interseca(
+        tg(),
+        QueryExpression::Case {
+            branches: vec![plenora_database_core::relational::QueryCaseBranch {
+                when: confronto(parametro("a"), Eq, parametro("b")),
+                then: sonda(),
+            }],
+            else_expression: None,
+        },
+    ));
+    forme.push((
+        "ST_Intersects(t.g, CASE WHEN a = b THEN sonda END)",
+        operation,
+        NonGiudicata,
+    ));
+
+    let mut operation = base();
+    operation.filter = Some(interseca(
+        tg(),
+        QueryExpression::Scalar {
+            function: plenora_database_core::relational::ScalarFunction::Coalesce,
+            arguments: vec![sonda(), tg()],
+        },
+    ));
+    forme.push((
+        "ST_Intersects(t.g, COALESCE(sonda, t.g))",
+        operation,
+        NonGiudicata,
+    ));
+
+    let mut operation = base();
+    operation.filter = Some(interseca(
+        tg(),
+        QueryExpression::Cast {
+            expression: Box::new(sonda()),
+            target_type: QueryParameterType::Binary,
+        },
+    ));
+    forme.push(("ST_Intersects(t.g, CAST(sonda))", operation, NonGiudicata));
+
+    // Un riferimento correlato: la colonna non e nella FROM del blocco che
+    // contiene il predicato.
+    let mut operation = base();
+    operation.filter = Some(QueryExpression::Exists {
+        query: Box::new(blocco(
+            Some(sorgente("altre", "u")),
+            vec![proiezione(colonna_di("u", "id"), "id")],
+            Some(interseca(tg(), sonda())),
+        )),
+        negated: false,
+    });
+    forme.push((
+        "EXISTS (SELECT u.id FROM altre u WHERE ST_Intersects(t.g, sonda))",
+        operation,
+        FuoriDalBlocco,
+    ));
+
+    // Una colonna di una sorgente derivata, nello stesso blocco.
+    let mut operation = base();
+    operation.joins = vec![join_derivata(
+        blocco(
+            Some(sorgente("altre", "u")),
+            vec![proiezione(colonna_di("u", "shape"), "s")],
+            None,
+        ),
+        "d",
+        interseca(colonna_di("d", "s"), sonda()),
+    )];
+    forme.push((
+        "JOIN (SELECT u.g AS s FROM altre u) d ON ST_Intersects(d.s, sonda)",
+        operation,
+        FuoriDalBlocco,
+    ));
+    forme
+}
+
+type CostruisciSonda = Box<dyn Fn() -> QueryExpression>;
+
+/// Le sonde della regola P strutturale: un `SpatialValue` 3857, la stessa
+/// dentro `ST_Centroid`, e un bind nudo in posizione geometrica.
+fn tre_sonde() -> [(&'static str, CostruisciSonda); 3] {
+    [
+        ("sv", Box::new(|| spatial_value(3_857))),
+        (
+            "ST_Centroid(sv)",
+            Box::new(|| funzione(SpatialFunction::Centroid, vec![spatial_value(3_857)])),
+        ),
+        (
+            "ST_Centroid(bind)",
+            Box::new(|| funzione(SpatialFunction::Centroid, vec![parametro("sonda")])),
+        ),
+    ]
+}
+
+const fn motivo(posizione: Posizione) -> &'static str {
+    use plenora_database_core::spatial_probe::{
+        PROBE_OUTSIDE_PREDICATE, PROBE_PEER_OUTSIDE_BLOCK, SPATIAL_VALUE_OUTSIDE_SPATIAL,
+    };
+    match posizione {
+        Posizione::Fuori => PROBE_OUTSIDE_PREDICATE,
+        Posizione::NonGiudicata => SPATIAL_VALUE_OUTSIDE_SPATIAL,
+        Posizione::FuoriDalBlocco => PROBE_PEER_OUTSIDE_BLOCK,
+    }
+}
+
+/// La regola P strutturale: una sonda e ammessa soltanto come argomento (o
+/// dentro funzioni che ne conservano il frame) di un nodo spatial che la
+/// giudica, in un `WHERE`, `ON` o `HAVING` del blocco la cui FROM contiene
+/// la colonna confrontata. Ogni altra posizione si rifiuta compilando, su
+/// ogni dialetto e su ogni percorso, con il motivo della posizione. Su
+/// d30d1d2 le forme P1 e P2 rendevano su tutti e sei i dialetti, e su `PostGIS`
+/// davano 0 righe senza errore.
+#[test]
+fn una_sonda_fuori_da_un_predicato_spatial_del_proprio_blocco_si_rifiuta() {
+    let mut difformi = Vec::new();
+    let mut casi = 0;
+    for (sonda, forma) in tre_sonde() {
+        for (nome, operation, posizione) in sonde_fuori_posto(forma.as_ref()) {
+            for prodotto in PRODOTTI {
+                for percorso in [Sdk, Provider] {
+                    casi += 1;
+                    let osservato = renderer(prodotto, percorso).render_query(&operation);
+                    let conforme = osservato.as_ref().is_err_and(|error| {
+                        error.category == Unsupported && error.message == motivo(posizione)
+                    });
+                    if !conforme {
+                        difformi.push(format!(
+                            "{sonda} | {nome} | {prodotto:?} {percorso:?}: {:?}",
+                            osservato
+                                .map(|rendered| rendered.sql)
+                                .map_err(|error| (error.category, error.message))
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        difformi.is_empty(),
+        "{} difformi su {casi}:\n{}",
+        difformi.len(),
+        difformi.join("\n")
+    );
+}
+
+/// I controlli positivi della regola P strutturale: le forme ammesse restano
+/// ammesse, anche nel `WHERE` di una sorgente derivata, di una CTE, di un
+/// `EXISTS`, nell'`ON` e nell'`HAVING`, con la colonna nella FROM dello
+/// stesso blocco. Su PostgreSQL senza catalogo con la guardia sul typmod, col
+/// catalogo del provider; su `MySQL` dove passa da 3033/3643.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn le_forme_ammesse_della_regola_p_restano_ammesse() {
+    use plenora_database_core::plan::ComparisonOperator::{Eq, Lt};
+    let sv = || spatial_value(3_857);
+    let ug = || colonna_di("u", "shape");
+    let dentro = |filtro: QueryExpression| {
+        blocco(
+            Some(sorgente("features", "u")),
+            vec![proiezione(colonna_di("u", "id"), "id")],
+            Some(filtro),
+        )
+    };
+    let mut forme: Vec<(&str, QueryOperation, bool)> = vec![
+        (
+            "ST_Intersects(g, sonda)",
+            dentro(interseca(ug(), sv())),
+            true,
+        ),
+        (
+            "ST_Intersects(g, ST_Centroid(sonda))",
+            dentro(interseca(
+                ug(),
+                funzione(SpatialFunction::Centroid, vec![sv()]),
+            )),
+            true,
+        ),
+        (
+            "ST_Distance(g, sonda) < d",
+            dentro(confronto(
+                funzione(SpatialFunction::Distance, vec![ug(), sv()]),
+                Lt,
+                parametro("d"),
+            )),
+            true,
+        ),
+        (
+            "g && sonda",
+            dentro(QueryExpression::SpatialOperator {
+                operator: SpatialOperator::BoundingBoxIntersects,
+                left: Box::new(ug()),
+                right: Box::new(sv()),
+            }),
+            false,
+        ),
+    ];
+    let mut operation = base();
+    operation.joins = vec![join_derivata(
+        dentro(interseca(ug(), sv())),
+        "d",
+        confronto(colonna_di("d", "id"), Eq, colonna_di("t", "id")),
+    )];
+    forme.push((
+        "JOIN (SELECT u.id FROM features u WHERE ST_Intersects(u.g, sonda)) d",
+        operation,
+        true,
+    ));
+    let mut operation = base();
+    operation.common_table_expressions = vec![CommonTableExpression {
+        name: "vicine".to_owned(),
+        recursive: false,
+        query: Box::new(dentro(interseca(ug(), sv()))),
+    }];
+    forme.push((
+        "WITH vicine AS (SELECT u.id FROM features u WHERE ST_Intersects(u.g, sonda))",
+        operation,
+        true,
+    ));
+    let mut operation = base();
+    operation.filter = Some(QueryExpression::Exists {
+        query: Box::new(dentro(interseca(ug(), sv()))),
+        negated: false,
+    });
+    forme.push((
+        "EXISTS (SELECT u.id FROM features u WHERE ST_Intersects(u.g, sonda))",
+        operation,
+        true,
+    ));
+    let mut operation = base();
+    operation.joins = vec![QueryJoin {
+        kind: JoinKind::Inner,
+        source: Some(sorgente("features", "u")),
+        derived_source: None,
+        lateral: false,
+        on: Some(QueryExpression::And {
+            arguments: vec![
+                confronto(colonna_di("u", "id"), Eq, colonna_di("t", "id")),
+                interseca(ug(), sv()),
+            ],
+        }),
+    }];
+    forme.push((
+        "JOIN features u ON u.id = t.id AND ST_Intersects(u.g, sonda)",
+        operation,
+        true,
+    ));
+    let mut operation = dentro(interseca(ug(), sv()));
+    operation.filter = None;
+    operation.group_by = vec![colonna_di("u", "id"), ug()];
+    operation.having = Some(interseca(ug(), sv()));
+    forme.push((
+        "GROUP BY u.id, u.g HAVING ST_Intersects(u.g, sonda)",
+        operation,
+        true,
+    ));
+
+    let mut difformi = Vec::new();
+    for (nome, operation, mysql) in &forme {
+        match renderer(Postgres, Sdk).render_query(operation) {
+            Ok(rendered) if rendered.sql.contains("postgis_typmod_srid") => {}
+            other => difformi.push(format!("{nome} Postgres Sdk: {other:?}")),
+        }
+        if let Err(error) = renderer(Postgres, Provider).render_query(operation) {
+            difformi.push(format!("{nome} Postgres Provider: {error:?}"));
+        }
+        if *mysql {
+            if let Err(error) = renderer(Mysql, Sdk).render_query(operation) {
+                difformi.push(format!("{nome} Mysql Sdk: {error:?}"));
+            }
+        }
+    }
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
 }

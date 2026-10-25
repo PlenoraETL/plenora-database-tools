@@ -46,7 +46,7 @@ use plenora_database_core::relational::{
     QueryWalkNode, SpatialFunction,
 };
 use plenora_database_core::spatial_probe::{
-    check_spatial_value, compare_frames, contains_geometry_probe, judge_scalar_operands,
+    check_spatial_value, compare_frames, contains_geometry_probe, judge_probe_positions,
     stamped_probe, term_frame, BaseColumn, ProbeEvidence, RelationScope, TermFrame,
     PROBE_PEER_WITHOUT_SRID, PROBE_SRID_MISMATCH,
 };
@@ -362,6 +362,14 @@ pub fn plan_query_probes(
             }
         }
     }
+    // La regola P sul piano intero: una sonda fuori da un predicato spatial
+    // del proprio blocco (una projection, un `ORDER BY`, un operatore non
+    // spatial, un termine che non e una colonna della FROM) non la confronta
+    // nessuno, nemmeno questo catalogo. Dopo il giudizio dei nodi, perche un
+    // termine non risolvibile resti `crs` come prima. Fino al 25/10 una sonda
+    // nella projection di una subquery `IN` o di una sorgente derivata
+    // nominata per alias rendeva zero righe senza errore.
+    judge_probe_positions(PROVIDER, ProbeEvidence::Catalog, operation)?;
     columns.sort_by(|left, right| {
         (&left.schema, &left.object, &left.column, left.srid).cmp(&(
             &right.schema,
@@ -387,11 +395,6 @@ fn judge_node(
     max_depth: u64,
     columns: &mut Vec<ColumnFrame>,
 ) -> Result<()> {
-    // Una sonda sotto un operatore che non e spatial (`=`, `IN`, ...), a
-    // qualunque profondita: nessuno la confronta con la colonna, nemmeno
-    // questo catalogo. Fino al 25/10 il giudizio guardava soltanto i nodi
-    // spatial con due geometrie, e `g = ST_Centroid(sonda 3857)` passava.
-    judge_scalar_operands(PROVIDER, ProbeEvidence::Catalog, expression)?;
     if let QueryExpression::SpatialValue {
         expression, srid, ..
     } = expression

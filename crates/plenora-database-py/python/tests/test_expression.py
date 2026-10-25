@@ -478,3 +478,51 @@ def test_a_probe_under_a_scalar_comparison_is_refused_by_the_compiler() -> None:
     )
     sql, _ = compile_relational_query(judged.to_json(), "postgres")
     assert "postgis_typmod_srid" in sql
+
+
+def test_a_probe_outside_a_spatial_predicate_of_its_block_is_refused() -> None:
+    """La regola P strutturale allo SDK: le forme P1 e P2 non si compilano.
+
+    Una sonda nella projection di una subquery `IN` o di una sorgente
+    derivata nominata per alias non la confronta nessun nodo spatial: su
+    d30d1d2 si compilavano su ogni dialetto, e su una colonna 4326 una sonda
+    3857 rendeva zero righe senza errore. Anche la projection e l'`ORDER BY`
+    della query esterna si rifiutano; la stessa sonda in un predicato spatial
+    del blocco resta ammessa.
+    """
+    from plenora_database.expression import _spatial_function, _spatial_predicate, _spatial_value
+
+    features = p.table("features", "id", "g", schema="public").alias("t")
+
+    def declared() -> p.Expression:
+        return _spatial_value(p.bind("sonda", p.BindType.BINARY), 3857, "geometry")
+
+    projected = p.select(declared().label("s"))
+    derived = projected.subquery("d")
+    statements = {
+        "g IN (SELECT sonda)": p.select(features.c.id).where(
+            features.c.g.in_subquery(projected)
+        ),
+        "JOIN (SELECT sonda AS s) d ON t.g = d.s": p.select(features.c.id)
+        .select_from(features)
+        .join(derived, features.c.g == derived.c.s),
+        "JOIN (SELECT sonda AS s) d ON ST_Intersects(t.g, d.s)": p.select(features.c.id)
+        .select_from(features)
+        .join(derived, _spatial_predicate("intersects", features.c.g, derived.c.s)),
+        "SELECT ST_Distance(t.g, sonda)": p.select(
+            features.c.id,
+            _spatial_function("distance", features.c.g, declared()).label("m"),
+        ).select_from(features),
+    }
+    for name, statement in statements.items():
+        for provider in ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"):
+            with pytest.raises(p.PlenoraUnsupportedError):
+                compile_relational_query(statement.to_json(), provider)
+                pytest.fail(f"{name} {provider}: compilato")
+    judged = (
+        p.select(features.c.id)
+        .select_from(features)
+        .where(_spatial_predicate("intersects", features.c.g, declared()))
+    )
+    sql, _ = compile_relational_query(judged.to_json(), "postgres")
+    assert "postgis_typmod_srid" in sql

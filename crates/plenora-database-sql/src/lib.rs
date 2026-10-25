@@ -601,6 +601,7 @@ impl Renderer {
             limits.max_identifier_bytes = ORACLE_MAX_IDENTIFIER_BYTES;
         }
         validate_query_operation(query, &limits)?;
+        self.judge_probe_positions(query)?;
 
         let mut binds = RenderState::default();
         let mut with_clause = String::new();
@@ -667,6 +668,7 @@ impl Renderer {
             limits.max_identifier_bytes = ORACLE_MAX_IDENTIFIER_BYTES;
         }
         validate_query_operation(query, &limits)?;
+        self.judge_probe_positions(query)?;
         let mut binds = RenderState::default();
         let sql = self.render_query_inner(query, &mut binds, encode_spatial_output)?;
         self.validate_bind_count(&binds)?;
@@ -1293,10 +1295,7 @@ impl Renderer {
                 negated,
             } => Ok(format!(
                 "{} {}IN ({})",
-                {
-                    self.refuse_spatial_value_operand(expression)?;
-                    self.render_query_expression(operand, binds)?
-                },
+                self.render_query_expression(operand, binds)?,
                 if *negated { "NOT " } else { "" },
                 self.render_query_inner(query, binds, false)?
             )),
@@ -1548,19 +1547,19 @@ impl Renderer {
         }
     }
 
-    /// Una sonda confrontata con `=`, `<>`, `IN`, `BETWEEN`, `LIKE`, `IS
-    /// NULL`, `IN (subquery)`: nessuno di questi confronta gli SRID (un
-    /// `PostGIS` `=` fra sistemi diversi e falso senza errore), e la regola
-    /// delle sonde la rifiuta (`spatial_probe::judge_scalar_operands`), a
-    /// qualunque profondita dell'operando e attraverso qualunque funzione
-    /// (`g = ST_Centroid(sonda)`). Fino al 25/10 si guardava soltanto un
-    /// `SpatialValue` operando diretto, e `g = ST_Centroid(SpatialValue 3857)`
-    /// su una colonna 4326 rendeva zero righe senza errore.
-    fn refuse_spatial_value_operand(&self, expression: &QueryExpression) -> Result<()> {
-        plenora_database_core::spatial_probe::judge_scalar_operands(
+    /// La regola P sul piano intero, prima di rendere: una sonda e ammessa
+    /// soltanto come argomento di un nodo spatial che la giudica, in un
+    /// predicato del blocco la cui FROM contiene la colonna confrontata
+    /// (`spatial_probe::judge_probe_positions`). La stessa visita per ogni
+    /// dialetto, con o senza catalogo, e per il provider `PostgreSQL`. Fino
+    /// al 25/10 il renderer guardava soltanto gli operandi di un operatore non
+    /// spatial, e una sonda nella projection di una subquery `IN` o di una
+    /// sorgente derivata nominata per alias rendeva zero righe senza errore.
+    fn judge_probe_positions(&self, query: &QueryOperation) -> Result<()> {
+        plenora_database_core::spatial_probe::judge_probe_positions(
             self.provider_kind(),
             self.probe_evidence,
-            expression,
+            query,
         )
     }
 
@@ -1569,7 +1568,6 @@ impl Renderer {
         expression: &QueryExpression,
         binds: &mut RenderState,
     ) -> Result<String> {
-        self.refuse_spatial_value_operand(expression)?;
         match expression {
             QueryExpression::Compare {
                 left,
