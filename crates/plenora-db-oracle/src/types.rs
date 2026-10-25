@@ -74,7 +74,7 @@ impl OracleColumnSpec {
             value if value.starts_with("TIMESTAMP") && !value.contains("TIME ZONE") => {
                 OracleColumnKind::DateTime
             }
-            "SDO_GEOMETRY" => {
+            "SDO_GEOMETRY" if column.is_sdo_geometry() => {
                 if column.spatial_srid.is_none()
                     || !matches!(column.spatial_dimensions, Some(2 | 3))
                     || column.spatial_semantics.is_none()
@@ -290,9 +290,10 @@ impl OracleReadPlan {
             operation.filter.as_ref(),
             &operation.order_by,
             |field| {
-                description.columns.iter().any(|column| {
-                    column.name == field && column.data_type.eq_ignore_ascii_case("SDO_GEOMETRY")
-                })
+                description
+                    .columns
+                    .iter()
+                    .any(|column| column.name == field && column.is_sdo_geometry())
             },
         )?;
         let bind_names = if let Some(filter) = &operation.filter {

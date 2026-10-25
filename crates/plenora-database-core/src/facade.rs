@@ -276,9 +276,10 @@ pub async fn verify_operands(
 ) -> Result<()> {
     let provider = tx.provider_kind();
     let operands = plan.operands(provider)?;
-    // Oracle e Db2: il server rifiuta ogni operatore scalare su una colonna
-    // geometrica (`spatial_operand::operand_server_guard`); il giudizio
-    // senza catalogo ha gia rifiutato cio che il server non protegge.
+    // Oracle: il server rifiuta ogni operatore scalare su una colonna
+    // geometrica (`spatial_operand::operand_server_guard`, misurato); il
+    // giudizio senza catalogo ha gia rifiutato cio che il server non
+    // protegge. Db2 non ha guardia e passa dal catalogo (mondo chiuso).
     if operands.is_empty() || crate::spatial_operand::operand_server_guard(provider).is_some() {
         return Ok(());
     }

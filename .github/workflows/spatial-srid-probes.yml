@@ -4,6 +4,9 @@ name: spatial-srid-probes
 # server rifiuta una sonda in un altro sistema di riferimento prima di ogni
 # riga e dove no. `plenora_database_core::spatial_probe::server_guard` ammette
 # una sonda senza catalogo soltanto dove queste misure dicono «guardia».
+# Il job `operandi` misura la guardia del server sugli operandi scalari
+# geometrici (`spatial_operand::operand_server_guard`) su Oracle e Db2, con lo
+# SQL del renderer di `tests/fixtures/operandi_server_guard.json`.
 #
 # Questo file non contiene logica di qualifica: un'invocazione per prodotto.
 # Le immagini vengono, per digest, da `docker/<prodotto>/references.json` e
@@ -21,6 +24,11 @@ on:
       - "crates/plenora-database-core/src/portable/compiler.rs"
       - "crates/plenora-database-sql/src/lib.rs"
       - "scripts/sonde_srid_server.py"
+      - "scripts/sonde_operandi_server.py"
+      - "crates/plenora-database-core/src/spatial_operand.rs"
+      - "tests/fixtures/operandi_server_guard.json"
+      - "docker-compose.oracle.yml"
+      - "docker/db2-client/Dockerfile"
       - "docker/mysql/references.json"
       - "docker/mariadb/references.json"
       - "docker-compose.postgres.yml"
@@ -65,4 +73,37 @@ jobs:
         with:
           name: sonde-srid-${{ matrix.server }}
           path: sonde-srid-${{ matrix.server }}.json
+          if-no-files-found: error
+
+  operandi:
+    name: sonde operandi (${{ matrix.server }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [oracle, db2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: dipendenze dei gate Python
+        run: python3 -m pip install -r requirements-self-tests.txt
+      # Le decisioni dello script e la tabella del core contro il fixture,
+      # senza server; la stessa tabella la prova `operandi_geometrici.rs`.
+      - name: scripts/test_sonde_operandi_server.py
+        run: python3 scripts/test_sonde_operandi_server.py
+      - name: sonde_operandi_server.py
+        run: >-
+          python3 scripts/sonde_operandi_server.py
+          --server ${{ matrix.server }}
+          --riferimenti
+          --referto sonde-operandi-${{ matrix.server }}.json
+      - name: referto
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonde-operandi-${{ matrix.server }}
+          path: sonde-operandi-${{ matrix.server }}.json
           if-no-files-found: error

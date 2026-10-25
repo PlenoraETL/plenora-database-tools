@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 117335,
-  "max_code_lines": 95042,
-  "rationale": "Regole N e S degli operandi geometrici ristrette ai piani che possono contenere geometrie; guardia del server sugli operandi scalari di Oracle e Db2 (operand_server_guard), SpatialOutput sotto un operatore rifiutato senza catalogo, SQL dello SDK reso dal piano nel nativo; prove offline e live PostgreSQL, SQL Server CS, MySQL e MariaDB. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 117187 -> 117335 (+148), righe di codice 94971 -> 95042 (+71). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 117358,
+  "max_code_lines": 95044,
+  "rationale": "Guardia del server sugli operandi scalari misurata live: Oracle (MDSYS.SDO_GEOMETRY, ogni forma rifiutata) resta con la guardia, Db2 (SYSIBM.ST_GEOMETRY confronta i byte) torna a mondo chiuso; il riconoscimento di SDO_GEOMETRY Oracle chiede il proprietario MDSYS (DATA_TYPE_OWNER). Prove: fixture tests/fixtures/operandi_server_guard.json, scripts/sonde_operandi_server.py, live test Oracle. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 117335 -> 117358 (+23), righe di codice 95042 -> 95044 (+2). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

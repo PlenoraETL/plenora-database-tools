@@ -153,7 +153,7 @@ fn validate_spatial_filter(
                         "colonna Spatial Oracle non trovata",
                     )
                 })?;
-            if !column.data_type.eq_ignore_ascii_case("SDO_GEOMETRY") {
+            if !column.is_sdo_geometry() {
                 return Err(read_error(
                     ErrorCategory::DataMapping,
                     "filtro Spatial Oracle applicato a una colonna non geometrica",

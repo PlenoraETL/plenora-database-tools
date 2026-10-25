@@ -13,7 +13,7 @@
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::spatial_operand::{
-    scalar_operands, OperandCatalog, RelationColumns, AMBIGUOUS_NAME_SHAPE,
+    operand_server_guard, scalar_operands, OperandCatalog, RelationColumns, AMBIGUOUS_NAME_SHAPE,
     GEOMETRY_OPERAND_UNRESOLVED,
 };
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
@@ -409,89 +409,154 @@ fn colonne_scalari_e_tabelle_senza_geometrie_restano_ammesse() {
     }
 }
 
-/// L'evidenza offline della guardia del server su Oracle e Db2
-/// (`spatial_operand::operand_server_guard`): in ogni posizione di operando
-/// scalare il renderer applica l'operatore, il `CAST` o la funzione
-/// direttamente alla colonna, senza conversioni fra la colonna e
-/// l'operatore. Su `SDO_GEOMETRY` e `DB2GSE.ST_GEOMETRY` il server rifiuta
-/// quelle forme (dalla documentazione; non misurato live).
+/// Le forme della guardia del server sugli operandi scalari
+/// (`spatial_operand::operand_server_guard`), con lo SQL reso per Oracle e
+/// Db2 e gli esiti misurati sul server da `scripts/sonde_operandi_server.py`
+/// e dal live test Oracle.
+const FIXTURE_GUARDIA: &str = include_str!("../../../tests/fixtures/operandi_server_guard.json");
+
+const DIALETTI_GUARDIA: [(ProviderKind, Dialect, &str); 2] = [
+    (ProviderKind::Oracle, Dialect::Oracle, "oracle"),
+    (ProviderKind::Db2, Dialect::Db2, "db2"),
+];
+
+fn forme_della_guardia() -> Vec<Value> {
+    let fixture: Value = serde_json::from_str(FIXTURE_GUARDIA).expect("fixture della guardia");
+    fixture["forme"].as_array().expect("forme").clone()
+}
+
+/// `SELECT T.ID FROM PLENORA.SONDE_OPERANDI T` con il piano della forma sopra.
+fn piano_della_forma(piano: &Value) -> Value {
+    let mut operation = json!({
+        "source": {"object": {"catalog": null, "schema": "PLENORA", "object": "SONDE_OPERANDI"}, "alias": "T"},
+        "projection": [{"expression": {"kind": "column", "column": {"relation": "T", "field": "ID"}}, "alias": "ID"}],
+        "filter": null,
+        "having": null,
+        "row_limit": null
+    });
+    for (key, value) in piano.as_object().expect("piano") {
+        operation[key] = value.clone();
+    }
+    operation
+}
+
+/// Il piano con la colonna `G` (e il suo alias di uscita) sostituita da
+/// `colonna`: il controllo della forma.
+fn con_colonna(value: &Value, colonna: &str) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, inner)| {
+                    let sostituito = (key == "field" || key == "alias") && inner == "G";
+                    let inner = if sostituito {
+                        Value::String(colonna.to_owned())
+                    } else {
+                        con_colonna(inner, colonna)
+                    };
+                    (key.clone(), inner)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| con_colonna(item, colonna))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn resa(prodotto: ProviderKind, dialect: Dialect, piano: &Value) -> (String, Vec<String>) {
+    let operation: QueryOperation = serde_json::from_value(piano.clone()).expect("piano");
+    let rendered = renderer(prodotto, dialect)
+        .render_query(&operation)
+        .unwrap_or_else(|error| panic!("{prodotto:?}: {error:?}"));
+    (
+        rendered.sql,
+        rendered.binds.into_iter().map(|bind| bind.name).collect(),
+    )
+}
+
+/// Lo SQL del fixture e quello del renderer, per ogni forma e dialetto: lo
+/// script misura sul server proprio lo SQL che il repository rende. Il
+/// renderer applica l'operatore direttamente alla colonna, senza
+/// conversioni; il controllo (la forma sulla colonna non geometrica) e lo
+/// stesso SQL con un altro nome di colonna.
 #[test]
-fn su_oracle_e_db2_l_operatore_scalare_cade_sulla_colonna_geometrica() {
-    let g = colonna("g");
-    let stringa = json!({"kind": "typed_parameter", "name": "p", "parameter_type": "string"});
-    let forme = [
-        (
-            "=",
-            json!({"filter": {"kind": "compare", "left": g, "operator": "eq", "right": bind()}}),
-            "\"t\".\"g\" = ",
-        ),
-        (
-            "<>",
-            json!({"filter": {"kind": "compare", "left": g, "operator": "ne", "right": bind()}}),
-            "\"t\".\"g\" <> ",
-        ),
-        (
-            "<",
-            json!({"filter": {"kind": "compare", "left": g, "operator": "lt", "right": bind()}}),
-            "\"t\".\"g\" < ",
-        ),
-        (
-            "IN",
-            json!({"filter": {"kind": "in_list", "expression": g, "values": [bind()]}}),
-            "\"t\".\"g\" IN (",
-        ),
-        (
-            "BETWEEN",
-            json!({"filter": {"kind": "between", "expression": g, "lower": bind(), "upper": bind()}}),
-            "\"t\".\"g\" BETWEEN ",
-        ),
-        (
-            "LIKE su CAST",
-            json!({"filter": {"kind": "like", "expression": testo(&g), "pattern": stringa}}),
-            "CAST(\"t\".\"g\" AS VARCHAR",
-        ),
-        (
-            "LOWER",
-            json!({"filter": {"kind": "compare", "left": {"kind": "scalar", "function": "lower", "arguments": [g]}, "operator": "eq", "right": stringa}}),
-            "LOWER(\"t\".\"g\")",
-        ),
-        (
-            "ORDER BY",
-            json!({"order_by": ordine(&g)}),
-            "ORDER BY \"t\".\"g\"",
-        ),
-        ("GROUP BY", json!({"group_by": [g]}), "GROUP BY \"t\".\"g\""),
-        (
-            "DISTINCT",
-            json!({"projection": [voce(&g, Some("g"))], "distinct": true}),
-            "DISTINCT \"t\".\"g\"",
-        ),
-        (
-            "MAX",
-            json!({"projection": [voce(&json!({"kind": "scalar", "function": "maximum", "arguments": [g]}), Some("m"))]}),
-            "MAX(\"t\".\"g\")",
-        ),
-        (
-            "UNION",
-            json!({"projection": [voce(&g, Some("g"))],
-                "set_operations": [{"operator": "union", "all": false, "query": query(&json!({"projection": [voce(&g, Some("g"))]}))}]}),
-            " UNION ",
-        ),
-    ];
-    for (prodotto, dialect) in [
-        (ProviderKind::Oracle, Dialect::Oracle),
-        (ProviderKind::Db2, Dialect::Db2),
-    ] {
-        for (forma, extra, atteso) in &forme {
-            let sql = renderer(prodotto, dialect)
-                .render_query(&query(extra))
-                .unwrap_or_else(|error| panic!("{prodotto:?} {forma}: {error:?}"))
-                .sql;
-            assert!(sql.contains(atteso), "{prodotto:?} {forma}: {sql}");
+fn il_fixture_della_guardia_e_lo_sql_del_renderer() {
+    for forma in forme_della_guardia() {
+        let nome = forma["forma"].as_str().expect("nome della forma");
+        let piano = piano_della_forma(&forma["piano"]);
+        for (prodotto, dialect, chiave) in DIALETTI_GUARDIA {
+            let (sql, binds) = resa(prodotto, dialect, &piano);
+            let atteso = &forma["sql"][chiave];
+            assert_eq!(sql, atteso["sql"].as_str().expect("sql"), "{chiave} {nome}");
+            let binds_attesi: Vec<String> =
+                serde_json::from_value(atteso["binds"].clone()).expect("bind del fixture");
+            assert_eq!(binds, binds_attesi, "{chiave} {nome}");
             assert!(
                 !sql.contains("SDO_UTIL") && !sql.contains("ST_As"),
-                "{prodotto:?} {forma}: conversione implicita in {sql}"
+                "{chiave} {nome}: conversione implicita in {sql}"
             );
+            if let Some(colonna) = forma["controllo"].as_str() {
+                let (controllo, binds_controllo) =
+                    resa(prodotto, dialect, &con_colonna(&piano, colonna));
+                assert_eq!(
+                    controllo,
+                    sql.replace("\"G\"", &format!("\"{colonna}\"")),
+                    "{chiave} {nome}: controllo"
+                );
+                assert_eq!(binds_controllo, binds, "{chiave} {nome}: controllo");
+            }
+        }
+    }
+}
+
+/// La tabella della guardia e le misure: un prodotto ha la guardia se e
+/// soltanto se ogni forma misurata che la regola non ammette e rifiutata dal
+/// server. Le forme su una colonna che la query non legge mai non contano:
+/// nessuna riga dipende dall'operatore.
+#[test]
+fn la_guardia_del_server_e_dove_ogni_forma_misurata_e_rifiutata() {
+    let forme = forme_della_guardia();
+    for (prodotto, _, chiave) in DIALETTI_GUARDIA {
+        let mut senza_guardia = Vec::new();
+        let mut rifiutate = 0;
+        for forma in &forme {
+            let esito = &forma["esito"][chiave];
+            if let Some(codici) = esito.get("errore") {
+                assert!(
+                    !codici.as_array().expect("codici").is_empty(),
+                    "{chiave} {}: errore senza codice",
+                    forma["forma"]
+                );
+                assert!(
+                    forma.get("ammessa").is_none(),
+                    "{chiave} {}",
+                    forma["forma"]
+                );
+                rifiutate += 1;
+            } else {
+                assert_eq!(esito, &json!({"ok": true}), "{chiave} {}", forma["forma"]);
+                if forma.get("ammessa").is_none() && forma.get("colonna_mai_letta").is_none() {
+                    senza_guardia.push(forma["forma"].clone());
+                }
+            }
+        }
+        if operand_server_guard(prodotto).is_some() {
+            assert!(senza_guardia.is_empty(), "{chiave}: {senza_guardia:?}");
+            assert!(rifiutate > 0, "{chiave}");
+        } else {
+            assert!(
+                !senza_guardia.is_empty(),
+                "{chiave}: nessuna misura senza guardia"
+            );
+        }
+    }
+    for (prodotto, _) in PRODOTTI {
+        if !matches!(prodotto, ProviderKind::Oracle | ProviderKind::Db2) {
+            assert!(operand_server_guard(prodotto).is_none(), "{prodotto:?}");
         }
     }
 }

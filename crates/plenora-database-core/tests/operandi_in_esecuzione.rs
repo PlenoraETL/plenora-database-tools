@@ -341,8 +341,8 @@ fn le_colonne_non_dichiarate_si_giudicano_sul_catalogo_della_transazione() {
             ),
         ] {
             if operand_server_guard(prodotto).is_some() {
-                // Oracle e Db2: il server rifiuta l'operatore scalare sul
-                // tipo oggetto o strutturato; lo SQL arriva al server.
+                // Oracle: il server rifiuta l'operatore scalare sul tipo
+                // oggetto (misurato); lo SQL arriva al server.
                 ammessa(prodotto, forma, plan);
             } else {
                 rifiutata(prodotto, forma, plan, GEOMETRY_SCALAR_OPERAND);
@@ -351,8 +351,9 @@ fn le_colonne_non_dichiarate_si_giudicano_sul_catalogo_della_transazione() {
     }
 }
 
-/// Oracle e Db2: cio che la guardia del server non protegge resta
-/// rifiutato senza catalogo, prima di eseguire: il binario canonico di una
+/// Oracle (con la guardia del server) e Db2 (senza, a mondo chiuso): cio
+/// che la guardia non protegge resta rifiutato senza catalogo, prima di
+/// eseguire: il binario canonico di una
 /// geometria (`SpatialOutput`, un `BLOB` WKB) e una funzione spatial che
 /// rende una geometria sotto un operatore scalare.
 #[test]

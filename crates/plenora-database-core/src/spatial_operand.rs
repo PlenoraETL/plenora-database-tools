@@ -97,10 +97,12 @@
 //! relazioni resta. Il nativo dello SDK rende lo SQL dal piano e lo confronta
 //! con quello ricevuto: uno SQL diverso si rifiuta.
 //!
-//! Oracle e Db2 non leggono il catalogo: la guardia del server
-//! ([`operand_server_guard`]) rifiuta ogni operatore scalare su
-//! `SDO_GEOMETRY` e `DB2GSE.ST_GEOMETRY`, e l'esecuzione giudica soltanto la
-//! parte senza catalogo, che rifiuta cio che la guardia non protegge.
+//! Oracle non legge il catalogo: la guardia del server
+//! ([`operand_server_guard`], misurata) rifiuta ogni operatore scalare su
+//! `MDSYS.SDO_GEOMETRY`, e l'esecuzione giudica soltanto la parte senza
+//! catalogo, che rifiuta cio che la guardia non protegge. Db2 non legge il
+//! catalogo e non ha guardia (misurato: `SYSIBM.ST_GEOMETRY` e un tipo
+//! distinto su `BLOB`, e il server ne confronta i byte): mondo chiuso.
 //!
 //! # Perche
 //!
@@ -126,26 +128,34 @@
 //!
 //! # Limiti dichiarati
 //!
-//! - **Regola.** La guardia del server sugli operandi scalari di Oracle e Db2
-//!   ([`operand_server_guard`]) e letta dalla documentazione dei prodotti,
-//!   non misurata live; il renderer e provato offline (l'operatore cade
-//!   sulla colonna).
-//! - **Ambito.** Oracle e Db2, sullo SDK, la facade e la CLI portable: le
-//!   colonne non si giudicano sul catalogo.
-//! - **Hazard.** Se un server accettasse una forma che la documentazione
-//!   dice rifiutata (un `MAP`/`ORDER` aggiunto al tipo, una conversione
-//!   implicita), quella forma confronterebbe il formato interno senza errore.
-//! - **Rientro.** Le sonde live della guardia su Oracle Database Free e Db2
-//!   LUW, come `sonde_srid_server.py`, o la lettura del catalogo nella
-//!   transazione.
+//! - **Regola.** La guardia del server sugli operandi scalari di Oracle
+//!   ([`operand_server_guard`]) vale per le forme misurate
+//!   (`tests/fixtures/operandi_server_guard.json`, misurate da
+//!   `scripts/sonde_operandi_server.py` e dal live test Oracle), non per
+//!   ogni forma che il piano puo esprimere.
+//! - **Ambito.** Oracle, sullo SDK, la facade e la CLI portable: le colonne
+//!   non si giudicano sul catalogo.
+//! - **Hazard.** Una forma non misurata in cui il server convertisse la
+//!   geometria prima dell'operatore confronterebbe senza errore; su
+//!   un'immagine diversa da quella qualificata il tipo potrebbe avere un
+//!   `MAP`/`ORDER`. Un operatore su una colonna di una sorgente derivata che
+//!   la query non legge mai passa senza errore (misurato: il server elimina
+//!   la colonna prima di controllarne il tipo); nessuna riga ne dipende.
+//! - **Rientro.** Quando Oracle legge il catalogo nella transazione; fino ad
+//!   allora ogni forma nuova del renderer entra nel fixture e si misura.
 //!
 //! - **Regola.** Mondo chiuso: senza le colonne di una relazione non si prova
 //!   niente.
-//! - **Ambito.** Un provider senza `operand_catalog` e senza guardia (oggi
-//!   nessuno dei provider del repository; i finti di prova).
+//! - **Ambito.** Un provider senza `operand_catalog` e senza guardia: Db2
+//!   (misurato senza guardia: `=`, `<>`, `<`, `IN`, `BETWEEN`, `CAST`,
+//!   `COALESCE` su `SYSIBM.ST_GEOMETRY` passano e confrontano i byte del
+//!   `BLOB`), sullo SDK, la facade e la CLI portable; i finti di prova.
 //! - **Hazard.** Nessun passaggio silenzioso: un riferimento in posizione di
-//!   operando su una relazione si rifiuta, anche su colonne scalari.
-//! - **Rientro.** Quando il provider legge il catalogo.
+//!   operando su una relazione che puo contenere una geometria si rifiuta,
+//!   anche su colonne scalari (`WHERE id = ?`, `ORDER BY id`). Il costo e il
+//!   rifiuto di query ordinarie su Db2.
+//! - **Rientro.** Quando Db2 legge il catalogo nella transazione
+//!   (`TransactionScope::operand_catalog`), con le sue prove live.
 //!
 //! - **Regola.** La compilazione senza esecuzione non legge il catalogo.
 //! - **Ambito.** `compile_relational_query` e `compile_relational_mutation`
@@ -206,38 +216,39 @@ pub const AMBIGUOUS_NAME_SHAPE: &str =
 /// oltre, l'espansione non si conosce e il riferimento non si risolve.
 const MAX_EXPANSION_DEPTH: usize = 64;
 
-/// La guardia del server sugli operandi geometrici scalari: dove il tipo
-/// geometrico e un tipo oggetto o strutturato, il server rifiuta ogni
-/// operatore scalare su una colonna geometrica.
+/// La guardia del server sugli operandi geometrici scalari: dove il server
+/// rifiuta ogni operatore scalare su una colonna geometrica, misurato.
 ///
-/// Letta dalla documentazione dei prodotti, non misurata live (limite
-/// dichiarato nel modulo):
+/// Oracle, `MDSYS.SDO_GEOMETRY` (tipo oggetto senza `MAP` o `ORDER`, con
+/// attributi `VARRAY`), misurato su Oracle Database Free
+/// (`docker-compose.oracle.yml`) con lo SQL del renderer per ogni forma di
+/// `tests/fixtures/operandi_server_guard.json`: confronto con un bind
+/// binario o testo, `IN` e `BETWEEN` con bind, `CAST` a `VARCHAR2` o `RAW`,
+/// `LOWER`/`UPPER`, `COALESCE`, aritmetica, `SUM`/`AVG`, una colonna di CTE
+/// sotto `=`: ORA-00932; `=` fra geometrie, `IN` subquery, `ORDER BY` (anche
+/// di `CASE`, di subquery scalare, per alias, di una colonna derivata),
+/// `DISTINCT`, `MIN`/`MAX`, `HAVING`, `PARTITION BY` e `ORDER BY` delle
+/// finestre, `LAG`/`LEAD`, `UNION`/`INTERSECT`/`EXCEPT`: ORA-22901;
+/// `GROUP BY`: ORA-22950. La stessa forma su una colonna non geometrica
+/// passa (controllo).
 ///
-/// - Oracle, `MDSYS.SDO_GEOMETRY`: confronto con `RAW` o `VARCHAR2`,
-///   `CAST` a `VARCHAR2` o `RAW`, `LOWER`/`UPPER`, aritmetica:
-///   ORA-00932; `=`, `<>`, `IN` fra oggetti con attributi `VARRAY`:
-///   ORA-22901; `<`, `BETWEEN`, `ORDER BY`, `GROUP BY`, `DISTINCT`, set
-///   operation che confrontano righe, `MIN`/`MAX`, `PARTITION BY` su un
-///   oggetto senza metodo `MAP` o `ORDER`: ORA-22950;
-/// - Db2 LUW, `DB2GSE.ST_GEOMETRY` e sottotipi (tipi strutturati senza
-///   `ORDERING`): confronto con un binario o un testo: SQL0401N;
-///   `CAST` a `VARCHAR` (anche `FOR BIT DATA`): SQL0461N; funzioni
-///   stringa: SQL0440N; `ORDER BY`, `GROUP BY`, `DISTINCT`, set operation
-///   che confrontano righe, `MIN`/`MAX` su un tipo strutturato senza
-///   ordinamento: SQLSTATE 42818/42907.
+/// Db2 non ha guardia: su Db2 12.1 `ST_GEOMETRY` e `SYSIBM.ST_GEOMETRY`, un
+/// tipo distinto su `BLOB`, e `=`, `<>`, `<`, `>=`, `IN`, `NOT IN`,
+/// `BETWEEN` con un bind binario, `=` fra geometrie, `IN` subquery, `CAST` a
+/// testo o binario, `COALESCE`, una colonna di CTE sotto `=` passano senza
+/// errore, confrontando i byte del formato interno (misurato con lo stesso
+/// fixture). Db2 resta a mondo chiuso.
 ///
-/// Il renderer applica l'operatore direttamente alla colonna su entrambi i
-/// dialetti (provato offline in `operandi_geometrici.rs`): nessuna
+/// Il renderer applica l'operatore direttamente alla colonna (provato
+/// offline in `operandi_geometrici.rs` sullo stesso fixture): nessuna
 /// conversione implicita sta fra la colonna e l'operatore. Le forme che il
 /// server non protegge restano rifiutate senza catalogo: una funzione
 /// spatial che rende una geometria, un `SpatialValue`, il binario canonico
 /// (`SpatialOutput`, un `BLOB` WKB) sotto un operatore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperandServerGuard {
-    /// Oracle, `SDO_GEOMETRY`.
+    /// Oracle, `MDSYS.SDO_GEOMETRY`.
     OracleObjectType,
-    /// Db2 LUW, `DB2GSE.ST_GEOMETRY`.
-    Db2StructuredType,
 }
 
 /// La guardia del server sugli operandi scalari del prodotto, se c'e.
@@ -245,7 +256,6 @@ pub enum OperandServerGuard {
 pub const fn operand_server_guard(provider: ProviderKind) -> Option<OperandServerGuard> {
     match provider {
         ProviderKind::Oracle => Some(OperandServerGuard::OracleObjectType),
-        ProviderKind::Db2 => Some(OperandServerGuard::Db2StructuredType),
         _ => None,
     }
 }

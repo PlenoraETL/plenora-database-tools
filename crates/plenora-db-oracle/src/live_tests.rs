@@ -2489,3 +2489,260 @@ async fn live_cached_query_reexecutes_with_an_unexhausted_first_page() {
     }
     connection.close().await.expect("chiusura cache probe");
 }
+
+/// Le forme della guardia del server sugli operandi scalari, con lo SQL
+/// reso e gli esiti misurati (`scripts/sonde_operandi_server.py`).
+const FIXTURE_GUARDIA: &str = include_str!("../../../tests/fixtures/operandi_server_guard.json");
+
+/// `SELECT T.ID FROM PLENORA.SONDE_OPERANDI T` con il piano della forma sopra.
+fn guard_plan(piano: &serde_json::Value) -> serde_json::Value {
+    let mut operation = serde_json::json!({
+        "source": {"object": {"catalog": null, "schema": "PLENORA", "object": "SONDE_OPERANDI"}, "alias": "T"},
+        "projection": [{"expression": {"kind": "column", "column": {"relation": "T", "field": "ID"}}, "alias": "ID"}],
+        "filter": null,
+        "having": null,
+        "row_limit": null
+    });
+    for (key, value) in piano.as_object().expect("piano") {
+        operation[key] = value.clone();
+    }
+    operation
+}
+
+/// Il piano con `G` (e il suo alias di uscita) sostituita da `colonna`.
+fn guard_control(value: &serde_json::Value, colonna: &str) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(key, inner)| {
+                    let replaced = (key == "field" || key == "alias") && inner == "G";
+                    let inner = if replaced {
+                        serde_json::Value::String(colonna.to_owned())
+                    } else {
+                        guard_control(inner, colonna)
+                    };
+                    (key.clone(), inner)
+                })
+                .collect(),
+        ),
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(|item| guard_control(item, colonna))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Il valore di un bind tipato del piano: binario, testo, intero.
+fn guard_bind(piano: &serde_json::Value, name: &str) -> ParameterValue {
+    let mut stack = vec![piano];
+    while let Some(node) = stack.pop() {
+        match node {
+            serde_json::Value::Object(map) => {
+                if map.get("kind").and_then(serde_json::Value::as_str) == Some("typed_parameter")
+                    && map.get("name").and_then(serde_json::Value::as_str) == Some(name)
+                {
+                    return match map["parameter_type"].as_str() {
+                        Some("binary") => ParameterValue::Bytes(vec![1]),
+                        Some("string") => ParameterValue::String("a".to_owned()),
+                        Some("integer") => ParameterValue::I64(1),
+                        other => panic!("tipo di bind del fixture {other:?}"),
+                    };
+                }
+                stack.extend(map.values());
+            }
+            serde_json::Value::Array(items) => stack.extend(items),
+            _ => {}
+        }
+    }
+    panic!("bind {name} assente dal piano");
+}
+
+/// Esegue il piano reso dal renderer del repository attraverso il percorso
+/// giudicato dell'esecuzione (`facade::query_judged`, come lo SDK, la
+/// facade e la CLI portable): sotto la guardia del server il giudizio non
+/// legge il catalogo e lo SQL arriva al server.
+async fn run_guard_plan(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    budget: &ResourceBudget,
+    plan: &serde_json::Value,
+    cancellation: &CancellationToken,
+) -> (String, plenora_database_core::Result<Vec<String>>) {
+    let operation: QueryOperation = serde_json::from_value(plan.clone()).expect("piano");
+    let rendered = Renderer::new(
+        Dialect::Oracle,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .with_provider(ProviderKind::Oracle)
+    .render_query(&operation)
+    .expect("resa Oracle");
+    let values = rendered
+        .binds
+        .iter()
+        .map(|bind| guard_bind(plan, &bind.name))
+        .collect();
+    let statement = Statement::new(rendered.sql.clone()).with_params(values);
+    let mut transaction = provider
+        .begin_transaction(secret, &TransactionOptions::default(), budget, cancellation)
+        .await
+        .expect("transazione guardia Oracle");
+    let outcome = plenora_database_core::facade::query_judged(
+        transaction.as_mut(),
+        &statement,
+        Some(&plenora_database_core::spatial_operand::OperandPlan::Query(
+            &operation,
+        )),
+        cancellation,
+    )
+    .await
+    .map(|rows| {
+        let mut ids: Vec<String> = rows
+            .iter()
+            .map(|row| format!("{:?}", row.get("ID")))
+            .collect();
+        ids.sort();
+        ids
+    });
+    let _ = transaction.rollback(cancellation).await;
+    (rendered.sql, outcome)
+}
+
+/// La guardia del server sugli operandi scalari
+/// (`spatial_operand::operand_server_guard`), misurata sul server: per ogni
+/// forma del fixture lo SQL reso dal renderer del repository, eseguito dal
+/// percorso giudicato, e rifiutato dal server con uno dei codici misurati;
+/// la stessa forma su una colonna non geometrica passa; le forme che la
+/// regola ammette passano; un operatore su una colonna derivata mai letta
+/// passa e rende le stesse righe del controllo. Il catalogo dice
+/// `MDSYS.SDO_GEOMETRY`, proprietario compreso.
+#[tokio::test]
+#[ignore = "richiede Oracle Spatial live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_operand_server_guard_rejects_every_measured_form() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget guardia Oracle");
+    let table = "SONDE_OPERANDI";
+    let _ = provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!(
+                "CREATE TABLE {table} (ID NUMBER(10), NAME VARCHAR2(20), B RAW(16), G MDSYS.SDO_GEOMETRY)"
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("tabella guardia Oracle");
+    let mut setup = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione preparazione guardia Oracle");
+    for sql in [
+        format!("DELETE FROM USER_SDO_GEOM_METADATA WHERE TABLE_NAME = '{table}'"),
+        format!(
+            "INSERT INTO USER_SDO_GEOM_METADATA (TABLE_NAME, COLUMN_NAME, DIMINFO, SRID) VALUES ('{table}', 'G', MDSYS.SDO_DIM_ARRAY(MDSYS.SDO_DIM_ELEMENT('X', -180, 180, 0.005), MDSYS.SDO_DIM_ELEMENT('Y', -90, 90, 0.005)), 4326)"
+        ),
+        format!("INSERT INTO {table} VALUES (1, 'a', HEXTORAW('01'), MDSYS.SDO_GEOMETRY(2001, 4326, MDSYS.SDO_POINT_TYPE(1, 2, NULL), NULL, NULL))"),
+        format!("INSERT INTO {table} VALUES (2, 'b', HEXTORAW('02'), MDSYS.SDO_GEOMETRY(2001, 4326, MDSYS.SDO_POINT_TYPE(1, 2, NULL), NULL, NULL))"),
+    ] {
+        setup
+            .execute(&Statement::new(sql), &cancellation)
+            .await
+            .expect("preparazione guardia Oracle");
+    }
+    setup
+        .commit(&cancellation)
+        .await
+        .expect("commit preparazione guardia Oracle");
+
+    let description = provider
+        .inspect(
+            &secret,
+            &Operation::DatabaseDescribeObject {
+                source: ObjectRef {
+                    catalog: None,
+                    schema: Some("PLENORA".to_owned()),
+                    object: table.to_owned(),
+                },
+            },
+            &cancellation,
+        )
+        .await
+        .expect("catalogo guardia Oracle");
+    let description: crate::OracleObjectDescription =
+        serde_json::from_value(description.document).expect("documento catalogo guardia Oracle");
+    let geometry = description
+        .columns
+        .iter()
+        .find(|column| column.name == "G")
+        .expect("colonna G");
+    assert_eq!(geometry.data_type_owner.as_deref(), Some("MDSYS"));
+    assert!(geometry.is_sdo_geometry());
+
+    let fixture: serde_json::Value =
+        serde_json::from_str(FIXTURE_GUARDIA).expect("fixture della guardia");
+    let forms = fixture["forme"].as_array().expect("forme");
+    assert!(!forms.is_empty());
+    for form in forms {
+        let name = form["forma"].as_str().expect("nome della forma");
+        let plan = guard_plan(&form["piano"]);
+        let (sql, outcome) =
+            run_guard_plan(&provider, &secret, &budget, &plan, &cancellation).await;
+        assert_eq!(
+            sql,
+            form["sql"]["oracle"]["sql"].as_str().expect("sql"),
+            "{name}"
+        );
+        let control = match form["controllo"].as_str() {
+            Some(column) => {
+                let (_, control) = run_guard_plan(
+                    &provider,
+                    &secret,
+                    &budget,
+                    &guard_control(&plan, column),
+                    &cancellation,
+                )
+                .await;
+                Some(control.unwrap_or_else(|error| panic!("{name} controllo: {error}")))
+            }
+            None => None,
+        };
+        let expected = &form["esito"]["oracle"];
+        if let Some(codes) = expected.get("errore") {
+            let error = outcome.expect_err(name);
+            assert!(
+                codes
+                    .as_array()
+                    .expect("codici")
+                    .iter()
+                    .any(|code| error.message.contains(code.as_str().expect("codice"))),
+                "{name}: {}",
+                error.message
+            );
+        } else {
+            let rows = outcome.unwrap_or_else(|error| panic!("{name}: {error}"));
+            if form.get("colonna_mai_letta").is_some() {
+                // Il server elimina la colonna prima di controllarne il tipo:
+                // nessuna riga ne dipende.
+                assert_eq!(Some(rows), control, "{name}");
+            }
+        }
+    }
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .expect("pulizia guardia Oracle");
+}
