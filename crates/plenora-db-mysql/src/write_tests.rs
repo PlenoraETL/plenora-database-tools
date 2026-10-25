@@ -1701,3 +1701,43 @@ fn la_regola_k_vuole_un_indice_unico_sulle_chiavi() {
         "Append non e una mode della regola K"
     );
 }
+
+fn text_column(data_type: &str, declaration: &str) -> crate::MysqlColumn {
+    crate::MysqlColumn {
+        name: "label".to_owned(),
+        ordinal: 1,
+        data_type: data_type.to_owned(),
+        native_declaration: declaration.to_owned(),
+        nullable: true,
+        default_expression: None,
+        character_set: Some("utf8mb4".to_owned()),
+        collation: Some("utf8mb4_0900_ai_ci".to_owned()),
+        numeric_precision: None,
+        numeric_scale: None,
+        datetime_precision: None,
+        spatial_srid: None,
+        extra: String::new(),
+        generation_expression: String::new(),
+    }
+}
+
+/// La regola P: su 1b02559 `abc` con tre spazi verso `VARCHAR(3)` diventava
+/// `abc` con il COMMIT (il server tronca gli spazi finali anche con
+/// `STRICT_TRANS_TABLES`). Ora un testo piu lungo della colonna si rifiuta.
+#[test]
+fn la_regola_p_rifiuta_il_testo_piu_lungo_della_colonna() {
+    let varchar = text_limit(&text_column("varchar", "varchar(3)"));
+    assert_eq!(varchar, Some(TextLimit::Chars(3)));
+    assert!(check_text(varchar, "abc   ").is_err());
+    assert!(check_text(varchar, "ab ").is_ok());
+    // I caratteri, non i byte, per `VARCHAR(n)`.
+    assert!(check_text(varchar, "\u{416}\u{20ac}\u{4e2d}").is_ok());
+    let tiny = text_limit(&text_column("tinytext", "tinytext"));
+    assert_eq!(tiny, Some(TextLimit::Bytes(255)));
+    assert!(check_text(tiny, &"\u{20ac}".repeat(86)).is_err());
+    assert!(check_text(tiny, &"\u{20ac}".repeat(85)).is_ok());
+    assert_eq!(text_limit(&text_column("longtext", "longtext")), None);
+    let error = check_text(varchar, "abcd").expect_err("rifiuto");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert!(error.message.ends_with(LOSSY_VALUE));
+}

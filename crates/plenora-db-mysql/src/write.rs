@@ -49,6 +49,77 @@ struct MysqlWriteColumn {
     /// catalogo prima di ogni effetto (GEO-008).
     spatial_srid_derived: bool,
     exact_geometry_type: Option<String>,
+    /// La lunghezza massima della colonna di testo del target (regola P),
+    /// letta dal catalogo nella sessione della scrittura
+    /// ([`MysqlWritePlan::with_text_limits`]).
+    text_limit: Option<TextLimit>,
+}
+
+/// La lunghezza massima di una colonna di testo: caratteri per `VARCHAR(n)`,
+/// byte per `TINYTEXT`, `TEXT`, `MEDIUMTEXT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextLimit {
+    Chars(usize),
+    Bytes(usize),
+}
+
+/// Il motivo pubblico del rifiuto della regola P.
+pub(crate) const LOSSY_VALUE: &str = "il tipo della colonna troncherebbe il valore \
+     (spazi finali oltre la lunghezza massima)";
+
+/// La lunghezza massima della colonna `column` del target per un testo
+/// (regola P), dalla dichiarazione (`varchar(3)`) e dal tipo.
+#[must_use]
+pub(crate) fn text_limit(column: &crate::MysqlColumn) -> Option<TextLimit> {
+    let declared = || {
+        column
+            .native_declaration
+            .split_once('(')
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .and_then(|(length, _)| length.parse::<usize>().ok())
+    };
+    match column.data_type.to_ascii_lowercase().as_str() {
+        "varchar" | "char" => declared().map(TextLimit::Chars),
+        "tinytext" => Some(TextLimit::Bytes(255)),
+        "text" => Some(TextLimit::Bytes(65_535)),
+        "mediumtext" => Some(TextLimit::Bytes(16_777_215)),
+        _ => None,
+    }
+}
+
+/// La regola P su un testo: `MySQL` e `MariaDB` troncano in silenzio, anche
+/// con `STRICT_TRANS_TABLES`, gli spazi finali oltre la lunghezza di un
+/// `VARCHAR(n)` (con una nota) e di un `TEXT` (con un avviso): fino al 25/10
+/// `abc` con tre spazi verso `VARCHAR(3)` diventava `abc` con il COMMIT. La
+/// scrittura e sempre `Strict` su questi motori: un testo piu lungo della
+/// colonna si rifiuta prima di arrivare al server. I byte di un `TEXT` si
+/// contano in UTF-8, il charset della connessione: per un charset a un byte
+/// la stima e per eccesso, e rifiuta anche un valore che ci starebbe.
+///
+/// # Limite dichiarato
+///
+/// - **Regola**: un testo non si tronca nella colonna.
+/// - **Ambito**: ogni mode che lega valori di testo, nella sessione della
+///   scrittura, con le lunghezze lette dal catalogo prima della transazione.
+/// - **Hazard**: i byte di un `TEXT` si contano in UTF-8; per un charset
+///   multibyte diverso (`gb18030`) un carattere puo occupare piu byte che in
+///   UTF-8 e la verifica non lo vede. `LONGTEXT` non ha un limite verificato.
+/// - **Rientro**: la lunghezza in byte nel charset della colonna.
+///
+/// # Errors
+///
+/// `data_mapping` con [`LOSSY_VALUE`].
+pub(crate) fn check_text(limit: Option<TextLimit>, value: &str) -> Result<()> {
+    let fits = match limit {
+        None => true,
+        Some(TextLimit::Chars(max)) => value.chars().count() <= max,
+        Some(TextLimit::Bytes(max)) => value.len() <= max,
+    };
+    if fits {
+        Ok(())
+    } else {
+        Err(write_error(ErrorCategory::DataMapping, LOSSY_VALUE))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -166,6 +237,7 @@ fn compile_write_column(
         spatial_srid,
         spatial_srid_derived,
         exact_geometry_type,
+        text_limit: None,
     })
 }
 
@@ -661,6 +733,23 @@ impl MysqlWritePlan {
         Ok(sql)
     }
 
+    /// Il piano con le lunghezze massime delle colonne di testo del target
+    /// (regola P), lette nella sessione della scrittura.
+    #[must_use]
+    pub(crate) fn with_text_limits(&self, target: &MysqlObjectDescription) -> Self {
+        let mut plan = self.clone();
+        for column in &mut plan.columns {
+            if column.kind == MysqlColumnKind::Utf8 {
+                column.text_limit = target
+                    .columns
+                    .iter()
+                    .find(|server| server.name == column.name)
+                    .and_then(text_limit);
+            }
+        }
+        plan
+    }
+
     pub(super) fn bind_chunk(
         &self,
         batch: &RecordBatch,
@@ -697,6 +786,13 @@ impl MysqlWritePlan {
                     }
                     values.push(Value::NULL);
                 } else {
+                    if column.kind == MysqlColumnKind::Utf8 {
+                        let text = array
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .ok_or_else(|| mapping_error("array Arrow incoerente con il piano"))?;
+                        check_text(column.text_limit, text.value(row))?;
+                    }
                     values.push(bind_value(array.as_ref(), row, &column.kind)?);
                 }
             }
@@ -1012,6 +1108,15 @@ impl MysqlWritePlan {
 /// indici parziali ne vincoli unici differibili; un indice `UNIQUE` su un
 /// prefisso della colonna vincola gia la colonna intera, e un indice
 /// invisibile resta applicato.
+///
+/// La regola K2 (l'indice confronta come la colonna) vale per costruzione:
+/// la chiave di un indice di sole colonne usa la collation della colonna
+/// (un indice non ne dichiara un'altra; un `COLLATE` sta soltanto in un
+/// indice funzionale, che qui non prova), e un indice `UNIQUE` su un
+/// prefisso rende unici i prefissi, quindi anche i valori interi sotto la
+/// stessa collation. Lo statement confronta la chiave legata con la
+/// colonna, e la collation della colonna prevale su quella della
+/// connessione (coercibilita implicita contro quella di un parametro).
 ///
 /// Senza, una chiave tocca piu righe e un'altra nessuna, e i conteggi si
 /// compensano: misurato il 25/10 (seconda rilettura), con `(1,a),(1,b),(2,c)`

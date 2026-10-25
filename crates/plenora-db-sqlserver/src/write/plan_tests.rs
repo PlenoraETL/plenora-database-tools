@@ -254,6 +254,8 @@ fn bulk_profile_is_explicit_and_rejects_ambiguous_columns_or_spatial() {
         object: "target".to_owned(),
         added_columns: Vec::new(),
         spatial_indexes: Vec::new(),
+        strict: true,
+        precision_losses: Vec::new(),
     };
     assert_eq!(
         validate_bulk_profile(&plan)
@@ -583,4 +585,87 @@ fn spatial_create_refuses_north_first_axes_and_derived_srids() {
             .category,
         ErrorCategory::Crs
     );
+}
+
+/// La regola P: su 1b02559 10:00:00.999999 verso `datetime2(0)` diventava
+/// 10:00:01 con l'INSERT preparato e 10:00:00 con il bulk TDS; ora con
+/// `Strict` si rifiuta al piano, in ogni profilo, e con `Lossy` la perdita e
+/// nel `LossReport`.
+#[test]
+fn la_regola_p_rifiuta_le_colonne_temporali_ridotte_con_strict() {
+    for (native, declaration) in [
+        (
+            "datetime2(0)",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        ),
+        (
+            "datetime2(5)",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        ),
+        ("datetime", DataType::Timestamp(TimeUnit::Microsecond, None)),
+        (
+            "smalldatetime",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        ),
+        ("time(0)", DataType::Time64(TimeUnit::Microsecond)),
+    ] {
+        let schema = Arc::new(plenora_database_core::arrow::Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("at", declaration, true).with_metadata(HashMap::from([(
+                protocol::SQLSERVER_NATIVE_DECLARATION.to_owned(),
+                native.to_owned(),
+            )])),
+        ]));
+        let mut create = operation(WriteMode::Create);
+        create.keys = vec!["id".to_owned()];
+        let refused =
+            WritePlan::compile_create(&create, Arc::clone(&schema)).expect_err("Strict rifiuta");
+        assert_eq!(refused.category, ErrorCategory::DataMapping, "{native}");
+        assert!(refused.message.ends_with(LOSSY_VALUE), "{native}");
+        create.mapping_policy = MappingPolicy::Lossy;
+        let plan = WritePlan::compile_create(&create, schema).expect("Lossy ammette");
+        let report = plan.loss_report(MappingPolicy::Lossy).expect("report");
+        assert!(
+            report
+                .losses
+                .iter()
+                .any(|loss| loss.category == LossCategory::Precision
+                    && loss.severity == LossSeverity::DataLoss),
+            "{native}"
+        );
+    }
+    for native in ["datetime2(6)", "datetime2(7)", "time(6)", "time(7)"] {
+        assert!(!reduced_temporal(
+            native.split('(').next().unwrap_or_default(),
+            native
+        ));
+    }
+}
+
+#[test]
+fn la_regola_p_sul_testo_dipende_da_collation_e_lunghezza() {
+    let latin =
+        text_limit("varchar", "varchar(20)", Some("Latin1_General_CI_AS")).expect("limite varchar");
+    assert_eq!(latin.code_page, CodePage::Windows1252);
+    assert_eq!(latin.max, Some(20));
+    assert!(latin.code_page.represents("caff\u{e8} \u{20ac}"));
+    assert!(!latin.code_page.represents("\u{416}\u{20ac}\u{4e2d}"));
+    assert!(!latin.code_page.represents("\u{81}"));
+    assert_eq!(latin.code_page.bytes("caff\u{e8}"), 5);
+    let greek = text_limit("varchar", "varchar(20)", Some("Greek_CI_AS")).expect("greco");
+    assert_eq!(greek.code_page, CodePage::Ascii);
+    assert!(!greek.code_page.represents("caff\u{e8}"));
+    let utf8 = text_limit(
+        "varchar",
+        "varchar(max)",
+        Some("Latin1_General_100_CI_AS_SC_UTF8"),
+    )
+    .expect("limite varchar utf8");
+    assert_eq!(utf8.code_page, CodePage::Unicode);
+    assert_eq!(utf8.max, None);
+    let national = text_limit("nvarchar", "nvarchar(3)", None).expect("limite nvarchar");
+    assert_eq!((national.max, national.unit), (Some(3), TextUnit::Utf16));
+    assert!(text_limit("uniqueidentifier", "uniqueidentifier", None).is_none());
+    assert_eq!(offset_scale("datetimeoffset", "datetimeoffset(0)"), Some(0));
+    assert_eq!(offset_scale("datetime2", "datetime2(0)"), None);
 }

@@ -640,3 +640,8 @@ async fn bound_links(admin: &mut SqlServerSession) -> i64 {
 #[cfg(test)]
 #[path = "write_semantics_r2_live_tests.rs"]
 mod r2;
+
+// La terza rilettura del 25/10 (regole P e K2).
+#[cfg(test)]
+#[path = "write_semantics_r3_live_tests.rs"]
+mod r3;

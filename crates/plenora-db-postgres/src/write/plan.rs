@@ -28,6 +28,9 @@ pub(super) struct WriteColumnPlan {
     /// La regola V della colonna del target (`super::canonical`), letta dal
     /// catalogo nella transazione della scrittura o nel dry run con la DSN.
     pub(super) session_rule: Option<super::canonical::SessionRule>,
+    /// L'uguaglianza con cui Update e `DeleteByKeys` confrontano la colonna,
+    /// se e una chiave (regola K2, `super::visibility::key_equality`).
+    pub(super) key_equality: Option<super::visibility::KeyEquality>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +69,7 @@ impl WriteColumnPlan {
             },
             postgis: String::new(),
             session_rule: None,
+            key_equality: None,
         })
     }
 

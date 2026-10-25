@@ -12,6 +12,14 @@
 //!
 //! Fuori dalla prova: `spatial.rs` e `spatial_probe.rs` (le letture con
 //! predicati spatial, limite dichiarato in `postgis_schema`).
+//!
+//! La regola Q2 (`crate::search_path`) chiude il percorso per lo SQL della
+//! libreria nella scrittura e nel dry run; dove resta quello della sessione
+//! (introspezione, preflight, letture) la prova degli interi
+//! ([`bare_integer_operators`]) cerca gli operatori che una conversione
+//! implicita del letterale lascerebbe a uno schema qualsiasi del percorso, e
+//! la prova di `write::sql` (`write_tests`) che gli statement sul target non
+//! nominino tipi od operatori risolti dalla sessione.
 
 /// I sorgenti che emettono SQL della libreria.
 const SOURCES: &[(&str, &str)] = &[
@@ -28,6 +36,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("postgis_schema.rs", include_str!("postgis_schema.rs")),
     ("preflight.rs", include_str!("preflight.rs")),
     ("query_execution.rs", include_str!("query_execution.rs")),
+    ("search_path.rs", include_str!("search_path.rs")),
     ("transaction/mod.rs", include_str!("transaction/mod.rs")),
     ("types.rs", include_str!("types.rs")),
     ("write.rs", include_str!("write.rs")),
@@ -44,6 +53,8 @@ const SOURCES: &[(&str, &str)] = &[
 
 /// Le funzioni di `pg_catalog` che lo SQL della libreria chiama.
 const FUNCTIONS: &[&str] = &[
+    "acldefault",
+    "aclexplode",
     "array_agg",
     "bool_or",
     "col_description",
@@ -106,8 +117,10 @@ const RELATIONS: &[&str] = &[
     "pg_operator",
     "pg_policy",
     "pg_proc",
+    "pg_amop",
     "pg_range",
     "pg_rewrite",
+    "pg_roles",
     "pg_trigger",
     "pg_type",
 ];
@@ -115,6 +128,11 @@ const RELATIONS: &[&str] = &[
 /// I tipi di `pg_catalog` che non sono parole chiave della grammatica (quelle,
 /// come `int` o `bigint`, il parser le risolve in `pg_catalog` da se).
 const TYPES: &[&str] = &[
+    "bytea",
+    "cidr",
+    "date",
+    "daterange",
+    "inet",
     "int2",
     "int4",
     "int8",
@@ -126,6 +144,10 @@ const TYPES: &[&str] = &[
     "regnamespace",
     "regtype",
     "text",
+    "timestamptz",
+    "tsrange",
+    "tstzrange",
+    "uuid",
 ];
 
 /// I nomi di `PostGIS`, che passano da `postgis_schema::qualify` o dal
@@ -330,4 +352,114 @@ fn la_prova_della_regola_q_riconosce_le_forme_non_qualificate() {
     let (_, unsafe_sql) = &found[0];
     assert_eq!(occurrences(unsafe_sql, "current_setting").len(), 1);
     assert_eq!(occurrences(unsafe_sql, "pg_class")[0].0, Some(b' '));
+}
+
+/// Le colonne di catalogo di tipo `int2`, `int4` o `int8` che lo SQL della
+/// libreria confronta con un intero senza cast: `pg_catalog` ha gli operatori
+/// di confronto esatti per ogni coppia di questi tipi (`int24gt`, ...), che
+/// precedono ogni schema del percorso. Per `oid`, `"char"` o un operatore
+/// bit a bit (`int2 & int4` non c'e) il letterale va portato al tipo esatto.
+const INTEGER_COLUMNS: &[&str] = &[
+    "amopstrategy",
+    "attnum",
+    "atttypmod",
+    "depth",
+    "position",
+    "pronargs",
+    "srid",
+    "typmod",
+];
+
+const COMPARISONS: &[&str] = &["<>", "<=", ">=", "!=", "=", "<", ">"];
+const BITWISE: &[&str] = &["&", "|", "#"];
+
+/// La parola prima di `end` in `text`, saltando gli spazi.
+fn word_before(text: &str, end: usize) -> &str {
+    let head = text[..end].trim_end();
+    let start = head
+        .rfind(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .map_or(0, |index| index + 1);
+    &head[start..]
+}
+
+/// Ogni operatore fra un'espressione e un intero senza cast (`y.typelem <>
+/// 0`, `t.tgtype & 64`), dove la conversione implicita del letterale lascia
+/// vincere un operatore esatto di un altro schema (F1 della terza
+/// rilettura: `public.<>(oid, integer)`).
+fn bare_integer_operators(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let rest = &text[index..];
+        let operator = COMPARISONS
+            .iter()
+            .chain(BITWISE)
+            .find(|operator| rest.starts_with(**operator));
+        let Some(operator) = operator else {
+            index += rest.chars().next().map_or(1, char::len_utf8);
+            continue;
+        };
+        let after = rest[operator.len()..].trim_start();
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        let literal = digits > 0
+            && !after[digits..].starts_with("::")
+            && after[digits..]
+                .bytes()
+                .next()
+                .is_none_or(|byte| !(byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.'));
+        // Un operatore preceduto da un altro carattere d'operatore (`<<`,
+        // `->>`) o da `::tipo` esplicito non e di questo caso.
+        let previous = text[..index].trim_end();
+        let typed = previous.ends_with(')')
+            || previous
+                .rsplit_once("::")
+                .is_some_and(|(_, tail)| !tail.contains(char::is_whitespace));
+        let column = word_before(text, index);
+        let allowed = !BITWISE.contains(operator) && INTEGER_COLUMNS.contains(&column);
+        let in_operator = previous
+            .bytes()
+            .last()
+            .is_some_and(|byte| b"<>=!&|#-+*/".contains(&byte));
+        if literal && !typed && !allowed && !in_operator && !column.is_empty() {
+            found.push(format!("{column} {operator} {}", &after[..digits]));
+        }
+        index += operator.len();
+    }
+    found
+}
+
+#[test]
+fn nessun_operatore_dipende_dalla_conversione_di_un_intero() {
+    let mut unqualified = Vec::new();
+    for (file, source) in SOURCES {
+        for (line, text) in literals(source) {
+            if !is_sql(&text) {
+                continue;
+            }
+            for hit in bare_integer_operators(&text) {
+                unqualified.push(format!("{file}:{line}: {hit}"));
+            }
+        }
+    }
+    assert!(unqualified.is_empty(), "{}", unqualified.join("\n"));
+}
+
+/// La prova degli interi vede le forme della terza rilettura e lascia le
+/// forme esatte.
+#[test]
+fn la_prova_degli_interi_riconosce_le_forme_dirottabili() {
+    assert_eq!(
+        bare_integer_operators("WHERE y.typelem <> 0 AND (t.tgtype & 64) <> 0"),
+        vec!["typelem <> 0".to_owned(), "tgtype & 64".to_owned()]
+    );
+    assert_eq!(
+        bare_integer_operators("CASE WHEN role_oid = 0 THEN 'PUBLIC' END"),
+        vec!["role_oid = 0".to_owned()]
+    );
+    assert!(bare_integer_operators(
+        "WHERE y.typelem <> 0::pg_catalog.oid AND (g.tgtype::int & 64) <> 0 \
+         AND a.attnum > 0 AND a.atttypmod >= 0 AND ((x - 4) & 2047) >= 1024"
+    )
+    .is_empty());
 }

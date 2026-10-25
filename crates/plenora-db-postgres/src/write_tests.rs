@@ -280,7 +280,7 @@ fn prepared_placeholders_accept_canonical_native_metadata() {
     let jsonb_plan = WriteColumnPlan::compile(&jsonb).expect("JSONB plan");
     assert_eq!(
         placeholder_expression(&jsonb_plan, 1),
-        "$1::pg_catalog.text::jsonb"
+        "$1::pg_catalog.text::pg_catalog.jsonb"
     );
 
     let domain =
@@ -821,4 +821,58 @@ fn spatial_support_limits_are_decided_from_the_schema() {
             .postgres_type,
         "geography(point,4326)"
     );
+}
+
+/// La regola Q2 negli statement sul target, che girano con il `search_path`
+/// della sessione: le chiavi si confrontano con l'operatore dell'indice che
+/// ne prova l'unicita (regola K2), entrambi i lati portati al tipo
+/// qualificato, e i tipi di `pg_catalog` che non sono parole chiave si
+/// qualificano. Su 1b02559 lo statement era `"id" = $2`.
+#[test]
+fn gli_statement_sul_target_non_dipendono_dal_search_path() {
+    let schema = Arc::new(arrow_schema::Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("at", DataType::Utf8, true).with_metadata(std::collections::HashMap::from([(
+            protocol::POSTGRES_NATIVE_TYPE.to_owned(),
+            "date".to_owned(),
+        )])),
+    ]));
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: None,
+            object: "t".to_owned(),
+        },
+        mode: WriteMode::Update,
+        mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: vec!["id".to_owned()],
+        update_columns: vec!["at".to_owned()],
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    let operation = qualified_target(&operation);
+    assert_eq!(operation.target.schema.as_deref(), Some("public"));
+    let mut plans = compile_schema_plan(&schema, &operation).expect("piano");
+    // Senza l'uguaglianza letta dal catalogo la chiave si rifiuta.
+    assert!(statement(&operation, &operation.target, &schema, &plans).is_err());
+    plans[0].key_equality = Some(visibility::KeyEquality {
+        operator: "pg_catalog.=".to_owned(),
+        cast: "pg_catalog.int8".to_owned(),
+    });
+    let (sql, indexes) =
+        statement(&operation, &operation.target, &schema, &plans).expect("statement");
+    assert_eq!(
+        sql,
+        "UPDATE \"public\".\"t\" SET \"at\" = $1::pg_catalog.text::pg_catalog.date \
+         WHERE \"id\"::pg_catalog.int8 OPERATOR(pg_catalog.=) $2::pg_catalog.int8"
+    );
+    assert_eq!(indexes, vec![1, 0]);
+    assert_eq!(plans[1].postgres_type, "pg_catalog.date");
+    assert_eq!(
+        sql::qualify_builtin("tstzrange[]"),
+        "pg_catalog.tstzrange[]"
+    );
+    assert_eq!(sql::qualify_builtin("integer"), "integer");
 }

@@ -848,6 +848,9 @@ async fn execute_mysql_write_after_ddl(
         token,
     )
     .await?;
+    // La regola P: le lunghezze massime delle colonne di testo, dal catalogo
+    // della sessione che scrive.
+    let plan = &plan.with_text_limits(&target);
     // La regola K di nuovo sulla sessione della scrittura, prima della
     // transazione.
     crate::write::validate_unique_keys(

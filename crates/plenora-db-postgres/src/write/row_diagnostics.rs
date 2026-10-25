@@ -93,6 +93,7 @@ pub(super) async fn execute(
     cancel_token: &CancelToken,
     execution_id: &str,
     diagnostic_input: DiagnosticInput,
+    paths: &crate::search_path::SessionPath,
 ) -> Result<WriteOutcome> {
     let constraint_column = diagnostic_input.policy.constraint_column.clone();
     let mut tracker =
@@ -107,6 +108,7 @@ pub(super) async fn execute(
         cancellation,
         runtime,
         constraint_column,
+        paths,
     )
     .await;
     let mut writer = match writer {
@@ -315,6 +317,7 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
         cancellation: &'input CancellationToken,
         runtime: &'input WriteRuntime,
         constraint_column: Option<String>,
+        paths: &crate::search_path::SessionPath,
     ) -> std::result::Result<Self, Box<(Transaction<'transaction>, DatabaseError)>> {
         let (sql, indexes) =
             match diagnostic_statement(operation, schema, plans, runtime.insert_mode) {
@@ -356,6 +359,21 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
                     diagnostic_error(
                         crate::error::interruption_category(cancellation),
                         "lettura del catalogo PostgreSQL interrotta",
+                    ),
+                )));
+            }
+        }
+        // La regola Q2: dopo l'ultima lettura del catalogo restano soltanto
+        // gli INSERT sul target, con il percorso della sessione.
+        match select_with_cancellation(paths.restore(&transaction), cancellation).await {
+            Some(Ok(())) => {}
+            Some(Err(error)) => return Err(Box::new((transaction, error))),
+            None => {
+                return Err(Box::new((
+                    transaction,
+                    diagnostic_error(
+                        crate::error::interruption_category(cancellation),
+                        "impostazione del search_path PostgreSQL interrotta",
                     ),
                 )));
             }

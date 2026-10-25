@@ -80,6 +80,11 @@ pub(super) struct WritePlan {
     pub(super) object: String,
     pub(super) added_columns: Vec<AddedColumn>,
     pub(super) spatial_indexes: Vec<SpatialIndexPlan>,
+    /// La politica di mapping e `Strict` (regola P, [`rule_p`]).
+    pub(super) strict: bool,
+    /// Le perdite della regola P che una politica non stretta ammette, per il
+    /// `LossReport`.
+    pub(super) precision_losses: Vec<MappingLoss>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +126,7 @@ impl WritePlan {
         let mut columns = Vec::with_capacity(input_schema.fields().len());
         let mut added_columns = Vec::new();
         let mut add_columns_sql = Vec::new();
+        let mut precision_losses = Vec::new();
         for (input_index, field) in input_schema.fields().iter().enumerate() {
             let target = description
                 .columns
@@ -206,6 +212,9 @@ impl WritePlan {
                 spatial_srid,
             });
         }
+        for (column, field) in columns.iter().zip(input_schema.fields()) {
+            rule_p(operation, column, field, &mut precision_losses)?;
+        }
         if matches!(
             operation.mode,
             WriteMode::Append | WriteMode::TruncateInsert | WriteMode::Upsert
@@ -257,6 +266,8 @@ impl WritePlan {
             object: description.name.clone(),
             added_columns,
             spatial_indexes: Vec::new(),
+            strict: operation.mapping_policy == MappingPolicy::Strict,
+            precision_losses,
         })
     }
 
@@ -299,6 +310,7 @@ impl WritePlan {
                     target_type: Some(column.native_declaration.clone()),
                 })
             })
+            .chain(self.precision_losses.iter().cloned().map(Ok))
             .collect::<Result<Vec<_>>>()?;
         let report = LossReport {
             schema_version: 2,
@@ -378,6 +390,10 @@ fn compile_new_target(
             spatial_srid,
         });
     }
+    let mut precision_losses = Vec::new();
+    for (column, field) in columns.iter().zip(input_schema.fields()) {
+        rule_p(operation, column, field, &mut precision_losses)?;
+    }
     validate_mutation_columns(operation, &columns)?;
     validate_parameter_count(&columns)?;
     let row_statement =
@@ -413,6 +429,8 @@ fn compile_new_target(
         object: operation.target.object.clone(),
         added_columns: Vec::new(),
         spatial_indexes,
+        strict: operation.mapping_policy == MappingPolicy::Strict,
+        precision_losses,
     })
 }
 
@@ -1085,6 +1103,242 @@ pub(super) fn sql_identifier(value: &str) -> Result<Identifier> {
         ));
     }
     Identifier::new(value.to_owned())
+}
+
+/// Il motivo pubblico del rifiuto della regola P.
+pub(super) const LOSSY_VALUE: &str = "con MappingPolicy::Strict il tipo della colonna SQL Server \
+     arrotonderebbe, troncherebbe o convertirebbe il valore (precisione frazionaria, \
+     lunghezza massima, code page della collation)";
+
+/// L'argomento fra parentesi di una dichiarazione (`datetime2(0)` -> `0`).
+fn declaration_argument(declaration: &str) -> Option<&str> {
+    declaration
+        .split_once('(')
+        .and_then(|(_, rest)| rest.strip_suffix(')'))
+}
+
+/// La scala frazionaria di `time`, `datetime2` e `datetimeoffset`, 7 se la
+/// dichiarazione non la porta.
+fn temporal_scale(declaration: &str) -> u32 {
+    declaration_argument(declaration)
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(7)
+}
+
+/// La regola P sui tipi temporali con un valore Arrow al microsecondo:
+/// `datetime2(p)` e `time(p)` con `p < 6` arrotondano, `datetime` arrotonda a
+/// 1/300 di secondo, `smalldatetime` al minuto.
+#[must_use]
+pub(super) fn reduced_temporal(native_type: &str, declaration: &str) -> bool {
+    match native_type {
+        "datetime" | "smalldatetime" => true,
+        "datetime2" | "time" => temporal_scale(declaration) < 6,
+        _ => false,
+    }
+}
+
+/// L'unita della lunghezza massima di una colonna di testo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TextUnit {
+    /// `char`/`varchar`: byte della code page (UTF-8 per una collation
+    /// `_UTF8`).
+    Bytes,
+    /// `nchar`/`nvarchar`: unita UTF-16.
+    Utf16,
+}
+
+/// La code page con cui una colonna `char`/`varchar` conserva il testo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CodePage {
+    /// Una collation `_UTF8`, o `nchar`/`nvarchar`: ogni carattere.
+    Unicode,
+    /// `Latin1_General_*` e `SQL_Latin1_General_CP1_*`: Windows-1252.
+    Windows1252,
+    /// Ogni altra collation: si ammette soltanto ASCII, che ogni code page di
+    /// SQL Server rappresenta.
+    Ascii,
+}
+
+impl CodePage {
+    /// Il valore si conserva com'e: un carattere fuori dalla code page
+    /// diventerebbe `?`.
+    #[must_use]
+    pub(super) fn represents(self, value: &str) -> bool {
+        match self {
+            Self::Unicode => true,
+            Self::Ascii => value.is_ascii(),
+            Self::Windows1252 => value.chars().all(windows_1252),
+        }
+    }
+
+    /// La lunghezza di `value` nell'unita della colonna: byte UTF-8, un byte
+    /// per carattere in Windows-1252 e in ASCII.
+    #[must_use]
+    pub(super) fn bytes(self, value: &str) -> usize {
+        match self {
+            Self::Unicode => value.len(),
+            Self::Windows1252 | Self::Ascii => value.chars().count(),
+        }
+    }
+}
+
+/// Un carattere che Windows-1252 rappresenta: ASCII, `U+00A0`-`U+00FF` e i 27
+/// caratteri di `0x80`-`0x9F` (i cinque byte non assegnati e i controlli C1
+/// non lo sono).
+fn windows_1252(character: char) -> bool {
+    const HIGH: [char; 27] = [
+        '\u{20ac}', '\u{201a}', '\u{0192}', '\u{201e}', '\u{2026}', '\u{2020}', '\u{2021}',
+        '\u{02c6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{017d}', '\u{2018}',
+        '\u{2019}', '\u{201c}', '\u{201d}', '\u{2022}', '\u{2013}', '\u{2014}', '\u{02dc}',
+        '\u{2122}', '\u{0161}', '\u{203a}', '\u{0153}', '\u{017e}', '\u{0178}',
+    ];
+    character.is_ascii() || ('\u{a0}'..='\u{ff}').contains(&character) || HIGH.contains(&character)
+}
+
+/// Cio che una colonna di testo fa del valore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TextLimit {
+    /// La lunghezza massima, se la dichiarazione ne ha una.
+    pub(super) max: Option<usize>,
+    pub(super) unit: TextUnit,
+    /// La code page della collation: un carattere fuori diventa `?`.
+    pub(super) code_page: CodePage,
+}
+
+/// La regola P sul testo, dal tipo nativo, dalla dichiarazione e dalla
+/// collation della colonna.
+#[must_use]
+pub(super) fn text_limit(
+    native_type: &str,
+    declaration: &str,
+    collation: Option<&str>,
+) -> Option<TextLimit> {
+    let max = || {
+        declaration_argument(declaration)
+            .filter(|value| *value != "max")
+            .and_then(|value| value.parse::<usize>().ok())
+    };
+    let name = collation.unwrap_or_default().to_ascii_uppercase();
+    let code_page = if name.ends_with("_UTF8") {
+        CodePage::Unicode
+    } else if name.starts_with("LATIN1_GENERAL_") || name.starts_with("SQL_LATIN1_GENERAL_CP1_") {
+        CodePage::Windows1252
+    } else {
+        CodePage::Ascii
+    };
+    match native_type {
+        "char" | "varchar" => Some(TextLimit {
+            max: max(),
+            unit: TextUnit::Bytes,
+            code_page,
+        }),
+        "text" => Some(TextLimit {
+            max: None,
+            unit: TextUnit::Bytes,
+            code_page,
+        }),
+        "nchar" | "nvarchar" => Some(TextLimit {
+            max: max(),
+            unit: TextUnit::Utf16,
+            code_page: CodePage::Unicode,
+        }),
+        _ => None,
+    }
+}
+
+/// La scala frazionaria di una colonna `datetimeoffset`, che riceve testo
+/// RFC 3339 (fino ai nanosecondi).
+#[must_use]
+pub(super) fn offset_scale(native_type: &str, declaration: &str) -> Option<u32> {
+    (native_type == "datetimeoffset").then(|| temporal_scale(declaration))
+}
+
+/// La regola P per una colonna del piano: con `Strict` un tipo temporale che
+/// arrotonda il microsecondo si rifiuta prima di ogni effetto, in ogni
+/// profilo (fino al 25/10 10:00:00.999999 verso `datetime2(0)` diventava
+/// 10:00:01 con l'INSERT preparato e 10:00:00 con il bulk TDS, lo stesso
+/// piano con due valori diversi); con le altre politiche la perdita va nel
+/// `LossReport`. Il testo verso una code page, una lunghezza massima o un
+/// `datetimeoffset(p)` si verifica valore per valore (`codec::check_text`):
+/// con le politiche non strette la perdita possibile si dichiara qui.
+///
+/// # Limite dichiarato
+///
+/// - **Regola**: con `Strict` nessun valore si arrotonda, si tronca o si
+///   converte nel tipo della colonna.
+/// - **Ambito**: ogni mode e ogni profilo (`Prepared`, `TdsBulk`), Create e
+///   l'evoluzione dello schema comprese.
+/// - **Hazard**: la tabella della code page c'e soltanto per Windows-1252
+///   (`Latin1_General_*`, `SQL_Latin1_General_CP1_*`); verso ogni altra
+///   collation che non e `_UTF8` si ammette soltanto ASCII, anche dove la
+///   code page rappresenterebbe il carattere.
+///   `char(n)` e `nchar(n)` completano con spazi i valori piu corti: e la
+///   semantica del tipo, che li confronta senza gli spazi finali, e non si
+///   rifiuta.
+/// - **Rientro**: la code page dal catalogo (`COLLATIONPROPERTY(...,
+///   'CodePage')`) e la sua tabella, per ogni code page di SQL Server.
+///
+/// # Errors
+///
+/// `data_mapping` con [`LOSSY_VALUE`].
+fn rule_p(
+    operation: &WriteOperation,
+    column: &WriteColumnPlan,
+    field: &Field,
+    losses: &mut Vec<MappingLoss>,
+) -> Result<()> {
+    let strict = operation.mapping_policy == MappingPolicy::Strict;
+    let field_id = u32::try_from(column.input_index)
+        .map_err(|_| DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport"))?;
+    let loss = |category, severity, reason: &str| MappingLoss {
+        field_id,
+        category,
+        severity,
+        reason: reason.to_owned(),
+        source_type: Some(field.data_type().to_string()),
+        target_type: Some(column.native_declaration.clone()),
+    };
+    if reduced_temporal(&column.native_type, &column.native_declaration) {
+        if strict {
+            return Err(plan_error(ErrorCategory::DataMapping, LOSSY_VALUE));
+        }
+        losses.push(loss(
+            LossCategory::Precision,
+            LossSeverity::DataLoss,
+            "precisione temporale della colonna sotto il microsecondo",
+        ));
+    }
+    if strict {
+        return Ok(());
+    }
+    if let Some(limit) = text_limit(
+        &column.native_type,
+        &column.native_declaration,
+        column.collation.as_deref(),
+    ) {
+        if limit.code_page != CodePage::Unicode {
+            losses.push(loss(
+                LossCategory::Encoding,
+                LossSeverity::Warning,
+                "i caratteri fuori dalla code page della collation diventerebbero '?'",
+            ));
+        }
+        if limit.max.is_some() {
+            losses.push(loss(
+                LossCategory::Precision,
+                LossSeverity::Warning,
+                "gli spazi finali oltre la lunghezza della colonna si troncherebbero",
+            ));
+        }
+    }
+    if offset_scale(&column.native_type, &column.native_declaration).is_some() {
+        losses.push(loss(
+            LossCategory::Precision,
+            LossSeverity::Warning,
+            "le cifre frazionarie oltre la scala della colonna si arrotonderebbero",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn plan_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {

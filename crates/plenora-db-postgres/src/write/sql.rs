@@ -54,6 +54,8 @@ pub(super) fn statement(
             let predicates = key_predicates(
                 &renderer,
                 &operation.keys,
+                schema,
+                plans,
                 operation.update_columns.len() + 1,
             )?;
             Ok((
@@ -70,7 +72,7 @@ pub(super) fn statement(
             format!(
                 "DELETE FROM {} WHERE {}",
                 quote_object(target)?,
-                key_predicates(&renderer, &operation.keys, 1)?
+                key_predicates(&renderer, &operation.keys, schema, plans, 1)?
             ),
             operation
                 .keys
@@ -146,13 +148,13 @@ pub(super) fn placeholder_expression(plan: &WriteColumnPlan, ordinal: usize) -> 
             postgis = plan.postgis
         )
     } else if matches!(plan.data_type, DataType::Decimal128(_, _)) {
-        format!("${ordinal}::pg_catalog.text::numeric")
+        format!("${ordinal}::pg_catalog.text::pg_catalog.numeric")
     } else if matches!(plan.data_type, DataType::Utf8)
         && matches!(plan.native_type.as_deref(), Some("json" | "jsonb" | "uuid"))
     {
         format!(
             "${ordinal}::pg_catalog.text::{}",
-            plan.native_type.as_deref().unwrap_or("text")
+            qualify_builtin(plan.native_type.as_deref().unwrap_or("text"))
         )
     } else if matches!(
         plan.data_type,
@@ -164,7 +166,10 @@ pub(super) fn placeholder_expression(plan: &WriteColumnPlan, ordinal: usize) -> 
                 if declaration == "text" {
                     format!("${ordinal}")
                 } else {
-                    format!("${ordinal}::pg_catalog.text::{declaration}")
+                    format!(
+                        "${ordinal}::pg_catalog.text::{}",
+                        qualify_builtin(declaration)
+                    )
                 }
             },
         )
@@ -173,20 +178,94 @@ pub(super) fn placeholder_expression(plan: &WriteColumnPlan, ordinal: usize) -> 
     }
 }
 
-fn key_predicates(renderer: &Renderer, keys: &[String], first: usize) -> Result<String> {
+/// Il confronto delle chiavi di Update e `DeleteByKeys`, con l'uguaglianza
+/// dell'indice che ne prova l'unicita (regola K2): i due lati portati al tipo
+/// dell'opclass, l'operatore qualificato con il suo schema. Il testo non
+/// dipende dal `search_path` (regola Q2). Una chiave senza l'uguaglianza
+/// letta dal catalogo si rifiuta: nessun ripiego su un `=` risolto dalla
+/// sessione.
+fn key_predicates(
+    renderer: &Renderer,
+    keys: &[String],
+    schema: &SchemaRef,
+    plans: &[WriteColumnPlan],
+    first: usize,
+) -> Result<String> {
     let items: Result<Vec<String>> = keys
         .iter()
         .enumerate()
         .map(|(offset, key)| {
             let id = Identifier::new(key.clone())?;
             let quoted = renderer.quote_identifier(&id)?;
-            Ok(format!("{quoted} = ${}", first + offset))
+            let equality = schema
+                .index_of(key)
+                .ok()
+                .and_then(|index| plans.get(index))
+                .and_then(|plan| plan.key_equality.as_ref())
+                .ok_or_else(|| {
+                    DatabaseError::invalid_plan(
+                        "uguaglianza della chiave PostgreSQL non letta dal catalogo",
+                    )
+                })?;
+            Ok(format!(
+                "{quoted}::{cast} OPERATOR({operator}) ${ordinal}::{cast}",
+                cast = equality.cast,
+                operator = equality.operator,
+                ordinal = first + offset
+            ))
         })
         .collect();
     Ok(items?.join(" AND "))
 }
 
+/// I tipi di `pg_catalog` che lo SQL della scrittura nomina e che non sono
+/// parole chiave della grammatica (`integer`, `boolean`, `numeric(p,s)`,
+/// `timestamp ...`, `time ...`, `interval`, `character varying` il parser li
+/// risolve in `pg_catalog` da se).
+const UNRESERVED_BUILTINS: &[&str] = &[
+    "text",
+    "bytea",
+    "date",
+    "timestamptz",
+    "uuid",
+    "json",
+    "jsonb",
+    "inet",
+    "cidr",
+    "int4range",
+    "int8range",
+    "numrange",
+    "tsrange",
+    "tstzrange",
+    "daterange",
+];
+
+/// La regola Q2 negli statement sul target, che girano con il `search_path`
+/// della sessione: un tipo di `pg_catalog` che non e una parola chiave si
+/// qualifica (`pg_catalog.date[]`), cosi uno schema della sessione con un
+/// tipo omonimo non lo sostituisce. Gli altri nomi restano come sono.
+pub(super) fn qualify_builtin(declaration: &str) -> String {
+    let base = declaration.trim_end_matches("[]");
+    let suffix = &declaration[base.len()..];
+    if UNRESERVED_BUILTINS.contains(&base) {
+        format!("pg_catalog.{base}{suffix}")
+    } else {
+        declaration.to_owned()
+    }
+}
+
+/// Il tipo con cui `CREATE TABLE` e l'evoluzione dello schema dichiarano la
+/// colonna, con i tipi di `pg_catalog` qualificati ([`qualify_builtin`]).
 pub(super) fn pg_type(contract: &FieldContract<'_>) -> Result<String> {
+    let declared = pg_type_unqualified(contract)?;
+    Ok(if contract.is_geometry() || contract.is_geography() {
+        declared
+    } else {
+        qualify_builtin(&declared)
+    })
+}
+
+fn pg_type_unqualified(contract: &FieldContract<'_>) -> Result<String> {
     if contract.is_geometry() || contract.is_geography() {
         let base = if contract.is_geography() {
             "geography"

@@ -57,6 +57,8 @@ fn null_key_is_rejected_before_any_row_is_bound() {
         object: "target".to_owned(),
         added_columns: Vec::new(),
         spatial_indexes: Vec::new(),
+        strict: true,
+        precision_losses: Vec::new(),
     };
     let error =
         inspect_batch(&batch, &plan, 1024, 1024, 16).expect_err("NULL key must fail closed");
@@ -116,6 +118,8 @@ fn fixed_width_rows_consume_output_and_memory_bytes() {
         object: "target".to_owned(),
         added_columns: Vec::new(),
         spatial_indexes: Vec::new(),
+        strict: true,
+        precision_losses: Vec::new(),
     };
 
     let inspection = inspect_row(&batch, 0, &plan, 1024, 1024, 16).expect("fixed-width inspection");
@@ -182,6 +186,8 @@ fn geometry_outside_the_declared_types_is_rejected_before_binding() {
         object: "target".to_owned(),
         added_columns: Vec::new(),
         spatial_indexes: Vec::new(),
+        strict: true,
+        precision_losses: Vec::new(),
     };
     for error in [
         inspect_batch(&batch, &plan, 1024, 1024, 16).expect_err("tipo fuori lista"),
@@ -192,4 +198,82 @@ fn geometry_outside_the_declared_types_is_rejected_before_binding() {
         assert_eq!(error.category, ErrorCategory::DataMapping);
         assert_eq!(error.phase, ErrorPhase::Write);
     }
+}
+
+fn text_plan(native: &str, declaration: &str, collation: Option<&str>, strict: bool) -> WritePlan {
+    let schema = Arc::new(Schema::new(vec![Field::new("label", DataType::Utf8, true)]));
+    WritePlan {
+        input_schema: schema,
+        columns: vec![WriteColumnPlan {
+            input_index: 0,
+            name: "label".to_owned(),
+            kind: crate::SqlServerColumnKind::Utf8,
+            native_type: native.to_owned(),
+            native_declaration: declaration.to_owned(),
+            nullable: true,
+            collation: collation.map(str::to_owned),
+            spatial_srid: None,
+        }],
+        mode: WriteMode::Append,
+        row_sql: String::new(),
+        key_input_indices: Vec::new(),
+        bulk_table: String::new(),
+        bulk_columns_aligned: true,
+        lifecycle: TargetLifecycle::Existing {
+            lock_sql: String::new(),
+            truncate_sql: None,
+            add_columns_sql: Vec::new(),
+            schema_fingerprint: String::new(),
+        },
+        schema: "dbo".to_owned(),
+        object: "target".to_owned(),
+        added_columns: Vec::new(),
+        spatial_indexes: Vec::new(),
+        strict,
+        precision_losses: Vec::new(),
+    }
+}
+
+/// F6: un testo cirillico e cinese verso `varchar(20) COLLATE
+/// Latin1_General_CI_AS` si committava con i caratteri fuori dalla code page
+/// diventati punti interrogativi; `abc` con tre spazi verso `varchar(3)`
+/// perdeva gli spazi. Con `Strict` entrambi si rifiutano, nel preparato e
+/// nel bulk.
+#[test]
+fn la_regola_p_rifiuta_il_testo_che_la_colonna_cambierebbe() {
+    let latin = text_plan("varchar", "varchar(20)", Some("Latin1_General_CI_AS"), true);
+    let column = &latin.columns[0];
+    assert!(check_text(&latin, column, "\u{416}\u{20ac}\u{4e2d}").is_err());
+    assert!(check_text(&latin, column, "ascii ok").is_ok());
+    // Windows-1252 rappresenta `è` e `€`.
+    assert!(check_text(&latin, column, "caff\u{e8} \u{20ac}").is_ok());
+    let short = text_plan("varchar", "varchar(3)", Some("Latin1_General_CI_AS"), true);
+    assert!(check_text(&short, &short.columns[0], "abc   ").is_err());
+    assert!(check_text(&short, &short.columns[0], "ab ").is_ok());
+    let national = text_plan("nvarchar", "nvarchar(3)", None, true);
+    assert!(check_text(&national, &national.columns[0], "\u{416}\u{20ac}\u{4e2d}").is_ok());
+    assert!(check_text(&national, &national.columns[0], "\u{416}\u{20ac}\u{4e2d} ").is_err());
+    let lossy = text_plan("varchar", "varchar(3)", Some("Latin1_General_CI_AS"), false);
+    assert!(check_text(&lossy, &lossy.columns[0], "\u{416}bc   ").is_ok());
+    let batch = RecordBatch::try_new(
+        Arc::clone(&latin.input_schema),
+        vec![Arc::new(StringArray::from(vec![Some(
+            "\u{416}\u{20ac}\u{4e2d}",
+        )]))],
+    )
+    .expect("batch");
+    assert!(bulk_rows(&latin, &batch).is_err());
+    assert!(bind_row(&latin, &batch, 0).is_err());
+}
+
+#[test]
+fn la_regola_p_rifiuta_le_frazioni_oltre_la_scala_di_datetimeoffset() {
+    let mut plan = text_plan("datetimeoffset", "datetimeoffset(0)", None, true);
+    plan.columns[0].kind = crate::SqlServerColumnKind::TimestampTz;
+    let exact = datetimeoffset("2026-01-02T10:00:00Z").expect("rfc3339");
+    let fraction = datetimeoffset("2026-01-02T10:00:00.999999Z").expect("rfc3339");
+    assert!(check_offset(&plan, &plan.columns[0], &exact).is_ok());
+    assert!(check_offset(&plan, &plan.columns[0], &fraction).is_err());
+    plan.columns[0].native_declaration = "datetimeoffset(7)".to_owned();
+    assert!(check_offset(&plan, &plan.columns[0], &fraction).is_ok());
 }

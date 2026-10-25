@@ -273,6 +273,9 @@ pub(super) fn bind_row(
             }
             crate::SqlServerColumnKind::Utf8 => {
                 let values = downcast::<StringArray>(array.as_ref())?;
+                if !values.is_null(row) {
+                    check_text(plan, column, values.value(row))?;
+                }
                 query.bind((!values.is_null(row)).then(|| values.value(row).to_owned()));
             }
             crate::SqlServerColumnKind::Binary => {
@@ -310,6 +313,9 @@ pub(super) fn bind_row(
                 let value = (!values.is_null(row))
                     .then(|| datetimeoffset(values.value(row)))
                     .transpose()?;
+                if let Some(value) = &value {
+                    check_offset(plan, column, value)?;
+                }
                 query.bind(value);
             }
             crate::SqlServerColumnKind::Decimal { scale, .. } => {
@@ -406,6 +412,9 @@ pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<
                 }
                 crate::SqlServerColumnKind::Utf8 => {
                     let values = downcast::<StringArray>(array.as_ref())?;
+                    if !values.is_null(row_index) {
+                        check_text(plan, column, values.value(row_index))?;
+                    }
                     row.push(
                         (!values.is_null(row_index))
                             .then(|| values.value(row_index))
@@ -444,6 +453,9 @@ pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<
                     let value = (!values.is_null(row_index))
                         .then(|| datetimeoffset(values.value(row_index)))
                         .transpose()?;
+                    if let Some(value) = &value {
+                        check_offset(plan, column, value)?;
+                    }
                     row.push(value.into_sql());
                 }
                 crate::SqlServerColumnKind::Decimal { scale, .. } => {
@@ -531,6 +543,70 @@ fn time64(microseconds: i64) -> Result<NaiveTime> {
 fn timestamp(microseconds: i64) -> Result<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp_micros(microseconds)
         .ok_or_else(|| mapping_error("timestamp Arrow oltre il range SQL Server/chrono"))
+}
+
+/// La regola P su un testo, in ogni profilo e con `Strict`: verso una
+/// collation che non e `_UTF8` soltanto i caratteri della sua code page
+/// (fino al 25/10 `'Ж€中'` verso
+/// `varchar(20) COLLATE Latin1_General_CI_AS` si committava `'?€?'`), e mai
+/// piu lungo della colonna (gli spazi finali oltre la lunghezza si troncano
+/// in silenzio).
+///
+/// # Errors
+///
+/// `data_mapping` con `plan::LOSSY_VALUE`.
+pub(super) fn check_text(plan: &WritePlan, column: &WriteColumnPlan, value: &str) -> Result<()> {
+    if !plan.strict {
+        return Ok(());
+    }
+    let Some(limit) = super::plan::text_limit(
+        &column.native_type,
+        &column.native_declaration,
+        column.collation.as_deref(),
+    ) else {
+        return Ok(());
+    };
+    if !limit.code_page.represents(value) {
+        return Err(mapping_error(super::plan::LOSSY_VALUE));
+    }
+    if let Some(max) = limit.max {
+        let length = match limit.unit {
+            super::plan::TextUnit::Bytes => limit.code_page.bytes(value),
+            super::plan::TextUnit::Utf16 => value.encode_utf16().count(),
+        };
+        if length > max {
+            return Err(mapping_error(super::plan::LOSSY_VALUE));
+        }
+    }
+    Ok(())
+}
+
+/// La regola P su un `datetimeoffset(p)`, con `Strict`: niente cifre
+/// frazionarie oltre la scala, che il percorso preparato arrotonderebbe e il
+/// bulk troncherebbe.
+///
+/// # Errors
+///
+/// `data_mapping` con `plan::LOSSY_VALUE`.
+pub(super) fn check_offset(
+    plan: &WritePlan,
+    column: &WriteColumnPlan,
+    value: &DateTime<FixedOffset>,
+) -> Result<()> {
+    use chrono::Timelike;
+    let Some(scale) = super::plan::offset_scale(&column.native_type, &column.native_declaration)
+    else {
+        return Ok(());
+    };
+    if !plan.strict || scale >= 9 {
+        return Ok(());
+    }
+    let unit = 10_u32.pow(9 - scale);
+    if value.nanosecond().is_multiple_of(unit) {
+        Ok(())
+    } else {
+        Err(mapping_error(super::plan::LOSSY_VALUE))
+    }
 }
 
 fn datetimeoffset(value: &str) -> Result<DateTime<FixedOffset>> {

@@ -2,7 +2,9 @@ use crate::error::{classify_error, public_error};
 use crate::pool::PooledClient;
 use crate::{PostgresProvider, PostgresSchemaEvolution};
 use arrow_schema::SchemaRef;
-use plenora_database_core::loss::{LossCategory, LossReport, LossSeverity, MappingLoss};
+use plenora_database_core::loss::{
+    LossCategory, LossReport, LossSeverity, MappingLoss, MappingPolicy,
+};
 use plenora_database_core::plan::{WriteMode, WriteOperation};
 use plenora_database_core::primary_key::validate_create_primary_key;
 use plenora_database_core::protocol;
@@ -140,6 +142,63 @@ pub async fn write(
                     Some(source.data_type().to_string()),
                     Some(target_field.data_type().to_string()),
                 )?);
+            }
+            // La regola P: una colonna temporale con precisione ridotta
+            // (`timestamp(0)`, `time(3)`, `interval day`, anche dentro un
+            // dominio, un array o un composto) arrotonda o tronca un valore
+            // al microsecondo. Fino al 25/10 10:00:00.999999 diventava
+            // 10:00:01 in ogni profilo, con `Strict`, dove la scala di un
+            // `numeric` si rifiutava. Lo stesso criterio di MySQL
+            // (`DATETIME(0)`), e la scrittura lo rifiuta di nuovo nella sua
+            // transazione (`write::canonical::refuse_lossy`).
+            let declarations = std::iter::once(target.native_declaration.as_deref())
+                .chain(std::iter::once(target.domain_base_type.as_deref()))
+                .flatten()
+                .chain(
+                    target
+                        .composite_fields
+                        .iter()
+                        .map(|field| field.declaration.as_str()),
+                );
+            if let Some(reduced) = declarations
+                .into_iter()
+                .find(|declaration| crate::write::reduced_temporal(declaration))
+            {
+                losses.push(mapping_loss(
+                    field_id,
+                    LossCategory::Precision,
+                    "precisione temporale della colonna sotto il microsecondo: il valore si \
+                     arrotonderebbe o troncherebbe",
+                    Some(source.data_type().to_string()),
+                    Some(reduced.to_owned()),
+                )?);
+            }
+            // Una lunghezza massima (`varchar(n)`, `char(n)`): il server tronca
+            // in silenzio gli spazi finali oltre la lunghezza. Con `Strict` la
+            // scrittura rifiuta quei valori uno per uno
+            // (`write::canonical::check`); con le altre politiche la perdita
+            // possibile si dichiara qui.
+            let bounded = target
+                .native_declaration
+                .as_deref()
+                .or(target.domain_base_type.as_deref())
+                .is_some_and(|declaration| {
+                    let base = declaration.trim_end_matches("[]");
+                    (base.starts_with("character varying(") || base.starts_with("character("))
+                        && base.ends_with(')')
+                });
+            if bounded && operation.mapping_policy != MappingPolicy::Strict {
+                losses.push(MappingLoss {
+                    field_id: u32::try_from(field_id).map_err(|_| {
+                        DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport")
+                    })?,
+                    category: LossCategory::Precision,
+                    severity: LossSeverity::Warning,
+                    reason: "gli spazi finali oltre la lunghezza della colonna si troncherebbero"
+                        .to_owned(),
+                    source_type: Some(source.data_type().to_string()),
+                    target_type: target.native_declaration.clone(),
+                });
             }
             if source.is_nullable() && !target.nullable {
                 losses.push(mapping_loss(

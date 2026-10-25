@@ -34,11 +34,17 @@
 //!
 //! E la regola W2 (sessione fissata): [`pin_session`] riporta
 //! `session_replication_role` a `origin` nella transazione della scrittura,
-//! o la rifiuta, dopo la guardia della regola Q ([`guard_search_path`]).
+//! o la rifiuta, con il percorso gia chiuso dalla regola Q2
+//! (`crate::search_path`).
 //!
 //! La regola K (`plenora_database_core::write_keys`): per Update e
 //! `DeleteByKeys` le chiavi coincidono con un indice unico, non parziale e
-//! immediato del target (`keys_unique`), letto con gli altri fatti.
+//! immediato del target, letto con gli altri fatti; e la regola K2: quell'indice
+//! confronta ogni chiave con la collation della colonna e con l'opclass btree
+//! predefinita del suo tipo (`keys_unique`), e lo statement confronta le chiavi
+//! con l'operatore di quell'opclass ([`key_equality`]). Upsert, che arbitra con
+//! ogni indice unico sulle chiavi, si rifiuta se ha un arbitro e nessuno della
+//! regola K2.
 //!
 //! # La regola W1 per `COPY`
 //!
@@ -61,10 +67,10 @@
 //! generate (calcolate se assenti, rifiutate se nominate), partizioni. RLS
 //! rifiuta `COPY FROM` con un errore (`target`).
 //!
-//! Il target si risolve come lo risolve lo statement: per nome con lo schema
-//! dichiarato (senza i controlli di `USAGE`, che restano dello statement), con
-//! il `search_path` senza schema. Un target che non si risolve non ha fatti:
-//! lo statement lo rifiutera da se.
+//! Il target si risolve come lo risolve lo statement: per nome con lo schema,
+//! sempre dichiarato (`super::qualified_target`; senza i controlli di
+//! `USAGE`, che restano dello statement). Un target che non si risolve non ha
+//! fatti: lo statement lo rifiutera da se.
 
 use super::target::WritePath;
 use crate::error::classify_error;
@@ -77,13 +83,108 @@ use plenora_database_core::write_keys::keys_without_unique_index;
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use tokio_postgres::GenericClient;
 
-const FACTS_SQL: &str = "\
+/// L'indice unico sulle chiavi (il parametro `$keys`), per la forma (regola K): unico,
+/// immediato, valido, pronto e vivo, senza predicato ne espressioni, con le
+/// colonne chiave esattamente le chiavi, e senza figli di ereditarieta fuori
+/// dall'indice (una tabella partizionata si: l'indice vale su ogni
+/// partizione). Su `pg_catalog.pg_index i` e `pg_catalog.pg_class c` del
+/// target; lo SQL gira con il percorso chiuso (regola Q2).
+macro_rules! keys_index {
+    ($keys:literal) => {
+        concat!(
+            "i.indisunique AND i.indimmediate AND i.indisvalid AND i.indisready AND i.indislive
+               AND i.indpred IS NULL AND i.indexprs IS NULL
+               AND (c.relkind = 'p'
+                    OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhparent = c.oid))
+               AND (SELECT pg_catalog.array_agg(DISTINCT a.attname::pg_catalog.text
+                                                ORDER BY a.attname::pg_catalog.text)
+                      FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) WITH ORDINALITY AS k(attnum, position)
+                      JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+                     WHERE k.position <= i.indnkeyatts)
+                   OPERATOR(pg_catalog.=) (SELECT pg_catalog.array_agg(DISTINCT key ORDER BY key)
+                        FROM pg_catalog.unnest(",
+            $keys,
+            "::pg_catalog.text[]) key)"
+        )
+    };
+}
+
+/// La regola K2 sull'indice `i`: per ogni colonna chiave la collation
+/// dell'indice e quella della colonna (`indcollation` = `attcollation`) e
+/// l'opclass e quella btree predefinita per il tipo della colonna (per un
+/// dominio, del suo tipo base; un dominio su un dominio non si risolve e non
+/// prova). L'uguaglianza che rende unica la chiave e allora quella della
+/// colonna, e quella con cui lo statement la confronta (`KEY_EQUALITY_SQL`).
+macro_rules! key_semantics {
+    () => {
+        "NOT EXISTS (
+            SELECT 1
+              FROM ROWS FROM (pg_catalog.unnest(i.indkey::pg_catalog.int2[]),
+                              pg_catalog.unnest(i.indcollation::pg_catalog.oid[]),
+                              pg_catalog.unnest(i.indclass::pg_catalog.oid[]))
+                   WITH ORDINALITY AS k(attnum, coll, opclass, position)
+              JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+              JOIN pg_catalog.pg_type y ON y.oid = a.atttypid
+              LEFT JOIN pg_catalog.pg_opclass oc ON oc.oid = k.opclass
+             WHERE k.position <= i.indnkeyatts
+               AND (k.coll IS DISTINCT FROM a.attcollation
+                    OR oc.oid IS NULL OR NOT oc.opcdefault OR oc.opcmethod <> 403::pg_catalog.oid
+                    OR (y.typtype = 'd' AND EXISTS (SELECT 1 FROM pg_catalog.pg_type b
+                                                     WHERE b.oid = y.typbasetype AND b.typtype = 'd'))
+                    OR EXISTS (SELECT 1 FROM pg_catalog.pg_opclass o
+                                WHERE o.opcmethod = oc.opcmethod AND o.opcdefault AND o.oid <> oc.oid
+                                  AND o.opcintype = CASE WHEN y.typtype = 'd' THEN y.typbasetype
+                                                         ELSE y.oid END)))"
+    };
+}
+
+/// Per ogni chiave, l'operatore di uguaglianza (strategia 3 della famiglia
+/// btree) dell'opclass dell'indice che prova l'unicita, qualificato con il
+/// suo schema, e il tipo, qualificato, a cui si portano i due lati del
+/// confronto: quello dell'opclass, o il tipo base della colonna se l'opclass
+/// e polimorfica (`anyarray`, `anyenum`, ...).
+const KEY_EQUALITY_SQL: &str = concat!(
+    "\
+WITH target AS (
+    SELECT c.oid FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text
+)
+SELECT DISTINCT ON (a.attname) a.attname::pg_catalog.text,
+       pg_catalog.quote_ident(opn.nspname) || '.' || o.oprname::pg_catalog.text,
+       pg_catalog.quote_ident(tn.nspname) || '.' || pg_catalog.quote_ident(t.typname)
+  FROM target x
+  JOIN pg_catalog.pg_class c ON c.oid = x.oid
+  JOIN pg_catalog.pg_index i ON i.indrelid = x.oid
+  CROSS JOIN LATERAL ROWS FROM (pg_catalog.unnest(i.indkey::pg_catalog.int2[]),
+                                pg_catalog.unnest(i.indclass::pg_catalog.oid[]))
+       WITH ORDINALITY AS k(attnum, opclass, position)
+  JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+  JOIN pg_catalog.pg_type y ON y.oid = a.atttypid
+  JOIN pg_catalog.pg_opclass oc ON oc.oid = k.opclass
+  JOIN pg_catalog.pg_type it ON it.oid = oc.opcintype
+  JOIN pg_catalog.pg_amop m ON m.amopfamily = oc.opcfamily AND m.amopmethod = oc.opcmethod
+   AND m.amopstrategy = 3 AND m.amoplefttype = oc.opcintype AND m.amoprighttype = oc.opcintype
+  JOIN pg_catalog.pg_operator o ON o.oid = m.amopopr
+  JOIN pg_catalog.pg_namespace opn ON opn.oid = o.oprnamespace
+  JOIN pg_catalog.pg_type t ON t.oid = CASE WHEN it.typtype = 'p'
+                                            THEN CASE WHEN y.typtype = 'd' THEN y.typbasetype ELSE y.oid END
+                                            ELSE oc.opcintype END
+  JOIN pg_catalog.pg_namespace tn ON tn.oid = t.typnamespace
+ WHERE k.position <= i.indnkeyatts AND ",
+    keys_index!("$3"),
+    " AND ",
+    key_semantics!(),
+    "
+ ORDER BY a.attname, i.indexrelid"
+);
+
+const FACTS_SQL: &str = concat!(
+    "\
 WITH RECURSIVE target AS (
-    SELECT CASE WHEN $1::pg_catalog.text IS NULL
-                THEN pg_catalog.to_regclass(pg_catalog.quote_ident($2::pg_catalog.text))::pg_catalog.oid
-           ELSE (SELECT c.oid FROM pg_catalog.pg_class c
-                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                 WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text) END AS oid
+    SELECT (SELECT c.oid FROM pg_catalog.pg_class c
+              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text) AS oid
 ), closure(oid, via_view) AS (
     SELECT oid, false FROM target WHERE oid IS NOT NULL
     UNION
@@ -123,17 +224,18 @@ SELECT
     EXISTS (SELECT 1 FROM target t
               JOIN pg_catalog.pg_class c ON c.oid = t.oid
               JOIN pg_catalog.pg_index i ON i.indrelid = t.oid
-             WHERE i.indisunique AND i.indimmediate AND i.indisvalid AND i.indislive
-               AND i.indpred IS NULL AND i.indexprs IS NULL
-               AND (c.relkind = 'p'
-                    OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhparent = t.oid))
-               AND (SELECT pg_catalog.array_agg(DISTINCT a.attname::pg_catalog.text
-                                                ORDER BY a.attname::pg_catalog.text)
-                      FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) WITH ORDINALITY AS k(attnum, position)
-                      JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
-                     WHERE k.position <= i.indnkeyatts)
-                   OPERATOR(pg_catalog.=) (SELECT pg_catalog.array_agg(DISTINCT key ORDER BY key)
-                        FROM pg_catalog.unnest($7::pg_catalog.text[]) key))";
+             WHERE ",
+    keys_index!("$7"),
+    "),
+    EXISTS (SELECT 1 FROM target t
+              JOIN pg_catalog.pg_class c ON c.oid = t.oid
+              JOIN pg_catalog.pg_index i ON i.indrelid = t.oid
+             WHERE ",
+    keys_index!("$7"),
+    " AND ",
+    key_semantics!(),
+    ")"
+);
 
 /// La guardia del `search_path` (regola Q): uno schema che precede
 /// `pg_catalog` nel percorso effettivo (`current_schemas(true)`) e contiene
@@ -148,9 +250,9 @@ SELECT
 /// implicito: un `public."="(text[], text[])` esatto vincerebbe anche dopo
 /// `pg_catalog`. Quelli, nello SQL della libreria, sono qualificati con
 /// `OPERATOR(pg_catalog.=)` o hanno gli operandi portati al tipo esatto
-/// (seconda rilettura del 25/10). Gli statement sul target (`WHERE "id" =
-/// $1`) restano risolti dal `search_path` della sessione, che i trigger del
-/// target vedono: e il limite dichiarato qui sotto.
+/// (seconda rilettura del 25/10), e nella scrittura girano con il percorso
+/// chiuso (regola Q2, terza rilettura: `public.<>(oid, integer)` passava di
+/// qui).
 /// `11` e l'oid fisso di `pg_catalog` (`PG_CATALOG_NAMESPACE`).
 const SEARCH_PATH_GUARD_SQL: &str = "\
 SELECT EXISTS (
@@ -208,10 +310,14 @@ pub struct TargetFacts {
     /// IDENTITY` del target: `COPY` scrive il valore dell'ingresso, l'INSERT
     /// lo rifiuta.
     pub copy_identity_always: bool,
-    /// La regola K: le chiavi coincidono con le colonne di un indice unico,
-    /// immediato, valido, senza predicato ne espressioni, e il target non ha
+    /// Le chiavi coincidono con le colonne di un indice unico, immediato,
+    /// valido, pronto, senza predicato ne espressioni, e il target non ha
     /// figli di ereditarieta fuori da quell'indice (una tabella partizionata
     /// si: l'indice unico vale su ogni partizione).
+    pub keys_index: bool,
+    /// La regola K2: uno di quegli indici confronta ogni chiave con la
+    /// collation della colonna e con l'opclass btree predefinita del suo
+    /// tipo (`key_semantics`).
     pub keys_unique: bool,
 }
 
@@ -272,7 +378,7 @@ pub async fn facts<C: GenericClient + Sync>(
         .query_one(
             FACTS_SQL,
             &[
-                &target.schema,
+                &target.schema.as_deref().unwrap_or("public"),
                 &target.object,
                 &rules,
                 &destructive,
@@ -295,7 +401,8 @@ pub async fn facts<C: GenericClient + Sync>(
         instead_trigger: row.get(7),
         foreign_relation: row.get(8),
         copy_identity_always: row.get(9),
-        keys_unique: row.get(10),
+        keys_index: row.get(10),
+        keys_unique: row.get(11),
     })
 }
 
@@ -329,8 +436,82 @@ pub fn refusal(operation: &WriteOperation, facts: TargetFacts) -> Option<Databas
     ) {
         return Some(error);
     }
-    (matches!(operation.mode, WriteMode::Update | WriteMode::DeleteByKeys) && !facts.keys_unique)
-        .then(|| keys_without_unique_index(ProviderKind::Postgres, ErrorPhase::Write))
+    let unproven = match operation.mode {
+        WriteMode::Update | WriteMode::DeleteByKeys => !facts.keys_unique,
+        // `ON CONFLICT` arbitra con ogni indice unico sulle chiavi, qualunque
+        // collation e opclass abbia: con un arbitro e nessun indice della
+        // regola K2, `A` e `a` di una colonna con collation non
+        // deterministica non entrano in conflitto. Senza arbitro decide il
+        // server (42P10, 55000), come prima.
+        WriteMode::Upsert => facts.keys_index && !facts.keys_unique,
+        _ => false,
+    };
+    unproven.then(|| keys_without_unique_index(ProviderKind::Postgres, ErrorPhase::Write))
+}
+
+/// L'uguaglianza con cui lo statement confronta una chiave: l'operatore,
+/// qualificato con il suo schema (`"pg_catalog".=`), e il tipo qualificato a
+/// cui si portano i due lati.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyEquality {
+    pub operator: String,
+    pub cast: String,
+}
+
+/// La regola K2 negli statement: per ogni chiave, l'uguaglianza dell'indice
+/// che ne prova l'unicita ([`KEY_EQUALITY_SQL`]), per nome di colonna.
+///
+/// Fino al 25/10 lo statement confrontava `"k" = $1`, con l'operatore
+/// risolto dal `search_path` e la collation della colonna, mentre l'unicita
+/// la provava un indice qualsiasi sulle colonne: con una collation ICU non
+/// deterministica sulla colonna e l'indice unico sotto `"C"`, Update di
+/// `(A,N),(zzz,B)` dava `confirmed 2 updated 2` aggiornando `A` e `a`, con
+/// `zzz` assente.
+///
+/// # Limite dichiarato
+///
+/// - **Regola**: l'indice che prova le chiavi confronta come la colonna
+///   (collation della colonna, opclass btree predefinita del tipo), e lo
+///   statement confronta con l'operatore di quell'opclass.
+/// - **Ambito**: Update e `DeleteByKeys` (e Upsert con un arbitro), nella
+///   transazione della scrittura e nel dry run con la DSN.
+/// - **Hazard**: si rifiutano anche indici equivalenti che non sono quelli
+///   predefiniti (`varchar_ops`, un alias di `text_ops` che non e
+///   predefinito) e le chiavi su un dominio di un dominio, che la lettura
+///   non risolve fino al tipo base.
+/// - **Rientro**: un confronto per famiglia di operatori invece che per
+///   opclass, e la risoluzione ricorsiva dei domini.
+///
+/// # Errors
+///
+/// L'errore classificato della lettura.
+pub async fn key_equality<C: GenericClient + Sync>(
+    client: &C,
+    operation: &WriteOperation,
+) -> Result<std::collections::BTreeMap<String, KeyEquality>> {
+    let rows = client
+        .query(
+            KEY_EQUALITY_SQL,
+            &[
+                &operation.target.schema.as_deref().unwrap_or("public"),
+                &operation.target.object,
+                &operation.keys,
+            ],
+        )
+        .await
+        .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
+    Ok(rows
+        .iter()
+        .map(|row| {
+            (
+                row.get::<_, String>(0),
+                KeyEquality {
+                    operator: row.get(1),
+                    cast: row.get(2),
+                },
+            )
+        })
+        .collect())
 }
 
 /// La regola R nella transazione della scrittura: legge i fatti e rifiuta.
@@ -397,8 +578,13 @@ pub fn copied_columns(schema: &arrow_schema::SchemaRef, path: WritePath) -> Vec<
 /// - **Regola**: nessuno schema prima di `pg_catalog` nel percorso effettivo
 ///   contiene un nome di funzione, operatore o tipo di `pg_catalog`.
 /// - **Ambito**: ogni sessione della libreria (`connect_session`: letture,
-///   introspezione, preflight, dry run, transazioni applicative) e la
-///   transazione della scrittura; non `run_ddl`, che e SQL del chiamante.
+///   introspezione, preflight, dry run, transazioni applicative), quindi
+///   anche ogni scrittura, che passa dal preflight; non `run_ddl`, che e SQL
+///   del chiamante. Nella transazione della scrittura e nel dry run lo SQL
+///   della libreria gira inoltre con il percorso chiuso della regola Q2
+///   (`crate::search_path`), che copre anche gli operatori raggiunti con una
+///   conversione implicita da uno schema dopo `pg_catalog`, che questa
+///   guardia non vede.
 /// - **Hazard**: il confronto e per nome, non per firma: si rifiuta anche chi
 ///   non oscura (uno schema con `PostGIS` messo prima di `pg_catalog`
 ///   definisce `text(geometry)` e `box(...)`). Una funzione o un operatore
@@ -454,7 +640,6 @@ pub async fn guard_search_path<C: GenericClient + Sync>(
 /// rifiuto del `set_config` interrompe la transazione: il chiamante la
 /// annulla.
 pub async fn pin_session<C: GenericClient + Sync>(client: &C) -> Result<()> {
-    guard_search_path(client, ErrorPhase::Write).await?;
     let read = |error: tokio_postgres::Error| classify_error(ErrorPhase::Write, &error);
     let current: String = client
         .query_one(

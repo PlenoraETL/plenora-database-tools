@@ -332,9 +332,9 @@ pub async fn describe_object_metadata(
                 p.polcmd::pg_catalog.text,
                 (
                     SELECT pg_catalog.jsonb_agg(
-                        CASE WHEN role_oid = 0 THEN 'PUBLIC' ELSE r.rolname END
+                        CASE WHEN role_oid = 0::pg_catalog.oid THEN 'PUBLIC' ELSE r.rolname END
                         ORDER BY CASE
-                            WHEN role_oid = 0 THEN 'PUBLIC'
+                            WHEN role_oid = 0::pg_catalog.oid THEN 'PUBLIC'
                             ELSE r.rolname
                         END
                     )::pg_catalog.text
@@ -375,8 +375,8 @@ pub async fn describe_object_metadata(
                 acl.is_grantable
             FROM pg_catalog.pg_class c
             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-            CROSS JOIN LATERAL aclexplode(
-                COALESCE(c.relacl, acldefault('r', c.relowner))
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(c.relacl, pg_catalog.acldefault('r', c.relowner))
             ) acl
             LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid = acl.grantee
             WHERE n.nspname = $1 AND c.relname = $2

@@ -282,8 +282,9 @@ async fn table(client: &Client, schema: &str, object: &str) -> Result<Option<Tab
                     EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t \
                             WHERE t.tgrelid = c.oid AND NOT t.tgisinternal \
                               AND t.tgenabled <> 'D' \
-                              AND (t.tgtype & 64) <> 0 AND (t.tgtype & 4) <> 0 \
-                              AND (t.tgtype & 1) <> 0), \
+                              AND (t.tgtype::pg_catalog.int4 & 64) <> 0 \
+                              AND (t.tgtype::pg_catalog.int4 & 4) <> 0 \
+                              AND (t.tgtype::pg_catalog.int4 & 1) <> 0), \
                     pg_catalog.pg_relation_is_updatable(c.oid, true) \
              FROM pg_catalog.pg_class c \
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
@@ -368,12 +369,16 @@ enum Arbiter {
     Missing,
 }
 
+/// L'arbitro come lo sceglie il server, per la forma dell'indice; la regola
+/// K2 (l'indice confronta come la colonna) la decide prima
+/// `super::visibility::refusal`, sui fatti che legge anche la scrittura.
 async fn arbiter(client: &Client, oid: u32, keys: &[String]) -> Result<Arbiter> {
     let row = client
         .query_one(
             "SELECT pg_catalog.bool_or(i.indimmediate), pg_catalog.count(*) > 0 \
              FROM pg_catalog.pg_index i \
-             WHERE i.indrelid = $1 AND i.indisunique AND i.indisvalid \
+             WHERE i.indrelid = $1 AND i.indisunique AND i.indisvalid AND i.indisready \
+               AND i.indislive \
                AND i.indpred IS NULL AND i.indexprs IS NULL \
                AND (SELECT pg_catalog.array_agg(DISTINCT a.attname::pg_catalog.text ORDER BY a.attname::pg_catalog.text) \
                     FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) WITH ORDINALITY AS k(attnum, position) \

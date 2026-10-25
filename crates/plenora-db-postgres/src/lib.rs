@@ -21,6 +21,7 @@ mod query_execution;
 mod query_plan;
 mod read_stream;
 mod schema_cache;
+mod search_path;
 mod spatial;
 mod spatial_probe;
 mod transaction;
@@ -107,6 +108,8 @@ impl PostgresProvider {
         budget: &ResourceBudget,
         cancellation: &CancellationToken,
     ) -> Result<PostgresWriteDryRun> {
+        // Il target come lo scrive la scrittura (`write::qualified_target`).
+        let operation = &write::qualified_target(operation);
         let schema = input.schema();
         let mut gate = write::StatementGate::default();
         let mut row_security = write::target::RowSecurity::NotPerformed;
@@ -123,52 +126,50 @@ impl PostgresProvider {
             // ordine: DDL e svuotamento, poi la registrazione degli id dei
             // campi, poi lo statement e la prima riga (`gate`).
             let client = self.connect_session(secret).await?;
-            // La regola W2 come la scrittura, nello stesso punto (prima di
-            // ogni altra lettura del target): in una transazione che si
-            // annulla, cosi `set_config` non resta nella sessione.
             let session = client.client()?;
-            session
-                .batch_execute("BEGIN")
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
-            let pinned = write::visibility::pin_session(session).await;
-            session
-                .batch_execute("ROLLBACK")
-                .await
-                .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
-            pinned?;
             let row_scoped = operation.mode == plenora_database_core::plan::WriteMode::Append
                 && operation.transaction_profile
                     == plenora_database_core::plan::TransactionProfile::SingleTransaction
                 && input.declared_input_rows().is_some();
-            let verdict = write::target::inspect(
-                client.client()?,
-                operation,
-                &schema,
-                write::target::WritePath::of(operation, row_scoped, self.insert_mode),
-                self.schema_evolution,
-            )
-            .await?;
-            if let Some(error) = verdict.before_input {
-                return Err(error);
+            // Cio che la scrittura legge, nel suo ordine e come lo legge: in
+            // una transazione che si annulla, con il percorso chiuso della
+            // regola Q2 (`search_path`) e la regola W2 prima di ogni altra
+            // lettura del target; `set_config` non resta nella sessione.
+            session
+                .batch_execute("BEGIN")
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
+            let read = async {
+                search_path::SessionPath::close(session, ErrorPhase::Write).await?;
+                write::visibility::pin_session(session).await?;
+                let verdict = write::target::inspect(
+                    session,
+                    operation,
+                    &schema,
+                    write::target::WritePath::of(operation, row_scoped, self.insert_mode),
+                    self.schema_evolution,
+                )
+                .await?;
+                if let Some(error) = verdict.before_input {
+                    return Err(error);
+                }
+                field_identity::check(session, operation, &schema, verdict.may_lock, verdict.owner)
+                    .await?;
+                // La regola V come la scrittura: le colonne del target che
+                // il server legge secondo la sessione.
+                write::assign_dry_run_session_rules(Some(session), &mut state, operation, &schema)
+                    .await?;
+                // La regola K2 come la scrittura: l'uguaglianza delle chiavi.
+                write::assign_dry_run_key_equality(Some(session), &mut state, operation, &schema)
+                    .await?;
+                Ok(verdict)
             }
-            field_identity::check(
-                client.client()?,
-                operation,
-                &schema,
-                verdict.may_lock,
-                verdict.owner,
-            )
-            .await?;
-            // La regola V come la scrittura: le colonne del target che il
-            // server legge secondo la sessione.
-            write::assign_dry_run_session_rules(
-                Some(client.client()?),
-                &mut state,
-                operation,
-                &schema,
-            )
-            .await?;
+            .await;
+            session
+                .batch_execute("ROLLBACK")
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
+            let verdict = read?;
             drop(client);
             gate.at_statement = verdict.at_statement;
             gate.at_first_row = verdict.at_first_row;
@@ -178,6 +179,7 @@ impl PostgresProvider {
         } else {
             let mut state = write::prepare_state(&schema, operation)?;
             write::assign_dry_run_session_rules(None, &mut state, operation, &schema).await?;
+            write::assign_dry_run_key_equality(None, &mut state, operation, &schema).await?;
             (state, None, None)
         };
         // La regola K come la scrittura, nello stesso punto (dopo il
@@ -1036,6 +1038,9 @@ impl Provider for PostgresProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite> {
         Box::pin(async move {
+            // Il target sempre con lo schema (regola Q2): ogni statement e
+            // ogni lettura del catalogo nominano la stessa relazione.
+            let operation = &write::qualified_target(operation);
             let control = BudgetCancellation::new(cancellation, budget)?;
             check_cancelled(control.token(), ErrorPhase::Prepare)?;
             // La stessa compilazione di `compile_write_plan`, che il dry run
@@ -1239,3 +1244,7 @@ mod write_r2_live_tests;
 #[cfg(test)]
 #[path = "sql_qualification_tests.rs"]
 mod sql_qualification_tests;
+
+#[cfg(test)]
+#[path = "write_r3_live_tests.rs"]
+mod write_r3_live_tests;

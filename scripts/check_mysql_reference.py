@@ -255,6 +255,7 @@ EXPECTED_UNIT_TESTS = {
     "types::tests::the_window_renders_with_and_without_a_ceiling",
     "write::tests::a_created_table_survives_the_rollback_and_every_outcome_says_so",
     "write::tests::la_regola_k_vuole_un_indice_unico_sulle_chiavi",
+    "write::tests::la_regola_p_rifiuta_il_testo_piu_lungo_della_colonna",
     "write::tests::a_declared_deadlock_stays_rolled_back_instead_of_unknown",
     "write::tests::a_spatial_index_belongs_to_the_create_ddl_and_wants_a_non_null_column",
     "write::tests::an_already_quarantined_error_stays_non_retryable_when_rollback_is_unobservable",
@@ -394,6 +395,10 @@ EXPECTED_LIVE_REFERENCE_TESTS = {
     "live_tests::live_w2_sessione_della_scrittura_fissa_fuso_e_charset",
     "live_tests::live_isolamento_richiesto_e_quello_effettivo",
     "live_tests::live_update_condizionale_conta_le_righe_trovate",
+    # La terza rilettura del 25/10: regola P (spazi finali oltre la
+    # lunghezza) e regola K2 (indice unico su un prefisso).
+    "live_tests::live_p_spazi_finali_oltre_la_lunghezza_rifiutano",
+    "live_tests::live_k2_indice_unico_su_un_prefisso_prova_la_chiave",
 }
 
 

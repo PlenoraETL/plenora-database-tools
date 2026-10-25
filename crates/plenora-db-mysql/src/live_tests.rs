@@ -9000,3 +9000,110 @@ async fn live_staging_di_update_confronta_con_la_collation_del_target() {
         written.map(|outcome| outcome.rows)
     );
 }
+
+// ---- Terza rilettura del 25/10 (su 1b02559) ----
+
+/// La regola P: `abc` con tre spazi verso `VARCHAR(3)` diventava `abc` con
+/// il COMMIT, anche con `STRICT_TRANS_TABLES` (il server tronca gli spazi
+/// finali con una nota). Ora un testo piu lungo della colonna si rifiuta
+/// prima di ogni effetto, in ogni mode che scrive valori.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_p_spazi_finali_oltre_la_lunghezza_rifiutano() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let short = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (id BIGINT NOT NULL PRIMARY KEY, \
+             label VARCHAR(3) NULL) ENGINE=InnoDB"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES (1, 'a'), (2, 'b'), (3, 'a')"),
+    ];
+    let short: Vec<&str> = short.iter().map(String::as_str).collect();
+    let mut difformi = Vec::new();
+    for (mode, id) in [
+        (plenora_database_core::plan::WriteMode::Append, 10),
+        (plenora_database_core::plan::WriteMode::Upsert, 1),
+        (plenora_database_core::plan::WriteMode::Update, 1),
+    ] {
+        semantica_prepare(&mut connection, &short).await;
+        let written = semantica_write(mode, &[(id, "abc   ")]).await;
+        let after = semantica_rows(&mut connection).await;
+        let refused = written.as_ref().err().is_some_and(|error| {
+            error.category == ErrorCategory::DataMapping
+                && error.message.ends_with(crate::write::LOSSY_VALUE)
+        });
+        if !refused || after != ["1:a", "2:b", "3:a"] {
+            difformi.push(format!(
+                "{mode:?}: {:?}, righe {after:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+        // Entro la lunghezza il valore si scrive com'e.
+        let written = semantica_write(mode, &[(id, "ab ")]).await;
+        if written.is_err() {
+            difformi.push(format!("{mode:?} entro la lunghezza: {written:?}"));
+        }
+    }
+    semantica_cleanup(&mut connection).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// La regola K2 su `MySQL` e `MariaDB`: un indice `UNIQUE` su un prefisso
+/// della chiave prova l'unicita della colonna intera (prefissi unici, valori
+/// unici, con la collation della colonna), e Update conferma la riga sola.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_k2_indice_unico_su_un_prefisso_prova_la_chiave() {
+    use plenora_database_core::arrow::array::{Array, StringArray};
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let keyed = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (code VARCHAR(10) NOT NULL, label VARCHAR(64) NULL, \
+             UNIQUE KEY prefisso (code(2))) ENGINE=InnoDB"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES ('ab1', 'prima'), ('cd1', 'seconda')"),
+    ];
+    let keyed: Vec<&str> = keyed.iter().map(String::as_str).collect();
+    semantica_prepare(&mut connection, &keyed).await;
+    let schema = std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("code", DataType::Utf8, false),
+            Field::new("label", DataType::Utf8, true),
+        ],
+        std::collections::HashMap::from([(
+            plenora_database_core::protocol::CONTRACT_VERSION_KEY.to_owned(),
+            plenora_database_core::protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ));
+    let batch = plenora_database_core::arrow::RecordBatch::try_new(
+        schema,
+        vec![
+            std::sync::Arc::new(StringArray::from(vec!["ab1", "zz9"])) as std::sync::Arc<dyn Array>,
+            std::sync::Arc::new(StringArray::from(vec![Some("x"), Some("y")])),
+        ],
+    )
+    .expect("batch");
+    let mut operation = semantica_operation(plenora_database_core::plan::WriteMode::Update);
+    operation.keys = vec!["code".to_owned()];
+    let written = semantica_write_batch(&operation, batch).await;
+    let after = connection
+        .query::<String, _>(format!(
+            "SELECT CONCAT(code, ':', label) FROM `{SEMANTICA_TABLE}` ORDER BY code"
+        ))
+        .await
+        .expect("righe");
+    semantica_cleanup(&mut connection).await;
+    assert!(
+        written
+            .as_ref()
+            .is_ok_and(|outcome| (outcome.rows.confirmed, outcome.rows.skipped) == (1, 1))
+            && after == ["ab1:x", "cd1:seconda"],
+        "{:?}, righe {after:?}",
+        written.map(|outcome| outcome.rows)
+    );
+}

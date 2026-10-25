@@ -1,66 +1,93 @@
-//! La regola V su PostgreSQL: un valore che la scrittura manda come testo e
-//! che il server interpreta secondo la sessione (`DateStyle`,
-//! `IntervalStyle`, `TimeZone`, `lc_monetary`) deve essere nella forma
-//! canonica che non ne dipende, o la scrittura si rifiuta.
+//! Le regole V2 e P su PostgreSQL: cio che un valore puo diventare nel tipo
+//! della sua colonna.
 //!
-//! Misurato il 25/10 su PostgreSQL 16 (rilettura indipendente):
+//! - **V2** (valori indipendenti dalla sessione): un valore che la scrittura
+//!   manda come testo, e che il server legge con la funzione d'ingresso del
+//!   tipo, arriva soltanto a un **elenco chiuso** di tipi la cui lettura non
+//!   dipende dalla sessione ([`TEXT_INPUTS`]), o ai tipi temporali nella forma
+//!   canonica che non ne dipende ([`canonical`]). Ogni altro tipo, anche di
+//!   un'estensione, si rifiuta (mondo chiuso).
+//! - **P** (nessuna perdita silenziosa con `Strict`): un valore che il tipo
+//!   del target arrotonderebbe o troncherebbe si rifiuta prima di ogni
+//!   effetto, in ogni profilo e nel dry run.
+//!
+//! Misurato il 25/10 su PostgreSQL 16 (letture indipendenti):
 //!
 //! - `daterange` con il limite `'01/02/2026'`: 2 gennaio con `DateStyle =
 //!   'ISO, MDY'`, 1 febbraio con `'ISO, DMY'`, entrambi `committed`;
 //! - `tstzrange` con il limite `'2026-01-02 10:00:00'`, senza offset: l'istante
 //!   cambiava con il `TimeZone` del ruolo;
 //! - un `interval` scritto da `CopyText` cambiava segno con `IntervalStyle =
-//!   sql_standard` (corretto in `binary_codec::interval_text`, che ora mette
-//!   il segno su ogni campo).
+//!   sql_standard` (corretto in `binary_codec::interval_text`);
+//! - F3, terza lettura: `'now'` verso una colonna `time` (oid 1083, fuori
+//!   dall'elenco dei tipi della sessione di allora) con `Lossy` e `CopyText`
+//!   si scriveva come l'ora del `TimeZone` della sessione;
+//! - F5: `timestamp(0)` e `time(0)` arrotondavano 10:00:00.999999 a 10:00:01
+//!   in ogni profilo, con `Strict`, dove la scala di un `numeric` si rifiuta.
 //!
 //! # La regola
 //!
 //! La transazione della scrittura (e il dry run con la DSN) legge dal
-//! catalogo, per ogni colonna dell'ingresso, se il tipo della colonna arriva —
-//! attraverso domini, array, range e tipi composti — a uno dei tipi che
-//! dipendono dalla sessione ([`rules`], per oid fisso: `date`, `timestamp`,
-//! `timestamptz`, `timetz`, `interval`, `money`). Poi ogni valore non nullo
-//! passa da [`check`] prima della codifica, in ogni profilo:
+//! catalogo, con il percorso chiuso della regola Q2, le **foglie** del tipo di
+//! ogni colonna dell'ingresso: domini, array, range, multirange e tipi
+//! composti si attraversano fino ai tipi base ed enum, con la funzione
+//! d'ingresso (il simbolo interno, `pg_proc.prosrc` con `prolang = internal`)
+//! e il typmod di ciascuna ([`rules`]). La classe di una foglia viene dal
+//! simbolo, non dal nome del tipo: `citext` legge con `textin` ed e testo.
 //!
-//! - testo libero (`Utf8`, gli elementi di una lista `Utf8`, i limiti di un
-//!   range): soltanto la forma canonica del tipo foglia — date ISO
-//!   `AAAA-MM-GG`; timestamp ISO senza zona; `timestamptz` e `timetz` con la
-//!   zona esplicita (`Z` o `+hh[:mm]`); `infinity`/`-infinity`; intervalli in
-//!   forma ISO 8601 (`P...`) o con il segno esplicito su ogni campo dopo un
-//!   primo campo negativo;
-//! - un array o un range scritto come un unico letterale di testo, un tipo
-//!   composto che contiene un tipo della sessione, `money` (il separatore
-//!   decimale dipende da `lc_monetary`): rifiutati;
-//! - valori Arrow tipizzati che la scrittura formatta lei stessa: canonici
-//!   per costruzione, tranne le conversioni che passano dal `TimeZone`
-//!   (un timestamp senza zona, una data o un `time` verso `timestamptz` o
-//!   `timetz`, ammesse soltanto da una politica di mapping non stretta):
-//!   rifiutate.
+//! Poi ogni valore non nullo passa da [`check`] prima della codifica:
+//!
+//! - una foglia `money` (il separatore decimale dipende da `lc_monetary`) o
+//!   fuori dall'elenco chiuso: rifiutata, qualunque sia il valore;
+//! - una foglia di testo ([`TEXT_INPUTS`]): ogni valore; con `Strict`, un
+//!   testo piu lungo di `varchar(n)`/`char(n)` si rifiuta (il server tronca
+//!   in silenzio gli spazi in eccesso: `'abc   '` diventava `'abc'`);
+//! - una foglia temporale (`date`, `time`, `timetz`, `timestamp`,
+//!   `timestamptz`, `interval`): testo soltanto nella forma canonica — date
+//!   ISO `AAAA-MM-GG`, ore `hh:mm[:ss[.f]]`, timestamp ISO, la zona esplicita
+//!   per `timestamptz` e `timetz`, intervalli ISO 8601 o con il segno su ogni
+//!   campo —, mai i valori speciali (`now`, `today`, `epoch`, `allballs`,
+//!   `infinity`); con `Strict`, non piu cifre frazionarie di quante la
+//!   colonna ne conserva. I valori Arrow tipizzati, che la scrittura formatta
+//!   da se, si ammettono tranne le conversioni che passano dal `TimeZone`
+//!   (una data, un timestamp senza zona o un `time` verso `timestamptz` o
+//!   `timetz`);
+//! - un composto, un multirange o un array di range: soltanto se ogni foglia
+//!   e testo (e, con `Strict`, senza lunghezze massime, che qui non si
+//!   verificano per campo).
+//!
+//! Con `Strict` una colonna temporale con precisione ridotta (`timestamp(p)`,
+//! `time(p)`, `timetz(p)`, `timestamptz(p)` con `p < 6`, un `interval` con
+//! campi o precisione) si rifiuta prima del primo valore ([`refuse_lossy`]),
+//! come gia fa il preflight (`LossCategory::Precision`): e lo stesso
+//! criterio di `MySQL`, che rifiuta `DATETIME(0)`. Con una politica non
+//! stretta la perdita e nel `LossReport` del preflight e il valore passa.
 //!
 //! La sessione **non** si fissa: `TimeZone` e `DateStyle` decidono anche i
-//! default e i trigger del target (`current_date`, `localtimestamp`, una data
-//! formattata in testo), e fissarli cambierebbe in silenzio cio che il target
-//! scrive. La forma canonica non dipende dalla sessione, e non la tocca.
+//! default e i trigger del target, e fissarli cambierebbe in silenzio cio che
+//! il target scrive. La forma canonica non dipende dalla sessione.
 //!
 //! # Limite dichiarato
 //!
-//! - **Regola**: un valore testuale verso un tipo della sessione e canonico,
-//!   o la scrittura si rifiuta.
+//! - **Regola**: un valore testuale arriva soltanto a un tipo dell'elenco
+//!   chiuso, o in forma canonica a un tipo temporale; con `Strict` nessun
+//!   valore si arrotonda o si tronca.
 //! - **Ambito**: scrittura e dry run con la DSN, per le colonne del target
 //!   lette dal catalogo; il dry run senza DSN, e quello di Create, conoscono
-//!   soltanto i tipi di `pg_catalog` che il piano dichiara ([`declared`]),
-//!   non i domini ne i tipi composti.
+//!   soltanto i tipi di `pg_catalog` che il piano dichiara ([`declared`]).
+//!   Le colonne spatial hanno la verifica propria
+//!   (`plenora_database_core::geometry_value`).
 //! - **Hazard**: si rifiutano anche forme che non dipendono dalla sessione
 //!   ma non sono nell'elenco (una zona per nome, `Europe/Rome`; una data con
-//!   il nome del mese; `today`, che pero dipende dall'ora). Un tipo composto
-//!   con un campo della sessione si rifiuta sempre, anche se il valore e
-//!   canonico.
-//!   Le regole si leggono una volta, prima del primo valore e senza rileggerle
-//!   dopo il lock: un `ALTER COLUMN ... TYPE` concorrente fra la lettura e il
-//!   primo statement lascia la colonna con la regola del tipo di prima.
-//! - **Rientro**: la verifica per posizione dei campi di un composto, i
-//!   domini e i composti dichiarati risolti dal catalogo anche senza DSN, e
-//!   le regole rilette con la regola R dopo il lock.
+//!   il nome del mese; `infinity`, che un valore Arrow non sa portare: oggi
+//!   non si scrive). Un tipo di un'estensione con una funzione d'ingresso in
+//!   C (`hstore`, `ltree`) non riceve valori. `char(n)` completa con spazi i
+//!   valori piu corti: e la semantica del tipo, che li confronta senza gli
+//!   spazi finali, e non si rifiuta. Le regole si leggono una volta, prima
+//!   del primo valore e senza rileggerle dopo il lock.
+//! - **Rientro**: la verifica per campo dei composti; i domini e i composti
+//!   dichiarati risolti dal catalogo anche senza DSN; le regole rilette con
+//!   la regola R dopo il lock.
 
 use super::mapping_error;
 use super::plan::{ColumnSemantics, WriteColumnPlan};
@@ -68,15 +95,17 @@ use super::value_codec::range_value;
 use crate::error::{classify_error, public_error};
 use arrow_array::{Array, ListArray, StringArray, StructArray};
 use arrow_schema::{DataType, SchemaRef};
+use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::plan::WriteOperation;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::BTreeMap;
 use tokio_postgres::GenericClient;
 
-/// Il tipo foglia che la sessione interpreta.
+/// Il tipo temporale (o `money`) di una foglia.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SessionLeaf {
     Date,
+    Time,
     Timestamp,
     TimestampTz,
     TimeTz,
@@ -84,7 +113,7 @@ pub(super) enum SessionLeaf {
     Money,
 }
 
-/// Dove sta il tipo foglia nel tipo della colonna.
+/// Dove sta la foglia nel tipo della colonna.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SessionShape {
     Scalar,
@@ -95,16 +124,57 @@ pub(super) enum SessionShape {
     Nested,
 }
 
-/// La regola V di una colonna.
+/// Che cosa la funzione d'ingresso di una foglia fa del testo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SessionRule {
-    pub(super) leaf: SessionLeaf,
+pub(super) enum LeafClass {
+    /// Una lettura che non dipende dalla sessione ([`TEXT_INPUTS`]), con la
+    /// lunghezza massima in caratteri di `varchar(n)` e `char(n)`.
+    Text { max_chars: Option<usize> },
+    /// Un tipo temporale o `money`, con le cifre frazionarie dei secondi che
+    /// conserva e se la precisione e ridotta (typmod).
+    Session {
+        leaf: SessionLeaf,
+        fraction: u32,
+        reduced: bool,
+    },
+    /// Fuori dall'elenco chiuso.
+    Unknown,
+}
+
+/// Una foglia del tipo della colonna.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Leaf {
+    pub(super) class: LeafClass,
     pub(super) shape: SessionShape,
 }
 
-/// Il motivo pubblico del rifiuto.
-pub(super) const NOT_CANONICAL: &str = "valore non canonico per un tipo che il server \
-     interpreta secondo la sessione (DateStyle, IntervalStyle, TimeZone, lc_monetary)";
+/// Le regole V2 e P di una colonna.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SessionRule {
+    pub(super) leaves: Vec<Leaf>,
+    /// La politica di mapping e `Strict` (regola P).
+    pub(super) strict: bool,
+}
+
+impl SessionRule {
+    /// La foglia temporale della colonna, se ne ha una sola fuori da un
+    /// composto.
+    fn single(&self) -> Option<Leaf> {
+        match self.leaves.as_slice() {
+            [leaf] if leaf.shape != SessionShape::Nested => Some(*leaf),
+            _ => None,
+        }
+    }
+}
+
+/// Il motivo pubblico del rifiuto della regola V2.
+pub(super) const NOT_CANONICAL: &str = "valore non canonico, o verso un tipo fuori dall'elenco \
+     chiuso, che il server interpreterebbe secondo la sessione (DateStyle, IntervalStyle, \
+     TimeZone, lc_monetary)";
+
+/// Il motivo pubblico del rifiuto della regola P.
+pub(super) const LOSSY_VALUE: &str = "con MappingPolicy::Strict il tipo della colonna \
+     arrotonderebbe o troncherebbe il valore (precisione frazionaria, lunghezza massima)";
 
 fn refused() -> DatabaseError {
     public_error(
@@ -115,45 +185,156 @@ fn refused() -> DatabaseError {
     )
 }
 
-/// I tipi foglia per oid fisso del catalogo: `money` 790, `date` 1082,
-/// `timestamp` 1114, `timestamptz` 1184, `interval` 1186, `timetz` 1266.
+fn lossy() -> DatabaseError {
+    public_error(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Write,
+        false,
+        &format!("scrittura rifiutata: {LOSSY_VALUE}"),
+    )
+}
+
+/// L'elenco chiuso dei simboli interni delle funzioni d'ingresso la cui
+/// lettura del testo non dipende dalla sessione: testo, booleani, numeri
+/// (`numeric_in` non usa `lc_numeric`), `uuid`, `json`/`jsonb`, indirizzi,
+/// stringhe di bit, `bytea` (esadecimale o escape), enum. Fuori: `charin`
+/// e `namein` (troncano in silenzio a 1 e 63 byte), `xml_in` (dipende da
+/// `xmloption`), `regclassin` e gli altri `reg*` (risolvono nomi con il
+/// `search_path`), e ogni funzione in C di un'estensione.
+pub(super) const TEXT_INPUTS: &[&str] = &[
+    "textin",
+    "varcharin",
+    "bpcharin",
+    "boolin",
+    "int2in",
+    "int4in",
+    "int8in",
+    "float4in",
+    "float8in",
+    "numeric_in",
+    "uuid_in",
+    "json_in",
+    "jsonb_in",
+    "inet_in",
+    "cidr_in",
+    "macaddr_in",
+    "macaddr8_in",
+    "bit_in",
+    "varbit_in",
+    "byteain",
+    "enum_in",
+];
+
+/// La classe di una foglia dal simbolo interno della sua funzione d'ingresso
+/// (`None` per una funzione che non e `internal`) e dal suo typmod.
+#[must_use]
+pub(super) fn classify(symbol: Option<&str>, typmod: i32) -> LeafClass {
+    let Some(symbol) = symbol else {
+        return LeafClass::Unknown;
+    };
+    let session = |leaf| {
+        // `time(p)`, `timetz(p)`, `timestamp(p)`, `timestamptz(p)`: il typmod
+        // e la precisione; senza, sei cifre.
+        let (fraction, reduced) = match u32::try_from(typmod) {
+            Ok(precision) if precision < 6 => (precision, true),
+            _ => (6, false),
+        };
+        LeafClass::Session {
+            leaf,
+            fraction,
+            reduced,
+        }
+    };
+    match symbol {
+        "varcharin" | "bpcharin" => LeafClass::Text {
+            // `VARHDRSZ` (4) piu la lunghezza in caratteri.
+            max_chars: usize::try_from(typmod)
+                .ok()
+                .and_then(|typmod| typmod.checked_sub(4)),
+        },
+        _ if TEXT_INPUTS.contains(&symbol) => LeafClass::Text { max_chars: None },
+        "date_in" => LeafClass::Session {
+            leaf: SessionLeaf::Date,
+            fraction: 0,
+            reduced: false,
+        },
+        "time_in" => session(SessionLeaf::Time),
+        "timetz_in" => session(SessionLeaf::TimeTz),
+        "timestamp_in" => session(SessionLeaf::Timestamp),
+        "timestamptz_in" => session(SessionLeaf::TimestampTz),
+        // Il typmod di `interval` porta i campi (16 bit alti, `0x7FFF` tutti)
+        // e la precisione (16 bit bassi, `0xFFFF` non dichiarata): `interval
+        // day` tronca in silenzio ore e minuti, `interval(0)` arrotonda.
+        "interval_in" => {
+            let fields = (typmod >> 16) & 0x7FFF;
+            let precision = typmod & 0xFFFF;
+            LeafClass::Session {
+                leaf: SessionLeaf::Interval,
+                fraction: u32::try_from(precision)
+                    .ok()
+                    .filter(|p| *p < 6)
+                    .unwrap_or(6),
+                reduced: typmod >= 0
+                    && (fields != 0x7FFF || (precision != 0xFFFF && precision < 6)),
+            }
+        }
+        "cash_in" => LeafClass::Session {
+            leaf: SessionLeaf::Money,
+            fraction: 0,
+            reduced: false,
+        },
+        _ => LeafClass::Unknown,
+    }
+}
+
+/// Le foglie del tipo di ogni colonna `$3` del target, attraverso domini
+/// (con il loro typmod), array (con quello della colonna), range, multirange
+/// e composti, fino ai tipi base ed enum; a 32 livelli il nodo raggiunto
+/// conta come foglia (e la sua funzione d'ingresso non e nell'elenco). Gira
+/// con il percorso chiuso (regola Q2).
 const RULES_SQL: &str = "\
 WITH RECURSIVE target AS (
-    SELECT CASE WHEN $1::pg_catalog.text IS NULL
-                THEN pg_catalog.to_regclass(pg_catalog.quote_ident($2::pg_catalog.text))::pg_catalog.oid
-           ELSE (SELECT c.oid FROM pg_catalog.pg_class c
-                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                 WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text) END AS oid
-), walk(name, oid, shape, depth) AS (
-    SELECT a.attname::pg_catalog.text, a.atttypid, 'scalar'::pg_catalog.text, 0
+    SELECT c.oid FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text
+), walk(name, oid, typmod, shape, depth) AS (
+    SELECT a.attname::pg_catalog.text, a.atttypid, a.atttypmod, 'scalar'::pg_catalog.text, 0
       FROM target t JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid
      WHERE a.attnum > 0 AND NOT a.attisdropped
        AND a.attname::pg_catalog.text = ANY ($3::pg_catalog.text[])
     UNION ALL
-    SELECT w.name, x.next, x.shape, w.depth + 1 FROM walk w CROSS JOIN LATERAL (
-        SELECT y.typbasetype AS next, w.shape AS shape
+    SELECT w.name, x.next, x.typmod, x.shape, w.depth + 1 FROM walk w CROSS JOIN LATERAL (
+        SELECT y.typbasetype AS next, y.typtypmod AS typmod, w.shape AS shape
           FROM pg_catalog.pg_type y WHERE y.oid = w.oid AND y.typtype = 'd'
         UNION ALL
-        SELECT y.typelem, CASE WHEN w.shape = 'scalar' THEN 'array' ELSE 'nested' END
+        SELECT y.typelem, w.typmod, CASE WHEN w.shape = 'scalar' THEN 'array' ELSE 'nested' END
           FROM pg_catalog.pg_type y
-         WHERE y.oid = w.oid AND y.typtype = 'b' AND y.typcategory = 'A' AND y.typelem <> 0
+         WHERE y.oid = w.oid AND y.typtype = 'b' AND y.typcategory = 'A'
+           AND y.typelem <> 0::pg_catalog.oid
         UNION ALL
-        SELECT r.rngsubtype, CASE WHEN w.shape = 'scalar' THEN 'range' ELSE 'nested' END
+        SELECT r.rngsubtype, -1, CASE WHEN w.shape = 'scalar' THEN 'range' ELSE 'nested' END
           FROM pg_catalog.pg_range r WHERE r.rngtypid = w.oid
         UNION ALL
-        SELECT r.rngsubtype, 'nested' FROM pg_catalog.pg_range r WHERE r.rngmultitypid = w.oid
+        SELECT r.rngsubtype, -1, 'nested' FROM pg_catalog.pg_range r WHERE r.rngmultitypid = w.oid
         UNION ALL
-        SELECT a.atttypid, 'nested'
+        SELECT a.atttypid, a.atttypmod, 'nested'
           FROM pg_catalog.pg_type y JOIN pg_catalog.pg_attribute a ON a.attrelid = y.typrelid
          WHERE y.oid = w.oid AND y.typtype = 'c' AND a.attnum > 0 AND NOT a.attisdropped
     ) x
     WHERE w.depth < 32
 )
-SELECT name, shape, oid::pg_catalog.int8 FROM walk
- WHERE oid = ANY ('{790,1082,1114,1184,1186,1266}'::pg_catalog.oid[])";
+SELECT w.name, w.shape,
+       CASE WHEN p.prolang = 12::pg_catalog.oid THEN p.prosrc::pg_catalog.text END,
+       w.typmod
+  FROM walk w
+  JOIN pg_catalog.pg_type y ON y.oid = w.oid
+  LEFT JOIN pg_catalog.pg_proc p ON p.oid = y.typinput
+ WHERE w.depth = 32
+    OR (y.typtype IN ('b', 'e', 'p')
+        AND NOT (y.typtype = 'b' AND y.typcategory = 'A' AND y.typelem <> 0::pg_catalog.oid))";
 
-/// Le regole V delle colonne dell'ingresso sul target, per nome. Un target
-/// che non si risolve non ne ha: lo statement lo rifiutera da se.
+/// Le regole delle colonne dell'ingresso sul target, per nome. Una colonna
+/// che il target non ha non ne ha: lo statement la rifiutera da se.
 ///
 /// # Errors
 ///
@@ -169,14 +350,16 @@ pub(super) async fn rules<C: GenericClient + Sync>(
         .iter()
         .map(|field| field.name().clone())
         .collect::<Vec<_>>();
+    let target_schema = operation.target.schema.as_deref().unwrap_or("public");
     let rows = client
         .query(
             RULES_SQL,
-            &[&operation.target.schema, &operation.target.object, &names],
+            &[&target_schema, &operation.target.object, &names],
         )
         .await
         .map_err(|error| classify_error(phase, &error))?;
-    let mut rules = BTreeMap::new();
+    let strict = operation.mapping_policy == MappingPolicy::Strict;
+    let mut rules: BTreeMap<String, SessionRule> = BTreeMap::new();
     for row in rows {
         let name: String = row.get(0);
         let shape = match row.get::<_, String>(1).as_str() {
@@ -185,65 +368,114 @@ pub(super) async fn rules<C: GenericClient + Sync>(
             "range" => SessionShape::Range,
             _ => SessionShape::Nested,
         };
-        let leaf = match row.get::<_, i64>(2) {
-            790 => SessionLeaf::Money,
-            1082 => SessionLeaf::Date,
-            1114 => SessionLeaf::Timestamp,
-            1184 => SessionLeaf::TimestampTz,
-            1186 => SessionLeaf::Interval,
-            _ => SessionLeaf::TimeTz,
-        };
-        // Due foglie per una colonna arrivano soltanto da un composto, che e
-        // gia `Nested`: la prima basta.
+        let symbol: Option<String> = row.get(2);
+        let class = classify(symbol.as_deref(), row.get(3));
         rules
             .entry(name)
-            .and_modify(|rule: &mut SessionRule| {
-                if shape == SessionShape::Nested {
-                    rule.shape = SessionShape::Nested;
-                }
+            .or_insert_with(|| SessionRule {
+                leaves: Vec::new(),
+                strict,
             })
-            .or_insert(SessionRule { leaf, shape });
+            .leaves
+            .push(Leaf { class, shape });
     }
     Ok(rules)
 }
 
-/// Assegna a ogni piano la regola della sua colonna.
+/// Assegna a ogni piano la regola della sua colonna; le colonne spatial
+/// hanno la verifica propria.
 pub(super) fn assign(
     plans: &mut [WriteColumnPlan],
     schema: &SchemaRef,
     rules: &BTreeMap<String, SessionRule>,
 ) {
     for (plan, field) in plans.iter_mut().zip(schema.fields()) {
-        plan.session_rule = rules.get(field.name()).copied();
+        plan.session_rule = if plan.is_spatial() {
+            None
+        } else {
+            rules.get(field.name()).cloned()
+        };
     }
 }
 
 /// Assegna a ogni piano la regola che dichiara ([`declared`]).
-pub(super) fn assign_declared(plans: &mut [WriteColumnPlan]) {
+pub(super) fn assign_declared(plans: &mut [WriteColumnPlan], operation: &WriteOperation) {
+    let strict = operation.mapping_policy == MappingPolicy::Strict;
     for plan in plans {
-        plan.session_rule = declared(plan);
+        plan.session_rule = declared(plan, strict);
     }
 }
 
-/// La regola V che il piano dichiara da se, per i tipi nativi di
-/// `pg_catalog` che porta nei metadati (`plenora.native_type`): quella che
-/// la colonna avra dopo `CREATE TABLE`, e quella che il dry run senza DSN
-/// conosce. I domini e i tipi composti dichiarati non si risolvono senza il
-/// catalogo.
-pub(super) fn declared(plan: &WriteColumnPlan) -> Option<SessionRule> {
+/// La regola P prima del primo valore: con `Strict`, una colonna con una
+/// foglia temporale a precisione ridotta si rifiuta, qualunque valore
+/// arrivi (lo stesso criterio del preflight).
+///
+/// # Errors
+///
+/// `data_mapping` con [`LOSSY_VALUE`].
+pub(super) fn refuse_lossy(plans: &[WriteColumnPlan]) -> Result<()> {
+    let reduced = plans
+        .iter()
+        .filter_map(|plan| plan.session_rule.as_ref())
+        .any(|rule| {
+            rule.strict
+                && rule
+                    .leaves
+                    .iter()
+                    .any(|leaf| matches!(leaf.class, LeafClass::Session { reduced: true, .. }))
+        });
+    if reduced {
+        Err(lossy())
+    } else {
+        Ok(())
+    }
+}
+
+/// La regola P sul tipo dichiarato di una colonna, come lo scrive
+/// `format_type` (`timestamp(0) without time zone`, `interval day`,
+/// `time(3) with time zone[]`): la colonna arrotonda o tronca un valore Arrow
+/// al microsecondo. Per il preflight, che la pubblica nel `LossReport`.
+#[must_use]
+pub fn reduced_temporal(declaration: &str) -> bool {
+    let base = declaration.trim_end_matches("[]");
+    let precision = |rest: &str| {
+        rest.strip_prefix('(')
+            .and_then(|tail| tail.split_once(')'))
+            .and_then(|(digits, _)| digits.parse::<u32>().ok())
+    };
+    if let Some(rest) = base
+        .strip_prefix("timestamp")
+        .or_else(|| base.strip_prefix("time"))
+    {
+        return precision(rest).is_some_and(|digits| digits < 6);
+    }
+    if let Some(rest) = base.strip_prefix("interval") {
+        // `interval(p)` arrotonda sotto le sei cifre; `interval day`,
+        // `interval year to month` troncano i campi.
+        return precision(rest).map_or(!rest.is_empty(), |digits| digits < 6);
+    }
+    false
+}
+
+/// La regola che il piano dichiara da se, per i tipi nativi di `pg_catalog`
+/// che porta nei metadati (`plenora.native_type`): quella che la colonna avra
+/// dopo `CREATE TABLE`, e quella che il dry run senza DSN conosce. I domini e
+/// i tipi composti dichiarati non si risolvono senza il catalogo.
+pub(super) fn declared(plan: &WriteColumnPlan, strict: bool) -> Option<SessionRule> {
     let declaration = plan.native_declaration_sql.as_deref()?;
     let (base, array) = declaration
         .strip_suffix("[]")
         .map_or((declaration, false), |base| (base, true));
-    let (leaf, range) = match base {
-        "date" => (SessionLeaf::Date, false),
-        "timestamp without time zone" => (SessionLeaf::Timestamp, false),
-        "timestamp with time zone" => (SessionLeaf::TimestampTz, false),
-        "time with time zone" => (SessionLeaf::TimeTz, false),
-        "interval" => (SessionLeaf::Interval, false),
-        "daterange" => (SessionLeaf::Date, true),
-        "tsrange" => (SessionLeaf::Timestamp, true),
-        "tstzrange" => (SessionLeaf::TimestampTz, true),
+    let (symbol, range) = match base {
+        "date" => ("date_in", false),
+        "time without time zone" => ("time_in", false),
+        "timestamp without time zone" => ("timestamp_in", false),
+        "timestamp with time zone" => ("timestamptz_in", false),
+        "time with time zone" => ("timetz_in", false),
+        "interval" => ("interval_in", false),
+        "daterange" => ("date_in", true),
+        "tsrange" => ("timestamp_in", true),
+        "tstzrange" => ("timestamptz_in", true),
         _ => return None,
     };
     let shape = match (array, range) {
@@ -252,30 +484,77 @@ pub(super) fn declared(plan: &WriteColumnPlan) -> Option<SessionRule> {
         (false, true) => SessionShape::Range,
         (true, true) => SessionShape::Nested,
     };
-    Some(SessionRule { leaf, shape })
+    Some(SessionRule {
+        leaves: vec![Leaf {
+            class: classify(Some(symbol), -1),
+            shape,
+        }],
+        strict,
+    })
 }
 
 /// Il valore non nullo di `array` alla riga `row` contro la regola del piano.
 ///
 /// # Errors
 ///
-/// `data_mapping` con [`NOT_CANONICAL`].
+/// `data_mapping` con [`NOT_CANONICAL`] (regola V2) o con [`LOSSY_VALUE`]
+/// (regola P).
 pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Result<()> {
-    let Some(rule) = plan.session_rule else {
+    let Some(rule) = plan.session_rule.as_ref() else {
         return Ok(());
     };
-    if rule.leaf == SessionLeaf::Money || rule.shape == SessionShape::Nested {
+    // Mondo chiuso: `money` e i tipi fuori elenco non ricevono niente.
+    if rule.leaves.iter().any(|leaf| {
+        matches!(
+            leaf.class,
+            LeafClass::Unknown
+                | LeafClass::Session {
+                    leaf: SessionLeaf::Money,
+                    ..
+                }
+        )
+    }) {
         return Err(refused());
     }
-    let accepted = match (rule.shape, array.data_type()) {
-        (SessionShape::Scalar, DataType::Utf8) => canonical(rule.leaf, string(array, row)?),
-        (SessionShape::Scalar, DataType::Date32) => rule.leaf != SessionLeaf::TimestampTz,
-        (SessionShape::Scalar, DataType::Timestamp(_, None) | DataType::Time64(_)) => {
-            !matches!(rule.leaf, SessionLeaf::TimestampTz | SessionLeaf::TimeTz)
-        }
-        // Un array o un range scritto come un unico letterale di testo cade
-        // nell'ultimo ramo: rifiutato.
-        (SessionShape::Array, DataType::List(_)) => {
+    let Some(leaf) = rule.single() else {
+        // Un composto, un multirange o un array di range: soltanto testo,
+        // e con `Strict` senza lunghezze massime da verificare per campo.
+        let text_only = rule.leaves.iter().all(|leaf| match leaf.class {
+            LeafClass::Text { max_chars } => !(rule.strict && max_chars.is_some()),
+            _ => false,
+        });
+        return if text_only {
+            Ok(())
+        } else if rule
+            .leaves
+            .iter()
+            .all(|leaf| matches!(leaf.class, LeafClass::Text { .. }))
+        {
+            Err(lossy())
+        } else {
+            Err(refused())
+        };
+    };
+    match leaf.class {
+        LeafClass::Text { max_chars } => check_text(rule.strict, max_chars, array, row),
+        LeafClass::Session {
+            leaf: session,
+            fraction,
+            ..
+        } => check_session(plan, rule.strict, leaf.shape, session, fraction, array, row),
+        LeafClass::Unknown => Err(refused()),
+    }
+}
+
+/// Una foglia di testo: con `Strict`, la lunghezza massima.
+fn check_text(strict: bool, max_chars: Option<usize>, array: &dyn Array, row: usize) -> Result<()> {
+    let Some(limit) = max_chars.filter(|_| strict) else {
+        return Ok(());
+    };
+    let fits = |text: &str| text.chars().count() <= limit;
+    let accepted = match array.data_type() {
+        DataType::Utf8 => fits(string(array, row)?),
+        DataType::List(_) => {
             let list = array
                 .as_any()
                 .downcast_ref::<ListArray>()
@@ -285,10 +564,71 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .is_none_or(|items| {
-                    (0..items.len()).all(|index| {
-                        items.is_null(index) || canonical(rule.leaf, items.value(index))
-                    })
+                    (0..items.len()).all(|index| items.is_null(index) || fits(items.value(index)))
                 })
+        }
+        _ => true,
+    };
+    if accepted {
+        Ok(())
+    } else {
+        Err(lossy())
+    }
+}
+
+/// Una foglia temporale: testo canonico, valori tipizzati che non passano
+/// dal `TimeZone`; con `Strict`, non piu cifre frazionarie di `fraction`.
+fn check_session(
+    plan: &WriteColumnPlan,
+    strict: bool,
+    shape: SessionShape,
+    leaf: SessionLeaf,
+    fraction: u32,
+    array: &dyn Array,
+    row: usize,
+) -> Result<()> {
+    let text = |value: &str| -> Result<()> {
+        if !canonical(leaf, value) {
+            return Err(refused());
+        }
+        if strict && fraction_digits(value) > fraction {
+            return Err(lossy());
+        }
+        Ok(())
+    };
+    let zoned = matches!(leaf, SessionLeaf::TimestampTz | SessionLeaf::TimeTz);
+    match (shape, array.data_type()) {
+        (SessionShape::Scalar, DataType::Utf8) => text(string(array, row)?),
+        (SessionShape::Scalar, DataType::Date32) => {
+            if leaf == SessionLeaf::TimestampTz {
+                Err(refused())
+            } else {
+                Ok(())
+            }
+        }
+        (SessionShape::Scalar, DataType::Timestamp(_, None) | DataType::Time64(_)) => {
+            if zoned {
+                Err(refused())
+            } else {
+                Ok(())
+            }
+        }
+        // Un array o un range scritto come un unico letterale di testo cade
+        // nell'ultimo ramo: rifiutato.
+        (SessionShape::Array, DataType::List(_)) => {
+            let list = array
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .ok_or_else(mapping_error)?;
+            let values = list.value(row);
+            if let Some(items) = values.as_any().downcast_ref::<StringArray>() {
+                for index in 0..items.len() {
+                    if !items.is_null(index) {
+                        text(items.value(index))?;
+                    }
+                }
+            }
+            Ok(())
         }
         (SessionShape::Range, DataType::Struct(_)) if plan.semantics == ColumnSemantics::Range => {
             let range = array
@@ -296,15 +636,13 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
                 .downcast_ref::<StructArray>()
                 .ok_or_else(mapping_error)?;
             let value = range_value(range, row)?;
-            let lower = value
-                .lower
-                .as_deref()
-                .is_none_or(|bound| canonical(rule.leaf, bound));
-            let upper = value
-                .upper
-                .as_deref()
-                .is_none_or(|bound| canonical(rule.leaf, bound));
-            lower && upper
+            for bound in [value.lower.as_deref(), value.upper.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                text(bound)?;
+            }
+            Ok(())
         }
         // I valori Arrow tipizzati che la scrittura formatta da se.
         (
@@ -318,16 +656,11 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
             | DataType::Binary
             | DataType::Interval(_)
             | DataType::Timestamp(_, Some(_)),
-        ) => true,
+        ) => Ok(()),
         // Una lista o una struttura che non corrisponde alla forma della
         // colonna (un composto verso una `date`, una lista verso un range):
         // il suo testo arriverebbe al server senza verifica.
-        _ => false,
-    };
-    if accepted {
-        Ok(())
-    } else {
-        Err(refused())
+        _ => Err(refused()),
     }
 }
 
@@ -339,15 +672,33 @@ fn string(array: &dyn Array, row: usize) -> Result<&str> {
         .value(row))
 }
 
-/// La forma canonica di `text` per il tipo foglia.
-pub(super) fn canonical(leaf: SessionLeaf, text: &str) -> bool {
-    let infinite = || text == "infinity" || text == "-infinity";
-    match leaf {
-        SessionLeaf::Date => {
-            infinite() || date_end(text.as_bytes()).is_some_and(|end| bc_end(text, end))
+/// Le cifre frazionarie piu lunghe di `text`: dopo ogni `.` seguito da
+/// cifre (i secondi di un'ora o di un intervallo, la frazione di un campo).
+#[must_use]
+pub(super) fn fraction_digits(text: &str) -> u32 {
+    let bytes = text.as_bytes();
+    let mut longest = 0_u32;
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'.' {
+            let digits = bytes[index + 1..]
+                .iter()
+                .take_while(|byte| byte.is_ascii_digit())
+                .count();
+            longest = longest.max(u32::try_from(digits).unwrap_or(u32::MAX));
         }
-        SessionLeaf::Timestamp => infinite() || timestamp(text, false),
-        SessionLeaf::TimestampTz => infinite() || timestamp(text, true),
+    }
+    longest
+}
+
+/// La forma canonica di `text` per la foglia: mai un valore speciale
+/// (`now`, `today`, `epoch`, `allballs`, `infinity`), che la grammatica qui
+/// sotto non ammette.
+pub(super) fn canonical(leaf: SessionLeaf, text: &str) -> bool {
+    match leaf {
+        SessionLeaf::Date => date_end(text.as_bytes()).is_some_and(|end| bc_end(text, end)),
+        SessionLeaf::Time => time_end(text.as_bytes(), 0).is_some_and(|end| end == text.len()),
+        SessionLeaf::Timestamp => timestamp(text, false),
+        SessionLeaf::TimestampTz => timestamp(text, true),
         SessionLeaf::TimeTz => time_end(text.as_bytes(), 0)
             .and_then(|end| zone_end(text.as_bytes(), end))
             .is_some_and(|end| end == text.len()),
@@ -485,8 +836,10 @@ fn interval(text: &str) -> bool {
             .first()
             .is_some_and(|byte| byte.is_ascii_digit() || *byte == b'.')
     });
+    // Senza un campo numerico non e un intervallo canonico: `infinity`
+    // (PostgreSQL 17) e i valori speciali si rifiutano.
     let Some(first) = numeric.next() else {
-        return true;
+        return false;
     };
     !first.starts_with('-') || numeric.all(|word| word.starts_with(['+', '-']))
 }
