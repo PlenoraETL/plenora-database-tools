@@ -85,8 +85,8 @@ fn parse_column_info(buf: &mut ReadBuffer, caps: &Capabilities) -> Result<Column
     // Version (skip)
     buf.read_ub2()?;
 
-    // Character set ID (skip)
-    buf.read_ub2()?;
+    // Character set ID
+    let charset_id = buf.read_ub2()?;
 
     // Character set form
     let csfrm = buf.read_u8()?;
@@ -194,6 +194,7 @@ fn parse_column_info(buf: &mut ReadBuffer, caps: &Capabilities) -> Result<Column
         scale,
         nullable,
         csfrm,
+        charset_id,
         type_schema,
         type_name,
         domain_schema,

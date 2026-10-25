@@ -3222,10 +3222,33 @@ impl Connection {
                         let num = crate::types::decode_oracle_number(&bytes)?;
                         Ok(Value::String(num.value))
                     }
+                    // Il testo si decodifica esatto o non si decodifica: una
+                    // sostituzione con U+FFFD cambierebbe il valore in silenzio.
+                    // La forma nazionale (`csfrm` 2) viaggia in UTF-16BE.
                     OracleType::Varchar | OracleType::Char | OracleType::Long => {
-                        let s = String::from_utf8_lossy(&bytes).to_string();
-                        Ok(Value::String(s))
+                        decode_column_text(&bytes, col.csfrm, col.charset_id).map(Value::String)
                     }
+                    OracleType::BinaryDouble => {
+                        let bytes: [u8; 8] = bytes.as_slice().try_into().map_err(|_| {
+                            Error::DataConversionError("BINARY_DOUBLE senza 8 byte".to_string())
+                        })?;
+                        Ok(Value::Float(crate::types::decode_binary_double(&bytes)))
+                    }
+                    OracleType::BinaryFloat => {
+                        let bytes: [u8; 4] = bytes.as_slice().try_into().map_err(|_| {
+                            Error::DataConversionError("BINARY_FLOAT senza 4 byte".to_string())
+                        })?;
+                        Ok(Value::Float(f64::from(crate::types::decode_binary_float(
+                            &bytes,
+                        ))))
+                    }
+                    OracleType::Boolean => match bytes.last() {
+                        Some(1) => Ok(Value::Boolean(true)),
+                        Some(0) => Ok(Value::Boolean(false)),
+                        _ => Err(Error::DataConversionError(
+                            "BOOLEAN Oracle non decodificabile".to_string(),
+                        )),
+                    },
                     OracleType::Raw | OracleType::LongRaw => {
                         // RAW/LONG RAW types - return as bytes
                         Ok(Value::Bytes(bytes.to_vec()))
@@ -3245,11 +3268,11 @@ impl Connection {
                         let ts = crate::types::decode_oracle_timestamp(&bytes)?;
                         Ok(Value::Timestamp(ts))
                     }
-                    _ => {
-                        // Default: return as raw bytes or string
-                        let s = String::from_utf8_lossy(&bytes).to_string();
-                        Ok(Value::String(s))
-                    }
+                    // Un tipo senza decoder non diventa testo per caso: i
+                    // suoi byte letti come UTF-8 sarebbero un valore falso.
+                    _ => Err(Error::DataConversionError(
+                        "tipo di colonna Oracle senza decoder".to_string(),
+                    )),
                 }
             }
         }
@@ -3757,8 +3780,11 @@ impl Connection {
             buf.skip_ub8()?; // cont_flags
             let _oid = buf.read_bytes_with_length()?; // OID
             buf.skip_ub2()?; // version
-            buf.skip_ub2()?; // charset_id
-            let _csfrm = buf.read_u8()?; // charset form
+                             // La forma e l'id del charset decidono la decodifica del testo
+                             // (`decode_column_text`): scartarli faceva leggere un NVARCHAR2
+                             // in AL16UTF16 come UTF-8, `'ab'` diventava "\0a\0b".
+            let charset_id = buf.read_ub2()?; // charset_id
+            let csfrm = buf.read_u8()?; // charset form
             let max_size = buf.read_ub4()?;
 
             // For TTC field version >= 12.2 (8), skip oaccolid
@@ -3813,6 +3839,8 @@ impl Connection {
             col.data_size = if max_size > 0 { max_size } else { buffer_size };
             col.precision = precision as i16;
             col.scale = scale as i16;
+            col.csfrm = csfrm;
+            col.charset_id = charset_id;
             columns.push(col);
         }
 
@@ -4239,16 +4267,18 @@ impl Connection {
                     Ok(LobData::Bytes(bytes::Bytes::from(data)))
                 } else {
                     // CLOB - decode based on encoding
-                    let text = if locator.uses_var_length_charset() {
-                        // UTF-16 BE encoding
-                        let chars: Vec<u16> = data
-                            .chunks_exact(2)
-                            .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                            .collect();
-                        String::from_utf16_lossy(&chars)
+                    // Un CLOB si decodifica esatto o non si decodifica: la
+                    // sostituzione con U+FFFD e il byte dispari scartato
+                    // cambiavano il valore in silenzio (`61FF62` -> "a\u{FFFD}b").
+                    // Un NCLOB (forma nazionale) viaggia in AL16UTF16 anche
+                    // quando il locator non porta il flag del charset a
+                    // lunghezza variabile.
+                    let text = if locator.uses_var_length_charset() || locator._csfrm == 2 {
+                        decode_column_text(&data, 2, 2000)?
                     } else {
-                        // UTF-8 encoding
-                        String::from_utf8_lossy(&data).to_string()
+                        String::from_utf8(data.to_vec()).map_err(|_| {
+                            Error::DataConversionError("CLOB Oracle non UTF-8".to_string())
+                        })?
                     };
                     Ok(LobData::String(text))
                 }
@@ -4281,7 +4311,9 @@ impl Connection {
         let encoded_data: Vec<u8>;
         let write_data = if locator.is_clob() && locator.uses_var_length_charset() {
             // Convert UTF-8 to UTF-16 BE for CLOB with var length charset
-            let text = String::from_utf8_lossy(data);
+            let text = std::str::from_utf8(data).map_err(|_| {
+                Error::DataConversionError("testo CLOB da scrivere non UTF-8".to_string())
+            })?;
             encoded_data = text.encode_utf16().flat_map(|c| c.to_be_bytes()).collect();
             &encoded_data[..]
         } else {
@@ -5702,3 +5734,38 @@ mod tests {
         assert_eq!(collected.len(), 2);
     }
 }
+
+/// Il testo di una colonna `VARCHAR2`/`CHAR`/`LONG` e delle forme nazionali,
+/// esatto: UTF-16BE per AL16UTF16 (`charset_id` 2000, il charset nazionale di
+/// default), UTF-8 per AL32UTF8 e UTF8 (873, 871), e per la forma del
+/// database quando il server non dice il charset. Un charset nazionale
+/// diverso si rifiuta invece di indovinare.
+pub(crate) fn decode_column_text(bytes: &[u8], csfrm: u8, charset_id: u16) -> Result<String> {
+    let utf16 = match (csfrm, charset_id) {
+        (_, 2000) => true,
+        (_, 871 | 873) => false,
+        (2, _) => {
+            return Err(Error::DataConversionError(
+                "charset nazionale Oracle non supportato".to_string(),
+            ))
+        }
+        _ => false,
+    };
+    if utf16 {
+        let (pairs, remainder) = bytes.as_chunks::<2>();
+        if !remainder.is_empty() {
+            return Err(Error::DataConversionError(
+                "testo Oracle nazionale con byte dispari".to_string(),
+            ));
+        }
+        return char::decode_utf16(pairs.iter().map(|pair| u16::from_be_bytes(*pair)))
+            .collect::<std::result::Result<String, _>>()
+            .map_err(|_| Error::DataConversionError("testo Oracle UTF-16 non valido".to_string()));
+    }
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| Error::DataConversionError("testo Oracle UTF-8 non valido".to_string()))
+}
+
+#[cfg(test)]
+#[path = "text_decoding_tests.rs"]
+mod text_decoding_tests;
