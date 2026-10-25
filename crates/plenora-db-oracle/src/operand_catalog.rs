@@ -238,7 +238,7 @@ pub async fn ensure_scalar_read_fields(
             RelationColumns::Known(_) => column(field).is_some_and(CatalogColumn::is_geometric),
             _ => true,
         },
-        |field| column(field).map(|column| column.column_type.family),
+        |field| Ok(column(field).map(|column| column.column_type.family)),
         &ParameterFamilies::from_bag(parameters),
     )
 }

@@ -134,16 +134,31 @@ async fn observe_prepared_thread(audit: &mut mysql_async::Conn, marker: &str) ->
     owner_thread_id
 }
 
-async fn await_single_statement_execution(audit: &mut mysql_async::Conn, baseline: u64) {
+/// Le esecuzioni dello statement del chiamante, riconosciuto dal marcatore
+/// nel suo testo (`prepared_statements_instances`): le letture del catalogo
+/// che il giudizio degli operandi fa prima (`catalog::VIEW_SQL`, preparata)
+/// non contano. Fino alla quattordicesima lettura del 25/10 contava
+/// `Com_stmt_execute` del server, e la lettura del catalogo la faceva
+/// sembrare una seconda esecuzione.
+async fn marked_statement_executions(audit: &mut mysql_async::Conn, marker: &str) -> (u64, u64) {
+    let pattern = format!("%{marker}%");
+    let observed: Option<(u64, u64)> = audit
+        .exec_first(
+            "SELECT COUNT(*), CAST(COALESCE(SUM(COUNT_EXECUTE), 0) AS UNSIGNED) \
+             FROM performance_schema.prepared_statements_instances \
+             WHERE SQL_TEXT LIKE ? AND SQL_TEXT NOT LIKE '%prepared_statements_instances%'",
+            (&pattern,),
+        )
+        .await
+        .expect("esecuzioni dello statement marcato");
+    observed.expect("riga di conteggio")
+}
+
+async fn await_single_statement_execution(audit: &mut mysql_async::Conn, marker: &str) {
     for _ in 0..100 {
-        let current: Option<(String, u64)> = audit
-            .query_first("SHOW GLOBAL STATUS LIKE 'Com_stmt_execute'")
-            .await
-            .expect("COM_STMT_EXECUTE durante avvio worker");
-        let delta = current.and_then(|(_, value)| value.checked_sub(baseline));
-        match delta {
-            Some(1) => return,
-            Some(value) if value > 1 => {
+        match marked_statement_executions(audit, marker).await {
+            (1, 1) => return,
+            (statements, executions) if statements > 1 || executions > 1 => {
                 panic!("QueryOperation eseguita piu di una volta")
             }
             _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
@@ -2482,11 +2497,7 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
             .expect("pool performance_schema"),
     );
     let mut audit = audit_pool.get_conn().await.expect("checkout audit");
-    let baseline: Option<(String, u64)> = audit
-        .query_first("SHOW GLOBAL STATUS LIKE 'Com_stmt_execute'")
-        .await
-        .expect("baseline globale COM_STMT_EXECUTE");
-    let (_, baseline) = baseline.expect("contatore globale COM_STMT_EXECUTE");
+    let marker = "single_execution_observed_id";
     let budget = ResourceBudget::new(ResourceLimits {
         rows: 2_048,
         memory_bytes: 96 * 1_024,
@@ -2524,7 +2535,7 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
     };
     assert_eq!(error.category, ErrorCategory::ResourceLimit);
 
-    await_single_statement_execution(&mut audit, baseline).await;
+    await_single_statement_execution(&mut audit, marker).await;
 
     let mut rows = 0_usize;
     let mut batches = 0_usize;
@@ -2539,13 +2550,10 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
         rows = rows.saturating_add(batch.num_rows());
         batches = batches.saturating_add(1);
         assert_eq!(budget.remaining(ResourceKind::ConcurrentOperations), 0);
-        let current: Option<(String, u64)> = audit
-            .query_first("SHOW GLOBAL STATUS LIKE 'Com_stmt_execute'")
-            .await
-            .expect("COM_STMT_EXECUTE dopo un batch");
         assert_eq!(
-            current.and_then(|(_, value)| value.checked_sub(baseline)),
-            Some(1)
+            marked_statement_executions(&mut audit, marker).await,
+            (1, 1),
+            "una sola esecuzione dello statement dopo un batch"
         );
     }
     assert_eq!(rows, 2_048);
@@ -8679,7 +8687,7 @@ async fn live_name_shapes_and_the_transaction_catalog_are_judged() {
             ],
         },
         Some(&OperandPlan::Mutation(&update)),
-        &[],
+        &["v".to_owned(), "k".to_owned()],
         &cancellation,
     )
     .await
@@ -8915,7 +8923,7 @@ async fn live_binary_columns_of_views_are_judged_geometric() {
         &Statement::new("SELECT t.id FROM _derivate_b_v AS t WHERE t.w = ?")
             .with_params(vec![ParameterValue::Bytes(wkb.clone())]),
         Some(&OperandPlan::Query(&judged)),
-        &[],
+        &["p".to_owned()],
         &cancellation,
     )
     .await
@@ -9439,4 +9447,138 @@ async fn live_text_columns_compared_with_binary_values_are_refused() {
     for statement in cleanup {
         connection.query_drop(statement).await.expect("pulizia");
     }
+}
+
+/// Regola T (quattordicesima lettura del 25/10, difetto 1) su `MySQL` e
+/// `MariaDB`: un parametro dichiarato `string` legato al valore `I64` 1. Lo
+/// SQL senza giudizio `name = ?` confronta per numero e cancella `'1'`,
+/// `'01'` e `'1.0'`; su d5d7fa1 il lowering delle mutazioni rendeva proprio
+/// quel segnaposto nudo, e il giudizio prendeva la famiglia dal tipo
+/// dichiarato. Ora il valore si rifiuta prima dell'esecuzione
+/// (`TYPED_PARAMETER_MISMATCH`) nella mutazione della transazione (il
+/// percorso dello SDK) e nel path query; un testo per il testo cancella una
+/// riga sola, con il `CAST` del renderer delle query.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_typed_parameters_refuse_values_of_another_type() {
+    use plenora_database_core::facade::execute_judged;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::relational::MutationOperation;
+    use plenora_database_core::spatial_operand::OperandPlan;
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    let cleanup = "DROP TABLE IF EXISTS _tipi_t";
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione");
+        connection.query_drop(cleanup).await.expect("pulizia");
+        connection
+            .query_drop(
+                "CREATE TABLE _tipi_t (id BIGINT PRIMARY KEY, name VARCHAR(10) NOT NULL) ENGINE=InnoDB",
+            )
+            .await
+            .expect("tabella");
+        connection
+            .query_drop("INSERT INTO _tipi_t VALUES (1, '1'), (2, '01'), (3, '1.0')")
+            .await
+            .expect("righe");
+        let silent: Vec<i64> = connection
+            .exec(
+                "SELECT id FROM _tipi_t WHERE name = ? ORDER BY id",
+                (1_i64,),
+            )
+            .await
+            .expect("senza giudizio");
+        assert_eq!(silent, vec![1, 2, 3], "il server confronta per numero");
+    }
+    let kind = if environment("PLENORA_MYSQL_PRODUCT", "mysql") == "mariadb" {
+        ProviderKind::Mariadb
+    } else {
+        ProviderKind::Mysql
+    };
+    let database = environment("PLENORA_MYSQL_DATABASE", "dataflow_test");
+    let typed = json!({"kind": "typed_parameter", "name": "p", "parameter_type": "string"});
+    let filter = json!({"kind": "compare",
+        "left": {"kind": "column", "column": {"relation": null, "field": "name"}},
+        "operator": "eq", "right": typed});
+    let mutation: MutationOperation = serde_json::from_value(json!({
+        "type": "delete",
+        "target": {"catalog": null, "schema": database, "object": "_tipi_t"},
+        "filter": filter
+    }))
+    .expect("mutazione");
+    let lowered =
+        plenora_database_core::compile_relational_mutation(kind, &mutation).expect("lowering");
+    let provider = geometry_operand_provider();
+    let provider = provider.as_ref();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let statement =
+        |value: ParameterValue| Statement::new(lowered.sql.clone()).with_params(vec![value]);
+    let plan = OperandPlan::Mutation(&mutation);
+    let error = execute_judged(
+        tx.as_mut(),
+        &statement(ParameterValue::I64(1)),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect_err("intero per un testo dichiarato");
+    assert_eq!(error.category, ErrorCategory::InvalidPlan, "{error:?}");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    let deleted = execute_judged(
+        tx.as_mut(),
+        &statement(ParameterValue::String("1".to_owned())),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect("testo per il testo");
+    // La forma del renderer delle query.
+    assert!(lowered.sql.ends_with("`name` = ?"), "{}", lowered.sql);
+    assert_eq!(deleted, 1, "il CAST confronta il testo");
+    tx.rollback(&cancellation).await.expect("rollback");
+    // Il path query del provider.
+    let operation: plenora_database_core::query::QueryOperation = serde_json::from_value(json!({
+        "source": {"object": {"catalog": null, "schema": database, "object": "_tipi_t"}, "alias": "t"},
+        "projection": [{"expression": {"kind": "column", "column": {"relation": "t", "field": "id"}}, "alias": "id"}],
+        "filter": filter, "having": null, "row_limit": null
+    }))
+    .expect("piano");
+    let bag = |value: ParameterValue| ParameterBag::new(BTreeMap::from([("p".to_owned(), value)]));
+    let error = geometry_operand_rows(provider, &operation, &bag(ParameterValue::I64(1)))
+        .await
+        .expect_err("query con un intero");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    assert_eq!(
+        geometry_operand_rows(
+            provider,
+            &operation,
+            &bag(ParameterValue::String("1".to_owned()))
+        )
+        .await
+        .expect("query con un testo"),
+        1
+    );
+    let mut teardown = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("pulizia");
+    let connection = teardown.connection_mut().expect("connessione");
+    connection.query_drop(cleanup).await.expect("pulizia");
 }

@@ -174,7 +174,10 @@ fn valore_del_bind(piano: &Value, name: &str) -> ParameterValue {
 }
 
 /// Lo SQL che il renderer del repository rende per il piano, con i valori.
-fn resa(plan: &Value, valori: Option<&[ParameterValue]>) -> (QueryOperation, String, Statement) {
+fn resa(
+    plan: &Value,
+    valori: Option<&[ParameterValue]>,
+) -> (QueryOperation, String, Statement, Vec<String>) {
     let operation: QueryOperation = serde_json::from_value(plan.clone()).expect("piano");
     let rendered = Renderer::new(
         Dialect::Db2,
@@ -196,7 +199,12 @@ fn resa(plan: &Value, valori: Option<&[ParameterValue]>) -> (QueryOperation, Str
         <[ParameterValue]>::to_vec,
     );
     let statement = Statement::new(rendered.sql.clone()).with_params(values);
-    (operation, rendered.sql, statement)
+    let binds = rendered
+        .binds
+        .iter()
+        .map(|bind| bind.name.clone())
+        .collect();
+    (operation, rendered.sql, statement, binds)
 }
 
 /// Le righe come elenco della colonna `ID` (o `V`, l'uscita delle forme
@@ -225,7 +233,7 @@ async fn esegui(
     plenora_database_core::Result<Vec<String>>,
     plenora_database_core::Result<Vec<String>>,
 ) {
-    let (operation, sql, statement) = resa(plan, valori);
+    let (operation, sql, statement, binds) = resa(plan, valori);
     let mut transaction = provider
         .begin_transaction(
             secret,
@@ -239,7 +247,7 @@ async fn esegui(
         transaction.as_mut(),
         &statement,
         Some(&OperandPlan::Query(&operation)),
-        &[],
+        &binds,
         cancellation,
     )
     .await
@@ -1099,4 +1107,131 @@ async fn live_server_computed_binary_columns_are_judged_geometric() {
     for sql in PULIZIA_GENERATE {
         let _ = provider.run_ddl(&secret, sql, &cancellation).await;
     }
+}
+
+/// Regola T (quattordicesima lettura del 25/10, difetto 1) su Db2: un
+/// parametro dichiarato `string` legato al valore `I64` 1. Lo SQL senza
+/// giudizio `NAME = ?` da al segnaposto il tipo della colonna, e il server
+/// converte il numero in testo (misurato su 12.1: incontra `'1'`, non `'01'`
+/// ne `'1.0'`): una conversione che il chiamante non ha chiesto. Su d5d7fa1
+/// il lowering delle mutazioni rendeva quel segnaposto nudo, e il giudizio
+/// prendeva la famiglia dal tipo dichiarato. Ora il valore si rifiuta prima dell'esecuzione nella
+/// mutazione e nella query della transazione; un testo per il testo cancella
+/// una riga sola.
+#[tokio::test]
+#[ignore = "richiede Db2 live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_typed_parameters_refuse_values_of_another_type() {
+    use plenora_database_core::facade::execute_judged;
+    use plenora_database_core::relational::MutationOperation;
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    let provider = provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let _ = provider
+        .run_ddl(&secret, "DROP TABLE PLENORA.TIPI_T", &cancellation)
+        .await;
+    for sql in [
+        "CREATE TABLE PLENORA.TIPI_T (ID INTEGER NOT NULL PRIMARY KEY, NAME VARCHAR(10) NOT NULL)",
+        "INSERT INTO PLENORA.TIPI_T VALUES (1, '1'), (2, '01'), (3, '1.0')",
+    ] {
+        provider
+            .run_ddl(&secret, sql, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("preparazione regola T Db2: {error}"));
+    }
+    let mutation: MutationOperation = serde_json::from_value(json!({
+        "type": "delete",
+        "target": {"catalog": null, "schema": "PLENORA", "object": "TIPI_T"},
+        "filter": {"kind": "compare",
+            "left": {"kind": "column", "column": {"relation": null, "field": "NAME"}},
+            "operator": "eq",
+            "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}}
+    }))
+    .expect("mutazione");
+    let lowered = plenora_database_core::compile_relational_mutation(ProviderKind::Db2, &mutation)
+        .expect("lowering");
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("transazione regola T Db2");
+    let silent = transaction
+        .query(
+            &Statement::new("SELECT ID FROM PLENORA.TIPI_T WHERE NAME = ? ORDER BY ID")
+                .with_params(vec![ParameterValue::I64(1)]),
+            &cancellation,
+        )
+        .await
+        .expect("senza giudizio regola T Db2");
+    assert_eq!(
+        identificativi(&silent),
+        vec!["1".to_owned()],
+        "il segnaposto prende il tipo della colonna, e il server converte il valore"
+    );
+    let statement =
+        |value: ParameterValue| Statement::new(lowered.sql.clone()).with_params(vec![value]);
+    let plan = OperandPlan::Mutation(&mutation);
+    let error = execute_judged(
+        transaction.as_mut(),
+        &statement(ParameterValue::I64(1)),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect_err("intero per un testo dichiarato");
+    assert_eq!(error.category, ErrorCategory::InvalidPlan, "{error:?}");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    let deleted = execute_judged(
+        transaction.as_mut(),
+        &statement(ParameterValue::String("1".to_owned())),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect("testo per il testo");
+    // La forma del renderer delle query.
+    assert!(
+        lowered.sql.ends_with("= CAST(? AS VARCHAR(32672))"),
+        "{}",
+        lowered.sql
+    );
+    assert_eq!(deleted, 1, "il CAST confronta il testo");
+    let _ = transaction.rollback(&cancellation).await;
+    // La query della transazione (lo SDK), con lo stesso predicato.
+    let query = su(
+        Some("PLENORA"),
+        "TIPI_T",
+        &json!({"filter": {"kind": "compare", "left": colonna("T", "NAME"), "operator": "eq",
+            "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}}}),
+    );
+    let (_, judged, _) = esegui(
+        &provider,
+        &secret,
+        &query,
+        Some(&[ParameterValue::I64(1)]),
+        &cancellation,
+    )
+    .await;
+    let error = judged.expect_err("query con un intero");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    let (_, judged, _) = esegui(
+        &provider,
+        &secret,
+        &query,
+        Some(&[ParameterValue::String("1".to_owned())]),
+        &cancellation,
+    )
+    .await;
+    assert_eq!(judged.expect("query con un testo"), vec!["1".to_owned()]);
+    provider
+        .run_ddl(&secret, "DROP TABLE PLENORA.TIPI_T", &cancellation)
+        .await
+        .expect("pulizia regola T Db2");
 }

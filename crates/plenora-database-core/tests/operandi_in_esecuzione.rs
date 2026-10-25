@@ -527,3 +527,94 @@ fn la_regola_dei_nomi_vale_in_esecuzione_soltanto_con_geometrie() {
         );
     }
 }
+
+/// Regola T in esecuzione (quattordicesima lettura del 25/10): lo SDK manda
+/// i valori nell'ordine dei bind, convertiti per tipo Python
+/// (`py_convert`), senza guardare il `BindType`. Un intero per
+/// `bind("p", BindType.STRING)` in un `UPDATE ... WHERE` (e in una query, e
+/// scritto) si rifiuta prima di eseguire, anche dove il piano non ha
+/// operandi da leggere; un valore posizionale in piu non si lega.
+#[test]
+fn un_valore_fuori_dal_tipo_dichiarato_si_rifiuta_prima_di_eseguire() {
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::spatial_operand::BIND_LAYOUT_MISMATCH;
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    let typed = json!({"kind": "typed_parameter", "name": "p", "parameter_type": "string"});
+    let target = json!({"catalog": null, "schema": "public", "object": "plain"});
+    let filter =
+        json!({"kind": "compare", "left": colonna(None, "name"), "operator": "eq", "right": typed});
+    let update = mutazione(&json!({
+        "type": "update", "target": target,
+        "assignments": [{"column": "id", "value": {"kind": "parameter", "name": "q"}}],
+        "filter": filter
+    }));
+    let insert = mutazione(&json!({
+        "type": "insert", "target": target, "columns": ["name"], "rows": [[typed]]
+    }));
+    let select = query("plain", &json!({"filter": filter}));
+    let names = |plan: &OperandPlan<'_>| -> Vec<String> {
+        match plan {
+            OperandPlan::Mutation(MutationOperation::Update(_)) => vec!["q".into(), "p".into()],
+            _ => vec!["p".into()],
+        }
+    };
+    let run = |prodotto, plan: OperandPlan<'_>, values: Vec<ParameterValue>| {
+        let mut tx = finta(prodotto);
+        let cancel = CancellationToken::new();
+        let statement = Statement::new("SQL").with_params(values);
+        let outcome = match plan {
+            OperandPlan::Query(_) => block_on(query_judged(
+                &mut tx,
+                &statement,
+                Some(&plan),
+                &names(&plan),
+                &cancel,
+            ))
+            .map(|_| ()),
+            _ => block_on(execute_judged(
+                &mut tx,
+                &statement,
+                Some(&plan),
+                &names(&plan),
+                &cancel,
+            ))
+            .map(|_| ()),
+        };
+        (outcome, tx.eseguite)
+    };
+    for prodotto in PRODOTTI {
+        for (forma, plan) in [
+            ("update", OperandPlan::Mutation(&update)),
+            ("insert", OperandPlan::Mutation(&insert)),
+            ("select", OperandPlan::Query(&select)),
+        ] {
+            let mut values = vec![ParameterValue::I64(1)];
+            if forma == "update" {
+                values.insert(0, ParameterValue::I32(7));
+            }
+            let (outcome, eseguite) = run(prodotto, plan, values.clone());
+            let error = outcome.expect_err(forma);
+            assert_eq!(
+                error.category,
+                ErrorCategory::InvalidPlan,
+                "{prodotto:?} {forma}"
+            );
+            assert_eq!(error.phase, ErrorPhase::Prepare, "{prodotto:?} {forma}");
+            assert_eq!(
+                error.message, TYPED_PARAMETER_MISMATCH,
+                "{prodotto:?} {forma}"
+            );
+            assert_eq!(eseguite, 0, "{prodotto:?} {forma}: eseguita");
+            let last = values.len() - 1;
+            values[last] = ParameterValue::String("1".to_owned());
+            let (outcome, eseguite) = run(prodotto, plan, values.clone());
+            outcome.unwrap_or_else(|error| panic!("{prodotto:?} {forma}: {error:?}"));
+            assert_eq!(eseguite, 1, "{prodotto:?} {forma}");
+            values.push(ParameterValue::String("in piu".to_owned()));
+            let (outcome, eseguite) = run(prodotto, plan, values);
+            let error = outcome.expect_err("valore in piu");
+            assert_eq!(error.message, BIND_LAYOUT_MISMATCH, "{prodotto:?} {forma}");
+            assert_eq!(eseguite, 0, "{prodotto:?} {forma}: eseguita");
+        }
+    }
+}

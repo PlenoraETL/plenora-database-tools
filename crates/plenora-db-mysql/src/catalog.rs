@@ -854,11 +854,35 @@ pub(crate) fn mariadb_default_may_compute(default: Option<&str>) -> bool {
     default.is_some_and(|default| !default.trim().eq_ignore_ascii_case("NULL"))
 }
 
-/// Una vista con quel nome, senza maiuscole (`lower_case_table_names` decide
-/// se il server le distingue; senza, il giudizio e piu severo, non meno).
+/// I motori le cui righe stanno in altre relazioni ([`VIEW_SQL`]).
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) const DERIVED_ENGINES: [&str; 4] = ["MRG_MYISAM", "FEDERATED", "CONNECT", "SPIDER"];
+
+/// Una relazione derivata dalla descrizione (`TABLE_TYPE`, `ENGINE`): la
+/// stessa regola di [`VIEW_SQL`] per il percorso di lettura.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn is_derived_relation(kind: &str, engine: Option<&str>) -> bool {
+    matches!(kind, "VIEW" | "SYSTEM VIEW")
+        || engine.is_some_and(|engine| {
+            DERIVED_ENGINES
+                .iter()
+                .any(|derived| engine.eq_ignore_ascii_case(derived))
+        })
+}
+
+/// Una relazione derivata con quel nome, senza maiuscole
+/// (`lower_case_table_names` decide se il server le distingue; senza, il
+/// giudizio e piu severo, non meno): una vista, o una tabella le cui righe
+/// stanno in altre relazioni, una `MERGE` (`MRG_MyISAM`, l'unione di tabelle
+/// `MyISAM` che possono avere colonne generate dove la `MERGE` le dichiara
+/// memorizzate) o una tabella di un altro server (`FEDERATED`, `CONNECT`,
+/// `SPIDER`). Le partizioni di una tabella ne condividono la definizione, e
+/// le colonne generate. Fino alla quattordicesima lettura del 25/10 guardava
+/// soltanto le viste.
 const VIEW_SQL: &str = "SELECT 1 FROM INFORMATION_SCHEMA.TABLES \
     WHERE LOWER(TABLE_SCHEMA) = LOWER(?) AND LOWER(TABLE_NAME) = LOWER(?) \
-    AND TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW')";
+    AND (TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW') \
+        OR UPPER(ENGINE) IN ('MRG_MYISAM', 'FEDERATED', 'CONNECT', 'SPIDER'))";
 
 /// `SHOW COLUMNS` di una relazione, risolta come la risolve la query.
 async fn show_columns(

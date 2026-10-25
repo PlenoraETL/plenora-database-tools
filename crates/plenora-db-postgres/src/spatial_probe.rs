@@ -578,9 +578,11 @@ pub async fn operand_catalog(
 /// contiene `bytea` (`ST_AsBinary(g)`, `g::bytea`, un dominio su `bytea`),
 /// altrimenti dalla categoria del tipo (`typcategory`, che un dominio eredita
 /// dal tipo di base): `N` e `B` numerica, `S` testo, `D` temporale, il resto
-/// «altra». L'origine e derivata in una vista, in una vista materializzata e
-/// per una colonna generata (`attgenerated` non vuoto, `STORED` e, dal 18,
-/// `VIRTUAL`): la regola B per colonna.
+/// «altra». L'origine e derivata in una vista, in una vista materializzata,
+/// in una tabella esterna e per una colonna generata (`attgenerated` non
+/// vuoto, `STORED` e, dal 18, `VIRTUAL`), anche soltanto in una tabella
+/// figlia o in una partizione ([`RELATION_COLUMNS_SQL`]): la regola B per
+/// colonna.
 ///
 /// # Errors
 ///
@@ -624,22 +626,43 @@ pub async fn relation_columns(
 /// famiglia: geometrica o binaria se il loro tipo contiene una geometria o
 /// `bytea` (la chiusura di `typbasetype`, `typelem`, gli attributi di
 /// `typrelid`, `rngsubtype` e, per un multirange, il suo range,
-/// `rngmultitypid`, da `PostgreSQL` 14), altrimenti da `typcategory`; se la
-/// relazione e una vista o una vista materializzata (`relkind` `v`, `m`); se
-/// la colonna e generata (`attgenerated`). La colonna `rngmultitypid` si legge
-/// da `to_jsonb` della riga di `pg_range`: prima del 14 non esiste, e non
-/// esistono multirange da seguire. Fino al 25/10 il multirange di un range di
-/// geometrie non si riconosceva, e la colonna generata di una tabella era
-/// scalare.
+/// `rngmultitypid`, da `PostgreSQL` 14), altrimenti da `typcategory`.
+///
+/// L'origine guarda ogni relazione di cui il riferimento puo rendere le
+/// righe: la relazione e i suoi discendenti (`pg_inherits`, ricorsivo: le
+/// tabelle figlie di un'ereditarieta e le partizioni, a ogni livello). La
+/// colonna e derivata se una di loro e una vista, una vista materializzata o
+/// una tabella esterna (`relkind` `v`, `m`, `f`: le righe di una tabella
+/// esterna le rende un altro server, e il catalogo non dice come), o se in
+/// una di loro la colonna omonima e generata (`attgenerated`). Il tipo della
+/// colonna e lo stesso in ogni discendente: `PostgreSQL` rifiuta un figlio o
+/// una partizione con un tipo diverso per una colonna ereditata, e
+/// `ALTER COLUMN TYPE` su una colonna ereditata. La colonna `rngmultitypid`
+/// si legge da `to_jsonb` della riga di `pg_range`: prima del 14 non esiste,
+/// e non esistono multirange da seguire. Fino al 25/10 il multirange di un
+/// range di geometrie non si riconosceva, e la colonna generata di una tabella
+/// era scalare; fino alla quattordicesima lettura del 25/10 l'origine era
+/// della sola relazione nominata, e su `PostgreSQL` 14 e 15 (il 16 rifiuta
+/// lo schema) `p.w = :wkb` su un padre con una figlia o una partizione dalla
+/// colonna binaria generata rendeva una riga su due.
 const RELATION_COLUMNS_SQL: &str = "\
-WITH RECURSIVE columns AS ( \
-    SELECT a.attnum, a.attname::text AS name, a.atttypid, \
-        k.relkind IN ('v', 'm') AS derived, a.attgenerated <> '' AS generated \
-    FROM pg_catalog.pg_attribute a \
-    JOIN pg_catalog.pg_class k ON k.oid = a.attrelid \
-    WHERE a.attrelid = to_regclass(CASE WHEN $1::text IS NULL \
+WITH RECURSIVE named AS ( \
+    SELECT to_regclass(CASE WHEN $1::text IS NULL \
             THEN quote_ident($2::text) \
-            ELSE quote_ident($1::text) || '.' || quote_ident($2::text) END) \
+            ELSE quote_ident($1::text) || '.' || quote_ident($2::text) END) AS oid \
+), tree(oid) AS ( \
+    SELECT oid FROM named WHERE oid IS NOT NULL \
+    UNION \
+    SELECT i.inhrelid FROM pg_catalog.pg_inherits i JOIN tree t ON i.inhparent = t.oid \
+), columns AS ( \
+    SELECT a.attnum, a.attname::text AS name, a.atttypid, \
+        EXISTS (SELECT 1 FROM tree t JOIN pg_catalog.pg_class k ON k.oid = t.oid \
+            WHERE k.relkind IN ('v', 'm', 'f')) AS derived, \
+        EXISTS (SELECT 1 FROM tree t JOIN pg_catalog.pg_attribute d ON d.attrelid = t.oid \
+            WHERE d.attname = a.attname AND d.attnum > 0 AND NOT d.attisdropped \
+              AND d.attgenerated <> '') AS generated \
+    FROM pg_catalog.pg_attribute a \
+    WHERE a.attrelid = (SELECT oid FROM named) \
       AND a.attnum > 0 AND NOT a.attisdropped \
 ), reach(attnum, oid) AS ( \
     SELECT attnum, atttypid FROM columns \

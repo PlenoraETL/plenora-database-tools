@@ -308,7 +308,7 @@ impl OracleReadPlan {
                 })
             },
             // La regola F la giudica la lettura sul catalogo, con i valori.
-            |_| None,
+            |_| Ok(None),
             &plenora_database_core::spatial_operand::ParameterFamilies::default(),
         )?;
         let bind_names = if let Some(filter) = &operation.filter {

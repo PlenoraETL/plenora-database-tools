@@ -2653,6 +2653,11 @@ async fn run_guard_plan(
         <[ParameterValue]>::to_vec,
     );
     let statement = Statement::new(rendered.sql.clone()).with_params(values);
+    let binds = rendered
+        .binds
+        .iter()
+        .map(|bind| bind.name.clone())
+        .collect::<Vec<_>>();
     let mut transaction = provider
         .begin_transaction(secret, &TransactionOptions::default(), budget, cancellation)
         .await
@@ -2663,7 +2668,7 @@ async fn run_guard_plan(
         Some(&plenora_database_core::spatial_operand::OperandPlan::Query(
             &operation,
         )),
-        &[],
+        &binds,
         cancellation,
     )
     .await
@@ -3718,4 +3723,156 @@ async fn live_text_columns_compared_with_binary_values_are_refused() {
     for sql in ["DROP VIEW SONDE_TESTO_V", "DROP TABLE SONDE_TESTO PURGE"] {
         let _ = provider.execute_ddl(&secret, sql, &cancellation).await;
     }
+}
+
+/// Regola T (quattordicesima lettura del 25/10, difetto 1) su Oracle: un
+/// parametro dichiarato `string` legato al valore `I64` 1. Lo SQL senza
+/// giudizio `"NAME" = :1` converte la colonna nel numero e incontra `'1'`,
+/// `'01'` e `'1.0'`; su d5d7fa1 il lowering delle mutazioni rendeva quel
+/// segnaposto nudo, e il giudizio prendeva la famiglia dal tipo dichiarato.
+/// Ora il valore si rifiuta prima dell'esecuzione nella mutazione e nella
+/// query della transazione; un testo per il testo cancella una riga sola.
+#[tokio::test]
+#[ignore = "richiede Oracle Spatial live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_typed_parameters_refuse_values_of_another_type() {
+    use plenora_database_core::facade::execute_judged;
+    use plenora_database_core::relational::MutationOperation;
+    use plenora_database_core::spatial_operand::OperandPlan;
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget regola T Oracle");
+    let _ = provider
+        .execute_ddl(&secret, "DROP TABLE TIPI_T PURGE", &cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            "CREATE TABLE TIPI_T (ID NUMBER(10) PRIMARY KEY, NAME VARCHAR2(10) NOT NULL)",
+            &cancellation,
+        )
+        .await
+        .expect("tabella regola T Oracle");
+    let mut setup = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione preparazione");
+    for (id, name) in [(1, "1"), (2, "01"), (3, "1.0")] {
+        setup
+            .execute(
+                &Statement::new("INSERT INTO TIPI_T (ID, NAME) VALUES (:1, :2)").with_params(vec![
+                    ParameterValue::I32(id),
+                    ParameterValue::String(name.to_owned()),
+                ]),
+                &cancellation,
+            )
+            .await
+            .expect("riga");
+    }
+    setup
+        .commit(&cancellation)
+        .await
+        .expect("commit preparazione");
+    let mutation: MutationOperation = serde_json::from_value(serde_json::json!({
+        "type": "delete",
+        "target": {"catalog": null, "schema": "PLENORA", "object": "TIPI_T"},
+        "filter": {"kind": "compare",
+            "left": {"kind": "column", "column": {"relation": null, "field": "NAME"}},
+            "operator": "eq",
+            "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}}
+    }))
+    .expect("mutazione");
+    let lowered =
+        plenora_database_core::compile_relational_mutation(ProviderKind::Oracle, &mutation)
+            .expect("lowering");
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione regola T");
+    let silent = tx
+        .query(
+            &Statement::new("SELECT ID FROM TIPI_T WHERE NAME = :1 ORDER BY ID")
+                .with_params(vec![ParameterValue::I64(1)]),
+            &cancellation,
+        )
+        .await
+        .expect("senza giudizio");
+    assert_eq!(
+        guard_ids(&silent),
+        vec!["1".to_owned(), "2".to_owned(), "3".to_owned()],
+        "il server converte la colonna nel numero"
+    );
+    let statement =
+        |value: ParameterValue| Statement::new(lowered.sql.clone()).with_params(vec![value]);
+    let plan = OperandPlan::Mutation(&mutation);
+    let error = execute_judged(
+        tx.as_mut(),
+        &statement(ParameterValue::I64(1)),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect_err("intero per un testo dichiarato");
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::InvalidPlan,
+        "{error:?}"
+    );
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    let deleted = execute_judged(
+        tx.as_mut(),
+        &statement(ParameterValue::String("1".to_owned())),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect("testo per il testo");
+    // La forma del renderer delle query.
+    assert!(
+        lowered.sql.ends_with("= CAST(:1 AS VARCHAR2(4000))"),
+        "{}",
+        lowered.sql
+    );
+    assert_eq!(deleted, 1, "il CAST confronta il testo");
+    let _ = tx.rollback(&cancellation).await;
+    // La query della transazione (lo SDK), con lo stesso predicato.
+    let query = derived_plan("TIPI_T", &derived_equal(&derived_column("NAME"), "string"));
+    let (_, judged, _) = run_bound_plan(
+        &provider,
+        &secret,
+        &budget,
+        &query,
+        &[ParameterValue::I64(1)],
+        &cancellation,
+    )
+    .await;
+    let error = judged.expect_err("query con un intero");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    let (_, judged, _) = run_bound_plan(
+        &provider,
+        &secret,
+        &budget,
+        &query,
+        &[ParameterValue::String("1".to_owned())],
+        &cancellation,
+    )
+    .await;
+    assert_eq!(judged.expect("query con un testo"), vec!["1".to_owned()]);
+    provider
+        .execute_ddl(&secret, "DROP TABLE TIPI_T PURGE", &cancellation)
+        .await
+        .expect("pulizia regola T Oracle");
 }

@@ -219,7 +219,7 @@ fn build_read_sql(
             })
         },
         // La regola F la giudica l'esecuzione, sul catalogo e con i valori.
-        |_| None,
+        |_| Ok(None),
         &plenora_database_core::spatial_operand::ParameterFamilies::default(),
     )?;
     if let Some(filter) = &operation.filter {

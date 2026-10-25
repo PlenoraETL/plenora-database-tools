@@ -28,7 +28,10 @@
 //! famiglie ([`OperandFamily`]) dei valori devono coincidere. La famiglia di
 //! una colonna e quella del catalogo, di un parametro quella del suo valore
 //! ([`parameter_family`]) o del suo tipo dichiarato, di un `CAST` quella del
-//! tipo di destinazione. Due famiglie diverse si rifiutano prima
+//! tipo di destinazione. Il tipo dichiarato vale perche il valore legato e del
+//! suo tipo: la regola T ([`crate::typed_parameter`]) rifiuta prima un valore
+//! di un altro tipo (fino alla quattordicesima lettura del 25/10 la famiglia
+//! del tipo dichiarato copriva un valore di un'altra famiglia). Due famiglie diverse si rifiutano prima
 //! dell'esecuzione, `invalid_plan` in fase `prepare`
 //! ([`OPERAND_FAMILY_MISMATCH`]): il server non converte mai da se.
 //!
@@ -131,6 +134,22 @@
 //! - **Rientro.** Quando la scrittura giudica la famiglia di ogni valore
 //!   contro la colonna di destinazione.
 //!
+//! - **Regola.** L'origine di una colonna guarda ogni relazione di cui il
+//!   riferimento rende le righe: i discendenti di `PostgreSQL` (tabelle
+//!   figlie e partizioni, a ogni livello) e le tabelle esterne; su `MySQL` e
+//!   `MariaDB` le tabelle `MERGE`, `FEDERATED`, `CONNECT`, `SPIDER`. Le
+//!   partizioni di Oracle, Db2, `MySQL` e SQL Server condividono la
+//!   definizione della tabella (colonne virtuali, generate, calcolate
+//!   comprese); le viste partizionate di SQL Server e le gerarchie di tabelle
+//!   tipizzate di Db2 sono viste o relazioni gia lette.
+//! - **Ambito.** Ogni provider (quattordicesima lettura del 25/10: su
+//!   `PostgreSQL` 14 e 15 una figlia generata sotto un padre memorizzato
+//!   rendeva una riga su due).
+//! - **Hazard.** Il costo: una colonna binaria di una tabella esterna o di una
+//!   `MERGE` si giudica geometrica sotto un operatore non spatial, anche se le
+//!   sue righe portano byte del chiamante.
+//! - **Rientro.** Quando il giudizio legge la definizione remota.
+//!
 //! - **Regola.** Una colonna che il server calcola senza che il catalogo
 //!   della colonna lo dica non e derivata.
 //! - **Ambito.** I trigger che scrivono una colonna; un default di
@@ -164,6 +183,11 @@ use std::collections::BTreeMap;
 /// tipo (regola F).
 pub const OPERAND_FAMILY_MISMATCH: &str =
     "conversione implicita fra famiglie di tipo: i lati di un confronto, di IN, BETWEEN e LIKE (soltanto testo), i rami di CASE, COALESCE e di una set operation, gli argomenti di un'aritmetica, di SUM e AVG (numerica), di LOWER e UPPER (testo), e ogni operando di ORDER BY, GROUP BY, DISTINCT, PARTITION BY devono avere una sola famiglia (geometrica, binaria, testo, numerica, temporale) secondo il catalogo e il tipo dei parametri; si scriva un CAST esplicito";
+
+/// Motivo stabile del rifiuto di valori posizionali che non sono tanti quanti
+/// i parametri del piano.
+pub const BIND_LAYOUT_MISMATCH: &str =
+    "i valori legati non sono tanti quanti i parametri del piano: ogni valore si lega a un solo segnaposto";
 
 /// Motivo stabile del rifiuto di un'espressione troppo annidata per il
 /// giudizio delle famiglie.
@@ -374,12 +398,16 @@ const fn spatial_result(
     })
 }
 
-/// Le famiglie dei parametri per nome, come le dice il valore legato.
+/// Le famiglie dei parametri per nome, come le dice il valore legato, e i
+/// valori stessi per la regola T ([`crate::typed_parameter`]).
 ///
 /// I bit di ogni famiglia vista per quel nome (piu d'una se lo stesso nome e legato
 /// a valori di famiglie diverse, e allora ogni suo uso si rifiuta).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ParameterFamilies(BTreeMap<String, u8>);
+pub struct ParameterFamilies {
+    families: BTreeMap<String, u8>,
+    bound: crate::typed_parameter::BoundValues,
+}
 
 impl ParameterFamilies {
     /// Da un `ParameterBag` (i path query e lettura dei provider).
@@ -387,37 +415,55 @@ impl ParameterFamilies {
     pub fn from_bag(bag: &ParameterBag) -> Self {
         let mut families = Self::default();
         for (name, value) in bag.iter() {
-            if let Some(family) = parameter_family(value) {
-                families.insert(name.clone(), family);
-            }
+            families.bind(name, value);
         }
         families
     }
 
     /// Dai nomi dei bind nell'ordine dello SQL e dai valori posizionali (lo
-    /// SQL compilato dallo SDK). Un numero diverso di nomi e di valori non si
-    /// lega: nessuna famiglia nota, e l'esecuzione lo rifiutera. Un nome
-    /// legato piu volte con famiglie diverse le porta tutte: ogni suo uso e
-    /// una conversione implicita, e si rifiuta (fino alla seconda lettura del
-    /// 25/10 il nome perdeva la famiglia, e passava).
-    #[must_use]
-    pub fn from_positional(names: &[String], values: &[ParameterValue]) -> Self {
-        let mut families = Self::default();
+    /// SQL compilato dallo SDK). Un nome legato piu volte con famiglie
+    /// diverse le porta tutte: ogni suo uso e una conversione implicita, e si
+    /// rifiuta (fino alla seconda lettura del 25/10 il nome perdeva la
+    /// famiglia, e passava).
+    ///
+    /// # Errors
+    ///
+    /// `invalid_plan` in fase `prepare` se i valori non sono tanti quanti i
+    /// nomi: un valore in piu non si lega a nessun parametro del piano, e
+    /// non tutti i driver lo rifiutano (`sp_executesql` di SQL Server
+    /// accetta parametri che lo SQL non usa). Fino alla quattordicesima
+    /// lettura del 25/10 il giudizio proseguiva senza famiglie.
+    pub fn from_positional(
+        provider: crate::plan::ProviderKind,
+        names: &[String],
+        values: &[ParameterValue],
+    ) -> Result<Self> {
         if names.len() != values.len() {
-            return families;
+            return Err(DatabaseError::new(
+                ErrorCategory::InvalidPlan,
+                ErrorPhase::Prepare,
+                Some(provider),
+                BIND_LAYOUT_MISMATCH,
+            ));
         }
+        let mut families = Self::default();
         for (name, value) in names.iter().zip(values) {
-            if let Some(family) = parameter_family(value) {
-                families.insert(name.clone(), family);
-            }
+            families.bind(name, value);
         }
-        families
+        Ok(families)
+    }
+
+    fn bind(&mut self, name: &str, value: &ParameterValue) {
+        if let Some(family) = parameter_family(value) {
+            self.insert(name, family);
+        }
+        self.bound.add(name, value);
     }
 
     /// Una famiglia vista per un parametro con nome, in piu di quelle gia
     /// viste.
     pub fn insert(&mut self, name: impl Into<String>, family: OperandFamily) {
-        *self.0.entry(name.into()).or_insert(0) |= family.bit();
+        *self.families.entry(name.into()).or_insert(0) |= family.bit();
     }
 
     /// La famiglia del parametro, se e una sola.
@@ -436,14 +482,34 @@ impl ParameterFamilies {
         .find(|family| family.bit() == bits)
     }
 
+    /// La regola T ([`crate::typed_parameter`]) sui parametri tipizzati del
+    /// piano, con i valori legati: prima del giudizio sul catalogo, e anche
+    /// quando il piano non ha niente da leggere.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_plan` ([`crate::typed_parameter::TYPED_PARAMETER_MISMATCH`]).
+    pub fn judge_typed(
+        &self,
+        provider: crate::plan::ProviderKind,
+        plan: &super::OperandPlan<'_>,
+    ) -> Result<()> {
+        match *plan {
+            super::OperandPlan::Query(query) => self.bound.judge_query(provider, query),
+            super::OperandPlan::Mutation(mutation) => self.bound.judge_mutation(provider, mutation),
+            // Lo statement portable porta valori, non parametri tipizzati.
+            super::OperandPlan::Portable(_) => Ok(()),
+        }
+    }
+
     fn bits(&self, name: &str) -> u8 {
-        self.0.get(name).copied().unwrap_or(0)
+        self.families.get(name).copied().unwrap_or(0)
     }
 
     pub(super) fn merged(&self, other: &Self) -> Self {
         let mut merged = self.clone();
-        for (name, bits) in &other.0 {
-            *merged.0.entry(name.clone()).or_insert(0) |= bits;
+        for (name, bits) in &other.families {
+            *merged.families.entry(name.clone()).or_insert(0) |= bits;
         }
         merged
     }

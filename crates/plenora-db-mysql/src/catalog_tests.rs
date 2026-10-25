@@ -231,3 +231,21 @@ fn un_default_di_mariadb_si_giudica_calcolato() {
         );
     }
 }
+
+/// Le relazioni derivate: la descrizione della lettura e la lettura del
+/// catalogo degli operandi (`VIEW_SQL`) guardano gli stessi motori.
+#[test]
+fn le_relazioni_derivate_sono_le_stesse_nei_due_percorsi() {
+    for engine in DERIVED_ENGINES {
+        assert!(VIEW_SQL.contains(&format!("'{engine}'")), "{engine}");
+        assert!(is_derived_relation(
+            "BASE TABLE",
+            Some(&engine.to_lowercase())
+        ));
+    }
+    assert!(is_derived_relation("BASE TABLE", Some("MRG_MyISAM")));
+    assert!(is_derived_relation("VIEW", None));
+    assert!(is_derived_relation("SYSTEM VIEW", None));
+    assert!(!is_derived_relation("BASE TABLE", Some("InnoDB")));
+    assert!(!is_derived_relation("BASE TABLE", None));
+}

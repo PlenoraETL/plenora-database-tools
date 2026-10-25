@@ -10041,7 +10041,7 @@ async fn live_name_shapes_and_the_transaction_catalog_on_a_case_sensitive_databa
         tx.as_mut(),
         &statement,
         Some(&OperandPlan::Mutation(&update)),
-        &[],
+        &["v".to_owned(), "k".to_owned()],
         &cancellation,
     )
     .await
@@ -10311,7 +10311,7 @@ async fn live_binary_columns_of_views_are_judged_geometric() {
         )
         .with_params(vec![ParameterValue::Bytes(wkb.clone())]),
         Some(&OperandPlan::Query(&judged)),
-        &[],
+        &["p".to_owned()],
         &cancellation,
     )
     .await
@@ -10848,6 +10848,285 @@ async fn live_text_columns_compared_with_binary_values_are_refused() {
         .err()
         .expect("lettura x = ? con Bytes ammessa");
     assert_eq!(error.message, OPERAND_FAMILY_MISMATCH, "lettura: {error:?}");
+    admin
+        .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("pulizia");
+}
+
+/// Regola T (quattordicesima lettura del 25/10, difetto 1) su SQL Server: un
+/// parametro dichiarato `string` legato al valore `I64` 1. Lo SQL senza
+/// giudizio `[name] = @P1` converte la colonna nel numero (l'intero ha la
+/// precedenza) e incontra `'1'`, `'01'` e `' 1'`; su d5d7fa1 il lowering delle
+/// mutazioni rendeva quel segnaposto nudo. Ora il valore si rifiuta prima
+/// dell'esecuzione nella mutazione della transazione e nel path query; un
+/// testo per il testo cancella una riga sola. Un valore posizionale in piu
+/// (che `sp_executesql` accetterebbe) non si lega.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "richiede SQL Server live esplicito per la regola dei parametri tipizzati"]
+#[allow(clippy::too_many_lines)]
+async fn live_typed_parameters_refuse_values_of_another_type() {
+    use plenora_database_core::facade::execute_judged;
+    use plenora_database_core::relational::MutationOperation;
+    use plenora_database_core::spatial_operand::{OperandPlan, BIND_LAYOUT_MISMATCH};
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    use serde_json::json;
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("sessione di setup");
+    let cleanup = "DROP TABLE IF EXISTS [plenora_test].[tipi_t];";
+    admin
+        .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("pulizia iniziale");
+    admin
+        .execute_query(
+            Query::new(
+                "CREATE TABLE [plenora_test].[tipi_t] ([id] int NOT NULL PRIMARY KEY, \
+                 [name] nvarchar(10) NOT NULL); \
+                 INSERT INTO [plenora_test].[tipi_t] VALUES (1, N'1'), (2, N'01'), (3, N' 1');",
+            ),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("fixture");
+    let mut silent =
+        Query::new("SELECT [id] FROM [plenora_test].[tipi_t] WHERE [name] = @P1 ORDER BY [id];");
+    silent.bind(1_i64);
+    let ids = admin
+        .execute_query(silent, ErrorPhase::Read, &cancellation)
+        .await
+        .expect("senza giudizio")
+        .iter()
+        .flatten()
+        .map(|row| row.try_get::<i32, _>(0).unwrap().expect("id"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec![1, 2, 3],
+        "il server converte la colonna nel numero"
+    );
+    let filter = json!({"kind": "compare", "left": computed_column("name"), "operator": "eq",
+        "right": typed_bind("string")});
+    let mutation: MutationOperation = serde_json::from_value(json!({
+        "type": "delete",
+        "target": {"catalog": null, "schema": "plenora_test", "object": "tipi_t"},
+        "filter": {"kind": "compare",
+            "left": {"kind": "column", "column": {"relation": null, "field": "name"}},
+            "operator": "eq", "right": typed_bind("string")}
+    }))
+    .expect("mutazione");
+    let lowered = plenora_database_core::compile_relational_mutation(
+        plenora_database_core::plan::ProviderKind::Sqlserver,
+        &mutation,
+    )
+    .expect("lowering");
+    let provider = SqlServerProvider::new(config.clone(), 1024, 4).expect("provider");
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let statement =
+        |values: Vec<ParameterValue>| Statement::new(lowered.sql.clone()).with_params(values);
+    let plan = OperandPlan::Mutation(&mutation);
+    let error = execute_judged(
+        tx.as_mut(),
+        &statement(vec![ParameterValue::I64(1)]),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect_err("intero per un testo dichiarato");
+    assert_eq!(error.category, ErrorCategory::InvalidPlan, "{error:?}");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    let error = execute_judged(
+        tx.as_mut(),
+        &statement(vec![
+            ParameterValue::String("1".to_owned()),
+            ParameterValue::I64(1),
+        ]),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect_err("un valore in piu");
+    assert_eq!(error.message, BIND_LAYOUT_MISMATCH, "{error:?}");
+    let deleted = execute_judged(
+        tx.as_mut(),
+        &statement(vec![ParameterValue::String("1".to_owned())]),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect("testo per il testo");
+    // La forma del renderer delle query.
+    assert!(
+        lowered.sql.contains("= CAST(@P1 AS NVARCHAR(MAX))"),
+        "{}",
+        lowered.sql
+    );
+    assert_eq!(deleted, 1, "il CAST confronta il testo");
+    tx.rollback(&cancellation).await.expect("rollback");
+    // Il path query del provider.
+    let operation = computed_plan("tipi_t", &json!({"filter": filter}));
+    let bag = |value: ParameterValue| ParameterBag::new(BTreeMap::from([("p".to_owned(), value)]));
+    let error = judged_rows(
+        &provider,
+        &operation,
+        &bag(ParameterValue::I64(1)),
+        &budget,
+        &cancellation,
+    )
+    .await
+    .expect_err("query con un intero");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    assert_eq!(
+        judged_rows(
+            &provider,
+            &operation,
+            &bag(ParameterValue::String("1".to_owned())),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("query con un testo"),
+        1
+    );
+    admin
+        .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("pulizia");
+}
+
+/// Regola C (quattordicesima lettura del 25/10, difetto 3) su un database
+/// `COLLATE Latin1_General_CS_AS` (`PLENORA_SQLSERVER_CS_DATABASE`): `[W]
+/// varbinary` e `[w] nvarchar` sono due colonne. La lettura del provider
+/// giudicava la famiglia della prima che incontrava `w` senza maiuscole, `W`
+/// binaria, e `w = Bytes` arrivava al server, che converte da se. Ora il nome
+/// si risolve come lo risolve il server (il nome esatto, `w` testo:
+/// `OPERAND_FAMILY_MISMATCH`); un nome senza il nome esatto (`ab` per `[Ab]`
+/// e `[aB]`) non si trova.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "richiede SQL Server live con un database CS esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_read_column_names_resolve_like_the_server_on_a_case_sensitive_database() {
+    use plenora_database_core::spatial_operand::OPERAND_FAMILY_MISMATCH;
+
+    let database = std::env::var("PLENORA_SQLSERVER_CS_DATABASE")
+        .expect("PLENORA_SQLSERVER_CS_DATABASE: un database COLLATE Latin1_General_CS_AS");
+    let host = std::env::var("PLENORA_SQLSERVER_HOST").unwrap_or_else(|_| "sqlserver".to_owned());
+    let username =
+        std::env::var("PLENORA_SQLSERVER_USER").unwrap_or_else(|_| "dataflow".to_owned());
+    let config = with_live_port(
+        SqlServerConfig::new(host, database, username, live_secret())
+            .with_certificate_policy(CertificatePolicy::TrustServerCertificate),
+    );
+    let cancellation = CancellationToken::new();
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("sessione di setup");
+    let cleanup = "DROP TABLE IF EXISTS [dbo].[nomi_c14];";
+    admin
+        .execute_query(
+            Query::new(format!(
+                "IF CAST(DATABASEPROPERTYEX(DB_NAME(), 'Collation') AS nvarchar(128)) \
+                     NOT LIKE N'%[_]CS[_]%' THROW 50001, N'database non CS', 1; {cleanup} \
+                 CREATE TABLE [dbo].[nomi_c14] ([id] int NOT NULL PRIMARY KEY, \
+                     [W] varbinary(16) NULL, [w] nvarchar(16) NULL, \
+                     [Ab] nvarchar(16) NULL, [aB] varbinary(16) NULL); \
+                 INSERT INTO [dbo].[nomi_c14] VALUES (1, 0x31, N'1', N'1', 0x31), \
+                     (2, 0x32, N'2', N'2', 0x32);"
+            )),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("fixture");
+    let mut silent = Query::new("SELECT [id] FROM [dbo].[nomi_c14] WHERE [w] = @P1 ORDER BY [id];");
+    silent.bind(vec![0x31_u8]);
+    let ids = admin
+        .execute_query(silent, ErrorPhase::Read, &cancellation)
+        .await
+        .expect("senza giudizio")
+        .iter()
+        .flatten()
+        .map(|row| row.try_get::<i32, _>(0).unwrap().expect("id"))
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec![1], "il server converte il testo nei byte");
+    let provider = SqlServerProvider::new(config, 1024, 4).expect("provider");
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let reading = |field: &str| ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("dbo".to_owned()),
+            object: "nomi_c14".to_owned(),
+        },
+        projection: vec!["id".to_owned()],
+        order_by: vec![OrderBy {
+            field: "id".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: None,
+        row_offset: None,
+        filter: Some(FilterExpression::Eq {
+            field: field.to_owned(),
+            parameter: "p".to_owned(),
+        }),
+        declared_crs: Vec::new(),
+    };
+    let bytes = ParameterBag::new(BTreeMap::from([(
+        "p".to_owned(),
+        ParameterValue::Bytes(vec![0x31]),
+    )]));
+    let refusal = |field: &'static str| {
+        let provider = &provider;
+        let (bytes, budget, cancellation) = (&bytes, &budget, &cancellation);
+        async move {
+            provider
+                .read(&live_secret(), &reading(field), bytes, budget, cancellation)
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("lettura {field} = byte ammessa"))
+        }
+    };
+    let error = refusal("w").await;
+    assert_eq!(error.message, OPERAND_FAMILY_MISMATCH, "w: {error:?}");
+    // Senza il nome esatto la lettura non trova la colonna: il server la
+    // rifiuterebbe, e la lettura la rifiuta prima (`NotFound`), mai la prima
+    // che la incontra senza maiuscole.
+    let error = refusal("ab").await;
+    assert_eq!(error.category, ErrorCategory::NotFound, "ab: {error:?}");
+    // Il nome esatto della colonna binaria resta.
+    let mut stream = provider
+        .read(
+            &live_secret(),
+            &reading("W"),
+            &bytes,
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("lettura W = byte");
+    let mut rows = 0;
+    while let Some(batch) = stream.next_batch(&cancellation).await.expect("lettura W") {
+        rows += batch.num_rows();
+    }
+    assert_eq!(rows, 1);
+    drop(stream);
     admin
         .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
         .await

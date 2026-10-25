@@ -1236,6 +1236,12 @@ pub async fn verify_scalar_operands(
     parameters: &plenora_database_core::provider::ParameterBag,
     cancellation: &CancellationToken,
 ) -> Result<()> {
+    let families = plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters);
+    // La regola T (`typed_parameter`) anche senza operandi da leggere.
+    families.judge_typed(
+        ProviderKind::Sqlserver,
+        &plenora_database_core::spatial_operand::OperandPlan::Query(operation),
+    )?;
     let operands = plenora_database_core::spatial_operand::scalar_operands(
         ProviderKind::Sqlserver,
         operation,
@@ -1244,10 +1250,7 @@ pub async fn verify_scalar_operands(
         return Ok(());
     }
     let catalog = operand_catalog(session, operands.relations(), cancellation).await?;
-    operands.judge_bound(
-        &catalog,
-        &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
-    )
+    operands.judge_bound(&catalog, &families)
 }
 
 /// Il catalogo delle relazioni (schema, oggetto) per il giudizio degli

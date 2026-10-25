@@ -366,7 +366,7 @@ fn relations_name_base_tables_only() {
 #[test]
 fn read_filters_refuse_geometry_fields_under_scalar_operators() {
     let geometric = |field: &str| field == "g";
-    let unknown = |_: &str| None;
+    let unknown = |_: &str| Ok(None);
     let none = ParameterFamilies::default();
     for filter in [
         FilterExpression::Eq {
@@ -843,5 +843,64 @@ fn a_binary_column_is_geometric_only_when_derived() {
         (true, true, Derived),
     ] {
         assert_eq!(ColumnOrigin::of(relation, computed), origin);
+    }
+}
+
+/// Regola C (quattordicesima lettura del 25/10): una lettura risolve un nome
+/// di colonna come il server: il nome esatto, altrimenti l'unico che lo
+/// incontra senza maiuscole; con piu candidati e nessun nome esatto si
+/// rifiuta. Prima la lettura di SQL Server prendeva il primo: con `W
+/// varbinary` e `w nvarchar`, `w = Bytes` passava.
+#[test]
+fn un_nome_si_risolve_come_lo_risolve_il_server() {
+    let columns = [
+        "W".to_owned(),
+        "w".to_owned(),
+        "id".to_owned(),
+        "Ab".to_owned(),
+        "aB".to_owned(),
+    ];
+    for (field, expected) in [("w", Some(1)), ("W", Some(0)), ("ID", Some(2)), ("x", None)] {
+        assert_eq!(
+            folded_column(ProviderKind::Sqlserver, &columns, String::as_str, field)
+                .expect("risolto"),
+            expected.map(|index| &columns[index]),
+            "{field}"
+        );
+    }
+    let error = folded_column(ProviderKind::Sqlserver, &columns, String::as_str, "ab")
+        .expect_err("due colonne, nessun nome esatto");
+    assert_eq!(error.message, AMBIGUOUS_NAME_SHAPE);
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+    let family = |field: &str| {
+        Ok(
+            folded_column(ProviderKind::Sqlserver, &columns, String::as_str, field)?.map(
+                |column| {
+                    if column == "W" {
+                        OperandFamily::Binary
+                    } else {
+                        OperandFamily::Text
+                    }
+                },
+            ),
+        )
+    };
+    let mut bytes = ParameterFamilies::default();
+    bytes.insert("p", OperandFamily::Binary);
+    for (field, message) in [("w", OPERAND_FAMILY_MISMATCH), ("ab", AMBIGUOUS_NAME_SHAPE)] {
+        let filter = FilterExpression::Eq {
+            field: field.to_owned(),
+            parameter: "p".to_owned(),
+        };
+        let error = ensure_scalar_filter_fields(
+            ProviderKind::Sqlserver,
+            Some(&filter),
+            &[],
+            |_| false,
+            family,
+            &bytes,
+        )
+        .expect_err(field);
+        assert_eq!(error.message, message, "{field}");
     }
 }

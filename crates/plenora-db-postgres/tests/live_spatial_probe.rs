@@ -2216,7 +2216,7 @@ async fn live_name_shapes_multiranges_and_the_transaction_catalog_are_judged() {
             ],
         ),
         Some(&OperandPlan::Mutation(&update)),
-        &[],
+        &["v".to_owned(), "k".to_owned()],
         &cancel,
     )
     .await
@@ -2478,7 +2478,7 @@ async fn live_binary_columns_of_derived_relations_are_judged_geometric() {
         &Statement::new(format!("SELECT t.id FROM public.{view} t WHERE t.w = $1"))
             .with_params(vec![ParameterValue::Bytes(wkb)]),
         Some(&OperandPlan::Query(&judged)),
-        &[],
+        &["p".to_owned()],
         &cancel,
     )
     .await
@@ -2743,4 +2743,342 @@ async fn live_server_computed_binary_columns_are_judged_geometric() {
         2
     );
     client.batch_execute(&cleanup).await.expect("pulizia");
+}
+
+/// Regola B sui discendenti (quattordicesima lettura del 25/10, difetto 2):
+/// su `PostgreSQL` 14 e 15 una tabella figlia (`INHERIT`) o una partizione
+/// (`ATTACH PARTITION`) puo dichiarare generata (`ST_AsBinary(g)`) la colonna
+/// binaria che il padre dichiara memorizzata; il 16 rifiuta lo schema. Le
+/// righe della figlia arrivano dal padre, e lo SQL senza giudizio `w = $1`
+/// con il WKB del primo di due poligoni uguali ne rende uno: su d5d7fa1 il
+/// catalogo leggeva `attgenerated` della sola relazione nominata, e il padre
+/// passava. Ora l'origine guarda la relazione e ogni discendente
+/// (`pg_inherits` ricorsivo, anche una partizione di una partizione), nel
+/// path query, nella transazione e nella lettura. Su un server che rifiuta lo
+/// schema il test lo verifica e controlla il padre senza discendenti
+/// generati, che resta ammesso.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_generated_binary_columns_of_descendants_are_judged_geometric() {
+    use plenora_database_core::facade::query_judged;
+    use plenora_database_core::spatial_operand::OperandPlan;
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    use serde_json::{json, Value};
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .expect("connessione di setup");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let version: i32 = client
+        .query_one("SELECT current_setting('server_version_num')::int", &[])
+        .await
+        .expect("versione")
+        .get(0);
+    let cleanup = "DROP TABLE IF EXISTS public.plenora_eredi_p, public.plenora_eredi_f, \
+         public.plenora_parti_p, public.plenora_parti_q, public.plenora_parti_r CASCADE;";
+    client
+        .batch_execute(cleanup)
+        .await
+        .expect("pulizia iniziale");
+    let polygons = "ST_GeomFromText('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 4326), \
+         ST_GeomFromText('POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))', 4326)";
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE public.plenora_eredi_p (id int, g geometry(Polygon, 4326), w bytea);
+             CREATE TABLE public.plenora_parti_p (id int, g geometry(Polygon, 4326), w bytea)
+                 PARTITION BY RANGE (id);
+             CREATE TABLE public.plenora_parti_q (id int, g geometry(Polygon, 4326), w bytea)
+                 PARTITION BY RANGE (id);
+             ALTER TABLE public.plenora_parti_p ATTACH PARTITION public.plenora_parti_q
+                 FOR VALUES FROM (0) TO (100);
+             INSERT INTO public.plenora_eredi_p (id, g) VALUES (1, ST_GeomFromText('POLYGON ((5 5, 6 5, 6 6, 5 5))', 4326));
+             SELECT {polygons};"
+        ))
+        .await
+        .expect("fixture dei padri");
+    let generated = client
+        .batch_execute(&format!(
+            "CREATE TABLE public.plenora_eredi_f (id int, g geometry(Polygon, 4326),
+                 w bytea GENERATED ALWAYS AS (ST_AsBinary(g)) STORED);
+             ALTER TABLE public.plenora_eredi_f INHERIT public.plenora_eredi_p;
+             CREATE TABLE public.plenora_parti_r (id int, g geometry(Polygon, 4326),
+                 w bytea GENERATED ALWAYS AS (ST_AsBinary(g)) STORED);
+             ALTER TABLE public.plenora_parti_q ATTACH PARTITION public.plenora_parti_r
+                 FOR VALUES FROM (0) TO (100);
+             INSERT INTO public.plenora_eredi_f (id, g) VALUES (3, {first}), (4, {second});
+             INSERT INTO public.plenora_parti_p (id, g) VALUES (3, {first}), (4, {second});",
+            first = "ST_GeomFromText('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 4326)",
+            second = "ST_GeomFromText('POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))', 4326)",
+        ))
+        .await;
+    if version >= 160_000 {
+        // Il 16 rifiuta una figlia o una partizione generata sotto un padre
+        // memorizzato: lo schema del difetto non esiste.
+        assert!(generated.is_err(), "PostgreSQL {version} ammette lo schema");
+        client.batch_execute(cleanup).await.expect("pulizia");
+        return;
+    }
+    generated.expect("figlia e partizione generate");
+    let wkb: Vec<u8> = client
+        .query_one(
+            "SELECT ST_AsBinary(g) FROM public.plenora_eredi_f WHERE id = 3",
+            &[],
+        )
+        .await
+        .expect("WKB")
+        .get(0);
+    for parent in ["plenora_eredi_p", "plenora_parti_p"] {
+        let silent: Vec<i32> = client
+            .query(
+                &format!("SELECT id FROM public.{parent} WHERE w = $1 ORDER BY id"),
+                &[&wkb],
+            )
+            .await
+            .expect("senza giudizio")
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
+        assert_eq!(silent, vec![3], "{parent}: il server confronta i byte");
+    }
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.clone());
+    let cancel = CancellationToken::new();
+    let budget = budget();
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let over = |object: &str, extra: &Value| -> QueryOperation {
+        let mut operation = json!({
+            "source": {"object": {"catalog": null, "schema": "public", "object": object}, "alias": "t"},
+            "projection": [{"expression": column("id"), "alias": "id"}],
+            "filter": null, "having": null, "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        serde_json::from_value(operation).expect("piano")
+    };
+    let equal = json!({"filter": {"kind": "compare", "left": column("w"), "operator": "eq",
+        "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "binary"}}});
+    let bytes = probe(ParameterValue::Bytes(wkb.clone()));
+    // Il padre di un'ereditarieta, il padre e la partizione intermedia di
+    // un partizionamento a due livelli.
+    for object in ["plenora_eredi_p", "plenora_parti_p", "plenora_parti_q"] {
+        let error = rows(
+            provider
+                .query(&secret, &over(object, &equal), &bytes, &budget, &cancel)
+                .await,
+        )
+        .await
+        .expect_err(object);
+        assert_eq!(
+            error.message, GEOMETRY_SCALAR_OPERAND,
+            "{object}: {error:?}"
+        );
+        let mut reading = read(object, "id");
+        reading.filter = Some(FilterExpression::Eq {
+            field: "w".to_owned(),
+            parameter: "p".to_owned(),
+        });
+        let error = rows(
+            provider
+                .read(&secret, &reading, &bytes, &budget, &cancel)
+                .await,
+        )
+        .await
+        .expect_err(object);
+        assert_eq!(
+            error.message, GEOMETRY_SCALAR_OPERAND,
+            "lettura {object}: {error:?}"
+        );
+    }
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("transazione");
+    let judged = over("plenora_eredi_p", &equal);
+    let error = query_judged(
+        tx.as_mut(),
+        &Statement::new("SELECT t.id FROM public.plenora_eredi_p t WHERE t.w = CAST($1 AS BYTEA)")
+            .with_params(vec![ParameterValue::Bytes(wkb)]),
+        Some(&OperandPlan::Query(&judged)),
+        &["p".to_owned()],
+        &cancel,
+    )
+    .await
+    .expect_err("w = ? nella transazione");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{error:?}");
+    tx.rollback(&cancel).await.expect("rollback");
+    // `id` resta scalare, e un padre senza discendenti generati resta
+    // memorizzato.
+    let id = json!({"filter": {"kind": "compare", "left": column("id"), "operator": "eq",
+        "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "integer"}}});
+    assert_eq!(
+        rows(
+            provider
+                .query(
+                    &secret,
+                    &over("plenora_parti_p", &id),
+                    &probe(ParameterValue::I32(3)),
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await
+        .expect("id = ?"),
+        1
+    );
+    client
+        .batch_execute("ALTER TABLE public.plenora_eredi_f NO INHERIT public.plenora_eredi_p;")
+        .await
+        .expect("figlia staccata");
+    assert_eq!(
+        rows(
+            provider
+                .query(
+                    &secret,
+                    &over("plenora_eredi_p", &equal),
+                    &bytes,
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await
+        .expect("padre senza figlie generate"),
+        0
+    );
+    client.batch_execute(cleanup).await.expect("pulizia");
+}
+
+/// Regola T (quattordicesima lettura del 25/10, difetto 1) su `PostgreSQL`:
+/// un parametro dichiarato `string` legato al valore `I64` 1 si rifiuta
+/// prima dell'esecuzione, nella mutazione della transazione (il percorso
+/// dello SDK) e nel path query; su d5d7fa1 arrivava al driver, che lo
+/// rifiutava come tipo del protocollo. Un testo per il testo cancella una
+/// riga sola, con il `CAST` del renderer delle query.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_typed_parameters_refuse_values_of_another_type() {
+    use plenora_database_core::facade::execute_judged;
+    use plenora_database_core::relational::MutationOperation;
+    use plenora_database_core::spatial_operand::OperandPlan;
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    use serde_json::json;
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .expect("connessione di setup");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let cleanup = "DROP TABLE IF EXISTS public.plenora_tipi_t;";
+    client
+        .batch_execute(cleanup)
+        .await
+        .expect("pulizia iniziale");
+    client
+        .batch_execute(
+            "CREATE TABLE public.plenora_tipi_t (id int PRIMARY KEY, name text NOT NULL);
+             INSERT INTO public.plenora_tipi_t VALUES (1, '1'), (2, '01'), (3, '1.0');",
+        )
+        .await
+        .expect("fixture");
+    let filter = json!({"kind": "compare",
+        "left": {"kind": "column", "column": {"relation": null, "field": "name"}},
+        "operator": "eq",
+        "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}});
+    let mutation: MutationOperation = serde_json::from_value(json!({
+        "type": "delete",
+        "target": {"catalog": null, "schema": "public", "object": "plenora_tipi_t"},
+        "filter": filter
+    }))
+    .expect("mutazione");
+    let lowered = plenora_database_core::compile_relational_mutation(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        &mutation,
+    )
+    .expect("lowering");
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.clone());
+    let cancel = CancellationToken::new();
+    let budget = budget();
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("transazione");
+    let statement =
+        |value: ParameterValue| Statement::new(lowered.sql.clone()).with_params(vec![value]);
+    let plan = OperandPlan::Mutation(&mutation);
+    let error = execute_judged(
+        tx.as_mut(),
+        &statement(ParameterValue::I64(1)),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancel,
+    )
+    .await
+    .expect_err("intero per un testo dichiarato");
+    assert_eq!(error.category, ErrorCategory::InvalidPlan, "{error:?}");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    let deleted = execute_judged(
+        tx.as_mut(),
+        &statement(ParameterValue::String("1".to_owned())),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancel,
+    )
+    .await
+    .expect("testo per il testo");
+    // La forma del renderer delle query.
+    assert!(
+        lowered.sql.ends_with("= CAST($1 AS TEXT)"),
+        "{}",
+        lowered.sql
+    );
+    assert_eq!(deleted, 1, "il CAST confronta il testo");
+    tx.rollback(&cancel).await.expect("rollback");
+    let operation: QueryOperation = serde_json::from_value(json!({
+        "source": {"object": {"catalog": null, "schema": "public", "object": "plenora_tipi_t"}, "alias": null},
+        "projection": [{"expression": {"kind": "column", "column": {"relation": null, "field": "id"}}, "alias": "id"}],
+        "filter": filter, "having": null, "row_limit": null
+    }))
+    .expect("piano");
+    let error = rows(
+        provider
+            .query(
+                &secret,
+                &operation,
+                &probe(ParameterValue::I64(1)),
+                &budget,
+                &cancel,
+            )
+            .await,
+    )
+    .await
+    .expect_err("query con un intero");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    assert_eq!(
+        rows(
+            provider
+                .query(
+                    &secret,
+                    &operation,
+                    &probe(ParameterValue::String("1".to_owned())),
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await
+        .expect("query con un testo"),
+        1
+    );
+    client.batch_execute(cleanup).await.expect("pulizia");
 }

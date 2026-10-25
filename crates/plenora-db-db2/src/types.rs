@@ -486,7 +486,7 @@ fn ensure_scalar_fields(
         },
         // La regola F e le colonne generate le giudica la lettura sul
         // catalogo, con i valori.
-        |_| None,
+        |_| Ok(None),
         &plenora_database_core::spatial_operand::ParameterFamilies::default(),
     )
 }

@@ -1310,6 +1310,9 @@ impl Renderer {
         }
     }
 
+    /// La forma unica di un parametro tipizzato
+    /// (`plenora_database_core::typed_parameter::CastDialect::render`), la
+    /// stessa dei predicati del lowering delle mutazioni (regola T).
     fn render_typed_parameter(
         &self,
         name: &str,
@@ -1317,22 +1320,20 @@ impl Renderer {
         binds: &mut RenderState,
     ) -> String {
         let value = self.bind(name, binds);
-        if self.dialect == Dialect::Oracle {
-            match parameter_type {
-                QueryParameterType::Boolean => return format!("TO_BOOLEAN({value})"),
-                QueryParameterType::TimestampTz => {
-                    return format!(
-                        "TO_TIMESTAMP_TZ({value}, '{}')",
-                        plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
-                    )
-                }
-                _ => {}
-            }
+        self.cast_dialect().render(&value, parameter_type)
+    }
+
+    const fn cast_dialect(&self) -> plenora_database_core::typed_parameter::CastDialect {
+        use plenora_database_core::typed_parameter::CastDialect;
+        match self.dialect {
+            Dialect::Postgres => CastDialect::Postgres,
+            Dialect::Mysql => CastDialect::Mysql,
+            Dialect::SqlServer => CastDialect::SqlServer,
+            Dialect::Oracle => CastDialect::Oracle,
+            Dialect::Db2 => CastDialect::Db2,
+            Dialect::Sqlite => CastDialect::Sqlite,
+            Dialect::Duckdb => CastDialect::Duckdb,
         }
-        format!(
-            "CAST({value} AS {})",
-            self.render_parameter_type(parameter_type)
-        )
     }
 
     fn render_arithmetic(
@@ -1476,75 +1477,7 @@ impl Renderer {
     }
 
     const fn render_parameter_type(&self, parameter_type: QueryParameterType) -> &'static str {
-        match parameter_type {
-            QueryParameterType::Boolean => match self.dialect {
-                Dialect::Mysql => "SIGNED",
-                Dialect::SqlServer => "BIT",
-                _ => "BOOLEAN",
-            },
-            QueryParameterType::Integer => match self.dialect {
-                Dialect::Mysql => "SIGNED",
-                Dialect::Oracle => "NUMBER(10)",
-                _ => "INTEGER",
-            },
-            QueryParameterType::BigInteger => match self.dialect {
-                Dialect::Mysql => "SIGNED",
-                Dialect::Oracle => "NUMBER(19)",
-                _ => "BIGINT",
-            },
-            QueryParameterType::Float => match self.dialect {
-                Dialect::Postgres => "DOUBLE PRECISION",
-                Dialect::SqlServer => "FLOAT",
-                Dialect::Sqlite => "REAL",
-                Dialect::Oracle => "BINARY_DOUBLE",
-                _ => "DOUBLE",
-            },
-            QueryParameterType::String => match self.dialect {
-                Dialect::Postgres | Dialect::Sqlite => "TEXT",
-                Dialect::Mysql => "CHAR",
-                Dialect::SqlServer => "NVARCHAR(MAX)",
-                Dialect::Duckdb => "VARCHAR",
-                Dialect::Oracle => "VARCHAR2(4000)",
-                Dialect::Db2 => "VARCHAR(32672)",
-            },
-            QueryParameterType::Binary => match self.dialect {
-                Dialect::Postgres => "BYTEA",
-                Dialect::Mysql => "BINARY",
-                Dialect::SqlServer => "VARBINARY(MAX)",
-                Dialect::Sqlite | Dialect::Duckdb => "BLOB",
-                Dialect::Oracle => "RAW(2000)",
-                Dialect::Db2 => "VARCHAR(32672) FOR BIT DATA",
-            },
-            QueryParameterType::Date => "DATE",
-            QueryParameterType::Timestamp => match self.dialect {
-                Dialect::Mysql => "DATETIME(6)",
-                Dialect::SqlServer => "DATETIME2",
-                Dialect::Sqlite => "TEXT",
-                _ => "TIMESTAMP",
-            },
-            QueryParameterType::TimestampTz => match self.dialect {
-                Dialect::Postgres | Dialect::Sqlite | Dialect::Duckdb => "TIMESTAMPTZ",
-                Dialect::SqlServer => "DATETIMEOFFSET",
-                Dialect::Oracle | Dialect::Db2 => "TIMESTAMP WITH TIME ZONE",
-                Dialect::Mysql => "DATETIME(6)",
-            },
-            QueryParameterType::Decimal => match self.dialect {
-                Dialect::Oracle => "NUMBER(38, 10)",
-                _ => "DECIMAL(38, 10)",
-            },
-            QueryParameterType::Uuid => match self.dialect {
-                Dialect::Postgres => "UUID",
-                Dialect::SqlServer => "UNIQUEIDENTIFIER",
-                Dialect::Oracle => "VARCHAR2(36)",
-                _ => "CHAR(36)",
-            },
-            QueryParameterType::Json => match self.dialect {
-                Dialect::Postgres => "JSONB",
-                Dialect::Mysql | Dialect::Sqlite | Dialect::Duckdb => "JSON",
-                Dialect::SqlServer => "NVARCHAR(MAX)",
-                Dialect::Oracle | Dialect::Db2 => "CLOB",
-            },
-        }
+        self.cast_dialect().type_name(parameter_type)
     }
 
     /// La regola P sul piano intero, prima di rendere: una sonda e ammessa

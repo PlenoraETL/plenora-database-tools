@@ -231,6 +231,18 @@ impl From<DialectKind> for IdentifierDialect {
     }
 }
 
+/// Il dialetto della forma unica dei parametri tipizzati.
+const fn cast_dialect(dialect: DialectKind) -> crate::typed_parameter::CastDialect {
+    use crate::typed_parameter::CastDialect;
+    match dialect {
+        DialectKind::Postgres => CastDialect::Postgres,
+        DialectKind::Mysql | DialectKind::Mariadb => CastDialect::Mysql,
+        DialectKind::SqlServer => CastDialect::SqlServer,
+        DialectKind::Oracle => CastDialect::Oracle,
+        DialectKind::Db2 => CastDialect::Db2,
+    }
+}
+
 fn qualify_table(table: &TableRef, dialect: DialectKind) -> Result<String> {
     let table_id = quote_identifier(&table.name, dialect)?;
     if let Some(schema) = &table.schema {
@@ -244,6 +256,12 @@ fn qualify_table(table: &TableRef, dialect: DialectKind) -> Result<String> {
 fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<String> {
     match expr {
         Expression::Literal(v) => Ok(ctx.bind(v.clone())),
+        // La sentinella non e un valore del chiamante: serve al segnaposto,
+        // e la conversione la rende la forma unica del parametro tipizzato.
+        Expression::TypedParameter(parameter_type) => {
+            let placeholder = ctx.bind(ParameterValue::I64(0));
+            Ok(cast_dialect(ctx.dialect).render(&placeholder, *parameter_type))
+        }
         Expression::Column(name) => quote_identifier(name, ctx.dialect),
         Expression::SpatialValue {
             expression,
@@ -1316,6 +1334,9 @@ fn compile_upsert_merge(
                 let column = quote_identifier(column, ctx.dialect)?;
                 let expression = match expression {
                     Expression::Literal(value) => ctx.bind(value.clone()),
+                    // Un valore scritto: il solo segnaposto (regola T); il
+                    // lowering rende tipizzati soltanto i predicati.
+                    Expression::TypedParameter(_) => ctx.bind(ParameterValue::I64(0)),
                     Expression::Column(name) => {
                         format!("T.{}", quote_identifier(name, ctx.dialect)?)
                     }

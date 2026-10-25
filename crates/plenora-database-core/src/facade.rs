@@ -292,6 +292,9 @@ pub async fn verify_operands_bound(
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let provider = tx.provider_kind();
+    // La regola T prima del catalogo: anche un piano senza operandi da
+    // leggere porta parametri tipizzati, e i valori scritti.
+    parameters.judge_typed(provider, plan)?;
     let operands = plan.operands(provider)?;
     // Ogni provider giudica sul catalogo, Oracle compreso: la guardia del
     // server (`spatial_operand::operand_server_guard`) non protegge la
@@ -323,7 +326,8 @@ pub async fn query_judged(
     cancellation: &CancellationToken,
 ) -> Result<Vec<Row>> {
     if let Some(plan) = plan {
-        let parameters = ParameterFamilies::from_positional(bind_names, &statement.params);
+        let parameters =
+            ParameterFamilies::from_positional(tx.provider_kind(), bind_names, &statement.params)?;
         verify_operands_bound(tx, plan, &parameters, cancellation).await?;
     }
     tx.query(statement, cancellation).await
@@ -343,7 +347,8 @@ pub async fn execute_judged(
     cancellation: &CancellationToken,
 ) -> Result<u64> {
     if let Some(plan) = plan {
-        let parameters = ParameterFamilies::from_positional(bind_names, &statement.params);
+        let parameters =
+            ParameterFamilies::from_positional(tx.provider_kind(), bind_names, &statement.params)?;
         verify_operands_bound(tx, plan, &parameters, cancellation).await?;
     }
     tx.execute(statement, cancellation).await

@@ -200,6 +200,12 @@ pub(crate) async fn query_operation_with_profile(
     // confronterebbe il proprio formato interno con il valore legato senza
     // errore. I tipi delle colonne sono nel catalogo, e si leggono prima di
     // preparare (`spatial_operand`).
+    let families = plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters);
+    // La regola T (`typed_parameter`) anche senza operandi da leggere.
+    families.judge_typed(
+        profile.kind(),
+        &plenora_database_core::spatial_operand::OperandPlan::Query(operation),
+    )?;
     let operands =
         plenora_database_core::spatial_operand::scalar_operands(profile.kind(), operation)?;
     if !operands.is_empty() {
@@ -211,10 +217,7 @@ pub(crate) async fn query_operation_with_profile(
             &internal,
         )
         .await?;
-        operands.judge_bound(
-            &catalog,
-            &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
-        )?;
+        operands.judge_bound(&catalog, &families)?;
     }
     let statement = session.prepare_statement(&rendered.sql, &internal).await?;
     if usize::from(statement.num_params()) != bind_names.len() {

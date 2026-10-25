@@ -65,6 +65,7 @@ EXPECTED_UNIT_TESTS = {
 
     "transaction::tests::caller_sql_uint_overflow_preserves_decoder_context_and_requires_recovery",
     "arrow::tests::decimal_parser_is_exact_and_checked",
+    "catalog::tests::le_relazioni_derivate_sono_le_stesse_nei_due_percorsi",
     "arrow::tests::zero_dates_fail_closed_without_panicking",
     "catalog::tests::a_functional_index_is_described_where_the_product_publishes_its_parts",
     "catalog::tests::a_part_without_a_column_is_refused_where_the_product_cannot_describe_it",
@@ -302,6 +303,7 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_geometry_column_under_scalar_operator_is_refused",
     "live_tests::live_server_computed_binary_columns_are_judged_geometric",
     "live_tests::live_text_columns_compared_with_binary_values_are_refused",
+    "live_tests::live_typed_parameters_refuse_values_of_another_type",
     "live_tests::live_native_query_policy_allow_permits_ddl",
     "live_tests::live_native_query_policy_deny_rejects_conditional_update_ddl",
     "live_tests::live_native_query_policy_deny_rejects_ddl",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 120171,
-  "max_code_lines": 96893,
-  "rationale": "Regola B per colonna e regola F degli operandi (spatial_operand_types.rs): l'origine derivata e della colonna (relazione derivata o colonna generata/calcolata/virtuale, letta dal catalogo di ogni provider), la famiglia di tipo di ogni colonna e di ogni valore legato, nessuna conversione implicita fra famiglie in confronti, ordinamenti, raggruppamenti, IN e LIKE, binario derivato da un CAST del piano; prove offline sulla tabella delle famiglie e live test per provider. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 118713 -> 120171 (+1458), righe di codice 95910 -> 96893 (+983). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 120839,
+  "max_code_lines": 97292,
+  "rationale": "Quattordicesima lettura del 25/10: regola T (typed_parameter.rs: un parametro tipizzato accetta soltanto i valori del suo tipo, una sola forma resa per query e predicati delle mutazioni), regola B sui discendenti (PostgreSQL pg_inherits, tabelle esterne; MySQL MERGE/FEDERATED/CONNECT/SPIDER), nomi di colonna risolti come il server (folded_column), bind posizionali allineati; prove offline e live per provider. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 120171 -> 120839 (+668), righe di codice 96893 -> 97292 (+399). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

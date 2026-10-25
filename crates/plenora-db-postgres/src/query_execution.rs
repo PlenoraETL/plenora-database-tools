@@ -160,10 +160,10 @@ pub async fn read_stream(
                     .any(|column| column.is_geometric() && column.name == field)
             },
             |field| {
-                columns
+                Ok(columns
                     .iter()
                     .find(|column| column.name == field)
-                    .map(|column| column.column_type.family)
+                    .map(|column| column.column_type.family))
             },
             &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
         )?;
@@ -237,6 +237,12 @@ pub async fn query_stream(
     validate_stream_configuration(provider)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let rendered = render_query(operation)?;
+    // La regola T sui valori del chiamante (`typed_parameter`), prima di
+    // ogni altra cosa.
+    plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters).judge_typed(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        &plenora_database_core::spatial_operand::OperandPlan::Query(operation),
+    )?;
     // Le sonde spatial si giudicano prima della connessione; le colonne con
     // cui si confrontano, sul catalogo prima della query.
     let probes = crate::spatial_probe::plan_query_probes(

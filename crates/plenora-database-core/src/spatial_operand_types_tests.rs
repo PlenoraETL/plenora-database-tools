@@ -100,21 +100,33 @@ fn i_valori_posizionali_si_legano_ai_nomi() {
         ParameterValue::String("x".to_owned()),
         ParameterValue::I32(2),
     ];
-    let families = ParameterFamilies::from_positional(&names, &values);
+    let families = ParameterFamilies::from_positional(ProviderKind::Postgres, &names, &values)
+        .expect("legame");
     assert_eq!(families.get("a"), Some(OperandFamily::Numeric));
     assert_eq!(families.get("b"), Some(OperandFamily::Text));
     let conflicting = ParameterFamilies::from_positional(
+        ProviderKind::Postgres,
         &names,
         &[
             ParameterValue::I64(1),
             ParameterValue::String("x".to_owned()),
             ParameterValue::Bytes(vec![1]),
         ],
-    );
+    )
+    .expect("legame");
     assert_eq!(conflicting.get("a"), None);
     assert_eq!(conflicting.get("b"), Some(OperandFamily::Text));
-    let short = ParameterFamilies::from_positional(&names, &values[..2]);
-    assert_eq!(short.get("b"), None);
+    // Un valore in meno o in piu non si lega: si rifiuta, anche dove il
+    // driver accetterebbe un parametro in piu (`sp_executesql`).
+    for values in [
+        &values[..2],
+        &[values.as_slice(), &values[..1]].concat()[..],
+    ] {
+        let error = ParameterFamilies::from_positional(ProviderKind::Sqlserver, &names, values)
+            .expect_err("valori non allineati");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.message, BIND_LAYOUT_MISMATCH);
+    }
 }
 
 /// Il catalogo di prova: `s.f` con una colonna per famiglia, una binaria
@@ -588,11 +600,13 @@ fn i_letterali_portable_hanno_la_loro_famiglia() {
 /// La lettura del provider applica la stessa regola F ai campi.
 #[test]
 fn la_lettura_giudica_le_famiglie_dei_campi() {
-    let family = |field: &str| match field {
-        "id" => Some(OperandFamily::Numeric),
-        "name" => Some(OperandFamily::Text),
-        "u" => Some(OperandFamily::Other),
-        _ => None,
+    let family = |field: &str| {
+        Ok(match field {
+            "id" => Some(OperandFamily::Numeric),
+            "name" => Some(OperandFamily::Text),
+            "u" => Some(OperandFamily::Other),
+            _ => None,
+        })
     };
     let eq = |field: &str, parameter: &str| FilterExpression::Eq {
         field: field.to_owned(),
@@ -638,7 +652,8 @@ fn un_nome_legato_a_famiglie_diverse_si_rifiuta() {
         ParameterValue::I32(1),
         ParameterValue::String("01".to_owned()),
     ];
-    let families = ParameterFamilies::from_positional(&names, &values);
+    let families = ParameterFamilies::from_positional(ProviderKind::Postgres, &names, &values)
+        .expect("legame");
     assert_eq!(families.get("p"), None);
     let operation = piano(
         "f",

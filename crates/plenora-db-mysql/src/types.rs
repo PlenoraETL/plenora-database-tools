@@ -220,7 +220,7 @@ impl MysqlReadPlan {
                                 || read_column_type(description, catalog, profile).is_geometric())
                     })
             },
-            |_| None,
+            |_| Ok(None),
             &plenora_database_core::spatial_operand::ParameterFamilies::default(),
         )?;
         if let Some(filter) = &operation.filter {
@@ -761,7 +761,9 @@ fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> Databas
 }
 
 /// Il tipo di una colonna della descrizione per il giudizio degli operandi
-/// (`spatial_operand`): derivata in una vista o se il server la calcola
+/// (`spatial_operand`): derivata in una relazione derivata (una vista, una
+/// `MERGE`, una tabella di un altro server: `catalog::is_derived_relation`) o
+/// se il server la calcola
 /// (`catalog::is_computed_column`), con la famiglia del suo tipo
 /// (`catalog::type_family`).
 pub fn read_column_type(
@@ -772,7 +774,7 @@ pub fn read_column_type(
     use plenora_database_core::spatial_operand::{ColumnOrigin, ColumnType};
     ColumnType::new(
         ColumnOrigin::of(
-            matches!(description.kind.as_str(), "VIEW" | "SYSTEM VIEW"),
+            crate::catalog::is_derived_relation(&description.kind, description.engine.as_deref()),
             crate::catalog::is_computed_column(&column.extra, &column.generation_expression)
                 || (profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb
                     && crate::catalog::mariadb_default_may_compute(
@@ -796,18 +798,20 @@ pub fn ensure_read_families(
     parameters: &plenora_database_core::provider::ParameterBag,
     profile: &dyn crate::profile::ProductProfile,
 ) -> Result<()> {
-    use plenora_database_core::spatial_operand::{NameRule, ParameterFamilies};
+    use plenora_database_core::spatial_operand::{folded_column, ParameterFamilies};
     plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
         profile.kind(),
         operation.filter.as_ref(),
         &operation.order_by,
         |_| false,
         |field| {
-            description
-                .columns
-                .iter()
-                .find(|column| NameRule::Folded.matches(&column.name, field))
-                .map(|column| read_column_type(description, column, profile).family)
+            Ok(folded_column(
+                profile.kind(),
+                &description.columns,
+                |column| &column.name,
+                field,
+            )?
+            .map(|column| read_column_type(description, column, profile).family))
         },
         &ParameterFamilies::from_bag(parameters),
     )

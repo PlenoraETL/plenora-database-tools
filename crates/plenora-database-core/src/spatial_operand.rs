@@ -265,8 +265,8 @@ use std::collections::{BTreeMap, BTreeSet};
 mod types;
 pub use types::{
     catalog_column_is_geometric, parameter_family, query_parameter_family, CatalogColumn,
-    ColumnOrigin, ColumnType, OperandFamily, ParameterFamilies, OPERAND_FAMILY_MISMATCH,
-    OPERAND_TYPING_TOO_DEEP,
+    ColumnOrigin, ColumnType, OperandFamily, ParameterFamilies, BIND_LAYOUT_MISMATCH,
+    OPERAND_FAMILY_MISMATCH, OPERAND_TYPING_TOO_DEEP,
 };
 
 /// Motivo stabile del rifiuto di un riferimento che non si prova non
@@ -683,6 +683,9 @@ fn portable_operands(
         let family = match expression {
             crate::portable::Expression::Column(field) => return column(field),
             crate::portable::Expression::Literal(value) => parameter_family(value),
+            crate::portable::Expression::TypedParameter(parameter_type) => {
+                Some(query_parameter_family(*parameter_type))
+            }
             crate::portable::Expression::SpatialValue { .. } => Some(OperandFamily::Geometry),
         };
         let name = format!("literal{literals}");
@@ -2031,6 +2034,46 @@ const fn argument_operand(function: ScalarFunction, operand: bool) -> bool {
     }
 }
 
+/// La colonna di un catalogo che un nome del piano nomina, risolta come la
+/// risolve il server.
+///
+/// Dove il server confronta i nomi di colonna senza maiuscole (`MySQL`,
+/// `MariaDB`) o con la collation del database (SQL Server: `CI` o `CS`, che
+/// il giudizio non legge): la colonna con il nome esatto; senza, l'unica che
+/// lo incontra senza maiuscole e senza spazi finali.
+///
+/// Due colonne che differiscono soltanto per le maiuscole esistono soltanto
+/// dove il server le distingue (`CS`): li il nome esatto e quello che il
+/// server lega. Senza nome esatto e con piu colonne che lo incontrano, quale
+/// nomini lo decide la collation, e si rifiuta. Fino alla quattordicesima
+/// lettura del 25/10 la lettura di SQL Server prendeva la prima che lo
+/// incontrava senza maiuscole: con `W varbinary` e `w nvarchar` in un
+/// database `CS`, `w = Bytes` passava con una conversione implicita.
+///
+/// # Errors
+///
+/// `unsupported` ([`AMBIGUOUS_NAME_SHAPE`]) per piu di una colonna senza il
+/// nome esatto.
+pub fn folded_column<'c, T>(
+    provider: ProviderKind,
+    columns: impl IntoIterator<Item = &'c T>,
+    name: impl Fn(&T) -> &str,
+    field: &str,
+) -> Result<Option<&'c T>> {
+    let folded = columns
+        .into_iter()
+        .filter(|column| NameRule::Folded.matches(name(column), field))
+        .collect::<Vec<_>>();
+    if let Some(exact) = folded.iter().find(|column| name(column) == field) {
+        return Ok(Some(exact));
+    }
+    match folded.as_slice() {
+        [] => Ok(None),
+        [only] => Ok(Some(only)),
+        _ => Err(ambiguous_refusal(provider)),
+    }
+}
+
 /// La stessa regola per una lettura (`ReadOperation`).
 ///
 /// I campi di `filter` sotto un operatore non spatial e quelli di `order_by`
@@ -2050,7 +2093,7 @@ pub fn ensure_scalar_filter_fields(
     filter: Option<&FilterExpression>,
     order_by: &[OrderBy],
     geometric: impl Fn(&str) -> bool,
-    family: impl Fn(&str) -> Option<OperandFamily>,
+    family: impl Fn(&str) -> Result<Option<OperandFamily>>,
     parameters: &ParameterFamilies,
 ) -> Result<()> {
     if order_by.iter().any(|order| geometric(&order.field)) {
@@ -2088,7 +2131,7 @@ pub fn ensure_scalar_filter_fields(
         if geometric(field) {
             return Err(refusal(provider));
         }
-        let field_family = judged(family(field));
+        let field_family = judged(family(field)?);
         let mut sides = vec![field_family];
         sides.extend(values.iter().map(|name| judged(parameters.get(name))));
         let known = sides.iter().flatten().collect::<BTreeSet<_>>();

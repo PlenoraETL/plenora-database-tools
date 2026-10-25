@@ -410,7 +410,7 @@ fn ensure_scalar_fields(
                     }
             })
         },
-        |_| None,
+        |_| Ok(None),
         &plenora_database_core::spatial_operand::ParameterFamilies::default(),
     )
 }
@@ -459,18 +459,20 @@ pub fn ensure_read_families(
     operation: &ReadOperation,
     parameters: &plenora_database_core::provider::ParameterBag,
 ) -> Result<()> {
-    use plenora_database_core::spatial_operand::{NameRule, ParameterFamilies};
+    use plenora_database_core::spatial_operand::{folded_column, ParameterFamilies};
     plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
         plenora_database_core::plan::ProviderKind::Sqlserver,
         operation.filter.as_ref(),
         &operation.order_by,
         |_| false,
         |field| {
-            description
-                .columns
-                .iter()
-                .find(|column| NameRule::Folded.matches(&column.name, field))
-                .map(read_family)
+            Ok(folded_column(
+                plenora_database_core::plan::ProviderKind::Sqlserver,
+                &description.columns,
+                |column| &column.name,
+                field,
+            )?
+            .map(read_family))
         },
         &ParameterFamilies::from_bag(parameters),
     )
