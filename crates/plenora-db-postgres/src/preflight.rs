@@ -1,5 +1,6 @@
 use crate::error::{classify_error, public_error};
 use crate::pool::PooledClient;
+use crate::write::LeafLoss;
 use crate::{PostgresProvider, PostgresSchemaEvolution};
 use arrow_schema::SchemaRef;
 use plenora_database_core::loss::{
@@ -98,6 +99,17 @@ pub async fn write(
             ));
         }
     }
+    // Le perdite delle foglie del tipo di ogni colonna (domini, array, range,
+    // multirange, composti), lo stesso cammino con cui `Strict` rifiuta i
+    // valori nella scrittura (`write::leaf_losses`): con le altre politiche
+    // il valore passa e la perdita si dichiara qui.
+    let leaves = crate::write::leaf_losses(client.client()?, operation, input_schema).await?;
+    let leaf = |name: &str, loss: LeafLoss| {
+        leaves
+            .get(name)
+            .is_some_and(|losses| losses.contains(&loss))
+    };
+    let strict = operation.mapping_policy == MappingPolicy::Strict;
     let mut losses = Vec::new();
     if exists && operation.mode != WriteMode::Create {
         let (target_columns, _schema_token) =
@@ -160,17 +172,15 @@ pub async fn write(
                         .iter()
                         .map(|field| field.declaration.as_str()),
                 );
-            if let Some(reduced) = declarations
+            let reduced = declarations
                 .into_iter()
                 .find(|declaration| crate::write::reduced_temporal(declaration))
-            {
-                losses.push(mapping_loss(
+                .map(str::to_owned);
+            if reduced.is_some() || leaf(source.name(), LeafLoss::ReducedTemporal) {
+                losses.push(reduced_temporal_loss(
                     field_id,
-                    LossCategory::Precision,
-                    "precisione temporale della colonna sotto il microsecondo: il valore si \
-                     arrotonderebbe o troncherebbe",
-                    Some(source.data_type().to_string()),
-                    Some(reduced.to_owned()),
+                    source,
+                    reduced.or_else(|| target.native_declaration.clone()),
                 )?);
             }
             // Una lunghezza massima (`varchar(n)`, `char(n)`): il server tronca
@@ -186,19 +196,26 @@ pub async fn write(
                     let base = declaration.trim_end_matches("[]");
                     (base.starts_with("character varying(") || base.starts_with("character("))
                         && base.ends_with(')')
-                });
-            if bounded && operation.mapping_policy != MappingPolicy::Strict {
-                losses.push(MappingLoss {
-                    field_id: u32::try_from(field_id).map_err(|_| {
-                        DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport")
-                    })?,
-                    category: LossCategory::Precision,
-                    severity: LossSeverity::Warning,
-                    reason: "gli spazi finali oltre la lunghezza della colonna si troncherebbero"
-                        .to_owned(),
-                    source_type: Some(source.data_type().to_string()),
-                    target_type: target.native_declaration.clone(),
-                });
+                })
+                || leaf(source.name(), LeafLoss::Bounded);
+            if bounded && !strict {
+                losses.push(bounded_loss(
+                    field_id,
+                    source,
+                    target.native_declaration.clone(),
+                )?);
+            }
+            // Un numero che arrotonda il testo (`numeric(p,s)`, `real`, `double
+            // precision`), a qualunque profondita del tipo: con `Strict` la
+            // scrittura rifiuta il valore testuale, con le altre politiche si
+            // dichiara qui (`'1.005'` verso un dominio su `numeric(5,2)`
+            // diventava `1.01` con il `LossReport` vuoto).
+            if !strict && leaf(source.name(), LeafLoss::Rounding) {
+                losses.push(rounding_loss(
+                    field_id,
+                    source,
+                    target.native_declaration.clone(),
+                )?);
             }
             // La regola J: `jsonb` normalizza l'oggetto (ordine delle chiavi,
             // spazi) e di una chiave ripetuta tiene l'ultimo valore. Con
@@ -219,20 +236,14 @@ pub async fn write(
                         .iter()
                         .map(|field| field.declaration.as_str()),
                 )
-                .any(|declaration| declaration.trim_end_matches("[]") == "jsonb");
-            if jsonb && operation.mapping_policy != MappingPolicy::Strict {
-                losses.push(MappingLoss {
-                    field_id: u32::try_from(field_id).map_err(|_| {
-                        DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport")
-                    })?,
-                    category: LossCategory::NativeType,
-                    severity: LossSeverity::Warning,
-                    reason: "jsonb tiene l'ultimo valore di una chiave ripetuta e normalizza \
-                             ordine delle chiavi e spazi"
-                        .to_owned(),
-                    source_type: Some(source.data_type().to_string()),
-                    target_type: target.native_declaration.clone(),
-                });
+                .any(|declaration| declaration.trim_end_matches("[]") == "jsonb")
+                || leaf(source.name(), LeafLoss::Jsonb);
+            if jsonb && !strict {
+                losses.push(jsonb_loss(
+                    field_id,
+                    source,
+                    target.native_declaration.clone(),
+                )?);
             }
             if source.is_nullable() && !target.nullable {
                 losses.push(mapping_loss(
@@ -287,24 +298,33 @@ pub async fn write(
             }
         }
     }
-    // La regola J per Create: la colonna `jsonb` che il campo dichiara.
-    if operation.mode == WriteMode::Create && operation.mapping_policy != MappingPolicy::Strict {
+    // Le regole J e P per Create: la colonna che il campo dichiara, e per un
+    // tipo dell'utente le foglie del tipo nel catalogo (`write::leaf_losses`).
+    if operation.mode == WriteMode::Create {
         for (field_id, source) in input_schema.fields().iter().enumerate() {
             let contract = crate::field_contract::FieldContract::parse(source)?;
-            let declared = contract.native_declaration.or(contract.native_type);
-            if declared.is_some_and(|declaration| declaration.trim_end_matches("[]") == "jsonb") {
-                losses.push(MappingLoss {
-                    field_id: u32::try_from(field_id).map_err(|_| {
-                        DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport")
-                    })?,
-                    category: LossCategory::NativeType,
-                    severity: LossSeverity::Warning,
-                    reason: "jsonb tiene l'ultimo valore di una chiave ripetuta e normalizza \
-                             ordine delle chiavi e spazi"
-                        .to_owned(),
-                    source_type: Some(source.data_type().to_string()),
-                    target_type: declared.map(str::to_owned),
-                });
+            let declared = contract
+                .native_declaration
+                .or(contract.native_type)
+                .map(str::to_owned);
+            let name = source.name().as_str();
+            if leaf(name, LeafLoss::ReducedTemporal) {
+                losses.push(reduced_temporal_loss(field_id, source, declared.clone())?);
+            }
+            if strict {
+                continue;
+            }
+            if leaf(name, LeafLoss::Bounded) {
+                losses.push(bounded_loss(field_id, source, declared.clone())?);
+            }
+            if leaf(name, LeafLoss::Rounding) {
+                losses.push(rounding_loss(field_id, source, declared.clone())?);
+            }
+            let jsonb = declared
+                .as_deref()
+                .is_some_and(|declaration| declaration.trim_end_matches("[]") == "jsonb");
+            if jsonb || leaf(name, LeafLoss::Jsonb) {
+                losses.push(jsonb_loss(field_id, source, declared)?);
             }
         }
     }
@@ -435,6 +455,81 @@ async fn validate_resolved_crs_against_postgis(
         }
     }
     Ok(())
+}
+
+fn field_number(field_id: usize) -> Result<u32> {
+    u32::try_from(field_id)
+        .map_err(|_| DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport"))
+}
+
+/// La regola P: una precisione temporale sotto il microsecondo.
+fn reduced_temporal_loss(
+    field_id: usize,
+    source: &arrow_schema::Field,
+    target_type: Option<String>,
+) -> Result<MappingLoss> {
+    mapping_loss(
+        field_id,
+        LossCategory::Precision,
+        "precisione temporale della colonna sotto il microsecondo: il valore si \
+         arrotonderebbe o troncherebbe",
+        Some(source.data_type().to_string()),
+        target_type,
+    )
+}
+
+/// Una lunghezza massima (`varchar(n)`, `char(n)`), anche dentro un dominio,
+/// un array o un composto.
+fn bounded_loss(
+    field_id: usize,
+    source: &arrow_schema::Field,
+    target_type: Option<String>,
+) -> Result<MappingLoss> {
+    Ok(MappingLoss {
+        field_id: field_number(field_id)?,
+        category: LossCategory::Precision,
+        severity: LossSeverity::Warning,
+        reason: "gli spazi finali oltre la lunghezza della colonna si troncherebbero".to_owned(),
+        source_type: Some(source.data_type().to_string()),
+        target_type,
+    })
+}
+
+/// Un numero che arrotonda il testo, anche dentro un dominio, un array, un
+/// range o un composto.
+fn rounding_loss(
+    field_id: usize,
+    source: &arrow_schema::Field,
+    target_type: Option<String>,
+) -> Result<MappingLoss> {
+    Ok(MappingLoss {
+        field_id: field_number(field_id)?,
+        category: LossCategory::Precision,
+        severity: LossSeverity::DataLoss,
+        reason: "un numero del tipo della colonna (numeric con scala, real, double precision) \
+                 arrotonderebbe il valore testuale"
+            .to_owned(),
+        source_type: Some(source.data_type().to_string()),
+        target_type,
+    })
+}
+
+/// La regola J: `jsonb`, anche dentro un dominio, un array o un composto.
+fn jsonb_loss(
+    field_id: usize,
+    source: &arrow_schema::Field,
+    target_type: Option<String>,
+) -> Result<MappingLoss> {
+    Ok(MappingLoss {
+        field_id: field_number(field_id)?,
+        category: LossCategory::NativeType,
+        severity: LossSeverity::Warning,
+        reason: "jsonb tiene l'ultimo valore di una chiave ripetuta e normalizza ordine delle \
+                 chiavi e spazi"
+            .to_owned(),
+        source_type: Some(source.data_type().to_string()),
+        target_type,
+    })
 }
 
 fn mapping_loss(

@@ -1,5 +1,5 @@
 use crate::control::select_with_cancellation;
-use crate::error::{classify_error, public_error};
+use crate::error::classify_error;
 use crate::parameter_codec::{
     bind_parameters, typed_filter_parameter_types, typed_query_parameter_types,
 };
@@ -15,7 +15,7 @@ use plenora_database_core::plan::ReadOperation;
 use plenora_database_core::provider::{BatchStream, ParameterBag, SecretString};
 use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
-use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
+use plenora_database_core::{CancellationToken, DatabaseError, ErrorPhase, Result};
 use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::RowStream;
 
@@ -123,24 +123,9 @@ pub async fn read_stream(
     validate_stream_configuration(provider)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut client = connect_cancel_safe(provider, secret, cancellation).await?;
-    if let Some(catalog) = &operation.source.catalog {
-        let current_database: String = client
-            .client()?
-            .query_one("SELECT pg_catalog.current_database()", &[])
-            .await
-            .map_err(|error| classify_error(ErrorPhase::Probe, &error))?
-            .get(0);
-        if catalog != &current_database {
-            return Err(public_error(
-                ErrorCategory::NotFound,
-                ErrorPhase::Prepare,
-                false,
-                "catalog PostgreSQL diverso dalla connessione corrente",
-            ));
-        }
-    }
-    // La regola T: la sorgente senza schema si risolve una volta, con il
-    // percorso della sessione; colonne, statement e cache nominano lo stesso
+    // La regola T: il catalog e quello della connessione
+    // (`target_schema::check_catalog`), e la sorgente senza schema si
+    // risolve una volta, con il percorso della sessione; colonne, statement e cache nominano lo stesso
     // oggetto.
     let resolved = ReadOperation {
         source: crate::target_schema::resolve(

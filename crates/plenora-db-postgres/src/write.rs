@@ -45,7 +45,7 @@ use tokio_postgres::Transaction;
 
 pub mod binary_codec;
 mod canonical;
-pub use canonical::reduced_temporal;
+pub use canonical::{reduced_temporal, LeafLoss};
 mod dry_run;
 mod plan;
 mod prepared_codec;
@@ -409,9 +409,10 @@ pub async fn execute(
         return Err(recovery.rollback_cancellation(transaction).await);
     }
     // La regola V sulle colonne del target (per Create, quelle appena
-    // create), prima del primo valore; e la regola K2, l'uguaglianza con cui
-    // Update e `DeleteByKeys` confrontano le chiavi.
-    match select_with_cancellation(
+    // create), prima del primo valore; la regola K2, l'uguaglianza con cui
+    // Update e `DeleteByKeys` confrontano le chiavi; e la condizione 2 della
+    // regola K, con i `NULL` come li tratta l'indice che prova le chiavi.
+    let null_keys = match select_with_cancellation(
         async {
             assign_session_rules(&transaction, operation, &schema, &mut column_plans).await?;
             if matches!(operation.mode, WriteMode::Update | WriteMode::DeleteByKeys) {
@@ -420,16 +421,26 @@ pub async fn execute(
                     plan.key_equality = equalities.get(field.name()).cloned();
                 }
             }
-            Ok(())
+            visibility::null_keys(&transaction, operation).await
         },
         cancellation,
     )
     .await
     {
-        Some(Ok(())) => {}
+        Some(Ok(null_keys)) => null_keys,
         Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
         None => return Err(recovery.rollback_cancellation(transaction).await),
-    }
+    };
+    let mut input = match plenora_database_core::write_keys::guard_input_keys(
+        operation.mode,
+        &operation.keys,
+        input,
+        budget,
+        null_keys,
+    ) {
+        Ok(input) => input,
+        Err(error) => return Err(recovery.rollback_error(transaction, error).await),
+    };
     let mut received = 0_u64;
     let mut confirmed = 0_u64;
     loop {
@@ -642,6 +653,84 @@ pub async fn assign_dry_run_session_rules(
         canonical::assign(&mut state.column_plans, schema, &rules);
     }
     canonical::refuse_lossy(&state.column_plans)
+}
+
+/// Le perdite che le foglie del tipo di ogni colonna dell'ingresso danno ai
+/// suoi valori (`canonical::leaf_losses`), per nome, per il `LossReport` del
+/// preflight: lo stesso cammino del catalogo (domini, array, range,
+/// multirange, composti) con cui `Strict` rifiuta i valori.
+///
+/// Fino al 25/10 (quinta rilettura) il preflight guardava soltanto la
+/// dichiarazione della colonna (o il tipo base del suo dominio): con
+/// `Compatible`, `Lossy` e `Native` un dominio su `numeric(5,2)` scriveva
+/// `'1.005'` come `1.01`, `numeric(5,2)[]` `{1.005}` come `{1.01}`, un
+/// dominio su `real` `'16777217'` come `1.6777216e+07`, e un composto
+/// `(numeric(5,2), varchar(3), real)` arrotondava e troncava, tutti con il
+/// `LossReport` vuoto.
+///
+/// Per un target esistente le foglie si leggono come le legge la scrittura
+/// (`canonical::rules`, con il percorso chiuso della regola Q2, in una
+/// transazione che si annulla); per Create quelle che il piano dichiara
+/// (`canonical::declared`) e, per i tipi dell'utente, quelle del tipo nel
+/// catalogo (`canonical::type_rules`).
+///
+/// # Errors
+///
+/// L'errore classificato della lettura del catalogo, in `Prepare`.
+pub async fn leaf_losses(
+    client: &tokio_postgres::Client,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+) -> Result<std::collections::BTreeMap<String, std::collections::BTreeSet<LeafLoss>>> {
+    let phase = ErrorPhase::Prepare;
+    let mut plans = compile_schema_plan(schema, operation)?;
+    canonical::assign_declared(&mut plans, operation);
+    let read = |error: tokio_postgres::Error| classify_error(phase, &error);
+    if operation.mode == WriteMode::Create {
+        let mut declarations = Vec::new();
+        for field in schema.fields() {
+            let contract = crate::field_contract::FieldContract::parse(field)?;
+            if matches!(contract.type_kind, Some("e" | "d" | "c")) {
+                if let Some(declaration) = sql::native_declaration_sql(&contract) {
+                    declarations.push((field.name().clone(), declaration));
+                }
+            }
+        }
+        let rules = canonical::type_rules(
+            client,
+            &declarations,
+            operation.mapping_policy == plenora_database_core::loss::MappingPolicy::Strict,
+            phase,
+        )
+        .await?;
+        for (plan, field) in plans.iter_mut().zip(schema.fields()) {
+            if let Some(rule) = rules.get(field.name()) {
+                if !plan.is_spatial() {
+                    plan.session_rule = Some(rule.clone());
+                }
+            }
+        }
+    } else {
+        client.batch_execute("BEGIN").await.map_err(read)?;
+        let rules = async {
+            SessionPath::close(client, phase).await?;
+            canonical::rules(client, operation, schema, phase).await
+        }
+        .await;
+        client.batch_execute("ROLLBACK").await.map_err(read)?;
+        canonical::assign(&mut plans, schema, &rules?);
+    }
+    Ok(plans
+        .iter()
+        .zip(schema.fields())
+        .filter_map(|(plan, field)| {
+            let rule = plan.session_rule.as_ref()?;
+            Some((
+                field.name().clone(),
+                canonical::leaf_losses(rule, field.data_type()),
+            ))
+        })
+        .collect())
 }
 
 /// La regola K2 per il dry run: l'uguaglianza delle chiavi di Update e

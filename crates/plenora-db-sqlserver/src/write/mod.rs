@@ -443,6 +443,10 @@ async fn write_prepared_inner(
         &prepared.operation.keys,
         input,
         &prepared.budget,
+        // L'indice che prova le chiavi non e filtrato (`validate_unique_key`)
+        // e ammette un solo `NULL` per combinazione: due `NULL` sono la stessa
+        // voce.
+        plenora_database_core::write_keys::NullKeys::Equal,
     )?;
     let diagnostic_input = input
         .declared_input_rows()

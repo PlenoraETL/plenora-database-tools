@@ -506,6 +506,62 @@ pub struct KeyEquality {
     pub cast: String,
 }
 
+/// La condizione 2 della regola K sui `NULL`: un indice unico che prova le
+/// chiavi (`keys_index`) e `NULLS NOT DISTINCT`. Dalla 15
+/// (`pg_index.indnullsnotdistinct`); prima la colonna non c'e, e un indice
+/// tratta sempre i `NULL` come distinti: la riga di `pg_index` letta come
+/// `jsonb` la nomina soltanto dove esiste. Gira con il percorso chiuso
+/// (regola Q2).
+const NULL_KEYS_SQL: &str = concat!(
+    "\
+SELECT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_index i ON i.indrelid = c.oid
+     WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text
+       AND coalesce((pg_catalog.to_jsonb(i) ->> 'indnullsnotdistinct')::pg_catalog.bool, false)
+       AND ",
+    keys_index!("$3"),
+    ")"
+);
+
+/// Come l'indice che prova le chiavi tratta i `NULL`
+/// (`plenora_database_core::write_keys::NullKeys`): `Equal` se un indice
+/// unico sulle chiavi e `NULLS NOT DISTINCT`, `Distinct` altrimenti. Fino al
+/// 25/10 (quinta rilettura) due chiavi `NULL` non si confrontavano mai, e con
+/// `UNIQUE NULLS NOT DISTINCT (k)` l'Upsert di `[(NULL,'uno'),(NULL,'due')]`
+/// dava `confirmed 2` con una sola riga.
+///
+/// # Errors
+///
+/// L'errore classificato della lettura.
+pub async fn null_keys<C: GenericClient + Sync>(
+    client: &C,
+    operation: &WriteOperation,
+) -> Result<plenora_database_core::write_keys::NullKeys> {
+    use plenora_database_core::write_keys::{keyed_mode, NullKeys};
+    if !keyed_mode(operation.mode) || operation.keys.is_empty() {
+        return Ok(NullKeys::Distinct);
+    }
+    let equal: bool = client
+        .query_one(
+            NULL_KEYS_SQL,
+            &[
+                &crate::target_schema::schema_of(&operation.target)?,
+                &operation.target.object,
+                &operation.keys,
+            ],
+        )
+        .await
+        .map_err(|error| classify_error(ErrorPhase::Write, &error))?
+        .get(0);
+    Ok(if equal {
+        NullKeys::Equal
+    } else {
+        NullKeys::Distinct
+    })
+}
+
 /// La regola K2 negli statement: per ogni chiave, l'uguaglianza dell'indice
 /// che ne prova l'unicita ([`KEY_EQUALITY_SQL`]), per nome di colonna.
 ///

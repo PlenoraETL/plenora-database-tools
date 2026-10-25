@@ -116,7 +116,7 @@ impl PostgresProvider {
         let schema = input.schema();
         let mut gate = write::StatementGate::default();
         let mut row_security = write::target::RowSecurity::NotPerformed;
-        let (state, loss_report, prepared, resolved) = if let Some(secret) = secret {
+        let (state, loss_report, prepared, resolved, null_keys) = if let Some(secret) = secret {
             let mut prepared = self
                 .prepare_write(secret, operation, Arc::clone(&schema), budget, cancellation)
                 .await?;
@@ -168,34 +168,37 @@ impl PostgresProvider {
                 // La regola K2 come la scrittura: l'uguaglianza delle chiavi.
                 write::assign_dry_run_key_equality(Some(session), &mut state, operation, &schema)
                     .await?;
-                Ok(verdict)
+                let null_keys = write::visibility::null_keys(session, operation).await?;
+                Ok((verdict, null_keys))
             }
             .await;
             session
                 .batch_execute("ROLLBACK")
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
-            let verdict = read?;
+            let (verdict, null_keys) = read?;
             drop(client);
             gate.at_statement = verdict.at_statement;
             gate.at_first_row = verdict.at_first_row;
             row_security = verdict.row_security;
-            let report = prepared.loss_report.clone();
-            (state, Some(report), Some(prepared), operation.clone())
+            let report = Some(prepared.loss_report.clone());
+            (state, report, Some(prepared), operation.clone(), null_keys)
         } else {
             let mut state = write::prepare_state(&schema, operation)?;
             write::assign_dry_run_session_rules(None, &mut state, operation, &schema).await?;
             write::assign_dry_run_key_equality(None, &mut state, operation, &schema).await?;
-            (state, None, None, operation.clone())
+            let offline = plenora_database_core::write_keys::NullKeys::Distinct;
+            (state, None, None, operation.clone(), offline)
         };
         let operation = &resolved;
-        // La regola K come la scrittura, nello stesso punto (dopo il
-        // prepare): una chiave ripetuta si rifiuta leggendo il batch.
+        // La regola K come la scrittura, con i `NULL` dell'indice che prova le
+        // chiavi (senza la DSN `NULLS DISTINCT`: limite di `write_keys`).
         let mut input = plenora_database_core::write_keys::guard_input_keys(
             operation.mode,
             &operation.keys,
             input,
             budget,
+            null_keys,
         )?;
         let control = BudgetCancellation::new(cancellation, budget)?;
         let verified = write::verify_input(
@@ -919,11 +922,22 @@ impl PostgresProvider {
                 operation: "database.list_catalogs".to_owned(),
                 document: json!({"catalogs": list_catalogs(client.client()?).await?}),
             }),
-            Operation::DatabaseListSchemas { .. } => Ok(Inspection {
-                operation: "database.list_schemas".to_owned(),
-                document: json!({"schemas": list_schemas(client.client()?).await?}),
-            }),
+            Operation::DatabaseListSchemas { source } => {
+                // Il catalog del piano e quello della connessione (regola T).
+                if let Some(source) = source {
+                    target_schema::check_catalog(client.client()?, source, ErrorPhase::Probe)
+                        .await?;
+                }
+                Ok(Inspection {
+                    operation: "database.list_schemas".to_owned(),
+                    document: json!({"schemas": list_schemas(client.client()?).await?}),
+                })
+            }
             Operation::DatabaseListObjects { source } => {
+                if let Some(source) = source {
+                    target_schema::check_catalog(client.client()?, source, ErrorPhase::Probe)
+                        .await?;
+                }
                 // Senza schema, lo schema corrente della sessione (regola T):
                 // quello in cui un oggetto senza schema si crea.
                 let schema = match source.as_ref().and_then(|value| value.schema.clone()) {
@@ -1135,12 +1149,14 @@ impl Provider for PostgresProvider {
             let control = BudgetCancellation::new(cancellation, budget)?;
             let target = prepared.operation.target.clone();
             // La regola K: una chiave ripetuta nell'ingresso di una mode per
-            // chiavi rifiuta la scrittura prima del COMMIT.
-            let input = plenora_database_core::write_keys::guard_input_keys(
+            // chiavi rifiuta la scrittura prima del COMMIT. Lo stream della
+            // condizione 2 lo costruisce la transazione, che legge come
+            // l'indice che prova le chiavi tratta i `NULL`
+            // (`write::visibility::null_keys`); qui le verifiche delle chiavi.
+            plenora_database_core::write_keys::validate_input_keys(
                 prepared.operation.mode,
                 &prepared.operation.keys,
-                input,
-                budget,
+                &input.schema(),
             )?;
             let result = write::execute(
                 secret,
@@ -1313,3 +1329,7 @@ mod write_r3_live_tests;
 #[cfg(test)]
 #[path = "write_r4_live_tests.rs"]
 mod write_r4_live_tests;
+
+#[cfg(test)]
+#[path = "write_r5_live_tests.rs"]
+mod write_r5_live_tests;

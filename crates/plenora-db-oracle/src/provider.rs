@@ -235,6 +235,9 @@ impl Provider for OracleProvider {
                 &prepared.operation.keys,
                 input,
                 budget,
+                // Un indice B-tree Oracle non registra le chiavi tutte `NULL`
+                // e confronta le altre con i `NULL` uguali.
+                plenora_database_core::write_keys::NullKeys::EqualUnlessAllNull,
             )?;
             crate::write::execute_write(
                 &self.config,

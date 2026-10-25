@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 119202,
-  "max_code_lines": 95697,
-  "rationale": "Regole T (un oggetto senza schema si risolve una volta con il percorso della sessione: PostgreSQL to_regclass e current_schema, SQL Server OBJECT_SCHEMA_NAME), F (nessuna conversione del server verso un tipo diverso da quello della colonna: segnaposto nudi e testo in formato testo, CopyBinary verbatim per testo, enum, json e jsonb), J (jsonb con chiavi ripetute rifiutato con Strict, normalizzazioni del tipo dichiarate; xml di SQL Server con lo stile 1), percorso della sessione al COMMIT, un solo indice unico per l'upsert (PostgreSQL, MySQL/MariaDB con i prefissi), datetimeoffset oltre il nanosecondo e valori temporali esatti di SQL Server giudicati per valore. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 118225 -> 119202 (+977), righe di codice 95139 -> 95697 (+558). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 119913,
+  "max_code_lines": 96120,
+  "rationale": "Regole T (il catalog del target e quello della connessione, in ogni operazione PostgreSQL), K (i NULL delle chiavi come li tratta l'indice che le prova: NULLS NOT DISTINCT di PostgreSQL, SQL Server, Oracle, Db2), P con le politiche non strette (le perdite delle foglie del tipo dichiarate nel LossReport, anche per i tipi dell'utente di Create) e J negli array (gli elementi di un letterale di jsonb[] verificati uno per uno, la forma ristretta). Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 119202 -> 119913 (+711), righe di codice 95697 -> 96120 (+423). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

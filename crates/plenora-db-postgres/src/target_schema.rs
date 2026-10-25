@@ -84,6 +84,11 @@ const CURRENT_SQL: &str = "SELECT pg_catalog.current_schema()::pg_catalog.text";
 pub const TEMPORARY_SCHEMA: &str = "oggetto PostgreSQL in uno schema temporaneo: ogni sessione \
      ha il proprio, e l'operazione non resta su una sola sessione";
 
+/// Il motivo pubblico di un catalog diverso dal database della connessione.
+pub const OTHER_CATALOG: &str = "catalog PostgreSQL diverso dalla connessione corrente";
+
+const DATABASE_SQL: &str = "SELECT pg_catalog.current_database()::pg_catalog.text";
+
 /// Il motivo pubblico di un percorso senza schemi.
 pub const NO_CURRENT_SCHEMA: &str =
     "nessuno schema del search_path della sessione esiste: l'oggetto senza schema non si risolve";
@@ -98,19 +103,60 @@ fn temporary(phase: ErrorPhase) -> DatabaseError {
     public_error(ErrorCategory::InvalidPlan, phase, false, TEMPORARY_SCHEMA)
 }
 
-/// `object` con lo schema risolto con il percorso della sessione di
-/// `client` ([la regola](self)).
+/// Il catalog di `object`, se lo nomina, e il database della connessione:
+/// una sessione PostgreSQL non raggiunge un altro database.
+///
+/// Fino al 25/10 (quinta rilettura indipendente) soltanto la lettura lo
+/// verificava: scrittura, dry run e describe tacevano il catalog e
+/// operavano sul database della connessione, e il dry run pubblicava il
+/// target con il catalog del piano. Con
+/// `{"catalog":"database_che_non_esiste","schema":"r5p","object":"cat"}` un
+/// Append `Strict` dalla CLI si committava in `dataflow_test.r5p.cat`.
 ///
 /// # Errors
 ///
-/// `invalid_plan` per uno schema temporaneo, `not_found` se il percorso non
-/// ha schemi, l'errore classificato della lettura; tutti in `phase`.
+/// `not_found` con [`OTHER_CATALOG`] per un altro catalog (lo stesso
+/// rifiuto della lettura, in `phase`); l'errore classificato della lettura.
+pub async fn check_catalog<C: GenericClient + Sync>(
+    client: &C,
+    object: &ObjectRef,
+    phase: ErrorPhase,
+) -> Result<()> {
+    let Some(catalog) = object.catalog.as_deref() else {
+        return Ok(());
+    };
+    let current: String = client
+        .query_one(DATABASE_SQL, &[])
+        .await
+        .map_err(|error| classify_error(phase, &error))?
+        .get(0);
+    if catalog == current {
+        Ok(())
+    } else {
+        Err(public_error(
+            ErrorCategory::NotFound,
+            phase,
+            false,
+            OTHER_CATALOG,
+        ))
+    }
+}
+
+/// `object` con lo schema risolto con il percorso della sessione di
+/// `client` ([la regola](self)), dopo il catalog ([`check_catalog`]).
+///
+/// # Errors
+///
+/// `not_found` per un altro catalog o se il percorso non ha schemi,
+/// `invalid_plan` per uno schema temporaneo, l'errore classificato della
+/// lettura; tutti in `phase`.
 pub async fn resolve<C: GenericClient + Sync>(
     client: &C,
     object: &ObjectRef,
     purpose: Purpose,
     phase: ErrorPhase,
 ) -> Result<ObjectRef> {
+    check_catalog(client, object, phase).await?;
     if let Some(schema) = object.schema.as_deref() {
         if is_temporary(schema) {
             return Err(temporary(phase));

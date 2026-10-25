@@ -54,7 +54,8 @@ fn le_mode_per_chiavi_sono_tre() {
 #[test]
 fn una_chiave_ripetuta_nello_stesso_batch_rifiuta() {
     let budget = budget();
-    let mut seen = UniqueInputKeys::new(&schema(), &keys(&["id"])).expect("chiavi");
+    let mut seen =
+        UniqueInputKeys::new(&schema(), &keys(&["id"]), NullKeys::Distinct).expect("chiavi");
     let error = seen
         .admit(
             &batch(&[Some(1), Some(1)], &[Some("x"), Some("y")]),
@@ -69,7 +70,8 @@ fn una_chiave_ripetuta_nello_stesso_batch_rifiuta() {
 #[test]
 fn una_chiave_ripetuta_in_un_batch_successivo_rifiuta() {
     let budget = budget();
-    let mut seen = UniqueInputKeys::new(&schema(), &keys(&["id"])).expect("chiavi");
+    let mut seen =
+        UniqueInputKeys::new(&schema(), &keys(&["id"]), NullKeys::Distinct).expect("chiavi");
     seen.admit(
         &batch(&[Some(1), Some(2)], &[Some("x"), Some("y")]),
         &budget,
@@ -86,7 +88,8 @@ fn una_chiave_ripetuta_in_un_batch_successivo_rifiuta() {
 #[test]
 fn le_chiavi_composte_si_confrontano_per_tupla() {
     let budget = budget();
-    let mut seen = UniqueInputKeys::new(&schema(), &keys(&["id", "label"])).expect("chiavi");
+    let mut seen = UniqueInputKeys::new(&schema(), &keys(&["id", "label"]), NullKeys::Distinct)
+        .expect("chiavi");
     seen.admit(
         &batch(
             &[Some(1), Some(1), Some(2)],
@@ -116,16 +119,59 @@ fn le_stringhe_non_si_confondono_concatenate() {
         ],
     )
     .expect("batch");
-    let mut seen = UniqueInputKeys::new(&schema, &keys(&["a", "b"])).expect("chiavi");
+    let mut seen =
+        UniqueInputKeys::new(&schema, &keys(&["a", "b"]), NullKeys::Distinct).expect("chiavi");
     seen.admit(&input, &budget()).expect("due chiavi");
 }
 
 #[test]
 fn le_chiavi_con_null_non_si_registrano() {
     let budget = budget();
-    let mut seen = UniqueInputKeys::new(&schema(), &keys(&["id"])).expect("chiavi");
+    let mut seen =
+        UniqueInputKeys::new(&schema(), &keys(&["id"]), NullKeys::Distinct).expect("chiavi");
     seen.admit(&batch(&[None, None], &[Some("x"), Some("y")]), &budget)
         .expect("NULL non trova righe");
+}
+
+/// Quinta lettura del 25/10: con `UNIQUE NULLS NOT DISTINCT (k)` l'Upsert di
+/// `[(NULL,'uno'),(NULL,'due')]` dava `confirmed 2` con una sola riga.
+#[test]
+fn le_chiavi_null_uguali_per_l_indice_sono_ripetute() {
+    let budget = budget();
+    let mut seen =
+        UniqueInputKeys::new(&schema(), &keys(&["id"]), NullKeys::Equal).expect("chiavi");
+    let error = seen
+        .admit(&batch(&[None, None], &[Some("uno"), Some("due")]), &budget)
+        .expect_err("due NULL per un indice NULLS NOT DISTINCT");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert!(error.message.contains(DUPLICATE_INPUT_KEYS));
+    // Un NULL e un valore restano due chiavi.
+    let mut seen =
+        UniqueInputKeys::new(&schema(), &keys(&["id"]), NullKeys::Equal).expect("chiavi");
+    seen.admit(&batch(&[None, Some(0)], &[Some("a"), Some("b")]), &budget)
+        .expect("NULL e 0 sono due chiavi");
+    // Fra batch diversi.
+    assert!(seen.admit(&batch(&[None], &[Some("c")]), &budget).is_err());
+}
+
+/// Oracle: una chiave tutta NULL non e nell'indice, una in parte NULL si.
+#[test]
+fn oracle_distingue_soltanto_le_chiavi_tutte_null() {
+    let budget = budget();
+    let composite = keys(&["id", "label"]);
+    let mut seen =
+        UniqueInputKeys::new(&schema(), &composite, NullKeys::EqualUnlessAllNull).expect("chiavi");
+    seen.admit(&batch(&[None, None], &[None, None]), &budget)
+        .expect("chiavi tutte NULL distinte");
+    let error = seen
+        .admit(&batch(&[Some(1), Some(1)], &[None, None]), &budget)
+        .expect_err("(1,NULL) due volte");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    let mut distinct =
+        UniqueInputKeys::new(&schema(), &composite, NullKeys::Distinct).expect("chiavi");
+    distinct
+        .admit(&batch(&[Some(1), Some(1)], &[None, None]), &budget)
+        .expect("MySQL: (1,NULL) due volte non e ripetuta");
 }
 
 #[test]
@@ -137,7 +183,8 @@ fn i_float_uguali_per_il_server_sono_la_stessa_chiave() {
             vec![Arc::new(Float64Array::from(pair.to_vec())) as ArrayRef],
         )
         .expect("batch");
-        let mut seen = UniqueInputKeys::new(&schema, &keys(&["f"])).expect("chiavi");
+        let mut seen =
+            UniqueInputKeys::new(&schema, &keys(&["f"]), NullKeys::Distinct).expect("chiavi");
         assert!(seen.admit(&input, &budget()).is_err(), "{pair:?}");
     }
 }
@@ -149,7 +196,8 @@ fn un_tipo_non_confrontabile_si_rifiuta_prima() {
         DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
         true,
     )]));
-    let error = UniqueInputKeys::new(&schema, &keys(&["l"])).expect_err("lista");
+    let error =
+        UniqueInputKeys::new(&schema, &keys(&["l"]), NullKeys::Distinct).expect_err("lista");
     assert_eq!(error.category, ErrorCategory::Unsupported);
 }
 
@@ -161,7 +209,8 @@ fn la_memoria_delle_chiavi_si_prenota_e_si_restituisce() {
         ..ResourceLimits::default()
     })
     .expect("budget");
-    let mut seen = UniqueInputKeys::new(&schema(), &keys(&["id"])).expect("chiavi");
+    let mut seen =
+        UniqueInputKeys::new(&schema(), &keys(&["id"]), NullKeys::Distinct).expect("chiavi");
     seen.admit(&batch(&[Some(1)], &[Some("x")]), &budget)
         .expect("una chiave");
     assert!(budget.remaining(ResourceKind::MemoryBytes) < 1_000);
@@ -225,14 +274,16 @@ fn lo_stream_rifiuta_soltanto_le_mode_per_chiavi() {
         ])) as Box<dyn BatchStream>
     };
     let budget = budget();
-    let append = guard_input_keys(WriteMode::Append, &[], input(), &budget).expect("append");
+    let append = guard_input_keys(WriteMode::Append, &[], input(), &budget, NullKeys::Distinct)
+        .expect("append");
     assert_eq!(drain(append).expect("append ammessa"), 2);
     for mode in [
         WriteMode::Update,
         WriteMode::DeleteByKeys,
         WriteMode::Upsert,
     ] {
-        let guarded = guard_input_keys(mode, &keys(&["id"]), input(), &budget).expect("guardia");
+        let guarded = guard_input_keys(mode, &keys(&["id"]), input(), &budget, NullKeys::Distinct)
+            .expect("guardia");
         let error = drain(guarded).expect_err("ripetuta");
         assert_eq!(error.category, ErrorCategory::DataMapping, "{mode:?}");
     }

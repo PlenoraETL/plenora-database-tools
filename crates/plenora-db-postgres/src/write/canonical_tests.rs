@@ -1,7 +1,9 @@
 use super::{
-    canonical, classify, fraction_digits, json_duplicate_keys, reduced_temporal, LeafClass,
-    SessionLeaf,
+    array_elements, canonical, classify, fraction_digits, json_duplicate_keys, leaf_losses,
+    reduced_temporal, Leaf, LeafClass, LeafLoss, SessionLeaf, SessionRule, SessionShape,
 };
+use arrow_schema::{DataType, Field};
+use std::sync::Arc;
 
 #[test]
 fn le_date_canoniche_sono_iso() {
@@ -261,4 +263,107 @@ fn le_colonne_temporali_ridotte_si_riconoscono_dalla_dichiarazione() {
         classify(Some("interval_in"), 0x7FFF << 16 | 6),
         LeafClass::Session { reduced: false, .. }
     ));
+}
+
+/// Item 4 della quinta rilettura: gli elementi di un letterale si leggono
+/// come li legge il server, nella forma ristretta; ogni altra forma e `None`.
+#[test]
+fn gli_elementi_di_un_letterale_di_array_si_leggono_in_un_solo_modo() {
+    let some = |items: &[Option<&str>]| {
+        Some(
+            items
+                .iter()
+                .map(|item| item.map(str::to_owned))
+                .collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(
+        array_elements(r#"{"{\"b\":1,\"a\":2,\"a\":3}"}"#),
+        some(&[Some(r#"{"b":1,"a":2,"a":3}"#)])
+    );
+    assert_eq!(
+        array_elements(r#" { a , NULL,"NULL" , {"x\\y\"z"}, {} } "#),
+        some(&[Some("a"), None, Some("NULL"), Some(r#"x\y"z"#)])
+    );
+    assert_eq!(array_elements("{}"), some(&[]));
+    assert_eq!(array_elements("{\"\"}"), some(&[Some("")]));
+    for refused in [
+        "[1:1]={a}",
+        "{a b}",
+        "{a\"b\"}",
+        "{\"a\"b}",
+        r"{a\,b}",
+        "{,}",
+        "{a,}",
+        "{a}}",
+        "{a} x",
+        "{{a}",
+        "{\"a}",
+        "a",
+        "",
+    ] {
+        assert_eq!(array_elements(refused), None, "{refused}");
+    }
+}
+
+/// Item 3: le foglie che `Strict` rifiuta sono le perdite da dichiarare con
+/// le altre politiche, a qualunque profondita del tipo.
+#[test]
+fn le_perdite_vengono_dalle_foglie() {
+    let rule = |leaves: &[(LeafClass, SessionShape)]| SessionRule {
+        leaves: leaves
+            .iter()
+            .map(|(class, shape)| Leaf {
+                class: *class,
+                shape: *shape,
+            })
+            .collect(),
+        strict: false,
+    };
+    let text = DataType::Utf8;
+    let list = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
+    let composite = rule(&[
+        (LeafClass::Rounding, SessionShape::Nested),
+        (LeafClass::Text { max_chars: Some(3) }, SessionShape::Nested),
+        (LeafClass::Text { max_chars: None }, SessionShape::Nested),
+    ]);
+    assert_eq!(
+        leaf_losses(&composite, &text)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        [LeafLoss::Rounding, LeafLoss::Bounded]
+    );
+    let numbers = rule(&[(LeafClass::Rounding, SessionShape::Array)]);
+    assert_eq!(
+        leaf_losses(&numbers, &list).into_iter().collect::<Vec<_>>(),
+        [LeafLoss::Rounding]
+    );
+    // Un valore tipizzato si converte esatto, o il preflight dichiara il tipo.
+    assert!(leaf_losses(
+        &rule(&[(LeafClass::Rounding, SessionShape::Scalar)]),
+        &DataType::Decimal128(5, 2)
+    )
+    .is_empty());
+    let jsonb = rule(&[(LeafClass::Jsonb, SessionShape::Array)]);
+    assert_eq!(
+        leaf_losses(&jsonb, &text).into_iter().collect::<Vec<_>>(),
+        [LeafLoss::Jsonb]
+    );
+    let reduced = rule(&[(
+        LeafClass::Session {
+            leaf: SessionLeaf::Timestamp,
+            fraction: 0,
+            reduced: true,
+        },
+        SessionShape::Nested,
+    )]);
+    assert_eq!(
+        leaf_losses(&reduced, &text).into_iter().collect::<Vec<_>>(),
+        [LeafLoss::ReducedTemporal]
+    );
+    assert!(leaf_losses(
+        &rule(&[(LeafClass::Text { max_chars: None }, SessionShape::Scalar)]),
+        &text
+    )
+    .is_empty());
 }

@@ -31,8 +31,50 @@
 //! stringhe e i binari byte per byte, gli interi, le date, i tempi e i
 //! decimali per valore (lo schema fissa unita e scala della colonna), i
 //! float con `-0.0` uguale a `0.0` e ogni `NaN` uguale a ogni altro, come li
-//! confronta `PostgreSQL`. Una chiave con un `NULL` non si registra: `= NULL`
-//! non trova righe, e due chiavi `NULL` non toccano la stessa riga.
+//! confronta `PostgreSQL`.
+//!
+//! Un `NULL` in una colonna chiave segue l'indice che prova le chiavi
+//! ([`NullKeys`]), cioe il prodotto: due chiavi sono la stessa chiave se
+//! l'indice le tratterebbe come la stessa voce. Fino al 25/10 (quinta
+//! rilettura indipendente) una chiave con un `NULL` non si registrava mai
+//! («due chiavi `NULL` non toccano la stessa riga»), e con `UNIQUE NULLS NOT
+//! DISTINCT (k)` e la riga `(NULL,'vecchio')` l'Upsert di
+//! `[(NULL,'uno'),(NULL,'due')]` su PostgreSQL dava `confirmed 2` con una
+//! sola riga `'due'`: `ON CONFLICT` arbitra con l'indice, per cui i due `NULL`
+//! sono la stessa voce.
+//!
+//! - PostgreSQL: [`NullKeys::Distinct`] con un indice `NULLS DISTINCT` (il
+//!   predefinito), [`NullKeys::Equal`] se un indice unico che prova le chiavi
+//!   e `NULLS NOT DISTINCT` (`pg_index.indnullsnotdistinct`, dalla 15), letto
+//!   nella transazione della scrittura e nel dry run con la DSN;
+//! - SQL Server: [`NullKeys::Equal`]: un indice unico non filtrato (l'unico
+//!   che prova le chiavi) ammette un solo `NULL` per combinazione;
+//! - `MySQL` e `MariaDB`: [`NullKeys::Distinct`]: un indice unico ammette piu
+//!   righe con un `NULL`;
+//! - Oracle: [`NullKeys::EqualUnlessAllNull`]: un indice B-tree non registra
+//!   le chiavi tutte `NULL`, e confronta le altre con i `NULL` uguali;
+//! - Db2: [`NullKeys::Equal`]: un indice unico ammette un solo `NULL` per
+//!   combinazione; con `EXCLUDE NULL KEYS` le chiavi tutte `NULL` sarebbero
+//!   distinte, e la regola piu stretta le rifiuta comunque.
+//!
+//! La regola vale per ogni mode per chiavi: anche dove lo statement confronta
+//! con `=` e una chiave `NULL` non trova righe (Update, `DeleteByKeys`), due
+//! chiavi che l'indice tratta come una sola si rifiutano.
+//!
+//! # Limite dichiarato: i `NULL` delle chiavi
+//!
+//! - **Regola**: due chiavi che l'indice che le prova tratta come la stessa
+//!   voce sono ripetute, `NULL` compresi.
+//! - **Ambito**: ogni provider, nel modo dell'elenco qui sopra.
+//! - **Hazard**: comportamento piu stretto: Update e `DeleteByKeys` con due
+//!   chiavi `NULL` (SQL Server, Db2, PostgreSQL `NULLS NOT DISTINCT`), che
+//!   prima davano due `skipped`, si rifiutano; Db2 rifiuta anche due chiavi
+//!   tutte `NULL` sotto `EXCLUDE NULL KEYS`. Il dry run PostgreSQL senza la
+//!   DSN non legge l'indice e confronta come `NULLS DISTINCT`; la scrittura
+//!   legge l'indice una volta, prima del primo batch, e non lo rilegge dopo
+//!   il lock (lo stesso hazard del DDL concorrente della regola K2).
+//! - **Rientro**: la semantica dei `NULL` dello statement, mode per mode, al
+//!   posto di quella dell'indice; per Db2 la lettura di `EXCLUDE NULL KEYS`.
 //!
 //! # Limite dichiarato: chiavi uguali per il target, diverse come valori
 //!
@@ -180,22 +222,36 @@ fn uncomparable() -> DatabaseError {
     )
 }
 
+/// Come l'indice che prova le chiavi tratta un `NULL` in una colonna chiave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NullKeys {
+    /// Ogni chiave con un `NULL` e distinta da ogni altra: non si registra.
+    Distinct,
+    /// `NULL` uguale a `NULL` in ogni colonna chiave.
+    Equal,
+    /// Una chiave tutta `NULL` e distinta da ogni altra; le altre si
+    /// confrontano con `NULL` uguale a `NULL`.
+    EqualUnlessAllNull,
+}
+
 /// Le chiavi viste in un ingresso, per la condizione 2.
 #[derive(Debug)]
 pub struct UniqueInputKeys {
     columns: Vec<usize>,
+    nulls: NullKeys,
     seen: HashSet<Vec<u8>>,
     leases: Vec<ResourceLease>,
 }
 
 impl UniqueInputKeys {
-    /// Le colonne chiave di `schema`, nell'ordine di `keys`.
+    /// Le colonne chiave di `schema`, nell'ordine di `keys`, con i `NULL`
+    /// confrontati come `nulls`.
     ///
     /// # Errors
     ///
     /// `invalid_plan` per una chiave assente dallo schema; `unsupported` per
     /// una chiave di un tipo che [`Self::admit`] non confronta.
-    pub fn new(schema: &SchemaRef, keys: &[String]) -> Result<Self> {
+    pub fn new(schema: &SchemaRef, keys: &[String], nulls: NullKeys) -> Result<Self> {
         let columns = keys
             .iter()
             .map(|key| {
@@ -211,6 +267,7 @@ impl UniqueInputKeys {
         }
         Ok(Self {
             columns,
+            nulls,
             seen: HashSet::new(),
             leases: Vec::new(),
         })
@@ -229,12 +286,24 @@ impl UniqueInputKeys {
         let mut bytes = 0_u64;
         'rows: for row in 0..batch.num_rows() {
             let mut key = Vec::new();
+            let mut nulls = 0_usize;
             for index in &self.columns {
                 let array = batch.column(*index);
+                // Un'etichetta davanti a ogni colonna: un `NULL` e un valore
+                // non producono gli stessi byte.
                 if array.is_null(row) {
-                    continue 'rows;
+                    if self.nulls == NullKeys::Distinct {
+                        continue 'rows;
+                    }
+                    nulls += 1;
+                    key.push(0);
+                } else {
+                    key.push(1);
+                    encode(array.as_ref(), row, &mut key)?;
                 }
-                encode(array.as_ref(), row, &mut key)?;
+            }
+            if self.nulls == NullKeys::EqualUnlessAllNull && nulls == self.columns.len() {
+                continue 'rows;
             }
             bytes = bytes
                 .checked_add(u64::try_from(key.len()).unwrap_or(u64::MAX))
@@ -381,10 +450,25 @@ impl BatchStream for UniqueKeyStream {
     }
 }
 
+/// Le verifiche di [`UniqueInputKeys::new`] sulle chiavi di una mode per
+/// chiavi, per il provider che costruisce lo stream della condizione 2 piu
+/// avanti, quando ha letto l'indice che le prova.
+///
+/// # Errors
+///
+/// Gli errori di [`UniqueInputKeys::new`].
+pub fn validate_input_keys(mode: WriteMode, keys: &[String], schema: &SchemaRef) -> Result<()> {
+    if keyed_mode(mode) && !keys.is_empty() {
+        UniqueInputKeys::new(schema, keys, NullKeys::Equal)?;
+    }
+    Ok(())
+}
+
 /// L'ingresso di una scrittura con la condizione 2 della regola K.
 ///
 /// Per le mode per chiavi ([`keyed_mode`]) lo stream che rifiuta una chiave
-/// ripetuta, per le altre `input` com'e. Ogni provider lo chiama
+/// ripetuta, con i `NULL` confrontati come l'indice che prova le chiavi
+/// (`nulls`); per le altre `input` com'e. Ogni provider lo chiama
 /// all'ingresso di `write` e del dry run, prima di leggere un batch.
 ///
 /// # Errors
@@ -395,11 +479,12 @@ pub fn guard_input_keys(
     keys: &[String],
     input: Box<dyn BatchStream>,
     budget: &ResourceBudget,
+    nulls: NullKeys,
 ) -> Result<Box<dyn BatchStream>> {
     if !keyed_mode(mode) || keys.is_empty() {
         return Ok(input);
     }
-    let keys = UniqueInputKeys::new(&input.schema(), keys)?;
+    let keys = UniqueInputKeys::new(&input.schema(), keys, nulls)?;
     Ok(Box::new(UniqueKeyStream {
         inner: input,
         keys,

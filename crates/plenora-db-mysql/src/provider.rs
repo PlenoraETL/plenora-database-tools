@@ -646,6 +646,9 @@ async fn execute_mysql_write(
         &operation.keys,
         input,
         budget,
+        // Un indice unico di `MySQL` e `MariaDB` ammette piu righe con un
+        // `NULL`: due chiavi con un `NULL` non sono la stessa voce.
+        plenora_database_core::write_keys::NullKeys::Distinct,
     )?;
     let effective_cancellation = crate::read::BudgetCancellation::new(cancellation, budget)?;
     let token = effective_cancellation.token();

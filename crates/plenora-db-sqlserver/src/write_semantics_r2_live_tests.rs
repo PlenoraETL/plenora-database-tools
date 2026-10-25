@@ -364,3 +364,74 @@ async fn live_datetimeoffset_indipendente_dalla_lingua_della_sessione() {
         .await;
     assert!(difformi.is_empty(), "{}", difformi.join("\n"));
 }
+
+/// Quinta rilettura del 25/10: un indice unico SQL Server ammette un solo
+/// `NULL`, e due chiavi `NULL` nell'ingresso sono per l'indice la stessa
+/// voce. Su ff8841c la regola K non le confrontava, e l'Upsert arrivava al
+/// server (che rifiutava il secondo `INSERT` con una violazione di unicita);
+/// ora la scrittura si rifiuta prima di ogni statement, come per ogni altra
+/// chiave ripetuta.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta fixture DML isolate"]
+async fn live_due_chiavi_null_sono_ripetute_per_l_indice_unico() {
+    let _serial = SERIAL.lock().await;
+    let cancellation = CancellationToken::new();
+    let pool = SqlServerPool::new(live_config(), 2).expect("pool");
+    let setup = "UPDATE [plenora_test].[semantica] SET [label] = N'c' WHERE [id] = 3; \
+         CREATE UNIQUE INDEX [semantica_label_ux] ON [plenora_test].[semantica] ([label]);";
+    let mut difformi = Vec::new();
+    for mode in [WriteMode::Upsert, WriteMode::Update] {
+        let mut admin = SqlServerSession::open(&live_config(), &cancellation)
+            .await
+            .expect("admin");
+        admin
+            .execute_query(
+                Query::new(format!("{RESET} {setup}")),
+                ErrorPhase::Write,
+                &cancellation,
+            )
+            .await
+            .expect("fixture");
+        let mut by_label = operation(mode);
+        by_label.keys = vec!["label".to_owned()];
+        by_label.update_columns = if mode == WriteMode::Update {
+            vec!["id".to_owned()]
+        } else {
+            Vec::new()
+        };
+        let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+        let input = rows(WriteMode::Upsert, &[(10, None), (11, None)]);
+        let result = async {
+            let prepared = prepare_write_with_mode(
+                &pool,
+                &by_label,
+                input.schema(),
+                &budget,
+                &cancellation,
+                SqlServerInsertMode::Prepared,
+            )
+            .await?;
+            write_prepared(prepared, Box::new(input), &cancellation).await
+        }
+        .await;
+        let (rows, _) = observe(&mut admin).await;
+        let refused = result.as_ref().is_err_and(|error| {
+            error.category == ErrorCategory::DataMapping
+                && error.message.contains(DUPLICATE_INPUT_KEYS)
+        });
+        if !refused || rows != ["1:a", "2:b", "3:c"] {
+            difformi.push(format!(
+                "{mode:?}: {:?} righe {rows:?}",
+                result.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    let mut admin = SqlServerSession::open(&live_config(), &cancellation)
+        .await
+        .expect("admin");
+    admin
+        .execute_query(Query::new(RESET), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("pulizia");
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}

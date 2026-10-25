@@ -144,6 +144,10 @@ impl Provider for Db2Provider {
                 &prepared.operation.keys,
                 input,
                 budget,
+                // Un indice unico Db2 ammette un solo `NULL` per combinazione
+                // (con `EXCLUDE NULL KEYS` le chiavi tutte `NULL` sarebbero
+                // distinte: la regola piu stretta, `plenora_database_core::write_keys`).
+                plenora_database_core::write_keys::NullKeys::Equal,
             )?;
             crate::write::execute_write(&self.config, secret, prepared, input, budget, cancellation)
                 .await

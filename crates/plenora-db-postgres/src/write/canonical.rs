@@ -46,7 +46,14 @@
 //!   un testo con un oggetto che ripete una chiave, a qualunque profondita e
 //!   dopo gli escape, si rifiuta (`jsonb` tiene l'ultimo valore:
 //!   `{"b":1,"a":2,"a":3}` diventava `{"a": 3, "b": 1}`); `json` conserva
-//!   il testo e non si verifica;
+//!   il testo e non si verifica. Un array si verifica elemento per elemento,
+//!   come lista o come letterale nella forma ristretta di [`array_elements`]
+//!   (quinta rilettura: il letterale intero si leggeva come JSON); un
+//!   letterale fuori da quella forma, o un range scritto come testo, si
+//!   rifiuta;
+//! - una foglia numerica che arrotonda il testo (`numeric(p,s)`, `real`,
+//!   `double precision`, anche dentro un dominio, un array, un range o un
+//!   composto): con `Strict` un valore che arriva come testo si rifiuta;
 //! - una foglia temporale (`date`, `time`, `timetz`, `timestamp`,
 //!   `timestamptz`, `interval`): testo soltanto nella forma canonica — date
 //!   ISO `AAAA-MM-GG`, ore `hh:mm[:ss[.f]]`, timestamp ISO, la zona esplicita
@@ -67,6 +74,14 @@
 //! come gia fa il preflight (`LossCategory::Precision`): e lo stesso
 //! criterio di `MySQL`, che rifiuta `DATETIME(0)`. Con una politica non
 //! stretta la perdita e nel `LossReport` del preflight e il valore passa.
+//!
+//! Con le politiche non strette ogni foglia che `Strict` rifiuterebbe ha la
+//! sua perdita nel `LossReport` del preflight ([`leaf_losses`], lo stesso
+//! cammino del catalogo): fino al 25/10 (quinta rilettura) il preflight
+//! guardava soltanto la dichiarazione della colonna, e un dominio su
+//! `numeric(5,2)`, un `numeric(5,2)[]`, un dominio su `real`, un composto e
+//! gli array di domini su `varchar(n)` e `jsonb` arrotondavano o troncavano
+//! con il `LossReport` vuoto.
 //!
 //! La sessione **non** si fissa: `TimeZone` e `DateStyle` decidono anche i
 //! default e i trigger del target, e fissarli cambierebbe in silenzio cio che
@@ -93,11 +108,16 @@
 //!   (`1.50` resta `1.50`, `1e2` diventa `100`, `-0` diventa `0`): semantica
 //!   del tipo, ammessa con `Strict` e dichiarata con le altre politiche nel
 //!   `LossReport` (`native_type`, `warning`, con la chiave ripetuta). Con
-//!   `Strict` un testo non arriva a un numero che lo arrotonda
-//!   (`numeric(p,s)`, `real`, `double precision`: soltanto con Create, perche
-//!   verso una colonna esistente il preflight rifiuta il tipo Arrow). Le
-//!   regole si leggono una volta, prima
-//!   del primo valore e senza rileggerle dopo il lock.
+//!   `Strict` un testo non arriva a un numero che lo arrotonda, e si rifiuta
+//!   anche quando il valore non perderebbe niente (`'1.5'` verso
+//!   `numeric(5,2)`: la prova per valore non c'e); con le altre politiche la
+//!   perdita si dichiara per classe di foglia, non per valore. Un array di
+//!   `jsonb` scritto come letterale fuori dalla forma ristretta (le dimensioni
+//!   dichiarate, un elemento con spazi o escape senza virgolette) si rifiuta
+//!   con `Strict` anche quando il server lo leggerebbe senza perdite. Le
+//!   regole si leggono una volta, prima del primo valore e senza rileggerle
+//!   dopo il lock; il preflight le legge su un'altra sessione, prima della
+//!   transazione.
 //! - **Rientro**: la verifica per campo dei composti; i domini e i composti
 //!   dichiarati risolti dal catalogo anche senza DSN; le regole rilette con
 //!   la regola R dopo il lock.
@@ -154,9 +174,11 @@ pub(super) enum LeafClass {
     /// pero tiene soltanto l'ultimo valore di una chiave ripetuta.
     Jsonb,
     /// Un numero che arrotonda il testo: `numeric(p,s)` (typmod), `real`,
-    /// `double precision`. Con `Strict` un testo non vi arriva: ci arriva
-    /// soltanto con Create (verso una colonna esistente il preflight rifiuta
-    /// il tipo Arrow non equivalente), e `'1.005'` diventava `1.01`.
+    /// `double precision`. Con `Strict` un testo non vi arriva (`'1.005'`
+    /// diventava `1.01`); con le altre politiche il preflight dichiara la
+    /// perdita ([`LeafLoss::Rounding`]): verso un dominio, un array o un
+    /// composto il tipo Arrow e quello della colonna, e la differenza di tipo
+    /// non la dichiara.
     Rounding,
     /// Fuori dall'elenco chiuso.
     Unknown,
@@ -316,22 +338,14 @@ pub(super) fn classify(symbol: Option<&str>, typmod: i32) -> LeafClass {
     }
 }
 
-/// Le foglie del tipo di ogni colonna `$3` del target, attraverso domini
-/// (con il loro typmod), array (con quello della colonna), range, multirange
-/// e composti, fino ai tipi base ed enum; a 32 livelli il nodo raggiunto
-/// conta come foglia (e la sua funzione d'ingresso non e nell'elenco). Gira
-/// con il percorso chiuso (regola Q2).
-const RULES_SQL: &str = "\
-WITH RECURSIVE target AS (
-    SELECT c.oid FROM pg_catalog.pg_class c
-      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-     WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text
-), walk(name, oid, typmod, shape, depth) AS (
-    SELECT a.attname::pg_catalog.text, a.atttypid, a.atttypmod, 'scalar'::pg_catalog.text, 0
-      FROM target t JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid
-     WHERE a.attnum > 0 AND NOT a.attisdropped
-       AND a.attname::pg_catalog.text = ANY ($3::pg_catalog.text[])
-    UNION ALL
+/// Il cammino ricorsivo di [`RULES_SQL`] e [`TYPE_RULES_SQL`] dopo il seme:
+/// domini (con il loro typmod), array (con quello della colonna), range,
+/// multirange e composti, fino ai tipi base ed enum; a 32 livelli il nodo
+/// raggiunto conta come foglia (e la sua funzione d'ingresso non e
+/// nell'elenco).
+macro_rules! walk_sql {
+    () => {
+        "
     SELECT w.name, x.next, x.typmod, x.shape, w.depth + 1 FROM walk w CROSS JOIN LATERAL (
         SELECT y.typbasetype AS next, y.typtypmod AS typmod, w.shape AS shape
           FROM pg_catalog.pg_type y WHERE y.oid = w.oid AND y.typtype = 'd'
@@ -360,7 +374,46 @@ SELECT w.name, w.shape,
   LEFT JOIN pg_catalog.pg_proc p ON p.oid = y.typinput
  WHERE w.depth = 32
     OR (y.typtype IN ('b', 'e', 'p')
-        AND NOT (y.typtype = 'b' AND y.typcategory = 'A' AND y.typelem <> 0::pg_catalog.oid))";
+        AND NOT (y.typtype = 'b' AND y.typcategory = 'A' AND y.typelem <> 0::pg_catalog.oid))
+"
+    };
+}
+
+/// Le foglie del tipo di ogni colonna `$3` del target (`walk_sql!`). Gira
+/// con il percorso chiuso (regola Q2).
+const RULES_SQL: &str = concat!(
+    "\
+WITH RECURSIVE target AS (
+    SELECT c.oid FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text
+), walk(name, oid, typmod, shape, depth) AS (
+    SELECT a.attname::pg_catalog.text, a.atttypid, a.atttypmod, 'scalar'::pg_catalog.text, 0
+      FROM target t JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid
+     WHERE a.attnum > 0 AND NOT a.attisdropped
+       AND a.attname::pg_catalog.text = ANY ($3::pg_catalog.text[])
+    UNION ALL",
+    walk_sql!()
+);
+
+/// Le foglie dei tipi `$2` (oid), per i nomi `$1`: il cammino di
+/// `walk_sql!` da un tipo invece che da una colonna, per Create, la cui
+/// colonna non esiste ancora. Senza il typmod della colonna: i tipi che lo
+/// portano nella dichiarazione (`numeric(p,s)`) li conosce [`declared`]. Gira
+/// con il percorso chiuso (regola Q2).
+const TYPE_RULES_SQL: &str = concat!(
+    "\
+WITH RECURSIVE walk(name, oid, typmod, shape, depth) AS (
+    SELECT x.name, x.oid, -1, 'scalar'::pg_catalog.text, 0
+      FROM ROWS FROM (pg_catalog.unnest($1::pg_catalog.text[]),
+                      pg_catalog.unnest($2::pg_catalog.oid[])) AS x(name, oid)
+    UNION ALL",
+    walk_sql!()
+);
+
+/// Il tipo di una dichiarazione di Create, risolto con il percorso della
+/// sessione, come lo risolve `CREATE TABLE`.
+const TYPE_OID_SQL: &str = "SELECT pg_catalog.to_regtype($1::pg_catalog.text)::pg_catalog.oid";
 
 /// Le regole delle colonne dell'ingresso sul target, per nome. Una colonna
 /// che il target non ha non ne ha: lo statement la rifiutera da se.
@@ -387,7 +440,60 @@ pub(super) async fn rules<C: GenericClient + Sync>(
         )
         .await
         .map_err(|error| classify_error(phase, &error))?;
-    let strict = operation.mapping_policy == MappingPolicy::Strict;
+    Ok(collect_rules(
+        &rows,
+        operation.mapping_policy == MappingPolicy::Strict,
+    ))
+}
+
+/// Le regole delle colonne di Create che dichiarano un tipo dell'utente
+/// (enum, dominio, composto: `plenora.type_kind`), per nome, dal catalogo:
+/// il tipo si risolve con il percorso della sessione, come lo risolverebbe
+/// `CREATE TABLE`, poi le foglie si leggono con il percorso chiuso (regola
+/// Q2), in una transazione che si annulla. I tipi di `pg_catalog` li
+/// conosce [`declared`]; un tipo che non si risolve non ha regole (lo
+/// rifiutera `CREATE TABLE`).
+///
+/// # Errors
+///
+/// L'errore classificato della lettura, in `phase`.
+pub(super) async fn type_rules(
+    client: &tokio_postgres::Client,
+    declarations: &[(String, String)],
+    strict: bool,
+    phase: ErrorPhase,
+) -> Result<BTreeMap<String, SessionRule>> {
+    let read = |error: tokio_postgres::Error| classify_error(phase, &error);
+    let mut names = Vec::new();
+    let mut oids: Vec<u32> = Vec::new();
+    for (name, declaration) in declarations {
+        let oid: Option<u32> = client
+            .query_one(TYPE_OID_SQL, &[declaration])
+            .await
+            .map_err(read)?
+            .get(0);
+        if let Some(oid) = oid {
+            names.push(name.clone());
+            oids.push(oid);
+        }
+    }
+    if names.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    client.batch_execute("BEGIN").await.map_err(read)?;
+    let walked = async {
+        crate::search_path::SessionPath::close(client, phase).await?;
+        client
+            .query(TYPE_RULES_SQL, &[&names, &oids])
+            .await
+            .map_err(read)
+    }
+    .await;
+    client.batch_execute("ROLLBACK").await.map_err(read)?;
+    Ok(collect_rules(&walked?, strict))
+}
+
+fn collect_rules(rows: &[tokio_postgres::Row], strict: bool) -> BTreeMap<String, SessionRule> {
     let mut rules: BTreeMap<String, SessionRule> = BTreeMap::new();
     for row in rows {
         let name: String = row.get(0);
@@ -408,7 +514,7 @@ pub(super) async fn rules<C: GenericClient + Sync>(
             .leaves
             .push(Leaf { class, shape });
     }
-    Ok(rules)
+    rules
 }
 
 /// Assegna a ogni piano la regola della sua colonna; le colonne spatial
@@ -458,6 +564,49 @@ pub(super) fn refuse_lossy(plans: &[WriteColumnPlan]) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Una perdita che una foglia del tipo di una colonna da a un valore che,
+/// con `Strict`, [`check`] o [`refuse_lossy`] rifiuterebbero: con le altre
+/// politiche il valore passa, e la perdita si dichiara nel `LossReport` del
+/// preflight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LeafLoss {
+    /// Un numero che arrotonda il testo: `numeric(p,s)`, `real`, `double
+    /// precision` (`'1.005'` verso `numeric(5,2)` diventa `1.01`).
+    Rounding,
+    /// Una lunghezza massima (`varchar(n)`, `char(n)`): gli spazi finali
+    /// oltre la lunghezza si troncano.
+    Bounded,
+    /// `jsonb` tiene l'ultimo valore di una chiave ripetuta.
+    Jsonb,
+    /// Una precisione temporale sotto il microsecondo, o un `interval` con
+    /// campi.
+    ReducedTemporal,
+}
+
+/// Le perdite delle foglie di `rule` per un valore Arrow di tipo
+/// `data_type`: lo stesso cammino (domini, array, range, multirange,
+/// composti) e la stessa classe di foglia con cui `Strict` rifiuta.
+///
+/// Un numero arrotonda soltanto un valore che arriva come testo (stringa,
+/// letterale di array, limiti di range, campi di un composto): un valore
+/// tipizzato si converte esatto, o il preflight dichiara il tipo Arrow non
+/// equivalente.
+pub(super) fn leaf_losses(
+    rule: &SessionRule,
+    data_type: &DataType,
+) -> std::collections::BTreeSet<LeafLoss> {
+    rule.leaves
+        .iter()
+        .filter_map(|leaf| match leaf.class {
+            LeafClass::Rounding if text_bearing(data_type) => Some(LeafLoss::Rounding),
+            LeafClass::Text { max_chars: Some(_) } => Some(LeafLoss::Bounded),
+            LeafClass::Jsonb => Some(LeafLoss::Jsonb),
+            LeafClass::Session { reduced: true, .. } => Some(LeafLoss::ReducedTemporal),
+            _ => None,
+        })
+        .collect()
 }
 
 /// La regola P sul tipo dichiarato di una colonna, come lo scrive
@@ -584,11 +733,12 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
     };
     match leaf.class {
         LeafClass::Text { max_chars } => check_text(rule.strict, max_chars, array, row),
-        LeafClass::Jsonb => check_jsonb(rule.strict, array, row),
+        LeafClass::Jsonb => check_jsonb(plan, rule.strict, leaf.shape, array, row),
         // Un valore Arrow tipizzato si converte da se, esatto o rifiutato
-        // dal preflight; un testo con `Strict` no.
+        // dal preflight; un testo con `Strict` no, nemmeno nei limiti di un
+        // range (una struttura di testi).
         LeafClass::Rounding => {
-            if rule.strict && matches!(array.data_type(), DataType::Utf8 | DataType::List(_)) {
+            if rule.strict && text_bearing(array.data_type()) {
                 Err(lossy())
             } else {
                 Ok(())
@@ -633,8 +783,43 @@ fn check_text(strict: bool, max_chars: Option<usize>, array: &dyn Array, row: us
     }
 }
 
+/// Un valore che arriva al server come testo: una stringa, un array (che la
+/// scrittura compone come letterale) o una struttura (i limiti di un range,
+/// i campi di un composto).
+const fn text_bearing(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Utf8 | DataType::List(_) | DataType::Struct(_)
+    )
+}
+
+/// Il motivo pubblico del rifiuto di un letterale che non si verifica per
+/// elemento.
+pub(super) const UNCHECKED_LITERAL: &str = "con MappingPolicy::Strict un letterale di array \
+     fuori dalla forma che si verifica elemento per elemento, o un range scritto come testo, non \
+     si verifica: va scritto come lista, come struttura o nella forma ristretta";
+
+fn unchecked_literal() -> DatabaseError {
+    public_error(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Write,
+        false,
+        &format!("scrittura rifiutata: {UNCHECKED_LITERAL}"),
+    )
+}
+
 /// Una foglia `jsonb` (regola J): con `Strict`, un oggetto con una chiave
 /// ripetuta, a qualunque profondita, si rifiuta.
+///
+/// Gli elementi si verificano uno per uno: un array come lista di testi o
+/// come letterale di testo nella forma ristretta di [`array_elements`], un
+/// range come struttura con i due limiti. Fino al 25/10 (quinta rilettura)
+/// la verifica leggeva come JSON l'intero letterale
+/// `{"{\"b\":1,\"a\":2,\"a\":3}"}` verso `jsonb[]`, in cui l'oggetto e una
+/// stringa fra virgolette, e `Prepared` e `CopyText` committavano
+/// `{"{\"a\": 3, \"b\": 1}"}`. Un letterale fuori da quella forma, o un
+/// range scritto come testo, si rifiuta (mondo chiuso, [`UNCHECKED_LITERAL`]):
+/// la verifica non indovina come il server lo leggerebbe.
 ///
 /// `jsonb` tiene l'ultimo valore di una chiave ripetuta: fino al 25/10
 /// (quarta rilettura, S4) `{"b":1,"a":2,"a":3}` si committava come
@@ -647,7 +832,13 @@ fn check_text(strict: bool, max_chars: Option<usize>, array: &dyn Array, row: us
 /// verifica non sa leggere (un escape non valido, che il server rifiuterebbe
 /// comunque) si rifiuta con `Strict`: la prova che nessun valore si perde non
 /// c'e.
-fn check_jsonb(strict: bool, array: &dyn Array, row: usize) -> Result<()> {
+fn check_jsonb(
+    plan: &WriteColumnPlan,
+    strict: bool,
+    shape: SessionShape,
+    array: &dyn Array,
+    row: usize,
+) -> Result<()> {
     if !strict {
         return Ok(());
     }
@@ -658,9 +849,23 @@ fn check_jsonb(strict: bool, array: &dyn Array, row: usize) -> Result<()> {
             Err(duplicate_keys())
         }
     };
-    match array.data_type() {
-        DataType::Utf8 => verify(string(array, row)?),
-        DataType::List(_) => {
+    match (shape, array.data_type()) {
+        (SessionShape::Scalar, DataType::Utf8) => verify(string(array, row)?),
+        (SessionShape::Range, DataType::Struct(_)) if plan.semantics == ColumnSemantics::Range => {
+            let range = array
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .ok_or_else(mapping_error)?;
+            let value = range_value(range, row)?;
+            for bound in [value.lower.as_deref(), value.upper.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                verify(bound)?;
+            }
+            Ok(())
+        }
+        (SessionShape::Array, DataType::List(_)) => {
             let list = array
                 .as_any()
                 .downcast_ref::<ListArray>()
@@ -675,8 +880,126 @@ fn check_jsonb(strict: bool, array: &dyn Array, row: usize) -> Result<()> {
             }
             Ok(())
         }
+        // Un letterale di array: gli elementi uno per uno, se il letterale
+        // sta nella forma che `array_elements` legge come il server.
+        (SessionShape::Array, DataType::Utf8) => {
+            let elements = array_elements(string(array, row)?).ok_or_else(unchecked_literal)?;
+            for element in elements.iter().flatten() {
+                verify(element)?;
+            }
+            Ok(())
+        }
+        // Un testo che non e il valore di una foglia (un letterale di range,
+        // una lista o una struttura che non corrisponde alla forma della
+        // colonna) non si verifica per elemento.
+        (_, data_type) if text_bearing(data_type) => Err(unchecked_literal()),
+        // Un valore tipizzato (numero, booleano) non ha chiavi.
         _ => Ok(()),
     }
+}
+
+/// Gli elementi di un letterale di array PostgreSQL (`NULL` come `None`), a
+/// qualunque profondita, in una forma ristretta che si legge in un solo modo:
+///
+/// - parentesi graffe bilanciate, elementi separati da `,` (il delimitatore
+///   di ogni tipo tranne `box`), spazi ammessi intorno agli elementi e alle
+///   parentesi;
+/// - un elemento fra virgolette, con `\` che rende letterale il carattere
+///   dopo; oppure senza virgolette, senza spazi, virgolette, parentesi,
+///   virgole o `\` al suo interno (`NULL`, in qualunque combinazione di
+///   maiuscole, e il valore nullo).
+///
+/// Ogni altra forma — le dimensioni dichiarate (`[1:2]={...}`), le virgolette
+/// a meta elemento, gli escape fuori dalle virgolette, un elemento vuoto, un
+/// testo dopo la parentesi di chiusura — rende `None`: il chiamante rifiuta
+/// invece di indovinare come la leggerebbe il server.
+#[must_use]
+pub(super) fn array_elements(text: &str) -> Option<Vec<Option<String>>> {
+    let space = |byte: u8| matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C);
+    let bytes = text.as_bytes();
+    let skip = |index: &mut usize| {
+        while bytes.get(*index).copied().is_some_and(space) {
+            *index += 1;
+        }
+    };
+    let mut index = 0;
+    skip(&mut index);
+    if bytes.get(index) != Some(&b'{') {
+        return None;
+    }
+    let mut elements = Vec::new();
+    // La profondita delle parentesi aperte, e se dopo l'ultimo `{` o `,` si
+    // aspetta un elemento.
+    let mut depth = 0_usize;
+    let mut expect = true;
+    loop {
+        skip(&mut index);
+        let byte = *bytes.get(index)?;
+        match byte {
+            b'{' if expect => {
+                depth += 1;
+                index += 1;
+                // `{}` e un array vuoto, anche annidato.
+                skip(&mut index);
+                if bytes.get(index) == Some(&b'}') {
+                    depth -= 1;
+                    index += 1;
+                    expect = false;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            }
+            b'}' if !expect => {
+                depth = depth.checked_sub(1)?;
+                index += 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            b',' if !expect && depth > 0 => {
+                index += 1;
+                expect = true;
+            }
+            b'"' if expect => {
+                let mut element = Vec::new();
+                index += 1;
+                loop {
+                    match *bytes.get(index)? {
+                        b'"' => break,
+                        b'\\' => {
+                            element.push(*bytes.get(index + 1)?);
+                            index += 2;
+                        }
+                        other => {
+                            element.push(other);
+                            index += 1;
+                        }
+                    }
+                }
+                index += 1;
+                elements.push(Some(String::from_utf8(element).ok()?));
+                expect = false;
+            }
+            _ if expect => {
+                let start = index;
+                while bytes.get(index).is_some_and(|byte| {
+                    !space(*byte) && !matches!(byte, b'{' | b'}' | b'"' | b',' | b'\\')
+                }) {
+                    index += 1;
+                }
+                if index == start {
+                    return None;
+                }
+                let element = &text[start..index];
+                elements.push((!element.eq_ignore_ascii_case("null")).then(|| element.to_owned()));
+                expect = false;
+            }
+            _ => return None,
+        }
+    }
+    skip(&mut index);
+    (index == bytes.len()).then_some(elements)
 }
 
 fn duplicate_keys() -> DatabaseError {
