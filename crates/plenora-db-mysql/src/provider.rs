@@ -469,6 +469,9 @@ impl Provider for MysqlProvider {
                     .await?;
                     drop(session);
                 }
+                // La regola R prima di ogni effetto, per le mode con un evento
+                // distruttivo; la scrittura la rilegge sulla propria sessione.
+                refuse_unfaithful_destructive_write(self, secret, operation, token).await?;
                 let loss_report = if matches!(
                     operation.mode,
                     plenora_database_core::plan::WriteMode::Create
@@ -721,6 +724,41 @@ async fn execute_mysql_write(
     result
 }
 
+/// La regola R in `prepare_write`, per le mode con un evento distruttivo: i
+/// fatti di `catalog::row_filters`, letti con una sessione del pool.
+async fn refuse_unfaithful_destructive_write(
+    provider: &MysqlProvider,
+    secret: &SecretString,
+    operation: &WriteOperation,
+    token: &CancellationToken,
+) -> Result<()> {
+    if plenora_database_core::row_visibility::destructive_event(operation.mode).is_none() {
+        return Ok(());
+    }
+    let pool = provider.pool_for(secret)?;
+    let mut session = pool.checkout(token).await?;
+    let filters = crate::catalog::row_filters(
+        &mut session,
+        operation
+            .target
+            .schema
+            .as_deref()
+            .unwrap_or_else(|| provider.config.database()),
+        &operation.target.object,
+        operation.mode,
+        ErrorPhase::Prepare,
+        token,
+    )
+    .await?;
+    drop(session);
+    plenora_database_core::row_visibility::refuse_unfaithful_write(
+        provider.profile.kind(),
+        operation.mode,
+        ErrorPhase::Prepare,
+        filters,
+    )
+}
+
 /// Il corpo della scrittura dopo l'eventuale DDL di preparazione.
 ///
 /// Separato da `execute_mysql_write` per una ragione sola: dare alle sue
@@ -740,6 +778,9 @@ async fn execute_mysql_write_after_ddl(
     token: &CancellationToken,
 ) -> Result<WriteOutcome> {
     let product = session.profile().product();
+    // La regola W2 sulla sessione che scrive: le impostazioni del bootstrap
+    // ci sono, o la scrittura non parte.
+    crate::write::verify_write_session(session, token).await?;
     let target = crate::catalog::describe_object_with_profile(
         session,
         target_schema,
@@ -748,6 +789,23 @@ async fn execute_mysql_write_after_ddl(
         token,
     )
     .await?;
+    // La regola R di nuovo sulla sessione della scrittura, prima della
+    // transazione.
+    let filters = crate::catalog::row_filters(
+        session,
+        target_schema,
+        &operation.target.object,
+        operation.mode,
+        ErrorPhase::Prepare,
+        token,
+    )
+    .await?;
+    plenora_database_core::row_visibility::refuse_unfaithful_write(
+        provider.profile.kind(),
+        operation.mode,
+        ErrorPhase::Prepare,
+        filters,
+    )?;
     // Skip preflight compare per Create (target appena creato dallo schema)
     // e DeleteByKeys (schema keys-only, preflight standard non applicabile).
     // Il target deve comunque esistere ed essere BASE TABLE InnoDB — questo

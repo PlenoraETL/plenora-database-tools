@@ -599,6 +599,75 @@ pub(crate) async fn verify_epsg_srid(
     }
 }
 
+/// La regola R su `MySQL`/`MariaDB`: i fatti del catalogo per la mode.
+///
+/// I due prodotti non hanno regole di riscrittura, sicurezza di riga ne
+/// trigger `INSTEAD OF`, e il target e una `BASE TABLE`. Un trigger `BEFORE`
+/// non puo sopprimere una riga senza un errore, ma puo neutralizzarla:
+/// `BEFORE UPDATE ... SET NEW.c = OLD.c` lascia la riga com'era e lo statement
+/// la conta trovata (misurato il 25/10: Update pubblicava `confirmed 0
+/// skipped 1`, e con `CLIENT_FOUND_ROWS` la pubblicherebbe aggiornata). Come
+/// in PostgreSQL, un trigger `BEFORE` sull'evento distruttivo della mode
+/// (`UPDATE` per Update, `DELETE` per Replace e `DeleteByKeys`) rifiuta la
+/// mode; un `BEFORE INSERT` resta ammesso (la riga e scritta, con i valori
+/// che il trigger decide, e contata).
+///
+/// `information_schema.TRIGGERS` mostra i trigger di una tabella soltanto a
+/// chi ha `TRIGGER` su di essa: senza il privilegio, concesso direttamente
+/// all'utente sulla tabella, sullo schema o globalmente, il catalogo non
+/// prova l'assenza di trigger e la mode distruttiva si rifiuta
+/// (`unreadable`). Un privilegio che arriva soltanto da un ruolo non e
+/// letto: rifiuto conservativo, dichiarato in
+/// `plenora_database_core::row_visibility`.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn row_filters(
+    session: &mut MysqlSession,
+    schema: &str,
+    object: &str,
+    mode: plenora_database_core::plan::WriteMode,
+    phase: ErrorPhase,
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::row_visibility::RowFilters> {
+    use plenora_database_core::row_visibility::{destructive_event, DestructiveEvent, RowFilters};
+    let event = match destructive_event(mode) {
+        Some(DestructiveEvent::Update) => "UPDATE",
+        Some(DestructiveEvent::Delete) => "DELETE",
+        None => return Ok(RowFilters::default()),
+    };
+    let rows = session
+        .exec_rows(
+            crate::profile::ROW_FILTERS_QUERY,
+            Params::Positional(vec![
+                Value::from(schema),
+                Value::from(object),
+                Value::from(event),
+                Value::from(schema),
+                Value::from(schema),
+                Value::from(object),
+            ]),
+            phase,
+            cancellation,
+        )
+        .await?;
+    let row = rows.first().ok_or_else(|| catalog_row_missing(phase))?;
+    let triggers: i64 = required(row, 0, "before_triggers")?;
+    let visible: i64 = required(row, 1, "trigger_privilege")?;
+    Ok(RowFilters {
+        row_trigger: triggers > 0,
+        unreadable: visible == 0,
+        ..RowFilters::default()
+    })
+}
+
+fn catalog_row_missing(phase: ErrorPhase) -> DatabaseError {
+    DatabaseError::new(
+        ErrorCategory::Protocol,
+        phase,
+        None,
+        "lettura dei trigger del target senza righe",
+    )
+}
+
 /// Le colonne geometriche di `schema.object` il cui SRID il catalogo
 /// **dichiara** senza che il server lo vincoli, confrontate con quello che la
 /// scrittura scrive in ciascuna (`expected`: nome della colonna, SRID).

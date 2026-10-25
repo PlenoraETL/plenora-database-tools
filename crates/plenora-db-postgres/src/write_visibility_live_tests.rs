@@ -20,7 +20,7 @@ use plenora_database_core::row_visibility::{
 use plenora_database_core::{CancellationToken, ErrorCategory, ErrorPhase};
 
 pub const SCHEMA: &str = "pln_regola_r";
-const ROLE: &str = "pln_regola_r_ruolo";
+pub const ROLE: &str = "pln_regola_r_ruolo";
 const PASSWORD: &str = "pln_regola_r_segreto";
 
 /// Le prove condividono schema e ruolo: una alla volta.
@@ -38,7 +38,7 @@ pub fn live_dsn() -> Option<String> {
 }
 
 /// La stessa DSN con il ruolo dello scenario: forma URL o `chiave=valore`.
-fn dsn_as_role(dsn: &str) -> String {
+pub fn dsn_as_role(dsn: &str) -> String {
     if let Some((scheme, rest)) = dsn.split_once("://") {
         let host = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
         return format!("{scheme}://{ROLE}:{PASSWORD}@{host}");
@@ -51,9 +51,12 @@ fn dsn_as_role(dsn: &str) -> String {
     format!("{kept} user={ROLE} password={PASSWORD}")
 }
 
-struct Rows {
+pub struct Rows {
     schema: SchemaRef,
     batch: Option<RecordBatch>,
+    /// Il totale dichiarato: con `Some`, Append in una transazione prende
+    /// il percorso row-scoped.
+    declared: Option<u64>,
 }
 
 impl BatchStream for Rows {
@@ -67,9 +70,41 @@ impl BatchStream for Rows {
     ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(std::future::ready(Ok(self.batch.take())))
     }
+
+    fn declared_input_rows(&self) -> Option<u64> {
+        self.declared
+    }
+}
+
+/// L'ingresso `(id, owner)` con il totale dichiarato.
+pub fn declared_rows(values: &[(i64, &str)]) -> Box<dyn BatchStream> {
+    Box::new(rows_with(
+        values,
+        Some(u64::try_from(values.len()).expect("righe")),
+    ))
+}
+
+/// L'ingresso con la sola colonna `owner`: le colonne del target che non
+/// riceve prendono il default.
+pub fn owner_rows(owners: &[&str]) -> Box<dyn BatchStream> {
+    let schema = Arc::new(Schema::new(vec![Field::new("owner", DataType::Utf8, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(owners.to_vec())) as ArrayRef],
+    )
+    .expect("batch");
+    Box::new(Rows {
+        schema,
+        batch: Some(batch),
+        declared: None,
+    })
 }
 
 fn rows(values: &[(i64, &str)]) -> Box<dyn BatchStream> {
+    Box::new(rows_with(values, None))
+}
+
+fn rows_with(values: &[(i64, &str)], declared: Option<u64>) -> Rows {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("owner", DataType::Utf8, true),
@@ -86,10 +121,11 @@ fn rows(values: &[(i64, &str)]) -> Box<dyn BatchStream> {
         ],
     )
     .expect("batch");
-    Box::new(Rows {
+    Rows {
         schema,
         batch: Some(batch),
-    })
+        declared,
+    }
 }
 
 pub fn operation(object: &str, mode: WriteMode) -> WriteOperation {
@@ -132,9 +168,18 @@ pub async fn write(
     operation: &WriteOperation,
     input: &[(i64, &str)],
 ) -> Result<WriteOutcome> {
+    write_stream(provider, secret, operation, rows(input)).await
+}
+
+/// La scrittura di un ingresso qualunque.
+pub async fn write_stream(
+    provider: &PostgresProvider,
+    secret: &SecretString,
+    operation: &WriteOperation,
+    stream: Box<dyn BatchStream>,
+) -> Result<WriteOutcome> {
     let cancellation = CancellationToken::new();
     let budget = budget();
-    let stream = rows(input);
     let prepared = Provider::prepare_write(
         provider,
         secret,
@@ -153,11 +198,21 @@ pub async fn dry_run(
     operation: &WriteOperation,
     input: &[(i64, &str)],
 ) -> Result<PostgresWriteDryRun> {
+    dry_run_stream(provider, secret, operation, rows(input)).await
+}
+
+/// Il dry run di un ingresso qualunque.
+pub async fn dry_run_stream(
+    provider: &PostgresProvider,
+    secret: &SecretString,
+    operation: &WriteOperation,
+    stream: Box<dyn BatchStream>,
+) -> Result<PostgresWriteDryRun> {
     provider
         .dry_run_write(
             Some(secret),
             operation,
-            rows(input),
+            stream,
             &budget(),
             &CancellationToken::new(),
         )

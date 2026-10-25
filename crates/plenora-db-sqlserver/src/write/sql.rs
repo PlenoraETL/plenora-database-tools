@@ -76,12 +76,24 @@ pub(super) fn compile_row_statement(
         .zip(&ordinals)
         .map(|(column, ordinal)| placeholder_expression(column, *ordinal))
         .collect::<Vec<_>>();
-    let insert_sql = || {
+    // `OUTPUT` senza `INTO` e rifiutato da SQL Server (334) su una tabella
+    // con un trigger abilitato: fino al 25/10 Append, `TruncateInsert`,
+    // Update e `DeleteByKeys` fallivano con un trigger AFTER qualunque.
+    // L'azione va in una variabile tabella, che `OUTPUT ... INTO` ammette
+    // sempre, e si rilegge con un `SELECT`: la stessa forma di Upsert.
+    let actions = |statement: String| {
         format!(
-            "INSERT INTO {quoted_object} ({}) OUTPUT 1 AS [plenora_action] VALUES ({});",
+            "DECLARE @plenora_actions TABLE ([action] int NOT NULL); {statement} \
+             SELECT [action] AS [plenora_action] FROM @plenora_actions;"
+        )
+    };
+    let insert_sql = || {
+        actions(format!(
+            "INSERT INTO {quoted_object} ({}) OUTPUT 1 INTO @plenora_actions ([action]) \
+             VALUES ({});",
             quoted_columns.join(", "),
             insert_expressions.join(", ")
-        )
+        ))
     };
     let predicates = || -> Result<String> {
         operation
@@ -116,17 +128,17 @@ pub(super) fn compile_row_statement(
         WriteMode::Create | WriteMode::Append | WriteMode::Replace | WriteMode::TruncateInsert => {
             insert_sql()
         }
-        WriteMode::Update => format!(
+        WriteMode::Update => actions(format!(
             "UPDATE {quoted_object} WITH (UPDLOCK, HOLDLOCK) SET {} \
-             OUTPUT 2 AS [plenora_action] WHERE {};",
+             OUTPUT 2 INTO @plenora_actions ([action]) WHERE {};",
             assignments()?.join(", "),
             predicates()?
-        ),
-        WriteMode::DeleteByKeys => format!(
+        )),
+        WriteMode::DeleteByKeys => actions(format!(
             "DELETE FROM {quoted_object} WITH (HOLDLOCK) \
-             OUTPUT 3 AS [plenora_action] WHERE {};",
+             OUTPUT 3 INTO @plenora_actions ([action]) WHERE {};",
             predicates()?
-        ),
+        )),
         WriteMode::Upsert => {
             let assignments = assignments()?;
             let update = if assignments.is_empty() {

@@ -84,7 +84,9 @@ impl PostgresProvider {
     ///
     /// Decide la regola R come la scrittura (`write::visibility`): Replace,
     /// Update e `DeleteByKeys` che non vedrebbero tutte le righe si
-    /// rifiutano qui, con lo stesso errore.
+    /// rifiutano qui, con lo stesso errore; e cosi le regole W1 (`COPY` che
+    /// scavalcherebbe `IDENTITY ALWAYS`) e W2 (`session_replication_role`
+    /// che il ruolo non puo riportare a `origin`).
     ///
     /// Non decide cio che decide il server scrivendo (l'elenco chiuso e in
     /// `write::target`): gli altri trigger, vincoli `CHECK` ed esclusioni, unicita e
@@ -120,6 +122,20 @@ impl PostgresProvider {
             // ordine: DDL e svuotamento, poi la registrazione degli id dei
             // campi, poi lo statement e la prima riga (`gate`).
             let client = self.connect_session(secret).await?;
+            // La regola W2 come la scrittura, nello stesso punto (prima di
+            // ogni altra lettura del target): in una transazione che si
+            // annulla, cosi `set_config` non resta nella sessione.
+            let session = client.client()?;
+            session
+                .batch_execute("BEGIN")
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
+            let pinned = write::visibility::pin_session(session).await;
+            session
+                .batch_execute("ROLLBACK")
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
+            pinned?;
             let row_scoped = operation.mode == plenora_database_core::plan::WriteMode::Append
                 && operation.transaction_profile
                     == plenora_database_core::plan::TransactionProfile::SingleTransaction

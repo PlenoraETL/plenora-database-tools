@@ -461,10 +461,20 @@ fn assignments_survive_a_comma_inside_a_quoted_value() {
 }
 
 #[test]
-fn the_real_bootstrap_parses_into_three_assignments() {
+fn the_real_bootstrap_parses_into_six_assignments() {
     let parsed = sql_assignments(crate::SESSION_BOOTSTRAP_SQL);
     let names: Vec<&str> = parsed.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(names, vec!["autocommit", "time_zone", "sql_mode"]);
+    assert_eq!(
+        names,
+        vec![
+            "autocommit",
+            "time_zone",
+            "sql_mode",
+            "foreign_key_checks",
+            "unique_checks",
+            "sql_select_limit"
+        ]
+    );
 }
 
 #[test]

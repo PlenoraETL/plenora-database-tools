@@ -1295,6 +1295,31 @@ const OBJECT_QUERY: &str = "SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS t
     FROM information_schema.tables \
     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
 
+/// La regola R (`catalog::row_filters`), condivisa fra MySQL e MariaDB: i
+/// trigger `BEFORE` dell'evento e il privilegio che li rende visibili.
+/// `GRANTEE` e nella forma `'utente'@'host'` di `CURRENT_USER()`; il nome dello
+/// schema di una concessione puo essere un modello (`LIKE`), come lo legge il
+/// server.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) const ROW_FILTERS_QUERY: &str = "\
+SELECT
+    (SELECT COUNT(*) FROM information_schema.TRIGGERS
+      WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ?
+        AND ACTION_TIMING = 'BEFORE' AND EVENT_MANIPULATION = ?) AS before_triggers,
+    (SELECT COUNT(*) FROM (
+        SELECT CONCAT(CHAR(39), LEFT(CURRENT_USER(), CHAR_LENGTH(CURRENT_USER())
+                     - CHAR_LENGTH(SUBSTRING_INDEX(CURRENT_USER(), '@', -1)) - 1),
+                     CHAR(39), '@', CHAR(39), SUBSTRING_INDEX(CURRENT_USER(), '@', -1), CHAR(39)) AS grantee
+     ) AS me
+      WHERE EXISTS (SELECT 1 FROM information_schema.USER_PRIVILEGES p
+                     WHERE p.GRANTEE = me.grantee AND p.PRIVILEGE_TYPE = 'TRIGGER')
+         OR EXISTS (SELECT 1 FROM information_schema.SCHEMA_PRIVILEGES p
+                     WHERE p.GRANTEE = me.grantee AND p.PRIVILEGE_TYPE = 'TRIGGER'
+                       AND ? LIKE p.TABLE_SCHEMA)
+         OR EXISTS (SELECT 1 FROM information_schema.TABLE_PRIVILEGES p
+                     WHERE p.GRANTEE = me.grantee AND p.PRIVILEGE_TYPE = 'TRIGGER'
+                       AND p.TABLE_SCHEMA = ? AND p.TABLE_NAME = ?)) AS trigger_privilege";
+
 /// Il rifiuto di una versione che il profilo non dichiara qualificata.
 ///
 /// Vive accanto al riconoscimento perche e la seconda meta della stessa

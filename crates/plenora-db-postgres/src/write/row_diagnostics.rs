@@ -296,7 +296,11 @@ struct PostgresRowWriter<'transaction, 'input> {
     constraint_column: Option<String>,
     batch: Option<RecordBatch>,
     batch_start: u64,
+    /// Le righe che l'INSERT ha scritto nel target: `confirmed`.
     applied: u64,
+    /// Le righe il cui INSERT e andato a buon fine, scritte o soppresse da
+    /// un `BEFORE INSERT` che restituisce `NULL`: il cursore dell'ingresso.
+    processed: u64,
 }
 
 impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
@@ -339,7 +343,7 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
         // La preparazione ha preso il lock del target: la regola R si rilegge
         // qui, dove un DDL concorrente non puo piu cambiarla fino al COMMIT.
         match select_with_cancellation(
-            super::visibility::enforce(&transaction, operation),
+            super::visibility::enforce(&transaction, operation, &[]),
             cancellation,
         )
         .await
@@ -370,6 +374,7 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
             batch: None,
             batch_start: 0,
             applied: 0,
+            processed: 0,
         })
     }
 
@@ -473,13 +478,22 @@ impl RowScopedWriter for PostgresRowWriter<'_, '_> {
             )
             .await;
             match result {
-                Some(Ok(1)) => {
-                    self.applied = self.applied.checked_add(1).ok_or_else(|| {
+                // 1: la riga e nel target. 0: un trigger `BEFORE INSERT` di
+                // riga l'ha soppressa restituendo `NULL` (regole e `INSTEAD
+                // OF`, che darebbero 0 anche loro, la regola R le ha gia
+                // rifiutate): lo statement e riuscito, la riga non e scritta
+                // e non e contata, come negli altri percorsi (`skipped`).
+                // Fino al 25/10 lo 0 usciva `protocol` e la scrittura non
+                // partiva.
+                Some(Ok(affected @ (0 | 1))) => {
+                    let overflow = || {
                         diagnostic_error(
                             ErrorCategory::ResourceLimit,
                             "overflow nelle righe applicate PostgreSQL",
                         )
-                    })?;
+                    };
+                    self.processed = self.processed.checked_add(1).ok_or_else(overflow)?;
+                    self.applied = self.applied.checked_add(affected).ok_or_else(overflow)?;
                     Ok(RowApplication::Applied)
                 }
                 Some(Ok(affected)) => Err(invalid_affected_rows(affected)),
@@ -505,7 +519,7 @@ impl RowScopedWriter for PostgresRowWriter<'_, '_> {
         Box::pin(async move {
             if let Some(batch) = self.batch.take() {
                 let end = checked_batch_end(self.batch_start, batch_rows(&batch)?)?;
-                validate_consumed_batch_end(end, self.applied)?;
+                validate_consumed_batch_end(end, self.processed)?;
                 self.batch_start = end;
             }
             loop {
@@ -551,7 +565,7 @@ fn row_rejection_cause_from_sqlstate(code: &str) -> Option<&'static str> {
 fn invalid_affected_rows(_affected: u64) -> DatabaseError {
     diagnostic_error(
         ErrorCategory::Protocol,
-        "INSERT diagnostico PostgreSQL deve interessare esattamente una riga",
+        "INSERT diagnostico PostgreSQL deve interessare al piu una riga",
     )
 }
 
@@ -562,8 +576,8 @@ pub(super) fn short_input_error() -> DatabaseError {
     )
 }
 
-fn validate_consumed_batch_end(end: u64, applied: u64) -> Result<()> {
-    if end == applied {
+fn validate_consumed_batch_end(end: u64, processed: u64) -> Result<()> {
+    if end == processed {
         Ok(())
     } else {
         Err(input_beyond_declared_error())

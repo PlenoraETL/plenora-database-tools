@@ -22,7 +22,8 @@
 //!    ([`RowSecurity::NotPerformed`]);
 //! 5. colonne dell'ingresso che non ricevono valori: `GENERATED ALWAYS ...
 //!    STORED` (INSERT, UPDATE e `COPY`), `IDENTITY ALWAYS` (INSERT e UPDATE;
-//!    `COPY` lo scavalca e scrive il valore dell'ingresso);
+//!    `COPY` lo scavalcherebbe scrivendo il valore dell'ingresso, e la
+//!    regola W1 lo rifiuta prima, al punto 10);
 //! 6. aggiornabilita del target: vista non aggiornabile per il comando
 //!    (`pg_relation_is_updatable`, trigger `INSTEAD OF` compresi), `COPY` su
 //!    una relazione che non e una tabella, `TRUNCATE` su una vista;
@@ -36,9 +37,10 @@
 //!     `INSTEAD OF` per uno dei suoi eventi o una tabella esterna possono
 //!     mandare le righe altrove, e per Replace, Update e `DeleteByKeys` se una
 //!     policy RLS, un trigger di riga `BEFORE`/`INSTEAD OF` (o, per Replace,
-//!     una vista) possono nascondere righe allo statement distruttivo — la
-//!     stessa funzione e la stessa lettura della scrittura, nello stesso
-//!     punto.
+//!     una vista) possono nascondere righe allo statement distruttivo; e la
+//!     regola W1, se il percorso e `COPY` e scavalca una garanzia del target
+//!     (l'elenco chiuso di `super::visibility`) — la stessa funzione e la stessa
+//!     lettura della scrittura, nello stesso punto.
 //!
 //! Sotto una vista la row-level security delle tabelle di base decide un
 //! INSERT con il ruolo del proprietario della vista (o dell'invocante, con
@@ -513,6 +515,7 @@ pub async fn inspect(
         client,
         &operation.target,
         operation.mode,
+        &super::visibility::copied_columns(schema, path),
         ErrorPhase::Prepare,
     )
     .await?;
@@ -560,8 +563,9 @@ pub async fn inspect(
         verdict.at_statement = Some(missing_column());
         return Ok(verdict);
     }
-    // Le colonne che non ricevono valori: `COPY` rifiuta le generate (non
-    // `IDENTITY ALWAYS`, che scavalca); INSERT e UPDATE entrambe.
+    // Le colonne che non ricevono valori: `COPY` rifiuta le generate;
+    // `IDENTITY ALWAYS` lo scavalcherebbe, e la regola W1 l'ha gia rifiutato
+    // (`before_input`); INSERT e UPDATE entrambe.
     let receives_no_value = columns.iter().any(|(name, need)| {
         table.columns.get(name).is_some_and(|column| match need {
             Need::Insert if path == WritePath::Copy => column.generated,

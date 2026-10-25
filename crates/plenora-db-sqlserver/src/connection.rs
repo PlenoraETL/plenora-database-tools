@@ -1,7 +1,7 @@
 use crate::config::SqlServerConfig;
 use crate::error::{driver_error, interruption_error, timeout_error};
 use crate::recovery::{TransactionEvent, TransactionState};
-use crate::session::{SessionState, SESSION_BOOTSTRAP_SQL};
+use crate::session::{options_pinned, SessionState, SESSION_BOOTSTRAP_SQL, SESSION_OPTIONS_SQL};
 use crate::types::SqlServerColumnSpec;
 use futures_util::future::FutureExt;
 use futures_util::TryStreamExt;
@@ -108,7 +108,37 @@ impl SqlServerSession {
                 cancellation,
             )
             .await?;
+        // La regola W2: la sessione ha le impostazioni del bootstrap, o non
+        // si usa.
+        session.verify_pinned_options(cancellation).await?;
         Ok(session)
+    }
+
+    /// La regola W2: `@@OPTIONS` dice le impostazioni del bootstrap
+    /// ([`options_pinned`]); altrimenti la sessione si scarta.
+    async fn verify_pinned_options(&mut self, cancellation: &CancellationToken) -> Result<()> {
+        let options = self
+            .execute_query(
+                tiberius::Query::new(SESSION_OPTIONS_SQL),
+                ErrorPhase::Prepare,
+                cancellation,
+            )
+            .await?
+            .first()
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.try_get::<i32, _>(0).ok().flatten());
+        if options.is_some_and(options_pinned) {
+            return Ok(());
+        }
+        self.quarantine();
+        Err(plenora_database_core::DatabaseError::unsupported(
+            plenora_database_core::plan::ProviderKind::Sqlserver,
+            ErrorPhase::Connect,
+            format!(
+                "sessione SQL Server rifiutata: {}",
+                plenora_database_core::row_visibility::SESSION_WITHOUT_GUARANTEES
+            ),
+        ))
     }
 
     #[must_use]

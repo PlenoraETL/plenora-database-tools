@@ -25,11 +25,11 @@
 //!   righe al posto del target: il conteggio dello statement (o l'`OUTPUT` di
 //!   SQL Server) conta cio che il trigger ha ricevuto, non cio che ha scritto;
 //! - un trigger di riga `BEFORE` sopprime righe dello statement distruttivo
-//!   (`BEFORE DELETE ... RETURN NULL`): la chiave c'e, lo statement la salta;
-//! - il percorso di scrittura scelto non applica le garanzie del target: il
-//!   bulk TDS di SQL Server (`INSERT BULK` senza `CHECK_CONSTRAINTS` ne
-//!   `FIRE_TRIGGERS`) scrive righe che violano un `CHECK` o una foreign key,
-//!   lascia il vincolo `is_not_trusted` e non fa scattare i trigger;
+//!   (`BEFORE DELETE ... RETURN NULL` in PostgreSQL) o le neutralizza (`BEFORE
+//!   UPDATE ... SET NEW.c = OLD.c` in `MySQL`/`MariaDB`): la chiave c'e, lo
+//!   statement la salta o la lascia com'era;
+//! - il percorso di scrittura scelto non applica le garanzie del target (la
+//!   regola W1, qui sotto);
 //! - una vista (per `Replace`) o una relazione opaca (tabella esterna,
 //!   nickname, sinonimo, vista non risolta) possono filtrare o riscrivere
 //!   senza che il catalogo locale lo dica.
@@ -46,6 +46,61 @@
 //! orfano confermato; Upsert con `INSTEAD OF UPDATE` vuoto → `updated 1` e
 //! riga invariata.
 //!
+//! # La regola W1: fedelta del percorso
+//!
+//! Un percorso di scrittura (`COPY` testo e binario o INSERT preparato di
+//! PostgreSQL; bulk TDS, statement preparati o staging e scambio di Replace
+//! su SQL Server; gli statement di `MySQL`, Oracle, Db2) e ammesso per un
+//! target soltanto se applica ogni garanzia del target che applica lo
+//! statement di riferimento della mode: vincoli di ogni tipo (anche le regole
+//! legate), identita `ALWAYS`, colonne generate, domini, trigger, default e
+//! semantica dei `NULL`. Ogni provider tiene l'elenco **chiuso** di cio che
+//! ciascun suo percorso scavalca; se il target ne ha una, il percorso si
+//! rifiuta (`path_bypass`, [`BYPASSED_BY_PATH`]) — mai un ripiego silenzioso
+//! su un altro percorso — e il dry run concorda. Gli elenchi:
+//!
+//! - PostgreSQL `COPY` (`plenora-db-postgres`, `write::visibility`): le
+//!   regole di riscrittura (gia rifiutate per ogni profilo) e `IDENTITY
+//!   ALWAYS` su una colonna scritta. Misurato il 25/10: `COPY` scriveva 10 e
+//!   11 nella colonna d'identita senza avanzare la sequenza, dove l'INSERT
+//!   rifiuta (428C9);
+//! - SQL Server bulk TDS (`write::lifecycle`): `CHECK`, foreign key, regole
+//!   e default legati (`sp_bindrule`, `sp_bindefault`, sulla colonna o sul
+//!   tipo alias), trigger `INSERT`, vincoli `DEFAULT`. Misurato il 25/10:
+//!   la -5 passava contro una regola legata, un `NULL` diventava il default
+//!   legato;
+//! - SQL Server Replace (staging e scambio): la tabella nuova nasce dal
+//!   piano, e il piano rifiuta cio che non rappresenta; dal 25/10 anche le
+//!   regole e i default legati, che prima sparivano con la -5 nel target.
+//!
+//! # La regola W2: sessione fissata
+//!
+//! Ogni sessione del provider fissa, al bootstrap o nella transazione della
+//! scrittura, le impostazioni che spegnerebbero garanzie del target, e le
+//! verifica; se non le puo fissare la scrittura si rifiuta
+//! ([`SESSION_WITHOUT_GUARANTEES`]) prima di ogni effetto, e il dry run
+//! concorda dove c'e:
+//!
+//! - PostgreSQL: `session_replication_role = origin` (con `replica` i
+//!   trigger ordinari e quelli delle foreign key non scattano; misurato il
+//!   25/10, un orfano committato);
+//! - `MySQL`/`MariaDB`: `foreign_key_checks = 1`, `unique_checks = 1`,
+//!   `sql_mode` stretto, `sql_select_limit` al massimo (un limite globale
+//!   tronca in silenzio ogni `SELECT`, letture e catalogo compresi),
+//!   `CLIENT_FOUND_ROWS` per i conteggi di Update;
+//!   `MariaDB` anche `check_constraint_checks = 1` (misurati il 25/10: con il
+//!   valore globale spento un orfano, e su `MariaDB` 12.3 una riga oltre il
+//!   `CHECK`, committati);
+//! - SQL Server: `XACT_ABORT`, `ANSI_WARNINGS`, `ANSI_NULLS`, `ARITHABORT`,
+//!   `ROWCOUNT 0` e gli altri del bootstrap, verificati su `@@OPTIONS`;
+//! - Oracle e Db2: dalla documentazione dei prodotti (non misurato il 25/10:
+//!   i fixture non erano accesi) nessun interruttore di sessione spegne in
+//!   silenzio un vincolo o un trigger del target. I vincoli differiti di
+//!   Oracle (`SET CONSTRAINTS ALL DEFERRED`, `ALTER SESSION SET
+//!   CONSTRAINTS`) falliscono al COMMIT con un errore; trigger e vincoli di
+//!   Db2 si spengono soltanto con DDL della tabella (`SET INTEGRITY`,
+//!   `ALTER TRIGGER`), che il catalogo dice.
+//!
 //! La regola: quando il catalogo dice che uno di questi meccanismi agisce
 //! sugli statement della mode, la scrittura si rifiuta **prima di ogni
 //! effetto** con `unsupported`, e il dry run riporta lo stesso rifiuto. La
@@ -59,11 +114,20 @@
 //!   che restituisce `NULL` in PostgreSQL: la riga non e scritta e non e
 //!   contata (`confirmed` la esclude, `skipped` la conta). Misurato il 25/10:
 //!   Append, `TruncateInsert`, Replace, Upsert, in ogni profilo;
-//! - i trigger `AFTER` e di statement, i vincoli, le identita, i default, le
-//!   partizioni: non cambiano quali righe lo statement scrive;
-//! - in `MySQL`/`MariaDB` i trigger (soltanto `BEFORE`/`AFTER`, mai `INSTEAD
-//!   OF`) non possono sopprimere una riga senza un errore (`SIGNAL`), non ci
-//!   sono regole ne sicurezza di riga: la regola vale per costruzione.
+//! - i vincoli, le identita, i default, le partizioni e i trigger di
+//!   statement: non cambiano quali righe lo statement scrive;
+//! - i trigger `AFTER` di riga. Lo statement ha scritto la riga, e la conta;
+//!   un `AFTER INSERT` che poi la cancella, la sposta o la cambia e logica
+//!   del target, che il target dichiara nel proprio catalogo e che ogni
+//!   scrittura attraversa allo stesso modo: non e un'omissione silenziosa
+//!   della scrittura, ed e ammessa (decisione del 25/10, verificata su SQL
+//!   Server 2022: Append `inserted 1` e la riga tolta dal trigger). Il
+//!   conteggio pubblicato dice le righe che lo statement ha scritto, non
+//!   quelle che il target conserva dopo i propri trigger;
+//! - in `MySQL`/`MariaDB` un `BEFORE INSERT` di riga: non puo sopprimere la
+//!   riga senza un errore (`SIGNAL`), puo soltanto cambiarne i valori, e la
+//!   riga scritta e contata. Il `BEFORE` sull'evento distruttivo invece si
+//!   rifiuta, come sopra.
 //!
 //! # Limite dichiarato
 //!
@@ -74,7 +138,14 @@
 //!   Ogni regola di riscrittura per un evento della mode conta, anche `DO
 //!   ALSO`: la scrittura nel target avviene, ma gli effetti in piu non sono
 //!   dichiarati nel documento e `COPY` non li produrrebbe. Una relazione
-//!   opaca rifiuta ogni mode, anche quelle che inseriscono soltanto.
+//!   opaca rifiuta ogni mode, anche quelle che inseriscono soltanto. In
+//!   `MySQL`/`MariaDB` un `BEFORE DELETE` (che non puo neutralizzare la
+//!   riga) rifiuta comunque Replace e `DeleteByKeys`, e i trigger si vedono
+//!   soltanto con il privilegio `TRIGGER` concesso direttamente (un
+//!   privilegio che arriva da un ruolo non e letto): senza, le mode
+//!   distruttive si rifiutano (`unreadable`). Su PostgreSQL W2 rifiuta un
+//!   ruolo che ha `session_replication_role` diverso da `origin` e non puo
+//!   cambiarlo, anche se il target non ha trigger ne foreign key.
 //! - **Ambito.** Ogni mode che scrive un target esistente (tutte tranne
 //!   `Create`), su ogni provider che chiama la regola. Il `TRUNCATE` di
 //!   `TruncateInsert` non passa da policy, regole o trigger di riga; il suo
@@ -88,7 +159,14 @@
 //!   Oracle Label Security non sono letti: la regola rifiuta comunque, o non
 //!   vede (OLS). Un trigger `BEFORE INSERT` che scrive la riga altrove e
 //!   restituisce `NULL` (partizionamento con trigger) la pubblica `skipped`
-//!   anche se e in una tabella figlia.
+//!   anche se e in una tabella figlia. Un trigger `AFTER` che cancella o
+//!   cambia la riga appena scritta lascia nel target meno di quanto il
+//!   conteggio dice (ammesso, sopra). W2 non fissa la durabilita del COMMIT
+//!   (`synchronous_commit = off` di PostgreSQL, `DELAYED_DURABILITY` di SQL
+//!   Server, `innodb_flush_log_at_trx_commit` di `MySQL`): un COMMIT
+//!   confermato puo perdersi in un crash del server se il server e
+//!   configurato cosi; e una garanzia di durabilita, non del target, e resta
+//!   del server.
 //! - **Rientro.** Un conteggio delle righe del target prima e dopo lo
 //!   statement, nella stessa transazione e con lo stesso snapshot, che provi
 //!   che lo statement ha scritto nel target cio che pubblica; oppure una
@@ -183,9 +261,11 @@ pub struct RowFilters {
     /// (Oracle, Db2). Conta soltanto per le mode con un
     /// [`destructive_event`].
     pub row_trigger: bool,
-    /// Il percorso di scrittura scelto non applica vincoli, trigger o default
-    /// che il target ha (il bulk TDS di SQL Server su un target con `CHECK`,
-    /// foreign key, trigger o default).
+    /// La regola W1: il percorso di scrittura scelto non applica una garanzia
+    /// che il target ha e che lo statement di riferimento applica (il bulk
+    /// TDS di SQL Server su un target con `CHECK`, foreign key, regole o
+    /// default legati, trigger o default; `COPY` di PostgreSQL su una colonna
+    /// `IDENTITY ALWAYS` scritta).
     pub path_bypass: bool,
     /// Il target e una vista. `Replace` la rifiuta sempre: la definizione
     /// della vista e un filtro, e il catalogo non prova che non lo sia.
@@ -207,13 +287,18 @@ pub const HIDDEN_BY_INSTEAD_TRIGGER: &str =
 pub const HIDDEN_BY_TRIGGER: &str =
     "un trigger di riga BEFORE o INSTEAD OF del target puo sopprimere righe";
 pub const BYPASSED_BY_PATH: &str =
-    "il profilo di scrittura non applica vincoli, trigger o default del target";
+    "il profilo di scrittura non applica garanzie del target (vincoli, regole, identita, trigger o default)";
 pub const HIDDEN_BY_VIEW: &str =
     "replace su una vista: la definizione della vista puo escludere righe";
 pub const HIDDEN_BY_OPAQUE_RELATION: &str =
     "il target dipende da una relazione di cui il catalogo non dice filtri e riscritture";
 pub const HIDDEN_UNREADABLE: &str =
     "il catalogo che dice se lo statement scrive tutte le righe nel target non e leggibile";
+/// La regola W2: la sessione ha un'impostazione che spegne garanzie del
+/// target (trigger, foreign key, vincoli, unicita) e la scrittura non la
+/// puo riportare al valore che le applica.
+pub const SESSION_WITHOUT_GUARANTEES: &str =
+    "la sessione spegne garanzie del target e il ruolo non la puo riportare al valore che le applica";
 
 const fn mode_name(mode: WriteMode) -> &'static str {
     match mode {

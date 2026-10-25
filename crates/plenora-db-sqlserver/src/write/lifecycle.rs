@@ -92,6 +92,10 @@ pub(super) async fn validate_replace_external_state(
         "statistiche utente",
         "indice full-text",
         "specifiche database audit",
+        // La tabella nuova nasce dal piano: una regola o un default legati
+        // (`sp_bindrule`, `sp_bindefault`) non la seguirebbero. Fino al 25/10
+        // Replace committava la -5 contro `@v > 0` e la regola spariva.
+        "regole o default legati",
     ];
     for (index, name) in names.iter().enumerate() {
         if required::<i64>(&row, index, name, phase)? > 0 {
@@ -120,12 +124,20 @@ pub(super) async fn validate_replace_external_state(
 ///   predicato di blocco rifiuta con un errore, non in silenzio);
 /// - con il profilo `TdsBulk` (`bulk`), `INSERT BULK` di `tiberius-ng` 0.13.1
 ///   non passa `CHECK_CONSTRAINTS`, `FIRE_TRIGGERS` ne `KEEP_NULLS`, e il
-///   driver non ha modo di passarli: vincoli `CHECK` e foreign key non sono
-///   verificati (e restano `is_not_trusted`), i trigger `INSERT` non
-///   scattano, e un `NULL` dell'ingresso puo diventare il default della
-///   colonna. Un target con uno di questi rifiuta il profilo (`path_bypass`);
-///   il ripiego silenzioso sul profilo preparato non c'e, chi lo vuole lo
-///   sceglie.
+///   driver non ha modo di passarli. La regola W1 (fedelta del percorso)
+///   tiene l'elenco **chiuso** di cio che il bulk scavalca rispetto
+///   all'INSERT preparato, misurato su SQL Server 2022: vincoli `CHECK` e
+///   foreign key (non verificati, e restano `is_not_trusted`), regole legate
+///   (`sp_bindrule`, sulla colonna o sul tipo alias), trigger `INSERT` (non
+///   scattano), vincoli `DEFAULT` e default legati (`sp_bindefault`, sulla
+///   colonna o sul tipo alias: un `NULL` dell'ingresso diventa il default).
+///   Fino al 25/10 regole e default legati non erano letti: la -5 passava
+///   contro `@v > 0` e un `NULL` diventava il default. Identita, colonne
+///   calcolate e `rowversion` il bulk non le scrive (il piano chiede le
+///   colonne scrivibili, `plan::validate_bulk_profile`); unicita e indici li
+///   mantiene. Un target con uno di questi rifiuta il profilo
+///   (`path_bypass`); il ripiego silenzioso sul profilo preparato non c'e,
+///   chi lo vuole lo sceglie.
 ///
 /// Replace qui non passa: pubblica uno staging con lo swap e non cancella
 /// righe, e le sue condizioni (nessun trigger, nessuna policy) sono in
@@ -146,7 +158,7 @@ pub(super) async fn validate_replace_external_state(
 ///   Server; il profilo `TdsBulk` per Append e `TruncateInsert`.
 /// - **Hazard.** Un ruolo senza quel permesso non puo scrivere un target
 ///   esistente; `TdsBulk` non si usa su tabelle con vincoli `CHECK`, foreign
-///   key, trigger `INSERT` o default.
+///   key, regole o default legati, trigger `INSERT` o default.
 /// - **Rientro.** Una prova dell'assenza di policy che non dipenda dalla
 ///   visibilita dei metadati; un driver che passi le opzioni di `INSERT
 ///   BULK`.
@@ -266,7 +278,13 @@ SELECT
         WHERE t.parent_id IN (SELECT object_id FROM @closure)
           AND t.is_disabled = 0 AND e.type_desc = 'INSERT')
     + (SELECT COUNT_BIG(*) FROM sys.default_constraints
-        WHERE parent_object_id IN (SELECT object_id FROM @closure));
+        WHERE parent_object_id IN (SELECT object_id FROM @closure))
+    + (SELECT COUNT_BIG(*)
+         FROM sys.columns AS c
+         JOIN sys.types AS ty ON ty.user_type_id = c.user_type_id
+        WHERE c.object_id IN (SELECT object_id FROM @closure)
+          AND (c.default_object_id <> 0 OR c.rule_object_id <> 0
+               OR ty.default_object_id <> 0 OR ty.rule_object_id <> 0));
 ";
 
 fn replace_external_state_sql(has_ledger: bool, has_xml_compression: bool) -> String {
@@ -326,7 +344,13 @@ SELECT
       WHERE object_id = @object_id AND user_created = 1),
     (SELECT COUNT_BIG(*) FROM sys.fulltext_indexes WHERE object_id = @object_id),
     (SELECT COUNT_BIG(*) FROM sys.database_audit_specification_details
-      WHERE major_id = @object_id);
+      WHERE major_id = @object_id),
+    (SELECT COUNT_BIG(*) FROM sys.columns AS c
+      WHERE c.object_id = @object_id
+        AND (c.rule_object_id <> 0
+             OR (c.default_object_id <> 0
+                 AND NOT EXISTS (SELECT 1 FROM sys.default_constraints AS d
+                                  WHERE d.object_id = c.default_object_id))));
 "
     )
 }

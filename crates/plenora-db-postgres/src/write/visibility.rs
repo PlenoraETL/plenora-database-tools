@@ -28,18 +28,46 @@
 //!   restituisce `NULL` non conta: la riga non e scritta e non e contata;
 //! - tabelle esterne nella chiusura: filtri e riscritture li decide il server
 //!   remoto;
-//! - il tipo del target: `Replace` su una vista si rifiuta sempre.
+//! - il tipo del target: `Replace` su una vista si rifiuta sempre;
+//! - la regola W1 (fedelta del percorso): con `COPY`, una colonna `IDENTITY
+//!   ALWAYS` che l'ingresso porta (l'elenco chiuso qui sotto).
+//!
+//! E la regola W2 (sessione fissata): [`pin_session`] riporta
+//! `session_replication_role` a `origin` nella transazione della scrittura,
+//! o la rifiuta.
+//!
+//! # La regola W1 per `COPY`
+//!
+//! L'elenco **chiuso** delle garanzie che lo statement di riferimento
+//! (l'INSERT preparato) applica e `COPY FROM` no, misurato su PostgreSQL 16
+//! il 25/10.
+//!
+//! - le regole di riscrittura (`pg_rewrite`): rifiutate dalla regola R in
+//!   ogni profilo, quindi qui non servono;
+//! - `GENERATED ALWAYS AS IDENTITY` su una colonna che l'ingresso porta:
+//!   l'INSERT rifiuta il valore (428C9), `COPY` lo scrive come con
+//!   `OVERRIDING SYSTEM VALUE` e non avanza la sequenza. Fino al 25/10 le
+//!   righe 10 e 11 finivano nella colonna.
+//!
+//! Il resto `COPY` lo applica come l'INSERT, provato in ogni profilo da
+//! `write_semantics_live_tests`: vincoli `CHECK`, domini con vincoli (testo
+//! e binario), unicita, foreign key (trigger di sistema), trigger di riga
+//! `BEFORE` (anche quello che solleva o restituisce `NULL`) e `AFTER`,
+//! trigger di statement, default e identita delle colonne assenti, colonne
+//! generate (calcolate se assenti, rifiutate se nominate), partizioni. RLS
+//! rifiuta `COPY FROM` con un errore (`target`).
 //!
 //! Il target si risolve come lo risolve lo statement: per nome con lo schema
 //! dichiarato (senza i controlli di `USAGE`, che restano dello statement), con
 //! il `search_path` senza schema. Un target che non si risolve non ha fatti:
 //! lo statement lo rifiutera da se.
 
+use super::target::WritePath;
 use crate::error::classify_error;
 use plenora_database_core::plan::{ObjectRef, ProviderKind, WriteMode, WriteOperation};
 use plenora_database_core::row_visibility::{
     destructive_event, mode_events, refuse_unfaithful_write, DestructiveEvent, RowFilters,
-    WriteEvent,
+    WriteEvent, SESSION_WITHOUT_GUARANTEES,
 };
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use tokio_postgres::GenericClient;
@@ -82,7 +110,10 @@ SELECT
              WHERE NOT g.tgisinternal AND g.tgenabled <> 'D'
                AND (g.tgtype::int & $5::int) <> 0 AND (g.tgtype::int & 64) <> 0),
     EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_class c ON c.oid = cl.oid
-             WHERE c.relkind = 'f')";
+             WHERE c.relkind = 'f'),
+    EXISTS (SELECT 1 FROM target t JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid
+             WHERE a.attnum > 0 AND NOT a.attisdropped AND a.attidentity = 'a'
+               AND a.attname::text = ANY ($6::text[]))";
 
 /// I fatti del catalogo sul target, per gli eventi di una mode.
 #[allow(clippy::struct_excessive_bools)]
@@ -106,6 +137,10 @@ pub struct TargetFacts {
     /// Un trigger `INSTEAD OF` per uno degli eventi della mode.
     pub instead_trigger: bool,
     pub foreign_relation: bool,
+    /// Il percorso e `COPY` e scrive una colonna `GENERATED ALWAYS AS
+    /// IDENTITY` del target: `COPY` scrive il valore dell'ingresso, l'INSERT
+    /// lo rifiuta.
+    pub copy_identity_always: bool,
 }
 
 impl TargetFacts {
@@ -115,9 +150,10 @@ impl TargetFacts {
             rewrite_rule: self.rewrite_rule,
             instead_trigger: self.instead_trigger,
             row_trigger: self.row_trigger,
-            // `COPY` non salta vincoli ne trigger: scavalca soltanto le
-            // regole, che la regola rifiuta gia per ogni profilo.
-            path_bypass: false,
+            // L'elenco chiuso di cio che `COPY` scavalca rispetto all'INSERT
+            // (l'elenco chiuso del modulo): le regole, che la regola R rifiuta gia per
+            // ogni profilo, e `IDENTITY ALWAYS` su una colonna scritta.
+            path_bypass: self.copy_identity_always,
             view: self.kind == 'v',
             opaque_relation: self.foreign_relation,
             unreadable: false,
@@ -136,12 +172,14 @@ const fn event_codes(event: WriteEvent) -> (i32, &'static str) {
 }
 
 /// I fatti del target per gli eventi di `mode`, letti con `client` (la
-/// transazione della scrittura, o la sessione del dry run). Gli errori del
-/// catalogo escono in `phase`.
+/// transazione della scrittura, o la sessione del dry run). `copied` sono le
+/// colonne che `COPY` scrive, vuote se il percorso e uno statement. Gli
+/// errori del catalogo escono in `phase`.
 pub async fn facts<C: GenericClient + Sync>(
     client: &C,
     target: &ObjectRef,
     mode: WriteMode,
+    copied: &[String],
     phase: ErrorPhase,
 ) -> Result<TargetFacts> {
     let events = mode_events(mode);
@@ -166,6 +204,7 @@ pub async fn facts<C: GenericClient + Sync>(
                 &rules,
                 &destructive,
                 &instead,
+                &copied,
             ],
         )
         .await
@@ -181,6 +220,7 @@ pub async fn facts<C: GenericClient + Sync>(
         row_trigger: row.get(6),
         instead_trigger: row.get(7),
         foreign_relation: row.get(8),
+        copy_identity_always: row.get(9),
     })
 }
 
@@ -213,16 +253,101 @@ pub fn refusal(operation: &WriteOperation, facts: TargetFacts) -> Option<Databas
 /// prima (hazard del DDL concorrente, dichiarato in
 /// `plenora_database_core::row_visibility`).
 ///
+/// `copied` sono le colonne che `COPY` scrive (vuote sul percorso degli
+/// statement): la regola W1 rifiuta il profilo se scavalca una garanzia del
+/// target (l'elenco chiuso qui sopra).
+///
 /// # Errors
 ///
 /// Il rifiuto della regola, o l'errore della lettura del catalogo.
 pub async fn enforce<C: GenericClient + Sync>(
     client: &C,
     operation: &WriteOperation,
+    copied: &[String],
 ) -> Result<()> {
     if mode_events(operation.mode).is_empty() {
         return Ok(());
     }
-    let facts = facts(client, &operation.target, operation.mode, ErrorPhase::Write).await?;
+    let facts = facts(
+        client,
+        &operation.target,
+        operation.mode,
+        copied,
+        ErrorPhase::Write,
+    )
+    .await?;
     refusal(operation, facts).map_or(Ok(()), Err)
+}
+
+/// Le colonne che `COPY` scrive lungo `path`: quelle dell'ingresso se il
+/// percorso e `COPY`, nessuna altrimenti.
+#[must_use]
+pub fn copied_columns(schema: &arrow_schema::SchemaRef, path: WritePath) -> Vec<String> {
+    if path == WritePath::Copy {
+        schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// La regola W2 su PostgreSQL: la sessione della scrittura applica i trigger
+/// e le foreign key del target.
+///
+/// `session_replication_role` diverso da `origin` (`replica` o `local`)
+/// spegne i trigger ordinari e i trigger di sistema delle foreign key: fino
+/// al 25/10 un ruolo con `ALTER ROLE ... SET session_replication_role =
+/// replica` faceva committare ad Append un orfano e saltare un `BEFORE
+/// INSERT` che solleva, con il dry run `ok`. Il valore viene dal ruolo, dal
+/// database, dal server o da un `SET` precedente; `DISCARD ALL` lo riporta
+/// al valore del ruolo, non a `origin`.
+///
+/// Si legge nella transazione della scrittura (o del dry run); se non e
+/// `origin` si fissa con `set_config(..., true)`, locale alla transazione, e
+/// si rilegge. Il parametro e riservato al superutente: un ruolo senza `SET`
+/// sul parametro (`GRANT SET ON PARAMETER`, PostgreSQL 15) non lo puo
+/// cambiare, e la scrittura si rifiuta prima di ogni effetto.
+///
+/// # Errors
+///
+/// `unsupported` con [`SESSION_WITHOUT_GUARANTEES`] se la sessione resta
+/// fuori da `origin`; l'errore classificato di ogni altra lettura fallita. Il
+/// rifiuto del `set_config` interrompe la transazione: il chiamante la
+/// annulla.
+pub async fn pin_session<C: GenericClient + Sync>(client: &C) -> Result<()> {
+    let read = |error: tokio_postgres::Error| classify_error(ErrorPhase::Write, &error);
+    let current: String = client
+        .query_one("SELECT current_setting('session_replication_role')", &[])
+        .await
+        .map_err(read)?
+        .get(0);
+    if current == "origin" {
+        return Ok(());
+    }
+    let refused = || {
+        DatabaseError::unsupported(
+            ProviderKind::Postgres,
+            ErrorPhase::Write,
+            format!("scrittura rifiutata: session_replication_role: {SESSION_WITHOUT_GUARANTEES}"),
+        )
+    };
+    match client
+        .query_one(
+            "SELECT set_config('session_replication_role', 'origin', true)",
+            &[],
+        )
+        .await
+    {
+        Ok(row) if row.get::<_, String>(0) == "origin" => Ok(()),
+        Ok(_) => Err(refused()),
+        Err(error)
+            if error.code() == Some(&tokio_postgres::error::SqlState::INSUFFICIENT_PRIVILEGE) =>
+        {
+            Err(refused())
+        }
+        Err(error) => Err(read(error)),
+    }
 }

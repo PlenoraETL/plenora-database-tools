@@ -266,3 +266,325 @@ async fn live_regola_r_ammette_le_tabelle_ordinarie_e_i_before_insert() {
     reset(&admin).await;
     assert!(difformi.is_empty(), "{}", difformi.join("\n"));
 }
+
+/// La regola W1 (fedelta del percorso) per `IDENTITY ALWAYS`: `COPY` scrive
+/// il valore dell'ingresso in una colonna `GENERATED ALWAYS AS IDENTITY`
+/// (come `OVERRIDING SYSTEM VALUE`) e non avanza la sequenza, dove l'INSERT
+/// preparato rifiuta la scrittura (428C9, `invalid_plan`). Fino al 25/10 le
+/// righe 10 e 11 finivano nella colonna e il dry run `CopyText` diceva `ok`.
+/// Ora `COPY` si rifiuta prima di ogni effetto, e il dry run concorda; con
+/// l'ingresso che non porta la colonna `COPY` resta ammesso (la colonna
+/// prende la sequenza, come nell'INSERT).
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_w1_copy_non_scavalca_identity_always() {
+    use super::write_visibility_live_tests::{dry_run_stream, owner_rows, write_stream};
+    use plenora_database_core::row_visibility::BYPASSED_BY_PATH;
+    let Some(dsn) = live_dsn() else {
+        return;
+    };
+    let _serial = SERIAL.lock().await;
+    let secret = SecretString::new(dsn);
+    let admin = PostgresProvider::connect(&secret).await.expect("client");
+    let identity = "DROP TABLE {s}.t; \
+        CREATE TABLE {s}.t (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, owner text); \
+        INSERT INTO {s}.t (owner) VALUES ('a'), ('b'), ('a');";
+    let mut difformi = Vec::new();
+    for mode in [
+        WriteMode::Append,
+        WriteMode::TruncateInsert,
+        WriteMode::Replace,
+    ] {
+        for profile in PROFILES {
+            prepare(&admin, identity).await;
+            let provider = PostgresProvider::insecure_local().with_insert_mode(profile);
+            let operation = operation("t", mode);
+            let values = [(10, "a"), (11, "a")];
+            let before = (ids(&admin, "t").await, last_value(&admin).await);
+            let dry = dry_run(&provider, &secret, &operation, &values).await;
+            let written = write(&provider, &secret, &operation, &values).await;
+            let after = (ids(&admin, "t").await, last_value(&admin).await);
+            let expected = |error: Option<&DatabaseError>| {
+                error.is_some_and(|error| match profile {
+                    PostgresInsertMode::Prepared => error.category == ErrorCategory::InvalidPlan,
+                    _ => {
+                        error.category == ErrorCategory::Unsupported
+                            && error.phase == ErrorPhase::Write
+                            && error.message.ends_with(BYPASSED_BY_PATH)
+                    }
+                })
+            };
+            if !expected(written.as_ref().err()) || after != before {
+                difformi.push(format!(
+                    "identity {mode:?} {profile:?}: scrittura {:?}, {before:?} -> {after:?}",
+                    written.map(|outcome| outcome.rows)
+                ));
+                continue;
+            }
+            if profile == PostgresInsertMode::CopyBinary {
+                continue;
+            }
+            let dry_error = dry.as_ref().err().map(|error| error.message.clone());
+            if !expected(dry.as_ref().err())
+                || dry_error != written.err().map(|error| error.message)
+            {
+                difformi.push(format!("identity {mode:?} {profile:?}: dry run {dry:?}"));
+            }
+        }
+    }
+    // Il controllo positivo: senza la colonna d'identita nell'ingresso
+    // `COPY` applica la sequenza come l'INSERT.
+    for profile in PROFILES {
+        prepare(&admin, identity).await;
+        let provider = PostgresProvider::insecure_local().with_insert_mode(profile);
+        let operation = operation("t", WriteMode::Append);
+        let dry = if profile == PostgresInsertMode::CopyBinary {
+            Ok(())
+        } else {
+            dry_run_stream(&provider, &secret, &operation, owner_rows(&["z"]))
+                .await
+                .map(|_| ())
+        };
+        let written = write_stream(&provider, &secret, &operation, owner_rows(&["z"])).await;
+        let rows = ids(&admin, "t").await;
+        if dry.is_err()
+            || !written
+                .as_ref()
+                .is_ok_and(|outcome| outcome.rows.confirmed == 1)
+            || rows != vec![1, 2, 3, 4]
+        {
+            difformi.push(format!(
+                "identity senza colonna {profile:?}: dry {dry:?}, {:?}, righe {rows:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    reset(&admin).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// L'ultimo valore della sequenza d'identita di `t`.
+async fn last_value(client: &tokio_postgres::Client) -> Option<i64> {
+    client
+        .query_one(
+            &format!(
+                "SELECT last_value FROM pg_catalog.pg_sequences \
+                 WHERE schemaname = '{SCHEMA}' AND sequencename = 't_id_seq'"
+            ),
+            &[],
+        )
+        .await
+        .expect("sequenza")
+        .get(0)
+}
+
+/// La regola W2 (sessione fissata) per `session_replication_role`: un ruolo
+/// con `ALTER ROLE ... SET session_replication_role = replica` scriveva con
+/// i trigger ordinari spenti, foreign key comprese (sono trigger di sistema
+/// `ORIGIN`): Append committava un orfano e un `BEFORE INSERT` che solleva
+/// non scattava, e il dry run diceva `ok`. Ora la scrittura riporta la
+/// sessione a `origin` nella propria transazione; se il ruolo non puo, si
+/// rifiuta prima di ogni effetto e il dry run concorda. Con il permesso
+/// (`GRANT SET ON PARAMETER`) la sessione si fissa e il target applica le
+/// proprie garanzie: l'orfano e la riga che il trigger rifiuta falliscono.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_w2_session_replication_role_fissato_a_origin() {
+    use super::write_visibility_live_tests::dsn_as_role;
+    use plenora_database_core::row_visibility::SESSION_WITHOUT_GUARANTEES;
+    let Some(dsn) = live_dsn() else {
+        return;
+    };
+    let _serial = SERIAL.lock().await;
+    let admin_secret = SecretString::new(dsn.clone());
+    let role_secret = SecretString::new(dsn_as_role(&dsn));
+    let admin = PostgresProvider::connect(&admin_secret)
+        .await
+        .expect("client");
+    let foreign_key = "CREATE TABLE {s}.padre (id bigint PRIMARY KEY); \
+        INSERT INTO {s}.padre VALUES (1), (2), (3), (10); \
+        GRANT SELECT ON {s}.padre TO {r}; \
+        ALTER TABLE {s}.t ADD CONSTRAINT verso_padre FOREIGN KEY (id) REFERENCES {s}.padre (id); \
+        ALTER ROLE {r} SET session_replication_role = replica;";
+    let before_raise = "CREATE FUNCTION {s}.vieta() RETURNS trigger LANGUAGE plpgsql AS \
+        $$ BEGIN RAISE EXCEPTION 'vietato'; END $$; \
+        CREATE TRIGGER vieta BEFORE INSERT ON {s}.t FOR EACH ROW EXECUTE FUNCTION {s}.vieta(); \
+        ALTER ROLE {r} SET session_replication_role = replica;";
+    let grant = " GRANT SET ON PARAMETER session_replication_role TO {r};";
+    let mut difformi = Vec::new();
+    for (name, setup) in [("fk", foreign_key), ("before-raise", before_raise)] {
+        for profile in PROFILES {
+            let provider = PostgresProvider::insecure_local().with_insert_mode(profile);
+            let operation = operation("t", WriteMode::Append);
+            // 99 non ha un padre; il trigger rifiuta ogni riga.
+            let values = [(10, "a"), (99, "a")];
+            // Senza permesso: rifiuto prima di ogni effetto.
+            prepare(&admin, setup).await;
+            let before = ids(&admin, "t").await;
+            let dry = dry_run(&provider, &role_secret, &operation, &values).await;
+            let written = write(&provider, &role_secret, &operation, &values).await;
+            let after = ids(&admin, "t").await;
+            let refused = |error: Option<&DatabaseError>| {
+                error.is_some_and(|error| {
+                    error.category == ErrorCategory::Unsupported
+                        && error.message.ends_with(SESSION_WITHOUT_GUARANTEES)
+                })
+            };
+            if !refused(written.as_ref().err()) || after != before {
+                difformi.push(format!(
+                    "{name} {profile:?} senza permesso: {:?}, {before:?} -> {after:?}",
+                    written.map(|outcome| outcome.rows)
+                ));
+            } else if profile != PostgresInsertMode::CopyBinary
+                && (!refused(dry.as_ref().err())
+                    || dry.as_ref().err().map(|error| error.message.clone())
+                        != written.err().map(|error| error.message))
+            {
+                difformi.push(format!(
+                    "{name} {profile:?} senza permesso: dry run {dry:?}"
+                ));
+            }
+            // Con il permesso: la sessione si fissa e il target rifiuta.
+            prepare(&admin, &format!("{setup}{grant}")).await;
+            let before = ids(&admin, "t").await;
+            let written = write(&provider, &role_secret, &operation, &values).await;
+            let after = ids(&admin, "t").await;
+            // Il rifiuto e del target (foreign key, trigger), non della regola.
+            let by_target = written
+                .as_ref()
+                .is_err_and(|error| error.category != ErrorCategory::Unsupported);
+            if !by_target || after != before {
+                difformi.push(format!(
+                    "{name} {profile:?} con permesso: {:?}, {before:?} -> {after:?}",
+                    written.map(|outcome| outcome.rows)
+                ));
+            }
+        }
+    }
+    reset(&admin).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// N8: il percorso row-scoped (Append con il totale dichiarato) e un `BEFORE
+/// INSERT` che restituisce `NULL`. Fino al 25/10 la riga soppressa usciva
+/// come `protocol` («INSERT diagnostico deve interessare esattamente una
+/// riga») e la scrittura non partiva; negli altri percorsi la stessa riga e
+/// `skipped`. Ora e `skipped` anche qui: `confirmed` 2, `skipped` 1.
+#[tokio::test]
+async fn live_row_scoped_before_insert_null_conta_skipped() {
+    use super::write_visibility_live_tests::{declared_rows, write_stream};
+    let Some(dsn) = live_dsn() else {
+        return;
+    };
+    let _serial = SERIAL.lock().await;
+    let secret = SecretString::new(dsn);
+    let admin = PostgresProvider::connect(&secret).await.expect("client");
+    let before_null = "CREATE FUNCTION {s}.salta() RETURNS trigger LANGUAGE plpgsql AS \
+        $$ BEGIN IF NEW.id = 11 THEN RETURN NULL; END IF; RETURN NEW; END $$; \
+        CREATE TRIGGER salta BEFORE INSERT ON {s}.t FOR EACH ROW EXECUTE FUNCTION {s}.salta();";
+    let mut difformi = Vec::new();
+    for profile in PROFILES {
+        prepare(&admin, before_null).await;
+        let provider = PostgresProvider::insecure_local().with_insert_mode(profile);
+        let outcome = write_stream(
+            &provider,
+            &secret,
+            &operation("t", WriteMode::Append),
+            declared_rows(&[(10, "a"), (11, "a"), (12, "a")]),
+        )
+        .await;
+        let rows = ids(&admin, "t").await;
+        let counted = outcome.as_ref().is_ok_and(|outcome| {
+            (
+                outcome.rows.received,
+                outcome.rows.confirmed,
+                outcome.rows.inserted,
+                outcome.rows.skipped,
+            ) == (3, 2, Some(2), 1)
+        });
+        if !counted || rows != vec![1, 2, 3, 10, 12] {
+            difformi.push(format!(
+                "row-scoped {profile:?}: {:?}, righe {rows:?}",
+                outcome.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    reset(&admin).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// Uno scenario che il target rifiuta: nome, preparazione, ingresso.
+type Refusal = (&'static str, &'static str, &'static [(i64, &'static str)]);
+
+/// La regola W1, il lato che ammette: ogni altra garanzia del target `COPY`
+/// la applica come l'INSERT preparato, ed e cio che rende chiuso l'elenco di
+/// `write::visibility`. Su ogni profilo una riga che viola un `CHECK`, il
+/// vincolo di un dominio, l'unicita o un `BEFORE INSERT` che solleva fa
+/// fallire la scrittura senza effetti; una colonna generata assente
+/// dall'ingresso e calcolata.
+#[tokio::test]
+async fn live_w1_copy_applica_le_altre_garanzie_del_target() {
+    let Some(dsn) = live_dsn() else {
+        return;
+    };
+    let _serial = SERIAL.lock().await;
+    let secret = SecretString::new(dsn);
+    let admin = PostgresProvider::connect(&secret).await.expect("client");
+    let refusals: [Refusal; 4] = [
+        (
+            "check",
+            "ALTER TABLE {s}.t ADD CONSTRAINT piccolo CHECK (id < 100);",
+            &[(10, "a"), (200, "a")],
+        ),
+        (
+            "dominio",
+            "CREATE DOMAIN {s}.etichetta AS text CHECK (VALUE <> 'x'); \
+             ALTER TABLE {s}.t ALTER COLUMN owner TYPE {s}.etichetta;",
+            &[(10, "a"), (11, "x")],
+        ),
+        ("unicita", "", &[(10, "a"), (2, "a")]),
+        (
+            "before-solleva",
+            "CREATE FUNCTION {s}.vieta() RETURNS trigger LANGUAGE plpgsql AS \
+             $$ BEGIN IF NEW.id = 11 THEN RAISE EXCEPTION 'vietato'; END IF; RETURN NEW; END $$; \
+             CREATE TRIGGER vieta BEFORE INSERT ON {s}.t FOR EACH ROW EXECUTE FUNCTION {s}.vieta();",
+            &[(10, "a"), (11, "a")],
+        ),
+    ];
+    let mut difformi = Vec::new();
+    for profile in PROFILES {
+        let provider = PostgresProvider::insecure_local().with_insert_mode(profile);
+        let append = operation("t", WriteMode::Append);
+        for (name, setup, values) in refusals {
+            prepare(&admin, setup).await;
+            let before = ids(&admin, "t").await;
+            let written = write(&provider, &secret, &append, values).await;
+            let after = ids(&admin, "t").await;
+            if written.is_ok() || after != before {
+                difformi.push(format!(
+                    "{name} {profile:?}: {:?}, {before:?} -> {after:?}",
+                    written.map(|outcome| outcome.rows)
+                ));
+            }
+        }
+        prepare(
+            &admin,
+            "ALTER TABLE {s}.t ADD COLUMN g text GENERATED ALWAYS AS (owner || '!') STORED;",
+        )
+        .await;
+        let written = write(&provider, &secret, &append, &[(10, "a")]).await;
+        let generated: Option<String> = admin
+            .query_one(&format!("SELECT g FROM {SCHEMA}.t WHERE id = 10"), &[])
+            .await
+            .ok()
+            .and_then(|row| row.get(0));
+        if written.is_err() || generated.as_deref() != Some("a!") {
+            difformi.push(format!(
+                "generata {profile:?}: {:?}, {generated:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    reset(&admin).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}

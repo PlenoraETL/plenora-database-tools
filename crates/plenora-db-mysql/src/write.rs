@@ -101,13 +101,13 @@ fn compile_write_column(
                 "write spatial {product} richiede geometry GeoArrow WKB Binary"
             )));
         }
-        // XY è l'unico profilo dimensionale misurato per questi motori:
+        // XY Ã¨ l'unico profilo dimensionale misurato per questi motori:
         // `raw.geometry_dimensions` ha chiesto al
         // **parser** `POINT Z(1 2 3)` nelle due sintassi WKT, e `MySQL` risponde
-        // 3037 — WKT non valido — mentre `MariaDB` lo parsa a `NULL`. Anche
+        // 3037 â€” WKT non valido â€” mentre `MariaDB` lo parsa a `NULL`. Anche
         // `ST_Z` e `ST_M` sono assenti da entrambi.
         //
-        // La chiusura smette percio di essere «non qualificata» e diventa un
+        // La chiusura smette percio di essere Â«non qualificataÂ» e diventa un
         // fatto del prodotto: non c'e una Z da scrivere, non che non sia stata
         // provata.
         if contract.dimensions != Some("xy") {
@@ -312,7 +312,7 @@ impl MysqlWritePlan {
                     return Err(prepare_error(
                         ErrorCategory::InvalidPlan,
                         format!(
-                            "DeleteByKeys: colonna '{}' non è una key — schema Arrow \
+                            "DeleteByKeys: colonna '{}' non Ã¨ una key â€” schema Arrow \
  deve contenere solo le colonne key",
                             col.name
                         ),
@@ -331,7 +331,7 @@ impl MysqlWritePlan {
         };
         // Key columns dell'Upsert: nomi grezzi (per il match con gli unique
         // index del target) e quoted (per la clausola ON DUPLICATE no-op dei
-        // keys-only). La presenza di ogni key nello schema è già verificata
+        // keys-only). La presenza di ogni key nello schema Ã¨ giÃ  verificata
         // sopra per Upsert/DeleteByKeys.
         let (upsert_keys, upsert_keys_quoted) = if operation.mode == WriteMode::Upsert {
             let quoted: Vec<String> = operation
@@ -427,7 +427,7 @@ impl MysqlWritePlan {
     ///
     /// TEMPORARY table MySQL sono session-scoped; il naming deve solo
     /// evitare collision col target reale. Prefix `__pln_stg_` +
-    /// short target hash è unica per sessione.
+    /// short target hash Ã¨ unica per sessione.
     #[must_use]
     pub(super) fn staging_temp_name(&self, execution_id: &str) -> String {
         format!(
@@ -470,7 +470,7 @@ impl MysqlWritePlan {
         staging_quoted: &str,
         rows: usize,
     ) -> Result<String> {
-        // Staging INSERT: mai ON DUPLICATE KEY (la staging è vuota e senza
+        // Staging INSERT: mai ON DUPLICATE KEY (la staging Ã¨ vuota e senza
         // vincoli in conflitto; il merge avviene dopo con UPDATE JOIN).
         self.render_insert_generic(staging_quoted, rows, None)
     }
@@ -479,7 +479,7 @@ impl MysqlWritePlan {
     /// target reale, oppure `None` per le altre mode.
     ///
     /// - Upsert con colonne non-key: `col=VALUES(col), ...`.
-    /// - Upsert **keys-only** (schema di sole key): `k0=k0` — un update no-op
+    /// - Upsert **keys-only** (schema di sole key): `k0=k0` â€” un update no-op
     ///   che rende l'INSERT idempotente (insert-or-ignore) invece di fallire
     ///   con duplicate key. Senza questa clausola un Upsert keys-only
     ///   diventerebbe un INSERT nudo che erra sul primo conflitto.
@@ -787,7 +787,7 @@ impl MysqlWritePlan {
     /// richiediamo, prima di aprire la transazione:
     ///
     /// 1. esiste un PK/UNIQUE index le cui colonne coincidono (come insieme)
-    ///    con le keys — l'ancora che rende deterministico il match;
+    ///    con le keys â€” l'ancora che rende deterministico il match;
     /// 2. **nessun altro** PK/UNIQUE index con un insieme di colonne diverso;
     /// 3. nessun unique index funzionale (espressione) non confrontabile.
     ///
@@ -797,7 +797,7 @@ impl MysqlWritePlan {
         use std::collections::BTreeSet;
         let key_set: BTreeSet<&str> = self.upsert_keys.iter().map(String::as_str).collect();
         if key_set.is_empty() {
-            // validate_operation garantisce keys non vuote; difesa in profondità.
+            // validate_operation garantisce keys non vuote; difesa in profonditÃ .
             return Err(prepare_error(
                 ErrorCategory::InvalidPlan,
                 "Upsert richiede almeno una key column",
@@ -812,7 +812,7 @@ impl MysqlWritePlan {
                 return Err(unsupported(format!(
                     "Upsert non qualificato: la tabella '{}' ha un unique \
  index funzionale/espressione ('{}') non confrontabile con \
- le keys — ON DUPLICATE KEY UPDATE potrebbe aggiornare la \
+ le keys â€” ON DUPLICATE KEY UPDATE potrebbe aggiornare la \
  riga sbagliata",
                     target.name, index.name
                 )));
@@ -823,7 +823,7 @@ impl MysqlWritePlan {
             } else {
                 return Err(unsupported(format!(
                     "Upsert non sicuro: keys={:?} ma la tabella '{}' ha un \
- altro PK/UNIQUE index ('{}' su {:?}) — ON DUPLICATE KEY \
+ altro PK/UNIQUE index ('{}' su {:?}) â€” ON DUPLICATE KEY \
  UPDATE potrebbe collidere su quell'indice e aggiornare la \
  riga sbagliata. Rimuovere l'indice in conflitto o usare \
  WriteMode::Update esplicito.",
@@ -874,13 +874,16 @@ impl MysqlWritePlan {
         profile: &dyn crate::profile::ProductProfile,
     ) -> Result<LossReport> {
         let product = profile.product();
-        // La regola R (`plenora_database_core::row_visibility`) vale qui per
-        // costruzione, per ogni mode: il target e una BASE TABLE (niente
-        // viste, quindi niente relazioni di base da risolvere), `MySQL` e
-        // `MariaDB` non hanno regole di riscrittura, sicurezza di riga ne
-        // trigger `INSTEAD OF`, e un trigger `BEFORE` o `AFTER` non puo
-        // sopprimere o deviare una riga senza un errore (`SIGNAL`), che
-        // annulla lo statement.
+        // La regola R (`plenora_database_core::row_visibility`): il target e
+        // una BASE TABLE (niente viste, quindi niente relazioni di base da
+        // risolvere), `MySQL` e `MariaDB` non hanno regole di riscrittura,
+        // sicurezza di riga ne trigger `INSTEAD OF`. Un trigger `BEFORE` non
+        // sopprime una riga senza un errore (`SIGNAL`), ma puo neutralizzarla
+        // (`SET NEW.c = OLD.c`): quello sull'evento distruttivo della mode lo
+        // legge e lo rifiuta `catalog::row_filters`, prima di ogni effetto.
+        // Fino al 25/10 la regola si dava per vera senza leggere i trigger, e
+        // Update con un `BEFORE UPDATE` neutro pubblicava la chiave presente
+        // `skipped`.
         if target.kind != "BASE TABLE" {
             return Err(unsupported(format!(
                 "append {product} richiede una BASE TABLE"
@@ -908,8 +911,8 @@ impl MysqlWritePlan {
             // L'SRID del contratto Arrow **e** la dichiarazione, su questo
             // percorso. Costruire la spec senza passarlo faceva rifiutare ogni
             // colonna geometrica di un prodotto il cui catalogo tace: il
-            // rifiuto arrivava dalla regola della lettura — «il catalogo tace e
-            // il piano non lo dichiara» — applicata a un piano che lo dichiara
+            // rifiuto arrivava dalla regola della lettura â€” Â«il catalogo tace e
+            // il piano non lo dichiaraÂ» â€” applicata a un piano che lo dichiara
             // eccome, solo altrove.
             let spec =
                 MysqlColumnSpec::from_catalog_declaring(server, profile, column.spatial_srid)?;
@@ -923,7 +926,7 @@ impl MysqlWritePlan {
                 // domanda sui due prodotti: dove la colonna e vincolata il
                 // catalogo deve portare **quell'**SRID, dove non puo esserlo il
                 // catalogo tace e non c'e niente da confrontare. La
-                // compatibilità non può quindi essere un semplice confronto
+                // compatibilitÃ  non puÃ² quindi essere un semplice confronto
                 // tra `Option`.
                 let declared = column.spatial_srid.ok_or_else(|| {
                     crs_error(format!("write spatial {product} senza SRID dichiarato"))
@@ -979,6 +982,65 @@ impl MysqlWritePlan {
             policy: MappingPolicy::Strict,
             losses: Vec::new(),
         })
+    }
+}
+
+/// La regola W2 sulla sessione della scrittura: rilegge le impostazioni che
+/// il bootstrap fissa (`crate::SESSION_BOOTSTRAP_SQL`) e, su `MariaDB`, fissa
+/// `check_constraint_checks = 1`.
+///
+/// `MariaDB` ha un interruttore in piu: `check_constraint_checks = 0` spegne
+/// i vincoli `CHECK`. Non sta nel bootstrap perche `MySQL` non lo conosce, e
+/// il bootstrap gira prima che il profilo del server sia verificato.
+///
+/// # Errors
+///
+/// `unsupported` con il motivo della regola se un valore non e quello che
+/// applica le garanzie; l'errore della lettura altrimenti.
+pub(crate) async fn verify_write_session(
+    session: &mut crate::MysqlSession,
+    token: &plenora_database_core::CancellationToken,
+) -> Result<()> {
+    let mariadb = session.kind() == plenora_database_core::plan::ProviderKind::Mariadb;
+    if mariadb {
+        session
+            .exec_control(
+                "SET SESSION check_constraint_checks = 1",
+                ErrorPhase::Prepare,
+                token,
+            )
+            .await?;
+    }
+    let sql = if mariadb {
+        "SELECT @@session.foreign_key_checks, @@session.unique_checks, @@session.sql_mode, \
+         @@session.check_constraint_checks"
+    } else {
+        "SELECT @@session.foreign_key_checks, @@session.unique_checks, @@session.sql_mode, 1"
+    };
+    let rows = session.query_rows(sql, ErrorPhase::Prepare, token).await?;
+    let pinned = rows.first().is_some_and(|row| {
+        let flag = |index: usize| {
+            row.get_opt::<i64, _>(index)
+                .and_then(std::result::Result::ok)
+        };
+        let strict = row
+            .get_opt::<String, _>(2)
+            .and_then(std::result::Result::ok)
+            .is_some_and(|mode| mode.split(',').any(|part| part == "STRICT_TRANS_TABLES"));
+        flag(0) == Some(1) && flag(1) == Some(1) && flag(3) == Some(1) && strict
+    });
+    if pinned {
+        Ok(())
+    } else {
+        Err(DatabaseError::new(
+            ErrorCategory::Unsupported,
+            ErrorPhase::Prepare,
+            Some(session.kind()),
+            format!(
+                "scrittura rifiutata: {}",
+                plenora_database_core::row_visibility::SESSION_WITHOUT_GUARANTEES
+            ),
+        ))
     }
 }
 
@@ -1194,8 +1256,8 @@ pub fn rolled_back_error(
 ///
 /// Senza residuo il valore passa invariato.
 ///
-/// Su errore: `RolledBack` e `None` diventano `Partial` — righe annullate o
-/// mai scritte, schema persistito — con recupero richiesto. `Unknown` resta
+/// Su errore: `RolledBack` e `None` diventano `Partial` â€” righe annullate o
+/// mai scritte, schema persistito â€” con recupero richiesto. `Unknown` resta
 /// `Unknown`: non sapere se le righe siano sparite e piu grave che sapere che
 /// lo schema e rimasto. Una sessione gia quarantinata non viene declassata.
 ///
@@ -1415,7 +1477,7 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
     // `TruncateInsert` resta fail-closed. Su MySQL `TRUNCATE TABLE` e DDL con
     // commit implicito: le righe sparirebbero prima dell'INSERT e nessun
     // rollback le riporterebbe indietro. Emularla con `DELETE FROM` sarebbe
-    // peggio di rifiutarla — il consumer chiederebbe TRUNCATE (reset di
+    // peggio di rifiutarla â€” il consumer chiederebbe TRUNCATE (reset di
     // AUTO_INCREMENT, nessun trigger, nessun log riga per riga) e ne
     // otterrebbe un'altra cosa con lo stesso nome. Chi vuole svuotare e
     // riempire in transazione ha `Replace`, che dichiara esattamente questo.
@@ -1485,7 +1547,7 @@ fn validate_operation(operation: &WriteOperation, database: &str) -> Result<()> 
     {
         // Restano Append e Replace: nessuna delle due ha semantica di chiave.
         // Il messaggio nomina la mode effettiva, e la categoria e
-        // `InvalidPlan` — il piano descrive qualcosa che la mode non
+        // `InvalidPlan` â€” il piano descrive qualcosa che la mode non
         // significa, non una funzione che il provider non implementa.
         return Err(prepare_error(
             ErrorCategory::InvalidPlan,
@@ -1654,7 +1716,7 @@ fn unsupported(message: impl Into<String>) -> DatabaseError {
 /// Genera la dichiarazione MySQL per un tipo di colonna.
 ///
 /// La forma della colonna geometrica la decide il **profilo**: `MySQL` la
-/// vincola a un SRID, `MariaDB` non puo — e il CRS gli viaggia dentro i valori.
+/// vincola a un SRID, `MariaDB` non puo â€” e il CRS gli viaggia dentro i valori.
 /// Sceglierla qui avrebbe messo una divergenza di prodotto dentro una tabella
 /// di tipi, che e l'ultimo posto dove qualcuno la cercherebbe.
 fn mysql_column_ddl(
@@ -1675,8 +1737,8 @@ fn mysql_column_ddl(
         MysqlColumnKind::U64 => "BIGINT UNSIGNED".to_owned(),
         MysqlColumnKind::F32 => "FLOAT".to_owned(),
         MysqlColumnKind::F64 => "DOUBLE".to_owned(),
-        // TEXT senza length hint: general-purpose (no VARCHAR(N) perché
-        // il Arrow schema non porta max length). Consumer può ALTER
+        // TEXT senza length hint: general-purpose (no VARCHAR(N) perchÃ©
+        // il Arrow schema non porta max length). Consumer puÃ² ALTER
         // dopo il create se serve VARCHAR indexed.
         MysqlColumnKind::Utf8 => "TEXT".to_owned(),
         MysqlColumnKind::Binary => "BLOB".to_owned(),
@@ -1692,7 +1754,7 @@ fn mysql_column_ddl(
         // usare `GEOMETRY` accetterebbe forme che il piano dichiara vietate.
         //
         // `raw.exact_geometry_column` ha misurato che entrambi i prodotti
-        // reggono la colonna tipata e **rifiutano** il tipo sbagliato — 1366 su
+        // reggono la colonna tipata e **rifiutano** il tipo sbagliato â€” 1366 su
         // `MariaDB`, 1416 su `MySQL`.
         MysqlColumnKind::Geometry => {
             let base = exact_geometry_type.map_or("GEOMETRY", |exact| match exact {
@@ -1703,8 +1765,8 @@ fn mysql_column_ddl(
                 "multilinestring" => "MULTILINESTRING",
                 "multipolygon" => "MULTIPOLYGON",
                 "geometrycollection" => "GEOMETRYCOLLECTION",
-                // Il piano ammette solo i sette di sopra — lo decide
-                // `writable_geometry_type` — e un nome fuori da quell'insieme
+                // Il piano ammette solo i sette di sopra â€” lo decide
+                // `writable_geometry_type` â€” e un nome fuori da quell'insieme
                 // non arriva qui. Se ci arrivasse, la colonna generica e
                 // l'unica scelta che non inventa un tipo SQL.
                 _ => "GEOMETRY",
@@ -1788,7 +1850,7 @@ pub(crate) fn build_create_table_sql(
             // `NOT NULL` non e una raccomandazione: entrambi i motori
             // rifiutano un indice spaziale su una colonna nullable, e
             // scoprirlo dal server significherebbe averlo scoperto dopo aver
-            // creato la tabella — che qui fa commit implicito e non torna
+            // creato la tabella â€” che qui fa commit implicito e non torna
             // indietro.
             if column.nullable {
                 return Err(unsupported(format!(

@@ -10,7 +10,22 @@ use plenora_database_core::{
     RetryDisposition,
 };
 
-pub const SESSION_BOOTSTRAP_SQL: &str = "SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'";
+/// Il bootstrap di ogni sessione del pool, rieseguito dopo ogni reset.
+///
+/// La regola W2 (sessione fissata): ogni impostazione di sessione che
+/// spegnerebbe in silenzio una garanzia del target ha qui il valore che la
+/// applica. `foreign_key_checks = 0` (anche soltanto globale: la sessione
+/// nuova lo eredita) lasciava committare un orfano, misurato il 25/10;
+/// `unique_checks = 0` permette a `InnoDB` di non verificare l'unicita degli
+/// indici secondari; `sql_mode` senza `STRICT_TRANS_TABLES` troncherebbe e
+/// convertirebbe valori con un avviso invece di un errore (il target e
+/// sempre `InnoDB`, transazionale: la modalita stretta vale per ogni riga);
+/// `sql_select_limit` sotto il massimo troncherebbe ogni `SELECT` della
+/// sessione, le letture del catalogo comprese (`DEFAULT` darebbe il valore
+/// globale, non il massimo).
+/// La scrittura rilegge i valori sulla propria sessione
+/// (`crate::write::verify_write_session`).
+pub const SESSION_BOOTSTRAP_SQL: &str = "SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', foreign_key_checks = 1, unique_checks = 1, sql_select_limit = 18446744073709551615";
 
 #[cfg(test)]
 static TEST_ROW_PULLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

@@ -319,8 +319,9 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
         )
         # Le prove concorrenti verificano il recupero delle connessioni e del pool;
-        # l'ultima aggiunta e l'ordine degli assi geografici (GEO-001).
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 36)
+        # poi l'ordine degli assi geografici (GEO-001) e, il 25/10, le tre prove
+        # delle regole W1/W2 e della regola R sulla scrittura.
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 39)
         self.assertIn(
             "live_tests::live_geographic_axis_order_round_trips_and_derived_srid_is_verified",
             gate.EXPECTED_LIVE_REFERENCE_TESTS,

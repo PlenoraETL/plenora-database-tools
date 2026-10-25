@@ -259,11 +259,22 @@ pub async fn execute(
         execution_id: &execution_id,
     };
     let operation = &prepared.operation;
+    // La regola W2: la sessione applica trigger e foreign key del target
+    // (`session_replication_role = origin`), o la scrittura non parte.
+    match select_with_cancellation(visibility::pin_session(&transaction), cancellation).await {
+        Some(Ok(())) => {}
+        Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+        None => return Err(recovery.rollback_cancellation(transaction).await),
+    }
     if let Some(diagnostic_input) = diagnostic_input {
         // La regola R prima di ogni effetto, come nel percorso ordinario; di
-        // nuovo dopo la preparazione dell'INSERT (`row_diagnostics`).
-        match select_with_cancellation(visibility::enforce(&transaction, operation), cancellation)
-            .await
+        // nuovo dopo la preparazione dell'INSERT (`row_diagnostics`). Il
+        // percorso row-scoped e un INSERT preparato: niente `COPY`.
+        match select_with_cancellation(
+            visibility::enforce(&transaction, operation, &[]),
+            cancellation,
+        )
+        .await
         {
             Some(Ok(())) => {}
             Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
@@ -302,6 +313,12 @@ pub async fn execute(
         drop(client);
         return result;
     }
+    // Le colonne che `COPY` scrive, se il percorso e `COPY`: la regola W1 le
+    // legge prima di ogni effetto (`prepare_target`) e dopo ogni `COPY`.
+    let copied = visibility::copied_columns(
+        &schema,
+        target::WritePath::of(operation, false, runtime.insert_mode),
+    );
     if let Some(result) = select_with_cancellation(
         evolve_target_schema(
             &transaction,
@@ -322,7 +339,7 @@ pub async fn execute(
     }
     if let Some(result) = select_with_cancellation(
         async {
-            prepare_target(&transaction, operation, &schema, &column_plans).await?;
+            prepare_target(&transaction, operation, &schema, &column_plans, &copied).await?;
             crate::field_identity::register(&transaction, operation, &schema).await
         },
         cancellation,
@@ -693,6 +710,7 @@ async fn prepare_target(
     operation: &WriteOperation,
     schema: &SchemaRef,
     plans: &[WriteColumnPlan],
+    copied: &[String],
 ) -> Result<()> {
     match operation.mode {
         WriteMode::Create => {
@@ -709,34 +727,34 @@ async fn prepare_target(
         // (`visibility::enforce`): un `DELETE` che non vede tutte le righe
         // lascerebbe righe vecchie accanto alle nuove, con un COMMIT riuscito.
         WriteMode::Replace => {
-            visibility::enforce(transaction, operation).await?;
+            visibility::enforce(transaction, operation, copied).await?;
             execute_sql(
                 transaction,
                 &format!("DELETE FROM {}", quote_object(&operation.target)?),
                 &[],
             )
             .await?;
-            visibility::enforce(transaction, operation).await
+            visibility::enforce(transaction, operation, copied).await
         }
         // Il `TRUNCATE` non passa da regole o trigger di riga, l'INSERT che
         // segue si: la regola prima dello svuotamento (un rifiuto dopo
         // lascerebbe soltanto il rollback), e di nuovo con il lock
         // `ACCESS EXCLUSIVE` del `TRUNCATE` preso.
         WriteMode::TruncateInsert => {
-            visibility::enforce(transaction, operation).await?;
+            visibility::enforce(transaction, operation, copied).await?;
             execute_sql(
                 transaction,
                 &format!("TRUNCATE TABLE {}", quote_object(&operation.target)?),
                 &[],
             )
             .await?;
-            visibility::enforce(transaction, operation).await
+            visibility::enforce(transaction, operation, copied).await
         }
         // Prima dell'ingresso, con lo stesso esito del dry run; di nuovo a
         // ogni statement preparato o `COPY` eseguito (`write_batch`), con il
         // lock preso.
         WriteMode::Update | WriteMode::DeleteByKeys | WriteMode::Append | WriteMode::Upsert => {
-            visibility::enforce(transaction, operation).await
+            visibility::enforce(transaction, operation, copied).await
         }
     }
 }
@@ -836,7 +854,8 @@ async fn write_batch(
         };
         if let Some(copied) = copied {
             let copied = copied?;
-            visibility::enforce(transaction, operation).await?;
+            let columns = visibility::copied_columns(batch.schema_ref(), target::WritePath::Copy);
+            visibility::enforce(transaction, operation, &columns).await?;
             return Ok(copied);
         }
     }
@@ -850,7 +869,7 @@ async fn write_batch(
         .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
     // La preparazione ha preso il lock del target: la regola R si rilegge
     // qui, dove un DDL concorrente non puo piu cambiarla fino al COMMIT.
-    visibility::enforce(transaction, operation).await?;
+    visibility::enforce(transaction, operation, &[]).await?;
     let mut affected = 0;
     for row in 0..batch.num_rows() {
         let values = indexes

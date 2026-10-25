@@ -65,7 +65,8 @@ impl MutationCounts {
 /// `Prepared` resta il default compatibile e copre l'intero profilo tipi.
 /// `TdsBulk` è opt-in e viene accettato soltanto quando il piano soddisfa il
 /// sottoinsieme verificato dal codec bulk e il target non ha vincoli `CHECK`,
-/// foreign key, trigger `INSERT` o default: `INSERT BULK` di `tiberius-ng`
+/// foreign key, regole o default legati, trigger `INSERT` o default (la
+/// regola W1, elenco in `lifecycle`): `INSERT BULK` di `tiberius-ng`
 /// non passa `CHECK_CONSTRAINTS`, `FIRE_TRIGGERS` ne `KEEP_NULLS`, e la
 /// regola R (`lifecycle::validate_row_visibility`) rifiuta il profilo invece
 /// di scavalcarli. Non si ripiega in silenzio su `Prepared`.

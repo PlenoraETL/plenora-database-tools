@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 114300,
-  "max_code_lines": 92807,
-  "rationale": "Regola R estesa a ogni mode (core row_visibility: mode_events, refusal_reason, fatti instead_trigger e path_bypass; PostgreSQL write::visibility con le regole e gli INSTEAD OF per gli eventi della mode, riletta dopo TRUNCATE, COPY e la preparazione row-scoped; SQL Server validate_row_visibility per Append, TruncateInsert, Upsert e il profilo TdsBulk; Oracle e Db2 con gli INSTEAD OF per gli eventi della mode), sopra la regola P strutturale; test in file dedicati, scenari del runner. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 113949 -> 114300 (+351), righe di codice 92654 -> 92807 (+153). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 114901,
+  "max_code_lines": 93078,
+  "rationale": "Regole W1 (fedelta del percorso: COPY di PostgreSQL e IDENTITY ALWAYS, bulk TDS e Replace di SQL Server con regole e default legati) e W2 (sessione fissata: session_replication_role di PostgreSQL, foreign_key_checks/unique_checks/sql_select_limit/CLIENT_FOUND_ROWS di MySQL, check_constraint_checks di MariaDB, @@OPTIONS e ROWCOUNT di SQL Server), regola R per i trigger BEFORE di MySQL/MariaDB, OUTPUT ... INTO di SQL Server, skipped nel percorso row-scoped di PostgreSQL; prove live per provider. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 114300 -> 114901 (+601), righe di codice 92807 -> 93078 (+271). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

@@ -93,7 +93,7 @@ EXPECTED_UNIT_TESTS = {
     "evidence::tests::the_expected_ddl_outcome_is_the_measured_one",
     "evidence::tests::the_generated_index_contract_is_verified_in_full",
     "evidence::tests::the_qualified_filter_forms_are_the_thirteen_declared",
-    "evidence::tests::the_real_bootstrap_parses_into_three_assignments",
+    "evidence::tests::the_real_bootstrap_parses_into_six_assignments",
     "evidence::tests::the_server_code_is_read_from_the_message_or_absent",
     "parameter::tests::binding_is_positional_and_rejects_extra_parameters",
     "parameter::tests::wkb_is_rejected_until_srid_preflight_exists",
@@ -378,6 +378,10 @@ EXPECTED_LIVE_REFERENCE_TESTS = {
     "live_tests::live_scalar_window_functions_publish_peer_stable_ranking_and_range_aggregates",
     "live_tests::live_streaming_read_maps_scalar_and_xy_geometry_exactly",
     "live_tests::live_verified_tls_rejects_a_hostname_mismatch",
+    # Le regole W1/W2 e la regola R della scrittura (25/10).
+    "live_tests::live_regola_r_before_sull_evento_distruttivo_rifiuta",
+    "live_tests::live_update_conta_le_righe_trovate_non_soltanto_quelle_cambiate",
+    "live_tests::live_w2_foreign_key_checks_fissato_anche_con_il_globale_spento",
 }
 
 
