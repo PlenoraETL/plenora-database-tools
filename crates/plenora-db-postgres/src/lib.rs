@@ -1165,3 +1165,7 @@ mod test_suite;
 #[cfg(test)]
 #[path = "write_visibility_live_tests.rs"]
 mod write_visibility_live_tests;
+
+#[cfg(test)]
+#[path = "write_semantics_live_tests.rs"]
+mod write_semantics_live_tests;

@@ -19,14 +19,14 @@ use plenora_database_core::row_visibility::{
 };
 use plenora_database_core::{CancellationToken, ErrorCategory, ErrorPhase};
 
-const SCHEMA: &str = "pln_regola_r";
+pub const SCHEMA: &str = "pln_regola_r";
 const ROLE: &str = "pln_regola_r_ruolo";
 const PASSWORD: &str = "pln_regola_r_segreto";
 
 /// Le prove condividono schema e ruolo: una alla volta.
-static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn live_dsn() -> Option<String> {
+pub fn live_dsn() -> Option<String> {
     let declared = std::env::var("PLENORA_TEST_POSTGRES_DSN").ok();
     if declared.is_none() {
         assert!(
@@ -92,8 +92,11 @@ fn rows(values: &[(i64, &str)]) -> Box<dyn BatchStream> {
     })
 }
 
-fn operation(object: &str, mode: WriteMode) -> WriteOperation {
-    let keyed = matches!(mode, WriteMode::Update | WriteMode::DeleteByKeys);
+pub fn operation(object: &str, mode: WriteMode) -> WriteOperation {
+    let keyed = matches!(
+        mode,
+        WriteMode::Update | WriteMode::DeleteByKeys | WriteMode::Upsert
+    );
     WriteOperation {
         target: ObjectRef {
             catalog: None,
@@ -123,7 +126,7 @@ fn budget() -> ResourceBudget {
     ResourceBudget::new(ResourceLimits::default()).expect("budget")
 }
 
-async fn write(
+pub async fn write(
     provider: &PostgresProvider,
     secret: &SecretString,
     operation: &WriteOperation,
@@ -144,7 +147,7 @@ async fn write(
     Provider::write(provider, secret, prepared, stream, &budget, &cancellation).await
 }
 
-async fn dry_run(
+pub async fn dry_run(
     provider: &PostgresProvider,
     secret: &SecretString,
     operation: &WriteOperation,
@@ -161,7 +164,7 @@ async fn dry_run(
         .await
 }
 
-async fn ids(client: &tokio_postgres::Client, object: &str) -> Vec<i64> {
+pub async fn ids(client: &tokio_postgres::Client, object: &str) -> Vec<i64> {
     client
         .query(
             &format!("SELECT id FROM {SCHEMA}.{object} ORDER BY id"),
@@ -253,7 +256,7 @@ const SCENARIOS: &[Scenario] = &[
         setup: "CREATE VIEW {s}.v AS SELECT id, owner FROM {s}.t WHERE owner = 'a';" },
 ];
 
-async fn reset(admin: &tokio_postgres::Client) {
+pub async fn reset(admin: &tokio_postgres::Client) {
     admin
         .batch_execute(&format!(
             "DROP SCHEMA IF EXISTS {SCHEMA} CASCADE; \
@@ -264,7 +267,7 @@ async fn reset(admin: &tokio_postgres::Client) {
         .expect("pulizia");
 }
 
-async fn prepare(admin: &tokio_postgres::Client, setup: &str) {
+pub async fn prepare(admin: &tokio_postgres::Client, setup: &str) {
     reset(admin).await;
     let sql = format!(
         "CREATE ROLE {ROLE} LOGIN PASSWORD '{PASSWORD}'; CREATE SCHEMA {SCHEMA}; {TABLE} {setup}"

@@ -9289,7 +9289,7 @@ async fn live_regola_r_rifiuta_delete_e_update_con_righe_nascoste() {
     }
     refused(
         attempt(WriteMode::DeleteByKeys).await,
-        plenora_database_core::row_visibility::HIDDEN_BY_TRIGGER,
+        plenora_database_core::row_visibility::HIDDEN_BY_INSTEAD_TRIGGER,
     );
     // Il controllo positivo: senza filtri la chiave 2 si cancella.
     admin
@@ -9316,3 +9316,9 @@ async fn live_regola_r_rifiuta_delete_e_update_con_righe_nascoste() {
         .await
         .expect("pulizia regola R");
 }
+
+// La regola R per le mode che inseriscono e per il profilo `TdsBulk`: dentro
+// `live_tests`, cosi l'inventario del gate SQL Server la elenca ed esige.
+#[cfg(test)]
+#[path = "write_semantics_live_tests.rs"]
+mod write_semantics;

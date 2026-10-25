@@ -106,11 +106,30 @@ pub(super) async fn validate_replace_external_state(
 }
 
 /// La regola R su SQL Server (`plenora_database_core::row_visibility`) per
-/// `Update` e `DeleteByKeys`: le chiavi che lo statement non vede si
-/// pubblicano `skipped`, indistinguibili da chiavi assenti, se un predicato
-/// di filtro RLS o un trigger `INSTEAD OF` le nasconde. Replace qui non
-/// passa: pubblica uno staging con lo swap e non cancella righe, e le sue
-/// condizioni sono in [`validate_replace_external_state`].
+/// ogni mode su un target esistente tranne Replace:
+///
+/// - un trigger `INSTEAD OF` per uno degli eventi della mode riceve le righe
+///   al posto del target: l'`OUTPUT` dello statement (con cui la scrittura
+///   conta) e `@@ROWCOUNT` contano cio che il trigger ha ricevuto, non cio
+///   che ha scritto. Misurato il 25/10 su SQL Server 2022: Upsert con
+///   `INSTEAD OF UPDATE` vuoto → `updated 1` e riga invariata, con `INSTEAD
+///   OF INSERT` vuoto → `inserted 1` e nessuna riga; `DeleteByKeys` con
+///   `INSTEAD OF DELETE` → `skipped` per una chiave presente;
+/// - un predicato di filtro RLS nasconde righe a `Update` e `DeleteByKeys`,
+///   che le pubblicherebbero `skipped` come chiavi assenti (per un INSERT un
+///   predicato di blocco rifiuta con un errore, non in silenzio);
+/// - con il profilo `TdsBulk` (`bulk`), `INSERT BULK` di `tiberius-ng` 0.13.1
+///   non passa `CHECK_CONSTRAINTS`, `FIRE_TRIGGERS` ne `KEEP_NULLS`, e il
+///   driver non ha modo di passarli: vincoli `CHECK` e foreign key non sono
+///   verificati (e restano `is_not_trusted`), i trigger `INSERT` non
+///   scattano, e un `NULL` dell'ingresso puo diventare il default della
+///   colonna. Un target con uno di questi rifiuta il profilo (`path_bypass`);
+///   il ripiego silenzioso sul profilo preparato non c'e, chi lo vuole lo
+///   sceglie.
+///
+/// Replace qui non passa: pubblica uno staging con lo swap e non cancella
+/// righe, e le sue condizioni (nessun trigger, nessuna policy) sono in
+/// [`validate_replace_external_state`].
 ///
 /// I fatti si leggono sulla chiusura del target: il target e, se e una
 /// vista, gli oggetti da cui dipende (`sys.sql_expression_dependencies`,
@@ -123,30 +142,45 @@ pub(super) async fn validate_replace_external_state(
 ///   security policy a chi non ha permessi su di essa: senza `VIEW
 ///   DEFINITION` sul database il catalogo non prova l'assenza di filtri, e la
 ///   regola rifiuta (`unreadable`).
-/// - **Ambito.** `Update` e `DeleteByKeys` SQL Server.
-/// - **Hazard.** Un ruolo senza quel permesso non puo usare le due mode.
+/// - **Ambito.** Append, `TruncateInsert`, Upsert, Update, `DeleteByKeys` SQL
+///   Server; il profilo `TdsBulk` per Append e `TruncateInsert`.
+/// - **Hazard.** Un ruolo senza quel permesso non puo scrivere un target
+///   esistente; `TdsBulk` non si usa su tabelle con vincoli `CHECK`, foreign
+///   key, trigger `INSERT` o default.
 /// - **Rientro.** Una prova dell'assenza di policy che non dipenda dalla
-///   visibilita dei metadati.
+///   visibilita dei metadati; un driver che passi le opzioni di `INSERT
+///   BULK`.
 pub(super) async fn validate_row_visibility(
     session: &mut SqlServerSession,
     schema: &str,
     object: &str,
     mode: plenora_database_core::plan::WriteMode,
+    bulk: bool,
     phase: ErrorPhase,
     cancellation: &CancellationToken,
 ) -> Result<()> {
+    use plenora_database_core::plan::WriteMode;
     use plenora_database_core::row_visibility::{
-        destructive_event, refuse_filtered_rows, DestructiveEvent, RowFilters,
+        mode_events, refuse_unfaithful_write, RowFilters, WriteEvent,
     };
-    let event = match (mode, destructive_event(mode)) {
-        (plenora_database_core::plan::WriteMode::Replace, _) | (_, None) => return Ok(()),
-        (_, Some(DestructiveEvent::Delete)) => "DELETE",
-        (_, Some(DestructiveEvent::Update)) => "UPDATE",
-    };
+    let events = mode_events(mode);
+    if events.is_empty() || mode == WriteMode::Replace {
+        return Ok(());
+    }
+    // `sys.trigger_events.type_desc` degli eventi, fra virgole: il filtro
+    // e `CHARINDEX(',' + type_desc + ',', @P3) > 0`.
+    let names = events
+        .iter()
+        .map(|event| match event {
+            WriteEvent::Insert => "INSERT",
+            WriteEvent::Update => "UPDATE",
+            WriteEvent::Delete => "DELETE",
+        })
+        .collect::<Vec<_>>();
     let mut query = Query::new(ROW_VISIBILITY_SQL);
     query.bind(schema.to_owned());
     query.bind(object.to_owned());
-    query.bind(event.to_owned());
+    query.bind(format!(",{},", names.join(",")));
     let row = one_row(
         session.execute_query(query, phase, cancellation).await?,
         "visibilita delle righe",
@@ -158,7 +192,7 @@ pub(super) async fn validate_row_visibility(
     if !fact(0, "target risolto")? {
         return Ok(());
     }
-    refuse_filtered_rows(
+    refuse_unfaithful_write(
         ProviderKind::Sqlserver,
         mode,
         phase,
@@ -166,7 +200,11 @@ pub(super) async fn validate_row_visibility(
             unreadable: !fact(1, "permesso VIEW DEFINITION")?,
             row_security: fact(2, "predicati di filtro")?,
             rewrite_rule: false,
-            row_trigger: fact(3, "trigger INSTEAD OF")?,
+            instead_trigger: fact(3, "trigger INSTEAD OF")?,
+            // SQL Server non ha trigger BEFORE: l'unico trigger che sopprime
+            // righe e l'`INSTEAD OF`, letto sopra per ogni evento della mode.
+            row_trigger: false,
+            path_bypass: bulk && fact(6, "garanzie scavalcate dal bulk")?,
             opaque_relation: fact(4, "dipendenze opache")?,
             view: fact(5, "vista")?,
         },
@@ -206,7 +244,8 @@ SELECT
        FROM sys.triggers AS t
        JOIN sys.trigger_events AS e ON e.object_id = t.object_id
       WHERE t.parent_id IN (SELECT object_id FROM @closure)
-        AND t.is_instead_of_trigger = 1 AND t.is_disabled = 0 AND e.type_desc = @P3),
+        AND t.is_instead_of_trigger = 1 AND t.is_disabled = 0
+        AND CHARINDEX(',' + e.type_desc + ',', @P3) > 0),
     (SELECT COUNT_BIG(*)
        FROM @closure AS c
        LEFT JOIN sys.objects AS o ON o.object_id = c.object_id
@@ -216,7 +255,18 @@ SELECT
          JOIN sys.objects AS v ON v.object_id = d.referencing_id AND v.type = 'V'
         WHERE d.referencing_id IN (SELECT object_id FROM @closure)
           AND d.referenced_id IS NULL),
-    (SELECT COUNT_BIG(*) FROM sys.objects WHERE object_id = @object_id AND type = 'V');
+    (SELECT COUNT_BIG(*) FROM sys.objects WHERE object_id = @object_id AND type = 'V'),
+    (SELECT COUNT_BIG(*) FROM sys.check_constraints
+      WHERE parent_object_id IN (SELECT object_id FROM @closure) AND is_disabled = 0)
+    + (SELECT COUNT_BIG(*) FROM sys.foreign_keys
+        WHERE parent_object_id IN (SELECT object_id FROM @closure) AND is_disabled = 0)
+    + (SELECT COUNT_BIG(*)
+         FROM sys.triggers AS t
+         JOIN sys.trigger_events AS e ON e.object_id = t.object_id
+        WHERE t.parent_id IN (SELECT object_id FROM @closure)
+          AND t.is_disabled = 0 AND e.type_desc = 'INSERT')
+    + (SELECT COUNT_BIG(*) FROM sys.default_constraints
+        WHERE parent_object_id IN (SELECT object_id FROM @closure));
 ";
 
 fn replace_external_state_sql(has_ledger: bool, has_xml_compression: bool) -> String {

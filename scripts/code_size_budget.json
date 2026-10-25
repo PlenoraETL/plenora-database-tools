@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 113949,
-  "max_code_lines": 92654,
-  "rationale": "Regola R (core row_visibility: una scrittura distruttiva che non vede tutte le righe si rifiuta prima di ogni effetto; fatti dal catalogo in PostgreSQL write::visibility sulla chiusura del target, nella scrittura con il lock preso e nel dry run, SQL Server lifecycle::validate_row_visibility, Oracle e Db2 row_visibility) e regola P strutturale (core spatial_probe::judge_probe_positions: una visita iterativa dell'intero piano, ogni blocco, CTE, sorgente derivata, subquery e set operation, che ammette una sonda soltanto come argomento di un nodo spatial che la giudica in un WHERE, ON o HAVING del blocco la cui FROM contiene la colonna confrontata; sostituisce contains_unjudged_probe e judge_scalar_operands, chiamata dal renderer per ogni dialetto e dal giudizio PostgreSQL del piano); deleted non pubblicato per Replace; test in file dedicati, scenari del runner. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 113665 -> 113949 (+284), righe di codice 92425 -> 92654 (+229). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 114300,
+  "max_code_lines": 92807,
+  "rationale": "Regola R estesa a ogni mode (core row_visibility: mode_events, refusal_reason, fatti instead_trigger e path_bypass; PostgreSQL write::visibility con le regole e gli INSTEAD OF per gli eventi della mode, riletta dopo TRUNCATE, COPY e la preparazione row-scoped; SQL Server validate_row_visibility per Append, TruncateInsert, Upsert e il profilo TdsBulk; Oracle e Db2 con gli INSTEAD OF per gli eventi della mode), sopra la regola P strutturale; test in file dedicati, scenari del runner. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 113949 -> 114300 (+351), righe di codice 92654 -> 92807 (+153). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

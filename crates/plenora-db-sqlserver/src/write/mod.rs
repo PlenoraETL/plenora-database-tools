@@ -64,7 +64,11 @@ impl MutationCounts {
 ///
 /// `Prepared` resta il default compatibile e copre l'intero profilo tipi.
 /// `TdsBulk` è opt-in e viene accettato soltanto quando il piano soddisfa il
-/// sottoinsieme verificato dal codec bulk.
+/// sottoinsieme verificato dal codec bulk e il target non ha vincoli `CHECK`,
+/// foreign key, trigger `INSERT` o default: `INSERT BULK` di `tiberius-ng`
+/// non passa `CHECK_CONSTRAINTS`, `FIRE_TRIGGERS` ne `KEEP_NULLS`, e la
+/// regola R (`lifecycle::validate_row_visibility`) rifiuta il profilo invece
+/// di scavalcarli. Non si ripiega in silenzio su `Prepared`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SqlServerInsertMode {
     #[default]
@@ -278,6 +282,7 @@ async fn prepare_write_inner(
         Arc::clone(&input_schema),
         control.token(),
         schema_evolution,
+        insert_mode,
     )
     .await?;
     if insert_mode == SqlServerInsertMode::TdsBulk {
@@ -304,6 +309,7 @@ async fn compile_write_plan(
     input_schema: SchemaRef,
     cancellation: &CancellationToken,
     schema_evolution: SqlServerSchemaEvolution,
+    insert_mode: SqlServerInsertMode,
 ) -> Result<WritePlan> {
     match operation.mode {
         plenora_database_core::plan::WriteMode::Create => {
@@ -368,6 +374,7 @@ async fn compile_write_plan(
                 schema,
                 &operation.target.object,
                 operation.mode,
+                insert_mode == SqlServerInsertMode::TdsBulk,
                 ErrorPhase::Prepare,
                 cancellation,
             )
@@ -449,8 +456,13 @@ async fn write_prepared_inner(
     let mut pooled = prepared.pool.checkout(control.token()).await?;
     pooled.disallow_reuse();
     pooled.session_mut()?.begin(control.token()).await?;
-    if let Err(error) =
-        prepare_transaction_target(&mut pooled, &prepared.plan, control.token()).await
+    if let Err(error) = prepare_transaction_target(
+        &mut pooled,
+        &prepared.plan,
+        prepared.insert_mode,
+        control.token(),
+    )
+    .await
     {
         return Err(rollback_after_error(&mut pooled, error).await);
     }
@@ -750,6 +762,7 @@ fn unknown_commit_outcome(
 async fn prepare_transaction_target(
     pooled: &mut PooledSqlServerSession,
     plan: &WritePlan,
+    insert_mode: SqlServerInsertMode,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     match &plan.lifecycle {
@@ -768,6 +781,7 @@ async fn prepare_transaction_target(
                 &plan.schema,
                 &plan.object,
                 plan.mode,
+                insert_mode == SqlServerInsertMode::TdsBulk,
                 ErrorPhase::Write,
                 cancellation,
             )

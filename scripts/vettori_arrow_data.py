@@ -58,8 +58,13 @@ all'apertura dopo il DELETE di Replace; un rifiuto che cambia le righe del
 bersaglio e' `rifiuto-con-effetto`. La regola R ha aggiunto le scritture
 distruttive che non vedono tutte le righe (policy RLS anche restrittive,
 regole `ON DELETE`, trigger `BEFORE DELETE`, una vista sopra RLS): rifiutate
-prima di ogni effetto, nella scrittura e nel dry run. `--solo-scenari` salta i
-vettori.
+prima di ogni effetto, nella scrittura e nel dry run; allargata alle mode che
+inseriscono, ha aggiunto le regole `ON INSERT`/`ON UPDATE` (`DO INSTEAD` e `DO
+ALSO`) e i trigger `INSTEAD OF` delle viste. Gli scenari che la regola deve
+rifiutare sono dichiarati (`SCENARI_DELLA_REGOLA_R`): una scrittura che li
+accetta e' `regola-r-non-applicata`, anche se il dry run concorda — fino al
+25/10 `COPY` scriveva nel target scavalcando la regola, e dry run e scrittura
+concordavano su un successo. `--solo-scenari` salta i vettori.
 
     python scripts/vettori_arrow_data.py --contracts .plenora-contracts \\
         --cli target/debug/plenora-database --referto vettori-arrow-data.json \\
@@ -616,7 +621,59 @@ SCENARI = (
      "CREATE VIEW {t} WITH (security_invoker = true) AS SELECT id, v FROM {b}; "
      "GRANT ALL ON {b} TO {r}; GRANT ALL ON {t} TO {r}",
      "delete_by_keys", ("id",), ("id",), "strict", "lettore"),
+    # La regola R per le mode che inseriscono (25/10): una regola per un
+    # evento della mode o un trigger `INSTEAD OF` mandano le righe altrove o
+    # da nessuna parte. Fino ad allora la CLI (`COPY`) scriveva nel target
+    # scavalcando la regola, e il percorso preparato contava `inserted` per
+    # righe finite in `{b}`; la vista con `INSTEAD OF` contava righe mai
+    # scritte. Il controllo positivo: un trigger AFTER INSERT. (Un `BEFORE
+    # INSERT` che restituisce NULL resta ammesso dalla regola, ma l'esito lo
+    # decide la funzione, che il dry run non esegue: la CLI con il totale
+    # dichiarato scrive riga per riga e rifiuta la riga non scritta; la prova
+    # dei conteggi onesti e nella suite live del provider.)
+    ("regola-r-rule-insert-append",
+     "CREATE TABLE {b} (id bigint, v text); CREATE TABLE {t} (id bigint, v text); "
+     "CREATE RULE vad_altrove AS ON INSERT TO {t} DO INSTEAD INSERT INTO {b} VALUES (NEW.id, NEW.v)",
+     "append", ("id", "v"), (), "strict", "proprietario"),
+    ("regola-r-rule-also-append",
+     "CREATE TABLE {b} (id bigint, v text); CREATE TABLE {t} (id bigint, v text); "
+     "CREATE RULE vad_anche AS ON INSERT TO {t} DO ALSO INSERT INTO {b} VALUES (NEW.id, NEW.v)",
+     "append", ("id", "v"), (), "strict", "proprietario"),
+    ("regola-r-rule-insert-truncate-insert",
+     "CREATE TABLE {t} (id bigint); INSERT INTO {t} VALUES (7), (8), (9); "
+     "CREATE RULE vad_niente AS ON INSERT TO {t} DO INSTEAD NOTHING",
+     "truncate_insert", ("id",), (), "strict", "proprietario"),
+    ("regola-r-rule-insert-replace",
+     "CREATE TABLE {t} (id bigint); INSERT INTO {t} VALUES (7), (8), (9); "
+     "CREATE RULE vad_niente AS ON INSERT TO {t} DO INSTEAD NOTHING",
+     "replace", ("id",), (), "strict", "proprietario"),
+    ("regola-r-rule-update-upsert",
+     "CREATE TABLE {t} (id bigint PRIMARY KEY, v text); INSERT INTO {t} VALUES (1, 'z'); "
+     "CREATE RULE vad_niente AS ON UPDATE TO {t} DO INSTEAD NOTHING",
+     "upsert", ("id", "v"), ("id",), "strict", "proprietario"),
+    ("regola-r-vista-instead-append",
+     "CREATE TABLE {b} (id bigint, v text); CREATE VIEW {t} AS SELECT id, v FROM {b}; "
+     "CREATE OR REPLACE FUNCTION {b}_finge() RETURNS trigger LANGUAGE plpgsql AS "
+     "$$ BEGIN RETURN NEW; END $$; "
+     "CREATE TRIGGER vad_finge INSTEAD OF INSERT ON {t} FOR EACH ROW EXECUTE FUNCTION {b}_finge()",
+     "append", ("id", "v"), (), "strict", "proprietario"),
+    ("regola-r-trigger-after-insert-truncate-insert",
+     "CREATE TABLE {t} (id bigint, v text); INSERT INTO {t} VALUES (7, 'x'); "
+     "CREATE OR REPLACE FUNCTION {b}_nota() RETURNS trigger LANGUAGE plpgsql AS "
+     "$$ BEGIN RETURN NULL; END $$; "
+     "CREATE TRIGGER vad_nota AFTER INSERT ON {t} FOR EACH ROW EXECUTE FUNCTION {b}_nota()",
+     "truncate_insert", ("id", "v"), (), "strict", "proprietario"),
 )
+
+# Gli scenari che la regola R deve rifiutare (`unsupported`): un dry run e una
+# scrittura che concordano su un successo non bastano.
+SCENARI_DELLA_REGOLA_R = frozenset({
+    "regola-r-rls-replace", "regola-r-rls-restrittiva-replace", "regola-r-rls-delete",
+    "regola-r-rls-update", "regola-r-rule-replace", "regola-r-trigger-replace",
+    "regola-r-vista-rls-delete", "regola-r-rule-insert-append", "regola-r-rule-also-append",
+    "regola-r-rule-insert-truncate-insert", "regola-r-rule-insert-replace",
+    "regola-r-rule-update-upsert", "regola-r-vista-instead-append",
+})
 
 # Gli scenari in cui RLS si applica con una policy: l'esito dipende dai
 # valori, e il dry run deve dirlo invece di tacerlo.
@@ -727,6 +784,8 @@ class Scenari:
                 righe.append({"scenario": nome, "scrittura": scrittura, "dry_run": dry_run,
                               "verdetto": accordo_dry_run(
                                   dry_run, scrittura, nome in SCENARI_RLS_DICHIARATA)})
+                if nome in SCENARI_DELLA_REGOLA_R and scrittura.get("category") != "unsupported":
+                    righe[-1]["verdetto"] = "regola-r-non-applicata"
                 # Un rifiuto non ha effetti: il bersaglio ha le righe di prima.
                 if scrittura["exit"] != 0 and preparazione:
                     scrittura["righe"] = [prima, self.righe(tabella, schema)]
@@ -751,7 +810,7 @@ class Scenari:
             self.ddl(f"DROP VIEW public.{tabella}")
         self.ddl(f"DROP TABLE IF EXISTS public.{self.AUSILIARIO} CASCADE")
         # Le funzioni dei trigger della regola R.
-        for funzione in ("salva", "nota"):
+        for funzione in ("salva", "nota", "finge"):
             self.ddl(f"DROP FUNCTION IF EXISTS public.{self.AUSILIARIO}_{funzione}() CASCADE")
         self.postgres.cancella(tabella)
 

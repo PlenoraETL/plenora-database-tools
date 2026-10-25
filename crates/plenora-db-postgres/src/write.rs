@@ -260,6 +260,15 @@ pub async fn execute(
     };
     let operation = &prepared.operation;
     if let Some(diagnostic_input) = diagnostic_input {
+        // La regola R prima di ogni effetto, come nel percorso ordinario; di
+        // nuovo dopo la preparazione dell'INSERT (`row_diagnostics`).
+        match select_with_cancellation(visibility::enforce(&transaction, operation), cancellation)
+            .await
+        {
+            Some(Ok(())) => {}
+            Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+            None => return Err(recovery.rollback_cancellation(transaction).await),
+        }
         match select_with_cancellation(
             crate::field_identity::register(&transaction, operation, &schema),
             cancellation,
@@ -673,11 +682,12 @@ fn enforce_input_limits(
 /// rollback-safe quanto il `DELETE` di Replace ma piu economico, e non passa
 /// da policy RLS, regole o trigger di riga.
 ///
-/// Replace, Update e `DeleteByKeys` passano dalla regola R
+/// Ogni mode su un target esistente passa dalla regola R
 /// (`plenora_database_core::row_visibility`, fatti in [`visibility`]): se una
-/// policy, una regola, un trigger di riga, una vista o una tabella esterna
-/// possono nascondere righe allo statement distruttivo, la scrittura si
-/// rifiuta prima di ogni effetto.
+/// policy, una regola, un trigger `INSTEAD OF` o di riga, una vista o una
+/// tabella esterna possono nascondere righe allo statement distruttivo o
+/// mandare altrove quelle inserite, la scrittura si rifiuta prima di ogni
+/// effetto.
 async fn prepare_target(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
@@ -708,19 +718,26 @@ async fn prepare_target(
             .await?;
             visibility::enforce(transaction, operation).await
         }
-        WriteMode::TruncateInsert => execute_sql(
-            transaction,
-            &format!("TRUNCATE TABLE {}", quote_object(&operation.target)?),
-            &[],
-        )
-        .await
-        .map(|_| ()),
-        // Prima dell'ingresso, con lo stesso esito del dry run; di nuovo a
-        // ogni statement preparato (`write_batch`), con il lock preso.
-        WriteMode::Update | WriteMode::DeleteByKeys => {
+        // Il `TRUNCATE` non passa da regole o trigger di riga, l'INSERT che
+        // segue si: la regola prima dello svuotamento (un rifiuto dopo
+        // lascerebbe soltanto il rollback), e di nuovo con il lock
+        // `ACCESS EXCLUSIVE` del `TRUNCATE` preso.
+        WriteMode::TruncateInsert => {
+            visibility::enforce(transaction, operation).await?;
+            execute_sql(
+                transaction,
+                &format!("TRUNCATE TABLE {}", quote_object(&operation.target)?),
+                &[],
+            )
+            .await?;
             visibility::enforce(transaction, operation).await
         }
-        WriteMode::Append | WriteMode::Upsert => Ok(()),
+        // Prima dell'ingresso, con lo stesso esito del dry run; di nuovo a
+        // ogni statement preparato o `COPY` eseguito (`write_batch`), con il
+        // lock preso.
+        WriteMode::Update | WriteMode::DeleteByKeys | WriteMode::Append | WriteMode::Upsert => {
+            visibility::enforce(transaction, operation).await
+        }
     }
 }
 
@@ -805,14 +822,22 @@ async fn write_batch(
         operation.mode,
         WriteMode::Create | WriteMode::Append | WriteMode::Replace | WriteMode::TruncateInsert
     ) {
-        match insert_mode {
+        // `COPY` prende il lock del target aprendosi: la regola R si rilegge
+        // dopo, prima del COMMIT, e un rifiuto riporta indietro anche le
+        // righe copiate.
+        let copied = match insert_mode {
             PostgresInsertMode::CopyText => {
-                return copy_batch(transaction, target, batch, plans).await;
+                Some(copy_batch(transaction, target, batch, plans).await)
             }
             PostgresInsertMode::CopyBinary => {
-                return copy_binary_batch(transaction, target, batch, plans).await;
+                Some(copy_binary_batch(transaction, target, batch, plans).await)
             }
-            PostgresInsertMode::Prepared => {}
+            PostgresInsertMode::Prepared => None,
+        };
+        if let Some(copied) = copied {
+            let copied = copied?;
+            visibility::enforce(transaction, operation).await?;
+            return Ok(copied);
         }
     }
     let (sql, indexes) = statement(operation, target, batch.schema_ref(), plans)?;

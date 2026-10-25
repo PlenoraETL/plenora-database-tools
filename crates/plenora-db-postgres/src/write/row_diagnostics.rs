@@ -336,6 +336,26 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
                 )));
             }
         };
+        // La preparazione ha preso il lock del target: la regola R si rilegge
+        // qui, dove un DDL concorrente non puo piu cambiarla fino al COMMIT.
+        match select_with_cancellation(
+            super::visibility::enforce(&transaction, operation),
+            cancellation,
+        )
+        .await
+        {
+            Some(Ok(())) => {}
+            Some(Err(error)) => return Err(Box::new((transaction, error))),
+            None => {
+                return Err(Box::new((
+                    transaction,
+                    diagnostic_error(
+                        crate::error::interruption_category(cancellation),
+                        "lettura del catalogo PostgreSQL interrotta",
+                    ),
+                )));
+            }
+        }
         Ok(Self {
             transaction: Some(transaction),
             statement,

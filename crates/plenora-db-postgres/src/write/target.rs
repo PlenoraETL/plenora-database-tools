@@ -31,11 +31,14 @@
 //! 8. l'indice unico immediato che arbitra `ON CONFLICT`;
 //! 9. colonne che lo statement nomina, presenti nel target;
 //! 10. la regola R (`plenora_database_core::row_visibility`, fatti in
-//!     `super::visibility`): Replace, Update e `DeleteByKeys` si rifiutano
-//!     prima dell'ingresso se una policy RLS, una regola, un trigger di riga
-//!     `BEFORE`/`INSTEAD OF`, una tabella esterna (o, per Replace, una vista)
-//!     possono nascondere righe allo statement distruttivo — la stessa
-//!     funzione e la stessa lettura della scrittura, nello stesso punto.
+//!     `super::visibility`): ogni mode su un target esistente si rifiuta
+//!     prima dell'ingresso se una regola per uno dei suoi eventi, un trigger
+//!     `INSTEAD OF` per uno dei suoi eventi o una tabella esterna possono
+//!     mandare le righe altrove, e per Replace, Update e `DeleteByKeys` se una
+//!     policy RLS, un trigger di riga `BEFORE`/`INSTEAD OF` (o, per Replace,
+//!     una vista) possono nascondere righe allo statement distruttivo — la
+//!     stessa funzione e la stessa lettura della scrittura, nello stesso
+//!     punto.
 //!
 //! Sotto una vista la row-level security delle tabelle di base decide un
 //! INSERT con il ruolo del proprietario della vista (o dell'invocante, con
@@ -45,7 +48,7 @@
 //!
 //! Resta della scrittura, e il dry run lo dichiara (`checks.server:
 //! not_performed`), cio che il catalogo non decide: i trigger fuori dalla
-//! regola R (quelli delle mode che inseriscono, gli `AFTER`), vincoli `CHECK`
+//! regola R (i `BEFORE` delle mode che inseriscono, gli `AFTER`), vincoli `CHECK`
 //! ed esclusioni, unicita e foreign key sui valori, vincoli differiti,
 //! conversioni della colonna, timeout e lock concorrenti, le colonne `NOT
 //! NULL` di una tabella sotto una vista.
@@ -64,7 +67,6 @@ use crate::error::{classify_error, public_error};
 use crate::{PostgresInsertMode, PostgresSchemaEvolution};
 use arrow_schema::SchemaRef;
 use plenora_database_core::plan::{WriteMode, WriteOperation};
-use plenora_database_core::row_visibility::{destructive_event, DestructiveEvent};
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::BTreeMap;
 use tokio_postgres::Client;
@@ -505,12 +507,12 @@ pub async fn inspect(
         WriteMode::Replace | WriteMode::TruncateInsert
     );
     // La regola R legge la stessa chiusura del target che legge la
-    // scrittura; per le mode che inseriscono serve a sapere se sotto una
+    // scrittura, per gli eventi della mode; serve anche a sapere se sotto una
     // vista una policy decide l'INSERT.
     let facts = super::visibility::facts(
         client,
         &operation.target,
-        destructive_event(operation.mode).unwrap_or(DestructiveEvent::Delete),
+        operation.mode,
         ErrorPhase::Prepare,
     )
     .await?;

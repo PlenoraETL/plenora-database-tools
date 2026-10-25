@@ -1,6 +1,8 @@
-//! La regola R su PostgreSQL: i fatti del catalogo che dicono se lo statement
-//! distruttivo di una mode (il `DELETE` di Replace e di `DeleteByKeys`,
-//! l'`UPDATE` di Update) vede tutte le righe del target.
+//! La regola R su PostgreSQL: i fatti del catalogo che dicono se gli
+//! statement di una mode (il `DELETE` e l'INSERT di Replace, l'INSERT di
+//! Append e `TruncateInsert`, l'INSERT ... ON CONFLICT DO UPDATE di Upsert,
+//! l'`UPDATE` di Update, il `DELETE` di `DeleteByKeys`) arrivano al target
+//! cosi come sono e, se distruttivi, ne vedono tutte le righe.
 //!
 //! La decisione e di `plenora_database_core::row_visibility`; qui si leggono i
 //! fatti, sulla chiusura del target: il target, le relazioni sotto una vista
@@ -12,12 +14,20 @@
 //!   ogni altra relazione della chiusura basta `relrowsecurity`, perche chi ne
 //!   e soggetto (il proprietario della vista, o l'invocante con
 //!   `security_invoker`) non si decide qui;
-//! - regole di riscrittura per l'evento (`pg_rewrite.ev_type` '4' per
-//!   DELETE, '2' per UPDATE), abilitate;
-//! - trigger di riga `BEFORE` o `INSTEAD OF` per l'evento, non interni e non
-//!   disabilitati (anche quelli che scattano soltanto in modalita replica: la
-//!   sessione puo cambiarla);
-//! - tabelle esterne nella chiusura: il filtro lo decide il server remoto;
+//! - regole di riscrittura per uno degli eventi della mode
+//!   (`pg_rewrite.ev_type` '3' INSERT, '2' UPDATE, '4' DELETE), abilitate,
+//!   `DO INSTEAD` e `DO ALSO`: `COPY` non applica regole, quindi anche una
+//!   `DO ALSO` farebbe della stessa scrittura due cose diverse secondo il
+//!   profilo;
+//! - trigger `INSTEAD OF` per uno degli eventi della mode (esistono soltanto
+//!   sulle viste): il conteggio dello statement conta le righe per cui la
+//!   funzione restituisce una riga, che le abbia scritte o no;
+//! - trigger di riga `BEFORE` o `INSTEAD OF` per l'evento distruttivo, non
+//!   interni e non disabilitati (anche quelli che scattano soltanto in
+//!   modalita replica: la sessione puo cambiarla). Un `BEFORE INSERT` che
+//!   restituisce `NULL` non conta: la riga non e scritta e non e contata;
+//! - tabelle esterne nella chiusura: filtri e riscritture li decide il server
+//!   remoto;
 //! - il tipo del target: `Replace` su una vista si rifiuta sempre.
 //!
 //! Il target si risolve come lo risolve lo statement: per nome con lo schema
@@ -26,9 +36,10 @@
 //! lo statement lo rifiutera da se.
 
 use crate::error::classify_error;
-use plenora_database_core::plan::{ObjectRef, ProviderKind, WriteOperation};
+use plenora_database_core::plan::{ObjectRef, ProviderKind, WriteMode, WriteOperation};
 use plenora_database_core::row_visibility::{
-    destructive_event, refuse_filtered_rows, DestructiveEvent, RowFilters,
+    destructive_event, mode_events, refuse_unfaithful_write, DestructiveEvent, RowFilters,
+    WriteEvent,
 };
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use tokio_postgres::GenericClient;
@@ -62,15 +73,18 @@ SELECT
     EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_class c ON c.oid = cl.oid
              WHERE cl.via_view AND c.relrowsecurity),
     EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_rewrite r ON r.ev_class = cl.oid
-             WHERE r.ev_type::text = $3::text AND r.ev_enabled <> 'D'),
+             WHERE r.ev_type::text = ANY ($3::text[]) AND r.ev_enabled <> 'D'),
     EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_trigger g ON g.tgrelid = cl.oid
              WHERE NOT g.tgisinternal AND g.tgenabled <> 'D'
                AND (g.tgtype::int & $4::int) <> 0
                AND ((g.tgtype::int & 3) = 3 OR (g.tgtype::int & 64) <> 0)),
+    EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_trigger g ON g.tgrelid = cl.oid
+             WHERE NOT g.tgisinternal AND g.tgenabled <> 'D'
+               AND (g.tgtype::int & $5::int) <> 0 AND (g.tgtype::int & 64) <> 0),
     EXISTS (SELECT 1 FROM closure cl JOIN pg_catalog.pg_class c ON c.oid = cl.oid
              WHERE c.relkind = 'f')";
 
-/// I fatti del catalogo sul target, per un evento.
+/// I fatti del catalogo sul target, per gli eventi di una mode.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TargetFacts {
@@ -85,8 +99,12 @@ pub struct TargetFacts {
     /// RLS abilitata su una relazione sotto una vista: un INSERT attraverso
     /// la vista passa dalle sue policy.
     pub view_base_row_security: bool,
+    /// Una regola per uno degli eventi della mode.
     pub rewrite_rule: bool,
+    /// Un trigger di riga `BEFORE` o `INSTEAD OF` per l'evento distruttivo.
     pub row_trigger: bool,
+    /// Un trigger `INSTEAD OF` per uno degli eventi della mode.
+    pub instead_trigger: bool,
     pub foreign_relation: bool,
 }
 
@@ -95,7 +113,11 @@ impl TargetFacts {
         RowFilters {
             row_security: self.target_row_security || self.related_row_security,
             rewrite_rule: self.rewrite_rule,
+            instead_trigger: self.instead_trigger,
             row_trigger: self.row_trigger,
+            // `COPY` non salta vincoli ne trigger: scavalca soltanto le
+            // regole, che la regola rifiuta gia per ogni profilo.
+            path_bypass: false,
             view: self.kind == 'v',
             opaque_relation: self.foreign_relation,
             unreadable: false,
@@ -103,23 +125,48 @@ impl TargetFacts {
     }
 }
 
-/// I fatti del target per `event`, letti con `client` (la transazione della
-/// scrittura, o la sessione del dry run). Gli errori del catalogo escono in
-/// `phase`.
+/// I bit di `pg_trigger.tgtype` per un evento (`TRIGGER_TYPE_INSERT`,
+/// `_DELETE`, `_UPDATE`) e il valore di `pg_rewrite.ev_type`.
+const fn event_codes(event: WriteEvent) -> (i32, &'static str) {
+    match event {
+        WriteEvent::Insert => (4, "3"),
+        WriteEvent::Delete => (8, "4"),
+        WriteEvent::Update => (16, "2"),
+    }
+}
+
+/// I fatti del target per gli eventi di `mode`, letti con `client` (la
+/// transazione della scrittura, o la sessione del dry run). Gli errori del
+/// catalogo escono in `phase`.
 pub async fn facts<C: GenericClient + Sync>(
     client: &C,
     target: &ObjectRef,
-    event: DestructiveEvent,
+    mode: WriteMode,
     phase: ErrorPhase,
 ) -> Result<TargetFacts> {
-    let (rule, trigger) = match event {
-        DestructiveEvent::Delete => ("4", 8_i32),
-        DestructiveEvent::Update => ("2", 16_i32),
+    let events = mode_events(mode);
+    let rules = events
+        .iter()
+        .map(|event| event_codes(*event).1)
+        .collect::<Vec<_>>();
+    let instead = events
+        .iter()
+        .fold(0_i32, |mask, event| mask | event_codes(*event).0);
+    let destructive = match destructive_event(mode) {
+        Some(DestructiveEvent::Delete) => event_codes(WriteEvent::Delete).0,
+        Some(DestructiveEvent::Update) => event_codes(WriteEvent::Update).0,
+        None => 0,
     };
     let row = client
         .query_one(
             FACTS_SQL,
-            &[&target.schema, &target.object, &rule, &trigger],
+            &[
+                &target.schema,
+                &target.object,
+                &rules,
+                &destructive,
+                &instead,
+            ],
         )
         .await
         .map_err(|error| classify_error(phase, &error))?;
@@ -132,7 +179,8 @@ pub async fn facts<C: GenericClient + Sync>(
         view_base_row_security: row.get(4),
         rewrite_rule: row.get(5),
         row_trigger: row.get(6),
-        foreign_relation: row.get(7),
+        instead_trigger: row.get(7),
+        foreign_relation: row.get(8),
     })
 }
 
@@ -143,7 +191,7 @@ pub fn refusal(operation: &WriteOperation, facts: TargetFacts) -> Option<Databas
     if !facts.exists {
         return None;
     }
-    refuse_filtered_rows(
+    refuse_unfaithful_write(
         ProviderKind::Postgres,
         operation.mode,
         ErrorPhase::Write,
@@ -154,11 +202,12 @@ pub fn refusal(operation: &WriteOperation, facts: TargetFacts) -> Option<Databas
 
 /// La regola R nella transazione della scrittura: legge i fatti e rifiuta.
 ///
-/// Si chiama prima dello statement distruttivo, e di nuovo dopo che lo
+/// Si chiama prima del primo statement della mode, e di nuovo dopo che uno
 /// statement ha preso il lock del target (`ROW EXCLUSIVE`, in conflitto con
 /// `CREATE POLICY`, `CREATE RULE`, `CREATE TRIGGER`): la seconda lettura vede
-/// i DDL concorrenti confermati prima del lock, che la prima non vedeva.
-/// Vale con l'isolamento `READ COMMITTED` della scrittura: un
+/// i DDL concorrenti confermati prima del lock, che la prima non vedeva, e un
+/// rifiuto a quel punto riporta indietro la transazione. Vale con
+/// l'isolamento `READ COMMITTED` della scrittura: un
 /// `default_transaction_isolation` piu alto del server legge il catalogo con
 /// lo snapshot della transazione, e la seconda lettura resta quella della
 /// prima (hazard del DDL concorrente, dichiarato in
@@ -171,9 +220,9 @@ pub async fn enforce<C: GenericClient + Sync>(
     client: &C,
     operation: &WriteOperation,
 ) -> Result<()> {
-    let Some(event) = destructive_event(operation.mode) else {
+    if mode_events(operation.mode).is_empty() {
         return Ok(());
-    };
-    let facts = facts(client, &operation.target, event, ErrorPhase::Write).await?;
+    }
+    let facts = facts(client, &operation.target, operation.mode, ErrorPhase::Write).await?;
     refusal(operation, facts).map_or(Ok(()), Err)
 }

@@ -1,17 +1,23 @@
-//! La regola R su Db2 (`plenora_database_core::row_visibility`): il `DELETE`
-//! di Replace e gli statement di Update e `DeleteByKeys` devono vedere tutte
-//! le righe del target.
+//! La regola R su Db2 (`plenora_database_core::row_visibility`): gli
+//! statement di ogni mode su un target esistente arrivano al target cosi
+//! come sono, e il `DELETE` di Replace e gli statement di Update e
+//! `DeleteByKeys` ne vedono tutte le righe.
 //!
 //! I fatti, dal catalogo:
 //!
 //! - row permission attive (`SYSCAT.TABLES.CONTROL` `R` o `B`): il controllo
-//!   di accesso per riga (RCAC) restringe lo statement senza errore;
-//! - un trigger per l'evento (`SYSCAT.TRIGGERS.TRIGEVENT`, anche `M` per i
-//!   trigger a piu eventi), di qualunque tipo: il catalogo non dice se un
-//!   `INSTEAD OF` sopprime righe;
+//!   di accesso per riga (RCAC) restringe lo statement distruttivo senza
+//!   errore;
+//! - un trigger per l'evento distruttivo (`SYSCAT.TRIGGERS.TRIGEVENT`, anche
+//!   `M` per i trigger a piu eventi), di qualunque tipo: il catalogo non dice
+//!   se un `INSTEAD OF` sopprime righe;
+//! - un trigger `INSTEAD OF` (`TRIGTIME = 'I'`) per uno degli eventi della
+//!   mode (INSERT di Append e Replace, INSERT e UPDATE del `MERGE` di
+//!   Upsert): le righe vanno al trigger, non al target. Un trigger `BEFORE`
+//!   Db2 non sopprime righe (puo cambiarle o fallire con `SIGNAL`);
 //! - il tipo del target (`SYSCAT.TABLES.TYPE`): ogni tipo diverso da una
-//!   tabella (vista, alias, nickname federato, MQT) e opaco. La preflight lo
-//!   rifiuta gia per le scritture; la regola non se ne fida.
+//!   tabella (vista, alias, nickname federato, MQT) e opaco, per ogni mode.
+//!   La preflight lo rifiuta gia per le scritture; la regola non se ne fida.
 //!
 //! Se il catalogo non si legge (la lettura fallisce), la regola rifiuta.
 //!
@@ -20,7 +26,7 @@
 //! - **Regola.** Non misurato live: nessun fixture Db2 acceso al momento
 //!   della regola (25/10). Le colonne lette sono quelle documentate del
 //!   catalogo; una lettura che fallisce rifiuta, non ammette.
-//! - **Ambito.** Replace, Update, `DeleteByKeys` Db2.
+//! - **Ambito.** Ogni mode Db2 su un target esistente.
 //! - **Hazard.** Un DDL concorrente fra la lettura e lo statement resta una
 //!   finestra.
 //! - **Rientro.** La prova live sul fixture Db2 LUW (`live_tests.rs`).
@@ -29,31 +35,52 @@ use plenora_database_core::plan::{ProviderKind, WriteMode};
 use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::row::Row;
 use plenora_database_core::row_visibility::{
-    destructive_event, refuse_filtered_rows, DestructiveEvent, RowFilters,
+    destructive_event, mode_events, refuse_unfaithful_write, DestructiveEvent, RowFilters,
+    WriteEvent,
 };
 use plenora_database_core::transaction::{Statement, TransactionScope};
 use plenora_database_core::{CancellationToken, ErrorCategory, ErrorPhase, Result};
 
-/// La lettura dei fatti: tipo, controllo di accesso, trigger per l'evento.
-/// Un target assente rende `-` come tipo.
+/// La lettura dei fatti: tipo, controllo di accesso, trigger per l'evento
+/// distruttivo, trigger `INSTEAD OF` per gli eventi della mode. Un target
+/// assente rende `-` come tipo; un evento che la mode non ha si passa come
+/// [`NO_EVENT`].
 pub const FACTS_SQL: &str = "SELECT \
     COALESCE((SELECT TRIM(TYPE) FROM SYSCAT.TABLES WHERE TABSCHEMA = ? AND TABNAME = ?), '-'), \
     COALESCE((SELECT TRIM(CONTROL) FROM SYSCAT.TABLES WHERE TABSCHEMA = ? AND TABNAME = ?), ''), \
     CASE WHEN EXISTS (SELECT 1 FROM SYSCAT.TRIGGERS \
-      WHERE TABSCHEMA = ? AND TABNAME = ? AND TRIGEVENT IN (?, 'M')) THEN 'Y' ELSE 'N' END \
+      WHERE TABSCHEMA = ? AND TABNAME = ? AND TRIGEVENT IN (?, 'M')) THEN 'Y' ELSE 'N' END, \
+    CASE WHEN EXISTS (SELECT 1 FROM SYSCAT.TRIGGERS \
+      WHERE TABSCHEMA = ? AND TABNAME = ? AND TRIGTIME = 'I' \
+        AND TRIGEVENT IN (?, ?, 'M')) THEN 'Y' ELSE 'N' END \
     FROM SYSIBM.SYSDUMMY1";
 
-/// I parametri di [`FACTS_SQL`] per il target e l'evento.
+/// Il segnaposto di un evento che la mode non ha: non e un valore di
+/// `TRIGEVENT` (`I`, `U`, `D`, `M`).
+pub const NO_EVENT: &str = "-";
+
+const fn event_code(event: WriteEvent) -> &'static str {
+    match event {
+        WriteEvent::Insert => "I",
+        WriteEvent::Update => "U",
+        WriteEvent::Delete => "D",
+    }
+}
+
+/// I parametri di [`FACTS_SQL`] per il target e gli eventi della mode.
 #[must_use]
-pub fn facts_parameters(
-    schema: &str,
-    object: &str,
-    event: DestructiveEvent,
-) -> Vec<ParameterValue> {
+pub fn facts_parameters(schema: &str, object: &str, mode: WriteMode) -> Vec<ParameterValue> {
     let text = |value: &str| ParameterValue::String(value.to_owned());
-    let event = match event {
-        DestructiveEvent::Delete => "D",
-        DestructiveEvent::Update => "U",
+    let destructive = match destructive_event(mode) {
+        Some(DestructiveEvent::Delete) => event_code(WriteEvent::Delete),
+        Some(DestructiveEvent::Update) => event_code(WriteEvent::Update),
+        None => NO_EVENT,
+    };
+    let events = mode_events(mode);
+    let event = |index: usize| {
+        events
+            .get(index)
+            .map_or(NO_EVENT, |event| event_code(*event))
     };
     vec![
         text(schema),
@@ -62,7 +89,11 @@ pub fn facts_parameters(
         text(object),
         text(schema),
         text(object),
-        text(event),
+        text(destructive),
+        text(schema),
+        text(object),
+        text(event(0)),
+        text(event(1)),
     ]
 }
 
@@ -82,7 +113,9 @@ pub fn filters_from_row(rows: &[Row]) -> Option<RowFilters> {
         Some(ParameterValue::String(value)) => Some(value.trim().to_owned()),
         _ => None,
     };
-    let (Some(kind), Some(control), Some(trigger)) = (text(0), text(1), text(2)) else {
+    let (Some(kind), Some(control), Some(trigger), Some(instead)) =
+        (text(0), text(1), text(2), text(3))
+    else {
         return Some(unreadable);
     };
     if kind == "-" {
@@ -91,7 +124,9 @@ pub fn filters_from_row(rows: &[Row]) -> Option<RowFilters> {
     Some(RowFilters {
         row_security: matches!(control.as_str(), "R" | "B"),
         rewrite_rule: false,
+        instead_trigger: instead == "Y",
         row_trigger: trigger == "Y",
+        path_bypass: false,
         view: kind == "V",
         opaque_relation: kind != "T",
         unreadable: false,
@@ -99,7 +134,7 @@ pub fn filters_from_row(rows: &[Row]) -> Option<RowFilters> {
 }
 
 /// La regola R nella transazione della scrittura, prima del primo statement
-/// distruttivo.
+/// della mode.
 ///
 /// # Errors
 ///
@@ -112,12 +147,12 @@ pub async fn enforce(
     mode: WriteMode,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let Some(event) = destructive_event(mode) else {
+    if mode_events(mode).is_empty() {
         return Ok(());
-    };
+    }
     let statement = Statement {
         sql: FACTS_SQL.to_owned(),
-        params: facts_parameters(schema, object, event),
+        params: facts_parameters(schema, object, mode),
     };
     let filters = match transaction.query(&statement, cancellation).await {
         Ok(rows) => filters_from_row(&rows),
@@ -135,7 +170,7 @@ pub async fn enforce(
         }),
     };
     filters.map_or(Ok(()), |filters| {
-        refuse_filtered_rows(ProviderKind::Db2, mode, ErrorPhase::Write, filters)
+        refuse_unfaithful_write(ProviderKind::Db2, mode, ErrorPhase::Write, filters)
     })
 }
 

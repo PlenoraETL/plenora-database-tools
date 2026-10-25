@@ -874,6 +874,13 @@ impl MysqlWritePlan {
         profile: &dyn crate::profile::ProductProfile,
     ) -> Result<LossReport> {
         let product = profile.product();
+        // La regola R (`plenora_database_core::row_visibility`) vale qui per
+        // costruzione, per ogni mode: il target e una BASE TABLE (niente
+        // viste, quindi niente relazioni di base da risolvere), `MySQL` e
+        // `MariaDB` non hanno regole di riscrittura, sicurezza di riga ne
+        // trigger `INSTEAD OF`, e un trigger `BEFORE` o `AFTER` non puo
+        // sopprimere o deviare una riga senza un errore (`SIGNAL`), che
+        // annulla lo statement.
         if target.kind != "BASE TABLE" {
             return Err(unsupported(format!(
                 "append {product} richiede una BASE TABLE"
