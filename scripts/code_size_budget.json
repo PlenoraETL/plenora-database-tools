@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 111598,
-  "max_code_lines": 91248,
-  "rationale": "Dry run della scrittura PostgreSQL con un elenco chiuso di condizioni del target decise in sola lettura dal catalogo (write::target: schema e USAGE, privilegi compreso SELECT sulle colonne lette dall'upsert, row-level security, colonne generate e IDENTITY ALWAYS, viste non aggiornabili, NOT NULL senza default assenti, arbitro dell'upsert) con la categoria e la fase della scrittura costruite dalla stessa tabella degli SQLSTATE (sqlstate_error); 42P10, 428C9, 55000 e 42809 con una categoria che li nomina; COPY rifiutato all'apertura senza effetto ignoto (BatchFailure, Rollback); test in file dedicati. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 111055 -> 111598 (+543), righe di codice 90933 -> 91248 (+315). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 112638,
+  "max_code_lines": 91878,
+  "rationale": "Regola unica delle sonde spatial (core spatial_probe: admit_probe, server_guard, term_frame e RelationScope condivisi dal compilatore portable, dal renderer relazionale con lo stato di resa e dal provider PostgreSQL; guardia PostGIS sul typmod anche nello SDK; MySQL 3033/3643 crs; MariaDB REF_SYSTEM_ID confrontato in scrittura); sonde live dei server (scripts/sonde_srid_server.py); test in file dedicati. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 111598 -> 112638 (+1040), righe di codice 91248 -> 91878 (+630). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

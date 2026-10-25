@@ -886,16 +886,21 @@ fn spatial_mysql_geography_is_accepted_as_hint_only() {
     ));
     // Sanity: no `::geography`.
     assert!(!compiled.sql.contains("::geography"));
-    // MariaDB non ha l'argomento delle opzioni ne semantica geografica, e
-    // rifiuta il segnaposto senza cast (4079).
-    let compiled = compile_portable(ProviderKind::Mariadb, &stmt).unwrap();
-    assert!(compiled
-        .sql
-        .contains("ST_Intersects(`geom`, ST_GeomFromWKB(CAST(? AS BINARY), ?))"));
+    // MariaDB non confronta gli SRID: fino al 25/10 la stessa forma senza
+    // opzione, e una sonda 3857 contro una colonna `REF_SYSTEM_ID=4326`
+    // rendeva righe. Ora la regola delle sonde la rifiuta.
+    let error = compile_portable(ProviderKind::Mariadb, &stmt).expect_err("MariaDB");
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+    assert_eq!(error.message, crate::spatial_probe::PROBE_SRID_UNPROVEN);
 }
 
+/// Db2 e Oracle non hanno una guardia misurata che rifiuti uno SRID diverso
+/// prima di ogni riga, e il compilatore portable non ha il catalogo: la
+/// regola delle sonde li rifiuta. Fino al 25/10 compilavano
+/// `ST_INTERSECTS(.., ST_GEOMETRY(BLOB(HEXTORAW(?)), ?))` e
+/// `SDO_RELATE(.., FROM_WKBGEOMETRY(TO_BLOB(:1), :2), ..)`.
 #[test]
-fn spatial_db2_uses_integrated_geometry_and_hex_binary_binding() {
+fn spatial_db2_and_oracle_are_refused_without_a_proven_srid() {
     use crate::geometry::{Dimensions, SpatialSemantics};
     let bytes = ewkb_point_2d(4326);
     let stmt = select("features", vec!["id"])
@@ -910,47 +915,24 @@ fn spatial_db2_uses_integrated_geometry_and_hex_binary_binding() {
             },
         ))
         .into_statement();
-    let compiled = compile_portable(ProviderKind::Db2, &stmt).expect("spatial Db2");
-
-    assert_eq!(
-        compiled.sql,
-        "SELECT \"id\" FROM \"features\" WHERE (ST_INTERSECTS(\"shape\", ST_GEOMETRY(BLOB(HEXTORAW(?)), ?)) = 1)"
-    );
-    assert_eq!(
-        compiled.params,
-        vec![ParameterValue::Bytes(bytes), ParameterValue::I32(4326)]
-    );
+    let _ = &bytes;
+    for kind in [ProviderKind::Db2, ProviderKind::Oracle] {
+        let error = compile_portable(kind, &stmt).expect_err("sonda senza prova");
+        assert_eq!(
+            error.category,
+            crate::ErrorCategory::Unsupported,
+            "{kind:?}"
+        );
+        assert_eq!(error.message, crate::spatial_probe::PROBE_SRID_UNPROVEN);
+    }
 }
 
+/// Un valore spatial scritto su Oracle (e su Db2, `MariaDB`) senza catalogo:
+/// il server non e stato misurato (Oracle vincola lo SRID dei metadati
+/// soltanto con un indice spatial), e la regola delle sonde lo rifiuta. Fino
+/// al 25/10 era `FROM_WKBGEOMETRY(TO_BLOB(:1), 4326)`.
 #[test]
-fn spatial_oracle_uses_sdo_geometry_with_bound_wkb_and_srid() {
-    use crate::geometry::{Dimensions, SpatialSemantics};
-    let bytes = ewkb_point_2d(4326);
-    let statement = select("features", vec!["id"])
-        .where_(spatial(
-            "shape",
-            SpatialPredicate::Intersects,
-            SpatialReference {
-                ewkb: bytes.clone(),
-                srid: 4326,
-                dimensions: Dimensions::Xy,
-                semantics: SpatialSemantics::Geometry,
-            },
-        ))
-        .into_statement();
-    let compiled = compile_portable(ProviderKind::Oracle, &statement).expect("spatial Oracle");
-    assert_eq!(
-        compiled.sql,
-        "SELECT \"id\" FROM \"features\" WHERE (MDSYS.SDO_RELATE(\"shape\", MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(TO_BLOB(:1), :2), 'mask=ANYINTERACT') = 'TRUE')"
-    );
-    assert_eq!(
-        compiled.params,
-        vec![ParameterValue::Bytes(bytes), ParameterValue::I32(4326)]
-    );
-}
-
-#[test]
-fn spatial_oracle_geography_value_uses_the_same_sdo_constructor() {
+fn spatial_oracle_value_is_refused_without_a_proven_column_srid() {
     use crate::geometry::SpatialSemantics;
     let bytes = ewkb_point_2d(4326);
     let statement = PortableStatement::Insert(InsertStatement {
@@ -963,13 +945,11 @@ fn spatial_oracle_geography_value_uses_the_same_sdo_constructor() {
         }]],
         returning: Vec::new(),
     });
-    let compiled =
-        compile_portable(ProviderKind::Oracle, &statement).expect("valore geography Oracle");
-    assert_eq!(
-        compiled.sql,
-        "INSERT INTO \"features\" (\"shape\") VALUES (MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(TO_BLOB(:1), 4326))"
-    );
-    assert_eq!(compiled.params, vec![ParameterValue::Bytes(bytes)]);
+    let _ = &bytes;
+    let error =
+        compile_portable(ProviderKind::Oracle, &statement).expect_err("valore geography Oracle");
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+    assert_eq!(error.message, crate::spatial_probe::VALUE_SRID_UNPROVEN);
 }
 
 /// Un letterale con uno SRID proprio diverso da quello del `SpatialValue` si
@@ -1016,8 +996,21 @@ fn spatial_value_with_another_srid_is_refused_on_every_dialect() {
             let error = compile_portable(kind, &insert(value)).expect_err("SRID divergente");
             assert_eq!(error.category, crate::ErrorCategory::Crs, "{kind:?}");
         }
-        compile_portable(kind, &insert(ParameterValue::Bytes(plain.clone())))
-            .expect("WKB senza SRID prende quello dichiarato");
+        // Un WKB senza SRID prende quello dichiarato, dove la colonna e
+        // provata dal server; altrove la regola delle sonde lo rifiuta.
+        let written = compile_portable(kind, &insert(ParameterValue::Bytes(plain.clone())));
+        if matches!(
+            kind,
+            ProviderKind::Mariadb | ProviderKind::Oracle | ProviderKind::Db2
+        ) {
+            assert_eq!(
+                written.expect_err("SRID di colonna non provato").category,
+                crate::ErrorCategory::Unsupported,
+                "{kind:?}"
+            );
+        } else {
+            written.expect("WKB senza SRID prende quello dichiarato");
+        }
     }
 }
 
@@ -1345,9 +1338,9 @@ fn mysql_spatial_value_fixes_the_axis_order_and_mariadb_has_none() {
         "INSERT INTO `features` (`shape`) VALUES \
          (ST_GeomFromWKB(CAST(? AS BINARY), 4326, 'axis-order=long-lat'))"
     );
-    let mariadb = compile_portable(ProviderKind::Mariadb, &statement).expect("valore MariaDB");
-    assert_eq!(
-        mariadb.sql,
-        "INSERT INTO `features` (`shape`) VALUES (ST_GeomFromWKB(CAST(? AS BINARY), 4326))"
-    );
+    // `MariaDB` accetta un valore 3857 in una colonna `REF_SYSTEM_ID=4326`:
+    // senza catalogo il valore non si scrive (fino al 25/10 si scriveva).
+    let error = compile_portable(ProviderKind::Mariadb, &statement).expect_err("valore MariaDB");
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+    assert_eq!(error.message, crate::spatial_probe::VALUE_SRID_UNPROVEN);
 }

@@ -251,6 +251,10 @@ fn build_read_sql(
     Ok((sql, bind_names))
 }
 
+/// Il renderer del path read e query: ogni sonda che rende e gia stata
+/// confrontata con lo SRID della colonna sul catalogo, prima dell'esecuzione
+/// (`spatial_probe::verify_read_filter` nel read, `plan_query_probes` e
+/// `verify_query_columns` nel query), e lo statement non parte senza.
 const fn postgres_renderer() -> Renderer {
     Renderer::new(
         Dialect::Postgres,
@@ -258,6 +262,7 @@ const fn postgres_renderer() -> Renderer {
             spatial_intersects: true,
         },
     )
+    .with_spatial_probes_verified()
 }
 
 fn convert_filter(expression: &FilterExpression) -> Result<Expression> {

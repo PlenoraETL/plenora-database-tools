@@ -1808,6 +1808,21 @@ where
     })
 }
 
+/// Il renderer del path query: le sonde che rende sono parametri `wkb` con
+/// SRID e semantica risolti, confrontati da `validate_spatial_inputs` con gli
+/// SRID osservati nella colonna prima dell'esecuzione; un `SpatialValue` o
+/// un'altra forma come operando e gia rifiutato li (`collect_spatial_use`).
+///
+/// # Limite dichiarato
+///
+/// - **Regola.** Lo SRID della colonna e quello dei valori osservati al
+///   preflight, non un vincolo: SQL Server non ha SRID di colonna.
+/// - **Ambito.** Path query di SQL Server con una sonda `wkb`.
+/// - **Hazard.** Una colonna vuota (o di soli `NULL`) al preflight non ha
+///   SRID da confrontare, e righe scritte fra il preflight e la query in un
+///   altro sistema renderebbero `NULL` nel predicato.
+/// - **Rientro.** Un vincolo `CHECK (col.STSrid = n)` letto dal catalogo, o
+///   preflight e query nella stessa transazione serializzabile.
 const fn sql_server_renderer() -> Renderer {
     Renderer::new(
         Dialect::SqlServer,
@@ -1815,6 +1830,7 @@ const fn sql_server_renderer() -> Renderer {
             spatial_intersects: true,
         },
     )
+    .with_spatial_probes_verified()
 }
 
 fn query_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {

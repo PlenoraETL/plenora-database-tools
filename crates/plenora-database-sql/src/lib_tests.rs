@@ -626,6 +626,8 @@ fn a_column_in_a_geometry_position_is_not_typed_by_the_renderer() {
             spatial_intersects: true,
         },
     )
+    // Come il provider, che ha confrontato le sonde con il catalogo.
+    .with_spatial_probes_verified()
     .render_query_with_spatial_encoding(&query, false)
     .expect("render")
     .sql;
@@ -798,6 +800,8 @@ fn sqlserver_spatial_ast_uses_typed_wkb_constructor_and_bound_value() {
             spatial_intersects: true,
         },
     )
+    // Come il provider, che ha confrontato le sonde con il catalogo.
+    .with_spatial_probes_verified()
     .with_sql_server_spatial_parameters(BTreeMap::from([(
         "needle".to_owned(),
         SqlServerSpatialParameter {
@@ -823,6 +827,8 @@ fn sqlserver_renders_only_the_verified_native_scalar_spatial_subset() {
             spatial_intersects: true,
         },
     )
+    // Come il provider, che ha confrontato le sonde con il catalogo.
+    .with_spatial_probes_verified()
     .with_sql_server_spatial_parameters(BTreeMap::from([(
         "needle".to_owned(),
         SqlServerSpatialParameter {
@@ -966,7 +972,9 @@ fn oracle_renderer_and_qualified_spatial_table_are_the_same_surface() {
         DialectCapabilities {
             spatial_intersects: true,
         },
-    );
+    )
+    // Come il provider, che ha confrontato le sonde con il catalogo.
+    .with_spatial_probes_verified();
     for function in SpatialFunction::ALL {
         let Some(shape) = oracle_spatial_shape(*function) else {
             continue;
@@ -1220,6 +1228,8 @@ fn postgres_renders_typed_d_within_with_ewkb_binds() {
             spatial_intersects: true,
         },
     )
+    // Come il provider, che ha confrontato le sonde con il catalogo.
+    .with_spatial_probes_verified()
     .render_filter(&Expression::SpatialPredicate {
         function: SpatialFunction::DWithin,
         field: identifier("geom"),
@@ -1243,6 +1253,8 @@ fn oracle_filter_relation_qualifies_spatial_object_attributes() {
             spatial_intersects: true,
         },
     )
+    // Come il provider, che ha confrontato le sonde con il catalogo.
+    .with_spatial_probes_verified()
     .render_filter_for_relation(
         &Expression::SpatialPredicate {
             function: SpatialFunction::Intersects,
@@ -1300,6 +1312,8 @@ fn postgres_query_ast_wraps_spatial_wkb_parameters() {
             spatial_intersects: true,
         },
     )
+    // Come il provider, che ha confrontato le sonde con il catalogo.
+    .with_spatial_probes_verified()
     .render_query(&query)
     .expect("query spatial");
     assert!(rendered
@@ -1382,6 +1396,8 @@ fn oracle_converts_wkb_and_db2_refuses_to_invent_an_srid() {
             spatial_intersects: true,
         },
     )
+    // Come il provider, che ha confrontato le sonde con il catalogo.
+    .with_spatial_probes_verified()
     .render_select(&select)
     .expect("Oracle spatial")
     .sql;
@@ -1569,6 +1585,8 @@ fn postgres_renders_index_aware_spatial_query() {
             spatial_intersects: true,
         },
     )
+    // Come il provider, che ha confrontato le sonde con il catalogo.
+    .with_spatial_probes_verified()
     .render_query(&query)
     .expect("index-aware spatial query");
     assert!(rendered

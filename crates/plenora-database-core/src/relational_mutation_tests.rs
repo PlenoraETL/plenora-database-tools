@@ -115,21 +115,27 @@ fn qualified_spatial_values_keep_payloads_in_named_binds() {
         postgres.sql
     );
     // GEO-001: `MySQL` legge il WKB con la longitudine per prima anche su un
-    // SRS geografico; `MariaDB` non ha l'opzione.
-    for (provider, expected) in [
-        (
-            ProviderKind::Mysql,
-            "ST_GeomFromWKB(CAST(? AS BINARY), 4326, 'axis-order=long-lat')",
-        ),
-        (
-            ProviderKind::Mariadb,
-            "ST_GeomFromWKB(CAST(? AS BINARY), 4326))",
-        ),
-    ] {
-        let lowered =
-            compile_relational_mutation(provider, &operation).expect("bind spatial MySQL/MariaDB");
-        assert_eq!(lowered.bind_names, ["shape"]);
-        assert!(lowered.sql.contains(expected), "{}", lowered.sql);
+    // SRS geografico.
+    let mysql =
+        compile_relational_mutation(ProviderKind::Mysql, &operation).expect("bind spatial MySQL");
+    assert_eq!(mysql.bind_names, ["shape"]);
+    assert!(
+        mysql
+            .sql
+            .contains("ST_GeomFromWKB(CAST(? AS BINARY), 4326, 'axis-order=long-lat')"),
+        "{}",
+        mysql.sql
+    );
+    // `MariaDB` non vincola lo SRID della colonna, Db2 non e misurato: senza
+    // catalogo il valore non si scrive (fino al 25/10 si scriveva).
+    for provider in [ProviderKind::Mariadb, ProviderKind::Db2] {
+        let error = compile_relational_mutation(provider, &operation)
+            .expect_err("SRID di colonna non provato");
+        assert_eq!(
+            error.category,
+            crate::ErrorCategory::Unsupported,
+            "{provider:?}"
+        );
     }
     let sqlserver = compile_relational_mutation(ProviderKind::Sqlserver, &operation)
         .expect("bind spatial SQL Server");
@@ -138,13 +144,6 @@ fn qualified_spatial_values_keep_payloads_in_named_binds() {
         sqlserver.sql.contains("geometry::STGeomFromWKB(@P1, 4326)"),
         "{}",
         sqlserver.sql
-    );
-    let db2 = compile_relational_mutation(ProviderKind::Db2, &operation).expect("bind spatial Db2");
-    assert_eq!(db2.bind_names, ["shape"]);
-    assert!(
-        db2.sql.contains("ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)"),
-        "{}",
-        db2.sql
     );
 
     let geography = MutationOperation::Insert(InsertOperation {

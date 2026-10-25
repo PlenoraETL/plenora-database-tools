@@ -60,6 +60,12 @@ pub fn compile_relational_query(
         _ if dialect == Dialect::Mysql => Some(plenora_database_sql::MYSQL_WKB_AXIS_OPTION),
         _ => None,
     })
+    // `MariaDB` parla il dialetto `MySQL` ma non confronta gli SRID: la
+    // regola delle sonde lo deve sapere. Nessun catalogo e stato letto qui,
+    // quindi le sonde passano soltanto dove il server ha una guardia misurata
+    // (`spatial_probe::server_guard`): PostgreSQL con la guardia sul typmod,
+    // MySQL.
+    .with_provider(provider)
     .render_query(&query)
     .map_err(crate::errors::to_py_err)?;
     Ok((

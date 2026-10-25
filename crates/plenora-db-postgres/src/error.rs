@@ -125,6 +125,13 @@ pub fn classify_error(phase: ErrorPhase, error: &tokio_postgres::Error) -> Datab
     {
         return mixed_srid_error(phase);
     }
+    if sqlstate == Some("22023")
+        && error
+            .as_db_error()
+            .is_some_and(|db| column_srid_message(db.message()))
+    {
+        return mixed_srid_error(phase);
+    }
     let mapping = resolve_mapping(sqlstate, transport_closed, phase);
     public_error_envelope(
         mapping.category,
@@ -147,6 +154,17 @@ pub fn classify_error(phase: ErrorPhase, error: &tokio_postgres::Error) -> Datab
 /// pubblico.
 fn mixed_srid_message(message: &str) -> bool {
     message.contains("Operation on mixed SRID geometries")
+}
+
+/// Il rifiuto `PostGIS` di un valore con uno SRID diverso dal typmod della
+/// colonna in scrittura: la guardia del server della regola delle sonde per
+/// un valore scritto (`spatial_probe::ServerGuard::PostgresTypmodWrite`).
+/// `PostGIS` lo emette con 22023 (`invalid_parameter_value`), lo stesso di
+/// molti altri argomenti non validi, quindi si riconosce dalla frase di
+/// `postgis_valid_typmod`, non dal codice; il valore non entra nel messaggio
+/// pubblico. Senza voce era `protocol`.
+fn column_srid_message(message: &str) -> bool {
+    message.contains("does not match column SRID")
 }
 
 fn mixed_srid_error(phase: ErrorPhase) -> DatabaseError {

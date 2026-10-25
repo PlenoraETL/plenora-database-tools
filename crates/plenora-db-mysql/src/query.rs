@@ -262,6 +262,7 @@ pub(crate) fn render_query_plan(
         return Ok(MysqlRenderedQuery {
             rendered: mysql_renderer()
                 .with_wkb_axis_option(profile.wkb_axis_option())
+                .with_provider(profile.kind())
                 .render_query(operation)?,
             geometries: Vec::new(),
             crs_checks: Vec::new(),
@@ -272,6 +273,7 @@ pub(crate) fn render_query_plan(
     Ok(MysqlRenderedQuery {
         rendered: mysql_renderer()
             .with_wkb_axis_option(profile.wkb_axis_option())
+            .with_provider(profile.kind())
             .render_query(&checked)?,
         geometries: geometries
             .into_iter()

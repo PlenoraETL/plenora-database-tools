@@ -124,6 +124,9 @@ struct CompileContext {
     /// La tabella dello statement, gia quotata: il predicato spatial
     /// `PostgreSQL` vi legge lo SRID della colonna (`postgres_guarded_probe`).
     relation: Option<String>,
+    /// Si sta compilando un predicato: un valore spatial qui sarebbe
+    /// confrontato, non scritto.
+    in_predicate: bool,
 }
 
 impl CompileContext {
@@ -132,6 +135,7 @@ impl CompileContext {
             params: Vec::new(),
             dialect,
             relation: None,
+            in_predicate: false,
         }
     }
 
@@ -251,6 +255,18 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     "valore spatial richiede SRID positivo",
                 ));
             }
+            // Un valore spatial in un predicato si confronta con `=`, `IN`,
+            // `BETWEEN`: nessuno di questi confronta gli SRID, e un
+            // `PostGIS` `=` fra sistemi diversi e falso senza errore. Nel
+            // compilatore portable i predicati spatial passano da
+            // `Predicate::Spatial`; qui il valore e soltanto scritto.
+            if ctx.in_predicate {
+                return Err(DatabaseError::unsupported(
+                    dialect_provider(ctx.dialect),
+                    crate::ErrorPhase::Prepare,
+                    crate::spatial_probe::SPATIAL_VALUE_OUTSIDE_SPATIAL,
+                ));
+            }
             // Un valore che porta uno SRID proprio deve avere quello
             // dichiarato: `PostGIS` lo sovrascriverebbe con `ST_SetSRID`, e
             // gli altri dialetti ignorano il `srid` di `ParameterValue::Wkb`.
@@ -264,6 +280,16 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     u64::MAX,
                 )?;
             }
+            // Scritto in una colonna: la regola delle sonde decide se lo
+            // SRID della colonna e provato (guardia del server su
+            // PostgreSQL e MySQL; MariaDB, Oracle e Db2 non lo vincolano o
+            // non sono misurati, e il compilatore non ha il catalogo).
+            crate::spatial_probe::admit_probe(
+                dialect_provider(ctx.dialect),
+                crate::spatial_probe::ProbeEvidence::CompileOnly,
+                crate::spatial_probe::ProbeUse::WriteValue,
+                crate::spatial_probe::ProbeFrame::Declared(*srid),
+            )?;
             let value = compile_expression(expression, ctx)?;
             match ctx.dialect {
                 DialectKind::Postgres => {
@@ -316,6 +342,13 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
 }
 
 fn compile_predicate(pred: &Predicate, ctx: &mut CompileContext) -> Result<String> {
+    let outer = std::mem::replace(&mut ctx.in_predicate, true);
+    let compiled = compile_predicate_inner(pred, ctx);
+    ctx.in_predicate = outer;
+    compiled
+}
+
+fn compile_predicate_inner(pred: &Predicate, ctx: &mut CompileContext) -> Result<String> {
     match pred {
         Predicate::Eq { column, value } => {
             let c = quote_identifier(column, ctx.dialect)?;
@@ -418,11 +451,32 @@ fn compile_spatial(
     ctx: &mut CompileContext,
 ) -> Result<String> {
     let col = quote_identifier(column, ctx.dialect)?;
+    reference.validate()?;
+    // La regola delle sonde, la stessa del renderer relazionale: il
+    // compilatore portable non ha il catalogo, quindi una sonda e eseguibile
+    // soltanto dove una guardia del server misurata rifiuta un altro SRID
+    // prima di ogni riga (PostgreSQL con la guardia sul typmod, MySQL con
+    // 3033/3643). SQL Server, MariaDB, Oracle e Db2 la rifiutano qui: i loro
+    // predicati rendono `NULL` o righe con SRID diversi, o non sono misurati.
+    crate::spatial_probe::admit_probe(
+        dialect_provider(ctx.dialect),
+        crate::spatial_probe::ProbeEvidence::CompileOnly,
+        if matches!(predicate, SpatialPredicate::BoundingBox) {
+            crate::spatial_probe::ProbeUse::BoundingBox
+        } else {
+            crate::spatial_probe::ProbeUse::Function
+        },
+        if reference.srid == 0 {
+            crate::spatial_probe::ProbeFrame::Missing
+        } else {
+            crate::spatial_probe::ProbeFrame::Declared(reference.srid)
+        },
+    )?;
     match ctx.dialect {
         DialectKind::Postgres => compile_spatial_postgres(column, &col, predicate, reference, ctx),
-        // `ST_GeomFromWKB` e i predicati spatial: nessuna divergenza misurata
-        // fra i due prodotti — `raw.spatial_functions` ha registrato lo stesso
-        // esito sui tre riferimenti.
+        // La forma e la stessa sui due prodotti (`raw.spatial_functions`), lo
+        // SRID no: `MySQL` rifiuta due SRID diversi, `MariaDB` li confronta
+        // senza errore, e la regola delle sonde lo ha gia rifiutato sopra.
         DialectKind::Mysql | DialectKind::Mariadb => {
             compile_spatial_mysql(&col, predicate, reference, ctx)
         }
@@ -517,17 +571,21 @@ fn compile_spatial_db2(
 ///
 /// # Limite dichiarato
 ///
-/// - **Regola.** Lo SRID dichiarato nel riferimento non si confronta con
-///   quello dei valori della colonna prima dell'esecuzione: in SQL Server lo
-///   SRID e del valore, non della colonna, e non c'e un catalogo da leggere.
-/// - **Ambito.** Predicati spatial del compilatore portable verso SQL Server
-///   (`STIntersects`, `STContains`, `STWithin`, bounding box).
-/// - **Hazard.** Con SRID diversi i metodi rendono `NULL` invece di un
-///   errore, e `= 1` esclude la riga: un riferimento in un altro sistema, o
-///   una colonna con valori in piu sistemi, danno meno righe senza errore.
-/// - **Rientro.** Un confronto per valore (`STSrid`) che fallisca invece di
-///   escludere, qualificato sul fixture SQL Server; il path `query` di SQL
-///   Server rifiuta gia un parametro geometry senza tipo e SRID risolti.
+/// - **Regola.** Nessun predicato spatial portable verso SQL Server: la
+///   regola delle sonde (`spatial_probe::admit_probe`) lo rifiuta prima di
+///   arrivare qui, perche il compilatore non ha il catalogo e SQL Server non
+///   ha una guardia che rifiuti uno SRID diverso.
+/// - **Ambito.** `where_spatial` dello SDK su Select, Update e Delete, la
+///   facade, le mutazioni relazionali verso SQL Server.
+/// - **Hazard evitato.** Con SRID diversi i metodi rendono `NULL` invece di
+///   un errore, e `= 1` esclude la riga (anche sotto `NOT`, con
+///   `STEnvelope`, su `geography` 4326 contro 4269): meno righe lette o
+///   toccate, con successo. Misurato su SQL Server 2022 il 25/10.
+/// - **Rientro.** Una guardia per valore (`STSrid`) che fallisca invece di
+///   escludere, misurata sul fixture SQL Server; oppure il path `query` del
+///   provider, che confronta gia gli SRID osservati nella colonna.
+///
+/// La forma resta qui, completa, per quel rientro.
 fn compile_spatial_sqlserver(
     col: &str,
     predicate: &SpatialPredicate,

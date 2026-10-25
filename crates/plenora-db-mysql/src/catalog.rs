@@ -599,6 +599,69 @@ pub(crate) async fn verify_epsg_srid(
     }
 }
 
+/// Le colonne geometriche di `schema.object` il cui SRID il catalogo
+/// **dichiara** senza che il server lo vincoli, confrontate con quello che la
+/// scrittura scrive in ciascuna (`expected`: nome della colonna, SRID).
+///
+/// Serve dove il profilo la chiede
+/// (`ProductProfile::declared_column_srids_query`): su `MariaDB`
+/// `REF_SYSTEM_ID=4326` si dichiara nella DDL, il registro OGC lo pubblica
+/// (`GEOMETRY_COLUMNS.SRID`), ma un `INSERT` di un valore 3857 nella colonna
+/// e accettato (misurato su 11.4 il 25/10). La regola delle sonde vuole che
+/// un adapter il cui server non vincola lo SRID della colonna lo confronti
+/// lui, prima della scrittura, come la scrittura `PostgreSQL` con il typmod
+/// (GEO-009). Uno SRID 0 e una colonna non vincolata: niente da confrontare.
+///
+/// # Errors
+///
+/// `crs` per una colonna dichiarata in un altro SRID; gli errori del catalogo.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn verify_declared_column_srids(
+    session: &mut MysqlSession,
+    profile: &dyn crate::profile::ProductProfile,
+    schema: &str,
+    object: &str,
+    expected: &[(String, u32)],
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let Some(query) = profile.declared_column_srids_query() else {
+        return Ok(());
+    };
+    if expected.is_empty() {
+        return Ok(());
+    }
+    let rows = session
+        .exec_rows(
+            query,
+            Params::Positional(vec![Value::from(schema), Value::from(object)]),
+            ErrorPhase::Prepare,
+            cancellation,
+        )
+        .await?;
+    for row in &rows {
+        let column: String = required(row, "column_name", "column_name")?;
+        let declared: Option<u32> = optional(row, "srid", "srid")?;
+        let Some(declared) = declared.filter(|srid| *srid != 0) else {
+            continue;
+        };
+        if expected
+            .iter()
+            .any(|(name, srid)| *name == column && *srid != declared)
+        {
+            return Err(DatabaseError::new(
+                ErrorCategory::Crs,
+                ErrorPhase::Prepare,
+                Some(profile.kind()),
+                format!(
+                    "SRID target {} incompatibile col contratto Arrow",
+                    profile.product()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn mapping_error(message: impl Into<String>) -> DatabaseError {
     DatabaseError::new(
         ErrorCategory::DataMapping,

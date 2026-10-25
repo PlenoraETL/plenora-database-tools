@@ -360,6 +360,8 @@ python scripts\check_sqlserver_reference.py # gate SQL Server live
 python scripts\check_oracle_reference.py    # gate Oracle Database Free full live
 python scripts\check_db2_reference.py       # gate IBM Db2 LUW live
 python scripts\check_sdk_campaign.py        # wheel + fixture relazionali e AGE
+python scripts\sonde_srid_server.py --server mariadb --riferimenti
+                                            # guardie SRID dei server (postgres|mysql|mariadb|sqlserver), container usa e getta
 cargo test --workspace -- --skip live_      # unit, senza server
 cargo deny check                            # alternativa se cargo-deny è installato
 ```

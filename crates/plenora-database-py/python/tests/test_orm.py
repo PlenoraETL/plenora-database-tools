@@ -2682,6 +2682,34 @@ def test_live_mysql_family_geometry_orm_qualification(provider: str, connector) 
         with pytest.raises(p.OrmUnsupportedError, match="XY"):
             p.OrmMetadata(models=(LiveMysqlGeometryXyz,)).create_all(session)
 
+        if provider == "mariadb":
+            # La regola delle sonde: MariaDB accetta un valore in un altro
+            # sistema in una colonna `REF_SYSTEM_ID` e non confronta gli SRID
+            # nei predicati, e lo SDK non legge il catalogo. Fino al 25/10
+            # scrittura e predicato passavano.
+            with pytest.raises(p.PlenoraUnsupportedError):
+                with p.OrmSession(session) as orm:
+                    orm.add(
+                        LiveMysqlGeometry(
+                            id=1,
+                            point=point,
+                            line=line,
+                            polygon=polygon,
+                            optional_point=None,
+                        )
+                    )
+            assert (
+                session.execute_scalar("SELECT COUNT(*) FROM _plenora_orm_mysql_geometry")
+                == 0
+            )
+            predicate = _MYSQL_POINT.predicate(
+                "intersects", LiveMysqlGeometry.point, _MYSQL_POINT.bind("reference")
+            )
+            with p.OrmSession(session) as orm:
+                with pytest.raises(p.PlenoraUnsupportedError):
+                    orm.query(LiveMysqlGeometry).where(predicate).all({"reference": point})
+            return
+
         with p.OrmSession(session) as orm:
             orm.add(
                 LiveMysqlGeometry(
@@ -2744,6 +2772,11 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
             (9.10, 45.40),
         )
     )
+    predicate = _PORTABLE_POINT.predicate(
+        "intersects",
+        LivePortableGeometry.point,
+        _PORTABLE_POINT.bind("reference"),
+    )
     try:
         if provider == "db2":
             _drop_db2_models_if_present(
@@ -2752,6 +2785,27 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
         else:
             metadata.drop_all(session)
         metadata.create_all(session)
+        if provider == "db2":
+            # Db2 non e misurato: senza catalogo ne la scrittura ne il
+            # predicato provano lo SRID della colonna, e la regola delle
+            # sonde li rifiuta (fino al 25/10 passavano).
+            with pytest.raises(p.PlenoraUnsupportedError):
+                with p.OrmSession(session) as orm:
+                    orm.add(
+                        LivePortableGeometry(
+                            id=1,
+                            point=point,
+                            line=line,
+                            polygon=polygon,
+                            optional_point=None,
+                        )
+                    )
+            with p.OrmSession(session) as orm:
+                with pytest.raises(p.PlenoraUnsupportedError):
+                    orm.query(LivePortableGeometry).where(predicate).all(
+                        {"reference": point}
+                    )
+            return
         with pytest.raises(ValueError):
             LivePortableGeometry(
                 id=99,
@@ -2793,17 +2847,23 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
             loaded.point = moved_point
             loaded.optional_point = point
 
-        predicate = _PORTABLE_POINT.predicate(
-            "intersects",
-            LivePortableGeometry.point,
-            _PORTABLE_POINT.bind("reference"),
-        )
         with p.OrmSession(session) as orm:
-            [queried] = (
-                orm.query(LivePortableGeometry)
-                .where(predicate)
-                .all({"reference": moved_point})
-            )
+            if provider == "sqlserver":
+                # SQL Server rende `NULL` con SRID diversi, e lo SDK non
+                # legge il catalogo: il predicato si rifiuta (fino al 25/10
+                # passava, e una sonda in un altro sistema escludeva le righe).
+                with pytest.raises(p.PlenoraUnsupportedError):
+                    orm.query(LivePortableGeometry).where(predicate).all(
+                        {"reference": moved_point}
+                    )
+                queried = orm.get(LivePortableGeometry, 1)
+                assert queried is not None
+            else:
+                [queried] = (
+                    orm.query(LivePortableGeometry)
+                    .where(predicate)
+                    .all({"reference": moved_point})
+                )
             _assert_portable_wkb(queried.point.ewkb, _root_wkb(moved_point), provider)
             assert queried.optional_point is not None
             _assert_portable_wkb(
@@ -2857,11 +2917,12 @@ def test_live_sqlserver_geometry_orm_qualification() -> None:
             ),
         )
         with p.OrmSession(session) as orm:
-            [loaded] = (
-                orm.query(LiveSqlServerGeography)
-                .where(predicate)
-                .all({"reference": point})
-            )
+            # Il predicato si rifiuta senza catalogo (vedi sopra); la lettura
+            # per chiave porta lo stesso valore.
+            with pytest.raises(p.PlenoraUnsupportedError):
+                orm.query(LiveSqlServerGeography).where(predicate).all({"reference": point})
+            loaded = orm.get(LiveSqlServerGeography, 1)
+            assert loaded is not None
             assert loaded.shape.ewkb == _root_wkb(point)
             assert loaded.shape.semantics == "geography"
             orm.delete(loaded)

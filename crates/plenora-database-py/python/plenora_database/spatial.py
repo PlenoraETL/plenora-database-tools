@@ -7,6 +7,18 @@ provider (PostGIS `ST_Intersects` / `ST_Contains` / `ST_Within` /
 `ST_DWithin` con cast condizionale `::geometry` o `::geography` in
 base alle semantics).
 
+Lo SRID del riferimento deve essere provato uguale a quello della colonna
+prima dell'esecuzione (`spatial_probe::admit_probe` nel core), e qui nessuno
+legge il catalogo: il predicato si compila soltanto dove il server stesso
+rifiuta un altro SRID prima di ogni riga. Su PostgreSQL il riferimento passa
+da una guardia sul typmod della colonna (`crs` se diverso), su MySQL dalla
+guardia del server (3033/3643, `crs`). Su SQL Server, MariaDB, Oracle e Db2
+il predicato si rifiuta con `unsupported`: i loro server rendono `NULL` o
+righe con SRID diversi, o non sono stati misurati. Vale anche per le
+espressioni dell'ORM (`Geometry.predicate`, `Geometry.bind`) e per i valori
+geometrici scritti, che su MariaDB, Oracle e Db2 si rifiutano allo stesso
+modo (il server non vincola lo SRID della colonna, o non e misurato).
+
 Uso tipico:
 
     import plenora_database as p

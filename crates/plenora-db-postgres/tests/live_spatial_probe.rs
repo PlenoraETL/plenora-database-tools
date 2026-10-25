@@ -569,6 +569,315 @@ async fn live_compiled_spatial_statements_compare_the_column_srid() {
     drop_fixture(&dsn, table).await;
 }
 
+/// Il renderer relazionale come lo usa lo SDK, senza catalogo: una sonda
+/// passa soltanto dalla guardia del server sul typmod della colonna di
+/// fronte, e la guardia rifiuta un altro SRID prima di ogni riga. Fino al
+/// 25/10 lo stesso SQL senza guardia rendeva righe (`&&` con una sonda 3857,
+/// la sonda lontana indicizzata, `geography` per cast implicito), e un bind
+/// nudo in posizione geometrica si rendeva senza che nessuno ne confrontasse
+/// lo SRID. Anche la scrittura di un valore in un altro SRID e rifiutata dal
+/// server (typmod) e pubblicata `crs`.
+#[tokio::test]
+async fn live_sdk_relational_probes_pass_only_through_the_server_guard() {
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let table = "plenora_probe_sdk";
+    fixture(&dsn, table).await;
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.clone());
+    let cancel = CancellationToken::new();
+    let budget = budget();
+    let sdk = plenora_database_sql::Renderer::new(
+        plenora_database_sql::Dialect::Postgres,
+        plenora_database_sql::DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .with_provider(plenora_database_core::plan::ProviderKind::Postgres);
+    let value = |srid: u32, semantics: SpatialSemantics| QueryExpression::SpatialValue {
+        expression: Box::new(parameter()),
+        srid,
+        semantics,
+    };
+    let statement = |operation: QueryOperation, bound: Vec<u8>| {
+        let rendered = sdk.render_query(&operation).expect("lo SDK rende la sonda");
+        assert!(
+            rendered.sql.contains("postgis_typmod_srid"),
+            "{}",
+            rendered.sql
+        );
+        Statement {
+            sql: rendered.sql,
+            params: rendered
+                .binds
+                .iter()
+                .map(|_| ParameterValue::Bytes(bound.clone()))
+                .collect(),
+        }
+    };
+    let execute = |statement: Statement| {
+        let provider = &provider;
+        let secret = &secret;
+        let cancel = &cancel;
+        let budget = &budget;
+        async move {
+            let mut transaction = provider
+                .begin_transaction(secret, &TransactionOptions::default(), budget, cancel)
+                .await?;
+            let result = transaction.query(&statement, cancel).await;
+            let _ = transaction.rollback(cancel).await;
+            result.map(|rows| rows.len())
+        }
+    };
+    let bbox = |field: &str, right: QueryExpression| QueryExpression::SpatialOperator {
+        operator: SpatialOperator::BoundingBoxIntersects,
+        left: Box::new(column(field)),
+        right: Box::new(right),
+    };
+    let far = wkb_point(100_000.0, 100_000.0);
+    let near = wkb_point(1.0, 1.0);
+    for (name, operation, bound) in [
+        (
+            "&&, valore 3857",
+            query(table, bbox("g", value(3857, SpatialSemantics::Geometry))),
+            near.clone(),
+        ),
+        (
+            "ST_Intersects indicizzato, valore 3857 lontano",
+            query(
+                table,
+                spatial(
+                    SpatialFunction::Intersects,
+                    "g",
+                    value(3857, SpatialSemantics::Geometry),
+                ),
+            ),
+            far.clone(),
+        ),
+        (
+            "NOT ST_Intersects, valore 3857",
+            query(
+                table,
+                QueryExpression::Not {
+                    expression: Box::new(spatial(
+                        SpatialFunction::Intersects,
+                        "g",
+                        value(3857, SpatialSemantics::Geometry),
+                    )),
+                },
+            ),
+            far.clone(),
+        ),
+        (
+            "geography, valore 4258",
+            query(
+                table,
+                spatial(
+                    SpatialFunction::Intersects,
+                    "h",
+                    value(4258, SpatialSemantics::Geography),
+                ),
+            ),
+            near.clone(),
+        ),
+        (
+            "colonna senza typmod, valore 4326",
+            query(
+                table,
+                bbox("libera", value(4326, SpatialSemantics::Geometry)),
+            ),
+            near.clone(),
+        ),
+    ] {
+        crs(execute(statement(operation, bound)).await, name);
+    }
+    for (name, operation) in [
+        (
+            "&&, valore 4326",
+            query(table, bbox("g", value(4326, SpatialSemantics::Geometry))),
+        ),
+        (
+            "ST_Intersects, valore 4326",
+            query(
+                table,
+                spatial(
+                    SpatialFunction::Intersects,
+                    "g",
+                    value(4326, SpatialSemantics::Geometry),
+                ),
+            ),
+        ),
+        (
+            "geography, valore 4326",
+            query(
+                table,
+                spatial(
+                    SpatialFunction::Intersects,
+                    "h",
+                    value(4326, SpatialSemantics::Geography),
+                ),
+            ),
+        ),
+    ] {
+        assert_eq!(
+            execute(statement(operation, near.clone()))
+                .await
+                .expect(name),
+            1,
+            "{name}"
+        );
+    }
+    // Un bind nudo non ha SRID noto a chi compila: lo SDK lo rifiuta.
+    let error = sdk
+        .render_query(&query(table, bbox("g", parameter())))
+        .expect_err("bind nudo");
+    assert_eq!(error.category, ErrorCategory::Unsupported);
+
+    // La scrittura dello SDK: il typmod della colonna rifiuta un valore in un
+    // altro SRID, e il rifiuto e `crs` (era `protocol`).
+    let insert = |srid: u32| {
+        let lowered = plenora_database_core::compile_relational_mutation(
+            plenora_database_core::plan::ProviderKind::Postgres,
+            &plenora_database_core::relational::MutationOperation::Insert(
+                plenora_database_core::relational::InsertOperation {
+                    target: ObjectRef {
+                        catalog: None,
+                        schema: Some("public".to_owned()),
+                        object: table.to_owned(),
+                    },
+                    columns: vec!["id".to_owned(), "g".to_owned()],
+                    rows: vec![vec![
+                        QueryExpression::Parameter {
+                            name: "id".to_owned(),
+                        },
+                        value(srid, SpatialSemantics::Geometry),
+                    ]],
+                    returning: Vec::new(),
+                },
+            ),
+        )
+        .expect("mutazione");
+        Statement {
+            sql: lowered.sql,
+            params: vec![
+                ParameterValue::I32(9_002),
+                ParameterValue::Bytes(near.clone()),
+            ],
+        }
+    };
+    let mut transaction = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("begin");
+    let error = transaction
+        .execute(&insert(3857), &cancel)
+        .await
+        .expect_err("valore 3857 nella colonna 4326");
+    assert_eq!(error.category, ErrorCategory::Crs, "{error:?}");
+    let _ = transaction.rollback(&cancel).await;
+    let mut transaction = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("begin");
+    transaction
+        .execute(&insert(4326), &cancel)
+        .await
+        .expect("valore 4326");
+    let _ = transaction.rollback(&cancel).await;
+    drop_fixture(&dsn, table).await;
+}
+
+/// Il commento di `postgres_guarded_probe`, misurato: su una tabella vuota
+/// letta in scansione sequenziale la guardia non si valuta e la lettura rende
+/// zero righe senza errore — lo stesso risultato di qualunque sonda; con un
+/// indice la guardia si valuta come chiave anche sulla tabella vuota.
+#[tokio::test]
+async fn live_guard_on_an_empty_table_returns_no_rows_or_refuses() {
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let table = "plenora_probe_empty";
+    let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .expect("connessione");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+        .batch_execute(&format!(
+            "DROP TABLE IF EXISTS public.{table};
+             CREATE TABLE public.{table} (id int, g geometry(Point, 4326));
+             CREATE INDEX ON public.{table} USING gist (g);"
+        ))
+        .await
+        .expect("fixture vuota");
+    let compiled = compile_portable(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        &p_select(table, vec!["id"])
+            .where_(p_spatial(
+                "g",
+                SpatialPredicate::Intersects,
+                SpatialReference {
+                    ewkb: ewkb_point(3857, 1.0, 1.0),
+                    srid: 3857,
+                    dimensions: Dimensions::Xy,
+                    semantics: SpatialSemantics::Geometry,
+                },
+            ))
+            .into_statement(),
+    )
+    .expect("compila");
+    let params = compiled
+        .params
+        .iter()
+        .map(|value| match value {
+            ParameterValue::Bytes(bytes) => {
+                Box::new(bytes.clone()) as Box<dyn tokio_postgres::types::ToSql + Sync>
+            }
+            ParameterValue::I32(value) => Box::new(*value),
+            ParameterValue::String(value) => Box::new(value.clone()),
+            other => panic!("parametro inatteso {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    let refs = params
+        .iter()
+        .map(|value| value.as_ref() as &(dyn tokio_postgres::types::ToSql + Sync))
+        .collect::<Vec<_>>();
+    client
+        .batch_execute("SET enable_indexscan = off; SET enable_bitmapscan = off")
+        .await
+        .expect("seqscan");
+    assert_eq!(
+        client
+            .query(&compiled.sql, &refs)
+            .await
+            .expect("seqscan")
+            .len(),
+        0
+    );
+    client
+        .batch_execute(
+            "SET enable_indexscan = on; SET enable_bitmapscan = on; SET enable_seqscan = off",
+        )
+        .await
+        .expect("indexscan");
+    let error = client
+        .query(&compiled.sql, &refs)
+        .await
+        .expect_err("la guardia come chiave dell'indice");
+    assert!(
+        error
+            .as_db_error()
+            .is_some_and(|db| db.message().contains("mixed SRID")),
+        "{error:?}"
+    );
+    client
+        .batch_execute(&format!("DROP TABLE IF EXISTS public.{table}"))
+        .await
+        .expect("pulizia");
+}
+
 /// `SpatialValue` del path portable: lo SRID incorporato diverso da quello
 /// dichiarato si rifiuta compilando (il valore e noto) e, se arriva al
 /// server come bind, dal server. fd471c2 memorizzava `SRID=4326` con le

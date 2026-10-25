@@ -12,12 +12,16 @@
 //! confrontato con quello della colonna letto dal catalogo (typmod), e il
 //! valore legato e l'EWKB con quello SRID: il server non deve indovinarlo.
 //!
-//! Il termine di confronto si risolve in modo conservativo: una colonna di
-//! una relazione nominata senza ambiguita, un'altra sonda, un `SpatialValue`,
-//! o una funzione che conserva il frame del suo unico argomento geometrico.
-//! Cio che non si risolve cosi (una sorgente derivata, una CTE, un riferimento
-//! correlato, una funzione che cambia frame) non si confronta con una sonda:
-//! si rifiuta con `crs` invece di lasciar decidere al server.
+//! Il termine di confronto si risolve in modo conservativo, con la stessa
+//! funzione del renderer relazionale (`plenora_database_core::spatial_probe::
+//! term_frame`): una colonna di una relazione nominata senza ambiguita,
+//! un'altra sonda, un `SpatialValue`, o una funzione che conserva il frame del
+//! suo unico argomento geometrico. Cio che non si risolve cosi (una sorgente
+//! derivata, una CTE, un riferimento correlato, una funzione che cambia
+//! frame) non si confronta con una sonda: si rifiuta con `crs` invece di
+//! lasciar decidere al server, anche quando la sonda sta dentro quel termine
+//! (`ST_Transform(sonda, n)` contro una colonna). Il renderer, a cui questo
+//! modulo lascia la resa, lo sa (`Renderer::with_spatial_probes_verified`).
 //!
 //! # Limite dichiarato
 //!
@@ -38,13 +42,12 @@ use crate::types::ColumnSpec;
 use plenora_database_core::plan::{FilterExpression, ProviderKind};
 use plenora_database_core::provider::{ParameterBag, ParameterValue};
 use plenora_database_core::relational::{
-    walk_query, walk_query_expression, ColumnRef, QueryExpression, QueryOperation,
-    QueryWalkControl, QueryWalkNode, SpatialFunction,
+    walk_query, walk_query_expression, QueryExpression, QueryOperation, QueryWalkControl,
+    QueryWalkNode, SpatialFunction,
 };
-use plenora_database_core::spatial_catalog::CrsRule;
 use plenora_database_core::spatial_probe::{
-    check_spatial_value, compare_frames, stamped_probe, PROBE_PEER_WITHOUT_SRID,
-    PROBE_SRID_MISMATCH,
+    check_spatial_value, compare_frames, contains_geometry_probe, stamped_probe, term_frame,
+    BaseColumn, RelationScope, TermFrame, PROBE_PEER_WITHOUT_SRID, PROBE_SRID_MISMATCH,
 };
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -228,82 +231,15 @@ pub struct QueryProbes {
     pub columns: Vec<ColumnFrame>,
 }
 
-/// Il frame di un termine geometrico.
+/// Il frame di un termine geometrico, con lo SRID delle sonde legate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Frame {
     /// Una colonna di una relazione di base, da leggere nel catalogo.
-    Column {
-        schema: Option<String>,
-        object: String,
-        column: String,
-    },
+    Column(BaseColumn),
     /// Uno SRID noto senza server: una sonda o un `SpatialValue`.
     Known(u32),
     /// Un termine senza sonde il cui frame non si risolve qui.
     Unresolved,
-}
-
-/// Le relazioni di un'operazione con cui si risolve una colonna.
-struct Scope<'a> {
-    operation: &'a QueryOperation,
-    common_tables: &'a BTreeSet<String>,
-}
-
-impl Scope<'_> {
-    fn column(&self, column: &ColumnRef) -> Frame {
-        let operation = self.operation;
-        let sources = operation
-            .source
-            .iter()
-            .chain(
-                operation
-                    .joins
-                    .iter()
-                    .filter_map(|join| join.source.as_ref()),
-            )
-            .collect::<Vec<_>>();
-        let derived = operation
-            .derived_source
-            .iter()
-            .chain(
-                operation
-                    .joins
-                    .iter()
-                    .filter_map(|join| join.derived_source.as_ref()),
-            )
-            .collect::<Vec<_>>();
-        let named = match &column.relation {
-            Some(relation) => {
-                if derived.iter().any(|source| source.alias == *relation) {
-                    return Frame::Unresolved;
-                }
-                sources
-                    .iter()
-                    .filter(|source| {
-                        source.alias.as_deref().map_or_else(
-                            || source.object.object == *relation,
-                            |alias| alias == relation,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            }
-            None if derived.is_empty() => sources.iter().collect(),
-            None => return Frame::Unresolved,
-        };
-        let [source] = named.as_slice() else {
-            return Frame::Unresolved;
-        };
-        // Un nome senza schema puo essere una CTE della query: non e la
-        // tabella del catalogo con lo stesso nome.
-        if source.object.schema.is_none() && self.common_tables.contains(&source.object.object) {
-            return Frame::Unresolved;
-        }
-        Frame::Column {
-            schema: source.object.schema.clone(),
-            object: source.object.object.clone(),
-            column: column.field.clone(),
-        }
-    }
 }
 
 /// Le posizioni geometriche di un nodo spatial: gli argomenti che il
@@ -391,10 +327,7 @@ pub fn plan_query_probes(
     let mut probes = Probes::new(parameters);
     let mut columns = Vec::new();
     for operation in operations {
-        let scope = Scope {
-            operation,
-            common_tables: &common_tables,
-        };
+        let scope = RelationScope::of(operation, &common_tables);
         let expressions = operation
             .clause_expressions()
             .chain(operation.joins.iter().filter_map(|join| join.on.as_ref()));
@@ -446,7 +379,7 @@ pub fn plan_query_probes(
 #[allow(clippy::too_many_arguments)]
 fn judge_node(
     expression: &QueryExpression,
-    scope: &Scope<'_>,
+    scope: &RelationScope,
     probes: &mut Probes,
     parameters: &ParameterBag,
     shared: &BTreeSet<String>,
@@ -477,6 +410,11 @@ fn judge_node(
     if !with_probe || frames.len() < 2 {
         return Ok(());
     }
+    // Un termine che non si risolve non si confronta con una sonda, anche
+    // quando la sonda gli sta dentro.
+    if frames.contains(&Frame::Unresolved) {
+        return Err(crs(PROBE_PEER_WITHOUT_SRID));
+    }
     let known = frames
         .iter()
         .filter_map(|frame| match frame {
@@ -491,11 +429,11 @@ fn judge_node(
         match frame {
             Frame::Known(_) => {}
             Frame::Unresolved => return Err(crs(PROBE_PEER_WITHOUT_SRID)),
-            Frame::Column {
+            Frame::Column(BaseColumn {
                 schema,
                 object,
                 column,
-            } => columns.push(ColumnFrame {
+            }) => columns.push(ColumnFrame {
                 schema,
                 object,
                 column,
@@ -507,45 +445,25 @@ fn judge_node(
 }
 
 /// Il frame di un termine geometrico, e se viene da una sonda o da un valore
-/// con SRID dichiarato.
+/// con SRID dichiarato o la contiene.
 fn frame_of(
     expression: &QueryExpression,
-    scope: &Scope<'_>,
+    scope: &RelationScope,
     probes: &mut Probes,
     parameters: &ParameterBag,
     shared: &BTreeSet<String>,
     max_depth: u64,
 ) -> Result<(Frame, bool)> {
-    let mut current = expression;
-    loop {
-        match current {
-            QueryExpression::Column { column } => return Ok((scope.column(column), false)),
-            QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. } => {
-                return Ok(probes
-                    .srid(name, parameters, shared, max_depth)?
-                    .map_or((Frame::Unresolved, false), |srid| {
-                        (Frame::Known(srid), true)
-                    }));
-            }
-            QueryExpression::SpatialValue { srid, .. } => return Ok((Frame::Known(*srid), true)),
-            QueryExpression::Spatial {
-                function,
-                arguments,
-            } if function.returns_geometry() && function.crs_rule() == Some(CrsRule::Preserves) => {
-                let geometric = arguments
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| function.takes_geometry_at(*index))
-                    .map(|(_, argument)| argument)
-                    .collect::<Vec<_>>();
-                let [argument] = geometric.as_slice() else {
-                    return Ok((Frame::Unresolved, false));
-                };
-                current = argument;
-            }
-            _ => return Ok((Frame::Unresolved, false)),
-        }
-    }
+    Ok(match term_frame(expression, scope) {
+        TermFrame::Column(column) => (Frame::Column(column), false),
+        TermFrame::Declared(srid) => (Frame::Known(srid), true),
+        TermFrame::Parameter(name) => probes
+            .srid(&name, parameters, shared, max_depth)?
+            .map_or((Frame::Unresolved, false), |srid| {
+                (Frame::Known(srid), true)
+            }),
+        TermFrame::Unresolved => (Frame::Unresolved, contains_geometry_probe(expression)),
+    })
 }
 
 /// Le colonne confrontate con una sonda contro il catalogo: lo SRID del

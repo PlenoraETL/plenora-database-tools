@@ -1,7 +1,8 @@
 use super::*;
 use plenora_database_core::plan::ObjectRef;
 use plenora_database_core::relational::{
-    CommonTableExpression, QueryDerivedSource, QueryProjection, QuerySource, SpatialOperator,
+    ColumnRef, CommonTableExpression, QueryDerivedSource, QueryProjection, QuerySource,
+    SpatialOperator,
 };
 
 fn wkb_point() -> Vec<u8> {

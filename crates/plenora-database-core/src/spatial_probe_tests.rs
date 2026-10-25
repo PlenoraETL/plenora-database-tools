@@ -127,3 +127,179 @@ fn frames_must_be_known_and_equal() {
         ErrorCategory::Crs
     );
 }
+
+/// La regola delle sonde per prodotto, prova, uso e frame, scritta per
+/// esteso: la tabella attesa non si ricava dalla regola. Senza catalogo
+/// passano soltanto le guardie misurate (`PostgreSQL`, `MySQL`), e la
+/// scrittura su SQL Server, che non ha SRID di colonna; un bind nudo non
+/// passa mai; una sonda senza SRID e `crs` anche col catalogo.
+#[test]
+fn the_probe_rule_admits_only_proven_srids() {
+    use Admission::{Catalog, Server, ValueCarriesFrame};
+    use ProbeEvidence::{Catalog as Cat, CompileOnly as Co};
+    use ProbeFrame::{Declared, Missing, Unbound};
+    use ProbeUse::{BoundingBox, Function, WriteValue};
+    use ProviderKind::{Db2, Mariadb, Mysql, Oracle, Postgres, Sqlserver};
+    let refused = Err(ErrorCategory::Unsupported);
+    let crs = Err(ErrorCategory::Crs);
+    #[allow(clippy::type_complexity)]
+    let table: &[(
+        ProviderKind,
+        ProbeEvidence,
+        ProbeUse,
+        ProbeFrame,
+        std::result::Result<Admission, ErrorCategory>,
+    )] = &[
+        (
+            Postgres,
+            Co,
+            Function,
+            Declared(3857),
+            Ok(Server(ServerGuard::PostgresColumnTypmod)),
+        ),
+        (
+            Postgres,
+            Co,
+            BoundingBox,
+            Declared(4326),
+            Ok(Server(ServerGuard::PostgresColumnTypmod)),
+        ),
+        (
+            Postgres,
+            Co,
+            WriteValue,
+            Declared(4326),
+            Ok(Server(ServerGuard::PostgresTypmodWrite)),
+        ),
+        (Postgres, Co, BoundingBox, Unbound, refused),
+        (Postgres, Cat, BoundingBox, Unbound, Ok(Catalog)),
+        (
+            Mysql,
+            Co,
+            Function,
+            Declared(3857),
+            Ok(Server(ServerGuard::MysqlSrid)),
+        ),
+        (
+            Mysql,
+            Co,
+            BoundingBox,
+            Declared(3857),
+            Ok(Server(ServerGuard::MysqlSrid)),
+        ),
+        (
+            Mysql,
+            Co,
+            WriteValue,
+            Declared(3857),
+            Ok(Server(ServerGuard::MysqlSrid)),
+        ),
+        (Mysql, Co, Function, Unbound, refused),
+        (Mariadb, Co, Function, Declared(4326), refused),
+        (Mariadb, Co, BoundingBox, Declared(4326), refused),
+        (Mariadb, Co, WriteValue, Declared(4326), refused),
+        (Sqlserver, Co, Function, Declared(4326), refused),
+        (Sqlserver, Co, BoundingBox, Declared(4326), refused),
+        (
+            Sqlserver,
+            Co,
+            WriteValue,
+            Declared(4326),
+            Ok(ValueCarriesFrame),
+        ),
+        (Sqlserver, Cat, Function, Unbound, Ok(Catalog)),
+        (Oracle, Co, Function, Declared(4326), refused),
+        (Oracle, Co, WriteValue, Declared(4326), refused),
+        (Oracle, Cat, Function, Unbound, Ok(Catalog)),
+        (Db2, Co, Function, Declared(4326), refused),
+        (Db2, Co, WriteValue, Declared(4326), refused),
+        (Postgres, Cat, Function, Missing, crs),
+        (Mysql, Co, Function, Missing, crs),
+        (Sqlserver, Co, WriteValue, Missing, crs),
+    ];
+    for (provider, evidence, probe_use, frame, expected) in table {
+        let observed =
+            admit_probe(*provider, *evidence, *probe_use, *frame).map_err(|error| error.category);
+        assert_eq!(
+            &observed, expected,
+            "{provider:?} {evidence:?} {probe_use:?} {frame:?}"
+        );
+    }
+    // Il rifiuto dice perche, senza valori.
+    let error = admit_probe(Mariadb, Co, WriteValue, Declared(4326)).expect_err("MariaDB");
+    assert_eq!(error.message, VALUE_SRID_UNPROVEN);
+    assert_eq!(error.provider, Some(Mariadb));
+}
+
+/// La colonna di una sonda si risolve senza catalogo soltanto se nomina una
+/// tabella di base senza ambiguita: non una sorgente derivata, non una CTE,
+/// non un alias che non c'e.
+#[test]
+fn a_probe_peer_resolves_only_to_an_unambiguous_base_table() {
+    use crate::plan::ObjectRef;
+    use crate::relational::{QueryDerivedSource, QueryJoin, QuerySource};
+    let source = |object: &str, alias: Option<&str>| QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: Some("public".to_owned()),
+            object: object.to_owned(),
+        },
+        alias: alias.map(str::to_owned),
+    };
+    let column = |relation: Option<&str>| ColumnRef {
+        relation: relation.map(str::to_owned),
+        field: "g".to_owned(),
+    };
+    let mut operation: QueryOperation = serde_json::from_value(serde_json::json!({
+        "source": null, "projection": [{"expression": {"kind": "wildcard", "relation": null}, "alias": null}],
+        "filter": null, "having": null, "row_limit": null, "row_offset": null, "locking": null
+    }))
+    .expect("operazione minima");
+    operation.source = Some(source("strade", Some("s")));
+    let scope = RelationScope::of(&operation, &BTreeSet::new());
+    assert_eq!(
+        scope.base_column(&column(Some("s"))),
+        Some(BaseColumn {
+            schema: Some("public".to_owned()),
+            object: "strade".to_owned(),
+            column: "g".to_owned(),
+        })
+    );
+    assert_eq!(scope.base_column(&column(Some("altrove"))), None);
+    assert!(scope.base_column(&column(None)).is_some());
+    // Un join: senza relazione la colonna e ambigua.
+    operation.joins.push(QueryJoin {
+        kind: crate::relational::JoinKind::Inner,
+        source: Some(source("fiumi", Some("f"))),
+        derived_source: None,
+        lateral: false,
+        on: None,
+    });
+    let scope = RelationScope::of(&operation, &BTreeSet::new());
+    assert_eq!(scope.base_column(&column(None)), None);
+    assert_eq!(
+        scope.base_column(&column(Some("f"))).map(|c| c.object),
+        Some("fiumi".to_owned())
+    );
+    // Una sorgente derivata con quel nome non e una tabella di base.
+    operation.joins[0].source = None;
+    operation.joins[0].derived_source = Some(QueryDerivedSource {
+        query: Box::new(operation.clone()),
+        alias: "f".to_owned(),
+    });
+    let scope = RelationScope::of(&operation, &BTreeSet::new());
+    assert_eq!(scope.base_column(&column(Some("f"))), None);
+    // Un nome senza schema che e una CTE della query.
+    let mut cte = operation.clone();
+    cte.joins.clear();
+    cte.source = Some(QuerySource {
+        object: ObjectRef {
+            catalog: None,
+            schema: None,
+            object: "vicine".to_owned(),
+        },
+        alias: None,
+    });
+    let scope = RelationScope::of(&cte, &BTreeSet::from(["vicine".to_owned()]));
+    assert_eq!(scope.base_column(&column(None)), None);
+}

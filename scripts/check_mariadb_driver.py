@@ -295,6 +295,10 @@ REQUIRED_REJECTED_PROBES: dict[str, str] = {
     "provider.profile_write_update_rollback": "writes.update: il rollback rimette i valori di prima",
     "provider.profile_write_upsert_cancellation": "writes.upsert: la cancellazione non applica nulla, e il provider resta usabile",
     "provider.profile_write_upsert_rollback": "writes.upsert: il rollback annulla anche gli aggiornamenti del primo batch",
+    # La regola delle sonde: dove il server non vincola lo SRID della colonna
+    # (`REF_SYSTEM_ID` di MariaDB), la scrittura lo confronta dal catalogo
+    # prima di ogni effetto, e rifiuta `crs` senza righe.
+    "provider.profile_write_spatial_declared_srid": "spatial.write_wkb: un altro SRID verso una colonna che ne dichiara uno",
 }
 
 
@@ -420,6 +424,7 @@ EXPECTED_PROBES: tuple[str, ...] = (
     "provider.profile_write_spatial_create",
     "provider.profile_write_spatial_append",
     "provider.profile_write_spatial_mixed",
+    "provider.profile_write_spatial_declared_srid",
     "provider.profile_write_spatial_index",
     "provider.profile_spatial_functions",
     "provider.profile_concurrent_readers",

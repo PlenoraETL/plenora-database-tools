@@ -222,12 +222,16 @@ impl OracleReadPlan {
             .iter()
             .map(OracleColumnSpec::from_catalog)
             .collect::<Result<Vec<_>>>()?;
+        // Le sonde del filtro sono gia confrontate con lo SRID del catalogo
+        // Spatial (`read::validate_spatial_filter`, prima di questa
+        // compilazione).
         let renderer = Renderer::new(
             Dialect::Oracle,
             DialectCapabilities {
                 spatial_intersects: true,
             },
-        );
+        )
+        .with_spatial_probes_verified();
         let mut projections = columns
             .iter()
             .map(|column| {

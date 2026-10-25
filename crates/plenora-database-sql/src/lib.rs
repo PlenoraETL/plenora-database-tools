@@ -12,11 +12,15 @@ use plenora_database_core::relational::{
     QueryParameterType, QueryProjection, QuerySetOperator, QuerySource, ScalarFunction,
     SpatialOperator, WindowFrame, WindowFrameBound, WindowFrameUnits,
 };
+use plenora_database_core::spatial_probe::{
+    admit_probe, contains_geometry_probe, term_frame, Admission, BaseColumn, ProbeEvidence,
+    ProbeFrame, ProbeUse, RelationScope, ServerGuard, TermFrame,
+};
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const SQL_SERVER_MAX_IDENTIFIER_CHARS: usize = 128;
 const SQL_SERVER_MAX_BIND_PARAMETERS: usize = 2_100;
@@ -369,6 +373,51 @@ pub struct RenderedQueryParts {
     pub binds: Vec<BindParameter>,
 }
 
+/// Lo stato di una resa: i bind nell'ordine dei segnaposto e gli scope delle
+/// operazioni che si stanno rendendo, il piu interno in coda.
+///
+/// Si comporta come la lista dei bind (`Deref`), cosi chi accoda un bind non
+/// cambia; gli scope servono soltanto alla regola delle sonde, che deve sapere
+/// a quale tabella di base appartiene la colonna confrontata con una sonda.
+#[derive(Debug, Default)]
+struct RenderState {
+    binds: Vec<BindParameter>,
+    scopes: Vec<RelationScope>,
+    /// Le CTE di una query il cui corpo si rende senza la clausola `WITH`
+    /// (`render_query_native_spatial_parts`).
+    outer_common_tables: BTreeSet<String>,
+}
+
+impl std::ops::Deref for RenderState {
+    type Target = Vec<BindParameter>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.binds
+    }
+}
+
+impl std::ops::DerefMut for RenderState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.binds
+    }
+}
+
+impl RenderState {
+    /// Lo scope dell'operazione che si sta rendendo, o uno vuoto fuori da
+    /// una query (un filtro di lettura: colonne senza relazione).
+    fn scope(&self) -> RelationScope {
+        self.scopes.last().cloned().unwrap_or_default()
+    }
+
+    /// Le CTE visibili a una query che comincia qui.
+    fn visible_common_tables(&self) -> BTreeSet<String> {
+        self.scopes.last().map_or_else(
+            || self.outer_common_tables.clone(),
+            |scope| scope.common_tables().clone(),
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SqlServerSpatialParameter {
     pub semantics: SpatialSemantics,
@@ -401,6 +450,15 @@ pub struct Renderer {
     /// su `MariaDB` da un errore del server, dimenticarla su `MySQL` darebbe
     /// assi scambiati senza errore: il default sta dalla parte che fallisce.
     wkb_axis_option: Option<&'static str>,
+    /// Il prodotto, dove il dialetto ne serve piu di uno: `MariaDB` parla il
+    /// dialetto `MySQL` ma non confronta gli SRID, e la regola delle sonde lo
+    /// tratta da prodotto diverso. `None` vale il prodotto del dialetto.
+    provider: Option<plenora_database_core::plan::ProviderKind>,
+    /// Chi ha confrontato gli SRID delle sonde prima della resa. Il default e
+    /// nessuno ([`ProbeEvidence::CompileOnly`]): soltanto un provider che li
+    /// ha confrontati sul catalogo lo dichiara
+    /// ([`Self::with_spatial_probes_verified`]).
+    probe_evidence: ProbeEvidence,
 }
 
 /// L'opzione d'ordine degli assi che `MySQL` 8+ riceve su ogni scambio WKB
@@ -420,7 +478,36 @@ impl Renderer {
                 Dialect::Mysql => Some(MYSQL_WKB_AXIS_OPTION),
                 _ => None,
             },
+            provider: None,
+            probe_evidence: ProbeEvidence::CompileOnly,
         }
+    }
+
+    /// Il prodotto che riceve lo statement, dove il dialetto non basta a
+    /// dirlo (`MariaDB` sul dialetto `MySQL`).
+    #[must_use]
+    pub const fn with_provider(
+        mut self,
+        provider: plenora_database_core::plan::ProviderKind,
+    ) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
+    /// Il chiamante ha confrontato, sul catalogo del target e prima della
+    /// resa, lo SRID di ogni sonda con quello della colonna con cui si
+    /// confronta (`spatial_probe::ProbeEvidence::Catalog`).
+    ///
+    /// Lo dichiarano soltanto i provider che lo fanno davvero: il path read e
+    /// query di `PostgreSQL` (`spatial_probe::verify_read_filter`,
+    /// `plan_query_probes` e `verify_query_columns`), il path query di SQL
+    /// Server (`validate_spatial_inputs`), il path read di Oracle
+    /// (`validate_spatial_filter`). Senza, ogni sonda passa dalla regola con
+    /// le sole guardie del server, e dove non ce ne sono si rifiuta.
+    #[must_use]
+    pub const fn with_spatial_probes_verified(mut self) -> Self {
+        self.probe_evidence = ProbeEvidence::Catalog;
+        self
     }
 
     /// L'opzione d'ordine degli assi che il dialetto `MySQL` passa a
@@ -515,7 +602,7 @@ impl Renderer {
         }
         validate_query_operation(query, &limits)?;
 
-        let mut binds = Vec::new();
+        let mut binds = RenderState::default();
         let mut with_clause = String::new();
         if !query.common_table_expressions.is_empty() {
             with_clause.push_str("WITH ");
@@ -550,12 +637,19 @@ impl Renderer {
 
         let mut body_query = query.clone();
         body_query.common_table_expressions.clear();
+        // Il corpo nomina le CTE come sorgenti: restano CTE anche senza la
+        // clausola, per la risoluzione delle colonne delle sonde.
+        binds.outer_common_tables = query
+            .common_table_expressions
+            .iter()
+            .map(|cte| cte.name.clone())
+            .collect();
         let body = self.render_query_inner(&body_query, &mut binds, false)?;
         self.validate_bind_count(&binds)?;
         Ok(RenderedQueryParts {
             with_clause,
             body,
-            binds,
+            binds: binds.binds,
         })
     }
 
@@ -573,17 +667,35 @@ impl Renderer {
             limits.max_identifier_bytes = ORACLE_MAX_IDENTIFIER_BYTES;
         }
         validate_query_operation(query, &limits)?;
-        let mut binds = Vec::new();
+        let mut binds = RenderState::default();
         let sql = self.render_query_inner(query, &mut binds, encode_spatial_output)?;
         self.validate_bind_count(&binds)?;
-        Ok(RenderedSql { sql, binds })
+        Ok(RenderedSql {
+            sql,
+            binds: binds.binds,
+        })
     }
 
-    #[allow(clippy::too_many_lines)]
+    /// Rende un'operazione nel proprio scope: le colonne che le sonde
+    /// confrontano si risolvono con le sorgenti di questa operazione.
     fn render_query_inner(
         &self,
         query: &QueryOperation,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
+        encode_spatial_output: bool,
+    ) -> Result<String> {
+        let scope = RelationScope::of(query, &binds.visible_common_tables());
+        binds.scopes.push(scope);
+        let rendered = self.render_query_scoped(query, binds, encode_spatial_output);
+        binds.scopes.pop();
+        rendered
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn render_query_scoped(
+        &self,
+        query: &QueryOperation,
+        binds: &mut RenderState,
         encode_spatial_output: bool,
     ) -> Result<String> {
         if query.projection.is_empty() {
@@ -931,7 +1043,7 @@ impl Renderer {
         derived: Option<&QueryDerivedSource>,
         lateral: bool,
         locking: Option<&QueryLock>,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         match (source, derived) {
             (Some(source), None) => {
@@ -1079,7 +1191,7 @@ impl Renderer {
     fn render_query_expression(
         &self,
         expression: &QueryExpression,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         match expression {
             QueryExpression::Wildcard { relation } => {
@@ -1200,7 +1312,7 @@ impl Renderer {
         &self,
         name: &str,
         parameter_type: plenora_database_core::relational::QueryParameterType,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> String {
         let value = self.bind(name, binds);
         if self.dialect == Dialect::Oracle {
@@ -1226,7 +1338,7 @@ impl Renderer {
         left: &QueryExpression,
         operator: ArithmeticOperator,
         right: &QueryExpression,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         let left = self.render_query_expression(left, binds)?;
         let right = self.render_query_expression(right, binds)?;
@@ -1243,7 +1355,7 @@ impl Renderer {
         &self,
         expression: &QueryExpression,
         target_type: QueryParameterType,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         let value = self.render_query_expression(expression, binds)?;
         if self.dialect == Dialect::Oracle {
@@ -1268,7 +1380,7 @@ impl Renderer {
         &self,
         branches: &[plenora_database_core::relational::QueryCaseBranch],
         else_expression: Option<&QueryExpression>,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         let mut sql = String::from("CASE");
         for branch in branches {
@@ -1289,7 +1401,7 @@ impl Renderer {
         &self,
         expression: &QueryExpression,
         semantics: SpatialSemantics,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         let value = self.render_query_expression(expression, binds)?;
         match (self.dialect, semantics) {
@@ -1324,7 +1436,7 @@ impl Renderer {
         expression: &QueryExpression,
         srid: u32,
         semantics: SpatialSemantics,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         let value = self.render_query_expression(expression, binds)?;
         match (self.dialect, semantics) {
@@ -1433,11 +1545,43 @@ impl Renderer {
         }
     }
 
+    /// Un valore spatial confrontato con `=`, `IN`, `BETWEEN`: nessuno di
+    /// questi confronta gli SRID (un `PostGIS` `=` fra sistemi diversi e
+    /// falso senza errore), e la regola delle sonde vale soltanto dentro una
+    /// funzione o un operatore spatial.
+    fn refuse_spatial_value_operand(&self, expression: &QueryExpression) -> Result<()> {
+        let operands: Vec<&QueryExpression> = match expression {
+            QueryExpression::Compare { left, right, .. } => vec![left, right],
+            QueryExpression::InList {
+                expression, values, ..
+            } => std::iter::once(expression.as_ref()).chain(values).collect(),
+            QueryExpression::Between {
+                expression,
+                lower,
+                upper,
+                ..
+            } => vec![expression, lower, upper],
+            _ => Vec::new(),
+        };
+        if operands
+            .iter()
+            .any(|operand| matches!(operand, QueryExpression::SpatialValue { .. }))
+        {
+            return Err(DatabaseError::unsupported(
+                self.provider_kind(),
+                ErrorPhase::Prepare,
+                plenora_database_core::spatial_probe::SPATIAL_VALUE_OUTSIDE_SPATIAL,
+            ));
+        }
+        Ok(())
+    }
+
     fn render_predicate_expression(
         &self,
         expression: &QueryExpression,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
+        self.refuse_spatial_value_operand(expression)?;
         match expression {
             QueryExpression::Compare {
                 left,
@@ -1524,12 +1668,182 @@ impl Renderer {
         }
     }
 
+    /// La regola delle sonde (`spatial_probe::admit_probe`) sugli argomenti
+    /// geometrici di un nodo spatial, nell'ordine in cui il nodo li riceve.
+    ///
+    /// Una **sonda** e un argomento il cui frame viene dal piano: un
+    /// `SpatialValue`, un bind, o una funzione che conserva il frame di uno di
+    /// questi (`spatial_probe::term_frame`). Ciascuna passa dalla regola con
+    /// la prova di questo renderer ([`Self::with_spatial_probes_verified`]):
+    /// col catalogo passa com'e; senza, passa soltanto dove il server ha una
+    /// guardia misurata. Su `PostgreSQL` la guardia confronta la sonda con il
+    /// typmod della colonna che le sta di fronte, e per farlo serve la tabella
+    /// di base di quella colonna: una colonna che non si risolve (sorgente
+    /// derivata, CTE, riferimento correlato), un termine senza frame, un bind
+    /// nudo si rifiutano. Una sonda dentro un termine il cui frame non si
+    /// risolve (una funzione che cambia frame) si rifiuta senza catalogo.
+    ///
+    /// Restituisce per ogni argomento la colonna e lo SRID della guardia da
+    /// applicare ([`Self::apply_probe_guards`]), o `None`.
+    ///
+    /// # Errors
+    ///
+    /// `crs` per una sonda senza SRID o per due SRID dichiarati diversi;
+    /// `unsupported` dove la prova manca.
+    fn judge_geometry_arguments(
+        &self,
+        probe_use: ProbeUse,
+        arguments: &[&QueryExpression],
+        state: &RenderState,
+    ) -> Result<Vec<Option<(BaseColumn, u32)>>> {
+        // Una sola geometria: niente si confronta con la sonda qui, e il nodo
+        // che riceve il risultato la giudica come proprio argomento
+        // (`term_frame` attraversa le funzioni che conservano il frame).
+        if arguments.len() < 2 {
+            return Ok(vec![None; arguments.len()]);
+        }
+        let provider = self.provider_kind();
+        let unproven = || {
+            DatabaseError::unsupported(
+                provider,
+                ErrorPhase::Prepare,
+                plenora_database_core::spatial_probe::PROBE_SRID_UNPROVEN,
+            )
+        };
+        let scope = state.scope();
+        let frames = arguments
+            .iter()
+            .map(|argument| term_frame(argument, &scope))
+            .collect::<Vec<_>>();
+        let mut guards = vec![None; arguments.len()];
+        for (index, argument) in arguments.iter().enumerate() {
+            let frame = match &frames[index] {
+                TermFrame::Declared(0) => ProbeFrame::Missing,
+                TermFrame::Declared(srid) => ProbeFrame::Declared(*srid),
+                TermFrame::Parameter(_) => ProbeFrame::Unbound,
+                TermFrame::Column(_) => continue,
+                TermFrame::Unresolved if !contains_geometry_probe(argument) => continue,
+                // Il provider l'ha gia giudicata sul piano intero.
+                TermFrame::Unresolved if self.probe_evidence == ProbeEvidence::Catalog => continue,
+                TermFrame::Unresolved => return Err(unproven()),
+            };
+            let admission = admit_probe(provider, self.probe_evidence, probe_use, frame)?;
+            let (Admission::Server(ServerGuard::PostgresColumnTypmod), ProbeFrame::Declared(srid)) =
+                (admission, frame)
+            else {
+                continue;
+            };
+            for (peer, peer_frame) in frames.iter().enumerate() {
+                if peer == index {
+                    continue;
+                }
+                match peer_frame {
+                    TermFrame::Column(column) => guards[index] = Some((column.clone(), srid)),
+                    TermFrame::Declared(other) if *other == srid => {}
+                    TermFrame::Declared(_) => {
+                        return Err(DatabaseError::new(
+                            plenora_database_core::ErrorCategory::Crs,
+                            ErrorPhase::Prepare,
+                            Some(provider),
+                            plenora_database_core::spatial_probe::PROBE_SRID_MISMATCH,
+                        ));
+                    }
+                    TermFrame::Parameter(_) => {
+                        admit_probe(
+                            provider,
+                            self.probe_evidence,
+                            probe_use,
+                            ProbeFrame::Unbound,
+                        )?;
+                    }
+                    TermFrame::Unresolved => return Err(unproven()),
+                }
+            }
+        }
+        Ok(guards)
+    }
+
+    /// La regola delle sonde sugli argomenti geometrici di una funzione
+    /// spatial gia resi, e la guardia dove serve.
+    fn guard_geometry_arguments(
+        &self,
+        function: SpatialFunction,
+        arguments: &[QueryExpression],
+        rendered: &mut [String],
+        state: &RenderState,
+    ) -> Result<()> {
+        let geometric = arguments
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| spatial_geometry_argument(function, *index))
+            .collect::<Vec<_>>();
+        let guards = self.judge_geometry_arguments(
+            ProbeUse::Function,
+            &geometric
+                .iter()
+                .map(|(_, argument)| *argument)
+                .collect::<Vec<_>>(),
+            state,
+        )?;
+        let mut values = geometric
+            .iter()
+            .map(|(index, _)| rendered[*index].clone())
+            .collect::<Vec<_>>();
+        self.apply_probe_guards(&mut values, &guards);
+        for ((index, _), value) in geometric.iter().zip(values) {
+            rendered[*index] = value;
+        }
+        Ok(())
+    }
+
+    /// La regola delle sonde su un dialetto senza guardia da rendere (SQL
+    /// Server, Oracle): giudica e basta.
+    fn judge_function_arguments(
+        &self,
+        function: SpatialFunction,
+        arguments: &[QueryExpression],
+        state: &RenderState,
+    ) -> Result<()> {
+        let geometric = arguments
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| spatial_geometry_argument(function, *index))
+            .map(|(_, argument)| argument)
+            .collect::<Vec<_>>();
+        self.judge_geometry_arguments(ProbeUse::Function, &geometric, state)
+            .map(|_| ())
+    }
+
+    /// La guardia `PostgreSQL` attorno agli argomenti che
+    /// [`Self::judge_geometry_arguments`] ha indicato: il valore se lo SRID
+    /// dichiarato e quello del typmod della colonna di fronte, un errore del
+    /// server («mixed SRID», `crs`) altrimenti.
+    fn apply_probe_guards(&self, rendered: &mut [String], guards: &[Option<(BaseColumn, u32)>]) {
+        if self.dialect != Dialect::Postgres {
+            return;
+        }
+        for (value, guard) in rendered.iter_mut().zip(guards) {
+            let Some((column, srid)) = guard else {
+                continue;
+            };
+            *value = plenora_database_core::spatial_probe::postgres_column_guard(
+                value,
+                &srid.to_string(),
+                &plenora_database_core::spatial_probe::postgres_relation_text(
+                    column.schema.as_deref(),
+                    &column.object,
+                ),
+                &plenora_database_core::spatial_probe::postgres_text_literal(&column.column),
+            );
+        }
+    }
+
     fn render_spatial_operator(
         &self,
         operator: SpatialOperator,
         left: &QueryExpression,
         right: &QueryExpression,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         if self.dialect != Dialect::Postgres {
             return Err(DatabaseError::unsupported(
@@ -1540,23 +1854,25 @@ impl Renderer {
         }
         let operand = |renderer: &Self,
                        expression: &QueryExpression,
-                       binds: &mut Vec<BindParameter>|
+                       binds: &mut RenderState|
          -> Result<String> {
             let value = renderer.render_query_expression(expression, binds)?;
             if matches!(
                 expression,
                 QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. }
             ) {
-                // Lo SRID della sonda contro quello dell'altro operando non
-                // si confronta qui: vedi il limite dichiarato sul parametro
-                // geometry `PostgreSQL` in `render_spatial_function`.
                 Ok(format!("ST_GeomFromEWKB({value})"))
             } else {
                 Ok(value)
             }
         };
-        let left = operand(self, left, binds)?;
-        let right = operand(self, right, binds)?;
+        let mut rendered = [operand(self, left, binds)?, operand(self, right, binds)?];
+        // `&&`, `~`, `@`, `<->` non confrontano gli SRID: la regola delle
+        // sonde decide prima, e senza catalogo la sonda passa dalla guardia
+        // sul typmod della colonna di fronte.
+        let guards = self.judge_geometry_arguments(ProbeUse::BoundingBox, &[left, right], binds)?;
+        self.apply_probe_guards(&mut rendered, &guards);
+        let [left, right] = rendered;
         let symbol = match operator {
             SpatialOperator::BoundingBoxIntersects => "&&",
             SpatialOperator::BoundingBoxContains => "~",
@@ -1573,7 +1889,7 @@ impl Renderer {
         partition_by: &[QueryExpression],
         order_by: &[plenora_database_core::relational::QueryOrdering],
         frame: Option<&WindowFrame>,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         let mut clauses = Vec::new();
         if !partition_by.is_empty() {
@@ -1599,7 +1915,7 @@ impl Renderer {
     fn render_query_ordering(
         &self,
         ordering: &QueryOrdering,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         let direction = match ordering.direction {
             SortDirection::Asc => "ASC",
@@ -1639,7 +1955,7 @@ impl Renderer {
         &self,
         name: &str,
         arguments: &[QueryExpression],
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         let arguments = arguments
             .iter()
@@ -1652,7 +1968,7 @@ impl Renderer {
         &self,
         function: SpatialFunction,
         arguments: &[QueryExpression],
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         if !self.capabilities.spatial_intersects {
             return Err(DatabaseError::unsupported(
@@ -1689,19 +2005,13 @@ impl Renderer {
                     )
                 {
                     Ok(match self.dialect {
-                        // Limite dichiarato. Regola: il renderer non vede i
-                        // valori, e lo SRID della sonda contro quello del
-                        // termine con cui si confronta lo decide chi esegue.
-                        // Il provider `PostgreSQL` lo fa prima della query
-                        // (`spatial_probe::plan_query_probes`, catalogo della
-                        // colonna). Ambito: chi esegue questo SQL con valori
-                        // propri senza passare dal provider, cioe il path
-                        // relazionale dello SDK con un `bind()` nudo in
-                        // posizione geometrica (l'ORM usa `SpatialValue`).
-                        // Hazard: una sonda senza SRID o in un altro sistema
-                        // da righe sbagliate senza errore con `&&` e verso
-                        // `geography`. Rientro: lo SDK giudica le sonde con
-                        // la stessa funzione del provider prima di legare.
+                        // Lo SRID del bind lo conosce soltanto chi lega i
+                        // valori: la regola delle sonde, sotto, lo ammette
+                        // soltanto se il provider lo ha confrontato con il
+                        // catalogo della colonna (`plan_query_probes`,
+                        // `verify_read_filter`). Fino al 25/10 lo SDK lo
+                        // rendeva anche senza: `&&` e il cast a `geography`
+                        // davano righe con una sonda in un altro sistema.
                         Dialect::Postgres => format!("ST_GeomFromEWKB({value})"),
                         // Un parametro nudo e un WKB senza CRS. `MySQL` lo
                         // leggerebbe con SRID 0 e il predicato contro una
@@ -1748,6 +2058,8 @@ impl Renderer {
                 }
             })
             .collect::<Result<Vec<_>>>()?;
+        let mut rendered = rendered;
+        self.guard_geometry_arguments(function, arguments, &mut rendered, binds)?;
         // GEO-001: su un SRS geografico `ST_X`/`ST_Y` di `MySQL` seguono
         // l'ordine del registro (`ST_X` e la latitudine per EPSG:4326), mentre
         // la `x` di questo contratto e la prima ordinata del WKB, longitudine
@@ -1778,8 +2090,13 @@ impl Renderer {
         &self,
         function: SpatialFunction,
         arguments: &[QueryExpression],
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
+        // Un bind diventa `FROM_WKBGEOMETRY(bind, colonna.SDO_SRID)`: lo SRID
+        // della colonna, qualunque sia quello del valore. Soltanto il path
+        // read del provider lo confronta col catalogo prima
+        // (`validate_spatial_filter`); senza, la regola delle sonde rifiuta.
+        self.judge_function_arguments(function, arguments, binds)?;
         let left = self.render_oracle_spatial_argument(arguments, 0, binds)?;
         match oracle_spatial_shape(function) {
             Some(OracleSpatialShape::GeometryType) => Ok(format!(
@@ -1877,7 +2194,7 @@ impl Renderer {
         &self,
         arguments: &[QueryExpression],
         index: usize,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         let value = arguments.get(index).ok_or_else(|| {
             DatabaseError::invalid_plan("funzione spatial Oracle con arieta incompleta")
@@ -1890,7 +2207,7 @@ impl Renderer {
         arguments: &[QueryExpression],
         index: usize,
         left: &str,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         let expression = arguments.get(index).ok_or_else(|| {
             DatabaseError::invalid_plan("funzione spatial Oracle con arieta incompleta")
@@ -1912,7 +2229,7 @@ impl Renderer {
         &self,
         function: SpatialFunction,
         arguments: &[QueryExpression],
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         self.render_sql_server_spatial_function_value(function, arguments, binds, true)
     }
@@ -1921,7 +2238,7 @@ impl Renderer {
         &self,
         function: SpatialFunction,
         arguments: &[QueryExpression],
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
         predicate_context: bool,
     ) -> Result<String> {
         if !self.capabilities.spatial_intersects {
@@ -1931,6 +2248,11 @@ impl Renderer {
                 "AST spatial SQL Server non abilitato",
             ));
         }
+        // Con SRID diversi i metodi rendono `NULL`: soltanto il path query
+        // del provider confronta gli SRID prima (`validate_spatial_inputs`);
+        // senza, la regola delle sonde rifiuta ogni sonda, anche un
+        // `SpatialValue` (`geometry::STGeomFromWKB(?, srid)`).
+        self.judge_function_arguments(function, arguments, binds)?;
         let receiver = arguments.first().ok_or_else(|| {
             DatabaseError::invalid_plan("funzione spatial SQL Server senza ricevitore")
         })?;
@@ -1944,10 +2266,7 @@ impl Renderer {
             }
         };
         let unary_predicate = |method: &str| Ok(predicate(format!("{receiver}.{method}()")));
-        let binary = |renderer: &Self,
-                      method: &str,
-                      binds: &mut Vec<BindParameter>|
-         -> Result<String> {
+        let binary = |renderer: &Self, method: &str, binds: &mut RenderState| -> Result<String> {
             let right = arguments.get(1).ok_or_else(|| {
                 DatabaseError::invalid_plan("funzione spatial SQL Server senza secondo operando")
             })?;
@@ -1955,13 +2274,10 @@ impl Renderer {
             Ok(format!("{receiver}.{method}({right})"))
         };
         let binary_predicate =
-            |renderer: &Self, method: &str, binds: &mut Vec<BindParameter>| -> Result<String> {
+            |renderer: &Self, method: &str, binds: &mut RenderState| -> Result<String> {
                 Ok(predicate(binary(renderer, method, binds)?))
             };
-        let numeric = |renderer: &Self,
-                       method: &str,
-                       binds: &mut Vec<BindParameter>|
-         -> Result<String> {
+        let numeric = |renderer: &Self, method: &str, binds: &mut RenderState| -> Result<String> {
             let argument = arguments.get(1).ok_or_else(|| {
                 DatabaseError::invalid_plan("funzione spatial SQL Server senza argomento numerico")
             })?;
@@ -1999,7 +2315,7 @@ impl Renderer {
     fn render_sql_server_spatial_operand(
         &self,
         expression: &QueryExpression,
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         let (QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. }) =
             expression
@@ -2031,7 +2347,7 @@ impl Renderer {
         &self,
         operator: &str,
         arguments: &[QueryExpression],
-        binds: &mut Vec<BindParameter>,
+        binds: &mut RenderState,
     ) -> Result<String> {
         if arguments.is_empty() {
             return Err(DatabaseError::invalid_plan("gruppo query vuoto"));
@@ -2072,11 +2388,14 @@ impl Renderer {
         expression: &Expression,
         relation: Option<&Identifier>,
     ) -> Result<RenderedSql> {
-        let mut binds = Vec::new();
+        let mut binds = RenderState::default();
         let relational = simple_expression_to_relational_with_relation(expression, relation);
         let sql = self.render_query_expression(&relational, &mut binds)?;
         self.validate_bind_count(&binds)?;
-        Ok(RenderedSql { sql, binds })
+        Ok(RenderedSql {
+            sql,
+            binds: binds.binds,
+        })
     }
 
     /// # Errors
@@ -2092,7 +2411,7 @@ impl Renderer {
         self.render_object(object)
     }
 
-    fn bind(&self, name: &str, binds: &mut Vec<BindParameter>) -> String {
+    fn bind(&self, name: &str, binds: &mut RenderState) -> String {
         let ordinal = binds.len() + 1;
         binds.push(BindParameter {
             ordinal,
@@ -2146,6 +2465,9 @@ impl Renderer {
 
     const fn provider_kind(&self) -> plenora_database_core::plan::ProviderKind {
         use plenora_database_core::plan::ProviderKind;
+        if let Some(provider) = self.provider {
+            return provider;
+        }
         match self.dialect {
             Dialect::Postgres => ProviderKind::Postgres,
             Dialect::Mysql => ProviderKind::Mysql,

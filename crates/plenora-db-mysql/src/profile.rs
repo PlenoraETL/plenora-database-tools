@@ -284,9 +284,25 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// 3003 in una colonna dichiarata 4326 e un errore che il server
     /// rifiuterebbe comunque, ed e meglio dirlo in preflight.
     ///
-    /// Dove la colonna non puo essere vincolata — `MariaDB` — il catalogo tace
-    /// per costruzione e `None` significa "non confrontabile", non "diverso".
+    /// Dove la colonna non e vincolata — `MariaDB` — `information_schema.columns`
+    /// tace per costruzione e `None` significa "non confrontabile", non
+    /// "diverso"; lo SRID che `MariaDB` dichiara senza vincolarlo
+    /// (`REF_SYSTEM_ID`) lo confronta [`Self::declared_column_srids_query`].
     fn geometry_target_srid_is_compatible(&self, catalog: Option<u32>, declared: u32) -> bool;
+
+    /// La query che rende lo SRID che il catalogo **dichiara** per ogni
+    /// colonna geometrica di una tabella senza che il server lo vincoli in
+    /// scrittura (`column_name`, `srid`; parametri: schema, tabella), o `None`
+    /// dove il server lo vincola da se.
+    ///
+    /// `MySQL` lo vincola: 3643 su un valore con un altro SRID, misurato su
+    /// 8.0.46 e 9.7.2. `MariaDB` no: `REF_SYSTEM_ID=4326` dopo il tipo e
+    /// accettato nella DDL e pubblicato in `GEOMETRY_COLUMNS.SRID`, e un
+    /// valore 3857 nella colonna e accettato (11.4, 25/10). Lo confronta la
+    /// scrittura prima di ogni effetto (`catalog::verify_declared_column_srids`).
+    fn declared_column_srids_query(&self) -> Option<&'static str> {
+        None
+    }
 
     /// La proiezione che rende l'SRID di **ogni valore** geometrico.
     ///
@@ -393,6 +409,12 @@ pub(crate) const INDEX_PART_ALIASES: &[&str] = &[
 /// (`catalog::verify_epsg_srid`), che soltanto `MySQL` esegue.
 #[cfg(test)]
 pub(crate) const SRS_ALIASES: &[&str] = &["organization", "organization_coordsys_id"];
+
+/// Vedi [`SCHEMA_ALIASES`]. Lo SRID che il catalogo dichiara senza che il
+/// server lo vincoli (`catalog::verify_declared_column_srids`), che soltanto
+/// `MariaDB` chiede.
+#[cfg(test)]
+pub(crate) const DECLARED_SRID_ALIASES: &[&str] = &["column_name", "srid"];
 
 /// Il `ProviderKind` con cui firma chi non ha ancora un prodotto sotto.
 ///
@@ -639,7 +661,25 @@ impl ProductProfile for MysqlProfile {
     }
 
     fn classify_server_code(&self, code: u16) -> ServerCodeVerdict {
-        classify_shared_code(self.product(), code)
+        match code {
+            // La guardia del server su cui poggia la regola delle sonde
+            // (`spatial_probe::ServerGuard::MysqlSrid`): 3033 «given two
+            // geometries of different srids», 3643 «The SRID of the geometry
+            // does not match the SRID of the column». Misurati su 8.0.46 e
+            // 9.7.2 il 25/10 (`scripts/sonde_srid_server.py`). Prima finivano
+            // nel verdetto generico `execution`: un confronto fra due CRS non
+            // e un'esecuzione fallita (ERR-001). `MariaDB` non li emette.
+            3_033 | 3_643 => ServerCodeVerdict {
+                category: ErrorCategory::Crs,
+                retry: RetryDisposition::Never,
+                message: format!(
+                    "geometrie {} in sistemi di riferimento diversi",
+                    self.product()
+                ),
+                remote_effect: None,
+            },
+            _ => classify_shared_code(self.product(), code),
+        }
     }
 
     fn row_rejection_cause(&self, code: u16) -> Option<&'static str> {
@@ -945,9 +985,11 @@ impl ProductProfile for MariadbProfile {
 
     fn geometry_column_ddl(&self, _srid: u32) -> String {
         // Senza vincolo, e non per prudenza: `raw.spatial_write_forms` ha
-        // misurato 1064 su entrambe le major per `GEOMETRY SRID 4326`, e la
-        // stessa prova rifiuta anche `REF_SYSTEM_ID`. Non esiste una DDL che vincoli una colonna
-        // geometrica a un sistema di riferimento su questo prodotto.
+        // misurato 1064 su entrambe le major per `GEOMETRY SRID 4326`.
+        // `REF_SYSTEM_ID=4326` dopo il tipo e accettato (11.4, 25/10), ma
+        // dichiara senza vincolare: un valore 3857 nella colonna passa. Non
+        // esiste una DDL che vincoli una colonna geometrica a un sistema di
+        // riferimento su questo prodotto.
         //
         // L'SRID dichiarato non viene perso: lo porta ogni valore, perche
         // `ST_GeomFromWKB(?, <n>)` e accettato e cio che resta memorizzato
@@ -956,15 +998,30 @@ impl ProductProfile for MariadbProfile {
     }
 
     fn geometry_target_srid_is_compatible(&self, catalog: Option<u32>, _declared: u32) -> bool {
-        // Il catalogo tace per costruzione, e quel silenzio e la risposta
-        // giusta: `GEOMETRY_COLUMNS.SRID` vale sempre zero perche nessuna DDL
-        // puo farlo diventare altro. Con niente da confrontare, il confronto
-        // non e «fallito»: non si pone.
+        // `information_schema.columns` non ha `SRS_ID` su questo prodotto: il
+        // catalogo letto qui tace per costruzione, e con niente da
+        // confrontare il confronto non e «fallito», non si pone. Lo SRID che
+        // `REF_SYSTEM_ID` dichiara sta nel registro OGC, e lo confronta
+        // `declared_column_srids_query`.
         //
-        // Un SRID che comparisse sarebbe invece una sorpresa — vorrebbe dire
-        // che questo prodotto ha cominciato a vincolare le colonne, e la
-        // decisione qui sopra andrebbe rimisurata invece di essere aggirata.
+        // Un SRID che comparisse qui sarebbe invece una sorpresa — vorrebbe
+        // dire che questo prodotto ha cominciato a pubblicarlo in
+        // `information_schema.columns`, e la decisione andrebbe rimisurata
+        // invece di essere aggirata.
         catalog.is_none()
+    }
+
+    fn declared_column_srids_query(&self) -> Option<&'static str> {
+        // Il nome della colonna sta in `G_GEOMETRY_COLUMN`: su 11.4
+        // `F_GEOMETRY_COLUMN` e vuoto (misurato il 25/10). Si prende il primo
+        // dei due che c'e, cosi la query non dipende da quale dei due una
+        // versione popoli.
+        Some(
+            "SELECT COALESCE(NULLIF(F_GEOMETRY_COLUMN, ''), G_GEOMETRY_COLUMN) AS column_name, \
+             SRID AS srid \
+             FROM information_schema.GEOMETRY_COLUMNS \
+             WHERE F_TABLE_SCHEMA = ? AND F_TABLE_NAME = ?",
+        )
     }
 
     fn geometry_srid_projection(&self, quoted: &str) -> String {

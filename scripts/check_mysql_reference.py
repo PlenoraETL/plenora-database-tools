@@ -112,6 +112,8 @@ EXPECTED_UNIT_TESTS = {
     "profile::tests::no_other_module_writes_the_timeout_statement",
     "profile::tests::no_production_module_writes_the_metadata_namespace_itself",
     "profile::tests::no_production_path_uses_a_profileless_entry_point",
+    "profile::tests::mysql_srid_mismatches_are_crs_and_mariadb_does_not_inherit_them",
+    "profile::tests::only_mariadb_reads_the_declared_column_srid_and_with_the_declared_aliases",
     "profile::tests::only_the_mariadb_provider_selects_the_mariadb_profile",
     "profile::tests::the_capability_table_is_built_only_by_the_profile",
     "profile::tests::the_catalog_derived_specs_always_carry_a_profile",

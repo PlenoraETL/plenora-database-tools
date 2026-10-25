@@ -857,6 +857,17 @@ impl MysqlWritePlan {
         srids
     }
 
+    /// Le colonne geometriche che la scrittura tocca, con lo SRID che vi
+    /// scrive: quello che il catalogo deve dichiarare, dove lo dichiara
+    /// (`catalog::verify_declared_column_srids`).
+    pub(super) fn geometry_column_srids(&self) -> Vec<(String, u32)> {
+        self.columns
+            .iter()
+            .filter(|column| column.kind == MysqlColumnKind::Geometry)
+            .filter_map(|column| column.spatial_srid.map(|srid| (column.name.clone(), srid)))
+            .collect()
+    }
+
     pub(super) fn preflight(
         &self,
         target: &MysqlObjectDescription,

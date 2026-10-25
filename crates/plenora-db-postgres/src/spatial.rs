@@ -68,6 +68,24 @@ pub fn build_spatial_select(
         &filter.predicate,
         &filter.reference,
     )?;
+    // La regola delle sonde, come nel compilatore portable: chi esegue questo
+    // statement non ha letto il catalogo, e la sonda passa soltanto dalla
+    // guardia del server sul typmod della colonna, resa qui sotto. Una sonda
+    // senza SRID e `crs`.
+    spatial_probe::admit_probe(
+        ProviderKind::Postgres,
+        spatial_probe::ProbeEvidence::CompileOnly,
+        if matches!(filter.predicate, SpatialPredicate::BoundingBox) {
+            spatial_probe::ProbeUse::BoundingBox
+        } else {
+            spatial_probe::ProbeUse::Function
+        },
+        if filter.reference.srid == 0 {
+            spatial_probe::ProbeFrame::Missing
+        } else {
+            spatial_probe::ProbeFrame::Declared(filter.reference.srid)
+        },
+    )?;
     let srid = i32::try_from(filter.reference.srid).map_err(|_| {
         DatabaseError::invalid_plan("SRID oltre il range i32 supportato da PostGIS")
     })?;

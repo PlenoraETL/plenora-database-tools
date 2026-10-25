@@ -439,6 +439,36 @@ impl Provider for MysqlProvider {
                     }
                     drop(session);
                 }
+                // Lo SRID che il catalogo dichiara e il server non vincola
+                // (`REF_SYSTEM_ID` di `MariaDB`) si confronta qui, prima di
+                // ogni effetto: il server accetterebbe un valore in un altro
+                // sistema.
+                let geometry_srids = plan.geometry_column_srids();
+                if !geometry_srids.is_empty()
+                    && self.profile.declared_column_srids_query().is_some()
+                    && !matches!(
+                        operation.mode,
+                        plenora_database_core::plan::WriteMode::Create
+                            | plenora_database_core::plan::WriteMode::DeleteByKeys
+                    )
+                {
+                    let pool = self.pool_for(secret)?;
+                    let mut session = pool.checkout(token).await?;
+                    crate::catalog::verify_declared_column_srids(
+                        &mut session,
+                        self.profile,
+                        operation
+                            .target
+                            .schema
+                            .as_deref()
+                            .unwrap_or_else(|| self.config.database()),
+                        &operation.target.object,
+                        &geometry_srids,
+                        token,
+                    )
+                    .await?;
+                    drop(session);
+                }
                 let loss_report = if matches!(
                     operation.mode,
                     plenora_database_core::plan::WriteMode::Create
@@ -734,6 +764,23 @@ async fn execute_mysql_write_after_ddl(
             ErrorPhase::Prepare,
             format!("preflight {product} cambiato fra prepare e write"),
         ));
+    }
+    // Di nuovo sulla sessione della scrittura: la DDL di prepare non vincola
+    // lo SRID dichiarato, e il server non lo fara.
+    if !matches!(
+        operation.mode,
+        plenora_database_core::plan::WriteMode::Create
+            | plenora_database_core::plan::WriteMode::DeleteByKeys
+    ) {
+        crate::catalog::verify_declared_column_srids(
+            session,
+            provider.profile,
+            target_schema,
+            &operation.target.object,
+            &plan.geometry_column_srids(),
+            token,
+        )
+        .await?;
     }
 
     // Update scrive il bulk nella tabella temporanea e applica poi UPDATE JOIN
