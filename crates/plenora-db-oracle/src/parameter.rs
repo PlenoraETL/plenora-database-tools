@@ -1,6 +1,7 @@
 use crate::connection::with_timeout_duration;
 use oracle_rs::types::{LobLocator, LobValue, OracleDate, OracleNumber, OracleTimestamp};
 use oracle_rs::{Connection, OracleType, Value};
+use plenora_database_core::parameter_fidelity::{canonical_uuid, reject_sub_microsecond};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
@@ -45,6 +46,9 @@ pub async fn bind_parameters_with_lobs(
         cancellation,
     };
     for parameter in parameters {
+        if !promote_write_lobs {
+            reject_empty(parameter)?;
+        }
         let blob = match parameter {
             ParameterValue::Wkb { bytes, .. } => Some(bytes.as_slice()),
             ParameterValue::Bytes(bytes) if promote_write_lobs => Some(bytes.as_slice()),
@@ -169,6 +173,30 @@ impl LobIo<'_> {
     }
 }
 
+/// Oracle conserva una stringa vuota, e un `RAW` vuoto, come `NULL`: il valore
+/// scritto non sarebbe quello bindato, e `col = :n` non lo ritroverebbe mai.
+///
+/// Vale per lo statement del chiamante e per il filtro della lettura
+/// (`promote_write_lobs` falso). Il percorso di scrittura Arrow, che promuove
+/// i binari a `BLOB` e binda le righe del parameter array con
+/// [`bind_parameters`], resta fuori: la sua regola per `''` e quella della
+/// scrittura, non di questo modulo.
+pub fn reject_empty(parameter: &ParameterValue) -> Result<()> {
+    let empty = match parameter {
+        ParameterValue::String(value)
+        | ParameterValue::Uuid(value)
+        | ParameterValue::Enum { label: value, .. } => value.is_empty(),
+        ParameterValue::Bytes(value) => value.is_empty(),
+        _ => false,
+    };
+    if empty {
+        return Err(mapping_error(
+            "parametro vuoto Oracle: stringa e RAW vuoti si conservano come NULL",
+        ));
+    }
+    Ok(())
+}
+
 fn lob_error(mut error: DatabaseError, message: &'static str) -> DatabaseError {
     message.clone_into(&mut error.message);
     error
@@ -181,9 +209,13 @@ fn bind_parameter(value: &ParameterValue) -> Result<Value> {
         ParameterValue::I64(value) => Ok(Value::Integer(*value)),
         ParameterValue::F64(value) if value.is_finite() => Ok(Value::Float(*value)),
         ParameterValue::F64(_) => Err(mapping_error("parametro float Oracle non finito")),
-        ParameterValue::String(value)
-        | ParameterValue::Uuid(value)
-        | ParameterValue::Enum { label: value, .. } => Ok(Value::String(value.clone())),
+        ParameterValue::String(value) | ParameterValue::Enum { label: value, .. } => {
+            Ok(Value::String(value.clone()))
+        }
+        ParameterValue::Uuid(value) => {
+            canonical_uuid(ProviderKind::Oracle, value)?;
+            Ok(Value::String(value.clone()))
+        }
         ParameterValue::Bytes(value) => Ok(Value::Bytes(value.clone())),
         ParameterValue::Json(value) => Ok(Value::Json(value.clone())),
         ParameterValue::Decimal(value) => {
@@ -198,7 +230,19 @@ fn bind_parameter(value: &ParameterValue) -> Result<Value> {
     }
 }
 
+/// Il testo nel modello `ORACLE_TIMESTAMP_TZ_FORMAT_MODEL`, per il
+/// `TO_TIMESTAMP_TZ(:n, modello)` che lo converte.
+///
+/// Limite dichiarato (regola di `plenora_database_core::parameter_fidelity`):
+/// il binding e esatto soltanto dentro quella conversione esplicita, che il
+/// portable scrive da se e che lo statement del chiamante deve scrivere.
+/// Ambito: un `:n` nudo confrontato o assegnato a un `TIMESTAMP WITH TIME
+/// ZONE`. Hazard: Oracle converte il testo con l'`NLS_TIMESTAMP_TZ_FORMAT`
+/// della sessione; con quello di default rifiuta (ORA-01843), con un modello
+/// diverso potrebbe leggere altri campi. Rientro: un binding nativo di
+/// `TIMESTAMP WITH TIME ZONE` nel fork di `oracle-rs`.
 fn parse_timestamp_tz(value: &str) -> Result<String> {
+    reject_sub_microsecond(ProviderKind::Oracle, value)?;
     let timestamp = chrono::DateTime::parse_from_rfc3339(value)
         .map_err(|_| mapping_error("parametro timestamptz Oracle non valido"))?;
     Ok(timestamp.format("%Y-%m-%dT%H:%M:%S%.6f%:z").to_string())
@@ -253,6 +297,7 @@ fn parse_date(value: &str) -> Result<OracleDate> {
 }
 
 fn parse_timestamp(value: &str) -> Result<OracleTimestamp> {
+    reject_sub_microsecond(ProviderKind::Oracle, value)?;
     let timestamp = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
         .map_err(|_| mapping_error("parametro timestamp Oracle non valido"))?;
     Ok(OracleTimestamp::new(

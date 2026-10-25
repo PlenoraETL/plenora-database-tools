@@ -1165,3 +1165,7 @@ mod test_suite;
 #[cfg(test)]
 #[path = "write_visibility_live_tests.rs"]
 mod write_visibility_live_tests;
+
+#[cfg(test)]
+#[path = "parameter_fidelity_live_tests.rs"]
+mod parameter_fidelity_live_tests;

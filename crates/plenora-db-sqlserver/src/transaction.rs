@@ -323,22 +323,35 @@ fn decode_cell(
                 || null_value(kind),
                 |value| ParameterValue::Bytes(value.to_vec()),
             )),
-        Ct::Datetime | Ct::Datetime2 | Ct::Datetime4 | Ct::Datetimen => Ok(row
+        // Il canone e il microsecondo: un `datetime2(7)` con il settimo
+        // decimale diverso da zero si rifiuta invece di troncarlo.
+        Ct::Datetime | Ct::Datetime2 | Ct::Datetime4 | Ct::Datetimen => row
             .try_get::<chrono::NaiveDateTime, _>(index)
             .map_err(|_| decode_mapping_error(index, "datetime"))?
             .map_or_else(
-                || null_value(kind),
+                || Ok(null_value(kind)),
                 |value| {
-                    ParameterValue::Timestamp(value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string())
+                    microsecond_exact(chrono::Timelike::nanosecond(&value), index)?;
+                    Ok(ParameterValue::Timestamp(
+                        value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string(),
+                    ))
                 },
-            )),
-        Ct::DatetimeOffsetn => Ok(row
-            .try_get::<chrono::DateTime<chrono::Utc>, _>(index)
+            ),
+        // Il `DateTime<Utc>` di `tiberius` sottrae l'offset a un istante che
+        // il protocollo porta gia in UTC: `10:20+02:00` tornava `06:20Z`.
+        // L'istante si legge con il suo offset e si porta a UTC qui.
+        Ct::DatetimeOffsetn => row
+            .try_get::<chrono::DateTime<chrono::FixedOffset>, _>(index)
             .map_err(|_| decode_mapping_error(index, "datetimeoffset"))?
             .map_or_else(
-                || null_value(kind),
-                |value| ParameterValue::TimestampTz(value.to_rfc3339()),
-            )),
+                || Ok(null_value(kind)),
+                |value| {
+                    microsecond_exact(chrono::Timelike::nanosecond(&value), index)?;
+                    Ok(ParameterValue::TimestampTz(
+                        value.with_timezone(&chrono::Utc).to_rfc3339(),
+                    ))
+                },
+            ),
         Ct::Daten => Ok(row
             .try_get::<chrono::NaiveDate, _>(index)
             .map_err(|_| decode_mapping_error(index, "date"))?
@@ -424,6 +437,17 @@ fn decode_cell(
             ErrorPhase::Read,
             "tipo di colonna SQL Server fuori dal sottoinsieme mappato",
         )),
+    }
+}
+
+fn microsecond_exact(nanosecond: u32, index: usize) -> Result<()> {
+    if nanosecond.is_multiple_of(1_000) {
+        Ok(())
+    } else {
+        Err(decode_mapping_error(
+            index,
+            "temporale oltre il microsecondo",
+        ))
     }
 }
 

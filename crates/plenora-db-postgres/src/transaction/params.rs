@@ -12,8 +12,14 @@ use crate::error::public_error;
 use crate::parameter_codec::{DecimalParameter, IntegerParameter, UuidParameter};
 use bytes::BytesMut;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use plenora_database_core::parameter_fidelity::{
+    canonical_uuid, exact_f32, reject_nul, reject_sub_microsecond,
+};
+use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::{ErrorCategory, ErrorPhase, Result};
+
+const PROVIDER: ProviderKind = ProviderKind::Postgres;
 use tokio_postgres::types::{to_sql_checked, IsNull, ToSql, Type};
 
 pub(super) enum SqlParam {
@@ -61,10 +67,12 @@ impl ToSql for SqlParam {
             Self::Bool(v) => v.to_sql(ty, out),
             Self::I32(v) => IntegerParameter(i64::from(*v)).to_sql(ty, out),
             Self::I64(v) => IntegerParameter(*v).to_sql(ty, out),
-            // Il target preparato richiede esplicitamente la rappresentazione
-            // IEEE-754 a 32 bit; la riduzione di precisione e quindi intenzionale.
-            #[allow(clippy::cast_possible_truncation)]
-            Self::F64(v) if *ty == Type::FLOAT4 => (*v as f32).to_sql(ty, out),
+            // Il target preparato e IEEE-754 a 32 bit: il valore vi entra
+            // esatto o non arriva qui (`parameter_accepts_target`, regola di
+            // `plenora_database_core::parameter_fidelity`).
+            Self::F64(v) if *ty == Type::FLOAT4 => exact_f32(*v)
+                .ok_or("double non rappresentabile esatto in float4")?
+                .to_sql(ty, out),
             Self::F64(v) => v.to_sql(ty, out),
             Self::String(v) => v.as_str().to_sql(ty, out),
             Self::Bytes(v) => v.as_slice().to_sql(ty, out),
@@ -154,7 +162,11 @@ fn parameter_accepts_target(param: &ParameterValue, target: &Type) -> bool {
             Type::INT8 | Type::NUMERIC => true,
             _ => false,
         },
-        ParameterValue::F64(_) => matches!(*target, Type::FLOAT4 | Type::FLOAT8),
+        // Un `float4` riceve soltanto un double che vi entra esatto: la
+        // riduzione a 32 bit cambierebbe il valore in silenzio.
+        ParameterValue::F64(value) => {
+            *target == Type::FLOAT8 || (*target == Type::FLOAT4 && exact_f32(*value).is_some())
+        }
         ParameterValue::String(_) => textual,
         ParameterValue::Bytes(_) | ParameterValue::Wkb { .. } => *target == Type::BYTEA,
         ParameterValue::Date(_) => *target == Type::DATE,
@@ -195,24 +207,31 @@ fn encode_param(param: &ParameterValue) -> Result<SqlParam> {
         ParameterValue::I32(v) => Ok(SqlParam::I32(*v)),
         ParameterValue::I64(v) => Ok(SqlParam::I64(*v)),
         ParameterValue::F64(v) => Ok(SqlParam::F64(*v)),
-        ParameterValue::String(v) => Ok(SqlParam::String(v.clone())),
+        ParameterValue::String(v) => {
+            reject_nul(PROVIDER, v)?;
+            Ok(SqlParam::String(v.clone()))
+        }
         ParameterValue::Bytes(v) => Ok(SqlParam::Bytes(v.clone())),
         ParameterValue::Date(v) => v
             .parse::<NaiveDate>()
             .map(SqlParam::Date)
             .map_err(|_| unsupported_param("date non conforme a ISO-8601")),
-        ParameterValue::Timestamp(v) => v
-            .parse::<NaiveDateTime>()
-            .map(SqlParam::Timestamp)
-            .map_err(|_| unsupported_param("timestamp non conforme a ISO-8601")),
-        ParameterValue::TimestampTz(v) => v
-            .parse::<DateTime<Utc>>()
-            .map(SqlParam::TimestampTz)
-            .map_err(|_| unsupported_param("timestamptz non conforme a RFC-3339")),
+        // La precisione bindabile e il microsecondo: `chrono` tronca in
+        // silenzio le cifre oltre, quindi il rifiuto guarda il testo.
+        ParameterValue::Timestamp(v) => {
+            reject_sub_microsecond(PROVIDER, v)?;
+            v.parse::<NaiveDateTime>()
+                .map(SqlParam::Timestamp)
+                .map_err(|_| unsupported_param("timestamp non conforme a ISO-8601"))
+        }
+        ParameterValue::TimestampTz(v) => {
+            reject_sub_microsecond(PROVIDER, v)?;
+            v.parse::<DateTime<Utc>>()
+                .map(SqlParam::TimestampTz)
+                .map_err(|_| unsupported_param("timestamptz non conforme a RFC-3339"))
+        }
         ParameterValue::Uuid(v) => {
-            if v.len() != 36 {
-                return Err(unsupported_param("uuid non conforme a lunghezza 36"));
-            }
+            canonical_uuid(PROVIDER, v)?;
             // Parsea a 16 byte per invio binario a Postgres UUID.
             let binary = UuidParameter::parse(v)
                 .map_err(|_| unsupported_param("uuid non conforme (hex-digits + dash attesi)"))?;
@@ -234,6 +253,7 @@ fn encode_param(param: &ParameterValue) -> Result<SqlParam> {
             "geometrie non supportate nel path OLTP: usare il piano dati",
         )),
         ParameterValue::Enum { label, .. } => {
+            reject_nul(PROVIDER, label)?;
             // Il wire format Postgres per enum è la label testuale. Se la
             // colonna target è enum, Postgres applica implicit cast dal
             // text. In altri contesti il consumer deve usare `$1::mood`.

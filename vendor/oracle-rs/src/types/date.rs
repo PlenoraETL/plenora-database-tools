@@ -250,10 +250,16 @@ pub fn decode_oracle_timestamp(data: &[u8]) -> Result<OracleTimestamp> {
 
     let date = decode_oracle_date(data)?;
 
-    // Fractional seconds (bytes 7-10)
+    // Fractional seconds (bytes 7-10). Il tipo porta il microsecondo: un
+    // valore con nanosecondi non si tronca in silenzio, si rifiuta.
     let fsecond = if data.len() >= 11 {
         let nanos = u32::from_be_bytes([data[7], data[8], data[9], data[10]]);
-        nanos / 1000 // Convert nanoseconds to microseconds
+        if nanos % 1000 != 0 {
+            return Err(Error::DataConversionError(
+                "Oracle TIMESTAMP oltre il microsecondo".to_string(),
+            ));
+        }
+        nanos / 1000
     } else {
         0
     };

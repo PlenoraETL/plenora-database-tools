@@ -3231,3 +3231,7 @@ async fn live_operand_catalog_refuses_derived_binary_and_resolves_public_sdo_geo
     }
     drop_derived(&provider, &secret, &cancellation).await;
 }
+
+#[cfg(test)]
+#[path = "parameter_fidelity_live_tests.rs"]
+mod parameter_fidelity;

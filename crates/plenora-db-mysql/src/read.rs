@@ -86,7 +86,7 @@ pub(crate) async fn read_operation_with_profile(
         DatabaseError::resource_limit(format!("numero colonne {product} non rappresentabile"))
     })?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
-    let parameters = bind_parameters(&plan.bind_names, parameters)?;
+    let parameters = bind_parameters(&plan.bind_names, parameters, profile.kind())?;
     let confirmation = crate::catalog::describe_object_with_profile(
         &mut session,
         schema,
@@ -189,7 +189,7 @@ pub(crate) async fn query_operation_with_profile(
             "query {product} oltre il limite di placeholder del prepared statement"
         )));
     }
-    let bound = bind_parameters(&bind_names, parameters)?;
+    let bound = bind_parameters(&bind_names, parameters, profile.kind())?;
     ensure_active_read_budget(budget, profile)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;

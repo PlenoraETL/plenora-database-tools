@@ -10353,3 +10353,7 @@ async fn live_binary_columns_of_views_are_judged_geometric() {
         .await
         .expect("pulizia");
 }
+
+#[cfg(test)]
+#[path = "parameter_fidelity_live_tests.rs"]
+mod parameter_fidelity;

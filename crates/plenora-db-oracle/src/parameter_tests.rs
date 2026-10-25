@@ -60,3 +60,45 @@ fn timestamptz_is_validated_and_normalized_for_explicit_oracle_conversion() {
         Value::String(value) if value == "2026-09-03T10:11:12.123000+02:30"
     ));
 }
+
+/// La precisione bindabile e il microsecondo (regola di
+/// `plenora_database_core::parameter_fidelity`): la decima cifra non si tronca.
+#[test]
+fn sub_microsecond_timestamps_and_non_canonical_uuids_are_refused() {
+    for value in [
+        ParameterValue::Timestamp("2026-03-19T10:11:12.1234567".to_owned()),
+        ParameterValue::TimestampTz("2026-03-19T10:11:12.1234567+02:00".to_owned()),
+        ParameterValue::Uuid("6f1c2a2e7-d3b-4c55-9a1e-0b2c3d4e5f60".to_owned()),
+    ] {
+        let error = bind_parameters(std::slice::from_ref(&value)).expect_err("rifiuto");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::DataMapping
+        );
+    }
+    assert!(bind_parameters(&[ParameterValue::Timestamp(
+        "2026-03-19T10:11:12.123456000".to_owned()
+    )])
+    .is_ok());
+}
+
+/// Oracle conserva `''` e un `RAW` vuoto come `NULL`: sul percorso dei
+/// parametri si rifiutano, prima dell'invio.
+#[test]
+fn empty_text_and_bytes_are_refused_on_the_parameter_path() {
+    for value in [
+        ParameterValue::String(String::new()),
+        ParameterValue::Bytes(Vec::new()),
+        ParameterValue::Enum {
+            type_name: "mood".to_owned(),
+            label: String::new(),
+        },
+    ] {
+        let error = crate::parameter::reject_empty(&value).expect_err("vuoto");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::DataMapping
+        );
+    }
+    assert!(crate::parameter::reject_empty(&ParameterValue::String(" ".to_owned())).is_ok());
+}

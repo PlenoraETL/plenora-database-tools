@@ -564,7 +564,8 @@ impl TransactionScope for MysqlTransaction {
                     self.native_query_policy,
                     &statement.sql,
                 )?;
-                let params = bind_positional_params(&statement.params)?;
+                let params =
+                    bind_positional_params(&statement.params, self.session.profile().kind())?;
                 let result = self
                     .session
                     .exec_write_tracked(
@@ -619,7 +620,8 @@ impl TransactionScope for MysqlTransaction {
                     self.native_query_policy,
                     &statement.sql,
                 )?;
-                let params = bind_positional_params(&statement.params)?;
+                let params =
+                    bind_positional_params(&statement.params, self.session.profile().kind())?;
                 // Prendo il timeout ORA per evitare borrow conflict con connection_mut sotto.
                 let timeout = self.session.operation_timeout();
                 let connection = self
@@ -707,7 +709,8 @@ impl TransactionScope for MysqlTransaction {
                     self.native_query_policy,
                     &statement.sql,
                 )?;
-                let params = bind_positional_params(&statement.params)?;
+                let params =
+                    bind_positional_params(&statement.params, self.session.profile().kind())?;
                 let profile = self.session.profile();
                 let timeout = self.session.operation_timeout();
                 let Self { session, sent, .. } = self;
@@ -998,7 +1001,8 @@ impl TransactionScope for MysqlTransaction {
                 //   3. Se ok, RELEASE; se no, ROLLBACK TO + return ConcurrentModification
                 let sp = "__plenora_cu";
                 self.savepoint(sp, cancellation).await?;
-                let params = bind_positional_params(&request.update.params)?;
+                let params =
+                    bind_positional_params(&request.update.params, self.session.profile().kind())?;
                 let affected = self
                     .session
                     .exec_write_tracked(
