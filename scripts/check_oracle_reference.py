@@ -28,12 +28,16 @@ COMPOSE_FILE = ROOT / "docker-compose.oracle.yml"
 REFERENCE_FILE = ROOT / "docker" / "oracle" / "references.json"
 MYSQL_REFERENCE_FILE = ROOT / "docker" / "mysql" / "references.json"
 LIVE_SOURCE = ROOT / "crates" / "plenora-db-oracle" / "src" / "live_tests.rs"
+FIDELITY_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-oracle" / "src" / "parameter_fidelity_live_tests.rs"
+)
 PYTHON_TESTS = ROOT / "crates" / "plenora-database-py" / "python" / "tests"
 RESULT = ROOT / "assurance-results" / "oracle-reference.json"
 TIMEOUT = 30 * 60
 REQUIRED_LIVE_TESTS = frozenset(
     {
         "live_caller_stream_fetch_failure_requires_recovery",
+        "live_parameter_values_bind_exactly_or_are_refused",
         "live_thin_driver_crud_merge_stream_and_rollback",
         "live_driver_errors_are_redacted",
         "live_type_fidelity_includes_utc_timestamptz_and_lobs",
@@ -131,7 +135,7 @@ def reference_contract() -> dict[str, str]:
 
 def live_source_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE], keep=lambda name: name.startswith("live_")
+        [LIVE_SOURCE, FIDELITY_LIVE_SOURCE], keep=lambda name: name.startswith("live_")
     )
 
 

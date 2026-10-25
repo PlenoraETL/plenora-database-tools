@@ -43,7 +43,9 @@ Il runtime Db2 richiede unixODBC e il client IBM Db2 12.1 sul sistema. Il
 driver `libdb2o` deve essere registrato in `odbcinst.ini` con il nome
 `IBM DB2 ODBC DRIVER`, che e il default usato dall'adapter; `DB2DIR`,
 `IBM_DB_HOME` e il percorso delle librerie devono puntare all'installazione
-IBM. La qualifica live dell'asset avviene prima che il workflow lo alleghi alla
+IBM. Il client deve scambiare il testo in UTF-8: `DB2CODEPAGE=1208` oppure una
+locale UTF-8. Con un'altra codepage l'adapter rifiuta la connessione
+(`invalid_configuration`), perche il testo arriverebbe al database convertito. La qualifica live dell'asset avviene prima che il workflow lo alleghi alla
 release; Windows resta build-only e non e distribuito come runtime Db2.
 
 ### Da sorgenti (dev)

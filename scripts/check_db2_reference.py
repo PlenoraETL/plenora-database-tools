@@ -29,20 +29,34 @@ SPATIAL_LIVE_SOURCE = (
 OPERAND_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-db2" / "src" / "operand_live_tests.rs"
 )
-LIVE_SOURCES = (LIVE_SOURCE, SPATIAL_LIVE_SOURCE, OPERAND_LIVE_SOURCE)
+FIDELITY_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-db2" / "src" / "parameter_fidelity_live_tests.rs"
+)
+LIVE_SOURCES = (
+    LIVE_SOURCE,
+    SPATIAL_LIVE_SOURCE,
+    OPERAND_LIVE_SOURCE,
+    FIDELITY_LIVE_SOURCE,
+)
 PYTHON_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-database-py" / "python" / "tests" / "test_db2_session.py"
 )
 WHEEL_NAMER = ROOT / "scripts" / "name_db2_wheel.py"
 RESULT = ROOT / "assurance-results" / "db2-reference.json"
 TIMEOUT = 20 * 60
+# Il client CLI scambia il testo nella codepage della locale: con quella POSIX
+# del container il testo UTF-8 arrivava doppiamente codificato, e l'adapter
+# ora rifiuta la connessione (`connection::verify_utf8_codepage`).
+DB2_CODEPAGE = {"DB2CODEPAGE": "1208"}
 DB2_ENV = {
+    **DB2_CODEPAGE,
     "PLENORA_DB2_HOST": "127.0.0.1",
     "PLENORA_DB2_DATABASE": "plenora",
     "PLENORA_DB2_USER": "db2inst1",
     "PLENORA_DB2_PASSWORD": "plenora_test",
 }
 PYTHON_ENV = {
+    **DB2_CODEPAGE,
     "PLENORA_TEST_DB2_HOST": "127.0.0.1",
     "PLENORA_TEST_DB2_DATABASE": "plenora",
     "PLENORA_TEST_DB2_USER": "db2inst1",
@@ -67,6 +81,9 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_spatial_portable_predicates_execute_with_bound_wkb_and_srid",
         "live_operand_catalog_judges_geometry_and_admits_scalars",
         "live_binary_columns_of_derived_relations_are_judged_geometric",
+        "live_parameter_values_bind_exactly_or_are_refused",
+        "live_arrow_read_returns_floating_point_values_exactly",
+        "live_sub_microsecond_timestamps_are_refused_on_read",
     }
 )
 

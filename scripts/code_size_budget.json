@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 118713,
-  "max_code_lines": 95910,
-  "rationale": "Regola B degli operandi geometrici (spatial_operand::catalog_column_is_geometric): la colonna binaria di una vista, vista materializzata o MQT si giudica geometrica su ogni provider; Oracle legge il catalogo nella transazione e nella lettura (crates/plenora-db-oracle/src/operand_catalog.rs: ALL_OBJECTS, ALL_TAB_COLUMNS, ALL_SYNONYMS, proprietario di SDO_GEOMETRY risolto attraverso il sinonimo pubblico), Db2 riconosce BINARY, VARBINARY, FOR BIT DATA e i tipi distinti, PostgreSQL, MySQL/MariaDB e SQL Server leggono l'origine della relazione e il tipo binario; prove offline sui cataloghi finti e live test per provider. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 117949 -> 118713 (+764), righe di codice 95426 -> 95910 (+484). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 120393,
+  "max_code_lines": 97188,
+  "rationale": "Fedelta dei parametri bindati (plenora_database_core::parameter_fidelity): ogni variante di ParameterValue su ogni provider ha un binding esatto provato live o un rifiuto prima dell'invio. Db2 lega i parametri sul tipo descritto del segnaposto (crates/plenora-db-db2/src/parameter.rs), i byte come binario, i double come f64, rilegge i floating point nel loro tipo C e rifiuta una connessione senza codepage UTF-8; SQL Server lega i decimali come decimal nativo e legge datetimeoffset con il suo offset; Oracle decodifica BINARY_DOUBLE, BINARY_FLOAT e BOOLEAN nel fork e rifiuta testo e RAW vuoti sui parametri; MySQL/MariaDB, PostgreSQL e il portable verificano forma e precisione; harness comune in plenora-database-testkit. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 118713 -> 120393 (+1680), righe di codice 95910 -> 97188 (+1278). Conteggio e perimetro invariati, nessun margine aggiunto."
 }
