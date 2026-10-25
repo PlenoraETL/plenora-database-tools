@@ -18,7 +18,8 @@ use plenora_database_core::provider::ProviderFuture;
 use plenora_database_core::relational::{MutationOperation, QueryOperation};
 use plenora_database_core::row::Row;
 use plenora_database_core::spatial_operand::{
-    OperandCatalog, OperandPlan, RelationColumns, AMBIGUOUS_NAME_SHAPE, GEOMETRY_OPERAND_UNRESOLVED,
+    CatalogColumn, OperandCatalog, OperandPlan, RelationColumns, AMBIGUOUS_NAME_SHAPE,
+    GEOMETRY_OPERAND_UNRESOLVED,
 };
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::transaction::{
@@ -134,12 +135,17 @@ impl TransactionScope for Finta {
         };
         let mut catalogo = OperandCatalog::new(self.prodotto);
         for (schema, object) in relations {
-            let colonne = tabelle
-                .iter()
-                .find(|(nome, _)| nome == object)
-                .map_or(RelationColumns::Absent, |(_, colonne)| {
-                    RelationColumns::Known(colonne.clone())
-                });
+            let colonne = tabelle.iter().find(|(nome, _)| nome == object).map_or(
+                RelationColumns::Absent,
+                |(_, colonne)| {
+                    RelationColumns::Known(
+                        colonne
+                            .iter()
+                            .map(|(nome, geometrica)| CatalogColumn::from_flag(nome, *geometrica))
+                            .collect(),
+                    )
+                },
+            );
             catalogo.insert(schema.clone(), object.clone(), colonne);
         }
         Box::pin(async move { Ok(catalogo) })
@@ -234,9 +240,16 @@ fn esito(prodotto: ProviderKind, plan: OperandPlan<'_>) -> (Result<(), DatabaseE
     let statement = Statement::new("SELECT 1");
     let outcome = match plan {
         OperandPlan::Query(_) => {
-            block_on(query_judged(&mut tx, &statement, Some(&plan), &cancel)).map(|_| ())
+            block_on(query_judged(&mut tx, &statement, Some(&plan), &[], &cancel)).map(|_| ())
         }
-        _ => block_on(execute_judged(&mut tx, &statement, Some(&plan), &cancel)).map(|_| ()),
+        _ => block_on(execute_judged(
+            &mut tx,
+            &statement,
+            Some(&plan),
+            &[],
+            &cancel,
+        ))
+        .map(|_| ()),
     };
     (outcome, tx.eseguite)
 }

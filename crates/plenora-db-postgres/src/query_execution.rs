@@ -144,7 +144,7 @@ pub async fn read_stream(
     // geometria (array, dominio, composito, range), non soltanto sul tipo
     // descritto: `geometry[]` si descrive come testo.
     if operation.filter.is_some() || !operation.order_by.is_empty() {
-        let geometric = crate::spatial_probe::relation_columns(
+        let columns = crate::spatial_probe::relation_columns(
             client.client()?,
             operation.source.schema.as_deref(),
             &operation.source.object,
@@ -155,10 +155,17 @@ pub async fn read_stream(
             operation.filter.as_ref(),
             &operation.order_by,
             |field| {
-                geometric
+                columns
                     .iter()
-                    .any(|(name, geometric)| *geometric && name == field)
+                    .any(|column| column.is_geometric() && column.name == field)
             },
+            |field| {
+                columns
+                    .iter()
+                    .find(|column| column.name == field)
+                    .map(|column| column.column_type.family)
+            },
+            &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
         )?;
     }
     let plan = plan_read(operation, &available)?;
@@ -244,7 +251,12 @@ pub async fn query_stream(
     )?;
     let mut client = connect_cancel_safe(provider, secret, cancellation).await?;
     crate::spatial_probe::verify_query_columns(client.client()?, &probes.columns).await?;
-    crate::spatial_probe::verify_scalar_operands(client.client()?, &operands).await?;
+    crate::spatial_probe::verify_scalar_operands(
+        client.client()?,
+        &operands,
+        &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
+    )
+    .await?;
     let bind_names = rendered
         .binds
         .iter()

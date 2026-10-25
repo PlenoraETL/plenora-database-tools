@@ -527,19 +527,23 @@ pub async fn verify_query_columns(
 /// farebbe fallire ogni query. Una relazione che `to_regclass` non trova e
 /// assente: la query fallira sul server.
 ///
+/// Con le famiglie dei valori legati (`parameters`) giudica anche la regola F
+/// (nessuna conversione implicita fra famiglie di tipo).
+///
 /// # Errors
 ///
-/// `unsupported` per un operando geometrico o non risolto; gli errori del
-/// catalogo in fase `prepare`.
+/// `unsupported` per un operando geometrico o non risolto; `invalid_plan`
+/// per una conversione implicita; gli errori del catalogo in fase `prepare`.
 pub async fn verify_scalar_operands(
     client: &tokio_postgres::Client,
     operands: &plenora_database_core::spatial_operand::ScalarOperands,
+    parameters: &plenora_database_core::spatial_operand::ParameterFamilies,
 ) -> Result<()> {
     if operands.is_empty() {
         return Ok(());
     }
     let catalog = operand_catalog(client, operands.relations()).await?;
-    operands.judge(&catalog)
+    operands.judge_bound(&catalog, parameters)
 }
 
 /// Il catalogo delle relazioni (schema, oggetto) per il giudizio degli
@@ -568,63 +572,69 @@ pub async fn operand_catalog(
     Ok(catalog)
 }
 
-/// Le colonne di una relazione, con il flag geometrico di
-/// [`verify_scalar_operands`]; vuote se `to_regclass` non la trova. Il flag e
-/// la regola condivisa dei cataloghi
-/// (`spatial_operand::catalog_column_is_geometric`): un tipo che contiene una
-/// geometria, o un tipo che contiene `bytea` in una vista o in una vista
-/// materializzata (`ST_AsBinary(g)`, `g::bytea`, un dominio su `bytea`).
+/// Le colonne di una relazione, con origine e famiglia
+/// (`spatial_operand::CatalogColumn`); vuote se `to_regclass` non la trova.
+/// La famiglia: geometrica se il tipo contiene una geometria, binaria se
+/// contiene `bytea` (`ST_AsBinary(g)`, `g::bytea`, un dominio su `bytea`),
+/// altrimenti dalla categoria del tipo (`typcategory`, che un dominio eredita
+/// dal tipo di base): `N` e `B` numerica, `S` testo, `D` temporale, il resto
+/// «altra». L'origine e derivata in una vista, in una vista materializzata e
+/// per una colonna generata (`attgenerated` non vuoto, `STORED` e, dal 18,
+/// `VIRTUAL`): la regola B per colonna.
 ///
 /// # Errors
 ///
-/// Gli errori del catalogo in fase `prepare`.
+/// Gli errori del catalogo in fase `prepare`; `protocol` per una famiglia che
+/// il catalogo rende e il giudizio non conosce.
 pub async fn relation_columns(
     client: &tokio_postgres::Client,
     schema: Option<&str>,
     object: &str,
-) -> Result<Vec<(String, bool)>> {
-    use plenora_database_core::spatial_operand::{
-        catalog_column_is_geometric, ColumnCarrier, RelationOrigin,
-    };
+) -> Result<Vec<plenora_database_core::spatial_operand::CatalogColumn>> {
+    use plenora_database_core::spatial_operand::{CatalogColumn, ColumnOrigin, OperandFamily};
     let rows = client
         .query(RELATION_COLUMNS_SQL, &[&schema, &object])
         .await
         .map_err(|error| crate::error::classify_error(ErrorPhase::Prepare, &error))?;
-    Ok(rows
-        .iter()
+    rows.iter()
         .map(|row| {
-            let carrier = if row.get::<_, bool>(1) {
-                ColumnCarrier::Geometry
-            } else if row.get::<_, bool>(2) {
-                ColumnCarrier::Binary
-            } else {
-                ColumnCarrier::Scalar
+            let family = match row.get::<_, &str>(1) {
+                "geometry" => OperandFamily::Geometry,
+                "binary" => OperandFamily::Binary,
+                "text" => OperandFamily::Text,
+                "numeric" => OperandFamily::Numeric,
+                "temporal" => OperandFamily::Temporal,
+                "other" => OperandFamily::Other,
+                _ => {
+                    return Err(plenora_database_core::DatabaseError::new(
+                        plenora_database_core::ErrorCategory::Protocol,
+                        ErrorPhase::Prepare,
+                        Some(PROVIDER),
+                        "famiglia di colonna PostgreSQL non riconosciuta",
+                    ))
+                }
             };
-            let origin = if row.get::<_, bool>(3) {
-                RelationOrigin::Derived
-            } else {
-                RelationOrigin::Base
-            };
-            (
-                row.get::<_, String>(0),
-                catalog_column_is_geometric(origin, carrier),
-            )
+            let origin = ColumnOrigin::of(row.get::<_, bool>(2), row.get::<_, bool>(3));
+            Ok(CatalogColumn::new(row.get::<_, String>(0), origin, family))
         })
-        .collect())
+        .collect()
 }
 
-/// Le colonne di una relazione (schema, oggetto) nell'ordine di `attnum`; se
-/// il loro tipo contiene una geometria o `bytea`: la chiusura di
-/// `typbasetype`, `typelem`, gli attributi di `typrelid`, `rngsubtype` e, per
-/// un multirange, il suo range (`rngmultitypid`, da `PostgreSQL` 14); se la
-/// relazione e una vista o una vista materializzata (`relkind` `v`, `m`). La
-/// colonna `rngmultitypid` si legge da `to_jsonb` della riga di `pg_range`:
-/// prima del 14 non esiste, e non esistono multirange da seguire. Fino al
-/// 25/10 il multirange di un range di geometrie non si riconosceva.
+/// Le colonne di una relazione (schema, oggetto) nell'ordine di `attnum`; la
+/// famiglia: geometrica o binaria se il loro tipo contiene una geometria o
+/// `bytea` (la chiusura di `typbasetype`, `typelem`, gli attributi di
+/// `typrelid`, `rngsubtype` e, per un multirange, il suo range,
+/// `rngmultitypid`, da `PostgreSQL` 14), altrimenti da `typcategory`; se la
+/// relazione e una vista o una vista materializzata (`relkind` `v`, `m`); se
+/// la colonna e generata (`attgenerated`). La colonna `rngmultitypid` si legge
+/// da `to_jsonb` della riga di `pg_range`: prima del 14 non esiste, e non
+/// esistono multirange da seguire. Fino al 25/10 il multirange di un range di
+/// geometrie non si riconosceva, e la colonna generata di una tabella era
+/// scalare.
 const RELATION_COLUMNS_SQL: &str = "\
 WITH RECURSIVE columns AS ( \
     SELECT a.attnum, a.attname::text AS name, a.atttypid, \
-        k.relkind IN ('v', 'm') AS derived \
+        k.relkind IN ('v', 'm') AS derived, a.attgenerated <> '' AS generated \
     FROM pg_catalog.pg_attribute a \
     JOIN pg_catalog.pg_class k ON k.oid = a.attrelid \
     WHERE a.attrelid = to_regclass(CASE WHEN $1::text IS NULL \
@@ -649,13 +659,17 @@ WITH RECURSIVE columns AS ( \
     ) n \
     WHERE n.oid <> 0 \
 ) \
-SELECT c.name, EXISTS ( \
+SELECT c.name, CASE WHEN EXISTS ( \
     SELECT 1 FROM reach r JOIN pg_catalog.pg_type t ON t.oid = r.oid \
     WHERE r.attnum = c.attnum AND t.typname IN ('geometry', 'geography') \
-), EXISTS ( \
+) THEN 'geometry' WHEN EXISTS ( \
     SELECT 1 FROM reach r \
     WHERE r.attnum = c.attnum AND r.oid = 'pg_catalog.bytea'::pg_catalog.regtype \
-), c.derived \
+) THEN 'binary' ELSE ( \
+    SELECT CASE t.typcategory WHEN 'N' THEN 'numeric' WHEN 'B' THEN 'numeric' \
+        WHEN 'S' THEN 'text' WHEN 'D' THEN 'temporal' ELSE 'other' END \
+    FROM pg_catalog.pg_type t WHERE t.oid = c.atttypid \
+) END, c.derived, c.generated \
 FROM columns c ORDER BY c.attnum";
 
 #[cfg(test)]

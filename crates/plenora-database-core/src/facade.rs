@@ -7,7 +7,7 @@
 use crate::portable::{compile_portable, PortableStatement};
 use crate::provider::ParameterValue;
 use crate::row::Row;
-use crate::spatial_operand::OperandPlan;
+use crate::spatial_operand::{OperandPlan, ParameterFamilies};
 use crate::transaction::{Statement, TransactionScope};
 use crate::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 
@@ -262,16 +262,33 @@ pub async fn execute_portable(
 /// dei provider, per ogni relazione nominata, con le colonne del catalogo e
 /// non con quelle che il chiamante dichiara. Un provider che non legge il
 /// catalogo rende ogni relazione sconosciuta: un riferimento in posizione di
-/// operando si rifiuta.
+/// operando si rifiuta. I parametri senza tipo dichiarato non hanno famiglia
+/// nota: [`verify_operands_bound`].
+///
+/// # Errors
+///
+/// Quelli di [`verify_operands_bound`].
+pub async fn verify_operands(
+    tx: &mut dyn TransactionScope,
+    plan: &OperandPlan<'_>,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    verify_operands_bound(tx, plan, &ParameterFamilies::default(), cancellation).await
+}
+
+/// [`verify_operands`] con le famiglie dei valori legati ai parametri del
+/// piano (la regola F, `spatial_operand`).
 ///
 /// # Errors
 ///
 /// `unsupported` per un operando geometrico, un riferimento non risolto in
-/// un piano che puo contenere una geometria, una forma di nomi ambigua; gli
+/// un piano che puo contenere una geometria, una forma di nomi ambigua;
+/// `invalid_plan` per una conversione implicita fra famiglie di tipo; gli
 /// errori della lettura del catalogo.
-pub async fn verify_operands(
+pub async fn verify_operands_bound(
     tx: &mut dyn TransactionScope,
     plan: &OperandPlan<'_>,
+    parameters: &ParameterFamilies,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let provider = tx.provider_kind();
@@ -285,41 +302,49 @@ pub async fn verify_operands(
     let catalog = tx
         .operand_catalog(operands.relations(), cancellation)
         .await?;
-    operands.judge(&catalog)
+    operands.judge_bound(&catalog, parameters)
 }
 
 /// Esegue lo SQL compilato da `plan` che rende righe, dopo
-/// [`verify_operands`]. `plan` assente: SQL del chiamante, senza giudizio.
+/// [`verify_operands_bound`].
+///
+/// `plan` assente: SQL del chiamante, senza giudizio. `bind_names`: i nomi
+/// dei parametri del piano nell'ordine dei valori di `statement` (quelli che
+/// il renderer ha reso), da cui le famiglie dei valori legati.
 ///
 /// # Errors
 ///
-/// Quelli di [`verify_operands`] e del driver.
+/// Quelli di [`verify_operands_bound`] e del driver.
 pub async fn query_judged(
     tx: &mut dyn TransactionScope,
     statement: &Statement,
     plan: Option<&OperandPlan<'_>>,
+    bind_names: &[String],
     cancellation: &CancellationToken,
 ) -> Result<Vec<Row>> {
     if let Some(plan) = plan {
-        verify_operands(tx, plan, cancellation).await?;
+        let parameters = ParameterFamilies::from_positional(bind_names, &statement.params);
+        verify_operands_bound(tx, plan, &parameters, cancellation).await?;
     }
     tx.query(statement, cancellation).await
 }
 
 /// Esegue lo SQL compilato da `plan` che rende un conteggio, dopo
-/// [`verify_operands`]. `plan` assente: SQL del chiamante, senza giudizio.
+/// [`verify_operands_bound`]: come [`query_judged`].
 ///
 /// # Errors
 ///
-/// Quelli di [`verify_operands`] e del driver.
+/// Quelli di [`verify_operands_bound`] e del driver.
 pub async fn execute_judged(
     tx: &mut dyn TransactionScope,
     statement: &Statement,
     plan: Option<&OperandPlan<'_>>,
+    bind_names: &[String],
     cancellation: &CancellationToken,
 ) -> Result<u64> {
     if let Some(plan) = plan {
-        verify_operands(tx, plan, cancellation).await?;
+        let parameters = ParameterFamilies::from_positional(bind_names, &statement.params);
+        verify_operands_bound(tx, plan, &parameters, cancellation).await?;
     }
     tx.execute(statement, cancellation).await
 }

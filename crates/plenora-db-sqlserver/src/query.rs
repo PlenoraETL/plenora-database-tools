@@ -1223,13 +1223,17 @@ fn resolve_spatial_source_parts<'a>(
 /// le colonne non si leggono e nessun riferimento si risolve). Fino al 25/10
 /// un sinonimo non portava colonne e `CAST(s.g AS NVARCHAR) LIKE` passava.
 ///
+/// Con i valori legati (`parameters`) giudica anche la regola F.
+///
 /// # Errors
 ///
-/// `unsupported` per un operando geometrico o non risolto; gli errori del
+/// `unsupported` per un operando geometrico o non risolto; `invalid_plan`
+/// per una conversione implicita fra famiglie di tipo; gli errori del
 /// catalogo.
 pub async fn verify_scalar_operands(
     session: &mut SqlServerSession,
     operation: &QueryOperation,
+    parameters: &plenora_database_core::provider::ParameterBag,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let operands = plenora_database_core::spatial_operand::scalar_operands(
@@ -1240,7 +1244,10 @@ pub async fn verify_scalar_operands(
         return Ok(());
     }
     let catalog = operand_catalog(session, operands.relations(), cancellation).await?;
-    operands.judge(&catalog)
+    operands.judge_bound(
+        &catalog,
+        &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
+    )
 }
 
 /// Il catalogo delle relazioni (schema, oggetto) per il giudizio degli
@@ -1256,7 +1263,7 @@ pub async fn operand_catalog(
     cancellation: &CancellationToken,
 ) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
     use plenora_database_core::spatial_operand::{
-        catalog_column_is_geometric, ColumnCarrier, OperandCatalog, RelationColumns, RelationOrigin,
+        CatalogColumn, ColumnOrigin, OperandCatalog, OperandFamily, RelationColumns,
     };
     let mut catalog = OperandCatalog::new(ProviderKind::Sqlserver);
     for (schema, object) in relations {
@@ -1272,22 +1279,25 @@ pub async fn operand_catalog(
             let row_state: &str = required(row, 0, "stato relazione")?;
             state = Some(row_state.to_owned());
             if let Some(column) = optional::<&str>(row, 1, "colonna")? {
-                let carrier = if required(row, 2, "colonna geometrica")? {
-                    ColumnCarrier::Geometry
-                } else if required(row, 3, "colonna binaria")? {
-                    ColumnCarrier::Binary
-                } else {
-                    ColumnCarrier::Scalar
+                let family = match required::<&str>(row, 2, "famiglia della colonna")? {
+                    "geometry" => OperandFamily::Geometry,
+                    "binary" => OperandFamily::Binary,
+                    "text" => OperandFamily::Text,
+                    "numeric" => OperandFamily::Numeric,
+                    "temporal" => OperandFamily::Temporal,
+                    "other" => OperandFamily::Other,
+                    _ => {
+                        return Err(query_error(
+                            ErrorCategory::Protocol,
+                            "famiglia di colonna SQL Server non riconosciuta",
+                        ))
+                    }
                 };
-                let origin = if required(row, 4, "relazione derivata")? {
-                    RelationOrigin::Derived
-                } else {
-                    RelationOrigin::Base
-                };
-                columns.push((
-                    column.to_owned(),
-                    catalog_column_is_geometric(origin, carrier),
-                ));
+                let origin = ColumnOrigin::of(
+                    required(row, 3, "relazione derivata")?,
+                    required(row, 4, "colonna calcolata")?,
+                );
+                columns.push(CatalogColumn::new(column.to_owned(), origin, family));
             }
         }
         let columns = match state.as_deref() {
@@ -1306,11 +1316,19 @@ pub async fn operand_catalog(
 /// sinonimo verso un altro database o un oggetto che non si risolve). Una
 /// colonna e geometrica se il suo tipo e `geometry` o `geography`: un alias
 /// di tipo su `geometry` il server non lo ammette («not a valid base type for
-/// the alias data type», misurato su SQL Server 2022 il 25/10). Per la regola
-/// B (`spatial_operand::catalog_column_is_geometric`) la colonna dice anche se
-/// il suo tipo di sistema (`system_type_id`, che un tipo alias eredita) e
-/// binario (`image` 34, `sql_variant` 98, che porta anche un `varbinary`,
-/// `varbinary` 165, `binary` 173) e se la relazione e una vista (`V`).
+/// the alias data type», misurato su SQL Server 2022 il 25/10). La famiglia
+/// (regola F, `spatial_operand::OperandFamily`) dal tipo di sistema
+/// (`system_type_id`, che un tipo alias eredita): binaria `image` 34,
+/// `sql_variant` 98 (che porta anche un `varbinary`), `varbinary` 165,
+/// `binary` 173, `timestamp`/`rowversion` 189 (fino al 25/10 mancava);
+/// testo `text` 35, `ntext` 99, `varchar` 167, `char` 175, `nvarchar` 231
+/// (anche `sysname`), `nchar` 239; numerica `tinyint` 48, `smallint` 52,
+/// `int` 56, `real` 59, `money` 60, `float` 62, `bit` 104, `decimal` 106,
+/// `numeric` 108, `smallmoney` 122, `bigint` 127; temporale `date` 40,
+/// `time` 41, `datetime2` 42, `datetimeoffset` 43, `smalldatetime` 58,
+/// `datetime` 61; il resto (`uniqueidentifier`, `xml`, i tipi CLR) «altra».
+/// L'origine (regola B per colonna): derivata in una vista (`V`) e per una
+/// colonna calcolata (`is_computed`, persistita o no).
 const RELATION_COLUMNS_SQL: &str = "\
 SET NOCOUNT ON; \
 DECLARE @name nvarchar(300) = CASE WHEN @P1 = N'' THEN QUOTENAME(@P2) \
@@ -1339,20 +1357,30 @@ BEGIN \
     END; \
 END; \
 IF @state <> N'known' \
-    SELECT @state, CAST(NULL AS nvarchar(128)), CAST(NULL AS bit), CAST(NULL AS bit), \
-        CAST(NULL AS bit); \
+    SELECT @state, CAST(NULL AS nvarchar(128)), CAST(NULL AS nvarchar(16)), \
+        CAST(NULL AS bit), CAST(NULL AS bit); \
 ELSE IF @temp = 1 \
     SELECT @state, CAST(c.name AS nvarchar(128)), \
-        CAST(CASE WHEN ty.name IN (N'geometry', N'geography') THEN 1 ELSE 0 END AS bit), \
-        CAST(CASE WHEN c.system_type_id IN (34, 98, 165, 173) THEN 1 ELSE 0 END AS bit), \
-        CAST(0 AS bit) \
+        CAST(CASE WHEN ty.name IN (N'geometry', N'geography') THEN N'geometry' \
+            WHEN c.system_type_id IN (34, 98, 165, 173, 189) THEN N'binary' \
+            WHEN c.system_type_id IN (35, 99, 167, 175, 231, 239) THEN N'text' \
+            WHEN c.system_type_id IN (48, 52, 56, 59, 60, 62, 104, 106, 108, 122, 127) \
+                THEN N'numeric' \
+            WHEN c.system_type_id IN (40, 41, 42, 43, 58, 61) THEN N'temporal' \
+            ELSE N'other' END AS nvarchar(16)), \
+        CAST(0 AS bit), CAST(c.is_computed AS bit) \
     FROM tempdb.sys.columns c JOIN tempdb.sys.types ty ON ty.user_type_id = c.user_type_id \
     WHERE c.object_id = @id ORDER BY c.column_id; \
 ELSE \
     SELECT @state, CAST(c.name AS nvarchar(128)), \
-        CAST(CASE WHEN ty.name IN (N'geometry', N'geography') THEN 1 ELSE 0 END AS bit), \
-        CAST(CASE WHEN c.system_type_id IN (34, 98, 165, 173) THEN 1 ELSE 0 END AS bit), \
-        CAST(CASE WHEN o.type = 'V' THEN 1 ELSE 0 END AS bit) \
+        CAST(CASE WHEN ty.name IN (N'geometry', N'geography') THEN N'geometry' \
+            WHEN c.system_type_id IN (34, 98, 165, 173, 189) THEN N'binary' \
+            WHEN c.system_type_id IN (35, 99, 167, 175, 231, 239) THEN N'text' \
+            WHEN c.system_type_id IN (48, 52, 56, 59, 60, 62, 104, 106, 108, 122, 127) \
+                THEN N'numeric' \
+            WHEN c.system_type_id IN (40, 41, 42, 43, 58, 61) THEN N'temporal' \
+            ELSE N'other' END AS nvarchar(16)), \
+        CAST(CASE WHEN o.type = 'V' THEN 1 ELSE 0 END AS bit), CAST(c.is_computed AS bit) \
     FROM sys.columns c JOIN sys.types ty ON ty.user_type_id = c.user_type_id \
     JOIN sys.objects o ON o.object_id = c.object_id \
     WHERE c.object_id = @id ORDER BY c.column_id;";

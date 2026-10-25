@@ -64,9 +64,10 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps",
         "live_spatial_capabilities_and_streaming_wkb_are_evidence_backed",
         "live_spatial_write_round_trips_and_invalid_wkb_rolls_back",
-        "live_spatial_portable_predicates_execute_with_bound_wkb_and_srid",
+        "live_spatial_portable_predicates_are_refused_without_srid_proof",
         "live_operand_catalog_judges_geometry_and_admits_scalars",
         "live_binary_columns_of_derived_relations_are_judged_geometric",
+        "live_server_computed_binary_columns_are_judged_geometric",
     }
 )
 

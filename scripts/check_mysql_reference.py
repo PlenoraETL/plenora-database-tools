@@ -68,6 +68,8 @@ EXPECTED_UNIT_TESTS = {
     "arrow::tests::zero_dates_fail_closed_without_panicking",
     "catalog::tests::a_functional_index_is_described_where_the_product_publishes_its_parts",
     "catalog::tests::a_part_without_a_column_is_refused_where_the_product_cannot_describe_it",
+    "catalog::tests::ogni_tipo_ha_la_famiglia_della_tabella_e_le_colonne_generate_sono_derivate",
+    "catalog::tests::un_default_di_mariadb_si_giudica_calcolato",
     "catalog::tests::schema_token_is_stable_and_sensitive",
     "config::tests::debug_redacts_credentials",
     "config::tests::driver_opts_require_tls_even_for_explicit_trust_opt_out",
@@ -298,6 +300,8 @@ EXPECTED_UNIT_TESTS = {
 EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_binary_columns_of_views_are_judged_geometric",
     "live_tests::live_geometry_column_under_scalar_operator_is_refused",
+    "live_tests::live_server_computed_binary_columns_are_judged_geometric",
+    "live_tests::live_text_columns_compared_with_binary_values_are_refused",
     "live_tests::live_native_query_policy_allow_permits_ddl",
     "live_tests::live_native_query_policy_deny_rejects_conditional_update_ddl",
     "live_tests::live_native_query_policy_deny_rejects_ddl",

@@ -190,7 +190,7 @@ impl SqlServerReadPlan {
         sql.push_str(&renderer.quote_object(&object)?);
 
         let mut bind_names = Vec::new();
-        ensure_scalar_fields(operation, &available, description.kind == "VIEW")?;
+        ensure_scalar_fields(operation, &available, description)?;
         if let Some(filter) = &operation.filter {
             ensure_filter_columns(filter, &available)?;
             let rendered_filter = renderer.render_filter(&convert_filter(filter)?)?;
@@ -378,39 +378,101 @@ fn convert_filter(expression: &FilterExpression) -> Result<Expression> {
 
 /// Un campo geometrico sotto un operatore non spatial o in ORDER BY
 /// confronterebbe il formato interno del server con il valore legato
-/// (`spatial_operand`); un campo binario di una vista si giudica geometrico
-/// (regola B, `catalog_column_is_geometric`).
+/// (`spatial_operand`); un campo binario di una vista o calcolato
+/// (`is_computed`) si giudica geometrico (regola B per colonna,
+/// `catalog_column_is_geometric`). La regola F la giudica la lettura con i
+/// valori ([`ensure_read_families`]).
 fn ensure_scalar_fields(
     operation: &ReadOperation,
     columns: &[SqlServerColumnSpec],
-    view: bool,
+    description: &SqlServerObjectDescription,
 ) -> Result<()> {
-    use plenora_database_core::spatial_operand::{
-        catalog_column_is_geometric, ColumnCarrier, RelationOrigin,
-    };
-    let origin = if view {
-        RelationOrigin::Derived
-    } else {
-        RelationOrigin::Base
-    };
+    use plenora_database_core::spatial_operand::{catalog_column_is_geometric, NameRule};
     plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
         plenora_database_core::plan::ProviderKind::Sqlserver,
         operation.filter.as_ref(),
         &operation.order_by,
         |field| {
             columns.iter().any(|column| {
-                let carrier = match column.kind {
-                    SqlServerColumnKind::Geometry | SqlServerColumnKind::Geography => {
-                        ColumnCarrier::Geometry
+                NameRule::Folded.matches(&column.name, field)
+                    && match column.kind {
+                        SqlServerColumnKind::Geometry | SqlServerColumnKind::Geography => true,
+                        _ => description
+                            .columns
+                            .iter()
+                            .filter(|catalog| catalog.name == column.name)
+                            .any(|catalog| {
+                                catalog_column_is_geometric(
+                                    read_origin(description, catalog),
+                                    read_family(catalog),
+                                )
+                            }),
                     }
-                    SqlServerColumnKind::Binary => ColumnCarrier::Binary,
-                    _ => ColumnCarrier::Scalar,
-                };
-                plenora_database_core::spatial_operand::NameRule::Folded
-                    .matches(&column.name, field)
-                    && catalog_column_is_geometric(origin, carrier)
             })
         },
+        |_| None,
+        &plenora_database_core::spatial_operand::ParameterFamilies::default(),
+    )
+}
+
+/// L'origine di una colonna della descrizione: derivata in una vista o se
+/// calcolata.
+fn read_origin(
+    description: &SqlServerObjectDescription,
+    column: &SqlServerColumn,
+) -> plenora_database_core::spatial_operand::ColumnOrigin {
+    plenora_database_core::spatial_operand::ColumnOrigin::of(
+        description.kind == "VIEW",
+        column.computed,
+    )
+}
+
+/// La famiglia del tipo di sistema di una colonna della descrizione, la
+/// stessa tabella del catalogo degli operandi (`query::RELATION_COLUMNS_SQL`).
+fn read_family(column: &SqlServerColumn) -> plenora_database_core::spatial_operand::OperandFamily {
+    use plenora_database_core::spatial_operand::OperandFamily;
+    match column.native_type.to_ascii_lowercase().as_str() {
+        "geometry" | "geography" => OperandFamily::Geometry,
+        "binary" | "varbinary" | "image" | "timestamp" | "rowversion" | "sql_variant" => {
+            OperandFamily::Binary
+        }
+        "char" | "varchar" | "nchar" | "nvarchar" | "text" | "ntext" | "sysname" => {
+            OperandFamily::Text
+        }
+        "tinyint" | "smallint" | "int" | "bigint" | "decimal" | "numeric" | "money"
+        | "smallmoney" | "float" | "real" | "bit" => OperandFamily::Numeric,
+        "date" | "time" | "datetime" | "datetime2" | "smalldatetime" | "datetimeoffset" => {
+            OperandFamily::Temporal
+        }
+        _ => OperandFamily::Other,
+    }
+}
+
+/// La regola F di una lettura (`spatial_operand::ensure_scalar_filter_fields`),
+/// con le famiglie dei valori legati.
+///
+/// # Errors
+///
+/// `invalid_plan` per una conversione implicita fra famiglie.
+pub fn ensure_read_families(
+    description: &SqlServerObjectDescription,
+    operation: &ReadOperation,
+    parameters: &plenora_database_core::provider::ParameterBag,
+) -> Result<()> {
+    use plenora_database_core::spatial_operand::{NameRule, ParameterFamilies};
+    plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+        plenora_database_core::plan::ProviderKind::Sqlserver,
+        operation.filter.as_ref(),
+        &operation.order_by,
+        |_| false,
+        |field| {
+            description
+                .columns
+                .iter()
+                .find(|column| NameRule::Folded.matches(&column.name, field))
+                .map(read_family)
+        },
+        &ParameterFamilies::from_bag(parameters),
     )
 }
 

@@ -81,29 +81,31 @@ impl RelationalPlan {
         }
     }
 
-    /// Lo SQL che il piano rende per il provider della transazione: lo stesso
-    /// renderer di `compile_relational_query` e `compile_relational_mutation`.
-    fn sql(&self, provider: ProviderKind) -> plenora_database_core::Result<String> {
+    /// Lo SQL che il piano rende per il provider della transazione, con i
+    /// nomi dei bind nell'ordine dei valori: lo stesso renderer di
+    /// `compile_relational_query` e `compile_relational_mutation`.
+    fn sql(&self, provider: ProviderKind) -> plenora_database_core::Result<(String, Vec<String>)> {
         match self {
-            Self::Query(query) => {
-                render_query(dialect_of(provider), provider, query).map(|r| r.sql)
-            }
+            Self::Query(query) => render_query(dialect_of(provider), provider, query)
+                .map(|r| (r.sql, r.binds.into_iter().map(|bind| bind.name).collect())),
             Self::Mutation(mutation) => {
                 plenora_database_core::compile_relational_mutation(provider, mutation)
-                    .map(|lowered| lowered.sql)
+                    .map(|lowered| (lowered.sql, lowered.bind_names))
             }
         }
     }
 
     /// Lo SQL ricevuto e quello che il piano rende: altrimenti il giudizio
-    /// sarebbe di un piano e l'esecuzione di un altro.
+    /// sarebbe di un piano e l'esecuzione di un altro. Rende i nomi dei bind,
+    /// da cui il giudizio legge le famiglie dei valori (regola F).
     fn ensure_renders(
         &self,
         provider: ProviderKind,
         statement: &plenora_database_core::transaction::Statement,
-    ) -> plenora_database_core::Result<()> {
-        if self.sql(provider)? == statement.sql {
-            Ok(())
+    ) -> plenora_database_core::Result<Vec<String>> {
+        let (sql, binds) = self.sql(provider)?;
+        if sql == statement.sql {
+            Ok(binds)
         } else {
             Err(plenora_database_core::DatabaseError::invalid_plan(
                 "lo SQL ricevuto non e quello che il piano relazionale rende",
@@ -161,11 +163,13 @@ pub async fn query_rows(
     plan: Option<&RelationalPlan>,
     cancellation: &plenora_database_core::CancellationToken,
 ) -> plenora_database_core::Result<Vec<plenora_database_core::row::Row>> {
-    if let Some(plan) = plan {
-        plan.ensure_renders(tx.provider_kind(), statement)?;
-    }
+    let binds = match plan {
+        Some(plan) => plan.ensure_renders(tx.provider_kind(), statement)?,
+        None => Vec::new(),
+    };
     let plan = plan.map(RelationalPlan::as_plan);
-    plenora_database_core::facade::query_judged(tx, statement, plan.as_ref(), cancellation).await
+    plenora_database_core::facade::query_judged(tx, statement, plan.as_ref(), &binds, cancellation)
+        .await
 }
 
 /// `execute` di una transazione con il giudizio del piano, se c'e.
@@ -179,11 +183,19 @@ pub async fn execute(
     plan: Option<&RelationalPlan>,
     cancellation: &plenora_database_core::CancellationToken,
 ) -> plenora_database_core::Result<u64> {
-    if let Some(plan) = plan {
-        plan.ensure_renders(tx.provider_kind(), statement)?;
-    }
+    let binds = match plan {
+        Some(plan) => plan.ensure_renders(tx.provider_kind(), statement)?,
+        None => Vec::new(),
+    };
     let plan = plan.map(RelationalPlan::as_plan);
-    plenora_database_core::facade::execute_judged(tx, statement, plan.as_ref(), cancellation).await
+    plenora_database_core::facade::execute_judged(
+        tx,
+        statement,
+        plan.as_ref(),
+        &binds,
+        cancellation,
+    )
+    .await
 }
 
 /// La query resa dal renderer canonico con la configurazione dello SDK.

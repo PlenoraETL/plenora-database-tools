@@ -288,11 +288,7 @@ impl OracleReadPlan {
         // geometrico (regola B). La lettura giudica poi sul catalogo, che
         // distingue anche le viste materializzate
         // (`operand_catalog::ensure_scalar_read_fields`).
-        let origin = if description.kind == "VIEW" {
-            plenora_database_core::spatial_operand::RelationOrigin::Derived
-        } else {
-            plenora_database_core::spatial_operand::RelationOrigin::Base
-        };
+        let view = description.kind == "VIEW";
         plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
             ProviderKind::Oracle,
             operation.filter.as_ref(),
@@ -302,12 +298,18 @@ impl OracleReadPlan {
                     column.name == field
                         && (column.is_sdo_geometry()
                             || crate::operand_catalog::column_is_geometric(
-                                origin,
+                                plenora_database_core::spatial_operand::ColumnOrigin::of(
+                                    view,
+                                    column.virtual_column,
+                                ),
                                 &column.data_type,
                                 column.data_type_owner.as_deref(),
                             ))
                 })
             },
+            // La regola F la giudica la lettura sul catalogo, con i valori.
+            |_| None,
+            &plenora_database_core::spatial_operand::ParameterFamilies::default(),
         )?;
         let bind_names = if let Some(filter) = &operation.filter {
             if !filter.all_fields(&|name| available.contains(name)) {

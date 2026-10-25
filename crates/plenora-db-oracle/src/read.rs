@@ -85,6 +85,7 @@ pub async fn read_operation(
         &plan.schema_name,
         &plan.object_name,
         operation,
+        parameters,
     )
     .await?;
     raw.set_response_byte_limit(

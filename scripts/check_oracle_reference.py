@@ -53,6 +53,8 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_every_declared_spatial_function_executes_on_geometry_and_geography",
         "live_operand_server_guard_rejects_every_measured_form",
         "live_operand_catalog_refuses_derived_binary_and_resolves_public_sdo_geometry",
+        "live_server_computed_binary_columns_are_judged_geometric",
+        "live_text_columns_compared_with_binary_values_are_refused",
     }
 )
 PYTHON_LIVE_EXPECTED = 6

@@ -218,6 +218,9 @@ fn build_read_sql(
                     && matches!(column.kind, ColumnKind::Geometry | ColumnKind::Geography)
             })
         },
+        // La regola F la giudica l'esecuzione, sul catalogo e con i valori.
+        |_| None,
+        &plenora_database_core::spatial_operand::ParameterFamilies::default(),
     )?;
     if let Some(filter) = &operation.filter {
         ensure_filter_columns(filter, available_columns)?;

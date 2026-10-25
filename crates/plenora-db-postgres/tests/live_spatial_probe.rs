@@ -2155,6 +2155,7 @@ async fn live_name_shapes_multiranges_and_the_transaction_catalog_are_judged() {
             tx.as_mut(),
             &statement,
             Some(&OperandPlan::Query(operation)),
+            &[],
             &cancel,
         )
         .await
@@ -2192,6 +2193,7 @@ async fn live_name_shapes_multiranges_and_the_transaction_catalog_are_judged() {
             "SELECT id FROM public.{table} WHERE ST_Intersects(g, g) ORDER BY id"
         )),
         Some(&OperandPlan::Query(&ordered)),
+        &[],
         &cancel,
     )
     .await
@@ -2214,6 +2216,7 @@ async fn live_name_shapes_multiranges_and_the_transaction_catalog_are_judged() {
             ],
         ),
         Some(&OperandPlan::Mutation(&update)),
+        &[],
         &cancel,
     )
     .await
@@ -2475,6 +2478,7 @@ async fn live_binary_columns_of_derived_relations_are_judged_geometric() {
         &Statement::new(format!("SELECT t.id FROM public.{view} t WHERE t.w = $1"))
             .with_params(vec![ParameterValue::Bytes(wkb)]),
         Some(&OperandPlan::Query(&judged)),
+        &[],
         &cancel,
     )
     .await
@@ -2505,6 +2509,237 @@ async fn live_binary_columns_of_derived_relations_are_judged_geometric() {
         )
         .await
         .expect("lettura ORDER BY id"),
+        2
+    );
+    client.batch_execute(&cleanup).await.expect("pulizia");
+}
+
+/// Regola B per colonna (rilettura 13, R13-1), sul `PostGIS` reale: una
+/// colonna generata di una **tabella** (`bytea GENERATED ALWAYS AS
+/// (ST_AsBinary(g)) STORED`) porta il WKB della geometria, e il server ne
+/// confronta i byte. Due poligoni uguali per `ST_Equals` con i vertici in
+/// ordine diverso: lo SQL senza giudizio `w = $1` rende soltanto il primo, un
+/// risultato sbagliato senza errore. Fino al 25/10 l'origine era della
+/// relazione e la colonna restava scalare; ora la colonna generata e derivata
+/// (`attgenerated`) e il giudizio la rifiuta nel path query, nella
+/// transazione e nella lettura. La colonna `bytea` memorizzata, la colonna
+/// generata numerica e l'id restano.
+#[tokio::test]
+async fn live_server_computed_binary_columns_are_judged_geometric() {
+    use plenora_database_core::facade::query_judged;
+    use plenora_database_core::plan::{OrderBy, SortDirection};
+    use plenora_database_core::spatial_operand::OperandPlan;
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    use serde_json::{json, Value};
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let table = "plenora_generate_b";
+    let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .expect("connessione di setup");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let cleanup = format!("DROP TABLE IF EXISTS public.{table};");
+    client
+        .batch_execute(&cleanup)
+        .await
+        .expect("pulizia iniziale");
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE public.{table} (id int PRIMARY KEY, b bytea, g geometry(Polygon, 4326),
+                 w bytea GENERATED ALWAYS AS (ST_AsBinary(g)) STORED,
+                 n int GENERATED ALWAYS AS (id * 2) STORED);
+             INSERT INTO public.{table} (id, b, g) VALUES
+                 (3, decode('03', 'hex'), ST_GeomFromText('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 4326)),
+                 (4, decode('04', 'hex'), ST_GeomFromText('POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))', 4326));"
+        ))
+        .await
+        .expect("fixture");
+    let equal: i64 = client
+        .query_one(
+            &format!(
+                "SELECT count(*) FROM public.{table} a, public.{table} b \
+                 WHERE a.id = 3 AND b.id = 4 AND ST_Equals(a.g, b.g)"
+            ),
+            &[],
+        )
+        .await
+        .expect("ST_Equals")
+        .get(0);
+    assert_eq!(equal, 1);
+    let wkb: Vec<u8> = client
+        .query_one(
+            &format!("SELECT ST_AsBinary(g) FROM public.{table} WHERE id = 3"),
+            &[],
+        )
+        .await
+        .expect("WKB")
+        .get(0);
+    let silent: Vec<i32> = client
+        .query(
+            &format!("SELECT id FROM public.{table} WHERE w = $1 ORDER BY id"),
+            &[&wkb],
+        )
+        .await
+        .expect("senza giudizio")
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(silent, vec![3], "il server confronta i byte");
+
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.clone());
+    let cancel = CancellationToken::new();
+    let budget = budget();
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let over = |extra: &Value| {
+        let mut operation = json!({
+            "source": {"object": {"catalog": null, "schema": "public", "object": table}, "alias": "t"},
+            "projection": [{"expression": column("id"), "alias": "id"}],
+            "filter": null, "having": null, "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        operation
+    };
+    let equal_to = |field: &str, right: Value| json!({"filter": {"kind": "compare", "left": column(field), "operator": "eq", "right": right}});
+    let typed = |parameter_type: &str| json!({"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type});
+    let untyped = json!({"kind": "parameter", "name": "p"});
+    let ordered =
+        |field: &str| json!({"order_by": [{"expression": column(field), "direction": "asc"}]});
+    let plan = |value: Value| -> QueryOperation { serde_json::from_value(value).expect("piano") };
+    let bytes = probe(ParameterValue::Bytes(wkb.clone()));
+    let none = ParameterBag::default();
+    let refused = [
+        (
+            "w = ? binario",
+            over(&equal_to("w", typed("binary"))),
+            bytes.clone(),
+        ),
+        (
+            "w = ? con byte",
+            over(&equal_to("w", untyped.clone())),
+            bytes.clone(),
+        ),
+        ("ORDER BY w", over(&ordered("w")), none.clone()),
+        (
+            "DISTINCT w",
+            over(
+                &json!({"distinct": true, "projection": [{"expression": column("w"), "alias": "w"}]}),
+            ),
+            none.clone(),
+        ),
+    ];
+    for (form, operation, parameters) in &refused {
+        let error = rows(
+            provider
+                .query(
+                    &secret,
+                    &plan(operation.clone()),
+                    parameters,
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await
+        .expect_err(form);
+        assert_eq!(
+            error.category,
+            ErrorCategory::Unsupported,
+            "{form}: {error:?}"
+        );
+        assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{form}: {error:?}");
+    }
+    let admitted = [
+        (
+            "b = ? memorizzata",
+            over(&equal_to("b", typed("binary"))),
+            probe(ParameterValue::Bytes(vec![4])),
+            1,
+        ),
+        (
+            "n = ? generata numerica",
+            over(&equal_to("n", typed("integer"))),
+            probe(ParameterValue::I32(6)),
+            1,
+        ),
+        (
+            "id = ?",
+            over(&equal_to("id", typed("integer"))),
+            probe(ParameterValue::I32(3)),
+            1,
+        ),
+        ("ORDER BY n", over(&ordered("n")), none.clone(), 2),
+    ];
+    for (form, operation, parameters, expected) in admitted {
+        let count = rows(
+            provider
+                .query(&secret, &plan(operation), &parameters, &budget, &cancel)
+                .await,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(count, expected, "{form}");
+    }
+    // La transazione (SDK, facade, CLI portable): lo stesso giudizio.
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("transazione");
+    let judged = plan(over(&equal_to("w", untyped)));
+    let error = query_judged(
+        tx.as_mut(),
+        &Statement::new(format!("SELECT t.id FROM public.{table} t WHERE t.w = $1"))
+            .with_params(vec![ParameterValue::Bytes(wkb)]),
+        Some(&OperandPlan::Query(&judged)),
+        &["p".to_owned()],
+        &cancel,
+    )
+    .await
+    .expect_err("w = ? nella transazione");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{error:?}");
+    tx.rollback(&cancel).await.expect("rollback");
+    // La lettura del provider.
+    let mut reading = read(table, "w");
+    reading.filter = Some(FilterExpression::Eq {
+        field: "w".to_owned(),
+        parameter: "p".to_owned(),
+    });
+    let error = rows(
+        provider
+            .read(&secret, &reading, &bytes, &budget, &cancel)
+            .await,
+    )
+    .await
+    .expect_err("lettura w = ?");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "lettura: {error:?}");
+    reading.filter = None;
+    reading.order_by = vec![OrderBy {
+        field: "w".to_owned(),
+        direction: SortDirection::Asc,
+    }];
+    let error = rows(
+        provider
+            .read(&secret, &reading, &none, &budget, &cancel)
+            .await,
+    )
+    .await
+    .expect_err("lettura ORDER BY w");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "lettura: {error:?}");
+    reading.order_by[0].field = "n".to_owned();
+    assert_eq!(
+        rows(
+            provider
+                .read(&secret, &reading, &none, &budget, &cancel)
+                .await
+        )
+        .await
+        .expect("lettura ORDER BY n"),
         2
     );
     client.batch_execute(&cleanup).await.expect("pulizia");

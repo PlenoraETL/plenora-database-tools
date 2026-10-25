@@ -43,7 +43,7 @@ fn catalog(provider: ProviderKind) -> OperandCatalog {
         RelationColumns::Known(
             columns
                 .iter()
-                .map(|(name, geometric)| ((*name).to_owned(), *geometric))
+                .map(|(name, geometric)| CatalogColumn::from_flag(*name, *geometric))
                 .collect(),
         )
     };
@@ -309,7 +309,10 @@ fn scalar_columns_and_spatial_arguments_are_admitted() {
         ),
         (
             "ST_Area confrontata",
-            json!({"filter": compare(&json!({"kind": "spatial", "function": "area", "arguments": [g]}), &bind())}),
+            json!({"filter": compare(
+                &json!({"kind": "spatial", "function": "area", "arguments": [g]}),
+                &json!({"kind": "typed_parameter", "name": "p", "parameter_type": "float"})
+            )}),
         ),
         (
             "projection",
@@ -363,6 +366,8 @@ fn relations_name_base_tables_only() {
 #[test]
 fn read_filters_refuse_geometry_fields_under_scalar_operators() {
     let geometric = |field: &str| field == "g";
+    let unknown = |_: &str| None;
+    let none = ParameterFamilies::default();
     for filter in [
         FilterExpression::Eq {
             field: "g".to_owned(),
@@ -375,15 +380,16 @@ fn read_filters_refuse_geometry_fields_under_scalar_operators() {
             }],
         },
     ] {
-        let error = ensure_scalar_filter_fields(MYSQL, Some(&filter), &[], geometric)
-            .expect_err("campo geometrico");
+        let error =
+            ensure_scalar_filter_fields(MYSQL, Some(&filter), &[], geometric, unknown, &none)
+                .expect_err("campo geometrico");
         assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND);
     }
     let order = [OrderBy {
         field: "g".to_owned(),
         direction: SortDirection::Asc,
     }];
-    assert!(ensure_scalar_filter_fields(MYSQL, None, &order, geometric).is_err());
+    assert!(ensure_scalar_filter_fields(MYSQL, None, &order, geometric, unknown, &none).is_err());
     for filter in [
         FilterExpression::IsNull {
             field: "g".to_owned(),
@@ -393,7 +399,8 @@ fn read_filters_refuse_geometry_fields_under_scalar_operators() {
             parameter: "p".to_owned(),
         },
     ] {
-        ensure_scalar_filter_fields(MYSQL, Some(&filter), &[], geometric).expect("ammesso");
+        ensure_scalar_filter_fields(MYSQL, Some(&filter), &[], geometric, unknown, &none)
+            .expect("ammesso");
     }
 }
 
@@ -552,7 +559,10 @@ fn the_six_unresolved_shapes_are_refused() {
     array.insert(
         Some("s".to_owned()),
         "a".to_owned(),
-        RelationColumns::Known(vec![("id".to_owned(), false), ("ga".to_owned(), true)]),
+        RelationColumns::Known(vec![
+            CatalogColumn::from_flag("id", false),
+            CatalogColumn::from_flag("ga", true),
+        ]),
     );
     let ordered: QueryOperation = serde_json::from_value(json!({
         "source": source("a", Some("a")),
@@ -764,7 +774,10 @@ fn second_reading_shapes_are_refused() {
     with_base_t.insert(
         None,
         "t".to_owned(),
-        RelationColumns::Known(vec![("id".to_owned(), false), ("g".to_owned(), true)]),
+        RelationColumns::Known(vec![
+            CatalogColumn::from_flag("id", false),
+            CatalogColumn::from_flag("g", true),
+        ]),
     );
     let inner_t: QueryOperation = serde_json::from_value(json!({
         "projection": [item(&bind(), Some("g"))],
@@ -800,23 +813,35 @@ fn second_reading_shapes_are_refused() {
     assert_unresolved(judged(&foreign), "relazione di un altro catalogo");
 }
 
-/// Regola B: la tabella della verita della regola condivisa dai cataloghi.
+/// Regola B: la tabella della verita della regola condivisa dai cataloghi,
+/// con l'origine per colonna (relazione derivata o colonna calcolata).
 #[test]
-fn a_binary_column_is_geometric_only_in_a_derived_relation() {
-    use ColumnCarrier::{Binary, Geometry, Scalar};
-    use RelationOrigin::{Base, Derived};
-    for (origin, carrier, expected) in [
-        (Base, Geometry, true),
+fn a_binary_column_is_geometric_only_when_derived() {
+    use ColumnOrigin::{Derived, Stored};
+    use OperandFamily::{Binary, Geometry, Numeric, Other, Temporal, Text};
+    for (origin, family, expected) in [
+        (Stored, Geometry, true),
         (Derived, Geometry, true),
-        (Base, Binary, false),
+        (Stored, Binary, false),
         (Derived, Binary, true),
-        (Base, Scalar, false),
-        (Derived, Scalar, false),
+        (Stored, Text, false),
+        (Derived, Text, false),
+        (Derived, Numeric, false),
+        (Derived, Temporal, false),
+        (Derived, Other, false),
     ] {
         assert_eq!(
-            catalog_column_is_geometric(origin, carrier),
+            catalog_column_is_geometric(origin, family),
             expected,
-            "{origin:?} {carrier:?}"
+            "{origin:?} {family:?}"
         );
+    }
+    for (relation, computed, origin) in [
+        (false, false, Stored),
+        (true, false, Derived),
+        (false, true, Derived),
+        (true, true, Derived),
+    ] {
+        assert_eq!(ColumnOrigin::of(relation, computed), origin);
     }
 }

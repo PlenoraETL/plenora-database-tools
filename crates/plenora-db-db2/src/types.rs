@@ -484,6 +484,10 @@ fn ensure_scalar_fields(
                         || (computed && matches!(native.as_str(), "BLOB" | "BINARY" | "VARBINARY")))
             })
         },
+        // La regola F e le colonne generate le giudica la lettura sul
+        // catalogo, con i valori.
+        |_| None,
+        &plenora_database_core::spatial_operand::ParameterFamilies::default(),
     )
 }
 

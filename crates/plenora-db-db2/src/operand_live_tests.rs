@@ -239,6 +239,7 @@ async fn esegui(
         transaction.as_mut(),
         &statement,
         Some(&OperandPlan::Query(&operation)),
+        &[],
         cancellation,
     )
     .await
@@ -508,10 +509,17 @@ async fn live_operand_catalog_judges_geometry_and_admits_scalars() {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            // Regola F (`spatial_operand::OPERAND_FAMILY_MISMATCH`, rilettura
+            // 13): `UPPER(G)` converte una geometria in testo, e si rifiuta
+            // anche fuori da un confronto, prima del server.
+            let conversione = error.category == ErrorCategory::InvalidPlan
+                && error.phase == ErrorPhase::Prepare
+                && error.message == plenora_database_core::spatial_operand::OPERAND_FAMILY_MISMATCH;
             assert!(
                 ragioni
                     .iter()
                     .any(|motivo| rifiuto_del_giudizio(&error, motivo))
+                    || conversione
                     || misurati.iter().any(|codice| error.message.contains(codice)),
                 "{name}: {error}"
             );
@@ -914,6 +922,181 @@ async fn live_binary_columns_of_derived_relations_are_judged_geometric() {
         );
     }
     for sql in PULIZIA_DERIVATE {
+        let _ = provider.run_ddl(&secret, sql, &cancellation).await;
+    }
+}
+
+/// La preparazione della regola B per colonna: una tabella con una colonna
+/// generata dal server con il WKB della geometria (`W`), una binaria
+/// memorizzata (`B`) e una generata numerica (`N`); due poligoni uguali per
+/// `ST_EQUALS` con i vertici in ordine diverso.
+const PREPARAZIONE_GENERATE: [&str; 2] = [
+    "CREATE TABLE PLENORA.SONDE_GENERATE (ID INTEGER NOT NULL, G ST_GEOMETRY, \
+     B VARBINARY(2000), \
+     W VARBINARY(2000) GENERATED ALWAYS AS (CAST(ST_ASBINARY(G) AS VARBINARY(2000))), \
+     N INTEGER GENERATED ALWAYS AS (ID * 10)) IN PLENORA_TS8K",
+    "INSERT INTO PLENORA.SONDE_GENERATE (ID, G, B) VALUES \
+     (3, ST_GEOMETRY('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 4326), BX'03'), \
+     (4, ST_GEOMETRY('POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))', 4326), BX'04')",
+];
+
+const PULIZIA_GENERATE: [&str; 1] = ["DROP TABLE PLENORA.SONDE_GENERATE"];
+
+/// Regola B per colonna (rilettura 13, R13-1): fino al 25/10 l'origine era
+/// della relazione, e la colonna generata binaria di una tabella
+/// (`SYSCAT.COLUMNS.GENERATED` `A`) restava scalare. Lo SQL senza giudizio
+/// `W = <WKB del primo poligono>` rende soltanto il primo, mentre `ST_EQUALS`
+/// dice uguali i due: un risultato sbagliato senza errore. Ora `W` si giudica
+/// geometrica (rifiuto prima del server) nell'esecuzione giudicata e nella
+/// lettura del provider; la colonna binaria memorizzata `B`, la generata
+/// numerica `N` e l'id restano.
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_server_computed_binary_columns_are_judged_geometric() {
+    let provider = provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    for sql in PULIZIA_GENERATE {
+        let _ = provider.run_ddl(&secret, sql, &cancellation).await;
+    }
+    for (index, sql) in PREPARAZIONE_GENERATE.iter().enumerate() {
+        provider
+            .run_ddl(&secret, sql, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("preparazione colonne generate Db2 {index}: {error}"));
+    }
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("transazione colonne generate Db2");
+    let equal = transaction
+        .query(
+            &Statement::new(
+                "SELECT A.ID FROM PLENORA.SONDE_GENERATE A, PLENORA.SONDE_GENERATE B \
+                 WHERE A.ID = 3 AND B.ID = 4 AND ST_EQUALS(A.G, B.G) = 1",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("ST_EQUALS colonne generate Db2");
+    assert_eq!(identificativi(&equal), vec!["3".to_owned()]);
+    let silent = transaction
+        .query(
+            &Statement::new(
+                "SELECT T.ID FROM PLENORA.SONDE_GENERATE T WHERE T.W = \
+                 (SELECT U.W FROM PLENORA.SONDE_GENERATE U WHERE U.ID = 3) ORDER BY T.ID",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("senza giudizio colonne generate Db2");
+    assert_eq!(
+        identificativi(&silent),
+        vec!["3".to_owned()],
+        "il server confronta i byte: il secondo poligono, uguale, manca"
+    );
+    let _ = transaction.rollback(&cancellation).await;
+    let tabella = Some("PLENORA");
+    let bytes = vec![ParameterValue::Bytes(vec![1])];
+    let rifiutati = [
+        (
+            "W = ?",
+            su(tabella, "SONDE_GENERATE", &uguale_binario("W")),
+            bytes.clone(),
+        ),
+        (
+            "ORDER BY W",
+            su(tabella, "SONDE_GENERATE", &ordinato("W", "asc")),
+            Vec::new(),
+        ),
+    ];
+    for (nome, piano, valori) in rifiutati {
+        let (_, judged, _) = esegui(&provider, &secret, &piano, Some(&valori), &cancellation).await;
+        let error = judged.expect_err(nome);
+        assert!(
+            rifiuto_del_giudizio(&error, GEOMETRY_SCALAR_OPERAND),
+            "{nome}: {error}"
+        );
+    }
+    // La colonna binaria memorizzata resta scalare: il giudizio la ammette e
+    // lo SQL arriva al server, con le righe dello SQL senza giudizio (il
+    // valore del bind `Bytes` lo decide il legame dei parametri, che non e di
+    // questa prova).
+    let (_, judged, direct) = esegui(
+        &provider,
+        &secret,
+        &su(tabella, "SONDE_GENERATE", &uguale_binario("B")),
+        Some(&[ParameterValue::Bytes(vec![4])]),
+        &cancellation,
+    )
+    .await;
+    let rows = judged.unwrap_or_else(|error| panic!("B = ? (binaria memorizzata): {error}"));
+    assert_eq!(Ok(rows), direct, "B = ? (binaria memorizzata)");
+    let ammessi = [
+        (
+            "N = ? (generata numerica)",
+            su(tabella, "SONDE_GENERATE", &uguale("N")),
+            vec![ParameterValue::I32(30)],
+            vec!["3"],
+        ),
+        (
+            "ORDER BY ID DESC",
+            su(tabella, "SONDE_GENERATE", &ordinato("ID", "desc")),
+            Vec::new(),
+            vec!["4", "3"],
+        ),
+    ];
+    for (nome, piano, valori, attese) in ammessi {
+        let (_, judged, direct) =
+            esegui(&provider, &secret, &piano, Some(&valori), &cancellation).await;
+        let rows = judged.unwrap_or_else(|error| panic!("{nome}: {error}"));
+        assert_eq!(rows, attese, "{nome}");
+        assert_eq!(Ok(rows), direct, "{nome}");
+    }
+    let lettura = |field: &str| ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: "SONDE_GENERATE".to_owned(),
+        },
+        projection: vec!["ID".to_owned()],
+        order_by: vec![OrderBy {
+            field: "ID".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: None,
+        row_offset: None,
+        filter: Some(FilterExpression::Eq {
+            field: field.to_owned(),
+            parameter: "p".to_owned(),
+        }),
+        declared_crs: Vec::new(),
+    };
+    let parametri = ParameterBag::new(BTreeMap::from([("p".to_owned(), bytes[0].clone())]));
+    let error = provider
+        .read(&secret, &lettura("W"), &parametri, &budget(), &cancellation)
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("lettura W ammessa"));
+    assert!(
+        rifiuto_del_giudizio(&error, GEOMETRY_SCALAR_OPERAND),
+        "lettura W: {error}"
+    );
+    // La lettura di Db2 non lega ancora un parametro `Bytes` (rifiuto
+    // esplicito del provider): il controllo ammesso e la colonna generata
+    // numerica.
+    let numero = ParameterBag::new(BTreeMap::from([("p".to_owned(), ParameterValue::I32(30))]));
+    provider
+        .read(&secret, &lettura("N"), &numero, &budget(), &cancellation)
+        .await
+        .unwrap_or_else(|error| panic!("lettura N: {error}"));
+    for sql in PULIZIA_GENERATE {
         let _ = provider.run_ddl(&secret, sql, &cancellation).await;
     }
 }

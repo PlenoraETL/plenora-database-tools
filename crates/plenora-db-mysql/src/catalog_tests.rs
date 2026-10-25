@@ -158,3 +158,76 @@ fn schema_token_is_stable_and_sensitive() {
     assert_ne!(first, changed);
     assert_ne!(first, index_changed);
 }
+
+/// La tabella delle famiglie di `MySQL` e `MariaDB` (regola F) e le colonne
+/// che il server calcola (regola B per colonna, rilettura 13).
+#[test]
+fn ogni_tipo_ha_la_famiglia_della_tabella_e_le_colonne_generate_sono_derivate() {
+    use plenora_database_core::spatial_operand::OperandFamily::{
+        Binary, Geometry, Numeric, Other, Temporal, Text,
+    };
+    for profile in [
+        &crate::profile::MysqlProfile as &dyn crate::profile::ProductProfile,
+        &crate::profile::MariadbProfile,
+    ] {
+        for (declared, family) in [
+            ("geometry", Geometry),
+            ("point", Geometry),
+            ("varbinary(100)", Binary),
+            ("binary(16)", Binary),
+            ("longblob", Binary),
+            ("varchar(10)", Text),
+            ("char(1)", Text),
+            ("longtext", Text),
+            ("enum('a','b')", Text),
+            ("set('a')", Text),
+            ("int unsigned", Numeric),
+            ("bigint", Numeric),
+            ("decimal(10,2)", Numeric),
+            ("double", Numeric),
+            ("bit(1)", Numeric),
+            ("tinyint(1)", Numeric),
+            ("year", Numeric),
+            ("date", Temporal),
+            ("datetime(6)", Temporal),
+            ("timestamp", Temporal),
+            ("time", Temporal),
+            ("json", Other),
+        ] {
+            assert_eq!(type_family(declared, profile), family, "{declared}");
+        }
+    }
+    for (extra, expression, computed) in [
+        ("VIRTUAL GENERATED", "", true),
+        ("STORED GENERATED", "", true),
+        ("DEFAULT_GENERATED", "", true),
+        ("PERSISTENT", "", true),
+        ("", "st_asbinary(`g`)", true),
+        ("auto_increment", "", false),
+        ("on update CURRENT_TIMESTAMP", "", false),
+        ("INVISIBLE", "", false),
+        ("", "", false),
+    ] {
+        assert_eq!(is_computed_column(extra, expression), computed, "{extra}");
+    }
+}
+
+/// Su `MariaDB` ogni default presente si giudica calcolato (regola B): il
+/// catalogo non distingue `DEFAULT (ST_AsBinary(g))` da un letterale.
+#[test]
+fn un_default_di_mariadb_si_giudica_calcolato() {
+    for (default, computed) in [
+        (None, false),
+        (Some("NULL"), false),
+        (Some("null"), false),
+        (Some("st_asbinary(`g`)"), true),
+        (Some("'x'"), true),
+        (Some("7"), true),
+    ] {
+        assert_eq!(
+            mariadb_default_may_compute(default),
+            computed,
+            "{default:?}"
+        );
+    }
+}

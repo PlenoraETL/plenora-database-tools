@@ -200,6 +200,19 @@ async fn qualify_spatial_surface(
         };
         let mut arguments = vec![spatial_column(field)];
         let mut parameters = BTreeMap::from([("row_id".to_owned(), ParameterValue::I32(1))]);
+        // Regola P (`spatial_probe::judge_probe_positions`, 9fb015b): una
+        // sonda nella projection non e ammessa, anche dove il catalogo la
+        // proverebbe. La forma con la sonda si rifiuta compilando; la funzione
+        // si esegue con la seconda geometria presa da una colonna della stessa
+        // tabella.
+        let probed = matches!(
+            shape,
+            OracleSpatialShape::Relate(_)
+                | OracleSpatialShape::Disjoint
+                | OracleSpatialShape::BinaryGeometry(_)
+                | OracleSpatialShape::BinaryMeasure { .. }
+                | OracleSpatialShape::DWithin
+        );
         match shape {
             OracleSpatialShape::Relate(_) => {
                 let bytes = match function {
@@ -267,6 +280,29 @@ async fn qualify_spatial_surface(
                 parameters.insert("distance".to_owned(), ParameterValue::F64(10.0));
             }
             _ => {}
+        }
+        if probed {
+            let refused = renderer
+                .render_query(&spatial_query(
+                    table,
+                    QueryExpression::Spatial {
+                        function: *function,
+                        arguments: arguments.clone(),
+                    },
+                ))
+                .expect_err("sonda nella projection rifiutata");
+            assert_eq!(
+                refused.message,
+                plenora_database_core::spatial_probe::PROBE_OUTSIDE_PREDICATE,
+                "{function:?}"
+            );
+            parameters.remove("geometry");
+            let other = if field == "POINT_SHAPE" {
+                "POLY_SHAPE"
+            } else {
+                "POINT_SHAPE"
+            };
+            arguments[1] = spatial_column(other);
         }
         let query = spatial_query(
             table,
@@ -1397,12 +1433,28 @@ async fn live_spatial_catalog_portable_predicates_and_arrow_wkb() {
         ]],
         returning: Vec::new(),
     });
-    let insert =
-        compile_portable(ProviderKind::Oracle, &insert).expect("compila insert Spatial Oracle");
+    // Regola delle sonde (`spatial_probe::admit_probe`, 14960f9): Oracle non
+    // ha una guardia misurata sullo SRID della colonna, e il compilatore
+    // portable non legge il catalogo: il valore spatial scritto si rifiuta.
+    let refused = compile_portable(ProviderKind::Oracle, &insert)
+        .expect_err("valore spatial portable senza prova dello SRID");
+    assert_eq!(
+        refused.category,
+        plenora_database_core::ErrorCategory::Unsupported
+    );
+    assert_eq!(
+        refused.message,
+        plenora_database_core::spatial_probe::VALUE_SRID_UNPROVEN
+    );
     setup
-        .execute(&insert, &cancellation)
+        .execute(
+            &Statement::new(
+                "INSERT INTO PLENORA_ORACLE_SPATIAL (ID, SHAPE) VALUES (1, MDSYS.SDO_GEOMETRY(2001, 4326, MDSYS.SDO_POINT_TYPE(1, 2, NULL), NULL, NULL))",
+            ),
+            &cancellation,
+        )
         .await
-        .expect("inserisce WKB Spatial Oracle");
+        .expect("inserisce geometria Spatial Oracle");
     setup
         .commit(&cancellation)
         .await
@@ -1454,29 +1506,18 @@ async fn live_spatial_catalog_portable_predicates_and_arrow_wkb() {
             },
         ))
         .into_statement();
-    let predicate = compile_portable(ProviderKind::Oracle, &predicate)
-        .expect("compila predicato Spatial Oracle");
-    let mut transaction = provider
-        .begin_transaction(
-            &secret,
-            &TransactionOptions::default(),
-            &budget,
-            &cancellation,
-        )
-        .await
-        .expect("transazione predicato Spatial Oracle");
+    // La stessa regola per la sonda di un predicato portable; il predicato
+    // si esegue dalla lettura del provider, che prova lo SRID sul catalogo.
+    let refused = compile_portable(ProviderKind::Oracle, &predicate)
+        .expect_err("sonda portable senza prova dello SRID");
     assert_eq!(
-        transaction
-            .query(&predicate, &cancellation)
-            .await
-            .expect("esegue predicato Spatial Oracle")
-            .len(),
-        1
+        refused.category,
+        plenora_database_core::ErrorCategory::Unsupported
     );
-    transaction
-        .rollback(&cancellation)
-        .await
-        .expect("rollback predicato Spatial Oracle");
+    assert_eq!(
+        refused.message,
+        plenora_database_core::spatial_probe::PROBE_SRID_UNPROVEN
+    );
 
     let read = ReadOperation {
         source: ObjectRef {
@@ -2622,6 +2663,7 @@ async fn run_guard_plan(
         Some(&plenora_database_core::spatial_operand::OperandPlan::Query(
             &operation,
         )),
+        &[],
         cancellation,
     )
     .await
@@ -2786,10 +2828,15 @@ async fn live_operand_server_guard_rejects_every_measured_form() {
             assert_eq!(Ok(rows), direct, "{name}");
         } else {
             let error = judged.expect_err(name);
+            // Regola F (`spatial_operand::OPERAND_FAMILY_MISMATCH`, seconda
+            // lettura del 25/10): `UPPER`/`LOWER` di una geometria e una
+            // conversione implicita, rifiutata prima del server anche in
+            // projection.
             assert!(
                 reasons
                     .iter()
                     .any(|reason| judgement_refusal(&error, reason))
+                    || family_refusal(&error)
                     || codes.iter().any(|code| error.message.contains(code)),
                 "{name}: {}",
                 error.message
@@ -3230,4 +3277,445 @@ async fn live_operand_catalog_refuses_derived_binary_and_resolves_public_sdo_geo
         );
     }
     drop_derived(&provider, &secret, &cancellation).await;
+}
+
+/// Il piano reso dal renderer del repository attraverso il percorso giudicato
+/// dell'esecuzione (`facade::query_judged`) con i **nomi dei bind** resi, da
+/// cui il giudizio legge le famiglie dei valori legati (regola F), e lo
+/// stesso SQL senza giudizio, nella stessa transazione.
+async fn run_bound_plan(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    budget: &ResourceBudget,
+    plan: &serde_json::Value,
+    values: &[ParameterValue],
+    cancellation: &CancellationToken,
+) -> (
+    String,
+    plenora_database_core::Result<Vec<String>>,
+    plenora_database_core::Result<Vec<String>>,
+) {
+    let operation: QueryOperation = serde_json::from_value(plan.clone()).expect("piano");
+    let rendered = Renderer::new(
+        Dialect::Oracle,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .with_provider(ProviderKind::Oracle)
+    .render_query(&operation)
+    .expect("resa Oracle");
+    let binds = rendered
+        .binds
+        .iter()
+        .map(|bind| bind.name.clone())
+        .collect::<Vec<_>>();
+    let statement = Statement::new(rendered.sql.clone()).with_params(values.to_vec());
+    let mut transaction = provider
+        .begin_transaction(secret, &TransactionOptions::default(), budget, cancellation)
+        .await
+        .expect("transazione regola F Oracle");
+    let judged = plenora_database_core::facade::query_judged(
+        transaction.as_mut(),
+        &statement,
+        Some(&plenora_database_core::spatial_operand::OperandPlan::Query(
+            &operation,
+        )),
+        &binds,
+        cancellation,
+    )
+    .await
+    .map(|rows| guard_ids(&rows));
+    let direct = transaction
+        .query(&statement, cancellation)
+        .await
+        .map(|rows| guard_ids(&rows));
+    let _ = transaction.rollback(cancellation).await;
+    (rendered.sql, judged, direct)
+}
+
+/// Il rifiuto della regola F: `invalid_plan`, fase di preparazione.
+fn family_refusal(error: &plenora_database_core::DatabaseError) -> bool {
+    error.category == plenora_database_core::ErrorCategory::InvalidPlan
+        && error.phase == plenora_database_core::ErrorPhase::Prepare
+        && error.message == plenora_database_core::spatial_operand::OPERAND_FAMILY_MISMATCH
+}
+
+fn untyped_equal(left: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"filter": {"kind": "compare", "left": left, "operator": "eq",
+        "right": {"kind": "parameter", "name": "p"}}})
+}
+
+/// Una tabella con `G SDO_GEOMETRY` e due poligoni uguali per
+/// `SDO_GEOM.RELATE` con i vertici in ordine diverso; il WKB del primo.
+async fn equal_polygons(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    budget: &ResourceBudget,
+    table: &str,
+    cancellation: &CancellationToken,
+) -> Vec<u8> {
+    let mut setup = provider
+        .begin_transaction(secret, &TransactionOptions::default(), budget, cancellation)
+        .await
+        .expect("transazione preparazione Oracle");
+    for sql in [
+        format!("DELETE FROM USER_SDO_GEOM_METADATA WHERE TABLE_NAME = '{table}'"),
+        format!(
+            "INSERT INTO USER_SDO_GEOM_METADATA (TABLE_NAME, COLUMN_NAME, DIMINFO, SRID) VALUES ('{table}', 'G', MDSYS.SDO_DIM_ARRAY(MDSYS.SDO_DIM_ELEMENT('X', -180, 180, 0.005), MDSYS.SDO_DIM_ELEMENT('Y', -90, 90, 0.005)), 4326)"
+        ),
+        format!("INSERT INTO {table} (ID, B, G) VALUES (3, HEXTORAW('03'), SDO_UTIL.FROM_WKTGEOMETRY('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 4326))"),
+        format!("INSERT INTO {table} (ID, B, G) VALUES (4, HEXTORAW('04'), SDO_UTIL.FROM_WKTGEOMETRY('POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))', 4326))"),
+    ] {
+        setup
+            .execute(&Statement::new(sql), cancellation)
+            .await
+            .expect("preparazione Oracle");
+    }
+    let equal = setup
+        .query(
+            &Statement::new(format!(
+                "SELECT A.ID FROM {table} A, {table} B WHERE A.ID = 3 AND B.ID = 4 \
+                 AND SDO_GEOM.RELATE(A.G, 'EQUAL', B.G, 0.005) = 'EQUAL'"
+            )),
+            cancellation,
+        )
+        .await
+        .expect("RELATE Oracle");
+    assert_eq!(guard_ids(&equal), vec!["3".to_owned()]);
+    let wkb = setup
+        .query(
+            &Statement::new(format!(
+                "SELECT DBMS_LOB.SUBSTR(SDO_UTIL.TO_WKBGEOMETRY(G), 2000, 1) AS W \
+                 FROM {table} WHERE ID = 3"
+            )),
+            cancellation,
+        )
+        .await
+        .expect("WKB Oracle");
+    let wkb = match wkb.first().and_then(|row| row.get("W")) {
+        Some(ParameterValue::Bytes(bytes)) => bytes.clone(),
+        other => panic!("WKB Oracle: {other:?}"),
+    };
+    setup
+        .commit(cancellation)
+        .await
+        .expect("commit preparazione Oracle");
+    wkb
+}
+
+/// `SELECT ID FROM PLENORA.<object>` con un filtro `field = :p`.
+fn bound_read(object: &str, field: &str) -> ReadOperation {
+    ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: object.to_owned(),
+        },
+        projection: vec!["ID".to_owned()],
+        order_by: vec![OrderBy {
+            field: "ID".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: None,
+        row_offset: None,
+        filter: Some(FilterExpression::Eq {
+            field: field.to_owned(),
+            parameter: "p".to_owned(),
+        }),
+        declared_crs: Vec::new(),
+    }
+}
+
+async fn read_count(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    budget: &ResourceBudget,
+    reading: &ReadOperation,
+    value: ParameterValue,
+    cancellation: &CancellationToken,
+) -> plenora_database_core::Result<usize> {
+    let parameters = ParameterBag::new(BTreeMap::from([("p".to_owned(), value)]));
+    let mut stream = provider
+        .read(secret, reading, &parameters, budget, cancellation)
+        .await?;
+    let mut rows = 0;
+    while let Some(batch) = stream.next_batch(cancellation).await? {
+        rows += batch.num_rows();
+    }
+    Ok(rows)
+}
+
+/// Regola B per colonna (rilettura 13, R13-1), sull'Oracle reale: una
+/// colonna **virtuale** di una tabella
+/// (`W RAW(2000) AS (DBMS_LOB.SUBSTR(SDO_UTIL.TO_WKBGEOMETRY(G), 2000, 1))`, il
+/// WKB della geometria; una colonna virtuale `BLOB` il server non la ammette,
+/// ORA-54003, misurato il 25/10) e `VIRTUAL_COLUMN` `YES` in `ALL_TAB_COLS`. Due
+/// poligoni uguali per `SDO_GEOM.RELATE` con i vertici in ordine diverso:
+/// lo SQL senza giudizio `W = :1` con il WKB del primo rende soltanto il
+/// primo, un risultato sbagliato senza errore. Fino al 25/10 l'origine era
+/// della relazione e `W = ?` passava; ora si rifiuta nella transazione e
+/// nella lettura. La colonna `RAW` memorizzata e la colonna virtuale
+/// numerica restano.
+#[tokio::test]
+#[ignore = "richiede Oracle Spatial live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_server_computed_binary_columns_are_judged_geometric() {
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget R13-1 Oracle");
+    let table = "SONDE_CALCOLATE";
+    let _ = provider
+        .execute_ddl(&secret, "DROP TABLE SONDE_CALCOLATE PURGE", &cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            "CREATE TABLE SONDE_CALCOLATE (ID NUMBER(10), B RAW(16), G SDO_GEOMETRY, \
+             W RAW(2000) GENERATED ALWAYS AS \
+             (DBMS_LOB.SUBSTR(SDO_UTIL.TO_WKBGEOMETRY(G), 2000, 1)) VIRTUAL, \
+             N NUMBER GENERATED ALWAYS AS (ID + 1) VIRTUAL)",
+            &cancellation,
+        )
+        .await
+        .expect("tabella R13-1 Oracle");
+    let wkb = equal_polygons(&provider, &secret, &budget, table, &cancellation).await;
+    let bytes = [ParameterValue::Bytes(wkb.clone())];
+
+    let (sql, judged, direct) = run_bound_plan(
+        &provider,
+        &secret,
+        &budget,
+        &derived_plan(table, &derived_equal(&derived_column("W"), "binary")),
+        &bytes,
+        &cancellation,
+    )
+    .await;
+    assert!(sql.contains("\"V\".\"W\" = CAST(:1 AS RAW(2000))"), "{sql}");
+    assert_eq!(
+        direct.expect("senza giudizio"),
+        vec!["3".to_owned()],
+        "il server confronta i byte: il secondo poligono, uguale, manca"
+    );
+    let error = judged.expect_err("W = ? giudicato");
+    assert!(
+        judgement_refusal(&error, GEOMETRY_SCALAR_OPERAND),
+        "{error}"
+    );
+    let refused = [
+        (
+            "ORDER BY W",
+            derived_plan(
+                table,
+                &serde_json::json!({"order_by": [{"expression": derived_column("W"), "direction": "asc"}]}),
+            ),
+            Vec::new(),
+        ),
+        (
+            "W = ? (valore Bytes, bind non tipato)",
+            derived_plan(table, &untyped_equal(&derived_column("W"))),
+            bytes.to_vec(),
+        ),
+    ];
+    for (name, plan, values) in refused {
+        let (_, judged, _) =
+            run_bound_plan(&provider, &secret, &budget, &plan, &values, &cancellation).await;
+        let error = judged.expect_err(name);
+        assert!(
+            judgement_refusal(&error, GEOMETRY_SCALAR_OPERAND),
+            "{name}: {error}"
+        );
+    }
+    let admitted = [
+        (
+            "B = ? (memorizzata)",
+            derived_plan(table, &derived_equal(&derived_column("B"), "binary")),
+            vec![ParameterValue::Bytes(vec![4])],
+            vec!["4"],
+        ),
+        (
+            "N = ? (virtuale numerica)",
+            derived_plan(table, &derived_equal(&derived_column("N"), "integer")),
+            vec![ParameterValue::I64(4)],
+            vec!["3"],
+        ),
+    ];
+    for (name, plan, values, expected) in admitted {
+        let (_, judged, direct) =
+            run_bound_plan(&provider, &secret, &budget, &plan, &values, &cancellation).await;
+        let rows = judged.unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(rows, expected, "{name}");
+        assert_eq!(Ok(rows), direct, "{name}");
+    }
+    // La lettura del provider.
+    let error = read_count(
+        &provider,
+        &secret,
+        &budget,
+        &bound_read(table, "W"),
+        ParameterValue::Bytes(wkb.clone()),
+        &cancellation,
+    )
+    .await
+    .expect_err("lettura W = ?");
+    assert!(
+        judgement_refusal(&error, GEOMETRY_SCALAR_OPERAND),
+        "lettura: {error}"
+    );
+    assert_eq!(
+        read_count(
+            &provider,
+            &secret,
+            &budget,
+            &bound_read(table, "B"),
+            ParameterValue::Bytes(vec![3]),
+            &cancellation,
+        )
+        .await
+        .expect("lettura B = ?"),
+        1
+    );
+    let _ = provider
+        .execute_ddl(&secret, "DROP TABLE SONDE_CALCOLATE PURGE", &cancellation)
+        .await;
+}
+
+/// Regola F (rilettura 13, R13-2), sull'Oracle reale: una vista rende il WKB
+/// come testo (`RAWTOHEX(...)` in `X`, `CAST(raw AS VARCHAR2(4000))` in `Y`),
+/// e lo SQL senza giudizio `"V"."X" = CAST(:1 AS RAW(2000))` con il WKB del
+/// primo poligono converte da se e rende soltanto il primo, mentre i due sono
+/// uguali per `SDO_GEOM.RELATE`. Il giudizio rifiuta il confronto fra il
+/// testo e il binario (`invalid_plan`, `OPERAND_FAMILY_MISMATCH`) con il
+/// bind tipato, con il `CAST` binario del bind e con un bind non tipato di
+/// valore `Bytes`, nella transazione e nella lettura; il `CAST` binario della
+/// colonna testo e un binario derivato (`GEOMETRY_SCALAR_OPERAND`). Il testo
+/// confrontato con un testo resta: il confine dichiarato del mondo chiuso.
+#[tokio::test]
+#[ignore = "richiede Oracle Spatial live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_text_columns_compared_with_binary_values_are_refused() {
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget R13-2 Oracle");
+    let table = "SONDE_TESTO";
+    let view = "SONDE_TESTO_V";
+    for sql in ["DROP VIEW SONDE_TESTO_V", "DROP TABLE SONDE_TESTO PURGE"] {
+        let _ = provider.execute_ddl(&secret, sql, &cancellation).await;
+    }
+    provider
+        .execute_ddl(
+            &secret,
+            "CREATE TABLE SONDE_TESTO (ID NUMBER(10), B RAW(16), G SDO_GEOMETRY)",
+            &cancellation,
+        )
+        .await
+        .expect("tabella R13-2 Oracle");
+    let wkb = equal_polygons(&provider, &secret, &budget, table, &cancellation).await;
+    provider
+        .execute_ddl(
+            &secret,
+            "CREATE OR REPLACE VIEW SONDE_TESTO_V AS SELECT T.ID AS ID, \
+             RAWTOHEX(DBMS_LOB.SUBSTR(SDO_UTIL.TO_WKBGEOMETRY(T.G), 2000, 1)) AS X, \
+             CAST(DBMS_LOB.SUBSTR(SDO_UTIL.TO_WKBGEOMETRY(T.G), 2000, 1) AS VARCHAR2(4000)) AS Y \
+             FROM SONDE_TESTO T",
+            &cancellation,
+        )
+        .await
+        .expect("vista R13-2 Oracle");
+    let bytes = [ParameterValue::Bytes(wkb.clone())];
+    let cast_bind = serde_json::json!({"kind": "cast",
+        "expression": {"kind": "parameter", "name": "p"}, "target_type": "binary"});
+    for field in ["X", "Y"] {
+        let (sql, judged, direct) = run_bound_plan(
+            &provider,
+            &secret,
+            &budget,
+            &derived_plan(
+                view,
+                &serde_json::json!({"filter": {"kind": "compare", "left": derived_column(field),
+                    "operator": "eq", "right": cast_bind}}),
+            ),
+            &bytes,
+            &cancellation,
+        )
+        .await;
+        assert!(
+            sql.contains(&format!("\"V\".\"{field}\" = CAST(:1 AS RAW(2000))")),
+            "{sql}"
+        );
+        assert_eq!(
+            direct.expect("senza giudizio"),
+            vec!["3".to_owned()],
+            "{field}: il server converte da se, il secondo poligono uguale manca"
+        );
+        let error = judged.expect_err(field);
+        assert!(family_refusal(&error), "{field} = CAST(? AS RAW): {error}");
+        for (name, plan) in [
+            (
+                "bind binario",
+                derived_plan(view, &derived_equal(&derived_column(field), "binary")),
+            ),
+            (
+                "valore Bytes, bind non tipato",
+                derived_plan(view, &untyped_equal(&derived_column(field))),
+            ),
+        ] {
+            let (_, judged, _) =
+                run_bound_plan(&provider, &secret, &budget, &plan, &bytes, &cancellation).await;
+            let error = judged.expect_err(name);
+            assert!(family_refusal(&error), "{field} {name}: {error}");
+        }
+        let (_, judged, _) = run_bound_plan(
+            &provider,
+            &secret,
+            &budget,
+            &derived_plan(
+                view,
+                &derived_equal(&derived_binary(&derived_column(field)), "binary"),
+            ),
+            &bytes,
+            &cancellation,
+        )
+        .await;
+        let error = judged.expect_err("CAST(testo AS RAW) = ?");
+        assert!(
+            judgement_refusal(&error, GEOMETRY_SCALAR_OPERAND),
+            "CAST({field}) = ?: {error}"
+        );
+    }
+    // Il testo confrontato con un testo resta (il confine dichiarato).
+    let hex = wkb.iter().fold(String::new(), |mut hex, byte| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02X}");
+        hex
+    });
+    let (_, judged, direct) = run_bound_plan(
+        &provider,
+        &secret,
+        &budget,
+        &derived_plan(view, &derived_equal(&derived_column("X"), "string")),
+        &[ParameterValue::String(hex)],
+        &cancellation,
+    )
+    .await;
+    let rows = judged.expect("X = ? con un testo");
+    assert_eq!(rows, vec!["3".to_owned()]);
+    assert_eq!(Ok(rows), direct);
+    // La lettura del provider.
+    let error = read_count(
+        &provider,
+        &secret,
+        &budget,
+        &bound_read(view, "X"),
+        ParameterValue::Bytes(wkb.clone()),
+        &cancellation,
+    )
+    .await
+    .expect_err("lettura X = ? con Bytes");
+    assert!(family_refusal(&error), "lettura: {error}");
+    for sql in ["DROP VIEW SONDE_TESTO_V", "DROP TABLE SONDE_TESTO PURGE"] {
+        let _ = provider.execute_ddl(&secret, sql, &cancellation).await;
+    }
 }

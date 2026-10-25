@@ -13,8 +13,8 @@
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::spatial_operand::{
-    operand_server_guard, scalar_operands, OperandCatalog, RelationColumns, AMBIGUOUS_NAME_SHAPE,
-    GEOMETRY_OPERAND_UNRESOLVED,
+    operand_server_guard, scalar_operands, CatalogColumn, OperandCatalog, RelationColumns,
+    AMBIGUOUS_NAME_SHAPE, GEOMETRY_OPERAND_UNRESOLVED,
 };
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::ErrorCategory;
@@ -166,16 +166,19 @@ fn catalogo(prodotto: ProviderKind) -> OperandCatalog {
         public(),
         "features".to_owned(),
         RelationColumns::Known(vec![
-            ("id".to_owned(), false),
-            ("g".to_owned(), true),
-            ("b".to_owned(), false),
-            ("ga".to_owned(), true),
+            CatalogColumn::from_flag("id", false),
+            CatalogColumn::from_flag("g", true),
+            CatalogColumn::from_flag("b", false),
+            CatalogColumn::from_flag("ga", true),
         ]),
     );
     catalogo.insert(
         public(),
         "plain".to_owned(),
-        RelationColumns::Known(vec![("id".to_owned(), false), ("name".to_owned(), false)]),
+        RelationColumns::Known(vec![
+            CatalogColumn::from_flag("id", false),
+            CatalogColumn::from_flag("name", false),
+        ]),
     );
     catalogo.insert(public(), "syn".to_owned(), RelationColumns::Unknown);
     catalogo

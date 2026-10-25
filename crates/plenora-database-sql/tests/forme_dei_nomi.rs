@@ -14,7 +14,7 @@
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::spatial_operand::{
-    scalar_operands, OperandCatalog, RelationColumns, AMBIGUOUS_NAME_SHAPE,
+    scalar_operands, CatalogColumn, OperandCatalog, RelationColumns, AMBIGUOUS_NAME_SHAPE,
 };
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::ErrorCategory;
@@ -104,7 +104,7 @@ fn catalogo(prodotto: ProviderKind) -> OperandCatalog {
         RelationColumns::Known(
             columns
                 .iter()
-                .map(|(name, geometric)| ((*name).to_owned(), *geometric))
+                .map(|(name, geometric)| CatalogColumn::from_flag(*name, *geometric))
                 .collect(),
         )
     };

@@ -82,6 +82,7 @@ pub(crate) async fn read_operation_with_profile(
     )
     .await?;
     let plan = MysqlReadPlan::compile_with_profile(&description, operation, profile)?;
+    crate::types::ensure_read_families(&description, operation, parameters, profile)?;
     let column_count = u64::try_from(plan.columns.len()).map_err(|_| {
         DatabaseError::resource_limit(format!("numero colonne {product} non rappresentabile"))
     })?;
@@ -210,7 +211,10 @@ pub(crate) async fn query_operation_with_profile(
             &internal,
         )
         .await?;
-        operands.judge(&catalog)?;
+        operands.judge_bound(
+            &catalog,
+            &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
+        )?;
     }
     let statement = session.prepare_statement(&rendered.sql, &internal).await?;
     if usize::from(statement.num_params()) != bind_names.len() {

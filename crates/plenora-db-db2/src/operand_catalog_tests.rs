@@ -5,7 +5,7 @@
 //! che il catalogo non descrive).
 
 use crate::operand_catalog::{
-    geometric_columns, operand_catalog, ColumnRow, Db2Catalog, QualifiedName, RelationRow, TypeRow,
+    operand_catalog, read_columns, ColumnRow, Db2Catalog, QualifiedName, RelationRow, TypeRow,
     MAX_ALIAS_DEPTH, MAX_TYPE_DEPTH,
 };
 use plenora_database_core::plan::ProviderKind;
@@ -27,6 +27,21 @@ struct Finto {
     types: BTreeMap<QualifiedName, TypeRow>,
     supertypes: BTreeMap<QualifiedName, QualifiedName>,
     letture: usize,
+}
+
+/// I nomi delle colonne geometriche di `read_columns`.
+fn geometric_columns(
+    catalog: &mut dyn Db2Catalog,
+    schema: &str,
+    object: &str,
+) -> Result<Option<Vec<String>>> {
+    Ok(read_columns(catalog, schema, object)?.map(|columns| {
+        columns
+            .into_iter()
+            .filter(plenora_database_core::spatial_operand::CatalogColumn::is_geometric)
+            .map(|column| column.name)
+            .collect()
+    }))
 }
 
 impl Finto {
@@ -53,6 +68,7 @@ impl Finto {
                     name: (*column).to_owned(),
                     type_name: name(type_schema, type_name),
                     bit_data: false,
+                    generated: false,
                 })
                 .collect(),
         );
@@ -544,6 +560,7 @@ fn ogni_tipo_binario_calcolato_da_una_vista_si_giudica_geometrico() {
                     name: (*column).to_owned(),
                     type_name: name(schema, type_name),
                     bit_data: *bit_data,
+                    generated: false,
                 })
                 .collect(),
         );
@@ -562,4 +579,101 @@ fn ogni_tipo_binario_calcolato_da_una_vista_si_giudica_geometrico() {
             );
         }
     }
+}
+
+/// Regola B per colonna (rilettura 13, R13-1): una colonna generata binaria di
+/// una tabella (`GENERATED ALWAYS AS (CAST(ST_ASBINARY(G) AS VARBINARY))`) e
+/// derivata; una colonna generata numerica e una binaria memorizzata no.
+#[test]
+fn una_colonna_generata_binaria_di_una_tabella_si_giudica_geometrica() {
+    let mut finto = Finto::new();
+    finto.table(
+        "PLENORA",
+        "T",
+        &[
+            ("ID", "SYSIBM", "INTEGER"),
+            ("W", "SYSIBM", "VARBINARY"),
+            ("B", "SYSIBM", "VARBINARY"),
+            ("N", "SYSIBM", "INTEGER"),
+        ],
+    );
+    for column in finto
+        .columns
+        .get_mut(&name("PLENORA", "T"))
+        .into_iter()
+        .flatten()
+    {
+        column.generated = matches!(column.name.as_str(), "W" | "N");
+    }
+    assert!(geometrica(&mut finto, "PLENORA", "T", "W"));
+    for campo in ["ID", "B", "N"] {
+        assert_eq!(
+            giudizio(&mut finto, Some("PLENORA"), "T", campo),
+            Ok(()),
+            "{campo}"
+        );
+    }
+}
+
+/// La tabella delle famiglie di Db2 (regola F), sui tipi di `SYSIBM` e
+/// attraverso un tipo distinto.
+#[test]
+fn ogni_tipo_ha_la_famiglia_della_tabella() {
+    use plenora_database_core::spatial_operand::OperandFamily::{
+        Binary, Geometry, Numeric, Other, Temporal, Text,
+    };
+    let mut finto = Finto::new();
+    finto.distinct("M", "DTESTO", ("SYSIBM", "VARCHAR"));
+    let tipi = [
+        ("SMALLINT", Numeric),
+        ("INTEGER", Numeric),
+        ("BIGINT", Numeric),
+        ("DECIMAL", Numeric),
+        ("DECFLOAT", Numeric),
+        ("REAL", Numeric),
+        ("DOUBLE", Numeric),
+        ("BOOLEAN", Numeric),
+        ("CHARACTER", Text),
+        ("VARCHAR", Text),
+        ("LONG VARCHAR", Text),
+        ("CLOB", Text),
+        ("GRAPHIC", Text),
+        ("VARGRAPHIC", Text),
+        ("LONG VARGRAPHIC", Text),
+        ("DBCLOB", Text),
+        ("BLOB", Binary),
+        ("BINARY", Binary),
+        ("VARBINARY", Binary),
+        ("DATE", Temporal),
+        ("TIME", Temporal),
+        ("TIMESTAMP", Temporal),
+        ("XML", Other),
+        ("ST_GEOMETRY", Geometry),
+    ];
+    let mut columns = tipi
+        .iter()
+        .enumerate()
+        .map(|(position, (tipo, _))| (format!("C{position}"), "SYSIBM", *tipo))
+        .collect::<Vec<_>>();
+    columns.push(("D".to_owned(), "M", "DTESTO"));
+    let borrowed = columns
+        .iter()
+        .map(|(column, schema, tipo)| (column.as_str(), *schema, *tipo))
+        .collect::<Vec<_>>();
+    finto.table("PLENORA", "F", &borrowed);
+    let letti = read_columns(&mut finto, "PLENORA", "F")
+        .expect("colonne")
+        .expect("relazione nota");
+    let attese = tipi
+        .iter()
+        .map(|(_, family)| *family)
+        .chain([Text])
+        .collect::<Vec<_>>();
+    assert_eq!(
+        letti
+            .iter()
+            .map(|column| column.column_type.family)
+            .collect::<Vec<_>>(),
+        attese
+    );
 }

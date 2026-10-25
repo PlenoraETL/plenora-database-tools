@@ -755,15 +755,103 @@ const BINARY_TYPES: [&str; 6] = [
     "longblob",
 ];
 
-/// Il tipo (il nome prima della lunghezza, senza maiuscole) e binario.
-#[allow(clippy::redundant_pub_crate)]
-pub(crate) fn is_binary_type(data_type: &str) -> bool {
-    let base = data_type
+/// Il nome del tipo prima della lunghezza, senza maiuscole.
+fn base_type(data_type: &str) -> String {
+    data_type
         .split(|character: char| !character.is_ascii_alphabetic())
         .next()
         .unwrap_or_default()
-        .to_ascii_lowercase();
-    BINARY_TYPES.contains(&base.as_str())
+        .to_ascii_lowercase()
+}
+
+/// I tipi testo (`ENUM` e `SET` si confrontano come testo).
+const TEXT_TYPES: [&str; 8] = [
+    "char",
+    "varchar",
+    "tinytext",
+    "text",
+    "mediumtext",
+    "longtext",
+    "enum",
+    "set",
+];
+
+/// I tipi numerici (`BIT`, `BOOL`, `YEAR` sono interi nella regola F).
+const NUMERIC_TYPES: [&str; 16] = [
+    "tinyint",
+    "smallint",
+    "mediumint",
+    "int",
+    "integer",
+    "bigint",
+    "decimal",
+    "numeric",
+    "dec",
+    "fixed",
+    "float",
+    "double",
+    "real",
+    "bit",
+    "bool",
+    "year",
+];
+
+/// I tipi temporali.
+const TEMPORAL_TYPES: [&str; 4] = ["date", "time", "datetime", "timestamp"];
+
+/// La famiglia di un tipo per la regola F (`spatial_operand::OperandFamily`):
+/// un tipo spatial del prodotto geometrico, poi binaria, testo, numerica,
+/// temporale; il resto (`JSON`, `VECTOR`, `UUID` e `INET` di `MariaDB`)
+/// «altra». Un `CHAR`/`VARCHAR` con `CHARACTER SET binary` si descrive
+/// `binary`/`varbinary`.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn type_family(
+    data_type: &str,
+    profile: &dyn crate::profile::ProductProfile,
+) -> plenora_database_core::spatial_operand::OperandFamily {
+    use plenora_database_core::spatial_operand::OperandFamily;
+    let base = base_type(data_type);
+    let base = base.as_str();
+    if profile.is_spatial_native_type(base) {
+        OperandFamily::Geometry
+    } else if BINARY_TYPES.contains(&base) {
+        OperandFamily::Binary
+    } else if TEXT_TYPES.contains(&base) {
+        OperandFamily::Text
+    } else if NUMERIC_TYPES.contains(&base) {
+        OperandFamily::Numeric
+    } else if TEMPORAL_TYPES.contains(&base) {
+        OperandFamily::Temporal
+    } else {
+        OperandFamily::Other
+    }
+}
+
+/// La colonna la calcola il server (regola B per colonna): `Extra` dice
+/// `VIRTUAL GENERATED`, `STORED GENERATED` o `DEFAULT_GENERATED` (un default
+/// di espressione, che puo leggere altre colonne) su `MySQL`, `VIRTUAL
+/// GENERATED`, `STORED GENERATED` o `PERSISTENT` su `MariaDB`; o il catalogo
+/// ne da l'espressione (`GENERATION_EXPRESSION`).
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn is_computed_column(extra: &str, generation_expression: &str) -> bool {
+    let extra = extra.to_ascii_uppercase();
+    extra.contains("GENERATED")
+        || extra.contains("VIRTUAL")
+        || extra.contains("PERSISTENT")
+        || !generation_expression.trim().is_empty()
+}
+
+/// Su `MariaDB` un default di espressione puo leggere altre colonne
+/// (`w BLOB DEFAULT (ST_AsBinary(g))`, misurato su 12.3.2 il 25/10: il
+/// server riempie `w` dalla geometria) e il catalogo non lo distingue da un
+/// letterale: `Extra` e vuoto, `IS_GENERATED` e `NEVER`, e `SHOW COLUMNS`
+/// stampa i letterali senza apici. Ogni default presente (non `NULL`) si
+/// giudica quindi calcolato: conta soltanto per la famiglia binaria (regola
+/// B), dove il costo e il rifiuto di una colonna binaria con un default
+/// letterale. Su `MySQL` lo dice `DEFAULT_GENERATED` ([`is_computed_column`]).
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn mariadb_default_may_compute(default: Option<&str>) -> bool {
+    default.is_some_and(|default| !default.trim().eq_ignore_ascii_case("NULL"))
 }
 
 /// Una vista con quel nome, senza maiuscole (`lower_case_table_names` decide
@@ -781,9 +869,7 @@ async fn show_columns(
     cancellation: &CancellationToken,
 ) -> Result<plenora_database_core::spatial_operand::RelationColumns> {
     use plenora_database_core::identifier::{quote_identifier, IdentifierDialect};
-    use plenora_database_core::spatial_operand::{
-        catalog_column_is_geometric, ColumnCarrier, RelationOrigin,
-    };
+    use plenora_database_core::spatial_operand::{CatalogColumn, ColumnOrigin};
     let sql = format!(
         "SHOW COLUMNS FROM {}.{}",
         quote_identifier(IdentifierDialect::Mysql, schema)?,
@@ -793,11 +879,12 @@ async fn show_columns(
         .query_rows(&sql, ErrorPhase::Prepare, cancellation)
         .await?;
     // La regola B (`spatial_operand::catalog_column_is_geometric`): una vista
-    // del nome, anche soltanto senza maiuscole. `SHOW COLUMNS` legge una
-    // tabella `TEMPORARY` che ne nasconde una omonima, che `TABLES` non
-    // elenca: una vista omonima la fa giudicare derivata, un rifiuto in piu.
-    let origin = if rows.is_empty() {
-        RelationOrigin::Base
+    // del nome, anche soltanto senza maiuscole, o una colonna generata.
+    // `SHOW COLUMNS` legge una tabella `TEMPORARY` che ne nasconde una
+    // omonima, che `TABLES` non elenca: una vista omonima la fa giudicare
+    // derivata, un rifiuto in piu.
+    let derived = if rows.is_empty() {
+        false
     } else {
         let views = session
             .exec_rows(
@@ -807,29 +894,22 @@ async fn show_columns(
                 cancellation,
             )
             .await?;
-        if views.is_empty() {
-            RelationOrigin::Base
-        } else {
-            RelationOrigin::Derived
-        }
+        !views.is_empty()
     };
     let mut columns = Vec::with_capacity(rows.len());
     for row in &rows {
         let column: String = required(row, 0, "Field")?;
         let declared: String = required(row, 1, "Type")?;
-        let base = declared
-            .split(|character: char| !character.is_ascii_alphabetic())
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let carrier = if profile.is_spatial_native_type(&base) {
-            ColumnCarrier::Geometry
-        } else if is_binary_type(&base) {
-            ColumnCarrier::Binary
-        } else {
-            ColumnCarrier::Scalar
-        };
-        columns.push((column, catalog_column_is_geometric(origin, carrier)));
+        let extra: String = required(row, 5, "Extra")?;
+        let default: Option<String> = required(row, 4, "Default")?;
+        let computed = is_computed_column(&extra, "")
+            || (profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb
+                && mariadb_default_may_compute(default.as_deref()));
+        columns.push(CatalogColumn::new(
+            column,
+            ColumnOrigin::of(derived, computed),
+            type_family(&declared, profile),
+        ));
     }
     Ok(if columns.is_empty() {
         plenora_database_core::spatial_operand::RelationColumns::Absent
