@@ -14,7 +14,7 @@ use crate::live_tests::{fixture, VecBatchStream};
 use crate::number_oracle_tests::{generated, parse_canon, parse_dump, reference_bytes, Canon};
 use crate::OracleProvider;
 use plenora_database_core::arrow::array::{
-    Array, Decimal128Array, Int32Array, Int64Array, StringArray,
+    Array, Decimal128Array, Float32Array, Float64Array, Int32Array, Int64Array, StringArray,
 };
 use plenora_database_core::arrow::schema::{DataType, Field};
 use plenora_database_core::arrow::RecordBatch;
@@ -31,7 +31,7 @@ use plenora_database_core::protocol::contract_schema;
 use plenora_database_core::provider::{ParameterBag, ParameterValue, Provider, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::{Statement, TransactionOptions, TransactionScope};
-use plenora_database_core::{CancellationToken, Row};
+use plenora_database_core::{CancellationToken, ErrorCategory, Row};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -824,6 +824,21 @@ const INVALID: [(&str, &str); 3] = [
 ];
 const INVALID_TABLE: &str = "PLENORA_ORACLE_NUMBER_INVALID";
 
+/// `None` se `outcome` e l'errore `DataMapping` atteso; altrimenti la
+/// discrepanza: un valore reso, o un errore d'altra categoria (trasporto,
+/// esecuzione), che non proverebbe il rifiuto del valore.
+fn expect_data_mapping<T: std::fmt::Debug>(
+    label: &str,
+    path: &str,
+    outcome: plenora_database_core::Result<T>,
+) -> Option<String> {
+    match outcome {
+        Err(error) if error.category == ErrorCategory::DataMapping => None,
+        Err(error) => Some(format!("{label}: {path} fallita con {:?}", error.category)),
+        Ok(value) => Some(format!("{label}: {path} resa {value:?}")),
+    }
+}
+
 async fn arrow_read_by_id(
     provider: &OracleProvider,
     secret: &SecretString,
@@ -897,22 +912,24 @@ async fn live_number_infinities_and_invalid_bytes_fail_every_read() {
             "NUMBER Oracle: {label} -> {:?}",
             optional_text(&dump[0], "DMP")
         );
-        // Query di riga: decoder del driver.
-        if let Ok(rows) = transaction
+        // Query di riga: decoder del driver. Deve fallire per mappatura
+        // dati, non per un errore qualsiasi.
+        let outcome = transaction
             .query(
                 &Statement::new(format!("SELECT D FROM {INVALID_TABLE} WHERE ID = {id}")),
                 &cancellation,
             )
-            .await
-        {
-            misses.push(format!("{label}: query resa {:?}", rows[0].get("D")));
+            .await;
+        if let Some(miss) = expect_data_mapping(label, "query", outcome.map(|rows| rows.len())) {
+            misses.push(miss);
         }
         let _ = transaction.rollback(&cancellation).await;
     }
     // Read Arrow: Decimal128(38, 0) sulla colonna NUMBER libera.
     for (id, label) in &stored {
-        if let Ok(rows) = arrow_read_by_id(&provider, &secret, *id).await {
-            misses.push(format!("{label}: read Arrow resa {rows} righe"));
+        let outcome = arrow_read_by_id(&provider, &secret, *id).await;
+        if let Some(miss) = expect_data_mapping(label, "read Arrow", outcome) {
+            misses.push(miss);
         }
     }
     drop_table(&provider, &secret, INVALID_TABLE).await;
@@ -973,12 +990,237 @@ async fn live_number_inside_json_reads_back_exactly_or_fails() {
     // Non rappresentabili senza perdita: la lettura deve fallire, non rendere
     // il double piu vicino.
     for probe in ["123456789012345678901234567890", "0.12345678901234567891"] {
-        if let Ok(value) = json_number(&provider, &secret, probe).await {
-            misses.push(format!("{probe}: reso {value:?}"));
+        let outcome = json_number(&provider, &secret, probe).await;
+        if let Some(miss) = expect_data_mapping(probe, "JSON", outcome) {
+            misses.push(miss);
         }
     }
     assert!(
         report("numeri dentro JSON", &misses, exact.len() + 2),
         "{misses:?}"
     );
+}
+
+const FLOATS: &str = "PLENORA_ORACLE_NUMBER_FLOAT";
+
+fn float_batch(columns: &[&str], ids: Vec<i32>, values: &[Vec<f64>]) -> RecordBatch {
+    let mut fields = vec![Field::new("ID", DataType::Int32, false)];
+    let mut arrays: Vec<Arc<dyn Array>> = vec![Arc::new(Int32Array::from(ids))];
+    for (name, column) in columns.iter().zip(values) {
+        fields.push(Field::new(*name, DataType::Float64, false));
+        arrays.push(Arc::new(Float64Array::from(column.clone())));
+    }
+    RecordBatch::try_new(contract_schema(fields).expect("schema"), arrays).expect("batch FLOAT")
+}
+
+/// (ID, colonne) lette come Arrow; ogni colonna Float64 resa come bit.
+async fn arrow_read_floats(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    columns: &[&str],
+) -> plenora_database_core::Result<Vec<Vec<u64>>> {
+    let cancellation = CancellationToken::new();
+    let mut operation = read_operation(FLOATS);
+    operation.projection = std::iter::once("ID")
+        .chain(columns.iter().copied())
+        .map(str::to_owned)
+        .collect();
+    let mut stream = provider
+        .read(
+            secret,
+            &operation,
+            &ParameterBag::default(),
+            &budget(),
+            &cancellation,
+        )
+        .await?;
+    let mut rows = Vec::new();
+    while let Some(batch) = stream.next_batch(&cancellation).await? {
+        for row in 0..batch.num_rows() {
+            rows.push(
+                (1..batch.num_columns())
+                    .map(|index| {
+                        let column = batch.column(index);
+                        column
+                            .as_any()
+                            .downcast_ref::<Float64Array>()
+                            .map(|values| values.value(row).to_bits())
+                            .or_else(|| {
+                                column
+                                    .as_any()
+                                    .downcast_ref::<Float32Array>()
+                                    .map(|values| u64::from(values.value(row).to_bits()))
+                            })
+                            .expect("colonna float")
+                    })
+                    .collect(),
+            );
+        }
+    }
+    Ok(rows)
+}
+
+async fn reset_floats(provider: &OracleProvider, secret: &SecretString) {
+    drop_table(provider, secret, FLOATS).await;
+    create_table(
+        provider,
+        secret,
+        &format!(
+            "CREATE TABLE {FLOATS} (ID NUMBER(10) PRIMARY KEY, F FLOAT, F10 FLOAT(10), \
+             BD BINARY_DOUBLE, BF BINARY_FLOAT)"
+        ),
+    )
+    .await;
+}
+
+async fn execute_sql(provider: &OracleProvider, secret: &SecretString, sql: &str) {
+    let cancellation = CancellationToken::new();
+    let mut transaction = begin(provider, secret).await;
+    transaction
+        .execute(&Statement::new(sql), &cancellation)
+        .await
+        .expect("SQL fixture FLOAT");
+    transaction.commit(&cancellation).await.expect("commit");
+}
+
+/// `FLOAT(b)` e un NUMBER decimale fino a 38 cifre: in lettura diventa
+/// Float64 solo se il valore se ne ricava di nuovo, in scrittura si lega il
+/// decimale piu breve che ricostruisce l'f64 (o si rifiuta). `BINARY_DOUBLE`
+/// e `BINARY_FLOAT` si leggono dai byte IEEE, senza passare da NUMBER.
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_number_float_columns_read_and_write_exactly_or_fail() {
+    let (provider, secret) = fixture();
+    let mut misses = Vec::new();
+
+    // 1. Lettura di valori scritti dal server con letterali.
+    reset_floats(&provider, &secret).await;
+    execute_sql(
+        &provider,
+        &secret,
+        &format!(
+            "INSERT INTO {FLOATS} (ID, F, F10, BD, BF) VALUES (1, 0.1, 0.1234, \
+             TO_BINARY_DOUBLE('1e-300'), TO_BINARY_FLOAT('1e-40'))"
+        ),
+    )
+    .await;
+    execute_sql(
+        &provider,
+        &secret,
+        &format!(
+            "INSERT INTO {FLOATS} (ID, F, F10, BD, BF) VALUES (2, -2.5, -1, \
+             TO_BINARY_DOUBLE('0.30000000000000004'), TO_BINARY_FLOAT('-1.5'))"
+        ),
+    )
+    .await;
+    let expected = vec![
+        vec![
+            0.1_f64.to_bits(),
+            0.1234_f64.to_bits(),
+            1e-300_f64.to_bits(),
+            u64::from(1e-40_f32.to_bits()),
+        ],
+        vec![
+            (-2.5_f64).to_bits(),
+            (-1.0_f64).to_bits(),
+            0.300_000_000_000_000_04_f64.to_bits(),
+            u64::from((-1.5_f32).to_bits()),
+        ],
+    ];
+    match arrow_read_floats(&provider, &secret, &["F", "F10", "BD", "BF"]).await {
+        Ok(rows) if rows == expected => {}
+        other => misses.push(format!("read FLOAT/BINARY_*: {other:?}")),
+    }
+
+    // 2. Un FLOAT che f64 non ricostruisce: la read fallisce per mappatura.
+    for literal in [
+        "9007199254740993",
+        "12345678901234567890123",
+        "123456789.123456789",
+        "1/3",
+    ] {
+        reset_floats(&provider, &secret).await;
+        execute_sql(
+            &provider,
+            &secret,
+            &format!("INSERT INTO {FLOATS} (ID, F) VALUES (1, {literal})"),
+        )
+        .await;
+        let outcome = arrow_read_floats(&provider, &secret, &["F"]).await;
+        if let Some(miss) = expect_data_mapping(literal, "read FLOAT", outcome) {
+            misses.push(miss);
+        }
+    }
+
+    // 3. Scrittura Float64 su FLOAT e BINARY_DOUBLE, riletta da Arrow e dal
+    //    server (TO_CHAR): il FLOAT conserva il decimale piu breve dell'f64.
+    reset_floats(&provider, &secret).await;
+    let written = [
+        0.1_f64,
+        9_007_199_254_740_992.0,
+        0.300_000_000_000_000_04,
+        -1e-120,
+    ];
+    let batch = float_batch(
+        &["F", "BD"],
+        (1..=4).collect(),
+        &[written.to_vec(), written.to_vec()],
+    );
+    match arrow_write(
+        &provider,
+        &secret,
+        &write_operation(FLOATS, WriteMode::Append, &[], &[]),
+        batch,
+    )
+    .await
+    {
+        Ok(4) => {
+            let expected = written
+                .iter()
+                .map(|value| vec![value.to_bits(), value.to_bits()])
+                .collect::<Vec<_>>();
+            match arrow_read_floats(&provider, &secret, &["F", "BD"]).await {
+                Ok(rows) if rows == expected => {}
+                other => misses.push(format!("rilettura write FLOAT: {other:?}")),
+            }
+            let mut transaction = begin(&provider, &secret).await;
+            let rows = transaction
+                .query(
+                    &Statement::new(format!(
+                        "SELECT TO_CHAR(F, 'TM9') AS T FROM {FLOATS} ORDER BY ID"
+                    )),
+                    &CancellationToken::new(),
+                )
+                .await
+                .expect("TO_CHAR FLOAT");
+            let _ = transaction.rollback(&CancellationToken::new()).await;
+            for (row, value) in rows.iter().zip(written) {
+                let stored = text(row, "T");
+                if parse_canon(&stored) != parse_canon(&format!("{value:e}")) {
+                    misses.push(format!("{value:e}: FLOAT salvato {stored}"));
+                }
+            }
+        }
+        other => misses.push(format!("write Float64 su FLOAT: {other:?}")),
+    }
+
+    // 4. Valori che il FLOAT di destinazione non conserva: rifiuto esplicito,
+    //    non zero ne arrotondamento.
+    for (column, value) in [("F", 1e-300_f64), ("F10", 0.123_45)] {
+        reset_floats(&provider, &secret).await;
+        let outcome = arrow_write(
+            &provider,
+            &secret,
+            &write_operation(FLOATS, WriteMode::Append, &[], &[]),
+            float_batch(&[column], vec![1], &[vec![value]]),
+        )
+        .await;
+        match outcome {
+            Err(error) if error.contains("DataMapping") => {}
+            other => misses.push(format!("{column} {value:e}: {other:?}")),
+        }
+    }
+    drop_table(&provider, &secret, FLOATS).await;
+    assert!(report("colonne FLOAT", &misses, 12), "{misses:?}");
 }

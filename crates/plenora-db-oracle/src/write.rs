@@ -52,6 +52,11 @@ struct WriteColumn {
     data_type: DataType,
     nullable: bool,
     spatial: Option<SpatialWriteColumn>,
+    /// Cifre decimali del target `FLOAT(b)` per una colonna Float64. Il
+    /// valore si lega come il decimale piu breve che lo ricostruisce: legato
+    /// come `BINARY_DOUBLE`, il server lo convertiva in NUMBER azzerando in
+    /// silenzio ogni |x| < 1e-130 e arrotondandolo alle cifre di `FLOAT(b)`.
+    float_digits: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,14 +149,14 @@ impl OracleWritePlan {
         })
     }
 
-    fn preflight(&self, target: &OracleObjectDescription) -> Result<LossReport> {
+    fn preflight(&mut self, target: &OracleObjectDescription) -> Result<LossReport> {
         if target.kind != "TABLE" {
             return Err(prepare_error(
                 ErrorCategory::Unsupported,
                 "scrittura Oracle richiede una tabella base",
             ));
         }
-        for column in &self.columns {
+        for column in &mut self.columns {
             let server = target
                 .columns
                 .iter()
@@ -176,6 +181,11 @@ impl OracleWritePlan {
                     ErrorCategory::DataMapping,
                     "tipo Arrow incompatibile con il target Oracle",
                 ));
+            }
+            if column.data_type == DataType::Float64
+                && server.data_type.eq_ignore_ascii_case("FLOAT")
+            {
+                column.float_digits = Some(float_decimal_digits(server.precision));
             }
             if let Some(spatial) = &column.spatial {
                 if server.spatial_srid != Some(spatial.srid)
@@ -419,7 +429,7 @@ pub async fn prepare_write(
             ErrorPhase::Prepare,
         ));
     }
-    let plan = OracleWritePlan::compile(config, &input_schema, operation)?;
+    let mut plan = OracleWritePlan::compile(config, &input_schema, operation)?;
     let (operation_lease, columns_lease) =
         ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
     let loss_report = if operation.mode == WriteMode::Create {
@@ -940,13 +950,46 @@ fn batch_values(batch: &RecordBatch, plan: &OracleWritePlan) -> Result<Vec<Vec<P
                 .columns()
                 .iter()
                 .zip(batch.schema().fields().iter().zip(&plan.columns))
-                .map(|(array, (field, _column))| {
-                    arrow_parameter_value(array.as_ref(), field, row, 'T')
-                        .map_err(oracle_write_error)
+                .map(|(array, (field, column))| {
+                    let value = arrow_parameter_value(array.as_ref(), field, row, 'T')
+                        .map_err(oracle_write_error)?;
+                    match (column.float_digits, value) {
+                        (Some(digits), ParameterValue::F64(value)) => {
+                            float_as_decimal(value, digits).map(ParameterValue::Decimal)
+                        }
+                        (_, value) => Ok(value),
+                    }
                 })
                 .collect()
         })
         .collect()
+}
+
+/// Cifre decimali di `FLOAT(b)`: Oracle le dichiara `ceil(b * 0.30103)`
+/// (126 bit, il massimo e il default, sono 38 cifre).
+fn float_decimal_digits(binary_precision: Option<u64>) -> usize {
+    let bits = binary_precision.unwrap_or(126).min(126);
+    usize::try_from((bits * 30_103).div_ceil(100_000)).unwrap_or(38)
+}
+
+/// Il decimale piu breve che ricostruisce `value`, se sta nelle cifre del
+/// `FLOAT(b)` di destinazione. Fuori dal dominio NUMBER (|x| < 1e-130 o
+/// >= 1e126) lo rifiuta il codec NUMBER al bind, invece di azzerarlo.
+fn float_as_decimal(value: f64, digits: usize) -> Result<String> {
+    let text = format!("{value:e}");
+    let mantissa = text.split(['e', 'E']).next().unwrap_or_default();
+    let significant = mantissa
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .skip_while(|digit| *digit == b'0')
+        .count();
+    if !value.is_finite() || significant > digits {
+        return Err(write_error(
+            ErrorCategory::DataMapping,
+            "Float64 non rappresentabile nel FLOAT Oracle di destinazione",
+        ));
+    }
+    Ok(text)
 }
 
 const fn oracle_write_error(mut error: DatabaseError) -> DatabaseError {
@@ -1189,6 +1232,7 @@ fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
         data_type: field.data_type().clone(),
         nullable: field.is_nullable(),
         spatial,
+        float_digits: None,
     })
 }
 

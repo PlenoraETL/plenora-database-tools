@@ -62,6 +62,8 @@ impl OracleColumnSpec {
             }
             "NUMBER" => decimal_kind(column)?,
             "BINARY_FLOAT" => OracleColumnKind::F32,
+            // FLOAT(b) e un NUMBER decimale: resta Float64 per compatibilita,
+            // ma la read lo converte solo quando il valore e ricostruibile.
             "BINARY_DOUBLE" | "FLOAT" => OracleColumnKind::F64,
             "CHAR" | "NCHAR" | "VARCHAR2" | "NVARCHAR2" | "CLOB" | "NCLOB" | "JSON" => {
                 OracleColumnKind::Utf8
@@ -241,8 +243,16 @@ impl OracleReadPlan {
                     Ok(format!(
                         "CASE WHEN {source} THEN 1 WHEN NOT {source} THEN 0 END AS {quoted}"
                     ))
-                } else if matches!(column.kind, OracleColumnKind::F32 | OracleColumnKind::F64) {
-                    Ok(format!("CAST({source} AS NUMBER) AS {quoted}"))
+                } else if column.native_type == "BINARY_FLOAT" {
+                    // I byte IEEE del server: `CAST(... AS NUMBER)` arrotondava
+                    // e azzerava in silenzio ogni |x| < 1e-130.
+                    Ok(format!(
+                        "UTL_RAW.CAST_FROM_BINARY_FLOAT({source}) AS {quoted}"
+                    ))
+                } else if column.native_type == "BINARY_DOUBLE" {
+                    Ok(format!(
+                        "UTL_RAW.CAST_FROM_BINARY_DOUBLE({source}) AS {quoted}"
+                    ))
                 } else {
                     Ok(format!("{source} AS {quoted}"))
                 }

@@ -59,6 +59,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_number_every_public_bind_path_is_exact",
         "live_number_infinities_and_invalid_bytes_fail_every_read",
         "live_number_inside_json_reads_back_exactly_or_fails",
+        "live_number_float_columns_read_and_write_exactly_or_fail",
     }
 )
 PYTHON_LIVE_EXPECTED = 7
@@ -406,17 +407,34 @@ def run_cli_number_probe(environment: dict[str, str]) -> None:
         run(command("database-execute-ddl", f"DROP TABLE {CLI_NUMBER_TABLE} PURGE"),
             environment=environment)
     for raw in ("00", "FF65"):
-        try:
-            run(
-                command(
-                    "database-execute-scalar",
-                    f"SELECT UTL_RAW.CAST_TO_NUMBER(HEXTORAW('{raw}')) FROM DUAL",
-                ),
-                environment=environment,
+        # Il rifiuto deve essere quello della mappatura dati: un errore di
+        # trasporto o di esecuzione non proverebbe niente.
+        completed = subprocess.run(
+            command(
+                "database-execute-scalar",
+                f"SELECT UTL_RAW.CAST_TO_NUMBER(HEXTORAW('{raw}')) FROM DUAL",
+            ),
+            cwd=ROOT,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=TIMEOUT,
+            env=os.environ | environment,
+        )
+        if completed.returncode == 0:
+            raise RuntimeError("la CLI Oracle ha letto un infinito come numero")
+        categories = set()
+        for line in f"{completed.stdout}{completed.stderr}".splitlines():
+            try:
+                document = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(document, dict) and isinstance(document.get("error"), dict):
+                categories.add(document["error"].get("category"))
+        if categories != {"data_mapping"}:
+            raise RuntimeError(
+                "la CLI Oracle ha rifiutato un infinito senza errore data_mapping"
             )
-        except RuntimeError:
-            continue
-        raise RuntimeError("la CLI Oracle ha letto un infinito come numero")
 
 
 def build_and_run_python_live(environment: dict[str, str]) -> str:

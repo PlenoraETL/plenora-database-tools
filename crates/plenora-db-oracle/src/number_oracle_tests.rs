@@ -492,3 +492,41 @@ fn decimal_text_without_digits_or_beyond_precision_is_not_read_as_a_value() {
         );
     }
 }
+
+#[test]
+fn a_decimal_float_becomes_f64_only_when_the_value_is_recoverable() {
+    use crate::read::decimal_as_f64;
+    for (text, expected) in [
+        ("0.1", 0.1_f64),
+        (".10000000000000001", 0.1),
+        (
+            "0.1000000000000000055511151231257827021181583404541015625",
+            0.1,
+        ),
+        ("9007199254740992", 9_007_199_254_740_992.0),
+        ("123456789.12345679", 123_456_789.123_456_79),
+        ("-1.5", -1.5),
+        ("0", 0.0),
+        ("1E-130", 1e-130),
+        ("1.7976931348623157e308", f64::MAX),
+    ] {
+        assert_eq!(
+            decimal_as_f64(text).expect("ricostruibile").to_bits(),
+            expected.to_bits(),
+            "{text}"
+        );
+    }
+    // Gli esempi del secondo lettore: f64 renderebbe un altro numero.
+    for text in [
+        "12345678901234567890123",
+        "9007199254740993",
+        "123456789.123456789",
+        ".3333333333333333333333333333333333333333",
+        "0.12345678901234567891",
+        "",
+        "-",
+        "1e400",
+    ] {
+        assert!(decimal_as_f64(text).is_err(), "{text}");
+    }
+}

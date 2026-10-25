@@ -308,9 +308,10 @@ def test_oracle_decimal_binds_and_reads_are_exact() -> None:
     for raw in ("00", "FF65"):
         session = connect_oracle_reference()
         try:
-            with pytest.raises(p.PlenoraError):
+            with pytest.raises(p.PlenoraDataMappingError) as raised:
                 session.execute_scalar(
                     f"SELECT UTL_RAW.CAST_TO_NUMBER(HEXTORAW('{raw}')) FROM DUAL"
                 )
+            assert raised.value.category == "data_mapping"
         finally:
             session.close()
