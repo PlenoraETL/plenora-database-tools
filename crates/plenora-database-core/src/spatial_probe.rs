@@ -41,7 +41,9 @@
 use crate::ewkb::inspect_ewkb_detailed;
 use crate::plan::ProviderKind;
 use crate::provider::ParameterValue;
-use crate::relational::{ColumnRef, QueryExpression, QueryOperation};
+use crate::relational::{
+    ColumnRef, CommonTableExpression, QueryExpression, QueryOperation, QuerySource,
+};
 use crate::spatial_catalog::CrsRule;
 use crate::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::BTreeSet;
@@ -594,10 +596,42 @@ impl RelationScope {
         }
     }
 
+    /// Lo scope di un predicato isolato su una sola relazione di base, come
+    /// lo rende `render_filter`: ogni colonna, qualificata con `relation` o
+    /// senza qualificazione, e una colonna di quella relazione.
+    #[must_use]
+    pub fn single(relation: &str) -> Self {
+        Self {
+            sources: vec![(relation.to_owned(), None, relation.to_owned())],
+            derived: BTreeSet::new(),
+            common_tables: BTreeSet::new(),
+        }
+    }
+
     /// Le CTE visibili da qui, per lo scope di una query annidata.
     #[must_use]
     pub const fn common_tables(&self) -> &BTreeSet<String> {
         &self.common_tables
+    }
+
+    /// Questo blocco nomina una relazione `relation` nella propria FROM:
+    /// una sorgente (tabella o CTE) o una sorgente derivata.
+    #[must_use]
+    pub fn names(&self, relation: &str) -> bool {
+        self.derived.contains(relation) || self.sources.iter().any(|(name, _, _)| name == relation)
+    }
+
+    /// La FROM di questo blocco contiene una relazione che non e una tabella
+    /// di base: una sorgente derivata o una CTE. Una colonna senza
+    /// qualificazione di un blocco annidato puo allora essere sua, e nessuno
+    /// lo sa senza catalogo.
+    #[must_use]
+    pub fn has_non_base_relation(&self) -> bool {
+        !self.derived.is_empty()
+            || self
+                .sources
+                .iter()
+                .any(|(_, schema, object)| schema.is_none() && self.common_tables.contains(object))
     }
 
     /// La colonna di base che `column` nomina, se si risolve senza
@@ -756,6 +790,11 @@ pub const PROBE_OUTSIDE_PREDICATE: &str =
 pub const PROBE_PEER_OUTSIDE_BLOCK: &str =
     "sonda spatial confrontata con un termine che non e una colonna di una tabella nella FROM dello stesso blocco";
 
+/// Motivo stabile del rifiuto di un argomento geometrico che non e una
+/// colonna di relazione, una funzione spatial o una sonda.
+pub const GEOMETRY_ARGUMENT_UNCLASSIFIED: &str =
+    "argomento geometrico di un nodo spatial che non e una colonna di una relazione nella FROM, una funzione spatial o una sonda diretta: CAST, COALESCE, CASE, subquery e altre espressioni non sono ammesse in posizione geometrica";
+
 /// La clausola in cui sta un'espressione.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Clause {
@@ -766,13 +805,58 @@ enum Clause {
 }
 
 enum ProbeItem<'a> {
-    /// Un blocco, con le CTE visibili da li.
-    Operation(&'a QueryOperation, BTreeSet<String>),
-    /// Un'espressione nella clausola indicata, nello scope `usize`.
+    /// Un blocco, con le CTE visibili da li e il blocco a cui un suo
+    /// riferimento correlato puo appartenere.
+    Operation(
+        &'a QueryOperation,
+        Vec<&'a CommonTableExpression>,
+        Option<usize>,
+    ),
+    /// Un'espressione nella clausola indicata, nel blocco `usize`.
     Expression(&'a QueryExpression, Clause, usize),
-    /// L'argomento geometrico di un nodo che giudica le proprie geometrie, in
-    /// un predicato.
-    Geometry(&'a QueryExpression, usize),
+}
+
+/// Un blocco visitato: lo scope della sua FROM, il blocco che lo contiene
+/// per i riferimenti correlati (`None` per una CTE o una sorgente derivata
+/// non `LATERAL`, che non vedono la FROM esterna), l'operazione e le CTE
+/// visibili, per seguire una colonna di una sorgente derivata o di una CTE
+/// fino all'espressione che la definisce.
+struct Block<'a> {
+    scope: RelationScope,
+    parent: Option<usize>,
+    operation: Option<&'a QueryOperation>,
+    common_tables: Vec<&'a CommonTableExpression>,
+}
+
+/// Oltre questa profondita di sorgenti derivate e CTE annidate una colonna
+/// non si classifica: il rifiuto e esplicito, non una visita senza fondo.
+const MAX_RELATION_DEPTH: usize = 64;
+
+/// Che cosa e un argomento in posizione geometrica di un nodo spatial.
+///
+/// Il mondo e chiuso: un argomento e una di queste classi **in positivo**, e
+/// ogni altra espressione e [`GeometryClass::Unclassified`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GeometryClass {
+    /// Una sonda: un `SpatialValue` o un bind direttamente in quella
+    /// posizione, anche sotto funzioni che ne conservano il frame
+    /// (`ST_Centroid(sonda)`). La giudica [`admit_probe`].
+    Probe,
+    /// Una colonna di una tabella di base nominata dalla FROM del blocco, o
+    /// di un blocco esterno per un riferimento qualificato correlato; o una
+    /// colonna di una sorgente derivata o di una CTE la cui espressione di
+    /// projection, in ogni ramo, e a sua volta una di queste colonne o una
+    /// funzione spatial su di esse ([`relation_output_is_column`]).
+    Column,
+    /// Una funzione spatial che rende una geometria: e a sua volta un nodo
+    /// spatial, e i suoi argomenti geometrici si classificano allo stesso
+    /// modo.
+    Produced,
+    /// Tutto il resto: `CAST`, `COALESCE`, `CASE`, subquery, aritmetica,
+    /// funzioni scalari, colonne di sorgenti derivate o di CTE definite da
+    /// una di queste espressioni (`(SELECT CAST(:p AS BINARY) AS s) d`),
+    /// colonne senza qualificazione che un blocco esterno potrebbe fornire.
+    Unclassified,
 }
 
 const fn is_bind(expression: &QueryExpression) -> bool {
@@ -822,17 +906,301 @@ fn is_probe_term(expression: &QueryExpression) -> bool {
     }
 }
 
+/// La colonna `column` del blocco `index` e una colonna di relazione
+/// ([`GeometryClass::Column`]).
+///
+/// Un riferimento qualificato si risolve nel blocco piu interno che nomina
+/// la relazione, come in SQL; un riferimento senza qualificazione soltanto
+/// nel proprio blocco, e soltanto se nessun blocco esterno ha una sorgente
+/// derivata o una CTE che potrebbe fornirlo (senza catalogo non si sa quali
+/// colonne abbia la tabella del blocco). Nel blocco trovato e una colonna
+/// di una tabella di base, o di una sorgente derivata o di una CTE la cui
+/// projection la definisce come colonna ([`relation_output_is_column`]).
+fn is_relation_column(column: &ColumnRef, blocks: &[Block<'_>], index: usize) -> bool {
+    let block = match &column.relation {
+        None => {
+            let mut outer = blocks[index].parent;
+            while let Some(block) = outer {
+                if blocks[block].scope.has_non_base_relation() {
+                    return false;
+                }
+                outer = blocks[block].parent;
+            }
+            index
+        }
+        Some(relation) => {
+            let mut current = Some(index);
+            loop {
+                let Some(block) = current else {
+                    return false;
+                };
+                if blocks[block].scope.names(relation) {
+                    break block;
+                }
+                current = blocks[block].parent;
+            }
+        }
+    };
+    let block = &blocks[block];
+    if block.scope.base_column(column).is_some() {
+        return true;
+    }
+    block.operation.is_some_and(|operation| {
+        relation_output_is_column(operation, &block.common_tables, column, &mut Vec::new(), 0)
+    })
+}
+
+/// La colonna `column`, nominata nella FROM di `operation`, viene da una
+/// sorgente derivata o da una CTE la cui projection, in ogni ramo di set
+/// operation e nella stessa posizione, e una colonna di relazione o una
+/// funzione spatial che rende una geometria dai soli argomenti geometrici
+/// di quel tipo.
+///
+/// Una CTE ricorsiva che si nomina da se si ammette per induzione: ogni ramo
+/// deve portare colonne in colonne, e il ramo base deve farlo senza di lei.
+/// Un `SELECT *`, una colonna senza alias che non e una colonna, un
+/// riferimento correlato a un blocco esterno dentro la sorgente: `false`.
+fn relation_output_is_column<'a>(
+    operation: &'a QueryOperation,
+    common_tables: &[&'a CommonTableExpression],
+    column: &ColumnRef,
+    visiting: &mut Vec<String>,
+    depth: usize,
+) -> bool {
+    if depth > MAX_RELATION_DEPTH {
+        return false;
+    }
+    let mut visible: Vec<&CommonTableExpression> = common_tables.to_vec();
+    visible.extend(operation.common_table_expressions.iter());
+    let Some((query, name)) = named_relation(operation, &visible, column.relation.as_deref())
+    else {
+        return false;
+    };
+    if let Some(name) = &name {
+        if visiting.contains(name) {
+            return true;
+        }
+        visiting.push(name.clone());
+    }
+    let defined = output_is_column(query, &visible, &column.field, visiting, depth + 1);
+    if name.is_some() {
+        visiting.pop();
+    }
+    defined
+}
+
+/// La sorgente derivata o la CTE che `relation` nomina nella FROM di
+/// `operation`, con il nome della CTE; senza qualificazione, soltanto se la
+/// FROM ha una relazione sola. Una tabella di base, o un nome che non si
+/// risolve: `None`.
+fn named_relation<'a>(
+    operation: &'a QueryOperation,
+    visible: &[&'a CommonTableExpression],
+    relation: Option<&str>,
+) -> Option<(&'a QueryOperation, Option<String>)> {
+    let derived = operation
+        .derived_source
+        .iter()
+        .chain(
+            operation
+                .joins
+                .iter()
+                .filter_map(|join| join.derived_source.as_ref()),
+        )
+        .collect::<Vec<_>>();
+    let sources = operation
+        .source
+        .iter()
+        .chain(
+            operation
+                .joins
+                .iter()
+                .filter_map(|join| join.source.as_ref()),
+        )
+        .collect::<Vec<_>>();
+    let common_table = |source: &QuerySource| {
+        if source.object.schema.is_some() {
+            return None;
+        }
+        visible
+            .iter()
+            .rev()
+            .find(|cte| cte.name == source.object.object)
+            .map(|cte| (cte.query.as_ref(), Some(cte.name.clone())))
+    };
+    let Some(relation) = relation else {
+        return match (derived.as_slice(), sources.as_slice()) {
+            ([source], []) => Some((source.query.as_ref(), None)),
+            ([], [source]) => common_table(source),
+            _ => None,
+        };
+    };
+    if let Some(source) = derived.iter().find(|source| source.alias == relation) {
+        return Some((source.query.as_ref(), None));
+    }
+    sources
+        .iter()
+        .find(|source| source.alias.as_ref().unwrap_or(&source.object.object) == relation)
+        .and_then(|source| common_table(source))
+}
+
+/// La colonna di uscita `field` di `query` e, in ogni ramo, una colonna di
+/// relazione o una funzione spatial su colonne di relazione.
+fn output_is_column<'a>(
+    query: &'a QueryOperation,
+    common_tables: &[&'a CommonTableExpression],
+    field: &str,
+    visiting: &mut Vec<String>,
+    depth: usize,
+) -> bool {
+    let Some(position) = query.projection.iter().position(|item| {
+        item.alias.as_ref().map_or_else(
+            || matches!(&item.expression, QueryExpression::Column { column } if column.field == field),
+            |alias| alias == field,
+        )
+    }) else {
+        return false;
+    };
+    let mut branches = vec![query];
+    let mut index = 0;
+    while let Some(branch) = branches.get(index).copied() {
+        branches.extend(branch.set_operations.iter().map(|set| set.query.as_ref()));
+        index += 1;
+    }
+    branches.into_iter().all(|branch| {
+        let Some(item) = branch.projection.get(position) else {
+            return false;
+        };
+        let names = common_tables
+            .iter()
+            .map(|cte| cte.name.clone())
+            .collect::<BTreeSet<_>>();
+        let scope = RelationScope::of(branch, &names);
+        expression_is_column(
+            &item.expression,
+            branch,
+            &scope,
+            common_tables,
+            visiting,
+            depth,
+        )
+    })
+}
+
+fn expression_is_column<'a>(
+    expression: &'a QueryExpression,
+    operation: &'a QueryOperation,
+    scope: &RelationScope,
+    common_tables: &[&'a CommonTableExpression],
+    visiting: &mut Vec<String>,
+    depth: usize,
+) -> bool {
+    match expression {
+        QueryExpression::Column { column } => {
+            scope.base_column(column).is_some()
+                || relation_output_is_column(operation, common_tables, column, visiting, depth)
+        }
+        QueryExpression::Spatial {
+            function,
+            arguments,
+        } if function.returns_geometry() => arguments
+            .iter()
+            .enumerate()
+            .filter(|(position, _)| function.takes_geometry_at(*position))
+            .all(|(_, argument)| {
+                expression_is_column(argument, operation, scope, common_tables, visiting, depth)
+            }),
+        _ => false,
+    }
+}
+
+fn classify_geometry(
+    argument: &QueryExpression,
+    blocks: &[Block<'_>],
+    index: usize,
+) -> GeometryClass {
+    if is_probe_term(argument) {
+        return GeometryClass::Probe;
+    }
+    match argument {
+        QueryExpression::Column { column } if is_relation_column(column, blocks, index) => {
+            GeometryClass::Column
+        }
+        QueryExpression::Spatial { function, .. } if function.returns_geometry() => {
+            GeometryClass::Produced
+        }
+        _ => GeometryClass::Unclassified,
+    }
+}
+
+/// Gli argomenti di un nodo spatial, ciascuno con `true` se sta in posizione
+/// geometrica, e se il nodo confronta due geometrie (una funzione con due
+/// argomenti geometrici, un operatore spatial). `None` per ogni altro nodo.
+fn spatial_arguments(
+    expression: &QueryExpression,
+) -> Option<(Vec<(&QueryExpression, bool)>, bool)> {
+    let (function, arguments) = match expression {
+        QueryExpression::SpatialOperator { left, right, .. } => {
+            return Some((vec![(left.as_ref(), true), (right.as_ref(), true)], true));
+        }
+        QueryExpression::Spatial {
+            function,
+            arguments,
+        }
+        | QueryExpression::SpatialWindow {
+            function,
+            arguments,
+            ..
+        } => (function, arguments),
+        _ => return None,
+    };
+    let arguments = arguments
+        .iter()
+        .enumerate()
+        .map(|(position, argument)| (argument, function.takes_geometry_at(position)))
+        .collect::<Vec<_>>();
+    let comparing = arguments.iter().filter(|(_, geometric)| *geometric).count() >= 2;
+    Some((arguments, comparing))
+}
+
 /// La regola P, per un piano intero.
 ///
-/// Una sonda — un `SpatialValue`, o un bind in posizione geometrica di un
-/// nodo spatial — e ammessa soltanto come argomento geometrico, diretto o
-/// attraverso funzioni che ne conservano il frame (`ST_Centroid(sonda)`), di
-/// un nodo che confronta due geometrie (una funzione con due argomenti
-/// geometrici, un operatore spatial), in un `WHERE`, `ON` o `HAVING`, e
-/// confrontata con una colonna di una tabella nella FROM dello stesso blocco
-/// (o con un'altra sonda). Li, e soltanto li, [`admit_probe`] la giudica
-/// contro la colonna. Ogni altra posizione si rifiuta compilando, con
-/// `unsupported`:
+/// **Il mondo e chiuso.** In ogni nodo spatial — una funzione `ST_*`, un
+/// operatore spatial, una finestra spatial — di ogni clausola, ogni
+/// argomento in posizione geometrica si classifica in positivo come una sola
+/// di queste cose ([`GeometryClass`]):
+///
+/// - una **colonna** di una tabella di base nominata dalla FROM del blocco
+///   (o, per un riferimento qualificato correlato, del blocco esterno che la
+///   nomina), o di una sorgente derivata o di una CTE la cui projection la
+///   definisce, in ogni ramo di set operation, come una di queste colonne o
+///   una funzione spatial su di esse (l'alias si segue fino alla tabella; una
+///   CTE ricorsiva per induzione);
+/// - una **funzione spatial che rende una geometria**, i cui argomenti
+///   geometrici si classificano allo stesso modo (`ST_Transform(t.g, n)`,
+///   `ST_Centroid(t.g)`);
+/// - una **sonda**: un `SpatialValue`, o un bind direttamente in quella
+///   posizione, anche sotto funzioni che ne conservano il frame
+///   (`ST_Centroid(sonda)`).
+///
+/// Ogni altra espressione in posizione geometrica — `CAST`, `COALESCE`,
+/// `CASE`, subquery, aritmetica, funzioni scalari, una colonna di una
+/// sorgente derivata o di una CTE definita da una di queste espressioni (o
+/// da un `SELECT *`), una colonna senza qualificazione che un blocco esterno
+/// potrebbe fornire — si rifiuta compilando
+/// ([`GEOMETRY_ARGUMENT_UNCLASSIFIED`]): un bind nascosto da un involucro non
+/// e riconosciuto come sonda da nessun renderer e da nessun provider, e
+/// arrivava al server senza che lo SRID fosse confrontato (fino al 25/10
+/// `t.g && CAST(:p AS BINARY)` con un EWKB 3857 rendeva una riga su una
+/// colonna 4326, `ST_Intersects(t.g, CAST(:p AS BINARY))` con una sonda
+/// 3857 lontana zero righe, su `PostGIS`, SQL Server e `MariaDB`).
+///
+/// Una sonda e poi ammessa soltanto in un nodo che confronta due geometrie
+/// (una funzione con due argomenti geometrici, un operatore spatial), in un
+/// `WHERE`, `ON` o `HAVING`, e confrontata con una colonna di una tabella
+/// nella FROM dello stesso blocco (o con un'altra sonda). Li, e soltanto li,
+/// [`admit_probe`] la giudica contro la colonna. Le altre posizioni si
+/// rifiutano con `unsupported`:
 ///
 /// - fuori da un predicato — ogni projection, anche di una sorgente derivata,
 ///   di una CTE, di una subquery o di un ramo di set operation; `ORDER BY`,
@@ -842,8 +1210,7 @@ fn is_probe_term(expression: &QueryExpression) -> bool {
 ///   d.s`, `g IN (SELECT sonda)`: 0 righe senza errore su d30d1d2);
 /// - in un predicato, sotto un nodo che non la giudica — un operatore non
 ///   spatial (`=`, `IN`, `BETWEEN`, ...), una funzione con una sola geometria
-///   (`ST_Area(sonda)`, `ST_Transform(sonda, n)`), un involucro che la
-///   nasconde al nodo spatial (`CASE`, `COALESCE`, `CAST`):
+///   (`ST_Area(sonda)`, `ST_Transform(sonda, n)`):
 ///   [`admit_probe`] con [`ProbeUse::ScalarOperand`],
 ///   [`SPATIAL_VALUE_OUTSIDE_SPATIAL`];
 /// - confrontata con un termine che non si risolve in una colonna della FROM
@@ -851,35 +1218,90 @@ fn is_probe_term(expression: &QueryExpression) -> bool {
 ///   di una sorgente derivata o di una CTE, una funzione che cambia frame:
 ///   [`PROBE_PEER_OUTSIDE_BLOCK`].
 ///
+/// Un argomento non classificato si visita comunque come espressione: se
+/// contiene una sonda fuori posto, il motivo e quello della sonda; se no,
+/// alla fine della visita e [`GEOMETRY_ARGUMENT_UNCLASSIFIED`].
+///
 /// La visita e iterativa e copre ogni blocco: CTE, sorgenti derivate, join,
 /// subquery di ogni tipo, set operation. E l'unica: la chiedono il renderer
-/// relazionale per ogni dialetto, con o senza catalogo, e il provider
-/// `PostgreSQL` sul piano che giudica.
+/// relazionale per ogni dialetto, con o senza catalogo, anche per il
+/// predicato isolato di `render_filter` ([`judge_probe_predicate`]), e il
+/// provider `PostgreSQL` sul piano che giudica.
 ///
 /// # Limite dichiarato
 ///
 /// - **Regola.** Una sonda nell'`ORDER BY` (`ORDER BY g <-> sonda`, la
 ///   ricerca KNN indicizzata) o nella projection (`SELECT ST_Distance(g,
 ///   sonda)`) non e ammessa, anche dove il catalogo o la guardia del server
-///   la proverebbero.
+///   la proverebbero. In posizione geometrica di un nodo spatial non sono
+///   ammesse, anche senza sonde: una colonna senza qualificazione in un
+///   blocco annidato sotto una FROM con sorgenti derivate o CTE; una colonna
+///   di una sorgente derivata o di una CTE nominata con `SELECT *`, o
+///   definita da un riferimento correlato, o oltre 64 livelli; una funzione
+///   scalare o un `CASE` su colonne di tabella (`COALESCE(t.g, u.g)`).
 /// - **Ambito.** Ogni query relazionale, su ogni dialetto e percorso.
 /// - **Hazard.** Nessuno di correttezza: e una forma rifiutata, non un
 ///   risultato sbagliato. Il chiamante calcola la distanza o l'ordinamento
-///   dopo la lettura, o filtra con un predicato.
+///   dopo la lettura, filtra con un predicato, qualifica la colonna o la
+///   legge dalla tabella di base.
 /// - **Rientro.** Una posizione si riammette quando il valore che la sonda
 ///   produce non lascia il blocco (non e una colonna di uscita nominabile per
 ///   alias) e la prova live su `PostGIS` e `MySQL` mostra che una sonda in un
-///   altro sistema e rifiutata prima di ogni riga anche li.
+///   altro sistema e rifiutata prima di ogni riga anche li. Una colonna
+///   senza qualificazione o un `SELECT *` si riammettono con il catalogo
+///   delle colonne delle relazioni nominate; un `COALESCE` o un `CASE` su
+///   colonne quando la classifica li attraversa ramo per ramo, senza bind.
 ///
 /// # Errors
 ///
-/// `unsupported` con uno dei tre motivi sopra, per la prima sonda fuori
-/// posto in ordine di visita.
-#[allow(clippy::too_many_lines)]
+/// `unsupported` con uno dei motivi sopra: per la prima sonda fuori posto in
+/// ordine di visita, o, se non ce ne sono, per il primo argomento non
+/// classificato.
 pub fn judge_probe_positions(
     provider: ProviderKind,
     evidence: ProbeEvidence,
     operation: &QueryOperation,
+) -> Result<()> {
+    judge(
+        provider,
+        evidence,
+        Vec::new(),
+        vec![ProbeItem::Operation(operation, Vec::new(), None)],
+    )
+}
+
+/// La regola P per un predicato isolato su una sola relazione di base, come
+/// lo rende `render_filter`: la stessa visita di [`judge_probe_positions`],
+/// con ogni colonna del predicato colonna di `relation`.
+///
+/// # Errors
+///
+/// Quelli di [`judge_probe_positions`].
+pub fn judge_probe_predicate(
+    provider: ProviderKind,
+    evidence: ProbeEvidence,
+    predicate: &QueryExpression,
+    relation: &str,
+) -> Result<()> {
+    judge(
+        provider,
+        evidence,
+        vec![Block {
+            scope: RelationScope::single(relation),
+            parent: None,
+            operation: None,
+            common_tables: Vec::new(),
+        }],
+        vec![ProbeItem::Expression(predicate, Clause::Predicate, 0)],
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn judge<'a>(
+    provider: ProviderKind,
+    evidence: ProbeEvidence,
+    mut blocks: Vec<Block<'a>>,
+    mut stack: Vec<ProbeItem<'a>>,
 ) -> Result<()> {
     let unsupported =
         |message: &str| DatabaseError::unsupported(provider, ErrorPhase::Prepare, message);
@@ -894,39 +1316,50 @@ pub fn judge_probe_positions(
         .unwrap_or_else(|| unsupported(SPATIAL_VALUE_OUTSIDE_SPATIAL)),
         Clause::Elsewhere => unsupported(PROBE_OUTSIDE_PREDICATE),
     };
-    let mut scopes: Vec<RelationScope> = Vec::new();
-    let mut stack = vec![ProbeItem::Operation(operation, BTreeSet::new())];
+    let mut unclassified = false;
     while let Some(item) = stack.pop() {
         match item {
-            ProbeItem::Operation(operation, visible) => {
-                let scope = RelationScope::of(operation, &visible);
-                let inner = scope.common_tables().clone();
-                let index = scopes.len();
-                scopes.push(scope);
-                let blocks = operation
+            ProbeItem::Operation(operation, visible, parent) => {
+                let names = visible
+                    .iter()
+                    .map(|cte| cte.name.clone())
+                    .collect::<BTreeSet<_>>();
+                let scope = RelationScope::of(operation, &names);
+                let mut inner = visible;
+                inner.extend(operation.common_table_expressions.iter());
+                let index = blocks.len();
+                blocks.push(Block {
+                    scope,
+                    parent,
+                    operation: Some(operation),
+                    common_tables: inner.clone(),
+                });
+                // Una CTE e una sorgente derivata non vedono la FROM di chi
+                // le nomina; una sorgente `LATERAL` si, e un ramo di set
+                // operation vede quello che vede il blocco.
+                let blocks_inside = operation
                     .common_table_expressions
                     .iter()
-                    .map(|cte| cte.query.as_ref())
+                    .map(|cte| (cte.query.as_ref(), None))
                     .chain(
                         operation
                             .derived_source
                             .iter()
-                            .chain(
-                                operation
-                                    .joins
-                                    .iter()
-                                    .filter_map(|join| join.derived_source.as_ref()),
-                            )
-                            .map(|source| source.query.as_ref()),
+                            .map(|source| (source.query.as_ref(), None)),
                     )
+                    .chain(operation.joins.iter().filter_map(|join| {
+                        join.derived_source
+                            .as_ref()
+                            .map(|source| (source.query.as_ref(), join.lateral.then_some(index)))
+                    }))
                     .chain(
                         operation
                             .set_operations
                             .iter()
-                            .map(|set| set.query.as_ref()),
+                            .map(|set| (set.query.as_ref(), parent)),
                     );
-                for block in blocks {
-                    stack.push(ProbeItem::Operation(block, inner.clone()));
+                for (block, block_parent) in blocks_inside {
+                    stack.push(ProbeItem::Operation(block, inner.clone(), block_parent));
                 }
                 let elsewhere = operation
                     .projection
@@ -947,121 +1380,76 @@ pub fn judge_probe_positions(
                     stack.push(ProbeItem::Expression(expression, Clause::Predicate, index));
                 }
             }
-            ProbeItem::Geometry(argument, index) => match argument {
-                QueryExpression::SpatialValue { expression, .. } => {
-                    stack.push(ProbeItem::Expression(expression, Clause::Predicate, index));
-                }
-                QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. } => {}
-                QueryExpression::Spatial { arguments, .. } => {
-                    if let Some((preserved, _)) = preserved_argument(argument) {
-                        for (position, child) in arguments.iter().enumerate() {
-                            stack.push(if position == preserved {
-                                ProbeItem::Geometry(child, index)
-                            } else {
-                                ProbeItem::Expression(child, Clause::Predicate, index)
-                            });
-                        }
-                    } else {
-                        stack.push(ProbeItem::Expression(argument, Clause::Predicate, index));
-                    }
-                }
-                _ => stack.push(ProbeItem::Expression(argument, Clause::Predicate, index)),
-            },
             ProbeItem::Expression(expression, clause, index) => {
-                // I nodi che confrontano due geometrie, in un predicato: qui
-                // una sonda si giudica.
-                let judging = match expression {
-                    QueryExpression::Spatial {
-                        function,
-                        arguments,
-                    } if clause == Clause::Predicate
-                        && (0..arguments.len())
-                            .filter(|index| function.takes_geometry_at(*index))
-                            .count()
-                            >= 2 =>
-                    {
-                        Some(
-                            arguments
-                                .iter()
-                                .enumerate()
-                                .map(|(position, argument)| {
-                                    (argument, function.takes_geometry_at(position))
-                                })
-                                .collect::<Vec<_>>(),
-                        )
-                    }
-                    QueryExpression::SpatialOperator { left, right, .. }
-                        if clause == Clause::Predicate =>
-                    {
-                        Some(vec![(left.as_ref(), true), (right.as_ref(), true)])
-                    }
-                    _ => None,
-                };
-                if let Some(arguments) = judging {
-                    let probes = arguments
-                        .iter()
-                        .any(|(argument, geometric)| *geometric && is_probe_term(argument));
+                if let Some((arguments, comparing)) = spatial_arguments(expression) {
+                    // Gli argomenti di una finestra spatial stanno fuori da
+                    // ogni predicato, come la finestra stessa.
+                    let clause = if matches!(expression, QueryExpression::SpatialWindow { .. }) {
+                        Clause::Elsewhere
+                    } else {
+                        clause
+                    };
+                    let judging = comparing && clause == Clause::Predicate;
+                    let probes = judging
+                        && arguments
+                            .iter()
+                            .any(|(argument, geometric)| *geometric && is_probe_term(argument));
                     for (argument, geometric) in arguments {
                         if !geometric {
-                            stack.push(ProbeItem::Expression(argument, Clause::Predicate, index));
+                            stack.push(ProbeItem::Expression(argument, clause, index));
                             continue;
                         }
                         if probes
                             && !is_probe_term(argument)
-                            && !matches!(term_frame(argument, &scopes[index]), TermFrame::Column(_))
+                            && !matches!(
+                                term_frame(argument, &blocks[index].scope),
+                                TermFrame::Column(_)
+                            )
                         {
                             return Err(unsupported(PROBE_PEER_OUTSIDE_BLOCK));
                         }
-                        stack.push(ProbeItem::Geometry(argument, index));
+                        match classify_geometry(argument, &blocks, index) {
+                            GeometryClass::Probe if judging => {
+                                push_probe(argument, index, &mut stack)?;
+                            }
+                            GeometryClass::Probe => return Err(refuse(clause)),
+                            GeometryClass::Column => {}
+                            GeometryClass::Produced => {
+                                stack.push(ProbeItem::Expression(argument, clause, index));
+                            }
+                            GeometryClass::Unclassified => {
+                                unclassified = true;
+                                stack.push(ProbeItem::Expression(argument, clause, index));
+                            }
+                        }
+                    }
+                    if let QueryExpression::SpatialWindow {
+                        partition_by,
+                        order_by,
+                        ..
+                    } = expression
+                    {
+                        for child in partition_by
+                            .iter()
+                            .chain(order_by.iter().map(|order| &order.expression))
+                        {
+                            stack.push(ProbeItem::Expression(child, Clause::Elsewhere, index));
+                        }
                     }
                     continue;
                 }
-                let visible = || scopes[index].common_tables().clone();
+                let visible = || blocks[index].common_tables.clone();
                 match expression {
                     QueryExpression::Wildcard { .. }
                     | QueryExpression::Column { .. }
                     | QueryExpression::Parameter { .. }
                     | QueryExpression::TypedParameter { .. } => {}
                     QueryExpression::SpatialValue { .. } => return Err(refuse(clause)),
-                    QueryExpression::Spatial {
-                        function,
-                        arguments,
-                    } => {
-                        if arguments.iter().enumerate().any(|(position, argument)| {
-                            function.takes_geometry_at(position) && is_bind(argument)
-                        }) {
-                            return Err(refuse(clause));
-                        }
-                        for argument in arguments {
-                            stack.push(ProbeItem::Expression(argument, clause, index));
-                        }
-                    }
-                    QueryExpression::SpatialOperator { left, right, .. } => {
-                        if is_bind(left) || is_bind(right) {
-                            return Err(refuse(clause));
-                        }
-                        stack.push(ProbeItem::Expression(left, clause, index));
-                        stack.push(ProbeItem::Expression(right, clause, index));
-                    }
-                    QueryExpression::SpatialWindow {
-                        function,
-                        arguments,
-                        partition_by,
-                        order_by,
-                        ..
-                    } => {
-                        if arguments.iter().enumerate().any(|(position, argument)| {
-                            function.takes_geometry_at(position) && is_bind(argument)
-                        }) {
-                            return Err(refuse(Clause::Elsewhere));
-                        }
-                        for child in arguments
-                            .iter()
-                            .chain(partition_by)
-                            .chain(order_by.iter().map(|order| &order.expression))
-                        {
-                            stack.push(ProbeItem::Expression(child, Clause::Elsewhere, index));
-                        }
+                    // I nodi spatial sono tutti sopra.
+                    QueryExpression::Spatial { .. }
+                    | QueryExpression::SpatialOperator { .. }
+                    | QueryExpression::SpatialWindow { .. } => {
+                        return Err(unsupported(GEOMETRY_ARGUMENT_UNCLASSIFIED));
                     }
                     QueryExpression::Window {
                         arguments,
@@ -1079,13 +1467,13 @@ pub fn judge_probe_positions(
                     }
                     QueryExpression::ScalarSubquery { query }
                     | QueryExpression::Exists { query, .. } => {
-                        stack.push(ProbeItem::Operation(query, visible()));
+                        stack.push(ProbeItem::Operation(query, visible(), Some(index)));
                     }
                     QueryExpression::InSubquery {
                         expression, query, ..
                     } => {
                         stack.push(ProbeItem::Expression(expression, clause, index));
-                        stack.push(ProbeItem::Operation(query, visible()));
+                        stack.push(ProbeItem::Operation(query, visible(), Some(index)));
                     }
                     QueryExpression::Arithmetic { left, right, .. }
                     | QueryExpression::Compare { left, right, .. } => {
@@ -1148,7 +1536,58 @@ pub fn judge_probe_positions(
             }
         }
     }
+    if unclassified {
+        return Err(unsupported(GEOMETRY_ARGUMENT_UNCLASSIFIED));
+    }
     Ok(())
+}
+
+/// Una sonda ammessa da un nodo che la giudica: si scende lungo le funzioni
+/// che ne conservano il frame, e gli altri argomenti di quelle funzioni (una
+/// distanza, una tolleranza) si visitano come espressioni del predicato.
+fn push_probe<'a>(
+    argument: &'a QueryExpression,
+    index: usize,
+    stack: &mut Vec<ProbeItem<'a>>,
+) -> Result<()> {
+    let mut current = argument;
+    loop {
+        match current {
+            QueryExpression::SpatialValue { expression, .. } => {
+                stack.push(ProbeItem::Expression(expression, Clause::Predicate, index));
+                return Ok(());
+            }
+            QueryExpression::Parameter { .. } | QueryExpression::TypedParameter { .. } => {
+                return Ok(());
+            }
+            QueryExpression::Spatial { arguments, .. } => {
+                // `is_probe_term` ha gia provato la catena: un passo che non
+                // la segue e un errore, non un argomento accettato.
+                let Some((preserved, next)) = preserved_argument(current) else {
+                    return Err(DatabaseError::new(
+                        ErrorCategory::Internal,
+                        ErrorPhase::Prepare,
+                        None,
+                        GEOMETRY_ARGUMENT_UNCLASSIFIED,
+                    ));
+                };
+                for (position, child) in arguments.iter().enumerate() {
+                    if position != preserved {
+                        stack.push(ProbeItem::Expression(child, Clause::Predicate, index));
+                    }
+                }
+                current = next;
+            }
+            _ => {
+                return Err(DatabaseError::new(
+                    ErrorCategory::Internal,
+                    ErrorPhase::Prepare,
+                    None,
+                    GEOMETRY_ARGUMENT_UNCLASSIFIED,
+                ));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

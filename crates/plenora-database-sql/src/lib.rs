@@ -2376,6 +2376,15 @@ impl Renderer {
     ) -> Result<RenderedSql> {
         let mut binds = RenderState::default();
         let relational = simple_expression_to_relational_with_relation(expression, relation);
+        // La stessa regola P delle query, sul predicato isolato: ogni colonna
+        // e della relazione filtrata (qualificata con `relation`, o senza
+        // qualificazione se il chiamante non la nomina).
+        plenora_database_core::spatial_probe::judge_probe_predicate(
+            self.provider_kind(),
+            self.probe_evidence,
+            &relational,
+            relation.map_or("", Identifier::as_str),
+        )?;
         let sql = self.render_query_expression(&relational, &mut binds)?;
         self.validate_bind_count(&binds)?;
         Ok(RenderedSql {

@@ -1252,3 +1252,632 @@ fn le_forme_ammesse_della_regola_p_restano_ammesse() {
     }
     assert!(difformi.is_empty(), "{}", difformi.join("\n"));
 }
+
+// ---------------------------------------------------------------------------
+// Il mondo chiuso: ogni argomento geometrico e una colonna, una funzione
+// spatial o una sonda diretta.
+// ---------------------------------------------------------------------------
+
+type Involucro = Box<dyn Fn(QueryExpression) -> QueryExpression>;
+
+fn cast(target_type: QueryParameterType) -> Involucro {
+    Box::new(move |inner| QueryExpression::Cast {
+        expression: Box::new(inner),
+        target_type,
+    })
+}
+
+/// Gli involucri che nascondono una sonda al nodo spatial: nessuno conserva
+/// il frame in modo che chi compila lo veda.
+#[allow(clippy::too_many_lines)]
+fn involucri() -> Vec<(&'static str, Involucro)> {
+    use plenora_database_core::plan::ComparisonOperator::Eq;
+    use plenora_database_core::relational::{ArithmeticOperator, QueryCaseBranch, ScalarFunction};
+    vec![
+        ("CAST(x AS BINARY)", cast(QueryParameterType::Binary)),
+        ("CAST(x AS STRING)", cast(QueryParameterType::String)),
+        (
+            "COALESCE(x)",
+            Box::new(|inner| QueryExpression::Scalar {
+                function: ScalarFunction::Coalesce,
+                arguments: vec![inner],
+            }),
+        ),
+        (
+            "COALESCE(x, t.g)",
+            Box::new(|inner| QueryExpression::Scalar {
+                function: ScalarFunction::Coalesce,
+                arguments: vec![inner, colonna_di("t", "shape")],
+            }),
+        ),
+        (
+            "UPPER(x)",
+            Box::new(|inner| QueryExpression::Scalar {
+                function: ScalarFunction::Upper,
+                arguments: vec![inner],
+            }),
+        ),
+        (
+            "CASE WHEN a = b THEN x END",
+            Box::new(|inner| QueryExpression::Case {
+                branches: vec![QueryCaseBranch {
+                    when: confronto(parametro("a"), Eq, parametro("b")),
+                    then: inner,
+                }],
+                else_expression: None,
+            }),
+        ),
+        (
+            "CASE WHEN a = b THEN t.g ELSE x END",
+            Box::new(|inner| QueryExpression::Case {
+                branches: vec![QueryCaseBranch {
+                    when: confronto(parametro("a"), Eq, parametro("b")),
+                    then: colonna_di("t", "shape"),
+                }],
+                else_expression: Some(Box::new(inner)),
+            }),
+        ),
+        (
+            "x + 0",
+            Box::new(|inner| QueryExpression::Arithmetic {
+                left: Box::new(inner),
+                operator: ArithmeticOperator::Add,
+                right: Box::new(parametro("zero")),
+            }),
+        ),
+        (
+            "(SELECT x)",
+            Box::new(|inner| QueryExpression::ScalarSubquery {
+                query: Box::new(sonda_proiettata(inner)),
+            }),
+        ),
+        (
+            "ST_Buffer(CAST(x AS BINARY), d)",
+            Box::new(|inner| {
+                funzione(
+                    SpatialFunction::Buffer,
+                    vec![
+                        QueryExpression::Cast {
+                            expression: Box::new(inner),
+                            target_type: QueryParameterType::Binary,
+                        },
+                        parametro("d"),
+                    ],
+                )
+            }),
+        ),
+        (
+            "ST_Transform(COALESCE(x), s)",
+            Box::new(|inner| {
+                funzione(
+                    SpatialFunction::Transform,
+                    vec![
+                        QueryExpression::Scalar {
+                            function: ScalarFunction::Coalesce,
+                            arguments: vec![inner],
+                        },
+                        parametro("s"),
+                    ],
+                )
+            }),
+        ),
+    ]
+}
+
+/// Le sonde che un involucro puo nascondere: il bind nudo e quello tipizzato
+/// (la forma dello SDK `p.bind("p", BindType.BINARY)`), un `SpatialValue`,
+/// un bind sotto `ST_Centroid`.
+fn quattro_sonde() -> [(&'static str, CostruisciSonda); 4] {
+    [
+        ("bind", Box::new(|| parametro("sonda"))),
+        (
+            "bind BINARY",
+            Box::new(|| QueryExpression::TypedParameter {
+                name: "sonda".to_owned(),
+                parameter_type: QueryParameterType::Binary,
+            }),
+        ),
+        ("sv 3857", Box::new(|| spatial_value(3_857))),
+        (
+            "ST_Centroid(bind)",
+            Box::new(|| funzione(SpatialFunction::Centroid, vec![parametro("sonda")])),
+        ),
+    ]
+}
+
+/// I nodi spatial che confrontano due geometrie, con `x` in una posizione
+/// geometrica e la colonna del blocco nell'altra.
+fn nodi_che_confrontano(x: &QueryExpression) -> Vec<(&'static str, QueryExpression)> {
+    use plenora_database_core::plan::ComparisonOperator::Lt;
+    let tg = || colonna_di("t", "shape");
+    vec![
+        ("ST_Intersects(t.g, x)", interseca(tg(), x.clone())),
+        ("ST_Intersects(x, t.g)", interseca(x.clone(), tg())),
+        (
+            "ST_DWithin(t.g, x, d)",
+            funzione(
+                SpatialFunction::DWithin,
+                vec![tg(), x.clone(), parametro("d")],
+            ),
+        ),
+        (
+            "ST_Distance(t.g, x) < d",
+            confronto(
+                funzione(SpatialFunction::Distance, vec![tg(), x.clone()]),
+                Lt,
+                parametro("d"),
+            ),
+        ),
+        (
+            "NOT ST_Intersects(t.g, x)",
+            QueryExpression::Not {
+                expression: Box::new(interseca(tg(), x.clone())),
+            },
+        ),
+        (
+            "t.g && x",
+            QueryExpression::SpatialOperator {
+                operator: SpatialOperator::BoundingBoxIntersects,
+                left: Box::new(tg()),
+                right: Box::new(x.clone()),
+            },
+        ),
+        (
+            "x ~ t.g",
+            QueryExpression::SpatialOperator {
+                operator: SpatialOperator::BoundingBoxContains,
+                left: Box::new(x.clone()),
+                right: Box::new(tg()),
+            },
+        ),
+    ]
+}
+
+/// La settima rilettura: una sonda nascosta da un involucro non spatial in
+/// posizione geometrica non era riconosciuta come sonda da nessun renderer e
+/// da nessun provider, e arrivava al server senza confronto di SRID
+/// (`PostGIS` `t.g && CAST(:p AS BINARY)` con EWKB 3857: 1 riga su una
+/// colonna 4326; `ST_Intersects` con una sonda 3857 lontana: 0 righe; SQL
+/// Server 0 righe anche sotto `NOT`; `MariaDB` 1 riga). Ora ogni involucro,
+/// per ogni sonda, nodo, dialetto e percorso, si rifiuta compilando. Su
+/// 9fb015b le forme con un bind rendevano.
+#[test]
+fn una_sonda_nascosta_da_un_involucro_si_rifiuta_ovunque() {
+    use plenora_database_core::spatial_probe::{
+        GEOMETRY_ARGUMENT_UNCLASSIFIED, PROBE_OUTSIDE_PREDICATE, SPATIAL_VALUE_OUTSIDE_SPATIAL,
+    };
+    let mut difformi = Vec::new();
+    let mut casi = 0;
+    for (sonda, forma) in quattro_sonde() {
+        for (involucro, avvolgi) in involucri() {
+            for (nodo, filtro) in nodi_che_confrontano(&avvolgi(forma())) {
+                let mut operation = base();
+                operation.filter = Some(filtro);
+                for prodotto in PRODOTTI {
+                    for percorso in [Sdk, Provider] {
+                        casi += 1;
+                        let osservato = renderer(prodotto, percorso).render_query(&operation);
+                        // Un bind nudo nell'involucro e l'argomento non
+                        // classificato; una sonda riconoscibile dentro
+                        // l'involucro porta il motivo della propria posizione.
+                        let conforme = osservato.as_ref().is_err_and(|error| {
+                            error.category == Unsupported
+                                && if sonda.starts_with("bind") {
+                                    error.message == GEOMETRY_ARGUMENT_UNCLASSIFIED
+                                } else {
+                                    [
+                                        GEOMETRY_ARGUMENT_UNCLASSIFIED,
+                                        SPATIAL_VALUE_OUTSIDE_SPATIAL,
+                                        PROBE_OUTSIDE_PREDICATE,
+                                    ]
+                                    .contains(&error.message.as_str())
+                                }
+                        });
+                        if !conforme {
+                            difformi.push(format!(
+                                "{sonda} | {involucro} | {nodo} | {prodotto:?} {percorso:?}: {:?}",
+                                osservato
+                                    .map(|rendered| rendered.sql)
+                                    .map_err(|error| (error.category, error.message))
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        difformi.is_empty(),
+        "{} difformi su {casi}:\n{}",
+        difformi.len(),
+        difformi.join("\n")
+    );
+}
+
+/// Il mondo chiuso anche senza sonde riconoscibili: un valore che arriva in
+/// posizione geometrica da una colonna di una sorgente derivata o di una
+/// CTE definita da un bind (a qualunque livello, in qualunque ramo), o da
+/// una colonna senza qualificazione che la FROM esterna potrebbe fornire,
+/// non e una colonna di relazione. Su 9fb015b `JOIN (SELECT
+/// CAST(:p AS BINARY) AS s) d ON ST_Intersects(t.g, d.s)` rendeva.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn un_argomento_geometrico_non_classificato_si_rifiuta() {
+    use plenora_database_core::spatial_probe::GEOMETRY_ARGUMENT_UNCLASSIFIED;
+    let tg = || colonna_di("t", "shape");
+    let bind_in_cast = || QueryExpression::Cast {
+        expression: Box::new(parametro("sonda")),
+        target_type: QueryParameterType::Binary,
+    };
+    let mut forme: Vec<(&str, QueryOperation)> = Vec::new();
+
+    let mut operation = base();
+    operation.joins = vec![join_derivata(
+        sonda_proiettata(bind_in_cast()),
+        "d",
+        interseca(tg(), colonna_di("d", "s")),
+    )];
+    forme.push((
+        "JOIN (SELECT CAST(:p) AS s) d ON ST_Intersects(t.g, d.s)",
+        operation,
+    ));
+
+    let mut operation = base();
+    operation.joins = vec![join_derivata(
+        sonda_proiettata(parametro("sonda")),
+        "d",
+        QueryExpression::SpatialOperator {
+            operator: SpatialOperator::BoundingBoxIntersects,
+            left: Box::new(tg()),
+            right: Box::new(colonna_di("d", "s")),
+        },
+    )];
+    forme.push(("JOIN (SELECT :p AS s) d ON t.g && d.s", operation));
+
+    let mut operation = base();
+    operation.common_table_expressions = vec![CommonTableExpression {
+        name: "p".to_owned(),
+        recursive: false,
+        query: Box::new(sonda_proiettata(bind_in_cast())),
+    }];
+    operation.joins = vec![QueryJoin {
+        kind: JoinKind::Inner,
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: None,
+                object: "p".to_owned(),
+            },
+            alias: None,
+        }),
+        derived_source: None,
+        lateral: false,
+        on: Some(interseca(tg(), colonna_di("p", "s"))),
+    }];
+    forme.push((
+        "WITH p AS (SELECT CAST(:p) AS s) JOIN p ON ST_Intersects(t.g, p.s)",
+        operation,
+    ));
+
+    // Una colonna senza qualificazione in un blocco annidato: SQL la
+    // risolve nella sorgente derivata esterna se la tabella interna non ha
+    // quella colonna, e chi compila non lo sa.
+    let mut operation = blocco(None, vec![proiezione(colonna_di("d", "s"), "s")], None);
+    operation.derived_source = Some(QueryDerivedSource {
+        query: Box::new(sonda_proiettata(bind_in_cast())),
+        alias: "d".to_owned(),
+    });
+    operation.filter = Some(QueryExpression::Exists {
+        query: Box::new(blocco(
+            Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: Some("public".to_owned()),
+                    object: "features".to_owned(),
+                },
+                alias: None,
+            }),
+            vec![proiezione(colonna(), "g")],
+            Some(interseca(
+                colonna(),
+                QueryExpression::Column {
+                    column: ColumnRef {
+                        relation: None,
+                        field: "s".to_owned(),
+                    },
+                },
+            )),
+        )),
+        negated: false,
+    });
+    forme.push((
+        "FROM (SELECT CAST(:p) AS s) d WHERE EXISTS (SELECT g FROM features WHERE ST_Intersects(g, s))",
+        operation,
+    ));
+
+    // Un argomento geometrico non classificato fuori da un predicato.
+    let mut operation = base();
+    operation.projection.push(proiezione(
+        funzione(SpatialFunction::Area, vec![bind_in_cast()]),
+        "a",
+    ));
+    forme.push(("SELECT ST_Area(CAST(:p))", operation));
+
+    let mut operation = base();
+    operation.order_by = vec![ordinamento(QueryExpression::SpatialOperator {
+        operator: SpatialOperator::KnnDistance,
+        left: Box::new(tg()),
+        right: Box::new(bind_in_cast()),
+    })];
+    forme.push(("ORDER BY t.g <-> CAST(:p)", operation));
+
+    // La colonna di una sorgente derivata si segue fino alla projection che
+    // la definisce, a ogni livello e in ogni ramo di set operation.
+    let mut operation = base();
+    let mut esterna = blocco(None, vec![proiezione(colonna_di("i", "s"), "s")], None);
+    esterna.derived_source = Some(QueryDerivedSource {
+        query: Box::new(sonda_proiettata(bind_in_cast())),
+        alias: "i".to_owned(),
+    });
+    operation.joins = vec![join_derivata(
+        esterna,
+        "d",
+        interseca(tg(), colonna_di("d", "s")),
+    )];
+    forme.push((
+        "JOIN (SELECT i.s FROM (SELECT CAST(:p) AS s) i) d ON ST_Intersects(t.g, d.s)",
+        operation,
+    ));
+
+    let mut operation = base();
+    let mut rami = blocco(
+        Some(sorgente("altre", "u")),
+        vec![proiezione(colonna_di("u", "shape"), "s")],
+        None,
+    );
+    rami.set_operations = vec![QuerySetOperation {
+        operator: QuerySetOperator::Union,
+        all: true,
+        query: Box::new(sonda_proiettata(bind_in_cast())),
+    }];
+    operation.joins = vec![join_derivata(
+        rami,
+        "d",
+        interseca(tg(), colonna_di("d", "s")),
+    )];
+    forme.push((
+        "JOIN (SELECT u.g AS s FROM altre u UNION ALL SELECT CAST(:p)) d ON ST_Intersects(t.g, d.s)",
+        operation,
+    ));
+
+    let mut difformi = Vec::new();
+    for (nome, operation) in &forme {
+        for prodotto in PRODOTTI {
+            for percorso in [Sdk, Provider] {
+                let osservato = renderer(prodotto, percorso).render_query(operation);
+                let conforme = osservato.as_ref().is_err_and(|error| {
+                    error.category == Unsupported && error.message == GEOMETRY_ARGUMENT_UNCLASSIFIED
+                });
+                if !conforme {
+                    difformi.push(format!(
+                        "{nome} | {prodotto:?} {percorso:?}: {:?}",
+                        osservato
+                            .map(|rendered| rendered.sql)
+                            .map_err(|error| (error.category, error.message))
+                    ));
+                }
+            }
+        }
+    }
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// Il mondo chiuso non rifiuta le forme che classifica: colonna contro
+/// colonna (anche correlata e qualificata, anche sotto `ST_Transform`), una
+/// funzione spatial sulla colonna nella projection, una colonna di una
+/// sorgente derivata o di una CTE definita da colonne di tabella (anche in
+/// una set operation), il bind diretto dei provider col catalogo,
+/// `ST_DWithin` con un valore dichiarato.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn le_forme_classificate_restano_ammesse() {
+    use plenora_database_core::spatial_probe::GEOMETRY_ARGUMENT_UNCLASSIFIED;
+    let tg = || colonna_di("t", "shape");
+    let ug = || colonna_di("u", "shape");
+    let con_u = |on: QueryExpression| {
+        let mut operation = base();
+        operation.joins = vec![QueryJoin {
+            kind: JoinKind::Inner,
+            source: Some(sorgente("altre", "u")),
+            derived_source: None,
+            lateral: false,
+            on: Some(on),
+        }];
+        operation
+    };
+    // Senza sonde.
+    let mut senza_sonde: Vec<(&str, QueryOperation)> = vec![
+        (
+            "JOIN altre u ON ST_Intersects(t.g, u.g)",
+            con_u(interseca(tg(), ug())),
+        ),
+        (
+            "JOIN altre u ON ST_Intersects(ST_Centroid(t.g), u.g)",
+            con_u(interseca(
+                funzione(SpatialFunction::Centroid, vec![tg()]),
+                ug(),
+            )),
+        ),
+        (
+            "JOIN altre u ON ST_Intersects(ST_Transform(t.g, s), u.g)",
+            con_u(interseca(
+                funzione(SpatialFunction::Transform, vec![tg(), parametro("s")]),
+                ug(),
+            )),
+        ),
+    ];
+    let mut operation = base();
+    operation.filter = Some(QueryExpression::Exists {
+        query: Box::new(blocco(
+            Some(sorgente("altre", "u")),
+            vec![proiezione(colonna_di("u", "id"), "id")],
+            Some(interseca(ug(), tg())),
+        )),
+        negated: false,
+    });
+    senza_sonde.push((
+        "EXISTS (SELECT u.id FROM altre u WHERE ST_Intersects(u.g, t.g))",
+        operation,
+    ));
+    let mut operation = base();
+    operation
+        .projection
+        .push(proiezione(funzione(SpatialFunction::Area, vec![tg()]), "a"));
+    senza_sonde.push(("SELECT ST_Area(t.g)", operation));
+
+    // Le colonne di sorgenti derivate e di CTE definite da colonne di
+    // tabella: la classifica segue l'alias fino alla projection.
+    let derivata_da = |inner: QueryOperation| {
+        let mut operation = blocco(
+            None,
+            vec![proiezione(
+                funzione(SpatialFunction::ConvexHull, vec![colonna_di("d", "g")]),
+                "j",
+            )],
+            None,
+        );
+        operation.derived_source = Some(QueryDerivedSource {
+            query: Box::new(inner),
+            alias: "d".to_owned(),
+        });
+        operation
+    };
+    let colonna_u = || {
+        blocco(
+            Some(sorgente("features", "u")),
+            vec![proiezione(colonna_di("u", "shape"), "g")],
+            None,
+        )
+    };
+    senza_sonde.push((
+        "SELECT ST_ConvexHull(d.g) FROM (SELECT u.g FROM features u) d",
+        derivata_da(colonna_u()),
+    ));
+    let mut rami = colonna_u();
+    rami.set_operations = vec![QuerySetOperation {
+        operator: QuerySetOperator::Union,
+        all: true,
+        query: Box::new(blocco(
+            Some(sorgente("altre", "v")),
+            vec![proiezione(
+                funzione(SpatialFunction::Centroid, vec![colonna_di("v", "shape")]),
+                "g",
+            )],
+            None,
+        )),
+    }];
+    senza_sonde.push((
+        "SELECT ST_ConvexHull(d.g) FROM (SELECT u.g ... UNION ALL SELECT ST_Centroid(v.g) ...) d",
+        derivata_da(rami),
+    ));
+    let mut cte = blocco(
+        Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: None,
+                object: "valori".to_owned(),
+            },
+            alias: Some("scope".to_owned()),
+        }),
+        vec![proiezione(
+            funzione(SpatialFunction::ConvexHull, vec![colonna_di("scope", "g")]),
+            "j",
+        )],
+        None,
+    );
+    cte.common_table_expressions = vec![CommonTableExpression {
+        name: "valori".to_owned(),
+        recursive: false,
+        query: Box::new(colonna_u()),
+    }];
+    senza_sonde.push((
+        "WITH valori AS (SELECT u.g FROM features u) SELECT ST_ConvexHull(scope.g) FROM valori scope",
+        cte,
+    ));
+    let mut join_derivata_colonna = base();
+    join_derivata_colonna.joins = vec![join_derivata(
+        colonna_u(),
+        "d",
+        interseca(tg(), colonna_di("d", "g")),
+    )];
+    senza_sonde.push((
+        "JOIN (SELECT u.g FROM features u) d ON ST_Intersects(t.g, d.g)",
+        join_derivata_colonna,
+    ));
+
+    let mut difformi = Vec::new();
+    for (nome, operation) in &senza_sonde {
+        for prodotto in PRODOTTI {
+            for percorso in [Sdk, Provider] {
+                // Un dialetto che non ha la funzione la rifiuta per conto
+                // proprio: qui conta che il mondo chiuso non lo faccia.
+                if let Err(error) = renderer(prodotto, percorso).render_query(operation) {
+                    if error.message == GEOMETRY_ARGUMENT_UNCLASSIFIED {
+                        difformi.push(format!("{nome} | {prodotto:?} {percorso:?}: {error:?}"));
+                    }
+                }
+            }
+        }
+        if let Err(error) = renderer(Postgres, Sdk).render_query(operation) {
+            difformi.push(format!("{nome} | Postgres Sdk: {error:?}"));
+        }
+    }
+
+    // Il bind diretto del provider che confronta col catalogo, e il valore
+    // dichiarato con la guardia senza catalogo, in `ST_DWithin` (soltanto
+    // PostGIS; il bind diretto degli altri provider e nella tabella).
+    let mut operation = base();
+    operation.filter = Some(funzione(
+        SpatialFunction::DWithin,
+        vec![tg(), parametro("sonda"), parametro("d")],
+    ));
+    if let Err(error) = renderer(Postgres, Provider).render_query(&operation) {
+        difformi.push(format!(
+            "ST_DWithin(t.g, :p, d) | Postgres Provider: {error:?}"
+        ));
+    }
+    let mut operation = base();
+    operation.filter = Some(funzione(
+        SpatialFunction::DWithin,
+        vec![tg(), spatial_value(3_857), parametro("d")],
+    ));
+    match renderer(Postgres, Sdk).render_query(&operation) {
+        Ok(rendered) if rendered.sql.contains("postgis_typmod_srid") => {}
+        other => difformi.push(format!("ST_DWithin(t.g, sv, d) Postgres Sdk: {other:?}")),
+    }
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// `render_filter` passa dalla stessa regola: il suo predicato isolato si
+/// giudica con la colonna della relazione filtrata.
+#[test]
+fn render_filter_giudica_le_sonde_del_predicato() {
+    use plenora_database_sql::{Expression, Identifier};
+    let filtro = Expression::SpatialPredicate {
+        function: SpatialFunction::Intersects,
+        field: Identifier::new("shape").expect("identificatore"),
+        geometry_parameter: Some("sonda".to_owned()),
+        distance_parameter: None,
+    };
+    // Senza catalogo un bind nudo non ha SRID noto; col catalogo passa.
+    let error = renderer(Postgres, Sdk)
+        .render_filter(&filtro)
+        .expect_err("bind nudo senza catalogo");
+    assert_eq!(error.category, Unsupported);
+    renderer(Postgres, Provider)
+        .render_filter(&filtro)
+        .expect("bind col catalogo");
+    renderer(Oracle, Provider)
+        .render_filter_for_relation(&filtro, &Identifier::new("T").expect("identificatore"))
+        .expect("bind col catalogo, relazione qualificata");
+}

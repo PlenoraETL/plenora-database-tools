@@ -526,3 +526,41 @@ def test_a_probe_outside_a_spatial_predicate_of_its_block_is_refused() -> None:
     )
     sql, _ = compile_relational_query(judged.to_json(), "postgres")
     assert "postgis_typmod_srid" in sql
+
+
+def test_a_probe_hidden_by_a_wrapper_is_refused_by_the_compiler() -> None:
+    """Il mondo chiuso allo SDK: una sonda dietro CAST, COALESCE o CASE.
+
+    La settima rilettura, dall'API pubblica: un bind nascosto da un
+    involucro non spatial in posizione geometrica non era riconosciuto come
+    sonda, e su 9fb015b `Geometry(srid=4326).predicate("intersects", t.c.g,
+    p.bind("p", BindType.BINARY).cast(BindType.BINARY))` si compilava su
+    ogni dialetto; su PostGIS una sonda 3857 lontana rendeva zero righe
+    senza errore. Ora ogni argomento geometrico e una colonna, una funzione
+    spatial o una sonda diretta, e il resto si rifiuta compilando.
+    """
+    features = p.table("features", "id", "g", schema="public")
+    hidden = {
+        "CAST(:p AS BINARY)": p.bind("p", p.BindType.BINARY).cast(p.BindType.BINARY),
+        "CAST(:p AS STRING)": p.bind("p", p.BindType.STRING).cast(p.BindType.STRING),
+        "COALESCE(:p)": p.func.coalesce(p.bind("p", p.BindType.BINARY)),
+        "CASE WHEN id = :i THEN :p END": p.case(
+            (features.c.id == p.bind("i", p.BindType.INTEGER), p.bind("p", p.BindType.BINARY))
+        ),
+    }
+    for name, reference in hidden.items():
+        for function in ("intersects", "within"):
+            statement = p.select(features.c.id).where(
+                p.Geometry(srid=4326).predicate(function, features.c.g, reference)
+            )
+            for provider in ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"):
+                with pytest.raises(p.PlenoraUnsupportedError, match="argomento geometrico"):
+                    compile_relational_query(statement.to_json(), provider)
+                    pytest.fail(f"{name} {function} {provider}: compilato")
+        within = p.select(features.c.id).where(
+            p.Geometry(srid=4326).predicate(
+                "d_within", features.c.g, reference, p.bind("d", p.BindType.FLOAT)
+            )
+        )
+        with pytest.raises(p.PlenoraUnsupportedError, match="argomento geometrico"):
+            compile_relational_query(within.to_json(), "postgres")

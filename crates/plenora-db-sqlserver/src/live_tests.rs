@@ -53,8 +53,22 @@ fn live_config(policy: CertificatePolicy) -> SqlServerConfig {
         std::env::var("PLENORA_SQLSERVER_USER").unwrap_or_else(|_| "dataflow".to_owned());
     let password = std::env::var("PLENORA_SQLSERVER_PASSWORD")
         .unwrap_or_else(|_| "DataFlow_Test_2026!".to_owned());
-    SqlServerConfig::new(host, database, username, SecretString::new(password))
-        .with_certificate_policy(policy)
+    with_live_port(
+        SqlServerConfig::new(host, database, username, SecretString::new(password))
+            .with_certificate_policy(policy),
+    )
+}
+
+/// Un fixture usa e getta accanto a quello di riferimento: la porta di
+/// `PLENORA_SQLSERVER_PORT`, altrimenti quella del fixture (1433).
+fn with_live_port(config: SqlServerConfig) -> SqlServerConfig {
+    match std::env::var("PLENORA_SQLSERVER_PORT")
+        .ok()
+        .and_then(|port| port.parse().ok())
+    {
+        Some(port) => config.with_port(port),
+        None => config,
+    }
 }
 
 fn private_ca_live_config(host: String) -> SqlServerConfig {
@@ -100,8 +114,10 @@ fn live_admin_config() -> SqlServerConfig {
         std::env::var("PLENORA_SQLSERVER_DATABASE").unwrap_or_else(|_| "dataflow_test".to_owned());
     let password = std::env::var("PLENORA_SQLSERVER_SA_PASSWORD")
         .unwrap_or_else(|_| "DataFlow_Test_2026!".to_owned());
-    SqlServerConfig::new(host, database, "sa", SecretString::new(password))
-        .with_certificate_policy(CertificatePolicy::TrustServerCertificate)
+    with_live_port(
+        SqlServerConfig::new(host, database, "sa", SecretString::new(password))
+            .with_certificate_policy(CertificatePolicy::TrustServerCertificate),
+    )
 }
 
 struct TcpCutProxy {
@@ -2347,14 +2363,7 @@ async fn live_every_verified_spatial_function_is_crossed() {
         // essere attraversabile in **almeno una** delle forme che il piano
         // ammette. Nessuna, e la funzione non merita la lista.
         let mut refusals: Vec<String> = Vec::new();
-        for (field, semantics, coordinates) in [
-            ("shape", SpatialSemantics::Geometry, [3.0_f64, 3.0_f64]),
-            (
-                "position",
-                SpatialSemantics::Geography,
-                [13.0_f64, 43.0_f64],
-            ),
-        ] {
+        for field in ["shape", "position"] {
             // Le arieta si perdonano fra loro, le **semantiche** no: una
             // funzione dell'intersezione deve riuscire sia su `geometry` sia
             // su `geography`.
@@ -2371,17 +2380,15 @@ async fn live_every_verified_spatial_function_is_crossed() {
                                 },
                             }
                         } else if function.takes_geometry_at(index) {
-                            parameters.insert(
-                                "needle".to_owned(),
-                                ParameterValue::Wkb {
-                                    bytes: ewkb_point(1, &coordinates),
-                                    srid: Some(4_326),
-                                    dimensions: Dimensions::Xy,
-                                    semantics,
+                            // La seconda geometria e la stessa colonna: una
+                            // sonda nella projection non e ammessa dalla
+                            // regola P (`judge_probe_positions`), e il suo
+                            // rifiuto si prova sotto, funzione per funzione.
+                            QueryExpression::Column {
+                                column: ColumnRef {
+                                    relation: Some("source".to_owned()),
+                                    field: field.to_owned(),
                                 },
-                            );
-                            QueryExpression::Parameter {
-                                name: "needle".to_owned(),
                             }
                         } else {
                             // Lo scalare non e uno solo: il renderer classifica
@@ -2488,6 +2495,81 @@ async fn live_every_verified_spatial_function_is_crossed() {
         }
     }
 
+    // La stessa funzione con una sonda nella projection: la regola P la
+    // rifiuta prima del server, perche il valore della projection lascia il
+    // blocco e nessuno confronta lo SRID della sonda con la colonna.
+    for function in crate::query::VERIFIED_SPATIAL_FUNCTIONS
+        .iter()
+        .filter(|function| function.takes_geometry_at(1) && function.accepts_argument_count(2))
+    {
+        let operation = QueryOperation {
+            declared_crs: Vec::new(),
+            common_table_expressions: Vec::new(),
+            source: Some(QuerySource {
+                object: ObjectRef {
+                    catalog: None,
+                    schema: Some("plenora_test".to_owned()),
+                    object: "stream_probe".to_owned(),
+                },
+                alias: Some("source".to_owned()),
+            }),
+            derived_source: None,
+            projection: vec![QueryProjection {
+                expression: QueryExpression::Spatial {
+                    function: *function,
+                    arguments: vec![
+                        QueryExpression::Column {
+                            column: ColumnRef {
+                                relation: Some("source".to_owned()),
+                                field: "shape".to_owned(),
+                            },
+                        },
+                        QueryExpression::Parameter {
+                            name: "needle".to_owned(),
+                        },
+                    ],
+                },
+                alias: Some("sonda".to_owned()),
+            }],
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            set_operations: Vec::new(),
+            row_limit: Some(1),
+            row_offset: None,
+            locking: None,
+        };
+        let bag = ParameterBag::new(BTreeMap::from([(
+            "needle".to_owned(),
+            ParameterValue::Wkb {
+                bytes: ewkb_point(1, &[3.0, 3.0]),
+                srid: Some(4_326),
+                dimensions: Dimensions::Xy,
+                semantics: SpatialSemantics::Geometry,
+            },
+        )]));
+        match provider
+            .query(&secret, &operation, &bag, &budget, &cancellation)
+            .await
+        {
+            Err(error)
+                if error.category == ErrorCategory::Unsupported
+                    && error.message
+                        == plenora_database_core::spatial_probe::PROBE_OUTSIDE_PREDICATE => {}
+            Err(error) => broken.push(format!(
+                "{function:?} con una sonda nella projection: {}",
+                error.message
+            )),
+            Ok(_) => broken.push(format!(
+                "{function:?} con una sonda nella projection: accettata"
+            )),
+        }
+    }
+
     assert!(
         broken.is_empty(),
         "verified che il riferimento non attraversa ({} su {}): {}",
@@ -2544,6 +2626,14 @@ async fn live_native_scalar_spatial_methods_cover_geometry_and_geography() {
             function,
             arguments: vec![column(), needle()],
         };
+        // Nella projection le funzioni binarie confrontano la colonna con se
+        // stessa: una sonda li non e ammessa dalla regola P (il rifiuto si
+        // prova sotto). Il filtro `Equals(colonna, sonda)` tiene la riga della
+        // sonda, quindi i valori attesi sono gli stessi.
+        let with_itself = |function| QueryExpression::Spatial {
+            function,
+            arguments: vec![column(), column()],
+        };
         let projection = [
             ("geometry_type", unary(SpatialFunction::GeometryType)),
             ("srid", unary(SpatialFunction::Srid)),
@@ -2552,12 +2642,12 @@ async fn live_native_scalar_spatial_methods_cover_geometry_and_geography() {
             ("is_empty", unary(SpatialFunction::IsEmpty)),
             ("is_valid", unary(SpatialFunction::IsValid)),
             ("is_closed", unary(SpatialFunction::IsClosed)),
-            ("intersects", binary(SpatialFunction::Intersects)),
-            ("contains", binary(SpatialFunction::Contains)),
-            ("within", binary(SpatialFunction::Within)),
-            ("disjoint", binary(SpatialFunction::Disjoint)),
-            ("equals", binary(SpatialFunction::Equals)),
-            ("distance", binary(SpatialFunction::Distance)),
+            ("intersects", with_itself(SpatialFunction::Intersects)),
+            ("contains", with_itself(SpatialFunction::Contains)),
+            ("within", with_itself(SpatialFunction::Within)),
+            ("disjoint", with_itself(SpatialFunction::Disjoint)),
+            ("equals", with_itself(SpatialFunction::Equals)),
+            ("distance", with_itself(SpatialFunction::Distance)),
             ("area", unary(SpatialFunction::Area)),
             ("length", unary(SpatialFunction::Length)),
         ]
@@ -2602,6 +2692,21 @@ async fn live_native_scalar_spatial_methods_cover_geometry_and_geography() {
             },
         )]));
         let budget = ResourceBudget::new(ResourceLimits::default()).expect("spatial method budget");
+        let mut refused = operation.clone();
+        refused.projection = vec![QueryProjection {
+            expression: binary(SpatialFunction::Distance),
+            alias: Some("distance".to_owned()),
+        }];
+        let error = provider
+            .query(&secret, &refused, &parameters, &budget, &cancellation)
+            .await
+            .err()
+            .expect("una sonda nella projection si rifiuta");
+        assert_eq!(error.category, ErrorCategory::Unsupported, "{error:?}");
+        assert_eq!(
+            error.message,
+            plenora_database_core::spatial_probe::PROBE_OUTSIDE_PREDICATE
+        );
         let mut stream = provider
             .query(&secret, &operation, &parameters, &budget, &cancellation)
             .await
@@ -2830,12 +2935,17 @@ async fn live_native_spatial_processing_covers_geometry_and_geography() {
             Query::new(
                 "DROP TABLE IF EXISTS [plenora_test].[spatial_processing_probe]; \
                  CREATE TABLE [plenora_test].[spatial_processing_probe] \
-                 ([id] int NOT NULL PRIMARY KEY, [shape] geometry NULL, [position] geography NULL); \
+                 ([id] int NOT NULL PRIMARY KEY, [shape] geometry NULL, [position] geography NULL, \
+                  [shape_needle] geometry NULL, [position_needle] geography NULL); \
                  INSERT INTO [plenora_test].[spatial_processing_probe] VALUES \
                  (1, geometry::STGeomFromText('POLYGON ((0 0, 0 4, 4 4, 4 0, 0 0))', 4326), \
                      geography::STGeomFromText( \
                        'POLYGON ((-122.358 47.653, -122.348 47.649, -122.348 47.658, \
-                                  -122.358 47.658, -122.358 47.653))', 4326));",
+                                  -122.358 47.658, -122.358 47.653))', 4326), \
+                     geometry::STGeomFromText('POLYGON ((2 2, 2 6, 6 6, 6 2, 2 2))', 4326), \
+                     geography::STGeomFromText( \
+                       'POLYGON ((-122.351 47.656, -122.341 47.656, -122.341 47.661, \
+                                  -122.351 47.661, -122.351 47.656))', 4326));",
             ),
             ErrorPhase::Write,
             &cancellation,
@@ -2845,6 +2955,9 @@ async fn live_native_spatial_processing_covers_geometry_and_geography() {
     let provider = SqlServerProvider::new(config, 16, 1).expect("spatial processing provider");
     let secret = live_secret();
 
+    // La seconda geometria delle funzioni binarie e una colonna della stessa
+    // riga (`*_needle`, lo stesso poligono che era la sonda): una sonda nella
+    // projection non e ammessa dalla regola P, e il rifiuto si prova sotto.
     for (field, semantics, distance, polygon) in [
         (
             "shape",
@@ -2882,9 +2995,15 @@ async fn live_native_spatial_processing_covers_geometry_and_geography() {
             function,
             arguments: vec![column()],
         };
+        let needle_column = || QueryExpression::Column {
+            column: ColumnRef {
+                relation: Some("source".to_owned()),
+                field: format!("{field}_needle"),
+            },
+        };
         let geometry_binary = |function| QueryExpression::Spatial {
             function,
-            arguments: vec![column(), parameter("needle")],
+            arguments: vec![column(), needle_column()],
         };
         let projection = [
             (
@@ -2951,6 +3070,28 @@ async fn live_native_spatial_processing_covers_geometry_and_geography() {
         ]));
         let budget =
             ResourceBudget::new(ResourceLimits::default()).expect("spatial processing budget");
+        let mut refused = operation.clone();
+        refused.projection = vec![QueryProjection {
+            expression: QueryExpression::Spatial {
+                function: SpatialFunction::Intersection,
+                arguments: vec![column(), parameter("needle")],
+            },
+            alias: Some("intersection".to_owned()),
+        }];
+        let error = provider
+            .query(&secret, &refused, &parameters, &budget, &cancellation)
+            .await
+            .err()
+            .expect("una sonda nella projection si rifiuta");
+        assert_eq!(error.category, ErrorCategory::Unsupported, "{error:?}");
+        assert_eq!(
+            error.message,
+            plenora_database_core::spatial_probe::PROBE_OUTSIDE_PREDICATE
+        );
+        let parameters = ParameterBag::new(BTreeMap::from([(
+            "distance".to_owned(),
+            ParameterValue::F64(distance),
+        )]));
         let mut stream = provider
             .query(&secret, &operation, &parameters, &budget, &cancellation)
             .await

@@ -1323,3 +1323,168 @@ async fn live_a_probe_outside_a_spatial_predicate_of_its_block_is_refused() {
     drop_fixture(&dsn, table).await;
     assert!(accepted.is_empty(), "{}", accepted.join("\n"));
 }
+
+/// La settima rilettura, misurata su `PostGIS`: una sonda nascosta da un
+/// involucro non spatial in posizione geometrica non era riconosciuta come
+/// sonda, ne dal provider ne dallo SDK, e arrivava al server senza confronto
+/// di SRID. Su 9fb015b, sul path query del provider: `g && CAST(:p AS
+/// BINARY)` con EWKB 3857 vicino rendeva 1 riga (anche con
+/// `ParameterValue::Wkb { srid: Some(3857) }`, il cui SRID si perdeva);
+/// `ST_Intersects`/`ST_DWithin(g, CAST(:p AS BINARY))` con una sonda 3857
+/// lontana 0 righe; `CAST(:p AS STRING)` con `'SRID=3857;POINT(1 1)'` 1
+/// riga; `COALESCE(:p)` 0 righe. Ora ogni forma si rifiuta prima del server
+/// con `unsupported`, motivo `GEOMETRY_ARGUMENT_UNCLASSIFIED`.
+#[tokio::test]
+async fn live_a_probe_hidden_by_a_wrapper_is_refused_before_the_server() {
+    use plenora_database_core::relational::{QueryParameterType, ScalarFunction};
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let table = "plenora_probe_wrapped";
+    fixture(&dsn, table).await;
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.clone());
+    let cancel = CancellationToken::new();
+    let budget = budget();
+    let cast = |target_type: QueryParameterType| QueryExpression::Cast {
+        expression: Box::new(parameter()),
+        target_type,
+    };
+    let coalesce = || QueryExpression::Scalar {
+        function: ScalarFunction::Coalesce,
+        arguments: vec![parameter()],
+    };
+    let bbox = |right: QueryExpression| QueryExpression::SpatialOperator {
+        operator: SpatialOperator::BoundingBoxIntersects,
+        left: Box::new(column("g")),
+        right: Box::new(right),
+    };
+    let dwithin = |argument: QueryExpression| QueryExpression::Spatial {
+        function: SpatialFunction::DWithin,
+        arguments: vec![
+            column("g"),
+            argument,
+            QueryExpression::Parameter {
+                name: "d".to_owned(),
+            },
+        ],
+    };
+    let near = ewkb_point(3857, 1.0, 1.0);
+    let far = ewkb_point(3857, 100_000.0, 100_000.0);
+    let cases = [
+        (
+            "g && CAST(:p AS BINARY), EWKB 3857 vicino",
+            bbox(cast(QueryParameterType::Binary)),
+            ParameterValue::Bytes(near.clone()),
+        ),
+        (
+            "g && CAST(:p AS BINARY), Wkb srid 3857",
+            bbox(cast(QueryParameterType::Binary)),
+            wkb(wkb_point(1.0, 1.0), Some(3857)),
+        ),
+        (
+            "ST_Intersects(g, CAST(:p AS BINARY)), EWKB 3857 lontano",
+            spatial(
+                SpatialFunction::Intersects,
+                "g",
+                cast(QueryParameterType::Binary),
+            ),
+            ParameterValue::Bytes(far.clone()),
+        ),
+        (
+            "ST_DWithin(g, CAST(:p AS BINARY), d), EWKB 3857 lontano",
+            dwithin(cast(QueryParameterType::Binary)),
+            ParameterValue::Bytes(far.clone()),
+        ),
+        (
+            "ST_Intersects(g, CAST(:p AS STRING)), testo SRID=3857",
+            spatial(
+                SpatialFunction::Intersects,
+                "g",
+                cast(QueryParameterType::String),
+            ),
+            ParameterValue::String("SRID=3857;POINT(1 1)".to_owned()),
+        ),
+        (
+            "ST_Intersects(g, COALESCE(:p)), EWKB 3857 lontano",
+            spatial(SpatialFunction::Intersects, "g", coalesce()),
+            ParameterValue::Bytes(far),
+        ),
+    ];
+    let unclassified = |observed: Result<usize, DatabaseError>, case: &str| match observed {
+        Err(error) => {
+            assert_eq!(
+                error.category,
+                ErrorCategory::Unsupported,
+                "{case}: {error:?}"
+            );
+            assert_eq!(
+                error.message,
+                plenora_database_core::spatial_probe::GEOMETRY_ARGUMENT_UNCLASSIFIED,
+                "{case}"
+            );
+        }
+        Ok(rows) => panic!("{case}: accettato con {rows} righe"),
+    };
+    let sdk = plenora_database_sql::Renderer::new(
+        plenora_database_sql::Dialect::Postgres,
+        plenora_database_sql::DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .with_provider(plenora_database_core::plan::ProviderKind::Postgres);
+    for (case, filter, value) in cases {
+        let operation = query(table, filter);
+        let parameters = ParameterBag::new(BTreeMap::from([
+            ("p".to_owned(), value),
+            ("d".to_owned(), ParameterValue::F64(1.0)),
+        ]));
+        unclassified(
+            rows(
+                provider
+                    .query(&secret, &operation, &parameters, &budget, &cancel)
+                    .await,
+            )
+            .await,
+            &format!("provider, {case}"),
+        );
+        unclassified(
+            sdk.render_query(&operation).map(|_| 0),
+            &format!("SDK, {case}"),
+        );
+    }
+    // Il controllo positivo: la stessa sonda diretta e giudicata, e lo SRID
+    // diverso e `crs`; con lo SRID della colonna rende la riga.
+    crs(
+        rows(
+            provider
+                .query(
+                    &secret,
+                    &query(table, bbox(parameter())),
+                    &probe(ParameterValue::Bytes(near)),
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await,
+        "g && :p, EWKB 3857",
+    );
+    assert_eq!(
+        rows(
+            provider
+                .query(
+                    &secret,
+                    &query(table, bbox(parameter())),
+                    &probe(ParameterValue::Bytes(ewkb_point(4326, 1.0, 1.0))),
+                    &budget,
+                    &cancel,
+                )
+                .await,
+        )
+        .await
+        .expect("g && :p, EWKB 4326"),
+        1
+    );
+    drop_fixture(&dsn, table).await;
+}
