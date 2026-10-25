@@ -5258,7 +5258,10 @@ async fn live_v12_write_upsert_rejects_conflicting_unique_index() {
     else {
         panic!("prepare upsert deve fallire fail-closed sull'indice in conflitto");
     };
-    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert_eq!(error.category, ErrorCategory::Schema);
+    assert!(error
+        .message
+        .ends_with(plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX));
 
     let mut check = MysqlSession::open(&live_config(), &cancellation)
         .await
@@ -9106,4 +9109,203 @@ async fn live_k2_indice_unico_su_un_prefisso_prova_la_chiave() {
         "{:?}, righe {after:?}",
         written.map(|outcome| outcome.rows)
     );
+}
+
+// ---- Quarta rilettura del 25/10 (su 04029d4) ----
+
+/// La regola K2 nell'Upsert: `ON DUPLICATE KEY UPDATE` scatta su un indice
+/// `UNIQUE` di un **prefisso** della chiave quando due valori diversi hanno
+/// lo stesso prefisso. Con `UNIQUE (code(2))` e la riga `('ab1', 'prima')`,
+/// l'Upsert di `('ab2', 'nuovo')` aggiornava `ab1` in `nuovo` e non scriveva
+/// `ab2`, con il COMMIT. Ora l'Upsert si rifiuta prima di ogni effetto, come
+/// con un secondo indice unico (`id` PRIMARY KEY e `UNIQUE (email)`).
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+#[allow(clippy::too_many_lines)]
+async fn live_s6_upsert_rifiuta_un_indice_unico_che_non_e_la_chiave() {
+    use plenora_database_core::arrow::array::{Array, Int64Array, StringArray};
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let metadata = std::collections::HashMap::from([(
+        plenora_database_core::protocol::CONTRACT_VERSION_KEY.to_owned(),
+        plenora_database_core::protocol::CONTRACT_VERSION.to_owned(),
+    )]);
+    let mut difformi = Vec::new();
+
+    // Un prefisso della chiave.
+    let prefisso = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (code VARCHAR(10) NOT NULL, label VARCHAR(64) NULL, \
+             UNIQUE KEY prefisso (code(2))) ENGINE=InnoDB"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES ('ab1', 'prima')"),
+    ];
+    let prefisso: Vec<&str> = prefisso.iter().map(String::as_str).collect();
+    semantica_prepare(&mut connection, &prefisso).await;
+    let schema = std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("code", DataType::Utf8, false),
+            Field::new("label", DataType::Utf8, true),
+        ],
+        metadata.clone(),
+    ));
+    let batch = plenora_database_core::arrow::RecordBatch::try_new(
+        schema,
+        vec![
+            std::sync::Arc::new(StringArray::from(vec!["ab2"])) as std::sync::Arc<dyn Array>,
+            std::sync::Arc::new(StringArray::from(vec![Some("nuovo")])),
+        ],
+    )
+    .expect("batch");
+    let mut operation = semantica_operation(plenora_database_core::plan::WriteMode::Upsert);
+    operation.keys = vec!["code".to_owned()];
+    let written = semantica_write_batch(&operation, batch).await;
+    let after = connection
+        .query::<String, _>(format!(
+            "SELECT CONCAT(code, ':', label) FROM `{SEMANTICA_TABLE}` ORDER BY code"
+        ))
+        .await
+        .expect("righe");
+    if !written.as_ref().err().is_some_and(|error| {
+        error.category == ErrorCategory::Schema
+            && error
+                .message
+                .ends_with(plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX)
+    }) || after != ["ab1:prima"]
+    {
+        difformi.push(format!(
+            "prefisso: {:?}, righe {after:?}",
+            written.map(|outcome| outcome.rows)
+        ));
+    }
+
+    // Un secondo indice unico, su un'altra colonna.
+    let secondo = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (id BIGINT NOT NULL PRIMARY KEY, \
+             email VARCHAR(64) NOT NULL, UNIQUE KEY posta (email)) ENGINE=InnoDB"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES (1, 'a@x')"),
+    ];
+    let secondo: Vec<&str> = secondo.iter().map(String::as_str).collect();
+    semantica_prepare(&mut connection, &secondo).await;
+    let schema = std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("email", DataType::Utf8, false),
+        ],
+        metadata,
+    ));
+    let batch = plenora_database_core::arrow::RecordBatch::try_new(
+        schema,
+        vec![
+            std::sync::Arc::new(Int64Array::from(vec![2])) as std::sync::Arc<dyn Array>,
+            std::sync::Arc::new(StringArray::from(vec!["a@x"])),
+        ],
+    )
+    .expect("batch");
+    let operation = semantica_operation(plenora_database_core::plan::WriteMode::Upsert);
+    let written = semantica_write_batch(&operation, batch).await;
+    let after = connection
+        .query::<String, _>(format!(
+            "SELECT CONCAT(id, ':', email) FROM `{SEMANTICA_TABLE}` ORDER BY id"
+        ))
+        .await
+        .expect("righe");
+    if !written.as_ref().err().is_some_and(|error| {
+        error.category == ErrorCategory::Schema
+            && error
+                .message
+                .ends_with(plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX)
+    }) || after != ["1:a@x"]
+    {
+        difformi.push(format!(
+            "secondo indice: {:?}, righe {after:?}",
+            written.map(|outcome| outcome.rows)
+        ));
+    }
+    semantica_cleanup(&mut connection).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// La regola T su `MySQL` e `MariaDB`: un `ObjectRef` senza schema si
+/// risolve una volta, nel database della configurazione, che e quello della
+/// sessione (`DATABASE()`, `db_name` all'apertura); describe, lettura e
+/// scrittura nominano la stessa tabella, e ogni statement la qualifica.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_t_target_senza_schema_si_risolve_nel_database_della_sessione() {
+    use plenora_database_core::arrow::array::Int64Array;
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    semantica_prepare(&mut connection, &[]).await;
+    let session_database = connection
+        .query_first::<Option<String>, _>("SELECT DATABASE()")
+        .await
+        .expect("DATABASE()")
+        .flatten();
+    let provider = semantica_provider();
+    let cancellation = CancellationToken::new();
+    let source = ObjectRef {
+        catalog: None,
+        schema: None,
+        object: SEMANTICA_TABLE.to_owned(),
+    };
+    let described = provider
+        .inspect(
+            &live_secret(),
+            &Operation::DatabaseDescribeObject {
+                source: source.clone(),
+            },
+            &cancellation,
+        )
+        .await
+        .expect("describe senza schema");
+    let mut operation = semantica_operation(plenora_database_core::plan::WriteMode::Append);
+    operation.target = source.clone();
+    let written = semantica_write_batch(
+        &operation,
+        semantica_batch(plenora_database_core::plan::WriteMode::Append, &[(7, "t")]),
+    )
+    .await;
+    let budget = write_budget();
+    let mut stream = provider
+        .read(
+            &live_secret(),
+            &ReadOperation {
+                source,
+                projection: vec!["id".to_owned()],
+                order_by: Vec::new(),
+                row_limit: None,
+                row_offset: None,
+                filter: None,
+                declared_crs: Vec::new(),
+            },
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("lettura senza schema");
+    let mut ids = Vec::new();
+    while let Some(batch) = stream.next_batch(&cancellation).await.expect("batch") {
+        let column = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("id");
+        ids.extend(column.values().iter().copied());
+    }
+    drop(stream);
+    ids.sort_unstable();
+    let after = semantica_rows(&mut connection).await;
+    semantica_cleanup(&mut connection).await;
+    assert_eq!(session_database.as_deref(), Some("dataflow_test"));
+    assert_eq!(described.document["schema"], "dataflow_test");
+    assert!(written.is_ok(), "{written:?}");
+    assert_eq!(after, ["1:a", "2:b", "3:a", "7:t"]);
+    assert_eq!(ids, [1, 2, 3, 7]);
 }

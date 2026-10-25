@@ -1,4 +1,7 @@
-use super::{canonical, classify, fraction_digits, reduced_temporal, LeafClass, SessionLeaf};
+use super::{
+    canonical, classify, fraction_digits, json_duplicate_keys, reduced_temporal, LeafClass,
+    SessionLeaf,
+};
 
 #[test]
 fn le_date_canoniche_sono_iso() {
@@ -117,6 +120,28 @@ fn le_ore_sono_canoniche_senza_valori_speciali() {
     }
     assert!(!canonical(SessionLeaf::Interval, "infinity"));
     assert!(!canonical(SessionLeaf::Interval, "@ ago"));
+}
+
+/// La regola J: le chiavi ripetute di un oggetto JSON, a ogni profondita e
+/// dopo gli escape; i numeri non si leggono.
+#[test]
+fn le_chiavi_ripetute_si_trovano_a_ogni_profondita() {
+    for (text, expected) in [
+        (r#"{"b":1,"a":2,"a":3}"#, Some(true)),
+        (r#"[{"x": {"k": 1, "k": 2}}]"#, Some(true)),
+        (r#"{"a\u0062": 1, "ab": 2}"#, Some(true)),
+        (r#"{"\ud83d\ude00": 1, "😀": 2}"#, Some(true)),
+        (r#"{"a": {"a": 1}, "b": [{"a": 1}, {"a": 2}]}"#, Some(false)),
+        (r#"{"a": "a", "b": "a"}"#, Some(false)),
+        (r#"{"n": 1e400, "m": 12345678901234567890123}"#, Some(false)),
+        (r#"{"a": 1, "x": {"a": 1}, "b": 2}"#, Some(false)),
+        (r#"[1, "a", "a", {}]"#, Some(false)),
+        (r#"{"\ud800": 1}"#, None),
+        (r#"{"\q": 1}"#, None),
+    ] {
+        assert_eq!(json_duplicate_keys(text), expected, "{text}");
+    }
+    assert_eq!(classify(Some("jsonb_in"), -1), LeafClass::Jsonb);
 }
 
 #[test]

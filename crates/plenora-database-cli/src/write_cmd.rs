@@ -212,6 +212,11 @@ async fn execute_bulk_write(
         print_json(&json!({
             "status": status,
             "operation": operation,
+            // Il target come la scrittura lo nominerebbe: con il catalogo,
+            // lo schema risolto una volta con il percorso della sessione
+            // (regola T, `plenora_db_postgres::target_schema`); offline, il
+            // target del piano.
+            "target": decided.target,
             "input_schema": { "fields": fields },
             "input": { "batches": decided.batches, "rows": decided.rows },
             // Che cosa il dry run ha deciso. `catalog` comprende l'elenco

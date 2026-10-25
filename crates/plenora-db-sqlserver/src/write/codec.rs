@@ -291,6 +291,9 @@ pub(super) fn bind_row(
             }
             crate::SqlServerColumnKind::Time => {
                 let values = downcast::<Time64MicrosecondArray>(array.as_ref())?;
+                if !values.is_null(row) {
+                    check_temporal(plan, column, values.value(row))?;
+                }
                 let value = (!values.is_null(row))
                     .then(|| time64(values.value(row)))
                     .transpose()?;
@@ -298,6 +301,9 @@ pub(super) fn bind_row(
             }
             crate::SqlServerColumnKind::Timestamp => {
                 let values = downcast::<TimestampMicrosecondArray>(array.as_ref())?;
+                if !values.is_null(row) {
+                    check_temporal(plan, column, values.value(row))?;
+                }
                 let value = (!values.is_null(row))
                     .then(|| timestamp(values.value(row)).map(|value| value.naive_utc()))
                     .transpose()?;
@@ -436,6 +442,9 @@ pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<
                 }
                 crate::SqlServerColumnKind::Time => {
                     let values = downcast::<Time64MicrosecondArray>(array.as_ref())?;
+                    if !values.is_null(row_index) {
+                        check_temporal(plan, column, values.value(row_index))?;
+                    }
                     let value = (!values.is_null(row_index))
                         .then(|| time64(values.value(row_index)))
                         .transpose()?;
@@ -443,6 +452,9 @@ pub(super) fn bulk_rows<'a>(plan: &WritePlan, batch: &'a RecordBatch) -> Result<
                 }
                 crate::SqlServerColumnKind::Timestamp => {
                     let values = downcast::<TimestampMicrosecondArray>(array.as_ref())?;
+                    if !values.is_null(row_index) {
+                        check_temporal(plan, column, values.value(row_index))?;
+                    }
                     let value = (!values.is_null(row_index))
                         .then(|| timestamp(values.value(row_index)).map(|value| value.naive_utc()))
                         .transpose()?;
@@ -609,7 +621,54 @@ pub(super) fn check_offset(
     }
 }
 
+/// La regola P su un valore Arrow al microsecondo verso una colonna
+/// temporale ridotta (`datetime2(p)` e `time(p)` con `p < 6`, `datetime`,
+/// `smalldatetime`), con `Strict`: il valore si scrive soltanto se la colonna
+/// lo rappresenta senza arrotondarlo (`plan::temporal_unit`).
+///
+/// Fino al 25/10 la regola si applicava al piano e rifiutava la colonna
+/// anche per i valori esatti: `10:01:01` verso `datetime2(0)` era un rifiuto.
+/// Ora si giudica valore per valore, nel preparato e nel bulk TDS, come il
+/// testo (`check_text`) e `datetimeoffset(p)` (`check_offset`).
+///
+/// # Errors
+///
+/// `data_mapping` con `plan::LOSSY_VALUE`.
+pub(super) fn check_temporal(
+    plan: &WritePlan,
+    column: &WriteColumnPlan,
+    microseconds: i64,
+) -> Result<()> {
+    if !plan.strict {
+        return Ok(());
+    }
+    match super::plan::temporal_unit(&column.native_type, &column.native_declaration) {
+        Some(unit) if microseconds.rem_euclid(unit) != 0 => {
+            Err(mapping_error(super::plan::LOSSY_VALUE))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Il testo RFC 3339 di un `datetimeoffset`, mai oltre il nanosecondo.
+///
+/// chrono legge una frazione di qualunque lunghezza e tronca al nanosecondo:
+/// fino al 25/10 `10:00:00.12345670001+00:00` verso `datetimeoffset(7)` si
+/// committava `.1234567`, in ogni politica e in ogni profilo, perche il valore
+/// troncato e esatto alla scala della colonna (S7). Piu di nove cifre
+/// frazionarie si rifiutano in ogni politica, come `fraction_digits` di
+/// PostgreSQL: nessun tipo di SQL Server le conserva, e la libreria non le
+/// toglie in silenzio.
 fn datetimeoffset(value: &str) -> Result<DateTime<FixedOffset>> {
+    let fraction_digits = value.split_once('.').map_or(0, |(_, fraction)| {
+        fraction.bytes().take_while(u8::is_ascii_digit).count()
+    });
+    if fraction_digits > 9 {
+        return Err(mapping_error(
+            "datetimeoffset SQL Server con piu di nove cifre frazionarie: il valore si \
+             troncherebbe",
+        ));
+    }
     DateTime::parse_from_rfc3339(value)
         .map_err(|_| mapping_error("datetimeoffset SQL Server non valido"))
 }

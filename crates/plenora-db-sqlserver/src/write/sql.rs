@@ -193,8 +193,10 @@ fn placeholder_expression(column: &WriteColumnPlan, ordinal: usize) -> String {
         SqlServerColumnKind::Utf8 if column.native_type == "uniqueidentifier" => {
             format!("CONVERT(uniqueidentifier, {placeholder})")
         }
+        // Lo stile 1 conserva gli spazi dei nodi di testo (regola J,
+        // `plan::rule_p`); lo stile 0 li toglieva.
         SqlServerColumnKind::Utf8 if column.native_type == "xml" => {
-            format!("CONVERT(xml, {placeholder})")
+            format!("CONVERT(xml, {placeholder}, 1)")
         }
         SqlServerColumnKind::Geometry => format!(
             "geometry::STGeomFromWKB({placeholder}, @P{})",

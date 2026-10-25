@@ -905,11 +905,36 @@ impl MysqlWritePlan {
     /// 1. esiste un PK/UNIQUE index le cui colonne coincidono (come insieme)
     ///    con le keys — l'ancora che rende deterministico il match;
     /// 2. **nessun altro** PK/UNIQUE index con un insieme di colonne diverso;
-    /// 3. nessun unique index funzionale (espressione) non confrontabile.
+    /// 3. nessun unique index funzionale (espressione) non confrontabile;
+    /// 4. nessun unique index su un **prefisso** di colonna (`SUB_PART`).
     ///
     /// Senza (1) l'`ON DUPLICATE KEY UPDATE` non troverebbe mai un conflitto
-    /// sulle keys e inserirebbe duplicati invece di aggiornare.
-    fn validate_upsert_target_indexes(&self, target: &MysqlObjectDescription) -> Result<()> {
+    /// sulle keys e inserirebbe duplicati invece di aggiornare. Le condizioni
+    /// 2-4 escono con il rifiuto comune dei provider
+    /// (`plenora_database_core::write_keys::upsert_with_other_unique_index`).
+    ///
+    /// # Limite dichiarato (S6, quarta rilettura del 25/10)
+    ///
+    /// - **Regola**: l'Upsert scrive soltanto se l'unico conflitto possibile
+    ///   e l'uguaglianza delle keys intere: ogni indice unico della tabella
+    ///   ha per colonne intere esattamente le keys (uno o piu indici con lo
+    ///   stesso insieme arbitrano la stessa riga).
+    /// - **Ambito**: `MySQL` e `MariaDB`, `WriteMode::Upsert`, nel preflight di
+    ///   `prepare_write` e di nuovo, sul catalogo riletto, prima della
+    ///   transazione della scrittura.
+    /// - **Hazard**: con `UNIQUE (code(2))` come sola ancora, l'Upsert di
+    ///   `('ab2', 'nuovo')` su `('ab1', 'prima')` aggiornava `ab1` in `nuovo`
+    ///   e non scriveva `ab2`, con il COMMIT (misurato su `MySQL` 9.7 e
+    ///   `MariaDB` 12.3): un indice su un prefisso prova l'unicita dei valori
+    ///   interi (regola K2: Update e `DeleteByKeys` lo accettano), ma entra
+    ///   in conflitto anche fra valori diversi con lo stesso prefisso.
+    /// - **Rientro**: un Upsert che confronti le keys intere riga per riga
+    ///   prima di aggiornare.
+    fn validate_upsert_target_indexes(
+        &self,
+        target: &MysqlObjectDescription,
+        kind: plenora_database_core::plan::ProviderKind,
+    ) -> Result<()> {
         use std::collections::BTreeSet;
         let key_set: BTreeSet<&str> = self.upsert_keys.iter().map(String::as_str).collect();
         if key_set.is_empty() {
@@ -919,32 +944,29 @@ impl MysqlWritePlan {
                 "Upsert richiede almeno una key column",
             ));
         }
+        let other_index = || {
+            plenora_database_core::write_keys::upsert_with_other_unique_index(
+                kind,
+                ErrorPhase::Prepare,
+            )
+        };
         let mut anchor_found = false;
         for index in &target.indexes {
             if !index.unique {
                 continue;
             }
-            if !index.column_backed {
-                return Err(unsupported(format!(
-                    "Upsert non qualificato: la tabella '{}' ha un unique \
- index funzionale/espressione ('{}') non confrontabile con \
- le keys — ON DUPLICATE KEY UPDATE potrebbe aggiornare la \
- riga sbagliata",
-                    target.name, index.name
-                )));
+            // Un indice funzionale non si confronta con le keys, uno su un
+            // prefisso entra in conflitto fra valori interi diversi: in
+            // entrambi i casi l'arbitro del conflitto non e l'uguaglianza
+            // delle keys.
+            if !index.column_backed || index.prefix {
+                return Err(other_index());
             }
             let index_set: BTreeSet<&str> = index.columns.iter().map(String::as_str).collect();
             if index_set == key_set {
                 anchor_found = true;
             } else {
-                return Err(unsupported(format!(
-                    "Upsert non sicuro: keys={:?} ma la tabella '{}' ha un \
- altro PK/UNIQUE index ('{}' su {:?}) — ON DUPLICATE KEY \
- UPDATE potrebbe collidere su quell'indice e aggiornare la \
- riga sbagliata. Rimuovere l'indice in conflitto o usare \
- WriteMode::Update esplicito.",
-                    self.upsert_keys, target.name, index.name, index.columns
-                )));
+                return Err(other_index());
             }
         }
         if !anchor_found {
@@ -1011,7 +1033,7 @@ impl MysqlWritePlan {
             )));
         }
         if self.mode == WriteMode::Upsert {
-            self.validate_upsert_target_indexes(target)?;
+            self.validate_upsert_target_indexes(target, profile.kind())?;
         }
         for column in &self.columns {
             let server = target

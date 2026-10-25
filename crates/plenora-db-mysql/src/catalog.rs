@@ -69,6 +69,14 @@ pub struct MysqlIndex {
     /// Colonne dell'indice in ordine `SEQ_IN_INDEX`. Parziale/vuoto quando
     /// `column_backed` è `false`.
     pub columns: Vec<String>,
+    /// `true` se almeno una parte indicizza soltanto un prefisso della
+    /// colonna (`SUB_PART` non nullo, `UNIQUE (code(2))`). Un indice unico
+    /// su un prefisso entra in conflitto anche fra valori interi diversi con
+    /// lo stesso prefisso: per l'Upsert non e la chiave
+    /// (`write::MysqlWritePlan::validate_upsert_target_indexes`). Assente dal
+    /// documento quando e `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prefix: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -469,6 +477,7 @@ fn build_indexes(
         let non_unique: i64 = required(row, "non_unique", "non_unique")?;
         let column: Option<String> = optional(row, "column_name", "column_name")?;
         let expression: Option<String> = optional(row, "expression", "expression")?;
+        let sub_part: Option<u64> = optional(row, "sub_part", "sub_part")?;
         // Nuovo indice se il nome cambia rispetto all'ultimo accumulato.
         if indexes.last().map(|last| last.name.as_str()) != Some(name.as_str()) {
             indexes.push(MysqlIndex {
@@ -476,11 +485,13 @@ fn build_indexes(
                 unique: non_unique == 0,
                 column_backed: true,
                 columns: Vec::new(),
+                prefix: false,
             });
         }
         let current = indexes
             .last_mut()
             .ok_or_else(|| mapping_error(format!("aggregazione indici {product} incoerente")))?;
+        current.prefix |= sub_part.is_some();
         match column {
             Some(column_name) => current.columns.push(column_name),
             // Parte funzionale (espressione non nulla, colonna nulla):

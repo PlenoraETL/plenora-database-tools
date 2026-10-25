@@ -703,7 +703,13 @@ pub(super) fn validate_bulk_profile(plan: &WritePlan) -> Result<()> {
             SqlServerColumnKind::Decimal { scale, .. } => {
                 column.native_type == "decimal" && (0..38).contains(&scale)
             }
-            SqlServerColumnKind::Time => column.native_type == "time",
+            // `time(p)` con `p < 7` il bulk TDS di tiberius lo rifiuta dal
+            // server (4875) dopo l'apertura della transazione: la prova live
+            // della quarta rilettura (`time(0)`, `time(6)`); si rifiuta qui,
+            // prima di ogni effetto.
+            SqlServerColumnKind::Time => {
+                column.native_type == "time" && temporal_scale(&column.native_declaration) == 7
+            }
             SqlServerColumnKind::Timestamp => column.native_type == "datetime2",
             SqlServerColumnKind::TimestampTz => column.native_type == "datetimeoffset",
             SqlServerColumnKind::Date
@@ -1130,10 +1136,27 @@ fn temporal_scale(declaration: &str) -> u32 {
 /// 1/300 di secondo, `smalldatetime` al minuto.
 #[must_use]
 pub(super) fn reduced_temporal(native_type: &str, declaration: &str) -> bool {
+    temporal_unit(native_type, declaration).is_some()
+}
+
+/// Il passo in microsecondi dei valori che una colonna temporale ridotta
+/// rappresenta esattamente, `None` se la colonna conserva il microsecondo.
+///
+/// - `datetime2(p)` e `time(p)` con `p < 6`: `10^(6 - p)`;
+/// - `datetime`: la colonna conserva multipli di 1/300 di secondo; fra i
+///   valori al microsecondo sono esatti soltanto i multipli di 10 ms (tre
+///   tick): `.003` si legge cosi ma vale 3,333... ms;
+/// - `smalldatetime`: il minuto.
+#[must_use]
+pub(super) fn temporal_unit(native_type: &str, declaration: &str) -> Option<i64> {
     match native_type {
-        "datetime" | "smalldatetime" => true,
-        "datetime2" | "time" => temporal_scale(declaration) < 6,
-        _ => false,
+        "datetime" => Some(10_000),
+        "smalldatetime" => Some(60_000_000),
+        "datetime2" | "time" => {
+            let scale = temporal_scale(declaration);
+            (scale < 6).then(|| 10_i64.pow(6 - scale))
+        }
+        _ => None,
     }
 }
 
@@ -1253,14 +1276,26 @@ pub(super) fn offset_scale(native_type: &str, declaration: &str) -> Option<u32> 
     (native_type == "datetimeoffset").then(|| temporal_scale(declaration))
 }
 
-/// La regola P per una colonna del piano: con `Strict` un tipo temporale che
-/// arrotonda il microsecondo si rifiuta prima di ogni effetto, in ogni
-/// profilo (fino al 25/10 10:00:00.999999 verso `datetime2(0)` diventava
-/// 10:00:01 con l'INSERT preparato e 10:00:00 con il bulk TDS, lo stesso
-/// piano con due valori diversi); con le altre politiche la perdita va nel
+/// La regola P per una colonna del piano: con `Strict` un valore che il tipo
+/// temporale della colonna arrotonderebbe si rifiuta valore per valore, in
+/// ogni profilo (`codec::check_temporal`; fino al 25/10 10:00:00.999999 verso
+/// `datetime2(0)` diventava 10:00:01 con l'INSERT preparato e 10:00:00 con il
+/// bulk TDS, e dopo la terza rilettura la colonna si rifiutava al piano anche
+/// per i valori esatti); con le altre politiche la perdita va nel
 /// `LossReport`. Il testo verso una code page, una lunghezza massima o un
 /// `datetimeoffset(p)` si verifica valore per valore (`codec::check_text`):
 /// con le politiche non strette la perdita possibile si dichiara qui.
+///
+/// La regola J su `xml`: il server conserva il documento (l'infoset), non il
+/// testo. Lo SQL della scrittura converte con lo stile 1 di `CONVERT`
+/// (`super::sql`), che conserva gli spazi dei nodi di testo (fino al 25/10
+/// lo stile 0 li toglieva: `<a> <c/></a>` diventava `<a><c/></a>`, un nodo
+/// di testo perso); la dichiarazione `<?xml ...?>`, gli apici degli
+/// attributi, la forma degli elementi vuoti, le sezioni CDATA e i
+/// riferimenti ai caratteri si normalizzano. E la semantica del tipo, come
+/// il riordino delle chiavi di `jsonb` su PostgreSQL: con `Strict` si
+/// ammette, con le altre politiche si dichiara nel `LossReport`
+/// (`native_type`, `warning`).
 ///
 /// # Limite dichiarato
 ///
@@ -1274,9 +1309,13 @@ pub(super) fn offset_scale(native_type: &str, declaration: &str) -> Option<u32> 
 ///   code page rappresenterebbe il carattere.
 ///   `char(n)` e `nchar(n)` completano con spazi i valori piu corti: e la
 ///   semantica del tipo, che li confronta senza gli spazi finali, e non si
-///   rifiuta.
+///   rifiuta. `xml` normalizza la forma del documento (dichiarazione, apici,
+///   elementi vuoti, CDATA, riferimenti ai caratteri) anche con `Strict`:
+///   chi confronta il testo e non l'infoset vede un valore diverso.
 /// - **Rientro**: la code page dal catalogo (`COLLATIONPROPERTY(...,
-///   'CodePage')`) e la sua tabella, per ogni code page di SQL Server.
+///   'CodePage')`) e la sua tabella, per ogni code page di SQL Server; per
+///   `xml`, un confronto del testo con la serializzazione del server prima
+///   del COMMIT, se un consumatore ne avesse bisogno.
 ///
 /// # Errors
 ///
@@ -1298,18 +1337,23 @@ fn rule_p(
         source_type: Some(field.data_type().to_string()),
         target_type: Some(column.native_declaration.clone()),
     };
+    if strict {
+        return Ok(());
+    }
     if reduced_temporal(&column.native_type, &column.native_declaration) {
-        if strict {
-            return Err(plan_error(ErrorCategory::DataMapping, LOSSY_VALUE));
-        }
         losses.push(loss(
             LossCategory::Precision,
             LossSeverity::DataLoss,
             "precisione temporale della colonna sotto il microsecondo",
         ));
     }
-    if strict {
-        return Ok(());
+    if column.native_type == "xml" {
+        losses.push(loss(
+            LossCategory::NativeType,
+            LossSeverity::Warning,
+            "xml conserva il documento, non il testo: dichiarazione, apici, forma degli \
+             elementi vuoti, sezioni CDATA e riferimenti ai caratteri si normalizzano",
+        ));
     }
     if let Some(limit) = text_limit(
         &column.native_type,

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 118225,
-  "max_code_lines": 95139,
-  "rationale": "Regole Q2 (lo SQL della libreria nella scrittura e nel dry run di PostgreSQL con search_path = pg_catalog, pg_temp, gli statement sul target con il percorso della sessione e testo qualificato, target sempre con lo schema), K2 (l'indice che prova le chiavi confronta come la colonna: collation e opclass btree predefinita, operatore esplicito negli statement), V2 (testo soltanto verso un elenco chiuso di funzioni d'ingresso, time e valori speciali compresi) e P (nessun arrotondamento, troncamento o conversione con Strict: precisione temporale ridotta, spazi finali oltre la lunghezza, code page di SQL Server, datetimeoffset(p); in PostgreSQL, SQL Server e MySQL/MariaDB). Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 116824 -> 118225 (+1401), righe di codice 94273 -> 95139 (+866). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 119202,
+  "max_code_lines": 95697,
+  "rationale": "Regole T (un oggetto senza schema si risolve una volta con il percorso della sessione: PostgreSQL to_regclass e current_schema, SQL Server OBJECT_SCHEMA_NAME), F (nessuna conversione del server verso un tipo diverso da quello della colonna: segnaposto nudi e testo in formato testo, CopyBinary verbatim per testo, enum, json e jsonb), J (jsonb con chiavi ripetute rifiutato con Strict, normalizzazioni del tipo dichiarate; xml di SQL Server con lo stile 1), percorso della sessione al COMMIT, un solo indice unico per l'upsert (PostgreSQL, MySQL/MariaDB con i prefissi), datetimeoffset oltre il nanosecondo e valori temporali esatti di SQL Server giudicati per valore. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 118225 -> 119202 (+977), righe di codice 95139 -> 95697 (+558). Conteggio e perimetro invariati, nessun margine aggiunto."
 }

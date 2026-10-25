@@ -93,6 +93,7 @@ fn generated_description() -> crate::MysqlObjectDescription {
             unique: true,
             column_backed: true,
             columns: vec!["lname".to_owned()],
+            prefix: false,
         }],
         token: crate::MysqlSchemaToken(String::new()),
     }

@@ -66,6 +66,7 @@ EXPECTED_UNIT_TESTS = {
     "transaction::tests::caller_sql_uint_overflow_preserves_decoder_context_and_requires_recovery",
     "arrow::tests::decimal_parser_is_exact_and_checked",
     "arrow::tests::zero_dates_fail_closed_without_panicking",
+    "catalog::tests::a_prefix_part_marks_the_index",
     "catalog::tests::a_functional_index_is_described_where_the_product_publishes_its_parts",
     "catalog::tests::a_part_without_a_column_is_refused_where_the_product_cannot_describe_it",
     "catalog::tests::schema_token_is_stable_and_sensitive",
@@ -256,6 +257,7 @@ EXPECTED_UNIT_TESTS = {
     "write::tests::a_created_table_survives_the_rollback_and_every_outcome_says_so",
     "write::tests::la_regola_k_vuole_un_indice_unico_sulle_chiavi",
     "write::tests::la_regola_p_rifiuta_il_testo_piu_lungo_della_colonna",
+    "write::tests::upsert_preflight_rejects_a_unique_index_on_a_key_prefix",
     "write::tests::a_declared_deadlock_stays_rolled_back_instead_of_unknown",
     "write::tests::a_spatial_index_belongs_to_the_create_ddl_and_wants_a_non_null_column",
     "write::tests::an_already_quarantined_error_stays_non_retryable_when_rollback_is_unobservable",
@@ -399,6 +401,10 @@ EXPECTED_LIVE_REFERENCE_TESTS = {
     # lunghezza) e regola K2 (indice unico su un prefisso).
     "live_tests::live_p_spazi_finali_oltre_la_lunghezza_rifiutano",
     "live_tests::live_k2_indice_unico_su_un_prefisso_prova_la_chiave",
+    # La quarta rilettura del 25/10: un solo indice unico per l'upsert (S6)
+    # e la regola T (target senza schema nel database della sessione).
+    "live_tests::live_s6_upsert_rifiuta_un_indice_unico_che_non_e_la_chiave",
+    "live_tests::live_t_target_senza_schema_si_risolve_nel_database_della_sessione",
 }
 
 

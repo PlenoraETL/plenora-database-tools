@@ -190,9 +190,9 @@ const fn renderer() -> Renderer {
 fn quoted_target(renderer: &Renderer, operation: &WriteOperation) -> Result<String> {
     renderer.quote_object(&ObjectName {
         catalog: None,
-        schema: Some(Identifier::new(
-            operation.target.schema.as_deref().unwrap_or("public"),
-        )?),
+        schema: Some(Identifier::new(crate::target_schema::schema_of(
+            &operation.target,
+        )?)?),
         object: Identifier::new(operation.target.object.clone())?,
     })
 }

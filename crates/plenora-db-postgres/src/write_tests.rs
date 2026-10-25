@@ -269,8 +269,11 @@ fn binary_copy_jsonb_accepts_canonical_native_type_metadata() {
     assert_eq!(encoded.first(), Some(&1));
 }
 
+/// La regola F: il segnaposto e il parametro nudo, tipizzato dal server con
+/// la colonna, qualunque tipo il campo dichiari; il testo viaggia in formato
+/// testo. Su 04029d4 era `$1::pg_catalog.text::pg_catalog.jsonb`.
 #[test]
-fn prepared_placeholders_accept_canonical_native_metadata() {
+fn i_segnaposto_non_convertono_nel_tipo_dichiarato() {
     let jsonb = Field::new("payload", DataType::Utf8, true).with_metadata(
         std::collections::HashMap::from([(
             protocol::POSTGRES_NATIVE_TYPE.to_owned(),
@@ -278,10 +281,13 @@ fn prepared_placeholders_accept_canonical_native_metadata() {
         )]),
     );
     let jsonb_plan = WriteColumnPlan::compile(&jsonb).expect("JSONB plan");
-    assert_eq!(
-        placeholder_expression(&jsonb_plan, 1),
-        "$1::pg_catalog.text::pg_catalog.jsonb"
-    );
+    assert_eq!(placeholder_expression(&jsonb_plan, 1), "$1");
+    let text = StringArray::from(vec![Some("{\"a\":1}")]);
+    let value = arrow_value(&text, &jsonb_plan, 0).expect("valore");
+    assert!(matches!(
+        value.encode_format(&Type::JSONB),
+        tokio_postgres::types::Format::Text
+    ));
 
     let domain =
         Field::new("code", DataType::Utf8, true).with_metadata(std::collections::HashMap::from([
@@ -292,10 +298,7 @@ fn prepared_placeholders_accept_canonical_native_metadata() {
             (protocol::POSTGRES_TYPE_KIND.to_owned(), "d".to_owned()),
         ]));
     let domain_plan = WriteColumnPlan::compile(&domain).expect("domain plan");
-    assert_eq!(
-        placeholder_expression(&domain_plan, 2),
-        "$2::pg_catalog.text::\"public\".\"safe_code\""
-    );
+    assert_eq!(placeholder_expression(&domain_plan, 2), "$2");
 }
 
 #[test]
@@ -840,7 +843,7 @@ fn gli_statement_sul_target_non_dipendono_dal_search_path() {
     let operation = WriteOperation {
         target: ObjectRef {
             catalog: None,
-            schema: None,
+            schema: Some("public".to_owned()),
             object: "t".to_owned(),
         },
         mode: WriteMode::Update,
@@ -852,8 +855,6 @@ fn gli_statement_sul_target_non_dipendono_dal_search_path() {
         create_spatial_index: false,
         allow_partial: false,
     };
-    let operation = qualified_target(&operation);
-    assert_eq!(operation.target.schema.as_deref(), Some("public"));
     let mut plans = compile_schema_plan(&schema, &operation).expect("piano");
     // Senza l'uguaglianza letta dal catalogo la chiave si rifiuta.
     assert!(statement(&operation, &operation.target, &schema, &plans).is_err());
@@ -865,7 +866,7 @@ fn gli_statement_sul_target_non_dipendono_dal_search_path() {
         statement(&operation, &operation.target, &schema, &plans).expect("statement");
     assert_eq!(
         sql,
-        "UPDATE \"public\".\"t\" SET \"at\" = $1::pg_catalog.text::pg_catalog.date \
+        "UPDATE \"public\".\"t\" SET \"at\" = $1 \
          WHERE \"id\"::pg_catalog.int8 OPERATOR(pg_catalog.=) $2::pg_catalog.int8"
     );
     assert_eq!(indexes, vec![1, 0]);

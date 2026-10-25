@@ -104,28 +104,6 @@ pub struct PreparedPostgresWrite {
     column_plans: Vec<WriteColumnPlan>,
 }
 
-/// Il piano con il target sempre qualificato dallo schema: `public` quando il
-/// piano non lo nomina, come lo leggevano gia il preflight, il dry run e la
-/// registrazione degli id dei campi.
-///
-/// Fino al 25/10 gli statement nominavano il target senza schema quando il
-/// piano non lo dava, e la sessione lo risolveva con il proprio
-/// `search_path` (anche in uno schema `"$user"` o in `pg_temp`), mentre il
-/// preflight e il dry run guardavano `public`. Con la regola Q2 lo SQL della
-/// libreria gira con il percorso chiuso, e un nome senza schema non
-/// troverebbe piu il target: lo schema esplicito toglie l'ambiguita a tutti.
-/// Comportamento piu stretto, dichiarato: chi contava sul `search_path` per
-/// scrivere fuori da `public` deve nominare lo schema.
-#[must_use]
-pub fn qualified_target(operation: &WriteOperation) -> WriteOperation {
-    let mut operation = operation.clone();
-    operation
-        .target
-        .schema
-        .get_or_insert_with(|| "public".to_owned());
-    operation
-}
-
 pub fn prepare_state(
     schema: &SchemaRef,
     operation: &WriteOperation,
@@ -570,6 +548,14 @@ pub async fn execute(
         );
         return Err(recovery.rollback_error(transaction, error).await);
     }
+    // La regola Q2 al COMMIT: i trigger e i controlli differiti del target
+    // scattano qui, con il percorso della sessione come ogni altro codice del
+    // target (`SessionPath::restore`).
+    match select_with_cancellation(paths.restore(&transaction), cancellation).await {
+        Some(Ok(())) => {}
+        Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+        None => return Err(recovery.rollback_cancellation(transaction).await),
+    }
     let commit_result = select_with_cancellation(transaction.commit(), cancellation).await;
     if commit_result.is_none() {
         runtime.metrics.write_outcome_unknown();
@@ -709,6 +695,20 @@ pub const fn canonical_reason() -> &'static str {
 #[must_use]
 pub const fn lossy_reason() -> &'static str {
     canonical::LOSSY_VALUE
+}
+
+/// Il motivo pubblico del rifiuto della regola J (chiavi ripetute).
+#[cfg(test)]
+#[must_use]
+pub const fn duplicate_keys_reason() -> &'static str {
+    canonical::DUPLICATE_KEYS
+}
+
+/// Il motivo pubblico del rifiuto dell'arbitro unico dell'upsert.
+#[cfg(test)]
+#[must_use]
+pub const fn upsert_arbiter_reason() -> &'static str {
+    plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX
 }
 
 /// Il documento di un write andato a buon fine, per mode.

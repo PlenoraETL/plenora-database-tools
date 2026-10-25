@@ -459,7 +459,7 @@ pub async fn inspect(
     path: WritePath,
     evolution: PostgresSchemaEvolution,
 ) -> Result<TargetVerdict> {
-    let schema_name = operation.target.schema.as_deref().unwrap_or("public");
+    let schema_name = crate::target_schema::schema_of(&operation.target)?;
     let mut verdict = TargetVerdict {
         owner: true,
         may_lock: true,

@@ -139,6 +139,42 @@ pub(super) fn statement(
     }
 }
 
+/// Il segnaposto di un valore (regola F): il parametro nudo, che il server
+/// tipizza con il tipo della colonna. I valori di testo (`Utf8`, i decimali,
+/// le liste, i range e i composti resi come letterali) viaggiano in formato
+/// testo (`prepared_codec::TextParam`) e li legge la funzione d'ingresso della
+/// colonna, come in `COPY`; gli altri in binario, con il tipo della colonna.
+///
+/// Fino al 25/10 (quarta rilettura, S2) un testo con
+/// `plenora.postgres.native_type` passava dal tipo dichiarato
+/// (`$1::pg_catalog.text::numeric(5,2)`) e poi da quello della colonna: verso
+/// una colonna `text` '1.005' diventava '1.01', '16777217' dichiarato `real`
+/// '1.6777216e+07', un `timetz` prendeva l'offset della sessione, `jsonb`
+/// toglieva la chiave ripetuta, con Prepared e Upsert in ogni politica e il
+/// `LossReport` vuoto, mentre `COPY` scriveva il testo com'era. Ora la
+/// libreria non chiede mai al server di convertire un valore in un tipo
+/// diverso da quello della colonna: il tipo dichiarato serve soltanto a
+/// creare la colonna (Create, evoluzione) e alle regole che il dry run senza
+/// catalogo conosce. Per costruzione le regole V2 e P (`super::canonical`)
+/// valgono sulla catena effettiva, che e la sola colonna.
+///
+/// # Limite dichiarato
+///
+/// - **Regola F**: il valore arriva alla colonna con il tipo della colonna;
+///   la libreria lo converte esattamente (i valori Arrow tipizzati, in
+///   binario) o lo manda come testo alla funzione d'ingresso della colonna.
+/// - **Ambito**: INSERT, UPDATE e upsert preparati, anche row-scoped;
+///   `COPY` in testo lo faceva gia; `CopyBinary` codifica il testo soltanto
+///   verso testo, enum, `json`, `jsonb` e `uuid`
+///   (`binary_codec::binary_copy_value`). Le chiavi di Update e
+///   `DeleteByKeys` si confrontano con l'operatore della regola K2, con i due
+///   lati portati al tipo della sua opclass.
+/// - **Hazard**: un campo che dichiara un tipo diverso da quello della
+///   colonna non si rifiuta: il tipo dichiarato non conta, e il testo si
+///   legge come la colonna lo legge (un `jsonb` dichiarato verso `text`
+///   scrive il testo com'e, chiavi ripetute comprese).
+/// - **Rientro**: un `LossReport` che segnali il tipo dichiarato diverso da
+///   quello della colonna.
 pub(super) fn placeholder_expression(plan: &WriteColumnPlan, ordinal: usize) -> String {
     if plan.semantics == ColumnSemantics::Geometry {
         format!("{}ST_GeomFromEWKB(${ordinal})", plan.postgis)
@@ -146,32 +182,6 @@ pub(super) fn placeholder_expression(plan: &WriteColumnPlan, ordinal: usize) -> 
         format!(
             "{postgis}ST_GeomFromEWKB(${ordinal})::{postgis}geography",
             postgis = plan.postgis
-        )
-    } else if matches!(plan.data_type, DataType::Decimal128(_, _)) {
-        format!("${ordinal}::pg_catalog.text::pg_catalog.numeric")
-    } else if matches!(plan.data_type, DataType::Utf8)
-        && matches!(plan.native_type.as_deref(), Some("json" | "jsonb" | "uuid"))
-    {
-        format!(
-            "${ordinal}::pg_catalog.text::{}",
-            qualify_builtin(plan.native_type.as_deref().unwrap_or("text"))
-        )
-    } else if matches!(
-        plan.data_type,
-        DataType::Utf8 | DataType::List(_) | DataType::Struct(_)
-    ) {
-        plan.native_declaration_sql.as_deref().map_or_else(
-            || format!("${ordinal}"),
-            |declaration| {
-                if declaration == "text" {
-                    format!("${ordinal}")
-                } else {
-                    format!(
-                        "${ordinal}::pg_catalog.text::{}",
-                        qualify_builtin(declaration)
-                    )
-                }
-            },
         )
     } else {
         format!("${ordinal}")

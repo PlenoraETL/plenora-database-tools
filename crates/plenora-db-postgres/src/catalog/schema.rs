@@ -11,7 +11,7 @@ pub async fn load_columns_and_token(
     client: &Client,
     source: &ObjectRef,
 ) -> Result<(Arc<Vec<ColumnSpec>>, CatalogSchemaToken)> {
-    let schema = source.schema.as_deref().unwrap_or("public");
+    let schema = crate::target_schema::schema_of(source)?;
     let postgis = crate::postgis_schema::qualifier(client, ErrorPhase::Probe).await?;
     let rows = client
         .query(
@@ -231,7 +231,7 @@ pub async fn load_columns_and_token(
 
 #[allow(clippy::too_many_lines)]
 pub async fn schema_token(client: &Client, source: &ObjectRef) -> Result<CatalogSchemaToken> {
-    let schema = source.schema.as_deref().unwrap_or("public");
+    let schema = crate::target_schema::schema_of(source)?;
     let postgis = crate::postgis_schema::qualifier(client, ErrorPhase::Probe).await?;
     let row = client
         .query_opt(

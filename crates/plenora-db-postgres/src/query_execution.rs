@@ -139,6 +139,20 @@ pub async fn read_stream(
             ));
         }
     }
+    // La regola T: la sorgente senza schema si risolve una volta, con il
+    // percorso della sessione; colonne, statement e cache nominano lo stesso
+    // oggetto.
+    let resolved = ReadOperation {
+        source: crate::target_schema::resolve(
+            client.client()?,
+            &operation.source,
+            crate::target_schema::Purpose::Existing,
+            ErrorPhase::Prepare,
+        )
+        .await?,
+        ..operation.clone()
+    };
+    let operation = &resolved;
     let (available, _schema_token) = provider.cached_columns(&client, &operation.source).await?;
     let plan = plan_read(operation, &available)?;
     // Ogni sonda spatial porta uno SRID esplicito, quello della colonna

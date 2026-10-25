@@ -199,9 +199,16 @@ impl SqlServerProvider {
             }
             Operation::DatabaseDescribeObject { source } => {
                 self.validate_source(source)?;
-                let schema = source.schema.as_deref().unwrap_or("dbo");
+                // La regola T: senza schema, quello che la sessione risolve.
+                let schema = crate::catalog::resolve_schema(
+                    pooled.session_mut()?,
+                    source.schema.as_deref(),
+                    &source.object,
+                    cancellation,
+                )
+                .await?;
                 let description =
-                    describe_object(pooled.session_mut()?, schema, &source.object, cancellation)
+                    describe_object(pooled.session_mut()?, &schema, &source.object, cancellation)
                         .await?;
                 Ok(Inspection {
                     operation: "database.describe_object".to_owned(),

@@ -14,7 +14,7 @@ use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 use bytes::BytesMut;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use plenora_database_core::Result;
-use tokio_postgres::types::{IsNull, Kind, ToSql, Type};
+use tokio_postgres::types::{Format, IsNull, Kind, ToSql, Type};
 
 /// Il parametro di uno statement preparato per il valore di `array` alla riga
 /// `row`, che attraversa i domini ([`ThroughDomains`]).
@@ -69,6 +69,44 @@ impl ToSql for ThroughDomains {
     ) -> std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
         self.0.to_sql_checked(base_type(target_type), output)
     }
+
+    fn encode_format(&self, target_type: &Type) -> Format {
+        self.0.encode_format(base_type(target_type))
+    }
+}
+
+/// Un valore di testo in formato testo (regola F, `super::sql::placeholder_expression`):
+/// il server lo legge con la funzione d'ingresso del tipo della colonna, che
+/// ha dato al parametro, come una riga di `COPY` in testo. Nessun passaggio
+/// da un altro tipo.
+#[derive(Debug)]
+pub(super) struct TextParam(pub(super) String);
+
+impl ToSql for TextParam {
+    fn to_sql(
+        &self,
+        _target_type: &Type,
+        output: &mut BytesMut,
+    ) -> std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        output.extend_from_slice(self.0.as_bytes());
+        Ok(IsNull::No)
+    }
+
+    fn accepts(_target_type: &Type) -> bool {
+        true
+    }
+
+    fn to_sql_checked(
+        &self,
+        target_type: &Type,
+        output: &mut BytesMut,
+    ) -> std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        self.to_sql(target_type, output)
+    }
+
+    fn encode_format(&self, _target_type: &Type) -> Format {
+        Format::Text
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -101,7 +139,7 @@ fn typed_value(
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .ok_or_else(mapping_error)?;
-            Box::new((!typed.is_null(row)).then(|| typed.value(row).to_owned()))
+            Box::new((!typed.is_null(row)).then(|| TextParam(typed.value(row).to_owned())))
         }
         DataType::Binary => {
             let typed = array
@@ -174,7 +212,9 @@ fn typed_value(
                 .as_any()
                 .downcast_ref::<Decimal128Array>()
                 .ok_or_else(mapping_error)?;
-            Box::new((!typed.is_null(row)).then(|| decimal_string(typed.value(row), *scale)))
+            Box::new(
+                (!typed.is_null(row)).then(|| TextParam(decimal_string(typed.value(row), *scale))),
+            )
         }
         DataType::List(_) => {
             let typed = array
@@ -182,7 +222,7 @@ fn typed_value(
                 .downcast_ref::<ListArray>()
                 .ok_or_else(mapping_error)?;
             let value = (!typed.is_null(row))
-                .then(|| list_string(typed, row))
+                .then(|| list_string(typed, row).map(TextParam))
                 .transpose()?;
             Box::new(value)
         }
@@ -192,7 +232,7 @@ fn typed_value(
                 .downcast_ref::<StructArray>()
                 .ok_or_else(mapping_error)?;
             let value = (!typed.is_null(row))
-                .then(|| range_string(typed, row))
+                .then(|| range_string(typed, row).map(TextParam))
                 .transpose()?;
             Box::new(value)
         }
@@ -202,7 +242,7 @@ fn typed_value(
                 .downcast_ref::<StructArray>()
                 .ok_or_else(mapping_error)?;
             let value = (!typed.is_null(row))
-                .then(|| composite_string(typed, row))
+                .then(|| composite_string(typed, row).map(TextParam))
                 .transpose()?;
             Box::new(value)
         }

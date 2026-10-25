@@ -24,6 +24,7 @@ mod schema_cache;
 mod search_path;
 mod spatial;
 mod spatial_probe;
+mod target_schema;
 mod transaction;
 mod types;
 mod write;
@@ -66,6 +67,10 @@ pub struct PostgresWriteDryRun {
     /// caso il dry run non decide l'esito, e lo dice. Offline e
     /// `NotPerformed`: il catalogo non e stato letto.
     pub row_security: write::target::RowSecurity,
+    /// Il target come la scrittura lo nominerebbe (regola T): con la DSN,
+    /// lo schema risolto una volta con il percorso della sessione; offline,
+    /// il target del piano.
+    pub target: plenora_database_core::plan::ObjectRef,
 }
 
 impl PostgresProvider {
@@ -108,15 +113,16 @@ impl PostgresProvider {
         budget: &ResourceBudget,
         cancellation: &CancellationToken,
     ) -> Result<PostgresWriteDryRun> {
-        // Il target come lo scrive la scrittura (`write::qualified_target`).
-        let operation = &write::qualified_target(operation);
         let schema = input.schema();
         let mut gate = write::StatementGate::default();
         let mut row_security = write::target::RowSecurity::NotPerformed;
-        let (state, loss_report, prepared) = if let Some(secret) = secret {
+        let (state, loss_report, prepared, resolved) = if let Some(secret) = secret {
             let mut prepared = self
                 .prepare_write(secret, operation, Arc::clone(&schema), budget, cancellation)
                 .await?;
+            // Il target risolto una volta dalla preparazione (regola T): il
+            // dry run legge e pubblica quello che la scrittura scriverebbe.
+            let operation = &prepared.operation.clone();
             let mut state = prepared
                 .take_driver_state::<write::PreparedPostgresWrite>()
                 .ok_or_else(|| {
@@ -175,13 +181,14 @@ impl PostgresProvider {
             gate.at_first_row = verdict.at_first_row;
             row_security = verdict.row_security;
             let report = prepared.loss_report.clone();
-            (state, Some(report), Some(prepared))
+            (state, Some(report), Some(prepared), operation.clone())
         } else {
             let mut state = write::prepare_state(&schema, operation)?;
             write::assign_dry_run_session_rules(None, &mut state, operation, &schema).await?;
             write::assign_dry_run_key_equality(None, &mut state, operation, &schema).await?;
-            (state, None, None)
+            (state, None, None, operation.clone())
         };
+        let operation = &resolved;
         // La regola K come la scrittura, nello stesso punto (dopo il
         // prepare): una chiave ripetuta si rifiuta leggendo il batch.
         let mut input = plenora_database_core::write_keys::guard_input_keys(
@@ -213,6 +220,7 @@ impl PostgresProvider {
             rows: verified.rows,
             loss_report,
             row_security,
+            target: operation.target.clone(),
         })
     }
 }
@@ -813,12 +821,38 @@ impl PostgresProvider {
         .await
     }
 
-    fn schema_cache_key(client: &PooledClient, source: &ObjectRef) -> SchemaCacheKey {
-        SchemaCacheKey::new(
+    fn schema_cache_key(client: &PooledClient, source: &ObjectRef) -> Result<SchemaCacheKey> {
+        Ok(SchemaCacheKey::new(
             client.key(),
-            source.schema.as_deref().unwrap_or("public").to_owned(),
+            target_schema::schema_of(source)?.to_owned(),
             source.object.clone(),
+        ))
+    }
+
+    /// Il target della scrittura con lo schema risolto (regola T,
+    /// `target_schema`), su una sessione della libreria.
+    async fn resolve_write_target(
+        &self,
+        secret: &SecretString,
+        operation: &WriteOperation,
+    ) -> Result<WriteOperation> {
+        let purpose = if operation.mode == plenora_database_core::plan::WriteMode::Create {
+            target_schema::Purpose::Create
+        } else {
+            target_schema::Purpose::Existing
+        };
+        let client = self.connect_session(secret).await?;
+        let target = target_schema::resolve(
+            client.client()?,
+            &operation.target,
+            purpose,
+            ErrorPhase::Prepare,
         )
+        .await?;
+        drop(client);
+        let mut operation = operation.clone();
+        operation.target = target;
+        Ok(operation)
     }
 
     async fn cached_columns(
@@ -826,7 +860,7 @@ impl PostgresProvider {
         client: &PooledClient,
         source: &ObjectRef,
     ) -> Result<(Arc<Vec<ColumnSpec>>, PostgresSchemaToken)> {
-        let key = Self::schema_cache_key(client, source);
+        let key = Self::schema_cache_key(client, source)?;
         if let Some((candidate_token, candidate_columns)) = self.schema_cache.candidate(&key) {
             self.metrics.schema_token_check();
             let current = match schema_token(client.client()?, source).await {
@@ -868,11 +902,12 @@ impl PostgresProvider {
             self.statement_timeout_ms,
             self.lock_timeout_ms,
         );
-        let key = SchemaCacheKey::new(
-            connection,
-            source.schema.as_deref().unwrap_or("public").to_owned(),
-            source.object.clone(),
-        );
+        // Il target della scrittura e gia risolto (regola T); uno senza
+        // schema non ha una voce nella cache.
+        let Some(schema) = source.schema.as_deref() else {
+            return;
+        };
+        let key = SchemaCacheKey::new(connection, schema.to_owned(), source.object.clone());
         if self.schema_cache.invalidate(&key) {
             self.metrics.schema_cache_invalidation();
         }
@@ -889,10 +924,25 @@ impl PostgresProvider {
                 document: json!({"schemas": list_schemas(client.client()?).await?}),
             }),
             Operation::DatabaseListObjects { source } => {
-                let schema = source
-                    .as_ref()
-                    .and_then(|value| value.schema.as_deref())
-                    .unwrap_or("public");
+                // Senza schema, lo schema corrente della sessione (regola T):
+                // quello in cui un oggetto senza schema si crea.
+                let schema = match source.as_ref().and_then(|value| value.schema.clone()) {
+                    Some(schema) => schema,
+                    None => target_schema::resolve(
+                        client.client()?,
+                        &ObjectRef {
+                            catalog: None,
+                            schema: None,
+                            object: String::new(),
+                        },
+                        target_schema::Purpose::Create,
+                        ErrorPhase::Probe,
+                    )
+                    .await?
+                    .schema
+                    .unwrap_or_default(),
+                };
+                let schema = schema.as_str();
                 let objects = list_objects(client.client()?, schema).await?;
                 Ok(Inspection {
                     operation: "database.list_objects".to_owned(),
@@ -900,6 +950,15 @@ impl PostgresProvider {
                 })
             }
             Operation::DatabaseDescribeObject { source } => {
+                // L'oggetto risolto una volta (regola T): colonne, metadati
+                // e chiave della cache dello stesso oggetto.
+                let source = &target_schema::resolve(
+                    client.client()?,
+                    source,
+                    target_schema::Purpose::Existing,
+                    ErrorPhase::Probe,
+                )
+                .await?;
                 let (columns, schema_token) = self.cached_columns(client, source).await?;
                 let metadata = describe_object_metadata(client.client()?, source).await?;
                 Ok(Inspection {
@@ -1038,11 +1097,13 @@ impl Provider for PostgresProvider {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, PreparedWrite> {
         Box::pin(async move {
-            // Il target sempre con lo schema (regola Q2): ogni statement e
-            // ogni lettura del catalogo nominano la stessa relazione.
-            let operation = &write::qualified_target(operation);
             let control = BudgetCancellation::new(cancellation, budget)?;
             check_cancelled(control.token(), ErrorPhase::Prepare)?;
+            // La regola T: il target senza schema si risolve una volta, con
+            // il percorso della sessione; da qui ogni statement e ogni
+            // lettura del catalogo nominano lo schema risolto, e
+            // `PreparedWrite::operation` lo pubblica.
+            let operation = &self.resolve_write_target(secret, operation).await?;
             // La stessa compilazione di `compile_write_plan`, che il dry run
             // della CLI esegue senza server.
             let driver_state = write::prepare_state(&input_schema, operation)?;
@@ -1248,3 +1309,7 @@ mod sql_qualification_tests;
 #[cfg(test)]
 #[path = "write_r3_live_tests.rs"]
 mod write_r3_live_tests;
+
+#[cfg(test)]
+#[path = "write_r4_live_tests.rs"]
+mod write_r4_live_tests;

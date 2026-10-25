@@ -41,6 +41,77 @@ impl ToSql for NumericBinary {
     to_sql_checked!();
 }
 
+/// Un testo nel formato binario di un tipo che lo porta com'e (regola F e
+/// S3): `text`, `varchar`, `bpchar`, un enum (la sua etichetta), `json` (il
+/// testo), `jsonb` (la versione 1 e il testo). Il server lo legge come lo
+/// leggerebbe la funzione d'ingresso: nessuna nuova lettura nella libreria.
+///
+/// Fino al 25/10 (quarta rilettura, S3) `CopyBinary` codificava il JSON
+/// passando da `serde_json::Value`: gli interi oltre `f64` e i decimali
+/// lunghi si arrotondavano (`12345678901234567890123` diventava
+/// `1.2345678901234568e+22`), le chiavi si riordinavano e quelle ripetute si
+/// toglievano anche verso `json`, che il testo lo conserva.
+#[derive(Debug)]
+struct VerbatimBinary {
+    text: String,
+    format: Verbatim,
+}
+
+/// Come un tipo porta il testo nel formato binario.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verbatim {
+    /// Il testo e basta: `text`, `varchar`, `bpchar`, enum, `json`.
+    Plain,
+    /// Il byte di versione 1 e il testo: `jsonb`.
+    Jsonb,
+}
+
+impl ToSql for VerbatimBinary {
+    fn to_sql(
+        &self,
+        target_type: &Type,
+        output: &mut BytesMut,
+    ) -> std::result::Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        if verbatim_format(target_type) != Some(self.format) {
+            return Err("target non testuale".into());
+        }
+        if self.format == Verbatim::Jsonb {
+            output.put_u8(1);
+        }
+        output.extend_from_slice(self.text.as_bytes());
+        Ok(IsNull::No)
+    }
+
+    fn accepts(target_type: &Type) -> bool {
+        verbatim_format(target_type).is_some()
+    }
+
+    to_sql_checked!();
+}
+
+/// Il tipo attraverso i domini.
+fn through_domains(target_type: &Type) -> &Type {
+    let mut current = target_type;
+    while let Kind::Domain(base) = current.kind() {
+        current = base;
+    }
+    current
+}
+
+/// Se `target_type` (attraverso i domini) porta il testo com'e nel formato
+/// binario, e come.
+fn verbatim_format(target_type: &Type) -> Option<Verbatim> {
+    let base = through_domains(target_type);
+    if matches!(base.kind(), Kind::Enum(_)) {
+        return Some(Verbatim::Plain);
+    }
+    match *base {
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::JSON => Some(Verbatim::Plain),
+        Type::JSONB => Some(Verbatim::Jsonb),
+        _ => None,
+    }
+}
+
 #[derive(Debug)]
 struct EwkbBinary(Vec<u8>);
 
@@ -271,8 +342,11 @@ fn encode_composite_field(
             }
             .to_sql(field_type, output)?;
         }
-        Type::JSON | Type::JSONB => {
-            serde_json::from_str::<serde_json::Value>(value)?.to_sql(field_type, output)?;
+        // Il testo com'e (S3): nessuna nuova lettura del JSON.
+        Type::JSON => output.extend_from_slice(value.as_bytes()),
+        Type::JSONB => {
+            output.put_u8(1);
+            output.extend_from_slice(value.as_bytes());
         }
         Type::UUID => output.extend_from_slice(&parse_uuid_bytes(value)?),
         _ => return Err("campo composite binario non supportato".into()),
@@ -287,12 +361,19 @@ fn parse_uuid_bytes(
         .chars()
         .filter(|character| *character != '-')
         .collect::<String>();
-    if compact.len() != 32 {
-        return Err("UUID non valido".into());
-    }
+    // Soltanto cifre esadecimali ASCII: `from_str_radix` accetterebbe un
+    // segno (`+1`), e un taglio per byte dentro un carattere multibyte
+    // andrebbe in panic.
+    let digits = compact
+        .bytes()
+        .map(|byte| char::from(byte).to_digit(16))
+        .collect::<Option<Vec<u32>>>()
+        .filter(|digits| digits.len() == 32 && compact.is_ascii())
+        .ok_or("UUID non valido")?;
     let mut output = [0_u8; 16];
-    for (index, byte) in output.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&compact[index * 2..index * 2 + 2], 16)?;
+    let (pairs, _) = digits.as_chunks::<2>();
+    for (byte, [high, low]) in output.iter_mut().zip(pairs) {
+        *byte = u8::try_from(high * 16 + low)?;
     }
     Ok(output)
 }
@@ -468,18 +549,19 @@ pub(super) fn binary_copy_value(
             (!typed.is_null(row)).then(|| EwkbBinary(typed.value(row).to_vec())),
         ));
     }
-    if matches!(plan.data_type, DataType::Utf8)
-        && matches!(plan.native_type.as_deref(), Some("json" | "jsonb"))
-    {
-        let typed = array
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(mapping_error)?;
-        let value = (!typed.is_null(row))
-            .then(|| serde_json::from_str::<serde_json::Value>(typed.value(row)))
-            .transpose()
-            .map_err(|_| DatabaseError::invalid_plan("JSON Arrow non valido"))?;
-        return Ok(Box::new(value));
+    // Un testo si codifica per il tipo della colonna (regola F), non per il
+    // tipo che il campo dichiara: testo, enum, `json` e `jsonb` com'e.
+    if matches!(plan.data_type, DataType::Utf8) {
+        if let Some(format) = verbatim_format(target_type) {
+            let typed = array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(mapping_error)?;
+            return Ok(Box::new((!typed.is_null(row)).then(|| VerbatimBinary {
+                text: typed.value(row).to_owned(),
+                format,
+            })));
+        }
     }
     if target_type.name() == "uuid" {
         let typed = array
@@ -494,6 +576,18 @@ pub(super) fn binary_copy_value(
             })
             .transpose()?;
         return Ok(Box::new(value));
+    }
+    // Un testo verso un altro tipo: il codec di testo del driver, che lo
+    // rifiuta per i tipi non testuali (`protocol`). Mai `TextParam`, che e
+    // del formato testo degli statement preparati.
+    if matches!(plan.data_type, DataType::Utf8) {
+        let typed = array
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(mapping_error)?;
+        return Ok(Box::new(
+            (!typed.is_null(row)).then(|| typed.value(row).to_owned()),
+        ));
     }
     arrow_value(array, plan, row)
 }

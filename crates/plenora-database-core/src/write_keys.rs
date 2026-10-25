@@ -121,6 +121,36 @@ pub fn refuse_key_in_update_columns(operation: &crate::plan::WriteOperation) -> 
 pub const KEY_IN_UPDATE_COLUMNS: &str =
     "una chiave di Update non puo essere anche una colonna aggiornata";
 
+/// Il motivo pubblico della condizione 4: Upsert vuole un solo indice
+/// unico sulle chiavi.
+///
+/// L'arbitro dell'upsert non e soltanto l'indice che prova le chiavi:
+/// PostgreSQL (`ON CONFLICT (k)`) arbitra con ogni indice unico sulle stesse
+/// colonne, qualunque collation abbia, e `MySQL`/`MariaDB` (`ON DUPLICATE
+/// KEY UPDATE`) con ogni indice unico della tabella. Con un secondo indice la
+/// riga in ingresso puo aggiornarne un'altra (quarta rilettura del 25/10:
+/// `id text COLLATE "C" PRIMARY KEY` e `UNIQUE (id COLLATE ci)`, l'upsert di
+/// `('a', 'nuovo')` aggiornava la riga `A`). La regola e chiusa e stretta:
+/// un solo indice unico del target coinvolge le colonne chiave, ed e quello
+/// che le prova (per `MySQL` e `MariaDB`, dove l'arbitro e ogni indice unico
+/// della tabella: soltanto indici unici interi sulle colonne chiave, che
+/// arbitrano la stessa riga; nessuno su altre colonne, funzionale o su un
+/// prefisso).
+pub const UPSERT_WITH_OTHER_UNIQUE_INDEX: &str =
+    "Upsert vuole un solo indice unico che coinvolga le chiavi, quello che le prova: un altro \
+     indice unico potrebbe arbitrare il conflitto e aggiornare un'altra riga";
+
+/// Il rifiuto della condizione 4, nella fase in cui il provider lo scopre.
+#[must_use]
+pub fn upsert_with_other_unique_index(provider: ProviderKind, phase: ErrorPhase) -> DatabaseError {
+    DatabaseError::new(
+        ErrorCategory::Schema,
+        phase,
+        Some(provider),
+        format!("scrittura rifiutata: {UPSERT_WITH_OTHER_UNIQUE_INDEX}"),
+    )
+}
+
 /// Il rifiuto della condizione 1, nella fase in cui il provider lo scopre.
 #[must_use]
 pub fn keys_without_unique_index(provider: ProviderKind, phase: ErrorPhase) -> DatabaseError {

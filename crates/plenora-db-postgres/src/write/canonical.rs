@@ -42,6 +42,11 @@
 //! - una foglia di testo ([`TEXT_INPUTS`]): ogni valore; con `Strict`, un
 //!   testo piu lungo di `varchar(n)`/`char(n)` si rifiuta (il server tronca
 //!   in silenzio gli spazi in eccesso: `'abc   '` diventava `'abc'`);
+//! - una foglia `jsonb` (regola J, quarta rilettura del 25/10): con `Strict`,
+//!   un testo con un oggetto che ripete una chiave, a qualunque profondita e
+//!   dopo gli escape, si rifiuta (`jsonb` tiene l'ultimo valore:
+//!   `{"b":1,"a":2,"a":3}` diventava `{"a": 3, "b": 1}`); `json` conserva
+//!   il testo e non si verifica;
 //! - una foglia temporale (`date`, `time`, `timetz`, `timestamp`,
 //!   `timestamptz`, `interval`): testo soltanto nella forma canonica — date
 //!   ISO `AAAA-MM-GG`, ore `hh:mm[:ss[.f]]`, timestamp ISO, la zona esplicita
@@ -83,7 +88,15 @@
 //!   non si scrive). Un tipo di un'estensione con una funzione d'ingresso in
 //!   C (`hstore`, `ltree`) non riceve valori. `char(n)` completa con spazi i
 //!   valori piu corti: e la semantica del tipo, che li confronta senza gli
-//!   spazi finali, e non si rifiuta. Le regole si leggono una volta, prima
+//!   spazi finali, e non si rifiuta. Allo stesso modo `jsonb` riordina le
+//!   chiavi, toglie gli spazi e scrive i numeri nella forma di `numeric`
+//!   (`1.50` resta `1.50`, `1e2` diventa `100`, `-0` diventa `0`): semantica
+//!   del tipo, ammessa con `Strict` e dichiarata con le altre politiche nel
+//!   `LossReport` (`native_type`, `warning`, con la chiave ripetuta). Con
+//!   `Strict` un testo non arriva a un numero che lo arrotonda
+//!   (`numeric(p,s)`, `real`, `double precision`: soltanto con Create, perche
+//!   verso una colonna esistente il preflight rifiuta il tipo Arrow). Le
+//!   regole si leggono una volta, prima
 //!   del primo valore e senza rileggerle dopo il lock.
 //! - **Rientro**: la verifica per campo dei composti; i domini e i composti
 //!   dichiarati risolti dal catalogo anche senza DSN; le regole rilette con
@@ -137,6 +150,14 @@ pub(super) enum LeafClass {
         fraction: u32,
         reduced: bool,
     },
+    /// `jsonb` (regola J): una lettura che non dipende dalla sessione, che
+    /// pero tiene soltanto l'ultimo valore di una chiave ripetuta.
+    Jsonb,
+    /// Un numero che arrotonda il testo: `numeric(p,s)` (typmod), `real`,
+    /// `double precision`. Con `Strict` un testo non vi arriva: ci arriva
+    /// soltanto con Create (verso una colonna esistente il preflight rifiuta
+    /// il tipo Arrow non equivalente), e `'1.005'` diventava `1.01`.
+    Rounding,
     /// Fuori dall'elenco chiuso.
     Unknown,
 }
@@ -175,6 +196,11 @@ pub(super) const NOT_CANONICAL: &str = "valore non canonico, o verso un tipo fuo
 /// Il motivo pubblico del rifiuto della regola P.
 pub(super) const LOSSY_VALUE: &str = "con MappingPolicy::Strict il tipo della colonna \
      arrotonderebbe o troncherebbe il valore (precisione frazionaria, lunghezza massima)";
+
+/// Il motivo pubblico del rifiuto della regola J: un testo JSON con chiavi
+/// ripetute verso `jsonb`, che tiene soltanto l'ultima.
+pub(super) const DUPLICATE_KEYS: &str = "con MappingPolicy::Strict un oggetto JSON con chiavi \
+     ripetute verso jsonb perderebbe i valori tranne l'ultimo";
 
 fn refused() -> DatabaseError {
     public_error(
@@ -252,6 +278,9 @@ pub(super) fn classify(symbol: Option<&str>, typmod: i32) -> LeafClass {
                 .ok()
                 .and_then(|typmod| typmod.checked_sub(4)),
         },
+        "jsonb_in" => LeafClass::Jsonb,
+        "float4in" | "float8in" => LeafClass::Rounding,
+        "numeric_in" if typmod >= 0 => LeafClass::Rounding,
         _ if TEXT_INPUTS.contains(&symbol) => LeafClass::Text { max_chars: None },
         "date_in" => LeafClass::Session {
             leaf: SessionLeaf::Date,
@@ -350,7 +379,7 @@ pub(super) async fn rules<C: GenericClient + Sync>(
         .iter()
         .map(|field| field.name().clone())
         .collect::<Vec<_>>();
-    let target_schema = operation.target.schema.as_deref().unwrap_or("public");
+    let target_schema = crate::target_schema::schema_of(&operation.target)?;
     let rows = client
         .query(
             RULES_SQL,
@@ -476,6 +505,22 @@ pub(super) fn declared(plan: &WriteColumnPlan, strict: bool) -> Option<SessionRu
         "daterange" => ("date_in", true),
         "tsrange" => ("timestamp_in", true),
         "tstzrange" => ("timestamptz_in", true),
+        "jsonb" => ("jsonb_in", false),
+        "real" => ("float4in", false),
+        "double precision" => ("float8in", false),
+        _ if base.starts_with("numeric(") => {
+            return Some(SessionRule {
+                leaves: vec![Leaf {
+                    class: LeafClass::Rounding,
+                    shape: if array {
+                        SessionShape::Array
+                    } else {
+                        SessionShape::Scalar
+                    },
+                }],
+                strict,
+            });
+        }
         _ => return None,
     };
     let shape = match (array, range) {
@@ -521,15 +566,17 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
         // e con `Strict` senza lunghezze massime da verificare per campo.
         let text_only = rule.leaves.iter().all(|leaf| match leaf.class {
             LeafClass::Text { max_chars } => !(rule.strict && max_chars.is_some()),
+            LeafClass::Jsonb | LeafClass::Rounding => !rule.strict,
             _ => false,
         });
         return if text_only {
             Ok(())
-        } else if rule
-            .leaves
-            .iter()
-            .all(|leaf| matches!(leaf.class, LeafClass::Text { .. }))
-        {
+        } else if rule.leaves.iter().all(|leaf| {
+            matches!(
+                leaf.class,
+                LeafClass::Text { .. } | LeafClass::Jsonb | LeafClass::Rounding
+            )
+        }) {
             Err(lossy())
         } else {
             Err(refused())
@@ -537,6 +584,16 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
     };
     match leaf.class {
         LeafClass::Text { max_chars } => check_text(rule.strict, max_chars, array, row),
+        LeafClass::Jsonb => check_jsonb(rule.strict, array, row),
+        // Un valore Arrow tipizzato si converte da se, esatto o rifiutato
+        // dal preflight; un testo con `Strict` no.
+        LeafClass::Rounding => {
+            if rule.strict && matches!(array.data_type(), DataType::Utf8 | DataType::List(_)) {
+                Err(lossy())
+            } else {
+                Ok(())
+            }
+        }
         LeafClass::Session {
             leaf: session,
             fraction,
@@ -574,6 +631,176 @@ fn check_text(strict: bool, max_chars: Option<usize>, array: &dyn Array, row: us
     } else {
         Err(lossy())
     }
+}
+
+/// Una foglia `jsonb` (regola J): con `Strict`, un oggetto con una chiave
+/// ripetuta, a qualunque profondita, si rifiuta.
+///
+/// `jsonb` tiene l'ultimo valore di una chiave ripetuta: fino al 25/10
+/// (quarta rilettura, S4) `{"b":1,"a":2,"a":3}` si committava come
+/// `{"a": 3, "b": 1}` in ogni profilo, con `Strict` e il `LossReport` vuoto.
+/// Le chiavi si confrontano dopo gli escape, come le confronta il server
+/// (`{"a\u0062": 1, "ab": 2}` ha la chiave `ab` due volte). L'ordine delle
+/// chiavi e gli spazi sono invece la semantica del tipo (come gli spazi di
+/// `char(n)`): non si rifiutano, e con le altre politiche il preflight li
+/// dichiara con la chiave ripetuta (`LossSeverity::Warning`). Un testo che la
+/// verifica non sa leggere (un escape non valido, che il server rifiuterebbe
+/// comunque) si rifiuta con `Strict`: la prova che nessun valore si perde non
+/// c'e.
+fn check_jsonb(strict: bool, array: &dyn Array, row: usize) -> Result<()> {
+    if !strict {
+        return Ok(());
+    }
+    let verify = |text: &str| -> Result<()> {
+        if json_duplicate_keys(text) == Some(false) {
+            Ok(())
+        } else {
+            Err(duplicate_keys())
+        }
+    };
+    match array.data_type() {
+        DataType::Utf8 => verify(string(array, row)?),
+        DataType::List(_) => {
+            let list = array
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .ok_or_else(mapping_error)?;
+            let values = list.value(row);
+            if let Some(items) = values.as_any().downcast_ref::<StringArray>() {
+                for index in 0..items.len() {
+                    if !items.is_null(index) {
+                        verify(items.value(index))?;
+                    }
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn duplicate_keys() -> DatabaseError {
+    public_error(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Write,
+        false,
+        &format!("scrittura rifiutata: {DUPLICATE_KEYS}"),
+    )
+}
+
+/// Se un testo JSON ha un oggetto che ripete una chiave, a qualunque
+/// profondita: `Some(true)` o `Some(false)`, `None` se la lettura non riesce
+/// (un escape non valido). La validita del resto la decide il server; i
+/// numeri non si leggono (`jsonb` li tiene come `numeric`, qualunque
+/// grandezza). Iterativo: nessun limite di profondita oltre la memoria del
+/// testo.
+pub(super) fn json_duplicate_keys(text: &str) -> Option<bool> {
+    enum Frame {
+        Object {
+            keys: std::collections::HashSet<String>,
+            expect_key: bool,
+        },
+        Array,
+    }
+    let bytes = text.as_bytes();
+    let mut stack: Vec<Frame> = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'{' => {
+                stack.push(Frame::Object {
+                    keys: std::collections::HashSet::new(),
+                    expect_key: true,
+                });
+                index += 1;
+            }
+            b'[' => {
+                stack.push(Frame::Array);
+                index += 1;
+            }
+            b'}' | b']' => {
+                stack.pop();
+                index += 1;
+            }
+            b',' => {
+                if let Some(Frame::Object { expect_key, .. }) = stack.last_mut() {
+                    *expect_key = true;
+                }
+                index += 1;
+            }
+            b'"' => {
+                let (value, end) = json_string(bytes, index + 1)?;
+                index = end;
+                if let Some(Frame::Object { keys, expect_key }) = stack.last_mut() {
+                    if *expect_key {
+                        if !keys.insert(value) {
+                            return Some(true);
+                        }
+                        *expect_key = false;
+                    }
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    Some(false)
+}
+
+/// La stringa JSON che comincia a `from` (dopo le virgolette), con gli
+/// escape risolti, e la posizione dopo le virgolette di chiusura.
+fn json_string(bytes: &[u8], from: usize) -> Option<(String, usize)> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut index = from;
+    loop {
+        match *bytes.get(index)? {
+            b'"' => return Some((String::from_utf8(out).ok()?, index + 1)),
+            b'\\' => {
+                let escape = *bytes.get(index + 1)?;
+                index += 2;
+                let decoded = match escape {
+                    b'"' => '"',
+                    b'\\' => '\\',
+                    b'/' => '/',
+                    b'b' => '\u{8}',
+                    b'f' => '\u{c}',
+                    b'n' => '\n',
+                    b'r' => '\r',
+                    b't' => '\t',
+                    b'u' => {
+                        let high = json_hex4(bytes, index)?;
+                        index += 4;
+                        if (0xD800..0xDC00).contains(&high) {
+                            if bytes.get(index) != Some(&b'\\')
+                                || bytes.get(index + 1) != Some(&b'u')
+                            {
+                                return None;
+                            }
+                            let low = json_hex4(bytes, index + 2)?;
+                            if !(0xDC00..0xE000).contains(&low) {
+                                return None;
+                            }
+                            index += 6;
+                            char::from_u32(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))?
+                        } else {
+                            char::from_u32(high)?
+                        }
+                    }
+                    _ => return None,
+                };
+                let mut buffer = [0_u8; 4];
+                out.extend_from_slice(decoded.encode_utf8(&mut buffer).as_bytes());
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+}
+
+fn json_hex4(bytes: &[u8], from: usize) -> Option<u32> {
+    let digits = std::str::from_utf8(bytes.get(from..from.checked_add(4)?)?).ok()?;
+    u32::from_str_radix(digits, 16).ok()
 }
 
 /// Una foglia temporale: testo canonico, valori tipizzati che non passano

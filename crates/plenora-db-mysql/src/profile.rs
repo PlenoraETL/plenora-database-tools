@@ -403,6 +403,7 @@ pub(crate) const INDEX_PART_ALIASES: &[&str] = &[
     "seq_in_index",
     "column_name",
     "expression",
+    "sub_part",
 ];
 
 /// Vedi [`SCHEMA_ALIASES`]. La verifica di uno SRID derivato da `EPSG:<n>`
@@ -547,7 +548,7 @@ impl ProductProfile for MysqlProfile {
     fn object_indexes_query(&self) -> &'static str {
         "SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique, \
         SEQ_IN_INDEX AS seq_in_index, COLUMN_NAME AS column_name, \
-        EXPRESSION AS expression \
+        EXPRESSION AS expression, SUB_PART AS sub_part \
         FROM information_schema.statistics \
         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
         ORDER BY INDEX_NAME, SEQ_IN_INDEX"
@@ -903,7 +904,7 @@ impl ProductProfile for MariadbProfile {
         // `SEQ_IN_INDEX` rendono le stesse righe per la stessa tabella.
         "SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique, \
         SEQ_IN_INDEX AS seq_in_index, COLUMN_NAME AS column_name, \
-        NULL AS expression \
+        NULL AS expression, SUB_PART AS sub_part \
         FROM information_schema.statistics \
         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
         ORDER BY INDEX_NAME, SEQ_IN_INDEX"

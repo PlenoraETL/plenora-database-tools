@@ -97,8 +97,8 @@ fn refused_lossy(result: &plenora_database_core::Result<WriteOutcome>) -> bool {
     })
 }
 
-/// F4: con `Strict` una colonna che arrotonda il microsecondo si rifiuta al
-/// piano, in entrambi i profili; un `datetimeoffset(0)` rifiuta il testo con
+/// F4: con `Strict` un valore che la colonna arrotonderebbe si rifiuta, in
+/// entrambi i profili (valore per valore dalla quarta rilettura); un `datetimeoffset(0)` rifiuta il testo con
 /// una frazione; `datetime2(6)` scrive il valore com'e.
 #[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta fixture DML isolate"]
@@ -128,6 +128,12 @@ async fn live_p_precisione_temporale_identica_in_ogni_profilo() {
         ("datetimeoffset(0)", offset),
     ] {
         for insert_mode in [SqlServerInsertMode::Prepared, SqlServerInsertMode::TdsBulk] {
+            // `datetime` non sta nel profilo TDS bulk (`unsupported` al
+            // piano); dalla quarta rilettura il valore si giudica uno per
+            // uno, e il bulk non arriva a giudicarlo.
+            if column == "datetime" && insert_mode == SqlServerInsertMode::TdsBulk {
+                continue;
+            }
             run(
                 &mut admin,
                 &format!(

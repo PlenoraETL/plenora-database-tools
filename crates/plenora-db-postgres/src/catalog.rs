@@ -122,7 +122,7 @@ pub async fn describe_object_metadata(
     client: &Client,
     source: &ObjectRef,
 ) -> Result<ObjectMetadata> {
-    let schema = source.schema.as_deref().unwrap_or("public");
+    let schema = crate::target_schema::schema_of(source)?;
     let relation = client
         .query_one(
             r"

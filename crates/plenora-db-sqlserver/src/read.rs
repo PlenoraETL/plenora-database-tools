@@ -83,7 +83,16 @@ pub async fn read_operation(
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;
     let internal = budget_cancellation.token().clone();
     let mut pooled = pool.checkout(&internal).await?;
-    let schema = operation.source.schema.as_deref().unwrap_or("dbo");
+    // La regola T: lo schema come lo risolve la sessione, una volta; la
+    // descrizione, la sonda spatial, la conferma e il testo della lettura
+    // (`description.schema`) nominano quello.
+    let schema = &crate::catalog::resolve_schema(
+        pooled.session_mut()?,
+        operation.source.schema.as_deref(),
+        &operation.source.object,
+        &internal,
+    )
+    .await?;
     let description = describe_object(
         pooled.session_mut()?,
         schema,
@@ -183,7 +192,13 @@ pub async fn read_query_operation(
         )?;
     }
     for expected in spatial_validation.source_tokens {
-        let schema = expected.object.schema.as_deref().unwrap_or("dbo");
+        let schema = &crate::catalog::resolve_schema(
+            pooled.session_mut()?,
+            expected.object.schema.as_deref(),
+            &expected.object.object,
+            &internal,
+        )
+        .await?;
         let confirmation = describe_object(
             pooled.session_mut()?,
             schema,

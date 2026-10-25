@@ -266,6 +266,38 @@ fn la_regola_p_rifiuta_il_testo_che_la_colonna_cambierebbe() {
     assert!(bind_row(&latin, &batch, 0).is_err());
 }
 
+/// S7: piu di nove cifre frazionarie si rifiutano in ogni politica; su
+/// 04029d4 chrono le troncava e `.12345670001` si committava `.1234567`.
+#[test]
+fn datetimeoffset_rifiuta_piu_di_nove_cifre_frazionarie() {
+    assert!(datetimeoffset("2026-01-02T10:00:00.123456789+00:00").is_ok());
+    let refused = datetimeoffset("2026-01-02T10:00:00.12345670001+00:00").expect_err("dieci cifre");
+    assert_eq!(refused.category, ErrorCategory::DataMapping);
+    assert!(datetimeoffset("2026-01-02T10:00:00.1234567890Z").is_err());
+}
+
+/// I valori esatti verso una colonna temporale ridotta passano con
+/// `Strict`; quelli che arrotonderebbero si rifiutano.
+#[test]
+fn la_regola_p_giudica_il_valore_temporale() {
+    let mut plan = text_plan("datetime2", "datetime2(0)", None, true);
+    plan.columns[0].kind = crate::SqlServerColumnKind::Timestamp;
+    assert!(check_temporal(&plan, &plan.columns[0], 1_767_348_001_000_000).is_ok());
+    assert!(check_temporal(&plan, &plan.columns[0], 1_767_348_001_500_000).is_err());
+    assert!(check_temporal(&plan, &plan.columns[0], -1_000_000).is_ok());
+    assert!(check_temporal(&plan, &plan.columns[0], -1).is_err());
+    plan.columns[0].native_type = "datetime".to_owned();
+    plan.columns[0].native_declaration = "datetime".to_owned();
+    assert!(check_temporal(&plan, &plan.columns[0], 10_000).is_ok());
+    assert!(check_temporal(&plan, &plan.columns[0], 3_000).is_err());
+    plan.columns[0].native_type = "smalldatetime".to_owned();
+    plan.columns[0].native_declaration = "smalldatetime".to_owned();
+    assert!(check_temporal(&plan, &plan.columns[0], 60_000_000).is_ok());
+    assert!(check_temporal(&plan, &plan.columns[0], 1_000_000).is_err());
+    let lossy = text_plan("datetime2", "datetime2(0)", None, false);
+    assert!(check_temporal(&lossy, &lossy.columns[0], 1).is_ok());
+}
+
 #[test]
 fn la_regola_p_rifiuta_le_frazioni_oltre_la_scala_di_datetimeoffset() {
     let mut plan = text_plan("datetimeoffset", "datetimeoffset(0)", None, true);

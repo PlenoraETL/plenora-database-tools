@@ -68,7 +68,7 @@
 //! rifiuta `COPY FROM` con un errore (`target`).
 //!
 //! Il target si risolve come lo risolve lo statement: per nome con lo schema,
-//! sempre dichiarato (`super::qualified_target`; senza i controlli di
+//! sempre dichiarato (regola T, `crate::target_schema`; senza i controlli di
 //! `USAGE`, che restano dello statement). Un target che non si risolve non ha
 //! fatti: lo statement lo rifiutera da se.
 
@@ -234,7 +234,22 @@ SELECT
     keys_index!("$7"),
     " AND ",
     key_semantics!(),
-    ")"
+    "),
+    (SELECT pg_catalog.count(*)::pg_catalog.int8 FROM target t
+       JOIN pg_catalog.pg_index i ON i.indrelid = t.oid
+      WHERE i.indisunique
+        AND (EXISTS (SELECT 1 FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) AS k(attnum)
+                       JOIN pg_catalog.pg_attribute a
+                         ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+                      WHERE a.attname::pg_catalog.text = ANY ($7::pg_catalog.text[]))
+             OR EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
+                          JOIN pg_catalog.pg_attribute a
+                            ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid
+                         WHERE d.classid = 'pg_catalog.pg_class'::pg_catalog.regclass
+                           AND d.objid = i.indexrelid
+                           AND d.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+                           AND d.refobjid = i.indrelid
+                           AND a.attname::pg_catalog.text = ANY ($7::pg_catalog.text[]))))"
 );
 
 /// La guardia del `search_path` (regola Q): uno schema che precede
@@ -319,6 +334,10 @@ pub struct TargetFacts {
     /// collation della colonna e con l'opclass btree predefinita del suo
     /// tipo (`key_semantics`).
     pub keys_unique: bool,
+    /// Gli indici unici del target (anche parziali, con espressioni, non
+    /// immediati o non validi) che coinvolgono una chiave: fra le colonne
+    /// dell'indice o nelle sue espressioni e nel suo predicato (`pg_depend`).
+    pub unique_on_keys: i64,
 }
 
 impl TargetFacts {
@@ -378,7 +397,7 @@ pub async fn facts<C: GenericClient + Sync>(
         .query_one(
             FACTS_SQL,
             &[
-                &target.schema.as_deref().unwrap_or("public"),
+                &crate::target_schema::schema_of(target)?,
                 &target.object,
                 &rules,
                 &destructive,
@@ -403,6 +422,7 @@ pub async fn facts<C: GenericClient + Sync>(
         copy_identity_always: row.get(9),
         keys_index: row.get(10),
         keys_unique: row.get(11),
+        unique_on_keys: row.get(12),
     })
 }
 
@@ -436,6 +456,27 @@ pub fn refusal(operation: &WriteOperation, facts: TargetFacts) -> Option<Databas
     ) {
         return Some(error);
     }
+    // La condizione 4 della regola K (`write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX`):
+    // l'arbitro dell'upsert e l'indice che prova le chiavi e nessun altro.
+    // `ON CONFLICT (k)` sceglie ogni indice unico sulle stesse colonne,
+    // qualunque collation abbia: fino al 25/10 (quarta rilettura, S6) con
+    // `id text COLLATE "C" PRIMARY KEY` e `UNIQUE (id COLLATE ci)` l'upsert di
+    // `('a', 'nuovo')` aggiornava la riga `A`. La regola chiusa e piu stretta
+    // del server: un solo indice unico del target coinvolge le colonne
+    // chiave. Comportamento piu stretto, dichiarato: si rifiutano anche
+    // indici che non arbitrerebbero (`UNIQUE (id, altro)`, `UNIQUE
+    // (lower(id))`, che il server rifiuterebbe con 23505).
+    // Si decide prima delle altre condizioni: vale anche senza un indice
+    // che provi le chiavi (il padre di un'ereditarieta).
+    if operation.mode == WriteMode::Upsert && facts.unique_on_keys > 1 {
+        return Some(
+            plenora_database_core::write_keys::upsert_with_other_unique_index(
+                ProviderKind::Postgres,
+                ErrorPhase::Write,
+            ),
+        );
+    }
+
     let unproven = match operation.mode {
         WriteMode::Update | WriteMode::DeleteByKeys => !facts.keys_unique,
         // `ON CONFLICT` arbitra con ogni indice unico sulle chiavi, qualunque
@@ -446,6 +487,13 @@ pub fn refusal(operation: &WriteOperation, facts: TargetFacts) -> Option<Databas
         WriteMode::Upsert => facts.keys_index && !facts.keys_unique,
         _ => false,
     };
+    // Un indice unico che coinvolge le chiavi senza che nessuno le provi
+    // (`keys_index` falso: parziale, con espressioni, o sul padre di
+    // un'ereditarieta): `ON CONFLICT` puo arbitrare con quello, e nessun
+    // arbitro e provato. Prima decideva il server, che con un padre di
+    // ereditarieta lo accettava.
+    let unproven = unproven
+        || (operation.mode == WriteMode::Upsert && !facts.keys_index && facts.unique_on_keys > 0);
     unproven.then(|| keys_without_unique_index(ProviderKind::Postgres, ErrorPhase::Write))
 }
 
@@ -493,7 +541,7 @@ pub async fn key_equality<C: GenericClient + Sync>(
         .query(
             KEY_EQUALITY_SQL,
             &[
-                &operation.target.schema.as_deref().unwrap_or("public"),
+                &crate::target_schema::schema_of(&operation.target)?,
                 &operation.target.object,
                 &operation.keys,
             ],

@@ -32,10 +32,19 @@
 //! trigger che scrive in `audit_log` senza schema, e cambierebbe in silenzio
 //! un confronto `citext` di un trigger (`citext = citext` sta in `public`).
 //! Il testo di questi statement non dipende dal percorso: target qualificato
-//! con lo schema (anche quando il piano non lo nomina, `public`), tipi dei
+//! con lo schema (quando il piano non lo nomina, quello risolto una volta con
+//! il percorso della sessione, regola T in `crate::target_schema`), tipi dei
 //! segnaposto e delle colonne create qualificati, confronto delle chiavi con
 //! l'operatore esplicito dell'indice che prova l'unicita (regola K2). La
 //! prova statica e in `sql_qualification_tests`.
+//!
+//! Il `COMMIT` gira con il percorso della sessione rimesso al suo posto
+//! ([`SessionPath::restore`]): i trigger di vincolo differiti
+//! (`DEFERRABLE INITIALLY DEFERRED`) e i controlli differiti scattano li, e
+//! sono codice del target come gli altri. Fino al 25/10 (quarta rilettura,
+//! S5) scattavano con il percorso chiuso: un trigger che confronta due
+//! `citext` (`citext = citext` sta in `public`) li confrontava come `text`,
+//! e 'ABC' = 'abc' diventava falso in silenzio, in ogni profilo.
 //!
 //! Il dry run con la DSN legge cio che la scrittura leggerebbe in una
 //! transazione che si annulla, con il percorso chiuso nello stesso modo.
@@ -113,7 +122,8 @@ impl SessionPath {
 
     /// Rimette il percorso della sessione per il resto della transazione:
     /// per il percorso row-scoped, dove dopo l'ultima lettura del catalogo
-    /// restano soltanto gli INSERT sul target.
+    /// restano soltanto gli INSERT sul target, e prima di ogni `COMMIT`, dove
+    /// scattano i trigger e i controlli differiti del target.
     ///
     /// # Errors
     ///

@@ -588,11 +588,12 @@ fn spatial_create_refuses_north_first_axes_and_derived_srids() {
 }
 
 /// La regola P: su 1b02559 10:00:00.999999 verso `datetime2(0)` diventava
-/// 10:00:01 con l'INSERT preparato e 10:00:00 con il bulk TDS; ora con
-/// `Strict` si rifiuta al piano, in ogni profilo, e con `Lossy` la perdita e
-/// nel `LossReport`.
+/// 10:00:01 con l'INSERT preparato e 10:00:00 con il bulk TDS; con `Strict`
+/// il piano si compila e il valore si giudica uno per uno
+/// (`codec::check_temporal`, su 04029d4 la colonna si rifiutava al piano
+/// anche per i valori esatti), e con `Lossy` la perdita e nel `LossReport`.
 #[test]
-fn la_regola_p_rifiuta_le_colonne_temporali_ridotte_con_strict() {
+fn la_regola_p_sulle_colonne_temporali_ridotte() {
     for (native, declaration) in [
         (
             "datetime2(0)",
@@ -618,10 +619,13 @@ fn la_regola_p_rifiuta_le_colonne_temporali_ridotte_con_strict() {
         ]));
         let mut create = operation(WriteMode::Create);
         create.keys = vec!["id".to_owned()];
-        let refused =
-            WritePlan::compile_create(&create, Arc::clone(&schema)).expect_err("Strict rifiuta");
-        assert_eq!(refused.category, ErrorCategory::DataMapping, "{native}");
-        assert!(refused.message.ends_with(LOSSY_VALUE), "{native}");
+        let strict =
+            WritePlan::compile_create(&create, Arc::clone(&schema)).expect("Strict compila");
+        assert!(strict
+            .loss_report(MappingPolicy::Strict)
+            .expect("report")
+            .losses
+            .is_empty());
         create.mapping_policy = MappingPolicy::Lossy;
         let plan = WritePlan::compile_create(&create, schema).expect("Lossy ammette");
         let report = plan.loss_report(MappingPolicy::Lossy).expect("report");
@@ -640,6 +644,14 @@ fn la_regola_p_rifiuta_le_colonne_temporali_ridotte_con_strict() {
             native
         ));
     }
+    assert_eq!(temporal_unit("datetime2", "datetime2(0)"), Some(1_000_000));
+    assert_eq!(temporal_unit("time", "time(3)"), Some(1_000));
+    assert_eq!(temporal_unit("datetime", "datetime"), Some(10_000));
+    assert_eq!(
+        temporal_unit("smalldatetime", "smalldatetime"),
+        Some(60_000_000)
+    );
+    assert_eq!(temporal_unit("datetime2", "datetime2"), None);
 }
 
 #[test]

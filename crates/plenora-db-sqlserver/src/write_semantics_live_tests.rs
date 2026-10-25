@@ -645,3 +645,8 @@ mod r2;
 #[cfg(test)]
 #[path = "write_semantics_r3_live_tests.rs"]
 mod r3;
+
+// La quarta rilettura del 25/10 (regole T, J, S7, valori esatti, S6).
+#[cfg(test)]
+#[path = "write_semantics_r4_live_tests.rs"]
+mod r4;

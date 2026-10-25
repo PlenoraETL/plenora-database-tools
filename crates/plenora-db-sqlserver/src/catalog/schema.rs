@@ -868,6 +868,52 @@ fn spatial_index(row: &tiberius::Row) -> Result<Option<SqlServerSpatialIndex>> {
     }
 }
 
+/// La regola T: lo schema di un oggetto, una volta per operazione, come lo
+/// risolverebbe la sessione.
+///
+/// Uno schema nominato si usa com'e. Senza schema SQL Server risolve un nome
+/// nello schema predefinito dell'utente, poi in `dbo`; fino al 25/10 la
+/// lettura, la descrizione e la validazione spatial delle query nominavano
+/// sempre `dbo`: con `DEFAULT_SCHEMA = app` e le tabelle `app.r4t` e
+/// `dbo.r4t`, `{object: "r4t"}` si leggeva e si descriveva in `dbo`, mentre
+/// lo SQL del chiamante e il testo di una `QueryOperation` senza schema
+/// leggevano `app.r4t`. `OBJECT_ID(QUOTENAME(@P1))` risolve il nome con le
+/// regole della sessione; un oggetto che la sessione non vede si rifiuta.
+///
+/// # Errors
+///
+/// `not_found` se la sessione non risolve il nome; l'errore classificato
+/// della lettura.
+pub async fn resolve_schema(
+    session: &mut SqlServerSession,
+    schema: Option<&str>,
+    object: &str,
+    cancellation: &CancellationToken,
+) -> Result<String> {
+    if let Some(schema) = schema {
+        return Ok(schema.to_owned());
+    }
+    let mut query = Query::new("SELECT OBJECT_SCHEMA_NAME(OBJECT_ID(QUOTENAME(@P1)));");
+    query.bind(object.to_owned());
+    let rows = one_result(
+        session
+            .execute_query(query, ErrorPhase::Probe, cancellation)
+            .await?,
+    )?;
+    rows.first()
+        .map(|row| optional_text(row, 0, "schema"))
+        .transpose()?
+        .flatten()
+        .ok_or_else(|| {
+            plenora_database_core::DatabaseError::new(
+                plenora_database_core::ErrorCategory::NotFound,
+                ErrorPhase::Prepare,
+                Some(plenora_database_core::plan::ProviderKind::Sqlserver),
+                "oggetto SQL Server senza schema non risolto dalla sessione",
+            )
+        })
+}
+
 async fn execute_bound(
     session: &mut SqlServerSession,
     sql: &'static str,

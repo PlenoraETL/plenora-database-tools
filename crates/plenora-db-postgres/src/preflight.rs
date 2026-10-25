@@ -20,7 +20,7 @@ pub async fn write(
 ) -> Result<LossReport> {
     let client = provider.connect_session(secret).await?;
     validate_resolved_crs_against_postgis(&client, input_schema).await?;
-    let schema_name = operation.target.schema.as_deref().unwrap_or("public");
+    let schema_name = crate::target_schema::schema_of(&operation.target)?;
     let exists: bool = client
         .client()?
         .query_one(
@@ -200,6 +200,40 @@ pub async fn write(
                     target_type: target.native_declaration.clone(),
                 });
             }
+            // La regola J: `jsonb` normalizza l'oggetto (ordine delle chiavi,
+            // spazi) e di una chiave ripetuta tiene l'ultimo valore. Con
+            // `Strict` la scrittura rifiuta le chiavi ripetute valore per
+            // valore (`write::canonical`), e l'ordine e gli spazi sono la
+            // semantica del tipo; con le altre politiche la perdita possibile
+            // si dichiara qui.
+            // Il tipo base di un dominio, o la colonna, e i campi di un
+            // composto: `native_declaration` di un dominio e il suo nome.
+            let jsonb = target
+                .domain_base_type
+                .as_deref()
+                .or(target.native_declaration.as_deref())
+                .into_iter()
+                .chain(
+                    target
+                        .composite_fields
+                        .iter()
+                        .map(|field| field.declaration.as_str()),
+                )
+                .any(|declaration| declaration.trim_end_matches("[]") == "jsonb");
+            if jsonb && operation.mapping_policy != MappingPolicy::Strict {
+                losses.push(MappingLoss {
+                    field_id: u32::try_from(field_id).map_err(|_| {
+                        DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport")
+                    })?,
+                    category: LossCategory::NativeType,
+                    severity: LossSeverity::Warning,
+                    reason: "jsonb tiene l'ultimo valore di una chiave ripetuta e normalizza \
+                             ordine delle chiavi e spazi"
+                        .to_owned(),
+                    source_type: Some(source.data_type().to_string()),
+                    target_type: target.native_declaration.clone(),
+                });
+            }
             if source.is_nullable() && !target.nullable {
                 losses.push(mapping_loss(
                     field_id,
@@ -250,6 +284,27 @@ pub async fn write(
                 return Err(DatabaseError::invalid_plan(
                     "chiave write assente nel target PostgreSQL",
                 ));
+            }
+        }
+    }
+    // La regola J per Create: la colonna `jsonb` che il campo dichiara.
+    if operation.mode == WriteMode::Create && operation.mapping_policy != MappingPolicy::Strict {
+        for (field_id, source) in input_schema.fields().iter().enumerate() {
+            let contract = crate::field_contract::FieldContract::parse(source)?;
+            let declared = contract.native_declaration.or(contract.native_type);
+            if declared.is_some_and(|declaration| declaration.trim_end_matches("[]") == "jsonb") {
+                losses.push(MappingLoss {
+                    field_id: u32::try_from(field_id).map_err(|_| {
+                        DatabaseError::invalid_plan("numero colonne oltre il contratto LossReport")
+                    })?,
+                    category: LossCategory::NativeType,
+                    severity: LossSeverity::Warning,
+                    reason: "jsonb tiene l'ultimo valore di una chiave ripetuta e normalizza \
+                             ordine delle chiavi e spazi"
+                        .to_owned(),
+                    source_type: Some(source.data_type().to_string()),
+                    target_type: declared.map(str::to_owned),
+                });
             }
         }
     }

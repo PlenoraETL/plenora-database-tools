@@ -631,6 +631,7 @@ fn unique_index(name: &str, columns: &[&str]) -> crate::MysqlIndex {
         unique: true,
         column_backed: true,
         columns: columns.iter().map(|c| (*c).to_owned()).collect(),
+        prefix: false,
     }
 }
 
@@ -1474,8 +1475,41 @@ fn upsert_preflight_rejects_a_conflicting_extra_unique_index() {
     let error = plan
         .preflight(&target, &crate::profile::MYSQL_PROFILE)
         .expect_err("unique index in conflitto");
-    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert_eq!(error.category, ErrorCategory::Schema);
     assert_eq!(error.phase, ErrorPhase::Prepare);
+    assert!(error
+        .message
+        .ends_with(plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX));
+}
+
+/// S6: un unique index su un **prefisso** delle keys entra in conflitto fra
+/// valori interi diversi con lo stesso prefisso: l'Upsert si rifiuta, anche
+/// quando e l'unico indice e le sue colonne sono le keys.
+#[test]
+fn upsert_preflight_rejects_a_unique_index_on_a_key_prefix() {
+    let plan = upsert_plan(
+        vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("label", DataType::Utf8, true),
+        ],
+        vec!["id".to_owned()],
+    );
+    let mut prefix = unique_index("prefisso", &["id"]);
+    prefix.prefix = true;
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        let target = base_table_with_indexes(identity_target(), vec![prefix.clone()]);
+        let error = plan
+            .preflight(&target, profile)
+            .expect_err("unique index su un prefisso");
+        assert_eq!(error.category, ErrorCategory::Schema);
+        assert_eq!(error.provider, Some(profile.kind()));
+        assert!(error
+            .message
+            .ends_with(plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX));
+    }
 }
 
 /// Nessun unique index sulle keys → l'Upsert inserirebbe duplicati.
@@ -1494,6 +1528,7 @@ fn upsert_preflight_rejects_keys_without_a_backing_unique_index() {
         unique: false,
         column_backed: true,
         columns: vec!["id".to_owned()],
+        prefix: false,
     };
     let target = base_table_with_indexes(identity_target(), vec![non_unique]);
     let error = plan
@@ -1518,6 +1553,7 @@ fn upsert_preflight_rejects_a_functional_unique_index() {
         unique: true,
         column_backed: false,
         columns: Vec::new(),
+        prefix: false,
     };
     let target = base_table_with_indexes(
         identity_target(),
@@ -1526,7 +1562,7 @@ fn upsert_preflight_rejects_a_functional_unique_index() {
     let error = plan
         .preflight(&target, &crate::profile::MYSQL_PROFILE)
         .expect_err("unique index funzionale");
-    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert_eq!(error.category, ErrorCategory::Schema);
 }
 
 /// Un unique index composito ridondante sulle **stesse** colonne delle
@@ -1652,12 +1688,14 @@ fn la_regola_k_vuole_un_indice_unico_sulle_chiavi() {
         unique: true,
         column_backed: false,
         columns: vec!["id".to_owned()],
+        prefix: false,
     };
     let non_unique = crate::MysqlIndex {
         name: "idx_id".to_owned(),
         unique: false,
         column_backed: true,
         columns: vec!["id".to_owned()],
+        prefix: false,
     };
     for mode in [WriteMode::Update, WriteMode::DeleteByKeys] {
         let mut operation = append_operation();
