@@ -640,3 +640,92 @@ fn provider_dates_bind_only_where_chrono_and_oracle_calendars_agree() {
         assert_eq!(written, None, "{value}");
     }
 }
+
+/// Secondo giro: ogni percorso da chrono a Oracle passa da `bind_parameter`
+/// (parametri, letterali portable, scrittura Arrow): `timestamptz` con la
+/// stessa guardia gregoriana e lo stesso microsecondo esatto degli altri.
+#[test]
+fn provider_timestamptz_binds_only_gregorian_microsecond_instants() {
+    use crate::parameter::bind_parameters;
+    use plenora_database_core::provider::ParameterValue;
+    for value in [
+        "1500-03-01T12:00:00Z",
+        "1000-01-01T00:00:00Z",
+        "0100-03-01T00:00:00Z",
+        "1582-10-14T12:00:00Z",
+        "1582-10-15T02:00:00+05:00",
+        "1582-10-14T22:00:00-05:00",
+        "2024-01-01T00:00:00.123456789Z",
+        "2016-12-31T23:59:60Z",
+    ] {
+        let bound = no_panic("bind TIMESTAMPTZ", || {
+            bind_parameters(&[ParameterValue::TimestampTz(value.to_owned())])
+        });
+        assert!(bound.is_err(), "{value}");
+    }
+    for value in [
+        "1582-10-15T12:00:00Z",
+        "2024-01-01T00:00:00.123456000+02:00",
+    ] {
+        assert!(
+            bind_parameters(&[ParameterValue::TimestampTz(value.to_owned())]).is_ok(),
+            "{value}"
+        );
+    }
+    for value in [
+        "2024-01-01T00:00:00.123456789",
+        "2024-01-01T00:00:00.0000001",
+    ] {
+        let bound = no_panic("bind TIMESTAMP", || {
+            bind_parameters(&[ParameterValue::Timestamp(value.to_owned())])
+        });
+        assert!(bound.is_err(), "{value}");
+    }
+    let bound = bind_parameters(&[ParameterValue::Timestamp(
+        "2024-01-01T00:00:00.123456000".to_owned(),
+    )])
+    .unwrap();
+    assert!(matches!(
+        bound.as_slice(),
+        [oracle_rs::Value::Timestamp(t)] if t.microsecond == 123_456
+    ));
+}
+
+#[test]
+fn timestamp_with_an_offset_is_not_bound_as_a_naive_timestamp() {
+    // Base: l'offset spariva e il server riceveva un altro istante.
+    let timestamp = OracleTimestamp::with_timezone(2024, 1, 1, 12, 0, 0, 0, 2, 0);
+    assert_eq!(encode_timestamp(timestamp), None);
+    assert_eq!(
+        encode_timestamp(OracleTimestamp::new(2024, 1, 1, 12, 0, 0, 0)).map(|b| b.len()),
+        Some(11)
+    );
+}
+
+#[test]
+fn oson_binary_float_and_utc_offset_render_as_json_serialize() {
+    let float_node = |value: f32| {
+        let mut node = vec![0x7F];
+        node.extend_from_slice(&oracle_rs::types::encode_binary_float(value));
+        oson_scalar(&node)
+    };
+    // Base: 0.1 diventava 0.10000000149011612, 1/3 0.3333333432674408.
+    for (value, text) in [
+        (0.1_f32, "0.1"),
+        (1.0 / 3.0, "0.33333334"),
+        (-123_456.7, "-123456.7"),
+        (16_777_216.0, "16777216.0"),
+    ] {
+        let decoded = decode_oson(float_node(value)).unwrap();
+        assert_eq!(decoded.to_string(), text, "{value}");
+    }
+    // TIMESTAMP WITH TIME ZONE a offset zero: `Z` (era `+00:00`).
+    let mut node = vec![0x7C];
+    node.extend_from_slice(&reference_date_bytes(2024, 3, 15, 14, 30, 45));
+    node.extend_from_slice(&500_000_000_u32.to_be_bytes());
+    node.extend_from_slice(&[20, 60]);
+    assert_eq!(
+        decode_oson(oson_scalar(&node)),
+        Some(json!("2024-03-15T14:30:45.500000Z"))
+    );
+}

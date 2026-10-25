@@ -187,7 +187,20 @@ impl OracleTimestamp {
     /// [`OracleDate::to_oracle_bytes`] and the fraction must be below one
     /// second (a chrono leap second carries 1_000_000 microseconds or more,
     /// which used to reach the wire as an invalid fraction).
+    ///
+    /// The eleven bytes are a TIMESTAMP without time zone: a value carrying
+    /// an offset is refused (its offset used to be dropped, binding another
+    /// instant). [`encode_oracle_timestamp`] writes the offset form.
     pub fn to_oracle_bytes(&self) -> Result<[u8; 11]> {
+        if self.has_timezone() {
+            return Err(Error::DataConversionError(
+                "TIMESTAMP with a time zone offset bound without its offset".to_string(),
+            ));
+        }
+        self.to_naive_oracle_bytes()
+    }
+
+    fn to_naive_oracle_bytes(&self) -> Result<[u8; 11]> {
         let date_bytes = self.to_date().to_oracle_bytes()?;
         if self.microsecond >= 1_000_000 {
             return Err(Error::DataConversionError(
@@ -411,7 +424,12 @@ pub fn encode_oracle_date(date: &OracleDate) -> Result<Vec<u8>> {
 ///
 /// Returns 7 bytes for DATE, 11 bytes for TIMESTAMP, or 13 bytes for TIMESTAMP WITH TIME ZONE
 pub fn encode_oracle_timestamp(ts: &OracleTimestamp, include_tz: bool) -> Result<Vec<u8>> {
-    let bytes = ts.to_oracle_bytes()?;
+    if ts.has_timezone() && !include_tz {
+        return Err(Error::DataConversionError(
+            "TIMESTAMP with a time zone offset encoded without its offset".to_string(),
+        ));
+    }
+    let bytes = ts.to_naive_oracle_bytes()?;
     let mut result = bytes[..7].to_vec();
 
     // Add fractional seconds if non-zero or if we need timezone

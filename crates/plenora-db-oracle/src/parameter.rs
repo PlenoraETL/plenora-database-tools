@@ -240,6 +240,21 @@ fn json_has_negative_zero(value: &serde_json::Value) -> bool {
 fn parse_timestamp_tz(value: &str) -> Result<String> {
     let timestamp = chrono::DateTime::parse_from_rfc3339(value)
         .map_err(|_| mapping_error("parametro timestamptz Oracle non valido"))?;
+    // Stesse regole del timestamp senza fuso: microsecondo esatto, niente
+    // leap second, e calendario gregoriano sia per l'ora locale sia per
+    // l'istante UTC che Oracle conserva (1582-10-14T12:00Z diventava
+    // 1582-10-15, 1500-03-01 un istante dieci giorni dopo).
+    exact_microsecond(chrono::Timelike::nanosecond(&timestamp))?;
+    for date in [timestamp.naive_local().date(), timestamp.naive_utc().date()] {
+        crate::decode::require_gregorian(
+            chrono::Datelike::year(&date),
+            u8::try_from(chrono::Datelike::month(&date))
+                .map_err(|_| mapping_error("mese Oracle non rappresentabile"))?,
+            u8::try_from(chrono::Datelike::day(&date))
+                .map_err(|_| mapping_error("giorno Oracle non rappresentabile"))?,
+            ErrorPhase::Prepare,
+        )?;
+    }
     Ok(timestamp.format("%Y-%m-%dT%H:%M:%S%.6f%:z").to_string())
 }
 
@@ -306,8 +321,25 @@ fn parse_timestamp(value: &str) -> Result<OracleTimestamp> {
             .map_err(|_| mapping_error("minuto Oracle non rappresentabile"))?,
         u8::try_from(chrono::Timelike::second(&timestamp))
             .map_err(|_| mapping_error("secondo Oracle non rappresentabile"))?,
-        chrono::Timelike::nanosecond(&timestamp) / 1_000,
+        exact_microsecond(chrono::Timelike::nanosecond(&timestamp))?,
     ))
+}
+
+/// I microsecondi di una frazione chrono, esatti o rifiutati. Stessa regola
+/// e stesso messaggio di `parameter_fidelity::reject_sub_microsecond` di
+/// #135: cifre oltre il microsecondo diverse da zero sono un errore (erano
+/// troncate, `.123456789` diventava `.123456`). Un leap second di chrono
+/// (frazione da un secondo in su) e un errore anch'esso.
+fn exact_microsecond(nanosecond: u32) -> Result<u32> {
+    if !nanosecond.is_multiple_of(1_000) {
+        return Err(mapping_error(
+            "parametro temporale oltre il microsecondo: la precisione bindabile e il microsecondo",
+        ));
+    }
+    if nanosecond >= 1_000_000_000 {
+        return Err(mapping_error("parametro temporale con secondo intercalare"));
+    }
+    Ok(nanosecond / 1_000)
 }
 
 /// Una data si lega soltanto dove il calendario di chrono (gregoriano

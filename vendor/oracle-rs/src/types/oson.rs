@@ -184,8 +184,18 @@ fn render_oson_timestamp_tz(bytes: &[u8]) -> Result<String> {
     let byte = |value: u32| u8::try_from(value).map_err(|_| invalid());
     let sign = if offset_seconds < 0 { '-' } else { '+' };
     let magnitude = offset_seconds.unsigned_abs();
+    // `JSON_SERIALIZE` writes a zero offset as `Z`.
+    let offset = if magnitude == 0 {
+        "Z".to_owned()
+    } else {
+        format!(
+            "{sign}{:02}:{:02}",
+            magnitude / 3600,
+            (magnitude % 3600) / 60
+        )
+    };
     Ok(format!(
-        "{}{}{}{:02}:{:02}",
+        "{}{}{}",
         render_fields(
             local.year(),
             byte(local.month())?,
@@ -195,9 +205,7 @@ fn render_oson_timestamp_tz(bytes: &[u8]) -> Result<String> {
             byte(local.second())?,
         ),
         fraction,
-        sign,
-        magnitude / 3600,
-        (magnitude % 3600) / 60
+        offset
     ))
 }
 
@@ -535,9 +543,21 @@ impl OsonDecoder {
                     .read_bytes(4)?
                     .try_into()
                     .map_err(|_| oson_error("invalid OSON BINARY_FLOAT"))?;
-                serde_json::Number::from_f64(f64::from(decode_binary_float(&bytes)))
+                // Plenora fork: the shortest decimal that reads back as the
+                // same f32, as `JSON_SERIALIZE` writes it (0.1, 0.33333334);
+                // widening to f64 printed 0.10000000149011612. A decimal of at
+                // most nine significant digits is its own shortest f64.
+                let value = decode_binary_float(&bytes);
+                if !value.is_finite() {
+                    return Err(oson_error("non-finite OSON BINARY_FLOAT"));
+                }
+                value
+                    .to_string()
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(serde_json::Number::from_f64)
                     .map(serde_json::Value::Number)
-                    .ok_or_else(|| oson_error("non-finite OSON BINARY_FLOAT"))
+                    .ok_or_else(|| oson_error("invalid OSON BINARY_FLOAT"))
             }
 
             // Date types (convert to string for JSON)

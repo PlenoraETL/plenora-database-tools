@@ -313,7 +313,13 @@ struct ConnectionInner {
 impl ConnectionInner {
     /// Remember the last row of a page as the base for the next fetch of the
     /// same cursor. A new execution starts from its own first row.
+    /// An exhausted cursor drops its entry: its id can be reused by the
+    /// server for another statement.
     fn remember_last_row(&mut self, result: &QueryResult, new_execution: bool) {
+        if !result.has_more_rows {
+            self.last_row_values.remove(&result.cursor_id);
+            return;
+        }
         match result.rows.last() {
             Some(row) => {
                 self.last_row_values
@@ -4966,6 +4972,7 @@ impl Connection {
         }
 
         inner.state = ConnectionState::Closed;
+        inner.last_row_values.clear();
 
         // Close the TCP stream
         if let Some(stream) = inner.stream.take() {

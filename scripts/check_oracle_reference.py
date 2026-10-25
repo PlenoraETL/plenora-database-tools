@@ -75,6 +75,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_clob_chunks_with_supplementary_characters_are_contiguous",
         "live_inline_lob_binds_are_refused_not_nulled",
         "live_pre_gregorian_dates_are_refused_by_the_provider",
+        "live_timestamptz_binds_keep_the_instant_or_are_refused",
     }
 )
 PYTHON_LIVE_EXPECTED = 7

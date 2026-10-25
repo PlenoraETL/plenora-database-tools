@@ -677,6 +677,11 @@ async fn live_json_reads_match_json_serialize_or_are_refused() {
          'tzn' VALUE TIMESTAMP '2024-03-15 23:30:45 -05:30', \
          'b' VALUE HEXTORAW('0A0BFF'), 'f' VALUE TO_BINARY_DOUBLE(0.1), \
          'n' VALUE 0.1, 'i' VALUE 12345678901234, 'm' VALUE -1.5e-100 RETURNING JSON)",
+        // Secondo giro: BINARY_FLOAT reso con le cifre piu corte dell'f32
+        // (era l'f64 allargato, 0.10000000149011612) e offset zero come `Z`.
+        "JSON_OBJECT('g' VALUE TO_BINARY_FLOAT(0.1), 'h' VALUE TO_BINARY_FLOAT(1/3), \
+         'k' VALUE TO_BINARY_FLOAT('1.17549435E-38'), 'l' VALUE TO_BINARY_FLOAT(-123456.7), \
+         'z' VALUE TIMESTAMP '2024-03-15 14:30:45.5 +00:00' RETURNING JSON)",
         "JSON('{\"a\":[1,2,{\"b\":null,\"c\":true}],\"s\":\"\u{e8}\u{1F600}\"}')",
     ];
     for document in documents {
@@ -955,5 +960,60 @@ async fn live_pre_gregorian_dates_are_refused_by_the_provider() {
         )
         .await;
         assert_eq!(rows.is_ok(), accepted, "{query}: {rows:?}");
+    }
+}
+
+/// Secondo giro: un `timestamptz` legato dal provider (con
+/// `TO_TIMESTAMP_TZ`, come il portable e la scrittura Arrow) conserva lo
+/// stesso istante, riletto dal server in UTC con `TO_CHAR`; prima del
+/// 1582-10-15, nell'ora locale o nell'istante UTC, si rifiuta (base:
+/// 1500-03-01T12:00Z conservato dieci giorni dopo, 1582-10-14T12:00Z come
+/// 1582-10-15) e oltre il microsecondo pure (base: troncato).
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_timestamptz_binds_keep_the_instant_or_are_refused() {
+    use crate::parameter::bind_parameters;
+    let connection = driver().await;
+    let model = plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL;
+    let sql = format!(
+        "SELECT TO_CHAR(SYS_EXTRACT_UTC(TO_TIMESTAMP_TZ(:1, '{model}')), \
+         'SYYYY-MM-DD\"T\"HH24:MI:SS.FF6') FROM DUAL"
+    );
+    for (input, utc) in [
+        ("1582-10-15T12:00:00Z", " 1582-10-15T12:00:00.000000"),
+        ("1582-10-16T02:00:00+05:00", " 1582-10-15T21:00:00.000000"),
+        (
+            "2024-02-29T23:59:59.123456+14:00",
+            " 2024-02-29T09:59:59.123456",
+        ),
+        (
+            "2024-03-01T00:30:00.000001-12:00",
+            " 2024-03-01T12:30:00.000001",
+        ),
+        ("9999-12-31T23:59:59.999999Z", " 9999-12-31T23:59:59.999999"),
+    ] {
+        let bound = bind_parameters(&[ParameterValue::TimestampTz(input.to_owned())]).unwrap();
+        let row = single(&connection, &sql, &bound).await;
+        assert_eq!(text(&row[0]), utc, "{input}");
+    }
+    for input in [
+        "1500-03-01T12:00:00Z",
+        "1000-01-01T00:00:00Z",
+        "0100-03-01T00:00:00Z",
+        "1582-10-14T12:00:00Z",
+        "1582-10-15T02:00:00+05:00",
+        "1582-10-14T22:00:00-05:00",
+        "2024-01-01T00:00:00.123456789Z",
+        "2024-01-01T00:00:00.0000001+01:00",
+    ] {
+        let bound = bind_parameters(&[ParameterValue::TimestampTz(input.to_owned())]);
+        assert!(bound.is_err(), "{input} legato come {bound:?}");
+    }
+    for input in [
+        "2024-01-01T00:00:00.123456789",
+        "2024-01-01T00:00:00.0000005",
+    ] {
+        let bound = bind_parameters(&[ParameterValue::Timestamp(input.to_owned())]);
+        assert!(bound.is_err(), "{input} legato come {bound:?}");
     }
 }
