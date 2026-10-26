@@ -208,8 +208,12 @@ impl<'a> ExecuteMessage<'a> {
     pub fn set_batch_bind_values(&mut self, rows: Vec<Vec<Value>>) {
         self.batch_bind_values = rows;
         // Update num_execs to match batch size
+        // Plenora fork: a batch beyond u32::MAX rows cannot be described on
+        // the wire; it is refused when the request is built (see
+        // `write_execute_message`), never truncated here.
         if !self.batch_bind_values.is_empty() {
-            self.options.num_execs = self.batch_bind_values.len() as u32;
+            self.options.num_execs =
+                u32::try_from(self.batch_bind_values.len()).unwrap_or(u32::MAX);
         }
     }
 
@@ -260,9 +264,9 @@ impl<'a> ExecuteMessage<'a> {
         let num_params = if stmt.requires_define() {
             0 // No bind params when defining columns
         } else if !stmt.bind_info().is_empty() {
-            stmt.bind_info().len() as u32
+            wire_u32(stmt.bind_info().len())?
         } else if self.has_bind_values() {
-            self.batch_bind_values[0].len() as u32
+            wire_u32(self.batch_bind_values[0].len())?
         } else {
             0
         };
@@ -339,7 +343,7 @@ impl<'a> ExecuteMessage<'a> {
         // SQL pointer and length
         if stmt.cursor_id() == 0 || stmt.is_ddl() {
             buf.write_u8(1)?; // Pointer (cursor id)
-            buf.write_ub4(stmt.sql_bytes().len() as u32)?;
+            buf.write_ub4(wire_u32(stmt.sql_bytes().len())?)?;
         } else {
             buf.write_u8(0)?; // Pointer (cursor id)
             buf.write_ub4(0)?;
@@ -372,7 +376,7 @@ impl<'a> ExecuteMessage<'a> {
         // Column defines
         if stmt.requires_define() {
             buf.write_u8(1)?; // Pointer (al8doac)
-            buf.write_ub4(stmt.column_count() as u32)?; // Number of defines
+            buf.write_ub4(wire_u32(stmt.column_count())?)?; // Number of defines
         } else {
             buf.write_u8(0)?;
             buf.write_ub4(0)?;
@@ -546,18 +550,41 @@ impl<'a> ExecuteMessage<'a> {
         };
 
         let num_params = first_row.len();
+        // The execution count written in the header is the batch length.
+        wire_u32(self.batch_bind_values.len())?;
 
-        // Calculate max buffer sizes across all rows for each column
+        // Calculate max buffer sizes across all rows for each column.
+        // Plenora fork: every row must carry one value per bind (a shorter
+        // row used to panic on the index, a longer one to be written with
+        // metadata for the first row only), and sizes are checked.
         let mut max_sizes: Vec<u32> = vec![0; num_params];
         for row in &self.batch_bind_values {
+            if row.len() != num_params {
+                return Err(crate::error::Error::DataConversionError(
+                    "batch rows with different bind counts".to_string(),
+                ));
+            }
             for (col_idx, value) in row.iter().enumerate() {
                 let size = match value {
-                    Value::String(s) => s.len() as u32,
-                    Value::Bytes(b) => b.len() as u32,
-                    Value::Json(json) => serde_json::to_string(json)
-                        .map(|s| s.len() as u32)
-                        .unwrap_or(100),
-                    Value::Vector(vec) => (vec.dimensions() * 8) as u32, // Estimate: 8 bytes per dimension max
+                    Value::String(s) => wire_u32(s.len())?,
+                    Value::Bytes(b) => wire_u32(b.len())?,
+                    Value::Json(json) => wire_u32(
+                        serde_json::to_string(json)
+                            .map_err(|_| {
+                                crate::error::Error::DataConversionError(
+                                    "JSON bind not serializable".to_string(),
+                                )
+                            })?
+                            .len(),
+                    )?,
+                    // Estimate: 8 bytes per dimension max
+                    Value::Vector(vec) => {
+                        wire_u32(vec.dimensions().checked_mul(8).ok_or_else(|| {
+                            crate::error::Error::DataConversionError(
+                                "VECTOR bind beyond the Oracle wire limit".to_string(),
+                            )
+                        })?)?
+                    }
                     _ => 0, // Fixed-size types don't need max calculation
                 };
                 if size > max_sizes[col_idx] {
@@ -622,7 +649,7 @@ impl<'a> ExecuteMessage<'a> {
 
                 if let Some(oid) = type_oid {
                     // Write the type OID
-                    buf.write_ub4(oid.len() as u32)?; // OID length
+                    buf.write_ub4(wire_u32(oid.len())?)?; // OID length
                     buf.write_bytes_with_length(Some(oid))?; // OID bytes with length
                     buf.write_ub4(0)?; // Version (ub4 for objects)
                 } else {
@@ -730,7 +757,13 @@ impl<'a> ExecuteMessage<'a> {
     }
 
     /// Write a single bind value
+    ///
+    /// Plenora fork: every arm either writes the exact value or fails. The
+    /// upstream encoder wrote NULL for a JSON value OSON could not encode,
+    /// for an invalid ROWID and for an inline or empty LOB, and wrote values
+    /// longer than 252 bytes as one unterminated chunk.
     fn write_bind_value(&self, buf: &mut WriteBuffer, value: &Value) -> Result<()> {
+        use crate::error::Error;
         use crate::types::{encode_binary_double, encode_oracle_number};
 
         match value {
@@ -740,8 +773,7 @@ impl<'a> ExecuteMessage<'a> {
             Value::Integer(n) => {
                 // Encode as Oracle NUMBER format
                 let encoded = encode_oracle_number(&n.to_string())?;
-                buf.write_u8(encoded.len() as u8)?;
-                buf.write_bytes(&encoded)?;
+                buf.write_bytes_with_length(Some(&encoded))?;
             }
             Value::Float(f) => {
                 // Write as Oracle binary double (8 bytes)
@@ -752,34 +784,13 @@ impl<'a> ExecuteMessage<'a> {
             Value::Number(n) => {
                 // Encode OracleNumber to wire format
                 let encoded = encode_oracle_number(n.as_str())?;
-                buf.write_u8(encoded.len() as u8)?;
-                buf.write_bytes(&encoded)?;
+                buf.write_bytes_with_length(Some(&encoded))?;
             }
-            Value::String(s) => {
-                let bytes = s.as_bytes();
-                if bytes.is_empty() {
-                    buf.write_u8(0)?; // Empty string = NULL in Oracle
-                } else if bytes.len() <= 252 {
-                    buf.write_u8(bytes.len() as u8)?;
-                    buf.write_bytes(bytes)?;
-                } else {
-                    buf.write_u8(254)?; // Long form indicator
-                    buf.write_ub4(bytes.len() as u32)?;
-                    buf.write_bytes(bytes)?;
-                }
-            }
-            Value::Bytes(b) => {
-                if b.is_empty() {
-                    buf.write_u8(0)?;
-                } else if b.len() <= 252 {
-                    buf.write_u8(b.len() as u8)?;
-                    buf.write_bytes(b)?;
-                } else {
-                    buf.write_u8(254)?;
-                    buf.write_ub4(b.len() as u32)?;
-                    buf.write_bytes(b)?;
-                }
-            }
+            // Empty string and empty RAW are NULL in Oracle (length 0); a
+            // longer value goes in chunks of at most 32767 bytes closed by a
+            // zero chunk, as in python-oracledb `write_bytes_with_length`.
+            Value::String(s) => buf.write_bytes_with_length(Some(s.as_bytes()))?,
+            Value::Bytes(b) => buf.write_bytes_with_length(Some(b))?,
             Value::Boolean(b) => {
                 // Oracle Boolean encoding: escape char + value
                 // false = 0x02 0x00, true = 0x02 0x01, null = 0xC0 0x01
@@ -787,29 +798,28 @@ impl<'a> ExecuteMessage<'a> {
                 buf.write_u8(if *b { 0x01 } else { 0x00 })?;
             }
             Value::Timestamp(ts) => {
-                // Write as Oracle timestamp
-                let bytes = ts.to_oracle_bytes();
-                buf.write_u8(bytes.len() as u8)?;
-                buf.write_bytes(&bytes)?;
+                // Senza frazione si scrive la forma a 7 byte, come fa il
+                // driver di riferimento (python-oracledb): misurato su Oracle
+                // 23ai, gli 11 byte con i nanosecondi a zero non sono uguali
+                // in un confronto al valore senza frazione (`TS = :1` non
+                // ritrovava la riga), pur assegnandosi esatti.
+                let bytes = ts.to_oracle_bytes()?;
+                let length = if ts.microsecond == 0 { 7 } else { bytes.len() };
+                buf.write_u8(length as u8)?;
+                buf.write_bytes(&bytes[..length])?;
             }
             Value::Date(d) => {
                 // Write as Oracle date (7 bytes)
-                let bytes = d.to_oracle_bytes();
+                let bytes = d.to_oracle_bytes()?;
                 buf.write_u8(bytes.len() as u8)?;
                 buf.write_bytes(&bytes)?;
             }
             Value::RowId(r) => {
                 // Write ROWID as string
-                match r.to_string() {
-                    Some(s) => {
-                        let bytes = s.as_bytes();
-                        buf.write_u8(bytes.len() as u8)?;
-                        buf.write_bytes(bytes)?;
-                    }
-                    None => {
-                        buf.write_u8(0)?; // NULL for invalid ROWID
-                    }
-                }
+                let text = r
+                    .to_string()
+                    .ok_or_else(|| Error::DataConversionError("invalid ROWID bind".to_string()))?;
+                buf.write_bytes_with_length(Some(text.as_bytes()))?;
             }
             Value::Lob(lob_value) => {
                 use crate::types::LobValue;
@@ -819,23 +829,30 @@ impl<'a> ExecuteMessage<'a> {
                         // Write LOB locator
                         // Format: UB4(locator_len) + length-prefixed locator bytes
                         let locator_bytes = locator.locator_bytes();
-                        buf.write_ub4(locator_bytes.len() as u32)?;
+                        buf.write_ub4(wire_u32(locator_bytes.len())?)?;
                         buf.write_bytes_with_length(Some(locator_bytes))?;
                     }
-                    LobValue::Inline(_) | LobValue::Empty | LobValue::Null => {
-                        // For non-locator LOBs, write as NULL
-                        // To bind inline data to a LOB column, use a temporary LOB instead
-                        buf.write_u8(0)?;
+                    LobValue::Null => buf.write_u8(0)?,
+                    LobValue::Inline(_) | LobValue::Empty => {
+                        // Writing NULL here lost the data: inline content
+                        // reaches a LOB column only through a temporary LOB.
+                        return Err(Error::DataConversionError(
+                            "inline or empty LOB bind without a locator".to_string(),
+                        ));
                     }
                 }
             }
             Value::Json(json) => {
                 use crate::types::OsonEncoder;
 
-                // Encode JSON to OSON format
-                match OsonEncoder::encode(json) {
-                    Ok(oson_bytes) => {
-                        let data_len = oson_bytes.len() as u64;
+                // Encode JSON to OSON format. Plenora fork: a value OSON
+                // cannot encode is an error, it used to be bound as NULL.
+                {
+                    let oson_bytes = OsonEncoder::encode(json)?;
+                    {
+                        let data_len = u64::try_from(oson_bytes.len()).map_err(|_| {
+                            Error::DataConversionError("JSON bind too large".to_string())
+                        })?;
 
                         // Write QLocator (40 bytes) - LOB-like descriptor for JSON data
                         // QLocator constants
@@ -863,26 +880,13 @@ impl<'a> ExecuteMessage<'a> {
                         buf.write_u64_be(0)?; // Unused
                         buf.write_u64_be(0)?; // Unused
 
-                        // Write OSON data with chunked length prefix
-                        // Per Python's write_length():
-                        // - < 254: single byte
-                        // - 254-65535: 254 + 2-byte BE length
-                        // - > 65535: 255 + 4-byte BE length
-                        let oson_len = oson_bytes.len();
-                        if oson_len < 254 {
-                            buf.write_u8(oson_len as u8)?;
-                        } else if oson_len <= 65535 {
-                            buf.write_u8(254)?;
-                            buf.write_u16_be(oson_len as u16)?;
-                        } else {
-                            buf.write_u8(255)?;
-                            buf.write_u32_be(oson_len as u32)?;
-                        }
-                        buf.write_bytes(&oson_bytes)?;
-                    }
-                    Err(_) => {
-                        // If OSON encoding fails, write as NULL
-                        buf.write_u8(0)?;
+                        // Write OSON data as python-oracledb `write_oson` does,
+                        // with `write_bytes_with_length`: one length byte up to
+                        // 252, then 254 and ub4-prefixed chunks closed by a zero
+                        // chunk. The upstream prefix wrote 253 as a length, 254
+                        // with a two-byte length and 255 (the NULL indicator)
+                        // with a four-byte length.
+                        buf.write_bytes_with_length(Some(&oson_bytes))?;
                     }
                 }
             }
@@ -891,7 +895,8 @@ impl<'a> ExecuteMessage<'a> {
 
                 // Encode vector to binary format
                 let vector_bytes = encode_vector(vector);
-                let data_len = vector_bytes.len() as u64;
+                let data_len = u64::try_from(vector_bytes.len())
+                    .map_err(|_| Error::DataConversionError("VECTOR bind too large".to_string()))?;
 
                 // Write QLocator (40 bytes) - LOB-like descriptor for VECTOR data
                 const QLOCATOR_LEN: u32 = 40;
@@ -918,18 +923,8 @@ impl<'a> ExecuteMessage<'a> {
                 buf.write_u64_be(0)?; // Unused
                 buf.write_u64_be(0)?; // Unused
 
-                // Write vector data with chunked length prefix
-                let vec_len = vector_bytes.len();
-                if vec_len < 254 {
-                    buf.write_u8(vec_len as u8)?;
-                } else if vec_len <= 65535 {
-                    buf.write_u8(254)?;
-                    buf.write_u16_be(vec_len as u16)?;
-                } else {
-                    buf.write_u8(255)?;
-                    buf.write_u32_be(vec_len as u32)?;
-                }
-                buf.write_bytes(&vector_bytes)?;
+                // Write vector data with the same length prefix as OSON.
+                buf.write_bytes_with_length(Some(&vector_bytes))?;
             }
             Value::Cursor(cursor) => {
                 // Write cursor parameter (REF CURSOR)
@@ -997,30 +992,43 @@ impl<'a> ExecuteMessage<'a> {
                 )
             })?;
 
+        // Plenora fork: missing type metadata is refused, not defaulted.
+        let missing = |what: &str| {
+            crate::error::Error::DataConversionError(format!("collection bind without {what}"))
+        };
         let schema = collection
             .get("_type_schema")
             .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .ok_or_else(|| missing("its type schema"))?;
         let name = collection
             .get("_type_name")
             .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .ok_or_else(|| missing("its type name"))?;
 
+        // Plenora fork: a missing or unknown element or collection type is
+        // refused; it used to default to VARCHAR elements in a VARRAY.
+        let metadata_error = || {
+            crate::error::Error::DataConversionError(
+                "collection bind without a valid element or collection type".to_string(),
+            )
+        };
         let element_type_code = collection
             .get("_element_type")
             .and_then(|v| v.as_i64())
-            .and_then(|c| crate::constants::OracleType::try_from(c as u8).ok())
-            .unwrap_or(crate::constants::OracleType::Varchar);
+            .and_then(|c| u8::try_from(c).ok())
+            .and_then(|c| crate::constants::OracleType::try_from(c).ok())
+            .ok_or_else(metadata_error)?;
 
         let coll_type_code = collection
             .get("_collection_type")
             .and_then(|v| v.as_i64())
-            .unwrap_or(3); // Default to VARRAY
+            .ok_or_else(metadata_error)?;
 
         let collection_type = match coll_type_code {
             1 => CollectionType::PlsqlIndexTable,
             2 => CollectionType::NestedTable,
-            _ => CollectionType::Varray,
+            3 => CollectionType::Varray,
+            _ => return Err(metadata_error()),
         };
 
         // Build TOID: prefix + flags + type_oid + extent_oid
@@ -1050,7 +1058,7 @@ impl<'a> ExecuteMessage<'a> {
         let packed_data = encode_collection(collection, &obj_type)?;
 
         // Write TOID
-        buf.write_ub4(toid.len() as u32)?;
+        buf.write_ub4(wire_u32(toid.len())?)?;
         buf.write_bytes_with_length(Some(&toid))?;
 
         // Write OID (null for new objects)
@@ -1063,7 +1071,7 @@ impl<'a> ExecuteMessage<'a> {
         buf.write_ub4(0)?;
 
         // Write packed data length
-        buf.write_ub4(packed_data.len() as u32)?;
+        buf.write_ub4(wire_u32(packed_data.len())?)?;
 
         // Write flags (TOP_LEVEL)
         buf.write_ub4(obj_flags::TOP_LEVEL as u32)?;
@@ -1130,6 +1138,16 @@ impl<'a> ExecuteMessage<'a> {
     pub fn function_code(&self) -> FunctionCode {
         self.function_code
     }
+}
+
+/// Plenora fork: a length, count or id written on the wire, checked. The
+/// upstream `as u32` casts truncated silently past `u32::MAX`.
+fn wire_u32(value: usize) -> Result<u32> {
+    u32::try_from(value).map_err(|_| {
+        crate::error::Error::DataConversionError(
+            "length or count beyond the Oracle wire limit".to_string(),
+        )
+    })
 }
 
 #[cfg(test)]

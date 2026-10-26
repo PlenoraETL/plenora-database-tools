@@ -29,7 +29,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "8.0.1"
+version = "8.0.2"
 edition = "2021"
 rust-version = "1.98.1"
 publish = false
@@ -56,7 +56,13 @@ bytes = "=1.12.1"
 # capability in tutti i crate.
 serde = { version = "=1.0.229", features = ["derive"] }
 # JSON dei contratti v2, dei documenti CLI e dei fingerprint canonici.
-serde_json = "=1.0.151"
+# `float_roundtrip`: senza, il parser veloce di serde_json non arrotonda
+# correttamente circa un numero su quattro (-1e-130 diventava
+# -9.999999999999999e-131, un ULP sotto) e ogni f64 letto da JSON (piani,
+# letterali CLI, parametri `json`, payload) poteva arrivare al database
+# diverso da quello scritto, in silenzio. Con la feature il parsing coincide
+# con `str::parse::<f64>`.
+serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
 # Solo nell'adapter SQL Server: `native_query_policy` analizza lo statement
 # nativo per applicarvi la policy prima dell'invio. Senza feature di default.
 sqlparser = { version = "=0.63.0", default-features = false, features = ["std"] }

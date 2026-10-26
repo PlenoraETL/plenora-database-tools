@@ -24,7 +24,7 @@ plenora-db-mysql = { path = "../crates/plenora-db-mysql" }
 # Tipi dello schema Arrow costruiti dal target `field_contract`.
 arrow-schema = "=60.0.0"
 # Decodifica JSON degli input dei target di piano, query e catalogo.
-serde_json = "=1.0.151"
+serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
 
 [[bin]]
 name = "ewkb_parser"

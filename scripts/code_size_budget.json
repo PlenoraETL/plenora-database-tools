@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 122995,
-  "max_code_lines": 98809,
-  "rationale": "Sedicesima lettura del 25/10: CAST a testo rifiutato su MySQL e MariaDB (cambia la collation del confronto), regola N in ogni piano giudicato e CTE legate con la regola del server, una relazione assente dal catalogo non lega i riferimenti; prove offline e live per difetto. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 122878 -> 122995 (+117), righe di codice 98771 -> 98809 (+38). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 123328,
+  "max_code_lines": 99008,
+  "rationale": "Merge di feat/adozione-geometry-semantics con origin/main (Oracle #136/#137, release 8.0.2): conservate adozione Arrow Geometry Semantics e correzioni di fedelta Oracle. Soglie ricalcolate con scripts/code_size.py sul prodotto integrato; conteggio e perimetro invariati, nessun margine aggiunto."
 }

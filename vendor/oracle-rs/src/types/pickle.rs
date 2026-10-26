@@ -81,8 +81,12 @@ pub fn decode_collection(obj_type: &DbObjectType, data: &[u8]) -> Result<DbObjec
     // Read element count
     let num_elements = read_length(&mut buf)?;
 
-    let element_type = obj_type.element_type.unwrap_or(OracleType::Varchar);
-    let coll_type = obj_type.collection_type.unwrap_or(CollectionType::Varray);
+    let element_type = obj_type.element_type.ok_or_else(|| {
+        Error::DataConversionError("collection type without its element type".to_string())
+    })?;
+    let coll_type = obj_type.collection_type.ok_or_else(|| {
+        Error::DataConversionError("collection type without its kind".to_string())
+    })?;
 
     for _ in 0..num_elements {
         // For associative arrays, read the index first (we ignore it for now)
@@ -140,20 +144,34 @@ pub fn encode_collection(obj: &DbObject, obj_type: &DbObjectType) -> Result<Vec<
         Some(CollectionType::Varray) => collection_type::VARRAY,
         Some(CollectionType::NestedTable) => collection_type::NESTED_TABLE,
         Some(CollectionType::PlsqlIndexTable) => collection_type::PLSQL_INDEX_TABLE,
-        None => collection_type::VARRAY,
+        // Plenora fork: a type without a collection kind or element type is
+        // refused; it used to be encoded as a VARRAY of VARCHAR2.
+        None => {
+            return Err(Error::DataConversionError(
+                "collection type without its kind".to_string(),
+            ))
+        }
     };
     buf.write_u8(coll_flags)?;
 
     // Write element count
     write_length(&mut buf, obj.elements.len())?;
 
-    let element_type = obj_type.element_type.unwrap_or(OracleType::Varchar);
-    let coll_type = obj_type.collection_type.unwrap_or(CollectionType::Varray);
+    let element_type = obj_type.element_type.ok_or_else(|| {
+        Error::DataConversionError("collection type without its element type".to_string())
+    })?;
+    let coll_type = obj_type.collection_type.ok_or_else(|| {
+        Error::DataConversionError("collection type without its kind".to_string())
+    })?;
 
     for (idx, value) in obj.elements.iter().enumerate() {
         // For associative arrays, write the index
         if coll_type == CollectionType::PlsqlIndexTable {
-            buf.write_u32_be(idx as u32)?;
+            buf.write_u32_be(u32::try_from(idx).map_err(|_| {
+                Error::DataConversionError(
+                    "collection too large for the Oracle pickle format".to_string(),
+                )
+            })?)?;
         }
 
         encode_value(&mut buf, value, element_type)?;
@@ -165,7 +183,15 @@ pub fn encode_collection(obj: &DbObject, obj_type: &DbObjectType) -> Result<Vec<
     let total_len = buf.len();
     let data = buf.as_ref();
     let mut result = data.to_vec();
-    result[length_pos + 1..length_pos + 5].copy_from_slice(&(total_len as u32).to_be_bytes());
+    result[length_pos + 1..length_pos + 5].copy_from_slice(
+        &u32::try_from(total_len)
+            .map_err(|_| {
+                Error::DataConversionError(
+                    "collection too large for the Oracle pickle format".to_string(),
+                )
+            })?
+            .to_be_bytes(),
+    );
 
     Ok(result)
 }
@@ -236,7 +262,11 @@ fn write_length(buf: &mut WriteBuffer, len: usize) -> Result<()> {
         buf.write_u8(len as u8)?;
     } else {
         buf.write_u8(LONG_LENGTH_INDICATOR)?;
-        buf.write_u32_be(len as u32)?;
+        buf.write_u32_be(u32::try_from(len).map_err(|_| {
+            Error::DataConversionError(
+                "collection too large for the Oracle pickle format".to_string(),
+            )
+        })?)?;
     }
     Ok(())
 }
@@ -278,43 +308,32 @@ fn decode_value(buf: &mut ReadBuffer, oracle_type: OracleType) -> Result<Value> 
             }
             Ok(Value::Number(num))
         }
+        // Plenora fork: a fixed-width element whose length is not its width
+        // is an error (it used to become NULL), and BINARY_INTEGER is a
+        // signed 32-bit value (it was read unsigned: -1 became 4294967295).
         OracleType::BinaryInteger => {
-            // Format: 4 bytes length + 4 bytes BE value
-            if len >= 4 {
-                let value = buf.read_u32_be()?;
-                // Skip remaining bytes if any
-                if len > 4 {
-                    buf.skip(len - 4)?;
-                }
-                Ok(Value::Integer(value as i64))
-            } else {
-                buf.skip(len)?;
-                Ok(Value::Null)
-            }
+            let bytes: [u8; 4] = buf.read_bytes_vec(len)?.try_into().map_err(|_| {
+                Error::DataConversionError("invalid BINARY_INTEGER length".to_string())
+            })?;
+            Ok(Value::Integer(i64::from(i32::from_be_bytes(bytes))))
         }
         OracleType::Raw => {
             let bytes = buf.read_bytes_vec(len)?;
             Ok(Value::Bytes(bytes))
         }
         OracleType::BinaryDouble => {
-            if len == 8 {
-                let bytes = buf.read_bytes_vec(8)?;
-                let f = crate::types::decode_binary_double(&bytes);
-                Ok(Value::Float(f))
-            } else {
-                buf.skip(len)?;
-                Ok(Value::Null)
-            }
+            let bytes: [u8; 8] = buf.read_bytes_vec(len)?.try_into().map_err(|_| {
+                Error::DataConversionError("invalid BINARY_DOUBLE length".to_string())
+            })?;
+            Ok(Value::Float(crate::types::decode_binary_double(&bytes)))
         }
         OracleType::BinaryFloat => {
-            if len == 4 {
-                let bytes = buf.read_bytes_vec(4)?;
-                let f = crate::types::decode_binary_float(&bytes);
-                Ok(Value::Float(f as f64))
-            } else {
-                buf.skip(len)?;
-                Ok(Value::Null)
-            }
+            let bytes: [u8; 4] = buf.read_bytes_vec(len)?.try_into().map_err(|_| {
+                Error::DataConversionError("invalid BINARY_FLOAT length".to_string())
+            })?;
+            Ok(Value::Float(f64::from(crate::types::decode_binary_float(
+                &bytes,
+            ))))
         }
         OracleType::Boolean => {
             // Format: value in last byte
@@ -358,9 +377,14 @@ fn encode_value(buf: &mut WriteBuffer, value: &Value, oracle_type: OracleType) -
         }
         Value::Integer(n) => {
             match oracle_type {
+                // Plenora fork: BINARY_INTEGER is a signed 32-bit value; an
+                // i64 outside it is refused (it used to wrap through `as u32`).
                 OracleType::BinaryInteger => {
+                    let value = i32::try_from(*n).map_err(|_| {
+                        Error::DataConversionError("BINARY_INTEGER out of range".to_string())
+                    })?;
                     buf.write_u8(4)?;
-                    buf.write_u32_be(*n as u32)?;
+                    buf.write_bytes(&value.to_be_bytes())?;
                 }
                 _ => {
                     // Encode as NUMBER
@@ -404,12 +428,12 @@ fn encode_value(buf: &mut WriteBuffer, value: &Value, oracle_type: OracleType) -
             buf.write_u32_be(if *b { 1 } else { 0 })?;
         }
         Value::Date(d) => {
-            let bytes = d.to_oracle_bytes();
+            let bytes = d.to_oracle_bytes()?;
             write_length(buf, bytes.len())?;
             buf.write_bytes(&bytes)?;
         }
         Value::Timestamp(ts) => {
-            let bytes = ts.to_oracle_bytes();
+            let bytes = ts.to_oracle_bytes()?;
             write_length(buf, bytes.len())?;
             buf.write_bytes(&bytes)?;
         }

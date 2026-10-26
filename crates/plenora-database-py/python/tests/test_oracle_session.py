@@ -259,3 +259,59 @@ def test_oracle_generated_identity_defaults_and_timestamptz_bind() -> None:
             _drop_probe(session, OracleGeneratedEvent.__tablename__)
         finally:
             session.close()
+
+
+# Decimali in (-1, 1) con zeri dopo il punto pari e dispari: il ramo che il
+# codec NUMBER del driver salvava per dieci volte se stesso (0.05 come .5).
+_NUMBER_PROBES = ("0.05", "0.5", "-0.05", "-0.5", "0.0005", "0.005", "0.07", "1.5", "1E-130")
+
+
+def test_oracle_decimal_binds_and_reads_are_exact() -> None:
+    from decimal import Decimal
+
+    session = connect_oracle_reference()
+    name = "PLENORA_PY_ORACLE_NUMBER"
+    try:
+        _drop_probe(session, name)
+        session.execute_ddl(
+            f'CREATE TABLE "{name}" ("ID" NUMBER(10) PRIMARY KEY, "D" NUMBER)'
+        )
+        for identity, text in enumerate(_NUMBER_PROBES, start=1):
+            session.execute_sql(
+                f'INSERT INTO "{name}" ("ID", "D") VALUES (:1, :2)',
+                [identity, p.decimal(text)],
+            )
+        for identity, text in enumerate(_NUMBER_PROBES, start=1):
+            # Il server, senza il decoder del driver.
+            server = session.execute_scalar(
+                f"SELECT TO_CHAR(\"D\", 'TM9') FROM \"{name}\" WHERE \"ID\" = :1",
+                [identity],
+            )
+            assert Decimal(server) == Decimal(text), (text, server)
+            # Uguaglianza con il valore legato: esattamente la propria riga.
+            assert session.execute_scalar(
+                f'SELECT COUNT(*) FROM "{name}" WHERE "D" = :1',
+                [p.decimal(text)],
+            ) == 1, text
+            # Il decoder del driver.
+            read = session.execute_scalar(
+                f'SELECT "D" FROM "{name}" WHERE "ID" = :1', [identity]
+            )
+            assert Decimal(str(read)) == Decimal(text), (text, read)
+    finally:
+        try:
+            _drop_probe(session, name)
+        finally:
+            session.close()
+    # -infinito e +infinito non sono decimali: la lettura fallisce, non rende
+    # "" o 1e126. Una sessione per lettura: l'errore la chiude.
+    for raw in ("00", "FF65"):
+        session = connect_oracle_reference()
+        try:
+            with pytest.raises(p.PlenoraDataMappingError) as raised:
+                session.execute_scalar(
+                    f"SELECT UTL_RAW.CAST_TO_NUMBER(HEXTORAW('{raw}')) FROM DUAL"
+                )
+            assert raised.value.category == "data_mapping"
+        finally:
+            session.close()

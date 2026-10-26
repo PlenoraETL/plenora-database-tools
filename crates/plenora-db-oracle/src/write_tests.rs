@@ -191,3 +191,30 @@ fn spatial_columns_refuse_north_first_axes_and_derived_srids() {
     assert_eq!(error.category, ErrorCategory::Crs);
     assert_eq!(error.provider, Some(ProviderKind::Oracle));
 }
+
+#[test]
+fn float64_into_a_decimal_float_target_binds_the_shortest_exact_decimal() {
+    assert_eq!(float_decimal_digits(None), 38);
+    assert_eq!(float_decimal_digits(Some(126)), 38);
+    assert_eq!(float_decimal_digits(Some(63)), 19);
+    assert_eq!(float_decimal_digits(Some(10)), 4);
+    assert_eq!(float_as_decimal(0.1, 38).unwrap(), "1e-1");
+    assert_eq!(float_as_decimal(1e-300, 38).unwrap(), "1e-300");
+    assert_eq!(float_as_decimal(0.0, 4).unwrap(), "0e0");
+    assert_eq!(
+        float_as_decimal(9_007_199_254_740_992.0, 38).unwrap(),
+        "9.007199254740992e15"
+    );
+    // FLOAT(10) tiene 4 cifre: 0.1234 si, 0.12345 sarebbe arrotondato.
+    assert!(float_as_decimal(0.1234, 4).is_ok());
+    assert!(float_as_decimal(0.12345, 4).is_err());
+    assert!(float_as_decimal(f64::NAN, 38).is_err());
+    assert!(float_as_decimal(-0.0, 38).is_err());
+    assert!(float_as_decimal(f64::INFINITY, 38).is_err());
+    // Il testo legato e un decimale che il codec NUMBER accetta, o rifiuta
+    // fuori dominio invece di azzerarlo.
+    assert!(oracle_rs::types::encode_oracle_number(&float_as_decimal(0.1, 38).unwrap()).is_ok());
+    assert!(
+        oracle_rs::types::encode_oracle_number(&float_as_decimal(1e-300, 38).unwrap()).is_err()
+    );
+}

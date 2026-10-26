@@ -60,3 +60,14 @@ fn timestamptz_is_validated_and_normalized_for_explicit_oracle_conversion() {
         Value::String(value) if value == "2026-09-03T10:11:12.123000+02:30"
     ));
 }
+
+#[test]
+fn negative_zero_is_refused_because_oracle_cannot_store_it() {
+    // Misurato: BINARY_FLOAT, FLOAT e NUMBER lo salvano +0; BINARY_DOUBLE con
+    // byte non canonici che il server non trova uguali a 0.
+    assert!(bind_parameters(&[ParameterValue::F64(-0.0)]).is_err());
+    assert!(matches!(
+        bind_parameters(&[ParameterValue::F64(0.0)]).expect("+0")[0],
+        Value::Float(value) if value.to_bits() == 0
+    ));
+}

@@ -1427,7 +1427,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "plenora-database-cli"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -1449,7 +1449,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-core"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-engine"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "arrow-ipc",
  "chrono",
@@ -1474,7 +1474,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-py"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "arrow-ipc",
  "plenora-database-core",
@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-sql"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "plenora-database-core",
  "serde",
@@ -1504,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-testkit"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "plenora-database-core",
  "serde",
@@ -1513,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-db2"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "chrono",
  "odbc-api",
@@ -1527,7 +1527,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-mysql"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "chrono",
  "futures-util",
@@ -1544,7 +1544,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-oracle"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "chrono",
  "plenora-database-core",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-postgres"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-sqlserver"
-version = "8.0.1"
+version = "8.0.2"
 dependencies = [
  "chrono",
  "futures-util",

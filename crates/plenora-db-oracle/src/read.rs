@@ -4,8 +4,8 @@ use crate::decode::{decode_columns, row_from_driver};
 use crate::error::interruption_error;
 use crate::parameter::{bind_parameters_with_lobs, LobCache};
 use crate::{
-    OracleColumnKind, OracleConfig, OracleObjectDescription, OraclePool, OracleReadPlan,
-    PooledOracleConnection,
+    OracleColumnKind, OracleColumnSpec, OracleConfig, OracleObjectDescription, OraclePool,
+    OracleReadPlan, PooledOracleConnection,
 };
 use chrono::{DateTime, NaiveDateTime};
 use oracle_rs::ColumnInfo;
@@ -419,7 +419,9 @@ enum Values {
     Bool(Vec<Option<bool>>),
     I64(Vec<Option<i64>>),
     F32(Vec<Option<f32>>),
-    F64(Vec<Option<f64>>),
+    /// `true` quando la sorgente e un NUMBER decimale (`FLOAT(b)`), non un
+    /// `BINARY_DOUBLE`: ogni valore passa da f64 solo se ne e ricostruibile.
+    F64(Vec<Option<f64>>, bool),
     Decimal(Vec<Option<i128>>, u8, i8),
     Utf8(Vec<Option<String>>),
     Binary(Vec<Option<Vec<u8>>>),
@@ -427,12 +429,15 @@ enum Values {
 }
 
 impl Values {
-    fn new(kind: &OracleColumnKind, capacity: usize) -> Self {
-        match *kind {
+    fn new(column: &OracleColumnSpec, capacity: usize) -> Self {
+        match column.kind {
             OracleColumnKind::Bool => Self::Bool(Vec::with_capacity(capacity)),
             OracleColumnKind::I64 => Self::I64(Vec::with_capacity(capacity)),
             OracleColumnKind::F32 => Self::F32(Vec::with_capacity(capacity)),
-            OracleColumnKind::F64 => Self::F64(Vec::with_capacity(capacity)),
+            OracleColumnKind::F64 => Self::F64(
+                Vec::with_capacity(capacity),
+                column.native_type != "BINARY_DOUBLE",
+            ),
             OracleColumnKind::Decimal { precision, scale } => {
                 Self::Decimal(Vec::with_capacity(capacity), precision, scale)
             }
@@ -451,7 +456,7 @@ impl Values {
                 Self::Bool(values) => values.push(None),
                 Self::I64(values) | Self::Timestamp(values, _) => values.push(None),
                 Self::F32(values) => values.push(None),
-                Self::F64(values) => values.push(None),
+                Self::F64(values, _) => values.push(None),
                 Self::Decimal(values, ..) => values.push(None),
                 Self::Utf8(values) => values.push(None),
                 Self::Binary(values) => values.push(None),
@@ -476,42 +481,37 @@ impl Values {
                     .parse()
                     .map_err(|_| mapping("NUMBER intero Oracle non rappresentabile"))?,
             )),
+            // BINARY_FLOAT e BINARY_DOUBLE arrivano come `DUMP()` dei byte
+            // salvati: passare da NUMBER azzerava in silenzio ogni
+            // |x| < 1e-130, `UTL_RAW.CAST_FROM_BINARY_*` rendeva +0 per un
+            // -0.0 non canonico.
+            (Self::F32(values), ParameterValue::String(dump)) => {
+                values.push(binary_float_from_dump(dump)?);
+            }
             (Self::F32(values), ParameterValue::F64(value)) => {
                 let narrowed = narrow_f32(*value);
-                if !narrowed.is_finite() {
+                if !narrowed.is_finite() || f64::from(narrowed).to_bits() != value.to_bits() {
                     return Err(mapping("BINARY_FLOAT Oracle non rappresentabile"));
                 }
                 values.push(Some(narrowed));
             }
-            (Self::F32(values), ParameterValue::Decimal(value)) => {
-                let parsed = value
-                    .parse::<f64>()
-                    .map_err(|_| mapping("BINARY_FLOAT Oracle non rappresentabile"))?;
-                let narrowed = narrow_f32(parsed);
-                if !narrowed.is_finite() {
-                    return Err(mapping("BINARY_FLOAT Oracle non rappresentabile"));
-                }
-                values.push(Some(narrowed));
+            (Self::F64(values, false), ParameterValue::String(dump)) => {
+                values.push(binary_double_from_dump(dump)?);
             }
-            (Self::F32(values), ParameterValue::I64(value)) => {
-                values.push(Some(narrow_f32(i64_to_f64(*value))));
+            (Self::F64(values, _), ParameterValue::F64(value)) => values.push(Some(*value)),
+            // FLOAT(b) e un NUMBER decimale fino a 38 cifre: diventa f64 solo
+            // se il valore se ne ricava di nuovo (9007199254740993 o 1/3 no).
+            (Self::F64(values, true), ParameterValue::Decimal(value)) => {
+                values.push(Some(decimal_as_f64(value)?));
             }
-            (Self::F64(values), ParameterValue::F64(value)) => values.push(Some(*value)),
-            (Self::F64(values), ParameterValue::Decimal(value)) => values.push(Some(
-                value
-                    .parse()
-                    .ok()
-                    .filter(|value: &f64| value.is_finite())
-                    .ok_or_else(|| mapping("BINARY_DOUBLE Oracle non rappresentabile"))?,
-            )),
-            (Self::F64(values), ParameterValue::I64(value)) => {
-                values.push(Some(i64_to_f64(*value)));
+            (Self::F64(values, true), ParameterValue::I64(value)) => {
+                values.push(Some(decimal_as_f64(&value.to_string())?));
             }
-            (Self::Decimal(values, _, scale), ParameterValue::Decimal(value)) => {
-                values.push(Some(parse_decimal(value, *scale)?));
+            (Self::Decimal(values, precision, scale), ParameterValue::Decimal(value)) => {
+                values.push(Some(parse_decimal(value, *precision, *scale)?));
             }
-            (Self::Decimal(values, _, 0), ParameterValue::I64(value)) => {
-                values.push(Some(i128::from(*value)));
+            (Self::Decimal(values, precision, 0), ParameterValue::I64(value)) => {
+                values.push(Some(parse_decimal(&value.to_string(), *precision, 0)?));
             }
             (Self::Utf8(values), ParameterValue::String(value)) => values.push(Some(value.clone())),
             (Self::Utf8(values), ParameterValue::Json(value)) => values.push(Some(
@@ -545,7 +545,7 @@ impl Values {
             Self::Bool(_) => "bool",
             Self::I64(_) => "int64",
             Self::F32(_) => "float32",
-            Self::F64(_) => "float64",
+            Self::F64(..) => "float64",
             Self::Decimal(..) => "decimal128",
             Self::Utf8(_) => "utf8",
             Self::Binary(_) => "binary",
@@ -558,7 +558,7 @@ impl Values {
             Self::Bool(values) => Arc::new(BooleanArray::from(values)),
             Self::I64(values) => Arc::new(Int64Array::from(values)),
             Self::F32(values) => Arc::new(Float32Array::from(values)),
-            Self::F64(values) => Arc::new(Float64Array::from(values)),
+            Self::F64(values, _) => Arc::new(Float64Array::from(values)),
             Self::Decimal(values, precision, scale) => Arc::new(
                 Decimal128Array::from(values)
                     .with_precision_and_scale(precision, scale)
@@ -623,9 +623,141 @@ const fn narrow_f32(value: f64) -> f32 {
     value as f32
 }
 
-#[allow(clippy::cast_precision_loss)]
-const fn i64_to_f64(value: i64) -> f64 {
-    value as f64
+/// Segno, cifre significative ed esponente decimale della prima cifra; lo
+/// zero e `(false, "", 0)`. `None` se il testo non e un decimale finito.
+fn canonical_decimal(text: &str) -> Option<(bool, String, i64)> {
+    let (negative, unsigned) = match text.as_bytes().first()? {
+        b'-' => (true, &text[1..]),
+        b'+' => (false, &text[1..]),
+        _ => (false, text),
+    };
+    let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
+        Some(index) => (
+            &unsigned[..index],
+            unsigned[index + 1..].parse::<i64>().ok()?,
+        ),
+        None => (unsigned, 0),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if (whole.is_empty() && fraction.is_empty())
+        || !whole
+            .bytes()
+            .chain(fraction.bytes())
+            .all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let digits = format!("{whole}{fraction}");
+    let trimmed = digits.trim_start_matches('0');
+    let leading = digits.len() - trimmed.len();
+    let significant = trimmed.trim_end_matches('0');
+    if significant.is_empty() {
+        return Some((false, String::new(), 0));
+    }
+    let point = i64::try_from(whole.len())
+        .ok()?
+        .checked_add(exponent)?
+        .checked_sub(i64::try_from(leading).ok()?)?;
+    Some((negative, significant.to_owned(), point))
+}
+
+/// Il decimale `D` di un NUMBER (`FLOAT(b)`) come f64.
+///
+/// Regola: `D` diventa `x = f64(D)` solo se `D` e, come valore decimale, la
+/// forma piu breve che ricostruisce `x` (quella di `{x:e}`). Cosi la
+/// conversione e iniettiva: due decimali distinti non diventano mai lo stesso
+/// f64, e rileggere e riscrivere `x` riconsegna `D`.
+///
+/// Ambito: la read Arrow delle colonne `FLOAT(b)`, `REAL`, `DOUBLE
+/// PRECISION`, il cui tipo Arrow dichiarato resta Float64. Hazard evitato:
+/// `0.1` e `0.10000000000000001`, o `1.0000000000000002` e la sua espansione
+/// a 38 cifre, avevano gli stessi bit; due chiavi distinte sembravano uguali
+/// e una read + write riscriveva il valore salvato. Coerente con il golden
+/// (`float_coercion: false`): un decimale che f64 non distingue non viene
+/// convertito ma rifiutato (`DataMapping`).
+///
+/// Pareggi di arrotondamento: quando due decimali brevi della stessa
+/// lunghezza ricostruiscono lo stesso `x` (per esempio il `repr` Python di
+/// `253800534855476.62` e quello di Rust differiscono nell'ultima cifra),
+/// solo quello reso da `{x:e}` e ammesso; l'altro e rifiutato, in modo
+/// esplicito. Ammetterli entrambi romperebbe l'iniettivita.
+///
+/// Condizione di rientro: per questi valori serve un target esatto
+/// (`Decimal128` con scala dichiarata) o una politica lossy esplicita e
+/// dichiarata nel `LossReport`; la write Oracle oggi qualifica solo `Strict`.
+///
+/// # Errors
+///
+/// `DataMapping` se il testo non e un decimale o non e la forma breve del
+/// proprio f64.
+pub fn decimal_as_f64(text: &str) -> Result<f64> {
+    let unrepresentable = || mapping("NUMBER Oracle non rappresentabile esattamente in Float64");
+    let source = canonical_decimal(text).ok_or_else(unrepresentable)?;
+    let value = text
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .ok_or_else(unrepresentable)?;
+    if canonical_decimal(&format!("{value:e}")).as_ref() != Some(&source) {
+        return Err(unrepresentable());
+    }
+    Ok(value)
+}
+
+/// Byte di `DUMP()` di un `BINARY_FLOAT` (`Typ=100`, 4 byte) o
+/// `BINARY_DOUBLE` (`Typ=101`, 8 byte) nel valore IEEE.
+///
+/// I byte vengono dal valore salvato, non da una conversione: un -0.0 legato
+/// dalle versioni precedenti del driver e salvato non canonico (`7f ff ...`,
+/// mentre Oracle normalizza ogni zero a `80 00 ...`), non e uguale a 0 nei
+/// confronti del server e `UTL_RAW.CAST_FROM_BINARY_DOUBLE` lo rende +0.
+/// Un valore cosi, i non finiti e un `DUMP` malformato sono `DataMapping`.
+fn oracle_binary_float(dump: &str, type_code: u8, length: usize) -> Result<Option<[u8; 8]>> {
+    let invalid = || mapping("BINARY_FLOAT/BINARY_DOUBLE Oracle non rappresentabile");
+    if dump == "NULL" {
+        return Ok(None);
+    }
+    let bytes = dump
+        .strip_prefix(&format!("Typ={type_code} Len={length}: "))
+        .ok_or_else(invalid)?
+        .split(',')
+        .map(|byte| byte.trim().parse::<u8>().map_err(|_| invalid()))
+        .collect::<Result<Vec<_>>>()?;
+    if bytes.len() != length {
+        return Err(invalid());
+    }
+    // Formato Oracle: positivi con il bit di segno acceso, negativi con
+    // tutti i bit invertiti.
+    let mut ieee = [0_u8; 8];
+    for (target, byte) in ieee.iter_mut().zip(&bytes) {
+        *target = if bytes[0] & 0x80 == 0 { !byte } else { *byte };
+    }
+    if bytes[0] & 0x80 != 0 {
+        ieee[0] ^= 0x80;
+    }
+    Ok(Some(ieee))
+}
+
+pub fn binary_double_from_dump(dump: &str) -> Result<Option<f64>> {
+    let Some(ieee) = oracle_binary_float(dump, 101, 8)? else {
+        return Ok(None);
+    };
+    let value = f64::from_be_bytes(ieee);
+    if !value.is_finite() || (value == 0.0 && value.is_sign_negative()) {
+        return Err(mapping("BINARY_DOUBLE Oracle non rappresentabile"));
+    }
+    Ok(Some(value))
+}
+
+pub fn binary_float_from_dump(dump: &str) -> Result<Option<f32>> {
+    let Some(ieee) = oracle_binary_float(dump, 100, 4)? else {
+        return Ok(None);
+    };
+    let value = f32::from_be_bytes([ieee[0], ieee[1], ieee[2], ieee[3]]);
+    if !value.is_finite() || (value == 0.0 && value.is_sign_negative()) {
+        return Err(mapping("BINARY_FLOAT Oracle non rappresentabile"));
+    }
+    Ok(Some(value))
 }
 
 fn rows_to_batch(
@@ -637,7 +769,7 @@ fn rows_to_batch(
     let mut values = plan
         .columns
         .iter()
-        .map(|column| Values::new(&column.kind, rows.len()))
+        .map(|column| Values::new(column, rows.len()))
         .collect::<Vec<_>>();
     let mut components = 0_u64;
     for row in rows {
@@ -796,15 +928,28 @@ fn parse_tz_timestamp(value: &str) -> Result<i64> {
         .map_err(|_| mapping("timestamp con fuso Oracle non rappresentabile"))
 }
 
-fn parse_decimal(value: &str, scale: i8) -> Result<i128> {
+/// Testo decimale del driver nel valore intero di un `Decimal128(precision,
+/// scale)`.
+///
+/// Un testo senza cifre (`""`, `"-"`, `"."`) era letto come 0: il decoder
+/// rendeva `""` per -infinito. Ora e un errore, come le cifre oltre la
+/// precisione dichiarata, che `with_precision_and_scale` non controlla sui
+/// valori.
+pub fn parse_decimal(value: &str, precision: u8, scale: i8) -> Result<i128> {
     let negative = value.starts_with('-');
     let unsigned = value.strip_prefix(['+', '-']).unwrap_or(value);
     let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
-    if !whole.bytes().all(|byte| byte.is_ascii_digit())
+    if (whole.is_empty() && fraction.is_empty())
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
         || !fraction.bytes().all(|byte| byte.is_ascii_digit())
         || fraction.len() > usize::try_from(scale).unwrap_or(0)
     {
         return Err(mapping("NUMBER Oracle non rappresentabile in Decimal128"));
+    }
+    // La frazione sta gia nella scala: la parte intera deve stare nel resto.
+    let integer_digits = usize::from(precision).saturating_sub(usize::try_from(scale).unwrap_or(0));
+    if whole.trim_start_matches('0').len() > integer_digits {
+        return Err(mapping("NUMBER Oracle oltre la precisione Decimal128"));
     }
     let mut digits = String::with_capacity(whole.len() + usize::try_from(scale).unwrap_or(0));
     digits.push_str(if whole.is_empty() { "0" } else { whole });

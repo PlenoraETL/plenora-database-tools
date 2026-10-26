@@ -62,9 +62,11 @@ fn parse_column_info(buf: &mut ReadBuffer, caps: &Capabilities) -> Result<Column
     // Flags (skip)
     buf.skip(1)?;
 
-    // Precision and scale
-    let precision = buf.read_u8()? as i16;
-    let scale = buf.read_u8()? as i16;
+    // Precision and scale. Plenora fork: SB1, signed (as in
+    // `Connection::parse_describe_info`); read unsigned, a scale of -127
+    // became 129.
+    let precision = i16::from(i8::from_be_bytes([buf.read_u8()?]));
+    let scale = i16::from(i8::from_be_bytes([buf.read_u8()?]));
 
     // Buffer size
     let buffer_size = buf.read_ub4()?;
@@ -85,8 +87,8 @@ fn parse_column_info(buf: &mut ReadBuffer, caps: &Capabilities) -> Result<Column
     // Version (skip)
     buf.read_ub2()?;
 
-    // Character set ID (skip)
-    buf.read_ub2()?;
+    // Character set ID
+    let charset_id = buf.read_ub2()?;
 
     // Character set form
     let csfrm = buf.read_u8()?;
@@ -194,6 +196,7 @@ fn parse_column_info(buf: &mut ReadBuffer, caps: &Capabilities) -> Result<Column
         scale,
         nullable,
         csfrm,
+        charset_id,
         type_schema,
         type_name,
         domain_schema,
