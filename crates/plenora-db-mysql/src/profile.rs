@@ -159,7 +159,7 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// e quello della sessione.
     fn column_types_query(&self) -> &'static str {
         "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, CHARACTER_MAXIMUM_LENGTH, \
-    NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION \
+    NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION, CHARACTER_SET_NAME \
     FROM information_schema.COLUMNS \
     WHERE TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ?"
     }

@@ -12,8 +12,7 @@ use plenora_database_core::plan::{
     TransactionProfile, WriteMode, WriteOperation,
 };
 use plenora_database_core::portable::{
-    compile_portable, eq, select, Expression, InsertStatement, PortableStatement, TableRef,
-    UpsertStatement,
+    eq, select, Expression, InsertStatement, PortableStatement, TableRef, UpsertStatement,
 };
 use plenora_database_core::protocol::contract_schema;
 use plenora_database_core::provider::{
@@ -853,7 +852,13 @@ async fn live_portable_sql_executes_insert_merge_select_and_rollback() {
         .expect("transazione portable Db2");
 
     let insert = portable_probe_insert();
-    let insert = compile_portable(ProviderKind::Db2, &insert).expect("compila INSERT Db2");
+    let insert = plenora_database_core::admission_gate::portable(
+        transaction.as_mut(),
+        &insert,
+        &cancellation,
+    )
+    .await
+    .expect("compila INSERT Db2");
     assert_eq!(
         transaction
             .execute(&insert, &cancellation)
@@ -863,7 +868,13 @@ async fn live_portable_sql_executes_insert_merge_select_and_rollback() {
     );
 
     let upsert = portable_probe_upsert();
-    let upsert = compile_portable(ProviderKind::Db2, &upsert).expect("compila MERGE Db2");
+    let upsert = plenora_database_core::admission_gate::portable(
+        transaction.as_mut(),
+        &upsert,
+        &cancellation,
+    )
+    .await
+    .expect("compila MERGE Db2");
     assert_eq!(
         transaction
             .execute(&upsert, &cancellation)
@@ -877,8 +888,13 @@ async fn live_portable_sql_executes_insert_merge_select_and_rollback() {
         .where_(eq("ID", ParameterValue::I32(20)))
         .limit(1)
         .into_statement();
-    let compiled_select =
-        compile_portable(ProviderKind::Db2, &select_statement).expect("compila SELECT Db2");
+    let compiled_select = plenora_database_core::admission_gate::portable(
+        transaction.as_mut(),
+        &select_statement,
+        &cancellation,
+    )
+    .await
+    .expect("compila SELECT Db2");
     let rows = transaction
         .query(&compiled_select, &cancellation)
         .await
@@ -907,8 +923,13 @@ async fn live_portable_sql_executes_insert_merge_select_and_rollback() {
         .schema("PLENORA_TEST")
         .where_(eq("ID", ParameterValue::I32(20)))
         .into_statement();
-    let select =
-        compile_portable(ProviderKind::Db2, &select_statement).expect("compila verifica Db2");
+    let select = plenora_database_core::admission_gate::portable(
+        verification.as_mut(),
+        &select_statement,
+        &cancellation,
+    )
+    .await
+    .expect("compila verifica Db2");
     let rows = verification
         .query(&select, &cancellation)
         .await

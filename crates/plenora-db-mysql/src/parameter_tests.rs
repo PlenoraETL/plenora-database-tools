@@ -110,3 +110,26 @@ fn values_the_server_would_change_are_refused_before_sending() {
         assert!(parameter_value(&value, kind).is_ok(), "{value:?}");
     }
 }
+
+#[test]
+fn integral_decimals_bind_as_integers_and_the_rest_as_text() {
+    use mysql_async::Value;
+    let bound = |text: &str| parameter_value(&ParameterValue::Decimal(text.to_owned()), MYSQL);
+    // Legato come testo, `9007199254740993` diventava `9007199254740992`
+    // contro un `BIGINT` (il server converte il testo con un double).
+    assert_eq!(
+        bound("9007199254740993").ok(),
+        Some(Value::Int(9_007_199_254_740_993))
+    );
+    assert_eq!(bound("-12.000").ok(), Some(Value::Int(-12)));
+    assert_eq!(bound("0").ok(), Some(Value::Int(0)));
+    assert_eq!(
+        bound("18446744073709551615").ok(),
+        Some(Value::UInt(u64::MAX))
+    );
+    assert_eq!(bound("12.5").ok(), Some(Value::Bytes(b"12.5".to_vec())));
+    assert_eq!(
+        bound("99999999999999999999").ok(),
+        Some(Value::Bytes(b"99999999999999999999".to_vec()))
+    );
+}

@@ -126,7 +126,7 @@ pub async fn read_operation(
         let types = crate::query::column_types(pooled.session_mut()?, &relation, &internal)
             .await?
             .unwrap_or_default();
-        plenora_database_core::operand_admission::admit_filter(
+        plenora_database_core::admission_gate::read_filter(
             plenora_database_core::plan::ProviderKind::Sqlserver,
             operation.filter.as_ref(),
             parameters,
@@ -171,7 +171,7 @@ pub async fn read_query_operation(
     validate_batch_rows(batch_rows)?;
     validate_query_sources(operation, database)?;
     // I parametri tipati contro il loro CAST (`operand_admission`).
-    let parameters = &plenora_database_core::operand_admission::admit_typed_parameters(
+    let parameters = &plenora_database_core::admission_gate::query_parameters(
         plenora_database_core::plan::ProviderKind::Sqlserver,
         operation,
         parameters,

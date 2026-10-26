@@ -348,10 +348,14 @@ impl<'c> ConnectionCatalog<'c> {
 }
 
 const COLUMN_TYPES_SQL: &str = "SELECT COLUMN_NAME, DATA_TYPE, TO_CHAR(CHAR_LENGTH), \
-    TO_CHAR(DATA_LENGTH), TO_CHAR(DATA_PRECISION), TO_CHAR(DATA_SCALE) FROM ALL_TAB_COLUMNS \
+    TO_CHAR(DATA_LENGTH), TO_CHAR(DATA_PRECISION), TO_CHAR(DATA_SCALE), CHAR_USED, \
+    (SELECT VALUE FROM NLS_DATABASE_PARAMETERS WHERE PARAMETER = 'NLS_CHARACTERSET') \
+    FROM ALL_TAB_COLUMNS \
     WHERE OWNER = :1 AND TABLE_NAME = :2 ORDER BY COLUMN_ID";
 const COLUMN_TYPES_CURRENT_SQL: &str = "SELECT COLUMN_NAME, DATA_TYPE, TO_CHAR(CHAR_LENGTH), \
-    TO_CHAR(DATA_LENGTH), TO_CHAR(DATA_PRECISION), TO_CHAR(DATA_SCALE) FROM ALL_TAB_COLUMNS \
+    TO_CHAR(DATA_LENGTH), TO_CHAR(DATA_PRECISION), TO_CHAR(DATA_SCALE), CHAR_USED, \
+    (SELECT VALUE FROM NLS_DATABASE_PARAMETERS WHERE PARAMETER = 'NLS_CHARACTERSET') \
+    FROM ALL_TAB_COLUMNS \
     WHERE OWNER = SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') AND TABLE_NAME = :1 \
     ORDER BY COLUMN_ID";
 
@@ -369,7 +373,7 @@ impl ConnectionCatalog<'_> {
         owner: Option<&str>,
         name: &str,
     ) -> Result<Option<plenora_database_core::operand_admission::RelationTypes>> {
-        use plenora_database_core::operand_admission::CatalogType;
+        use plenora_database_core::operand_admission::{CatalogType, Charset, LengthUnit};
         let rows = match owner {
             Some(owner) => self.rows(COLUMN_TYPES_SQL, &[owner, name]).await?,
             None => self.rows(COLUMN_TYPES_CURRENT_SQL, &[name]).await?,
@@ -390,11 +394,24 @@ impl ConnectionCatalog<'_> {
         rows.iter()
             .map(|row| {
                 let data_type = required(row, 1, "colonna Oracle senza tipo")?;
-                let raw = data_type.eq_ignore_ascii_case("RAW");
-                let length = if raw {
-                    number(row, 3)?
-                } else {
-                    number(row, 2)?
+                let upper = data_type.to_ascii_uppercase();
+                let national = upper.starts_with('N');
+                // `VARCHAR2(n BYTE)` conta i byte (`DATA_LENGTH`), `n CHAR`
+                // i caratteri (`CHAR_LENGTH`); le forme nazionali in
+                // AL16UTF16 contano le unita UTF-16, `RAW` i byte.
+                let (length, length_unit) = match (upper.as_str(), text(row, 6)?.as_deref()) {
+                    ("RAW", _) => (number(row, 3)?, LengthUnit::Bytes),
+                    _ if national => (number(row, 2)?, LengthUnit::Utf16),
+                    (_, Some("B")) => (number(row, 3)?, LengthUnit::Bytes),
+                    _ => (number(row, 2)?, LengthUnit::Characters),
+                };
+                // Il charset del database per le forme del database; le
+                // forme nazionali sono AL16UTF16 (il fork rifiuta le altre).
+                let charset = match text(row, 7)?.as_deref() {
+                    _ if national => Charset::Unicode,
+                    Some("AL32UTF8" | "UTF8") => Charset::Unicode,
+                    Some("WE8MSWIN1252") => Charset::Windows1252,
+                    _ => Charset::Ascii,
                 };
                 let scale = text(row, 5)?
                     .map(|value| {
@@ -413,6 +430,8 @@ impl ConnectionCatalog<'_> {
                         precision: number(row, 4)?,
                         scale,
                         datetime_precision: None,
+                        length_unit,
+                        charset,
                     },
                 ))
             })

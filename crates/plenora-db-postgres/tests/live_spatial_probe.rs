@@ -444,7 +444,9 @@ async fn live_compiled_spatial_statements_compare_the_column_srid() {
         dimensions: Dimensions::Xy,
         semantics,
     };
-    let execute = |statement: Statement| {
+    // Lo statement portable esce eseguibile soltanto dal cancello
+    // dell'ammissione; quello di `build_spatial_select` e SQL gia legato.
+    let execute = |statement: Probe| {
         let provider = &provider;
         let secret = &secret;
         let cancel = &cancel;
@@ -453,19 +455,29 @@ async fn live_compiled_spatial_statements_compare_the_column_srid() {
             let mut transaction = provider
                 .begin_transaction(secret, &TransactionOptions::default(), budget, cancel)
                 .await?;
+            let statement = match statement {
+                Probe::Portable(ast) => {
+                    plenora_database_core::admission_gate::portable(
+                        transaction.as_mut(),
+                        &ast,
+                        cancel,
+                    )
+                    .await?
+                }
+                Probe::Built(statement) => statement,
+            };
             let result = transaction.query(&statement, cancel).await;
             let _ = transaction.rollback(cancel).await;
             result.map(|rows| rows.len())
         }
     };
     let portable = |predicate: SpatialPredicate, field: &str, reference: SpatialReference| {
-        compile_portable(
-            plenora_database_core::plan::ProviderKind::Postgres,
-            &p_select(table, vec!["id"])
-                .where_(p_spatial(field, predicate, reference))
-                .into_statement(),
-        )
-        .expect("compila")
+        let ast = p_select(table, vec!["id"])
+            .where_(p_spatial(field, predicate, reference))
+            .into_statement();
+        compile_portable(plenora_database_core::plan::ProviderKind::Postgres, &ast)
+            .expect("compila");
+        Probe::Portable(ast)
     };
     let built = |predicate: SpatialPredicate, field: &str, reference: SpatialReference| {
         build_spatial_select(
@@ -479,6 +491,7 @@ async fn live_compiled_spatial_statements_compare_the_column_srid() {
             },
             None,
         )
+        .map(Probe::Built)
         .expect("costruisce")
     };
 
@@ -812,8 +825,8 @@ async fn live_guard_on_an_empty_table_returns_no_rows_or_refuses() {
         ))
         .await
         .expect("fixture vuota");
-    let compiled = compile_portable(
-        plenora_database_core::plan::ProviderKind::Postgres,
+    let compiled = admitted(
+        &dsn,
         &p_select(table, vec!["id"])
             .where_(p_spatial(
                 "g",
@@ -827,7 +840,7 @@ async fn live_guard_on_an_empty_table_returns_no_rows_or_refuses() {
             ))
             .into_statement(),
     )
-    .expect("compila");
+    .await;
     let params = compiled
         .params
         .iter()
@@ -931,8 +944,12 @@ async fn live_spatial_value_keeps_or_refuses_the_embedded_srid() {
         &insert(ParameterValue::Bytes(wkb_point(1.0, 1.0))),
     )
     .expect("WKB senza SRID");
-    let mut late = compiled.clone();
-    late.params[1] = ParameterValue::Bytes(ewkb_point(3857, 1.0, 1.0));
+    // Lo SQL compilato con i bind del chiamante, come lo SQL dello SDK: non
+    // passa dal cancello, e la guardia e del server.
+    let late = Statement::new(compiled.sql.clone()).with_params(vec![
+        ParameterValue::I32(9_001),
+        ParameterValue::Bytes(ewkb_point(3857, 1.0, 1.0)),
+    ]);
     let mut transaction = provider
         .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
         .await
@@ -948,15 +965,17 @@ async fn live_spatial_value_keeps_or_refuses_the_embedded_srid() {
         ParameterValue::Bytes(wkb_point(1.0, 1.0)),
         ParameterValue::Bytes(ewkb_point(4326, 1.0, 1.0)),
     ] {
-        let statement = compile_portable(
-            plenora_database_core::plan::ProviderKind::Postgres,
-            &insert(value),
-        )
-        .expect("compila");
         let mut transaction = provider
             .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
             .await
             .expect("begin");
+        let statement = plenora_database_core::admission_gate::portable(
+            transaction.as_mut(),
+            &insert(value),
+            &cancel,
+        )
+        .await
+        .expect("compila");
         transaction
             .execute(&statement, &cancel)
             .await
@@ -2508,4 +2527,32 @@ async fn live_binary_columns_of_derived_relations_are_judged_geometric() {
         2
     );
     client.batch_execute(&cleanup).await.expect("pulizia");
+}
+
+/// Una sonda del censimento SRID: un AST portable, che il cancello
+/// dell'ammissione rende eseguibile, o SQL gia legato.
+enum Probe {
+    Portable(plenora_database_core::portable::PortableStatement),
+    Built(Statement),
+}
+
+/// Lo statement eseguibile di un AST portable, dal cancello dell'ammissione
+/// in una transazione del provider (poi annullata).
+async fn admitted(
+    dsn: &str,
+    ast: &plenora_database_core::portable::PortableStatement,
+) -> Statement {
+    let provider = PostgresProvider::insecure_local_with_batch_rows(1_024);
+    let secret = SecretString::new(dsn.to_owned());
+    let cancel = CancellationToken::new();
+    let mut transaction = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget(), &cancel)
+        .await
+        .expect("begin");
+    let statement =
+        plenora_database_core::admission_gate::portable(transaction.as_mut(), ast, &cancel)
+            .await
+            .expect("ammissione");
+    let _ = transaction.rollback(&cancel).await;
+    statement
 }

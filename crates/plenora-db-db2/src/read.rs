@@ -59,7 +59,7 @@ pub async fn read_operation(
     // La regola dei parametri che incontrano un operando
     // (`operand_admission`): ogni parametro del filtro si ammette contro il
     // tipo del campo, con lunghezza, scala e `FOR BIT DATA` del catalogo.
-    let admitted = plenora_database_core::operand_admission::admit_filter(
+    let admitted = plenora_database_core::admission_gate::read_filter(
         plenora_database_core::plan::ProviderKind::Db2,
         operation.filter.as_ref(),
         parameters,

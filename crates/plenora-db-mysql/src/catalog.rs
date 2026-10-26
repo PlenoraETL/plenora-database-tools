@@ -757,7 +757,7 @@ pub(crate) async fn transaction_column_types(
     relation: &(Option<String>, String),
     cancellation: &CancellationToken,
 ) -> Result<Option<plenora_database_core::operand_admission::RelationTypes>> {
-    use plenora_database_core::operand_admission::CatalogType;
+    use plenora_database_core::operand_admission::{CatalogType, Charset};
     let rows = session
         .exec_rows(
             session.profile().column_types_query(),
@@ -788,6 +788,16 @@ pub(crate) async fn transaction_column_types(
                 precision: optional::<u64, _>(row, 4, "NUMERIC_PRECISION")?,
                 scale: optional::<i64, _>(row, 5, "NUMERIC_SCALE")?,
                 datetime_precision: optional::<u64, _>(row, 6, "DATETIME_PRECISION")?,
+                // La lunghezza in caratteri; il charset della colonna decide
+                // quali caratteri conserva (`utf8mb3` soltanto il piano di
+                // base, `latin1` e Windows-1252).
+                length_unit: plenora_database_core::operand_admission::LengthUnit::Characters,
+                charset: match optional::<String, _>(row, 7, "CHARACTER_SET_NAME")?.as_deref() {
+                    None | Some("utf8mb4") => Charset::Unicode,
+                    Some("utf8mb3" | "utf8") => Charset::UnicodeBmp,
+                    Some("latin1") => Charset::Windows1252,
+                    Some(_) => Charset::Ascii,
+                },
             };
             Ok((name, catalog))
         })

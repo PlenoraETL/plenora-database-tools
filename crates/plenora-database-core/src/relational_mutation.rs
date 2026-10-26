@@ -33,25 +33,9 @@ pub fn compile_relational_mutation(
     provider: ProviderKind,
     operation: &MutationOperation,
 ) -> Result<LoweredMutation> {
-    let mut bind_names = Vec::new();
-    let (statement, returns_rows) = match operation {
-        MutationOperation::Insert(insert) => (
-            PortableStatement::Insert(insert_statement(insert, &mut bind_names)?),
-            !insert.returning.is_empty(),
-        ),
-        MutationOperation::Update(update) => (
-            PortableStatement::Update(update_statement(update, &mut bind_names)?),
-            !update.returning.is_empty(),
-        ),
-        MutationOperation::Delete(delete) => (
-            PortableStatement::Delete(delete_statement(delete, &mut bind_names)?),
-            !delete.returning.is_empty(),
-        ),
-        MutationOperation::Upsert(upsert) => (
-            PortableStatement::Upsert(upsert_statement(upsert, &mut bind_names)?),
-            !upsert.returning.is_empty(),
-        ),
-    };
+    let mut binds = Binds::sentinels();
+    let (statement, returns_rows) = lower(operation, &mut binds)?;
+    let bind_names = binds.names;
     let lowered = crate::portable::compile_portable(provider, &statement)?;
     if lowered.params.len() != bind_names.len() {
         return Err(DatabaseError::new(
@@ -68,16 +52,92 @@ pub fn compile_relational_mutation(
     })
 }
 
-fn upsert_statement(
-    operation: &UpsertOperation,
-    bind_names: &mut Vec<String>,
-) -> Result<UpsertStatement> {
+/// I segnaposto del lowering: sentinelle per lo SQL, oppure i valori veri del
+/// chiamante nell'ordine dei bind, per l'ammissione
+/// ([`crate::admission_gate::mutation`]).
+pub(crate) struct Binds<'v> {
+    pub(crate) names: Vec<String>,
+    values: Option<&'v [ParameterValue]>,
+    /// Le posizioni dei valori spatial: restano sentinelle nel lowering (il
+    /// compilatore giudicherebbe lo SRID del letterale) e il cancello rimette
+    /// il valore del chiamante dopo la compilazione.
+    pub(crate) spatial: Vec<usize>,
+}
+
+impl<'v> Binds<'v> {
+    const fn sentinels() -> Self {
+        Self {
+            names: Vec::new(),
+            values: None,
+            spatial: Vec::new(),
+        }
+    }
+
+    pub(crate) const fn values(values: &'v [ParameterValue]) -> Self {
+        Self {
+            names: Vec::new(),
+            values: Some(values),
+            spatial: Vec::new(),
+        }
+    }
+
+    fn scalar(
+        &mut self,
+        name: &str,
+        parameter_type: Option<QueryParameterType>,
+    ) -> Result<Expression> {
+        let position = self.names.len();
+        self.names.push(name.to_owned());
+        let value = match self.values {
+            Some(values) => values.get(position).cloned().ok_or_else(|| {
+                DatabaseError::invalid_plan("valori DML meno dei segnaposto del piano")
+            })?,
+            None if parameter_type == Some(QueryParameterType::TimestampTz) => {
+                ParameterValue::TimestampTz(String::new())
+            }
+            None => ParameterValue::I64(0),
+        };
+        Ok(Expression::Literal(value))
+    }
+
+    fn spatial(&mut self, name: &str) {
+        self.spatial.push(self.names.len());
+        self.names.push(name.to_owned());
+    }
+}
+
+/// Il DML abbassato nell'AST portable, con i segnaposto di `binds`.
+pub(crate) fn lower(
+    operation: &MutationOperation,
+    binds: &mut Binds<'_>,
+) -> Result<(PortableStatement, bool)> {
+    Ok(match operation {
+        MutationOperation::Insert(insert) => (
+            PortableStatement::Insert(insert_statement(insert, binds)?),
+            !insert.returning.is_empty(),
+        ),
+        MutationOperation::Update(update) => (
+            PortableStatement::Update(update_statement(update, binds)?),
+            !update.returning.is_empty(),
+        ),
+        MutationOperation::Delete(delete) => (
+            PortableStatement::Delete(delete_statement(delete, binds)?),
+            !delete.returning.is_empty(),
+        ),
+        MutationOperation::Upsert(upsert) => (
+            PortableStatement::Upsert(upsert_statement(upsert, binds)?),
+            !upsert.returning.is_empty(),
+        ),
+    })
+}
+
+fn upsert_statement(operation: &UpsertOperation, binds: &mut Binds<'_>) -> Result<UpsertStatement> {
     let values = operation
         .rows
         .iter()
         .map(|row| {
             row.iter()
-                .map(|expression| insert_value(expression, bind_names))
+                .map(|expression| insert_value(expression, binds))
                 .collect()
         })
         .collect::<Result<Vec<_>>>()?;
@@ -87,7 +147,7 @@ fn upsert_statement(
         .map(|assignment| {
             Ok((
                 assignment.column.clone(),
-                value(&assignment.value, &operation.target, bind_names)?,
+                value(&assignment.value, &operation.target, binds)?,
             ))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -113,16 +173,13 @@ fn table(target: &crate::plan::ObjectRef) -> Result<TableRef> {
     })
 }
 
-fn insert_statement(
-    operation: &InsertOperation,
-    bind_names: &mut Vec<String>,
-) -> Result<InsertStatement> {
+fn insert_statement(operation: &InsertOperation, binds: &mut Binds<'_>) -> Result<InsertStatement> {
     let values = operation
         .rows
         .iter()
         .map(|row| {
             row.iter()
-                .map(|expression| insert_value(expression, bind_names))
+                .map(|expression| insert_value(expression, binds))
                 .collect()
         })
         .collect::<Result<Vec<_>>>()?;
@@ -134,24 +191,21 @@ fn insert_statement(
     })
 }
 
-fn update_statement(
-    operation: &UpdateOperation,
-    bind_names: &mut Vec<String>,
-) -> Result<UpdateStatement> {
+fn update_statement(operation: &UpdateOperation, binds: &mut Binds<'_>) -> Result<UpdateStatement> {
     let assignments = operation
         .assignments
         .iter()
         .map(|assignment| {
             Ok((
                 assignment.column.clone(),
-                value(&assignment.value, &operation.target, bind_names)?,
+                value(&assignment.value, &operation.target, binds)?,
             ))
         })
         .collect::<Result<Vec<_>>>()?;
     let filter = operation
         .filter
         .as_ref()
-        .map(|expression| predicate(expression, &operation.target, bind_names))
+        .map(|expression| predicate(expression, &operation.target, binds))
         .transpose()?;
     Ok(UpdateStatement {
         table: table(&operation.target)?,
@@ -161,14 +215,11 @@ fn update_statement(
     })
 }
 
-fn delete_statement(
-    operation: &DeleteOperation,
-    bind_names: &mut Vec<String>,
-) -> Result<DeleteStatement> {
+fn delete_statement(operation: &DeleteOperation, binds: &mut Binds<'_>) -> Result<DeleteStatement> {
     let filter = operation
         .filter
         .as_ref()
-        .map(|expression| predicate(expression, &operation.target, bind_names))
+        .map(|expression| predicate(expression, &operation.target, binds))
         .transpose()?;
     Ok(DeleteStatement {
         table: table(&operation.target)?,
@@ -195,18 +246,18 @@ fn column(expression: &QueryExpression, target: &crate::plan::ObjectRef) -> Resu
     Ok(column.field.clone())
 }
 
-fn insert_value(expression: &QueryExpression, bind_names: &mut Vec<String>) -> Result<Expression> {
+fn insert_value(expression: &QueryExpression, binds: &mut Binds<'_>) -> Result<Expression> {
     match expression {
-        QueryExpression::Parameter { name } => Ok(parameter(name, None, bind_names)),
+        QueryExpression::Parameter { name } => parameter(name, None, binds),
         QueryExpression::TypedParameter {
             name,
             parameter_type,
-        } => Ok(parameter(name, Some(*parameter_type), bind_names)),
+        } => parameter(name, Some(*parameter_type), binds),
         QueryExpression::SpatialValue {
             expression,
             srid,
             semantics,
-        } => spatial_value(expression, *srid, *semantics, bind_names),
+        } => spatial_value(expression, *srid, *semantics, binds),
         _ => Err(DatabaseError::invalid_plan("valore INSERT richiede bind()")),
     }
 }
@@ -214,20 +265,20 @@ fn insert_value(expression: &QueryExpression, bind_names: &mut Vec<String>) -> R
 fn value(
     expression: &QueryExpression,
     target: &crate::plan::ObjectRef,
-    bind_names: &mut Vec<String>,
+    binds: &mut Binds<'_>,
 ) -> Result<Expression> {
     match expression {
-        QueryExpression::Parameter { name } => Ok(parameter(name, None, bind_names)),
+        QueryExpression::Parameter { name } => parameter(name, None, binds),
         QueryExpression::TypedParameter {
             name,
             parameter_type,
-        } => Ok(parameter(name, Some(*parameter_type), bind_names)),
+        } => parameter(name, Some(*parameter_type), binds),
         QueryExpression::Column { .. } => Ok(Expression::Column(column(expression, target)?)),
         QueryExpression::SpatialValue {
             expression,
             srid,
             semantics,
-        } => spatial_value(expression, *srid, *semantics, bind_names),
+        } => spatial_value(expression, *srid, *semantics, binds),
         _ => Err(DatabaseError::invalid_plan(
             "valore DML richiede bind() o Column",
         )),
@@ -237,22 +288,16 @@ fn value(
 fn parameter(
     name: &str,
     parameter_type: Option<QueryParameterType>,
-    bind_names: &mut Vec<String>,
-) -> Expression {
-    bind_names.push(name.to_owned());
-    let sentinel = if parameter_type == Some(QueryParameterType::TimestampTz) {
-        ParameterValue::TimestampTz(String::new())
-    } else {
-        ParameterValue::I64(0)
-    };
-    Expression::Literal(sentinel)
+    binds: &mut Binds<'_>,
+) -> Result<Expression> {
+    binds.scalar(name, parameter_type)
 }
 
 fn spatial_value(
     expression: &QueryExpression,
     srid: u32,
     semantics: crate::geometry::SpatialSemantics,
-    bind_names: &mut Vec<String>,
+    binds: &mut Binds<'_>,
 ) -> Result<Expression> {
     if srid == 0 {
         return Err(DatabaseError::invalid_plan(
@@ -266,7 +311,7 @@ fn spatial_value(
             "valore spatial richiede un bind",
         ));
     };
-    bind_names.push(name.clone());
+    binds.spatial(name);
     // Sentinella non geometrica: il compilatore portable giudica lo SRID di
     // un letterale geometrico, e questo non e un valore del chiamante.
     Ok(Expression::SpatialValue {
@@ -281,7 +326,7 @@ fn spatial_value(
 fn predicate(
     expression: &QueryExpression,
     target: &crate::plan::ObjectRef,
-    bind_names: &mut Vec<String>,
+    binds: &mut Binds<'_>,
 ) -> Result<Predicate> {
     match expression {
         QueryExpression::Compare {
@@ -290,7 +335,7 @@ fn predicate(
             right,
         } => {
             let column = column(left, target)?;
-            let value = value(right, target, bind_names)?;
+            let value = value(right, target, binds)?;
             Ok(match operator {
                 ComparisonOperator::Eq => Predicate::Eq { column, value },
                 ComparisonOperator::Ne => Predicate::Ne { column, value },
@@ -309,7 +354,7 @@ fn predicate(
                 column: column(expression, target)?,
                 values: values
                     .iter()
-                    .map(|expression| value(expression, target, bind_names))
+                    .map(|expression| value(expression, target, binds))
                     .collect::<Result<Vec<_>>>()?,
             };
             Ok(negate(predicate, *negated))
@@ -322,8 +367,8 @@ fn predicate(
         } => {
             let predicate = Predicate::Between {
                 column: column(expression, target)?,
-                low: value(lower, target, bind_names)?,
-                high: value(upper, target, bind_names)?,
+                low: value(lower, target, binds)?,
+                high: value(upper, target, binds)?,
             };
             Ok(negate(predicate, *negated))
         }
@@ -340,7 +385,7 @@ fn predicate(
             }
             let predicate = Predicate::Like {
                 column: column(expression, target)?,
-                pattern: value(pattern, target, bind_names)?,
+                pattern: value(pattern, target, binds)?,
             };
             Ok(negate(predicate, *negated))
         }
@@ -359,17 +404,17 @@ fn predicate(
         QueryExpression::And { arguments } => Ok(Predicate::And {
             predicates: arguments
                 .iter()
-                .map(|argument| predicate(argument, target, bind_names))
+                .map(|argument| predicate(argument, target, binds))
                 .collect::<Result<Vec<_>>>()?,
         }),
         QueryExpression::Or { arguments } => Ok(Predicate::Or {
             predicates: arguments
                 .iter()
-                .map(|argument| predicate(argument, target, bind_names))
+                .map(|argument| predicate(argument, target, binds))
                 .collect::<Result<Vec<_>>>()?,
         }),
         QueryExpression::Not { expression } => Ok(Predicate::Not {
-            predicate: Box::new(predicate(expression, target, bind_names)?),
+            predicate: Box::new(predicate(expression, target, binds)?),
         }),
         _ => Err(DatabaseError::invalid_plan(
             "predicato DML non ancora supportato",

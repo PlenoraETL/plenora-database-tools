@@ -314,3 +314,300 @@ async fn live_parameter_values_bind_exactly_or_are_refused() {
         "binding SQL Server non esatti: {failures:#?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Censimento generato (`plenora_database_testkit::parameter_sweep`)
+// ---------------------------------------------------------------------------
+
+const SWEEP_TABLE: &str = "param_sweep";
+
+fn sweep_native(kind: NativeSql, column: &str) -> String {
+    let table = format!("{SCHEMA}.{SWEEP_TABLE}");
+    match kind {
+        NativeSql::Insert => format!("INSERT INTO {table} (id, {column}) VALUES (@P1, @P2)"),
+        NativeSql::Select => format!("SELECT {column} FROM {table} WHERE id = @P1"),
+        NativeSql::Count => {
+            format!("SELECT COUNT(*) FROM {table} WHERE id = @P1 AND {column} = @P2")
+        }
+        NativeSql::Raw => {
+            format!("SELECT CONVERT(varchar(64), {column}) FROM {table} WHERE id = @P1")
+        }
+        NativeSql::Delete => format!("DELETE FROM {table} WHERE id = @P1"),
+    }
+}
+
+/// Le colonne del censimento: ogni parametrizzazione che il catalogo di SQL
+/// Server riporta (precisione, scala, lunghezza in byte e in unita UTF-16,
+/// codepage della collation).
+#[allow(clippy::too_many_lines)]
+fn sweep_columns() -> Vec<(
+    plenora_database_testkit::parameter_sweep::Column,
+    &'static str,
+)> {
+    use plenora_database_testkit::parameter_sweep::{Column, Kind, Render, Set, Unit};
+    let integer = |min: i128, max: i128| Kind::Integer { min, max };
+    let text = |length, padded, unit, set| Kind::Text {
+        length,
+        padded,
+        unit,
+        set,
+    };
+    let column = |name, kind, render| Column { name, kind, render };
+    vec![
+        (column("c_ti", integer(0, 255), Render::Decimal), "tinyint"),
+        (
+            column(
+                "c_i",
+                integer(i128::from(i32::MIN), i128::from(i32::MAX)),
+                Render::Decimal,
+            ),
+            "int",
+        ),
+        (
+            column(
+                "c_bi",
+                integer(i128::from(i64::MIN), i128::from(i64::MAX)),
+                Render::Decimal,
+            ),
+            "bigint",
+        ),
+        (
+            column(
+                "c_r",
+                Kind::Float { bits: 24 },
+                Render::FloatHex {
+                    bits: 24,
+                    little_endian: false,
+                },
+            ),
+            "real",
+        ),
+        (
+            column(
+                "c_f",
+                Kind::Float { bits: 53 },
+                Render::FloatHex {
+                    bits: 53,
+                    little_endian: false,
+                },
+            ),
+            "float",
+        ),
+        (
+            column(
+                "c_n124",
+                Kind::Decimal {
+                    precision: 12,
+                    scale: 4,
+                },
+                Render::Decimal,
+            ),
+            "decimal(12, 4)",
+        ),
+        (
+            column(
+                "c_n55",
+                Kind::Decimal {
+                    precision: 5,
+                    scale: 5,
+                },
+                Render::Decimal,
+            ),
+            "decimal(5, 5)",
+        ),
+        (
+            column(
+                "c_v3",
+                text(Some(3), false, Unit::Bytes, Set::Windows1252),
+                Render::Utf16LeHex,
+            ),
+            "varchar(3) COLLATE SQL_Latin1_General_CP1_CI_AS",
+        ),
+        (
+            column(
+                "c_v20",
+                text(Some(20), false, Unit::Bytes, Set::Windows1252),
+                Render::Utf16LeHex,
+            ),
+            "varchar(20) COLLATE SQL_Latin1_General_CP1_CI_AS",
+        ),
+        (
+            column(
+                "c_v10u",
+                text(Some(10), false, Unit::Bytes, Set::Unicode),
+                Render::Utf16LeHex,
+            ),
+            "varchar(10) COLLATE Latin1_General_100_CI_AS_SC_UTF8",
+        ),
+        (
+            column(
+                "c_nv3",
+                text(Some(3), false, Unit::Utf16, Set::Unicode),
+                Render::Utf16LeHex,
+            ),
+            "nvarchar(3)",
+        ),
+        (
+            column(
+                "c_c4",
+                text(Some(4), true, Unit::Bytes, Set::Windows1252),
+                Render::Utf16LeHex,
+            ),
+            "char(4) COLLATE SQL_Latin1_General_CP1_CI_AS",
+        ),
+        (
+            column(
+                "c_nc4",
+                text(Some(4), true, Unit::Utf16, Set::Unicode),
+                Render::Utf16LeHex,
+            ),
+            "nchar(4)",
+        ),
+        (
+            column(
+                "c_vb4",
+                Kind::Binary {
+                    length: Some(4),
+                    padded: false,
+                },
+                Render::BytesHex,
+            ),
+            "varbinary(4)",
+        ),
+        (
+            column(
+                "c_b4",
+                Kind::Binary {
+                    length: Some(4),
+                    padded: true,
+                },
+                Render::BytesHex,
+            ),
+            "binary(4)",
+        ),
+        (column("c_dt", Kind::Date, Render::Date), "date"),
+        (
+            column("c_ts0", Kind::Timestamp { fraction: 0 }, Render::Timestamp),
+            "datetime2(0)",
+        ),
+        (
+            column("c_ts3", Kind::Timestamp { fraction: 3 }, Render::Timestamp),
+            "datetime2(3)",
+        ),
+        (
+            column("c_ts7", Kind::Timestamp { fraction: 7 }, Render::Timestamp),
+            "datetime2(7)",
+        ),
+        (
+            column("c_tz0", Kind::TimestampTz { fraction: 0 }, Render::Instant),
+            "datetimeoffset(0)",
+        ),
+        (
+            column("c_tz7", Kind::TimestampTz { fraction: 7 }, Render::Instant),
+            "datetimeoffset(7)",
+        ),
+        (column("c_bo", Kind::Boolean, Render::Boolean), "bit"),
+    ]
+}
+
+/// La resa del server: il testo come le sue unita UTF-16 qualunque sia la
+/// codepage, i floating point come i loro bit, i temporali a sette cifre e
+/// gli istanti in UTC; `NULL` resta `NULL`.
+fn sweep_raw(column: &str) -> String {
+    let expression = match column {
+        "c_r" => "CONVERT(varchar(32), CAST(c_r AS binary(4)), 2)".to_owned(),
+        "c_f" => "CONVERT(varchar(32), CAST(c_f AS binary(8)), 2)".to_owned(),
+        "c_v3" | "c_v20" | "c_v10u" | "c_nv3" | "c_c4" | "c_nc4" => format!(
+            "CONVERT(varchar(max), CAST(CAST({column} AS nvarchar(max)) AS varbinary(max)), 2)"
+        ),
+        "c_vb4" | "c_b4" => format!("CONVERT(varchar(max), {column}, 2)"),
+        "c_dt" => "CONVERT(varchar(10), c_dt, 23)".to_owned(),
+        "c_ts0" | "c_ts3" | "c_ts7" => {
+            format!("CONVERT(varchar(40), CAST({column} AS datetime2(7)), 126)")
+        }
+        "c_tz0" | "c_tz7" => format!(
+            "CONVERT(varchar(40), CAST(SWITCHOFFSET({column}, '+00:00') AS datetime2(7)), 126)"
+        ),
+        _ => format!("CONVERT(varchar(64), {column})"),
+    };
+    format!("SELECT {expression} FROM {SCHEMA}.{SWEEP_TABLE} WHERE id = @P1")
+}
+
+/// Il censimento generato: per ogni tipo di colonna, ogni valore generato
+/// per famiglia, su ogni percorso, contro la resa del server e il modello
+/// indipendente del tipo (la codepage e la lunghezza del testo comprese: il
+/// difetto 4 del terzo giro della #135, `'łę日x'` in CP1252 diventava `'l?x'`).
+#[tokio::test]
+#[ignore = "richiede SQL Server live"]
+async fn live_generated_values_bind_exactly_or_are_refused() {
+    use plenora_database_testkit::parameter_sweep::{
+        sweep, sweep_report, ServerFacts, SweepTarget,
+    };
+    let provider = live_provider();
+    let secret = live_secret();
+    let cancellation = CancellationToken::new();
+    let columns = sweep_columns();
+    let definition = columns
+        .iter()
+        .map(|(column, sql)| format!("{} {sql}", column.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    for sql in [
+        format!("DROP TABLE IF EXISTS {SCHEMA}.{SWEEP_TABLE}"),
+        format!("CREATE TABLE {SCHEMA}.{SWEEP_TABLE} (id INT NOT NULL PRIMARY KEY, {definition})"),
+    ] {
+        provider
+            .execute_ddl(&secret, &sql, &cancellation)
+            .await
+            .expect("DDL tabella del censimento generato SQL Server");
+    }
+    let target = SweepTarget {
+        target: Target {
+            provider: &provider,
+            secret: &secret,
+            limits: ResourceLimits::default(),
+            table: ObjectRef {
+                catalog: None,
+                schema: Some(SCHEMA.to_owned()),
+                object: SWEEP_TABLE.to_owned(),
+            },
+            id_column: "id",
+            native: &sweep_native,
+            native_cross_type_declared: true,
+        },
+        raw: &sweep_raw,
+        part: None,
+        facts: ServerFacts {
+            native_declared: true,
+            ..ServerFacts::default()
+        },
+    };
+    let columns = columns
+        .into_iter()
+        .map(|(column, _)| column)
+        .collect::<Vec<_>>();
+    let outcomes = sweep(
+        &target,
+        &columns,
+        &[
+            FidelityPath::Native,
+            FidelityPath::Portable,
+            FidelityPath::Read,
+        ],
+    )
+    .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("DROP TABLE {SCHEMA}.{SWEEP_TABLE}"),
+            &cancellation,
+        )
+        .await
+        .expect("pulizia tabella del censimento generato SQL Server");
+    let (text, failures) = sweep_report(&outcomes);
+    println!("{text}");
+    assert!(
+        failures.is_empty(),
+        "valori generati non esatti su SQL Server: {failures:#?}"
+    );
+}

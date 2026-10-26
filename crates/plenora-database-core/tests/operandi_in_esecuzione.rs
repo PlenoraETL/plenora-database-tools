@@ -231,7 +231,23 @@ fn portable(value: &Value) -> PortableStatement {
 fn esito(prodotto: ProviderKind, plan: OperandPlan<'_>) -> (Result<(), DatabaseError>, usize) {
     let mut tx = finta(prodotto);
     let cancel = CancellationToken::new();
-    let statement = Statement::new("SELECT 1");
+    // Una mutazione passa dal cancello dell'ammissione con un valore per
+    // segnaposto: qui `NULL`, ammesso su ogni colonna.
+    let statement = match plan {
+        OperandPlan::Mutation(operation) => Statement::new("SELECT 1").with_params(
+            plenora_database_core::compile_relational_mutation(prodotto, operation)
+                .map(|lowered| {
+                    vec![
+                        plenora_database_core::provider::ParameterValue::Null {
+                            type_name: "text".to_owned(),
+                        };
+                        lowered.bind_names.len()
+                    ]
+                })
+                .unwrap_or_default(),
+        ),
+        _ => Statement::new("SELECT 1"),
+    };
     let outcome = match plan {
         OperandPlan::Query(_) => {
             block_on(query_judged(&mut tx, &statement, Some(&plan), &cancel)).map(|_| ())

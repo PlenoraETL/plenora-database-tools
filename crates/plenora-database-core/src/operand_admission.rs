@@ -18,10 +18,27 @@
 //! ([`OperandType::Unknown`]) rifiuta ogni valore che non sia `NULL`.
 //!
 //! La regola vale dove l'operando e noto: l'AST portable (il catalogo della
-//! transazione, `TransactionScope::column_types`), il filtro della lettura
-//! plan-based (la descrizione dell'oggetto letto), il parameter-array Db2 e
-//! lo SQL del chiamante su Db2 (il tipo che `SQLDescribeParam` da al
-//! segnaposto).
+//! transazione, `TransactionScope::column_types`), il DML relazionale dello
+//! SDK, il filtro della lettura plan-based (il catalogo dell'oggetto letto),
+//! il parameter-array Db2 e lo SQL del chiamante su Db2 (il tipo che
+//! `SQLDescribeParam` da al segnaposto). La applica soltanto il cancello
+//! [`crate::admission_gate`], con l'elenco dei punti d'ingresso.
+//!
+//! Il terzo giro della #135 l'ha estesa a tre classi che il censimento a punti
+//! non vedeva, trovate dal censimento generato
+//! (`plenora_database_testkit::parameter_sweep`):
+//!
+//! - **testo**: la lunghezza nell'unita della colonna ([`LengthUnit`]:
+//!   caratteri, byte del charset, unita UTF-16) e ogni carattere nel suo
+//!   charset ([`Charset`]); altrimenti il server tronca (`'abc   '` in un
+//!   `varchar(3)` di PostgreSQL e Db2 diventava `'abc'`) o sostituisce
+//!   (`'łę日x'` in un `varchar` CP1252 di SQL Server diventava `'l?x'`);
+//! - **`FLOAT(M, D)` e `DOUBLE(M, D)` di `MySQL` e `MariaDB`**
+//!   ([`OperandType::ScaledFloat`]): il server arrotonda con l'aritmetica dei
+//!   double, e soltanto un valore esatto con `D` cifre e al piu quindici cifre
+//!   resta lui (`1.25` in `FLOAT(7, 1)` diventava `1.2`, `-0.1` in `DOUBLE(10,
+//!   2)` diventava `-0.09999999999999998`);
+//! - **decimali a scala negativa** ([`OperandType::RoundedDecimal`]).
 //!
 //! # Limite dichiarato: lo SQL del chiamante
 //!
@@ -67,6 +84,87 @@ pub struct CatalogType {
     /// Cifre frazionarie dei tipi temporali, quando il catalogo le tiene a
     /// parte dalla scala.
     pub datetime_precision: Option<u64>,
+    /// L'unita in cui il catalogo conta la lunghezza di un tipo testuale.
+    pub length_unit: LengthUnit,
+    /// I caratteri che la colonna testuale sa conservare.
+    pub charset: Charset,
+}
+
+/// L'unita della lunghezza di un tipo testuale.
+///
+/// I caratteri (PostgreSQL, `MySQL`, `VARCHAR2(n CHAR)`), i byte del charset della colonna
+/// (`varchar(n)` di SQL Server, `VARCHAR2(n BYTE)`, `VARCHAR(n)` di Db2), le
+/// unita UTF-16 (`nvarchar(n)`, `NVARCHAR2(n)` in AL16UTF16, `GRAPHIC`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LengthUnit {
+    #[default]
+    Characters,
+    Bytes,
+    Utf16,
+}
+
+/// I caratteri che una colonna testuale conserva.
+///
+/// Un carattere fuori dal
+/// charset il server lo sostituisce (`'日'` in un `varchar` CP1252 di SQL
+/// Server diventava `'?'`, `'ł'` diventava `'l'`): si rifiuta prima.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Charset {
+    /// UTF-8 o UTF-16: ogni carattere.
+    #[default]
+    Unicode,
+    /// UTF-8 a tre byte (`utf8mb3` di `MySQL`): il piano multilingue di base.
+    UnicodeBmp,
+    /// Windows-1252 (`latin1` di `MySQL`, le collation CP1252 di SQL Server,
+    /// `WE8MSWIN1252` di Oracle), un byte per carattere.
+    Windows1252,
+    /// Un charset che il repository non tabula: soltanto ASCII e certo, un
+    /// byte per carattere.
+    Ascii,
+}
+
+impl Charset {
+    /// Se il charset conserva `character`.
+    #[must_use]
+    pub fn holds(self, character: char) -> bool {
+        match self {
+            Self::Unicode => true,
+            Self::UnicodeBmp => u32::from(character) <= 0xFFFF,
+            Self::Ascii => character.is_ascii(),
+            Self::Windows1252 => {
+                character.is_ascii()
+                    || ('\u{A0}'..='\u{FF}').contains(&character)
+                    || WINDOWS_1252_HIGH.contains(&character)
+            }
+        }
+    }
+
+    /// I byte di `text` nel charset (soltanto per un testo che il charset
+    /// conserva).
+    fn bytes(self, text: &str) -> usize {
+        match self {
+            Self::Unicode | Self::UnicodeBmp => text.len(),
+            Self::Windows1252 | Self::Ascii => text.chars().count(),
+        }
+    }
+}
+
+/// I caratteri di Windows-1252 fra `0x80` e `0x9F` (i cinque byte non
+/// definiti esclusi).
+const WINDOWS_1252_HIGH: [char; 27] = [
+    '\u{20AC}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}', '\u{02C6}',
+    '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{017D}', '\u{2018}', '\u{2019}', '\u{201C}',
+    '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}', '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}',
+    '\u{0153}', '\u{017E}', '\u{0178}',
+];
+
+/// La lunghezza di `text` nell'unita della colonna.
+fn text_length(text: &str, unit: LengthUnit, charset: Charset) -> usize {
+    match unit {
+        LengthUnit::Characters => text.chars().count(),
+        LengthUnit::Bytes => charset.bytes(text),
+        LengthUnit::Utf16 => text.encode_utf16().count(),
+    }
 }
 
 /// Il tipo di un operando, con cio che serve a giudicare l'esattezza.
@@ -80,6 +178,15 @@ pub enum OperandType {
     /// Floating point IEEE con `mantissa_bits` bit di mantissa (24 o 53).
     Float {
         mantissa_bits: u32,
+    },
+    /// `FLOAT(M, D)` e `DOUBLE(M, D)` di `MySQL` e `MariaDB`: il server
+    /// arrotonda il valore a `scale` cifre frazionarie e `precision` cifre in
+    /// tutto prima di salvarlo come floating point (`1.25` in `FLOAT(7, 1)`
+    /// diventava `1.2`).
+    ScaledFloat {
+        mantissa_bits: u32,
+        precision: u32,
+        scale: u32,
     },
     /// Decimale a precisione e scala fisse.
     Decimal {
@@ -98,9 +205,13 @@ pub enum OperandType {
         digits: u32,
     },
     /// Testo; `padded` per i tipi a lunghezza fissa completati con spazi.
+    /// La lunghezza si conta in `unit`, e la colonna conserva i caratteri di
+    /// `charset`.
     Text {
         length: Option<u64>,
         padded: bool,
+        unit: LengthUnit,
+        charset: Charset,
     },
     /// Binario; `padded` per i tipi a lunghezza fissa completati con zeri.
     Binary {
@@ -158,11 +269,41 @@ fn decimal(precision: Option<u64>, scale: Option<i64>, unbounded_digits: u32) ->
             precision: u32::try_from(precision).unwrap_or(u32::MAX),
             rounding: u32::try_from(scale.unsigned_abs()).unwrap_or(u32::MAX),
         },
+        // Una scala senza precisione (`NUMBER(*, s)` di Oracle): la
+        // precisione e quella del tipo, la scala resta. Seconda lettura del
+        // terzo giro: `NUMBER(*, -2)` ammetteva `123` e conservava `100`.
+        (None, Some(scale)) if scale > 0 => OperandType::Decimal {
+            precision: unbounded_digits,
+            scale: u32::try_from(scale).unwrap_or(u32::MAX),
+        },
+        (None, Some(scale)) if scale < 0 => OperandType::RoundedDecimal {
+            precision: unbounded_digits,
+            rounding: u32::try_from(scale.unsigned_abs()).unwrap_or(u32::MAX),
+        },
         (None, _) => OperandType::UnboundedDecimal {
             digits: unbounded_digits,
         },
     }
 }
+
+/// Un tipo testuale del catalogo, con l'unita della sua lunghezza e il suo
+/// charset.
+const fn text_of(length: Option<u64>, padded: bool, catalog: &CatalogType) -> OperandType {
+    OperandType::Text {
+        length,
+        padded,
+        unit: catalog.length_unit,
+        charset: catalog.charset,
+    }
+}
+
+/// Un testo senza lunghezza, in un charset Unicode.
+const UNBOUNDED_TEXT: OperandType = OperandType::Text {
+    length: None,
+    padded: false,
+    unit: LengthUnit::Characters,
+    charset: Charset::Unicode,
+};
 
 fn fraction(digits: Option<u64>, default: u32) -> u32 {
     digits.map_or(default, |digits| u32::try_from(digits).unwrap_or(u32::MAX))
@@ -193,18 +334,9 @@ fn postgres(name: &str, catalog: &CatalogType) -> OperandType {
         // `numeric` senza typmod: precisione arbitraria, ogni decimale e
         // esatto (il limite di 131072 cifre del server e un errore).
         "numeric" | "decimal" => decimal(catalog.precision, catalog.scale, u32::MAX),
-        "text" | "name" => OperandType::Text {
-            length: None,
-            padded: false,
-        },
-        "varchar" | "character varying" => OperandType::Text {
-            length: catalog.length,
-            padded: false,
-        },
-        "bpchar" | "character" => OperandType::Text {
-            length: catalog.length,
-            padded: true,
-        },
+        "text" | "name" => text_of(None, false, catalog),
+        "varchar" | "character varying" => text_of(catalog.length, false, catalog),
+        "bpchar" | "character" => text_of(catalog.length, true, catalog),
         "bytea" => OperandType::Binary {
             length: None,
             padded: false,
@@ -228,10 +360,7 @@ fn mysql(name: &str, catalog: &CatalogType) -> OperandType {
         .declaration
         .as_deref()
         .is_some_and(|declaration| declaration.to_ascii_lowercase().contains("unsigned"));
-    let text = |padded| OperandType::Text {
-        length: catalog.length,
-        padded,
-    };
+    let text = |padded| text_of(catalog.length, padded, catalog);
     match (name, unsigned_column) {
         ("tinyint", false) => integer(I8),
         ("tinyint", true) => unsigned(8),
@@ -243,8 +372,8 @@ fn mysql(name: &str, catalog: &CatalogType) -> OperandType {
         ("int" | "integer", true) => unsigned(32),
         ("bigint", false) => integer(I64),
         ("bigint", true) => unsigned(64),
-        ("float", _) => OperandType::Float { mantissa_bits: 24 },
-        ("double" | "real", _) => OperandType::Float { mantissa_bits: 53 },
+        ("float", _) => scaled_float(24, catalog),
+        ("double" | "real", _) => scaled_float(53, catalog),
         ("decimal" | "numeric", _) => decimal(catalog.precision, catalog.scale, 0),
         ("char", _) => text(true),
         ("varchar" | "tinytext" | "text" | "mediumtext" | "longtext", _) => text(false),
@@ -264,6 +393,43 @@ fn mysql(name: &str, catalog: &CatalogType) -> OperandType {
         },
         ("json", _) => OperandType::Json,
         _ => OperandType::Unknown,
+    }
+}
+
+/// Le cifre oltre le quali `x * 10^D` non e piu un intero esatto in un double
+/// (`10^15 < 2^53`).
+const SCALED_FLOAT_DIGITS: u32 = 15;
+
+/// Un valore che l'arrotondamento di `FLOAT(M, D)` lascia com'e qualunque sia
+/// l'aritmetica del server: il valore esatto ha al piu `D` cifre frazionarie
+/// e al piu quindici cifre in tutto, cosi `x * 10^D` e un intero esatto e
+/// tornare indietro e esatto. Non basta che la forma piu corta abbia `D`
+/// cifre: misurato su `MySQL`, `-0.1` in un `DOUBLE(10, 2)` diventava
+/// `-0.09999999999999998`, e `-0.05` diventava `-0.050000000000000044`.
+fn scaled_float_exact(exact: &ExactDecimal, precision: u32, scale: u32) -> bool {
+    let integer = u32::try_from(exact.integer.len()).unwrap_or(u32::MAX);
+    fits_decimal(exact, precision, scale) && integer.saturating_add(scale) <= SCALED_FLOAT_DIGITS
+}
+
+/// `FLOAT`, `DOUBLE` o, con la scala dichiarata (`float(7,1)` nella
+/// `COLUMN_TYPE`), `FLOAT(M, D)` e `DOUBLE(M, D)`.
+fn scaled_float(mantissa_bits: u32, catalog: &CatalogType) -> OperandType {
+    let declared = catalog.declaration.as_deref().and_then(|declaration| {
+        let (_, rest) = declaration.split_once('(')?;
+        let (inside, _) = rest.split_once(')')?;
+        let (precision, scale) = inside.split_once(',')?;
+        Some((
+            precision.trim().parse::<u32>().ok()?,
+            scale.trim().parse::<u32>().ok()?,
+        ))
+    });
+    match declared {
+        Some((precision, scale)) => OperandType::ScaledFloat {
+            mantissa_bits,
+            precision,
+            scale,
+        },
+        None => OperandType::Float { mantissa_bits },
     }
 }
 
@@ -291,14 +457,8 @@ fn sqlserver(name: &str, catalog: &CatalogType) -> OperandType {
             precision: 10,
             scale: 4,
         },
-        "char" | "nchar" => OperandType::Text {
-            length: catalog.length,
-            padded: true,
-        },
-        "varchar" | "nvarchar" => OperandType::Text {
-            length: catalog.length,
-            padded: false,
-        },
+        "char" | "nchar" => text_of(catalog.length, true, catalog),
+        "varchar" | "nvarchar" => text_of(catalog.length, false, catalog),
         "binary" => OperandType::Binary {
             length: catalog.length,
             padded: true,
@@ -335,14 +495,8 @@ fn oracle(name: &str, catalog: &CatalogType) -> OperandType {
         },
         "binary_float" => OperandType::Float { mantissa_bits: 24 },
         "binary_double" => OperandType::Float { mantissa_bits: 53 },
-        "varchar2" | "nvarchar2" => OperandType::Text {
-            length: catalog.length,
-            padded: false,
-        },
-        "char" | "nchar" => OperandType::Text {
-            length: catalog.length,
-            padded: true,
-        },
+        "varchar2" | "nvarchar2" => text_of(catalog.length, false, catalog),
+        "char" | "nchar" => text_of(catalog.length, true, catalog),
         "raw" => OperandType::Binary {
             length: catalog.length,
             padded: false,
@@ -374,14 +528,8 @@ fn db2(name: &str, catalog: &CatalogType) -> OperandType {
         "decfloat" => OperandType::UnboundedDecimal {
             digits: u32::try_from(catalog.precision.unwrap_or(34)).unwrap_or(34),
         },
-        "character" | "char" => OperandType::Text {
-            length: catalog.length,
-            padded: true,
-        },
-        "varchar" => OperandType::Text {
-            length: catalog.length,
-            padded: false,
-        },
+        "character" | "char" => text_of(catalog.length, true, catalog),
+        "varchar" => text_of(catalog.length, false, catalog),
         "binary" => OperandType::Binary {
             length: catalog.length,
             padded: true,
@@ -720,6 +868,17 @@ pub fn admit(
                 O::UnboundedDecimal { digits } if integer_digits(number) <= *digits => {
                     Ok(value.clone())
                 }
+                O::ScaledFloat {
+                    mantissa_bits,
+                    precision,
+                    scale,
+                } if number.abs() <= 1_i128 << mantissa_bits
+                    && integer_digits(number) <= precision.saturating_sub(*scale)
+                    && integer_digits(number).saturating_add(*scale) <= SCALED_FLOAT_DIGITS =>
+                {
+                    #[allow(clippy::cast_precision_loss)] // |n| <= 2^53: esatto
+                    Ok(V::F64(number as f64))
+                }
                 O::RoundedDecimal {
                     precision,
                     rounding,
@@ -739,6 +898,27 @@ pub fn admit(
             O::Float { .. } => Ok(value.clone()),
             _ => Err(inexact()),
         },
+        (
+            V::F64(number),
+            O::ScaledFloat {
+                mantissa_bits,
+                precision,
+                scale,
+            },
+        ) => {
+            if *mantissa_bits < 53 && crate::parameter_fidelity::exact_f32(*number).is_none() {
+                return Err(inexact());
+            }
+            let exact = exact_decimal_of_f64(*number).ok_or_else(inexact)?;
+            if scaled_float_exact(&exact, *precision, *scale) {
+                Ok(value.clone())
+            } else {
+                Err(refusal(
+                    provider,
+                    "floating point oltre la scala di FLOAT(M, D): il server lo arrotonderebbe",
+                ))
+            }
+        }
         (V::F64(number), O::Float { mantissa_bits }) => {
             if *mantissa_bits >= 53 || crate::parameter_fidelity::exact_f32(*number).is_some() {
                 Ok(value.clone())
@@ -798,7 +978,16 @@ pub fn admit(
                 O::Float { mantissa_bits } => float_of(&exact, *mantissa_bits)
                     .map(V::F64)
                     .ok_or_else(inexact),
-                O::Text { .. } => Ok(V::String(text.clone())),
+                O::ScaledFloat {
+                    mantissa_bits,
+                    precision,
+                    scale,
+                } if scaled_float_exact(&exact, *precision, *scale) => {
+                    float_of(&exact, *mantissa_bits)
+                        .map(V::F64)
+                        .ok_or_else(inexact)
+                }
+                O::Text { .. } => admit_text(provider, text, operand),
                 _ => Err(inexact()),
             }
         }
@@ -853,13 +1042,23 @@ pub fn admit(
             | V::Timestamp(text)
             | V::TimestampTz(text),
             O::Text { .. },
-        ) => Ok(V::String(text.clone())),
+        ) => admit_text(provider, text, operand),
         (V::String(text), O::Enumeration) => Ok(V::Enum {
             type_name: String::new(),
             label: text.clone(),
         }),
-        (V::Json(document), O::Text { padded: false, .. }) => Ok(V::String(document.to_string())),
+        (V::Json(document), O::Text { padded: false, .. }) => {
+            admit_text(provider, &document.to_string(), operand)
+        }
         (V::Bytes(bytes), O::Binary { length, padded }) => {
+            if length
+                .is_some_and(|length| u64::try_from(bytes.len()).map_or(true, |len| len > length))
+            {
+                return Err(refusal(
+                    provider,
+                    "byte oltre la lunghezza della colonna: il server li troncherebbe o li rifiuterebbe",
+                ));
+            }
             if *padded
                 && length.is_none_or(|length| u64::try_from(bytes.len()).ok() != Some(length))
             {
@@ -872,6 +1071,43 @@ pub fn admit(
         }
         _ => Err(inexact()),
     }
+}
+
+/// Un testo contro una colonna testuale: ogni carattere nel charset della
+/// colonna e la lunghezza, nella sua unita, entro quella dichiarata.
+/// Altrimenti il server sostituisce il carattere (`'日'` verso `'?'` in un
+/// `varchar` CP1252 di SQL Server) o tronca il testo (`'abc   '` in un
+/// `varchar(3)` di PostgreSQL e Db2 diventava `'abc'`): si rifiuta. Un testo
+/// piu corto di un `CHAR(n)` resta ammesso: il riempimento con spazi e la
+/// semantica di confronto dichiarata (limite «collation»).
+fn admit_text(provider: ProviderKind, text: &str, operand: &OperandType) -> Result<ParameterValue> {
+    let OperandType::Text {
+        length,
+        unit,
+        charset,
+        ..
+    } = *operand
+    else {
+        return Err(refusal(
+            provider,
+            "parametro non rappresentabile esatto nel tipo dell'operando",
+        ));
+    };
+    if !text.chars().all(|character| charset.holds(character)) {
+        return Err(refusal(
+            provider,
+            "carattere fuori dal charset della colonna: il server lo sostituirebbe",
+        ));
+    }
+    if length.is_some_and(|length| {
+        u64::try_from(text_length(text, unit, charset)).map_or(true, |count| count > length)
+    }) {
+        return Err(refusal(
+            provider,
+            "testo oltre la lunghezza della colonna: il server lo troncherebbe o lo rifiuterebbe",
+        ));
+    }
+    Ok(ParameterValue::String(text.to_owned()))
 }
 
 fn collect_filter<'a>(expression: &'a FilterExpression, uses: &mut Vec<(&'a str, &'a str)>) {
@@ -1093,10 +1329,7 @@ pub const fn cast_operand(
     parameter_type: crate::relational::QueryParameterType,
 ) -> OperandType {
     use crate::relational::QueryParameterType as T;
-    let unbounded_text = OperandType::Text {
-        length: None,
-        padded: false,
-    };
+    let unbounded_text = UNBOUNDED_TEXT;
     match (parameter_type, provider) {
         (T::Boolean | T::Integer | T::BigInteger, ProviderKind::Mysql | ProviderKind::Mariadb) => {
             integer(I64)
@@ -1113,9 +1346,12 @@ pub const fn cast_operand(
         },
         (T::BigInteger, _) => integer(I64),
         (T::Float, _) => OperandType::Float { mantissa_bits: 53 },
+        // `VARCHAR2(4000)` del renderer conta i byte (`BYTE` di default).
         (T::String, ProviderKind::Oracle) => OperandType::Text {
             length: Some(4000),
             padded: false,
+            unit: LengthUnit::Bytes,
+            charset: Charset::Unicode,
         },
         (T::Json, ProviderKind::Postgres | ProviderKind::Mysql) => OperandType::Json,
         (T::String | T::Json, _) => unbounded_text,
@@ -1143,6 +1379,8 @@ pub const fn cast_operand(
         (T::Uuid, _) => OperandType::Text {
             length: Some(36),
             padded: true,
+            unit: LengthUnit::Characters,
+            charset: Charset::Ascii,
         },
     }
 }

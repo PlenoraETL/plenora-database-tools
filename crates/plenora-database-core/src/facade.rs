@@ -251,31 +251,8 @@ pub async fn execute_portable(
     }
     compile_portable(tx.provider_kind(), statement)?;
     verify_operands(tx, &OperandPlan::Portable(statement), cancellation).await?;
-    let compiled = admitted(tx, statement, cancellation).await?;
+    let compiled = crate::admission_gate::portable(tx, statement, cancellation).await?;
     tx.execute(&compiled, cancellation).await
-}
-
-/// Lo statement compilato dopo l'ammissione dei letterali sul tipo delle
-/// colonne che incontrano (`operand_admission`), letto dal catalogo della
-/// transazione.
-///
-/// # Errors
-///
-/// Quelli della lettura del catalogo, di `admit_portable` e della
-/// compilazione.
-pub async fn admitted(
-    tx: &mut dyn TransactionScope,
-    statement: &PortableStatement,
-    cancellation: &CancellationToken,
-) -> Result<Statement> {
-    let provider = tx.provider_kind();
-    let relation = crate::operand_admission::statement_relation(statement);
-    let types = tx
-        .column_types(&relation, cancellation)
-        .await?
-        .unwrap_or_default();
-    let statement = crate::operand_admission::admit_portable(provider, statement, &types)?;
-    compile_portable(provider, &statement)
 }
 
 /// Il giudizio degli operandi geometrici di `plan`, prima di eseguirne lo SQL.
@@ -313,39 +290,114 @@ pub async fn verify_operands(
 }
 
 /// Esegue lo SQL compilato da `plan` che rende righe, dopo
-/// [`verify_operands`]. `plan` assente: SQL del chiamante, senza giudizio.
+/// [`verify_operands`] e il cancello dell'ammissione
+/// ([`admitted_for_plan`]). `plan` assente: SQL del chiamante, senza
+/// giudizio.
 ///
 /// # Errors
 ///
-/// Quelli di [`verify_operands`] e del driver.
+/// Quelli di [`verify_operands`], del cancello e del driver.
 pub async fn query_judged(
     tx: &mut dyn TransactionScope,
     statement: &Statement,
     plan: Option<&OperandPlan<'_>>,
     cancellation: &CancellationToken,
 ) -> Result<Vec<Row>> {
-    if let Some(plan) = plan {
-        verify_operands(tx, plan, cancellation).await?;
-    }
-    tx.query(statement, cancellation).await
+    let Some(plan) = plan else {
+        return tx.query(statement, cancellation).await;
+    };
+    verify_operands(tx, plan, cancellation).await?;
+    let admitted = admitted_for_plan(tx, statement, plan, cancellation).await?;
+    tx.query(&admitted, cancellation).await
 }
 
 /// Esegue lo SQL compilato da `plan` che rende un conteggio, dopo
-/// [`verify_operands`]. `plan` assente: SQL del chiamante, senza giudizio.
+/// [`verify_operands`] e il cancello dell'ammissione
+/// ([`admitted_for_plan`]). `plan` assente: SQL del chiamante, senza
+/// giudizio.
 ///
 /// # Errors
 ///
-/// Quelli di [`verify_operands`] e del driver.
+/// Quelli di [`verify_operands`], del cancello e del driver.
 pub async fn execute_judged(
     tx: &mut dyn TransactionScope,
     statement: &Statement,
     plan: Option<&OperandPlan<'_>>,
     cancellation: &CancellationToken,
 ) -> Result<u64> {
-    if let Some(plan) = plan {
-        verify_operands(tx, plan, cancellation).await?;
+    let Some(plan) = plan else {
+        return tx.execute(statement, cancellation).await;
+    };
+    verify_operands(tx, plan, cancellation).await?;
+    let admitted = admitted_for_plan(tx, statement, plan, cancellation).await?;
+    tx.execute(&admitted, cancellation).await
+}
+
+/// Esegue una query relazionale ammessa dal cancello
+/// ([`crate::admission_gate::query`]) dopo [`verify_operands`].
+///
+/// # Errors
+///
+/// Quelli di [`verify_operands`] e del driver.
+pub async fn query_admitted(
+    tx: &mut dyn TransactionScope,
+    admitted: &crate::admission_gate::Admitted,
+    plan: &OperandPlan<'_>,
+    cancellation: &CancellationToken,
+) -> Result<Vec<Row>> {
+    verify_operands(tx, plan, cancellation).await?;
+    tx.query(admitted.statement(), cancellation).await
+}
+
+/// Come [`query_admitted`], per uno statement che rende un conteggio.
+///
+/// # Errors
+///
+/// Quelli di [`verify_operands`] e del driver.
+pub async fn execute_admitted(
+    tx: &mut dyn TransactionScope,
+    admitted: &crate::admission_gate::Admitted,
+    plan: &OperandPlan<'_>,
+    cancellation: &CancellationToken,
+) -> Result<u64> {
+    verify_operands(tx, plan, cancellation).await?;
+    tx.execute(admitted.statement(), cancellation).await
+}
+
+/// Lo statement di un piano passato dal cancello dell'ammissione, in modo
+/// che nessun ingresso pubblico esegua un piano senza ammetterlo (seconda
+/// lettura del terzo giro della #135: `execute_judged` con un piano
+/// `Mutation` eseguiva `1.23456` in un `numeric(12, 4)` come `1.2346`).
+///
+/// - `Portable`: [`crate::admission_gate::portable`] sull'AST;
+/// - `Mutation`: [`crate::admission_gate::mutation`] con i valori dello
+///   statement, nell'ordine dei bind del piano;
+/// - `Query`: il nome di ogni segnaposto lo sa soltanto il renderer: una
+///   query con parametri passa da [`crate::admission_gate::query`] e
+///   [`query_admitted`]; qui si ammette soltanto una query senza parametri.
+///
+/// # Errors
+///
+/// Quelli del cancello; `InvalidPlan` per una query con parametri.
+async fn admitted_for_plan(
+    tx: &mut dyn TransactionScope,
+    statement: &Statement,
+    plan: &OperandPlan<'_>,
+    cancellation: &CancellationToken,
+) -> Result<Statement> {
+    match plan {
+        OperandPlan::Portable(ast) => crate::admission_gate::portable(tx, ast, cancellation).await,
+        OperandPlan::Mutation(operation) => {
+            crate::admission_gate::mutation(tx, operation, &statement.params, cancellation)
+                .await
+                .map(crate::admission_gate::Admitted::into_statement)
+        }
+        OperandPlan::Query(_) if statement.params.is_empty() => Ok(statement.clone()),
+        OperandPlan::Query(_) => Err(DatabaseError::invalid_plan(
+            "query relazionale con parametri: ammetterla con admission_gate::query \
+             ed eseguirla con query_admitted",
+        )),
     }
-    tx.execute(statement, cancellation).await
 }
 
 /// Compila ed esegue un `PortableStatement` che restituisce righe:
@@ -374,7 +426,7 @@ pub async fn execute_portable_returning(
     }
     compile_portable(tx.provider_kind(), statement)?;
     verify_operands(tx, &OperandPlan::Portable(statement), cancellation).await?;
-    let compiled = admitted(tx, statement, cancellation).await?;
+    let compiled = crate::admission_gate::portable(tx, statement, cancellation).await?;
     tx.query(&compiled, cancellation).await
 }
 

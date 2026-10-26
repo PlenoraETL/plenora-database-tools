@@ -233,7 +233,7 @@ pub async fn query_stream(
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let rendered = render_query(operation)?;
     // I parametri tipati contro il loro CAST (`operand_admission`).
-    let parameters = &plenora_database_core::operand_admission::admit_typed_parameters(
+    let parameters = &plenora_database_core::admission_gate::query_parameters(
         plenora_database_core::plan::ProviderKind::Postgres,
         operation,
         parameters,
@@ -445,7 +445,8 @@ async fn admit_read_filter(
     operation: &plenora_database_core::plan::ReadOperation,
     parameters: &ParameterBag,
 ) -> Result<ParameterBag> {
-    use plenora_database_core::operand_admission::{admit_filter, operand_type};
+    use plenora_database_core::admission_gate::read_filter as admit_filter;
+    use plenora_database_core::operand_admission::operand_type;
     use plenora_database_core::plan::ProviderKind;
     if operation.filter.is_none() {
         return Ok(parameters.clone());

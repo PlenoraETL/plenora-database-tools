@@ -48,6 +48,7 @@ REQUIRED_LIVE_TESTS = frozenset(
     {
         "live_caller_stream_cancellation_requires_recovery",
         "live_parameter_values_bind_exactly_or_are_refused",
+        "live_generated_values_bind_exactly_or_are_refused",
         "live_native_query_policy_guards_every_transaction_entrypoint",
         "live_a_native_batch_error_after_a_write_is_not_reported_as_no_effect",
         "live_provider_execute_ddl_creates_and_drops_table",

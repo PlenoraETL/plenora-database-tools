@@ -51,7 +51,13 @@
 //!   spazi, maiuscole o zeri finali ritrova la riga. Rientro: un confronto
 //!   binario esplicito (`DATALENGTH`, `COLLATE` binaria) nei renderer.
 //! - **Valori che il server normalizza.** `-0.0` si rifiuta dove il server lo
-//!   conserva come `+0.0` (Db2, `MariaDB`, Oracle `BINARY_DOUBLE`, misurato);
+//!   conserva come `+0.0` (Db2, `MariaDB`, misurato). Su Oracle si rifiuta
+//!   per eccesso: il bind lo conserva in `BINARY_DOUBLE` ma `NUMBER`, `FLOAT`
+//!   e `BINARY_FLOAT` lo salvano `+0`, e il bind non conosce la colonna
+//!   (misurato il 25/10 con `1 / x`; `UTL_RAW.CAST_FROM_BINARY_DOUBLE` rende
+//!   `-0` come `+0`, e il secondo giro lo aveva letto come una perdita del
+//!   `BINARY_DOUBLE`). Rientro: il rifiuto sul tipo dell'operando, nel
+//!   portable, quando il bind lo riceve;
 //!   i double subnormali dove Db2 li rifiuta; `''` e un `RAW` vuoto su Oracle,
 //!   che li conserva come `NULL`.
 //! - **Decimali con esponente.** `Decimal` si accetta soltanto in notazione

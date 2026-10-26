@@ -9321,3 +9321,275 @@ async fn live_parameter_values_bind_exactly_or_are_refused() {
     println!("{text}");
     assert!(failures.is_empty(), "binding non esatti: {failures:#?}");
 }
+
+// ---------------------------------------------------------------------------
+// Censimento generato (`plenora_database_testkit::parameter_sweep`)
+// ---------------------------------------------------------------------------
+
+const SWEEP_TABLE: &str = "param_sweep";
+
+fn sweep_native(kind: FidelitySql, column: &str) -> String {
+    let table = SWEEP_TABLE;
+    match kind {
+        FidelitySql::Insert => format!("INSERT INTO {table} (ID, {column}) VALUES (?, ?)"),
+        FidelitySql::Select => format!("SELECT {column} FROM {table} WHERE ID = ?"),
+        FidelitySql::Count => {
+            format!("SELECT COUNT(*) FROM {table} WHERE ID = ? AND {column} = ?")
+        }
+        FidelitySql::Raw => format!("SELECT CAST({column} AS CHAR) FROM {table} WHERE ID = ?"),
+        FidelitySql::Delete => format!("DELETE FROM {table} WHERE ID = ?"),
+    }
+}
+
+/// Le colonne del censimento: ogni parametrizzazione che il catalogo di
+/// `MySQL` e `MariaDB` riporta (precisione, scala, `FLOAT(M, D)`, lunghezza,
+/// charset).
+#[allow(clippy::too_many_lines)]
+fn sweep_columns() -> Vec<(
+    plenora_database_testkit::parameter_sweep::Column,
+    &'static str,
+)> {
+    use plenora_database_testkit::parameter_sweep::{Column, Kind, Render, Set, Unit};
+    let integer = |min: i128, max: i128| Kind::Integer { min, max };
+    let text = |length, padded, set| Kind::Text {
+        length,
+        padded,
+        unit: Unit::Characters,
+        set,
+    };
+    let column = |name, kind, render| Column { name, kind, render };
+    vec![
+        (
+            column("C_TI", integer(-128, 127), Render::Decimal),
+            "TINYINT",
+        ),
+        (
+            column("C_IU", integer(0, i128::from(u32::MAX)), Render::Decimal),
+            "INT UNSIGNED",
+        ),
+        (
+            column(
+                "C_BI",
+                integer(i128::from(i64::MIN), i128::from(i64::MAX)),
+                Render::Decimal,
+            ),
+            "BIGINT",
+        ),
+        (
+            column(
+                "C_F",
+                Kind::Float { bits: 24 },
+                Render::FloatText { bits: 53 },
+            ),
+            "FLOAT",
+        ),
+        (
+            column(
+                "C_F71",
+                Kind::ScaledFloat {
+                    bits: 24,
+                    precision: 7,
+                    scale: 1,
+                },
+                Render::FloatText { bits: 53 },
+            ),
+            "FLOAT(7, 1)",
+        ),
+        (
+            column(
+                "C_D",
+                Kind::Float { bits: 53 },
+                Render::FloatText { bits: 53 },
+            ),
+            "DOUBLE",
+        ),
+        (
+            column(
+                "C_D102",
+                Kind::ScaledFloat {
+                    bits: 53,
+                    precision: 10,
+                    scale: 2,
+                },
+                Render::FloatText { bits: 53 },
+            ),
+            "DOUBLE(10, 2)",
+        ),
+        (
+            column(
+                "C_N124",
+                Kind::Decimal {
+                    precision: 12,
+                    scale: 4,
+                },
+                Render::Decimal,
+            ),
+            "DECIMAL(12, 4)",
+        ),
+        (
+            column(
+                "C_N55",
+                Kind::Decimal {
+                    precision: 5,
+                    scale: 5,
+                },
+                Render::Decimal,
+            ),
+            "DECIMAL(5, 5)",
+        ),
+        (
+            column("C_V3", text(Some(3), false, Set::Unicode), Render::Utf8Hex),
+            "VARCHAR(3) CHARACTER SET utf8mb4",
+        ),
+        (
+            column("C_C4", text(Some(4), true, Set::Unicode), Render::Utf8Hex),
+            "CHAR(4) CHARACTER SET utf8mb4",
+        ),
+        (
+            column(
+                "C_L10",
+                text(Some(10), false, Set::Windows1252),
+                Render::Utf8Hex,
+            ),
+            "VARCHAR(10) CHARACTER SET latin1",
+        ),
+        (
+            column("C_M10", text(Some(10), false, Set::Bmp), Render::Utf8Hex),
+            "VARCHAR(10) CHARACTER SET utf8mb3",
+        ),
+        (
+            column(
+                "C_VB4",
+                Kind::Binary {
+                    length: Some(4),
+                    padded: false,
+                },
+                Render::BytesHex,
+            ),
+            "VARBINARY(4)",
+        ),
+        (
+            column(
+                "C_BN4",
+                Kind::Binary {
+                    length: Some(4),
+                    padded: true,
+                },
+                Render::BytesHex,
+            ),
+            "BINARY(4)",
+        ),
+        (column("C_DT", Kind::Date, Render::Date), "DATE"),
+        (
+            column("C_TS0", Kind::Timestamp { fraction: 0 }, Render::Timestamp),
+            "DATETIME(0)",
+        ),
+        (
+            column("C_TS3", Kind::Timestamp { fraction: 3 }, Render::Timestamp),
+            "DATETIME(3)",
+        ),
+        (
+            column("C_TS6", Kind::Timestamp { fraction: 6 }, Render::Timestamp),
+            "DATETIME(6)",
+        ),
+    ]
+}
+
+/// La resa del server: il testo come i suoi byte UTF-8 qualunque sia il
+/// charset della colonna, i floating point come il testo piu corto che li
+/// rilegge, i temporali alla precisione piena; `NULL` resta `NULL`.
+fn sweep_raw(column: &str) -> String {
+    let expression = match column {
+        // Un `FLOAT` reso come testo ha sei cifre: si allarga a `DOUBLE`,
+        // esatto, e il double si rende con il testo piu corto.
+        "C_F" | "C_F71" | "C_D" | "C_D102" => format!("CAST({column} * 1e0 AS CHAR)"),
+        "C_V3" | "C_C4" | "C_L10" | "C_M10" => format!("HEX(CONVERT({column} USING utf8mb4))"),
+        "C_VB4" | "C_BN4" => format!("HEX({column})"),
+        "C_DT" => format!("DATE_FORMAT({column}, '%Y-%m-%d')"),
+        "C_TS0" | "C_TS3" | "C_TS6" => format!("DATE_FORMAT({column}, '%Y-%m-%dT%H:%i:%s.%f')"),
+        _ => format!("CAST({column} AS CHAR)"),
+    };
+    format!("SELECT {expression} FROM {SWEEP_TABLE} WHERE ID = ?")
+}
+
+/// Il censimento generato: per ogni tipo di colonna, ogni valore generato
+/// per famiglia, su ogni percorso, contro la resa del server e il modello
+/// indipendente del tipo (`FLOAT(M, D)`, la lunghezza e il charset del testo
+/// compresi: i difetti 3 e 4 del terzo giro della #135).
+#[tokio::test]
+#[ignore = "live: richiede MySQL o MariaDB"]
+async fn live_generated_values_bind_exactly_or_are_refused() {
+    use plenora_database_testkit::parameter_sweep::{
+        sweep, sweep_report, ServerFacts, SweepTarget,
+    };
+    let provider: Box<dyn Provider> = if fidelity_mariadb() {
+        Box::new(MariadbProvider::new(live_config(), 2).expect("provider MariaDB"))
+    } else {
+        Box::new(MysqlProvider::new(live_config(), 2).expect("provider MySQL"))
+    };
+    let secret = live_secret();
+    let cancellation = CancellationToken::new();
+    let columns = sweep_columns();
+    let definition = columns
+        .iter()
+        .map(|(column, sql)| format!("{} {sql}", column.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    for sql in [
+        format!("DROP TABLE IF EXISTS {SWEEP_TABLE}"),
+        format!("CREATE TABLE {SWEEP_TABLE} (ID INT NOT NULL PRIMARY KEY, {definition})"),
+    ] {
+        provider
+            .execute_ddl(&secret, &sql, &cancellation)
+            .await
+            .expect("DDL tabella del censimento generato");
+    }
+    let target = SweepTarget {
+        target: FidelityTarget {
+            provider: provider.as_ref(),
+            secret: &secret,
+            limits: ResourceLimits::default(),
+            table: ObjectRef {
+                catalog: None,
+                schema: Some(environment("PLENORA_MYSQL_DATABASE", "dataflow_test")),
+                object: SWEEP_TABLE.to_owned(),
+            },
+            id_column: "ID",
+            native: &sweep_native,
+            native_cross_type_declared: true,
+        },
+        raw: &sweep_raw,
+        part: None,
+        facts: ServerFacts {
+            // `MariaDB` salva `-0.0` come `0` (misurato dalla #134).
+            normalizes_negative_zero: fidelity_mariadb(),
+            hides_padding: true,
+            native_declared: true,
+            ..ServerFacts::default()
+        },
+    };
+    let columns = columns
+        .into_iter()
+        .map(|(column, _)| column)
+        .collect::<Vec<_>>();
+    let outcomes = sweep(
+        &target,
+        &columns,
+        &[
+            FidelityPath::Native,
+            FidelityPath::Portable,
+            FidelityPath::Read,
+        ],
+    )
+    .await;
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {SWEEP_TABLE}"), &cancellation)
+        .await
+        .expect("pulizia tabella del censimento generato");
+    let (text, failures) = sweep_report(&outcomes);
+    println!("{text}");
+    assert!(
+        failures.is_empty(),
+        "valori generati non esatti: {failures:#?}"
+    );
+}

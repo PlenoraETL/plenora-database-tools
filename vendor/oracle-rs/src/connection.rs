@@ -3500,7 +3500,8 @@ impl Connection {
                     chunk_size,
                     col.oracle_type,
                     col.csfrm,
-                );
+                )
+                .with_charset(col.charset_id);
                 return Ok(Value::Lob(LobValue::locator(locator)));
             }
         }
@@ -4271,10 +4272,15 @@ impl Connection {
                     // Un CLOB si decodifica esatto o non si decodifica: la
                     // sostituzione con U+FFFD e il byte dispari scartato
                     // cambiavano il valore in silenzio (`61FF62` -> "a\u{FFFD}b").
-                    // Un NCLOB (forma nazionale) viaggia in AL16UTF16 anche
-                    // quando il locator non porta il flag del charset a
-                    // lunghezza variabile.
-                    let text = if locator.uses_var_length_charset() || locator._csfrm == 2 {
+                    // Un NCLOB (forma nazionale) si decodifica sul charset
+                    // nazionale che il server descrive per la colonna:
+                    // AL16UTF16, l'unico misurato; un altro si rifiuta invece
+                    // di indovinare (`decode_column_text`). Un CLOB del
+                    // database a lunghezza variabile viaggia in UTF-16 (il
+                    // flag del locator).
+                    let text = if locator._csfrm == 2 {
+                        decode_column_text(&data, 2, locator.charset_id)?
+                    } else if locator.uses_var_length_charset() {
                         decode_column_text(&data, 2, 2000)?
                     } else {
                         String::from_utf8(data.to_vec()).map_err(|_| {
@@ -5738,16 +5744,16 @@ mod tests {
 
 /// Il testo di una colonna `VARCHAR2`/`CHAR`/`LONG` e delle forme nazionali,
 /// esatto: UTF-16BE per AL16UTF16 (`charset_id` 2000, il charset nazionale di
-/// default), UTF-8 per AL32UTF8 e UTF8 (873, 871), e per la forma del
-/// database quando il server non dice il charset. Un charset nazionale
-/// diverso si rifiuta invece di indovinare.
+/// default), UTF-8 per la forma del database (il server la converte nel
+/// charset del client, AL32UTF8). La forma nazionale con un charset diverso
+/// da AL16UTF16 (UTF8, 871) si rifiuta: non e misurata, e decodificarla come
+/// UTF-8 o come UTF-16 sarebbe indovinare (terzo giro della #135).
 pub(crate) fn decode_column_text(bytes: &[u8], csfrm: u8, charset_id: u16) -> Result<String> {
     let utf16 = match (csfrm, charset_id) {
         (_, 2000) => true,
-        (_, 871 | 873) => false,
         (2, _) => {
             return Err(Error::DataConversionError(
-                "charset nazionale Oracle non supportato".to_string(),
+                "charset nazionale Oracle diverso da AL16UTF16: non qualificato".to_string(),
             ))
         }
         _ => false,

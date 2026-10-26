@@ -5,8 +5,7 @@ use crate::pfm::{pfm_budget, postgres_provider_for_pfm};
 use crate::{ensure_end, print_json, secret_from_env, CliResult};
 use plenora_database_core::conformance::{APPLICATION_OLTP_V1, PFM_CORE_V1, PFM_GIS_V1};
 use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
-use plenora_database_core::plan::ProviderKind;
-use plenora_database_core::portable::{compile_portable, select as p_select, spatial as p_spatial};
+use plenora_database_core::portable::{select as p_select, spatial as p_spatial};
 use plenora_database_core::provider::{ParameterValue, Provider};
 use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionOptions};
 use plenora_database_core::{CancellationToken, ErrorCategory, SpatialPredicate, SpatialReference};
@@ -369,9 +368,10 @@ pub(crate) async fn test_spatial(args: &mut impl Iterator<Item = String>) -> Cli
             },
         ))
         .into_statement();
-    let compiled = compile_portable(ProviderKind::Postgres, &ast)?;
     let start = std::time::Instant::now();
-    let rows = tx.query(&compiled, &cancel).await?;
+    let rows =
+        plenora_database_core::facade::execute_portable_returning(tx.as_mut(), &ast, &cancel)
+            .await?;
     let elapsed_ms = start.elapsed().as_millis();
     let _ = tx.rollback(&cancel).await;
 

@@ -11,6 +11,7 @@ use plenora_database_core::{CancellationToken, ErrorCategory};
 use plenora_database_testkit::parameter_fidelity::{
     report, run, Case, Expect, FidelityPath, NativeSql, Target,
 };
+use plenora_database_testkit::parameter_sweep::Column;
 
 const SCHEMA: &str = "public";
 const TABLE: &str = "param_fidelity";
@@ -347,5 +348,335 @@ async fn live_parameter_values_bind_exactly_or_are_refused() {
     assert!(
         failures.is_empty(),
         "binding PostgreSQL non esatti: {failures:#?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Censimento generato (`plenora_database_testkit::parameter_sweep`)
+// ---------------------------------------------------------------------------
+
+const SWEEP_TABLE: &str = "param_sweep";
+
+fn sweep_native(kind: NativeSql, column: &str) -> String {
+    let table = format!("{SCHEMA}.{SWEEP_TABLE}");
+    match kind {
+        NativeSql::Insert => format!("INSERT INTO {table} (id, {column}) VALUES ($1, $2)"),
+        NativeSql::Select => format!("SELECT {column} FROM {table} WHERE id = $1"),
+        NativeSql::Count => {
+            format!("SELECT COUNT(*) FROM {table} WHERE id = $1 AND {column} = $2")
+        }
+        NativeSql::Raw => format!("SELECT {column}::text FROM {table} WHERE id = $1"),
+        NativeSql::Delete => format!("DELETE FROM {table} WHERE id = $1"),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn sweep_columns(negative_scale: bool) -> Vec<(Column, &'static str)> {
+    use plenora_database_testkit::parameter_sweep::{Kind, Render, Set, Unit};
+    let integer = |min: i128, max: i128| Kind::Integer { min, max };
+    let text = |length, padded| Kind::Text {
+        length,
+        padded,
+        unit: Unit::Characters,
+        set: Set::Unicode,
+    };
+    let mut columns = vec![
+        (
+            Column {
+                name: "c_i2",
+                kind: integer(-32_768, 32_767),
+                render: Render::Decimal,
+            },
+            "int2",
+        ),
+        (
+            Column {
+                name: "c_i4",
+                kind: integer(i128::from(i32::MIN), i128::from(i32::MAX)),
+                render: Render::Decimal,
+            },
+            "int4",
+        ),
+        (
+            Column {
+                name: "c_i8",
+                kind: integer(i128::from(i64::MIN), i128::from(i64::MAX)),
+                render: Render::Decimal,
+            },
+            "int8",
+        ),
+        (
+            Column {
+                name: "c_f4",
+                kind: Kind::Float { bits: 24 },
+                render: Render::FloatHex {
+                    bits: 24,
+                    little_endian: false,
+                },
+            },
+            "float4",
+        ),
+        (
+            Column {
+                name: "c_f8",
+                kind: Kind::Float { bits: 53 },
+                render: Render::FloatHex {
+                    bits: 53,
+                    little_endian: false,
+                },
+            },
+            "float8",
+        ),
+        (
+            Column {
+                name: "c_n",
+                kind: Kind::UnboundedDecimal { digits: 100_000 },
+                render: Render::Decimal,
+            },
+            "numeric",
+        ),
+        (
+            Column {
+                name: "c_n124",
+                kind: Kind::Decimal {
+                    precision: 12,
+                    scale: 4,
+                },
+                render: Render::Decimal,
+            },
+            "numeric(12, 4)",
+        ),
+        (
+            Column {
+                name: "c_n55",
+                kind: Kind::Decimal {
+                    precision: 5,
+                    scale: 5,
+                },
+                render: Render::Decimal,
+            },
+            "numeric(5, 5)",
+        ),
+        (
+            Column {
+                name: "c_v3",
+                kind: text(Some(3), false),
+                render: Render::Utf8Hex,
+            },
+            "varchar(3)",
+        ),
+        (
+            Column {
+                name: "c_c4",
+                kind: text(Some(4), true),
+                render: Render::Utf8Hex,
+            },
+            "char(4)",
+        ),
+        (
+            Column {
+                name: "c_t",
+                kind: text(None, false),
+                render: Render::Utf8Hex,
+            },
+            "text",
+        ),
+        (
+            Column {
+                name: "c_b",
+                kind: Kind::Binary {
+                    length: None,
+                    padded: false,
+                },
+                render: Render::BytesHex,
+            },
+            "bytea",
+        ),
+        (
+            Column {
+                name: "c_d",
+                kind: Kind::Date,
+                render: Render::Date,
+            },
+            "date",
+        ),
+        (
+            Column {
+                name: "c_ts0",
+                kind: Kind::Timestamp { fraction: 0 },
+                render: Render::Timestamp,
+            },
+            "timestamp(0)",
+        ),
+        (
+            Column {
+                name: "c_ts3",
+                kind: Kind::Timestamp { fraction: 3 },
+                render: Render::Timestamp,
+            },
+            "timestamp(3)",
+        ),
+        (
+            Column {
+                name: "c_ts6",
+                kind: Kind::Timestamp { fraction: 6 },
+                render: Render::Timestamp,
+            },
+            "timestamp(6)",
+        ),
+        (
+            Column {
+                name: "c_tz0",
+                kind: Kind::TimestampTz { fraction: 0 },
+                render: Render::Instant,
+            },
+            "timestamptz(0)",
+        ),
+        (
+            Column {
+                name: "c_tz6",
+                kind: Kind::TimestampTz { fraction: 6 },
+                render: Render::Instant,
+            },
+            "timestamptz(6)",
+        ),
+        (
+            Column {
+                name: "c_bo",
+                kind: Kind::Boolean,
+                render: Render::Boolean,
+            },
+            "bool",
+        ),
+    ];
+    if negative_scale {
+        columns.push((
+            Column {
+                name: "c_nm2",
+                kind: Kind::Decimal {
+                    precision: 6,
+                    scale: -2,
+                },
+                render: Render::Decimal,
+            },
+            "numeric(6, -2)",
+        ));
+    }
+    columns
+}
+
+/// La resa del server della colonna: esadecimale dei byte e dei bit, testo
+/// a precisione piena; `NULL` resta `NULL`.
+fn sweep_raw(column: &str) -> String {
+    let table = format!("{SCHEMA}.{SWEEP_TABLE}");
+    let expression = match column {
+        "c_f4" => "encode(float4send(c_f4), 'hex')".to_owned(),
+        "c_f8" => "encode(float8send(c_f8), 'hex')".to_owned(),
+        "c_v3" | "c_c4" | "c_t" => format!("encode(convert_to({column}, 'UTF8'), 'hex')"),
+        "c_b" => "encode(c_b, 'hex')".to_owned(),
+        "c_d" => "to_char(c_d, 'YYYY-MM-DD')".to_owned(),
+        "c_ts0" | "c_ts3" | "c_ts6" => {
+            format!("to_char({column}, 'YYYY-MM-DD\"T\"HH24:MI:SS.US')")
+        }
+        "c_tz0" | "c_tz6" => {
+            format!("to_char({column} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US')")
+        }
+        _ => format!("{column}::text"),
+    };
+    format!("SELECT {expression} FROM {table} WHERE id = $1")
+}
+
+/// Il censimento generato: per ogni tipo di colonna, ogni valore generato
+/// per famiglia, su ogni percorso, contro la resa del server e il modello
+/// indipendente del tipo. Fallisce sui difetti del terzo giro della #135
+/// (testo oltre la lunghezza, frazioni oltre la precisione) prima della
+/// correzione.
+#[tokio::test]
+#[ignore = "richiede PostgreSQL live"]
+async fn live_generated_values_bind_exactly_or_are_refused() {
+    use plenora_database_testkit::parameter_sweep::{
+        sweep, sweep_report, ServerFacts, SweepTarget,
+    };
+    let Some(dsn) = live_dsn_or_skip() else {
+        return;
+    };
+    let provider = PostgresProvider::insecure_local();
+    let secret = SecretString::new(dsn);
+    let cancellation = CancellationToken::new();
+    // `numeric(p, -s)` esiste da PostgreSQL 15.
+    let negative_scale = provider
+        .execute_ddl(
+            &secret,
+            "DO $$ BEGIN IF current_setting('server_version_num')::int < 150000 THEN \
+             RAISE EXCEPTION 'senza scala negativa'; END IF; END $$",
+            &cancellation,
+        )
+        .await
+        .is_ok();
+    let columns = sweep_columns(negative_scale);
+    let definition = columns
+        .iter()
+        .map(|(column, sql)| format!("{} {sql}", column.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    for sql in [
+        format!("DROP TABLE IF EXISTS {SCHEMA}.{SWEEP_TABLE}"),
+        format!("CREATE TABLE {SCHEMA}.{SWEEP_TABLE} (id int4 PRIMARY KEY, {definition})"),
+    ] {
+        provider
+            .execute_ddl(&secret, &sql, &cancellation)
+            .await
+            .expect("DDL tabella del censimento generato PostgreSQL");
+    }
+    let target = SweepTarget {
+        target: Target {
+            provider: &provider,
+            secret: &secret,
+            limits: ResourceLimits::default(),
+            table: ObjectRef {
+                catalog: None,
+                schema: Some(SCHEMA.to_owned()),
+                object: SWEEP_TABLE.to_owned(),
+            },
+            id_column: "id",
+            native: &sweep_native,
+            native_cross_type_declared: true,
+        },
+        raw: &sweep_raw,
+        part: None,
+        facts: ServerFacts {
+            refuses_nul: true,
+            hides_padding: true,
+            native_declared: true,
+            ..ServerFacts::default()
+        },
+    };
+    let columns = columns
+        .into_iter()
+        .map(|(column, _)| column)
+        .collect::<Vec<_>>();
+    let outcomes = sweep(
+        &target,
+        &columns,
+        &[
+            FidelityPath::Native,
+            FidelityPath::Portable,
+            FidelityPath::Read,
+        ],
+    )
+    .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("DROP TABLE {SCHEMA}.{SWEEP_TABLE}"),
+            &cancellation,
+        )
+        .await
+        .expect("pulizia tabella del censimento generato PostgreSQL");
+    let (text, failures) = sweep_report(&outcomes);
+    println!("{text}");
+    assert!(
+        failures.is_empty(),
+        "valori generati non esatti su PostgreSQL: {failures:#?}"
     );
 }

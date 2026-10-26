@@ -403,7 +403,8 @@ impl<'c, 'e> OdbcCatalog<'c, 'e> {
 }
 
 const COLUMN_TYPES_SQL: &str = "SELECT COLNAME, TYPENAME, VARCHAR(LENGTH), VARCHAR(SCALE), \
-    VARCHAR(CODEPAGE) FROM SYSCAT.COLUMNS WHERE TABSCHEMA = ? AND TABNAME = ? ORDER BY COLNO";
+    VARCHAR(CODEPAGE), COALESCE(STRINGUNITS, '') FROM SYSCAT.COLUMNS \
+    WHERE TABSCHEMA = ? AND TABNAME = ? ORDER BY COLNO";
 
 impl OdbcCatalog<'_, '_> {
     /// I tipi delle colonne di una relazione (`SYSCAT.COLUMNS`), con
@@ -423,7 +424,7 @@ impl OdbcCatalog<'_, '_> {
             Some(schema) => schema.to_owned(),
             None => self.current_schema()?,
         };
-        let rows = self.rows(COLUMN_TYPES_SQL, &[&schema, name], 5)?;
+        let rows = self.rows(COLUMN_TYPES_SQL, &[&schema, name], 6)?;
         if rows.is_empty() {
             return Ok(None);
         }
@@ -448,7 +449,8 @@ impl OdbcCatalog<'_, '_> {
                         &type_name,
                         number(row, 2)?,
                         i64::try_from(number(row, 3)?).unwrap_or(i64::MAX),
-                        number(row, 4)? == 0,
+                        number(row, 4)?,
+                        cell(row, 5).unwrap_or_default().trim(),
                     ),
                 ))
             })
@@ -460,25 +462,55 @@ impl OdbcCatalog<'_, '_> {
 /// Il tipo del catalogo Db2: `LENGTH` e la precisione dei decimali e la
 /// lunghezza dei testi e dei binari, `SCALE` la scala o le cifre frazionarie
 /// di `TIMESTAMP`; un testo con `CODEPAGE` 0 e `FOR BIT DATA`, cioe binario.
+///
+/// Il `LENGTH` di un `DECFLOAT` sono i byte (8 o 16), non le cifre: le cifre
+/// sono 16 o 34 (fino al terzo giro della #135 un `DECFLOAT(16)` ammetteva
+/// soltanto 8 cifre, un rifiuto per eccesso). La lunghezza di un testo si
+/// conta nelle `STRINGUNITS` della colonna (`OCTETS` per difetto: i byte
+/// UTF-8 della codepage 1208), il charset e quello della `CODEPAGE`.
 #[must_use]
 pub fn catalog_type(
     type_name: &str,
     length: u64,
     scale: i64,
-    bit_data: bool,
+    codepage: u64,
+    string_units: &str,
 ) -> plenora_database_core::operand_admission::CatalogType {
-    let name = match (type_name.to_ascii_uppercase().as_str(), bit_data) {
+    use plenora_database_core::operand_admission::{Charset, LengthUnit};
+    let upper = type_name.to_ascii_uppercase();
+    let bit_data = codepage == 0
+        && matches!(
+            upper.as_str(),
+            "CHARACTER" | "CHAR" | "VARCHAR" | "LONG VARCHAR" | "CLOB"
+        );
+    let name = match (upper.as_str(), bit_data) {
         ("CHARACTER" | "CHAR", true) => "BINARY".to_owned(),
         ("VARCHAR", true) => "VARBINARY".to_owned(),
         (name, _) => name.to_owned(),
+    };
+    let precision = match upper.as_str() {
+        "DECFLOAT" if length == 8 => 16,
+        "DECFLOAT" => 34,
+        _ => length,
+    };
+    let length_unit = match (string_units, upper.as_str()) {
+        ("CODEUNITS32", _) => LengthUnit::Characters,
+        ("CODEUNITS16", _) | (_, "GRAPHIC" | "VARGRAPHIC" | "DBCLOB") => LengthUnit::Utf16,
+        _ => LengthUnit::Bytes,
+    };
+    let charset = match codepage {
+        1208 | 1200 | 0 => Charset::Unicode,
+        _ => Charset::Ascii,
     };
     plenora_database_core::operand_admission::CatalogType {
         name,
         declaration: None,
         length: Some(length),
-        precision: Some(length),
+        precision: Some(precision),
         scale: Some(scale),
         datetime_precision: None,
+        length_unit,
+        charset,
     }
 }
 

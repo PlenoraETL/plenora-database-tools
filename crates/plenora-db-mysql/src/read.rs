@@ -94,7 +94,7 @@ pub(crate) async fn read_operation_with_profile(
         let types = crate::catalog::transaction_column_types(&mut session, &relation, &internal)
             .await?
             .unwrap_or_default();
-        plenora_database_core::operand_admission::admit_filter(
+        plenora_database_core::admission_gate::read_filter(
             profile.kind(),
             operation.filter.as_ref(),
             parameters,
@@ -191,7 +191,7 @@ pub(crate) async fn query_operation_with_profile(
     let product = profile.product();
     validate_batch_rows(batch_rows)?;
     // I parametri tipati contro il loro CAST (`operand_admission`).
-    let parameters = &plenora_database_core::operand_admission::admit_typed_parameters(
+    let parameters = &plenora_database_core::admission_gate::query_parameters(
         profile.kind(),
         operation,
         parameters,

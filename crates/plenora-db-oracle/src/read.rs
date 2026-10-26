@@ -64,8 +64,6 @@ pub async fn read_operation(
         validate_spatial_filter(&description, filter, parameters)?;
     }
     let plan = OracleReadPlan::compile(&description, operation)?;
-    let admitted = admit_read_filter(&description, operation, parameters)?;
-    let parameter_values = named_parameters(&plan.bind_names, &admitted)?;
     let leases = ContractLeases::acquire(budget, plan.columns.len())?;
     let (operation_lease, columns_lease) = leases.into_parts();
     let mut deadline = DeadlineGuard::new(cancellation, budget)?;
@@ -88,6 +86,9 @@ pub async fn read_operation(
         operation,
     )
     .await?;
+    let types = filter_types(raw, config, &plan, &internal).await?;
+    let admitted = admit_read_filter(&types, operation, parameters)?;
+    let parameter_values = named_parameters(&plan.bind_names, &admitted)?;
     raw.set_response_byte_limit(
         usize::try_from(budget.limits().memory_bytes).unwrap_or(usize::MAX),
     )
@@ -285,47 +286,46 @@ const fn oracle_read_error(mut error: DatabaseError) -> DatabaseError {
     error
 }
 
+/// I tipi delle colonne lette per la regola dei parametri che incontrano un
+/// operando: dal catalogo della stessa sessione, con l'unita della lunghezza
+/// e il charset.
+async fn filter_types(
+    raw: &oracle_rs::Connection,
+    config: &OracleConfig,
+    plan: &OracleReadPlan,
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::operand_admission::RelationTypes> {
+    Ok(crate::operand_catalog::ConnectionCatalog::new(
+        raw,
+        config.operation_timeout(),
+        cancellation,
+    )
+    .column_types(Some(&plan.schema_name), &plan.object_name)
+    .await?
+    .unwrap_or_default())
+}
+
 /// La regola dei parametri che incontrano un operando (`operand_admission`):
 /// ogni parametro del filtro si ammette contro il tipo del campo, con
-/// lunghezza, precisione e scala della descrizione.
+/// lunghezza, precisione e scala del catalogo.
 fn admit_read_filter(
-    description: &OracleObjectDescription,
+    types: &plenora_database_core::operand_admission::RelationTypes,
     operation: &ReadOperation,
     parameters: &ParameterBag,
 ) -> Result<ParameterBag> {
-    use plenora_database_core::operand_admission::{admit_filter, operand_type};
+    use plenora_database_core::admission_gate::read_filter as admit_filter;
+    use plenora_database_core::operand_admission::operand_type;
     use plenora_database_core::plan::ProviderKind;
     admit_filter(
         ProviderKind::Oracle,
         operation.filter.as_ref(),
         parameters,
         |field| {
-            description
-                .columns
-                .iter()
-                .find(|column| column.name == field)
-                .map(|column| operand_type(ProviderKind::Oracle, &column_catalog_type(column)))
+            types
+                .get(field)
+                .map(|catalog| operand_type(ProviderKind::Oracle, catalog))
         },
     )
-}
-
-/// Il tipo del catalogo di una colonna descritta: la lunghezza in caratteri
-/// dei testi, in byte di `RAW`.
-fn column_catalog_type(
-    column: &crate::catalog::OracleColumn,
-) -> plenora_database_core::operand_admission::CatalogType {
-    plenora_database_core::operand_admission::CatalogType {
-        name: column.data_type.clone(),
-        declaration: None,
-        length: Some(if column.data_type.eq_ignore_ascii_case("RAW") {
-            column.data_length
-        } else {
-            column.char_length
-        }),
-        precision: column.precision,
-        scale: column.scale,
-        datetime_precision: None,
-    }
 }
 
 fn named_parameters(names: &[String], parameters: &ParameterBag) -> Result<Vec<ParameterValue>> {
@@ -635,7 +635,13 @@ impl Values {
                 }
                 Arc::new(builder.finish())
             }
-            Self::Timestamp(values, _) => Arc::new(TimestampMicrosecondArray::from(values)),
+            // Il `TIMESTAMP WITH TIME ZONE` e un istante UTC: l'array porta il
+            // fuso dello schema (`types.rs`), altrimenti il batch non si
+            // costruiva e ogni lettura Arrow della colonna falliva.
+            Self::Timestamp(values, true) => {
+                Arc::new(TimestampMicrosecondArray::from(values).with_timezone("UTC"))
+            }
+            Self::Timestamp(values, false) => Arc::new(TimestampMicrosecondArray::from(values)),
         };
         Ok(array)
     }

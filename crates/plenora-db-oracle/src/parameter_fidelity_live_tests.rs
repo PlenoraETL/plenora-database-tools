@@ -407,3 +407,383 @@ async fn live_invalid_text_bytes_are_refused_on_read() {
         Ok(value) => panic!("byte non UTF-8 letti come {value:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Censimento generato (`plenora_database_testkit::parameter_sweep`)
+// ---------------------------------------------------------------------------
+
+const SWEEP_TABLE: &str = "PARAM_SWEEP";
+
+fn sweep_value(column: &str) -> String {
+    if column.starts_with("C_TZ") {
+        format!(
+            "TO_TIMESTAMP_TZ(:2, '{}')",
+            plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
+        )
+    } else {
+        ":2".to_owned()
+    }
+}
+
+fn sweep_native(kind: NativeSql, column: &str) -> String {
+    match kind {
+        NativeSql::Insert => format!(
+            "INSERT INTO {SWEEP_TABLE} (ID, {column}) VALUES (:1, {})",
+            sweep_value(column)
+        ),
+        NativeSql::Select => format!("SELECT {column} FROM {SWEEP_TABLE} WHERE ID = :1"),
+        NativeSql::Count => format!(
+            "SELECT COUNT(*) FROM {SWEEP_TABLE} WHERE ID = :1 AND {column} = {}",
+            sweep_value(column)
+        ),
+        NativeSql::Raw => format!("SELECT TO_CHAR({column}) FROM {SWEEP_TABLE} WHERE ID = :1"),
+        NativeSql::Delete => format!("DELETE FROM {SWEEP_TABLE} WHERE ID = :1"),
+    }
+}
+
+/// Le colonne del censimento: ogni parametrizzazione che `ALL_TAB_COLUMNS`
+/// riporta (precisione, scala anche negativa, `BYTE` e `CHAR`, forme
+/// nazionali).
+#[allow(clippy::too_many_lines)]
+fn sweep_columns() -> Vec<(
+    plenora_database_testkit::parameter_sweep::Column,
+    &'static str,
+)> {
+    use plenora_database_testkit::parameter_sweep::{Column, Kind, Render, Set, Unit};
+    let decimal = |precision, scale| Kind::Decimal { precision, scale };
+    let text = |length, padded, unit| Kind::Text {
+        length,
+        padded,
+        unit,
+        set: Set::Unicode,
+    };
+    let column = |name, kind, render| Column { name, kind, render };
+    let utf8 = Render::Utf8Hex;
+    vec![
+        (
+            column(
+                "C_N",
+                Kind::UnboundedDecimal { digits: 38 },
+                Render::Decimal,
+            ),
+            "NUMBER",
+        ),
+        (
+            column("C_N124", decimal(12, 4), Render::Decimal),
+            "NUMBER(12, 4)",
+        ),
+        (
+            column("C_N55", decimal(5, 5), Render::Decimal),
+            "NUMBER(5, 5)",
+        ),
+        (
+            column("C_NM2", decimal(6, -2), Render::Decimal),
+            "NUMBER(6, -2)",
+        ),
+        (
+            column("C_N10", decimal(10, 0), Render::Decimal),
+            "NUMBER(10)",
+        ),
+        (
+            column(
+                "C_BF",
+                Kind::Float { bits: 24 },
+                Render::FloatHex {
+                    bits: 24,
+                    little_endian: false,
+                },
+            ),
+            "BINARY_FLOAT",
+        ),
+        (
+            column(
+                "C_BD",
+                Kind::Float { bits: 53 },
+                Render::FloatHex {
+                    bits: 53,
+                    little_endian: false,
+                },
+            ),
+            "BINARY_DOUBLE",
+        ),
+        (
+            column("C_V3B", text(Some(3), false, Unit::Bytes), utf8),
+            "VARCHAR2(3 BYTE)",
+        ),
+        (
+            column("C_V3C", text(Some(3), false, Unit::Characters), utf8),
+            "VARCHAR2(3 CHAR)",
+        ),
+        (
+            column("C_C4", text(Some(4), true, Unit::Characters), utf8),
+            "CHAR(4 CHAR)",
+        ),
+        (
+            column("C_NV3", text(Some(3), false, Unit::Utf16), utf8),
+            "NVARCHAR2(3)",
+        ),
+        (
+            column("C_NC4", text(Some(4), true, Unit::Utf16), utf8),
+            "NCHAR(4)",
+        ),
+        (
+            column(
+                "C_R4",
+                Kind::Binary {
+                    length: Some(4),
+                    padded: false,
+                },
+                Render::BytesHex,
+            ),
+            "RAW(4)",
+        ),
+        (
+            column("C_DT", Kind::Timestamp { fraction: 0 }, Render::Timestamp),
+            "DATE",
+        ),
+        (
+            column("C_TS0", Kind::Timestamp { fraction: 0 }, Render::Timestamp),
+            "TIMESTAMP(0)",
+        ),
+        (
+            column("C_TS3", Kind::Timestamp { fraction: 3 }, Render::Timestamp),
+            "TIMESTAMP(3)",
+        ),
+        (
+            column("C_TS9", Kind::Timestamp { fraction: 9 }, Render::Timestamp),
+            "TIMESTAMP(9)",
+        ),
+        (
+            column("C_TZ6", Kind::TimestampTz { fraction: 6 }, Render::Instant),
+            "TIMESTAMP(6) WITH TIME ZONE",
+        ),
+    ]
+}
+
+/// La resa del server: i numeri con `TM9` (esatti), i floating point come i
+/// loro bit, il testo come i suoi byte UTF-8 (`UTL_I18N`, anche le forme
+/// nazionali), i temporali a nove cifre e gli istanti in UTC.
+fn sweep_raw(column: &str) -> String {
+    let expression = match column {
+        // `CAST_FROM_BINARY_*` rende `-0` come `+0` (misurato): il segno di
+        // zero si legge da `1 / x`.
+        "C_BF" => "CASE WHEN C_BF = 0 AND 1 / C_BF < 0 THEN '80000000'                    ELSE RAWTOHEX(UTL_RAW.CAST_FROM_BINARY_FLOAT(C_BF)) END"
+            .to_owned(),
+        "C_BD" => "CASE WHEN C_BD = 0 AND 1 / C_BD < 0 THEN '8000000000000000'                    ELSE RAWTOHEX(UTL_RAW.CAST_FROM_BINARY_DOUBLE(C_BD)) END"
+            .to_owned(),
+        "C_V3B" | "C_V3C" | "C_C4" | "C_NV3" | "C_NC4" => {
+            format!("RAWTOHEX(UTL_I18N.STRING_TO_RAW({column}, 'AL32UTF8'))")
+        }
+        "C_R4" => "RAWTOHEX(C_R4)".to_owned(),
+        "C_DT" => "TO_CHAR(C_DT, 'YYYY-MM-DD\"T\"HH24:MI:SS')".to_owned(),
+        "C_TS0" | "C_TS3" | "C_TS9" => {
+            format!("TO_CHAR({column}, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF9')")
+        }
+        "C_TZ6" => "TO_CHAR(SYS_EXTRACT_UTC(C_TZ6), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF9')".to_owned(),
+        _ => format!("TO_CHAR({column}, 'TM9')"),
+    };
+    format!("SELECT {expression} FROM {SWEEP_TABLE} WHERE ID = :1")
+}
+
+/// Il censimento generato: per ogni tipo di colonna, ogni valore generato
+/// per famiglia, su ogni percorso, contro la resa del server e il modello
+/// indipendente del tipo. Prova anche i decoder dei `NUMBER` con |x| < 1 e
+/// un numero dispari di zeri iniziali (il difetto 1 del terzo giro della
+/// #135, corretto su main nel fork da `fix/oracle-number-modulo`): fino a
+/// quell'unione la lettura di quei valori qui fallisce.
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_generated_values_bind_exactly_or_are_refused() {
+    use plenora_database_testkit::parameter_sweep::{
+        sweep, sweep_report, ServerFacts, SweepTarget,
+    };
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let columns = sweep_columns();
+    let definition = columns
+        .iter()
+        .map(|(column, sql)| format!("{} {sql}", column.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = provider
+        .execute_ddl(
+            &secret,
+            &format!("DROP TABLE {SWEEP_TABLE} PURGE"),
+            &cancellation,
+        )
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("CREATE TABLE {SWEEP_TABLE} (ID NUMBER(10) PRIMARY KEY, {definition})"),
+            &cancellation,
+        )
+        .await
+        .expect("DDL tabella del censimento generato Oracle");
+    let schema = std::env::var("PLENORA_ORACLE_USER")
+        .unwrap_or_else(|_| "plenora".to_owned())
+        .to_ascii_uppercase();
+    let mut outcomes = Vec::new();
+    // Una sessione nuova ogni trenta valori di una colonna e di un percorso:
+    // il fork non chiude sul server i cursori delle istruzioni (il limite
+    // dichiarato del censimento a casi), e una sessione lunga arriva a
+    // ORA-01000. Le parti si riuniscono con `merge`.
+    let paths = [
+        FidelityPath::Native,
+        FidelityPath::Portable,
+        FidelityPath::Read,
+    ];
+    for (column, _) in &columns {
+        let count = plenora_database_testkit::parameter_sweep::values(column.kind).len();
+        for path in &paths {
+            // La lettura apre una sessione e i cataloghi per ogni filtro:
+            // parti piu piccole.
+            let size = if *path == FidelityPath::Read { 10 } else { 30 };
+            for start in (0..count).step_by(size) {
+                let (part_provider, part_secret) = fixture();
+                let target = SweepTarget {
+                    target: Target {
+                        provider: &part_provider,
+                        secret: &part_secret,
+                        limits: ResourceLimits::default(),
+                        table: ObjectRef {
+                            catalog: None,
+                            schema: Some(schema.clone()),
+                            object: SWEEP_TABLE.to_owned(),
+                        },
+                        id_column: "ID",
+                        native: &sweep_native,
+                        native_cross_type_declared: true,
+                    },
+                    raw: &sweep_raw,
+                    part: Some(start..(start + size).min(count)),
+                    facts: ServerFacts {
+                        empty_is_null: true,
+                        native_declared: true,
+                        ..ServerFacts::default()
+                    },
+                };
+                outcomes.extend(
+                    sweep(
+                        &target,
+                        std::slice::from_ref(column),
+                        std::slice::from_ref(path),
+                    )
+                    .await,
+                );
+            }
+        }
+    }
+    let outcomes = plenora_database_testkit::parameter_sweep::merge(outcomes);
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("DROP TABLE {SWEEP_TABLE} PURGE"),
+            &cancellation,
+        )
+        .await
+        .expect("pulizia tabella del censimento generato Oracle");
+    let (text, failures) = sweep_report(&outcomes);
+    println!("{text}");
+    assert!(
+        failures.is_empty(),
+        "valori generati non esatti su Oracle: {failures:#?}"
+    );
+}
+
+/// `-0.0` in `BINARY_DOUBLE` e `BINARY_FLOAT`, misurato: con un letterale,
+/// con l'aritmetica IEEE del server e con il bind del fork. La #134
+/// (`store_rewrite`) scrive che `BINARY_DOUBLE` lo conserva; il provider lo
+/// rifiutava come normalizzato. La misura decide quale vale, e la prova la
+/// tiene ferma.
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_binary_double_negative_zero_is_measured() {
+    let (config, secret) = super::fixture_config();
+    let driver = config
+        .driver_config(&secret)
+        .expect("driver config")
+        .into_inner();
+    let connection = oracle_rs::Connection::connect_with_config(driver)
+        .await
+        .expect("connessione della misura -0.0");
+    let _ = connection
+        .execute("DROP TABLE PARAM_NEG_ZERO PURGE", &[])
+        .await;
+    connection
+        .execute(
+            "CREATE TABLE PARAM_NEG_ZERO (ID NUMBER(2) PRIMARY KEY, BD BINARY_DOUBLE, \
+             BF BINARY_FLOAT)",
+            &[],
+        )
+        .await
+        .expect("tabella della misura");
+    for (id, double, float) in [
+        (1, "TO_BINARY_DOUBLE('-0')", "TO_BINARY_FLOAT('-0')"),
+        (2, "-0d", "-0f"),
+        (3, "TO_BINARY_DOUBLE(0) * -1", "TO_BINARY_FLOAT(0) * -1"),
+        (4, ":1", ":2"),
+    ] {
+        let params = if id == 4 {
+            vec![oracle_rs::Value::Float(-0.0), oracle_rs::Value::Float(-0.0)]
+        } else {
+            Vec::new()
+        };
+        connection
+            .execute(
+                &format!("INSERT INTO PARAM_NEG_ZERO VALUES ({id}, {double}, {float})"),
+                &params,
+            )
+            .await
+            .expect("scrittura della misura");
+    }
+    let rows = connection
+        .query(
+            "SELECT ID, RAWTOHEX(UTL_RAW.CAST_FROM_BINARY_DOUBLE(BD)) || ' ' || TO_CHAR(BD) \
+             || ' ' || TO_CHAR(1 / BD), RAWTOHEX(UTL_RAW.CAST_FROM_BINARY_FLOAT(BF)) || ' ' \
+             || TO_CHAR(1 / BF) FROM PARAM_NEG_ZERO ORDER BY ID",
+            &[],
+        )
+        .await
+        .expect("lettura della misura");
+    let measured = rows
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.get(0)
+                    .and_then(oracle_rs::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                row.get(1)
+                    .and_then(oracle_rs::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                row.get(2)
+                    .and_then(oracle_rs::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let _ = connection
+        .execute("DROP TABLE PARAM_NEG_ZERO PURGE", &[])
+        .await;
+    let _ = connection.close().await;
+    println!("misura -0.0 (id, BINARY_DOUBLE, BINARY_FLOAT): {measured:?}");
+    // Misurato il 25/10 (Oracle Free 23ai): i letterali e l'aritmetica del
+    // server danno `+0`; il bind del fork (`BINARY_DOUBLE`) conserva `-0.0`
+    // in un `BINARY_DOUBLE` (1 / x = -Inf) e lo perde in un `BINARY_FLOAT`.
+    // `UTL_RAW.CAST_FROM_BINARY_DOUBLE` e `TO_CHAR` rendono `-0` come `+0`:
+    // la resa dei bit non vede il segno, `1 / x` si.
+    let expected = [
+        ("1", "0000000000000000 0 Inf", "00000000 Inf"),
+        ("2", "0000000000000000 0 Inf", "00000000 Inf"),
+        ("3", "0000000000000000 0 Inf", "00000000 Inf"),
+        ("4", "0000000000000000 0 -Inf", "00000000 Inf"),
+    ]
+    .iter()
+    .map(|(id, double, float)| ((*id).to_owned(), (*double).to_owned(), (*float).to_owned()))
+    .collect::<Vec<_>>();
+    assert_eq!(measured, expected, "la misura di -0.0 su Oracle e cambiata");
+}

@@ -1398,7 +1398,9 @@ async fn live_spatial_catalog_portable_predicates_and_arrow_wkb() {
         returning: Vec::new(),
     });
     let insert =
-        compile_portable(ProviderKind::Oracle, &insert).expect("compila insert Spatial Oracle");
+        plenora_database_core::admission_gate::portable(setup.as_mut(), &insert, &cancellation)
+            .await
+            .expect("compila insert Spatial Oracle");
     setup
         .execute(&insert, &cancellation)
         .await
@@ -1454,8 +1456,6 @@ async fn live_spatial_catalog_portable_predicates_and_arrow_wkb() {
             },
         ))
         .into_statement();
-    let predicate = compile_portable(ProviderKind::Oracle, &predicate)
-        .expect("compila predicato Spatial Oracle");
     let mut transaction = provider
         .begin_transaction(
             &secret,
@@ -1465,6 +1465,13 @@ async fn live_spatial_catalog_portable_predicates_and_arrow_wkb() {
         )
         .await
         .expect("transazione predicato Spatial Oracle");
+    let predicate = plenora_database_core::admission_gate::portable(
+        transaction.as_mut(),
+        &predicate,
+        &cancellation,
+    )
+    .await
+    .expect("compila predicato Spatial Oracle");
     assert_eq!(
         transaction
             .query(&predicate, &cancellation)
@@ -1770,7 +1777,13 @@ async fn live_thin_driver_crud_merge_stream_and_rollback() {
         ]],
         returning: Vec::new(),
     });
-    let insert = compile_portable(ProviderKind::Oracle, &insert).expect("compile insert");
+    let insert = plenora_database_core::admission_gate::portable(
+        transaction.as_mut(),
+        &insert,
+        &cancellation,
+    )
+    .await
+    .expect("compile insert");
     assert_eq!(
         transaction
             .execute(&insert, &cancellation)
@@ -1804,7 +1817,13 @@ async fn live_thin_driver_crud_merge_stream_and_rollback() {
         ],
         returning: Vec::new(),
     });
-    let merge = compile_portable(ProviderKind::Oracle, &merge).expect("compile merge");
+    let merge = plenora_database_core::admission_gate::portable(
+        transaction.as_mut(),
+        &merge,
+        &cancellation,
+    )
+    .await
+    .expect("compile merge");
     assert_eq!(
         transaction
             .execute(&merge, &cancellation)
@@ -1824,7 +1843,13 @@ async fn live_thin_driver_crud_merge_stream_and_rollback() {
         order_by: Vec::new(),
         limit: Some(1),
     });
-    let select = compile_portable(ProviderKind::Oracle, &select).expect("compile select");
+    let select = plenora_database_core::admission_gate::portable(
+        transaction.as_mut(),
+        &select,
+        &cancellation,
+    )
+    .await
+    .expect("compile select");
     let rows = transaction
         .query(&select, &cancellation)
         .await

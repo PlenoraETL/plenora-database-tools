@@ -386,7 +386,7 @@ pub const fn or(predicates: Vec<Predicate>) -> Predicate {
 }
 
 mod compiler;
-pub use compiler::compile_portable;
+pub use compiler::{compile_portable, CompiledPortable};
 
 #[cfg(test)]
 mod tests;

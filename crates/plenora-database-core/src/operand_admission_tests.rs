@@ -1,6 +1,6 @@
 use super::{
-    admit, admit_filter, admit_portable, exact_decimal_of_f64, operand_type, CatalogType,
-    OperandType, RelationTypes,
+    admit, admit_filter, admit_portable, exact_decimal_of_f64, operand_type, CatalogType, Charset,
+    LengthUnit, OperandType, RelationTypes,
 };
 use crate::plan::{FilterExpression, ProviderKind};
 use crate::portable::{eq, select, Expression, InsertStatement, PortableStatement, TableRef};
@@ -179,6 +179,8 @@ fn text_binary_and_unknown_operands() {
     let padded = OperandType::Text {
         length: Some(4),
         padded: true,
+        unit: LengthUnit::Characters,
+        charset: Charset::Unicode,
     };
     // Il padding di `CHAR(n)` e semantica della collation, dichiarata.
     assert!(admit(P, &V::String("ab".to_owned()), &padded).is_ok());
@@ -188,7 +190,9 @@ fn text_binary_and_unknown_operands() {
         &V::I64(12),
         &OperandType::Text {
             length: None,
-            padded: false
+            padded: false,
+            unit: LengthUnit::Characters,
+            charset: Charset::Unicode,
         }
     ));
     let fixed = OperandType::Binary {
@@ -201,7 +205,9 @@ fn text_binary_and_unknown_operands() {
         &V::Bytes(vec![1]),
         &OperandType::Text {
             length: None,
-            padded: false
+            padded: false,
+            unit: LengthUnit::Characters,
+            charset: Charset::Unicode,
         }
     ));
     assert!(refused(&V::I64(1), &OperandType::Unknown));
@@ -377,6 +383,7 @@ fn negative_scale_decimals_admit_only_values_they_keep() {
         precision: Some(6),
         scale: Some(-2),
         datetime_precision: None,
+        ..CatalogType::default()
     };
     assert_eq!(operand_type(ProviderKind::Postgres, &catalog), rounded);
     assert_eq!(
@@ -397,4 +404,139 @@ fn negative_scale_decimals_admit_only_values_they_keep() {
     assert!(refused(&V::I64(100_000_000), &rounded));
     assert!(refused(&V::Decimal("12300.5".to_owned()), &rounded));
     assert!(refused(&V::F64(0.5), &rounded));
+}
+
+#[test]
+fn text_meets_the_column_length_unit_and_charset() {
+    let text = |length, padded, unit, charset| OperandType::Text {
+        length: Some(length),
+        padded,
+        unit,
+        charset,
+    };
+    let s = |value: &str| V::String(value.to_owned());
+    // `varchar(3)` di PostgreSQL e Db2: gli spazi oltre la lunghezza si
+    // troncavano in silenzio.
+    let varchar3 = text(3, false, LengthUnit::Characters, Charset::Unicode);
+    assert!(refused(&s("abc   "), &varchar3));
+    assert!(refused(&s("abcd"), &varchar3));
+    assert_eq!(admit(P, &s("abc"), &varchar3).ok(), Some(s("abc")));
+    assert_eq!(admit(P, &s(""), &varchar3).ok(), Some(s("")));
+    assert!(refused(
+        &s("abc "),
+        &text(3, true, LengthUnit::Characters, Charset::Unicode)
+    ));
+    // I byte UTF-8 di `VARCHAR(3)` di Db2: `'è'` sono due byte.
+    let bytes3 = text(3, false, LengthUnit::Bytes, Charset::Unicode);
+    assert!(admit(P, &s("aè"), &bytes3).is_ok());
+    assert!(refused(&s("aaè"), &bytes3));
+    // Le unita UTF-16 di `nvarchar(2)`: un carattere fuori dal piano di base
+    // ne occupa due.
+    let utf16 = text(2, false, LengthUnit::Utf16, Charset::Unicode);
+    assert!(admit(P, &s("\u{1F600}"), &utf16).is_ok());
+    assert!(refused(&s("a\u{1F600}"), &utf16));
+    // Il charset: `'łę日x'` in un `varchar(20)` CP1252 diventava `'l?x'`.
+    let cp1252 = text(20, false, LengthUnit::Bytes, Charset::Windows1252);
+    assert!(refused(&s("\u{142}\u{119}\u{65E5}x"), &cp1252));
+    assert!(refused(&s("\u{142}"), &cp1252));
+    assert!(admit(P, &s("caff\u{E8} \u{20AC}"), &cp1252).is_ok());
+    let ascii = text(20, false, LengthUnit::Bytes, Charset::Ascii);
+    assert!(refused(&s("\u{E8}"), &ascii));
+    assert!(admit(P, &s("abc"), &ascii).is_ok());
+    let bmp = text(20, false, LengthUnit::Characters, Charset::UnicodeBmp);
+    assert!(refused(&s("\u{1F600}"), &bmp));
+    assert!(admit(P, &s("\u{E8}\u{65E5}"), &bmp).is_ok());
+    // Gli altri valori testuali seguono la stessa regola.
+    assert!(refused(&V::Date("2024-01-01".to_owned()), &varchar3));
+    assert!(refused(&V::Json(serde_json::json!({"a": 1})), &varchar3));
+    // I binari oltre la lunghezza.
+    let varbinary2 = OperandType::Binary {
+        length: Some(2),
+        padded: false,
+    };
+    assert!(refused(&V::Bytes(vec![1, 2, 3]), &varbinary2));
+    assert!(admit(P, &V::Bytes(vec![1, 2]), &varbinary2).is_ok());
+}
+
+#[test]
+fn mysql_scaled_floats_admit_only_values_their_scale_keeps() {
+    let float71 = OperandType::ScaledFloat {
+        mantissa_bits: 24,
+        precision: 7,
+        scale: 1,
+    };
+    let double52 = OperandType::ScaledFloat {
+        mantissa_bits: 53,
+        precision: 5,
+        scale: 2,
+    };
+    let catalog = CatalogType {
+        name: "float".to_owned(),
+        declaration: Some("float(7,1)".to_owned()),
+        ..CatalogType::default()
+    };
+    assert_eq!(operand_type(ProviderKind::Mysql, &catalog), float71);
+    assert_eq!(
+        operand_type(
+            ProviderKind::Mysql,
+            &CatalogType {
+                name: "float".to_owned(),
+                declaration: Some("float".to_owned()),
+                ..CatalogType::default()
+            }
+        ),
+        REAL
+    );
+    // `1.25` in `FLOAT(7, 1)` diventava `1.2`; `2.75` diventava `2.8`.
+    assert!(refused(&V::F64(1.25), &float71));
+    assert!(refused(&V::Decimal("2.75".to_owned()), &float71));
+    assert_eq!(admit(P, &V::F64(1.5), &float71).ok(), Some(V::F64(1.5)));
+    assert_eq!(
+        admit(P, &V::Decimal("2.5".to_owned()), &float71).ok(),
+        Some(V::F64(2.5))
+    );
+    assert_eq!(
+        admit(P, &V::I64(123_456), &float71).ok(),
+        Some(V::F64(123_456.0))
+    );
+    assert!(refused(&V::I64(1_234_567), &float71));
+    // 0.1 non e un float a 24 bit esatto.
+    assert!(refused(&V::F64(0.1), &float71));
+    assert_eq!(admit(P, &V::F64(0.25), &double52).ok(), Some(V::F64(0.25)));
+    assert!(refused(&V::F64(0.125), &double52));
+    assert!(refused(&V::F64(1000.0), &double52));
+    // Il valore esatto di 0.1 non ha due cifre: misurato su `MySQL`, `-0.1`
+    // in un `DOUBLE(10, 2)` diventava `-0.09999999999999998`.
+    assert!(refused(&V::F64(0.1), &double52));
+    assert!(refused(&V::F64(-0.1), &double52));
+    assert!(refused(&V::Decimal("0.1".to_owned()), &double52));
+    assert_eq!(
+        admit(P, &V::F64(-0.75), &double52).ok(),
+        Some(V::F64(-0.75))
+    );
+}
+
+#[test]
+fn a_scale_without_precision_keeps_the_scale() {
+    // `NUMBER(*, -2)` e `NUMBER(*, 2)` di Oracle: precisione assente nel
+    // catalogo, scala presente.
+    let catalog = |scale| CatalogType {
+        name: "NUMBER".to_owned(),
+        precision: None,
+        scale: Some(scale),
+        ..CatalogType::default()
+    };
+    let rounded = operand_type(ProviderKind::Oracle, &catalog(-2));
+    assert_eq!(
+        rounded,
+        OperandType::RoundedDecimal {
+            precision: 38,
+            rounding: 2
+        }
+    );
+    assert!(refused(&V::I64(123), &rounded));
+    assert!(admit(P, &V::I64(12_300), &rounded).is_ok());
+    let scaled = operand_type(ProviderKind::Oracle, &catalog(2));
+    assert!(refused(&V::Decimal("1.234".to_owned()), &scaled));
+    assert!(admit(P, &V::Decimal("1.23".to_owned()), &scaled).is_ok());
 }

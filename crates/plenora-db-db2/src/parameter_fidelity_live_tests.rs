@@ -633,3 +633,275 @@ async fn live_sub_microsecond_timestamps_are_refused_on_read() {
         ErrorCategory::DataMapping
     );
 }
+
+// ---------------------------------------------------------------------------
+// Censimento generato (`plenora_database_testkit::parameter_sweep`)
+// ---------------------------------------------------------------------------
+
+const SWEEP_TABLE: &str = "PARAM_SWEEP";
+
+fn sweep_native(kind: NativeSql, column: &str) -> String {
+    let table = format!("{SCHEMA}.{SWEEP_TABLE}");
+    match kind {
+        NativeSql::Insert => format!("INSERT INTO {table} (ID, {column}) VALUES (?, ?)"),
+        NativeSql::Select => format!("SELECT {column} FROM {table} WHERE ID = ?"),
+        NativeSql::Count => format!("SELECT COUNT(*) FROM {table} WHERE ID = ? AND {column} = ?"),
+        NativeSql::Raw => format!("SELECT VARCHAR({column}) FROM {table} WHERE ID = ?"),
+        NativeSql::Delete => format!("DELETE FROM {table} WHERE ID = ?"),
+    }
+}
+
+/// Le colonne del censimento: ogni parametrizzazione che `SYSCAT.COLUMNS`
+/// riporta (precisione, scala, `DECFLOAT` 16 e 34, `OCTETS` e
+/// `CODEUNITS32`, binari).
+#[allow(clippy::too_many_lines)]
+fn sweep_columns() -> Vec<(
+    plenora_database_testkit::parameter_sweep::Column,
+    &'static str,
+)> {
+    use plenora_database_testkit::parameter_sweep::{Column, Kind, Render, Set, Unit};
+    let integer = |min: i128, max: i128| Kind::Integer { min, max };
+    let text = |length, padded, unit| Kind::Text {
+        length,
+        padded,
+        unit,
+        set: Set::Unicode,
+    };
+    let column = |name, kind, render| Column { name, kind, render };
+    vec![
+        (
+            column("C_SI", integer(-32_768, 32_767), Render::Decimal),
+            "SMALLINT",
+        ),
+        (
+            column(
+                "C_I",
+                integer(i128::from(i32::MIN), i128::from(i32::MAX)),
+                Render::Decimal,
+            ),
+            "INTEGER",
+        ),
+        (
+            column(
+                "C_BI",
+                integer(i128::from(i64::MIN), i128::from(i64::MAX)),
+                Render::Decimal,
+            ),
+            "BIGINT",
+        ),
+        (
+            column(
+                "C_R",
+                Kind::Float { bits: 24 },
+                Render::FloatHex {
+                    bits: 24,
+                    little_endian: true,
+                },
+            ),
+            "REAL",
+        ),
+        (
+            column(
+                "C_D",
+                Kind::Float { bits: 53 },
+                Render::FloatHex {
+                    bits: 53,
+                    little_endian: true,
+                },
+            ),
+            "DOUBLE",
+        ),
+        (
+            column(
+                "C_N124",
+                Kind::Decimal {
+                    precision: 12,
+                    scale: 4,
+                },
+                Render::Decimal,
+            ),
+            "DECIMAL(12, 4)",
+        ),
+        (
+            column(
+                "C_N55",
+                Kind::Decimal {
+                    precision: 5,
+                    scale: 5,
+                },
+                Render::Decimal,
+            ),
+            "DECIMAL(5, 5)",
+        ),
+        (
+            column(
+                "C_DF16",
+                Kind::UnboundedDecimal { digits: 16 },
+                Render::Decimal,
+            ),
+            "DECFLOAT(16)",
+        ),
+        (
+            column(
+                "C_DF34",
+                Kind::UnboundedDecimal { digits: 34 },
+                Render::Decimal,
+            ),
+            "DECFLOAT(34)",
+        ),
+        (
+            column("C_V3", text(Some(3), false, Unit::Bytes), Render::Utf8Hex),
+            "VARCHAR(3)",
+        ),
+        (
+            column("C_C4", text(Some(4), true, Unit::Bytes), Render::Utf8Hex),
+            "CHAR(4)",
+        ),
+        (
+            column(
+                "C_V3C",
+                text(Some(3), false, Unit::Characters),
+                Render::Utf8Hex,
+            ),
+            "VARCHAR(3 CODEUNITS32)",
+        ),
+        (
+            column(
+                "C_VB4",
+                Kind::Binary {
+                    length: Some(4),
+                    padded: false,
+                },
+                Render::BytesHex,
+            ),
+            "VARBINARY(4)",
+        ),
+        (
+            column(
+                "C_B4",
+                Kind::Binary {
+                    length: Some(4),
+                    padded: true,
+                },
+                Render::BytesHex,
+            ),
+            "BINARY(4)",
+        ),
+        (column("C_DT", Kind::Date, Render::Date), "DATE"),
+        (
+            column("C_TS0", Kind::Timestamp { fraction: 0 }, Render::Timestamp),
+            "TIMESTAMP(0)",
+        ),
+        (
+            column("C_TS3", Kind::Timestamp { fraction: 3 }, Render::Timestamp),
+            "TIMESTAMP(3)",
+        ),
+        (
+            column("C_TS6", Kind::Timestamp { fraction: 6 }, Render::Timestamp),
+            "TIMESTAMP(6)",
+        ),
+        (
+            column(
+                "C_TS12",
+                Kind::Timestamp { fraction: 12 },
+                Render::Timestamp,
+            ),
+            "TIMESTAMP(12)",
+        ),
+        (column("C_BO", Kind::Boolean, Render::Boolean), "BOOLEAN"),
+    ]
+}
+
+/// La resa del server: i bit dei floating point (`HEX`, little-endian), i
+/// byte UTF-8 del testo (codepage 1208), i decimali e i temporali come
+/// `VARCHAR` a precisione piena.
+fn sweep_raw(column: &str) -> String {
+    let expression = match column {
+        "C_R" | "C_D" | "C_V3" | "C_C4" | "C_V3C" | "C_VB4" | "C_B4" => format!("HEX({column})"),
+        "C_DT" => "CHAR(C_DT, ISO)".to_owned(),
+        "C_BO" => "CASE WHEN C_BO THEN 'true' WHEN NOT C_BO THEN 'false' END".to_owned(),
+        _ => format!("VARCHAR({column})"),
+    };
+    format!("SELECT {expression} FROM {SCHEMA}.{SWEEP_TABLE} WHERE ID = ?")
+}
+
+/// Il censimento generato: per ogni tipo di colonna, ogni valore generato
+/// per famiglia, su ogni percorso, contro la resa del server e il modello
+/// indipendente del tipo. Su Db2 lo SQL del chiamante e esatto (il tipo
+/// descritto del segnaposto): niente limite dichiarato sul percorso nativo.
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+async fn live_generated_values_bind_exactly_or_are_refused() {
+    use plenora_database_testkit::parameter_sweep::{
+        sweep, sweep_report, ServerFacts, SweepTarget,
+    };
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let columns = sweep_columns();
+    let definition = columns
+        .iter()
+        .map(|(column, sql)| format!("{} {sql}", column.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    ddl(
+        &provider,
+        &secret,
+        &[
+            format!("DROP TABLE IF EXISTS {SCHEMA}.{SWEEP_TABLE}"),
+            format!(
+                "CREATE TABLE {SCHEMA}.{SWEEP_TABLE} (ID INTEGER NOT NULL PRIMARY KEY, {definition})"
+            ),
+        ],
+    )
+    .await;
+    let target = SweepTarget {
+        target: Target {
+            provider: &provider,
+            secret: &secret,
+            limits: ResourceLimits::default(),
+            table: ObjectRef {
+                catalog: None,
+                schema: Some(SCHEMA.to_owned()),
+                object: SWEEP_TABLE.to_owned(),
+            },
+            id_column: "ID",
+            native: &sweep_native,
+            native_cross_type_declared: false,
+        },
+        raw: &sweep_raw,
+        part: None,
+        facts: ServerFacts {
+            normalizes_negative_zero: true,
+            refuses_subnormals: true,
+            ..ServerFacts::default()
+        },
+    };
+    let columns = columns
+        .into_iter()
+        .map(|(column, _)| column)
+        .collect::<Vec<_>>();
+    let outcomes = sweep(
+        &target,
+        &columns,
+        &[
+            FidelityPath::Native,
+            FidelityPath::Portable,
+            FidelityPath::Read,
+        ],
+    )
+    .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("DROP TABLE {SCHEMA}.{SWEEP_TABLE}"),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("pulizia tabella del censimento generato Db2");
+    let (text, failures) = sweep_report(&outcomes);
+    println!("{text}");
+    assert!(
+        failures.is_empty(),
+        "valori generati non esatti su Db2: {failures:#?}"
+    );
+}

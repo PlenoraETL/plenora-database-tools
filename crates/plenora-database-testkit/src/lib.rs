@@ -2,6 +2,7 @@
 
 mod conformance;
 pub mod parameter_fidelity;
+pub mod parameter_sweep;
 pub mod row_diagnostics;
 
 pub use conformance::{

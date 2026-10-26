@@ -24,6 +24,39 @@ use crate::transaction::Statement;
 use crate::{DatabaseError, Result};
 use std::fmt::Write as _;
 
+/// Lo SQL compilato da un `PortableStatement`, **non** eseguibile.
+///
+/// I valori legati restano dentro: fuori dal core non si leggono e non si
+/// trasformano in uno [`Statement`]. Lo statement eseguibile di un AST
+/// portable esce soltanto dal cancello dell'ammissione
+/// ([`crate::admission_gate::portable`]), che ammette ogni letterale sul tipo
+/// della colonna che incontra. Cosi un percorso che compila ed esegue senza
+/// ammissione non compila (il difetto del terzo giro: `portable-execute`
+/// della CLI scriveva `numeric(12, 4)` e `timestamp(0)` arrotondati).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledPortable {
+    /// Lo SQL, per ispezione (`portable-compile`, prove di rendering).
+    pub sql: String,
+    pub(crate) params: Vec<ParameterValue>,
+}
+
+impl CompiledPortable {
+    /// Il numero di segnaposto legati.
+    #[must_use]
+    pub const fn param_count(&self) -> usize {
+        self.params.len()
+    }
+
+    /// Lo statement eseguibile: soltanto il cancello dell'ammissione lo
+    /// chiede, dopo aver ammesso i letterali.
+    pub(crate) fn into_admitted_statement(self) -> Statement {
+        Statement {
+            sql: self.sql,
+            params: self.params,
+        }
+    }
+}
+
 /// Compila un `PortableStatement` per il provider indicato.
 ///
 /// # Errors
@@ -31,7 +64,10 @@ use std::fmt::Write as _;
 /// - `Unsupported` se il provider non è supportato dal compilatore
 /// - `InvalidPlan` se lo statement viola un vincolo (columns vuoto,
 ///   values shape mismatch, identificatori non validi, ecc.)
-pub fn compile_portable(kind: ProviderKind, statement: &PortableStatement) -> Result<Statement> {
+pub fn compile_portable(
+    kind: ProviderKind,
+    statement: &PortableStatement,
+) -> Result<CompiledPortable> {
     let dialect = match kind {
         ProviderKind::Postgres => DialectKind::Postgres,
         ProviderKind::Mysql => DialectKind::Mysql,
@@ -55,7 +91,7 @@ pub fn compile_portable(kind: ProviderKind, statement: &PortableStatement) -> Re
         PortableStatement::Delete(s) => compile_delete(s, &mut ctx)?,
         PortableStatement::Upsert(s) => compile_upsert(s, &mut ctx)?,
     };
-    Ok(Statement {
+    Ok(CompiledPortable {
         sql,
         params: ctx.params,
     })

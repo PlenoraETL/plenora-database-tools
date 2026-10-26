@@ -24,7 +24,8 @@
 use odbc_api::parameter::InputParameter;
 use odbc_api::sys::SqlDataType;
 use odbc_api::{DataType, IntoParameter};
-use plenora_database_core::operand_admission::{admit, OperandType};
+use plenora_database_core::admission_gate::described as admit;
+use plenora_database_core::operand_admission::{Charset, LengthUnit, OperandType};
 use plenora_database_core::parameter_fidelity::{
     canonical_uuid, exact_f32, reject_sub_microsecond, DecimalLiteral,
 };
@@ -122,6 +123,12 @@ fn text(value: String) -> Bound {
 /// unica (`plenora_database_core::operand_admission`).
 #[must_use]
 pub fn operand_of(described: &DataType) -> OperandType {
+    let text = |length, padded, unit| OperandType::Text {
+        length,
+        padded,
+        unit,
+        charset: Charset::Unicode,
+    };
     let length = |length: &Option<std::num::NonZeroUsize>| {
         length.and_then(|length| u64::try_from(length.get()).ok())
     };
@@ -148,17 +155,16 @@ pub fn operand_of(described: &DataType) -> OperandType {
             .map_or(OperandType::Unknown, |fraction_digits| {
                 OperandType::Timestamp { fraction_digits }
             }),
-        DataType::Char { length: size } | DataType::WChar { length: size } => OperandType::Text {
-            length: length(size),
-            padded: true,
-        },
-        DataType::Varchar { length: size }
-        | DataType::WVarchar { length: size }
-        | DataType::LongVarchar { length: size }
-        | DataType::WLongVarchar { length: size } => OperandType::Text {
-            length: length(size),
-            padded: false,
-        },
+        // Il segnaposto descrive `CHAR` e `VARCHAR` in byte della codepage
+        // 1208 (la connessione la verifica), `GRAPHIC` in unita UTF-16.
+        DataType::Char { length: size } => text(length(size), true, LengthUnit::Bytes),
+        DataType::WChar { length: size } => text(length(size), true, LengthUnit::Utf16),
+        DataType::Varchar { length: size } | DataType::LongVarchar { length: size } => {
+            text(length(size), false, LengthUnit::Bytes)
+        }
+        DataType::WVarchar { length: size } | DataType::WLongVarchar { length: size } => {
+            text(length(size), false, LengthUnit::Utf16)
+        }
         DataType::Binary { length: size } => OperandType::Binary {
             length: length(size),
             padded: true,
@@ -179,10 +185,7 @@ pub fn operand_of(described: &DataType) -> OperandType {
         DataType::Other {
             data_type: SQL_CLOB | SQL_DBCLOB,
             ..
-        } => OperandType::Text {
-            length: None,
-            padded: false,
-        },
+        } => text(None, false, LengthUnit::Bytes),
         DataType::Other {
             data_type: SQL_DECFLOAT,
             column_size,

@@ -43,6 +43,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_a_procedure_that_commits_then_raises_is_not_reported_as_no_effect",
         "live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps",
         "live_parameter_values_bind_exactly_or_are_refused",
+        "live_generated_values_bind_exactly_or_are_refused",
     }
 )
 

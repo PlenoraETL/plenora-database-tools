@@ -96,6 +96,7 @@ EXPECTED_UNIT_TESTS = {
     "evidence::tests::the_real_bootstrap_parses_into_three_assignments",
     "evidence::tests::the_server_code_is_read_from_the_message_or_absent",
     "parameter::tests::binding_is_positional_and_rejects_extra_parameters",
+    "parameter::tests::integral_decimals_bind_as_integers_and_the_rest_as_text",
     "parameter::tests::values_the_server_would_change_are_refused_before_sending",
     "parameter::tests::wkb_is_rejected_until_srid_preflight_exists",
     "pool::tests::checkout_preserves_the_independent_acquire_budget",
@@ -344,6 +345,7 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
 }
 EXPECTED_LIVE_REFERENCE_TESTS = {
     "live_tests::live_parameter_values_bind_exactly_or_are_refused",
+    "live_tests::live_generated_values_bind_exactly_or_are_refused",
     "live_tests::live_caller_query_decode_failure_requires_recovery",
     "live_tests::live_a_row_over_the_batch_budget_carries_over_to_the_next_batch",
     "live_tests::live_append_batch_failure_rolls_back_without_partial_rows",

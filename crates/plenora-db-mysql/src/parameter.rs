@@ -101,8 +101,33 @@ pub fn parameter_value(value: &ParameterValue, kind: ProviderKind) -> Result<Val
         ParameterValue::Date(_) | ParameterValue::Timestamp(_) | ParameterValue::TimestampTz(_) => {
             temporal_value(value, kind)
         }
+        // Un decimale intero si lega come intero: legato come testo, il
+        // server lo converte attraverso un double contro una colonna intera
+        // (misurato: `9007199254740993` in un `BIGINT` diventava
+        // `9007199254740992`, e `BIGINT = '9007199254740992'` ritrovava la
+        // riga di `9007199254740993`).
         ParameterValue::Decimal(value) => {
-            DecimalLiteral::parse(kind, value)?;
+            let literal = DecimalLiteral::parse(kind, value)?;
+            if literal.fraction.bytes().all(|digit| digit == b'0') {
+                let magnitude = if literal.integer.is_empty() {
+                    Some(0_i128)
+                } else {
+                    literal.integer.parse::<i128>().ok()
+                };
+                let signed = magnitude.map(|magnitude| {
+                    if literal.negative {
+                        -magnitude
+                    } else {
+                        magnitude
+                    }
+                });
+                if let Some(integer) = signed.and_then(|value| i64::try_from(value).ok()) {
+                    return Ok(Value::Int(integer));
+                }
+                if let Some(integer) = signed.and_then(|value| u64::try_from(value).ok()) {
+                    return Ok(Value::UInt(integer));
+                }
+            }
             Ok(Value::Bytes(value.as_bytes().to_vec()))
         }
         ParameterValue::Uuid(value) => {

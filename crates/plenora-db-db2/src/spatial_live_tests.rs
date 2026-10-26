@@ -6,10 +6,10 @@ use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
 use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::plan::{
-    DeclaredCrs, FilterExpression, ObjectRef, OrderBy, ProviderKind, ReadOperation, SortDirection,
-    SridPolicy, TransactionProfile, WriteMode, WriteOperation,
+    DeclaredCrs, FilterExpression, ObjectRef, OrderBy, ReadOperation, SortDirection, SridPolicy,
+    TransactionProfile, WriteMode, WriteOperation,
 };
-use plenora_database_core::portable::{compile_portable, select, spatial};
+use plenora_database_core::portable::{select, spatial};
 use plenora_database_core::protocol::{self, contract_schema};
 use plenora_database_core::provider::{
     BatchStream, ParameterBag, ParameterValue, Provider, ProviderFuture, SecretString,
@@ -457,8 +457,6 @@ async fn live_spatial_portable_predicates_execute_with_bound_wkb_and_srid() {
                 },
             ))
             .into_statement();
-        let statement =
-            compile_portable(ProviderKind::Db2, &statement).expect("compila predicato spatial Db2");
         let mut transaction = provider
             .begin_transaction(
                 &secret,
@@ -468,6 +466,13 @@ async fn live_spatial_portable_predicates_execute_with_bound_wkb_and_srid() {
             )
             .await
             .expect("transazione predicato spatial Db2");
+        let statement = plenora_database_core::admission_gate::portable(
+            transaction.as_mut(),
+            &statement,
+            &cancellation,
+        )
+        .await
+        .expect("compila predicato spatial Db2");
         let rows = transaction
             .query(&statement, &cancellation)
             .await

@@ -207,10 +207,19 @@ fn bind_parameter(value: &ParameterValue) -> Result<Value> {
         ParameterValue::Bool(value) => Ok(Value::Integer(i64::from(*value))),
         ParameterValue::I32(value) => Ok(Value::Integer(i64::from(*value))),
         ParameterValue::I64(value) => Ok(Value::Integer(*value)),
-        // Misurato: Oracle conserva `-0.0` in un BINARY_DOUBLE come `+0.0`.
-        ParameterValue::F64(value) if value.to_bits() == (-0.0_f64).to_bits() => Err(
-            mapping_error("parametro double -0.0: Oracle conserva lo zero senza segno"),
-        ),
+        // Misurato il 25/10 (`live_binary_double_negative_zero_is_measured`):
+        // il bind conserva `-0.0` in un `BINARY_DOUBLE`, ma `NUMBER`, `FLOAT`
+        // e `BINARY_FLOAT` lo salvano `+0`. Il bind non conosce la colonna
+        // (lo SQL del chiamante, e il portable lega con la stessa funzione):
+        // si rifiuta, per eccesso su `BINARY_DOUBLE` (limite dichiarato su
+        // `plenora_database_core::parameter_fidelity`). Il secondo giro
+        // scriveva che anche `BINARY_DOUBLE` lo perdeva: era la resa
+        // `UTL_RAW.CAST_FROM_BINARY_DOUBLE`, che rende `-0` come `+0`.
+        ParameterValue::F64(value) if value.to_bits() == (-0.0_f64).to_bits() => {
+            Err(mapping_error(
+                "parametro double -0.0: NUMBER e BINARY_FLOAT Oracle lo salvano senza segno",
+            ))
+        }
         ParameterValue::F64(value) if value.is_finite() => Ok(Value::Float(*value)),
         ParameterValue::F64(_) => Err(mapping_error("parametro float Oracle non finito")),
         ParameterValue::String(value) | ParameterValue::Enum { label: value, .. } => {
