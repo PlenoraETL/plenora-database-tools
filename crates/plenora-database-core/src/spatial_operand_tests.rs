@@ -932,3 +932,99 @@ fn un_nome_si_risolve_soltanto_per_byte() {
     .expect_err("w");
     assert_eq!(error.message, OPERAND_FAMILY_MISMATCH);
 }
+
+/// Sedicesima lettura del 25/10, regola N in ogni piano: una CTE che il
+/// server potrebbe legare a una relazione senza schema con un nome diverso
+/// per byte (maiuscole, spazi finali; larghezza e accenti dove il server
+/// confronta con una collation) si rifiuta, anche senza geometrie. La CTE con
+/// il nome uguale per byte resta.
+#[test]
+fn una_cte_che_il_server_potrebbe_legare_si_rifiuta_in_ogni_piano() {
+    let plan = |cte: &str| -> QueryOperation {
+        serde_json::from_value(json!({
+            "common_table_expressions": [{"name": cte, "query": query(&json!({}))}],
+            "source": {"object": {"catalog": null, "schema": null, "object": "e"}, "alias": "x"},
+            "projection": [{"expression": column(Some("x"), "id"), "alias": null}],
+            "filter": compare(&column(Some("x"), "id"), &bind()),
+            "having": null,
+            "row_limit": null
+        }))
+        .expect("piano")
+    };
+    let judge = |provider: ProviderKind, cte: &str| {
+        let mut catalog = catalog(provider);
+        catalog.insert(
+            None,
+            "e".to_owned(),
+            RelationColumns::Known(vec![CatalogColumn::new(
+                "id",
+                ColumnOrigin::Stored,
+                OperandFamily::Binary,
+            )]),
+        );
+        scalar_operands(provider, &plan(cte))?.judge(&catalog)
+    };
+    for (provider, cte) in [
+        (ProviderKind::Sqlserver, "ｅ"),
+        (ProviderKind::Sqlserver, "E"),
+        (ProviderKind::Sqlserver, "é"),
+        (ProviderKind::Sqlserver, "e "),
+        (ProviderKind::Mysql, "é"),
+        (ProviderKind::Mariadb, "E"),
+        (ProviderKind::Db2, "e "),
+        (ProviderKind::Postgres, "E"),
+        (ProviderKind::Oracle, "E"),
+    ] {
+        assert_ambiguous(judge(provider, cte), &format!("{provider:?} {cte:?}"));
+    }
+    for provider in [
+        ProviderKind::Sqlserver,
+        ProviderKind::Mysql,
+        ProviderKind::Db2,
+        ProviderKind::Postgres,
+    ] {
+        judge(provider, "e").unwrap_or_else(|error| panic!("{provider:?}: {error:?}"));
+    }
+    // Dove ogni identificatore e quotato per byte, un nome non ASCII diverso
+    // non si lega alla relazione.
+    judge(ProviderKind::Postgres, "é").expect("PostgreSQL per byte");
+}
+
+/// Sedicesima lettura del 25/10, mondo chiuso: un riferimento a una
+/// relazione che il catalogo non trova (`RelationColumns::Absent`) non si
+/// lega, e si rifiuta in ogni piano (`NAME_UNRESOLVED`). Fino ad allora si
+/// assumeva che la query fallisse sul server, ma il server legge relazioni che
+/// il catalogo non elenca (le tabelle temporanee private di Oracle).
+#[test]
+fn una_relazione_assente_dal_catalogo_non_lega_i_riferimenti() {
+    for provider in [
+        ProviderKind::Postgres,
+        ProviderKind::Mysql,
+        ProviderKind::Mariadb,
+        ProviderKind::Sqlserver,
+        ProviderKind::Oracle,
+        ProviderKind::Db2,
+    ] {
+        let mut operation = serde_json::to_value(query(&json!({
+            "filter": compare(&column(Some("t"), "id"), &bind())
+        })))
+        .expect("json");
+        operation["source"] = source("assente", Some("t"));
+        let operation: QueryOperation = serde_json::from_value(operation).expect("query");
+        let mut catalog = catalog(provider);
+        catalog.insert(
+            Some("s".to_owned()),
+            "assente".to_owned(),
+            RelationColumns::Absent,
+        );
+        let error = scalar_operands(provider, &operation)
+            .and_then(|operands| operands.judge(&catalog))
+            .expect_err("relazione assente");
+        assert_eq!(error.message, NAME_UNRESOLVED, "{provider:?}");
+        assert_eq!(
+            error.category,
+            crate::ErrorCategory::InvalidPlan,
+            "{provider:?}"
+        );
+    }
+}

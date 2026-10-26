@@ -10,7 +10,9 @@ use crate::operand_catalog::{
 };
 use plenora_database_core::plan::{FilterExpression, ObjectRef, ProviderKind, ReadOperation};
 use plenora_database_core::relational::QueryOperation;
-use plenora_database_core::spatial_operand::{scalar_operands, GEOMETRY_OPERAND_UNRESOLVED};
+use plenora_database_core::spatial_operand::{
+    scalar_operands, GEOMETRY_OPERAND_UNRESOLVED, NAME_UNRESOLVED,
+};
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::Result;
 use std::collections::BTreeMap;
@@ -262,8 +264,13 @@ fn senza_schema_vale_lo_schema_corrente_poi_il_sinonimo_pubblico() {
         rifiuto(GEOMETRY_SCALAR_OPERAND)
     );
     finto.current = "ALTRO".to_owned();
-    // Lo schema corrente non ha il nome, il sinonimo pubblico non c'e.
-    assert_eq!(giudizio(&mut finto, None, "V", "W"), Ok(()));
+    // Lo schema corrente non ha il nome, il sinonimo pubblico non c'e: la
+    // relazione e assente, e il riferimento non si lega (sedicesima lettura
+    // del 25/10: una tabella temporanea privata non e nel catalogo).
+    assert_eq!(
+        giudizio(&mut finto, None, "V", "W"),
+        rifiuto(NAME_UNRESOLVED)
+    );
     finto.synonym("PUBLIC", "V", Some(("PLENORA", "V")));
     assert_eq!(
         giudizio(&mut finto, None, "V", "W"),
@@ -279,7 +286,10 @@ fn senza_schema_vale_lo_schema_corrente_poi_il_sinonimo_pubblico() {
     );
     assert_eq!(giudizio(&mut finto, None, "V", "W"), Ok(()));
     // Con lo schema esplicito il sinonimo pubblico non vale.
-    assert_eq!(giudizio(&mut finto, Some("NESSUNO"), "V", "W"), Ok(()));
+    assert_eq!(
+        giudizio(&mut finto, Some("NESSUNO"), "V", "W"),
+        rifiuto(NAME_UNRESOLVED)
+    );
 }
 
 #[test]
@@ -318,10 +328,11 @@ fn un_sinonimo_che_non_arriva_a_una_relazione_non_si_conosce() {
             "{object}"
         );
     }
-    // Assente: la query fallira sul server, il piano non ha geometrie.
+    // Assente: il riferimento non si lega (il server puo leggere una
+    // relazione che il catalogo non elenca).
     assert_eq!(
         giudizio(&mut finto, Some("PLENORA"), "NESSUNO", "G"),
-        Ok(())
+        rifiuto(NAME_UNRESOLVED)
     );
 }
 
@@ -348,8 +359,11 @@ fn una_catena_di_sinonimi_oltre_il_limite_non_si_conosce() {
 fn i_nomi_si_confrontano_per_byte() {
     let mut finto = base();
     assert!(giudizio(&mut finto, Some("PLENORA"), "V", "w").is_err());
-    // Una relazione nominata in minuscolo e un'altra relazione.
-    assert_eq!(giudizio(&mut finto, Some("plenora"), "V", "W"), Ok(()));
+    // Una relazione nominata in minuscolo e un'altra relazione, assente.
+    assert_eq!(
+        giudizio(&mut finto, Some("plenora"), "V", "W"),
+        rifiuto(NAME_UNRESOLVED)
+    );
 }
 
 fn lettura(object: &str, field: &str) -> ReadOperation {

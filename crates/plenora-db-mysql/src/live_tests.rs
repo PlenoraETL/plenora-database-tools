@@ -9819,3 +9819,150 @@ async fn live_rilettura_quindici_fuso_uuid_nomi_e_cast() {
     let connection = teardown.connection_mut().expect("connessione");
     connection.query_drop(cleanup).await.expect("pulizia");
 }
+
+/// Sedicesima lettura del 25/10 su `MySQL` e `MariaDB`
+/// (`PLENORA_MYSQL_PRODUCT`): un `CAST` a testo cambia la collation del
+/// confronto senza errore.
+///
+/// `CAST(x AS CHAR)` da al valore la collation della connessione con
+/// coercibilita implicita: una colonna `latin1_swedish_ci` (`'ü'` e `'y'`,
+/// `'u'`), una `utf8mb4_bin` (`'A'` e `'a'`) e su `MariaDB` una
+/// `utf8mb3_general_ci` (`'ß'`) rendono, sotto il `CAST` della colonna o del
+/// parametro, righe diverse dal confronto senza `CAST`, e l'errore 1267 non
+/// arriva (misurato qui). Su c0f82ba il piano `CAST(t.l AS string) = ?`
+/// passava (un `VARCHAR(8)` sta in `CHAR`); ora ogni `CAST` a testo si
+/// rifiuta (`CAST_TEXT_COLLATION`), per una colonna e per un parametro, e il
+/// confronto senza `CAST` resta.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_rilettura_sedici_cast_a_testo_e_collation() {
+    use plenora_database_core::cast_table::CAST_TEXT_COLLATION;
+    use plenora_database_core::provider::ParameterValue;
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    let mariadb = environment("PLENORA_MYSQL_PRODUCT", "mysql") == "mariadb";
+    let cleanup = "DROP TABLE IF EXISTS _r16_t";
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione");
+        connection.query_drop(cleanup).await.expect("pulizia");
+        connection
+            .query_drop(
+                "CREATE TABLE _r16_t (id BIGINT PRIMARY KEY, \
+                 l VARCHAR(8) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL, \
+                 b VARCHAR(8) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, \
+                 m VARCHAR(8) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci NOT NULL) \
+                 ENGINE=InnoDB",
+            )
+            .await
+            .expect("tabella");
+        connection
+            .query_drop(
+                "INSERT INTO _r16_t VALUES (1, 'u', 'A', 's'), (2, 'ü', 'a', 'ß'), \
+                 (3, 'y', 'x', 'ss')",
+            )
+            .await
+            .expect("righe");
+        // La tabella del modulo `cast_table`, rimisurata: il confronto senza
+        // `CAST`, con il `CAST` della colonna e con quello del parametro.
+        for (column, value, under_cast) in [("l", "u", true), ("b", "a", true), ("m", "s", mariadb)]
+        {
+            let mut ids = Vec::new();
+            for sql in [
+                format!("SELECT id FROM _r16_t WHERE {column} = ? ORDER BY id"),
+                format!("SELECT id FROM _r16_t WHERE CAST({column} AS CHAR) = ? ORDER BY id"),
+                format!("SELECT id FROM _r16_t WHERE {column} = CAST(? AS CHAR) ORDER BY id"),
+            ] {
+                let found: Vec<i64> = connection
+                    .exec(sql.as_str(), (value,))
+                    .await
+                    .unwrap_or_else(|error| panic!("{sql}: {error:?}"));
+                ids.push(found);
+            }
+            let [bare, cast_column, cast_parameter] =
+                <[Vec<i64>; 3]>::try_from(ids).expect("tre misure");
+            if under_cast {
+                assert_ne!(
+                    bare, cast_column,
+                    "{column}: il CAST della colonna cambia la collation"
+                );
+            }
+            // Su `MySQL` anche il `CAST` del parametro cambia la collation
+            // dove i set di caratteri sono diversi (latin1 contro utf8mb4).
+            if column == "l" && !mariadb {
+                assert_ne!(
+                    bare, cast_parameter,
+                    "{column}: il CAST del parametro cambia la collation"
+                );
+            }
+        }
+    }
+    let database = environment("PLENORA_MYSQL_DATABASE", "dataflow_test");
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let typed = || json!({"kind": "typed_parameter", "name": "p", "parameter_type": "string"});
+    let compare = |left: Value, right: Value| json!({"kind": "compare", "left": left, "operator": "eq", "right": right});
+    let cast = |expression: Value, target: &str| json!({"kind": "cast", "expression": expression, "target_type": target});
+    let plan = |filter: Value| -> plenora_database_core::query::QueryOperation {
+        serde_json::from_value(json!({
+            "source": {"object": {"catalog": null, "schema": database, "object": "_r16_t"}, "alias": "t"},
+            "projection": [{"expression": column("id"), "alias": "id"}],
+            "filter": filter, "having": null, "row_limit": null
+        }))
+        .expect("piano")
+    };
+    let bag = |value: &str| {
+        ParameterBag::new(BTreeMap::from([(
+            "p".to_owned(),
+            ParameterValue::String(value.to_owned()),
+        )]))
+    };
+    let provider = geometry_operand_provider();
+    let provider = provider.as_ref();
+    for (field, value) in [("l", "u"), ("b", "a"), ("m", "s")] {
+        let refused = [
+            (
+                "CAST(colonna AS string) = testo",
+                compare(cast(column(field), "string"), typed()),
+            ),
+            (
+                "colonna = CAST(:p AS string)",
+                compare(
+                    column(field),
+                    cast(json!({"kind": "parameter", "name": "p"}), "string"),
+                ),
+            ),
+            (
+                "CAST(colonna AS uuid) = testo",
+                compare(cast(column(field), "uuid"), typed()),
+            ),
+        ];
+        for (form, filter) in refused {
+            let error = geometry_operand_rows(provider, &plan(filter), &bag(value))
+                .await
+                .expect_err(form);
+            assert_eq!(
+                error.category,
+                ErrorCategory::InvalidPlan,
+                "{field} {form}: {error:?}"
+            );
+            assert_eq!(error.message, CAST_TEXT_COLLATION, "{field} {form}");
+        }
+    }
+    // Senza `CAST` il confronto usa la collation della colonna, e resta.
+    assert_eq!(
+        geometry_operand_rows(provider, &plan(compare(column("b"), typed())), &bag("a"))
+            .await
+            .expect("b = testo"),
+        1
+    );
+    let mut teardown = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("pulizia");
+    let connection = teardown.connection_mut().expect("connessione");
+    connection.query_drop(cleanup).await.expect("pulizia");
+}

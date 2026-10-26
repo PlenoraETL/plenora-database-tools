@@ -20,7 +20,13 @@
 //!   sta in `VARCHAR(32672)`, un `float` non sta in nessun decimale;
 //! - **un altro `CAST`**: il tipo reso del `CAST` interno come colonna;
 //! - ogni altra espressione (aritmetica, funzioni, `CASE`): non si prova, e
-//!   si rifiuta.
+//!   si rifiuta;
+//! - **a testo su `MySQL` e `MariaDB`** (`string` reso `CHAR`, `uuid` reso
+//!   `CHAR(36)`): si rifiuta per ogni operando, colonna o parametro,
+//!   [`CAST_TEXT_COLLATION`]: il `CAST` da al valore la collation della
+//!   connessione, e il confronto cambia collation ([`cast_changes_collation`]).
+//!   Su `PostgreSQL` e SQL Server il `CAST` a testo tiene la collation della
+//!   colonna (rimisurato dai test live della sedicesima lettura).
 //!
 //! # La tabella, misurata
 //!
@@ -36,12 +42,12 @@
 //! | `big_integer` | `BIGINT` | `SIGNED` | `SIGNED` | `BIGINT` | `NUMBER(19)` | `BIGINT` |
 //! | `float` | `DOUBLE PRECISION` | `DOUBLE` | `DOUBLE` | `FLOAT` | `BINARY_DOUBLE` | `DOUBLE` |
 //! | `decimal` | `DECIMAL(38, 10)` | `DECIMAL(38, 10)` | `DECIMAL(38, 10)` | `DECIMAL(38, 10)` | `NUMBER(38, 10)` | `DECIMAL(31, 10)` |
-//! | `string` | `TEXT` | `CHAR` | `CHAR` | `NVARCHAR(MAX)` | `VARCHAR2(4000)` byte | `VARCHAR(32672)` byte |
+//! | `string` | `TEXT` | `CHAR`, rifiutato (collation) | `CHAR`, rifiutato (collation) | `NVARCHAR(MAX)` | `VARCHAR2(4000)` byte | `VARCHAR(32672)` byte |
 //! | `binary` | `BYTEA` | `BINARY` | `BINARY` | `VARBINARY(MAX)` | `RAW(2000)` | `VARCHAR(32672) FOR BIT DATA` |
 //! | `date` | `DATE` | `DATE` | `DATE` | `DATE` | `DATE` (con l'ora) | `DATE` |
 //! | `timestamp` | `TIMESTAMP` (6) | `DATETIME(6)` | `DATETIME(6)` | `DATETIME2` (7) | `TIMESTAMP` (6) | `TIMESTAMP` (6) |
 //! | `timestamp_tz` | `TIMESTAMPTZ` | `DATETIME(6)`, l'offset convertito nel fuso della sessione | `DATETIME(6)`, **l'offset scartato** | `DATETIMEOFFSET` | `TO_TIMESTAMP_TZ` | rifiutato (il tipo non esiste) |
-//! | `uuid` | `UUID` | `CHAR(36)` | `CHAR(36)` | `UNIQUEIDENTIFIER` | `VARCHAR2(36)` | `CHAR(36)` |
+//! | `uuid` | `UUID` | `CHAR(36)`, rifiutato (collation) | `CHAR(36)`, rifiutato (collation) | `UNIQUEIDENTIFIER` | `VARCHAR2(36)` | `CHAR(36)` |
 //! | `json` | `JSONB` | `JSON` | `JSON` | `NVARCHAR(MAX)` | `CLOB` | `CLOB` (1M byte) |
 //!
 //! Misurato: `CAST(? AS DECIMAL(38, 10))` con `0.12345678901` rende
@@ -91,6 +97,16 @@
 //! - **Rientro.** Quando il catalogo dice la lunghezza in byte accanto a
 //!   quella in caratteri.
 //!
+//! - **Regola.** Un `CAST` a testo su `MySQL` e `MariaDB` si rifiuta in ogni
+//!   posizione, anche dove la collation non decide niente (la projection di
+//!   un blocco senza `DISTINCT`).
+//! - **Ambito.** `string` e `uuid` di un `Cast` esplicito del piano; il
+//!   parametro tipizzato `string` o `uuid` si rende senza `CAST` e resta.
+//! - **Hazard.** Nessun passaggio silenzioso; il costo e il rifiuto di un
+//!   `CAST` di presentazione.
+//! - **Rientro.** Un `CAST` reso con la collation della colonna
+//!   (`CONVERT(... USING cs) COLLATE c`), misurato per ogni collation.
+//!
 //! - **Regola.** Un `F64` legato a un `CAST` decimale o intero, un decimale
 //!   legato a un `CAST` `float` si rifiutano.
 //! - **Ambito.** Ogni dialetto, finche il valore si lega nel proprio tipo e
@@ -109,6 +125,10 @@ use crate::{DatabaseError, ErrorCategory, ErrorPhase};
 /// Motivo stabile del rifiuto di un `CAST` reso dalla libreria che non e
 /// esatto (regola C).
 pub const CAST_NOT_EXACT: &str = "CAST non esatto: il tipo che la libreria rende (DECIMAL(38, 10) o DECIMAL(31, 10) su Db2, VARCHAR2(4000), VARCHAR(32672), RAW(2000), DATETIME(6), un timestamp_tz su MariaDB o Db2) non tiene esatto il valore legato o il tipo della colonna, o l'operando non si prova; si confronti la colonna con un parametro del suo tipo";
+
+/// Motivo stabile del rifiuto di un `CAST` a testo su `MySQL` e `MariaDB`
+/// (regola C, [`cast_changes_collation`]).
+pub const CAST_TEXT_COLLATION: &str = "CAST a testo rifiutato su MySQL e MariaDB: CAST(... AS CHAR) da al valore la collation della connessione, e il confronto cambia collation senza errore; si confronti la colonna con un parametro del suo tipo, senza CAST";
 
 /// Il tipo di una colonna come lo dice il catalogo del provider, prima della
 /// classificazione in [`OperandType`].
@@ -466,6 +486,41 @@ pub fn cast_refusal(provider: ProviderKind) -> DatabaseError {
         ErrorPhase::Prepare,
         Some(provider),
         CAST_NOT_EXACT,
+    )
+}
+
+/// Un `CAST` a testo su `MySQL` e `MariaDB` cambia la collation del confronto.
+///
+/// `CAST(... AS CHAR)`, un `uuid` reso `CHAR(36)`: il valore prende la
+/// collation della connessione
+/// (`collation_connection`) con coercibilita implicita, e il confronto con una
+/// colonna puo cambiare collation senza errore (l'errore 1267 non e
+/// garantito): una colonna `latin1_swedish_ci` con `'ü'`, `'u'` e `'y'`, una
+/// `utf8mb4_bin` con `'A'` e `'a'`, su `MariaDB` una `utf8mb3_general_ci`
+/// con `'ß'` rendono righe diverse (sedicesima lettura del 25/10). Non si
+/// prova che il `CAST` lasci la collation: si rifiuta, per una colonna e per
+/// un parametro, in ogni posizione.
+#[must_use]
+pub const fn cast_changes_collation(
+    provider: ProviderKind,
+    parameter_type: QueryParameterType,
+) -> bool {
+    matches!(provider, ProviderKind::Mysql | ProviderKind::Mariadb)
+        && matches!(
+            rendered_target(provider, parameter_type),
+            OperandType::Text { .. }
+        )
+}
+
+/// Il rifiuto di un `CAST` a testo su `MySQL` e `MariaDB`
+/// ([`cast_changes_collation`]).
+#[must_use]
+pub fn text_cast_refusal(provider: ProviderKind) -> DatabaseError {
+    DatabaseError::new(
+        ErrorCategory::InvalidPlan,
+        ErrorPhase::Prepare,
+        Some(provider),
+        CAST_TEXT_COLLATION,
     )
 }
 

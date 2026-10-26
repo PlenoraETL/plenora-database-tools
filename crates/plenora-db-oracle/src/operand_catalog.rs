@@ -298,8 +298,10 @@ async fn relation_columns(
     let mut name = object.to_owned();
     for depth in 0..=MAX_SYNONYM_DEPTH {
         let Some(owner) = rows.first().map(|row| row.owner.clone()) else {
-            // Il nome del piano non c'e: la query fallira sul server. Il
-            // bersaglio di un sinonimo che non c'e non si conosce.
+            // Il nome del piano non c'e nel catalogo: i riferimenti non si
+            // legano (una tabella temporanea privata, `ORA$PTT_*`, non e in
+            // `ALL_OBJECTS` ma il server la legge). Il bersaglio di un
+            // sinonimo che non c'e non si conosce.
             return Ok(if depth == 0 {
                 RelationColumns::Absent
             } else {

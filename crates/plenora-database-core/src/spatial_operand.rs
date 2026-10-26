@@ -37,9 +37,11 @@
 //! geometrica (o il catalogo non ne legge le colonne), oppure il piano
 //! contiene un nodo spatial. Su un piano senza geometrie un riferimento non
 //! risolto non puo essere geometrico, ma non si giudica (regola F, regola C):
-//! si rifiuta, `invalid_plan` con [`NAME_UNRESOLVED`] (regola A). Una
-//! relazione che il catalogo non trova (`RelationColumns::Absent`) non si
-//! giudica: la query fallira sul server.
+//! si rifiuta, `invalid_plan` con [`NAME_UNRESOLVED`] (regola A). Anche un
+//! riferimento a una relazione che il catalogo non trova
+//! (`RelationColumns::Absent`): il server puo leggerla (una tabella
+//! temporanea privata di Oracle non e in `ALL_TAB_COLS`, misurato il 25/10,
+//! sedicesima lettura), e non si assume che la query fallisca.
 //!
 //! # Regola A: i nomi li lega il server
 //!
@@ -75,20 +77,23 @@
 //!
 //! Il giudizio non emula il legame dei nomi di ogni dialetto: rifiuta le forme
 //! in cui il legame dipende dal dialetto, `unsupported` con
-//! [`AMBIGUOUS_NAME_SHAPE`], su ogni dialetto, **soltanto in un piano che puo
-//! contenere una geometria** (lo stesso criterio del mondo chiuso: una
-//! relazione con una colonna geometrica o con colonne che il catalogo non
-//! legge, un nodo spatial; rendendo, senza catalogo, soltanto il nodo
-//! spatial). Su un piano senza geometrie il legame di un nome non puo far
-//! confrontare una geometria, e le forme arrivano al server come prima:
+//! [`AMBIGUOUS_NAME_SHAPE`], su ogni dialetto, **in ogni piano giudicato sul
+//! catalogo**: il legame di un nome decide i tipi che le regole F e C
+//! giudicano, non soltanto se un operando e geometrico (sedicesima lettura del
+//! 25/10: fino ad allora soltanto in un piano che puo contenere una
+//! geometria). Senza catalogo (la sola resa) si rifiutano soltanto in un piano
+//! con un nodo spatial: l'esecuzione giudica sul catalogo (regola S).
 //!
 //! - (a) due nomi di relazione (alias o nome) visibili insieme — nello stesso
 //!   blocco o in blocchi annidati — uguali senza maiuscole e senza spazi
 //!   finali, anche uguali per byte; due CTE visibili uguali allo stesso modo;
-//!   un qualificatore o una relazione senza schema che incontra un nome
-//!   soltanto senza maiuscole; un corpo di CTE che nomina una CTE successiva
-//!   dello stesso `WITH`, o se stessa senza `recursive` (il dialetto la lega
-//!   alla tabella o la rifiuta);
+//!   un qualificatore che incontra un nome soltanto senza maiuscole; una
+//!   relazione senza schema e una CTE visibile con nomi diversi per byte che
+//!   il server potrebbe legare (senza maiuscole, senza spazi finali, e su SQL
+//!   Server, `MySQL` e `MariaDB` con un carattere non ASCII: la collation non
+//!   si emula); un corpo di CTE che nomina, con la stessa regola, una CTE
+//!   successiva dello stesso `WITH`, o se stessa senza `recursive` (il
+//!   dialetto la lega alla tabella o la rifiuta);
 //! - (b) due nomi di uscita della stessa projection uguali senza maiuscole
 //!   (alias, o il nome di una colonna senza alias);
 //! - (c) un riferimento di colonna senza qualificatore in un blocco annidato
@@ -103,7 +108,8 @@
 //!
 //! Con queste forme rifiutate il legame di ogni nome e lo stesso sotto ogni
 //! regola, e il giudizio risolve una volta sola: relazioni e alias per byte,
-//! una CTE con le CTE che vede dove e definita, un riferimento senza
+//! una CTE per byte con le CTE che vede dove e definita (nessun'altra CTE
+//! visibile puo legarsi al nome per il server), un riferimento senza
 //! qualificatore nel solo blocco che lo contiene, i nomi di colonna con la
 //! regola del dialetto ([`NameRule`]) soltanto contro il catalogo e i nomi di
 //! uscita. Una relazione nominata con il catalogo (un altro database) non si
@@ -473,7 +479,10 @@ fn fold(name: &str) -> String {
 /// Le colonne di una relazione di base, come le dice il catalogo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationColumns {
-    /// Il catalogo non conosce la relazione: la query fallira sul server.
+    /// Il catalogo non conosce la relazione: nessun riferimento si lega, e
+    /// in posizione di operando si rifiuta in ogni piano ([`NAME_UNRESOLVED`]).
+    /// Il server puo leggere relazioni che il catalogo non elenca (le tabelle
+    /// temporanee private di Oracle, le temporanee di sessione).
     Absent,
     /// La relazione esiste ma le sue colonne non si leggono (un sinonimo
     /// verso un altro database, un oggetto che il catalogo non descrive):
@@ -1156,6 +1165,15 @@ fn walk(
         if state.seen.unresolved {
             return Err(name_refusal(provider));
         }
+        // Regola N in ogni piano: una forma il cui legame dipende dal dialetto
+        // non si giudica (regola F, regola C), perche il giudizio non sa a
+        // quale relazione il server leghi il nome. Fino alla sedicesima
+        // lettura del 25/10 si rifiutava soltanto in un piano con geometrie:
+        // una CTE `[ｅ]` su SQL Server prendeva il posto della tabella `e` per
+        // il server, e il giudizio guardava i tipi della tabella.
+        if state.seen.ambiguous {
+            return Err(ambiguous_refusal(provider));
+        }
         if let Some(mismatch) = state.typing.mismatch.take() {
             return Err(mismatch);
         }
@@ -1341,7 +1359,7 @@ impl<'a> Walk<'a, '_> {
             }
         }
         let operation = block.operation;
-        if refers_forward(&operation.common_table_expressions) {
+        if refers_forward(self.provider, &operation.common_table_expressions) {
             return refused();
         }
         let sources = operation.source.iter().chain(
@@ -1350,11 +1368,19 @@ impl<'a> Walk<'a, '_> {
                 .iter()
                 .filter_map(|join| join.source.as_ref()),
         );
+        // Una relazione senza schema si lega a una CTE visibile soltanto se
+        // ogni CTE che il server potrebbe legarle ha il suo nome per byte
+        // ([`may_bind`]): il giudizio lega per byte, il server con le sue
+        // regole. Fino alla sedicesima lettura del 25/10 si guardavano
+        // soltanto le maiuscole: su SQL Server una CTE `[ｅ]` (larghezza),
+        // `[é]` (`CI_AI`) e su Db2 `"r16e "` (spazi finali) prendevano il
+        // posto della tabella `e` o `r16e` per il server, non per il giudizio.
         for source in sources {
             let object = &source.object;
             if object.schema.is_none()
+                && object.catalog.is_none()
                 && block.visible.iter().any(|cte| {
-                    NameRule::Exact.compare(&object.object, &cte.name) == NameMatch::CaseOnly
+                    cte.name != object.object && may_bind(self.provider, &object.object, &cte.name)
                 })
             {
                 return refused();
@@ -1894,10 +1920,15 @@ impl<'a> Walk<'a, '_> {
                     return vec![Candidate::Scalar];
                 };
                 match catalog.columns(schema.as_ref(), object) {
-                    // La relazione non esiste: la query fallira sul server, e
-                    // nessun valore si confronta.
-                    RelationColumns::Absent => vec![Candidate::Scalar],
-                    RelationColumns::Unknown => vec![Candidate::Unresolved],
+                    // Il catalogo non trova la relazione: il riferimento non
+                    // si lega (mondo chiuso). Fino alla sedicesima lettura
+                    // del 25/10 si assumeva che la query fallisse sul
+                    // server, ma una tabella temporanea privata di Oracle
+                    // (`ORA$PTT_*`) non e in `ALL_TAB_COLS` e il server la
+                    // legge: `N NUMBER = '01'` passava senza giudizio.
+                    RelationColumns::Absent | RelationColumns::Unknown => {
+                        vec![Candidate::Unresolved]
+                    }
                     RelationColumns::Declared(geometric) => {
                         // Dichiarate dal chiamante: un nome che incontra una
                         // colonna geometrica anche soltanto senza maiuscole
@@ -2224,7 +2255,7 @@ impl<'a> Walk<'a, '_> {
 /// ricorsiva. Il legame dipende dal dialetto (`PostgreSQL` lo lega alla
 /// tabella senza `RECURSIVE` e alla CTE con, SQL Server rifiuta il nome in
 /// avanti): la regola N lo rifiuta.
-fn refers_forward(ctes: &[CommonTableExpression]) -> bool {
+fn refers_forward(provider: ProviderKind, ctes: &[CommonTableExpression]) -> bool {
     use crate::relational::{walk_query, QueryWalkControl, QueryWalkNode};
     ctes.iter().enumerate().any(|(position, cte)| {
         let hidden = ctes
@@ -2233,8 +2264,8 @@ fn refers_forward(ctes: &[CommonTableExpression]) -> bool {
             .filter(|(other, sibling)| {
                 *other > position || (*other == position && !sibling.recursive)
             })
-            .map(|(_, sibling)| fold(&sibling.name))
-            .collect::<BTreeSet<_>>();
+            .map(|(_, sibling)| sibling.name.as_str())
+            .collect::<Vec<_>>();
         if hidden.is_empty() {
             return false;
         }
@@ -2242,13 +2273,27 @@ fn refers_forward(ctes: &[CommonTableExpression]) -> bool {
             QueryWalkNode::Source(source)
                 if source.object.schema.is_none()
                     && source.object.catalog.is_none()
-                    && hidden.contains(&fold(&source.object.object)) =>
+                    && hidden
+                        .iter()
+                        .any(|name| may_bind(provider, &source.object.object, name)) =>
             {
                 QueryWalkControl::Break
             }
             _ => QueryWalkControl::Continue,
         })
     })
+}
+
+/// Due nomi di relazione (una relazione senza schema e una CTE) che il
+/// server potrebbe legare l'uno all'altro: uguali per byte, senza maiuscole
+/// o senza spazi finali (Db2 e SQL Server ignorano gli spazi finali); dove il
+/// server confronta con una collation ([`server_resolves_names`]), anche due
+/// nomi con un carattere non ASCII (larghezza, accenti, `ß`): la collation non
+/// si emula, e i due nomi non si provano diversi.
+fn may_bind(provider: ProviderKind, left: &str, right: &str) -> bool {
+    left == right
+        || fold(left) == fold(right)
+        || (server_resolves_names(provider) && !(left.is_ascii() && right.is_ascii()))
 }
 
 /// Gli argomenti di una funzione scalare sono operandi se la funzione li

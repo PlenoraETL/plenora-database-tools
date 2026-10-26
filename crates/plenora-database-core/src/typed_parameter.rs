@@ -37,7 +37,9 @@
 //! `TO_TIMESTAMP_TZ` su Oracle, il segnaposto nudo per un `string` o un
 //! `uuid` su `MySQL` e `MariaDB` (il `CAST` gli darebbe la collation della
 //! connessione, e il confronto con una colonna di un'altra collation fallisce
-//! con 1267). In una posizione **scritta** (i valori di `INSERT`, le
+//! con 1267 o, con un altro set di caratteri, cambia collation senza errore:
+//! un `Cast` esplicito a testo si rifiuta, [`crate::cast_table::CAST_TEXT_COLLATION`]).
+//! In una posizione **scritta** (i valori di `INSERT`, le
 //! assegnazioni di `UPDATE`, le righe di un upsert) si rende il solo
 //! segnaposto: il tipo lo decide la colonna di destinazione, e il valore e
 //! gia del tipo dichiarato (su Oracle un `timestamp_tz` scritto resta in
@@ -201,10 +203,14 @@ impl CastDialect {
     #[must_use]
     pub fn render(self, placeholder: &str, parameter_type: QueryParameterType) -> String {
         // Su `MySQL` e `MariaDB` il `CAST` di un testo gli da la collation
-        // della connessione con coercibilita implicita, come la colonna: con
-        // due collation diverse il confronto fallisce (1267, misurato il
-        // 25/10 su 9.7.2). Il valore e gia un testo (regola T): il segnaposto
-        // nudo confronta con la collation della colonna, senza conversioni.
+        // della connessione con coercibilita implicita, come la colonna. Il
+        // confronto non sempre fallisce (1267): con un set di caratteri
+        // diverso il server converte verso Unicode e confronta con la
+        // collation della connessione, e rende righe diverse senza errore
+        // (sedicesima lettura del 25/10; per questo un `Cast` esplicito a
+        // testo si rifiuta, `cast_table::cast_changes_collation`). Il valore
+        // e gia un testo (regola T): il segnaposto nudo e coercibile, e il
+        // confronto usa la collation della colonna, senza conversioni.
         if self == Self::Mysql
             && matches!(
                 parameter_type,

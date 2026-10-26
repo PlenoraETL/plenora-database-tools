@@ -11435,3 +11435,137 @@ async fn live_i_nomi_li_lega_il_server_con_la_collation() {
         .await
         .expect("pulizia CI_AI");
 }
+
+/// Sedicesima lettura del 25/10 su SQL Server (`CI_AS`, senza `_WS`).
+///
+/// - **Regola N in ogni piano.** Una CTE `[ｒ16ｅ]` (larghezza) o `[R16E]`
+///   prende il posto della tabella `r16e` per il server (misurato qui: la
+///   query legge la CTE). Il giudizio legava per byte la tabella, dove `n` e
+///   un testo, e ammetteva `x.n = '01'`; il server confrontava l'intero della
+///   CTE e rendeva una riga per conversione implicita. Su c0f82ba passava; ora
+///   si rifiuta (`AMBIGUOUS_NAME_SHAPE`), e la CTE con il nome uguale per byte
+///   si giudica come la lega il server.
+/// - **Regola C, la tabella rimisurata.** `CAST(c AS NVARCHAR(MAX))` tiene
+///   la collation della colonna (`Latin1_General_CS_AS` distingue `'A'` da
+///   `'a'` anche sotto il `CAST`): il `CAST` a testo non si rifiuta qui.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "richiede SQL Server live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_rilettura_sedici_cte_e_collation_del_cast() {
+    use plenora_database_core::relational::QueryOperation;
+    use plenora_database_core::spatial_operand::{AMBIGUOUS_NAME_SHAPE, OPERAND_FAMILY_MISMATCH};
+    use serde_json::json;
+
+    let cancellation = CancellationToken::new();
+    let config = live_config(CertificatePolicy::TrustServerCertificate);
+    let cleanup = "DROP TABLE IF EXISTS [dbo].[r16e];";
+    let mut admin = SqlServerSession::open(&config, &cancellation)
+        .await
+        .expect("sessione di setup");
+    admin
+        .execute_query(
+            Query::new(format!(
+                "IF CAST(DATABASEPROPERTYEX(DB_NAME(), 'Collation') AS nvarchar(128)) \
+                     LIKE N'%[_]WS%' THROW 50001, N'database sensibile alla larghezza', 1; \
+                 {cleanup} \
+                 CREATE TABLE [dbo].[r16e] ([id] int NOT NULL PRIMARY KEY, \
+                     [n] nvarchar(10) NOT NULL, \
+                     [c] nvarchar(10) COLLATE Latin1_General_CS_AS NOT NULL); \
+                 INSERT INTO [dbo].[r16e] VALUES (1, N'1', N'A'), (2, N'2', N'a');"
+            )),
+            ErrorPhase::Write,
+            &cancellation,
+        )
+        .await
+        .expect("fixture");
+    for cte in ["ｒ16ｅ", "R16E"] {
+        let mut query = Query::new(format!(
+            "WITH [{cte}] AS (SELECT [id], [id] AS [n] FROM [dbo].[r16e]) \
+             SELECT [x].[id] FROM [r16e] AS [x] WHERE [x].[n] = @P1;"
+        ));
+        query.bind("01");
+        let found = admin
+            .execute_query(query, ErrorPhase::Read, &cancellation)
+            .await
+            .expect("CTE")
+            .iter()
+            .flatten()
+            .map(|row| row.try_get::<i32, _>(0).unwrap().expect("id"))
+            .collect::<Vec<_>>();
+        assert_eq!(found, vec![1], "{cte}: il server lega la CTE");
+    }
+    let mut cast =
+        Query::new("SELECT COUNT(*) FROM [dbo].[r16e] WHERE CAST([c] AS NVARCHAR(MAX)) = @P1;");
+    cast.bind("a");
+    let kept = admin
+        .execute_query(cast, ErrorPhase::Read, &cancellation)
+        .await
+        .expect("CAST a testo");
+    assert_eq!(
+        kept[0][0].try_get::<i32, _>(0).unwrap(),
+        Some(1),
+        "il CAST tiene la collation della colonna"
+    );
+
+    let plan = |cte: &str| -> QueryOperation {
+        serde_json::from_value(json!({
+            "common_table_expressions": [{"name": cte, "query": {
+                "source": {"object": {"catalog": null, "schema": "dbo", "object": "r16e"}, "alias": "y"},
+                "projection": [
+                    {"expression": {"kind": "column", "column": {"relation": "y", "field": "id"}}, "alias": "id"},
+                    {"expression": {"kind": "column", "column": {"relation": "y", "field": "id"}}, "alias": "n"}
+                ],
+                "filter": null, "having": null, "row_limit": null
+            }}],
+            "source": {"object": {"catalog": null, "schema": null, "object": "r16e"}, "alias": "x"},
+            "projection": [{"expression": {"kind": "column", "column": {"relation": "x", "field": "id"}}, "alias": "id"}],
+            "filter": {"kind": "compare", "operator": "eq",
+                "left": {"kind": "column", "column": {"relation": "x", "field": "n"}},
+                "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}},
+            "having": null, "row_limit": null
+        }))
+        .expect("piano")
+    };
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let provider = SqlServerProvider::new(config.clone(), 1024, 4).expect("provider");
+    let parameters = ParameterBag::new(BTreeMap::from([(
+        "p".to_owned(),
+        ParameterValue::String("01".to_owned()),
+    )]));
+    let mut outcomes = Vec::new();
+    for cte in ["ｒ16ｅ", "R16E", "r16e"] {
+        let outcome = async {
+            let mut stream = provider
+                .query(
+                    &live_secret(),
+                    &plan(cte),
+                    &parameters,
+                    &budget,
+                    &cancellation,
+                )
+                .await?;
+            let mut total = 0;
+            while let Some(batch) = stream.next_batch(&cancellation).await? {
+                total += batch.num_rows();
+            }
+            plenora_database_core::Result::Ok(total)
+        }
+        .await;
+        outcomes.push((cte, outcome));
+    }
+    for (cte, outcome) in outcomes {
+        let error = outcome.expect_err(cte);
+        // La CTE con il nome uguale per byte: il giudizio la lega come il
+        // server, e l'intero contro un testo si rifiuta (regola F).
+        let expected = if cte == "r16e" {
+            OPERAND_FAMILY_MISMATCH
+        } else {
+            AMBIGUOUS_NAME_SHAPE
+        };
+        assert_eq!(error.message, expected, "{cte}: {error:?}");
+    }
+    admin
+        .execute_query(Query::new(cleanup), ErrorPhase::Write, &cancellation)
+        .await
+        .expect("pulizia");
+}

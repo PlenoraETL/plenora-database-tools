@@ -1427,3 +1427,90 @@ async fn live_rilettura_quindici_cast_e_nomi() {
         .await
         .expect("pulizia");
 }
+
+/// Sedicesima lettura del 25/10 sul Db2 reale, regola N in ogni piano: Db2
+/// ignora gli spazi finali dei nomi, e una CTE `"R16E "` prende il posto della
+/// tabella `R16E` per il server (misurato qui: la query legge la CTE). Il
+/// giudizio legava per byte la tabella, dove `N` e un testo, e ammetteva
+/// `X.N = '01'`; il server confrontava l'intero della CTE e rendeva una riga
+/// per conversione implicita. Su c0f82ba passava; ora si rifiuta
+/// (`AMBIGUOUS_NAME_SHAPE`).
+#[tokio::test]
+#[ignore = "richiede Db2 live esplicito"]
+async fn live_rilettura_sedici_cte_con_spazi_finali() {
+    use plenora_database_core::spatial_operand::AMBIGUOUS_NAME_SHAPE;
+    let provider = provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    // `PLENORA.R16E` e il corpo della CTE; `R16E` senza schema e la tabella
+    // dello schema corrente, che il giudizio legava.
+    for sql in ["DROP TABLE PLENORA.R16E", "DROP TABLE R16E"] {
+        let _ = provider.run_ddl(&secret, sql, &cancellation).await;
+    }
+    for sql in [
+        "CREATE TABLE PLENORA.R16E (ID INTEGER NOT NULL PRIMARY KEY)",
+        "INSERT INTO PLENORA.R16E VALUES (1), (2)",
+        "CREATE TABLE R16E (ID INTEGER NOT NULL PRIMARY KEY, N VARCHAR(10) NOT NULL)",
+        "INSERT INTO R16E VALUES (1, '1'), (2, '2')",
+    ] {
+        provider
+            .run_ddl(&secret, sql, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("preparazione Db2: {error}"));
+    }
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let silent = transaction
+        .query(
+            &Statement::new(
+                "WITH \"R16E \" AS (SELECT ID, ID AS N FROM PLENORA.R16E) \
+                 SELECT X.ID FROM \"R16E\" X WHERE X.N = ?",
+            )
+            .with_params(vec![ParameterValue::String("01".to_owned())]),
+            &cancellation,
+        )
+        .await
+        .expect("la CTE con lo spazio finale");
+    assert_eq!(
+        identificativi(&silent),
+        vec!["1".to_owned()],
+        "il server lega la CTE"
+    );
+    let _ = transaction.rollback(&cancellation).await;
+    let plan = json!({
+        "common_table_expressions": [{"name": "R16E ", "query": su(Some("PLENORA"), "R16E", &json!({
+            "projection": [
+                {"expression": colonna("T", "ID"), "alias": "ID"},
+                {"expression": colonna("T", "ID"), "alias": "N"}
+            ]
+        }))}],
+        "source": {"object": {"catalog": null, "schema": null, "object": "R16E"}, "alias": "X"},
+        "projection": [{"expression": colonna("X", "ID"), "alias": "ID"}],
+        "filter": {"kind": "compare", "operator": "eq", "left": colonna("X", "N"),
+            "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}},
+        "having": null, "row_limit": null
+    });
+    let (sql, judged, _) = esegui(
+        &provider,
+        &secret,
+        &plan,
+        Some(&[ParameterValue::String("01".to_owned())]),
+        &cancellation,
+    )
+    .await;
+    let error = judged.expect_err(&sql);
+    assert_eq!(error.message, AMBIGUOUS_NAME_SHAPE, "{sql}: {error:?}");
+    for sql in ["DROP TABLE PLENORA.R16E", "DROP TABLE R16E"] {
+        provider
+            .run_ddl(&secret, sql, &cancellation)
+            .await
+            .expect("pulizia");
+    }
+}

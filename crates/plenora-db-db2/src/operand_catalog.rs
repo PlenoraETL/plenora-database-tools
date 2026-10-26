@@ -290,8 +290,9 @@ fn relation_columns(
             found => found,
         };
         let Some(found) = found else {
-            // Il nome del piano non c'e: la query fallira sul server. La base
-            // di un alias che non c'e non si conosce.
+            // Il nome del piano non c'e nel catalogo: i riferimenti non si
+            // legano (il core li rifiuta). La base di un alias che non c'e non
+            // si conosce.
             return Ok(if first {
                 RelationColumns::Absent
             } else {

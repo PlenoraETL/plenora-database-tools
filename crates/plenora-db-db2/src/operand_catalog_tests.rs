@@ -10,7 +10,7 @@ use crate::operand_catalog::{
 };
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::relational::QueryOperation;
-use plenora_database_core::spatial_operand::scalar_operands;
+use plenora_database_core::spatial_operand::{scalar_operands, NAME_UNRESOLVED};
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::Result;
 use std::collections::BTreeMap;
@@ -343,17 +343,22 @@ fn senza_schema_vale_current_schema_poi_l_alias_pubblico() {
         &[("ID", "SYSIBM", "INTEGER"), ("G", "SYSIBM", "BLOB")],
     );
     assert_eq!(giudizio(&mut finto, None, "T", "G"), Ok(()));
-    // Con lo schema esplicito l'alias pubblico non vale.
-    assert_eq!(giudizio(&mut finto, Some("NESSUNO"), "T", "G"), Ok(()));
+    // Con lo schema esplicito l'alias pubblico non vale: la relazione e
+    // assente, e il riferimento non si lega.
+    assert_eq!(
+        giudizio(&mut finto, Some("NESSUNO"), "T", "G"),
+        Err(NAME_UNRESOLVED.to_owned())
+    );
 }
 
 #[test]
-fn una_relazione_assente_non_ha_geometrie_e_session_non_si_conosce() {
+fn una_relazione_assente_non_lega_e_session_non_si_conosce() {
     let mut finto = base();
-    // Assente: la query fallira sul server; il piano non ha geometrie.
+    // Assente: il riferimento non si lega (sedicesima lettura del 25/10: fino
+    // ad allora si assumeva che la query fallisse sul server).
     assert_eq!(
         giudizio(&mut finto, Some("PLENORA"), "ASSENTE", "G"),
-        Ok(())
+        Err(NAME_UNRESOLVED.to_owned())
     );
     // SESSION: una tabella temporanea dichiarata, che SYSCAT non descrive.
     finto.table("SESSION", "T", &[("ID", "SYSIBM", "INTEGER")]);
@@ -441,8 +446,11 @@ fn i_nomi_si_confrontano_per_byte() {
     // Un nome del piano che incontra la colonna soltanto senza maiuscole.
     assert!(giudizio(&mut finto, Some("PLENORA"), "T", "id").is_err());
     assert!(giudizio(&mut finto, Some("PLENORA"), "T", "g").is_err());
-    // Una relazione nominata in minuscolo e un'altra relazione.
-    assert_eq!(giudizio(&mut finto, Some("plenora"), "T", "G"), Ok(()));
+    // Una relazione nominata in minuscolo e un'altra relazione, assente.
+    assert_eq!(
+        giudizio(&mut finto, Some("plenora"), "T", "G"),
+        Err(NAME_UNRESOLVED.to_owned())
+    );
 }
 
 #[test]

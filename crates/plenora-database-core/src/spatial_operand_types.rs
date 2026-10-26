@@ -885,7 +885,15 @@ impl<'a> Walk<'a, '_> {
             target_type,
         } = expression
         {
-            if self.parameters.values_known() {
+            // Un `CAST` a testo su `MySQL` e `MariaDB` cambia la collation del
+            // confronto: si rifiuta senza guardare l'operando, anche senza
+            // valori (sedicesima lettura del 25/10).
+            if crate::cast_table::cast_changes_collation(self.provider, *target_type) {
+                let provider = self.provider;
+                self.typing
+                    .cast
+                    .get_or_insert_with(|| crate::cast_table::text_cast_refusal(provider));
+            } else if self.parameters.values_known() {
                 let target = crate::cast_table::rendered_target(self.provider, *target_type);
                 self.cast_progress.clear();
                 if !self.cast_exact(inner, &target, index, 0)? {

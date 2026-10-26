@@ -525,7 +525,7 @@ pub async fn verify_query_columns(
 /// rifiuto e lo stesso degli altri provider, prima della query. Il tipo si
 /// riconosce per nome e non con `'geometry'::regtype`, che senza `PostGIS`
 /// farebbe fallire ogni query. Una relazione che `to_regclass` non trova e
-/// assente: la query fallira sul server.
+/// assente: i suoi riferimenti non si legano, e si rifiutano.
 ///
 /// Con le famiglie dei valori legati (`parameters`) giudica anche la regola F
 /// (nessuna conversione implicita fra famiglie di tipo).

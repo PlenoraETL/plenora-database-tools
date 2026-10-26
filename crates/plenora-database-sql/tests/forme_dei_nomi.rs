@@ -301,11 +301,13 @@ fn ogni_forma_di_nomi_ambigua_si_rifiuta_sul_catalogo_su_ogni_dialetto() {
     }
 }
 
-/// Le stesse forme su relazioni senza geometrie restano ammesse, rendendo e
-/// sul catalogo: la regola N vale soltanto per i piani che possono
-/// contenere geometrie. Su d9894ef si rifiutavano su ogni dialetto.
+/// Le stesse forme su relazioni senza geometrie si rendono (senza catalogo la
+/// regola N vale soltanto con un nodo spatial) e si rifiutano sul catalogo:
+/// la regola N vale in ogni piano giudicato (sedicesima lettura del 25/10;
+/// fino ad allora restavano ammesse, e il legame del nome decideva i tipi
+/// delle regole F e C).
 #[test]
-fn le_forme_di_nomi_senza_geometrie_restano_ammesse() {
+fn le_forme_di_nomi_senza_geometrie_si_rendono_e_si_rifiutano_sul_catalogo() {
     let ammesse = [
         (
             "SELECT t.id, u.id",
@@ -372,38 +374,36 @@ fn le_forme_di_nomi_senza_geometrie_restano_ammesse() {
             let outcome = scalar_operands(prodotto, operation).and_then(|operands| {
                 operands.judge(&come_il_server(&operands, catalogo(prodotto)))
             });
-            // Regola A (quindicesima lettura del 25/10): su SQL Server `K` e
-            // `k` sono lo stesso nome o due secondo la collation, e il nome
-            // non si lega anche senza geometrie.
             // Dove ogni identificatore e quotato `t.NAME` non nomina `name`:
             // il server rifiuterebbe la query, il giudizio la rifiuta prima.
+            // Dove il server lega i nomi (regola A) la colonna e `name`.
             let quotato = matches!(
                 prodotto,
                 ProviderKind::Postgres | ProviderKind::Oracle | ProviderKind::Db2
             );
-            // `MySQL` e `MariaDB` uguagliano `k` e `K`: `ORDER BY K` ordina un
-            // binario e un testo.
-            if matches!(prodotto, ProviderKind::Mysql | ProviderKind::Mariadb)
-                && forma.starts_with("alias k e K")
-            {
-                let error = outcome.expect_err(forma);
-                assert_eq!(
-                    error.message,
-                    plenora_database_core::spatial_operand::OPERAND_FAMILY_MISMATCH
-                );
+            if forma.starts_with("colonna NAME") {
+                if quotato {
+                    let error = outcome.expect_err(forma);
+                    assert_eq!(
+                        error.message,
+                        plenora_database_core::spatial_operand::NAME_UNRESOLVED
+                    );
+                    continue;
+                }
+                outcome.unwrap_or_else(|error| panic!("{prodotto:?} {forma}: {error:?}"));
                 continue;
             }
-            if (prodotto == ProviderKind::Sqlserver && forma.starts_with("alias k e K"))
-                || (quotato && forma.starts_with("colonna NAME"))
+            // Regola A (quindicesima lettura del 25/10): su SQL Server `K` e
+            // `k` sono lo stesso nome o due secondo la collation, e il nome
+            // non si lega; ogni altra forma e della regola N.
+            let atteso = if prodotto == ProviderKind::Sqlserver && forma.starts_with("alias k e K")
             {
-                let error = outcome.expect_err(forma);
-                assert_eq!(
-                    error.message,
-                    plenora_database_core::spatial_operand::NAME_UNRESOLVED
-                );
-                continue;
-            }
-            outcome.unwrap_or_else(|error| panic!("{prodotto:?} {forma}: {error:?}"));
+                plenora_database_core::spatial_operand::NAME_UNRESOLVED
+            } else {
+                AMBIGUOUS_NAME_SHAPE
+            };
+            let error = outcome.expect_err(forma);
+            assert_eq!(error.message, atteso, "{prodotto:?} {forma}");
         }
     }
 }

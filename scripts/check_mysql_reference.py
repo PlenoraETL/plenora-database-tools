@@ -305,6 +305,7 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_text_columns_compared_with_binary_values_are_refused",
     "live_tests::live_typed_parameters_refuse_values_of_another_type",
     "live_tests::live_rilettura_quindici_fuso_uuid_nomi_e_cast",
+    "live_tests::live_rilettura_sedici_cast_a_testo_e_collation",
     "live_tests::live_native_query_policy_allow_permits_ddl",
     "live_tests::live_native_query_policy_deny_rejects_conditional_update_ddl",
     "live_tests::live_native_query_policy_deny_rejects_ddl",

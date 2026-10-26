@@ -1467,7 +1467,7 @@ ELSE SELECT CAST(NULL AS int), CAST(NULL AS nvarchar(128)) WHERE 1 = 0;"
 
 /// Le colonne di una relazione (`@P1` schema, vuoto se assente; `@P2`
 /// oggetto) nell'ordine di `column_id`, con lo stato: `known`, `absent`
-/// (`OBJECT_ID` non la trova: la query fallira sul server) o `unknown` (un
+/// (`OBJECT_ID` non la trova: i riferimenti non si legano) o `unknown` (un
 /// sinonimo verso un altro database o un oggetto che non si risolve). Una
 /// colonna e geometrica se il suo tipo e `geometry` o `geography`: un alias
 /// di tipo su `geometry` il server non lo ammette («not a valid base type for

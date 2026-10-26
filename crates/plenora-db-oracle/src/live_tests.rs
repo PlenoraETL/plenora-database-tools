@@ -4058,3 +4058,107 @@ async fn live_rilettura_quindici_cast_e_nomi() {
         .execute_ddl(&secret, "DROP TABLE R15_T PURGE", &cancellation)
         .await;
 }
+
+/// Sedicesima lettura del 25/10 sull'Oracle reale, mondo chiuso: una tabella
+/// temporanea privata (`ORA$PTT_*`) non e in `ALL_TAB_COLS`, ma il server la
+/// legge nella sessione che l'ha creata.
+///
+/// `N NUMBER = '01'` rende la riga per conversione implicita (misurato qui).
+/// Su c0f82ba il catalogo la diceva assente (`RelationColumns::Absent`), il
+/// riferimento si assumeva scalare e il piano passava senza la regola F; ora
+/// un riferimento a una relazione assente non si lega e si rifiuta in ogni
+/// piano (`NAME_UNRESOLVED`).
+#[tokio::test]
+#[ignore = "richiede Oracle live esplicito"]
+async fn live_rilettura_sedici_tabella_temporanea_privata() {
+    use plenora_database_core::facade::query_judged;
+    use plenora_database_core::spatial_operand::{OperandPlan, NAME_UNRESOLVED};
+    use serde_json::json;
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    for sql in [
+        "CREATE PRIVATE TEMPORARY TABLE ORA$PTT_R16 (ID NUMBER(10), N NUMBER(10)) \
+         ON COMMIT PRESERVE DEFINITION",
+        "INSERT INTO ORA$PTT_R16 VALUES (1, 1)",
+    ] {
+        tx.execute(&Statement::new(sql), &cancellation)
+            .await
+            .expect("tabella temporanea privata");
+    }
+    let catalogo = tx
+        .query(
+            &Statement::new(
+                "SELECT COUNT(*) AS ID FROM ALL_TAB_COLS WHERE TABLE_NAME = 'ORA$PTT_R16'",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("ALL_TAB_COLS");
+    assert_eq!(
+        guard_ids(&catalogo),
+        vec!["0".to_owned()],
+        "fuori dal catalogo"
+    );
+    let silent = tx
+        .query(
+            &Statement::new("SELECT ID FROM ORA$PTT_R16 WHERE N = :1")
+                .with_params(vec![ParameterValue::String("01".to_owned())]),
+            &cancellation,
+        )
+        .await
+        .expect("senza giudizio");
+    assert_eq!(
+        guard_ids(&silent),
+        vec!["1".to_owned()],
+        "conversione implicita"
+    );
+    let operation: QueryOperation = serde_json::from_value(json!({
+        "source": {"object": {"catalog": null, "schema": "PLENORA", "object": "ORA$PTT_R16"}, "alias": "t"},
+        "projection": [{"expression": {"kind": "column", "column": {"relation": "t", "field": "ID"}}, "alias": "ID"}],
+        "filter": {"kind": "compare", "operator": "eq",
+            "left": {"kind": "column", "column": {"relation": "t", "field": "N"}},
+            "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}},
+        "having": null, "row_limit": null
+    }))
+    .expect("piano");
+    let renderer = Renderer::new(
+        Dialect::Oracle,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+    .with_provider(ProviderKind::Oracle);
+    let resa = renderer.render_query(&operation).expect("resa");
+    let names = resa
+        .binds
+        .iter()
+        .map(|bind| bind.name.clone())
+        .collect::<Vec<_>>();
+    let error = query_judged(
+        tx.as_mut(),
+        &Statement::new(resa.sql.clone())
+            .with_params(vec![ParameterValue::String("01".to_owned()); names.len()]),
+        Some(&OperandPlan::Query(&operation)),
+        &names,
+        &cancellation,
+    )
+    .await
+    .expect_err("N = testo su una tabella temporanea privata");
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::InvalidPlan,
+        "{error:?}"
+    );
+    assert_eq!(error.message, NAME_UNRESOLVED, "{error:?}");
+    let _ = tx.rollback(&cancellation).await;
+}

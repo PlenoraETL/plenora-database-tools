@@ -3150,6 +3150,31 @@ async fn live_rilettura_quindici_cast_altra_e_nomi() {
         vec![1],
         "il CAST arrotonda il float8 e ritrova la riga"
     );
+    // Il `CAST` a testo tiene la collation della colonna (sedicesima lettura
+    // del 25/10; su `MySQL` e `MariaDB` no, e si rifiuta): una collation non
+    // deterministica uguaglia `'A'` e `'a'` anche sotto il `CAST`.
+    client
+        .batch_execute(
+            "CREATE COLLATION IF NOT EXISTS public.plenora_r16_ci
+                 (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+             CREATE TEMP TABLE plenora_r16_c (c text COLLATE public.plenora_r16_ci);
+             INSERT INTO plenora_r16_c VALUES ('A'), ('a');",
+        )
+        .await
+        .expect("collation non deterministica");
+    let kept: i64 = client
+        .query_one(
+            "SELECT count(*) FROM plenora_r16_c WHERE CAST(c AS TEXT) = $1",
+            &[&"a"],
+        )
+        .await
+        .expect("CAST a testo")
+        .get(0);
+    assert_eq!(kept, 2, "il CAST tiene la collation della colonna");
+    client
+        .batch_execute("DROP TABLE plenora_r16_c; DROP COLLATION public.plenora_r16_ci;")
+        .await
+        .expect("pulizia collation");
 
     let column =
         |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});

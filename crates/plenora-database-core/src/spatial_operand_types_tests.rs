@@ -352,8 +352,20 @@ fn i_confronti_dentro_una_famiglia_sono_ammessi() {
     ];
     for prodotto in PRODOTTI {
         for (form, extra) in &cases {
-            giudica(prodotto, &piano("f", extra))
-                .unwrap_or_else(|error| panic!("{prodotto:?} {form}: {error:?}"));
+            let outcome = giudica(prodotto, &piano("f", extra));
+            // Su `MySQL` e `MariaDB` un `CAST` a testo cambia la collation.
+            if form.starts_with("CAST a testo")
+                && matches!(prodotto, ProviderKind::Mysql | ProviderKind::Mariadb)
+            {
+                let error = outcome.expect_err(form);
+                assert_eq!(
+                    error.message,
+                    crate::cast_table::CAST_TEXT_COLLATION,
+                    "{prodotto:?} {form}"
+                );
+                continue;
+            }
+            outcome.unwrap_or_else(|error| panic!("{prodotto:?} {form}: {error:?}"));
         }
     }
 }
@@ -827,16 +839,64 @@ fn un_cast_che_non_si_prova_esatto_si_rifiuta() {
         ] {
             let error =
                 giudica(prodotto, &piano("f", &extra)).expect_err(&format!("{prodotto:?} {form}"));
-            assert_eq!(
-                error.message,
-                crate::cast_table::CAST_NOT_EXACT,
-                "{prodotto:?} {form}"
-            );
+            let expected = if form.contains("a testo")
+                && matches!(prodotto, ProviderKind::Mysql | ProviderKind::Mariadb)
+            {
+                crate::cast_table::CAST_TEXT_COLLATION
+            } else {
+                crate::cast_table::CAST_NOT_EXACT
+            };
+            assert_eq!(error.message, expected, "{prodotto:?} {form}");
             assert_eq!(
                 error.category,
                 ErrorCategory::InvalidPlan,
                 "{prodotto:?} {form}"
             );
         }
+    }
+}
+
+/// Sedicesima lettura del 25/10: su `MySQL` e `MariaDB` un `CAST` a testo
+/// (`string` reso `CHAR`, `uuid` reso `CHAR(36)`) cambia la collation del
+/// confronto, e si rifiuta per una colonna e per un parametro, anche senza
+/// valori; sugli altri dialetti il `CAST` a testo di un testo resta.
+#[test]
+fn un_cast_a_testo_si_rifiuta_su_mysql_e_mariadb() {
+    let f = |field| colonna("f", field);
+    let forms = [
+        (
+            "CAST(colonna AS string) = testo",
+            json!({"filter": uguale(&cast(&f("name"), "string"), &parametro("s"))}),
+        ),
+        (
+            "colonna = CAST(parametro AS string)",
+            json!({"filter": uguale(&f("name"), &cast(&parametro("s"), "string"))}),
+        ),
+        (
+            "CAST(colonna AS uuid) = testo",
+            json!({"filter": uguale(&cast(&f("name"), "uuid"), &parametro("s"))}),
+        ),
+    ];
+    for prodotto in [ProviderKind::Mysql, ProviderKind::Mariadb] {
+        for (form, extra) in &forms {
+            let operation = piano("f", extra);
+            for outcome in [
+                giudica(prodotto, &operation),
+                scalar_operands(prodotto, &operation)
+                    .and_then(|operands| operands.judge(&catalogo(prodotto))),
+            ] {
+                let error = outcome.expect_err(form);
+                assert_eq!(
+                    error.message,
+                    crate::cast_table::CAST_TEXT_COLLATION,
+                    "{prodotto:?} {form}"
+                );
+                assert_eq!(error.category, ErrorCategory::InvalidPlan, "{form}");
+            }
+        }
+    }
+    for prodotto in [ProviderKind::Postgres, ProviderKind::Sqlserver] {
+        giudica(prodotto, &piano("f", &forms[1].1))
+            .unwrap_or_else(|error| panic!("{prodotto:?}: {error:?}"));
     }
 }

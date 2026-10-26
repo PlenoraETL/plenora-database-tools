@@ -19,7 +19,7 @@ use plenora_database_core::relational::{MutationOperation, QueryOperation};
 use plenora_database_core::row::Row;
 use plenora_database_core::spatial_operand::{
     CatalogColumn, OperandCatalog, OperandPlan, RelationColumns, AMBIGUOUS_NAME_SHAPE,
-    GEOMETRY_OPERAND_UNRESOLVED, NAME_UNRESOLVED, OPERAND_FAMILY_MISMATCH,
+    GEOMETRY_OPERAND_UNRESOLVED, NAME_UNRESOLVED,
 };
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::transaction::{
@@ -535,9 +535,10 @@ fn senza_catalogo_un_riferimento_si_rifiuta_dove_puo_essere_geometrico() {
     }
 }
 
-/// La regola N vale anche in esecuzione, prima di leggere il catalogo.
+/// La regola N vale anche in esecuzione, in ogni piano (sedicesima lettura
+/// del 25/10: fino ad allora soltanto con geometrie).
 #[test]
-fn la_regola_dei_nomi_vale_in_esecuzione_soltanto_con_geometrie() {
+fn la_regola_dei_nomi_vale_in_esecuzione_in_ogni_piano() {
     let alias = |object: &str| {
         query(
             object,
@@ -556,29 +557,18 @@ fn la_regola_dei_nomi_vale_in_esecuzione_soltanto_con_geometrie() {
             OperandPlan::Query(&geometrica),
             AMBIGUOUS_NAME_SHAPE,
         );
-        // Senza geometrie il legame conta per la regola F (quindicesima
-        // lettura del 25/10): dove gli identificatori sono quotati `K` e `k`
-        // sono due nomi; `MySQL` e `MariaDB` li uguagliano, e `ORDER BY K`
-        // confronta un intero e un testo; SQL Server dipende dalla collation,
-        // e il nome non si lega.
+        // Senza geometrie il legame conta per la regola F e per la regola C:
+        // la forma si rifiuta. SQL Server non lega il nome secondo la
+        // collation (regola A), e lo dice prima.
         let (outcome, eseguite) = esito(prodotto, OperandPlan::Query(&scalare));
-        match prodotto {
-            ProviderKind::Mysql | ProviderKind::Mariadb => {
-                let error = outcome.expect_err("k e K uguagliati");
-                assert_eq!(error.message, OPERAND_FAMILY_MISMATCH, "{prodotto:?}");
-                assert_eq!(eseguite, 0);
-            }
-            ProviderKind::Sqlserver => {
-                let error = outcome.expect_err("k e K secondo la collation");
-                assert_eq!(error.message, NAME_UNRESOLVED, "{prodotto:?}");
-                assert_eq!(error.category, ErrorCategory::InvalidPlan);
-                assert_eq!(eseguite, 0);
-            }
-            _ => {
-                outcome.unwrap_or_else(|error| panic!("{prodotto:?}: {error:?}"));
-                assert_eq!(eseguite, 1);
-            }
-        }
+        let error = outcome.expect_err("k e K");
+        let expected = if prodotto == ProviderKind::Sqlserver {
+            NAME_UNRESOLVED
+        } else {
+            AMBIGUOUS_NAME_SHAPE
+        };
+        assert_eq!(error.message, expected, "{prodotto:?}");
+        assert_eq!(eseguite, 0, "{prodotto:?}");
     }
 }
 
