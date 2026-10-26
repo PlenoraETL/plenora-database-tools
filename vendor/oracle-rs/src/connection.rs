@@ -3436,14 +3436,13 @@ impl Connection {
 
             if let Some(data) = data_bytes {
                 if !data.is_empty() {
-                    // Decode OSON to JSON
-                    match OsonDecoder::decode(bytes::Bytes::from(data)) {
-                        Ok(json_value) => return Ok(Value::Json(json_value)),
-                        Err(e) => {
-                            tracing::warn!("Failed to decode OSON: {}", e);
-                            return Ok(Value::Json(serde_json::Value::Null));
-                        }
-                    }
+                    // Decode OSON to JSON.
+                    //
+                    // Plenora fork: upstream logged the failure and returned
+                    // JSON null, so a document whose NUMBER cannot be read
+                    // exactly (or any undecodable document) reached the caller
+                    // as a valid null. The error now reaches the caller.
+                    return OsonDecoder::decode(bytes::Bytes::from(data)).map(Value::Json);
                 }
             }
             return Ok(Value::Json(serde_json::Value::Null));

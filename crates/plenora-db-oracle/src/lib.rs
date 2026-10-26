@@ -47,3 +47,11 @@ mod types_tests;
 #[cfg(test)]
 #[path = "live_tests.rs"]
 mod live_tests;
+
+#[cfg(test)]
+#[path = "number_oracle_tests.rs"]
+mod number_oracle_tests;
+
+#[cfg(test)]
+#[path = "number_live_tests.rs"]
+mod number_live_tests;
