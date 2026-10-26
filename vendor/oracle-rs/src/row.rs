@@ -479,10 +479,14 @@ impl<'a> RowDataDecoder<'a> {
         for (index, column) in self.columns.iter().enumerate() {
             let value = if self.is_duplicate(index) {
                 // Use value from previous row
+                // Plenora fork: a duplicate without a previous value is a
+                // protocol error, it used to become NULL.
                 previous_row
                     .and_then(|r| r.get(index))
                     .cloned()
-                    .unwrap_or(Value::Null)
+                    .ok_or_else(|| {
+                        Error::Protocol("duplicate column without a previous row".to_string())
+                    })?
             } else {
                 self.decode_column_value(buf, column)?
             };
@@ -507,7 +511,9 @@ impl<'a> RowDataDecoder<'a> {
 
         // Read the column data based on type
         match column.oracle_type {
-            OracleType::Varchar | OracleType::Char | OracleType::Long => self.decode_string(buf),
+            OracleType::Varchar | OracleType::Char | OracleType::Long => {
+                self.decode_string(buf, column)
+            }
             OracleType::Number | OracleType::BinaryInteger => self.decode_number(buf),
             OracleType::Date => self.decode_date(buf),
             OracleType::Timestamp | OracleType::TimestampLtz => self.decode_timestamp(buf, false),
@@ -518,10 +524,11 @@ impl<'a> RowDataDecoder<'a> {
             OracleType::Rowid => self.decode_rowid(buf),
             OracleType::Urowid => self.decode_urowid(buf),
             OracleType::Boolean => self.decode_boolean(buf),
-            _ => {
-                // For unsupported types, try to read as raw bytes
-                self.decode_raw(buf)
-            }
+            // Plenora fork: a type without a decoder is refused; its bytes
+            // used to come back as RAW.
+            _ => Err(Error::DataConversionError(
+                "tipo di colonna Oracle senza decoder".to_string(),
+            )),
         }
     }
 
@@ -569,14 +576,12 @@ impl<'a> RowDataDecoder<'a> {
     }
 
     /// Decode a string value
-    fn decode_string(&self, buf: &mut ReadBuffer) -> Result<Value> {
+    fn decode_string(&self, buf: &mut ReadBuffer, column: &ColumnInfo) -> Result<Value> {
         match self.read_oracle_slice(buf)? {
             None => Ok(Value::Null),
             Some(data) => {
-                let s = String::from_utf8(data).map_err(|e| {
-                    Error::DataConversionError(format!("Invalid UTF-8 in string: {}", e))
-                })?;
-                Ok(Value::String(s))
+                crate::connection::decode_column_text(&data, column.csfrm, column.charset_id)
+                    .map(Value::String)
             }
         }
     }
@@ -634,8 +639,10 @@ impl<'a> RowDataDecoder<'a> {
         match self.read_oracle_slice(buf)? {
             None => Ok(Value::Null),
             Some(data) => {
-                let f = decode_binary_float(&data);
-                Ok(Value::Float(f as f64))
+                let data: [u8; 4] = data.try_into().map_err(|_| {
+                    Error::DataConversionError("BINARY_FLOAT senza 4 byte".to_string())
+                })?;
+                Ok(Value::Float(f64::from(decode_binary_float(&data))))
             }
         }
     }
@@ -645,8 +652,10 @@ impl<'a> RowDataDecoder<'a> {
         match self.read_oracle_slice(buf)? {
             None => Ok(Value::Null),
             Some(data) => {
-                let f = decode_binary_double(&data);
-                Ok(Value::Float(f))
+                let data: [u8; 8] = data.try_into().map_err(|_| {
+                    Error::DataConversionError("BINARY_DOUBLE senza 8 byte".to_string())
+                })?;
+                Ok(Value::Float(decode_binary_double(&data)))
             }
         }
     }
@@ -688,7 +697,9 @@ impl<'a> RowDataDecoder<'a> {
                     Ok(Value::RowId(rowid))
                 } else {
                     // Logical ROWID - return as string (base64 encoded)
-                    let s = String::from_utf8_lossy(&data[1..]).to_string();
+                    let s = String::from_utf8(data[1..].to_vec()).map_err(|_| {
+                        Error::DataConversionError("ROWID logico Oracle non UTF-8".to_string())
+                    })?;
                     Ok(Value::String(s))
                 }
             }
@@ -700,9 +711,15 @@ impl<'a> RowDataDecoder<'a> {
         match self.read_oracle_slice(buf)? {
             None => Ok(Value::Null),
             Some(data) => {
-                // Boolean is typically the last byte being 1 (true) or 0 (false)
-                let b = data.last().copied().unwrap_or(0) == 1;
-                Ok(Value::Boolean(b))
+                // Plenora fork: as in `Connection::parse_column_value`, a
+                // last byte other than 0 or 1 is refused (it read as false).
+                match data.last() {
+                    Some(1) => Ok(Value::Boolean(true)),
+                    Some(0) => Ok(Value::Boolean(false)),
+                    _ => Err(Error::DataConversionError(
+                        "BOOLEAN Oracle non decodificabile".to_string(),
+                    )),
+                }
             }
         }
     }
@@ -842,6 +859,7 @@ mod tests {
             scale: 0,
             nullable: true,
             csfrm: 0,
+            charset_id: 0,
             type_schema: None,
             type_name: None,
             domain_schema: None,

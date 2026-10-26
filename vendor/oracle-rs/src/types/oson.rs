@@ -54,7 +54,185 @@ const TYPE_BINARY_FLOAT: u8 = 0x7f;
 const TYPE_OBJECT: u8 = 0x84;
 const TYPE_ARRAY: u8 = 0xc0;
 const TYPE_EXTENDED: u8 = 0x7b;
-const TYPE_VECTOR: u8 = 0x01;
+
+// Plenora fork, declared limits of the OSON codec (rule: a JSON value
+// either round-trips exactly or is refused with an error):
+// - encoder: field names up to 255 bytes (OSON version 1) and up to 65535
+//   distinct names; nesting up to `OSON_MAX_DEPTH`. Scope: JSON binds.
+//   Hazard: the upstream encoder truncated names, counts and ids with `as`.
+//   Re-entry: the version 3 long-name segment, proved against the server.
+// - decoder: scalars render as `JSON_SERIALIZE` writes them (dates and
+//   timestamps as text, RAW as upper-case hex, ids as lower-case hex), so a
+//   binary scalar reads as the same text a JSON client sees; INTERVAL,
+//   VECTOR and a TIMESTAMP WITH TIME ZONE before 1582-10-16 are refused, as
+//   is a NUMBER no i64, u64 or f64 represents exactly. Scope: JSON reads.
+//   Re-entry: typed JSON values in the provider (serde_json without
+//   arbitrary precision cannot carry them).
+// - decoder, BINARY_FLOAT: deviation from the `JSON_SERIALIZE` rendering.
+//   Rule: the library returns the exact stored f32 widened to f64 (lossless).
+//   Scope: BINARY_FLOAT scalars inside JSON reads. Hazard: the text differs
+//   from `JSON_SERIALIZE`, whose float rendering is neither the shortest nor
+//   the exact decimal (stored 123456792 is written 123456792, stored
+//   1.401298464324817e-45 is written 1.4E-45, stored 0.1f32 is written 0.1):
+//   no rule reproduces it, and the shortest f32 decimal (round 2) changed
+//   the value (123456790, 1e-45). A client comparing text with the server's
+//   serialization sees a different string for the same value. Re-entry: a
+//   documented Oracle rendering algorithm, proved on every f32.
+
+/// Plenora fork: deepest nesting of objects and arrays the codec accepts in
+/// either direction. Both directions recurse; past this depth a document is
+/// refused instead of overflowing the stack. 127 is the deepest nesting
+/// serde_json parses from text (its recursion limit of 128 refuses 128
+/// nested containers, measured), so what this codec accepts is exactly what
+/// a JSON text can carry through Plenora, and it keeps a debug build inside
+/// a 2 MiB thread stack (measured: the decoder overflowed it between 200 and
+/// 400 levels).
+pub const OSON_MAX_DEPTH: usize = 127;
+
+/// Plenora fork: longest field name the encoder writes (OSON version 1, one
+/// length byte). Longer names need the version 3 long-name segment, which the
+/// encoder does not write: they are refused.
+pub const OSON_MAX_FIELD_NAME_BYTES: usize = 255;
+
+/// Plenora fork: most distinct field names the encoder writes (two-byte
+/// field ids). More are refused.
+pub const OSON_MAX_FIELD_NAMES: usize = 65535;
+
+fn oson_error(message: &str) -> Error {
+    Error::DataConversionError(message.to_string())
+}
+
+/// Plenora fork: render an Oracle DATE or TIMESTAMP found inside OSON with
+/// every digit it carries (the upstream decoder truncated nanoseconds to
+/// microseconds and underflowed on a zero time byte).
+fn render_oson_datetime(bytes: &[u8]) -> Result<String> {
+    let date = super::date::decode_oracle_date(
+        bytes
+            .get(..7)
+            .ok_or_else(|| oson_error("invalid OSON date bytes"))?,
+    )?;
+    let base = render_fields(
+        date.year,
+        date.month,
+        date.day,
+        date.hour,
+        date.minute,
+        date.second,
+    );
+    match bytes.len() {
+        7 => Ok(base),
+        11 => Ok(format!("{}{}", base, render_fraction(&bytes[7..11])?)),
+        _ => Err(oson_error("invalid OSON timestamp bytes")),
+    }
+}
+
+/// `YYYY-MM-DDTHH:MI:SS` as `JSON_SERIALIZE` writes it, with a signed
+/// four-digit year before Christ (`-0044`, where `{:04}` gives `-044`).
+fn render_fields(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> String {
+    let year = if year < 0 {
+        format!("-{:04}", year.unsigned_abs())
+    } else {
+        format!("{:04}", year)
+    };
+    format!(
+        "{}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        year, month, day, hour, minute, second
+    )
+}
+
+/// The fraction of a TIMESTAMP as `JSON_SERIALIZE` writes it: six digits,
+/// nine when the value carries nanoseconds.
+fn render_fraction(bytes: &[u8]) -> Result<String> {
+    let bytes: [u8; 4] = bytes
+        .try_into()
+        .map_err(|_| oson_error("invalid OSON timestamp fraction"))?;
+    let nanos = u32::from_be_bytes(bytes);
+    if nanos >= 1_000_000_000 {
+        return Err(oson_error("invalid OSON timestamp fraction"));
+    }
+    if nanos % 1000 == 0 {
+        Ok(format!(".{:06}", nanos / 1000))
+    } else {
+        Ok(format!(".{:09}", nanos))
+    }
+}
+
+/// Plenora fork: a TIMESTAMP WITH TIME ZONE inside OSON, rendered as
+/// `JSON_SERIALIZE` does: the local time and the offset. The bytes carry the
+/// UTC instant; the local fields are computed with chrono, whose proleptic
+/// Gregorian calendar is Oracle's only from 1582-10-15, so an earlier instant
+/// (with a day of margin for the offset) is refused, as is a region id. The
+/// upstream decoder dropped the offset and printed the UTC fields as a local
+/// time.
+fn render_oson_timestamp_tz(bytes: &[u8]) -> Result<String> {
+    use chrono::{Datelike, Timelike};
+    let invalid = || oson_error("invalid OSON timestamp bytes");
+    if bytes.len() != 13 {
+        return Err(invalid());
+    }
+    let utc = super::date::decode_oracle_date(&bytes[..7])?;
+    let fraction = render_fraction(&bytes[7..11])?;
+    let (hour, minute) = super::date::decode_tz_offset(bytes[11], bytes[12])?;
+    if (utc.year, utc.month, utc.day) < (1582, 10, 16) {
+        return Err(oson_error(
+            "OSON TIMESTAMP WITH TIME ZONE before the Gregorian calendar",
+        ));
+    }
+    let offset_seconds = i32::from(hour) * 3600 + i32::from(minute) * 60;
+    let local = chrono::NaiveDate::from_ymd_opt(utc.year, u32::from(utc.month), u32::from(utc.day))
+        .and_then(|date| {
+            date.and_hms_opt(
+                u32::from(utc.hour),
+                u32::from(utc.minute),
+                u32::from(utc.second),
+            )
+        })
+        .and_then(|instant| {
+            instant.checked_add_signed(chrono::TimeDelta::seconds(i64::from(offset_seconds)))
+        })
+        .ok_or_else(invalid)?;
+    let byte = |value: u32| u8::try_from(value).map_err(|_| invalid());
+    let sign = if offset_seconds < 0 { '-' } else { '+' };
+    let magnitude = offset_seconds.unsigned_abs();
+    // `JSON_SERIALIZE` writes a zero offset as `Z`.
+    let offset = if magnitude == 0 {
+        "Z".to_owned()
+    } else {
+        format!(
+            "{sign}{:02}:{:02}",
+            magnitude / 3600,
+            (magnitude % 3600) / 60
+        )
+    };
+    Ok(format!(
+        "{}{}{}",
+        render_fields(
+            local.year(),
+            byte(local.month())?,
+            byte(local.day())?,
+            byte(local.hour())?,
+            byte(local.minute())?,
+            byte(local.second())?,
+        ),
+        fraction,
+        offset
+    ))
+}
+
+/// Hexadecimal text of an OSON binary scalar, as `JSON_SERIALIZE` writes it:
+/// upper case for RAW values, lower case for ids.
+fn render_hex(bytes: &[u8], upper: bool) -> String {
+    bytes
+        .iter()
+        .map(|byte| {
+            if upper {
+                format!("{byte:02X}")
+            } else {
+                format!("{byte:02x}")
+            }
+        })
+        .collect()
+}
 
 /// OSON Decoder - parses OSON binary format to serde_json::Value
 pub struct OsonDecoder {
@@ -67,6 +245,7 @@ pub struct OsonDecoder {
     field_id_length: usize,
     tree_seg_pos: usize,
     relative_offsets: bool,
+    depth: usize,
 }
 
 impl OsonDecoder {
@@ -82,6 +261,7 @@ impl OsonDecoder {
             field_id_length: 1,
             tree_seg_pos: 0,
             relative_offsets: false,
+            depth: 0,
         };
         decoder.parse()
     }
@@ -213,7 +393,7 @@ impl OsonDecoder {
 
         // Read offsets
         let _offsets_start = self.pos;
-        let mut offsets = Vec::with_capacity(num_fields as usize);
+        let mut offsets = Vec::with_capacity(self.bounded_capacity(num_fields));
         for _ in 0..num_fields {
             let offset = if offsets_size == 2 {
                 self.read_u16_be()? as u32
@@ -225,8 +405,21 @@ impl OsonDecoder {
 
         // Read field names segment
         let field_names_start = self.pos;
-        let field_names_data = &self.data[field_names_start..field_names_start + seg_size as usize];
+        let field_names_data = self.checked_segment(field_names_start, seg_size)?;
         self.pos += seg_size as usize;
+        // Plenora fork: every name inside the segment, checked before the
+        // indexing below (it used to panic on a malformed segment).
+        for offset in &offsets {
+            let start = *offset as usize;
+            let len = usize::from(
+                *field_names_data
+                    .get(start)
+                    .ok_or_else(|| oson_error("OSON field name outside its segment"))?,
+            );
+            if start + 1 + len > field_names_data.len() {
+                return Err(oson_error("OSON field name outside its segment"));
+            }
+        }
 
         // Parse field names
         let mut names = Vec::with_capacity(num_fields as usize);
@@ -234,7 +427,9 @@ impl OsonDecoder {
             let name_start = offset as usize;
             let name_len = field_names_data[name_start] as usize;
             let name_bytes = &field_names_data[name_start + 1..name_start + 1 + name_len];
-            let name = String::from_utf8_lossy(name_bytes).to_string();
+            let name = String::from_utf8(name_bytes.to_vec()).map_err(|_| {
+                Error::DataConversionError("nome di campo OSON non UTF-8".to_string())
+            })?;
             names.push(name);
         }
 
@@ -251,7 +446,7 @@ impl OsonDecoder {
         self.pos += num_fields as usize * 2;
 
         // Read offsets
-        let mut offsets = Vec::with_capacity(num_fields as usize);
+        let mut offsets = Vec::with_capacity(self.bounded_capacity(num_fields));
         for _ in 0..num_fields {
             let offset = if offsets_size == 2 {
                 self.read_u16_be()? as u32
@@ -263,8 +458,18 @@ impl OsonDecoder {
 
         // Read field names segment
         let field_names_start = self.pos;
-        let field_names_data = &self.data[field_names_start..field_names_start + seg_size as usize];
+        let field_names_data = self.checked_segment(field_names_start, seg_size)?;
         self.pos += seg_size as usize;
+        for offset in &offsets {
+            let start = *offset as usize;
+            let header = field_names_data
+                .get(start..start + 2)
+                .ok_or_else(|| oson_error("OSON field name outside its segment"))?;
+            let len = usize::from(u16::from_be_bytes([header[0], header[1]]));
+            if start + 2 + len > field_names_data.len() {
+                return Err(oson_error("OSON field name outside its segment"));
+            }
+        }
 
         // Parse field names (long names use 2-byte length prefix)
         let mut names = Vec::with_capacity(num_fields as usize);
@@ -275,7 +480,9 @@ impl OsonDecoder {
                 field_names_data[name_start + 1],
             ]) as usize;
             let name_bytes = &field_names_data[name_start + 2..name_start + 2 + name_len];
-            let name = String::from_utf8_lossy(name_bytes).to_string();
+            let name = String::from_utf8(name_bytes.to_vec()).map_err(|_| {
+                Error::DataConversionError("nome di campo OSON non UTF-8".to_string())
+            })?;
             names.push(name);
         }
 
@@ -289,7 +496,15 @@ impl OsonDecoder {
         if (node_type & 0x80) != 0 {
             return self.decode_container(node_type);
         }
+        self.decode_scalar(node_type)
+    }
 
+    /// Plenora fork: scalars decode outside the recursive path, so a level
+    /// of nesting costs only the small frames of `decode_node` and
+    /// `decode_container_body` (with every scalar arm inlined, a debug build
+    /// overflowed a 2 MiB stack below 150 levels).
+    #[inline(never)]
+    fn decode_scalar(&mut self, node_type: u8) -> Result<serde_json::Value> {
         // Simple scalar types
         match node_type {
             TYPE_NULL => Ok(serde_json::Value::Null),
@@ -320,78 +535,70 @@ impl OsonDecoder {
                 Ok(num)
             }
 
-            // Binary double
+            // Binary double. Plenora fork: a non-finite value is refused,
+            // `json!(NaN)` used to give `null`.
             TYPE_BINARY_DOUBLE => {
-                let bytes = self.read_bytes(8)?;
-                let value = decode_binary_double(&bytes);
-                Ok(serde_json::json!(value))
+                let bytes: [u8; 8] = self
+                    .read_bytes(8)?
+                    .try_into()
+                    .map_err(|_| oson_error("invalid OSON BINARY_DOUBLE"))?;
+                serde_json::Number::from_f64(decode_binary_double(&bytes))
+                    .map(serde_json::Value::Number)
+                    .ok_or_else(|| oson_error("non-finite OSON BINARY_DOUBLE"))
             }
 
-            // Binary float
+            // Binary float (widened exactly to f64)
             TYPE_BINARY_FLOAT => {
-                let bytes = self.read_bytes(4)?;
-                let value = decode_binary_float(&bytes);
-                Ok(serde_json::json!(value))
+                let bytes: [u8; 4] = self
+                    .read_bytes(4)?
+                    .try_into()
+                    .map_err(|_| oson_error("invalid OSON BINARY_FLOAT"))?;
+                // Plenora fork: the exact stored value, widened to f64
+                // (declared deviation from `JSON_SERIALIZE`, see the header).
+                serde_json::Number::from_f64(f64::from(decode_binary_float(&bytes)))
+                    .map(serde_json::Value::Number)
+                    .ok_or_else(|| oson_error("non-finite OSON BINARY_FLOAT"))
             }
 
             // Date types (convert to string for JSON)
             TYPE_DATE | TYPE_TIMESTAMP7 => {
                 let bytes = self.read_bytes(7)?;
-                let date_str = self.decode_oracle_date(&bytes)?;
-                Ok(serde_json::Value::String(date_str))
+                Ok(serde_json::Value::String(render_oson_datetime(&bytes)?))
             }
 
             TYPE_TIMESTAMP => {
                 let bytes = self.read_bytes(11)?;
-                let ts_str = self.decode_oracle_timestamp(&bytes)?;
-                Ok(serde_json::Value::String(ts_str))
+                Ok(serde_json::Value::String(render_oson_datetime(&bytes)?))
             }
 
             TYPE_TIMESTAMP_TZ => {
                 let bytes = self.read_bytes(13)?;
-                let ts_str = self.decode_oracle_timestamp(&bytes[..11])?;
-                Ok(serde_json::Value::String(ts_str))
+                Ok(serde_json::Value::String(render_oson_timestamp_tz(&bytes)?))
             }
 
-            // Binary data
+            // Plenora fork: binary scalars and ids become the hexadecimal
+            // text `JSON_SERIALIZE` writes (the declared rendering of this
+            // decoder); the upstream decoder wrote base64, a text Oracle
+            // never produces for them.
             TYPE_BINARY_LEN_U16 => {
                 let len = self.read_u16_be()? as usize;
                 let bytes = self.read_bytes(len)?;
-                // Encode as base64 for JSON
-                let b64 = base64_encode(&bytes);
-                Ok(serde_json::Value::String(b64))
+                Ok(serde_json::Value::String(render_hex(&bytes, true)))
             }
             TYPE_BINARY_LEN_U32 => {
                 let len = self.read_u32_be()? as usize;
                 let bytes = self.read_bytes(len)?;
-                let b64 = base64_encode(&bytes);
-                Ok(serde_json::Value::String(b64))
+                Ok(serde_json::Value::String(render_hex(&bytes, true)))
             }
-
-            // ID type
             TYPE_ID => {
                 let len = self.read_u8()? as usize;
                 let bytes = self.read_bytes(len)?;
-                let b64 = base64_encode(&bytes);
-                Ok(serde_json::Value::String(b64))
+                Ok(serde_json::Value::String(render_hex(&bytes, false)))
             }
 
-            // Extended types
-            TYPE_EXTENDED => {
-                let ext_type = self.read_u8()?;
-                match ext_type {
-                    TYPE_VECTOR => {
-                        let len = self.read_u32_be()? as usize;
-                        let _bytes = self.read_bytes(len)?;
-                        // Return as array placeholder - full vector decoding would go here
-                        Ok(serde_json::Value::Array(vec![]))
-                    }
-                    _ => Err(Error::ProtocolError(format!(
-                        "Unsupported extended OSON type: 0x{:02x}",
-                        ext_type
-                    ))),
-                }
-            }
+            // Extended types. Plenora fork: a VECTOR is refused, it used to
+            // become an empty array.
+            TYPE_EXTENDED => Err(oson_error("OSON extended type not supported")),
 
             // Intervals (not commonly used in JSON)
             TYPE_INTERVAL_YM | TYPE_INTERVAL_DS => Err(Error::ProtocolError(
@@ -431,8 +638,19 @@ impl OsonDecoder {
     }
 
     fn decode_container(&mut self, node_type: u8) -> Result<serde_json::Value> {
+        if self.depth >= OSON_MAX_DEPTH {
+            return Err(oson_error("OSON nesting deeper than the supported limit"));
+        }
+        self.depth += 1;
+        let value = self.decode_container_body(node_type);
+        self.depth -= 1;
+        value
+    }
+
+    fn decode_container_body(&mut self, node_type: u8) -> Result<serde_json::Value> {
         let is_object = (node_type & 0x40) == 0;
-        let container_offset = self.pos - self.tree_seg_pos - 1;
+        let container_offset = u32::try_from(self.pos - self.tree_seg_pos - 1)
+            .map_err(|_| oson_error("OSON offset overflow"))?;
 
         // Determine number of children
         let children_bits = node_type & 0x18;
@@ -459,7 +677,9 @@ impl OsonDecoder {
                 0x00 => self.read_u8()? as u32,
                 0x08 => self.read_u16_be()? as u32,
                 0x10 => self.read_u32_be()?,
-                _ => 0,
+                // Plenora fork: a shared node pointing at another shared
+                // node is malformed; it used to read as zero children.
+                _ => return Err(oson_error("OSON shared node without its own children")),
             };
             let shared_field_ids_pos = self.pos;
             (shared_field_ids_pos, local_offsets_pos, nc)
@@ -485,12 +705,13 @@ impl OsonDecoder {
                 };
                 field_ids_pos = self.pos;
 
-                // Get field name
-                let field_name = if field_id > 0 && field_id <= self.field_names.len() {
-                    self.field_names[field_id - 1].clone()
-                } else {
-                    format!("field_{}", field_id)
-                };
+                // Get field name. Plenora fork: an unknown id is an error, it
+                // used to invent the name "field_<id>".
+                let field_name = field_id
+                    .checked_sub(1)
+                    .and_then(|index| self.field_names.get(index))
+                    .cloned()
+                    .ok_or_else(|| oson_error("OSON field id without a field name"))?;
 
                 // Read value offset
                 self.pos = offsets_pos;
@@ -499,7 +720,9 @@ impl OsonDecoder {
 
                 // Calculate actual offset
                 let actual_offset = if self.relative_offsets {
-                    container_offset as u32 + value_offset
+                    container_offset
+                        .checked_add(value_offset)
+                        .ok_or_else(|| oson_error("OSON offset overflow"))?
                 } else {
                     value_offset
                 };
@@ -507,13 +730,15 @@ impl OsonDecoder {
                 // Read value at offset
                 self.pos = self.tree_seg_pos + actual_offset as usize;
                 let value = self.decode_node()?;
-                map.insert(field_name, value);
+                if map.insert(field_name, value).is_some() {
+                    return Err(oson_error("OSON object with a repeated field"));
+                }
             }
 
             Ok(serde_json::Value::Object(map))
         } else {
             // Array
-            let mut arr = Vec::with_capacity(num_children as usize);
+            let mut arr = Vec::with_capacity(self.bounded_capacity(num_children));
             let mut offsets_pos = self.pos;
 
             for _i in 0..num_children {
@@ -522,7 +747,9 @@ impl OsonDecoder {
                 offsets_pos = self.pos;
 
                 let actual_offset = if self.relative_offsets {
-                    container_offset as u32 + value_offset
+                    container_offset
+                        .checked_add(value_offset)
+                        .ok_or_else(|| oson_error("OSON offset overflow"))?
                 } else {
                     value_offset
                 };
@@ -573,34 +800,20 @@ impl OsonDecoder {
         })
     }
 
-    fn decode_oracle_date(&self, bytes: &[u8]) -> Result<String> {
-        if bytes.len() < 7 {
-            return Err(Error::ProtocolError("Invalid date bytes".to_string()));
-        }
-        let century = bytes[0] as i32 - 100;
-        let year = bytes[1] as i32 - 100;
-        let full_year = century * 100 + year;
-        let month = bytes[2];
-        let day = bytes[3];
-        let hour = bytes[4] - 1;
-        let minute = bytes[5] - 1;
-        let second = bytes[6] - 1;
-
-        Ok(format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-            full_year, month, day, hour, minute, second
-        ))
+    /// Capacity for a vector of `count` items read from this document: never
+    /// more than the bytes left, so a forged count cannot exhaust memory
+    /// before the reads fail.
+    fn bounded_capacity(&self, count: u32) -> usize {
+        (count as usize).min(self.data.len().saturating_sub(self.pos))
     }
 
-    fn decode_oracle_timestamp(&self, bytes: &[u8]) -> Result<String> {
-        let date_str = self.decode_oracle_date(&bytes[..7])?;
-        if bytes.len() >= 11 {
-            let nanos = u32::from_be_bytes([bytes[7], bytes[8], bytes[9], bytes[10]]);
-            let micros = nanos / 1000;
-            Ok(format!("{}.{:06}", date_str, micros))
-        } else {
-            Ok(date_str)
-        }
+    /// The `size` bytes at `start`, or an error when they are not all there.
+    fn checked_segment(&self, start: usize, size: u32) -> Result<Bytes> {
+        let end = start
+            .checked_add(size as usize)
+            .filter(|end| *end <= self.data.len())
+            .ok_or_else(|| oson_error("OSON segment outside the document"))?;
+        Ok(self.data.slice(start..end))
     }
 
     fn read_u8(&mut self) -> Result<u8> {
@@ -654,37 +867,9 @@ impl OsonDecoder {
 
     fn read_string(&mut self, len: usize) -> Result<String> {
         let bytes = self.read_bytes(len)?;
-        Ok(String::from_utf8_lossy(&bytes).to_string())
+        String::from_utf8(bytes)
+            .map_err(|_| Error::DataConversionError("stringa OSON non UTF-8".to_string()))
     }
-}
-
-/// Simple base64 encoding for binary data in JSON
-fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::new();
-
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as usize;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
-
-        result.push(ALPHABET[b0 >> 2] as char);
-        result.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
-
-        if chunk.len() > 1 {
-            result.push(ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] as char);
-        } else {
-            result.push('=');
-        }
-
-        if chunk.len() > 2 {
-            result.push(ALPHABET[b2 & 0x3f] as char);
-        } else {
-            result.push('=');
-        }
-    }
-
-    result
 }
 
 /// OSON Encoder - encodes serde_json::Value to OSON binary format
@@ -707,7 +892,12 @@ impl OsonEncoder {
 
     fn encode_value(&mut self, value: &serde_json::Value) -> Result<Bytes> {
         // Collect field names if this is an object/array
-        self.collect_field_names(value);
+        self.collect_field_names(value, 0)?;
+        if self.field_names.len() > OSON_MAX_FIELD_NAMES {
+            return Err(oson_error(
+                "JSON value with more field names than OSON encodes",
+            ));
+        }
 
         // Sort field names and update ID mapping BEFORE encoding tree segment
         // This ensures field IDs in the tree match the sorted order in the field names segment
@@ -732,7 +922,7 @@ impl OsonEncoder {
 
         // Prepare field names components first if not scalar (to know segment size for flags)
         let field_names_components = if !is_scalar {
-            Some(self.build_field_names_components())
+            Some(self.build_field_names_components()?)
         } else {
             None
         };
@@ -747,45 +937,55 @@ impl OsonEncoder {
                     flags |= FLAG_FNAMES_SEG_UINT32;
                 }
             }
+            // Plenora fork: more than 255 names need two-byte field ids;
+            // the upstream encoder wrote the count and every id `as u8`.
+            if self.field_names.len() > 255 {
+                flags |= FLAG_NUM_FNAMES_UINT16;
+            }
         }
 
-        if tree_seg.len() > 65535 {
+        let tree_seg_len = u32::try_from(tree_seg.len())
+            .map_err(|_| oson_error("JSON value too large for OSON"))?;
+        if tree_seg_len > 65535 {
             flags |= FLAG_TREE_SEG_UINT32;
         }
 
         // Write flags
         self.buffer.extend_from_slice(&flags.to_be_bytes());
 
+        // Every narrowing below is guarded by the flag chosen above for the
+        // same size, so the conversions are exact.
+        let tree_seg_size = |buffer: &mut Vec<u8>| {
+            if (flags & FLAG_TREE_SEG_UINT32) != 0 {
+                buffer.extend_from_slice(&tree_seg_len.to_be_bytes());
+            } else {
+                buffer.extend_from_slice(&(tree_seg_len as u16).to_be_bytes());
+            }
+        };
         if is_scalar {
             // Write tree segment size
-            if (flags & FLAG_TREE_SEG_UINT32) != 0 {
-                self.buffer
-                    .extend_from_slice(&(tree_seg.len() as u32).to_be_bytes());
-            } else {
-                self.buffer
-                    .extend_from_slice(&(tree_seg.len() as u16).to_be_bytes());
-            }
+            tree_seg_size(&mut self.buffer);
         } else if let Some((hash_ids, offsets, names_data)) = field_names_components {
             // Write number of field names
-            self.buffer.push(self.field_names.len() as u8);
+            let count = self.field_names.len();
+            if (flags & FLAG_NUM_FNAMES_UINT16) != 0 {
+                self.buffer.extend_from_slice(&(count as u16).to_be_bytes());
+            } else {
+                self.buffer.push(count as u8);
+            }
 
             // Write field names segment size (ONLY the names data, per Python)
+            let names_len = u32::try_from(names_data.len())
+                .map_err(|_| oson_error("JSON field names too large for OSON"))?;
             if (flags & FLAG_FNAMES_SEG_UINT32) != 0 {
-                self.buffer
-                    .extend_from_slice(&(names_data.len() as u32).to_be_bytes());
+                self.buffer.extend_from_slice(&names_len.to_be_bytes());
             } else {
                 self.buffer
-                    .extend_from_slice(&(names_data.len() as u16).to_be_bytes());
+                    .extend_from_slice(&(names_len as u16).to_be_bytes());
             }
 
             // Write tree segment size
-            if (flags & FLAG_TREE_SEG_UINT32) != 0 {
-                self.buffer
-                    .extend_from_slice(&(tree_seg.len() as u32).to_be_bytes());
-            } else {
-                self.buffer
-                    .extend_from_slice(&(tree_seg.len() as u16).to_be_bytes());
-            }
+            tree_seg_size(&mut self.buffer);
 
             // Write number of tiny nodes (0)
             self.buffer.extend_from_slice(&0u16.to_be_bytes());
@@ -802,25 +1002,38 @@ impl OsonEncoder {
         Ok(Bytes::from(std::mem::take(&mut self.buffer)))
     }
 
-    fn collect_field_names(&mut self, value: &serde_json::Value) {
+    /// Plenora fork: a name longer than 255 bytes and nesting deeper than
+    /// [`OSON_MAX_DEPTH`] are refused here, before anything is written. The
+    /// upstream encoder wrote the name length `as u8` (a 300-byte key became
+    /// 44 bytes long) and recursed without bound.
+    fn collect_field_names(&mut self, value: &serde_json::Value, depth: usize) -> Result<()> {
         match value {
+            serde_json::Value::Object(_) | serde_json::Value::Array(_)
+                if depth >= OSON_MAX_DEPTH =>
+            {
+                return Err(oson_error("JSON nesting deeper than the supported limit"));
+            }
             serde_json::Value::Object(map) => {
                 for (key, child) in map {
+                    if key.len() > OSON_MAX_FIELD_NAME_BYTES {
+                        return Err(oson_error("JSON field name longer than OSON encodes"));
+                    }
                     if !self.field_name_to_id.contains_key(key) {
                         // Temporarily use 0 as placeholder - will be updated by sort_and_update_field_ids
                         self.field_names.push(key.clone());
                         self.field_name_to_id.insert(key.clone(), 0);
                     }
-                    self.collect_field_names(child);
+                    self.collect_field_names(child, depth + 1)?;
                 }
             }
             serde_json::Value::Array(arr) => {
                 for item in arr {
-                    self.collect_field_names(item);
+                    self.collect_field_names(item, depth + 1)?;
                 }
             }
             _ => {}
         }
+        Ok(())
     }
 
     /// Sort field names by hash and update the ID mapping to match sorted order
@@ -831,10 +1044,15 @@ impl OsonEncoder {
 
         // Sort field names by hash (same logic as build_field_names_components)
         let mut sorted_names: Vec<_> = self.field_names.iter().cloned().enumerate().collect();
+        // Plenora fork: ties are broken by the name bytes as well, so the
+        // order (and the field ids) do not depend on insertion order.
         sorted_names.sort_by(|a, b| {
             let hash_a = bernstein_hash(a.1.as_bytes()) & 0xff;
             let hash_b = bernstein_hash(b.1.as_bytes()) & 0xff;
-            hash_a.cmp(&hash_b).then_with(|| a.1.len().cmp(&b.1.len()))
+            hash_a
+                .cmp(&hash_b)
+                .then_with(|| a.1.len().cmp(&b.1.len()))
+                .then_with(|| a.1.as_bytes().cmp(b.1.as_bytes()))
         });
 
         // Update field_name_to_id with sorted indices (1-based)
@@ -853,34 +1071,57 @@ impl OsonEncoder {
     /// - offsets: 2 byte BE offset per field name (into names_data)
     /// - names_data: length-prefixed field name strings
     /// Note: field_names must already be sorted by sort_and_update_field_ids
-    fn build_field_names_components(&self) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    ///
+    /// Plenora fork: offsets are four bytes when the names segment exceeds
+    /// 65535 bytes (the flag the decoder reads, `FLAG_FNAMES_SEG_UINT32`);
+    /// the upstream encoder always wrote them `as u16`. Name lengths fit one
+    /// byte because `collect_field_names` refused longer names.
+    fn build_field_names_components(&self) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let mut hash_ids = Vec::new();
         let mut offsets_bytes = Vec::new();
         let mut names_data = Vec::new();
 
         // Build hash IDs (1 byte each) - field_names already sorted
         for name in &self.field_names {
-            let hash = bernstein_hash(name.as_bytes()) & 0xff;
-            hash_ids.push(hash as u8);
+            hash_ids.push(bernstein_hash(name.as_bytes()).to_le_bytes()[0]);
         }
 
         // Build names data and collect offsets
         let mut offsets = Vec::new();
         for name in &self.field_names {
-            offsets.push(names_data.len() as u16);
-            names_data.push(name.len() as u8);
+            offsets.push(names_data.len());
+            names_data.push(
+                u8::try_from(name.len())
+                    .map_err(|_| oson_error("JSON field name longer than OSON encodes"))?,
+            );
             names_data.extend_from_slice(name.as_bytes());
         }
 
-        // Build offsets bytes (2 bytes each)
+        // Build offsets bytes (2 or 4 bytes each)
+        let wide = names_data.len() > 65535;
         for offset in &offsets {
-            offsets_bytes.extend_from_slice(&offset.to_be_bytes());
+            if wide {
+                offsets_bytes.extend_from_slice(&(*offset as u32).to_be_bytes());
+            } else {
+                offsets_bytes.extend_from_slice(&(*offset as u16).to_be_bytes());
+            }
         }
 
-        (hash_ids, offsets_bytes, names_data)
+        Ok((hash_ids, offsets_bytes, names_data))
     }
 
     fn encode_node(&self, value: &serde_json::Value, buf: &mut Vec<u8>) -> Result<()> {
+        match value {
+            serde_json::Value::Array(arr) => self.encode_array(arr, buf),
+            serde_json::Value::Object(map) => self.encode_object(map, buf),
+            scalar => Self::encode_scalar(scalar, buf),
+        }
+    }
+
+    /// Plenora fork: scalars encode outside the recursive path (see
+    /// `OsonDecoder::decode_scalar`).
+    #[inline(never)]
+    fn encode_scalar(value: &serde_json::Value, buf: &mut Vec<u8>) -> Result<()> {
         match value {
             serde_json::Value::Null => {
                 buf.push(TYPE_NULL);
@@ -908,23 +1149,23 @@ impl OsonEncoder {
             }
             serde_json::Value::String(s) => {
                 let bytes = s.as_bytes();
-                if bytes.len() < 256 {
+                let len = u32::try_from(bytes.len())
+                    .map_err(|_| oson_error("JSON string too long for OSON"))?;
+                // The branches bound `len`, so each narrowing is exact.
+                if len < 256 {
                     buf.push(TYPE_STRING_LEN_U8);
-                    buf.push(bytes.len() as u8);
-                } else if bytes.len() < 65536 {
+                    buf.push(len as u8);
+                } else if len < 65536 {
                     buf.push(TYPE_STRING_LEN_U16);
-                    buf.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+                    buf.extend_from_slice(&(len as u16).to_be_bytes());
                 } else {
                     buf.push(TYPE_STRING_LEN_U32);
-                    buf.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+                    buf.extend_from_slice(&len.to_be_bytes());
                 }
                 buf.extend_from_slice(bytes);
             }
-            serde_json::Value::Array(arr) => {
-                self.encode_array(arr, buf)?;
-            }
-            serde_json::Value::Object(map) => {
-                self.encode_object(map, buf)?;
+            serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                return Err(oson_error("container passed as an OSON scalar"));
             }
         }
         Ok(())
@@ -942,14 +1183,7 @@ impl OsonEncoder {
         }
         buf.push(node_type);
 
-        // Write number of children
-        if num_children < 256 {
-            buf.push(num_children as u8);
-        } else if num_children < 65536 {
-            buf.extend_from_slice(&(num_children as u16).to_be_bytes());
-        } else {
-            buf.extend_from_slice(&(num_children as u32).to_be_bytes());
-        }
+        write_child_count(buf, num_children)?;
 
         // Reserve space for offsets and remember where they start
         let offsets_start = buf.len();
@@ -959,7 +1193,7 @@ impl OsonEncoder {
         for i in 0..num_children {
             let child_pos = buf.len();
             // Write offset at the reserved position
-            let offset_bytes = (child_pos as u32).to_be_bytes();
+            let offset_bytes = tree_offset(child_pos)?.to_be_bytes();
             buf[offsets_start + i * 4..offsets_start + i * 4 + 4].copy_from_slice(&offset_bytes);
             // Encode the child
             self.encode_node(&arr[i], buf)?;
@@ -984,24 +1218,24 @@ impl OsonEncoder {
         }
         buf.push(node_type);
 
-        // Write number of children
-        if num_children < 256 {
-            buf.push(num_children as u8);
-        } else if num_children < 65536 {
-            buf.extend_from_slice(&(num_children as u16).to_be_bytes());
-        } else {
-            buf.extend_from_slice(&(num_children as u32).to_be_bytes());
-        }
+        write_child_count(buf, num_children)?;
 
-        // Collect field IDs first
-        let field_ids: Vec<u8> = map
-            .keys()
-            .map(|key| self.field_name_to_id.get(key).copied().unwrap_or(0) as u8)
-            .collect();
-
-        // Write field IDs
-        for &id in &field_ids {
-            buf.push(id);
+        // Write field IDs. Plenora fork: two bytes each past 255 names (the
+        // decoder reads `field_id_length` from FLAG_NUM_FNAMES_UINT16); the
+        // upstream encoder wrote every id `as u8` and defaulted a missing
+        // one to 0.
+        let wide_ids = self.field_names.len() > 255;
+        for key in map.keys() {
+            let id = *self
+                .field_name_to_id
+                .get(key)
+                .ok_or_else(|| oson_error("JSON field name without an OSON id"))?;
+            if wide_ids {
+                let id = u16::try_from(id).map_err(|_| oson_error("OSON field id overflow"))?;
+                buf.extend_from_slice(&id.to_be_bytes());
+            } else {
+                buf.push(u8::try_from(id).map_err(|_| oson_error("OSON field id overflow"))?);
+            }
         }
 
         // Reserve space for offsets and remember where they start
@@ -1012,7 +1246,7 @@ impl OsonEncoder {
         for (i, (_, value)) in map.iter().enumerate() {
             let child_pos = buf.len();
             // Write offset at the reserved position
-            let offset_bytes = (child_pos as u32).to_be_bytes();
+            let offset_bytes = tree_offset(child_pos)?.to_be_bytes();
             buf[offsets_start + i * 4..offsets_start + i * 4 + 4].copy_from_slice(&offset_bytes);
             // Encode the child
             self.encode_node(value, buf)?;
@@ -1020,6 +1254,26 @@ impl OsonEncoder {
 
         Ok(())
     }
+}
+
+/// Plenora fork: the child count of a container, in the width its node type
+/// announces (the type bits use the same thresholds).
+fn write_child_count(buf: &mut Vec<u8>, num_children: usize) -> Result<()> {
+    let count =
+        u32::try_from(num_children).map_err(|_| oson_error("JSON container too large for OSON"))?;
+    if count < 256 {
+        buf.push(count as u8);
+    } else if count < 65536 {
+        buf.extend_from_slice(&(count as u16).to_be_bytes());
+    } else {
+        buf.extend_from_slice(&count.to_be_bytes());
+    }
+    Ok(())
+}
+
+/// Plenora fork: a position in the tree segment as a four-byte offset.
+fn tree_offset(position: usize) -> Result<u32> {
+    u32::try_from(position).map_err(|_| oson_error("JSON value too large for OSON"))
 }
 
 /// Bernstein hash function (FNV-1a variant used by Oracle)
@@ -1067,16 +1321,5 @@ mod tests {
         let result = OsonDecoder::decode(Bytes::from(data));
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), serde_json::Value::String(String::new()));
-    }
-
-    #[test]
-    fn test_base64_encode() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
-        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
     }
 }

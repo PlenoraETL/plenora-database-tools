@@ -166,14 +166,17 @@ pub fn parse_rowid_string(s: &str) -> Result<RowId> {
 
     let bytes = s.as_bytes();
 
+    // Plenora fork: six base64 characters carry 36 bits and three carry 18;
+    // a value beyond the field is refused (it was truncated by `as`).
+    let overflow = || Error::DataConversionError("ROWID field out of range".to_string());
     // Decode RBA (6 characters)
-    let rba = decode_base64(&bytes[0..6])? as u32;
+    let rba = u32::try_from(decode_base64(&bytes[0..6])?).map_err(|_| overflow())?;
     // Decode Partition ID (3 characters)
-    let partition_id = decode_base64(&bytes[6..9])? as u16;
+    let partition_id = u16::try_from(decode_base64(&bytes[6..9])?).map_err(|_| overflow())?;
     // Decode Block Number (6 characters)
-    let block_num = decode_base64(&bytes[9..15])? as u32;
+    let block_num = u32::try_from(decode_base64(&bytes[9..15])?).map_err(|_| overflow())?;
     // Decode Slot Number (3 characters)
-    let slot_num = decode_base64(&bytes[15..18])? as u16;
+    let slot_num = u16::try_from(decode_base64(&bytes[15..18])?).map_err(|_| overflow())?;
 
     Ok(RowId {
         rba,
@@ -194,10 +197,11 @@ fn decode_base64(chars: &[u8]) -> Result<u64> {
             b'+' => 62,
             b'/' => 63,
             _ => {
-                return Err(Error::DataConversionError(format!(
-                    "Invalid base64 character in ROWID: {}",
-                    char::from(c)
-                )))
+                // Plenora fork: the character is not echoed (errors carry
+                // no data values).
+                return Err(Error::DataConversionError(
+                    "Invalid base64 character in ROWID".to_string(),
+                ));
             }
         };
         value = (value << 6) | (idx as u64);

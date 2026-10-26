@@ -14,11 +14,10 @@
 //! The data is stored in big-endian format.
 
 /// Decode an Oracle BINARY_FLOAT from wire format (4 bytes)
-pub fn decode_binary_float(data: &[u8]) -> f32 {
-    if data.len() < 4 {
-        return 0.0;
-    }
-
+///
+/// Plenora fork: the length is part of the type. The upstream decoder took a
+/// slice and returned 0.0 for a short one.
+pub fn decode_binary_float(data: &[u8; 4]) -> f32 {
     let mut b0 = data[0];
     let mut b1 = data[1];
     let mut b2 = data[2];
@@ -65,11 +64,9 @@ pub fn encode_binary_float(value: f32) -> [u8; 4] {
 }
 
 /// Decode an Oracle BINARY_DOUBLE from wire format (8 bytes)
-pub fn decode_binary_double(data: &[u8]) -> f64 {
-    if data.len() < 8 {
-        return 0.0;
-    }
-
+///
+/// Plenora fork: the length is part of the type, see [`decode_binary_float`].
+pub fn decode_binary_double(data: &[u8; 8]) -> f64 {
     let mut b0 = data[0];
     let mut b1 = data[1];
     let mut b2 = data[2];

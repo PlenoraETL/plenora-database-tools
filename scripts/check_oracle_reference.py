@@ -32,6 +32,9 @@ LIVE_SOURCE = ROOT / "crates" / "plenora-db-oracle" / "src" / "live_tests.rs"
 NUMBER_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-oracle" / "src" / "number_live_tests.rs"
 )
+DRIVER_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-oracle" / "src" / "driver_fidelity_live_tests.rs"
+)
 PYTHON_TESTS = ROOT / "crates" / "plenora-database-py" / "python" / "tests"
 RESULT = ROOT / "assurance-results" / "oracle-reference.json"
 TIMEOUT = 30 * 60
@@ -60,6 +63,20 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_number_infinities_and_invalid_bytes_fail_every_read",
         "live_number_inside_json_reads_back_exactly_or_fails",
         "live_number_float_columns_read_and_write_exactly_or_fail",
+        "live_duplicate_columns_keep_their_value_across_fetch_pages",
+        "live_dates_bind_exactly_on_every_year_boundary_of_the_server_calendar",
+        "live_timestamps_bind_and_read_exactly_at_every_fractional_precision",
+        "live_text_and_raw_binds_cross_every_length_prefix",
+        "live_text_of_every_length_reads_exactly",
+        "live_json_binds_round_trip_through_json_serialize",
+        "live_json_reads_match_json_serialize_or_are_refused",
+        "live_scalar_types_read_exactly_or_are_refused",
+        "live_describe_keeps_signed_scale_and_refuses_unknown_types",
+        "live_clob_chunks_with_supplementary_characters_are_contiguous",
+        "live_inline_lob_binds_are_refused_not_nulled",
+        "live_pre_gregorian_dates_are_refused_by_the_provider",
+        "live_timestamptz_binds_keep_the_instant_or_are_refused",
+        "live_binary_float_in_json_reads_the_stored_value",
     }
 )
 PYTHON_LIVE_EXPECTED = 7
@@ -138,7 +155,7 @@ def reference_contract() -> dict[str, str]:
 
 def live_source_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE, NUMBER_LIVE_SOURCE],
+        [LIVE_SOURCE, NUMBER_LIVE_SOURCE, DRIVER_LIVE_SOURCE],
         keep=lambda name: name.startswith("live_"),
     )
 

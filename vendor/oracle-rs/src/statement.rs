@@ -328,6 +328,9 @@ pub struct ColumnInfo {
     pub nullable: bool,
     /// Character set form
     pub csfrm: u8,
+    /// Character set id del testo della colonna (873 AL32UTF8, 871 UTF8,
+    /// 2000 AL16UTF16); 0 se il server non lo dice.
+    pub charset_id: u16,
     /// Schema name (for object types)
     pub type_schema: Option<String>,
     /// Type name (for object types)
@@ -360,6 +363,7 @@ impl ColumnInfo {
             scale: 0,
             nullable: true,
             csfrm: 0,
+            charset_id: 0,
             type_schema: None,
             type_name: None,
             domain_schema: None,
