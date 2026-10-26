@@ -877,3 +877,26 @@ fn gli_statement_sul_target_non_dipendono_dal_search_path() {
     );
     assert_eq!(sql::qualify_builtin("integer"), "integer");
 }
+
+/// `CopyText` scrive le date con l'anno di PostgreSQL: l'anno astronomico 0
+/// di chrono e `0001 BC`, -1 e `0002 BC`; fino al 25/10 usciva la forma di
+/// chrono (`0000-01-01`, `-0001-01-01`).
+#[test]
+fn copy_text_scrive_gli_anni_avanti_cristo_come_postgresql() {
+    let date = |year, month, day| chrono::NaiveDate::from_ymd_opt(year, month, day).expect("data");
+    assert_eq!(value_codec::date_text(date(2026, 1, 2), None), "2026-01-02");
+    assert_eq!(value_codec::date_text(date(1, 1, 1), None), "0001-01-01");
+    assert_eq!(value_codec::date_text(date(0, 1, 1), None), "0001-01-01 BC");
+    assert_eq!(
+        value_codec::date_text(date(-1, 12, 31), None),
+        "0002-12-31 BC"
+    );
+    assert_eq!(
+        value_codec::date_text(date(10_000, 1, 1), None),
+        "10000-01-01"
+    );
+    assert_eq!(
+        value_codec::date_text(date(0, 1, 1), Some("10:00:00.5+00:00")),
+        "0001-01-01 10:00:00.5+00:00 BC"
+    );
+}

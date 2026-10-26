@@ -914,29 +914,51 @@ pub async fn resolve_schema(
         })
 }
 
-/// `sys.columns.is_ansi_padded` per ogni colonna del target, per la regola S
-/// della scrittura (`crate::write::plan::store_rewrites`): una colonna creata
-/// con `ANSI_PADDING OFF` toglie gli spazi e gli `0x00` finali. Non entra nel
-/// documento di describe ne nel token strutturale; una colonna assente dalla
-/// mappa si legge senza riempimento, la lettura piu stretta.
+/// I fatti di una colonna che decidono che cosa il server ne salva, per la
+/// chiave d'ammissione della regola A della scrittura
+/// (`crate::write::admission`): il tipo di `sys.types`, lunghezza, precisione
+/// e scala, la collation e la sua code page, `is_ansi_padded` e la
+/// nullabilita (con `ANSI_PADDING OFF` un `char(n)` nullable toglie gli spazi
+/// finali, uno `NOT NULL` completa).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlServerWriteFacts {
+    pub name: String,
+    pub native_type: String,
+    pub max_length: i16,
+    pub precision: u8,
+    pub scale: u8,
+    pub collation: Option<String>,
+    /// `COLLATIONPROPERTY(collation, 'CodePage')`: 65001 per le `_UTF8`, 0
+    /// per le collation soltanto Unicode, assente senza collation.
+    pub code_page: Option<i32>,
+    pub ansi_padded: bool,
+    pub nullable: bool,
+}
+
+/// I fatti della regola A ([`SqlServerWriteFacts`]) per ogni colonna del
+/// target. Non entrano nel documento di describe ne nel token strutturale.
 ///
 /// # Errors
 ///
 /// Gli errori della lettura del catalogo.
-pub async fn load_ansi_padding(
+pub async fn load_write_facts(
     session: &mut SqlServerSession,
     schema: &str,
     object: &str,
     cancellation: &CancellationToken,
-) -> Result<std::collections::HashMap<String, bool>> {
+) -> Result<Vec<SqlServerWriteFacts>> {
     let rows = execute_bound(
         session,
         r"
-SELECT c.name, c.is_ansi_padded
+SELECT c.name, ty.name, c.max_length, c.precision, c.scale, c.collation_name,
+       CONVERT(int, COLLATIONPROPERTY(c.collation_name, N'CodePage')),
+       c.is_ansi_padded, c.is_nullable
 FROM sys.objects AS o
 JOIN sys.schemas AS s ON s.schema_id = o.schema_id
 JOIN sys.columns AS c ON c.object_id = o.object_id
-WHERE s.name = @P1 AND o.name = @P2;
+JOIN sys.types AS ty ON ty.user_type_id = c.user_type_id
+WHERE s.name = @P1 AND o.name = @P2
+ORDER BY c.column_id;
 ",
         schema,
         object,
@@ -945,10 +967,17 @@ WHERE s.name = @P1 AND o.name = @P2;
     .await?;
     rows.iter()
         .map(|row| {
-            Ok((
-                text(row, 0, "column_name")?,
-                required(row, 1, "is_ansi_padded")?,
-            ))
+            Ok(SqlServerWriteFacts {
+                name: text(row, 0, "column_name")?,
+                native_type: text(row, 1, "native_type")?,
+                max_length: required(row, 2, "max_length")?,
+                precision: required(row, 3, "precision")?,
+                scale: required(row, 4, "scale")?,
+                collation: optional_text(row, 5, "collation")?,
+                code_page: super::optional(row, 6, "code_page")?,
+                ansi_padded: required(row, 7, "is_ansi_padded")?,
+                nullable: required(row, 8, "is_nullable")?,
+            })
         })
         .collect()
 }

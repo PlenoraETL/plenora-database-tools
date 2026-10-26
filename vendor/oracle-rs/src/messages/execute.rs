@@ -755,31 +755,11 @@ impl<'a> ExecuteMessage<'a> {
                 buf.write_u8(encoded.len() as u8)?;
                 buf.write_bytes(&encoded)?;
             }
-            Value::String(s) => {
-                let bytes = s.as_bytes();
-                if bytes.is_empty() {
-                    buf.write_u8(0)?; // Empty string = NULL in Oracle
-                } else if bytes.len() <= 252 {
-                    buf.write_u8(bytes.len() as u8)?;
-                    buf.write_bytes(bytes)?;
-                } else {
-                    buf.write_u8(254)?; // Long form indicator
-                    buf.write_ub4(bytes.len() as u32)?;
-                    buf.write_bytes(bytes)?;
-                }
-            }
-            Value::Bytes(b) => {
-                if b.is_empty() {
-                    buf.write_u8(0)?;
-                } else if b.len() <= 252 {
-                    buf.write_u8(b.len() as u8)?;
-                    buf.write_bytes(b)?;
-                } else {
-                    buf.write_u8(254)?;
-                    buf.write_ub4(b.len() as u32)?;
-                    buf.write_bytes(b)?;
-                }
-            }
+            // Oltre 252 byte il valore va a pezzi (254, poi UB4 e byte per
+            // pezzo, poi UB4 zero): senza il terminatore il server resta in
+            // attesa di altri dati ("SQL*Net more data from client").
+            Value::String(s) => buf.write_bytes_with_length(Some(s.as_bytes()))?,
+            Value::Bytes(b) => buf.write_bytes_with_length(Some(b))?,
             Value::Boolean(b) => {
                 // Oracle Boolean encoding: escape char + value
                 // false = 0x02 0x00, true = 0x02 0x01, null = 0xC0 0x01
@@ -863,27 +843,14 @@ impl<'a> ExecuteMessage<'a> {
                         buf.write_u64_be(0)?; // Unused
                         buf.write_u64_be(0)?; // Unused
 
-                        // Write OSON data with chunked length prefix
-                        // Per Python's write_length():
-                        // - < 254: single byte
-                        // - 254-65535: 254 + 2-byte BE length
-                        // - > 65535: 255 + 4-byte BE length
-                        let oson_len = oson_bytes.len();
-                        if oson_len < 254 {
-                            buf.write_u8(oson_len as u8)?;
-                        } else if oson_len <= 65535 {
-                            buf.write_u8(254)?;
-                            buf.write_u16_be(oson_len as u16)?;
-                        } else {
-                            buf.write_u8(255)?;
-                            buf.write_u32_be(oson_len as u32)?;
-                        }
-                        buf.write_bytes(&oson_bytes)?;
+                        // Dati OSON come in python-oracledb
+                        // (`_write_raw_bytes_and_length`): fino a 252 byte
+                        // un byte di lunghezza, oltre a pezzi con terminatore.
+                        buf.write_bytes_with_length(Some(&oson_bytes))?;
                     }
-                    Err(_) => {
-                        // If OSON encoding fails, write as NULL
-                        buf.write_u8(0)?;
-                    }
+                    // Un JSON non codificabile si rifiuta: scriverlo NULL
+                    // sarebbe un dato perso in silenzio.
+                    Err(error) => return Err(error),
                 }
             }
             Value::Vector(vector) => {
@@ -918,18 +885,8 @@ impl<'a> ExecuteMessage<'a> {
                 buf.write_u64_be(0)?; // Unused
                 buf.write_u64_be(0)?; // Unused
 
-                // Write vector data with chunked length prefix
-                let vec_len = vector_bytes.len();
-                if vec_len < 254 {
-                    buf.write_u8(vec_len as u8)?;
-                } else if vec_len <= 65535 {
-                    buf.write_u8(254)?;
-                    buf.write_u16_be(vec_len as u16)?;
-                } else {
-                    buf.write_u8(255)?;
-                    buf.write_u32_be(vec_len as u32)?;
-                }
-                buf.write_bytes(&vector_bytes)?;
+                // Come OSON: un byte fino a 252, oltre a pezzi con terminatore.
+                buf.write_bytes_with_length(Some(&vector_bytes))?;
             }
             Value::Cursor(cursor) => {
                 // Write cursor parameter (REF CURSOR)

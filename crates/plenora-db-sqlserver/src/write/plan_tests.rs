@@ -418,7 +418,6 @@ fn additive_schema_evolution_is_explicit_nullable_and_transaction_planned() {
         Arc::clone(&schema),
         &HashMap::new(),
         SqlServerSchemaEvolution::Disabled,
-        &HashMap::new(),
     )
     .is_err());
     let plan = WritePlan::compile_existing(
@@ -427,7 +426,6 @@ fn additive_schema_evolution_is_explicit_nullable_and_transaction_planned() {
         Arc::clone(&schema),
         &HashMap::new(),
         SqlServerSchemaEvolution::AddNullableColumns,
-        &HashMap::new(),
     )
     .expect("add nullable column");
     let TargetLifecycle::Existing {
@@ -456,7 +454,6 @@ fn additive_schema_evolution_is_explicit_nullable_and_transaction_planned() {
         non_nullable,
         &HashMap::new(),
         SqlServerSchemaEvolution::AddNullableColumns,
-        &HashMap::new(),
     )
     .is_err());
 }
@@ -684,4 +681,13 @@ fn la_regola_p_sul_testo_dipende_da_collation_e_lunghezza() {
     assert!(text_limit("uniqueidentifier", "uniqueidentifier", None).is_none());
     assert_eq!(offset_scale("datetimeoffset", "datetimeoffset(0)"), Some(0));
     assert_eq!(offset_scale("datetime2", "datetime2(0)"), None);
+}
+
+#[test]
+fn la_lunghezza_dei_binari_viene_dalla_dichiarazione() {
+    assert_eq!(binary_limit("varbinary", "varbinary(1)"), Some(1));
+    assert_eq!(binary_limit("binary", "binary(8000)"), Some(8000));
+    assert_eq!(binary_limit("varbinary", "varbinary(max)"), None);
+    assert_eq!(binary_limit("image", "image"), None);
+    assert_eq!(binary_limit("varchar", "varchar(10)"), None);
 }

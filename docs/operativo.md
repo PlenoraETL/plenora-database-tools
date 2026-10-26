@@ -81,3 +81,44 @@ PLENORA_DB2_ORA_DATABASE=plnora cargo test --locked -p plenora-db-db2 --lib \
 
 Il vettore si toglie subito dopo la creazione: `varchar2_compat` resta `ON` nel
 nuovo database e `OFF` in `plenora`.
+
+## Le misure della regola A
+
+Una scrittura si ammette soltanto per una coppia fra il tipo Arrow
+dell'ingresso e il tipo nativo del target che il fixture del provider misura
+sulla major del server (`plenora_database_core::write_admission`, la regola A):
+`tests/fixtures/scrittura_server_<prodotto>.json`. Una coppia o una major non
+misurata si rifiuta con ogni politica, come non provata. Le misure si producono
+e si verificano con la sonda, che scrive con il percorso della libreria una
+batteria fissa di valori limite per ogni chiave e li rilegge con la sua lettura:
+
+```bash
+python scripts/sonde_scritture_server.py --server oracle --riferimenti            # verifica
+python scripts/sonde_scritture_server.py --server oracle --riferimenti --aggiorna # riscrive il fixture
+```
+
+Senza `--aggiorna` la sonda confronta ogni misura con il fixture e fallisce se
+una chiave cambia: e il gate del workflow `write-admission-probes`. Con
+`--aggiorna` il referto sostituisce, nel fixture, la misura della stessa major;
+la differenza si rilegge in PR come ogni altra prova. `--container NOME
+--porta P` usa un container gia pronto. Per la diagnosi, con la sola misura,
+`PLENORA_SONDE_SCRITTURE_FILTRO` restringe le chiavi,
+`PLENORA_SONDE_SCRITTURE_TRACCIA=1` stampa gli errori (senza dati) e
+`PLENORA_SONDE_SCRITTURE_CONSERVA=1` lascia la tabella `PLN_SONDA_W`.
+
+Rientrare in un limite della regola A (una coppia rifiutata perche non
+misurata, una major nuova, una lunghezza fuori da quelle misurate) e sempre lo
+stesso passo: aggiungere la chiave all'elenco chiuso della sonda del provider
+(`live_sonde_scritture_server`), misurarla con `--aggiorna` e far rileggere il
+fixture. I limiti dichiarati della regola stanno nel modulo
+`plenora_database_core::write_admission`. Per Oracle, il registro dei limiti
+include [zero negativo e collation delle chiavi](../crates/plenora-db-oracle/src/write_admission.rs):
+la dichiarazione di una perdita non sostituisce la qualifica del bind.
+Il confronto delle chiavi con catalogo incompleto si rifiuta anche in
+[MySQL/MariaDB](../crates/plenora-db-mysql/src/write.rs) e
+[SQL Server](../crates/plenora-db-sqlserver/src/write/keys.rs): nessuna
+collation mancante viene sostituita dal default dello staging.
+Il rifiuto in MySQL/MariaDB vale anche per le colonne testuali non chiave
+dello staging Update: metadati assenti, vuoti o non rappresentabili non
+provano la semantica del target. Il controllo e le regressioni sono in
+`build_temp_staging_sql` e `write_tests.rs` dello stesso crate.

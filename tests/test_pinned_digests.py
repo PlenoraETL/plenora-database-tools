@@ -59,6 +59,8 @@ class EveryDigestHasOneHome(unittest.TestCase):
         "docker-compose.postgres-tls.yml": "stessa fixture del Compose PostgreSQL",
         "scripts/check_postgres_matrix.py": "i cinque riferimenti PostGIS non hanno un references.json: la matrice e la loro dichiarazione",
         "scripts/check_sqlserver_reference.py": "verifica che l'immagine avviata sia quella del Compose, e per farlo deve nominarla",
+        "tests/fixtures/scrittura_server_mysql.json": "il fixture della regola A registra l'immagine misurata, come prova; scripts/test_sonde_scritture_server.py verifica che sia una di quelle delle fonti",
+        "tests/fixtures/scrittura_server_mariadb.json": "stessa ragione del fixture MySQL della regola A",
     }
 
     def digests_by_file(self) -> dict[str, set[str]]:

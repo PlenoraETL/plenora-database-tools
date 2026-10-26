@@ -4,7 +4,7 @@
 //! prova qui sotto falliva su quel commit.
 
 use super::write_visibility_live_tests::{
-    dry_run_stream, live_dsn, operation, prepare, reset, write_stream, SCHEMA, SERIAL,
+    dry_run_stream, live_dsn, operation, prepare, reset, rule_a, write_stream, SCHEMA, SERIAL,
 };
 use super::*;
 use arrow_array::builder::{ListBuilder, StringBuilder};
@@ -333,7 +333,6 @@ async fn live_k_le_chiavi_null_seguono_l_indice() {
 }
 
 /// I motivi delle perdite che il preflight dichiara.
-const ROUNDING: &str = "arrotonderebbe il valore testuale";
 const BOUNDED: &str = "spazi finali";
 const JSONB: &str = "jsonb tiene l'ultimo valore";
 
@@ -349,7 +348,10 @@ const LOSSY_TYPES: &str = "CREATE DOMAIN {s}.dn AS numeric(5,2); \
 /// prepare e nel dry run, e la scrittura committava `1.01`, `{1.01}`,
 /// `1.6777216e+07` e il composto arrotondato e troncato. Ora ogni foglia che
 /// `Strict` rifiuterebbe ha la sua perdita nel `LossReport`; il valore
-/// passa, come la politica chiede.
+/// passa, come la politica chiede. Dal 25/10 (regola A) il testo verso una
+/// foglia numerica, gli array e i composti non sono coppie misurate: si
+/// rifiutano nel preflight con ogni politica, e le perdite delle foglie si
+/// provano sui domini delle foglie misurate (`varchar(3)`, `jsonb`).
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_strette() {
@@ -361,22 +363,17 @@ async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_stret
     let admin = PostgresProvider::connect(&secret).await.expect("client");
     // (tipo della colonna, valore, motivi attesi, valore committato)
     let cases: &[(&str, &str, &[&str], &str)] = &[
-        ("{s}.dn", "1.005", &[ROUNDING], "1.01"),
-        ("numeric(5,2)[]", "{1.005}", &[ROUNDING], "{1.01}"),
-        ("{s}.dr", "16777217", &[ROUNDING], "1.6777216e+07"),
-        (
-            "{s}.misto",
-            "(1.005,\"ab   \",16777217)",
-            &[ROUNDING, BOUNDED],
-            "(1.01,\"ab \",1.6777216e+07)",
-        ),
-        ("{s}.dv[]", "{\"ab   \"}", &[BOUNDED], "{\"ab \"}"),
-        (
-            "{s}.dj[]",
-            "{\"{\\\"a\\\":1,\\\"a\\\":2}\"}",
-            &[JSONB],
-            "{\"{\\\"a\\\": 2}\"}",
-        ),
+        ("{s}.dv", "ab   ", &[BOUNDED], "ab "),
+        ("{s}.dj", "{\"a\":1,\"a\":2}", &[JSONB], "{\"a\": 2}"),
+    ];
+    // Le coppie non misurate: rifiutate nel preflight con ogni politica.
+    let unmeasured: &[(&str, &str)] = &[
+        ("{s}.dn", "1.005"),
+        ("numeric(5,2)[]", "{1.005}"),
+        ("{s}.dr", "16777217"),
+        ("{s}.misto", "(1.005,\"ab   \",16777217)"),
+        ("{s}.dv[]", "{\"ab   \"}"),
+        ("{s}.dj[]", "{\"{\\\"a\\\":1,\\\"a\\\":2}\"}"),
     ];
     let mut difformi = Vec::new();
     for policy in [
@@ -439,8 +436,36 @@ async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_stret
             }
         }
     }
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        for (column, value) in unmeasured {
+            prepare(
+                &admin,
+                &format!("{LOSSY_TYPES} CREATE TABLE {{s}}.p (id bigint PRIMARY KEY, v {column});"),
+            )
+            .await;
+            let provider = PostgresProvider::insecure_local();
+            let mut append = operation("p", WriteMode::Append);
+            append.mapping_policy = policy;
+            let dry = dry_run_stream(&provider, &secret, &append, text_row(1, value)).await;
+            let written = write_stream(&provider, &secret, &append, text_row(1, value)).await;
+            let stored = texts(&admin, "SELECT v::text FROM pln_regola_r.p").await;
+            if !rule_a(dry.as_ref().err()) || !rule_a(written.as_ref().err()) || !stored.is_empty()
+            {
+                difformi.push(format!(
+                    "{policy:?} {column} non misurata: {} -> {stored:?}",
+                    outcome_of(&written)
+                ));
+            }
+        }
+    }
     // Create con una colonna di un dominio su `numeric(5,2)`: le foglie del
-    // tipo dal catalogo, prima che la colonna esista.
+    // tipo dal catalogo, prima che la colonna esista; il testo verso la foglia
+    // numerica non e misurato (regola A).
     prepare(&admin, LOSSY_TYPES).await;
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -475,13 +500,7 @@ async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_stret
         &CancellationToken::new(),
     )
     .await;
-    if !prepared.as_ref().is_ok_and(|prepared| {
-        prepared
-            .loss_report
-            .losses
-            .iter()
-            .any(|loss| loss.field_id == 1 && loss.reason.contains(ROUNDING))
-    }) {
+    if !rule_a(prepared.as_ref().err()) {
         difformi.push(format!(
             "Create dominio: {:?}",
             prepared.map(|prepared| prepared.loss_report.losses)
@@ -494,10 +513,15 @@ async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_stret
         Box::new(One(schema, Some(batch))),
     )
     .await;
-    let stored = texts(&admin, "SELECT v::text FROM pln_regola_r.pc").await;
-    if written.is_err() || stored != ["1.01"] {
+    let created = texts(
+        &admin,
+        "SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = 'pln_regola_r' AND c.relname = 'pc'",
+    )
+    .await;
+    if !rule_a(written.as_ref().err()) || !created.is_empty() {
         difformi.push(format!(
-            "Create dominio: {} -> {stored:?}",
+            "Create dominio: {} -> {created:?}",
             outcome_of(&written)
         ));
     }
@@ -538,7 +562,9 @@ async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_stret
 /// run lo accettava e `Prepared` e `CopyText` committavano
 /// `{"{\"a\": 3, \"b\": 1}"}`. Ora il letterale si legge elemento per
 /// elemento nella forma ristretta che si legge in un solo modo, e ogni altra
-/// forma si rifiuta.
+/// forma si rifiuta. Dal 25/10 un array non e una forma misurata (regola A):
+/// ogni scrittura verso `jsonb[]` si rifiuta nel preflight, e il dry run lo
+/// decide allo stesso modo.
 #[tokio::test]
 async fn live_j_le_chiavi_ripetute_negli_elementi_di_un_array_si_rifiutano() {
     let Some(dsn) = live_dsn() else {
@@ -549,11 +575,8 @@ async fn live_j_le_chiavi_ripetute_negli_elementi_di_un_array_si_rifiutano() {
     let admin = PostgresProvider::connect(&secret).await.expect("client");
     let literal = "{\"{\\\"b\\\":1,\\\"a\\\":2,\\\"a\\\":3}\"}";
     let element = "{\"b\":1,\"a\":2,\"a\":3}";
-    let refused = |result: &plenora_database_core::Result<WriteOutcome>| {
-        result
-            .as_ref()
-            .is_err_and(|error| error.category == ErrorCategory::DataMapping)
-    };
+    let refused =
+        |result: &plenora_database_core::Result<WriteOutcome>| rule_a(result.as_ref().err());
     let mut difformi = Vec::new();
     for column in ["jsonb[]", "{s}.dj[]"] {
         for profile in [PostgresInsertMode::Prepared, PostgresInsertMode::CopyText] {
@@ -580,14 +603,10 @@ async fn live_j_le_chiavi_ripetute_negli_elementi_di_un_array_si_rifiutano() {
                 }
             }
             let dry = dry_run_stream(&provider, &secret, &strict, text_row(3, literal)).await;
-            if !dry
-                .as_ref()
-                .is_err_and(|error| error.category == ErrorCategory::DataMapping)
-            {
+            if !rule_a(dry.as_ref().err()) {
                 difformi.push(format!("{column} {profile:?} dry run letterale: ok"));
             }
-            // Un letterale nella forma che si legge in un solo modo, senza
-            // chiavi ripetute, si scrive; uno con le dimensioni dichiarate no.
+            // Anche un letterale senza chiavi ripetute: la forma non e misurata.
             let written = write_stream(
                 &provider,
                 &secret,
@@ -595,7 +614,7 @@ async fn live_j_le_chiavi_ripetute_negli_elementi_di_un_array_si_rifiutano() {
                 text_row(4, "{ \"{\\\"a\\\":1}\" , \"[1,2]\" }"),
             )
             .await;
-            if written.is_err() {
+            if !refused(&written) {
                 difformi.push(format!(
                     "{column} {profile:?} letterale senza ripetute: {}",
                     outcome_of(&written)
@@ -610,7 +629,7 @@ async fn live_j_le_chiavi_ripetute_negli_elementi_di_un_array_si_rifiutano() {
                 ));
             }
             let stored = texts(&admin, "SELECT v::text FROM pln_regola_r.ja").await;
-            if stored != ["{\"{\\\"a\\\": 1}\",\"[1, 2]\"}"] {
+            if !stored.is_empty() {
                 difformi.push(format!("{column} {profile:?} righe: {stored:?}"));
             }
         }

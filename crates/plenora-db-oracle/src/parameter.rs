@@ -179,6 +179,15 @@ fn bind_parameter(value: &ParameterValue) -> Result<Value> {
         ParameterValue::Bool(value) => Ok(Value::Integer(i64::from(*value))),
         ParameterValue::I32(value) => Ok(Value::Integer(i64::from(*value))),
         ParameterValue::I64(value) => Ok(Value::Integer(*value)),
+        // `-0.0` non ha una forma fedele in Oracle: `BINARY_DOUBLE` legato
+        // dal driver si salva in una forma non canonica (`DUMP` 127,255,...:
+        // `= 0` falso, distinto da `+0` in `COUNT(DISTINCT)`, normalizzato a
+        // `+0` da SQL), `BINARY_FLOAT`, `FLOAT` e `NUMBER` lo salvano `+0`
+        // (misurato il 25/10 su Oracle 23, PR #136). Si rifiuta su ogni
+        // percorso dei bind, con ogni politica.
+        ParameterValue::F64(value) if *value == 0.0 && value.is_sign_negative() => Err(
+            mapping_error("zero negativo senza una forma fedele in Oracle"),
+        ),
         ParameterValue::F64(value) if value.is_finite() => Ok(Value::Float(*value)),
         ParameterValue::F64(_) => Err(mapping_error("parametro float Oracle non finito")),
         ParameterValue::String(value)
@@ -240,9 +249,22 @@ fn validate_decimal(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Gli anni che un `DATE` Oracle scrive come Arrow li intende: da 1 a 9999.
+/// Prima dell'anno 1 chrono conta gli anni in modo astronomico (l'anno 0
+/// esiste) e Oracle no, e la codifica del driver (`(anno / 100) as u8 + 100`)
+/// andava in panic (seconda rilettura del round 8): si rifiuta.
+fn oracle_year(year: i32) -> Result<i32> {
+    if (1..=9999).contains(&year) {
+        Ok(year)
+    } else {
+        Err(mapping_error("anno fuori dall'intervallo 1-9999 di Oracle"))
+    }
+}
+
 fn parse_date(value: &str) -> Result<OracleDate> {
     let date = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .map_err(|_| mapping_error("parametro date Oracle non valido"))?;
+    oracle_year(chrono::Datelike::year(&date))?;
     Ok(OracleDate::date(
         chrono::Datelike::year(&date),
         u8::try_from(chrono::Datelike::month(&date))
@@ -255,6 +277,14 @@ fn parse_date(value: &str) -> Result<OracleDate> {
 fn parse_timestamp(value: &str) -> Result<OracleTimestamp> {
     let timestamp = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
         .map_err(|_| mapping_error("parametro timestamp Oracle non valido"))?;
+    oracle_year(chrono::Datelike::year(&timestamp))?;
+    // Il driver porta i microsecondi: una frazione sotto il microsecondo si
+    // perderebbe in silenzio nella divisione.
+    if chrono::Timelike::nanosecond(&timestamp) % 1_000 != 0 {
+        return Err(mapping_error(
+            "frazione di secondo sotto il microsecondo non rappresentabile da Oracle",
+        ));
+    }
     Ok(OracleTimestamp::new(
         chrono::Datelike::year(&timestamp),
         u8::try_from(chrono::Datelike::month(&timestamp))

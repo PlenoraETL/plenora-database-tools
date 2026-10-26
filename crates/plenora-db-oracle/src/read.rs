@@ -462,8 +462,10 @@ impl Values {
                     .map_err(|_| mapping("NUMBER intero Oracle non rappresentabile"))?,
             )),
             (Self::F32(values), ParameterValue::F64(value)) => {
+                // Il driver legge BINARY_FLOAT come f64 esatto: il ritorno a
+                // f32 deve essere esatto, o il valore non e un BINARY_FLOAT.
                 let narrowed = narrow_f32(*value);
-                if !narrowed.is_finite() {
+                if !narrowed.is_finite() || f64::from(narrowed).to_bits() != value.to_bits() {
                     return Err(mapping("BINARY_FLOAT Oracle non rappresentabile"));
                 }
                 values.push(Some(narrowed));
@@ -577,7 +579,11 @@ impl Values {
                 }
                 Arc::new(builder.finish())
             }
-            Self::Timestamp(values, _) => Arc::new(TimestampMicrosecondArray::from(values)),
+            Self::Timestamp(values, false) => Arc::new(TimestampMicrosecondArray::from(values)),
+            // Lo schema dichiara gli istanti in UTC: la colonna lo porta.
+            Self::Timestamp(values, true) => {
+                Arc::new(TimestampMicrosecondArray::from(values).with_timezone("UTC"))
+            }
         };
         Ok(array)
     }

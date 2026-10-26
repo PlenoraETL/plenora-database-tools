@@ -14,6 +14,7 @@ mod row_visibility;
 mod transaction;
 mod types;
 mod write;
+mod write_admission;
 
 pub use catalog::{Db2Column, Db2Index, Db2ObjectDescription, Db2ObjectSummary};
 pub use config::{Db2Config, Db2TlsMode};
@@ -67,3 +68,11 @@ mod write_rewrite_live_tests;
 #[cfg(test)]
 #[path = "write_rewrite_ora_tests.rs"]
 mod write_rewrite_ora_tests;
+
+#[cfg(test)]
+#[path = "write_admission_live_tests.rs"]
+mod write_admission_live_tests;
+
+#[cfg(test)]
+#[path = "write_keys_collation_tests.rs"]
+mod write_keys_collation_tests;

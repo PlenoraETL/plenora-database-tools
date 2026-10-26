@@ -168,7 +168,7 @@ impl PostgresProvider {
                 // La regola K2 come la scrittura: l'uguaglianza delle chiavi.
                 write::assign_dry_run_key_equality(Some(session), &mut state, operation, &schema)
                     .await?;
-                let null_keys = write::visibility::null_keys(session, operation).await?;
+                let null_keys = write::key_facts(session, operation).await?;
                 Ok((verdict, null_keys))
             }
             .await;
@@ -1120,10 +1120,14 @@ impl Provider for PostgresProvider {
             let operation = &self.resolve_write_target(secret, operation).await?;
             // La stessa compilazione di `compile_write_plan`, che il dry run
             // della CLI esegue senza server.
-            let driver_state = write::prepare_state(&input_schema, operation)?;
+            let mut driver_state = write::prepare_state(&input_schema, operation)?;
             let (operation_lease, columns_lease) =
                 ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
-            let loss_report = preflight::write(self, secret, operation, &input_schema).await?;
+            let (loss_report, admitted) =
+                preflight::write(self, secret, operation, &input_schema).await?;
+            // La regola A: le riscritture misurate del target, che la
+            // scrittura e il dry run verificano valore per valore.
+            driver_state.apply_admission(&input_schema, operation, &admitted);
             Ok(PreparedWrite::new(
                 operation.clone(),
                 input_schema,
@@ -1337,3 +1341,7 @@ mod write_r5_live_tests;
 #[cfg(test)]
 #[path = "write_r7_live_tests.rs"]
 mod write_r7_live_tests;
+
+#[cfg(test)]
+#[path = "write_admission_live_tests.rs"]
+mod write_admission_live_tests;

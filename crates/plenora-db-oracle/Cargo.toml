@@ -19,5 +19,8 @@ serde.workspace = true
 tokio.workspace = true
 sha2.workspace = true
 
+[dev-dependencies]
+plenora-database-testkit.workspace = true
+
 [lints]
 workspace = true

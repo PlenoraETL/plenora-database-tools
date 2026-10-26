@@ -655,3 +655,8 @@ mod r4;
 #[cfg(test)]
 #[path = "write_semantics_r7_live_tests.rs"]
 mod r7;
+
+// L'ottava rilettura del 25/10 (regola A e regola K sotto la collation).
+#[cfg(test)]
+#[path = "write_semantics_r8_live_tests.rs"]
+mod r8;

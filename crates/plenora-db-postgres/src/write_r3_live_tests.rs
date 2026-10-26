@@ -4,7 +4,8 @@
 //! `committed` silenzioso.
 
 use super::write_visibility_live_tests::{
-    dry_run_stream, dsn_as_role, live_dsn, operation, prepare, reset, write_stream, SERIAL,
+    dry_run_stream, dsn_as_role, live_dsn, nondeterministic_key, operation, prepare, reset, rule_a,
+    write_stream, SERIAL,
 };
 use super::*;
 use arrow_array::builder::{ListBuilder, StringBuilder};
@@ -13,7 +14,7 @@ use arrow_array::{
     TimestampMicrosecondArray,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use plenora_database_core::loss::{LossCategory, MappingPolicy};
+use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::plan::WriteMode;
 use plenora_database_core::provider::{BatchStream, Provider};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
@@ -117,7 +118,10 @@ fn with_policy(mut operation: WriteOperation, policy: MappingPolicy) -> WriteOpe
 /// percorso del ruolo dopo `pg_catalog` (la guardia della regola Q non lo
 /// vede), e `DateStyle = DMY`. Su 1b02559 il confronto `typelem <> 0` della
 /// regola V saltava il ramo degli array e `['01/02/2026']` verso `date[]` si
-/// committava come `{2026-02-01}`, in ogni profilo.
+/// committava come `{2026-02-01}`, in ogni profilo. Dal 25/10 (regola A)
+/// un array non e una forma misurata: la scrittura si rifiuta nel preflight,
+/// con la forma canonica come con l'altra, e il dry run lo decide allo stesso
+/// modo.
 #[tokio::test]
 async fn live_q2_operatore_dirottato_non_cambia_lo_sql_della_libreria() {
     let Some(dsn) = live_dsn() else {
@@ -167,12 +171,7 @@ async fn live_q2_operatore_dirottato_non_cambia_lo_sql_della_libreria() {
         let append = with_policy(operation("d", WriteMode::Append), MappingPolicy::Lossy);
         let written = write_stream(&provider, &role_secret, &append, input("01/02/2026")).await;
         let stored = texts(&admin, "SELECT at::text FROM pln_regola_r.d").await;
-        if !refused_with(
-            written.as_ref().err(),
-            ErrorCategory::DataMapping,
-            write::canonical_reason(),
-        ) || !stored.is_empty()
-        {
+        if !rule_a(written.as_ref().err()) || !stored.is_empty() {
             difformi.push(format!(
                 "{profile:?} non canonico: {} -> {stored:?}",
                 rows_of(&written)
@@ -180,11 +179,7 @@ async fn live_q2_operatore_dirottato_non_cambia_lo_sql_della_libreria() {
         }
         if profile != PostgresInsertMode::CopyBinary {
             let dry = dry_run_stream(&provider, &role_secret, &append, input("01/02/2026")).await;
-            if !refused_with(
-                dry.as_ref().err(),
-                ErrorCategory::DataMapping,
-                write::canonical_reason(),
-            ) {
+            if !rule_a(dry.as_ref().err()) {
                 difformi.push(format!("{profile:?} dry run: {:?}", dry.map(|_| "ok")));
             }
         }
@@ -196,7 +191,7 @@ async fn live_q2_operatore_dirottato_non_cambia_lo_sql_della_libreria() {
         }
         let written = write_stream(&provider, &role_secret, &append, input("2026-01-02")).await;
         let stored = texts(&admin, "SELECT at::text FROM pln_regola_r.d").await;
-        if written.is_err() || stored != ["{2026-01-02}"] {
+        if !rule_a(written.as_ref().err()) || !stored.is_empty() {
             difformi.push(format!(
                 "{profile:?} canonico: {} -> {stored:?}",
                 rows_of(&written)
@@ -211,6 +206,10 @@ async fn live_q2_operatore_dirottato_non_cambia_lo_sql_della_libreria() {
 /// sotto `"C"`. Su 1b02559 Update di `(A,N),(zzz,B)` dava `confirmed 2
 /// updated 2`, con `A` e `a` aggiornate e `zzz` assente. Anche un'opclass
 /// che non e la predefinita del tipo non prova l'unicita della colonna.
+/// Dal 25/10 una chiave con una collation non deterministica si rifiuta
+/// prima (regola K sotto collation, `refuse_nondeterministic_keys`), anche
+/// con l'indice sotto la collation della colonna; `citext` non e una coppia
+/// misurata (regola A).
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_k2_l_indice_unico_confronta_come_la_colonna() {
@@ -263,7 +262,11 @@ async fn live_k2_l_indice_unico_confronta_come_la_colonna() {
             let written = write_stream(&provider, &secret, &operation, input()).await;
             let after = texts(&admin, read).await;
             let refused = |error: Option<&DatabaseError>| {
-                refused_with(error, ErrorCategory::Schema, KEYS_WITHOUT_UNIQUE_INDEX)
+                if *name == "collation-diversa" {
+                    nondeterministic_key(error)
+                } else {
+                    refused_with(error, ErrorCategory::Schema, KEYS_WITHOUT_UNIQUE_INDEX)
+                }
             };
             if !refused(written.as_ref().err()) || !refused(dry.as_ref().err()) || after != before {
                 difformi.push(format!(
@@ -274,8 +277,10 @@ async fn live_k2_l_indice_unico_confronta_come_la_colonna() {
             }
         }
     }
-    // L'indice con la collation della colonna: `a` trova `A`, come lo
-    // statement la confronta; `citext` con la sua opclass predefinita.
+    // L'indice con la collation della colonna, che fino al 25/10 si
+    // ammetteva (`a` trovava `A`), e `citext`: rifiutati prima di ogni
+    // effetto, il primo dalla regola K sotto collation, il secondo dalla
+    // regola A.
     let accepted = [
         (
             "collation-della-colonna",
@@ -305,8 +310,12 @@ async fn live_k2_l_indice_unico_confronta_come_la_colonna() {
             )
             .await;
             let after = texts(&admin, read).await;
-            let confirmed = written.as_ref().map(|outcome| outcome.rows.confirmed);
-            if confirmed.as_ref().ok() != Some(&1) || after != ["A:N", "b:y"] {
+            let refused = if *name == "citext" {
+                rule_a(written.as_ref().err())
+            } else {
+                nondeterministic_key(written.as_ref().err())
+            };
+            if !refused || after != ["A:x", "b:y"] {
                 difformi.push(format!(
                     "{name} {profile:?}: {} -> {after:?}",
                     rows_of(&written)
@@ -321,7 +330,9 @@ async fn live_k2_l_indice_unico_confronta_come_la_colonna() {
 /// F3: `'now'` verso `time` con `Lossy` e `CopyText` si scriveva come l'ora
 /// del `TimeZone` della sessione. I valori speciali si rifiutano ovunque, e
 /// un tipo fuori dall'elenco chiuso (`xml`, che dipende da `xmloption`) non
-/// riceve testo; `citext` legge con `textin` e lo riceve.
+/// riceve testo; `citext` legge con `textin` e lo riceve. Dal 25/10 il testo
+/// verso un tipo temporale, `xml` e `citext` non sono coppie misurate (regola
+/// A): si rifiutano nel preflight, prima della regola V2.
 #[tokio::test]
 async fn live_v2_testo_soltanto_verso_l_elenco_chiuso() {
     let Some(dsn) = live_dsn() else {
@@ -350,12 +361,7 @@ async fn live_v2_testo_soltanto_verso_l_elenco_chiuso() {
             let append = with_policy(operation("h", WriteMode::Append), MappingPolicy::Lossy);
             let written = write_stream(&provider, &secret, &append, text_input(1, value)).await;
             let stored = texts(&admin, "SELECT at::text FROM pln_regola_r.h").await;
-            if !refused_with(
-                written.as_ref().err(),
-                ErrorCategory::DataMapping,
-                write::canonical_reason(),
-            ) || !stored.is_empty()
-            {
+            if !rule_a(written.as_ref().err()) || !stored.is_empty() {
                 difformi.push(format!(
                     "{native} {value} {profile:?}: {} -> {stored:?}",
                     rows_of(&written)
@@ -379,7 +385,7 @@ async fn live_v2_testo_soltanto_verso_l_elenco_chiuso() {
         )
         .await;
         let stored = texts(&admin, "SELECT at::text FROM pln_regola_r.h").await;
-        if written.is_err() || stored != ["Testo"] {
+        if !rule_a(written.as_ref().err()) || !stored.is_empty() {
             difformi.push(format!(
                 "citext {profile:?}: {} -> {stored:?}",
                 rows_of(&written)
@@ -392,7 +398,9 @@ async fn live_v2_testo_soltanto_verso_l_elenco_chiuso() {
 
 /// F5: 10:00:00.999999 verso `timestamp(0)` e `time(0)` diventava 10:00:01
 /// in ogni profilo, con `Strict`, dove la scala di un `numeric` si rifiuta.
-/// Con `Lossy` la perdita e nel `LossReport` (`precision`).
+/// Con `Lossy` la perdita era nel `LossReport` (`precision`). Dal 25/10 la
+/// misura della regola A di `timestamp(0)` e `time(0)` non scrive alcun valore
+/// con `Strict`: la coppia si rifiuta nel preflight con ogni politica.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_p_precisione_temporale_ridotta() {
@@ -434,11 +442,7 @@ async fn live_p_precisione_temporale_ridotta() {
             let strict = operation("p", WriteMode::Append);
             let written = write_stream(&provider, &secret, &strict, input(native)).await;
             let stored = texts(&admin, "SELECT at::text FROM pln_regola_r.p").await;
-            let refused = written
-                .as_ref()
-                .err()
-                .is_some_and(|error| error.category == ErrorCategory::DataMapping);
-            if !refused || !stored.is_empty() {
+            if !rule_a(written.as_ref().err()) || !stored.is_empty() {
                 difformi.push(format!(
                     "{column} Strict {profile:?}: {} -> {stored:?}",
                     rows_of(&written)
@@ -446,18 +450,14 @@ async fn live_p_precisione_temporale_ridotta() {
             }
             if profile != PostgresInsertMode::CopyBinary {
                 let dry = dry_run_stream(&provider, &secret, &strict, input(native)).await;
-                if !dry
-                    .as_ref()
-                    .err()
-                    .is_some_and(|error| error.category == ErrorCategory::DataMapping)
-                {
+                if !rule_a(dry.as_ref().err()) {
                     difformi.push(format!(
                         "{column} dry run {profile:?}: {:?}",
                         dry.map(|_| "ok")
                     ));
                 }
             }
-            // Con `Lossy` il valore passa e la perdita e dichiarata.
+            // Con `Lossy` la coppia si rifiuta nello stesso modo.
             let lossy = with_policy(strict, MappingPolicy::Lossy);
             let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
             let prepared = Provider::prepare_write(
@@ -468,26 +468,11 @@ async fn live_p_precisione_temporale_ridotta() {
                 &budget,
                 &CancellationToken::new(),
             )
-            .await
-            .expect("preparazione Lossy");
-            let declared = prepared
-                .loss_report
-                .losses
-                .iter()
-                .any(|loss| loss.category == LossCategory::Precision);
-            let written = Provider::write(
-                &provider,
-                &secret,
-                prepared,
-                input(native),
-                &budget,
-                &CancellationToken::new(),
-            )
             .await;
-            if !declared || written.is_err() {
+            if !rule_a(prepared.as_ref().err()) {
                 difformi.push(format!(
-                    "{column} Lossy {profile:?}: dichiarata {declared}, {}",
-                    rows_of(&written)
+                    "{column} Lossy {profile:?}: {:?}",
+                    prepared.map(|_| "preparata")
                 ));
             }
         }

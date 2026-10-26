@@ -256,8 +256,10 @@ async fn live_s7_datetimeoffset_oltre_il_nanosecondo_si_rifiuta() {
 
 /// La regola J su `xml`: lo spazio di un nodo di testo si conserva (stile 1
 /// di `CONVERT`); dichiarazione, apici e forma degli elementi vuoti sono la
-/// semantica del tipo, ammessa con `Strict` e dichiarata nel `LossReport`
-/// delle altre politiche.
+/// semantica del tipo, dichiarata nel `LossReport` delle politiche non
+/// strette. Dal 25/10 (regola A) con `Strict` `xml` si rifiuta
+/// (`r8::live_a_xml_non_riscrive_il_testo_in_silenzio`): la prova del nodo di
+/// testo gira con `Lossy`.
 #[tokio::test]
 #[ignore = "richiede SQL Server live esplicito e muta fixture DML isolate"]
 async fn live_j_xml_conserva_i_nodi_di_testo() {
@@ -266,7 +268,7 @@ async fn live_j_xml_conserva_i_nodi_di_testo() {
     table(&mut admin, "xml").await;
     let result = append(
         SqlServerInsertMode::Prepared,
-        MappingPolicy::Strict,
+        MappingPolicy::Lossy,
         Field::new("at", DataType::Utf8, true),
         Arc::new(StringArray::from(vec![Some(
             "<?xml version=\"1.0\"?><a b='1'> <c></c></a>",

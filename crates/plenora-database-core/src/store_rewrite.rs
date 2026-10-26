@@ -48,8 +48,9 @@
 //!   `VARCHAR(3)` diventava `'abc'`).
 //! - [`StoreRewrite::Underflow`]: il `FLOAT` di Oracle (un `NUMBER`) salva
 //!   come `0` un valore non nullo sotto `1e-130` (`1e-200` diventava `0`).
-//! - [`StoreRewrite::NegativeZero`]: il `FLOAT` di Oracle salva `-0.0` come
-//!   `0`, e cosi `DOUBLE` e `REAL` di Db2 e `DOUBLE` e `FLOAT` di `MariaDB`
+//! - [`StoreRewrite::NegativeZero`]: nessun tipo numerico Oracle conserva
+//!   `-0.0` fedelmente; la riscrittura si dichiara per ogni ingresso float.
+//!   Lo stesso vale per `DOUBLE` e `REAL` di Db2 e `DOUBLE` e `FLOAT` di `MariaDB`
 //!   (misurato sul percorso dei bind e con uno statement preparato).
 //!
 //! Il provider dichiara, per colonna, le riscritture del tipo del target
@@ -65,8 +66,16 @@
 //! - Il carattere NUL nel testo: Oracle, Db2, SQL Server, `MySQL` lo
 //!   conservano; PostgreSQL lo rifiuta con un errore.
 //! - `-0.0`: lo conservano `float8` di PostgreSQL, `float` di SQL Server
-//!   (misurato con un letterale), `BINARY_DOUBLE` di Oracle, `DOUBLE` di
-//!   `MySQL`.
+//!   (misurato con un letterale), `DOUBLE` di `MySQL`. **Non** Oracle: fino al
+//!   round 8 qui si leggeva che `BINARY_DOUBLE` lo conserva, ed era falso
+//!   (PR #136, misurato): legato dal driver si salva in una forma non
+//!   canonica che il server non confronta uguale a `0` e normalizza a `+0`,
+//!   e ogni altro tipo numerico lo salva `+0`. Il provider Oracle lo rifiuta
+//!   al bind (`plenora-db-oracle`, `parameter.rs`); la sonda della regola A,
+//!   che rilegge con il decodificatore della libreria, non vede la forma non
+//!   canonica, e la prova e il rifiuto. Il piano Oracle aggiunge quindi
+//!   `NegativeZero` anche quando il fixture della sonda indica soltanto il
+//!   rifiuto: con `Strict` e per le chiavi interviene la regola S.
 //! - Le liste verso le collezioni Oracle, `CHAR`, `BINARY`, `ENUM` e `SET` di
 //!   `MySQL` e `MariaDB`: non sono tipi scrivibili (il preflight li rifiuta).
 //! - `EMPTY_STRING_IS_NULL` e `PAD_CHAR_TO_FULL_LENGTH` di `MariaDB` e
@@ -112,9 +121,12 @@ use crate::plan::{ProviderKind, WriteOperation};
 use crate::provider::{BatchStream, ProviderFuture};
 use crate::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Float32Type, Float64Type};
+use arrow_array::types::{
+    Float32Type, Float64Type, TimestampMicrosecondType, TimestampMillisecondType,
+    TimestampNanosecondType, TimestampSecondType,
+};
 use arrow_array::{Array, RecordBatch};
-use arrow_schema::{DataType, SchemaRef};
+use arrow_schema::{DataType, SchemaRef, TimeUnit};
 
 /// Il motivo pubblico del rifiuto di un valore riscritto con `Strict`.
 pub const REWRITTEN_VALUE: &str = "il server riscriverebbe al salvataggio il valore in uno \
@@ -143,6 +155,22 @@ pub enum StoreRewrite {
     Underflow { min_abs: f64 },
     /// `-0.0` diventa `0.0`.
     NegativeZero,
+    /// Un istante con piu di `digits` cifre frazionarie dei secondi si
+    /// arrotonda o si tronca (Oracle `TIMESTAMP(p)`, Db2 `TIMESTAMP(p)`).
+    FractionalSeconds { digits: u8 },
+    /// Un testo con un carattere fuori da ASCII si tratta come riscritto: il
+    /// charset della colonna non lo prova (verifica per eccesso).
+    NonAscii,
+    /// Un documento JSON con un numero fuori dalla forma intera breve
+    /// (`-?(0|[1-9][0-9]{0,14})`, senza `-0`) si tratta come riscritto: il
+    /// tipo JSON del target ne riscrive la forma (`1.0` in `1`, `1e2` in
+    /// `100`, `-0` in `0`, le cifre oltre la precisione). Verifica per
+    /// eccesso: anche `1.5`, che `jsonb` conserva, si tratta come riscritto.
+    JsonNumbers,
+    /// Ogni valore non nullo si tratta come riscritto: la misura della regola
+    /// A (`crate::write_admission`) ha trovato riscritture che nessuna classe
+    /// per valore spiega.
+    Every,
 }
 
 impl StoreRewrite {
@@ -169,6 +197,18 @@ impl StoreRewrite {
                 "regola S: il tipo numerico salva come 0 un float sotto il proprio minimo"
             }
             Self::NegativeZero => "regola S: il tipo numerico salva -0.0 come 0",
+            Self::FractionalSeconds { .. } => {
+                "regola S: il tipo temporale arrotonda o tronca le cifre frazionarie oltre la propria precisione"
+            }
+            Self::NonAscii => {
+                "regola S: il charset della colonna non conserva ogni carattere fuori da ASCII"
+            }
+            Self::JsonNumbers => {
+                "regola S: il tipo JSON del target riscrive la forma dei numeri fuori dagli interi brevi"
+            }
+            Self::Every => {
+                "regola S: la misura della coppia di tipi (regola A) ha trovato valori riscritti al salvataggio"
+            }
         }
     }
 
@@ -178,8 +218,13 @@ impl StoreRewrite {
             Self::PadText { .. }
             | Self::PadBinary { .. }
             | Self::StripTrailing
-            | Self::ExcessSpaces { .. } => LossCategory::NativeType,
-            Self::Underflow { .. } | Self::NegativeZero => LossCategory::Precision,
+            | Self::ExcessSpaces { .. }
+            | Self::Every => LossCategory::NativeType,
+            Self::Underflow { .. }
+            | Self::NegativeZero
+            | Self::FractionalSeconds { .. }
+            | Self::JsonNumbers => LossCategory::Precision,
+            Self::NonAscii => LossCategory::Encoding,
         }
     }
 
@@ -192,16 +237,26 @@ impl StoreRewrite {
             DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_)
         );
         let float = matches!(data_type, DataType::Float32 | DataType::Float64);
+        let instant = matches!(data_type, DataType::Timestamp(_, _));
         match self {
             Self::EmptyToNull | Self::StripTrailing => text || binary,
-            Self::PadText { .. } | Self::ExcessSpaces { .. } => text,
+            Self::PadText { .. }
+            | Self::ExcessSpaces { .. }
+            | Self::NonAscii
+            | Self::JsonNumbers => text,
             Self::PadBinary { .. } => binary,
             Self::Underflow { .. } | Self::NegativeZero => float,
+            Self::FractionalSeconds { .. } => instant,
+            Self::Every => true,
         }
     }
 
     /// Se il valore non nullo di `array` alla riga `row` sarebbe riscritto.
-    fn rewrites(self, array: &dyn Array, row: usize) -> bool {
+    #[must_use]
+    pub fn rewrites(self, array: &dyn Array, row: usize) -> bool {
+        if self == Self::Every {
+            return !array.is_null(row);
+        }
         match (self, value(array, row)) {
             (Self::EmptyToNull, Value::Text(text)) => text.is_empty(),
             (Self::EmptyToNull, Value::Bytes(bytes)) => bytes.is_empty(),
@@ -222,15 +277,71 @@ impl StoreRewrite {
             (Self::NegativeZero, Value::Float(number)) => {
                 number == 0.0 && number.is_sign_negative()
             }
+            (Self::FractionalSeconds { digits }, Value::Instant { subsecond_ns }) => {
+                // Le cifre conservate sono `digits` su nove: il resto dei
+                // nanosecondi oltre quella unita e cio che si perde.
+                let unit = 10_i64.pow(9_u32.saturating_sub(u32::from(digits.min(9))));
+                subsecond_ns.rem_euclid(unit) != 0
+            }
+            (Self::NonAscii, Value::Text(text)) => !text.is_ascii(),
+            (Self::JsonNumbers, Value::Text(text)) => has_rewritten_json_number(text),
             _ => false,
         }
     }
+}
+
+/// Se il testo contiene, fuori dalle stringhe JSON, un numero che non ha la
+/// forma `-?(0|[1-9][0-9]{0,14})` o che e `-0`. Il testo non si valida: un
+/// documento non valido lo rifiuta il server, e qui conta soltanto che nessun
+/// numero passi in una forma che il tipo riscrive.
+fn has_rewritten_json_number(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                index += 1;
+                while index < bytes.len() && bytes[index] != b'"' {
+                    index += if bytes[index] == b'\\' { 2 } else { 1 };
+                }
+                index += 1;
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = index;
+                while index < bytes.len()
+                    && matches!(bytes[index], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
+                {
+                    index += 1;
+                }
+                if !short_integer(&bytes[start..index]) {
+                    return true;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    false
+}
+
+fn short_integer(token: &[u8]) -> bool {
+    let digits = token.strip_prefix(b"-").unwrap_or(token);
+    if digits.is_empty() || digits.len() > 15 || !digits.iter().all(u8::is_ascii_digit) {
+        return false;
+    }
+    if digits == b"0" {
+        return token.len() == 1;
+    }
+    digits[0] != b'0'
 }
 
 enum Value<'a> {
     Text(&'a str),
     Bytes(&'a [u8]),
     Float(f64),
+    /// I nanosecondi dell'istante dentro il proprio secondo.
+    Instant {
+        subsecond_ns: i64,
+    },
     Other,
 }
 
@@ -245,6 +356,26 @@ fn value(array: &dyn Array, row: usize) -> Value<'_> {
             Value::Float(f64::from(array.as_primitive::<Float32Type>().value(row)))
         }
         DataType::Float64 => Value::Float(array.as_primitive::<Float64Type>().value(row)),
+        DataType::Timestamp(unit, _) => {
+            let (raw, per_second) = match unit {
+                TimeUnit::Second => (array.as_primitive::<TimestampSecondType>().value(row), 1),
+                TimeUnit::Millisecond => (
+                    array.as_primitive::<TimestampMillisecondType>().value(row),
+                    1_000,
+                ),
+                TimeUnit::Microsecond => (
+                    array.as_primitive::<TimestampMicrosecondType>().value(row),
+                    1_000_000,
+                ),
+                TimeUnit::Nanosecond => (
+                    array.as_primitive::<TimestampNanosecondType>().value(row),
+                    1_000_000_000,
+                ),
+            };
+            Value::Instant {
+                subsecond_ns: raw.rem_euclid(per_second) * (1_000_000_000 / per_second),
+            }
+        }
         _ => Value::Other,
     }
 }

@@ -1,0 +1,75 @@
+name: write-admission-probes
+
+# Le misure live della regola A delle scritture: per ogni prodotto e ogni
+# immagine qualificata, la sonda scrive con il percorso della libreria una
+# batteria fissa di valori limite per ogni chiave d'ammissione e verifica che il
+# server dia ancora le misure del fixture `tests/fixtures/scrittura_server_*.json`.
+# `plenora_database_core::write_admission` ammette soltanto le coppie misurate.
+#
+# Questo file non contiene logica di qualifica: un'invocazione per prodotto.
+# Le immagini vengono, per digest, dalle loro fonti (references.json, compose e
+# matrici); i container sono usa e getta (`docker run --rm`).
+
+on:
+  schedule:
+    # Mercoledi 03:41 UTC, fuori dalle campagne del lunedi e dalle sonde SRID.
+    - cron: '41 3 * * 3'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/write-admission-probes.yml"
+      - "crates/plenora-database-core/src/write_admission.rs"
+      - "crates/plenora-database-core/src/store_rewrite.rs"
+      - "crates/plenora-database-testkit/src/write_probe.rs"
+      - "crates/plenora-db-*/src/write*.rs"
+      - "crates/plenora-db-*/src/write/**"
+      - "crates/plenora-db-*/src/catalog/**"
+      - "crates/plenora-db-*/src/catalog.rs"
+      - "crates/plenora-db-*/src/parameter.rs"
+      - "crates/plenora-db-*/src/transaction.rs"
+      - "crates/plenora-db-*/src/read.rs"
+      - "vendor/oracle-rs/src/**"
+      - "scripts/sonde_scritture_server.py"
+      - "tests/fixtures/scrittura_server_*.json"
+      - "docker/**/references.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: write-admission-probes-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  probes:
+    name: sonde scritture (${{ matrix.server }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [postgres, mysql, mariadb, sqlserver, oracle, db2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: dipendenze dei gate Python
+        run: python3 -m pip install -r requirements-self-tests.txt
+      - name: sonde_scritture_server.py
+        run: >-
+          python3 scripts/sonde_scritture_server.py
+          --server ${{ matrix.server }}
+          --riferimenti
+          --referto sonde-scritture-${{ matrix.server }}.json
+      - name: referto
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonde-scritture-${{ matrix.server }}
+          path: sonde-scritture-${{ matrix.server }}.json
+          if-no-files-found: error

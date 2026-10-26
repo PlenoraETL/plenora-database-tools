@@ -26,8 +26,9 @@ pub(super) struct WriteColumnPlan {
     pub(super) nullable: bool,
     pub(super) collation: Option<String>,
     pub(super) spatial_srid: Option<u32>,
-    /// Le riscritture al salvataggio della colonna del target (regola S,
-    /// [`store_rewrites`]).
+    /// Le riscritture al salvataggio della colonna del target (regola S),
+    /// misurate per la sua chiave d'ammissione (regola A,
+    /// [`WritePlan::admit`]).
     pub(super) rewrites: Vec<StoreRewrite>,
 }
 
@@ -106,7 +107,6 @@ impl WritePlan {
         input_schema: SchemaRef,
         observed_spatial: &HashMap<String, ObservedSpatialContract>,
         schema_evolution: super::SqlServerSchemaEvolution,
-        ansi_padding: &HashMap<String, bool>,
     ) -> Result<Self> {
         validate_operation(operation)?;
         if input_schema.fields().is_empty() {
@@ -184,14 +184,6 @@ impl WritePlan {
                     source_type: field.data_type().to_string(),
                     native_declaration: target_spec.native_declaration.clone(),
                 });
-                // La colonna aggiunta nasce con `ANSI_PADDING ON`, quello della
-                // sessione (`crate::session`).
-                let rewrites = store_rewrites(
-                    &target_spec.native_type,
-                    &target_spec.native_declaration,
-                    true,
-                    true,
-                );
                 columns.push(WriteColumnPlan {
                     input_index,
                     name: field.name().clone(),
@@ -201,7 +193,7 @@ impl WritePlan {
                     nullable: true,
                     collation: target_spec.collation,
                     spatial_srid,
-                    rewrites,
+                    rewrites: Vec::new(),
                 });
                 continue;
             };
@@ -215,13 +207,6 @@ impl WritePlan {
             validate_arrow_type(field, &target_spec)?;
             let spatial_srid =
                 validate_spatial_contract(field, &target_spec, observed_spatial.get(&target.name))?;
-            let rewrites = store_rewrites(
-                &target_spec.native_type,
-                &target_spec.native_declaration,
-                target.nullable,
-                // Assente: senza riempimento, la lettura piu stretta.
-                ansi_padding.get(&target.name).copied().unwrap_or(false),
-            );
             columns.push(WriteColumnPlan {
                 input_index,
                 name: target.name.clone(),
@@ -231,7 +216,7 @@ impl WritePlan {
                 nullable: target.nullable,
                 collation: target.collation.clone(),
                 spatial_srid,
-                rewrites,
+                rewrites: Vec::new(),
             });
         }
         for (column, field) in columns.iter().zip(input_schema.fields()) {
@@ -344,6 +329,79 @@ impl WritePlan {
         report.validate()?;
         Ok(report)
     }
+
+    /// La regola A (`super::admission`): ogni colonna non spatial cerca la
+    /// propria chiave d'ammissione nel fixture della major del server, e le
+    /// riscritture misurate diventano quelle della regola S. Una chiave non
+    /// misurata, o una major non misurata, rifiuta la scrittura con ogni
+    /// politica. Con una politica non stretta le riscritture delle colonne che
+    /// non sono chiavi si dichiarano nel `LossReport`; in una chiave un valore
+    /// riscritto si rifiuta con ogni politica, e non e una perdita.
+    ///
+    /// La tabella della sonda (`cfg(test)`) non applica la regola: e la misura
+    /// che la regola legge.
+    ///
+    /// # Errors
+    ///
+    /// `unsupported` per una coppia o una major non misurate o misurate come
+    /// rifiutate; `internal` per un fixture non valido.
+    pub(super) fn admit(
+        &mut self,
+        operation: &WriteOperation,
+        facts: &[crate::catalog::SqlServerWriteFacts],
+        server_major: &str,
+    ) -> Result<()> {
+        #[cfg(test)]
+        if plenora_database_testkit::write_probe::is_probe_table(&self.object) {
+            for column in &mut self.columns {
+                column.rewrites.clear();
+            }
+            return Ok(());
+        }
+        let measured = super::admission::admission_table()?.server(server_major)?;
+        for column in &mut self.columns {
+            if matches!(
+                column.kind,
+                SqlServerColumnKind::Geometry | SqlServerColumnKind::Geography
+            ) {
+                continue;
+            }
+            let fact = facts
+                .iter()
+                .find(|candidate| candidate.name == column.name)
+                .ok_or_else(|| {
+                    plan_error(
+                        ErrorCategory::Schema,
+                        "colonna del target SQL Server senza fatti del catalogo (regola A)",
+                    )
+                })?;
+            let field = self.input_schema.field(column.input_index);
+            let (key, dimensions) = super::admission::admission_key(field.data_type(), fact);
+            column.rewrites = measured.admit(&key, dimensions)?;
+        }
+        let guard = plenora_database_core::store_rewrite::RewriteGuard::new(
+            plenora_database_core::plan::ProviderKind::Sqlserver,
+            &self.input_schema,
+            operation,
+            self.columns
+                .iter()
+                .map(|column| ColumnRewrites {
+                    field: column.input_index,
+                    target_type: column.native_declaration.clone(),
+                    rewrites: column.rewrites.clone(),
+                })
+                .collect(),
+        )?;
+        self.precision_losses
+            .extend(guard.losses().into_iter().map(|mut loss| {
+                loss.source_type = usize::try_from(loss.field_id)
+                    .ok()
+                    .and_then(|index| self.input_schema.fields().get(index))
+                    .map(|field| field.data_type().to_string());
+                loss
+            }));
+        Ok(())
+    }
 }
 
 const fn supports_additive_evolution(mode: WriteMode) -> bool {
@@ -402,13 +460,6 @@ fn compile_new_target(
                 ));
             }
         }
-        // Create e Replace creano la tabella con `ANSI_PADDING ON`.
-        let rewrites = store_rewrites(
-            &spec.native_type,
-            &spec.native_declaration,
-            field.is_nullable(),
-            true,
-        );
         columns.push(WriteColumnPlan {
             input_index,
             name: field.name().clone(),
@@ -418,7 +469,7 @@ fn compile_new_target(
             nullable: field.is_nullable(),
             collation: spec.collation,
             spatial_srid,
-            rewrites,
+            rewrites: Vec::new(),
         });
     }
     let mut precision_losses = Vec::new();
@@ -590,7 +641,7 @@ fn create_table_sql(
     ))
 }
 
-fn validate_collation_name(value: &str) -> Result<()> {
+pub(super) fn validate_collation_name(value: &str) -> Result<()> {
     if value.is_empty()
         || value.chars().count() > crate::MAX_IDENTIFIER_CHARACTERS
         || !value
@@ -1300,6 +1351,17 @@ pub(super) fn text_limit(
     }
 }
 
+/// La lunghezza massima di una colonna `binary(n)` o `varbinary(n)`, `None`
+/// per `varbinary(max)` e `image`.
+#[must_use]
+pub(super) fn binary_limit(native_type: &str, declaration: &str) -> Option<usize> {
+    matches!(native_type, "binary" | "varbinary")
+        .then(|| declaration_argument(declaration))
+        .flatten()
+        .filter(|value| *value != "max")
+        .and_then(|value| value.parse::<usize>().ok())
+}
+
 /// La scala frazionaria di una colonna `datetimeoffset`, che riceve testo
 /// RFC 3339 (fino ai nanosecondi).
 #[must_use]
@@ -1323,10 +1385,14 @@ pub(super) fn offset_scale(native_type: &str, declaration: &str) -> Option<u32> 
 /// lo stile 0 li toglieva: `<a> <c/></a>` diventava `<a><c/></a>`, un nodo
 /// di testo perso); la dichiarazione `<?xml ...?>`, gli apici degli
 /// attributi, la forma degli elementi vuoti, le sezioni CDATA e i
-/// riferimenti ai caratteri si normalizzano. E la semantica del tipo, come
-/// il riordino delle chiavi di `jsonb` su PostgreSQL: con `Strict` si
-/// ammette, con le altre politiche si dichiara nel `LossReport`
-/// (`native_type`, `warning`).
+/// riferimenti ai caratteri si normalizzano. Fino al 25/10 era «la semantica
+/// del tipo» e con `Strict` si ammetteva; dalla regola A ([`WritePlan::admit`])
+/// decide la misura: la sonda confronta il testo riletto byte per byte, e
+/// `xml` riscrive anche valori della batteria dei testi (CR LF in LF, il
+/// BOM, gli spazi di un documento di soli spazi) che nessuna classe spiega.
+/// La chiave e `ogni`: con `Strict` ogni valore si rifiuta, con le altre
+/// politiche la perdita si dichiara (`native_type`, `data_loss`), oltre
+/// all'avviso qui sotto.
 ///
 /// # Limite dichiarato
 ///
@@ -1339,10 +1405,12 @@ pub(super) fn offset_scale(native_type: &str, declaration: &str) -> Option<u32> 
 ///   collation che non e `_UTF8` si ammette soltanto ASCII, anche dove la
 ///   code page rappresenterebbe il carattere.
 ///   `char(n)` e `nchar(n)` completano con spazi i valori piu corti: dal
-///   25/10 (sesta rilettura) e la regola S ([`store_rewrites`]), non piu
-///   «semantica del tipo». `xml` normalizza la forma del documento (dichiarazione, apici,
-///   elementi vuoti, CDATA, riferimenti ai caratteri) anche con `Strict`:
-///   chi confronta il testo e non l'infoset vede un valore diverso.
+///   25/10 (sesta rilettura) e la regola S, misurata (regola A,
+///   [`WritePlan::admit`]), non piu
+///   «semantica del tipo». `xml` normalizza la forma del documento
+///   (dichiarazione, apici, elementi vuoti, CDATA, riferimenti ai
+///   caratteri): con le politiche non strette chi confronta il testo e non
+///   l'infoset vede un valore diverso; con `Strict` la regola A lo rifiuta.
 /// - **Rientro**: la code page dal catalogo (`COLLATIONPROPERTY(...,
 ///   'CodePage')`) e la sua tabella, per ogni code page di SQL Server; per
 ///   `xml`, un confronto del testo con la serializzazione del server prima
@@ -1406,6 +1474,13 @@ fn rule_p(
             ));
         }
     }
+    if binary_limit(&column.native_type, &column.native_declaration).is_some() {
+        losses.push(loss(
+            LossCategory::Precision,
+            LossSeverity::Warning,
+            "gli 0x00 finali oltre la lunghezza della colonna si troncherebbero",
+        ));
+    }
     if offset_scale(&column.native_type, &column.native_declaration).is_some() {
         losses.push(loss(
             LossCategory::Precision,
@@ -1413,69 +1488,7 @@ fn rule_p(
             "le cifre frazionarie oltre la scala della colonna si arrotonderebbero",
         ));
     }
-    // La regola S: in una chiave un valore riscritto si rifiuta con ogni
-    // politica, e non e una perdita da dichiarare.
-    if !operation.keys.contains(&column.name) {
-        losses.extend(
-            plenora_database_core::store_rewrite::RewriteGuard::new(
-                plenora_database_core::plan::ProviderKind::Sqlserver,
-                &std::sync::Arc::new(plenora_database_core::arrow::schema::Schema::new(vec![
-                    field.clone(),
-                ])),
-                operation,
-                vec![ColumnRewrites {
-                    field: 0,
-                    target_type: column.native_declaration.clone(),
-                    rewrites: column.rewrites.clone(),
-                }],
-            )?
-            .losses()
-            .into_iter()
-            .map(|mut rewrite| {
-                rewrite.field_id = field_id;
-                rewrite.source_type = Some(field.data_type().to_string());
-                rewrite
-            }),
-        );
-    }
     Ok(())
-}
-
-/// Le riscritture al salvataggio di SQL Server per una colonna (regola S,
-/// `plenora_database_core::store_rewrite`), misurate il 25/10 su SQL Server
-/// 2022:
-///
-/// - `char(n)` e `nchar(n)` completano con spazi un testo piu corto (`'a'`
-///   verso `char(3)` torna `'a  '`), `binary(n)` con `0x00` un binario piu
-///   corto (`0x01` verso `binary(3)` torna `0x010000`);
-/// - una colonna creata con `ANSI_PADDING OFF` (`sys.columns.is_ansi_padded =
-///   0`) toglie gli spazi finali da `varchar(n)` e da `char(n)` nullable, e gli
-///   `0x00` finali da `varbinary(n)` e da `binary(n)` nullable (`'a  '`
-///   tornava `'a'`, `0x0100` tornava `0x01`). L'impostazione non tocca
-///   `nchar`, `nvarchar` e i tipi `max`. La sessione la fissa a `ON` soltanto
-///   per le colonne che crea.
-///
-/// Fino al 25/10 il riempimento di `char(n)` era dichiarato «semantica del
-/// tipo» e si scriveva con `Strict`; `ANSI_PADDING OFF` non si leggeva.
-pub(super) fn store_rewrites(
-    native_type: &str,
-    declaration: &str,
-    nullable: bool,
-    ansi_padded: bool,
-) -> Vec<StoreRewrite> {
-    let length = declaration_argument(declaration).and_then(|value| value.parse::<u64>().ok());
-    let Some(length) = length else {
-        return Vec::new();
-    };
-    match native_type {
-        "nchar" => vec![StoreRewrite::PadText { chars: length }],
-        "char" if ansi_padded || !nullable => vec![StoreRewrite::PadText { chars: length }],
-        "binary" if ansi_padded || !nullable => vec![StoreRewrite::PadBinary { bytes: length }],
-        "char" | "varchar" | "binary" | "varbinary" if !ansi_padded => {
-            vec![StoreRewrite::StripTrailing]
-        }
-        _ => Vec::new(),
-    }
 }
 
 pub(super) fn plan_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {

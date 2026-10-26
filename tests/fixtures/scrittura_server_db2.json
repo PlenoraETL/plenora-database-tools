@@ -1,0 +1,5597 @@
+{
+ "schema_version": 1,
+ "provider": "db2",
+ "misure": [
+  {
+   "server_major": "12.1",
+   "server_version": "DB2 v12.1.5.0",
+   "immagine": "docker/db2-client/Dockerfile (icr.io/db2_community/db2@sha256:2de8151713c261843868c5c3411b57be6ae79d99d70a5b3022337836776bfda6)",
+   "batteria": "1",
+   "chiavi": [
+    {
+     "arrow": "bool",
+     "nativo": "BOOLEAN",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "int16",
+     "nativo": "SMALLINT",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "int32",
+     "nativo": "INTEGER",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "int64",
+     "nativo": "BIGINT",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "float32",
+     "nativo": "REAL",
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "zero_negativo"
+      }
+     ],
+     "riscritti": [
+      "zero_negativo"
+     ],
+     "rifiutati": [
+      "subnormale_minimo",
+      "subnormale",
+      "infinito",
+      "meno_infinito",
+      "nan"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "float64",
+     "nativo": "DOUBLE",
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "zero_negativo"
+      }
+     ],
+     "riscritti": [
+      "zero_negativo"
+     ],
+     "rifiutati": [
+      "subnormale_minimo",
+      "subnormale",
+      "infinito",
+      "meno_infinito",
+      "nan"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(1,0)",
+     "nativo": "DECIMAL(1,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(1,1)",
+     "nativo": "DECIMAL(1,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(2,0)",
+     "nativo": "DECIMAL(2,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(2,1)",
+     "nativo": "DECIMAL(2,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(2,2)",
+     "nativo": "DECIMAL(2,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(3,0)",
+     "nativo": "DECIMAL(3,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(3,1)",
+     "nativo": "DECIMAL(3,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(3,2)",
+     "nativo": "DECIMAL(3,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(3,3)",
+     "nativo": "DECIMAL(3,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(4,0)",
+     "nativo": "DECIMAL(4,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(4,1)",
+     "nativo": "DECIMAL(4,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(4,2)",
+     "nativo": "DECIMAL(4,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(4,3)",
+     "nativo": "DECIMAL(4,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(4,4)",
+     "nativo": "DECIMAL(4,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(5,0)",
+     "nativo": "DECIMAL(5,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(5,1)",
+     "nativo": "DECIMAL(5,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(5,2)",
+     "nativo": "DECIMAL(5,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(5,3)",
+     "nativo": "DECIMAL(5,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(5,4)",
+     "nativo": "DECIMAL(5,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(5,5)",
+     "nativo": "DECIMAL(5,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(6,0)",
+     "nativo": "DECIMAL(6,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(6,1)",
+     "nativo": "DECIMAL(6,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(6,2)",
+     "nativo": "DECIMAL(6,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(6,3)",
+     "nativo": "DECIMAL(6,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(6,4)",
+     "nativo": "DECIMAL(6,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(6,5)",
+     "nativo": "DECIMAL(6,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(6,6)",
+     "nativo": "DECIMAL(6,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(7,0)",
+     "nativo": "DECIMAL(7,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(7,1)",
+     "nativo": "DECIMAL(7,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(7,2)",
+     "nativo": "DECIMAL(7,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(7,3)",
+     "nativo": "DECIMAL(7,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(7,4)",
+     "nativo": "DECIMAL(7,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(7,5)",
+     "nativo": "DECIMAL(7,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(7,6)",
+     "nativo": "DECIMAL(7,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(7,7)",
+     "nativo": "DECIMAL(7,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(8,0)",
+     "nativo": "DECIMAL(8,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(8,1)",
+     "nativo": "DECIMAL(8,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(8,2)",
+     "nativo": "DECIMAL(8,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(8,3)",
+     "nativo": "DECIMAL(8,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(8,4)",
+     "nativo": "DECIMAL(8,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(8,5)",
+     "nativo": "DECIMAL(8,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(8,6)",
+     "nativo": "DECIMAL(8,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(8,7)",
+     "nativo": "DECIMAL(8,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(8,8)",
+     "nativo": "DECIMAL(8,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(9,0)",
+     "nativo": "DECIMAL(9,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(9,1)",
+     "nativo": "DECIMAL(9,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(9,2)",
+     "nativo": "DECIMAL(9,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(9,3)",
+     "nativo": "DECIMAL(9,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(9,4)",
+     "nativo": "DECIMAL(9,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(9,5)",
+     "nativo": "DECIMAL(9,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(9,6)",
+     "nativo": "DECIMAL(9,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(9,7)",
+     "nativo": "DECIMAL(9,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(9,8)",
+     "nativo": "DECIMAL(9,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(9,9)",
+     "nativo": "DECIMAL(9,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(10,0)",
+     "nativo": "DECIMAL(10,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(10,1)",
+     "nativo": "DECIMAL(10,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(10,2)",
+     "nativo": "DECIMAL(10,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(10,3)",
+     "nativo": "DECIMAL(10,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(10,4)",
+     "nativo": "DECIMAL(10,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(10,5)",
+     "nativo": "DECIMAL(10,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(10,6)",
+     "nativo": "DECIMAL(10,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(10,7)",
+     "nativo": "DECIMAL(10,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(10,8)",
+     "nativo": "DECIMAL(10,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(10,9)",
+     "nativo": "DECIMAL(10,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(10,10)",
+     "nativo": "DECIMAL(10,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(11,0)",
+     "nativo": "DECIMAL(11,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(11,1)",
+     "nativo": "DECIMAL(11,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(11,2)",
+     "nativo": "DECIMAL(11,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(11,3)",
+     "nativo": "DECIMAL(11,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(11,4)",
+     "nativo": "DECIMAL(11,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(11,5)",
+     "nativo": "DECIMAL(11,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(11,6)",
+     "nativo": "DECIMAL(11,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(11,7)",
+     "nativo": "DECIMAL(11,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(11,8)",
+     "nativo": "DECIMAL(11,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(11,9)",
+     "nativo": "DECIMAL(11,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(11,10)",
+     "nativo": "DECIMAL(11,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(11,11)",
+     "nativo": "DECIMAL(11,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,0)",
+     "nativo": "DECIMAL(12,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,1)",
+     "nativo": "DECIMAL(12,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,2)",
+     "nativo": "DECIMAL(12,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,3)",
+     "nativo": "DECIMAL(12,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,4)",
+     "nativo": "DECIMAL(12,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,5)",
+     "nativo": "DECIMAL(12,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,6)",
+     "nativo": "DECIMAL(12,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,7)",
+     "nativo": "DECIMAL(12,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,8)",
+     "nativo": "DECIMAL(12,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,9)",
+     "nativo": "DECIMAL(12,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,10)",
+     "nativo": "DECIMAL(12,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,11)",
+     "nativo": "DECIMAL(12,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(12,12)",
+     "nativo": "DECIMAL(12,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,0)",
+     "nativo": "DECIMAL(13,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,1)",
+     "nativo": "DECIMAL(13,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,2)",
+     "nativo": "DECIMAL(13,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,3)",
+     "nativo": "DECIMAL(13,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,4)",
+     "nativo": "DECIMAL(13,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,5)",
+     "nativo": "DECIMAL(13,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,6)",
+     "nativo": "DECIMAL(13,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,7)",
+     "nativo": "DECIMAL(13,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,8)",
+     "nativo": "DECIMAL(13,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,9)",
+     "nativo": "DECIMAL(13,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,10)",
+     "nativo": "DECIMAL(13,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,11)",
+     "nativo": "DECIMAL(13,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,12)",
+     "nativo": "DECIMAL(13,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(13,13)",
+     "nativo": "DECIMAL(13,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,0)",
+     "nativo": "DECIMAL(14,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,1)",
+     "nativo": "DECIMAL(14,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,2)",
+     "nativo": "DECIMAL(14,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,3)",
+     "nativo": "DECIMAL(14,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,4)",
+     "nativo": "DECIMAL(14,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,5)",
+     "nativo": "DECIMAL(14,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,6)",
+     "nativo": "DECIMAL(14,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,7)",
+     "nativo": "DECIMAL(14,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,8)",
+     "nativo": "DECIMAL(14,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,9)",
+     "nativo": "DECIMAL(14,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,10)",
+     "nativo": "DECIMAL(14,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,11)",
+     "nativo": "DECIMAL(14,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,12)",
+     "nativo": "DECIMAL(14,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,13)",
+     "nativo": "DECIMAL(14,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(14,14)",
+     "nativo": "DECIMAL(14,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,0)",
+     "nativo": "DECIMAL(15,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,1)",
+     "nativo": "DECIMAL(15,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,2)",
+     "nativo": "DECIMAL(15,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,3)",
+     "nativo": "DECIMAL(15,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,4)",
+     "nativo": "DECIMAL(15,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,5)",
+     "nativo": "DECIMAL(15,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,6)",
+     "nativo": "DECIMAL(15,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,7)",
+     "nativo": "DECIMAL(15,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,8)",
+     "nativo": "DECIMAL(15,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,9)",
+     "nativo": "DECIMAL(15,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,10)",
+     "nativo": "DECIMAL(15,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,11)",
+     "nativo": "DECIMAL(15,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,12)",
+     "nativo": "DECIMAL(15,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,13)",
+     "nativo": "DECIMAL(15,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,14)",
+     "nativo": "DECIMAL(15,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(15,15)",
+     "nativo": "DECIMAL(15,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,0)",
+     "nativo": "DECIMAL(16,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,1)",
+     "nativo": "DECIMAL(16,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,2)",
+     "nativo": "DECIMAL(16,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,3)",
+     "nativo": "DECIMAL(16,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,4)",
+     "nativo": "DECIMAL(16,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,5)",
+     "nativo": "DECIMAL(16,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,6)",
+     "nativo": "DECIMAL(16,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,7)",
+     "nativo": "DECIMAL(16,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,8)",
+     "nativo": "DECIMAL(16,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,9)",
+     "nativo": "DECIMAL(16,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,10)",
+     "nativo": "DECIMAL(16,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,11)",
+     "nativo": "DECIMAL(16,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,12)",
+     "nativo": "DECIMAL(16,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,13)",
+     "nativo": "DECIMAL(16,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,14)",
+     "nativo": "DECIMAL(16,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,15)",
+     "nativo": "DECIMAL(16,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(16,16)",
+     "nativo": "DECIMAL(16,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,0)",
+     "nativo": "DECIMAL(17,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,1)",
+     "nativo": "DECIMAL(17,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,2)",
+     "nativo": "DECIMAL(17,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,3)",
+     "nativo": "DECIMAL(17,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,4)",
+     "nativo": "DECIMAL(17,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,5)",
+     "nativo": "DECIMAL(17,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,6)",
+     "nativo": "DECIMAL(17,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,7)",
+     "nativo": "DECIMAL(17,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,8)",
+     "nativo": "DECIMAL(17,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,9)",
+     "nativo": "DECIMAL(17,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,10)",
+     "nativo": "DECIMAL(17,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,11)",
+     "nativo": "DECIMAL(17,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,12)",
+     "nativo": "DECIMAL(17,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,13)",
+     "nativo": "DECIMAL(17,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,14)",
+     "nativo": "DECIMAL(17,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,15)",
+     "nativo": "DECIMAL(17,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,16)",
+     "nativo": "DECIMAL(17,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(17,17)",
+     "nativo": "DECIMAL(17,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,0)",
+     "nativo": "DECIMAL(18,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,1)",
+     "nativo": "DECIMAL(18,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,2)",
+     "nativo": "DECIMAL(18,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,3)",
+     "nativo": "DECIMAL(18,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,4)",
+     "nativo": "DECIMAL(18,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,5)",
+     "nativo": "DECIMAL(18,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,6)",
+     "nativo": "DECIMAL(18,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,7)",
+     "nativo": "DECIMAL(18,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,8)",
+     "nativo": "DECIMAL(18,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,9)",
+     "nativo": "DECIMAL(18,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,10)",
+     "nativo": "DECIMAL(18,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,11)",
+     "nativo": "DECIMAL(18,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,12)",
+     "nativo": "DECIMAL(18,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,13)",
+     "nativo": "DECIMAL(18,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,14)",
+     "nativo": "DECIMAL(18,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,15)",
+     "nativo": "DECIMAL(18,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,16)",
+     "nativo": "DECIMAL(18,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,17)",
+     "nativo": "DECIMAL(18,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(18,18)",
+     "nativo": "DECIMAL(18,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,0)",
+     "nativo": "DECIMAL(19,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,1)",
+     "nativo": "DECIMAL(19,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,2)",
+     "nativo": "DECIMAL(19,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,3)",
+     "nativo": "DECIMAL(19,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,4)",
+     "nativo": "DECIMAL(19,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,5)",
+     "nativo": "DECIMAL(19,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,6)",
+     "nativo": "DECIMAL(19,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,7)",
+     "nativo": "DECIMAL(19,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,8)",
+     "nativo": "DECIMAL(19,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,9)",
+     "nativo": "DECIMAL(19,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,10)",
+     "nativo": "DECIMAL(19,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,11)",
+     "nativo": "DECIMAL(19,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,12)",
+     "nativo": "DECIMAL(19,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,13)",
+     "nativo": "DECIMAL(19,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,14)",
+     "nativo": "DECIMAL(19,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,15)",
+     "nativo": "DECIMAL(19,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,16)",
+     "nativo": "DECIMAL(19,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,17)",
+     "nativo": "DECIMAL(19,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,18)",
+     "nativo": "DECIMAL(19,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(19,19)",
+     "nativo": "DECIMAL(19,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,0)",
+     "nativo": "DECIMAL(20,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,1)",
+     "nativo": "DECIMAL(20,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,2)",
+     "nativo": "DECIMAL(20,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,3)",
+     "nativo": "DECIMAL(20,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,4)",
+     "nativo": "DECIMAL(20,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,5)",
+     "nativo": "DECIMAL(20,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,6)",
+     "nativo": "DECIMAL(20,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,7)",
+     "nativo": "DECIMAL(20,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,8)",
+     "nativo": "DECIMAL(20,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,9)",
+     "nativo": "DECIMAL(20,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,10)",
+     "nativo": "DECIMAL(20,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,11)",
+     "nativo": "DECIMAL(20,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,12)",
+     "nativo": "DECIMAL(20,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,13)",
+     "nativo": "DECIMAL(20,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,14)",
+     "nativo": "DECIMAL(20,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,15)",
+     "nativo": "DECIMAL(20,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,16)",
+     "nativo": "DECIMAL(20,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,17)",
+     "nativo": "DECIMAL(20,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,18)",
+     "nativo": "DECIMAL(20,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,19)",
+     "nativo": "DECIMAL(20,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(20,20)",
+     "nativo": "DECIMAL(20,20)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,0)",
+     "nativo": "DECIMAL(21,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,1)",
+     "nativo": "DECIMAL(21,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,2)",
+     "nativo": "DECIMAL(21,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,3)",
+     "nativo": "DECIMAL(21,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,4)",
+     "nativo": "DECIMAL(21,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,5)",
+     "nativo": "DECIMAL(21,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,6)",
+     "nativo": "DECIMAL(21,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,7)",
+     "nativo": "DECIMAL(21,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,8)",
+     "nativo": "DECIMAL(21,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,9)",
+     "nativo": "DECIMAL(21,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,10)",
+     "nativo": "DECIMAL(21,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,11)",
+     "nativo": "DECIMAL(21,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,12)",
+     "nativo": "DECIMAL(21,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,13)",
+     "nativo": "DECIMAL(21,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,14)",
+     "nativo": "DECIMAL(21,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,15)",
+     "nativo": "DECIMAL(21,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,16)",
+     "nativo": "DECIMAL(21,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,17)",
+     "nativo": "DECIMAL(21,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,18)",
+     "nativo": "DECIMAL(21,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,19)",
+     "nativo": "DECIMAL(21,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,20)",
+     "nativo": "DECIMAL(21,20)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(21,21)",
+     "nativo": "DECIMAL(21,21)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,0)",
+     "nativo": "DECIMAL(22,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,1)",
+     "nativo": "DECIMAL(22,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,2)",
+     "nativo": "DECIMAL(22,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,3)",
+     "nativo": "DECIMAL(22,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,4)",
+     "nativo": "DECIMAL(22,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,5)",
+     "nativo": "DECIMAL(22,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,6)",
+     "nativo": "DECIMAL(22,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,7)",
+     "nativo": "DECIMAL(22,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,8)",
+     "nativo": "DECIMAL(22,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,9)",
+     "nativo": "DECIMAL(22,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,10)",
+     "nativo": "DECIMAL(22,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,11)",
+     "nativo": "DECIMAL(22,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,12)",
+     "nativo": "DECIMAL(22,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,13)",
+     "nativo": "DECIMAL(22,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,14)",
+     "nativo": "DECIMAL(22,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,15)",
+     "nativo": "DECIMAL(22,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,16)",
+     "nativo": "DECIMAL(22,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,17)",
+     "nativo": "DECIMAL(22,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,18)",
+     "nativo": "DECIMAL(22,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,19)",
+     "nativo": "DECIMAL(22,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,20)",
+     "nativo": "DECIMAL(22,20)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,21)",
+     "nativo": "DECIMAL(22,21)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(22,22)",
+     "nativo": "DECIMAL(22,22)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,0)",
+     "nativo": "DECIMAL(23,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,1)",
+     "nativo": "DECIMAL(23,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,2)",
+     "nativo": "DECIMAL(23,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,3)",
+     "nativo": "DECIMAL(23,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,4)",
+     "nativo": "DECIMAL(23,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,5)",
+     "nativo": "DECIMAL(23,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,6)",
+     "nativo": "DECIMAL(23,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,7)",
+     "nativo": "DECIMAL(23,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,8)",
+     "nativo": "DECIMAL(23,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,9)",
+     "nativo": "DECIMAL(23,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,10)",
+     "nativo": "DECIMAL(23,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,11)",
+     "nativo": "DECIMAL(23,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,12)",
+     "nativo": "DECIMAL(23,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,13)",
+     "nativo": "DECIMAL(23,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,14)",
+     "nativo": "DECIMAL(23,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,15)",
+     "nativo": "DECIMAL(23,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,16)",
+     "nativo": "DECIMAL(23,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,17)",
+     "nativo": "DECIMAL(23,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,18)",
+     "nativo": "DECIMAL(23,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,19)",
+     "nativo": "DECIMAL(23,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,20)",
+     "nativo": "DECIMAL(23,20)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,21)",
+     "nativo": "DECIMAL(23,21)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,22)",
+     "nativo": "DECIMAL(23,22)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(23,23)",
+     "nativo": "DECIMAL(23,23)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,0)",
+     "nativo": "DECIMAL(24,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,1)",
+     "nativo": "DECIMAL(24,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,2)",
+     "nativo": "DECIMAL(24,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,3)",
+     "nativo": "DECIMAL(24,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,4)",
+     "nativo": "DECIMAL(24,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,5)",
+     "nativo": "DECIMAL(24,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,6)",
+     "nativo": "DECIMAL(24,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,7)",
+     "nativo": "DECIMAL(24,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,8)",
+     "nativo": "DECIMAL(24,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,9)",
+     "nativo": "DECIMAL(24,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,10)",
+     "nativo": "DECIMAL(24,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,11)",
+     "nativo": "DECIMAL(24,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,12)",
+     "nativo": "DECIMAL(24,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,13)",
+     "nativo": "DECIMAL(24,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,14)",
+     "nativo": "DECIMAL(24,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,15)",
+     "nativo": "DECIMAL(24,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,16)",
+     "nativo": "DECIMAL(24,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,17)",
+     "nativo": "DECIMAL(24,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,18)",
+     "nativo": "DECIMAL(24,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,19)",
+     "nativo": "DECIMAL(24,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,20)",
+     "nativo": "DECIMAL(24,20)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,21)",
+     "nativo": "DECIMAL(24,21)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,22)",
+     "nativo": "DECIMAL(24,22)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,23)",
+     "nativo": "DECIMAL(24,23)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(24,24)",
+     "nativo": "DECIMAL(24,24)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,0)",
+     "nativo": "DECIMAL(25,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,1)",
+     "nativo": "DECIMAL(25,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,2)",
+     "nativo": "DECIMAL(25,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,3)",
+     "nativo": "DECIMAL(25,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,4)",
+     "nativo": "DECIMAL(25,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,5)",
+     "nativo": "DECIMAL(25,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,6)",
+     "nativo": "DECIMAL(25,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,7)",
+     "nativo": "DECIMAL(25,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,8)",
+     "nativo": "DECIMAL(25,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,9)",
+     "nativo": "DECIMAL(25,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,10)",
+     "nativo": "DECIMAL(25,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,11)",
+     "nativo": "DECIMAL(25,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,12)",
+     "nativo": "DECIMAL(25,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,13)",
+     "nativo": "DECIMAL(25,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,14)",
+     "nativo": "DECIMAL(25,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,15)",
+     "nativo": "DECIMAL(25,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,16)",
+     "nativo": "DECIMAL(25,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,17)",
+     "nativo": "DECIMAL(25,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,18)",
+     "nativo": "DECIMAL(25,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,19)",
+     "nativo": "DECIMAL(25,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,20)",
+     "nativo": "DECIMAL(25,20)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,21)",
+     "nativo": "DECIMAL(25,21)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,22)",
+     "nativo": "DECIMAL(25,22)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,23)",
+     "nativo": "DECIMAL(25,23)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,24)",
+     "nativo": "DECIMAL(25,24)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(25,25)",
+     "nativo": "DECIMAL(25,25)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,0)",
+     "nativo": "DECIMAL(26,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,1)",
+     "nativo": "DECIMAL(26,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,2)",
+     "nativo": "DECIMAL(26,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,3)",
+     "nativo": "DECIMAL(26,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,4)",
+     "nativo": "DECIMAL(26,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,5)",
+     "nativo": "DECIMAL(26,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,6)",
+     "nativo": "DECIMAL(26,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,7)",
+     "nativo": "DECIMAL(26,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,8)",
+     "nativo": "DECIMAL(26,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,9)",
+     "nativo": "DECIMAL(26,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,10)",
+     "nativo": "DECIMAL(26,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,11)",
+     "nativo": "DECIMAL(26,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,12)",
+     "nativo": "DECIMAL(26,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,13)",
+     "nativo": "DECIMAL(26,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,14)",
+     "nativo": "DECIMAL(26,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,15)",
+     "nativo": "DECIMAL(26,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,16)",
+     "nativo": "DECIMAL(26,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,17)",
+     "nativo": "DECIMAL(26,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,18)",
+     "nativo": "DECIMAL(26,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,19)",
+     "nativo": "DECIMAL(26,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,20)",
+     "nativo": "DECIMAL(26,20)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,21)",
+     "nativo": "DECIMAL(26,21)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,22)",
+     "nativo": "DECIMAL(26,22)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,23)",
+     "nativo": "DECIMAL(26,23)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,24)",
+     "nativo": "DECIMAL(26,24)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,25)",
+     "nativo": "DECIMAL(26,25)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(26,26)",
+     "nativo": "DECIMAL(26,26)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,0)",
+     "nativo": "DECIMAL(27,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,1)",
+     "nativo": "DECIMAL(27,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,2)",
+     "nativo": "DECIMAL(27,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,3)",
+     "nativo": "DECIMAL(27,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,4)",
+     "nativo": "DECIMAL(27,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,5)",
+     "nativo": "DECIMAL(27,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,6)",
+     "nativo": "DECIMAL(27,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,7)",
+     "nativo": "DECIMAL(27,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,8)",
+     "nativo": "DECIMAL(27,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,9)",
+     "nativo": "DECIMAL(27,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,10)",
+     "nativo": "DECIMAL(27,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,11)",
+     "nativo": "DECIMAL(27,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,12)",
+     "nativo": "DECIMAL(27,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,13)",
+     "nativo": "DECIMAL(27,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,14)",
+     "nativo": "DECIMAL(27,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,15)",
+     "nativo": "DECIMAL(27,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,16)",
+     "nativo": "DECIMAL(27,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,17)",
+     "nativo": "DECIMAL(27,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,18)",
+     "nativo": "DECIMAL(27,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,19)",
+     "nativo": "DECIMAL(27,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,20)",
+     "nativo": "DECIMAL(27,20)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,21)",
+     "nativo": "DECIMAL(27,21)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,22)",
+     "nativo": "DECIMAL(27,22)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,23)",
+     "nativo": "DECIMAL(27,23)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,24)",
+     "nativo": "DECIMAL(27,24)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,25)",
+     "nativo": "DECIMAL(27,25)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,26)",
+     "nativo": "DECIMAL(27,26)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(27,27)",
+     "nativo": "DECIMAL(27,27)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,0)",
+     "nativo": "DECIMAL(28,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,1)",
+     "nativo": "DECIMAL(28,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,2)",
+     "nativo": "DECIMAL(28,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,3)",
+     "nativo": "DECIMAL(28,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,4)",
+     "nativo": "DECIMAL(28,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,5)",
+     "nativo": "DECIMAL(28,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,6)",
+     "nativo": "DECIMAL(28,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,7)",
+     "nativo": "DECIMAL(28,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,8)",
+     "nativo": "DECIMAL(28,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,9)",
+     "nativo": "DECIMAL(28,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,10)",
+     "nativo": "DECIMAL(28,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,11)",
+     "nativo": "DECIMAL(28,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,12)",
+     "nativo": "DECIMAL(28,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,13)",
+     "nativo": "DECIMAL(28,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,14)",
+     "nativo": "DECIMAL(28,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,15)",
+     "nativo": "DECIMAL(28,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,16)",
+     "nativo": "DECIMAL(28,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,17)",
+     "nativo": "DECIMAL(28,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,18)",
+     "nativo": "DECIMAL(28,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,19)",
+     "nativo": "DECIMAL(28,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,20)",
+     "nativo": "DECIMAL(28,20)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,21)",
+     "nativo": "DECIMAL(28,21)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,22)",
+     "nativo": "DECIMAL(28,22)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,23)",
+     "nativo": "DECIMAL(28,23)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,24)",
+     "nativo": "DECIMAL(28,24)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,25)",
+     "nativo": "DECIMAL(28,25)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,26)",
+     "nativo": "DECIMAL(28,26)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,27)",
+     "nativo": "DECIMAL(28,27)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(28,28)",
+     "nativo": "DECIMAL(28,28)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,0)",
+     "nativo": "DECIMAL(29,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,1)",
+     "nativo": "DECIMAL(29,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,2)",
+     "nativo": "DECIMAL(29,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,3)",
+     "nativo": "DECIMAL(29,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,4)",
+     "nativo": "DECIMAL(29,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,5)",
+     "nativo": "DECIMAL(29,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,6)",
+     "nativo": "DECIMAL(29,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,7)",
+     "nativo": "DECIMAL(29,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,8)",
+     "nativo": "DECIMAL(29,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,9)",
+     "nativo": "DECIMAL(29,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,10)",
+     "nativo": "DECIMAL(29,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,11)",
+     "nativo": "DECIMAL(29,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,12)",
+     "nativo": "DECIMAL(29,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,13)",
+     "nativo": "DECIMAL(29,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,14)",
+     "nativo": "DECIMAL(29,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,15)",
+     "nativo": "DECIMAL(29,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,16)",
+     "nativo": "DECIMAL(29,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,17)",
+     "nativo": "DECIMAL(29,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,18)",
+     "nativo": "DECIMAL(29,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,19)",
+     "nativo": "DECIMAL(29,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,20)",
+     "nativo": "DECIMAL(29,20)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,21)",
+     "nativo": "DECIMAL(29,21)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,22)",
+     "nativo": "DECIMAL(29,22)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,23)",
+     "nativo": "DECIMAL(29,23)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,24)",
+     "nativo": "DECIMAL(29,24)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,25)",
+     "nativo": "DECIMAL(29,25)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,26)",
+     "nativo": "DECIMAL(29,26)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,27)",
+     "nativo": "DECIMAL(29,27)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,28)",
+     "nativo": "DECIMAL(29,28)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(29,29)",
+     "nativo": "DECIMAL(29,29)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,0)",
+     "nativo": "DECIMAL(30,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,1)",
+     "nativo": "DECIMAL(30,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,2)",
+     "nativo": "DECIMAL(30,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,3)",
+     "nativo": "DECIMAL(30,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,4)",
+     "nativo": "DECIMAL(30,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,5)",
+     "nativo": "DECIMAL(30,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,6)",
+     "nativo": "DECIMAL(30,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,7)",
+     "nativo": "DECIMAL(30,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,8)",
+     "nativo": "DECIMAL(30,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,9)",
+     "nativo": "DECIMAL(30,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,10)",
+     "nativo": "DECIMAL(30,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,11)",
+     "nativo": "DECIMAL(30,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,12)",
+     "nativo": "DECIMAL(30,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,13)",
+     "nativo": "DECIMAL(30,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,14)",
+     "nativo": "DECIMAL(30,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,15)",
+     "nativo": "DECIMAL(30,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,16)",
+     "nativo": "DECIMAL(30,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,17)",
+     "nativo": "DECIMAL(30,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,18)",
+     "nativo": "DECIMAL(30,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,19)",
+     "nativo": "DECIMAL(30,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,20)",
+     "nativo": "DECIMAL(30,20)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,21)",
+     "nativo": "DECIMAL(30,21)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,22)",
+     "nativo": "DECIMAL(30,22)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,23)",
+     "nativo": "DECIMAL(30,23)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,24)",
+     "nativo": "DECIMAL(30,24)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,25)",
+     "nativo": "DECIMAL(30,25)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,26)",
+     "nativo": "DECIMAL(30,26)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,27)",
+     "nativo": "DECIMAL(30,27)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,28)",
+     "nativo": "DECIMAL(30,28)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,29)",
+     "nativo": "DECIMAL(30,29)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(30,30)",
+     "nativo": "DECIMAL(30,30)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,0)",
+     "nativo": "DECIMAL(31,0)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,1)",
+     "nativo": "DECIMAL(31,1)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,2)",
+     "nativo": "DECIMAL(31,2)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,3)",
+     "nativo": "DECIMAL(31,3)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,4)",
+     "nativo": "DECIMAL(31,4)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,5)",
+     "nativo": "DECIMAL(31,5)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,6)",
+     "nativo": "DECIMAL(31,6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,7)",
+     "nativo": "DECIMAL(31,7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,8)",
+     "nativo": "DECIMAL(31,8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,9)",
+     "nativo": "DECIMAL(31,9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,10)",
+     "nativo": "DECIMAL(31,10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,11)",
+     "nativo": "DECIMAL(31,11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,12)",
+     "nativo": "DECIMAL(31,12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,13)",
+     "nativo": "DECIMAL(31,13)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,14)",
+     "nativo": "DECIMAL(31,14)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,15)",
+     "nativo": "DECIMAL(31,15)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,16)",
+     "nativo": "DECIMAL(31,16)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,17)",
+     "nativo": "DECIMAL(31,17)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,18)",
+     "nativo": "DECIMAL(31,18)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,19)",
+     "nativo": "DECIMAL(31,19)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,20)",
+     "nativo": "DECIMAL(31,20)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,21)",
+     "nativo": "DECIMAL(31,21)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,22)",
+     "nativo": "DECIMAL(31,22)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,23)",
+     "nativo": "DECIMAL(31,23)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,24)",
+     "nativo": "DECIMAL(31,24)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,25)",
+     "nativo": "DECIMAL(31,25)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,26)",
+     "nativo": "DECIMAL(31,26)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,27)",
+     "nativo": "DECIMAL(31,27)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,28)",
+     "nativo": "DECIMAL(31,28)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,29)",
+     "nativo": "DECIMAL(31,29)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,30)",
+     "nativo": "DECIMAL(31,30)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "decimal128(31,31)",
+     "nativo": "DECIMAL(31,31)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "CHARACTER(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 1,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      },
+      {
+       "classe": "riempie_testo"
+      }
+     ],
+     "riscritti": [
+      "vuoto",
+      "spazio_finale",
+      "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "spazio_iniziale",
+      "nul_interno",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "CHARACTER(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 10,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "riempie_testo"
+      },
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "nul_interno",
+      "solo_nul",
+      "controllo",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno_meno_uno",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "CHARACTER(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 255,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "riempie_testo"
+      },
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "nul_interno",
+      "solo_nul",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno_meno_uno",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "VARCHAR(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 1,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
+      "spazio_finale",
+      "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "spazio_iniziale",
+      "nul_interno",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "VARCHAR(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 10,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "VARCHAR(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 32672,
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "CLOB(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 1,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
+      "spazio_finale",
+      "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "spazio_iniziale",
+      "nul_interno",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "CLOB(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 10,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "CLOB(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 2147483647,
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "CHARACTER(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 1,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      },
+      {
+       "classe": "riempie_testo"
+      }
+     ],
+     "riscritti": [
+      "vuoto",
+      "spazio_finale",
+      "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "spazio_iniziale",
+      "nul_interno",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "CHARACTER(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 10,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      },
+      {
+       "classe": "riempie_testo"
+      }
+     ],
+     "riscritti": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "nul_interno",
+      "solo_nul",
+      "controllo",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno_meno_uno",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": [
+      "latino"
+     ]
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "CHARACTER(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 63,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "riempie_testo"
+      },
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "nul_interno",
+      "solo_nul",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno_meno_uno",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "VARCHAR(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 1,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
+      "spazio_finale",
+      "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "spazio_iniziale",
+      "nul_interno",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "VARCHAR(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 10,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "VARCHAR(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 8168,
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "CLOB(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 1,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
+      "spazio_finale",
+      "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "spazio_iniziale",
+      "nul_interno",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "CLOB(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 10,
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "oltre",
+      "pieno_multibyte",
+      "pieno_non_bmp"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "utf8",
+     "nativo": "CLOB(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+     "dimensione": 536870911,
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "date32",
+     "nativo": "DATE",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [
+      "anno_0",
+      "prima_dell_anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(0)",
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "frazione_secondi",
+       "cifre": 0
+      }
+     ],
+     "riscritti": [
+      "mezzo",
+      "sette_decimi",
+      "cifre_1",
+      "cifre_2",
+      "cifre_3",
+      "cifre_4",
+      "cifre_5",
+      "cifre_6",
+      "quasi_secondo",
+      "un_micro",
+      "prima_epoca_micro",
+      "prima_epoca_mezzo",
+      "anno_9999_fine"
+     ],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(1)",
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "frazione_secondi",
+       "cifre": 1
+      }
+     ],
+     "riscritti": [
+      "cifre_2",
+      "cifre_3",
+      "cifre_4",
+      "cifre_5",
+      "cifre_6",
+      "quasi_secondo",
+      "un_micro",
+      "prima_epoca_micro",
+      "anno_9999_fine"
+     ],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(2)",
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "frazione_secondi",
+       "cifre": 2
+      }
+     ],
+     "riscritti": [
+      "cifre_3",
+      "cifre_4",
+      "cifre_5",
+      "cifre_6",
+      "quasi_secondo",
+      "un_micro",
+      "prima_epoca_micro",
+      "anno_9999_fine"
+     ],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(3)",
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "frazione_secondi",
+       "cifre": 3
+      }
+     ],
+     "riscritti": [
+      "cifre_4",
+      "cifre_5",
+      "cifre_6",
+      "quasi_secondo",
+      "un_micro",
+      "prima_epoca_micro",
+      "anno_9999_fine"
+     ],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(4)",
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "frazione_secondi",
+       "cifre": 4
+      }
+     ],
+     "riscritti": [
+      "cifre_5",
+      "cifre_6",
+      "quasi_secondo",
+      "un_micro",
+      "prima_epoca_micro",
+      "anno_9999_fine"
+     ],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(5)",
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "frazione_secondi",
+       "cifre": 5
+      }
+     ],
+     "riscritti": [
+      "cifre_6",
+      "quasi_secondo",
+      "un_micro",
+      "prima_epoca_micro",
+      "anno_9999_fine"
+     ],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(6)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(7)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(8)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(9)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(10)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(11)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    },
+    {
+     "arrow": "timestamp[us]",
+     "nativo": "TIMESTAMP(12)",
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [
+      "anno_0"
+     ],
+     "per_eccesso": []
+    }
+   ]
+  }
+ ]
+}

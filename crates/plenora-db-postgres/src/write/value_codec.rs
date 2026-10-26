@@ -82,7 +82,7 @@ pub(super) fn encode_copy_value(
             let value = epoch
                 .checked_add_signed(Duration::days(i64::from(typed!(Date32Array).value(row))))
                 .ok_or_else(temporal_range_error)?;
-            append_formatted(output, format_args!("{value}"))?;
+            output.push_str(&date_text(value, None));
         }
         DataType::Time64(TimeUnit::Microsecond) => {
             let value = time_from_microseconds(typed!(Time64MicrosecondArray).value(row))?;
@@ -97,11 +97,14 @@ pub(super) fn encode_copy_value(
                 typed!(TimestampMicrosecondArray).value(row),
             )
             .ok_or_else(temporal_range_error)?;
-            if timezone.is_some() {
-                append_formatted(output, format_args!("{}", instant.to_rfc3339()))?;
+            let naive = instant.naive_utc();
+            let time = naive.time().format("%H:%M:%S%.f").to_string();
+            let time = if timezone.is_some() {
+                format!("{time}+00:00")
             } else {
-                append_formatted(output, format_args!("{}", instant.naive_utc()))?;
-            }
+                time
+            };
+            output.push_str(&date_text(naive.date(), Some(&time)));
         }
         DataType::Decimal128(_, scale) => {
             output.push_str(&decimal_string(typed!(Decimal128Array).value(row), *scale));
@@ -121,6 +124,27 @@ pub(super) fn encode_copy_value(
         _ => return Err(mapping_error()),
     }
     Ok(())
+}
+
+/// Una data (e l'ora, se c'e) nel testo che PostgreSQL legge, con l'anno
+/// di PostgreSQL: l'anno astronomico `y <= 0` di chrono e `1 - y` avanti
+/// Cristo (`BC` alla fine), un anno oltre 9999 senza il `+` di chrono. Fino
+/// al 25/10 `CopyText` scriveva la forma di chrono (`0000-01-01`,
+/// `-0001-01-01`), che il server rifiuta o legge come un altro anno.
+pub(super) fn date_text(date: NaiveDate, time: Option<&str>) -> String {
+    use chrono::Datelike;
+    let year = date.year();
+    let (shown, era) = if year <= 0 {
+        (1 - i64::from(year), " BC")
+    } else {
+        (i64::from(year), "")
+    };
+    let time = time.map_or_else(String::new, |time| format!(" {time}"));
+    format!(
+        "{shown:04}-{:02}-{:02}{time}{era}",
+        date.month(),
+        date.day()
+    )
 }
 
 fn append_formatted(output: &mut String, arguments: std::fmt::Arguments<'_>) -> Result<()> {

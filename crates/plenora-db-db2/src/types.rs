@@ -244,10 +244,18 @@ impl Db2ReadPlan {
             .iter()
             .map(|column| {
                 let quoted = renderer.quote_identifier(&Identifier::new(column.name.clone())?)?;
-                if column.kind == Db2ColumnKind::Geometry {
-                    Ok(format!("ST_ASBINARY({quoted}) AS {quoted}"))
-                } else {
-                    Ok(quoted)
+                match column.kind {
+                    Db2ColumnKind::Geometry => Ok(format!("ST_ASBINARY({quoted}) AS {quoted}")),
+                    // Il result set e legato come testo, e il CLI IBM da di
+                    // un `DOUBLE` 15 cifre significative (`0.30000000000000004`
+                    // si rileggeva `0.3`, `f64::MAX` come un testo oltre
+                    // `f64`), di un `REAL` 7: misurato il 25/10 su Db2 12.1.5
+                    // dalla sonda della regola A. `DECFLOAT(34)` ne da 17, e
+                    // il testo si rilegge nello stesso float.
+                    Db2ColumnKind::F32 | Db2ColumnKind::F64 => {
+                        Ok(format!("CAST({quoted} AS DECFLOAT(34)) AS {quoted}"))
+                    }
+                    _ => Ok(quoted),
                 }
             })
             .collect::<Result<Vec<_>>>()?;

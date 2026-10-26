@@ -167,6 +167,10 @@ STEPS: tuple[tuple[str, list[str]], ...] = (
         "test_sonde_srid_server.py",
         [sys.executable, "scripts/test_sonde_srid_server.py"],
     ),
+    (
+        "test_sonde_scritture_server.py",
+        [sys.executable, "scripts/test_sonde_scritture_server.py"],
+    ),
     ("check_docs.py", [sys.executable, "scripts/check_docs.py"]),
     ("check_dependency_pins.py", [sys.executable, "scripts/check_dependency_pins.py"]),
     (

@@ -145,6 +145,11 @@ pub struct MysqlWritePlan {
     update_key_columns: Vec<String>,
     /// Colonne (quoted) da aggiornare in UPDATE (default: tutte non-key).
     update_set_columns: Vec<String>,
+    /// Le riscritture al salvataggio del target (regola S,
+    /// `plenora_database_core::store_rewrite`), misurate (regola A,
+    /// [`crate::write_admission`]) per la chiave d'ammissione di ogni colonna
+    /// non geometrica, dal catalogo nel preflight o dai tipi di Create.
+    rewrites: Vec<plenora_database_core::store_rewrite::ColumnRewrites>,
 }
 
 fn compile_write_column(
@@ -492,7 +497,54 @@ impl MysqlWritePlan {
             upsert_keys_quoted,
             update_key_columns,
             update_set_columns,
+            rewrites: Vec::new(),
         })
+    }
+
+    /// Le colonne non geometriche, con l'indice nello schema: quelle della
+    /// regola A (una geometria ha le proprie verifiche).
+    #[must_use]
+    pub(crate) fn scalar_columns(&self) -> Vec<(usize, String)> {
+        self.columns
+            .iter()
+            .enumerate()
+            .filter(|(_, column)| column.kind != MysqlColumnKind::Geometry)
+            .map(|(index, column)| (index, column.name.clone()))
+            .collect()
+    }
+
+    /// I fatti delle colonne che `mode=create` crea, come il catalogo del
+    /// prodotto li pubblichera.
+    ///
+    /// # Errors
+    ///
+    /// `unsupported` per un tipo che Create non scrive.
+    pub(crate) fn create_facts(
+        &self,
+        product: plenora_database_core::plan::ProviderKind,
+    ) -> Result<Vec<crate::write_admission::ColumnFacts>> {
+        self.columns
+            .iter()
+            .filter(|column| column.kind != MysqlColumnKind::Geometry)
+            .map(|column| {
+                crate::write_admission::create_facts(&column.name, &column.kind, product)
+                    .ok_or_else(|| unsupported("tipo Arrow non qualificato per Create"))
+            })
+            .collect()
+    }
+
+    /// Le riscritture della regola A, dal preflight.
+    #[must_use]
+    pub(crate) fn rewrites(&self) -> &[plenora_database_core::store_rewrite::ColumnRewrites] {
+        &self.rewrites
+    }
+
+    /// Fissa le riscritture della regola A.
+    pub(crate) fn set_rewrites(
+        &mut self,
+        rewrites: Vec<plenora_database_core::store_rewrite::ColumnRewrites>,
+    ) {
+        self.rewrites = rewrites;
     }
 
     /// Nome staging table temporary per Update (deterministico per target).
@@ -1662,13 +1714,311 @@ fn write_native_type_is_qualified(column: &crate::MysqlColumn, kind: &MysqlColum
             "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob"
         ),
         MysqlColumnKind::Date => native == "date",
-        MysqlColumnKind::Timestamp => {
-            matches!(native.as_str(), "datetime" | "timestamp")
-                && column.datetime_precision == Some(6)
-        }
+        // La scala frazionaria e nella chiave della regola A
+        // (`crate::write_admission`): `datetime(p)` con `p < 6` arrotonda, e
+        // la riscrittura misurata si dichiara (`FractionalSeconds`). Fino al
+        // 25/10 passava soltanto `p = 6`, per nome.
+        MysqlColumnKind::Timestamp => matches!(native.as_str(), "datetime" | "timestamp"),
         MysqlColumnKind::Decimal { .. } => matches!(native.as_str(), "decimal" | "numeric"),
         MysqlColumnKind::Time | MysqlColumnKind::Geometry => false,
     }
+}
+
+/// Il motivo pubblico del rifiuto di una chiave che la regola K non sa
+/// confrontare sotto la collation della colonna.
+pub(crate) const UNCOMPARABLE_COLLATION_KEY: &str = "scrittura rifiutata: una chiave di testo \
+     o binario lungo (TEXT, BLOB) con una collation non binaria nella chiave non si confronta \
+     sotto la collation della colonna (regola K)";
+
+/// La colonna del contatore delle ripetizioni nella tabella delle chiavi.
+const REPEATS_COLUMN: &str = "__pln_k_ripetizioni";
+
+/// La regola K sotto la collation della colonna, per Upsert e
+/// `DeleteByKeys`.
+///
+/// Il core confronta le chiavi dell'ingresso per valore Arrow
+/// (`plenora_database_core::write_keys`): `'a'`, `'A'` e `'à'` sono tre
+/// chiavi, e per un indice sotto `utf8mb4_0900_ai_ci`, `utf8mb4_general_ci` o
+/// `utf8mb4_uca1400_ai_ci` sono una sola voce. Fino al 25/10 l'Upsert di
+/// `[('a','x'),('A','y')]` su una chiave primaria `varchar` sotto una
+/// collation `_ai_ci` pubblicava `confirmed 2` con una riga sola, e
+/// `DeleteByKeys` di `'a'` e `'A'` una cancellata e una `skipped`.
+///
+/// Le collation non si emulano: e il **server** a dire quali chiavi
+/// dell'ingresso sono la stessa voce. Prima della transazione la scrittura
+/// crea una tabella `TEMPORARY` (che non fa commit implicito e muore con la
+/// sessione, che il pool azzera al rilascio) con le colonne chiave dello
+/// stesso `COLUMN_TYPE`, charset e collation della colonna del target e un
+/// indice unico su di esse; dentro la transazione, prima di ogni statement
+/// sul target, ogni blocco di chiavi entra nella tabella (`ON DUPLICATE KEY
+/// UPDATE` conta le ripetizioni) e una ripetizione rifiuta la scrittura
+/// (`data_mapping`, `DUPLICATE_INPUT_KEYS`, `rolled_back`). Un `NULL` resta
+/// distinto, come nell'indice del target (`NullKeys::Distinct`).
+///
+/// Serve soltanto se almeno una colonna chiave ha una collation non binaria
+/// (`binary` o `*_bin` confrontano per byte, a parte gli spazi finali che il
+/// core gia non distingue).
+///
+/// # Limite dichiarato
+///
+/// - **Regola**: le chiavi dell'ingresso si confrontano sotto la collation
+///   della colonna del target.
+/// - **Ambito**: Upsert e `DeleteByKeys` (Update ha il conteggio delle coppie
+///   dello staging). Una chiave con una collation non binaria e una colonna
+///   chiave di testo o binario lungo (`TINYTEXT` .. `LONGTEXT`, `TINYBLOB` ..
+///   `LONGBLOB`) si rifiuta ([`UNCOMPARABLE_COLLATION_KEY`]): un indice unico
+///   su quelle colonne vorrebbe un prefisso, che confronterebbe meno della
+///   colonna.
+/// - **Hazard**: piu stretto: quelle chiavi non si scrivono. Charset e
+///   collation delle colonne si leggono prima della transazione: un DDL
+///   concorrente che li cambia non si vede (lo stesso hazard della regola K2).
+/// - **Rientro**: un indice unico senza prefisso sulle colonne lunghe (le
+///   chiavi `long unique` di `MariaDB`) dopo la misura.
+#[derive(Debug, Clone)]
+pub(crate) struct KeyCollationGuard {
+    table: String,
+    key_indexes: Vec<usize>,
+    quoted_keys: Vec<String>,
+}
+
+fn binary_collation(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name == "binary" || name.ends_with("_bin")
+}
+
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+impl MysqlWritePlan {
+    /// La guardia della regola K sotto collation e il DDL della sua tabella,
+    /// o `None` se nessuna colonna chiave ha una collation non binaria (o la
+    /// mode non e Upsert ne `DeleteByKeys`).
+    ///
+    /// # Errors
+    ///
+    /// `unsupported` con [`UNCOMPARABLE_COLLATION_KEY`] per una chiave che non
+    /// si confronta sotto la collation; `data_mapping` se una colonna chiave
+    /// manca dal target o il catalogo ne da un tipo non rappresentabile.
+    pub(crate) fn key_collation_guard(
+        &self,
+        operation: &WriteOperation,
+        target: &MysqlObjectDescription,
+        database: &str,
+        seed: &str,
+    ) -> Result<Option<(String, KeyCollationGuard)>> {
+        if !plenora_database_core::write_keys::keyed_mode(operation.mode) {
+            return Ok(None);
+        }
+        let mut key_columns = Vec::with_capacity(operation.keys.len());
+        for key in &operation.keys {
+            let index = self
+                .columns
+                .iter()
+                .position(|column| &column.name == key)
+                .ok_or_else(|| mapping_error("chiave assente dallo schema Arrow"))?;
+            let server = target
+                .columns
+                .iter()
+                .find(|column| &column.name == key)
+                .ok_or_else(|| mapping_error("colonna chiave assente dal target"))?;
+            // Una collation assente non prova un confronto binario; nello
+            // staging di Update farebbe ereditare il default della tabella.
+            if matches!(
+                server.data_type.to_ascii_lowercase().as_str(),
+                "char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext"
+            ) && !server
+                .character_set
+                .as_deref()
+                .zip(server.collation.as_deref())
+                .is_some_and(|(charset, collation)| plain_name(charset) && plain_name(collation))
+            {
+                return Err(unsupported(
+                    "charset o collation della colonna chiave non provati",
+                ));
+            }
+            key_columns.push((index, server));
+        }
+        if operation.mode == WriteMode::Update {
+            return Ok(None);
+        }
+        let needs_collation = key_columns.iter().any(|(_, server)| {
+            server
+                .collation
+                .as_deref()
+                .is_some_and(|collation| !binary_collation(collation))
+        });
+        if !needs_collation {
+            return Ok(None);
+        }
+        let mut lines = Vec::with_capacity(key_columns.len() + 2);
+        let mut quoted_keys = Vec::with_capacity(key_columns.len());
+        for (index, server) in &key_columns {
+            let family = server.data_type.to_ascii_lowercase();
+            let indexable = matches!(
+                family.as_str(),
+                "tinyint"
+                    | "smallint"
+                    | "mediumint"
+                    | "int"
+                    | "integer"
+                    | "bigint"
+                    | "decimal"
+                    | "numeric"
+                    | "float"
+                    | "double"
+                    | "real"
+                    | "date"
+                    | "datetime"
+                    | "timestamp"
+                    | "year"
+                    | "char"
+                    | "varchar"
+                    | "binary"
+                    | "varbinary"
+            );
+            if !indexable || self.columns[*index].name == REPEATS_COLUMN {
+                return Err(unsupported(UNCOMPARABLE_COLLATION_KEY));
+            }
+            let column_type = server.native_declaration.trim().to_ascii_lowercase();
+            if column_type.is_empty()
+                || !column_type.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'(' | b')' | b',' | b' ')
+                })
+            {
+                return Err(mapping_error(
+                    "tipo della colonna chiave non rappresentabile",
+                ));
+            }
+            let collation = match (server.character_set.as_deref(), server.collation.as_deref()) {
+                (Some(charset), Some(collation))
+                    if plain_name(charset) && plain_name(collation) =>
+                {
+                    format!(" CHARACTER SET {charset} COLLATE {collation}")
+                }
+                (None, None) => String::new(),
+                _ => {
+                    return Err(mapping_error(
+                        "collation della colonna chiave non rappresentabile",
+                    ))
+                }
+            };
+            let quoted = self.columns[*index].quoted.clone();
+            lines.push(format!("    {quoted} {column_type}{collation} NULL"));
+            quoted_keys.push(quoted);
+        }
+        lines.push(format!("    `{REPEATS_COLUMN}` BIGINT NOT NULL DEFAULT 0"));
+        lines.push(format!("    UNIQUE KEY ({})", quoted_keys.join(", ")));
+        let table = quote_staging_name(
+            &format!(
+                "__pln_k_{}_{}",
+                self.target_object_raw.chars().take(24).collect::<String>(),
+                seed.replace('-', "_")
+            ),
+            database,
+        )?;
+        let ddl = format!(
+            "CREATE TEMPORARY TABLE {table} (\n{}\n) ENGINE=InnoDB",
+            lines.join(",\n")
+        );
+        Ok(Some((
+            ddl,
+            KeyCollationGuard {
+                table,
+                key_indexes: key_columns.iter().map(|(index, _)| *index).collect(),
+                quoted_keys,
+            },
+        )))
+    }
+
+    /// I bind delle chiavi di `rows` righe da `start`, per la guardia.
+    ///
+    /// # Errors
+    ///
+    /// Come [`Self::bind_chunk`].
+    pub(crate) fn bind_key_chunk(
+        &self,
+        batch: &RecordBatch,
+        start: usize,
+        rows: usize,
+        guard: &KeyCollationGuard,
+    ) -> Result<Params> {
+        if rows == 0
+            || start
+                .checked_add(rows)
+                .is_none_or(|end| end > batch.num_rows())
+            || batch.num_columns() != self.columns.len()
+        {
+            return Err(write_error(
+                ErrorCategory::InvalidPlan,
+                "intervallo batch non valido",
+            ));
+        }
+        let mut values = Vec::with_capacity(rows.saturating_mul(guard.key_indexes.len()));
+        for row in start..start + rows {
+            for index in &guard.key_indexes {
+                let column = &self.columns[*index];
+                let array = batch.column(*index);
+                if array.is_null(row) {
+                    values.push(Value::NULL);
+                    continue;
+                }
+                if column.kind == MysqlColumnKind::Utf8 {
+                    let text = array
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .ok_or_else(|| mapping_error("array Arrow incoerente con il piano"))?;
+                    check_text(column.text_limit, text.value(row))?;
+                }
+                values.push(bind_value(array.as_ref(), row, &column.kind)?);
+            }
+        }
+        Ok(Params::Positional(values))
+    }
+}
+
+impl KeyCollationGuard {
+    /// L'`INSERT` di `rows` chiavi: una ripetizione sotto la collation
+    /// incrementa il contatore invece di fallire.
+    #[must_use]
+    pub(crate) fn render_insert(&self, rows: usize) -> String {
+        let placeholders = vec!["?"; self.quoted_keys.len()].join(", ");
+        let tuples = vec![format!("({placeholders})"); rows].join(", ");
+        format!(
+            "INSERT INTO {} ({}) VALUES {tuples} ON DUPLICATE KEY UPDATE \
+             `{REPEATS_COLUMN}` = `{REPEATS_COLUMN}` + 1",
+            self.table,
+            self.quoted_keys.join(", ")
+        )
+    }
+
+    /// Le chiavi ripetute finora.
+    #[must_use]
+    pub(crate) fn render_repeats(&self) -> String {
+        format!(
+            "SELECT COUNT(*) FROM {} WHERE `{REPEATS_COLUMN}` > 0",
+            self.table
+        )
+    }
+}
+
+/// Il rifiuto di una chiave ripetuta sotto la collation.
+#[must_use]
+pub(crate) fn repeated_key_error(kind: plenora_database_core::plan::ProviderKind) -> DatabaseError {
+    DatabaseError::new(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Write,
+        Some(kind),
+        format!(
+            "scrittura rifiutata: {}",
+            plenora_database_core::write_keys::DUPLICATE_INPUT_KEYS
+        ),
+    )
 }
 
 fn mapping_error(message: impl Into<String>) -> DatabaseError {
@@ -2094,6 +2444,8 @@ pub(crate) fn build_create_table_sql(
 /// # Errors
 ///
 /// Come `build_create_table_sql`.
+/// Una colonna testuale senza charset e collation validi si rifiuta: il
+/// default dello staging non prova la semantica della colonna del target.
 pub(crate) fn build_temp_staging_sql(
     schema: &SchemaRef,
     staging_name: &str,
@@ -2133,7 +2485,7 @@ pub(crate) fn build_temp_staging_sql(
             // (`render_staging_pairs`). Charset e collation vengono dal
             // catalogo, che li rilegge da `information_schema.COLUMNS`: nomi
             // di soli `[A-Za-z0-9_]`, controllati prima di entrare nel DDL.
-            let collation = target
+            let text_metadata = target
                 .columns
                 .iter()
                 .find(|column| column.name == c.name)
@@ -2143,20 +2495,18 @@ pub(crate) fn build_temp_staging_sql(
                         .as_deref()
                         .zip(column.collation.as_deref())
                 })
-                .filter(|(charset, collation)| {
-                    c.kind == MysqlColumnKind::Utf8
-                        && [charset, collation].iter().all(|name| {
-                            !name.is_empty()
-                                && name
-                                    .bytes()
-                                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                        })
-                })
-                .map(|(charset, collation)| format!(" CHARACTER SET {charset} COLLATE {collation}"))
-                .unwrap_or_default();
-            format!("    {} {ty}{collation} {null}", c.quoted)
+                .filter(|(charset, collation)| plain_name(charset) && plain_name(collation));
+            let collation = if c.kind == MysqlColumnKind::Utf8 {
+                let (charset, collation) = text_metadata.ok_or_else(|| {
+                    unsupported("charset o collation della colonna di staging non provati")
+                })?;
+                format!(" CHARACTER SET {charset} COLLATE {collation}")
+            } else {
+                String::new()
+            };
+            Ok(format!("    {} {ty}{collation} {null}", c.quoted))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     Ok(format!(
         "CREATE TEMPORARY TABLE {quoted_staging} (\n{}\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
         lines.join(",\n")

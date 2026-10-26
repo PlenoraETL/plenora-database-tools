@@ -322,8 +322,10 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         # poi l'ordine degli assi geografici (GEO-001) e, il 25/10, le tre prove
         # delle regole W1/W2 e della regola R sulla scrittura, e le otto della
         # seconda rilettura (regole K e V, sessione, isolamento), e le due
-        # della terza (regole P e K2), e le due della quarta (S6 e regola T).
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 52)
+        # della terza (regole P e K2), e le due della quarta (S6 e regola T), e
+        # le sei della regola A (la sonda, `DOUBLE(M,D)`, `DATETIME(3)`, i tipi
+        # di Create) e della regola K sotto collation.
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 58)
         self.assertIn(
             "live_tests::live_geographic_axis_order_round_trips_and_derived_srid_is_verified",
             gate.EXPECTED_LIVE_REFERENCE_TESTS,

@@ -525,7 +525,27 @@ pub fn parse_date(value: &str) -> Result<i32> {
     Ok(date.num_days_from_ce() - UNIX_EPOCH_DAYS_FROM_CE)
 }
 
+/// Se il testo di un `TIMESTAMP(p)` con `p > 6` ha cifre non nulle oltre
+/// il microsecondo. Arrow e il contratto pubblicano `Timestamp(us)`, e
+/// `timestamp_micros` (o il formato a sei cifre della query) le scartava in
+/// silenzio: `.123456789` di un `TIMESTAMP(9)` si rileggeva `.123456`.
+#[must_use]
+pub fn has_sub_microsecond_digits(value: &str) -> bool {
+    value
+        .rsplit_once('.')
+        .map(|(_, fraction)| fraction.trim())
+        .is_some_and(|fraction| {
+            fraction.chars().all(|c| c.is_ascii_digit())
+                && fraction.chars().skip(6).any(|digit| digit != '0')
+        })
+}
+
 pub fn parse_timestamp(value: &str) -> Result<i64> {
+    if has_sub_microsecond_digits(value) {
+        return Err(mapping(
+            "TIMESTAMP Db2 con cifre oltre il microsecondo: Arrow le perderebbe",
+        ));
+    }
     let timestamp = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
         .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d-%H.%M.%S%.f"))
         .map_err(|_| mapping("TIMESTAMP Db2 non rappresentabile"))?;

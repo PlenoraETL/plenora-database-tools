@@ -277,21 +277,45 @@ async fn live_s_testo_e_binario_vuoti_non_diventano_null_in_silenzio() {
         .expect_err("testo vuoto");
         assert_rewritten(&error, false);
     }
-    for column in ["R", "B"] {
-        let error = write(
+    let error = write(
+        &provider,
+        &secret,
+        &append,
+        text_batch(
+            &[("R", true)],
+            vec![1],
+            vec![Arc::new(BinaryArray::from(vec![Some(&b""[..])]))],
+        ),
+    )
+    .await
+    .expect_err("binario vuoto in RAW");
+    assert_rewritten(&error, false);
+    // Un BLOB vuoto si scrive come LOB vuoto, non come NULL: dal 25/10
+    // (round 8) il driver lega i binari con la lunghezza a pezzi, e la regola
+    // A lo misura esatto (`tests/fixtures/scrittura_server_oracle.json`).
+    write(
+        &provider,
+        &secret,
+        &append,
+        text_batch(
+            &[("B", true)],
+            vec![1],
+            vec![Arc::new(BinaryArray::from(vec![Some(&b""[..])]))],
+        ),
+    )
+    .await
+    .expect("BLOB vuoto");
+    assert_eq!(
+        count(
             &provider,
             &secret,
-            &append,
-            text_batch(
-                &[(column, true)],
-                vec![1],
-                vec![Arc::new(BinaryArray::from(vec![Some(&b""[..])]))],
-            ),
+            &format!("SELECT COUNT(*) AS N FROM {table} WHERE B IS NOT NULL AND DBMS_LOB.GETLENGTH(B) = 0")
         )
-        .await
-        .expect_err("binario vuoto");
-        assert_rewritten(&error, false);
-    }
+        .await,
+        1,
+        "il BLOB vuoto resta vuoto, non NULL"
+    );
+    dml(&provider, &secret, &format!("DELETE FROM {table}")).await;
     // CHAR(3) completa con spazi un testo piu corto.
     let error = write(
         &provider,

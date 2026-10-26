@@ -43,6 +43,7 @@ use tokio_postgres::types::ToSql;
 use tokio_postgres::types::{IsNull, Type};
 use tokio_postgres::Transaction;
 
+pub mod admission;
 pub mod binary_codec;
 mod canonical;
 pub use canonical::{reduced_temporal, LeafLoss};
@@ -111,6 +112,18 @@ pub fn prepare_state(
     Ok(PreparedPostgresWrite {
         column_plans: compile_schema_plan(schema, operation)?,
     })
+}
+
+impl PreparedPostgresWrite {
+    /// Le riscritture misurate dal preflight (regola A, [`admission`]).
+    pub fn apply_admission(
+        &mut self,
+        schema: &SchemaRef,
+        operation: &WriteOperation,
+        columns: &[plenora_database_core::store_rewrite::ColumnRewrites],
+    ) {
+        admission::apply(&mut self.column_plans, schema, operation, columns);
+    }
 }
 
 fn compile_schema_plan(
@@ -421,7 +434,7 @@ pub async fn execute(
                     plan.key_equality = equalities.get(field.name()).cloned();
                 }
             }
-            visibility::null_keys(&transaction, operation).await
+            key_facts(&transaction, operation).await
         },
         cancellation,
     )
@@ -630,10 +643,33 @@ async fn assign_session_rules<C: tokio_postgres::GenericClient + Sync>(
     schema: &SchemaRef,
     plans: &mut [WriteColumnPlan],
 ) -> Result<()> {
-    let rules = canonical::rules(client, operation, schema, ErrorPhase::Write).await?;
+    let (rules, leaves) =
+        canonical::rules_with_leaves(client, operation, schema, ErrorPhase::Write).await?;
     canonical::assign(plans, schema, &rules);
     canonical::mark_keys(plans, schema, operation);
+    // La regola A con le foglie appena lette, prima del primo valore: la
+    // stessa ammissione del preflight, sul target come lo vede la
+    // transazione.
+    admission::assign(client, operation, schema, plans, &leaves, ErrorPhase::Write).await?;
     canonical::refuse_lossy(plans)
+}
+
+/// La regola K dal catalogo, prima di ogni statement sulle chiavi, nella
+/// transazione della scrittura e nel dry run con la DSN: una chiave con una
+/// collation non deterministica si rifiuta
+/// (`visibility::refuse_nondeterministic_keys`), poi come l'indice che prova
+/// le chiavi tratta i `NULL` (`visibility::null_keys`).
+///
+/// # Errors
+///
+/// `unsupported` per una chiave con una collation non deterministica;
+/// l'errore classificato della lettura.
+pub async fn key_facts<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
+    operation: &WriteOperation,
+) -> Result<plenora_database_core::write_keys::NullKeys> {
+    visibility::refuse_nondeterministic_keys(client, operation, ErrorPhase::Write).await?;
+    visibility::null_keys(client, operation).await
 }
 
 /// La regola V per il dry run: dal catalogo se c'e una sessione e il target
@@ -650,8 +686,20 @@ pub async fn assign_dry_run_session_rules(
 ) -> Result<()> {
     canonical::assign_declared(&mut state.column_plans, operation);
     if let (Some(client), false) = (client, operation.mode == WriteMode::Create) {
-        let rules = canonical::rules(client, operation, schema, ErrorPhase::Write).await?;
+        let (rules, leaves) =
+            canonical::rules_with_leaves(client, operation, schema, ErrorPhase::Write).await?;
         canonical::assign(&mut state.column_plans, schema, &rules);
+        // La regola A come la scrittura (il preflight l'ha gia decisa in
+        // `prepare_write`; qui si rilegge come nella transazione).
+        admission::assign(
+            client,
+            operation,
+            schema,
+            &mut state.column_plans,
+            &leaves,
+            ErrorPhase::Write,
+        )
+        .await?;
     }
     canonical::mark_keys(&mut state.column_plans, schema, operation);
     canonical::refuse_lossy(&state.column_plans)
@@ -772,13 +820,6 @@ pub async fn assign_dry_run_key_equality(
         plan.key_equality = equalities.get(field.name()).cloned();
     }
     Ok(())
-}
-
-/// Il motivo pubblico del rifiuto della regola V (`canonical`).
-#[cfg(test)]
-#[must_use]
-pub const fn canonical_reason() -> &'static str {
-    canonical::NOT_CANONICAL
 }
 
 /// Il motivo pubblico del rifiuto della regola P (`canonical`).

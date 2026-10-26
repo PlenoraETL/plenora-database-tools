@@ -26,6 +26,30 @@ const PASSWORD: &str = "pln_regola_r_segreto";
 /// Le prove condividono schema e ruolo: una alla volta.
 pub static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Il rifiuto della regola A (`crate::write::admission`): la coppia fra il
+/// tipo Arrow e la foglia del target non e misurata, o la misura non ha
+/// scritto alcun valore. Dal 25/10 le prove che scrivevano coppie non
+/// misurate (range, array, composti, testo verso tipi temporali o numerici,
+/// precisione temporale ridotta) lo asseriscono al posto dell'esito di prima.
+pub fn rule_a(error: Option<&DatabaseError>) -> bool {
+    use plenora_database_core::write_admission::{REFUSED_PAIR, UNPROVEN_PAIR};
+    error.is_some_and(|error| {
+        error.category == ErrorCategory::Unsupported
+            && error.phase == ErrorPhase::Prepare
+            && (error.message.contains(UNPROVEN_PAIR) || error.message.contains(REFUSED_PAIR))
+    })
+}
+
+/// Il rifiuto della regola K sotto una collation non deterministica.
+pub fn nondeterministic_key(error: Option<&DatabaseError>) -> bool {
+    error.is_some_and(|error| {
+        error.category == ErrorCategory::Unsupported
+            && error
+                .message
+                .contains(crate::write::visibility::NONDETERMINISTIC_KEY)
+    })
+}
+
 pub fn live_dsn() -> Option<String> {
     let declared = std::env::var("PLENORA_TEST_POSTGRES_DSN").ok();
     if declared.is_none() {

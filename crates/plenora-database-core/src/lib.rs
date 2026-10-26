@@ -46,6 +46,7 @@ pub mod spatial_probe;
 pub mod store_rewrite;
 pub mod strict_json;
 pub mod transaction;
+pub mod write_admission;
 pub mod write_keys;
 
 pub use cancellation::{CancellationReason, CancellationToken};

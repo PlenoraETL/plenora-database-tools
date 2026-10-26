@@ -80,19 +80,57 @@
 //! # Limite dichiarato: chiavi uguali per il target, diverse come valori
 //!
 //! - **Regola**: la condizione 2 confronta i valori Arrow.
-//! - **Ambito**: ogni provider; `MySQL`/`MariaDB` per Update confronta anche
-//!   le coppie dello staging con le righe trovate, sotto la collation della
-//!   colonna del target, e rifiuta con [`DUPLICATE_INPUT_KEYS`].
+//! - **Ambito**: ogni provider; `MySQL`/`MariaDB` confrontano anche sotto la
+//!   collation della colonna del target, nella sessione della scrittura e
+//!   prima di ogni statement sul target, e rifiutano con
+//!   [`DUPLICATE_INPUT_KEYS`] (`rolled_back`): Update con le coppie dello
+//!   staging contro le righe trovate, Upsert e `DeleteByKeys` con una
+//!   tabella `TEMPORARY` delle chiavi con lo stesso tipo, charset e
+//!   collation e un indice unico (`plenora_db_mysql`
+//!   `KeyCollationGuard`), e rifiutano nel preflight (`unsupported`) una
+//!   chiave sotto collation non binaria con una colonna `TEXT` o `BLOB`,
+//!   che un indice unico confronterebbe soltanto per prefisso. Db2 non ha
+//!   collation per colonna: sotto una collation del database (`collate_info`)
+//!   diversa da `IDENTITY` e `IDENTITY_16BIT` rifiuta nel preflight ogni
+//!   mode per chiavi con una chiave di testo (`unsupported`,
+//!   `plenora_db_db2` `refuse_text_keys_under_collation`); sotto `IDENTITY`
+//!   l'indice confronta i byte, con gli spazi finali della sezione qui sotto.
+//!   PostgreSQL confronta per byte sotto ogni collation deterministica (dopo
+//!   l'ordinamento, l'uguaglianza e quella dei byte: la condizione 2 e esatta
+//!   o piu stretta) e rifiuta (`unsupported`, `plenora_db_postgres`
+//!   `refuse_nondeterministic_keys`) ogni mode per chiavi con una chiave sotto
+//!   una collation non deterministica (`pg_collation.collisdeterministic`
+//!   falso, ICU), della colonna o di un indice unico che la comprende: nel
+//!   preflight, nella transazione della scrittura prima di ogni statement sul
+//!   target e nel dry run con la DSN. Fino al 25/10 l'Upsert di `'a'` e `'A'`
+//!   su una chiave ICU `und-u-ks-level2` confermava due righe e ne lasciava
+//!   una. SQL Server confronta sotto la collation e il tipo della colonna
+//!   del target in ogni mode per chiavi: nella transazione della scrittura,
+//!   dopo il lock e prima degli statement di ogni batch sul target, le chiavi
+//!   passano da una tabella temporanea `#plenora_keys` con le colonne chiave
+//!   dello stesso tipo e della stessa collation e un indice unico
+//!   (`plenora_db_sqlserver`, `write::keys`); una violazione e
+//!   [`DUPLICATE_INPUT_KEYS`] (`rolled_back`). Fino al 25/10 l'Upsert di
+//!   `'a'` e `'A'` su una chiave `nvarchar` sotto
+//!   `SQL_Latin1_General_CP1_CI_AS` confermava due righe e ne lasciava una.
 //! - **Hazard**: due valori diversi che il target confronta uguali (`'a'` e
 //!   `'A'` sotto una collation che ignora le maiuscole, due testi di
 //!   `datetimeoffset` con offset diversi per lo stesso istante) non sono
-//!   ripetuti per il core. PostgreSQL, SQL Server, Oracle e Db2 applicano le
-//!   righe in ordine (vince l'ultima, ciascuna contata); `MySQL`/`MariaDB` in
-//!   Upsert le applicano in ordine e in `DeleteByKeys` contano una
-//!   cancellata e una `skipped`.
+//!   ripetuti per il core. Oracle applica le righe in ordine (vince
+//!   l'ultima, ciascuna contata); SQL Server le rifiuta (fino al 25/10 le
+//!   applicava in ordine, ciascuna contata); PostgreSQL lo farebbe sotto una
+//!   collation non deterministica, ma rifiuta prima la chiave (piu stretto:
+//!   anche chiavi distinte sotto la collation si rifiutano); Db2 lo farebbe, ma
+//!   le rifiuta prima (piu stretto: chiavi di testo distinte anche sotto la
+//!   collation si rifiutano); `MySQL`/`MariaDB` le rifiutano (fino al 25/10
+//!   in Upsert le applicavano in ordine, `confirmed 2` con una riga, e in
+//!   `DeleteByKeys` contavano una cancellata e una `skipped`); piu stretto
+//!   per le chiavi `TEXT` e `BLOB` sotto collation non binaria.
 //! - **Rientro**: il confronto sotto la collation della colonna in ogni
-//!   provider e per ogni mode per chiavi (per `MySQL` con lo staging di
-//!   Update).
+//!   provider e per ogni mode per chiavi (fatto per `MySQL`/`MariaDB`,
+//!   salvo le chiavi `TEXT` e `BLOB`, e per SQL Server; per PostgreSQL con una tabella
+//!   temporanea e un indice unico sotto la collation della chiave, al posto
+//!   del rifiuto).
 //!
 //! # Gli spazi finali delle chiavi
 //!

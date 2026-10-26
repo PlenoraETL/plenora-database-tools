@@ -29,6 +29,9 @@ SPATIAL_LIVE_SOURCE = (
 REWRITE_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-db2" / "src" / "write_rewrite_live_tests.rs"
 )
+ADMISSION_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-db2" / "src" / "write_admission_live_tests.rs"
+)
 PYTHON_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-database-py" / "python" / "tests" / "test_db2_session.py"
 )
@@ -64,6 +67,9 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_spatial_capabilities_and_streaming_wkb_are_evidence_backed",
         "live_spatial_write_round_trips_and_invalid_wkb_rolls_back",
         "live_spatial_portable_predicates_execute_with_bound_wkb_and_srid",
+        # La regola A: la sonda contro il fixture e il difetto TIMESTAMP(p<6).
+        "live_sonde_scritture_server",
+        "live_a_db2_timestamp_3_non_tronca_in_silenzio",
     }
 )
 
@@ -104,7 +110,8 @@ def compose_exec(arguments: list[str], environment: dict[str, str]) -> str:
 
 def live_test_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE, SPATIAL_LIVE_SOURCE, REWRITE_LIVE_SOURCE], keep=lambda name: name.startswith("live_")
+        [LIVE_SOURCE, SPATIAL_LIVE_SOURCE, REWRITE_LIVE_SOURCE, ADMISSION_LIVE_SOURCE],
+        keep=lambda name: name.startswith("live_")
     )
 
 

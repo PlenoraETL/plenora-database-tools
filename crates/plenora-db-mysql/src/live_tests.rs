@@ -1,16 +1,32 @@
 #![allow(clippy::significant_drop_tightening)]
 
+use crate::MariadbProvider;
 use crate::{
     describe_object, list_objects, list_schemas, probe_server, MysqlConfig, MysqlProvider,
     MysqlSession,
 };
 use mysql_async::prelude::Queryable;
+use plenora_database_core::arrow::array::{
+    ArrayRef, Float32Array, Float64Array, Int64Array, StringArray, TimestampMicrosecondArray,
+};
+use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit};
+use plenora_database_core::arrow::RecordBatch;
+use plenora_database_core::loss::MappingPolicy;
+use plenora_database_core::outcome::{WriteOutcome, WriteStatus};
 use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind, ReadOperation};
+use plenora_database_core::plan::{TransactionProfile, WriteMode, WriteOperation};
+use plenora_database_core::protocol::contract_schema;
+use plenora_database_core::provider::{BatchStream, ProviderFuture};
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
+use plenora_database_core::write_admission::{AdmissionKey, TargetDimensions};
 use plenora_database_core::{
     CancellationToken, ErrorCategory, ReadCheckpoint, ResourceBudget, ResourceLimits,
 };
+use plenora_database_core::{DatabaseError, RemoteEffect};
 use plenora_database_engine::{Engine, Observation};
+use plenora_database_testkit::write_probe::{self, ProbeHooks, ProbeSpec, PROBE_TABLE};
+use std::collections::VecDeque;
+use std::sync::Arc;
 
 const DEFAULT_PASSWORD: &str = "DataFlow_Test_2026!";
 
@@ -9438,5 +9454,860 @@ async fn live_s_spazi_finali_delle_chiavi_e_meno_zero() {
     if after != expected {
         difformi.push(format!("righe {after:?}"));
     }
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+// ---------------------------------------------------------------------------
+// La regola A su `MySQL` e `MariaDB`, live
+// (`plenora_database_core::write_admission`), e la regola K sotto la
+// collation della colonna (`crate::write::KeyCollationGuard`).
+//
+// - [`live_sonde_scritture_server`]: la sonda. Misura ogni chiave
+//   d'ammissione di [`specs`] con il percorso di scrittura della libreria,
+//   scrive il referto (`PLENORA_SONDE_SCRITTURE_REFERTO`) e verifica che il
+//   server dia ancora il fixture: e l'oracolo di regressione. La esegue
+//   `scripts/sonde_scritture_server.py`, per `MySQL` e (con
+//   `PLENORA_MYSQL_PRODUCT=mariadb`) per `MariaDB`.
+// - I difetti della settima rilettura indipendente del 25/10 (su 092c859,
+//   `Strict`, `committed` e `LossReport` vuoto): `DOUBLE(M,D)` e
+//   `FLOAT(M,D)` che arrotondano e perdono `-0`; l'Upsert di `'a'` e `'A'`
+//   su una chiave `varchar` sotto una collation `_ai_ci`, che contava 2.
+//
+// La connessione e quella della suite live (la stessa configurazione), con la CA
+// privata obbligatoria: in CI la CA la genera, per ogni container usa e getta,
+// `scripts/sonde_scritture_server.py`.
+
+enum RegolaAProduct {
+    Mysql(MysqlProvider),
+    Mariadb(MariadbProvider),
+}
+
+struct RegolaAHooks {
+    product: RegolaAProduct,
+    secret: SecretString,
+    database: String,
+}
+
+impl RegolaAHooks {
+    fn new() -> Self {
+        // La sonda apre centinaia di sessioni: tempi larghi, perche un host
+        // carico non diventi una misura mancata.
+        let config = live_config().with_timeouts(
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(120),
+            std::time::Duration::from_secs(60),
+        );
+        let database = config.database().to_owned();
+        let product = if semantica_mariadb() {
+            RegolaAProduct::Mariadb(MariadbProvider::new(config, 2).expect("provider MariaDB"))
+        } else {
+            RegolaAProduct::Mysql(MysqlProvider::new(config, 2).expect("provider MySQL"))
+        };
+        Self {
+            product,
+            secret: live_secret(),
+            database,
+        }
+    }
+
+    const fn inner(&self) -> &MysqlProvider {
+        match &self.product {
+            RegolaAProduct::Mysql(provider) => provider,
+            RegolaAProduct::Mariadb(provider) => &provider.0,
+        }
+    }
+
+    fn kind(&self) -> ProviderKind {
+        self.provider().kind()
+    }
+
+    fn profile(&self) -> &'static dyn crate::profile::ProductProfile {
+        if self.kind() == ProviderKind::Mariadb {
+            &crate::profile::MARIADB_PROFILE
+        } else {
+            &crate::profile::MYSQL_PROFILE
+        }
+    }
+
+    async fn server(&self) -> crate::write_admission::ServerFacts {
+        let cancellation = CancellationToken::new();
+        let pool = self.inner().pool_for(&self.secret).expect("pool");
+        let mut session = pool.checkout(&cancellation).await.expect("sessione");
+        crate::write_admission::server_facts(&mut session, &cancellation)
+            .await
+            .expect("versione del server")
+    }
+
+    async fn admin(&self) -> mysql_async::Conn {
+        mysql_async::Conn::new(
+            live_config()
+                .driver_opts(self.profile().product())
+                .expect("opzioni"),
+        )
+        .await
+        .expect("connessione di servizio")
+    }
+}
+
+impl ProbeHooks for RegolaAHooks {
+    fn provider(&self) -> &dyn Provider {
+        match &self.product {
+            RegolaAProduct::Mysql(provider) => provider,
+            RegolaAProduct::Mariadb(provider) => provider,
+        }
+    }
+
+    fn secret(&self) -> &SecretString {
+        &self.secret
+    }
+
+    fn schema(&self) -> Option<String> {
+        Some(self.database.clone())
+    }
+
+    fn columns(&self) -> (&'static str, &'static str) {
+        ("ID", "V")
+    }
+
+    fn create_sql(&self, natives: &[String]) -> Vec<String> {
+        let columns = natives
+            .iter()
+            .enumerate()
+            .map(|(index, native)| format!("V{index} {native}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        vec![format!(
+            "CREATE TABLE {PROBE_TABLE} (ID BIGINT NOT NULL PRIMARY KEY, {columns}) \
+             ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        )]
+    }
+
+    fn drop_sql(&self) -> String {
+        format!("DROP TABLE IF EXISTS {PROBE_TABLE}")
+    }
+
+    fn truncate_sql(&self) -> String {
+        format!("TRUNCATE TABLE {PROBE_TABLE}")
+    }
+
+    fn admission_keys<'a>(
+        &'a self,
+        columns: &'a [(String, DataType)],
+    ) -> ProviderFuture<'a, Vec<(AdmissionKey, TargetDimensions)>> {
+        Box::pin(async move {
+            let cancellation = CancellationToken::new();
+            let pool = self.inner().pool_for(&self.secret)?;
+            let mut session = pool.checkout(&cancellation).await?;
+            let target = crate::catalog::describe_object_with_profile(
+                &mut session,
+                &self.database,
+                PROBE_TABLE,
+                self.profile(),
+                &cancellation,
+            )
+            .await?;
+            let json = crate::write_admission::json_valid_columns(
+                &mut session,
+                &self.database,
+                PROBE_TABLE,
+                &cancellation,
+            )
+            .await?;
+            drop(session);
+            let facts = crate::write_admission::target_facts(&target, &json);
+            Ok(columns
+                .iter()
+                .map(|(name, arrow)| {
+                    let value = facts
+                        .iter()
+                        .find(|column| &column.name == name)
+                        .expect("colonna della sonda");
+                    crate::write_admission::admission_key(arrow, value)
+                })
+                .collect())
+        })
+    }
+}
+
+/// Le lunghezze massime misurate: la tabella della sonda ha anche `ID
+/// BIGINT`, e la riga di `InnoDB` sta in 65535 byte.
+const VARCHAR_MAX_UTF8MB4: u64 = 16_380;
+const VARCHAR_MAX_LATIN1: u64 = 65_000;
+const VARBINARY_MAX: u64 = 65_000;
+
+/// Le chiavi che `MySQL` e `MariaDB` ammettono in scrittura: ogni altra coppia
+/// resta rifiutata (mondo chiuso). L'ordine tiene separate le colonne lunghe
+/// (due `varchar` lunghi nella stessa tabella supererebbero la riga).
+#[allow(clippy::too_many_lines)]
+fn regola_a_specs(kind: ProviderKind) -> Vec<ProbeSpec> {
+    let mut specs = vec![ProbeSpec::new("TINYINT(1)", DataType::Boolean)];
+    specs.push(ProbeSpec::new("TINYINT", DataType::Int8));
+    for native in ["TINYINT UNSIGNED", "TINYINT ZEROFILL"] {
+        specs.push(ProbeSpec::new(native, DataType::UInt8));
+    }
+    specs.push(ProbeSpec::new("SMALLINT", DataType::Int16));
+    for native in ["SMALLINT UNSIGNED", "SMALLINT ZEROFILL"] {
+        specs.push(ProbeSpec::new(native, DataType::UInt16));
+    }
+    for native in ["MEDIUMINT", "INT"] {
+        specs.push(ProbeSpec::new(native, DataType::Int32));
+    }
+    for native in [
+        "MEDIUMINT UNSIGNED",
+        "INT UNSIGNED",
+        "MEDIUMINT ZEROFILL",
+        "INT ZEROFILL",
+    ] {
+        specs.push(ProbeSpec::new(native, DataType::UInt32));
+    }
+    specs.push(ProbeSpec::new("BIGINT", DataType::Int64));
+    for native in ["BIGINT UNSIGNED", "BIGINT ZEROFILL"] {
+        specs.push(ProbeSpec::new(native, DataType::UInt64));
+    }
+    // `FLOAT(M,D)` e `DOUBLE(M,D)` su rappresentanti: ogni altra coppia
+    // `(M,D)` resta non misurata, quindi rifiutata.
+    for native in [
+        "FLOAT",
+        "FLOAT UNSIGNED",
+        "FLOAT(7,3)",
+        "FLOAT(10,2)",
+        "FLOAT(12,0)",
+    ] {
+        specs.push(ProbeSpec::new(native, DataType::Float32));
+    }
+    for native in [
+        "DOUBLE",
+        "DOUBLE UNSIGNED",
+        "DOUBLE(10,2)",
+        "DOUBLE(16,4)",
+        "DOUBLE(22,0)",
+        "DOUBLE(255,30)",
+    ] {
+        specs.push(ProbeSpec::new(native, DataType::Float64));
+    }
+    for precision in 1..=38_u8 {
+        for scale in 0..=precision.min(30) {
+            specs.push(ProbeSpec::new(
+                format!("DECIMAL({precision},{scale})"),
+                DataType::Decimal128(precision, i8::try_from(scale).expect("scala")),
+            ));
+        }
+    }
+    specs.push(ProbeSpec::new("DATE", DataType::Date32));
+    for precision in 0..=6 {
+        specs.push(ProbeSpec::new(
+            format!("DATETIME({precision})"),
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        ));
+    }
+    for precision in 0..=6 {
+        specs.push(ProbeSpec::new(
+            format!("TIMESTAMP({precision}) NULL"),
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        ));
+    }
+    let varchar = |length: u64, charset: &str| {
+        ProbeSpec::new(
+            format!("VARCHAR({length}) CHARACTER SET {charset}"),
+            DataType::Utf8,
+        )
+        .with_dimension(length)
+    };
+    specs.push(varchar(1, "utf8mb4"));
+    specs.push(varchar(1, "latin1"));
+    specs.push(varchar(10, "utf8mb4"));
+    specs.push(varchar(10, "latin1"));
+    specs.push(ProbeSpec::new(
+        "TINYTEXT CHARACTER SET utf8mb4",
+        DataType::Utf8,
+    ));
+    specs.push(varchar(VARCHAR_MAX_UTF8MB4, "utf8mb4"));
+    specs.push(ProbeSpec::new("TEXT CHARACTER SET utf8mb4", DataType::Utf8));
+    specs.push(varchar(VARCHAR_MAX_LATIN1, "latin1"));
+    for native in [
+        "MEDIUMTEXT CHARACTER SET utf8mb4",
+        "LONGTEXT CHARACTER SET utf8mb4",
+        "TINYTEXT CHARACTER SET latin1",
+        "TEXT CHARACTER SET latin1",
+        "MEDIUMTEXT CHARACTER SET latin1",
+        "LONGTEXT CHARACTER SET latin1",
+    ] {
+        specs.push(ProbeSpec::new(native, DataType::Utf8));
+    }
+    if kind == ProviderKind::Mariadb {
+        // Il tipo `JSON` di `MariaDB`: un `LONGTEXT` con `CHECK (json_valid)`.
+        specs.push(ProbeSpec::new("JSON", DataType::Utf8).document());
+    }
+    for length in [1_u64, 10] {
+        specs.push(
+            ProbeSpec::new(format!("VARBINARY({length})"), DataType::Binary).with_dimension(length),
+        );
+    }
+    specs.push(ProbeSpec::new("TINYBLOB", DataType::Binary));
+    specs.push(
+        ProbeSpec::new(format!("VARBINARY({VARBINARY_MAX})"), DataType::Binary)
+            .with_dimension(VARBINARY_MAX),
+    );
+    for native in ["BLOB", "MEDIUMBLOB", "LONGBLOB"] {
+        specs.push(ProbeSpec::new(native, DataType::Binary));
+    }
+    specs
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live esplicito"]
+async fn live_sonde_scritture_server() {
+    let hooks = RegolaAHooks::new();
+    let server = hooks.server().await;
+    let kind = hooks.kind();
+    let measured = write_probe::measure_server(
+        &hooks,
+        &regola_a_specs(kind),
+        &server.major,
+        &server.version,
+    )
+    .await;
+    write_probe::report_and_check(&measured, crate::write_admission::fixture(kind));
+}
+
+struct RegolaABatches {
+    schema: SchemaRef,
+    queue: VecDeque<RecordBatch>,
+    rows: u64,
+}
+
+impl BatchStream for RegolaABatches {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
+        Box::pin(async move { Ok(self.queue.pop_front()) })
+    }
+
+    fn declared_input_rows(&self) -> Option<u64> {
+        Some(self.rows)
+    }
+}
+
+async fn regola_a_ddl(hooks: &RegolaAHooks, sql: &str) {
+    hooks
+        .provider()
+        .execute_ddl(&hooks.secret, sql, &CancellationToken::new())
+        .await
+        .unwrap_or_else(|error| panic!("DDL: {error:?}"));
+}
+
+async fn regola_a_drop_table(hooks: &RegolaAHooks, table: &str) {
+    let _ = hooks
+        .provider()
+        .execute_ddl(
+            &hooks.secret,
+            &format!("DROP TABLE IF EXISTS {table}"),
+            &CancellationToken::new(),
+        )
+        .await;
+}
+
+fn regola_a_operation(
+    hooks: &RegolaAHooks,
+    table: &str,
+    mode: WriteMode,
+    keys: &[&str],
+    policy: MappingPolicy,
+) -> WriteOperation {
+    WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some(hooks.database.clone()),
+            object: table.to_owned(),
+        },
+        mode,
+        mapping_policy: policy,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: keys.iter().map(|key| (*key).to_owned()).collect(),
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    }
+}
+
+async fn regola_a_write(
+    hooks: &RegolaAHooks,
+    operation: &WriteOperation,
+    fields: Vec<Field>,
+    columns: Vec<ArrayRef>,
+) -> Result<WriteOutcome, DatabaseError> {
+    let schema = contract_schema(fields).expect("schema");
+    let batch = RecordBatch::try_new(schema, columns).expect("batch");
+    let rows = batch.num_rows() as u64;
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let prepared = hooks
+        .provider()
+        .prepare_write(
+            &hooks.secret,
+            operation,
+            batch.schema(),
+            &budget,
+            &cancellation,
+        )
+        .await?;
+    assert!(
+        prepared.loss_report.losses.is_empty(),
+        "Strict: nessuna perdita dichiarata"
+    );
+    hooks
+        .provider()
+        .write(
+            &hooks.secret,
+            prepared,
+            Box::new(RegolaABatches {
+                schema: batch.schema(),
+                rows,
+                queue: VecDeque::from([batch]),
+            }),
+            &budget,
+            &cancellation,
+        )
+        .await
+}
+
+/// Append `Strict` di `(ID, V)`.
+async fn regola_a_append(
+    hooks: &RegolaAHooks,
+    table: &str,
+    value: ArrayRef,
+) -> Result<WriteOutcome, DatabaseError> {
+    let rows = value.len();
+    let ids = Int64Array::from((0..i64::try_from(rows).expect("righe")).collect::<Vec<_>>());
+    regola_a_write(
+        hooks,
+        &regola_a_operation(hooks, table, WriteMode::Append, &[], MappingPolicy::Strict),
+        vec![
+            Field::new("ID", DataType::Int64, false),
+            Field::new("V", value.data_type().clone(), true),
+        ],
+        vec![Arc::new(ids), value],
+    )
+    .await
+}
+
+fn regola_a_assert_rewritten(result: Result<WriteOutcome, DatabaseError>) {
+    let error = result.expect_err("un valore riscritto al salvataggio non si scrive con Strict");
+    assert_eq!(error.category, ErrorCategory::DataMapping, "{error:?}");
+    assert!(
+        error
+            .message
+            .contains(plenora_database_core::store_rewrite::REWRITTEN_VALUE),
+        "{error:?}"
+    );
+}
+
+async fn regola_a_count(hooks: &RegolaAHooks, table: &str) -> u64 {
+    let mut connection = hooks.admin().await;
+    let rows: Option<u64> = connection
+        .query_first(format!("SELECT COUNT(*) FROM {table}"))
+        .await
+        .expect("conteggio");
+    drop(connection);
+    rows.expect("una riga")
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live esplicito"]
+async fn live_a_double_m_d_non_arrotonda_in_silenzio() {
+    let hooks = RegolaAHooks::new();
+    let table = "PLN_A_DOUBLE_MD";
+    regola_a_drop_table(&hooks, table).await;
+    regola_a_ddl(
+        &hooks,
+        &format!(
+            "CREATE TABLE {table} (ID BIGINT NOT NULL PRIMARY KEY, V DOUBLE(10,2) NULL) \
+             ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    // Su 092c859: `committed`, `LossReport` vuoto, `1.234` riletto `1.23` e
+    // `-0` riletto `0`.
+    for value in [1.234_f64, -0.0, 1.0 / 3.0] {
+        regola_a_assert_rewritten(
+            regola_a_append(&hooks, table, Arc::new(Float64Array::from(vec![value]))).await,
+        );
+    }
+    // Con le altre politiche la scrittura non e qualificata su questo
+    // provider (`validate_operation`): rifiutata, mai `committed`.
+    let compatible = regola_a_write(
+        &hooks,
+        &regola_a_operation(
+            &hooks,
+            table,
+            WriteMode::Append,
+            &[],
+            MappingPolicy::Compatible,
+        ),
+        vec![
+            Field::new("ID", DataType::Int64, false),
+            Field::new("V", DataType::Float64, true),
+        ],
+        vec![
+            Arc::new(Int64Array::from(vec![9])),
+            Arc::new(Float64Array::from(vec![1.234])),
+        ],
+    )
+    .await
+    .expect_err("Compatible non e qualificata");
+    assert_eq!(compatible.category, ErrorCategory::Unsupported);
+    assert_eq!(
+        regola_a_count(&hooks, table).await,
+        0,
+        "nessuna riga scritta"
+    );
+    regola_a_drop_table(&hooks, table).await;
+
+    let table = "PLN_A_FLOAT_MD";
+    regola_a_drop_table(&hooks, table).await;
+    regola_a_ddl(
+        &hooks,
+        &format!(
+            "CREATE TABLE {table} (ID BIGINT NOT NULL PRIMARY KEY, V FLOAT(7,3) NULL) \
+             ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    for value in [1.234_567_f32, -0.0] {
+        regola_a_assert_rewritten(
+            regola_a_append(&hooks, table, Arc::new(Float32Array::from(vec![value]))).await,
+        );
+    }
+    assert_eq!(
+        regola_a_count(&hooks, table).await,
+        0,
+        "nessuna riga scritta"
+    );
+    regola_a_drop_table(&hooks, table).await;
+
+    // Una scala non misurata non si ammette: la coppia non e provata.
+    let table = "PLN_A_DOUBLE_NM";
+    regola_a_drop_table(&hooks, table).await;
+    regola_a_ddl(
+        &hooks,
+        &format!(
+            "CREATE TABLE {table} (ID BIGINT NOT NULL PRIMARY KEY, V DOUBLE(11,3) NULL) \
+             ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    let error = regola_a_append(&hooks, table, Arc::new(Float64Array::from(vec![1.5])))
+        .await
+        .expect_err("coppia non misurata");
+    assert_eq!(error.category, ErrorCategory::Unsupported, "{error:?}");
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+    regola_a_drop_table(&hooks, table).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live esplicito"]
+async fn live_a_datetime_3_non_arrotonda_in_silenzio() {
+    let hooks = RegolaAHooks::new();
+    let table = "PLN_A_DATETIME3";
+    regola_a_drop_table(&hooks, table).await;
+    regola_a_ddl(
+        &hooks,
+        &format!(
+            "CREATE TABLE {table} (ID BIGINT NOT NULL PRIMARY KEY, V DATETIME(3) NULL) \
+             ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    // 2026-01-01T00:00:00.123456: `DATETIME(3)` lo salverebbe come .123.
+    let micro = 1_767_225_600_123_456_i64;
+    regola_a_assert_rewritten(
+        regola_a_append(
+            &hooks,
+            table,
+            Arc::new(TimestampMicrosecondArray::from(vec![micro])),
+        )
+        .await,
+    );
+    let outcome = regola_a_append(
+        &hooks,
+        table,
+        Arc::new(TimestampMicrosecondArray::from(vec![micro - 456])),
+    )
+    .await
+    .expect("un istante al millisecondo si scrive");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    regola_a_drop_table(&hooks, table).await;
+}
+
+/// L'Upsert e `DeleteByKeys` di chiavi che il target confronta uguali.
+#[allow(clippy::too_many_lines)]
+async fn regola_a_collation_case(hooks: &RegolaAHooks, collation: Option<&str>) -> Vec<String> {
+    let table = "PLN_K_COLLATION";
+    regola_a_drop_table(hooks, table).await;
+    let collate = collation.map_or_else(String::new, |name| format!(" COLLATE {name}"));
+    regola_a_ddl(
+        hooks,
+        &format!(
+            "CREATE TABLE {table} (code VARCHAR(16) CHARACTER SET utf8mb4{collate} NOT NULL \
+             PRIMARY KEY, label VARCHAR(16) NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        ),
+    )
+    .await;
+    regola_a_ddl(hooks, &format!("INSERT INTO {table} VALUES ('z', 'prima')")).await;
+    let mut difformi = Vec::new();
+    let fields = || {
+        vec![
+            Field::new("code", DataType::Utf8, false),
+            Field::new("label", DataType::Utf8, true),
+        ]
+    };
+    for codes in [["a", "A"], ["a", "\u{e0}"]] {
+        let written = regola_a_write(
+            hooks,
+            &regola_a_operation(
+                hooks,
+                table,
+                WriteMode::Upsert,
+                &["code"],
+                MappingPolicy::Strict,
+            ),
+            fields(),
+            vec![
+                Arc::new(StringArray::from(codes.to_vec())),
+                Arc::new(StringArray::from(vec!["x", "y"])),
+            ],
+        )
+        .await;
+        let refused = written.as_ref().err().is_some_and(|error| {
+            error.category == ErrorCategory::DataMapping
+                && error.remote_effect == RemoteEffect::RolledBack
+                && error
+                    .message
+                    .ends_with(plenora_database_core::write_keys::DUPLICATE_INPUT_KEYS)
+        });
+        // `'a'` e `'à'` sono la stessa voce sotto `_ai_ci` e `general_ci`.
+        if !refused {
+            difformi.push(format!(
+                "Upsert {codes:?} {collation:?}: {:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    let deleted = regola_a_write(
+        hooks,
+        &regola_a_operation(
+            hooks,
+            table,
+            WriteMode::DeleteByKeys,
+            &["code"],
+            MappingPolicy::Strict,
+        ),
+        vec![Field::new("code", DataType::Utf8, false)],
+        vec![Arc::new(StringArray::from(vec!["z", "Z"]))],
+    )
+    .await;
+    let refused = deleted.as_ref().err().is_some_and(|error| {
+        error.category == ErrorCategory::DataMapping
+            && error.remote_effect == RemoteEffect::RolledBack
+            && error
+                .message
+                .ends_with(plenora_database_core::write_keys::DUPLICATE_INPUT_KEYS)
+    });
+    if !refused {
+        difformi.push(format!(
+            "DeleteByKeys {collation:?}: {:?}",
+            deleted.map(|outcome| outcome.rows)
+        ));
+    }
+    if regola_a_count(hooks, table).await != 1 {
+        difformi.push(format!("{collation:?}: il target e cambiato"));
+    }
+    // Chiavi distinte anche per la collation: si scrivono.
+    let written = regola_a_write(
+        hooks,
+        &regola_a_operation(
+            hooks,
+            table,
+            WriteMode::Upsert,
+            &["code"],
+            MappingPolicy::Strict,
+        ),
+        fields(),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b", "Z"])),
+            Arc::new(StringArray::from(vec!["x", "y", "dopo"])),
+        ],
+    )
+    .await;
+    match written {
+        Ok(outcome) if outcome.status == WriteStatus::Committed && outcome.rows.confirmed == 3 => {}
+        other => difformi.push(format!(
+            "Upsert distinte {collation:?}: {:?}",
+            other.map(|outcome| outcome.rows)
+        )),
+    }
+    regola_a_drop_table(hooks, table).await;
+    difformi
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live esplicito"]
+async fn live_k_chiavi_uguali_per_la_collation_si_rifiutano() {
+    let hooks = RegolaAHooks::new();
+    let mut difformi = Vec::new();
+    // La collation predefinita di `utf8mb4` (`utf8mb4_0900_ai_ci` su `MySQL`
+    // 8+, `utf8mb4_uca1400_ai_ci` su `MariaDB` 11.8+, `utf8mb4_general_ci`
+    // su `MariaDB` 10.11) e `utf8mb4_general_ci`.
+    difformi.extend(regola_a_collation_case(&hooks, None).await);
+    difformi.extend(regola_a_collation_case(&hooks, Some("utf8mb4_general_ci")).await);
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live esplicito"]
+async fn live_k_una_chiave_text_sotto_collation_non_binaria_si_rifiuta() {
+    let hooks = RegolaAHooks::new();
+    let table = "PLN_K_TEXT";
+    regola_a_drop_table(&hooks, table).await;
+    regola_a_ddl(
+        &hooks,
+        &format!(
+            "CREATE TABLE {table} (code TEXT CHARACTER SET utf8mb4 NOT NULL, \
+             UNIQUE KEY (code(8))) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    let deleted = regola_a_write(
+        &hooks,
+        &regola_a_operation(
+            &hooks,
+            table,
+            WriteMode::DeleteByKeys,
+            &["code"],
+            MappingPolicy::Strict,
+        ),
+        vec![Field::new("code", DataType::Utf8, false)],
+        vec![Arc::new(StringArray::from(vec!["a"]))],
+    )
+    .await
+    .expect_err("la chiave non si confronta sotto la collation");
+    assert_eq!(deleted.category, ErrorCategory::Unsupported, "{deleted:?}");
+    assert_eq!(deleted.message, crate::write::UNCOMPARABLE_COLLATION_KEY);
+    regola_a_drop_table(&hooks, table).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_a_i_tipi_di_create_sono_quelli_del_catalogo() {
+    use plenora_database_core::arrow::array::{
+        BinaryArray, BooleanArray, Date32Array, Decimal128Array, Int16Array, Int32Array, Int8Array,
+        UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+    };
+    let hooks = RegolaAHooks::new();
+    let table = "PLN_A_CREATE";
+    regola_a_drop_table(&hooks, table).await;
+    let fields = vec![
+        Field::new("ID", DataType::Int64, false),
+        Field::new("b", DataType::Boolean, true),
+        Field::new("i8", DataType::Int8, true),
+        Field::new("u8", DataType::UInt8, true),
+        Field::new("i16", DataType::Int16, true),
+        Field::new("u16", DataType::UInt16, true),
+        Field::new("i32", DataType::Int32, true),
+        Field::new("u32", DataType::UInt32, true),
+        Field::new("u64", DataType::UInt64, true),
+        Field::new("f32", DataType::Float32, true),
+        Field::new("f64", DataType::Float64, true),
+        Field::new("t", DataType::Utf8, true),
+        Field::new("bin", DataType::Binary, true),
+        Field::new("d", DataType::Date32, true),
+        Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("dec", DataType::Decimal128(10, 2), true),
+    ];
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(Int64Array::from(vec![1])),
+        Arc::new(BooleanArray::from(vec![true])),
+        Arc::new(Int8Array::from(vec![-1])),
+        Arc::new(UInt8Array::from(vec![1])),
+        Arc::new(Int16Array::from(vec![-1])),
+        Arc::new(UInt16Array::from(vec![1])),
+        Arc::new(Int32Array::from(vec![-1])),
+        Arc::new(UInt32Array::from(vec![1])),
+        Arc::new(UInt64Array::from(vec![1])),
+        Arc::new(Float32Array::from(vec![1.5])),
+        Arc::new(Float64Array::from(vec![1.5])),
+        Arc::new(StringArray::from(vec!["a"])),
+        Arc::new(BinaryArray::from(vec![&b"a"[..]])),
+        Arc::new(Date32Array::from(vec![1])),
+        Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])),
+        Arc::new(
+            Decimal128Array::from(vec![150])
+                .with_precision_and_scale(10, 2)
+                .expect("decimal"),
+        ),
+    ];
+    let outcome = regola_a_write(
+        &hooks,
+        &regola_a_operation(
+            &hooks,
+            table,
+            WriteMode::Create,
+            &["ID"],
+            MappingPolicy::Strict,
+        ),
+        fields.clone(),
+        columns,
+    )
+    .await
+    .expect("Create con ogni tipo scrivibile");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    // La scrittura ha gia confrontato le riscritture dei tipi di Create con
+    // quelle del catalogo; qui si confrontano i fatti, tipo per tipo.
+    let cancellation = CancellationToken::new();
+    let pool = hooks.inner().pool_for(&hooks.secret).expect("pool");
+    let mut session = pool.checkout(&cancellation).await.expect("sessione");
+    let target = crate::catalog::describe_object_with_profile(
+        &mut session,
+        &hooks.database,
+        table,
+        hooks.profile(),
+        &cancellation,
+    )
+    .await
+    .expect("catalogo");
+    drop(session);
+    let catalog = crate::write_admission::target_facts(&target, &std::collections::BTreeSet::new());
+    let schema = contract_schema(fields).expect("schema");
+    let mut difformi = Vec::new();
+    for field in schema.fields() {
+        let column = crate::types::MysqlColumnSpec::from_catalog_declaring(
+            target
+                .columns
+                .iter()
+                .find(|column| &column.name == field.name())
+                .expect("colonna"),
+            hooks.profile(),
+            None,
+        )
+        .expect("spec");
+        let expected =
+            crate::write_admission::create_facts(field.name(), &column.kind, hooks.kind())
+                .expect("tipo di Create");
+        let found = catalog
+            .iter()
+            .find(|facts| &facts.name == field.name())
+            .expect("fatti");
+        if &expected != found {
+            difformi.push(format!("{}: {expected:?} contro {found:?}", field.name()));
+        }
+    }
+    regola_a_drop_table(&hooks, table).await;
     assert!(difformi.is_empty(), "{}", difformi.join("\n"));
 }

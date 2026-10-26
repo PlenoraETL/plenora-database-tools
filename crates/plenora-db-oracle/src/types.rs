@@ -245,9 +245,10 @@ impl OracleReadPlan {
                     Ok(format!(
                         "CASE WHEN {source} THEN 1 WHEN NOT {source} THEN 0 END AS {quoted}"
                     ))
-                } else if matches!(column.kind, OracleColumnKind::F32 | OracleColumnKind::F64) {
-                    Ok(format!("CAST({source} AS NUMBER) AS {quoted}"))
                 } else {
+                    // BINARY_FLOAT e BINARY_DOUBLE si leggono nel formato
+                    // binario: CAST AS NUMBER falliva oltre 1E126, azzerava i
+                    // valori sotto 1E-130 e perdeva lo zero negativo.
                     Ok(format!("{source} AS {quoted}"))
                 }
             })

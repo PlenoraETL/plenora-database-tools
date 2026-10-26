@@ -31,6 +31,9 @@ LIVE_SOURCE = ROOT / "crates" / "plenora-db-oracle" / "src" / "live_tests.rs"
 REWRITE_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-oracle" / "src" / "write_rewrite_live_tests.rs"
 )
+ADMISSION_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-oracle" / "src" / "write_admission_live_tests.rs"
+)
 PYTHON_TESTS = ROOT / "crates" / "plenora-database-py" / "python" / "tests"
 RESULT = ROOT / "assurance-results" / "oracle-reference.json"
 TIMEOUT = 30 * 60
@@ -54,6 +57,13 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_closed_capabilities_fail_closed_and_match_ddl_semantics",
         "live_xyz_wkb_roundtrip_matches_declared_dimension",
         "live_every_declared_spatial_function_executes_on_geometry_and_geography",
+        # La regola A: la sonda e l'oracolo di regressione del fixture, e i
+        # difetti della settima rilettura.
+        "live_sonde_scritture_server",
+        "live_a_timestamp_3_non_arrotonda_in_silenzio",
+        "live_a_json_non_normalizza_i_numeri_in_silenzio",
+        "live_a_binary_float_non_perde_lo_zero_negativo_in_silenzio",
+        "live_a_timestamp_con_zona_locale_si_rifiuta_nel_preflight",
     }
 )
 PYTHON_LIVE_EXPECTED = 6
@@ -132,7 +142,7 @@ def reference_contract() -> dict[str, str]:
 
 def live_source_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE, REWRITE_LIVE_SOURCE], keep=lambda name: name.startswith("live_")
+        [LIVE_SOURCE, REWRITE_LIVE_SOURCE, ADMISSION_LIVE_SOURCE], keep=lambda name: name.startswith("live_")
     )
 
 

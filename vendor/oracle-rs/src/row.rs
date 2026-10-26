@@ -8,7 +8,7 @@
 use crate::buffer::ReadBuffer;
 use crate::constants::{length, OracleType};
 use crate::dbobject::DbObject;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::statement::ColumnInfo;
 use crate::types::{
     decode_binary_double, decode_binary_float, decode_oracle_date, decode_oracle_number,
@@ -507,7 +507,9 @@ impl<'a> RowDataDecoder<'a> {
 
         // Read the column data based on type
         match column.oracle_type {
-            OracleType::Varchar | OracleType::Char | OracleType::Long => self.decode_string(buf),
+            OracleType::Varchar | OracleType::Char | OracleType::Long => {
+                self.decode_string(buf, column.csfrm)
+            }
             OracleType::Number | OracleType::BinaryInteger => self.decode_number(buf),
             OracleType::Date => self.decode_date(buf),
             OracleType::Timestamp | OracleType::TimestampLtz => self.decode_timestamp(buf, false),
@@ -569,15 +571,11 @@ impl<'a> RowDataDecoder<'a> {
     }
 
     /// Decode a string value
-    fn decode_string(&self, buf: &mut ReadBuffer) -> Result<Value> {
+    fn decode_string(&self, buf: &mut ReadBuffer, csfrm: u8) -> Result<Value> {
+        // Il charset nazionale (NCHAR, NVARCHAR2) e UTF-16 big endian.
         match self.read_oracle_slice(buf)? {
             None => Ok(Value::Null),
-            Some(data) => {
-                let s = String::from_utf8(data).map_err(|e| {
-                    Error::DataConversionError(format!("Invalid UTF-8 in string: {}", e))
-                })?;
-                Ok(Value::String(s))
-            }
+            Some(data) => crate::connection::decode_text(&data, csfrm).map(Value::String),
         }
     }
 

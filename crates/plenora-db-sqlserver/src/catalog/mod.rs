@@ -2,7 +2,6 @@ mod probe;
 mod schema;
 
 pub use probe::{list_objects, list_schemas, probe_server, SqlServerObjectSummary, SqlServerProbe};
-pub use schema::load_ansi_padding;
 pub use schema::{
     describe_object, resolve_schema, SqlServerColumn, SqlServerConstraint,
     SqlServerExternalTableMetadata, SqlServerGraphKind, SqlServerIndex, SqlServerObjectDescription,
@@ -10,6 +9,7 @@ pub use schema::{
     SqlServerSecurityPredicate, SqlServerSpatialBoundingBox, SqlServerSpatialIndex,
     SqlServerTemporalMetadata, SqlServerViewMetadata,
 };
+pub use schema::{load_write_facts, SqlServerWriteFacts};
 
 use crate::error::driver_error;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result};

@@ -30,6 +30,20 @@ pub(super) struct WriteColumnPlan {
     /// L'uguaglianza con cui Update e `DeleteByKeys` confrontano la colonna,
     /// se e una chiave (regola K2, `super::visibility::key_equality`).
     pub(super) key_equality: Option<super::visibility::KeyEquality>,
+    /// Le riscritture al salvataggio della colonna, misurate (regola A,
+    /// `super::admission`), con la politica e se la colonna e una chiave.
+    pub(super) store: StoreRule,
+}
+
+/// La regola S della colonna con le riscritture misurate della regola A.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(super) struct StoreRule {
+    pub(super) rewrites: Vec<plenora_database_core::store_rewrite::StoreRewrite>,
+    /// La politica e `Strict`: un valore riscritto si rifiuta.
+    pub(super) strict: bool,
+    /// La colonna e una chiave: un valore riscritto si rifiuta con ogni
+    /// politica.
+    pub(super) key: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +82,7 @@ impl WriteColumnPlan {
             postgis: String::new(),
             session_rule: None,
             key_equality: None,
+            store: StoreRule::default(),
         })
     }
 

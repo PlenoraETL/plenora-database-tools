@@ -22,8 +22,15 @@ const DESCRIBE_RELATION_SQL: &str = "SELECT TRIM(TABSCHEMA), TRIM(TABNAME), \
     CASE TYPE WHEN 'T' THEN 'TABLE' WHEN 'V' THEN 'VIEW' ELSE TRIM(TYPE) END \
     FROM SYSCAT.TABLES \
     WHERE TABSCHEMA = ? AND TABNAME = ? AND TYPE IN ('T', 'V')";
+// Un testo `FOR BIT DATA` (`CODEPAGE = 0`) e un binario: il catalogo lo
+// chiama `CHARACTER` o `VARCHAR`, e la lettura del testo ne restituiva la
+// forma esadecimale come se fosse il testo (`'a'` si rileggeva `'61'`),
+// misurato il 25/10 su Db2 12.1.5 dalla sonda della regola A. Il tipo
+// pubblicato lo dice, e lettura e scrittura non lo trattano come testo.
 const DESCRIBE_COLUMNS_SQL: &str = "SELECT TRIM(COLNAME), COLNO + 1, \
-    TRIM(TYPENAME), LENGTH, SCALE, NULLS, DEFAULT, GENERATED, IDENTITY \
+    CASE WHEN CODEPAGE = 0 AND TYPENAME IN ('CHARACTER', 'VARCHAR', 'LONG VARCHAR', 'CLOB') \
+    THEN TRIM(TYPENAME) || ' FOR BIT DATA' ELSE TRIM(TYPENAME) END, \
+    LENGTH, SCALE, NULLS, DEFAULT, GENERATED, IDENTITY \
     FROM SYSCAT.COLUMNS \
     WHERE TABSCHEMA = ? AND TABNAME = ? \
     ORDER BY COLNO";

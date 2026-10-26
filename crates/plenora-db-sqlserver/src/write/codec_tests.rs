@@ -314,3 +314,19 @@ fn la_regola_p_rifiuta_le_frazioni_oltre_la_scala_di_datetimeoffset() {
     plan.columns[0].native_declaration = "datetimeoffset(7)".to_owned();
     assert!(check_offset(&plan, &plan.columns[0], &fraction).is_ok());
 }
+
+#[test]
+fn le_date_fuori_dagli_anni_di_sql_server_si_rifiutano_prima_del_driver() {
+    // Il giorno prima di 0001-01-01 e l'ultimo di 9999.
+    assert!(date32(-719_163).is_err());
+    assert!(date32(-719_162).is_ok());
+    assert!(date32(2_932_896).is_ok());
+    assert!(date32(2_932_897).is_err());
+    assert!(timestamp(-62_135_596_800_000_001).is_err());
+    assert!(timestamp(-62_135_596_800_000_000).is_ok());
+    assert!(datetimeoffset("0001-01-01T00:00:00+01:00").is_err());
+    assert!(datetimeoffset("0001-01-01T00:00:00-01:00").is_ok());
+    assert!(datetimeoffset("9999-12-31T23:59:59-01:00").is_err());
+    assert!(datetimeoffset("2016-12-31T23:59:60Z").is_err());
+    assert!(datetimeoffset("2016-12-31T23:59:59.9999999Z").is_ok());
+}

@@ -2,7 +2,7 @@ use crate::connection::open_connection;
 use crate::error::{driver_error, interruption_error, task_error};
 use crate::read::decode_hex_binary;
 use crate::Db2Config;
-use odbc_api::buffers::TextRowSet;
+use odbc_api::buffers::{BufferDesc, ColumnarDynBuffer};
 use odbc_api::{sys::SqlDataType, Connection, Cursor, DataType, IntoParameter, ResultSetMetadata};
 use plenora_database_core::caller_sql::SendMarker;
 use plenora_database_core::native_query_policy::{
@@ -525,11 +525,21 @@ fn query_rows(
         );
     }
     let columns: Arc<[String]> = names.into();
-    let buffer = TextRowSet::from_max_str_lens(
-        QUERY_BATCH_ROWS,
-        std::iter::repeat_n(QUERY_CELL_BYTES, column_count),
-    )
-    .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
+    // I float si legano come `SQL_C_DOUBLE`: come testo il CLI IBM ne da 15
+    // cifre significative (`0.30000000000000004` diventava `0.3`, e
+    // `f64::MAX` un testo che non si rilegge), misurato il 25/10 su Db2
+    // 12.1.5 dalla sonda della regola A. Ogni altro tipo resta testo.
+    let descriptions = types.iter().map(|data_type| {
+        if is_float(*data_type) {
+            BufferDesc::F64 { nullable: true }
+        } else {
+            BufferDesc::Text {
+                max_str_len: QUERY_CELL_BYTES,
+            }
+        }
+    });
+    let buffer = ColumnarDynBuffer::try_from_descs(QUERY_BATCH_ROWS, descriptions)
+        .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
     let mut blocks = cursor
         .bind_buffer(buffer)
         .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
@@ -543,23 +553,68 @@ fn query_rows(
                 .iter()
                 .enumerate()
                 .map(|(column, data_type)| {
-                    if batch
-                        .indicator_at(column, row_index)
-                        .is_truncated(batch.max_len(column))
-                    {
+                    if is_float(*data_type) {
+                        let values = batch
+                            .column(column)
+                            .as_nullable_slice::<f64>()
+                            .ok_or_else(unexpected_buffer)?;
+                        return decode_float(values.get(row_index).copied(), *data_type);
+                    }
+                    let text = batch
+                        .column(column)
+                        .as_text()
+                        .ok_or_else(unexpected_buffer)?;
+                    if text.has_truncated_values().is_some() {
                         return Err(transaction_error(
                             ErrorCategory::ResourceLimit,
                             ErrorPhase::Read,
                             "cella query Db2 oltre il limite transazionale",
                         ));
                     }
-                    decode_value(batch.at(column, row_index), *data_type)
+                    decode_value(text.get(row_index), *data_type)
                 })
                 .collect::<Result<Vec<_>>>()?;
             rows.push(Row::try_new(Arc::clone(&columns), values)?);
         }
     }
     Ok(rows)
+}
+
+const fn is_float(data_type: DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Real | DataType::Float { .. } | DataType::Double
+    )
+}
+
+fn unexpected_buffer() -> DatabaseError {
+    transaction_error(
+        ErrorCategory::Internal,
+        ErrorPhase::Read,
+        "buffer query Db2 di un tipo diverso da quello legato",
+    )
+}
+
+/// Un float letto come `SQL_C_DOUBLE`: esatto, e soltanto finito.
+///
+/// # Errors
+///
+/// `data_mapping` se il valore non e finito.
+pub fn decode_float(value: Option<f64>, data_type: DataType) -> Result<ParameterValue> {
+    let Some(value) = value else {
+        return Ok(ParameterValue::Null {
+            type_name: type_name(data_type).to_owned(),
+        });
+    };
+    if value.is_finite() {
+        Ok(ParameterValue::F64(value))
+    } else {
+        Err(transaction_error(
+            ErrorCategory::DataMapping,
+            ErrorPhase::Read,
+            "float query Db2 non finito",
+        ))
+    }
 }
 
 pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<ParameterValue> {
@@ -627,6 +682,14 @@ pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<Paramet
 }
 
 pub fn canonical_timestamp(value: &str) -> Result<String> {
+    // Il formato pubblicato ha sei cifre: oltre, il valore si perderebbe.
+    if crate::read::has_sub_microsecond_digits(value) {
+        return Err(transaction_error(
+            ErrorCategory::DataMapping,
+            ErrorPhase::Read,
+            "timestamp query Db2 con cifre oltre il microsecondo",
+        ));
+    }
     chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
         .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d-%H.%M.%S%.f"))
         .map(|value| value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string())

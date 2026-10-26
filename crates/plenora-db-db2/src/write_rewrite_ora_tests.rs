@@ -5,16 +5,23 @@
 //! prefisso dei test live, e `scripts/check_db2_reference.py` non lo esegue.
 //! Si esegue a mano con `PLENORA_DB2_ORA_DATABASE` (vedi
 //! `docs/operativo.md`, «Db2 con la semantica VARCHAR2»).
+//!
+//! Dal 25/10 (regola A, `crate::write_admission`) `varchar2_compat` e nella
+//! chiave d'ammissione dei testi, e il fixture misura soltanto il database
+//! del gate (`varchar2_compat = OFF`): sotto `ON` ogni scrittura di testo si
+//! rifiuta nel preflight come non provata, prima ancora della regola S.
 
 use super::write_rewrite_live_tests::{
-    assert_rewritten, batch, environment, operation, provider, reset, run, single_text, text, write,
+    batch, environment, operation, provider, reset, run, single_text, text, write,
 };
 use plenora_database_core::plan::WriteMode;
 use plenora_database_core::provider::ParameterValue;
+use plenora_database_core::write_admission::UNPROVEN_PAIR;
+use plenora_database_core::{ErrorCategory, ErrorPhase};
 
 #[tokio::test]
 #[ignore = "richiede un database Db2 creato con DB2_COMPATIBILITY_VECTOR=ORA (PLENORA_DB2_ORA_DATABASE)"]
-async fn db2_ora_s_testo_vuoto_con_varchar2_compat_non_diventa_null() {
+async fn db2_ora_a_testo_sotto_varchar2_compat_non_misurato_si_rifiuta() {
     let (provider, secret) = provider(&environment("PLENORA_DB2_ORA_DATABASE", "plnora"));
     let table = "PLN_S_ORA";
     reset(
@@ -56,29 +63,25 @@ async fn db2_ora_s_testo_vuoto_con_varchar2_compat_non_diventa_null() {
     )
     .await;
     assert_eq!(measured[0].get_index(0), Some(&ParameterValue::I32(1)));
-    // Il caso della rilettura di Oracle, su Db2: [(1,""),(2,"x")].
-    for column in ["V", "CL"] {
+    // Ogni scrittura di testo, anche il testo pieno, non e misurata sotto
+    // `varchar2_compat = ON`: rifiutata nel preflight con ogni mode.
+    for (column, mode, keys, value) in [
+        ("V", WriteMode::Append, &[][..], ""),
+        ("CL", WriteMode::Append, &[][..], ""),
+        ("K", WriteMode::Upsert, &["K"][..], ""),
+        ("V", WriteMode::Append, &[][..], "x"),
+    ] {
         let error = write(
             &provider,
             &secret,
-            &operation(table, WriteMode::Append, &[]),
-            batch(column, vec![1, 2], text(vec![Some(""), Some("x")])),
+            &operation(table, mode, keys),
+            batch(column, vec![1], text(vec![Some(value)])),
         )
         .await
-        .expect_err("testo vuoto");
-        assert_rewritten(&error, false);
-    }
-    // Due Upsert sulla chiave vuota.
-    for id in [1, 2] {
-        let error = write(
-            &provider,
-            &secret,
-            &operation(table, WriteMode::Upsert, &["K"]),
-            batch("K", vec![id], text(vec![Some("")])),
-        )
-        .await
-        .expect_err("chiave vuota");
-        assert_rewritten(&error, true);
+        .expect_err("testo non provato sotto varchar2_compat");
+        assert_eq!(error.category, ErrorCategory::Unsupported, "{error:?}");
+        assert_eq!(error.phase, ErrorPhase::Prepare, "{error:?}");
+        assert_eq!(error.message, UNPROVEN_PAIR, "{error:?}");
     }
     let rows = run(
         &provider,
@@ -89,12 +92,4 @@ async fn db2_ora_s_testo_vuoto_con_varchar2_compat_non_diventa_null() {
     )
     .await;
     assert_eq!(rows[0].get_index(0), Some(&ParameterValue::I32(0)));
-    write(
-        &provider,
-        &secret,
-        &operation(table, WriteMode::Append, &[]),
-        batch("V", vec![1], text(vec![Some("x")])),
-    )
-    .await
-    .expect("testo pieno");
 }

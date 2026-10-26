@@ -334,15 +334,6 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// primo INSERT.
     fn write_spatial_is_qualified(&self) -> bool;
 
-    /// Se `DOUBLE` e `FLOAT` conservano `-0.0` (regola S,
-    /// `plenora_database_core::store_rewrite`). Misurato il 25/10: `MySQL` 9.7
-    /// lo conserva, `MariaDB` 12.3 lo salva come `0` anche da uno statement
-    /// preparato. Senza la misura un profilo risponde `false`: il valore si
-    /// rifiuta.
-    fn keeps_negative_zero(&self) -> bool {
-        false
-    }
-
     /// Se un tipo geometrico e scrivibile come dichiarazione `exact`.
     ///
     /// E un insieme piu stretto di quello letto: `geometry` e
@@ -705,10 +696,6 @@ impl ProductProfile for MysqlProfile {
     }
 
     fn write_spatial_is_qualified(&self) -> bool {
-        true
-    }
-
-    fn keeps_negative_zero(&self) -> bool {
         true
     }
 

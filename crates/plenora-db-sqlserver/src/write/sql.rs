@@ -184,7 +184,7 @@ pub(super) fn compile_row_statement(
     })
 }
 
-fn placeholder_expression(column: &WriteColumnPlan, ordinal: usize) -> String {
+pub(super) fn placeholder_expression(column: &WriteColumnPlan, ordinal: usize) -> String {
     let placeholder = format!("@P{ordinal}");
     match column.kind {
         SqlServerColumnKind::Decimal { .. } | SqlServerColumnKind::TimestampTz => {

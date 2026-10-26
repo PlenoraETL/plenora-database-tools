@@ -6,10 +6,11 @@ use arrow_schema::SchemaRef;
 use plenora_database_core::loss::{
     LossCategory, LossReport, LossSeverity, MappingLoss, MappingPolicy,
 };
-use plenora_database_core::plan::{WriteMode, WriteOperation};
+use plenora_database_core::plan::{ProviderKind, WriteMode, WriteOperation};
 use plenora_database_core::primary_key::validate_create_primary_key;
 use plenora_database_core::protocol;
 use plenora_database_core::provider::SecretString;
+use plenora_database_core::store_rewrite::{ColumnRewrites, RewriteGuard};
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 
 #[allow(clippy::too_many_lines)]
@@ -18,7 +19,7 @@ pub async fn write(
     secret: &SecretString,
     operation: &WriteOperation,
     input_schema: &SchemaRef,
-) -> Result<LossReport> {
+) -> Result<(LossReport, Vec<ColumnRewrites>)> {
     let client = provider.connect_session(secret).await?;
     validate_resolved_crs_against_postgis(&client, input_schema).await?;
     let schema_name = crate::target_schema::schema_of(&operation.target)?;
@@ -98,6 +99,21 @@ pub async fn write(
                  usare WriteMode::Create)",
             ));
         }
+    }
+    // La regola A (`write::admission`): ogni colonna cerca la chiave
+    // d'ammissione della propria foglia nel fixture della major del server;
+    // una coppia non misurata rifiuta la scrittura con ogni politica.
+    let admitted =
+        crate::write::admission::preflight(client.client()?, operation, input_schema).await?;
+    // La regola K sotto collation: una chiave con una collation non
+    // deterministica si rifiuta prima di ogni effetto.
+    if exists && operation.mode != WriteMode::Create {
+        crate::write::visibility::refuse_nondeterministic_keys(
+            client.client()?,
+            operation,
+            ErrorPhase::Prepare,
+        )
+        .await?;
     }
     // Le perdite delle foglie del tipo di ogni colonna (domini, array, range,
     // multirange, composti), lo stesso cammino con cui `Strict` rifiuta i
@@ -353,6 +369,18 @@ pub async fn write(
             }
         }
     }
+    // La regola S con le riscritture misurate: con le politiche non strette
+    // la perdita di ogni colonna che non e chiave (con `Strict` il valore
+    // riscritto si rifiuta nella scrittura, in una chiave con ogni politica).
+    losses.extend(
+        RewriteGuard::new(
+            ProviderKind::Postgres,
+            input_schema,
+            operation,
+            admitted.clone(),
+        )?
+        .losses(),
+    );
     let report = LossReport {
         schema_version: 2,
         policy: operation.mapping_policy,
@@ -372,7 +400,7 @@ pub async fn write(
         ));
     }
     drop(client);
-    Ok(report)
+    Ok((report, admitted))
 }
 
 // Deviazione dichiarata (REJ-003, contracts/adoption-source.json): i rifiuti decisi

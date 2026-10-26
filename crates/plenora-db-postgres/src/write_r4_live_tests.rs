@@ -4,8 +4,8 @@
 //! ciascuna prova qui sotto falliva su quel commit.
 
 use super::write_visibility_live_tests::{
-    dry_run_stream, dsn_as_role, live_dsn, operation, prepare, reset, write_stream, ROLE, SCHEMA,
-    SERIAL,
+    dry_run_stream, dsn_as_role, live_dsn, nondeterministic_key, operation, prepare, reset, rule_a,
+    write_stream, ROLE, SCHEMA, SERIAL,
 };
 use super::*;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
@@ -376,7 +376,9 @@ async fn live_f_il_tipo_dichiarato_non_converte_il_valore() {
 /// `Lossy` su 04029d4 Prepared falliva con `protocol` mentre `CopyText`
 /// scriveva. Ora l'INSERT preparato manda il testo alla colonna con il suo
 /// tipo, e il valore e quello della funzione d'ingresso della colonna,
-/// dichiarato come perdita nel `LossReport`, come con `CopyText`.
+/// dichiarato come perdita nel `LossReport`, come con `CopyText`. Dal 25/10 il
+/// testo verso un numero non e una coppia misurata (regola A): si rifiuta nel
+/// preflight con ogni politica, in ogni profilo.
 #[tokio::test]
 async fn live_f_un_testo_verso_una_colonna_numerica_e_uguale_in_ogni_profilo() {
     let Some(dsn) = live_dsn() else {
@@ -386,12 +388,12 @@ async fn live_f_un_testo_verso_una_colonna_numerica_e_uguale_in_ogni_profilo() {
     let secret = SecretString::new(dsn);
     let admin = PostgresProvider::connect(&secret).await.expect("client");
     let cases = [
-        ("numeric(5,2)", "1.005", "1.01"),
-        ("real", "16777217", "1.6777216e+07"),
-        ("double precision", "0.1", "0.1"),
+        ("numeric(5,2)", "1.005"),
+        ("real", "16777217"),
+        ("double precision", "0.1"),
     ];
     let mut difformi = Vec::new();
-    for (column, value, expected) in cases {
+    for (column, value) in cases {
         for profile in PROFILES {
             prepare(
                 &admin,
@@ -402,11 +404,7 @@ async fn live_f_un_testo_verso_una_colonna_numerica_e_uguale_in_ogni_profilo() {
             let strict = operation("n", WriteMode::Append);
             let written = write_stream(&provider, &secret, &strict, input(1, value, None)).await;
             let stored = texts(&admin, "SELECT v::text FROM pln_regola_r.n").await;
-            if !written
-                .as_ref()
-                .is_err_and(|error| error.category == ErrorCategory::DataMapping)
-                || !stored.is_empty()
-            {
+            if !rule_a(written.as_ref().err()) || !stored.is_empty() {
                 difformi.push(format!(
                     "{column} {profile:?} Strict: {} -> {stored:?}",
                     outcome_of(&written)
@@ -415,15 +413,7 @@ async fn live_f_un_testo_verso_una_colonna_numerica_e_uguale_in_ogni_profilo() {
             let lossy = with_policy(operation("n", WriteMode::Append), MappingPolicy::Lossy);
             let written = write_stream(&provider, &secret, &lossy, input(2, value, None)).await;
             let stored = texts(&admin, "SELECT v::text FROM pln_regola_r.n").await;
-            // `CopyBinary` non codifica un testo verso un tipo non testuale
-            // (limite dichiarato in `binary_codec`): lo rifiuta, senza
-            // effetti.
-            let uniform = if profile == PostgresInsertMode::CopyBinary {
-                written.is_err() && stored.is_empty()
-            } else {
-                written.is_ok() && stored == [expected]
-            };
-            if !uniform {
+            if !rule_a(written.as_ref().err()) || !stored.is_empty() {
                 difformi.push(format!(
                     "{column} {profile:?} Lossy: {} -> {stored:?}",
                     outcome_of(&written)
@@ -439,7 +429,10 @@ async fn live_f_un_testo_verso_una_colonna_numerica_e_uguale_in_ogni_profilo() {
 /// `serde_json::Value` (interi grandi e decimali arrotondati a `f64`,
 /// chiavi riordinate, ripetute tolte anche verso `json`); `jsonb` toglie la
 /// chiave ripetuta in ogni profilo. Ora `json` riceve il testo com'e, e con
-/// `Strict` un testo con chiavi ripetute verso `jsonb` si rifiuta.
+/// `Strict` un testo con chiavi ripetute verso `jsonb` si rifiuta. Dal 25/10
+/// (regola A, classe `json_numeri`) con `Strict` si rifiuta anche un
+/// documento con numeri fuori dagli interi brevi verso `jsonb`, che ne
+/// riscriverebbe la forma; `json` lo conserva.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_j_il_json_arriva_com_e_e_le_chiavi_ripetute_si_rifiutano() {
@@ -452,8 +445,6 @@ async fn live_j_il_json_arriva_com_e_e_le_chiavi_ripetute_si_rifiutano() {
     let verbatim = "{\"b\": 12345678901234567890123, \"a\": 0.1000000000000000055511151231257827, \
                     \"a\": 3}";
     let precise = "{\"n\": 12345678901234567890123, \"f\": 0.1000000000000000055511151231257827}";
-    let precise_stored = "{\"f\": 0.1000000000000000055511151231257827, \"n\": \
-                          12345678901234567890123}";
     let mut difformi = Vec::new();
     for profile in PROFILES {
         for native in [Some("json"), None] {
@@ -485,7 +476,13 @@ async fn live_j_il_json_arriva_com_e_e_le_chiavi_ripetute_si_rifiutano() {
             let written =
                 write_stream(&provider, &secret, &strict, input(1, precise, native)).await;
             let stored = texts(&admin, "SELECT v::text FROM pln_regola_r.j").await;
-            if written.is_err() || stored != [precise_stored] {
+            let rewritten = written.as_ref().is_err_and(|error| {
+                error.category == ErrorCategory::DataMapping
+                    && error
+                        .message
+                        .contains(plenora_database_core::store_rewrite::REWRITTEN_VALUE)
+            });
+            if !rewritten || !stored.is_empty() {
                 difformi.push(format!(
                     "jsonb {native:?} {profile:?}: {} -> {stored:?}",
                     outcome_of(&written)
@@ -571,7 +568,9 @@ async fn live_j_il_json_arriva_com_e_e_le_chiavi_ripetute_si_rifiutano() {
 /// COMMIT partiva con il percorso chiuso della regola Q2, e il confronto
 /// `citext = citext` del trigger (in `public`) diventava `text = text`:
 /// 'ABC' = 'abc' falso, in silenzio. Ora il percorso della sessione torna
-/// al suo posto prima del COMMIT.
+/// al suo posto prima del COMMIT. Dal 25/10 la colonna e `text` (`citext`
+/// non e una coppia misurata, regola A) e il trigger confronta come
+/// `citext`.
 #[tokio::test]
 async fn live_q2_il_commit_scatta_con_il_percorso_della_sessione() {
     let Some(dsn) = live_dsn() else {
@@ -581,12 +580,12 @@ async fn live_q2_il_commit_scatta_con_il_percorso_della_sessione() {
     let secret = SecretString::new(dsn);
     let admin = PostgresProvider::connect(&secret).await.expect("client");
     let setup = "CREATE EXTENSION IF NOT EXISTS citext SCHEMA public; \
-        CREATE TABLE {s}.c (id bigint PRIMARY KEY, owner public.citext); \
+        CREATE TABLE {s}.c (id bigint PRIMARY KEY, owner text); \
         INSERT INTO {s}.c VALUES (5, 'ABC'); \
         CREATE TABLE {s}.esito (uguale boolean); \
         CREATE FUNCTION {s}.confronta() RETURNS trigger LANGUAGE plpgsql AS \
           $$ BEGIN INSERT INTO pln_regola_r.esito \
-             VALUES (NEW.owner = 'abc'::public.citext); RETURN NULL; END $$; \
+             VALUES (NEW.owner::public.citext = 'abc'::public.citext); RETURN NULL; END $$; \
         CREATE CONSTRAINT TRIGGER confronta AFTER INSERT OR UPDATE ON {s}.c \
           DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION {s}.confronta();";
     let rows = |id: i64| {
@@ -648,7 +647,9 @@ async fn live_q2_il_commit_scatta_con_il_percorso_della_sessione() {
 /// stesse colonne. Con `id text COLLATE "C" PRIMARY KEY` e `UNIQUE (id
 /// COLLATE ci)` non deterministico, su 04029d4 l'upsert di `('a', 'nuovo')`
 /// aggiornava la riga `A` (`a = nuovo`, nessuna riga `a`). Ora l'upsert
-/// vuole un solo indice unico che coinvolga le chiavi.
+/// vuole un solo indice unico che coinvolga le chiavi. Dal 25/10 un indice
+/// unico con una collation non deterministica sulle chiavi si rifiuta prima
+/// (regola K sotto collation).
 #[tokio::test]
 async fn live_k2_l_upsert_vuole_un_solo_indice_unico_sulle_chiavi() {
     let Some(dsn) = live_dsn() else {
@@ -688,10 +689,17 @@ async fn live_k2_l_upsert_vuole_un_solo_indice_unico_sulle_chiavi() {
             let plan = operation("u", WriteMode::Upsert);
             let written = write_stream(&provider, &secret, &plan, text_pair("a", "nuovo")).await;
             let stored = texts(&admin, read).await;
-            let refused = written.as_ref().is_err_and(|error| {
-                error.category == ErrorCategory::Schema
-                    && error.message.ends_with(write::upsert_arbiter_reason())
-            });
+            let collated = setup.contains("COLLATE {s}.ci")
+                || setup.contains("COLLATE pln_regola_r.ci")
+                || setup.contains("u_ci");
+            let refused = if collated {
+                nondeterministic_key(written.as_ref().err())
+            } else {
+                written.as_ref().is_err_and(|error| {
+                    error.category == ErrorCategory::Schema
+                        && error.message.ends_with(write::upsert_arbiter_reason())
+                })
+            };
             if !refused || stored != ["A:vecchio"] {
                 difformi.push(format!(
                     "{profile:?}: {} -> {stored:?}",
@@ -700,10 +708,13 @@ async fn live_k2_l_upsert_vuole_un_solo_indice_unico_sulle_chiavi() {
             }
             if profile != PostgresInsertMode::CopyBinary {
                 let dry = dry_run_stream(&provider, &secret, &plan, text_pair("a", "nuovo")).await;
-                if !dry
-                    .as_ref()
-                    .is_err_and(|error| error.message.ends_with(write::upsert_arbiter_reason()))
-                {
+                let refused = if collated {
+                    nondeterministic_key(dry.as_ref().err())
+                } else {
+                    dry.as_ref()
+                        .is_err_and(|error| error.message.ends_with(write::upsert_arbiter_reason()))
+                };
+                if !refused {
                     difformi.push(format!("{profile:?} dry run: {:?}", dry.map(|_| "ok")));
                 }
             }
@@ -776,7 +787,9 @@ async fn live_f_un_enum_senza_metadati_si_scrive_in_ogni_profilo() {
 /// Seconda lettura: con Create un testo dichiarato `numeric(5,2)` o `real`
 /// crea la colonna di quel tipo, e con `Strict` `'1.005'` diventava `1.01`
 /// (verso una colonna esistente il preflight rifiutava gia il tipo Arrow).
-/// Un dominio su `jsonb` con `Lossy` dichiara la normalizzazione.
+/// Un dominio su `jsonb` con `Lossy` dichiara la normalizzazione. Dal 25/10
+/// il testo verso un numero non e una coppia misurata (regola A): Create si
+/// rifiuta nel preflight con ogni politica, senza creare la tabella.
 #[tokio::test]
 async fn live_p_create_non_arrotonda_un_testo_con_strict() {
     let Some(dsn) = live_dsn() else {
@@ -801,11 +814,7 @@ async fn live_p_create_non_arrotonda_un_testo_con_strict() {
                  AND c.relname = 'nuova'",
             )
             .await;
-            if !written
-                .as_ref()
-                .is_err_and(|error| error.message.ends_with(write::lossy_reason()))
-                || !exists.is_empty()
-            {
+            if !rule_a(written.as_ref().err()) || !exists.is_empty() {
                 difformi.push(format!(
                     "{native} {profile:?} Strict: {} -> {exists:?}",
                     outcome_of(&written)
@@ -814,9 +823,7 @@ async fn live_p_create_non_arrotonda_un_testo_con_strict() {
             let lossy = with_policy(create.clone(), MappingPolicy::Lossy);
             let written =
                 write_stream(&provider, &secret, &lossy, input(1, value, Some(native))).await;
-            // `CopyBinary` non codifica un testo verso un numero (limite
-            // dichiarato in `binary_codec`).
-            if written.is_err() != (profile == PostgresInsertMode::CopyBinary) {
+            if !rule_a(written.as_ref().err()) {
                 difformi.push(format!(
                     "{native} {profile:?} Lossy: {}",
                     outcome_of(&written)

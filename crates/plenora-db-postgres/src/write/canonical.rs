@@ -105,11 +105,23 @@
 //!   valori piu corti: dal 25/10 (sesta rilettura) e la regola S
 //!   (`plenora_database_core::store_rewrite`), rifiutata con `Strict` e in
 //!   una chiave con ogni politica, dichiarata con le altre (fino ad allora
-//!   era «semantica del tipo» e si scriveva). `jsonb` invece riordina le
-//!   chiavi, toglie gli spazi e scrive i numeri nella forma di `numeric`
-//!   (`1.50` resta `1.50`, `1e2` diventa `100`, `-0` diventa `0`): semantica
-//!   del tipo, ammessa con `Strict` e dichiarata con le altre politiche nel
-//!   `LossReport` (`native_type`, `warning`, con la chiave ripetuta). Con
+//!   era «semantica del tipo» e si scriveva). `jsonb` riordina le chiavi,
+//!   toglie gli spazi e scrive i numeri nella forma di `numeric` (`1.50`
+//!   resta `1.50`, `1e2` diventa `100`, `-0` diventa `0`): fino al 25/10
+//!   (ottava rilettura) era «semantica del tipo», ammessa con `Strict`, la
+//!   stessa classe del `JSON` di Oracle (`1.0` in `1`). Dalla regola A
+//!   (`super::admission`) il documento si confronta per struttura (il limite
+//!   dichiarato dei documenti JSON in
+//!   `plenora_database_core::write_admission`: spazi, ordine dei membri ed
+//!   escape non distinguono, i numeri si confrontano per forma, una chiave
+//!   ripetuta conta), e la misura di `jsonb` da la classe `json_numeri`
+//!   (`StoreRewrite::JsonNumbers`): con `Strict` si rifiuta ogni documento con
+//!   un numero fuori dagli interi brevi (per eccesso anche `1.5`, che `jsonb`
+//!   conserva), in una chiave con ogni politica, con le altre politiche la
+//!   perdita e nel `LossReport` (`precision`, `data_loss`); la chiave
+//!   ripetuta resta la regola J qui sotto, e l'ordine e gli spazi restano
+//!   dichiarati (`native_type`, `warning`). `json` conserva il testo e la
+//!   misura lo trova esatto. Con
 //!   `Strict` un testo non arriva a un numero che lo arrotonda, e si rifiuta
 //!   anche quando il valore non perderebbe niente (`'1.5'` verso
 //!   `numeric(5,2)`: la prova per valore non c'e); con le altre politiche la
@@ -384,7 +396,7 @@ macro_rules! walk_sql {
 )
 SELECT w.name, w.shape,
        CASE WHEN p.prolang = 12::pg_catalog.oid THEN p.prosrc::pg_catalog.text END,
-       w.typmod
+       w.typmod, pg_catalog.format_type(w.oid, w.typmod), y.typtype::pg_catalog.text
   FROM walk w
   JOIN pg_catalog.pg_type y ON y.oid = w.oid
   LEFT JOIN pg_catalog.pg_proc p ON p.oid = y.typinput
@@ -443,6 +455,36 @@ pub(super) async fn rules<C: GenericClient + Sync>(
     schema: &SchemaRef,
     phase: ErrorPhase,
 ) -> Result<BTreeMap<String, SessionRule>> {
+    Ok(rules_with_leaves(client, operation, schema, phase).await?.0)
+}
+
+/// Le foglie del tipo di una colonna come le descrive il catalogo, per la
+/// chiave d'ammissione della regola A (`super::admission`): il tipo con il
+/// typmod (`pg_catalog.format_type`), il genere (`typtype`), il typmod e la
+/// forma. Lo stesso cammino e la stessa lettura di [`rules`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LeafType {
+    pub(super) format: String,
+    pub(super) typtype: String,
+    pub(super) typmod: i32,
+    pub(super) shape: SessionShape,
+}
+
+/// Le regole e le foglie delle colonne dell'ingresso sul target, per nome,
+/// da un'unica lettura del catalogo ([`RULES_SQL`]).
+///
+/// # Errors
+///
+/// L'errore classificato della lettura, in `phase`.
+pub(super) async fn rules_with_leaves<C: GenericClient + Sync>(
+    client: &C,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+    phase: ErrorPhase,
+) -> Result<(
+    BTreeMap<String, SessionRule>,
+    BTreeMap<String, Vec<LeafType>>,
+)> {
     let names = schema
         .fields()
         .iter()
@@ -456,10 +498,32 @@ pub(super) async fn rules<C: GenericClient + Sync>(
         )
         .await
         .map_err(|error| classify_error(phase, &error))?;
-    Ok(collect_rules(
-        &rows,
-        operation.mapping_policy == MappingPolicy::Strict,
+    Ok((
+        collect_rules(&rows, operation.mapping_policy == MappingPolicy::Strict),
+        collect_leaf_types(&rows),
     ))
+}
+
+fn collect_leaf_types(rows: &[tokio_postgres::Row]) -> BTreeMap<String, Vec<LeafType>> {
+    let mut leaves: BTreeMap<String, Vec<LeafType>> = BTreeMap::new();
+    for row in rows {
+        leaves.entry(row.get(0)).or_default().push(LeafType {
+            format: row.get(4),
+            typtype: row.get(5),
+            typmod: row.get(3),
+            shape: shape_of(&row.get::<_, String>(1)),
+        });
+    }
+    leaves
+}
+
+fn shape_of(shape: &str) -> SessionShape {
+    match shape {
+        "scalar" => SessionShape::Scalar,
+        "array" => SessionShape::Array,
+        "range" => SessionShape::Range,
+        _ => SessionShape::Nested,
+    }
 }
 
 /// Le regole delle colonne di Create che dichiarano un tipo dell'utente
@@ -513,12 +577,7 @@ fn collect_rules(rows: &[tokio_postgres::Row], strict: bool) -> BTreeMap<String,
     let mut rules: BTreeMap<String, SessionRule> = BTreeMap::new();
     for row in rows {
         let name: String = row.get(0);
-        let shape = match row.get::<_, String>(1).as_str() {
-            "scalar" => SessionShape::Scalar,
-            "array" => SessionShape::Array,
-            "range" => SessionShape::Range,
-            _ => SessionShape::Nested,
-        };
+        let shape = shape_of(&row.get::<_, String>(1));
         let symbol: Option<String> = row.get(2);
         let class = classify(symbol.as_deref(), row.get(3));
         rules
@@ -759,6 +818,20 @@ pub(super) fn declared(plan: &WriteColumnPlan, strict: bool) -> Option<SessionRu
 /// `data_mapping` con [`NOT_CANONICAL`] (regola V2) o con [`LOSSY_VALUE`]
 /// (regola P).
 pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Result<()> {
+    // La regola S con le riscritture misurate della regola A
+    // (`super::admission`): con `Strict` un valore riscritto si rifiuta, in
+    // una chiave con ogni politica; con le altre politiche la perdita e nel
+    // `LossReport` del preflight.
+    if !array.is_null(row)
+        && (plan.store.strict || plan.store.key)
+        && plan
+            .store
+            .rewrites
+            .iter()
+            .any(|rewrite| rewrite.rewrites(array, row))
+    {
+        return Err(rewritten(plan.store.key));
+    }
     let Some(rule) = plan.session_rule.as_ref() else {
         return Ok(());
     };

@@ -932,28 +932,29 @@ fn server_preflight_keeps_unqualified_write_targets_closed() {
     }
 }
 
+/// Fino al 25/10 il preflight ammetteva soltanto `datetime(6)` e
+/// `timestamp(6)`, per nome. La scala frazionaria e ora nella chiave della
+/// regola A (`crate::write_admission`): il preflight lascia passare ogni
+/// precisione e la misura decide (`datetime(3)` riscrive le cifre oltre il
+/// millesimo, `FractionalSeconds`, e `Strict` rifiuta quei valori).
 #[test]
-fn server_preflight_requires_microsecond_temporal_precision() {
+fn server_preflight_leaves_the_temporal_precision_to_rule_a() {
     let plan = append_plan(vec![Field::new(
         "moment",
         DataType::Timestamp(TimeUnit::Microsecond, None),
         true,
     )]);
-    for precision in [None, Some(0), Some(3)] {
-        let mut column = server_column("moment", "datetime", "datetime", true);
+    for (precision, declaration) in [
+        (Some(0), "datetime"),
+        (Some(3), "datetime(3)"),
+        (Some(6), "datetime(6)"),
+    ] {
+        let mut column = server_column("moment", "datetime", declaration, true);
         column.datetime_precision = precision;
-        assert_eq!(
-            plan.preflight(&base_table(vec![column]), &crate::profile::MYSQL_PROFILE)
-                .expect_err("precisione temporale lossy")
-                .category,
-            ErrorCategory::DataMapping
-        );
+        assert!(plan
+            .preflight(&base_table(vec![column]), &crate::profile::MYSQL_PROFILE)
+            .is_ok());
     }
-    let mut exact = server_column("moment", "datetime", "datetime(6)", true);
-    exact.datetime_precision = Some(6);
-    assert!(plan
-        .preflight(&base_table(vec![exact]), &crate::profile::MYSQL_PROFILE)
-        .is_ok());
 }
 
 /// Un COMMIT interrotto non e un rollback: l'esito resta ignoto e non
@@ -1778,4 +1779,69 @@ fn la_regola_p_rifiuta_il_testo_piu_lungo_della_colonna() {
     let error = check_text(varchar, "abcd").expect_err("rifiuto");
     assert_eq!(error.category, ErrorCategory::DataMapping);
     assert!(error.message.ends_with(LOSSY_VALUE));
+}
+
+#[test]
+fn le_chiavi_testuali_senza_collation_si_rifiutano_in_ogni_mode() {
+    let plan = append_plan(vec![Field::new("label", DataType::Utf8, true)]);
+    for mode in [
+        WriteMode::Upsert,
+        WriteMode::Update,
+        WriteMode::DeleteByKeys,
+    ] {
+        let mut operation = append_operation();
+        operation.mode = mode;
+        operation.keys = vec!["label".to_owned()];
+        for missing_charset in [false, true] {
+            let mut text = text_column("varchar", "varchar(10)");
+            if missing_charset {
+                text.character_set = None;
+            } else {
+                text.collation = None;
+            }
+            let target = base_table(vec![text]);
+            let error = plan
+                .key_collation_guard(&operation, &target, "warehouse", "test")
+                .expect_err("confronto della chiave non provato");
+            assert_eq!(error.category, ErrorCategory::Unsupported);
+        }
+    }
+}
+
+#[test]
+fn lo_staging_non_sostituisce_metadati_testuali_assenti_o_invalidi() {
+    let schema = Arc::new(Schema::new(vec![Field::new("label", DataType::Utf8, true)]));
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        for invalid in [None, Some(""), Some("utf8mb4; DROP")] {
+            for charset in [false, true] {
+                let mut text = text_column("varchar", "varchar(10)");
+                if charset {
+                    text.character_set = invalid.map(ToOwned::to_owned);
+                } else {
+                    text.collation = invalid.map(ToOwned::to_owned);
+                }
+                let error = build_temp_staging_sql(
+                    &schema,
+                    "staging",
+                    "warehouse",
+                    profile,
+                    &base_table(vec![text]),
+                )
+                .expect_err("nessun default implicito per il testo");
+                assert_eq!(error.category, ErrorCategory::Unsupported);
+            }
+        }
+        let sql = build_temp_staging_sql(
+            &schema,
+            "staging",
+            "warehouse",
+            profile,
+            &base_table(vec![text_column("varchar", "varchar(10)")]),
+        )
+        .expect("metadati completi");
+        assert!(sql.contains("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"));
+    }
 }

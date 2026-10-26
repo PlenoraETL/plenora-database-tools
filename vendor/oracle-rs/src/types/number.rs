@@ -316,8 +316,11 @@ pub fn encode_oracle_number(value: &str) -> Result<Vec<u8>> {
         return Ok(vec![128]);
     }
 
-    // Adjust for odd exponent
-    let prepend_zero = decimal_point_index % 2 == 1;
+    // Adjust for odd exponent. `rem_euclid`, non `%`: con un esponente
+    // negativo dispari (`0.01`, `0.000123`) `%` dava `-1` e la cifra si
+    // spostava di una posizione decimale (`0.01` si salvava come `0.1`;
+    // misurato il 25/10 dalla sonda della regola A su Oracle 23).
+    let prepend_zero = decimal_point_index.rem_euclid(2) == 1;
     if prepend_zero && !digits.is_empty() {
         digits.push(0);
         decimal_point_index += 1;

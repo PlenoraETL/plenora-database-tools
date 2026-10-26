@@ -99,7 +99,7 @@ impl OracleProvider {
         &self.config
     }
 
-    fn pool_for(&self, secret: &SecretString) -> Result<Arc<OraclePool>> {
+    pub(crate) fn pool_for(&self, secret: &SecretString) -> Result<Arc<OraclePool>> {
         let fingerprint: [u8; 32] = Sha256::digest(secret.expose().as_bytes()).into();
         let mut cached = lock_recover(&self.cached_pool);
         if let Some(candidate) = cached.as_ref() {

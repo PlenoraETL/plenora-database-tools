@@ -16,7 +16,7 @@ use plenora_database_core::plan::{
 use plenora_database_core::primary_key::validate_create_primary_key;
 use plenora_database_core::provider::{BatchStream, ParameterValue, PreparedWrite, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
-use plenora_database_core::store_rewrite::{ColumnRewrites, RewriteGuard, StoreRewrite};
+use plenora_database_core::store_rewrite::{ColumnRewrites, RewriteGuard};
 use plenora_database_core::transaction::{
     CommitOutcome, Statement, TransactionOptions, TransactionScope,
 };
@@ -46,10 +46,14 @@ pub struct Db2WritePlan {
     keys: Vec<usize>,
     updates: Vec<usize>,
     create_sql: Option<String>,
-    /// Il tipo nativo e la lunghezza del target per ogni colonna, per la
-    /// regola S (`plenora_database_core::store_rewrite`): dal catalogo nel
-    /// preflight, dai tipi di Create.
-    targets: Vec<(String, u64)>,
+    /// Le riscritture al salvataggio del target (regola S,
+    /// `plenora_database_core::store_rewrite`), misurate (regola A,
+    /// [`crate::write_admission`]) per la chiave d'ammissione di ogni colonna,
+    /// dal catalogo nel preflight o dai tipi di Create.
+    rewrites: Vec<ColumnRewrites>,
+    /// Il `varchar2_compat` della chiave d'ammissione, letto nel preflight:
+    /// la transazione della scrittura lo rilegge e rifiuta se e cambiato.
+    varchar2_compat: Option<bool>,
     policy: MappingPolicy,
 }
 
@@ -138,17 +142,8 @@ impl Db2WritePlan {
         let create_sql = (operation.mode == WriteMode::Create)
             .then(|| create_table_sql(&target, &columns, &keys))
             .transpose()?;
-        // Create: i tipi di `native_type` (`CLOB(2G)`, `DOUBLE`, ...); per un
-        // target esistente li sostituisce il preflight.
-        let targets = columns
-            .iter()
-            .map(|column| {
-                column.native_type().map(|native| {
-                    let base = native.split('(').next().unwrap_or_default().to_owned();
-                    (base, u64::MAX)
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        // Le riscritture vengono dalla regola A, in `prepare_write` (dal
+        // catalogo del target o dai tipi di Create).
         Ok(Self {
             mode: operation.mode,
             target,
@@ -158,27 +153,93 @@ impl Db2WritePlan {
             keys,
             updates,
             create_sql,
-            targets,
+            rewrites: Vec::new(),
+            varchar2_compat: None,
             policy: operation.mapping_policy,
         })
     }
 
-    /// Le riscritture al salvataggio del target (regola S), con la
-    /// semantica `VARCHAR2` letta nella transazione della scrittura.
-    fn rewrites(&self, varchar2: bool) -> Vec<ColumnRewrites> {
+    /// La regola A ([`crate::write_admission`]): ogni colonna non spatial
+    /// cerca la propria chiave d'ammissione nel fixture della major del
+    /// server, e le riscritture misurate diventano quelle della regola S.
+    /// Una chiave non misurata rifiuta la scrittura con ogni politica.
+    ///
+    /// Prima, la regola K sotto la collation del database
+    /// ([`refuse_text_keys_under_collation`]).
+    ///
+    /// La tabella della sonda (`cfg(test)`) non applica la regola A: e la
+    /// misura che la regola legge.
+    fn admit(
+        &mut self,
+        facts: &[crate::write_admission::ColumnFacts],
+        server: &crate::write_admission::ServerFacts,
+    ) -> Result<()> {
+        let key_columns = self
+            .keys
+            .iter()
+            .map(|index| {
+                let column = &self.columns[*index];
+                facts
+                    .iter()
+                    .find(|candidate| candidate.name == column.name)
+                    .map(|fact| (&column.data_type, fact))
+                    .ok_or_else(|| {
+                        prepare_error(ErrorCategory::DataMapping, "colonna target Db2 mancante")
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        refuse_text_keys_under_collation(self.mode, &key_columns)?;
+        self.varchar2_compat = Some(server.varchar2_compat);
+        #[cfg(test)]
+        if plenora_database_testkit::write_probe::is_probe_table(&self.object_name) {
+            self.rewrites = Vec::new();
+            return Ok(());
+        }
+        let measured = crate::write_admission::admission_table()?.server(&server.major)?;
+        let mut rewrites = Vec::with_capacity(self.columns.len());
+        for (index, column) in self.columns.iter().enumerate() {
+            if column.spatial.is_some() {
+                continue;
+            }
+            let fact = facts
+                .iter()
+                .find(|candidate| candidate.name == column.name)
+                .ok_or_else(|| {
+                    prepare_error(ErrorCategory::DataMapping, "colonna target Db2 mancante")
+                })?;
+            let (key, dimensions) =
+                crate::write_admission::admission_key(&column.data_type, fact, server);
+            rewrites.push(ColumnRewrites {
+                field: index,
+                rewrites: measured.admit(&key, dimensions)?,
+                target_type: key.nativo,
+            });
+        }
+        self.rewrites = rewrites;
+        Ok(())
+    }
+
+    /// I fatti delle colonne che `mode=create` crea.
+    fn create_facts(
+        &self,
+        server: &crate::write_admission::ServerFacts,
+    ) -> Result<Vec<crate::write_admission::ColumnFacts>> {
         self.columns
             .iter()
-            .zip(&self.targets)
-            .enumerate()
-            .map(|(index, (column, (native, length)))| ColumnRewrites {
-                field: index,
-                target_type: native.clone(),
-                rewrites: store_rewrites(column, native, *length, varchar2),
+            .filter(|column| column.spatial.is_none())
+            .map(|column| {
+                crate::write_admission::create_facts(&column.name, &column.data_type, server)
+                    .ok_or_else(|| {
+                        prepare_error(
+                            ErrorCategory::Unsupported,
+                            "tipo Arrow non qualificato per write Db2",
+                        )
+                    })
             })
             .collect()
     }
 
-    fn preflight(&mut self, target: &Db2ObjectDescription) -> Result<LossReport> {
+    fn preflight(&self, target: &Db2ObjectDescription) -> Result<LossReport> {
         if target.kind != "TABLE" {
             return Err(prepare_error(
                 ErrorCategory::Unsupported,
@@ -245,18 +306,6 @@ impl Db2WritePlan {
                 "le chiavi Db2 devono corrispondere a un indice univoco",
             ));
         }
-        self.targets = self
-            .columns
-            .iter()
-            .map(|column| {
-                target
-                    .columns
-                    .iter()
-                    .find(|candidate| candidate.name == column.name)
-                    .map(|server| (server.data_type.to_ascii_uppercase(), server.length))
-                    .unwrap_or_default()
-            })
-            .collect();
         // La politica e quella richiesta (fino al 25/10 sempre `Strict`);
         // `validate_operation` ammette soltanto `Strict`, e la regola S
         // rifiuta il valore invece di dichiararlo.
@@ -533,33 +582,38 @@ pub async fn prepare_write(
     let plan = Db2WritePlan::compile(config, &input_schema, operation)?;
     let (operation_lease, columns_lease) =
         ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
-    let (loss_report, plan) = if operation.mode == WriteMode::Create {
-        (
+    // La regola A: la major e i parametri del database, e i fatti delle
+    // colonne del target (o dei tipi di Create), sulla stessa connessione
+    // del catalogo.
+    let config = config.clone();
+    let secret = secret.clone();
+    let schema = plan.schema_name.clone();
+    let object = plan.object_name.clone();
+    let mode = operation.mode;
+    let policy = operation.mapping_policy;
+    let mut plan_for_probe = plan;
+    let task = tokio::task::spawn_blocking(move || {
+        let (connection, timeout) = open_connection(&config, &secret)?;
+        let server = crate::write_admission::server_facts(&connection, timeout)?;
+        let report = if mode == WriteMode::Create {
+            let facts = plan_for_probe.create_facts(&server)?;
+            plan_for_probe.admit(&facts, &server)?;
             LossReport {
                 schema_version: 2,
-                policy: operation.mapping_policy,
+                policy,
                 losses: Vec::new(),
-            },
-            plan,
-        )
-    } else {
-        let config = config.clone();
-        let secret = secret.clone();
-        let schema = operation
-            .target
-            .schema
-            .clone()
-            .unwrap_or_else(|| config.username().to_ascii_uppercase());
-        let object = operation.target.object.clone();
-        let mut plan_for_probe = plan;
-        let task = tokio::task::spawn_blocking(move || {
-            let (connection, timeout) = open_connection(&config, &secret)?;
+            }
+        } else {
             let target = describe_object(&connection, timeout, &schema, &object)?;
+            let facts =
+                crate::write_admission::column_facts(&connection, timeout, &schema, &object)?;
             let report = plan_for_probe.preflight(&target)?;
-            Ok::<_, DatabaseError>((report, plan_for_probe))
-        });
-        task.await.map_err(|_| task_error(ErrorPhase::Prepare))??
-    };
+            plan_for_probe.admit(&facts, &server)?;
+            report
+        };
+        Ok::<_, DatabaseError>((report, plan_for_probe))
+    });
+    let (loss_report, plan) = task.await.map_err(|_| task_error(ErrorPhase::Prepare))??;
     loss_report.validate()?;
     Ok(PreparedWrite::new(
         operation.clone(),
@@ -610,17 +664,30 @@ pub async fn execute_write(
         cancellation,
     )
     .await?;
-    // La regola S nella transazione della scrittura, con la semantica
-    // `VARCHAR2` del database letta qui: un valore che Db2 riscriverebbe al
-    // salvataggio si rifiuta prima del primo statement che lo lega.
+    // La regola S nella transazione della scrittura, con le riscritture
+    // misurate per la chiave d'ammissione del preflight (regola A): un valore
+    // che Db2 riscriverebbe al salvataggio si rifiuta prima del primo
+    // statement che lo lega. La semantica `VARCHAR2` (`varchar2_compat`) e
+    // nella chiave; si rilegge qui e deve essere quella del preflight.
     let guard = match varchar2_compat(&mut transaction, cancellation)
         .await
         .and_then(|varchar2| {
+            if plan.varchar2_compat == Some(varchar2) {
+                Ok(())
+            } else {
+                Err(write_error(
+                    ErrorCategory::Unsupported,
+                    "semantica VARCHAR2 di Db2 (varchar2_compat) diversa da quella del \
+                     preflight: la chiave d'ammissione (regola A) non e provata",
+                ))
+            }
+        })
+        .and_then(|()| {
             RewriteGuard::new(
                 ProviderKind::Db2,
                 &prepared.input_schema,
                 &prepared.operation,
-                plan.rewrites(varchar2),
+                plan.rewrites.clone(),
             )
         }) {
         Ok(guard) => guard,
@@ -1388,43 +1455,59 @@ fn varchar2_unproven() -> DatabaseError {
     )
 }
 
-/// Le riscritture al salvataggio di Db2 per una colonna (regola S,
-/// `plenora_database_core::store_rewrite`), misurate il 25/10 su Db2 12.1.5:
+/// Il motivo pubblico del rifiuto della regola K sotto una collation non
+/// binaria.
+pub const TEXT_KEYS_UNDER_COLLATION: &str = "chiave di testo Db2 sotto una collation non \
+     binaria: due valori diversi possono essere la stessa chiave per l'indice (regola K), e \
+     l'unicita dell'ingresso non e provata";
+
+/// La regola K delle chiavi di testo sotto la collation del database
+/// (`plenora_database_core::write_keys`, «chiavi uguali per il target,
+/// diverse come valori»).
 ///
-/// - con `varchar2_compat` attivo il testo vuoto diventa `NULL` in ogni tipo
-///   di testo;
-/// - `CHAR(n)` completa con spazi un testo piu corto;
-/// - `CHAR(n)` e `VARCHAR(n)` troncano in silenzio gli spazi finali oltre la
-///   lunghezza (`'abc   '` verso `VARCHAR(3)` diventava `'abc'`): la
-///   lunghezza e in byte (`string_units = SYSTEM`), e si rifiuta ogni testo
-///   piu lungo in byte che finisce con uno spazio;
-/// - `DOUBLE` e `REAL` salvano `-0.0` come `0`.
-fn store_rewrites(
-    column: &WriteColumn,
-    native: &str,
-    length: u64,
-    varchar2: bool,
-) -> Vec<StoreRewrite> {
-    if column.spatial.is_some() {
-        return Vec::new();
+/// La condizione 2 confronta le chiavi come valori Arrow, byte per byte
+/// (senza gli spazi finali); un indice unico di Db2 le confronta con la
+/// collation della colonna, cioe del database (`COLLATIONNAME` del
+/// catalogo). Sotto `IDENTITY` e
+/// `IDENTITY_16BIT` i due confronti coincidono; sotto ogni altra collation
+/// (`SYSTEM_*`, `UCA*`, `CLDR*`, con forza `S1` o `S2` che ignora maiuscole o
+/// accenti) due valori diversi possono essere la stessa voce dell'indice, e
+/// un Upsert di `[('a','uno'),('A','due')]` toccherebbe due volte la stessa
+/// riga contandone due.
+///
+/// # Limite dichiarato: le chiavi di testo sotto una collation non binaria
+///
+/// - **Regola**: una mode per chiavi con una chiave di testo (`Utf8`) si
+///   rifiuta nel preflight (`unsupported`, [`TEXT_KEYS_UNDER_COLLATION`]) se
+///   la collation della colonna chiave (`SYSCAT.COLUMNS.COLLATIONNAME`, che
+///   Db2 LUW eredita dal database) non e `IDENTITY` o `IDENTITY_16BIT`, o non
+///   si legge.
+/// - **Ambito**: Db2, `Update`, `Upsert` e `DeleteByKeys`; le chiavi non di
+///   testo e le mode senza chiavi non cambiano. Db2 LUW non ha collation per
+///   colonna: quella del database e l'unica.
+/// - **Hazard**: piu stretto: chiavi di testo che sotto la collation sono
+///   tutte distinte si rifiutano comunque.
+/// - **Rientro**: il confronto delle chiavi dell'ingresso sotto la collation
+///   del database (per esempio con `COLLATION_KEY_BIT` sul server, dentro la
+///   transazione).
+///
+/// # Errors
+///
+/// `unsupported` (fase `prepare`) nel caso della regola.
+pub fn refuse_text_keys_under_collation(
+    mode: WriteMode,
+    key_columns: &[(&DataType, &crate::write_admission::ColumnFacts)],
+) -> Result<()> {
+    let unproven = key_columns.iter().any(|(data_type, facts)| {
+        matches!(data_type, DataType::Utf8 | DataType::LargeUtf8) && !facts.binary_collation()
+    });
+    if plenora_database_core::write_keys::keyed_mode(mode) && unproven {
+        return Err(prepare_error(
+            ErrorCategory::Unsupported,
+            TEXT_KEYS_UNDER_COLLATION,
+        ));
     }
-    match column.data_type {
-        DataType::Utf8 | DataType::LargeUtf8 => {
-            let mut rewrites = Vec::new();
-            if varchar2 {
-                rewrites.push(StoreRewrite::EmptyToNull);
-            }
-            if matches!(native, "CHARACTER" | "CHAR") {
-                rewrites.push(StoreRewrite::PadText { chars: length });
-            }
-            if matches!(native, "CHARACTER" | "CHAR" | "VARCHAR") {
-                rewrites.push(StoreRewrite::ExcessSpaces { bytes: length });
-            }
-            rewrites
-        }
-        DataType::Float32 | DataType::Float64 => vec![StoreRewrite::NegativeZero],
-        _ => Vec::new(),
-    }
+    Ok(())
 }
 
 fn target_has_unique_key(

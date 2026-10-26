@@ -338,9 +338,28 @@ impl SqlServerSession {
         Ok(())
     }
 
+    /// Un batch semplice (non `sp_executesql`) nella transazione della
+    /// scrittura: una tabella temporanea creata dentro una RPC sparisce alla
+    /// fine della chiamata, una creata da un batch semplice dura quanto la
+    /// sessione (la regola K sotto la collation, `crate::write`).
+    ///
+    /// # Errors
+    ///
+    /// Gli errori del batch; la sessione si scarta come per i batch di
+    /// controllo.
+    pub(crate) async fn execute_simple_batch(
+        &mut self,
+        sql: String,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.require_state(SessionState::Transaction, ErrorPhase::Write)?;
+        self.run_control(&sql, ErrorPhase::Write, RemoteEffect::Unknown, cancellation)
+            .await
+    }
+
     async fn run_control(
         &mut self,
-        sql: &'static str,
+        sql: &str,
         phase: ErrorPhase,
         remote_effect: RemoteEffect,
         cancellation: &CancellationToken,
@@ -719,7 +738,7 @@ enum WriteQueryOutcome {
     Driver(tiberius::error::Error),
 }
 
-async fn execute_and_drain(client: &mut TdsClient, sql: &'static str) -> tiberius::Result<()> {
+async fn execute_and_drain<'a>(client: &'a mut TdsClient, sql: &'a str) -> tiberius::Result<()> {
     client.simple_query(sql).await?.into_results().await?;
     Ok(())
 }

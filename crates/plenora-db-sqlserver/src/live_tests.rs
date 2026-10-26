@@ -1295,18 +1295,19 @@ async fn live_common_provider_contract_read_and_write() {
         .expect("provider read");
     let input_schema = source.schema();
 
-    let write_operation = write_operation("write_probe", WriteMode::TruncateInsert);
+    let write_operation = reference_copy_operation("write_probe", WriteMode::TruncateInsert);
     let write_budget = ResourceBudget::new(ResourceLimits::default()).expect("write budget");
     let prepared = provider
         .prepare_write(
             &secret,
             &write_operation,
-            input_schema,
+            Arc::clone(&input_schema),
             &write_budget,
             &cancellation,
         )
         .await
         .expect("provider prepare write");
+    only_xml_losses(&prepared.loss_report, &input_schema);
     let outcome = provider
         .write(&secret, prepared, source, &write_budget, &cancellation)
         .await
@@ -6100,7 +6101,7 @@ async fn live_prepared_write_round_trips_all_reference_types() {
     .expect("source stream");
     let input_schema = source.schema();
     let write_budget = ResourceBudget::new(ResourceLimits::default()).expect("write budget");
-    let operation = write_operation("write_probe", WriteMode::TruncateInsert);
+    let operation = reference_copy_operation("write_probe", WriteMode::TruncateInsert);
     let prepared = prepare_write(
         &pool,
         &operation,
@@ -6110,7 +6111,7 @@ async fn live_prepared_write_round_trips_all_reference_types() {
     )
     .await
     .expect("prepare write");
-    assert!(prepared.loss_report().losses.is_empty());
+    only_xml_losses(prepared.loss_report(), &input_schema);
     let outcome = write_prepared(prepared, source, &cancellation)
         .await
         .expect("write committed");
@@ -7724,7 +7725,7 @@ async fn live_create_and_replace_round_trip_all_reference_types() {
     .await
     .expect("typed create source");
     let schema = source.schema();
-    let mut create = write_operation("lifecycle_types_probe", WriteMode::Create);
+    let mut create = reference_copy_operation("lifecycle_types_probe", WriteMode::Create);
     create.keys = vec!["id".to_owned()];
     create.create_spatial_index = true;
     let create_budget =
@@ -7798,7 +7799,7 @@ async fn live_create_and_replace_round_trip_all_reference_types() {
     )
     .await
     .expect("typed replace source");
-    let mut replace = write_operation("lifecycle_types_probe", WriteMode::Replace);
+    let mut replace = reference_copy_operation("lifecycle_types_probe", WriteMode::Replace);
     replace.keys = vec!["id".to_owned()];
     replace.transaction_profile = TransactionProfile::StagedSwap;
     replace.create_spatial_index = true;
@@ -8350,6 +8351,35 @@ async fn live_replace_keeps_old_target_readable_while_staging_then_publishes_new
         )
         .await
         .expect("cleanup visibility fixture");
+}
+
+/// La copia dei tipi di riferimento con la politica `Compatible`: dal 25/10
+/// (regola A, `crate::write::admission`) `xml` riscrive il testo che riceve
+/// (la sonda misura `ogni`) e con `Strict` si rifiuta ogni valore; con
+/// `Compatible` la perdita si dichiara per la sola colonna `document`, e il
+/// resto della copia e esatto come prima. Il rifiuto con `Strict` lo prova
+/// `write_semantics::r8::live_a_xml_non_riscrive_il_testo_in_silenzio`.
+fn reference_copy_operation(object: &str, mode: WriteMode) -> WriteOperation {
+    let mut operation = write_operation(object, mode);
+    operation.mapping_policy = MappingPolicy::Compatible;
+    operation
+}
+
+/// Le perdite di dati dichiarate riguardano soltanto la colonna `xml`; le
+/// altre colonne portano gli avvisi della regola P di `Compatible`.
+fn only_xml_losses(report: &plenora_database_core::loss::LossReport, schema: &SchemaRef) {
+    let document =
+        u32::try_from(schema.index_of("document").expect("colonna document")).expect("indice");
+    let data_losses = report
+        .losses
+        .iter()
+        .filter(|loss| loss.severity == LossSeverity::DataLoss)
+        .collect::<Vec<_>>();
+    assert!(!data_losses.is_empty(), "la perdita di xml si dichiara");
+    assert!(
+        data_losses.iter().all(|loss| loss.field_id == document),
+        "{report:?}"
+    );
 }
 
 fn write_operation(object: &str, mode: WriteMode) -> WriteOperation {

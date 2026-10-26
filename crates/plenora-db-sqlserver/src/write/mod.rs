@@ -1,4 +1,6 @@
+pub mod admission;
 mod codec;
+mod keys;
 mod lifecycle;
 mod plan;
 mod resources;
@@ -312,7 +314,7 @@ async fn compile_write_plan(
     schema_evolution: SqlServerSchemaEvolution,
     insert_mode: SqlServerInsertMode,
 ) -> Result<WritePlan> {
-    match operation.mode {
+    let mut plan = match operation.mode {
         plenora_database_core::plan::WriteMode::Create => {
             if lifecycle::object_exists(
                 pooled.session_mut()?,
@@ -383,24 +385,71 @@ async fn compile_write_plan(
             let observed_spatial =
                 inspect_target_spatial_contracts(pooled.session_mut()?, &description, cancellation)
                     .await?;
-            // La regola S: le colonne create con `ANSI_PADDING OFF`.
-            let ansi_padding = crate::catalog::load_ansi_padding(
-                pooled.session_mut()?,
-                schema,
-                &operation.target.object,
-                cancellation,
-            )
-            .await?;
             WritePlan::compile_existing(
                 &description,
                 operation,
                 input_schema,
                 &observed_spatial,
                 schema_evolution,
-                &ansi_padding,
             )
         }
+    }?;
+    admit_plan(pooled, operation, schema, &mut plan, cancellation).await?;
+    Ok(plan)
+}
+
+/// La regola A (`admission`): la major del server e i fatti delle colonne del
+/// target (o di quelle che la scrittura crea), sulla sessione del catalogo.
+async fn admit_plan(
+    pooled: &mut PooledSqlServerSession,
+    operation: &WriteOperation,
+    schema: &str,
+    plan: &mut WritePlan,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let server = admission::server_facts(pooled.session_mut()?, cancellation).await?;
+    let mut facts = if matches!(plan.lifecycle, TargetLifecycle::Existing { .. }) {
+        crate::catalog::load_write_facts(
+            pooled.session_mut()?,
+            schema,
+            &operation.target.object,
+            cancellation,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+    let created = plan
+        .columns
+        .iter()
+        .filter(|column| {
+            !matches!(plan.lifecycle, TargetLifecycle::Existing { .. })
+                || plan
+                    .added_columns
+                    .iter()
+                    .any(|added| added.input_index == column.input_index)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for column in created {
+        let code_page = match &column.collation {
+            Some(collation) => {
+                admission::collation_code_page(pooled.session_mut()?, collation, cancellation)
+                    .await?
+            }
+            None => server.database_code_page,
+        };
+        facts.retain(|fact| fact.name != column.name);
+        facts.push(admission::created_facts(
+            &column.name,
+            &column.native_type,
+            &column.native_declaration,
+            column.collation.as_deref(),
+            code_page,
+            column.nullable,
+        ));
     }
+    plan.admit(operation, &facts, &server.major)
 }
 
 /// Esegue il piano preparato in una singola transazione SQL Server.
@@ -522,6 +571,21 @@ async fn write_prepared_inner(
     {
         return Err(rollback_after_error(&mut pooled, error).await);
     }
+    // La regola K sotto la collation del target (`keys`): le chiavi
+    // dell'ingresso passano da un indice unico dello stesso tipo e della
+    // stessa collation, batch per batch, prima degli statement sul target.
+    let server_keys = keys::applies(prepared.plan.mode);
+    if server_keys {
+        if let Err(error) = execute_key_sql(
+            &mut pooled,
+            keys::create_sql(&prepared.plan),
+            control.token(),
+        )
+        .await
+        {
+            return Err(rollback_after_error(&mut pooled, error).await);
+        }
+    }
 
     let (received, mutations) = if let Some(diagnostic_input) = diagnostic_input {
         let constraint_column = diagnostic_input.policy.constraint_column.clone();
@@ -571,6 +635,13 @@ async fn write_prepared_inner(
                 let error = DatabaseError::resource_limit("conteggio righe write overflow");
                 return Err(rollback_after_error(&mut pooled, error).await);
             };
+            if server_keys {
+                if let Err(error) =
+                    keys::register(&mut pooled, &prepared.plan, &batch, control.token()).await
+                {
+                    return Err(rollback_after_error(&mut pooled, error).await);
+                }
+            }
             let batch_result = match prepared.insert_mode {
                 SqlServerInsertMode::Prepared => {
                     execute_prepared_batch(
@@ -608,6 +679,13 @@ async fn write_prepared_inner(
         }
         (received, mutations)
     };
+    if server_keys {
+        if let Err(error) =
+            execute_key_sql(&mut pooled, Ok(keys::DROP_SQL.to_owned()), control.token()).await
+        {
+            return Err(rollback_after_error(&mut pooled, error).await);
+        }
+    }
     if let Err(error) =
         finalize_transaction_target(&mut pooled, &prepared.plan, control.token()).await
     {
@@ -691,6 +769,20 @@ async fn write_prepared_inner(
             }
         }
     }
+}
+
+/// Uno statement della regola K sotto la collation (`keys`) sulla
+/// transazione della scrittura.
+async fn execute_key_sql(
+    pooled: &mut PooledSqlServerSession,
+    sql: Result<String>,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let sql = sql?;
+    pooled
+        .session_mut()?
+        .execute_simple_batch(sql, cancellation)
+        .await
 }
 
 async fn execute_prepared_batch(

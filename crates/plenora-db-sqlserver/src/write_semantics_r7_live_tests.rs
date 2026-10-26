@@ -223,7 +223,6 @@ async fn live_s_char_binary_e_ansi_padding_off_non_si_riscrivono() {
     for (id, object, column, value) in [
         (7, "riscritture", "c", Value::Text("abc")),
         (8, "riscritture", "b", Value::Bytes(b"\x01\x02\x03")),
-        (9, "riscritture_off", "v", Value::Text(" a")),
     ] {
         let (written, _) = run(
             &pool,
@@ -235,6 +234,20 @@ async fn live_s_char_binary_e_ansi_padding_off_non_si_riscrivono() {
         if written.is_err() {
             difformi.push(format!("controllo {object}.{column}: {written:?}"));
         }
+    }
+    // Dal 25/10 (regola A) `varchar(n)` con `ANSI_PADDING OFF` e misurato
+    // `ogni`: il server toglie gli spazi finali ma conserva uno spazio di un
+    // testo di soli spazi, che la classe `toglie_finali` non spiega. Con
+    // `Strict` si rifiuta anche ` a`, che la colonna conserverebbe.
+    let (written, _) = run(
+        &pool,
+        &strict("riscritture_off"),
+        prepared,
+        input("v", &[(9, Value::Text(" a"))]),
+    )
+    .await;
+    if !refused(&written, REWRITTEN_VALUE) {
+        difformi.push(format!("ogni riscritture_off.v: {written:?}"));
     }
     // Compatible: la perdita e nel LossReport e il valore passa riscritto.
     let (written, losses) = run(

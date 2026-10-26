@@ -562,6 +562,89 @@ pub async fn null_keys<C: GenericClient + Sync>(
     })
 }
 
+/// Una chiave con una collation non deterministica: della colonna, o di un
+/// indice unico che comprende una colonna chiave (`pg_index.indcollation`).
+/// Gira con il percorso chiuso (regola Q2).
+const NONDETERMINISTIC_KEYS_SQL: &str = "\
+SELECT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+      JOIN pg_catalog.pg_collation k ON k.oid = a.attcollation
+     WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text
+       AND a.attnum > 0 AND NOT a.attisdropped
+       AND a.attname::pg_catalog.text = ANY ($3::pg_catalog.text[])
+       AND NOT k.collisdeterministic
+) OR EXISTS (
+    SELECT 1 FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_index i ON i.indrelid = c.oid
+      JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+       AND a.attnum = ANY (i.indkey::pg_catalog.int2[])
+      CROSS JOIN LATERAL pg_catalog.unnest(i.indcollation::pg_catalog.oid[]) AS u(collation_oid)
+      JOIN pg_catalog.pg_collation k ON k.oid = u.collation_oid
+     WHERE n.nspname = $1::pg_catalog.text AND c.relname = $2::pg_catalog.text
+       AND i.indisunique
+       AND a.attname::pg_catalog.text = ANY ($3::pg_catalog.text[])
+       AND NOT k.collisdeterministic
+)";
+
+/// Il motivo pubblico del rifiuto di una chiave con una collation non
+/// deterministica.
+pub const NONDETERMINISTIC_KEY: &str = "scrittura rifiutata: una chiave ha una collation non \
+     deterministica, sotto cui il server confronta uguali valori diversi: l'unicita delle chiavi \
+     dell'ingresso (regola K) non e provata";
+
+/// La regola K sotto collation: le mode per chiavi rifiutano una chiave con
+/// una collation non deterministica ([`NONDETERMINISTIC_KEYS_SQL`]).
+///
+/// La condizione 2 della regola K confronta i valori Arrow
+/// (`plenora_database_core::write_keys`), con un'uguaglianza esatta o piu
+/// stretta di quella del server sotto ogni collation deterministica (che
+/// confronta per byte dopo l'ordinamento). Sotto una collation non
+/// deterministica (ICU, `deterministic = false`) il server confronta uguali
+/// valori diversi: fino al 25/10 l'Upsert `Strict` di `'a'` e `'A'` su una
+/// chiave `COLLATE` `und-u-ks-level2` confermava due righe e ne lasciava una
+/// sola, con il `LossReport` vuoto. Si rifiuta invece di indovinare
+/// l'uguaglianza del server: decide la collation della colonna e di ogni
+/// indice unico che ne comprende una (`ON CONFLICT` arbitra con quello).
+///
+/// # Errors
+///
+/// `unsupported` con [`NONDETERMINISTIC_KEY`] in `phase`; l'errore
+/// classificato della lettura.
+pub async fn refuse_nondeterministic_keys<C: GenericClient + Sync>(
+    client: &C,
+    operation: &WriteOperation,
+    phase: ErrorPhase,
+) -> Result<()> {
+    use plenora_database_core::write_keys::keyed_mode;
+    if !keyed_mode(operation.mode) || operation.keys.is_empty() {
+        return Ok(());
+    }
+    let nondeterministic: bool = client
+        .query_one(
+            NONDETERMINISTIC_KEYS_SQL,
+            &[
+                &crate::target_schema::schema_of(&operation.target)?,
+                &operation.target.object,
+                &operation.keys,
+            ],
+        )
+        .await
+        .map_err(|error| classify_error(phase, &error))?
+        .get(0);
+    if nondeterministic {
+        return Err(crate::error::public_error(
+            plenora_database_core::ErrorCategory::Unsupported,
+            phase,
+            false,
+            NONDETERMINISTIC_KEY,
+        ));
+    }
+    Ok(())
+}
+
 /// La regola K2 negli statement: per ogni chiave, l'uguaglianza dell'indice
 /// che ne prova l'unicita ([`KEY_EQUALITY_SQL`]), per nome di colonna.
 ///

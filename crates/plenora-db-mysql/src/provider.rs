@@ -139,7 +139,7 @@ impl MysqlProvider {
         self.residues.snapshot()
     }
 
-    fn pool_for(&self, secret: &SecretString) -> Result<Arc<MysqlPool>> {
+    pub(crate) fn pool_for(&self, secret: &SecretString) -> Result<Arc<MysqlPool>> {
         let fingerprint: [u8; 32] = Sha256::digest(secret.expose().as_bytes()).into();
         let mut cached = lock_recover(&self.cached_pool);
         if let Some(candidate) = cached.as_ref() {
@@ -397,6 +397,7 @@ impl Provider for MysqlProvider {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn prepare_write<'a>(
         &'a self,
         secret: &'a SecretString,
@@ -413,7 +414,7 @@ impl Provider for MysqlProvider {
                 let effective_cancellation =
                     crate::read::BudgetCancellation::new(cancellation, budget)?;
                 let token = effective_cancellation.token();
-                let plan = crate::write::MysqlWritePlan::compile_with_profile(
+                let mut plan = crate::write::MysqlWritePlan::compile_with_profile(
                     &input_schema,
                     operation,
                     self.config.database(),
@@ -473,7 +474,7 @@ impl Provider for MysqlProvider {
                 // `DeleteByKeys`) prima di ogni effetto; la scrittura le
                 // rilegge sulla propria sessione.
                 refuse_before_effects(self, secret, operation, token).await?;
-                let loss_report = if matches!(
+                let mut loss_report = if matches!(
                     operation.mode,
                     plenora_database_core::plan::WriteMode::Create
                         | plenora_database_core::plan::WriteMode::DeleteByKeys
@@ -509,6 +510,16 @@ impl Provider for MysqlProvider {
                     drop(session);
                     report
                 };
+                admit_in_preflight(
+                    self,
+                    secret,
+                    operation,
+                    &input_schema,
+                    &mut plan,
+                    &mut loss_report,
+                    token,
+                )
+                .await?;
                 Ok(PreparedWrite::new(
                     operation.clone(),
                     input_schema,
@@ -650,45 +661,11 @@ async fn execute_mysql_write(
         // `NULL`: due chiavi con un `NULL` non sono la stessa voce.
         plenora_database_core::write_keys::NullKeys::Distinct,
     )?;
-    // La regola S: `MariaDB` salva `-0.0` come `0` in `DOUBLE` e `FLOAT`
-    // (`ProductProfile::keeps_negative_zero`). Gli altri tipi scrivibili non
-    // riscrivono (`CHAR`, `BINARY`, `ENUM` e `SET` non sono ammessi, la
-    // sessione fissa `sql_mode`), e la scrittura e soltanto `Strict`.
-    let input = if provider.profile.keeps_negative_zero() {
-        input
-    } else {
-        let schema = input.schema();
-        let floats = schema
-            .fields()
-            .iter()
-            .enumerate()
-            .filter(|(_, field)| {
-                matches!(
-                    field.data_type(),
-                    plenora_database_core::arrow::schema::DataType::Float32
-                        | plenora_database_core::arrow::schema::DataType::Float64
-                )
-            })
-            .map(
-                |(index, field)| plenora_database_core::store_rewrite::ColumnRewrites {
-                    field: index,
-                    target_type: field.data_type().to_string(),
-                    rewrites: vec![
-                        plenora_database_core::store_rewrite::StoreRewrite::NegativeZero,
-                    ],
-                },
-            )
-            .collect();
-        plenora_database_core::store_rewrite::guard_input(
-            input,
-            plenora_database_core::store_rewrite::RewriteGuard::new(
-                provider.profile.kind(),
-                &schema,
-                operation,
-                floats,
-            )?,
-        )
-    };
+    // La regola S con le riscritture della regola A la installa
+    // `execute_mysql_write_after_ddl`, con i tipi riletti nella sessione della
+    // scrittura. Fino al 25/10 l'unica era `-0.0` di `MariaDB` verso ogni
+    // float (`ProductProfile::keeps_negative_zero`), dichiarata a mano: ora
+    // viene dal fixture, per chiave.
     let effective_cancellation = crate::read::BudgetCancellation::new(cancellation, budget)?;
     let token = effective_cancellation.token();
     let pool = provider.pool_for(secret)?;
@@ -773,6 +750,76 @@ async fn execute_mysql_write(
     }
     drop(session);
     result
+}
+
+/// La regola A nel preflight (`crate::write_admission`), con ogni mode.
+async fn admit_in_preflight(
+    provider: &MysqlProvider,
+    secret: &SecretString,
+    operation: &WriteOperation,
+    input_schema: &SchemaRef,
+    plan: &mut crate::write::MysqlWritePlan,
+    loss_report: &mut plenora_database_core::loss::LossReport,
+    token: &CancellationToken,
+) -> Result<()> {
+    // La regola A (`crate::write_admission`), con ogni mode: la
+    // major del server e i fatti delle colonne del target (o dei
+    // tipi di Create) sulla stessa sessione; una chiave non
+    // misurata rifiuta la scrittura con ogni politica. La regola K
+    // sotto collation rifiuta qui le chiavi che non sa
+    // confrontare.
+    let pool = provider.pool_for(secret)?;
+    let mut session = pool.checkout(token).await?;
+    let server = crate::write_admission::server_facts(&mut session, token).await?;
+    let facts = if operation.mode == plenora_database_core::plan::WriteMode::Create {
+        plan.create_facts(provider.profile.kind())?
+    } else {
+        let target_schema = operation
+            .target
+            .schema
+            .as_deref()
+            .unwrap_or_else(|| provider.config.database());
+        let target = crate::catalog::describe_object_with_profile(
+            &mut session,
+            target_schema,
+            &operation.target.object,
+            provider.profile,
+            token,
+        )
+        .await?;
+        plan.key_collation_guard(operation, &target, provider.config.database(), "preflight")?;
+        let json = crate::write_admission::json_valid_columns(
+            &mut session,
+            target_schema,
+            &operation.target.object,
+            token,
+        )
+        .await?;
+        crate::write_admission::target_facts(&target, &json)
+    };
+    drop(session);
+    let rewrites = crate::write_admission::admit(
+        provider.profile.kind(),
+        &operation.target.object,
+        input_schema,
+        &plan.scalar_columns(),
+        &facts,
+        &server,
+    )?;
+    // La regola S: con una politica non stretta le riscritture
+    // sono perdite dichiarate (oggi `validate_operation` ammette
+    // soltanto `Strict`, e la lista resta vuota).
+    loss_report.losses.extend(
+        plenora_database_core::store_rewrite::RewriteGuard::new(
+            provider.profile.kind(),
+            input_schema,
+            operation,
+            rewrites.clone(),
+        )?
+        .losses(),
+    );
+    plan.set_rewrites(rewrites);
+    Ok(())
 }
 
 /// Le regole R e K in `prepare_write`, prima di ogni effetto.
@@ -869,7 +916,7 @@ async fn refuse_unfaithful_destructive_write(
 async fn execute_mysql_write_after_ddl(
     provider: &MysqlProvider,
     session: &mut crate::MysqlSession,
-    mut input: Box<dyn BatchStream>,
+    input: Box<dyn BatchStream>,
     operation: &plenora_database_core::plan::WriteOperation,
     schema: &SchemaRef,
     plan: &crate::write::MysqlWritePlan,
@@ -893,6 +940,43 @@ async fn execute_mysql_write_after_ddl(
     // La regola P: le lunghezze massime delle colonne di testo, dal catalogo
     // della sessione che scrive.
     let plan = &plan.with_text_limits(&target);
+    // La regola A di nuovo sulla sessione della scrittura, prima della
+    // transazione: la major e i tipi riletti (per Create, quelli della tabella
+    // appena creata) devono dare le riscritture del preflight; la regola S le
+    // verifica valore per valore.
+    let server = crate::write_admission::server_facts(session, token).await?;
+    let json = crate::write_admission::json_valid_columns(
+        session,
+        target_schema,
+        &operation.target.object,
+        token,
+    )
+    .await?;
+    let rewrites = crate::write_admission::admit(
+        provider.profile.kind(),
+        &operation.target.object,
+        schema,
+        &plan.scalar_columns(),
+        &crate::write_admission::target_facts(&target, &json),
+        &server,
+    )?;
+    if rewrites.as_slice() != plan.rewrites() {
+        return Err(provider_error(
+            ErrorCategory::Schema,
+            ErrorPhase::Prepare,
+            format!(
+                "regola A: le riscritture del target {product} sono cambiate fra prepare e write"
+            ),
+        ));
+    }
+    let rewrite_guard = plenora_database_core::store_rewrite::RewriteGuard::new(
+        provider.profile.kind(),
+        schema,
+        operation,
+        rewrites,
+    )?;
+    let rewrite_losses = rewrite_guard.losses();
+    let mut input = plenora_database_core::store_rewrite::guard_input(input, rewrite_guard);
     // La regola K di nuovo sulla sessione della scrittura, prima della
     // transazione.
     crate::write::validate_unique_keys(
@@ -927,8 +1011,11 @@ async fn execute_mysql_write_after_ddl(
         plenora_database_core::plan::WriteMode::Create
             | plenora_database_core::plan::WriteMode::DeleteByKeys
             | plenora_database_core::plan::WriteMode::Update
-    ) && plan.preflight(&target, provider.profile)? != prepared_loss
-    {
+    ) && {
+        let mut report = plan.preflight(&target, provider.profile)?;
+        report.losses.extend(rewrite_losses);
+        report != prepared_loss
+    } {
         return Err(provider_error(
             ErrorCategory::Schema,
             ErrorPhase::Prepare,
@@ -978,6 +1065,29 @@ async fn execute_mysql_write_after_ddl(
         Some(quoted)
     } else {
         None
+    };
+
+    // La regola K sotto la collation della colonna, per Upsert e
+    // `DeleteByKeys` (`crate::write::KeyCollationGuard`): la tabella delle
+    // chiavi si crea qui, prima della transazione; ogni blocco di chiavi vi
+    // entra prima del proprio statement sul target.
+    let key_guard = match plan.key_collation_guard(
+        operation,
+        &target,
+        provider.config.database(),
+        &format!(
+            "{}-{}",
+            std::process::id(),
+            WRITE_EXECUTION_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ),
+    )? {
+        Some((ddl, guard)) => {
+            session
+                .exec_control(&ddl, ErrorPhase::Prepare, token)
+                .await?;
+            Some(guard)
+        }
+        None => None,
     };
 
     // Replace: il DELETE viene reso qui ma eseguito dentro la transazione,
@@ -1051,6 +1161,7 @@ async fn execute_mysql_write_after_ddl(
         plan,
         operation.mode,
         effective_staging,
+        key_guard.as_ref(),
         budget,
         token,
     )
@@ -1276,6 +1387,7 @@ async fn write_input_batches(
     plan: &crate::write::MysqlWritePlan,
     mode: plenora_database_core::plan::WriteMode,
     staging_override: Option<&str>,
+    key_guard: Option<&crate::write::KeyCollationGuard>,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
 ) -> Result<WriteProgress> {
@@ -1317,6 +1429,7 @@ async fn write_input_batches(
             plan,
             mode,
             staging_override,
+            key_guard,
             cancellation,
         )
         .await?;
@@ -1344,6 +1457,7 @@ async fn write_batch_chunks_for_mode(
     plan: &crate::write::MysqlWritePlan,
     mode: plenora_database_core::plan::WriteMode,
     staging_override: Option<&str>,
+    key_guard: Option<&crate::write::KeyCollationGuard>,
     cancellation: &CancellationToken,
 ) -> Result<u64> {
     let product = session.profile().product();
@@ -1351,6 +1465,29 @@ async fn write_batch_chunks_for_mode(
     let mut start = 0_usize;
     while start < batch.num_rows() {
         let rows = plan.rows_per_statement().min(batch.num_rows() - start);
+        // La regola K sotto collation: le chiavi del blocco entrano nella
+        // tabella delle chiavi prima dello statement sul target, e una
+        // ripetizione rifiuta (la transazione si annulla).
+        if let Some(guard) = key_guard {
+            let keys = plan.bind_key_chunk(batch, start, rows, guard)?;
+            session
+                .exec_write(
+                    &guard.render_insert(rows),
+                    keys,
+                    ErrorPhase::Write,
+                    cancellation,
+                )
+                .await?;
+            let repeats = session
+                .query_rows(&guard.render_repeats(), ErrorPhase::Write, cancellation)
+                .await?
+                .first()
+                .and_then(|row| row.get_opt::<u64, _>(0))
+                .and_then(std::result::Result::ok);
+            if repeats != Some(0) {
+                return Err(crate::write::repeated_key_error(session.kind()));
+            }
+        }
         let parameters = plan.bind_chunk(batch, start, rows)?;
         let sql = if mode == plenora_database_core::plan::WriteMode::DeleteByKeys {
             plan.render_delete_by_keys(rows)?
@@ -1425,7 +1562,7 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 ///
 /// Condivide `MysqlConfig` e il trasporto con MySQL; `PublishedProfile`
 /// seleziona il profilo MariaDB e la probe rifiuta un prodotto diverso.
-pub struct MariadbProvider(MysqlProvider);
+pub struct MariadbProvider(pub(crate) MysqlProvider);
 
 impl PublishedProfile for MariadbProvider {
     const PROFILE: &'static dyn ProductProfile = &crate::profile::MARIADB_PROFILE;

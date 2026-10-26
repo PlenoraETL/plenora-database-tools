@@ -234,7 +234,7 @@ impl OsonDecoder {
             let name_start = offset as usize;
             let name_len = field_names_data[name_start] as usize;
             let name_bytes = &field_names_data[name_start + 1..name_start + 1 + name_len];
-            let name = String::from_utf8_lossy(name_bytes).to_string();
+            let name = oson_text(name_bytes)?;
             names.push(name);
         }
 
@@ -275,7 +275,7 @@ impl OsonDecoder {
                 field_names_data[name_start + 1],
             ]) as usize;
             let name_bytes = &field_names_data[name_start + 2..name_start + 2 + name_len];
-            let name = String::from_utf8_lossy(name_bytes).to_string();
+            let name = oson_text(name_bytes)?;
             names.push(name);
         }
 
@@ -644,8 +644,14 @@ impl OsonDecoder {
 
     fn read_string(&mut self, len: usize) -> Result<String> {
         let bytes = self.read_bytes(len)?;
-        Ok(String::from_utf8_lossy(&bytes).to_string())
+        oson_text(&bytes)
     }
+}
+
+/// Testo OSON: UTF-8 valido o errore, mai sostituzioni silenziose.
+fn oson_text(bytes: &[u8]) -> Result<String> {
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| Error::DataConversionError("OSON text is not UTF-8".into()))
 }
 
 /// Simple base64 encoding for binary data in JSON

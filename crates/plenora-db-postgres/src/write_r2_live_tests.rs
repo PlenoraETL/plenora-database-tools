@@ -4,7 +4,7 @@
 //! silenzioso, o con un `protocol` dove `COPY` riusciva.
 
 use super::write_visibility_live_tests::{
-    dry_run, dry_run_stream, dsn_as_role, ids, live_dsn, operation, prepare, reset, write,
+    dry_run, dry_run_stream, dsn_as_role, ids, live_dsn, operation, prepare, reset, rule_a, write,
     write_stream, ROLE, SCHEMA, SERIAL,
 };
 use super::*;
@@ -289,7 +289,9 @@ fn range_input(native: &str, lower: &str, upper: &str) -> Box<dyn BatchStream> {
 /// S3: i limiti di un range arrivano come testo libero. Su 675e322 un
 /// `tstzrange` senza offset cambiava istante con il `TimeZone` del ruolo, un
 /// `daterange` `'01/02/2026'` cambiava giorno con `DateStyle`, e il dry run
-/// diceva `ok`.
+/// diceva `ok`. Dal 25/10 un range non e una forma misurata (regola A): la
+/// scrittura si rifiuta nel preflight, con i limiti canonici come con gli
+/// altri, e il dry run lo decide allo stesso modo.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_v_limiti_di_range_soltanto_canonici() {
@@ -322,7 +324,7 @@ async fn live_v_limiti_di_range_soltanto_canonici() {
             "2026-01-02",
         ),
     ];
-    for (native, ambiguous, canonical, setting, read, expected) in cases {
+    for (native, ambiguous, canonical, setting, read, _expected) in cases {
         for profile in PROFILES {
             let setup = format!(
                 "CREATE TABLE {{s}}.rg (id bigint PRIMARY KEY, at {native}); \
@@ -332,10 +334,7 @@ async fn live_v_limiti_di_range_soltanto_canonici() {
             let provider = PostgresProvider::insecure_local().with_insert_mode(profile);
             let append = operation("rg", WriteMode::Append);
             let refused = |result: &plenora_database_core::Result<WriteOutcome>| {
-                result.as_ref().err().is_some_and(|error| {
-                    error.category == ErrorCategory::DataMapping
-                        && error.message.ends_with(write::canonical_reason())
-                })
+                rule_a(result.as_ref().err())
             };
             let written = write_stream(
                 &provider,
@@ -359,10 +358,7 @@ async fn live_v_limiti_di_range_soltanto_canonici() {
                     range_input(native, ambiguous.0, ambiguous.1),
                 )
                 .await;
-                if !dry.as_ref().err().is_some_and(|error| {
-                    error.category == ErrorCategory::DataMapping
-                        && error.message.ends_with(write::canonical_reason())
-                }) {
+                if !rule_a(dry.as_ref().err()) {
                     difformi.push(format!("{native} dry run {profile:?}: {dry:?}"));
                 }
                 // La forma canonica si scrive e non dipende dalla sessione.
@@ -374,7 +370,7 @@ async fn live_v_limiti_di_range_soltanto_canonici() {
                 )
                 .await;
                 let stored = texts(&admin, read).await;
-                if written.is_err() || stored != vec![expected.to_owned()] {
+                if !refused(&written) || !stored.is_empty() {
                     difformi.push(format!(
                         "{native} canonico {profile:?}: {} -> {stored:?}",
                         rows_of(&written)

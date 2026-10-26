@@ -22,6 +22,7 @@ mod row_visibility;
 mod transaction;
 mod types;
 mod write;
+mod write_admission;
 
 pub use catalog::{OracleColumn, OracleIndex, OracleObjectDescription, OracleObjectSummary};
 pub use config::{OracleConfig, OracleTlsMode};
@@ -52,3 +53,7 @@ mod live_tests;
 #[cfg(test)]
 #[path = "write_rewrite_live_tests.rs"]
 mod write_rewrite_live_tests;
+
+#[cfg(test)]
+#[path = "write_admission_live_tests.rs"]
+mod write_admission_live_tests;

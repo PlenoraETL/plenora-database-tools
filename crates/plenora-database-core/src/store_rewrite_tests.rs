@@ -200,3 +200,45 @@ fn le_riscritture_dei_binari_e_degli_spazi() {
     assert!(!StoreRewrite::PadText { chars: 2 }.rewrites(&accented, 0));
     assert!(StoreRewrite::PadText { chars: 3 }.rewrites(&accented, 0));
 }
+
+#[test]
+fn le_classi_della_regola_a_riconoscono_i_valori_che_si_riscrivono() {
+    use arrow_array::TimestampMicrosecondArray;
+    let instants = TimestampMicrosecondArray::from(vec![0, 123_000, 123_456, -1, 999_999]);
+    let three = StoreRewrite::FractionalSeconds { digits: 3 };
+    for (row, rewritten) in [false, false, true, true, true].iter().enumerate() {
+        assert_eq!(three.rewrites(&instants, row), *rewritten, "riga {row}");
+    }
+    let six = StoreRewrite::FractionalSeconds { digits: 6 };
+    assert!((0..5).all(|row| !six.rewrites(&instants, row)));
+
+    let text = StringArray::from(vec!["abc", "é", "😀"]);
+    assert!(!StoreRewrite::NonAscii.rewrites(&text, 0));
+    assert!(StoreRewrite::NonAscii.rewrites(&text, 1));
+    assert!(StoreRewrite::NonAscii.rewrites(&text, 2));
+
+    let documents = StringArray::from(vec![
+        r#"{"a": 1, "b": [0, -12, 123456789012345]}"#,
+        r#"{"a": 1.0}"#,
+        r#"{"a": 1e2}"#,
+        r#"{"a": -0}"#,
+        r#"{"a": 1234567890123456}"#,
+        r#"{"a": "1.0 dentro una stringa \" 1e2"}"#,
+        "[01]",
+    ]);
+    for (row, rewritten) in [false, true, true, true, true, false, true]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(
+            StoreRewrite::JsonNumbers.rewrites(&documents, row),
+            *rewritten,
+            "riga {row}"
+        );
+    }
+    let nullable = StringArray::from(vec![None, Some("")]);
+    assert!(!StoreRewrite::Every.rewrites(&nullable, 0));
+    assert!(StoreRewrite::Every.rewrites(&nullable, 1));
+    assert!(StoreRewrite::Every.admits(&DataType::Decimal128(5, 2)));
+    assert!(!StoreRewrite::FractionalSeconds { digits: 3 }.admits(&DataType::Utf8));
+}

@@ -132,6 +132,11 @@ impl LobLocator {
         self.oracle_type == OracleType::Clob
     }
 
+    /// Check if this is an NCLOB (national character set form)
+    pub fn is_nchar(&self) -> bool {
+        self._csfrm == crate::constants::csfrm::NCHAR
+    }
+
     /// Check if this is a BFILE
     pub fn is_bfile(&self) -> bool {
         self.oracle_type == OracleType::Bfile
@@ -314,7 +319,9 @@ impl LobValue {
         match self {
             Self::Null => Ok(None),
             Self::Empty => Ok(Some(String::new())),
-            Self::Inline(data) => Ok(Some(String::from_utf8_lossy(data).to_string())),
+            Self::Inline(data) => String::from_utf8(data.to_vec())
+                .map(Some)
+                .map_err(|_| Error::DataConversionError("CLOB data is not valid UTF-8".into())),
             Self::Locator(_) => Err(Error::Protocol(
                 "LOB data requires explicit read operation".to_string(),
             )),
