@@ -6,7 +6,7 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
-## 8.0.2 — non pubblicata
+## 8.0.2 — 2026-10-26
 
 Patch: due correzioni nel driver Oracle vendorizzato, nessun cambiamento di
 contratto.
