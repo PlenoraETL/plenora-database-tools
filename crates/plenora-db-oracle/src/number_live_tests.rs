@@ -995,8 +995,21 @@ async fn live_number_inside_json_reads_back_exactly_or_fails() {
             misses.push(miss);
         }
     }
+    // -0.0 in un documento legato: l'OSON lo salverebbe come 0.
+    let mut transaction = begin(&provider, &secret).await;
+    let outcome = transaction
+        .query(
+            &Statement::new("SELECT JSON_SERIALIZE(:1) AS DOC FROM DUAL")
+                .with_params(vec![ParameterValue::Json(serde_json::json!({"a": -0.0}))]),
+            &CancellationToken::new(),
+        )
+        .await;
+    let _ = transaction.rollback(&CancellationToken::new()).await;
+    if let Some(miss) = expect_data_mapping("{\"a\":-0.0}", "bind JSON", outcome) {
+        misses.push(miss);
+    }
     assert!(
-        report("numeri dentro JSON", &misses, exact.len() + 2),
+        report("numeri dentro JSON", &misses, exact.len() + 3),
         "{misses:?}"
     );
 }

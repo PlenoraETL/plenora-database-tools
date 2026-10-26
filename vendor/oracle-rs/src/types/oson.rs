@@ -895,6 +895,13 @@ impl OsonEncoder {
                 // Encode as Oracle NUMBER format
                 let s = n.to_string();
                 let num_bytes = crate::types::encode_oracle_number(&s)?;
+                // Plenora fork: -0.0 would be stored as NUMBER 0, sign lost
+                // (the same rule as a bound f64 -0.0, which is refused).
+                if num_bytes == [128] && s.starts_with('-') {
+                    return Err(Error::DataConversionError(
+                        "Negative zero not representable in Oracle JSON".to_string(),
+                    ));
+                }
                 buf.push(TYPE_NUMBER_LEN_U8);
                 buf.push(num_bytes.len() as u8);
                 buf.extend_from_slice(&num_bytes);

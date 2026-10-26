@@ -570,3 +570,37 @@ fn binary_floats_are_decoded_from_the_stored_bytes_and_negative_zero_is_refused(
     );
     assert!(binary_float_from_dump("Typ=100 Len=4: 127,255,255,255").is_err());
 }
+
+#[test]
+fn negative_zero_inside_json_is_refused_by_the_bind_and_by_the_oson_encoder() {
+    use crate::parameter::bind_parameters;
+    use plenora_database_core::provider::ParameterValue;
+    for document in [
+        serde_json::json!({"a": -0.0}),
+        serde_json::json!([1, {"b": [-0.0]}]),
+        serde_json::from_str::<serde_json::Value>(r#"{"a": -0e5}"#).expect("json"),
+    ] {
+        assert!(
+            bind_parameters(&[ParameterValue::Json(document.clone())]).is_err(),
+            "{document}"
+        );
+        assert!(
+            oracle_rs::OsonEncoder::encode(&document).is_err(),
+            "{document}"
+        );
+    }
+    for document in [
+        serde_json::json!({"a": 0.0}),
+        serde_json::json!({"a": -0.5, "b": 0}),
+        serde_json::json!({"a": -10}),
+    ] {
+        assert!(
+            bind_parameters(&[ParameterValue::Json(document.clone())]).is_ok(),
+            "{document}"
+        );
+        assert!(
+            oracle_rs::OsonEncoder::encode(&document).is_ok(),
+            "{document}"
+        );
+    }
+}

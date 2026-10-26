@@ -193,6 +193,13 @@ fn bind_parameter(value: &ParameterValue) -> Result<Value> {
         | ParameterValue::Uuid(value)
         | ParameterValue::Enum { label: value, .. } => Ok(Value::String(value.clone())),
         ParameterValue::Bytes(value) => Ok(Value::Bytes(value.clone())),
+        // Lo stesso -0.0 dentro un documento JSON diventerebbe il NUMBER 0
+        // dell'OSON. Il controllo sta qui e non solo nel codificatore OSON del
+        // fork, perche il bind del driver trasforma ancora in NULL un errore
+        // di codifica OSON.
+        ParameterValue::Json(value) if json_has_negative_zero(value) => Err(mapping_error(
+            "parametro JSON Oracle con -0.0 non rappresentabile",
+        )),
         ParameterValue::Json(value) => Ok(Value::Json(value.clone())),
         ParameterValue::Decimal(value) => {
             validate_decimal(value)?;
@@ -203,6 +210,24 @@ fn bind_parameter(value: &ParameterValue) -> Result<Value> {
         ParameterValue::TimestampTz(value) => parse_timestamp_tz(value).map(Value::String),
         ParameterValue::Null { .. } => Ok(Value::Null),
         ParameterValue::Wkb { bytes, .. } => Ok(Value::Bytes(bytes.clone())),
+    }
+}
+
+/// Un numero JSON che vale zero con il segno meno (`-0`, `-0.0`, `-0e5`).
+fn json_has_negative_zero(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Number(number) => {
+            let text = number.to_string();
+            text.starts_with('-')
+                && text.split(['e', 'E']).next().is_some_and(|mantissa| {
+                    mantissa
+                        .bytes()
+                        .all(|byte| matches!(byte, b'-' | b'0' | b'.'))
+                })
+        }
+        serde_json::Value::Array(items) => items.iter().any(json_has_negative_zero),
+        serde_json::Value::Object(fields) => fields.values().any(json_has_negative_zero),
+        _ => false,
     }
 }
 

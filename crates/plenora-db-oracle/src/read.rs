@@ -661,6 +661,12 @@ fn canonical_decimal(text: &str) -> Option<(bool, String, i64)> {
 /// (`float_coercion: false`): un decimale che f64 non distingue non viene
 /// convertito ma rifiutato (`DataMapping`).
 ///
+/// Pareggi di arrotondamento: quando due decimali brevi della stessa
+/// lunghezza ricostruiscono lo stesso `x` (per esempio il `repr` Python di
+/// `253800534855476.62` e quello di Rust differiscono nell'ultima cifra),
+/// solo quello reso da `{x:e}` e ammesso; l'altro e rifiutato, in modo
+/// esplicito. Ammetterli entrambi romperebbe l'iniettivita.
+///
 /// Condizione di rientro: per questi valori serve un target esatto
 /// (`Decimal128` con scala dichiarata) o una politica lossy esplicita e
 /// dichiarata nel `LossReport`; la write Oracle oggi qualifica solo `Strict`.
