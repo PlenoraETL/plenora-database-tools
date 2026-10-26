@@ -5,12 +5,12 @@
 //! che il catalogo non descrive).
 
 use crate::operand_catalog::{
-    geometric_columns, operand_catalog, ColumnRow, Db2Catalog, QualifiedName, RelationRow, TypeRow,
+    operand_catalog, read_columns, ColumnRow, Db2Catalog, QualifiedName, RelationRow, TypeRow,
     MAX_ALIAS_DEPTH, MAX_TYPE_DEPTH,
 };
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::relational::QueryOperation;
-use plenora_database_core::spatial_operand::scalar_operands;
+use plenora_database_core::spatial_operand::{scalar_operands, NAME_UNRESOLVED};
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::Result;
 use std::collections::BTreeMap;
@@ -27,6 +27,21 @@ struct Finto {
     types: BTreeMap<QualifiedName, TypeRow>,
     supertypes: BTreeMap<QualifiedName, QualifiedName>,
     letture: usize,
+}
+
+/// I nomi delle colonne geometriche di `read_columns`.
+fn geometric_columns(
+    catalog: &mut dyn Db2Catalog,
+    schema: &str,
+    object: &str,
+) -> Result<Option<Vec<String>>> {
+    Ok(read_columns(catalog, schema, object)?.map(|columns| {
+        columns
+            .into_iter()
+            .filter(plenora_database_core::spatial_operand::CatalogColumn::is_geometric)
+            .map(|column| column.name)
+            .collect()
+    }))
 }
 
 impl Finto {
@@ -53,6 +68,9 @@ impl Finto {
                     name: (*column).to_owned(),
                     type_name: name(type_schema, type_name),
                     bit_data: false,
+                    generated: false,
+                    length: None,
+                    scale: None,
                 })
                 .collect(),
         );
@@ -325,17 +343,22 @@ fn senza_schema_vale_current_schema_poi_l_alias_pubblico() {
         &[("ID", "SYSIBM", "INTEGER"), ("G", "SYSIBM", "BLOB")],
     );
     assert_eq!(giudizio(&mut finto, None, "T", "G"), Ok(()));
-    // Con lo schema esplicito l'alias pubblico non vale.
-    assert_eq!(giudizio(&mut finto, Some("NESSUNO"), "T", "G"), Ok(()));
+    // Con lo schema esplicito l'alias pubblico non vale: la relazione e
+    // assente, e il riferimento non si lega.
+    assert_eq!(
+        giudizio(&mut finto, Some("NESSUNO"), "T", "G"),
+        Err(NAME_UNRESOLVED.to_owned())
+    );
 }
 
 #[test]
-fn una_relazione_assente_non_ha_geometrie_e_session_non_si_conosce() {
+fn una_relazione_assente_non_lega_e_session_non_si_conosce() {
     let mut finto = base();
-    // Assente: la query fallira sul server; il piano non ha geometrie.
+    // Assente: il riferimento non si lega (sedicesima lettura del 25/10: fino
+    // ad allora si assumeva che la query fallisse sul server).
     assert_eq!(
         giudizio(&mut finto, Some("PLENORA"), "ASSENTE", "G"),
-        Ok(())
+        Err(NAME_UNRESOLVED.to_owned())
     );
     // SESSION: una tabella temporanea dichiarata, che SYSCAT non descrive.
     finto.table("SESSION", "T", &[("ID", "SYSIBM", "INTEGER")]);
@@ -423,8 +446,11 @@ fn i_nomi_si_confrontano_per_byte() {
     // Un nome del piano che incontra la colonna soltanto senza maiuscole.
     assert!(giudizio(&mut finto, Some("PLENORA"), "T", "id").is_err());
     assert!(giudizio(&mut finto, Some("PLENORA"), "T", "g").is_err());
-    // Una relazione nominata in minuscolo e un'altra relazione.
-    assert_eq!(giudizio(&mut finto, Some("plenora"), "T", "G"), Ok(()));
+    // Una relazione nominata in minuscolo e un'altra relazione, assente.
+    assert_eq!(
+        giudizio(&mut finto, Some("plenora"), "T", "G"),
+        Err(NAME_UNRESOLVED.to_owned())
+    );
 }
 
 #[test]
@@ -544,6 +570,9 @@ fn ogni_tipo_binario_calcolato_da_una_vista_si_giudica_geometrico() {
                     name: (*column).to_owned(),
                     type_name: name(schema, type_name),
                     bit_data: *bit_data,
+                    generated: false,
+                    length: None,
+                    scale: None,
                 })
                 .collect(),
         );
@@ -562,4 +591,101 @@ fn ogni_tipo_binario_calcolato_da_una_vista_si_giudica_geometrico() {
             );
         }
     }
+}
+
+/// Regola B per colonna (rilettura 13, R13-1): una colonna generata binaria di
+/// una tabella (`GENERATED ALWAYS AS (CAST(ST_ASBINARY(G) AS VARBINARY))`) e
+/// derivata; una colonna generata numerica e una binaria memorizzata no.
+#[test]
+fn una_colonna_generata_binaria_di_una_tabella_si_giudica_geometrica() {
+    let mut finto = Finto::new();
+    finto.table(
+        "PLENORA",
+        "T",
+        &[
+            ("ID", "SYSIBM", "INTEGER"),
+            ("W", "SYSIBM", "VARBINARY"),
+            ("B", "SYSIBM", "VARBINARY"),
+            ("N", "SYSIBM", "INTEGER"),
+        ],
+    );
+    for column in finto
+        .columns
+        .get_mut(&name("PLENORA", "T"))
+        .into_iter()
+        .flatten()
+    {
+        column.generated = matches!(column.name.as_str(), "W" | "N");
+    }
+    assert!(geometrica(&mut finto, "PLENORA", "T", "W"));
+    for campo in ["ID", "B", "N"] {
+        assert_eq!(
+            giudizio(&mut finto, Some("PLENORA"), "T", campo),
+            Ok(()),
+            "{campo}"
+        );
+    }
+}
+
+/// La tabella delle famiglie di Db2 (regola F), sui tipi di `SYSIBM` e
+/// attraverso un tipo distinto.
+#[test]
+fn ogni_tipo_ha_la_famiglia_della_tabella() {
+    use plenora_database_core::spatial_operand::OperandFamily::{
+        Binary, Geometry, Numeric, Other, Temporal, Text,
+    };
+    let mut finto = Finto::new();
+    finto.distinct("M", "DTESTO", ("SYSIBM", "VARCHAR"));
+    let tipi = [
+        ("SMALLINT", Numeric),
+        ("INTEGER", Numeric),
+        ("BIGINT", Numeric),
+        ("DECIMAL", Numeric),
+        ("DECFLOAT", Numeric),
+        ("REAL", Numeric),
+        ("DOUBLE", Numeric),
+        ("BOOLEAN", Numeric),
+        ("CHARACTER", Text),
+        ("VARCHAR", Text),
+        ("LONG VARCHAR", Text),
+        ("CLOB", Text),
+        ("GRAPHIC", Text),
+        ("VARGRAPHIC", Text),
+        ("LONG VARGRAPHIC", Text),
+        ("DBCLOB", Text),
+        ("BLOB", Binary),
+        ("BINARY", Binary),
+        ("VARBINARY", Binary),
+        ("DATE", Temporal),
+        ("TIME", Temporal),
+        ("TIMESTAMP", Temporal),
+        ("XML", Other),
+        ("ST_GEOMETRY", Geometry),
+    ];
+    let mut columns = tipi
+        .iter()
+        .enumerate()
+        .map(|(position, (tipo, _))| (format!("C{position}"), "SYSIBM", *tipo))
+        .collect::<Vec<_>>();
+    columns.push(("D".to_owned(), "M", "DTESTO"));
+    let borrowed = columns
+        .iter()
+        .map(|(column, schema, tipo)| (column.as_str(), *schema, *tipo))
+        .collect::<Vec<_>>();
+    finto.table("PLENORA", "F", &borrowed);
+    let letti = read_columns(&mut finto, "PLENORA", "F")
+        .expect("colonne")
+        .expect("relazione nota");
+    let attese = tipi
+        .iter()
+        .map(|(_, family)| *family)
+        .chain([Text])
+        .collect::<Vec<_>>();
+    assert_eq!(
+        letti
+            .iter()
+            .map(|column| column.column_type.family)
+            .collect::<Vec<_>>(),
+        attese
+    );
 }

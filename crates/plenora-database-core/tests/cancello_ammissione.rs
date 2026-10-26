@@ -288,10 +288,15 @@ fn the_judged_entry_points_admit_every_plan() {
         };
         let operation = mutation(column);
         let statement = Statement::new("INSERT ...").with_params(vec![V::I32(1), value.clone()]);
+        let names =
+            plenora_database_core::compile_relational_mutation(ProviderKind::Postgres, &operation)
+                .expect("lowering")
+                .bind_names;
         let outcome = block_on(execute_judged(
             &mut finta,
             &statement,
             Some(&OperandPlan::Mutation(&operation)),
+            &names,
             &cancellation,
         ));
         match admitted {
@@ -325,9 +330,58 @@ fn the_judged_entry_points_admit_every_plan() {
         &mut finta,
         &Statement::new("SELECT id FROM t WHERE id = $1").with_params(vec![V::I32(1)]),
         Some(&OperandPlan::Query(&query)),
+        &["p".to_owned()],
         &cancellation,
     ))
     .expect_err("query con parametri senza nomi");
     assert_eq!(error.category, ErrorCategory::InvalidPlan);
     assert!(finta.eseguiti.is_empty());
+}
+
+/// Un parametro tipizzato confrontato in un DML relazionale si rende
+/// `CAST(? AS DECIMAL(38, 10))` con una sentinella (regola T della #133): il
+/// cancello vi lega il valore del chiamante ammesso sul tipo del `CAST`.
+/// Undici cifre frazionarie il `CAST` le arrotonderebbe: si rifiuta; un
+/// valore esatto si lega al suo segnaposto, non la sentinella.
+#[test]
+fn a_compared_typed_parameter_is_admitted_on_its_cast() {
+    let operation: MutationOperation = serde_json::from_value(serde_json::json!({
+        "type": "delete",
+        "target": {"catalog": null, "schema": "public", "object": "t"},
+        "filter": {
+            "kind": "compare",
+            "left": {"kind": "column", "column": {"relation": null, "field": "dec"}},
+            "operator": "eq",
+            "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "decimal"}
+        }
+    }))
+    .expect("delete");
+    let cancellation = CancellationToken::new();
+    let mut finta = Finta {
+        eseguiti: Vec::new(),
+    };
+    let error = block_on(admission_gate::mutation(
+        &mut finta,
+        &operation,
+        &[V::Decimal("0.12345678901".to_owned())],
+        &cancellation,
+    ))
+    .expect_err("undici cifre frazionarie in DECIMAL(38, 10)");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    let admitted = block_on(admission_gate::mutation(
+        &mut finta,
+        &operation,
+        &[V::Decimal("0.5".to_owned())],
+        &cancellation,
+    ))
+    .expect("valore esatto");
+    assert_eq!(
+        admitted.statement().params,
+        vec![V::Decimal("0.5".to_owned())]
+    );
+    assert!(
+        admitted.statement().sql.contains("CAST("),
+        "{}",
+        admitted.statement().sql
+    );
 }

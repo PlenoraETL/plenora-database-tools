@@ -84,6 +84,7 @@ pub async fn read_operation(
         &plan.schema_name,
         &plan.object_name,
         operation,
+        parameters,
     )
     .await?;
     let types = filter_types(raw, config, &plan, &internal).await?;

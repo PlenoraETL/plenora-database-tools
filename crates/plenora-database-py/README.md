@@ -171,7 +171,12 @@ statement = p.select(
 
 `BindType` non accetta dichiarazioni SQL arbitrarie: il renderer traduce
 `BOOLEAN`, `INTEGER`, `BIG_INTEGER`, `FLOAT`, `STRING`, `BINARY`, `DATE`,
-`TIMESTAMP`, `TIMESTAMP_TZ`, `DECIMAL`, `UUID` e `JSON` per il dialect. Db2
+`TIMESTAMP`, `TIMESTAMP_TZ`, `DECIMAL`, `UUID` e `JSON` per il dialect, con la
+stessa forma nelle query e nei `WHERE` delle mutazioni. Il valore legato deve
+essere del tipo dichiarato: un `int` per `STRING`, un `float` per `INTEGER`, un
+`str` per `DATE` si rifiutano prima dell'esecuzione (`invalid_plan`), anche nei
+valori scritti; un `int` resta ammesso per `DECIMAL` e, entro 32 bit, per
+`FLOAT`. Db2
 rende la forma tipizzata con un `CAST` e `SYSIBM.SYSDUMMY1`.
 Oracle usa bind `:N`; il driver thin qualificato non conserva il tipo
 `TIMESTAMP WITH TIME ZONE` in scrittura, quindi quel bind resta fail-closed.

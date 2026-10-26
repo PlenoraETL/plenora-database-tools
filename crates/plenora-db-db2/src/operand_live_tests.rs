@@ -174,7 +174,10 @@ fn valore_del_bind(piano: &Value, name: &str) -> ParameterValue {
 }
 
 /// Lo SQL che il renderer del repository rende per il piano, con i valori.
-fn resa(plan: &Value, valori: Option<&[ParameterValue]>) -> (QueryOperation, String, Statement) {
+fn resa(
+    plan: &Value,
+    valori: Option<&[ParameterValue]>,
+) -> (QueryOperation, String, Statement, Vec<String>) {
     let operation: QueryOperation = serde_json::from_value(plan.clone()).expect("piano");
     let rendered = Renderer::new(
         Dialect::Db2,
@@ -196,7 +199,12 @@ fn resa(plan: &Value, valori: Option<&[ParameterValue]>) -> (QueryOperation, Str
         <[ParameterValue]>::to_vec,
     );
     let statement = Statement::new(rendered.sql.clone()).with_params(values);
-    (operation, rendered.sql, statement)
+    let binds = rendered
+        .binds
+        .iter()
+        .map(|bind| bind.name.clone())
+        .collect();
+    (operation, rendered.sql, statement, binds)
 }
 
 /// Le righe come elenco della colonna `ID` (o `V`, l'uscita delle forme
@@ -225,7 +233,7 @@ async fn esegui(
     plenora_database_core::Result<Vec<String>>,
     plenora_database_core::Result<Vec<String>>,
 ) {
-    let (operation, sql, statement) = resa(plan, valori);
+    let (operation, sql, statement, binds) = resa(plan, valori);
     let mut transaction = provider
         .begin_transaction(
             secret,
@@ -239,6 +247,7 @@ async fn esegui(
         transaction.as_mut(),
         &statement,
         Some(&OperandPlan::Query(&operation)),
+        &binds,
         cancellation,
     )
     .await
@@ -508,10 +517,17 @@ async fn live_operand_catalog_judges_geometry_and_admits_scalars() {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            // Regola F (`spatial_operand::OPERAND_FAMILY_MISMATCH`, rilettura
+            // 13): `UPPER(G)` converte una geometria in testo, e si rifiuta
+            // anche fuori da un confronto, prima del server.
+            let conversione = error.category == ErrorCategory::InvalidPlan
+                && error.phase == ErrorPhase::Prepare
+                && error.message == plenora_database_core::spatial_operand::OPERAND_FAMILY_MISMATCH;
             assert!(
                 ragioni
                     .iter()
                     .any(|motivo| rifiuto_del_giudizio(&error, motivo))
+                    || conversione
                     || misurati.iter().any(|codice| error.message.contains(codice)),
                 "{name}: {error}"
             );
@@ -915,5 +931,586 @@ async fn live_binary_columns_of_derived_relations_are_judged_geometric() {
     }
     for sql in PULIZIA_DERIVATE {
         let _ = provider.run_ddl(&secret, sql, &cancellation).await;
+    }
+}
+
+/// La preparazione della regola B per colonna: una tabella con una colonna
+/// generata dal server con il WKB della geometria (`W`), una binaria
+/// memorizzata (`B`) e una generata numerica (`N`); due poligoni uguali per
+/// `ST_EQUALS` con i vertici in ordine diverso.
+const PREPARAZIONE_GENERATE: [&str; 2] = [
+    "CREATE TABLE PLENORA.SONDE_GENERATE (ID INTEGER NOT NULL, G ST_GEOMETRY, \
+     B VARBINARY(2000), \
+     W VARBINARY(2000) GENERATED ALWAYS AS (CAST(ST_ASBINARY(G) AS VARBINARY(2000))), \
+     N INTEGER GENERATED ALWAYS AS (ID * 10)) IN PLENORA_TS8K",
+    "INSERT INTO PLENORA.SONDE_GENERATE (ID, G, B) VALUES \
+     (3, ST_GEOMETRY('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 4326), BX'03'), \
+     (4, ST_GEOMETRY('POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))', 4326), BX'04')",
+];
+
+const PULIZIA_GENERATE: [&str; 1] = ["DROP TABLE PLENORA.SONDE_GENERATE"];
+
+/// Regola B per colonna (rilettura 13, R13-1): fino al 25/10 l'origine era
+/// della relazione, e la colonna generata binaria di una tabella
+/// (`SYSCAT.COLUMNS.GENERATED` `A`) restava scalare. Lo SQL senza giudizio
+/// `W = <WKB del primo poligono>` rende soltanto il primo, mentre `ST_EQUALS`
+/// dice uguali i due: un risultato sbagliato senza errore. Ora `W` si giudica
+/// geometrica (rifiuto prima del server) nell'esecuzione giudicata e nella
+/// lettura del provider; la colonna binaria memorizzata `B`, la generata
+/// numerica `N` e l'id restano.
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_server_computed_binary_columns_are_judged_geometric() {
+    let provider = provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    for sql in PULIZIA_GENERATE {
+        let _ = provider.run_ddl(&secret, sql, &cancellation).await;
+    }
+    for (index, sql) in PREPARAZIONE_GENERATE.iter().enumerate() {
+        provider
+            .run_ddl(&secret, sql, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("preparazione colonne generate Db2 {index}: {error}"));
+    }
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("transazione colonne generate Db2");
+    let equal = transaction
+        .query(
+            &Statement::new(
+                "SELECT A.ID FROM PLENORA.SONDE_GENERATE A, PLENORA.SONDE_GENERATE B \
+                 WHERE A.ID = 3 AND B.ID = 4 AND ST_EQUALS(A.G, B.G) = 1",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("ST_EQUALS colonne generate Db2");
+    assert_eq!(identificativi(&equal), vec!["3".to_owned()]);
+    let silent = transaction
+        .query(
+            &Statement::new(
+                "SELECT T.ID FROM PLENORA.SONDE_GENERATE T WHERE T.W = \
+                 (SELECT U.W FROM PLENORA.SONDE_GENERATE U WHERE U.ID = 3) ORDER BY T.ID",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("senza giudizio colonne generate Db2");
+    assert_eq!(
+        identificativi(&silent),
+        vec!["3".to_owned()],
+        "il server confronta i byte: il secondo poligono, uguale, manca"
+    );
+    let _ = transaction.rollback(&cancellation).await;
+    let tabella = Some("PLENORA");
+    let bytes = vec![ParameterValue::Bytes(vec![1])];
+    let rifiutati = [
+        (
+            "W = ?",
+            su(tabella, "SONDE_GENERATE", &uguale_binario("W")),
+            bytes.clone(),
+        ),
+        (
+            "ORDER BY W",
+            su(tabella, "SONDE_GENERATE", &ordinato("W", "asc")),
+            Vec::new(),
+        ),
+    ];
+    for (nome, piano, valori) in rifiutati {
+        let (_, judged, _) = esegui(&provider, &secret, &piano, Some(&valori), &cancellation).await;
+        let error = judged.expect_err(nome);
+        assert!(
+            rifiuto_del_giudizio(&error, GEOMETRY_SCALAR_OPERAND),
+            "{nome}: {error}"
+        );
+    }
+    // La colonna binaria memorizzata resta scalare: il giudizio la ammette e
+    // lo SQL arriva al server, con le righe dello SQL senza giudizio (il
+    // valore del bind `Bytes` lo decide il legame dei parametri, che non e di
+    // questa prova).
+    let (_, judged, direct) = esegui(
+        &provider,
+        &secret,
+        &su(tabella, "SONDE_GENERATE", &uguale_binario("B")),
+        Some(&[ParameterValue::Bytes(vec![4])]),
+        &cancellation,
+    )
+    .await;
+    let rows = judged.unwrap_or_else(|error| panic!("B = ? (binaria memorizzata): {error}"));
+    assert_eq!(Ok(rows), direct, "B = ? (binaria memorizzata)");
+    let ammessi = [
+        (
+            "N = ? (generata numerica)",
+            su(tabella, "SONDE_GENERATE", &uguale("N")),
+            vec![ParameterValue::I32(30)],
+            vec!["3"],
+        ),
+        (
+            "ORDER BY ID DESC",
+            su(tabella, "SONDE_GENERATE", &ordinato("ID", "desc")),
+            Vec::new(),
+            vec!["4", "3"],
+        ),
+    ];
+    for (nome, piano, valori, attese) in ammessi {
+        let (_, judged, direct) =
+            esegui(&provider, &secret, &piano, Some(&valori), &cancellation).await;
+        let rows = judged.unwrap_or_else(|error| panic!("{nome}: {error}"));
+        assert_eq!(rows, attese, "{nome}");
+        assert_eq!(Ok(rows), direct, "{nome}");
+    }
+    let lettura = |field: &str| ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: "SONDE_GENERATE".to_owned(),
+        },
+        projection: vec!["ID".to_owned()],
+        order_by: vec![OrderBy {
+            field: "ID".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: None,
+        row_offset: None,
+        filter: Some(FilterExpression::Eq {
+            field: field.to_owned(),
+            parameter: "p".to_owned(),
+        }),
+        declared_crs: Vec::new(),
+    };
+    let parametri = ParameterBag::new(BTreeMap::from([("p".to_owned(), bytes[0].clone())]));
+    let error = provider
+        .read(&secret, &lettura("W"), &parametri, &budget(), &cancellation)
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("lettura W ammessa"));
+    assert!(
+        rifiuto_del_giudizio(&error, GEOMETRY_SCALAR_OPERAND),
+        "lettura W: {error}"
+    );
+    // La lettura di Db2 non lega ancora un parametro `Bytes` (rifiuto
+    // esplicito del provider): il controllo ammesso e la colonna generata
+    // numerica.
+    let numero = ParameterBag::new(BTreeMap::from([("p".to_owned(), ParameterValue::I32(30))]));
+    provider
+        .read(&secret, &lettura("N"), &numero, &budget(), &cancellation)
+        .await
+        .unwrap_or_else(|error| panic!("lettura N: {error}"));
+    for sql in PULIZIA_GENERATE {
+        let _ = provider.run_ddl(&secret, sql, &cancellation).await;
+    }
+}
+
+/// Regola T (quattordicesima lettura del 25/10, difetto 1) su Db2: un
+/// parametro dichiarato `string` legato al valore `I64` 1. Lo SQL senza
+/// giudizio `NAME = ?` da al segnaposto il tipo della colonna, e il server
+/// converte il numero in testo (misurato su 12.1: incontra `'1'`, non `'01'`
+/// ne `'1.0'`): una conversione che il chiamante non ha chiesto. Su d5d7fa1
+/// il lowering delle mutazioni rendeva quel segnaposto nudo, e il giudizio
+/// prendeva la famiglia dal tipo dichiarato. Ora il valore si rifiuta prima dell'esecuzione nella
+/// mutazione e nella query della transazione; un testo per il testo cancella
+/// una riga sola.
+#[tokio::test]
+#[ignore = "richiede Db2 live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_typed_parameters_refuse_values_of_another_type() {
+    use plenora_database_core::facade::execute_judged;
+    use plenora_database_core::relational::MutationOperation;
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    let provider = provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let _ = provider
+        .run_ddl(&secret, "DROP TABLE PLENORA.TIPI_T", &cancellation)
+        .await;
+    for sql in [
+        "CREATE TABLE PLENORA.TIPI_T (ID INTEGER NOT NULL PRIMARY KEY, NAME VARCHAR(10) NOT NULL)",
+        "INSERT INTO PLENORA.TIPI_T VALUES (1, '1'), (2, '01'), (3, '1.0')",
+    ] {
+        provider
+            .run_ddl(&secret, sql, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("preparazione regola T Db2: {error}"));
+    }
+    let mutation: MutationOperation = serde_json::from_value(json!({
+        "type": "delete",
+        "target": {"catalog": null, "schema": "PLENORA", "object": "TIPI_T"},
+        "filter": {"kind": "compare",
+            "left": {"kind": "column", "column": {"relation": null, "field": "NAME"}},
+            "operator": "eq",
+            "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}}
+    }))
+    .expect("mutazione");
+    let lowered = plenora_database_core::compile_relational_mutation(ProviderKind::Db2, &mutation)
+        .expect("lowering");
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("transazione regola T Db2");
+    let silent = transaction
+        .query(
+            &Statement::new("SELECT ID FROM PLENORA.TIPI_T WHERE NAME = ? ORDER BY ID")
+                .with_params(vec![ParameterValue::I64(1)]),
+            &cancellation,
+        )
+        .await
+        .expect("senza giudizio regola T Db2");
+    assert_eq!(
+        identificativi(&silent),
+        vec!["1".to_owned()],
+        "il segnaposto prende il tipo della colonna, e il server converte il valore"
+    );
+    let statement =
+        |value: ParameterValue| Statement::new(lowered.sql.clone()).with_params(vec![value]);
+    let plan = OperandPlan::Mutation(&mutation);
+    let error = execute_judged(
+        transaction.as_mut(),
+        &statement(ParameterValue::I64(1)),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect_err("intero per un testo dichiarato");
+    assert_eq!(error.category, ErrorCategory::InvalidPlan, "{error:?}");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    let deleted = execute_judged(
+        transaction.as_mut(),
+        &statement(ParameterValue::String("1".to_owned())),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect("testo per il testo");
+    // La forma del renderer delle query.
+    assert!(
+        lowered.sql.ends_with("= CAST(? AS VARCHAR(32672))"),
+        "{}",
+        lowered.sql
+    );
+    assert_eq!(deleted, 1, "il CAST confronta il testo");
+    let _ = transaction.rollback(&cancellation).await;
+    // La query della transazione (lo SDK), con lo stesso predicato.
+    let query = su(
+        Some("PLENORA"),
+        "TIPI_T",
+        &json!({"filter": {"kind": "compare", "left": colonna("T", "NAME"), "operator": "eq",
+            "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}}}),
+    );
+    let (_, judged, _) = esegui(
+        &provider,
+        &secret,
+        &query,
+        Some(&[ParameterValue::I64(1)]),
+        &cancellation,
+    )
+    .await;
+    let error = judged.expect_err("query con un intero");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    let (_, judged, _) = esegui(
+        &provider,
+        &secret,
+        &query,
+        Some(&[ParameterValue::String("1".to_owned())]),
+        &cancellation,
+    )
+    .await;
+    assert_eq!(judged.expect("query con un testo"), vec!["1".to_owned()]);
+    provider
+        .run_ddl(&secret, "DROP TABLE PLENORA.TIPI_T", &cancellation)
+        .await
+        .expect("pulizia regola T Db2");
+}
+
+/// Quindicesima lettura del 25/10 sul Db2 reale, regole C e A.
+///
+/// - **Regola C.** Db2 non ha `DECIMAL(38, 10)` (precisione massima 31,
+///   `CAST(? AS DECIMAL(38, 10))` fallisce, misurato): la libreria rende
+///   `DECIMAL(31, 10)`, che arrotonda `0.12345678901` e ritrova
+///   `DECIMAL(30, 12)` `0.123456789` (misurato). `D = CAST(:p AS decimal)`
+///   oltre la scala e il `CAST` di una colonna `DECIMAL(30, 12)` si rifiutano
+///   (`CAST_NOT_EXACT`); entro la scala e da `DECIMAL(20, 4)` restano.
+///   `CAST(C AS VARCHAR(32672))` di un `CLOB` di 40000 caratteri tronca senza
+///   errore (misurato): il `CAST` a `string` di un `CLOB` si
+///   rifiuta. `TIMESTAMP WITH TIME ZONE` non esiste (la query fallisce, misurato): un
+///   `timestamp_tz` tipizzato si rifiuta (`TYPED_PARAMETER_MISMATCH`).
+/// - **Regola A.** Il server ignora gli spazi finali di un identificatore:
+///   `T.M` lega la colonna `"M "` (misurato), e su f4989dc il riferimento non
+///   si giudicava in un piano senza geometrie (`T.M = '01'` rendeva la riga
+///   per conversione); ora si rifiuta (`NAME_UNRESOLVED`), come `T."k"` per
+///   la colonna `K`.
+#[tokio::test]
+#[ignore = "richiede Db2 live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_rilettura_quindici_cast_e_nomi() {
+    use plenora_database_core::cast_table::CAST_NOT_EXACT;
+    use plenora_database_core::spatial_operand::NAME_UNRESOLVED;
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    let provider = provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let _ = provider
+        .run_ddl(&secret, "DROP TABLE PLENORA.R15_T", &cancellation)
+        .await;
+    for sql in [
+        "CREATE TABLE PLENORA.R15_T (ID INTEGER NOT NULL PRIMARY KEY, D DECIMAL(30, 12) NOT NULL, \
+         E DECIMAL(20, 4) NOT NULL, C CLOB(100K) NOT NULL, \"M \" INTEGER NOT NULL, \
+         K INTEGER NOT NULL, TS TIMESTAMP NOT NULL)",
+        "INSERT INTO PLENORA.R15_T VALUES \
+         (1, 0.123456789, 1.5, REPEAT(CAST('a' AS CLOB(100K)), 40000), 1, 1, '2024-01-01-08.00.00'), \
+         (2, 0.5, 2.5, 'b', 2, 2, '2024-01-01-10.00.00')",
+    ] {
+        provider
+            .run_ddl(&secret, sql, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("preparazione Db2: {error}"));
+    }
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    // La tabella del modulo `cast_table`, rimisurata.
+    let wide = transaction
+        .query(
+            &Statement::new("SELECT ID FROM PLENORA.R15_T WHERE D = CAST(? AS DECIMAL(38, 10))")
+                .with_params(vec![ParameterValue::String("0.5".to_owned())]),
+            &cancellation,
+        )
+        .await
+        .expect_err("DECIMAL(38, 10) su Db2");
+    // L'errore del server, non un rifiuto del giudizio.
+    assert_ne!(wide.category, ErrorCategory::InvalidPlan, "{wide:?}");
+    let rounded = transaction
+        .query(
+            &Statement::new("SELECT ID FROM PLENORA.R15_T WHERE D = CAST(? AS DECIMAL(31, 10))")
+                .with_params(vec![ParameterValue::String("0.12345678901".to_owned())]),
+            &cancellation,
+        )
+        .await
+        .expect("DECIMAL(31, 10)");
+    assert_eq!(
+        identificativi(&rounded),
+        vec!["1".to_owned()],
+        "il CAST arrotonda"
+    );
+    let truncated = transaction
+        .query(
+            &Statement::new(
+                "SELECT LENGTH(CAST(C AS VARCHAR(32672))) AS V FROM PLENORA.R15_T WHERE ID = 1",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("CLOB troncato senza errore");
+    assert_eq!(identificativi(&truncated), vec!["32672".to_owned()]);
+    transaction
+        .query(
+            &Statement::new(
+                "SELECT ID FROM PLENORA.R15_T WHERE TS = CAST(? AS TIMESTAMP WITH TIME ZONE)",
+            )
+            .with_params(vec![ParameterValue::String(
+                "2024-01-01T10:00:00+02:00".to_owned(),
+            )]),
+            &cancellation,
+        )
+        .await
+        .expect_err("TIMESTAMP WITH TIME ZONE su Db2");
+    let trailing = transaction
+        .query(
+            &Statement::new("SELECT ID FROM PLENORA.R15_T WHERE \"M\" = ?")
+                .with_params(vec![ParameterValue::String("01".to_owned())]),
+            &cancellation,
+        )
+        .await
+        .expect("\"M\" lega \"M \"");
+    assert_eq!(identificativi(&trailing), vec!["1".to_owned()]);
+    let _ = transaction.rollback(&cancellation).await;
+
+    let typed = |parameter_type: &str| json!({"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type});
+    let parameter = || json!({"kind": "parameter", "name": "p"});
+    let cast = |expression: Value, target: &str| json!({"kind": "cast", "expression": expression, "target_type": target});
+    let compare = |left: Value, right: Value| json!({"filter": {"kind": "compare", "left": left, "operator": "eq", "right": right}});
+    let plan = |left: Value, right: Value| su(Some("PLENORA"), "R15_T", &compare(left, right));
+    let refused = [
+        (
+            "D = CAST(:p AS decimal) oltre la scala",
+            plan(colonna("T", "D"), cast(parameter(), "decimal")),
+            ParameterValue::Decimal("0.12345678901".to_owned()),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "CAST(D DECIMAL(30, 12) AS decimal) = ?",
+            plan(cast(colonna("T", "D"), "decimal"), typed("decimal")),
+            ParameterValue::Decimal("0.5".to_owned()),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "CAST(C CLOB AS string) = ?",
+            plan(cast(colonna("T", "C"), "string"), typed("string")),
+            ParameterValue::String("b".to_owned()),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "TS = timestamp_tz tipizzato",
+            plan(colonna("T", "TS"), typed("timestamp_tz")),
+            ParameterValue::TimestampTz("2024-01-01T10:00:00+02:00".to_owned()),
+            TYPED_PARAMETER_MISMATCH,
+        ),
+        (
+            "T.M lega \"M \" soltanto per il server",
+            plan(colonna("T", "M"), typed("string")),
+            ParameterValue::String("01".to_owned()),
+            NAME_UNRESOLVED,
+        ),
+        (
+            "T.\"k\" non lega K",
+            plan(colonna("T", "k"), typed("integer")),
+            ParameterValue::I32(1),
+            NAME_UNRESOLVED,
+        ),
+    ];
+    for (form, plan, value, message) in refused {
+        let (sql, judged, _) =
+            esegui(&provider, &secret, &plan, Some(&[value]), &cancellation).await;
+        let error = judged.expect_err(form);
+        assert_eq!(
+            error.category,
+            ErrorCategory::InvalidPlan,
+            "{form} ({sql}): {error:?}"
+        );
+        assert_eq!(error.message, message, "{form} ({sql}): {error:?}");
+    }
+    let admitted = [
+        (
+            "D = CAST(:p AS decimal) entro la scala",
+            plan(colonna("T", "D"), cast(parameter(), "decimal")),
+            ParameterValue::Decimal("0.5".to_owned()),
+            "2",
+        ),
+        (
+            "CAST(E DECIMAL(20, 4) AS decimal) = ?",
+            plan(cast(colonna("T", "E"), "decimal"), typed("decimal")),
+            ParameterValue::Decimal("2.5".to_owned()),
+            "2",
+        ),
+    ];
+    for (form, plan, value, id) in admitted {
+        let (sql, judged, _) =
+            esegui(&provider, &secret, &plan, Some(&[value]), &cancellation).await;
+        assert_eq!(
+            judged.unwrap_or_else(|error| panic!("{form} ({sql}): {error:?}")),
+            vec![id.to_owned()],
+            "{form}"
+        );
+    }
+    provider
+        .run_ddl(&secret, "DROP TABLE PLENORA.R15_T", &cancellation)
+        .await
+        .expect("pulizia");
+}
+
+/// Sedicesima lettura del 25/10 sul Db2 reale, regola N in ogni piano: Db2
+/// ignora gli spazi finali dei nomi, e una CTE `"R16E "` prende il posto della
+/// tabella `R16E` per il server (misurato qui: la query legge la CTE). Il
+/// giudizio legava per byte la tabella, dove `N` e un testo, e ammetteva
+/// `X.N = '01'`; il server confrontava l'intero della CTE e rendeva una riga
+/// per conversione implicita. Su c0f82ba passava; ora si rifiuta
+/// (`AMBIGUOUS_NAME_SHAPE`).
+#[tokio::test]
+#[ignore = "richiede Db2 live esplicito"]
+async fn live_rilettura_sedici_cte_con_spazi_finali() {
+    use plenora_database_core::spatial_operand::AMBIGUOUS_NAME_SHAPE;
+    let provider = provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    // `PLENORA.R16E` e il corpo della CTE; `R16E` senza schema e la tabella
+    // dello schema corrente, che il giudizio legava.
+    for sql in ["DROP TABLE PLENORA.R16E", "DROP TABLE R16E"] {
+        let _ = provider.run_ddl(&secret, sql, &cancellation).await;
+    }
+    for sql in [
+        "CREATE TABLE PLENORA.R16E (ID INTEGER NOT NULL PRIMARY KEY)",
+        "INSERT INTO PLENORA.R16E VALUES (1), (2)",
+        "CREATE TABLE R16E (ID INTEGER NOT NULL PRIMARY KEY, N VARCHAR(10) NOT NULL)",
+        "INSERT INTO R16E VALUES (1, '1'), (2, '2')",
+    ] {
+        provider
+            .run_ddl(&secret, sql, &cancellation)
+            .await
+            .unwrap_or_else(|error| panic!("preparazione Db2: {error}"));
+    }
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget(),
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let silent = transaction
+        .query(
+            &Statement::new(
+                "WITH \"R16E \" AS (SELECT ID, ID AS N FROM PLENORA.R16E) \
+                 SELECT X.ID FROM \"R16E\" X WHERE X.N = ?",
+            )
+            .with_params(vec![ParameterValue::String("01".to_owned())]),
+            &cancellation,
+        )
+        .await
+        .expect("la CTE con lo spazio finale");
+    assert_eq!(
+        identificativi(&silent),
+        vec!["1".to_owned()],
+        "il server lega la CTE"
+    );
+    let _ = transaction.rollback(&cancellation).await;
+    let plan = json!({
+        "common_table_expressions": [{"name": "R16E ", "query": su(Some("PLENORA"), "R16E", &json!({
+            "projection": [
+                {"expression": colonna("T", "ID"), "alias": "ID"},
+                {"expression": colonna("T", "ID"), "alias": "N"}
+            ]
+        }))}],
+        "source": {"object": {"catalog": null, "schema": null, "object": "R16E"}, "alias": "X"},
+        "projection": [{"expression": colonna("X", "ID"), "alias": "ID"}],
+        "filter": {"kind": "compare", "operator": "eq", "left": colonna("X", "N"),
+            "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}},
+        "having": null, "row_limit": null
+    });
+    let (sql, judged, _) = esegui(
+        &provider,
+        &secret,
+        &plan,
+        Some(&[ParameterValue::String("01".to_owned())]),
+        &cancellation,
+    )
+    .await;
+    let error = judged.expect_err(&sql);
+    assert_eq!(error.message, AMBIGUOUS_NAME_SHAPE, "{sql}: {error:?}");
+    for sql in ["DROP TABLE PLENORA.R16E", "DROP TABLE R16E"] {
+        provider
+            .run_ddl(&secret, sql, &cancellation)
+            .await
+            .expect("pulizia");
     }
 }

@@ -36,6 +36,7 @@ use crate::plan::ProviderKind;
 use crate::portable::{compile_portable, PortableStatement};
 use crate::provider::ParameterValue;
 use crate::relational::MutationOperation;
+use crate::spatial_operand::ParameterFamilies;
 use crate::transaction::{Statement, TransactionScope};
 use crate::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 
@@ -63,18 +64,32 @@ pub async fn portable(
 /// Uno statement relazionale passato dal cancello: si costruisce soltanto
 /// qui ([`mutation`], [`query`]) e si esegue con
 /// [`crate::facade::query_admitted`] e [`crate::facade::execute_admitted`].
+///
+/// Tiene anche le famiglie dei valori **del chiamante**
+/// ([`ParameterFamilies`]): le regole F, T e C (`spatial_operand`,
+/// `cast_table`) giudicano i valori come il chiamante li ha dati, e
+/// l'ammissione li riscrive nel tipo dell'operando; valgono tutte e due.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Admitted(Statement);
+pub struct Admitted {
+    statement: Statement,
+    families: ParameterFamilies,
+}
 
 impl Admitted {
     /// Lo statement ammesso, da leggere.
     #[must_use]
     pub const fn statement(&self) -> &Statement {
-        &self.0
+        &self.statement
+    }
+
+    /// Le famiglie dei valori del chiamante, per `facade::verify_operands_bound`.
+    #[must_use]
+    pub const fn families(&self) -> &ParameterFamilies {
+        &self.families
     }
 
     pub(crate) fn into_statement(self) -> Statement {
-        self.0
+        self.statement
     }
 }
 
@@ -87,8 +102,9 @@ impl Admitted {
 ///
 /// # Errors
 ///
-/// `InvalidPlan` se i valori non sono quanti i segnaposto; quelli di
-/// [`query_parameters`].
+/// `InvalidPlan` se i valori non sono quanti i segnaposto
+/// (`BIND_LAYOUT_MISMATCH`) o fuori dal tipo dichiarato (regola T); quelli
+/// di [`query_parameters`].
 pub fn query(
     provider: ProviderKind,
     operation: &crate::relational::QueryOperation,
@@ -96,11 +112,14 @@ pub fn query(
     bind_names: &[String],
     values: &[ParameterValue],
 ) -> Result<Admitted> {
-    if bind_names.len() != values.len() {
-        return Err(DatabaseError::invalid_plan(
-            "valori della query diversi dai segnaposto del piano",
-        ));
-    }
+    // Le famiglie dei valori del chiamante e la regola T prima della
+    // riscrittura: un valore fuori dal tipo dichiarato si rifiuta come tale,
+    // e non come valore inesatto nel tipo del `CAST`.
+    let families = ParameterFamilies::from_positional(provider, bind_names, values)?;
+    families.judge_typed(
+        provider,
+        &crate::spatial_operand::OperandPlan::Query(operation),
+    )?;
     let mut named = std::collections::BTreeMap::new();
     for (name, value) in bind_names.iter().zip(values) {
         if named
@@ -126,7 +145,10 @@ pub fn query(
                 .ok_or_else(|| DatabaseError::invalid_plan("parametro della query senza valore"))
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(Admitted(Statement::new(sql).with_params(params)))
+    Ok(Admitted {
+        statement: Statement::new(sql).with_params(params),
+        families,
+    })
 }
 
 /// Lo statement eseguibile di un DML relazionale con i valori del chiamante.
@@ -134,7 +156,9 @@ pub fn query(
 /// `values` e nell'ordine dei bind del piano: il piano si abbassa
 /// nell'AST portable con quei valori, si ammette come [`portable`] e si
 /// compila. I valori spatial restano quelli del chiamante: li giudica la
-/// regola degli operandi geometrici (`facade::verify_operands`).
+/// regola degli operandi geometrici (`facade::verify_operands`). Un
+/// parametro tipizzato confrontato si ammette sul tipo del suo `CAST`
+/// ([`crate::cast_table::rendered_target`]).
 ///
 /// # Errors
 ///
@@ -154,6 +178,7 @@ pub async fn mutation(
             "valori DML diversi dai segnaposto del piano",
         ));
     }
+    let families = ParameterFamilies::from_positional(provider, &binds.names, values)?;
     let admitted = admit_on_catalog(tx, &statement, cancellation).await?;
     let mut compiled = compile_portable(provider, &admitted)?.into_admitted_statement();
     if compiled.params.len() != values.len() {
@@ -162,7 +187,20 @@ pub async fn mutation(
     for position in binds.spatial {
         compiled.params[position] = values[position].clone();
     }
-    Ok(Admitted(compiled))
+    // Un parametro tipizzato confrontato si rende `CAST(? AS tipo)` con una
+    // sentinella (regola T): il valore del chiamante si ammette sul tipo che
+    // il renderer scrive nel `CAST`, come nella query relazionale.
+    for (position, parameter_type) in binds.typed {
+        compiled.params[position] = described(
+            provider,
+            &values[position],
+            &crate::cast_table::rendered_target(provider, parameter_type),
+        )?;
+    }
+    Ok(Admitted {
+        statement: compiled,
+        families,
+    })
 }
 
 async fn admit_on_catalog(

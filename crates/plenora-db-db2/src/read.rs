@@ -53,7 +53,15 @@ pub async fn read_operation(
     let description: Db2ObjectDescription = serde_json::from_value(inspection.document)
         .map_err(|_| read_error(ErrorCategory::Protocol, "catalogo Db2 non deserializzabile"))?;
     let plan = Db2ReadPlan::compile(&description, operation, budget.limits().cell_bytes)?;
-    verify_scalar_fields(config, secret, &description, operation, cancellation).await?;
+    verify_scalar_fields(
+        config,
+        secret,
+        &description,
+        operation,
+        parameters,
+        cancellation,
+    )
+    .await?;
     let types = column_types(config, secret, &description, cancellation).await?;
     refuse_bit_data(&plan, &description, &types)?;
     // La regola dei parametri che incontrano un operando
@@ -179,6 +187,7 @@ async fn verify_scalar_fields(
     secret: &SecretString,
     description: &Db2ObjectDescription,
     operation: &ReadOperation,
+    parameters: &ParameterBag,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     if operation.filter.is_none() && operation.order_by.is_empty() {
@@ -189,14 +198,14 @@ async fn verify_scalar_fields(
     let (schema, object) = (description.schema.clone(), description.name.clone());
     let mut task = tokio::task::spawn_blocking(move || {
         with_connection(&config, &secret, |connection, timeout| {
-            crate::operand_catalog::geometric_columns(
+            crate::operand_catalog::read_columns(
                 &mut crate::operand_catalog::OdbcCatalog::new(connection, timeout),
                 &schema,
                 &object,
             )
         })
     });
-    let geometric = tokio::select! {
+    let columns = tokio::select! {
         outcome = &mut task => outcome.map_err(|_| task_error(ErrorPhase::Prepare))??,
         _ = cancellation.cancelled() => {
             return Err(interruption_error(cancellation, ErrorPhase::Prepare));
@@ -207,10 +216,20 @@ async fn verify_scalar_fields(
         operation.filter.as_ref(),
         &operation.order_by,
         |field| {
-            geometric
-                .as_ref()
-                .is_none_or(|columns| columns.iter().any(|column| column == field))
+            columns.as_ref().is_none_or(|columns| {
+                columns
+                    .iter()
+                    .any(|column| column.is_geometric() && column.name == field)
+            })
         },
+        |field| {
+            Ok(columns
+                .iter()
+                .flatten()
+                .find(|column| column.name == field)
+                .map(plenora_database_core::spatial_operand::CatalogColumn::field_family))
+        },
+        &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
     )
 }
 

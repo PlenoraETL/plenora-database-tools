@@ -36,7 +36,36 @@
 //! puo contenere una geometria: una relazione nominata ha una colonna
 //! geometrica (o il catalogo non ne legge le colonne), oppure il piano
 //! contiene un nodo spatial. Su un piano senza geometrie un riferimento non
-//! risolto non puo essere geometrico, e arriva al server come prima.
+//! risolto non puo essere geometrico, ma non si giudica (regola F, regola C):
+//! si rifiuta, `invalid_plan` con [`NAME_UNRESOLVED`] (regola A). Anche un
+//! riferimento a una relazione che il catalogo non trova
+//! (`RelationColumns::Absent`): il server puo leggerla (una tabella
+//! temporanea privata di Oracle non e in `ALL_TAB_COLS`, misurato il 25/10,
+//! sedicesima lettura), e non si assume che la query fallisca.
+//!
+//! # Regola A: i nomi li lega il server
+//!
+//! Il giudizio non piega i nomi di colonna dal lato del client. Dove il
+//! server li lega con regole proprie ([`server_resolves_names`]: SQL Server
+//! con la collation del database, che ignora larghezza, accenti, maiuscole o
+//! spazi finali secondo la collation; `MySQL` e `MariaDB`, le cui regole non
+//! sono quelle di `INFORMATION_SCHEMA`) il provider manda al server ogni nome
+//! del piano ([`ScalarOperands::names`]) per ogni relazione, e registra le
+//! colonne che il server lega ([`OperandCatalog::insert_resolution`]): la
+//! risposta e per la stessa stringa che il renderer scrive. Nessuna colonna:
+//! il nome non si lega; piu d'una: si rifiuta. Dove ogni identificatore e
+//! quotato (`PostgreSQL`, Oracle, Db2) il server lega il nome esatto: un nome
+//! che incontra una colonna soltanto senza maiuscole o senza spazi finali (Db2
+//! ignora gli spazi finali) si rifiuta. Un riferimento che il catalogo non
+//! lega a una colonna si rifiuta in **ogni** piano (sopra). Misurato il 25/10
+//! (quindicesima lettura): su SQL Server `CI_AS` una colonna `[ｎ]` (U+FF4E) o
+//! `[m ]` si lega a `t.n` o `t.m`, e fino ad allora `t.n = '01'` non si
+//! giudicava e rendeva una riga per conversione implicita.
+//!
+//! I nomi del piano fra loro (alias, nomi di uscita) si confrontano con la
+//! regola del dialetto ([`NameRule`]): due nomi diversi per byte con un
+//! carattere non ASCII non si provano diversi dove il dialetto confronta con
+//! una collation, e il riferimento non si lega.
 //!
 //! Un'espressione senza alias che non e una colonna, nella projection di una
 //! sorgente derivata o di una CTE, prende dal server un nome che il piano non
@@ -48,35 +77,39 @@
 //!
 //! Il giudizio non emula il legame dei nomi di ogni dialetto: rifiuta le forme
 //! in cui il legame dipende dal dialetto, `unsupported` con
-//! [`AMBIGUOUS_NAME_SHAPE`], su ogni dialetto, **soltanto in un piano che puo
-//! contenere una geometria** (lo stesso criterio del mondo chiuso: una
-//! relazione con una colonna geometrica o con colonne che il catalogo non
-//! legge, un nodo spatial; rendendo, senza catalogo, soltanto il nodo
-//! spatial). Su un piano senza geometrie il legame di un nome non puo far
-//! confrontare una geometria, e le forme arrivano al server come prima:
+//! [`AMBIGUOUS_NAME_SHAPE`], su ogni dialetto, **in ogni piano giudicato sul
+//! catalogo**: il legame di un nome decide i tipi che le regole F e C
+//! giudicano, non soltanto se un operando e geometrico (sedicesima lettura del
+//! 25/10: fino ad allora soltanto in un piano che puo contenere una
+//! geometria). Senza catalogo (la sola resa) si rifiutano soltanto in un piano
+//! con un nodo spatial: l'esecuzione giudica sul catalogo (regola S).
 //!
 //! - (a) due nomi di relazione (alias o nome) visibili insieme — nello stesso
 //!   blocco o in blocchi annidati — uguali senza maiuscole e senza spazi
 //!   finali, anche uguali per byte; due CTE visibili uguali allo stesso modo;
-//!   un qualificatore o una relazione senza schema che incontra un nome
-//!   soltanto senza maiuscole; un corpo di CTE che nomina una CTE successiva
-//!   dello stesso `WITH`, o se stessa senza `recursive` (il dialetto la lega
-//!   alla tabella o la rifiuta);
+//!   un qualificatore che incontra un nome soltanto senza maiuscole; una
+//!   relazione senza schema e una CTE visibile con nomi diversi per byte che
+//!   il server potrebbe legare (senza maiuscole, senza spazi finali, e su SQL
+//!   Server, `MySQL` e `MariaDB` con un carattere non ASCII: la collation non
+//!   si emula); un corpo di CTE che nomina, con la stessa regola, una CTE
+//!   successiva dello stesso `WITH`, o se stessa senza `recursive` (il
+//!   dialetto la lega alla tabella o la rifiuta);
 //! - (b) due nomi di uscita della stessa projection uguali senza maiuscole
 //!   (alias, o il nome di una colonna senza alias);
 //! - (c) un riferimento di colonna senza qualificatore in un blocco annidato
 //!   (subquery, `LATERAL`) quando un blocco esterno ha relazioni;
 //! - (d) sul catalogo, un nome di colonna o di uscita che incontra il nome
-//!   nominato soltanto senza maiuscole dove il dialetto le distingue o puo
-//!   distinguerle ([`NameRule::Exact`]: `PostgreSQL`, Oracle, Db2, SQL Server
-//!   con qualunque collation);
+//!   nominato soltanto senza maiuscole o spazi finali dove il dialetto quota
+//!   ogni identificatore (`PostgreSQL`, Oracle, Db2); su SQL Server, `MySQL`
+//!   e `MariaDB` la colonna la lega il server (regola A);
 //! - (e) sul catalogo, in un piano con geometrie su SQL Server, `MySQL` e
 //!   `MariaDB`, un nome non ASCII (relazione, CTE, uscita, colonna): la
 //!   collation puo uguagliare nomi che la piegatura distingue.
 //!
 //! Con queste forme rifiutate il legame di ogni nome e lo stesso sotto ogni
 //! regola, e il giudizio risolve una volta sola: relazioni e alias per byte,
-//! una CTE con le CTE che vede dove e definita, un riferimento senza
+//! una CTE per byte con le CTE che vede dove e definita (nessun'altra CTE
+//! visibile puo legarsi al nome per il server), un riferimento senza
 //! qualificatore nel solo blocco che lo contiene, i nomi di colonna con la
 //! regola del dialetto ([`NameRule`]) soltanto contro il catalogo e i nomi di
 //! uscita. Una relazione nominata con il catalogo (un altro database) non si
@@ -108,15 +141,31 @@
 //! confronta i byte) e legge `SYSCAT.TABLES`, `SYSCAT.COLUMNS`,
 //! `SYSCAT.DATATYPES`, `SYSCAT.HIERARCHIES`.
 //!
-//! # Regola B: le colonne binarie delle relazioni derivate
+//! # Regola B: le colonne binarie derivate
 //!
 //! Ogni catalogo classifica le colonne con la stessa
-//! [`catalog_column_is_geometric`]: geometrico il tipo geometrico, e il tipo
-//! binario (o un dominio, tipo distinto, tipo alias che vi arriva) di una
-//! vista, vista materializzata o MQT. Una vista puo rendere una geometria in
-//! WKB o nel formato interno sotto un tipo binario, e il catalogo non dice da
-//! quale espressione viene la colonna.
+//! [`catalog_column_is_geometric`], per **colonna**: geometrico il tipo
+//! geometrico, e il tipo binario (o un dominio, tipo distinto, tipo alias che
+//! vi arriva) di una colonna derivata ([`ColumnOrigin::Derived`]): di una
+//! vista, vista materializzata o MQT, oppure calcolata dal server (colonna
+//! generata, calcolata, virtuale, con qualunque memorizzazione). Una vista o
+//! una colonna generata possono rendere una geometria in WKB o nel formato
+//! interno sotto un tipo binario, e il catalogo non dice da quale espressione
+//! viene la colonna. Fino al 25/10 l'origine era della relazione, e la
+//! colonna generata di una tabella restava scalare (rilettura 13, R13-1).
 //!
+//! # Regola F: nessuna conversione implicita fra famiglie
+//!
+//! I due lati di un confronto, di `IN`, `BETWEEN`, `LIKE`, i rami e gli
+//! argomenti che il server deve portare a un tipo comune, e ogni operando di
+//! un ordinamento o di un raggruppamento hanno una sola famiglia di tipo
+//! ([`OperandFamily`]), secondo il catalogo e il valore legato a ogni
+//! parametro ([`ScalarOperands::judge_bound`]); altrimenti `invalid_plan`
+//! ([`OPERAND_FAMILY_MISMATCH`]). La tabella delle famiglie, il binario
+//! derivato da un `CAST` e il confine del mondo chiuso (che cosa si giudica
+//! geometria, che cosa si confronta come byte e come testo) stanno nel
+//! modulo `types` (`spatial_operand_types.rs`), con i loro limiti dichiarati.
+
 //! # Perche
 //!
 //! Il server confronta il proprio formato interno con il valore legato.
@@ -141,29 +190,28 @@
 //!
 //! # Limiti dichiarati
 //!
-//! - **Regola.** Colonne binarie delle relazioni derivate (regola B): una
-//!   colonna binaria o LOB binario di una vista, vista materializzata o MQT
-//!   si giudica geometrica, e un confronto, un ordinamento, un raggruppamento
-//!   o un `DISTINCT` su di essa si rifiuta
-//!   ([`GEOMETRY_SCALAR_OPERAND`]); la colonna binaria di una tabella resta
-//!   scalare.
+//! - **Regola.** Colonne binarie derivate (regola B): una colonna binaria o
+//!   LOB binario di una vista, vista materializzata o MQT, o calcolata dal
+//!   server, si giudica geometrica, e un confronto, un ordinamento, un
+//!   raggruppamento o un `DISTINCT` su di essa si rifiuta
+//!   ([`GEOMETRY_SCALAR_OPERAND`]); la colonna binaria memorizzata di una
+//!   tabella resta scalare.
 //! - **Ambito.** Ogni provider: l'esecuzione giudicata (SDK, ORM, facade,
 //!   CLI portable), il path query e la lettura del provider. Nessun
-//!   provider prova che la colonna della vista ripete una colonna binaria di
+//!   provider prova che la colonna derivata ripete una colonna binaria di
 //!   una tabella: la prova non e ne esatta ne economica su ogni dialetto.
 //! - **Hazard.** Il costo e il rifiuto dei filtri e degli ordinamenti
-//!   scalari sulle colonne binarie delle viste che non portano geometrie
-//!   (un hash, un `bytea` copiato da una tabella). Restano scalari, e un
-//!   confronto ne confronta i byte senza errore: la colonna binaria di una
-//!   tabella riempita con il WKB di una geometria dal chiamante
-//!   (`INSERT ... SELECT ST_AsBinary(g)`; la libreria non scrive geometrie in
-//!   colonne binarie); una tabella esterna o remota che la dichiara binaria;
-//!   una geometria resa testo da una vista (`ST_AsText`, `GeoJSON`), che il
-//!   catalogo non distingue da un altro testo.
-//! - **Rientro.** Per le viste, quando il catalogo del dialetto dice quale
-//!   espressione rende la colonna (la dipendenza di colonna di una vista
-//!   verso una colonna binaria di tabella); per le tabelle, nessuno: i byte
-//!   li sceglie il chiamante.
+//!   scalari sulle colonne binarie derivate che non portano geometrie (un
+//!   hash generato, un `bytea` copiato da una tabella). Restano scalari, e un
+//!   confronto ne confronta i byte senza errore, le colonne del confine del
+//!   mondo chiuso (modulo `types`): la colonna binaria memorizzata di una
+//!   tabella riempita con il WKB di una geometria dal chiamante o da un
+//!   trigger; una tabella esterna o remota che la dichiara binaria; la forma
+//!   testuale di una geometria confrontata con un testo.
+//! - **Rientro.** Per le colonne derivate, quando il catalogo del dialetto
+//!   dice quale espressione rende la colonna (la dipendenza di colonna verso
+//!   una colonna binaria di tabella); per le tabelle, nessuno: i byte li
+//!   sceglie il chiamante.
 //!
 //! - **Regola.** La guardia del server sugli operandi scalari di Oracle
 //!   ([`operand_server_guard`]) vale per le forme misurate
@@ -206,8 +254,9 @@
 //! - **Hazard.** Lo SQL reso ha avuto il rifiuto delle geometrie che il
 //!   piano dice da se (funzioni spatial, `SpatialValue`, `SpatialOutput`, la
 //!   regola N con un nodo spatial, le colonne dichiarate `Geometry` dallo
-//!   SDK), non il giudizio sulle colonne:
-//!   chi lo esegue fuori da questo repository esegue SQL del chiamante.
+//!   SDK), non il giudizio sulle colonne ne la regola F, che chiedono il
+//!   catalogo e i valori legati: chi lo esegue fuori da questo repository
+//!   esegue SQL del chiamante.
 //! - **Rientro.** Nessuno: chi esegue passa dall'esecuzione, che giudica.
 //!
 //! - **Regola.** Il catalogo si legge prima di eseguire, con un'istruzione
@@ -228,13 +277,39 @@
 //!   regole.
 //! - **Rientro.** Non serve.
 //!
-//! - **Regola.** SQL Server confronta per byte ([`NameRule::Exact`]) senza
-//!   leggere la collation.
-//! - **Ambito.** SQL Server, anche con collation `CI`.
-//! - **Hazard.** Nessun passaggio silenzioso: un nome che incontra una
-//!   colonna o un alias soltanto senza maiuscole si rifiuta anche dove il
-//!   server lo legherebbe. Il costo e un rifiuto in piu.
-//! - **Rientro.** Quando il giudizio legge la collation del database.
+//! - **Regola.** I nomi del piano fra loro (alias, nomi di uscita) non li
+//!   lega il server: su SQL Server due nomi che differiscono per le maiuscole
+//!   o per un carattere non ASCII, su `MySQL` e `MariaDB` per un carattere
+//!   non ASCII, non si provano diversi.
+//! - **Ambito.** Ogni piano su SQL Server, `MySQL`, `MariaDB`.
+//! - **Hazard.** Nessun passaggio silenzioso: il riferimento si rifiuta
+//!   ([`NAME_UNRESOLVED`]) anche dove il server lo legherebbe. Il costo e un
+//!   rifiuto in piu.
+//! - **Rientro.** Quando il giudizio chiede al server il legame dei nomi di
+//!   uscita.
+//!
+//! - **Regola.** Il legame dei nomi di colonna (regola A) si legge con
+//!   un'istruzione per relazione (SQL Server, una ogni 500 nomi) o un prepare
+//!   per relazione (`MySQL`, `MariaDB`, uno per nome se uno non si lega).
+//! - **Ambito.** SQL Server, `MySQL`, `MariaDB`, nel path query e nella
+//!   transazione.
+//! - **Hazard.** Nessun passaggio silenzioso: il costo e la latenza del
+//!   giudizio. Su SQL Server il legame si legge con `COLUMNPROPERTY` e con la
+//!   collation del database (`COLLATE DATABASE_DEFAULT`): se non concordano
+//!   il nome ha due colonne e si rifiuta; una colonna che la collation lega e
+//!   `COLUMNPROPERTY` no (un database contenuto, con la collation del
+//!   catalogo) si giudica, e il server rifiuta la query.
+//! - **Rientro.** Non serve.
+//!
+//! - **Regola.** Un riferimento non risolto si rifiuta in ogni piano
+//!   (regola A), anche senza geometrie.
+//! - **Ambito.** Ogni provider: un nome che non esiste, un `*` che non si
+//!   espande (una CTE ricorsiva che espande se stessa, oltre 64 livelli), una
+//!   colonna di un ramo di set operation con meno colonne.
+//! - **Hazard.** Nessun passaggio silenzioso: il costo e il rifiuto, prima del
+//!   server, di query che il server rifiuterebbe o che legano un nome con
+//!   regole che il giudizio non prova.
+//! - **Rientro.** Non serve.
 
 use crate::plan::{FilterExpression, OrderBy, ProviderKind};
 use crate::relational::{
@@ -245,10 +320,23 @@ use crate::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use crate::{DatabaseError, ErrorPhase, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "spatial_operand_types.rs"]
+mod types;
+pub use types::{
+    catalog_column_is_geometric, parameter_family, query_parameter_family, rendered_family,
+    CatalogColumn, ColumnOrigin, ColumnType, OperandFamily, ParameterFamilies,
+    BIND_LAYOUT_MISMATCH, OPERAND_FAMILY_MISMATCH, OPERAND_TYPING_TOO_DEEP,
+};
+
 /// Motivo stabile del rifiuto di un riferimento che non si prova non
 /// geometrico, in un piano che puo contenere una geometria.
 pub const GEOMETRY_OPERAND_UNRESOLVED: &str =
     "riferimento di colonna non risolto in un piano con geometrie: sotto un operatore non spatial ogni colonna, alias, colonna di sorgente derivata o di CTE, nome generato dal server, colonna di un * o di un ramo di set operation deve risolversi in una colonna non geometrica del catalogo; si nomini la colonna con un alias esplicito";
+
+/// Motivo stabile del rifiuto di un riferimento che il giudizio non lega a
+/// una sola colonna come la lega il server, in un piano qualunque (regola A).
+pub const NAME_UNRESOLVED: &str =
+    "riferimento di colonna non risolto: ogni colonna, alias o colonna di sorgente derivata in posizione di operando deve legarsi, come la lega il server, a una sola colonna del catalogo o a un solo nome di uscita del piano; un nome che il server potrebbe legare con regole che il giudizio non prova (maiuscole, accenti, larghezza, spazi finali) si rifiuta; si nomini la colonna con il nome esatto del catalogo";
 
 /// Motivo stabile del rifiuto di una forma di nomi il cui legame dipende
 /// dalle regole di nome del dialetto (regola N).
@@ -334,6 +422,23 @@ enum NameMatch {
     Different,
 }
 
+/// Il catalogo del provider lega i nomi di colonna con le regole del server.
+///
+/// La regola A: SQL Server (la collation del database: maiuscole, accenti,
+/// larghezza, spazi finali), `MySQL` e `MariaDB` (le proprie regole, che non
+/// sono quelle di `INFORMATION_SCHEMA`). Il provider manda al server ogni nome
+/// del piano ([`ScalarOperands::names`]) e registra le colonne che il server
+/// lega ([`OperandCatalog::insert_resolution`]); il giudizio non piega i nomi.
+/// Su `PostgreSQL`, Oracle e Db2 ogni identificatore e quotato, e il nome
+/// esatto e quello che il server lega.
+#[must_use]
+pub const fn server_resolves_names(provider: ProviderKind) -> bool {
+    matches!(
+        provider,
+        ProviderKind::Sqlserver | ProviderKind::Mysql | ProviderKind::Mariadb
+    )
+}
+
 impl NameRule {
     /// La regola del provider.
     #[must_use]
@@ -371,78 +476,21 @@ fn fold(name: &str) -> String {
     name.trim_end_matches(' ').to_lowercase()
 }
 
-/// Da dove vengono i valori di una relazione del catalogo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelationOrigin {
-    /// Una tabella (anche temporanea, partizionata, esterna o remota
-    /// dichiarata con le proprie colonne): i valori li scrive chi la riempie.
-    Base,
-    /// Una relazione derivata, le cui colonne sono espressioni su altre
-    /// relazioni: vista (anche tipizzata, di oggetti, editioning), vista
-    /// materializzata o MQT.
-    Derived,
-}
-
-/// Il tipo di una colonna come lo classifica il catalogo del provider,
-/// seguito fino al tipo di sistema da cui deriva (dominio, tipo distinto,
-/// tipo alias).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColumnCarrier {
-    /// Un tipo geometrico del provider.
-    Geometry,
-    /// Un tipo binario o LOB binario: `bytea`; `BINARY`, `VARBINARY`,
-    /// `*BLOB`; `binary`, `varbinary`, `image`, `sql_variant`; `BLOB`, `RAW`,
-    /// `LONG RAW`; `BLOB`, `BINARY`, `VARBINARY`, `CHAR`/`VARCHAR FOR BIT
-    /// DATA`.
-    Binary,
-    /// Ogni altro tipo.
-    Scalar,
-}
-
-/// La regola delle colonne derivate binarie, la stessa per ogni provider:
-/// una colonna e geometrica, sotto un operatore non spatial, se il suo tipo
-/// e geometrico, o se e binaria in una relazione derivata.
-///
-/// Una vista porta una geometria sotto un tipo binario quando la colonna e
-/// resa da `ST_AsBinary(g)`, `g::bytea`, `ST_AsWKB(g)`, `CAST(g AS BINARY)`,
-/// `g.STAsBinary()`, `CAST(g AS varbinary(max))`, `SDO_UTIL.TO_WKBGEOMETRY(g)`,
-/// `g.GET_WKB()`, `ST_ASBINARY(G)`, `CAST(G AS VARBINARY)`, o da una funzione
-/// spatial che il catalogo descrive con il tipo binario di cui la geometria e
-/// un tipo distinto (Db2, `ST_CENTROID(G)` e `BLOB`). Il catalogo non dice la
-/// funzione che rende la colonna: a mondo chiuso, la colonna binaria di una
-/// relazione derivata non si prova non geometrica, e confrontarne i byte rende
-/// un risultato sbagliato senza errore (misurato: due poligoni uguali con i
-/// vertici in ordine diverso hanno WKB diversi). Il binario e la forma in cui
-/// la geometria viaggia nel contratto (WKB, EWKB, il bind binario,
-/// `SpatialOutput`): un confronto binario su una colonna derivata non si
-/// distingue da quello che la regola rifiuta su una colonna geometrica. Il
-/// testo (`ST_AsText`, `GeoJSON`) non sta in questa regola: il contratto non
-/// porta geometrie come testo, il catalogo non distingue un WKT da un altro
-/// testo, e rifiutare ogni testo delle viste rifiuterebbe le query ordinarie;
-/// resta nel limite dichiarato.
-///
-/// Limite dichiarato: vedi il modulo, «colonne binarie delle relazioni
-/// derivate».
-#[must_use]
-pub const fn catalog_column_is_geometric(origin: RelationOrigin, carrier: ColumnCarrier) -> bool {
-    match carrier {
-        ColumnCarrier::Geometry => true,
-        ColumnCarrier::Binary => matches!(origin, RelationOrigin::Derived),
-        ColumnCarrier::Scalar => false,
-    }
-}
-
 /// Le colonne di una relazione di base, come le dice il catalogo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelationColumns {
-    /// Il catalogo non conosce la relazione: la query fallira sul server.
+    /// Il catalogo non conosce la relazione: nessun riferimento si lega, e
+    /// in posizione di operando si rifiuta in ogni piano ([`NAME_UNRESOLVED`]).
+    /// Il server puo leggere relazioni che il catalogo non elenca (le tabelle
+    /// temporanee private di Oracle, le temporanee di sessione).
     Absent,
     /// La relazione esiste ma le sue colonne non si leggono (un sinonimo
     /// verso un altro database, un oggetto che il catalogo non descrive):
     /// nessun riferimento si risolve.
     Unknown,
-    /// Tutte le colonne, nell'ordine del catalogo: nome, geometrica.
-    Known(Vec<(String, bool)>),
+    /// Tutte le colonne, nell'ordine del catalogo, con origine e famiglia
+    /// ([`CatalogColumn`]).
+    Known(Vec<CatalogColumn>),
     /// Soltanto le colonne dichiarate geometriche (mapping ORM, reflection):
     /// le altre si assumono scalari. Lo usa soltanto la compilazione dello
     /// SDK, come rifiuto anticipato; l'esecuzione giudica sul catalogo
@@ -455,7 +503,7 @@ impl RelationColumns {
         match self {
             Self::Absent => false,
             Self::Unknown => true,
-            Self::Known(columns) => columns.iter().any(|(_, geometric)| *geometric),
+            Self::Known(columns) => columns.iter().any(CatalogColumn::is_geometric),
             Self::Declared(columns) => !columns.is_empty(),
         }
     }
@@ -465,7 +513,11 @@ impl RelationColumns {
 #[derive(Debug, Clone)]
 pub struct OperandCatalog {
     rule: NameRule,
+    server_names: bool,
     relations: BTreeMap<(Option<String>, String), RelationColumns>,
+    /// Le colonne che il server lega a un nome del piano, per relazione
+    /// (regola A): (schema, oggetto, nome del piano) -> nomi del catalogo.
+    resolved: BTreeMap<(Option<String>, String, String), Vec<String>>,
 }
 
 impl OperandCatalog {
@@ -474,13 +526,42 @@ impl OperandCatalog {
     pub const fn new(provider: ProviderKind) -> Self {
         Self {
             rule: NameRule::of(provider),
+            server_names: server_resolves_names(provider),
             relations: BTreeMap::new(),
+            resolved: BTreeMap::new(),
         }
     }
 
     /// Le colonne della relazione (schema, oggetto) come il piano la nomina.
     pub fn insert(&mut self, schema: Option<String>, object: String, columns: RelationColumns) {
         self.relations.insert((schema, object), columns);
+    }
+
+    /// Le colonne (nomi del catalogo) che il server lega al nome `field` del
+    /// piano nella relazione (schema, oggetto): nessuna se non lo lega, piu
+    /// d'una e un rifiuto. Un nome che il provider non ha mandato al server
+    /// non si lega, se non e uguale per byte a una colonna.
+    pub fn insert_resolution(
+        &mut self,
+        schema: Option<String>,
+        object: String,
+        field: String,
+        columns: Vec<String>,
+    ) {
+        self.resolved.insert((schema, object, field), columns);
+    }
+
+    /// Le colonne della relazione (schema, oggetto), se il catalogo la
+    /// descrive.
+    #[must_use]
+    pub fn relation(&self, schema: Option<&String>, object: &str) -> Option<&RelationColumns> {
+        self.relations.get(&(schema.cloned(), object.to_owned()))
+    }
+
+    fn resolution(&self, schema: Option<&String>, object: &str, field: &str) -> Option<&[String]> {
+        self.resolved
+            .get(&(schema.cloned(), object.to_owned(), field.to_owned()))
+            .map(Vec::as_slice)
     }
 
     /// Una relazione che nessuno ha letto non si conosce.
@@ -499,9 +580,34 @@ pub struct ScalarOperands {
     operation: QueryOperation,
     relations: Vec<(Option<String>, String)>,
     references: bool,
+    /// Le famiglie dei valori che il piano porta da se (i letterali di uno
+    /// statement portable).
+    parameters: ParameterFamilies,
 }
 
 impl ScalarOperands {
+    /// Il provider del piano.
+    #[must_use]
+    pub const fn provider(&self) -> ProviderKind {
+        self.provider
+    }
+
+    /// Ogni nome di colonna che il piano scrive (i campi dei riferimenti):
+    /// i nomi che un provider con [`server_resolves_names`] manda al server
+    /// per ogni relazione (regola A).
+    #[must_use]
+    pub fn names(&self) -> BTreeSet<String> {
+        use crate::relational::{walk_query, QueryWalkControl, QueryWalkNode};
+        let mut names = BTreeSet::new();
+        walk_query(&self.operation, |node| {
+            if let QueryWalkNode::Expression(QueryExpression::Column { column }) = node {
+                names.insert(column.field.clone());
+            }
+            QueryWalkControl::Continue
+        });
+        names
+    }
+
     /// Le relazioni di base (schema, oggetto) nominate dal piano, CTE escluse:
     /// quelle di cui il provider legge le colonne.
     #[must_use]
@@ -509,22 +615,41 @@ impl ScalarOperands {
         &self.relations
     }
 
-    /// Nessun riferimento in posizione di operando: il provider non ha
-    /// niente da leggere.
+    /// Nessun riferimento in posizione di operando e nessuna espressione
+    /// che la regola F giudica: il provider non ha niente da leggere.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         !self.references
     }
 
-    /// Il giudizio sul catalogo, a mondo chiuso.
+    /// Il giudizio sul catalogo, a mondo chiuso, senza le famiglie dei
+    /// parametri legati (un parametro senza tipo dichiarato ha una famiglia
+    /// non nota): [`Self::judge_bound`].
+    ///
+    /// # Errors
+    ///
+    /// Quelli di [`Self::judge_bound`].
+    pub fn judge(&self, catalog: &OperandCatalog) -> Result<()> {
+        self.judge_bound(catalog, &ParameterFamilies::default())
+    }
+
+    /// Il giudizio sul catalogo, a mondo chiuso, con le famiglie dei valori
+    /// legati ai parametri (regola F).
     ///
     /// # Errors
     ///
     /// `unsupported` ([`GEOMETRY_SCALAR_OPERAND`]) per un operando
     /// geometrico; `unsupported` ([`GEOMETRY_OPERAND_UNRESOLVED`]) per un
-    /// riferimento non risolto in un piano che puo contenere una geometria.
-    pub fn judge(&self, catalog: &OperandCatalog) -> Result<()> {
-        walk(self.provider, &self.operation, Some(catalog)).map(|_| ())
+    /// riferimento non risolto in un piano che puo contenere una geometria;
+    /// `invalid_plan` ([`OPERAND_FAMILY_MISMATCH`]) per una conversione
+    /// implicita fra famiglie.
+    pub fn judge_bound(
+        &self,
+        catalog: &OperandCatalog,
+        parameters: &ParameterFamilies,
+    ) -> Result<()> {
+        let parameters = self.parameters.merged(parameters);
+        walk(self.provider, &self.operation, Some(catalog), &parameters).map(|_| ())
     }
 }
 
@@ -540,6 +665,15 @@ fn ambiguous_refusal(provider: ProviderKind) -> DatabaseError {
     DatabaseError::unsupported(provider, ErrorPhase::Prepare, AMBIGUOUS_NAME_SHAPE)
 }
 
+fn name_refusal(provider: ProviderKind) -> DatabaseError {
+    DatabaseError::new(
+        crate::ErrorCategory::InvalidPlan,
+        ErrorPhase::Prepare,
+        Some(provider),
+        NAME_UNRESOLVED,
+    )
+}
+
 /// Il piano visitato senza catalogo: la parte statica decisa, le relazioni
 /// e i riferimenti raccolti.
 ///
@@ -552,12 +686,13 @@ pub fn scalar_operands(
     provider: ProviderKind,
     operation: &QueryOperation,
 ) -> Result<ScalarOperands> {
-    let outcome = walk(provider, operation, None)?;
+    let outcome = walk(provider, operation, None, &ParameterFamilies::default())?;
     Ok(ScalarOperands {
         provider,
         operation: operation.clone(),
         relations: outcome.relations,
         references: outcome.references,
+        parameters: ParameterFamilies::default(),
     })
 }
 
@@ -628,7 +763,8 @@ pub fn scalar_operands_of_portable(
         PortableStatement::Upsert(upsert) => upsert.conflict_target.as_slice(),
         _ => &[],
     };
-    let operands = portable_operands(conflict, filter);
+    let mut families = ParameterFamilies::default();
+    let operands = portable_operands(provider, conflict, filter, &mut families);
     let column = unqualified_column;
     let operation = QueryOperation {
         declared_crs: Vec::new(),
@@ -663,7 +799,9 @@ pub fn scalar_operands_of_portable(
         row_offset: None,
         locking: None,
     };
-    scalar_operands(provider, &operation)
+    let mut operands = scalar_operands(provider, &operation)?;
+    operands.parameters = families;
+    Ok(operands)
 }
 
 /// Una colonna senza qualificatore, della sola relazione dello statement.
@@ -677,19 +815,36 @@ fn unqualified_column(field: &str) -> QueryExpression {
 }
 
 /// Le colonne confrontate da uno statement portable, ciascuna come operando
-/// (`col IN (valori)`): la chiave di conflitto e ogni colonna di un
-/// confronto, di `IN`, `BETWEEN` o `LIKE`, anche quella a destra.
+/// (`col IN (valori)`, `col LIKE valore`): la chiave di conflitto e ogni
+/// colonna di un confronto, di `IN`, `BETWEEN` o `LIKE`, anche quella a
+/// destra. Ogni letterale e un parametro con la famiglia del suo valore
+/// (regola F); un `SpatialValue` e della famiglia geometrica.
 fn portable_operands(
+    provider: ProviderKind,
     conflict: &[String],
     filter: Option<&crate::portable::Predicate>,
+    families: &mut ParameterFamilies,
 ) -> Vec<QueryExpression> {
     use crate::portable::Predicate;
     let column = unqualified_column;
-    let value = |expression: &crate::portable::Expression| match expression {
-        crate::portable::Expression::Column(field) => column(field),
-        _ => QueryExpression::Parameter {
-            name: "p".to_owned(),
-        },
+    let mut literals = 0_usize;
+    let mut value = |expression: &crate::portable::Expression| {
+        let name = format!("literal{literals}");
+        match expression {
+            crate::portable::Expression::Column(field) => return column(field),
+            // Il letterale porta il suo valore: la famiglia la decide il
+            // provider (un uuid e un `uuid` su PostgreSQL, un testo su
+            // `MySQL`), come per un valore legato.
+            crate::portable::Expression::Literal(value) => families.bind(&name, value),
+            crate::portable::Expression::TypedParameter(parameter_type) => {
+                families.insert(name.clone(), rendered_family(provider, *parameter_type).0);
+            }
+            crate::portable::Expression::SpatialValue { .. } => {
+                families.insert(name.clone(), OperandFamily::Geometry);
+            }
+        }
+        literals += 1;
+        QueryExpression::Parameter { name }
     };
     let mut operands = conflict
         .iter()
@@ -701,6 +856,19 @@ fn portable_operands(
         .collect::<Vec<_>>();
     let mut stack = filter.into_iter().collect::<Vec<_>>();
     while let Some(predicate) = stack.pop() {
+        if let Predicate::Like {
+            column: field,
+            pattern,
+        } = predicate
+        {
+            operands.push(QueryExpression::Like {
+                expression: Box::new(column(field)),
+                pattern: Box::new(value(pattern)),
+                case_insensitive: false,
+                negated: false,
+            });
+            continue;
+        }
         let (field, values): (&str, Vec<&crate::portable::Expression>) = match predicate {
             Predicate::And { predicates } | Predicate::Or { predicates } => {
                 stack.extend(predicates);
@@ -718,17 +886,15 @@ fn portable_operands(
             | Predicate::Lt { column, value }
             | Predicate::Lte { column, value }
             | Predicate::Gt { column, value }
-            | Predicate::Gte { column, value }
-            | Predicate::Like {
-                column,
-                pattern: value,
-            } => (column, vec![value]),
+            | Predicate::Gte { column, value } => (column, vec![value]),
+            Predicate::Like { .. } => continue,
             Predicate::In { column, values } => (column, values.iter().collect()),
             Predicate::Between { column, low, high } => (column, vec![low, high]),
         };
+        let values = values.into_iter().map(&mut value).collect();
         operands.push(QueryExpression::InList {
             expression: Box::new(column(field)),
-            values: values.into_iter().map(value).collect(),
+            values,
             negated: false,
         });
     }
@@ -891,6 +1057,8 @@ enum Candidate<'a> {
     /// Il nome incontra il nome nominato soltanto senza maiuscole, dove il
     /// dialetto le distingue o puo distinguerle.
     Ambiguous,
+    /// Una colonna del catalogo che non e geometrica, con il suo tipo.
+    Typed(ColumnType),
     /// Si giudica l'item.
     Follow(Item<'a>),
 }
@@ -903,7 +1071,15 @@ struct Outcome {
 struct Walk<'a, 'c> {
     provider: ProviderKind,
     rule: NameRule,
+    /// Il dialetto confronta i nomi con una collation (SQL Server, `MySQL`,
+    /// `MariaDB`): due nomi del piano che differiscono per un carattere non
+    /// ASCII non si provano diversi.
+    collated: bool,
     catalog: Option<&'c OperandCatalog>,
+    parameters: &'c ParameterFamilies,
+    typing: types::Typing,
+    /// Le posizioni seguite dal giudizio di un `CAST` (regola C).
+    cast_progress: BTreeSet<(usize, Option<usize>, usize)>,
     blocks: Vec<Block<'a>>,
     opened: BTreeMap<(usize, Option<usize>), usize>,
     entries: BTreeMap<usize, Entries<'a>>,
@@ -937,11 +1113,16 @@ fn walk(
     provider: ProviderKind,
     operation: &QueryOperation,
     catalog: Option<&OperandCatalog>,
+    parameters: &ParameterFamilies,
 ) -> Result<Outcome> {
     let mut state = Walk {
         provider,
         rule: catalog.map_or_else(|| NameRule::of(provider), |catalog| catalog.rule),
+        collated: server_resolves_names(provider),
         catalog,
+        parameters,
+        typing: types::Typing::default(),
+        cast_progress: BTreeSet::new(),
         blocks: Vec::new(),
         opened: BTreeMap::new(),
         entries: BTreeMap::new(),
@@ -975,6 +1156,30 @@ fn walk(
         if state.seen.unresolved && geometric {
             return Err(unresolved_refusal(provider));
         }
+        // Regola A: anche in un piano senza geometrie un riferimento che non
+        // si lega a una colonna non si giudica (regola F, regola C), e il
+        // server lo legherebbe con le proprie regole. Fino alla quindicesima
+        // lettura del 25/10 passava: con `[ｎ]` in un database `CI_AS`,
+        // `t.n = '01'` non si giudicava e rendeva una riga per conversione
+        // implicita.
+        if state.seen.unresolved {
+            return Err(name_refusal(provider));
+        }
+        // Regola N in ogni piano: una forma il cui legame dipende dal dialetto
+        // non si giudica (regola F, regola C), perche il giudizio non sa a
+        // quale relazione il server leghi il nome. Fino alla sedicesima
+        // lettura del 25/10 si rifiutava soltanto in un piano con geometrie:
+        // una CTE `[ｅ]` su SQL Server prendeva il posto della tabella `e` per
+        // il server, e il giudizio guardava i tipi della tabella.
+        if state.seen.ambiguous {
+            return Err(ambiguous_refusal(provider));
+        }
+        if let Some(mismatch) = state.typing.mismatch.take() {
+            return Err(mismatch);
+        }
+        if let Some(cast) = state.typing.cast.take() {
+            return Err(cast);
+        }
     } else if state.seen.ambiguous && state.seen.geometric {
         // Senza catalogo si sa geometrico soltanto un piano con un nodo
         // spatial (o una relazione di un altro catalogo): il resto lo decide
@@ -999,7 +1204,7 @@ impl<'a> Walk<'a, '_> {
     fn step(&mut self, item: Item<'a>) -> Result<()> {
         match item {
             Item::Operation(operation, visible, parent, operand) => {
-                self.visit_operation(operation, visible, parent, operand);
+                self.visit_operation(operation, visible, parent, operand)?;
             }
             Item::Expression(expression, operand, index) => {
                 self.visit_expression(expression, operand, index)?;
@@ -1018,7 +1223,7 @@ impl<'a> Walk<'a, '_> {
         visible: Vec<&'a CommonTableExpression>,
         parent: Option<usize>,
         operand: bool,
-    ) {
+    ) -> Result<()> {
         let index = self.open_block(operation, visible, parent);
         self.check_names(index);
         let inner = self.blocks[index].visible.clone();
@@ -1059,6 +1264,11 @@ impl<'a> Walk<'a, '_> {
             .iter()
             .any(|set| set.operator != QuerySetOperator::Union || !set.all);
         let projection_operand = operand || operation.distinct || comparing;
+        // Regola F: le posizioni dei rami che si confrontano hanno una sola
+        // famiglia.
+        if comparing && self.catalog.is_some() {
+            self.judge_branches(operation, parent, index)?;
+        }
         for set in &operation.set_operations {
             self.stack.push(Item::Operation(
                 &set.query,
@@ -1090,6 +1300,7 @@ impl<'a> Walk<'a, '_> {
         {
             self.stack.push(Item::Expression(predicate, false, index));
         }
+        Ok(())
     }
 
     /// La regola N sul blocco, senza catalogo: (a) i nomi di relazione del
@@ -1148,7 +1359,7 @@ impl<'a> Walk<'a, '_> {
             }
         }
         let operation = block.operation;
-        if refers_forward(&operation.common_table_expressions) {
+        if refers_forward(self.provider, &operation.common_table_expressions) {
             return refused();
         }
         let sources = operation.source.iter().chain(
@@ -1157,11 +1368,19 @@ impl<'a> Walk<'a, '_> {
                 .iter()
                 .filter_map(|join| join.source.as_ref()),
         );
+        // Una relazione senza schema si lega a una CTE visibile soltanto se
+        // ogni CTE che il server potrebbe legarle ha il suo nome per byte
+        // ([`may_bind`]): il giudizio lega per byte, il server con le sue
+        // regole. Fino alla sedicesima lettura del 25/10 si guardavano
+        // soltanto le maiuscole: su SQL Server una CTE `[ｅ]` (larghezza),
+        // `[é]` (`CI_AI`) e su Db2 `"r16e "` (spazi finali) prendevano il
+        // posto della tabella `e` o `r16e` per il server, non per il giudizio.
         for source in sources {
             let object = &source.object;
             if object.schema.is_none()
+                && object.catalog.is_none()
                 && block.visible.iter().any(|cte| {
-                    NameRule::Exact.compare(&object.object, &cte.name) == NameMatch::CaseOnly
+                    cte.name != object.object && may_bind(self.provider, &object.object, &cte.name)
                 })
             {
                 return refused();
@@ -1322,6 +1541,29 @@ impl<'a> Walk<'a, '_> {
         index: usize,
     ) -> Result<()> {
         let provider = self.provider;
+        // Un'espressione che confronta, calcola o converte chiede la regola F
+        // anche senza colonne in posizione di operando (`:n = :s`,
+        // `COALESCE(t.n, t.s)` nella projection): il giudizio si fa
+        // (seconda lettura del 25/10, il piano passava senza giudizio).
+        if matches!(
+            expression,
+            QueryExpression::Compare { .. }
+                | QueryExpression::InList { .. }
+                | QueryExpression::Between { .. }
+                | QueryExpression::Like { .. }
+                | QueryExpression::InSubquery { .. }
+                | QueryExpression::Arithmetic { .. }
+                | QueryExpression::Case { .. }
+                | QueryExpression::Cast { .. }
+                | QueryExpression::Scalar { .. }
+                | QueryExpression::Window { .. }
+        ) {
+            self.references = true;
+        }
+        // Regola F e binario derivato, sul catalogo.
+        if self.catalog.is_some() {
+            self.judge_types(expression, operand, index)?;
+        }
         let mut children: Vec<(&'a QueryExpression, bool)> = Vec::new();
         match expression {
             QueryExpression::Column { column } => {
@@ -1496,8 +1738,16 @@ impl<'a> Walk<'a, '_> {
         for candidate in candidates {
             match candidate {
                 Candidate::Geometry => return Err(refusal(self.provider)),
-                Candidate::Ambiguous => self.seen.ambiguous = true,
-                Candidate::Scalar => {}
+                // Un nome che il giudizio non lega a una sola colonna non si
+                // giudica: in ogni piano si rifiuta (regola A).
+                Candidate::Ambiguous => {
+                    self.seen.ambiguous = true;
+                    self.seen.unresolved = true;
+                }
+                Candidate::Typed(column) if column.is_geometric() => {
+                    return Err(refusal(self.provider));
+                }
+                Candidate::Scalar | Candidate::Typed(_) => {}
                 Candidate::Unresolved => self.seen.unresolved = true,
                 Candidate::Follow(item) => self.stack.push(item),
             }
@@ -1517,6 +1767,7 @@ impl<'a> Walk<'a, '_> {
         };
         let own = self.output_positions(index, column).unwrap_or_else(|()| {
             self.seen.ambiguous = true;
+            self.seen.unresolved = true;
             Vec::new()
         });
         // Ogni colonna di uscita si segue una volta sola (due alias che si
@@ -1539,6 +1790,33 @@ impl<'a> Walk<'a, '_> {
         self.apply(candidates)
     }
 
+    /// Un nome del piano contro un nome del piano (un nome di uscita, un
+    /// alias): la regola del dialetto. Dove il dialetto confronta con una
+    /// collation (SQL Server, `MySQL`, `MariaDB`) due nomi diversi per byte
+    /// con un carattere non ASCII non si provano diversi (accenti, larghezza,
+    /// `ß`). Dove ogni identificatore e quotato (`PostgreSQL`, Oracle, Db2)
+    /// due nomi che differiscono per le maiuscole sono diversi per il server;
+    /// due che differiscono soltanto per gli spazi finali no (Db2 li ignora).
+    fn compare_names(&self, plan: &str, named: &str) -> NameMatch {
+        let trailing = |name: &str| name.len() != name.trim_end_matches(' ').len();
+        match self.rule.compare(plan, named) {
+            NameMatch::Different if self.collated && !(plan.is_ascii() && named.is_ascii()) => {
+                NameMatch::CaseOnly
+            }
+            // Due nomi che differiscono negli spazi finali non si provano
+            // uguali ne diversi (la piegatura li toglie, il server forse no).
+            NameMatch::Same if plan != named && (trailing(plan) || trailing(named)) => {
+                NameMatch::CaseOnly
+            }
+            NameMatch::CaseOnly
+                if !self.collated && plan.trim_end_matches(' ') != named.trim_end_matches(' ') =>
+            {
+                NameMatch::Different
+            }
+            found => found,
+        }
+    }
+
     /// Le posizioni delle colonne di uscita del blocco che `column` nomina:
     /// per nome se non e qualificata, per la stessa colonna della projection
     /// se lo e. `Err`: un nome di uscita la incontra soltanto senza
@@ -1550,13 +1828,12 @@ impl<'a> Walk<'a, '_> {
     ) -> std::result::Result<Vec<usize>, ()> {
         let (entries, _) = self.entries_of(index, 0);
         let operation = self.blocks[index].operation;
-        let rule = self.rule;
         let mut positions = Vec::new();
         for (position, entry) in entries.iter().enumerate() {
             let found = column.relation.as_deref().map_or_else(
                 || {
                     entry.name.as_deref().map_or(NameMatch::Different, |name| {
-                        rule.compare(&column.field, name)
+                        self.compare_names(&column.field, name)
                     })
                 },
                 |relation| match entry.source {
@@ -1565,7 +1842,7 @@ impl<'a> Walk<'a, '_> {
                             QueryExpression::Column { column: own }
                                 if own.relation.as_deref() == Some(relation) =>
                             {
-                                rule.compare(&column.field, &own.field)
+                                self.compare_names(&column.field, &own.field)
                             }
                             _ => NameMatch::Different,
                         }
@@ -1592,6 +1869,19 @@ impl<'a> Walk<'a, '_> {
                 .iter()
                 .find(|from| from.name == relation)
                 .map(|from| from.kind.clone());
+            // Un nome di relazione che il dialetto potrebbe legare al
+            // qualificatore in un blocco piu vicino (maiuscole, collation):
+            // il server sceglierebbe quello, il giudizio no.
+            let nearer = named.is_none()
+                && self.blocks[block].from.iter().any(|from| {
+                    NameRule::Exact.compare(relation, &from.name) == NameMatch::CaseOnly
+                        || (self.collated
+                            && from.name != relation
+                            && !(from.name.is_ascii() && relation.is_ascii()))
+                });
+            if nearer {
+                return vec![Candidate::Ambiguous];
+            }
             if let Some(kind) = named {
                 let candidates = self.in_relation(&kind, field);
                 if candidates.is_empty() {
@@ -1630,8 +1920,15 @@ impl<'a> Walk<'a, '_> {
                     return vec![Candidate::Scalar];
                 };
                 match catalog.columns(schema.as_ref(), object) {
-                    RelationColumns::Absent => Vec::new(),
-                    RelationColumns::Unknown => vec![Candidate::Unresolved],
+                    // Il catalogo non trova la relazione: il riferimento non
+                    // si lega (mondo chiuso). Fino alla sedicesima lettura
+                    // del 25/10 si assumeva che la query fallisse sul
+                    // server, ma una tabella temporanea privata di Oracle
+                    // (`ORA$PTT_*`) non e in `ALL_TAB_COLS` e il server la
+                    // legge: `N NUMBER = '01'` passava senza giudizio.
+                    RelationColumns::Absent | RelationColumns::Unknown => {
+                        vec![Candidate::Unresolved]
+                    }
                     RelationColumns::Declared(geometric) => {
                         // Dichiarate dal chiamante: un nome che incontra una
                         // colonna geometrica anche soltanto senza maiuscole
@@ -1642,23 +1939,53 @@ impl<'a> Walk<'a, '_> {
                             vec![Candidate::Scalar]
                         }
                     }
+                    RelationColumns::Known(columns) if catalog.server_names => {
+                        // Regola A: la colonna con il nome esatto e quella che
+                        // il server lega (i nomi di una relazione sono
+                        // distinti per la regola del server); altrimenti
+                        // quelle che il server ha legato al nome.
+                        let exact = columns.iter().filter(|column| column.name == field);
+                        let found = if columns.iter().any(|column| column.name == field) {
+                            exact
+                                .map(|column| column.column_type.clone())
+                                .collect::<Vec<_>>()
+                        } else {
+                            let Some(names) = catalog.resolution(schema.as_ref(), object, field)
+                            else {
+                                return vec![Candidate::Unresolved];
+                            };
+                            let found = columns
+                                .iter()
+                                .filter(|column| names.contains(&column.name))
+                                .map(|column| column.column_type.clone())
+                                .collect::<Vec<_>>();
+                            if names.len() > 1 || found.len() != names.len() {
+                                return vec![Candidate::Ambiguous];
+                            }
+                            found
+                        };
+                        if found.iter().any(ColumnType::is_geometric) {
+                            vec![Candidate::Geometry]
+                        } else {
+                            found.into_iter().map(Candidate::Typed).collect()
+                        }
+                    }
                     RelationColumns::Known(columns) => {
-                        let mut found: Option<bool> = None;
+                        let mut found = Vec::new();
                         let mut case_only = false;
-                        for (name, geometric) in columns {
-                            match self.rule.compare(field, name) {
-                                NameMatch::Same => {
-                                    found = Some(found.unwrap_or(false) || *geometric);
-                                }
+                        for column in columns {
+                            match self.rule.compare(field, &column.name) {
+                                NameMatch::Same => found.push(column.column_type.clone()),
                                 NameMatch::CaseOnly => case_only = true,
                                 NameMatch::Different => {}
                             }
                         }
-                        match found {
-                            Some(true) => vec![Candidate::Geometry],
-                            Some(false) => vec![Candidate::Scalar],
-                            None if case_only => vec![Candidate::Ambiguous],
-                            None => Vec::new(),
+                        if found.iter().any(ColumnType::is_geometric) {
+                            vec![Candidate::Geometry]
+                        } else if found.is_empty() && case_only {
+                            vec![Candidate::Ambiguous]
+                        } else {
+                            found.into_iter().map(Candidate::Typed).collect()
                         }
                     }
                 }
@@ -1682,13 +2009,12 @@ impl<'a> Walk<'a, '_> {
     ) -> Vec<Candidate<'a>> {
         let index = self.open_block(query, visible.to_vec(), parent);
         let (entries, complete) = self.entries_of(index, 0);
-        let rule = self.rule;
         let mut positions = Vec::new();
         for (position, entry) in entries.iter().enumerate() {
             match entry
                 .name
                 .as_deref()
-                .map_or(NameMatch::Different, |name| rule.compare(field, name))
+                .map_or(NameMatch::Different, |name| self.compare_names(field, name))
             {
                 NameMatch::Same => positions.push(position),
                 NameMatch::CaseOnly => return vec![Candidate::Ambiguous],
@@ -1757,12 +2083,12 @@ impl<'a> Walk<'a, '_> {
                             complete = false;
                             break 'projection;
                         };
-                        for (field, _) in columns {
+                        for column in columns {
                             entries.push(Entry {
-                                name: Some(field.clone()),
+                                name: Some(column.name.clone()),
                                 source: EntrySource::Column(ColumnRef {
                                     relation: Some(name.clone()),
-                                    field: field.clone(),
+                                    field: column.name.clone(),
                                 }),
                             });
                         }
@@ -1831,11 +2157,11 @@ impl<'a> Walk<'a, '_> {
                     };
                     match catalog.columns(schema.as_ref(), &object) {
                         RelationColumns::Known(columns) => {
-                            for (field, _) in columns {
+                            for column in columns {
                                 candidates.push(Candidate::Follow(Item::Reference(
                                     ColumnRef {
                                         relation: Some(name.clone()),
-                                        field: field.clone(),
+                                        field: column.name.clone(),
                                     },
                                     index,
                                 )));
@@ -1929,7 +2255,7 @@ impl<'a> Walk<'a, '_> {
 /// ricorsiva. Il legame dipende dal dialetto (`PostgreSQL` lo lega alla
 /// tabella senza `RECURSIVE` e alla CTE con, SQL Server rifiuta il nome in
 /// avanti): la regola N lo rifiuta.
-fn refers_forward(ctes: &[CommonTableExpression]) -> bool {
+fn refers_forward(provider: ProviderKind, ctes: &[CommonTableExpression]) -> bool {
     use crate::relational::{walk_query, QueryWalkControl, QueryWalkNode};
     ctes.iter().enumerate().any(|(position, cte)| {
         let hidden = ctes
@@ -1938,8 +2264,8 @@ fn refers_forward(ctes: &[CommonTableExpression]) -> bool {
             .filter(|(other, sibling)| {
                 *other > position || (*other == position && !sibling.recursive)
             })
-            .map(|(_, sibling)| fold(&sibling.name))
-            .collect::<BTreeSet<_>>();
+            .map(|(_, sibling)| sibling.name.as_str())
+            .collect::<Vec<_>>();
         if hidden.is_empty() {
             return false;
         }
@@ -1947,13 +2273,27 @@ fn refers_forward(ctes: &[CommonTableExpression]) -> bool {
             QueryWalkNode::Source(source)
                 if source.object.schema.is_none()
                     && source.object.catalog.is_none()
-                    && hidden.contains(&fold(&source.object.object)) =>
+                    && hidden
+                        .iter()
+                        .any(|name| may_bind(provider, &source.object.object, name)) =>
             {
                 QueryWalkControl::Break
             }
             _ => QueryWalkControl::Continue,
         })
     })
+}
+
+/// Due nomi di relazione (una relazione senza schema e una CTE) che il
+/// server potrebbe legare l'uno all'altro: uguali per byte, senza maiuscole
+/// o senza spazi finali (Db2 e SQL Server ignorano gli spazi finali); dove il
+/// server confronta con una collation ([`server_resolves_names`]), anche due
+/// nomi con un carattere non ASCII (larghezza, accenti, `ß`): la collation non
+/// si emula, e i due nomi non si provano diversi.
+fn may_bind(provider: ProviderKind, left: &str, right: &str) -> bool {
+    left == right
+        || fold(left) == fold(right)
+        || (server_resolves_names(provider) && !(left.is_ascii() && right.is_ascii()))
 }
 
 /// Gli argomenti di una funzione scalare sono operandi se la funzione li
@@ -1978,29 +2318,57 @@ const fn argument_operand(function: ScalarFunction, operand: bool) -> bool {
     }
 }
 
+/// La colonna di una descrizione che un nome del piano nomina, per byte.
+///
+/// Una lettura (`ReadOperation`) nomina i campi con il nome esatto: un nome
+/// che non e uguale per byte a una colonna della descrizione si rifiuta come
+/// colonna assente (`ensure_filter_columns` dei provider), e il giudizio non
+/// piega i nomi dal lato del client (regola A). Fino alla quattordicesima
+/// lettura del 25/10 `folded_column` emulava la collation di SQL Server e le
+/// regole di `MySQL` (senza maiuscole e senza spazi finali), che non sono
+/// quelle del server: larghezza, accenti, espansioni.
+pub fn exact_column<'c, T>(
+    columns: impl IntoIterator<Item = &'c T>,
+    name: impl Fn(&T) -> &str,
+    field: &str,
+) -> Option<&'c T> {
+    columns.into_iter().find(|column| name(column) == field)
+}
+
+/// Il tipo di un campo letto per la regola F di una lettura: la famiglia e,
+/// per la famiglia «altra», l'identita del tipo (`None` se non si conosce).
+pub type FieldFamily = (OperandFamily, Option<String>);
+
 /// La stessa regola per una lettura (`ReadOperation`).
 ///
 /// I campi di `filter` sotto un operatore non spatial e quelli di `order_by`
 /// non sono geometrici. `geometric` dice se un campo della relazione letta lo
 /// e, dalla descrizione che il provider ha gia letto, con le regole di nome
-/// del dialetto ([`NameRule`]).
+/// del dialetto ([`NameRule`]). La regola F: `family` dice la famiglia del
+/// campo ([`FieldFamily`]), `parameters` quella dei valori legati; un campo e
+/// un parametro di famiglie diverse, un tipo «altra» con un'altra famiglia o
+/// con un'altra identita (regola B), o un `LIKE` fuori dal testo, si
+/// rifiutano.
 ///
 /// # Errors
 ///
 /// `unsupported` ([`GEOMETRY_SCALAR_OPERAND`]) per il primo campo
-/// geometrico.
+/// geometrico; `invalid_plan` ([`OPERAND_FAMILY_MISMATCH`]) per una
+/// conversione implicita.
 pub fn ensure_scalar_filter_fields(
     provider: ProviderKind,
     filter: Option<&FilterExpression>,
     order_by: &[OrderBy],
     geometric: impl Fn(&str) -> bool,
+    family: impl Fn(&str) -> Result<Option<FieldFamily>>,
+    parameters: &ParameterFamilies,
 ) -> Result<()> {
     if order_by.iter().any(|order| geometric(&order.field)) {
         return Err(refusal(provider));
     }
     let mut stack = filter.into_iter().collect::<Vec<_>>();
     while let Some(expression) = stack.pop() {
-        let fields: Vec<&str> = match expression {
+        let (field, values, like): (&str, Vec<&String>, bool) = match expression {
             FilterExpression::And { args } | FilterExpression::Or { args } => {
                 stack.extend(args);
                 continue;
@@ -2008,18 +2376,50 @@ pub fn ensure_scalar_filter_fields(
             FilterExpression::IsNull { .. }
             | FilterExpression::IsNotNull { .. }
             | FilterExpression::Spatial { .. } => continue,
-            FilterExpression::Eq { field, .. }
-            | FilterExpression::Ne { field, .. }
-            | FilterExpression::Lt { field, .. }
-            | FilterExpression::Lte { field, .. }
-            | FilterExpression::Gt { field, .. }
-            | FilterExpression::Gte { field, .. }
-            | FilterExpression::In { field, .. }
-            | FilterExpression::Between { field, .. }
-            | FilterExpression::Like { field, .. } => vec![field],
+            FilterExpression::Eq { field, parameter }
+            | FilterExpression::Ne { field, parameter }
+            | FilterExpression::Lt { field, parameter }
+            | FilterExpression::Lte { field, parameter }
+            | FilterExpression::Gt { field, parameter }
+            | FilterExpression::Gte { field, parameter } => (field, vec![parameter], false),
+            FilterExpression::In { field, parameters } => {
+                (field, parameters.iter().collect(), false)
+            }
+            FilterExpression::Between {
+                field,
+                lower_parameter,
+                upper_parameter,
+            } => (field, vec![lower_parameter, upper_parameter], false),
+            FilterExpression::Like {
+                field, parameter, ..
+            } => (field, vec![parameter], true),
         };
-        if fields.into_iter().any(&geometric) {
+        if geometric(field) {
             return Err(refusal(provider));
+        }
+        let mut sides = family(field)?.into_iter().collect::<Vec<_>>();
+        sides.extend(values.iter().filter_map(|name| {
+            parameters
+                .get(provider, name)
+                .map(|(family, identity)| (family, identity.map(str::to_owned)))
+        }));
+        let families = sides
+            .iter()
+            .map(|(family, _)| *family)
+            .collect::<BTreeSet<_>>();
+        let outside_text = like && families.iter().any(|f| *f != OperandFamily::Text);
+        // Regola B: «altra» soltanto con «altra» della stessa identita nota.
+        let others = sides
+            .iter()
+            .filter(|(family, _)| *family == OperandFamily::Other)
+            .map(|(_, identity)| identity.as_deref().map(str::to_lowercase))
+            .collect::<Vec<_>>();
+        let other_conflict = sides.len() > 1
+            && !others.is_empty()
+            && (others.iter().any(Option::is_none)
+                || others.iter().collect::<BTreeSet<_>>().len() > 1);
+        if families.len() > 1 || outside_text || other_conflict {
+            return Err(types::mismatch(provider));
         }
     }
     Ok(())

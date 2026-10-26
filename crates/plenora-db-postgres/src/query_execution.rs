@@ -144,7 +144,7 @@ pub async fn read_stream(
     // geometria (array, dominio, composito, range), non soltanto sul tipo
     // descritto: `geometry[]` si descrive come testo.
     if operation.filter.is_some() || !operation.order_by.is_empty() {
-        let geometric = crate::spatial_probe::relation_columns(
+        let columns = crate::spatial_probe::relation_columns(
             client.client()?,
             operation.source.schema.as_deref(),
             &operation.source.object,
@@ -155,10 +155,17 @@ pub async fn read_stream(
             operation.filter.as_ref(),
             &operation.order_by,
             |field| {
-                geometric
+                columns
                     .iter()
-                    .any(|(name, geometric)| *geometric && name == field)
+                    .any(|column| column.is_geometric() && column.name == field)
             },
+            |field| {
+                Ok(columns
+                    .iter()
+                    .find(|column| column.name == field)
+                    .map(plenora_database_core::spatial_operand::CatalogColumn::field_family))
+            },
+            &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
         )?;
     }
     let plan = plan_read(operation, &available)?;
@@ -170,8 +177,7 @@ pub async fn read_stream(
         parameters,
         budget.limits().nesting_depth,
     )?;
-    let admitted = admit_read_filter(client.client()?, operation, parameters).await?;
-    let parameters = &admitted;
+    let parameters = &admit_read_filter(client.client()?, operation, parameters).await?;
     let columns = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, columns)?;
@@ -232,6 +238,12 @@ pub async fn query_stream(
     validate_stream_configuration(provider)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let rendered = render_query(operation)?;
+    // La regola T sui valori del chiamante (`typed_parameter`), prima di
+    // ogni altra cosa.
+    plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters).judge_typed(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        &plenora_database_core::spatial_operand::OperandPlan::Query(operation),
+    )?;
     // I parametri tipati contro il loro CAST (`operand_admission`).
     let parameters = &plenora_database_core::admission_gate::query_parameters(
         plenora_database_core::plan::ProviderKind::Postgres,
@@ -252,7 +264,12 @@ pub async fn query_stream(
     )?;
     let mut client = connect_cancel_safe(provider, secret, cancellation).await?;
     crate::spatial_probe::verify_query_columns(client.client()?, &probes.columns).await?;
-    crate::spatial_probe::verify_scalar_operands(client.client()?, &operands).await?;
+    crate::spatial_probe::verify_scalar_operands(
+        client.client()?,
+        &operands,
+        &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
+    )
+    .await?;
     let bind_names = rendered
         .binds
         .iter()

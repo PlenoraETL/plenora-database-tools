@@ -18,7 +18,8 @@ use plenora_database_core::provider::ProviderFuture;
 use plenora_database_core::relational::{MutationOperation, QueryOperation};
 use plenora_database_core::row::Row;
 use plenora_database_core::spatial_operand::{
-    OperandCatalog, OperandPlan, RelationColumns, AMBIGUOUS_NAME_SHAPE, GEOMETRY_OPERAND_UNRESOLVED,
+    CatalogColumn, OperandCatalog, OperandPlan, RelationColumns, AMBIGUOUS_NAME_SHAPE,
+    GEOMETRY_OPERAND_UNRESOLVED, NAME_UNRESOLVED,
 };
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::transaction::{
@@ -54,6 +55,38 @@ fn rifiuto(prodotto: ProviderKind) -> DatabaseError {
 impl TransactionScope for Finta {
     fn provider_kind(&self) -> ProviderKind {
         self.prodotto
+    }
+
+    /// I tipi di `plain` (`id` intero, `name` testo) per il cancello
+    /// dell'ammissione; le altre relazioni non hanno tipi (soltanto `NULL`).
+    fn column_types<'a>(
+        &'a mut self,
+        relation: &'a (Option<String>, String),
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<plenora_database_core::operand_admission::RelationTypes>> {
+        use plenora_database_core::operand_admission::CatalogType;
+        let (integer, text) = match self.prodotto {
+            ProviderKind::Postgres => ("int4", "text"),
+            ProviderKind::Oracle => ("number", "varchar2"),
+            ProviderKind::Db2 => ("integer", "varchar"),
+            ProviderKind::Sqlserver => ("int", "nvarchar"),
+            _ => ("int", "varchar"),
+        };
+        let tipo = |name: &str, precision| CatalogType {
+            name: name.to_owned(),
+            precision,
+            scale: precision.map(|_| 0),
+            ..CatalogType::default()
+        };
+        let types = (relation.1 == "plain").then(|| {
+            [
+                ("id".to_owned(), tipo(integer, Some(10))),
+                ("name".to_owned(), tipo(text, None)),
+            ]
+            .into_iter()
+            .collect()
+        });
+        Box::pin(async move { Ok(types) })
     }
 
     fn execute<'a>(
@@ -123,6 +156,7 @@ impl TransactionScope for Finta {
     fn operand_catalog<'a>(
         &'a mut self,
         relations: &'a [(Option<String>, String)],
+        names: &'a [String],
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, OperandCatalog> {
         let _ = cancellation;
@@ -134,12 +168,36 @@ impl TransactionScope for Finta {
         };
         let mut catalogo = OperandCatalog::new(self.prodotto);
         for (schema, object) in relations {
-            let colonne = tabelle
-                .iter()
-                .find(|(nome, _)| nome == object)
-                .map_or(RelationColumns::Absent, |(_, colonne)| {
-                    RelationColumns::Known(colonne.clone())
-                });
+            let colonne = tabelle.iter().find(|(nome, _)| nome == object).map_or(
+                RelationColumns::Absent,
+                |(_, colonne)| {
+                    RelationColumns::Known(
+                        colonne
+                            .iter()
+                            .map(|(nome, geometrica)| colonna_finta(nome, *geometrica))
+                            .collect(),
+                    )
+                },
+            );
+            // Dove il server lega i nomi (regola A) il finto fa da server:
+            // un database che non distingue le maiuscole.
+            if plenora_database_core::spatial_operand::server_resolves_names(self.prodotto) {
+                if let RelationColumns::Known(known) = &colonne {
+                    for name in names {
+                        let legate = known
+                            .iter()
+                            .filter(|column| column.name.to_lowercase() == name.to_lowercase())
+                            .map(|column| column.name.clone())
+                            .collect();
+                        catalogo.insert_resolution(
+                            schema.clone(),
+                            object.clone(),
+                            name.clone(),
+                            legate,
+                        );
+                    }
+                }
+            }
             catalogo.insert(schema.clone(), object.clone(), colonne);
         }
         Box::pin(async move { Ok(catalogo) })
@@ -156,6 +214,21 @@ impl TransactionScope for Finta {
     fn rollback(self: Box<Self>, _cancellation: &CancellationToken) -> ProviderFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
+}
+
+/// Una colonna del catalogo finto: geometrica, oppure `id` numerica e ogni
+/// altra testo (regola F con famiglie note, regola B senza «altra»).
+fn colonna_finta(nome: &str, geometrica: bool) -> CatalogColumn {
+    use plenora_database_core::spatial_operand::{ColumnOrigin, OperandFamily};
+    if geometrica {
+        return CatalogColumn::from_flag(nome, true);
+    }
+    let famiglia = if nome == "id" {
+        OperandFamily::Numeric
+    } else {
+        OperandFamily::Text
+    };
+    CatalogColumn::new(nome, ColumnOrigin::Stored, famiglia)
 }
 
 /// Il catalogo del server: `r10g(id, g geometrica, h geometrica)` e
@@ -233,26 +306,37 @@ fn esito(prodotto: ProviderKind, plan: OperandPlan<'_>) -> (Result<(), DatabaseE
     let cancel = CancellationToken::new();
     // Una mutazione passa dal cancello dell'ammissione con un valore per
     // segnaposto: qui `NULL`, ammesso su ogni colonna.
-    let statement = match plan {
-        OperandPlan::Mutation(operation) => Statement::new("SELECT 1").with_params(
+    let names = match plan {
+        OperandPlan::Mutation(operation) => {
             plenora_database_core::compile_relational_mutation(prodotto, operation)
-                .map(|lowered| {
-                    vec![
-                        plenora_database_core::provider::ParameterValue::Null {
-                            type_name: "text".to_owned(),
-                        };
-                        lowered.bind_names.len()
-                    ]
-                })
-                .unwrap_or_default(),
-        ),
-        _ => Statement::new("SELECT 1"),
-    };
-    let outcome = match plan {
-        OperandPlan::Query(_) => {
-            block_on(query_judged(&mut tx, &statement, Some(&plan), &cancel)).map(|_| ())
+                .map(|lowered| lowered.bind_names)
+                .unwrap_or_default()
         }
-        _ => block_on(execute_judged(&mut tx, &statement, Some(&plan), &cancel)).map(|_| ()),
+        _ => Vec::new(),
+    };
+    let statement = Statement::new("SELECT 1").with_params(vec![
+        plenora_database_core::provider::ParameterValue::Null {
+            type_name: "text".to_owned(),
+        };
+        names.len()
+    ]);
+    let outcome = match plan {
+        OperandPlan::Query(_) => block_on(query_judged(
+            &mut tx,
+            &statement,
+            Some(&plan),
+            &names,
+            &cancel,
+        ))
+        .map(|_| ()),
+        _ => block_on(execute_judged(
+            &mut tx,
+            &statement,
+            Some(&plan),
+            &names,
+            &cancel,
+        ))
+        .map(|_| ()),
     };
     (outcome, tx.eseguite)
 }
@@ -427,7 +511,8 @@ fn le_colonne_scalari_restano_ammesse() {
         "type": "update",
         "target": {"schema": "public", "object": "r10g"},
         "assignments": [{"column": "g", "value": {"kind": "parameter", "name": "v"}}],
-        "filter": {"kind": "compare", "left": colonna(None, "id"), "operator": "eq", "right": bind()}
+        "filter": {"kind": "compare", "left": colonna(None, "id"), "operator": "eq",
+            "right": {"kind": "typed_parameter", "name": "w", "parameter_type": "integer"}}
     }));
     let inserisci = mutazione(&json!({
         "type": "insert",
@@ -502,9 +587,10 @@ fn senza_catalogo_un_riferimento_si_rifiuta_dove_puo_essere_geometrico() {
     }
 }
 
-/// La regola N vale anche in esecuzione, prima di leggere il catalogo.
+/// La regola N vale anche in esecuzione, in ogni piano (sedicesima lettura
+/// del 25/10: fino ad allora soltanto con geometrie).
 #[test]
-fn la_regola_dei_nomi_vale_in_esecuzione_soltanto_con_geometrie() {
+fn la_regola_dei_nomi_vale_in_esecuzione_in_ogni_piano() {
     let alias = |object: &str| {
         query(
             object,
@@ -523,10 +609,115 @@ fn la_regola_dei_nomi_vale_in_esecuzione_soltanto_con_geometrie() {
             OperandPlan::Query(&geometrica),
             AMBIGUOUS_NAME_SHAPE,
         );
-        ammessa(
-            prodotto,
-            "alias k e K senza geometrie",
-            OperandPlan::Query(&scalare),
-        );
+        // Senza geometrie il legame conta per la regola F e per la regola C:
+        // la forma si rifiuta. SQL Server non lega il nome secondo la
+        // collation (regola A), e lo dice prima.
+        let (outcome, eseguite) = esito(prodotto, OperandPlan::Query(&scalare));
+        let error = outcome.expect_err("k e K");
+        let expected = if prodotto == ProviderKind::Sqlserver {
+            NAME_UNRESOLVED
+        } else {
+            AMBIGUOUS_NAME_SHAPE
+        };
+        assert_eq!(error.message, expected, "{prodotto:?}");
+        assert_eq!(eseguite, 0, "{prodotto:?}");
+    }
+}
+
+/// Regola T in esecuzione (quattordicesima lettura del 25/10): lo SDK manda
+/// i valori nell'ordine dei bind, convertiti per tipo Python
+/// (`py_convert`), senza guardare il `BindType`. Un intero per
+/// `bind("p", BindType.STRING)` in un `UPDATE ... WHERE` (e in una query, e
+/// scritto) si rifiuta prima di eseguire, anche dove il piano non ha
+/// operandi da leggere; un valore posizionale in piu non si lega.
+#[test]
+fn un_valore_fuori_dal_tipo_dichiarato_si_rifiuta_prima_di_eseguire() {
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::spatial_operand::BIND_LAYOUT_MISMATCH;
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    let typed = json!({"kind": "typed_parameter", "name": "p", "parameter_type": "string"});
+    let target = json!({"catalog": null, "schema": "public", "object": "plain"});
+    let filter =
+        json!({"kind": "compare", "left": colonna(None, "name"), "operator": "eq", "right": typed});
+    let update = mutazione(&json!({
+        "type": "update", "target": target,
+        "assignments": [{"column": "id", "value": {"kind": "parameter", "name": "q"}}],
+        "filter": filter
+    }));
+    let insert = mutazione(&json!({
+        "type": "insert", "target": target, "columns": ["name"], "rows": [[typed]]
+    }));
+    let select = query("plain", &json!({"filter": filter}));
+    let names = |plan: &OperandPlan<'_>| -> Vec<String> {
+        match plan {
+            OperandPlan::Mutation(MutationOperation::Update(_)) => vec!["q".into(), "p".into()],
+            _ => vec!["p".into()],
+        }
+    };
+    let run = |prodotto, plan: OperandPlan<'_>, values: Vec<ParameterValue>| {
+        let mut tx = finta(prodotto);
+        let cancel = CancellationToken::new();
+        let statement = Statement::new("SQL").with_params(values);
+        let outcome = match plan {
+            // Una query con parametri passa dal cancello dell'ammissione
+            // (`admission_gate::query`), come nello SDK.
+            OperandPlan::Query(operation) => plenora_database_core::admission_gate::query(
+                prodotto,
+                operation,
+                statement.sql.clone(),
+                &names(&plan),
+                &statement.params,
+            )
+            .and_then(|admitted| {
+                block_on(plenora_database_core::facade::query_admitted(
+                    &mut tx, &admitted, &plan, &cancel,
+                ))
+            })
+            .map(|_| ()),
+            _ => block_on(execute_judged(
+                &mut tx,
+                &statement,
+                Some(&plan),
+                &names(&plan),
+                &cancel,
+            ))
+            .map(|_| ()),
+        };
+        (outcome, tx.eseguite)
+    };
+    for prodotto in PRODOTTI {
+        for (forma, plan) in [
+            ("update", OperandPlan::Mutation(&update)),
+            ("insert", OperandPlan::Mutation(&insert)),
+            ("select", OperandPlan::Query(&select)),
+        ] {
+            let mut values = vec![ParameterValue::I64(1)];
+            if forma == "update" {
+                values.insert(0, ParameterValue::I32(7));
+            }
+            let (outcome, eseguite) = run(prodotto, plan, values.clone());
+            let error = outcome.expect_err(forma);
+            assert_eq!(
+                error.category,
+                ErrorCategory::InvalidPlan,
+                "{prodotto:?} {forma}"
+            );
+            assert_eq!(error.phase, ErrorPhase::Prepare, "{prodotto:?} {forma}");
+            assert_eq!(
+                error.message, TYPED_PARAMETER_MISMATCH,
+                "{prodotto:?} {forma}"
+            );
+            assert_eq!(eseguite, 0, "{prodotto:?} {forma}: eseguita");
+            let last = values.len() - 1;
+            values[last] = ParameterValue::String("1".to_owned());
+            let (outcome, eseguite) = run(prodotto, plan, values.clone());
+            outcome.unwrap_or_else(|error| panic!("{prodotto:?} {forma}: {error:?}"));
+            assert_eq!(eseguite, 1, "{prodotto:?} {forma}");
+            values.push(ParameterValue::String("in piu".to_owned()));
+            let (outcome, eseguite) = run(prodotto, plan, values);
+            let error = outcome.expect_err("valore in piu");
+            assert_eq!(error.message, BIND_LAYOUT_MISMATCH, "{prodotto:?} {forma}");
+            assert_eq!(eseguite, 0, "{prodotto:?} {forma}: eseguita");
+        }
     }
 }

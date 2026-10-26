@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 125935,
-  "max_code_lines": 101712,
-  "rationale": "Fedelta dei parametri bindati, terzo giro: il cancello unico dell'ammissione (plenora_database_core::admission_gate: lo SQL compilato portable non espone i valori, uno Statement eseguibile esce soltanto dal cancello; DML relazionale dello SDK ammesso sul catalogo), la regola dei testi su lunghezza, unita e charset della colonna, FLOAT(M, D) di MySQL/MariaDB esatto soltanto con D cifre e 15 cifre in tutto, i cataloghi dei cinque provider con unita e charset, il censimento generato (plenora_database_testkit::parameter_sweep: valori generati per famiglia, modello indipendente del tipo, resa del server) e i suoi test live su ogni provider. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 122880 -> 125935 (+3055), righe di codice 99219 -> 101712 (+2493). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 129874,
+  "max_code_lines": 104286,
+  "rationale": "Merge della #133 (c8579cd, adozione Geometry Semantics) nella #135 e terzo giro della fedelta dei parametri: il cancello unico dell'ammissione (plenora_database_core::admission_gate), la regola dei testi su lunghezza, unita e charset, FLOAT(M, D) di MySQL/MariaDB, il censimento generato (plenora_database_testkit::parameter_sweep) e i suoi test live; il modello dei tipi del catalogo vive una volta sola in cast_table, e un parametro tipizzato confrontato in un DML si ammette sul tipo del suo CAST. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 125935 (#135) e 122995 (#133) -> 129874, righe di codice 101712 (#135) e 98809 (#133) -> 104286. Conteggio e perimetro invariati, nessun margine aggiunto."
 }

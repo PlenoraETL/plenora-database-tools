@@ -62,6 +62,11 @@ pub(crate) struct Binds<'v> {
     /// compilatore giudicherebbe lo SRID del letterale) e il cancello rimette
     /// il valore del chiamante dopo la compilazione.
     pub(crate) spatial: Vec<usize>,
+    /// Le posizioni dei parametri tipizzati confrontati, con il loro tipo:
+    /// il compilatore li rende `CAST(? AS tipo)` con una sentinella (regola
+    /// T), e il cancello vi lega il valore del chiamante ammesso sul tipo
+    /// reso ([`crate::cast_table::rendered_target`]).
+    pub(crate) typed: Vec<(usize, QueryParameterType)>,
 }
 
 impl<'v> Binds<'v> {
@@ -70,6 +75,7 @@ impl<'v> Binds<'v> {
             names: Vec::new(),
             values: None,
             spatial: Vec::new(),
+            typed: Vec::new(),
         }
     }
 
@@ -78,6 +84,7 @@ impl<'v> Binds<'v> {
             names: Vec::new(),
             values: Some(values),
             spatial: Vec::new(),
+            typed: Vec::new(),
         }
     }
 
@@ -98,6 +105,14 @@ impl<'v> Binds<'v> {
             None => ParameterValue::I64(0),
         };
         Ok(Expression::Literal(value))
+    }
+
+    /// Un parametro tipizzato in una posizione confrontata: il segnaposto
+    /// del `CAST` reso, senza letterale.
+    fn typed(&mut self, name: &str, parameter_type: QueryParameterType) -> Expression {
+        self.typed.push((self.names.len(), parameter_type));
+        self.names.push(name.to_owned());
+        Expression::TypedParameter(parameter_type)
     }
 
     fn spatial(&mut self, name: &str) {
@@ -147,7 +162,7 @@ fn upsert_statement(operation: &UpsertOperation, binds: &mut Binds<'_>) -> Resul
         .map(|assignment| {
             Ok((
                 assignment.column.clone(),
-                value(&assignment.value, &operation.target, binds)?,
+                value(&assignment.value, &operation.target, binds, false)?,
             ))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -198,7 +213,7 @@ fn update_statement(operation: &UpdateOperation, binds: &mut Binds<'_>) -> Resul
         .map(|assignment| {
             Ok((
                 assignment.column.clone(),
-                value(&assignment.value, &operation.target, binds)?,
+                value(&assignment.value, &operation.target, binds, false)?,
             ))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -262,13 +277,24 @@ fn insert_value(expression: &QueryExpression, binds: &mut Binds<'_>) -> Result<E
     }
 }
 
+/// Un valore di un'assegnazione (`compared` falso) o di un predicato
+/// (`compared` vero). Un parametro tipizzato confrontato si rende come lo
+/// rende il renderer delle query (`CastDialect::render`, regola T); scritto,
+/// con il solo segnaposto. Fino alla quattordicesima lettura del 25/10 il
+/// predicato rendeva il segnaposto nudo, e il server convertiva il valore
+/// legato verso la colonna.
 fn value(
     expression: &QueryExpression,
     target: &crate::plan::ObjectRef,
     binds: &mut Binds<'_>,
+    compared: bool,
 ) -> Result<Expression> {
     match expression {
         QueryExpression::Parameter { name } => parameter(name, None, binds),
+        QueryExpression::TypedParameter {
+            name,
+            parameter_type,
+        } if compared => Ok(binds.typed(name, *parameter_type)),
         QueryExpression::TypedParameter {
             name,
             parameter_type,
@@ -335,7 +361,7 @@ fn predicate(
             right,
         } => {
             let column = column(left, target)?;
-            let value = value(right, target, binds)?;
+            let value = value(right, target, binds, true)?;
             Ok(match operator {
                 ComparisonOperator::Eq => Predicate::Eq { column, value },
                 ComparisonOperator::Ne => Predicate::Ne { column, value },
@@ -354,7 +380,7 @@ fn predicate(
                 column: column(expression, target)?,
                 values: values
                     .iter()
-                    .map(|expression| value(expression, target, binds))
+                    .map(|expression| value(expression, target, binds, true))
                     .collect::<Result<Vec<_>>>()?,
             };
             Ok(negate(predicate, *negated))
@@ -367,8 +393,8 @@ fn predicate(
         } => {
             let predicate = Predicate::Between {
                 column: column(expression, target)?,
-                low: value(lower, target, binds)?,
-                high: value(upper, target, binds)?,
+                low: value(lower, target, binds, true)?,
+                high: value(upper, target, binds, true)?,
             };
             Ok(negate(predicate, *negated))
         }
@@ -385,7 +411,7 @@ fn predicate(
             }
             let predicate = Predicate::Like {
                 column: column(expression, target)?,
-                pattern: value(pattern, target, binds)?,
+                pattern: value(pattern, target, binds, true)?,
             };
             Ok(negate(predicate, *negated))
         }

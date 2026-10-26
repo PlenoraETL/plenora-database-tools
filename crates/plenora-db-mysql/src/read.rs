@@ -82,6 +82,7 @@ pub(crate) async fn read_operation_with_profile(
     )
     .await?;
     let plan = MysqlReadPlan::compile_with_profile(&description, operation, profile)?;
+    crate::types::ensure_read_families(&description, operation, parameters, profile)?;
     let column_count = u64::try_from(plan.columns.len()).map_err(|_| {
         DatabaseError::resource_limit(format!("numero colonne {product} non rappresentabile"))
     })?;
@@ -226,18 +227,26 @@ pub(crate) async fn query_operation_with_profile(
     // confronterebbe il proprio formato interno con il valore legato senza
     // errore. I tipi delle colonne sono nel catalogo, e si leggono prima di
     // preparare (`spatial_operand`).
+    let families = plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters);
+    // La regola T (`typed_parameter`) anche senza operandi da leggere.
+    families.judge_typed(
+        profile.kind(),
+        &plenora_database_core::spatial_operand::OperandPlan::Query(operation),
+    )?;
     let operands =
         plenora_database_core::spatial_operand::scalar_operands(profile.kind(), operation)?;
     if !operands.is_empty() {
+        let names = operands.names().into_iter().collect::<Vec<_>>();
         let catalog = crate::catalog::relation_columns(
             &mut session,
             profile,
             database,
             operands.relations(),
+            &names,
             &internal,
         )
         .await?;
-        operands.judge(&catalog)?;
+        operands.judge_bound(&catalog, &families)?;
     }
     let statement = session.prepare_statement(&rendered.sql, &internal).await?;
     if usize::from(statement.num_params()) != bind_names.len() {

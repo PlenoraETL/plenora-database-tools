@@ -676,6 +676,7 @@ impl TransactionScope for OwnedSessionTransaction {
     fn operand_catalog<'a>(
         &'a mut self,
         relations: &'a [(Option<String>, String)],
+        names: &'a [String],
         cancellation: &'a CancellationToken,
     ) -> plenora_database_core::provider::ProviderFuture<
         'a,
@@ -683,7 +684,7 @@ impl TransactionScope for OwnedSessionTransaction {
     > {
         Box::pin(async move {
             let linked = CancellationToken::linked(&[&self.cancellation, cancellation]);
-            self.scope.operand_catalog(relations, &linked).await
+            self.scope.operand_catalog(relations, names, &linked).await
         })
     }
 

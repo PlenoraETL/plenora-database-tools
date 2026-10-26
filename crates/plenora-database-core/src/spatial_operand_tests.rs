@@ -36,14 +36,21 @@ fn query(extra: &Value) -> QueryOperation {
 }
 
 /// Il catalogo di prova: `s.t(id, g geometrica, b)`, `s.u(id, g scalare)`,
-/// `s.plain(id, name)` senza geometrie.
+/// `s.plain(id, name)` senza geometrie. Le colonne scalari sono binarie
+/// memorizzate: si confrontano con i parametri binari delle prove.
 fn catalog(provider: ProviderKind) -> OperandCatalog {
     let mut catalog = OperandCatalog::new(provider);
     let known = |columns: &[(&str, bool)]| {
         RelationColumns::Known(
             columns
                 .iter()
-                .map(|(name, geometric)| ((*name).to_owned(), *geometric))
+                .map(|(name, geometric)| {
+                    if *geometric {
+                        CatalogColumn::from_flag(*name, true)
+                    } else {
+                        CatalogColumn::new(*name, ColumnOrigin::Stored, OperandFamily::Binary)
+                    }
+                })
                 .collect(),
         )
     };
@@ -65,9 +72,32 @@ fn catalog(provider: ProviderKind) -> OperandCatalog {
     catalog
 }
 
-/// Il giudizio con il catalogo di prova.
+/// Il giudizio con il catalogo di prova. Dove il server lega i nomi
+/// (regola A) il catalogo di prova fa da server: lega un nome alle colonne
+/// che incontra senza maiuscole (un database `CI`).
 fn judged_as(provider: ProviderKind, operation: &QueryOperation) -> Result<()> {
-    scalar_operands(provider, operation)?.judge(&catalog(provider))
+    let operands = scalar_operands(provider, operation)?;
+    let mut catalog = catalog(provider);
+    if server_resolves_names(provider) {
+        for (schema, object) in operands.relations() {
+            let Some(RelationColumns::Known(columns)) = catalog
+                .relations
+                .get(&(schema.clone(), object.clone()))
+                .cloned()
+            else {
+                continue;
+            };
+            for name in operands.names() {
+                let bound = columns
+                    .iter()
+                    .filter(|column| column.name.to_lowercase() == name.to_lowercase())
+                    .map(|column| column.name.clone())
+                    .collect();
+                catalog.insert_resolution(schema.clone(), object.clone(), name, bound);
+            }
+        }
+    }
+    operands.judge(&catalog)
 }
 
 fn judged(operation: &QueryOperation) -> Result<()> {
@@ -309,7 +339,10 @@ fn scalar_columns_and_spatial_arguments_are_admitted() {
         ),
         (
             "ST_Area confrontata",
-            json!({"filter": compare(&json!({"kind": "spatial", "function": "area", "arguments": [g]}), &bind())}),
+            json!({"filter": compare(
+                &json!({"kind": "spatial", "function": "area", "arguments": [g]}),
+                &json!({"kind": "typed_parameter", "name": "p", "parameter_type": "float"})
+            )}),
         ),
         (
             "projection",
@@ -363,6 +396,8 @@ fn relations_name_base_tables_only() {
 #[test]
 fn read_filters_refuse_geometry_fields_under_scalar_operators() {
     let geometric = |field: &str| field == "g";
+    let unknown = |_: &str| Ok(None);
+    let none = ParameterFamilies::default();
     for filter in [
         FilterExpression::Eq {
             field: "g".to_owned(),
@@ -375,15 +410,16 @@ fn read_filters_refuse_geometry_fields_under_scalar_operators() {
             }],
         },
     ] {
-        let error = ensure_scalar_filter_fields(MYSQL, Some(&filter), &[], geometric)
-            .expect_err("campo geometrico");
+        let error =
+            ensure_scalar_filter_fields(MYSQL, Some(&filter), &[], geometric, unknown, &none)
+                .expect_err("campo geometrico");
         assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND);
     }
     let order = [OrderBy {
         field: "g".to_owned(),
         direction: SortDirection::Asc,
     }];
-    assert!(ensure_scalar_filter_fields(MYSQL, None, &order, geometric).is_err());
+    assert!(ensure_scalar_filter_fields(MYSQL, None, &order, geometric, unknown, &none).is_err());
     for filter in [
         FilterExpression::IsNull {
             field: "g".to_owned(),
@@ -393,7 +429,8 @@ fn read_filters_refuse_geometry_fields_under_scalar_operators() {
             parameter: "p".to_owned(),
         },
     ] {
-        ensure_scalar_filter_fields(MYSQL, Some(&filter), &[], geometric).expect("ammesso");
+        ensure_scalar_filter_fields(MYSQL, Some(&filter), &[], geometric, unknown, &none)
+            .expect("ammesso");
     }
 }
 
@@ -518,7 +555,8 @@ fn the_six_unresolved_shapes_are_refused() {
         ProviderKind::Mariadb,
         ProviderKind::Postgres,
     ] {
-        let folded = matches!(provider, ProviderKind::Mysql | ProviderKind::Mariadb);
+        // Il catalogo di prova lega i nomi come un database `CI`.
+        let folded = server_resolves_names(provider);
         let expected = |outcome: Result<()>, form: &str| {
             if folded {
                 assert_refused(outcome, form);
@@ -528,11 +566,21 @@ fn the_six_unresolved_shapes_are_refused() {
         };
         let upper = query(&json!({"filter": like(&cast(&column(Some("t"), "G")))}));
         expected(judged_as(provider, &upper), "colonna G");
+        // I nomi del piano si confrontano fra loro senza il server: le
+        // maiuscole di un alias le piegano soltanto `MySQL` e `MariaDB`.
         let alias = over_derived(
             &query(&json!({"projection": [item(&g, Some("X"))]})),
             &json!({"filter": compare(&column(Some("d"), "x"), &bind())}),
         );
-        expected(judged_as(provider, &alias), "alias X");
+        // Dove gli identificatori sono quotati `x` e `X` sono due nomi: il
+        // riferimento non si lega.
+        match provider {
+            ProviderKind::Mysql | ProviderKind::Mariadb => {
+                assert_refused(judged_as(provider, &alias), "alias X");
+            }
+            ProviderKind::Postgres => assert_unresolved(judged_as(provider, &alias), "alias X"),
+            _ => assert_ambiguous(judged_as(provider, &alias), "alias X"),
+        }
         let relation = query(&json!({"filter": compare(&column(Some("T"), "g"), &bind())}));
         assert_ambiguous(judged_as(provider, &relation), "relazione T");
     }
@@ -552,7 +600,10 @@ fn the_six_unresolved_shapes_are_refused() {
     array.insert(
         Some("s".to_owned()),
         "a".to_owned(),
-        RelationColumns::Known(vec![("id".to_owned(), false), ("ga".to_owned(), true)]),
+        RelationColumns::Known(vec![
+            CatalogColumn::from_flag("id", false),
+            CatalogColumn::from_flag("ga", true),
+        ]),
     );
     let ordered: QueryOperation = serde_json::from_value(json!({
         "source": source("a", Some("a")),
@@ -673,16 +724,20 @@ fn scalar_references_and_plans_without_geometry_are_admitted() {
             json!({"projection": [item(&star(), None)], "distinct": true}),
         ),
         (
-            "ORDER BY non risolto",
-            json!({"order_by": order(&column(None, "missing"))}),
-        ),
-        (
-            "GROUP BY NAME piegato",
+            "GROUP BY NAME legato dal server",
             json!({"group_by": [column(None, "NAME")]}),
         ),
     ] {
         judged(&plain(&extra)).unwrap_or_else(|error| panic!("{form}: {error:?}"));
     }
+    // Regola A (quindicesima lettura del 25/10): un riferimento che non si
+    // lega si rifiuta anche in un piano senza geometrie.
+    let error = judged(&plain(
+        &json!({"order_by": order(&column(None, "missing"))}),
+    ))
+    .expect_err("ORDER BY non risolto");
+    assert_eq!(error.message, NAME_UNRESOLVED);
+    assert_eq!(error.category, crate::ErrorCategory::InvalidPlan);
 }
 
 /// Senza catalogo la visita rifiuta soltanto cio che sa geometrico da se,
@@ -764,7 +819,10 @@ fn second_reading_shapes_are_refused() {
     with_base_t.insert(
         None,
         "t".to_owned(),
-        RelationColumns::Known(vec![("id".to_owned(), false), ("g".to_owned(), true)]),
+        RelationColumns::Known(vec![
+            CatalogColumn::from_flag("id", false),
+            CatalogColumn::from_flag("g", true),
+        ]),
     );
     let inner_t: QueryOperation = serde_json::from_value(json!({
         "projection": [item(&bind(), Some("g"))],
@@ -800,23 +858,173 @@ fn second_reading_shapes_are_refused() {
     assert_unresolved(judged(&foreign), "relazione di un altro catalogo");
 }
 
-/// Regola B: la tabella della verita della regola condivisa dai cataloghi.
+/// Regola B: la tabella della verita della regola condivisa dai cataloghi,
+/// con l'origine per colonna (relazione derivata o colonna calcolata).
 #[test]
-fn a_binary_column_is_geometric_only_in_a_derived_relation() {
-    use ColumnCarrier::{Binary, Geometry, Scalar};
-    use RelationOrigin::{Base, Derived};
-    for (origin, carrier, expected) in [
-        (Base, Geometry, true),
+fn a_binary_column_is_geometric_only_when_derived() {
+    use ColumnOrigin::{Derived, Stored};
+    use OperandFamily::{Binary, Geometry, Numeric, Other, Temporal, Text};
+    for (origin, family, expected) in [
+        (Stored, Geometry, true),
         (Derived, Geometry, true),
-        (Base, Binary, false),
+        (Stored, Binary, false),
         (Derived, Binary, true),
-        (Base, Scalar, false),
-        (Derived, Scalar, false),
+        (Stored, Text, false),
+        (Derived, Text, false),
+        (Derived, Numeric, false),
+        (Derived, Temporal, false),
+        (Derived, Other, false),
     ] {
         assert_eq!(
-            catalog_column_is_geometric(origin, carrier),
+            catalog_column_is_geometric(origin, family),
             expected,
-            "{origin:?} {carrier:?}"
+            "{origin:?} {family:?}"
+        );
+    }
+    for (relation, computed, origin) in [
+        (false, false, Stored),
+        (true, false, Derived),
+        (false, true, Derived),
+        (true, true, Derived),
+    ] {
+        assert_eq!(ColumnOrigin::of(relation, computed), origin);
+    }
+}
+
+/// Regola A (quindicesima lettura del 25/10): una lettura risolve un nome di
+/// colonna soltanto per byte ([`exact_column`]); un nome che il server
+/// legherebbe con la collation non si piega dal lato del client, e la lettura
+/// lo rifiuta come colonna assente. Fino alla quattordicesima lettura si
+/// prendeva il primo che lo incontrava senza maiuscole, poi l'unico.
+#[test]
+fn un_nome_si_risolve_soltanto_per_byte() {
+    let columns = ["W".to_owned(), "w".to_owned(), "id".to_owned()];
+    for (field, expected) in [("w", Some(1)), ("W", Some(0)), ("ID", None), ("x", None)] {
+        assert_eq!(
+            exact_column(&columns, String::as_str, field),
+            expected.map(|index| &columns[index]),
+            "{field}"
+        );
+    }
+    let family = |field: &str| {
+        Ok(exact_column(&columns, String::as_str, field).map(|column| {
+            if column == "W" {
+                (OperandFamily::Binary, None)
+            } else {
+                (OperandFamily::Text, None)
+            }
+        }))
+    };
+    let mut bytes = ParameterFamilies::default();
+    bytes.insert("p", OperandFamily::Binary);
+    let filter = FilterExpression::Eq {
+        field: "w".to_owned(),
+        parameter: "p".to_owned(),
+    };
+    let error = ensure_scalar_filter_fields(
+        ProviderKind::Sqlserver,
+        Some(&filter),
+        &[],
+        |_| false,
+        family,
+        &bytes,
+    )
+    .expect_err("w");
+    assert_eq!(error.message, OPERAND_FAMILY_MISMATCH);
+}
+
+/// Sedicesima lettura del 25/10, regola N in ogni piano: una CTE che il
+/// server potrebbe legare a una relazione senza schema con un nome diverso
+/// per byte (maiuscole, spazi finali; larghezza e accenti dove il server
+/// confronta con una collation) si rifiuta, anche senza geometrie. La CTE con
+/// il nome uguale per byte resta.
+#[test]
+fn una_cte_che_il_server_potrebbe_legare_si_rifiuta_in_ogni_piano() {
+    let plan = |cte: &str| -> QueryOperation {
+        serde_json::from_value(json!({
+            "common_table_expressions": [{"name": cte, "query": query(&json!({}))}],
+            "source": {"object": {"catalog": null, "schema": null, "object": "e"}, "alias": "x"},
+            "projection": [{"expression": column(Some("x"), "id"), "alias": null}],
+            "filter": compare(&column(Some("x"), "id"), &bind()),
+            "having": null,
+            "row_limit": null
+        }))
+        .expect("piano")
+    };
+    let judge = |provider: ProviderKind, cte: &str| {
+        let mut catalog = catalog(provider);
+        catalog.insert(
+            None,
+            "e".to_owned(),
+            RelationColumns::Known(vec![CatalogColumn::new(
+                "id",
+                ColumnOrigin::Stored,
+                OperandFamily::Binary,
+            )]),
+        );
+        scalar_operands(provider, &plan(cte))?.judge(&catalog)
+    };
+    for (provider, cte) in [
+        (ProviderKind::Sqlserver, "ｅ"),
+        (ProviderKind::Sqlserver, "E"),
+        (ProviderKind::Sqlserver, "é"),
+        (ProviderKind::Sqlserver, "e "),
+        (ProviderKind::Mysql, "é"),
+        (ProviderKind::Mariadb, "E"),
+        (ProviderKind::Db2, "e "),
+        (ProviderKind::Postgres, "E"),
+        (ProviderKind::Oracle, "E"),
+    ] {
+        assert_ambiguous(judge(provider, cte), &format!("{provider:?} {cte:?}"));
+    }
+    for provider in [
+        ProviderKind::Sqlserver,
+        ProviderKind::Mysql,
+        ProviderKind::Db2,
+        ProviderKind::Postgres,
+    ] {
+        judge(provider, "e").unwrap_or_else(|error| panic!("{provider:?}: {error:?}"));
+    }
+    // Dove ogni identificatore e quotato per byte, un nome non ASCII diverso
+    // non si lega alla relazione.
+    judge(ProviderKind::Postgres, "é").expect("PostgreSQL per byte");
+}
+
+/// Sedicesima lettura del 25/10, mondo chiuso: un riferimento a una
+/// relazione che il catalogo non trova (`RelationColumns::Absent`) non si
+/// lega, e si rifiuta in ogni piano (`NAME_UNRESOLVED`). Fino ad allora si
+/// assumeva che la query fallisse sul server, ma il server legge relazioni che
+/// il catalogo non elenca (le tabelle temporanee private di Oracle).
+#[test]
+fn una_relazione_assente_dal_catalogo_non_lega_i_riferimenti() {
+    for provider in [
+        ProviderKind::Postgres,
+        ProviderKind::Mysql,
+        ProviderKind::Mariadb,
+        ProviderKind::Sqlserver,
+        ProviderKind::Oracle,
+        ProviderKind::Db2,
+    ] {
+        let mut operation = serde_json::to_value(query(&json!({
+            "filter": compare(&column(Some("t"), "id"), &bind())
+        })))
+        .expect("json");
+        operation["source"] = source("assente", Some("t"));
+        let operation: QueryOperation = serde_json::from_value(operation).expect("query");
+        let mut catalog = catalog(provider);
+        catalog.insert(
+            Some("s".to_owned()),
+            "assente".to_owned(),
+            RelationColumns::Absent,
+        );
+        let error = scalar_operands(provider, &operation)
+            .and_then(|operands| operands.judge(&catalog))
+            .expect_err("relazione assente");
+        assert_eq!(error.message, NAME_UNRESOLVED, "{provider:?}");
+        assert_eq!(
+            error.category,
+            crate::ErrorCategory::InvalidPlan,
+            "{provider:?}"
         );
     }
 }

@@ -10,7 +10,9 @@ use crate::operand_catalog::{
 };
 use plenora_database_core::plan::{FilterExpression, ObjectRef, ProviderKind, ReadOperation};
 use plenora_database_core::relational::QueryOperation;
-use plenora_database_core::spatial_operand::{scalar_operands, GEOMETRY_OPERAND_UNRESOLVED};
+use plenora_database_core::spatial_operand::{
+    scalar_operands, GEOMETRY_OPERAND_UNRESOLVED, NAME_UNRESOLVED,
+};
 use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
 use plenora_database_core::Result;
 use std::collections::BTreeMap;
@@ -54,9 +56,23 @@ impl Finto {
                     name: (*column).to_owned(),
                     data_type: (*data_type).to_owned(),
                     data_type_owner: owner.map(str::to_owned),
+                    virtual_column: false,
+                    ..ColumnRow::default()
                 })
                 .collect(),
         );
+    }
+
+    /// Le colonne virtuali (`VIRTUAL_COLUMN` `YES`) della relazione.
+    fn virtual_columns(&mut self, owner: &str, object: &str, names: &[&str]) {
+        for column in self
+            .columns
+            .get_mut(&name(owner, object))
+            .into_iter()
+            .flatten()
+        {
+            column.virtual_column = names.contains(&column.name.as_str());
+        }
     }
 
     fn synonym(&mut self, owner: &str, object: &str, target: Option<(&str, &str)>) {
@@ -248,8 +264,13 @@ fn senza_schema_vale_lo_schema_corrente_poi_il_sinonimo_pubblico() {
         rifiuto(GEOMETRY_SCALAR_OPERAND)
     );
     finto.current = "ALTRO".to_owned();
-    // Lo schema corrente non ha il nome, il sinonimo pubblico non c'e.
-    assert_eq!(giudizio(&mut finto, None, "V", "W"), Ok(()));
+    // Lo schema corrente non ha il nome, il sinonimo pubblico non c'e: la
+    // relazione e assente, e il riferimento non si lega (sedicesima lettura
+    // del 25/10: una tabella temporanea privata non e nel catalogo).
+    assert_eq!(
+        giudizio(&mut finto, None, "V", "W"),
+        rifiuto(NAME_UNRESOLVED)
+    );
     finto.synonym("PUBLIC", "V", Some(("PLENORA", "V")));
     assert_eq!(
         giudizio(&mut finto, None, "V", "W"),
@@ -265,7 +286,10 @@ fn senza_schema_vale_lo_schema_corrente_poi_il_sinonimo_pubblico() {
     );
     assert_eq!(giudizio(&mut finto, None, "V", "W"), Ok(()));
     // Con lo schema esplicito il sinonimo pubblico non vale.
-    assert_eq!(giudizio(&mut finto, Some("NESSUNO"), "V", "W"), Ok(()));
+    assert_eq!(
+        giudizio(&mut finto, Some("NESSUNO"), "V", "W"),
+        rifiuto(NAME_UNRESOLVED)
+    );
 }
 
 #[test]
@@ -304,10 +328,11 @@ fn un_sinonimo_che_non_arriva_a_una_relazione_non_si_conosce() {
             "{object}"
         );
     }
-    // Assente: la query fallira sul server, il piano non ha geometrie.
+    // Assente: il riferimento non si lega (il server puo leggere una
+    // relazione che il catalogo non elenca).
     assert_eq!(
         giudizio(&mut finto, Some("PLENORA"), "NESSUNO", "G"),
-        Ok(())
+        rifiuto(NAME_UNRESOLVED)
     );
 }
 
@@ -334,8 +359,11 @@ fn una_catena_di_sinonimi_oltre_il_limite_non_si_conosce() {
 fn i_nomi_si_confrontano_per_byte() {
     let mut finto = base();
     assert!(giudizio(&mut finto, Some("PLENORA"), "V", "w").is_err());
-    // Una relazione nominata in minuscolo e un'altra relazione.
-    assert_eq!(giudizio(&mut finto, Some("plenora"), "V", "W"), Ok(()));
+    // Una relazione nominata in minuscolo e un'altra relazione, assente.
+    assert_eq!(
+        giudizio(&mut finto, Some("plenora"), "V", "W"),
+        rifiuto(NAME_UNRESOLVED)
+    );
 }
 
 fn lettura(object: &str, field: &str) -> ReadOperation {
@@ -376,6 +404,7 @@ fn la_lettura_giudica_sullo_stesso_catalogo() {
             "PLENORA",
             object,
             &lettura(object, field),
+            &plenora_database_core::provider::ParameterBag::default(),
         ));
         if rifiutata {
             let error = outcome.expect_err(field);
@@ -390,7 +419,93 @@ fn la_lettura_giudica_sullo_stesso_catalogo() {
         &mut finto,
         "PLENORA",
         "LINK",
-        &lettura("LINK", "ID")
+        &lettura("LINK", "ID"),
+        &plenora_database_core::provider::ParameterBag::default(),
     ))
     .is_err());
+}
+
+/// Regola B per colonna (rilettura 13, R13-1): la colonna virtuale binaria di
+/// una tabella e derivata; la colonna virtuale testo e la colonna binaria
+/// memorizzata no.
+#[test]
+fn una_colonna_virtuale_binaria_di_una_tabella_si_giudica_geometrica() {
+    let mut finto = base();
+    finto.virtual_columns("PLENORA", "T", &["W", "R", "X"]);
+    for campo in ["W", "R"] {
+        assert_eq!(
+            giudizio(&mut finto, Some("PLENORA"), "T", campo),
+            rifiuto(GEOMETRY_SCALAR_OPERAND),
+            "T.{campo}"
+        );
+    }
+    for campo in ["W2", "L", "X", "ID"] {
+        assert_eq!(
+            giudizio(&mut finto, Some("PLENORA"), "T", campo),
+            Ok(()),
+            "T.{campo}"
+        );
+    }
+}
+
+/// La tabella delle famiglie di Oracle (regola F).
+#[test]
+fn ogni_tipo_ha_la_famiglia_della_tabella() {
+    use crate::operand_catalog::column_family;
+    use plenora_database_core::spatial_operand::OperandFamily::{
+        Binary, Geometry, Numeric, Other, Temporal, Text,
+    };
+    for (data_type, owner, family) in [
+        ("SDO_GEOMETRY", Some("MDSYS"), Geometry),
+        ("SDO_GEOMETRY", Some("ALTRO"), Other),
+        ("BLOB", None, Binary),
+        ("RAW", None, Binary),
+        ("LONG RAW", None, Binary),
+        ("BFILE", None, Binary),
+        ("CHAR", None, Text),
+        ("VARCHAR2", None, Text),
+        ("NCHAR", None, Text),
+        ("NVARCHAR2", None, Text),
+        ("CLOB", None, Text),
+        ("NCLOB", None, Text),
+        ("LONG", None, Text),
+        ("NUMBER", None, Numeric),
+        ("FLOAT", None, Numeric),
+        ("BINARY_FLOAT", None, Numeric),
+        ("BINARY_DOUBLE", None, Numeric),
+        ("BOOLEAN", None, Numeric),
+        ("DATE", None, Temporal),
+        ("TIMESTAMP(6)", None, Temporal),
+        ("TIMESTAMP(6) WITH TIME ZONE", None, Temporal),
+        ("TIMESTAMP(6) WITH LOCAL TIME ZONE", None, Temporal),
+        ("INTERVAL DAY(2) TO SECOND(6)", None, Other),
+        ("ROWID", None, Other),
+        ("JSON", None, Other),
+    ] {
+        assert_eq!(column_family(data_type, owner), family, "{data_type}");
+    }
+}
+
+/// Regola F sul catalogo (R13-2): la colonna testo di una vista confrontata
+/// con un bind binario si rifiuta; con un testo resta.
+#[test]
+fn un_testo_di_una_vista_con_un_bind_binario_si_rifiuta() {
+    use plenora_database_core::provider::{ParameterBag, ParameterValue};
+    use plenora_database_core::spatial_operand::{ParameterFamilies, OPERAND_FAMILY_MISMATCH};
+    let mut finto = base();
+    let operation = confronto(Some("PLENORA"), "V", "NAME");
+    let operands = scalar_operands(ProviderKind::Oracle, &operation).expect("visita");
+    let catalog = block_on(operand_catalog(&mut finto, operands.relations())).expect("catalogo");
+    let legato = |value| {
+        ParameterFamilies::from_bag(&ParameterBag::new(
+            std::iter::once(("p".to_owned(), value)).collect(),
+        ))
+    };
+    let error = operands
+        .judge_bound(&catalog, &legato(ParameterValue::Bytes(vec![1])))
+        .expect_err("testo e byte");
+    assert_eq!(error.message, OPERAND_FAMILY_MISMATCH);
+    operands
+        .judge_bound(&catalog, &legato(ParameterValue::String("a".to_owned())))
+        .expect("testo e testo");
 }

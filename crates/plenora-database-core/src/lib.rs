@@ -6,6 +6,7 @@ pub mod admission_gate;
 pub mod caller_sql;
 pub mod cancellation;
 pub mod capabilities;
+pub mod cast_table;
 pub mod checkpoint;
 pub mod conformance;
 pub mod crs_definition;
@@ -49,6 +50,7 @@ pub mod spatial_predicate;
 pub mod spatial_probe;
 pub mod strict_json;
 pub mod transaction;
+pub mod typed_parameter;
 
 pub use cancellation::{CancellationReason, CancellationToken};
 pub use checkpoint::{ReadCheckpoint, READ_CHECKPOINT_SCHEMA_VERSION};

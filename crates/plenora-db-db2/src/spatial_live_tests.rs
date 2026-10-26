@@ -6,10 +6,10 @@ use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
 use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::outcome::WriteOutcome;
 use plenora_database_core::plan::{
-    DeclaredCrs, FilterExpression, ObjectRef, OrderBy, ReadOperation, SortDirection, SridPolicy,
-    TransactionProfile, WriteMode, WriteOperation,
+    DeclaredCrs, FilterExpression, ObjectRef, OrderBy, ProviderKind, ReadOperation, SortDirection,
+    SridPolicy, TransactionProfile, WriteMode, WriteOperation,
 };
-use plenora_database_core::portable::{select, spatial};
+use plenora_database_core::portable::{compile_portable, select, spatial};
 use plenora_database_core::protocol::{self, contract_schema};
 use plenora_database_core::provider::{
     BatchStream, ParameterBag, ParameterValue, Provider, ProviderFuture, SecretString,
@@ -434,11 +434,10 @@ async fn live_spatial_write_round_trips_and_invalid_wkb_rolls_back() {
 
 #[tokio::test]
 #[ignore = "richiede Db2 LUW live esplicito"]
-async fn live_spatial_portable_predicates_execute_with_bound_wkb_and_srid() {
-    let provider = provider();
-    let secret = secret();
-    let budget = budget();
-    let cancellation = CancellationToken::new();
+async fn live_spatial_portable_predicates_are_refused_without_srid_proof() {
+    // Regola delle sonde (`spatial_probe::admit_probe`, 14960f9): Db2 non ha
+    // una guardia misurata sullo SRID della colonna e il compilatore portable
+    // non legge il catalogo; la sonda si rifiuta prima di ogni connessione.
     for predicate in [
         SpatialPredicate::Intersects,
         SpatialPredicate::Contains,
@@ -457,30 +456,12 @@ async fn live_spatial_portable_predicates_execute_with_bound_wkb_and_srid() {
                 },
             ))
             .into_statement();
-        let mut transaction = provider
-            .begin_transaction(
-                &secret,
-                &TransactionOptions::default(),
-                &budget,
-                &cancellation,
-            )
-            .await
-            .expect("transazione predicato spatial Db2");
-        let statement = plenora_database_core::admission_gate::portable(
-            transaction.as_mut(),
-            &statement,
-            &cancellation,
-        )
-        .await
-        .expect("compila predicato spatial Db2");
-        let rows = transaction
-            .query(&statement, &cancellation)
-            .await
-            .expect("esegue predicato spatial Db2");
-        assert!(!rows.is_empty());
-        transaction
-            .rollback(&cancellation)
-            .await
-            .expect("chiude predicato spatial Db2");
+        let error = compile_portable(ProviderKind::Db2, &statement)
+            .expect_err("sonda portable Db2 senza prova dello SRID");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(
+            error.message,
+            plenora_database_core::spatial_probe::PROBE_SRID_UNPROVEN
+        );
     }
 }

@@ -134,16 +134,31 @@ async fn observe_prepared_thread(audit: &mut mysql_async::Conn, marker: &str) ->
     owner_thread_id
 }
 
-async fn await_single_statement_execution(audit: &mut mysql_async::Conn, baseline: u64) {
+/// Le esecuzioni dello statement del chiamante, riconosciuto dal marcatore
+/// nel suo testo (`prepared_statements_instances`): le letture del catalogo
+/// che il giudizio degli operandi fa prima (`catalog::VIEW_SQL`, preparata)
+/// non contano. Fino alla quattordicesima lettura del 25/10 contava
+/// `Com_stmt_execute` del server, e la lettura del catalogo la faceva
+/// sembrare una seconda esecuzione.
+async fn marked_statement_executions(audit: &mut mysql_async::Conn, marker: &str) -> (u64, u64) {
+    let pattern = format!("%{marker}%");
+    let observed: Option<(u64, u64)> = audit
+        .exec_first(
+            "SELECT COUNT(*), CAST(COALESCE(SUM(COUNT_EXECUTE), 0) AS UNSIGNED) \
+             FROM performance_schema.prepared_statements_instances \
+             WHERE SQL_TEXT LIKE ? AND SQL_TEXT NOT LIKE '%prepared_statements_instances%'",
+            (&pattern,),
+        )
+        .await
+        .expect("esecuzioni dello statement marcato");
+    observed.expect("riga di conteggio")
+}
+
+async fn await_single_statement_execution(audit: &mut mysql_async::Conn, marker: &str) {
     for _ in 0..100 {
-        let current: Option<(String, u64)> = audit
-            .query_first("SHOW GLOBAL STATUS LIKE 'Com_stmt_execute'")
-            .await
-            .expect("COM_STMT_EXECUTE durante avvio worker");
-        let delta = current.and_then(|(_, value)| value.checked_sub(baseline));
-        match delta {
-            Some(1) => return,
-            Some(value) if value > 1 => {
+        match marked_statement_executions(audit, marker).await {
+            (1, 1) => return,
+            (statements, executions) if statements > 1 || executions > 1 => {
                 panic!("QueryOperation eseguita piu di una volta")
             }
             _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
@@ -2482,11 +2497,7 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
             .expect("pool performance_schema"),
     );
     let mut audit = audit_pool.get_conn().await.expect("checkout audit");
-    let baseline: Option<(String, u64)> = audit
-        .query_first("SHOW GLOBAL STATUS LIKE 'Com_stmt_execute'")
-        .await
-        .expect("baseline globale COM_STMT_EXECUTE");
-    let (_, baseline) = baseline.expect("contatore globale COM_STMT_EXECUTE");
+    let marker = "single_execution_observed_id";
     let budget = ResourceBudget::new(ResourceLimits {
         rows: 2_048,
         memory_bytes: 96 * 1_024,
@@ -2524,7 +2535,7 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
     };
     assert_eq!(error.category, ErrorCategory::ResourceLimit);
 
-    await_single_statement_execution(&mut audit, baseline).await;
+    await_single_statement_execution(&mut audit, marker).await;
 
     let mut rows = 0_usize;
     let mut batches = 0_usize;
@@ -2539,13 +2550,10 @@ async fn live_query_operation_executes_once_holds_lease_and_stays_demand_bounded
         rows = rows.saturating_add(batch.num_rows());
         batches = batches.saturating_add(1);
         assert_eq!(budget.remaining(ResourceKind::ConcurrentOperations), 0);
-        let current: Option<(String, u64)> = audit
-            .query_first("SHOW GLOBAL STATUS LIKE 'Com_stmt_execute'")
-            .await
-            .expect("COM_STMT_EXECUTE dopo un batch");
         assert_eq!(
-            current.and_then(|(_, value)| value.checked_sub(baseline)),
-            Some(1)
+            marked_statement_executions(&mut audit, marker).await,
+            (1, 1),
+            "una sola esecuzione dello statement dopo un batch"
         );
     }
     assert_eq!(rows, 2_048);
@@ -8603,6 +8611,7 @@ async fn live_name_shapes_and_the_transaction_catalog_are_judged() {
             tx.as_mut(),
             &statement,
             Some(&OperandPlan::Query(operation)),
+            &[],
             &cancellation,
         )
         .await
@@ -8631,6 +8640,7 @@ async fn live_name_shapes_and_the_transaction_catalog_are_judged() {
         tx.as_mut(),
         &Statement::new("SELECT id FROM _nomi_r10 ORDER BY name"),
         Some(&OperandPlan::Query(&ordered)),
+        &[],
         &cancellation,
     )
     .await
@@ -8652,6 +8662,7 @@ async fn live_name_shapes_and_the_transaction_catalog_are_judged() {
              (SELECT x.id FROM {database}._nomi_r10_u AS x WHERE x.id = t.id)"
         )),
         Some(&OperandPlan::Query(&correlated)),
+        &[],
         &cancellation,
     )
     .await
@@ -8676,6 +8687,7 @@ async fn live_name_shapes_and_the_transaction_catalog_are_judged() {
             ],
         },
         Some(&OperandPlan::Mutation(&update)),
+        &["v".to_owned(), "k".to_owned()],
         &cancellation,
     )
     .await
@@ -8703,6 +8715,7 @@ async fn live_name_shapes_and_the_transaction_catalog_are_judged() {
         tx.as_mut(),
         &Statement::new("SELECT id FROM _nomi_r10_s ORDER BY g"),
         Some(&OperandPlan::Query(&shadowed)),
+        &[],
         &cancellation,
     )
     .await
@@ -8910,6 +8923,7 @@ async fn live_binary_columns_of_views_are_judged_geometric() {
         &Statement::new("SELECT t.id FROM _derivate_b_v AS t WHERE t.w = ?")
             .with_params(vec![ParameterValue::Bytes(wkb.clone())]),
         Some(&OperandPlan::Query(&judged)),
+        &["p".to_owned()],
         &cancellation,
     )
     .await
@@ -9592,4 +9606,979 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
         failures.is_empty(),
         "valori generati non esatti: {failures:#?}"
     );
+}
+
+/// Le righe di una lettura del provider, o il suo errore.
+async fn geometry_operand_read(
+    provider: &dyn Provider,
+    reading: &ReadOperation,
+    parameters: &ParameterBag,
+) -> plenora_database_core::Result<usize> {
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut stream = provider
+        .read(&live_secret(), reading, parameters, &budget, &cancellation)
+        .await?;
+    let mut rows = 0;
+    while let Some(batch) = stream.next_batch(&cancellation).await? {
+        rows += batch.num_rows();
+    }
+    Ok(rows)
+}
+
+/// Una lettura di `id` da `object` con `field = :p`, o senza filtro e con
+/// `ORDER BY field`.
+fn geometry_operand_reading(object: &str, field: &str, filtered: bool) -> ReadOperation {
+    ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some(environment("PLENORA_MYSQL_DATABASE", "dataflow_test")),
+            object: object.to_owned(),
+        },
+        projection: vec!["id".to_owned()],
+        order_by: vec![plenora_database_core::plan::OrderBy {
+            field: if filtered { "id" } else { field }.to_owned(),
+            direction: plenora_database_core::plan::SortDirection::Asc,
+        }],
+        row_limit: None,
+        row_offset: None,
+        filter: filtered.then(|| plenora_database_core::plan::FilterExpression::Eq {
+            field: field.to_owned(),
+            parameter: "p".to_owned(),
+        }),
+        declared_crs: Vec::new(),
+    }
+}
+
+/// Regola B per colonna (rilettura 13, R13-1), su `MySQL` e `MariaDB`
+/// (`PLENORA_MYSQL_PRODUCT`): una colonna generata di una **tabella**
+/// (`VARBINARY AS (ST_AsBinary(ST_GeomFromText(t))) STORED` e `VIRTUAL`, dal
+/// WKT di una colonna testo: la tabella non ha colonne spatial, e la lettura
+/// del provider arriva al giudizio) porta il WKB della geometria, e il server
+/// ne confronta i byte. Due poligoni uguali per
+/// `ST_Equals` con i vertici in ordine diverso: lo SQL senza giudizio
+/// `w = ?` rende soltanto il primo, un risultato sbagliato senza errore. Fino
+/// al 25/10 l'origine era della relazione e la colonna restava scalare; ora la
+/// colonna generata (`GENERATED` in `Extra`) e derivata e il giudizio la
+/// rifiuta nel path query, nella transazione e nella lettura. Lo stesso per
+/// un default di espressione che legge un'altra colonna (`wd`):
+/// `DEFAULT_GENERATED` su `MySQL`; su `MariaDB` il catalogo non lo distingue
+/// da un letterale (misurato il 25/10: `Extra` vuoto, `IS_GENERATED`
+/// `NEVER`), e ogni default presente si giudica calcolato. La colonna binaria
+/// memorizzata, la colonna generata numerica e l'id restano.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_server_computed_binary_columns_are_judged_geometric() {
+    use plenora_database_core::facade::query_judged;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::spatial_operand::OperandPlan;
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    let table = "_generate_b";
+    let cleanup = ["DROP TABLE IF EXISTS _generate_b"];
+    let wkb: Vec<u8>;
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione");
+        for statement in cleanup {
+            connection.query_drop(statement).await.expect("pulizia");
+        }
+        for statement in [
+            "CREATE TABLE _generate_b (id BIGINT PRIMARY KEY, b VARBINARY(16) NOT NULL, \
+             t VARCHAR(200) NOT NULL, \
+             w VARBINARY(200) AS (ST_AsBinary(ST_GeomFromText(t))) STORED, \
+             wv VARBINARY(200) AS (ST_AsBinary(ST_GeomFromText(t))) VIRTUAL, \
+             wd VARBINARY(200) DEFAULT (ST_AsBinary(ST_GeomFromText(t))), \
+             n BIGINT AS (id * 2) STORED) ENGINE=InnoDB",
+            "INSERT INTO _generate_b (id, b, t) VALUES \
+             (3, 0x03, 'POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))'), \
+             (4, 0x04, 'POLYGON((1 0, 1 1, 0 1, 0 0, 1 0))')",
+        ] {
+            connection.query_drop(statement).await.expect("fixture");
+        }
+        let equal: Option<i64> = connection
+            .query_first(
+                "SELECT COUNT(*) FROM _generate_b a, _generate_b b \
+                 WHERE a.id = 3 AND b.id = 4 \
+                 AND ST_Equals(ST_GeomFromText(a.t), ST_GeomFromText(b.t))",
+            )
+            .await
+            .expect("ST_Equals");
+        assert_eq!(equal, Some(1), "i due poligoni sono la stessa geometria");
+        wkb = connection
+            .query_first("SELECT ST_AsBinary(ST_GeomFromText(t)) FROM _generate_b WHERE id = 3")
+            .await
+            .expect("WKB")
+            .expect("riga");
+        for field in ["w", "wv", "wd"] {
+            let silent: Vec<i64> = connection
+                .exec(
+                    format!("SELECT id FROM _generate_b WHERE {field} = ? ORDER BY id"),
+                    (wkb.clone(),),
+                )
+                .await
+                .expect("senza giudizio");
+            assert_eq!(silent, vec![3], "{field}: il server confronta i byte");
+        }
+    }
+    let provider = geometry_operand_provider();
+    let provider = provider.as_ref();
+    let database = environment("PLENORA_MYSQL_DATABASE", "dataflow_test");
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let over = |extra: &Value| {
+        let mut operation = json!({
+            "source": {"object": {"catalog": null, "schema": database, "object": table}, "alias": "t"},
+            "projection": [{"expression": column("id"), "alias": "id"}],
+            "filter": null, "having": null, "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        serde_json::from_value::<plenora_database_core::query::QueryOperation>(operation)
+            .expect("piano")
+    };
+    let equal_to = |field: &str, right: Value| json!({"filter": {"kind": "compare", "left": column(field), "operator": "eq", "right": right}});
+    let typed = |parameter_type: &str| json!({"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type});
+    let untyped = json!({"kind": "parameter", "name": "p"});
+    let ordered =
+        |field: &str| json!({"order_by": [{"expression": column(field), "direction": "asc"}]});
+    let bag = |value: ParameterValue| ParameterBag::new(BTreeMap::from([("p".to_owned(), value)]));
+    let bytes = bag(ParameterValue::Bytes(wkb.clone()));
+    let none = ParameterBag::default();
+    let refused = [
+        (
+            "w = ? binario (STORED)",
+            over(&equal_to("w", typed("binary"))),
+            bytes.clone(),
+        ),
+        (
+            "wv = ? con byte (VIRTUAL)",
+            over(&equal_to("wv", untyped.clone())),
+            bytes.clone(),
+        ),
+        (
+            "wd = ? con byte (default di espressione)",
+            over(&equal_to("wd", untyped.clone())),
+            bytes.clone(),
+        ),
+        ("ORDER BY w", over(&ordered("w")), none.clone()),
+        ("ORDER BY wv", over(&ordered("wv")), none.clone()),
+    ];
+    for (form, operation, parameters) in &refused {
+        let error = geometry_operand_rows(provider, operation, parameters)
+            .await
+            .expect_err(form);
+        assert_eq!(
+            error.category,
+            ErrorCategory::Unsupported,
+            "{form}: {error:?}"
+        );
+        assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{form}: {error:?}");
+    }
+    let admitted = [
+        (
+            "b = ? memorizzata",
+            over(&equal_to("b", typed("binary"))),
+            bag(ParameterValue::Bytes(vec![4])),
+            1,
+        ),
+        (
+            "n = ? generata numerica",
+            over(&equal_to("n", typed("big_integer"))),
+            bag(ParameterValue::I64(6)),
+            1,
+        ),
+        (
+            "id = ?",
+            over(&equal_to("id", typed("big_integer"))),
+            bag(ParameterValue::I64(3)),
+            1,
+        ),
+        ("ORDER BY n", over(&ordered("n")), none.clone(), 2),
+    ];
+    for (form, operation, parameters, expected) in admitted {
+        let rows = geometry_operand_rows(provider, &operation, &parameters)
+            .await
+            .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(rows, expected, "{form}");
+    }
+    // La transazione (SDK, facade, CLI portable).
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let judged = over(&equal_to("w", untyped));
+    let error = query_judged(
+        tx.as_mut(),
+        &Statement::new("SELECT t.id FROM _generate_b AS t WHERE t.w = ?")
+            .with_params(vec![ParameterValue::Bytes(wkb.clone())]),
+        Some(&OperandPlan::Query(&judged)),
+        &["p".to_owned()],
+        &cancellation,
+    )
+    .await
+    .expect_err("w = ? nella transazione");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{error:?}");
+    let _ = tx.rollback(&cancellation).await;
+    // La lettura del provider.
+    for (field, filtered) in [("w", true), ("wv", true), ("wd", true), ("w", false)] {
+        let error = geometry_operand_read(
+            provider,
+            &geometry_operand_reading(table, field, filtered),
+            &bytes,
+        )
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("lettura {field} ammessa"));
+        assert_eq!(
+            error.message, GEOMETRY_SCALAR_OPERAND,
+            "lettura {field}: {error:?}"
+        );
+    }
+    assert_eq!(
+        geometry_operand_read(
+            provider,
+            &geometry_operand_reading(table, "n", true),
+            &bag(ParameterValue::I64(8)),
+        )
+        .await
+        .expect("lettura n"),
+        1
+    );
+    let mut teardown = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("pulizia");
+    let connection = teardown.connection_mut().expect("connessione");
+    for statement in cleanup {
+        connection.query_drop(statement).await.expect("pulizia");
+    }
+}
+
+/// Regola F (rilettura 13, R13-2), su `MySQL` e `MariaDB`: una vista rende i
+/// byte di una geometria come testo (`CONVERT(ST_AsBinary(g) USING latin1)`),
+/// e il server confronta il testo con un bind binario convertendo da se: lo
+/// SQL senza giudizio `x = CAST(? AS BINARY)` con il WKB del primo poligono
+/// rende soltanto il primo dei due poligoni uguali, un risultato sbagliato
+/// senza errore. Il giudizio rifiuta il confronto fra famiglie (testo e
+/// binaria, `OPERAND_FAMILY_MISMATCH`) nel path query, nella transazione e
+/// nella lettura, e il `CAST` binario della colonna testo derivata
+/// (`GEOMETRY_SCALAR_OPERAND`). Un testo confrontato con un testo resta
+/// (il confine dichiarato: l'esadecimale del WKB come testo).
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_text_columns_compared_with_binary_values_are_refused() {
+    use plenora_database_core::facade::query_judged;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::spatial_operand::{OperandPlan, OPERAND_FAMILY_MISMATCH};
+    use plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    let view = "_testo_b_v";
+    let cleanup = [
+        "DROP VIEW IF EXISTS _testo_b_v",
+        "DROP TABLE IF EXISTS _testo_b",
+    ];
+    let wkb: Vec<u8>;
+    let hex: String;
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione");
+        for statement in cleanup {
+            connection.query_drop(statement).await.expect("pulizia");
+        }
+        for statement in [
+            "CREATE TABLE _testo_b (id BIGINT PRIMARY KEY, g POLYGON NOT NULL) ENGINE=InnoDB",
+            "INSERT INTO _testo_b VALUES \
+             (3, ST_GeomFromText('POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))')), \
+             (4, ST_GeomFromText('POLYGON((1 0, 1 1, 0 1, 0 0, 1 0))'))",
+            "CREATE VIEW _testo_b_v AS SELECT id, CONVERT(ST_AsBinary(g) USING latin1) AS x, \
+             HEX(ST_AsBinary(g)) AS h FROM _testo_b",
+        ] {
+            connection.query_drop(statement).await.expect("fixture");
+        }
+        wkb = connection
+            .query_first("SELECT ST_AsBinary(g) FROM _testo_b WHERE id = 3")
+            .await
+            .expect("WKB")
+            .expect("riga");
+        hex = connection
+            .query_first("SELECT HEX(ST_AsBinary(g)) FROM _testo_b WHERE id = 3")
+            .await
+            .expect("HEX")
+            .expect("riga");
+        let silent: Vec<i64> = connection
+            .exec(
+                "SELECT id FROM _testo_b_v WHERE x = CAST(? AS BINARY) ORDER BY id",
+                (wkb.clone(),),
+            )
+            .await
+            .expect("senza giudizio");
+        assert_eq!(
+            silent,
+            vec![3],
+            "il server converte il testo e ne confronta i byte"
+        );
+    }
+    let provider = geometry_operand_provider();
+    let provider = provider.as_ref();
+    let database = environment("PLENORA_MYSQL_DATABASE", "dataflow_test");
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let over = |extra: &Value| {
+        let mut operation = json!({
+            "source": {"object": {"catalog": null, "schema": database, "object": view}, "alias": "t"},
+            "projection": [{"expression": column("id"), "alias": "id"}],
+            "filter": null, "having": null, "row_limit": null
+        });
+        for (key, value) in extra.as_object().expect("oggetto") {
+            operation[key] = value.clone();
+        }
+        serde_json::from_value::<plenora_database_core::query::QueryOperation>(operation)
+            .expect("piano")
+    };
+    let compare = |left: Value, right: Value| json!({"filter": {"kind": "compare", "left": left, "operator": "eq", "right": right}});
+    let untyped = json!({"kind": "parameter", "name": "p"});
+    let cast_binary = |expression: Value| json!({"kind": "cast", "expression": expression, "target_type": "binary"});
+    let bag = |value: ParameterValue| ParameterBag::new(BTreeMap::from([("p".to_owned(), value)]));
+    let bytes = bag(ParameterValue::Bytes(wkb.clone()));
+    let mismatched = [
+        (
+            "x = CAST(? AS BINARY)",
+            over(&compare(column("x"), cast_binary(untyped.clone()))),
+            bytes.clone(),
+        ),
+        (
+            "x = ? binario dichiarato",
+            over(&compare(
+                column("x"),
+                json!({"kind": "typed_parameter", "name": "p", "parameter_type": "binary"}),
+            )),
+            bytes.clone(),
+        ),
+        (
+            "x = ? con byte",
+            over(&compare(column("x"), untyped.clone())),
+            bytes.clone(),
+        ),
+    ];
+    for (form, operation, parameters) in &mismatched {
+        let error = geometry_operand_rows(provider, operation, parameters)
+            .await
+            .expect_err(form);
+        assert_eq!(
+            error.category,
+            ErrorCategory::InvalidPlan,
+            "{form}: {error:?}"
+        );
+        assert_eq!(
+            error.phase,
+            plenora_database_core::ErrorPhase::Prepare,
+            "{form}: {error:?}"
+        );
+        assert_eq!(error.message, OPERAND_FAMILY_MISMATCH, "{form}: {error:?}");
+    }
+    let error = geometry_operand_rows(
+        provider,
+        &over(&compare(cast_binary(column("x")), untyped.clone())),
+        &bytes,
+    )
+    .await
+    .expect_err("CAST(x AS BINARY) = ?");
+    assert_eq!(error.message, GEOMETRY_SCALAR_OPERAND, "{error:?}");
+    // Il testo con il testo: il confine dichiarato.
+    for (form, field, value, expected) in [
+        ("h = ? esadecimale", "h", hex.clone(), 1),
+        ("x = ? testo", "x", "nessuno".to_owned(), 0),
+    ] {
+        let rows = geometry_operand_rows(
+            provider,
+            &over(&compare(column(field), untyped.clone())),
+            &bag(ParameterValue::String(value)),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(rows, expected, "{form}");
+    }
+    // La transazione, con i nomi dei bind.
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let judged = over(&compare(column("x"), untyped));
+    let error = query_judged(
+        tx.as_mut(),
+        &Statement::new("SELECT t.id FROM _testo_b_v AS t WHERE t.x = ?")
+            .with_params(vec![ParameterValue::Bytes(wkb.clone())]),
+        Some(&OperandPlan::Query(&judged)),
+        &["p".to_owned()],
+        &cancellation,
+    )
+    .await
+    .expect_err("x = ? nella transazione");
+    assert_eq!(error.message, OPERAND_FAMILY_MISMATCH, "{error:?}");
+    let _ = tx.rollback(&cancellation).await;
+    // La lettura del provider.
+    let error = geometry_operand_read(provider, &geometry_operand_reading(view, "x", true), &bytes)
+        .await
+        .expect_err("lettura x = byte");
+    assert_eq!(error.message, OPERAND_FAMILY_MISMATCH, "lettura: {error:?}");
+    assert_eq!(
+        geometry_operand_read(
+            provider,
+            &geometry_operand_reading(view, "h", true),
+            &bag(ParameterValue::String(hex)),
+        )
+        .await
+        .expect("lettura h = testo"),
+        1
+    );
+    let mut teardown = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("pulizia");
+    let connection = teardown.connection_mut().expect("connessione");
+    for statement in cleanup {
+        connection.query_drop(statement).await.expect("pulizia");
+    }
+}
+
+/// Regola T (quattordicesima lettura del 25/10, difetto 1) su `MySQL` e
+/// `MariaDB`: un parametro dichiarato `string` legato al valore `I64` 1. Lo
+/// SQL senza giudizio `name = ?` confronta per numero e cancella `'1'`,
+/// `'01'` e `'1.0'`; su d5d7fa1 il lowering delle mutazioni rendeva proprio
+/// quel segnaposto nudo, e il giudizio prendeva la famiglia dal tipo
+/// dichiarato. Ora il valore si rifiuta prima dell'esecuzione
+/// (`TYPED_PARAMETER_MISMATCH`) nella mutazione della transazione (il
+/// percorso dello SDK) e nel path query; un testo per il testo cancella una
+/// riga sola, con il `CAST` del renderer delle query.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_typed_parameters_refuse_values_of_another_type() {
+    use plenora_database_core::facade::execute_judged;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::relational::MutationOperation;
+    use plenora_database_core::spatial_operand::OperandPlan;
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    let cleanup = "DROP TABLE IF EXISTS _tipi_t";
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione");
+        connection.query_drop(cleanup).await.expect("pulizia");
+        connection
+            .query_drop(
+                "CREATE TABLE _tipi_t (id BIGINT PRIMARY KEY, name VARCHAR(10) NOT NULL) ENGINE=InnoDB",
+            )
+            .await
+            .expect("tabella");
+        connection
+            .query_drop("INSERT INTO _tipi_t VALUES (1, '1'), (2, '01'), (3, '1.0')")
+            .await
+            .expect("righe");
+        let silent: Vec<i64> = connection
+            .exec(
+                "SELECT id FROM _tipi_t WHERE name = ? ORDER BY id",
+                (1_i64,),
+            )
+            .await
+            .expect("senza giudizio");
+        assert_eq!(silent, vec![1, 2, 3], "il server confronta per numero");
+    }
+    let kind = if environment("PLENORA_MYSQL_PRODUCT", "mysql") == "mariadb" {
+        ProviderKind::Mariadb
+    } else {
+        ProviderKind::Mysql
+    };
+    let database = environment("PLENORA_MYSQL_DATABASE", "dataflow_test");
+    let typed = json!({"kind": "typed_parameter", "name": "p", "parameter_type": "string"});
+    let filter = json!({"kind": "compare",
+        "left": {"kind": "column", "column": {"relation": null, "field": "name"}},
+        "operator": "eq", "right": typed});
+    let mutation: MutationOperation = serde_json::from_value(json!({
+        "type": "delete",
+        "target": {"catalog": null, "schema": database, "object": "_tipi_t"},
+        "filter": filter
+    }))
+    .expect("mutazione");
+    let lowered =
+        plenora_database_core::compile_relational_mutation(kind, &mutation).expect("lowering");
+    let provider = geometry_operand_provider();
+    let provider = provider.as_ref();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let statement =
+        |value: ParameterValue| Statement::new(lowered.sql.clone()).with_params(vec![value]);
+    let plan = OperandPlan::Mutation(&mutation);
+    let error = execute_judged(
+        tx.as_mut(),
+        &statement(ParameterValue::I64(1)),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect_err("intero per un testo dichiarato");
+    assert_eq!(error.category, ErrorCategory::InvalidPlan, "{error:?}");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    let deleted = execute_judged(
+        tx.as_mut(),
+        &statement(ParameterValue::String("1".to_owned())),
+        Some(&plan),
+        &lowered.bind_names,
+        &cancellation,
+    )
+    .await
+    .expect("testo per il testo");
+    // La forma del renderer delle query.
+    assert!(lowered.sql.ends_with("`name` = ?"), "{}", lowered.sql);
+    assert_eq!(deleted, 1, "il CAST confronta il testo");
+    tx.rollback(&cancellation).await.expect("rollback");
+    // Il path query del provider.
+    let operation: plenora_database_core::query::QueryOperation = serde_json::from_value(json!({
+        "source": {"object": {"catalog": null, "schema": database, "object": "_tipi_t"}, "alias": "t"},
+        "projection": [{"expression": {"kind": "column", "column": {"relation": "t", "field": "id"}}, "alias": "id"}],
+        "filter": filter, "having": null, "row_limit": null
+    }))
+    .expect("piano");
+    let bag = |value: ParameterValue| ParameterBag::new(BTreeMap::from([("p".to_owned(), value)]));
+    let error = geometry_operand_rows(provider, &operation, &bag(ParameterValue::I64(1)))
+        .await
+        .expect_err("query con un intero");
+    assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    assert_eq!(
+        geometry_operand_rows(
+            provider,
+            &operation,
+            &bag(ParameterValue::String("1".to_owned()))
+        )
+        .await
+        .expect("query con un testo"),
+        1
+    );
+    let mut teardown = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("pulizia");
+    let connection = teardown.connection_mut().expect("connessione");
+    connection.query_drop(cleanup).await.expect("pulizia");
+}
+
+/// Quindicesima lettura del 25/10 su `MySQL` e `MariaDB`
+/// (`PLENORA_MYSQL_PRODUCT`), le tre regole che tolgono emulazione.
+///
+/// - **Regola C.** `CAST(? AS DATETIME(6))` con
+///   `2024-01-01T10:00:00+02:00`: `MySQL` lo converte nel fuso della
+///   sessione (08:00 in UTC), `MariaDB` scarta l'offset (10:00) e ritrova le
+///   righe sbagliate; `CAST(? AS DECIMAL(38, 10))` arrotonda
+///   `0.12345678901` a `0.1234567890` e ritrova `0.123456789000`. Il
+///   `timestamp_tz` si rifiuta su `MariaDB`, il decimale oltre la scala resa
+///   e la colonna `DECIMAL(30, 12)` sotto `CAST(... AS decimal)` ovunque.
+/// - **Regola B.** `n INT = ?` con un uuid rende `n = 1` per conversione
+///   implicita; il parametro tipizzato `uuid` (reso senza `CAST`, un testo) e
+///   un `Uuid` legato si rifiutano (`OPERAND_FAMILY_MISMATCH`).
+/// - **Regola A.** Il nome lo lega il server: `t.ñame` lega `Ñame` (il prepare
+///   lo dice) e si giudica; `t.e` non lega `é` (1054), anche se
+///   `INFORMATION_SCHEMA` li uguaglia, e si rifiuta (`NAME_UNRESOLVED`).
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_rilettura_quindici_fuso_uuid_nomi_e_cast() {
+    use plenora_database_core::cast_table::CAST_NOT_EXACT;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::spatial_operand::{NAME_UNRESOLVED, OPERAND_FAMILY_MISMATCH};
+    use plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH;
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    let mariadb = environment("PLENORA_MYSQL_PRODUCT", "mysql") == "mariadb";
+    let cleanup = "DROP TABLE IF EXISTS _r15_t";
+    let uuid = "00000001-0000-0000-0000-000000000000";
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione");
+        connection.query_drop(cleanup).await.expect("pulizia");
+        connection
+            .query_drop(
+                "CREATE TABLE _r15_t (id BIGINT PRIMARY KEY, n INT NOT NULL, \
+                 ts DATETIME(6) NOT NULL, d DECIMAL(30, 12) NOT NULL, \
+                 `Ñame` INT NOT NULL, `é` INT NOT NULL) ENGINE=InnoDB",
+            )
+            .await
+            .expect("tabella");
+        connection
+            .query_drop(
+                "INSERT INTO _r15_t VALUES \
+                 (1, 1, '2024-01-01 08:00:00', 0.123456789000, 1, 1), \
+                 (2, 2, '2024-01-01 10:00:00', 0.5, 2, 2), \
+                 (3, 3, '2024-01-01 10:00:00', 0.5, 3, 3)",
+            )
+            .await
+            .expect("righe");
+        connection
+            .query_drop("SET time_zone = '+00:00'")
+            .await
+            .expect("fuso");
+        // La tabella del modulo `cast_table`, rimisurata.
+        let fuso: Vec<i64> = connection
+            .exec(
+                "SELECT id FROM _r15_t WHERE ts = CAST(? AS DATETIME(6)) ORDER BY id",
+                ("2024-01-01T10:00:00+02:00",),
+            )
+            .await
+            .expect("timestamp con fuso");
+        if mariadb {
+            assert_eq!(fuso, vec![2, 3], "MariaDB scarta l'offset");
+        } else {
+            assert_eq!(fuso, vec![1], "MySQL converte nel fuso della sessione");
+        }
+        let uuid_n: Vec<i64> = connection
+            .exec("SELECT id FROM _r15_t WHERE n = ?", (uuid,))
+            .await
+            .expect("uuid e intero");
+        assert_eq!(uuid_n, vec![1], "il server converte l'uuid in numero");
+        let arrotondato: Vec<String> = connection
+            .exec(
+                "SELECT CAST(CAST(? AS DECIMAL(38, 10)) AS CHAR)",
+                ("0.12345678901",),
+            )
+            .await
+            .expect("decimale");
+        assert_eq!(arrotondato, vec!["0.1234567890".to_owned()]);
+        let ritrovato: Vec<i64> = connection
+            .exec(
+                "SELECT id FROM _r15_t WHERE d = CAST(? AS DECIMAL(38, 10))",
+                ("0.12345678901",),
+            )
+            .await
+            .expect("decimale arrotondato");
+        assert_eq!(ritrovato, vec![1], "il CAST arrotonda e ritrova la riga");
+        let e_non_lega = connection
+            .exec_drop("SELECT `e` FROM _r15_t", ())
+            .await
+            .expect_err("e non lega é");
+        assert!(format!("{e_non_lega:?}").contains("1054"), "{e_non_lega:?}");
+        let i_s: Vec<String> = connection
+            .exec(
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS \
+                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '_r15_t' AND COLUMN_NAME = 'e'",
+                (),
+            )
+            .await
+            .expect("INFORMATION_SCHEMA");
+        assert_eq!(
+            i_s.len(),
+            usize::from(mariadb),
+            "la collation di INFORMATION_SCHEMA"
+        );
+    }
+    let database = environment("PLENORA_MYSQL_DATABASE", "dataflow_test");
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let typed = |parameter_type: &str| json!({"kind": "typed_parameter", "name": "p", "parameter_type": parameter_type});
+    let compare = |left: Value, right: Value| json!({"kind": "compare", "left": left, "operator": "eq", "right": right});
+    let plan = |filter: Value| -> plenora_database_core::query::QueryOperation {
+        serde_json::from_value(json!({
+            "source": {"object": {"catalog": null, "schema": database, "object": "_r15_t"}, "alias": "t"},
+            "projection": [{"expression": column("id"), "alias": "id"}],
+            "filter": filter, "having": null, "row_limit": null
+        }))
+        .expect("piano")
+    };
+    let cast = |expression: Value, target: &str| json!({"kind": "cast", "expression": expression, "target_type": target});
+    let bag = |value: ParameterValue| ParameterBag::new(BTreeMap::from([("p".to_owned(), value)]));
+    let provider = geometry_operand_provider();
+    let provider = provider.as_ref();
+    let tz = bag(ParameterValue::TimestampTz(
+        "2024-01-01T10:00:00+02:00".to_owned(),
+    ));
+    let fuso = geometry_operand_rows(
+        provider,
+        &plan(compare(column("ts"), typed("timestamp_tz"))),
+        &tz,
+    )
+    .await;
+    if mariadb {
+        let error = fuso.expect_err("timestamp_tz su MariaDB");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan, "{error:?}");
+        assert_eq!(error.message, TYPED_PARAMETER_MISMATCH, "{error:?}");
+    } else {
+        assert_eq!(fuso.expect("timestamp_tz su MySQL"), 1);
+    }
+    let refused = [
+        (
+            "n = uuid tipizzato",
+            plan(compare(column("n"), typed("uuid"))),
+            bag(ParameterValue::Uuid(uuid.to_owned())),
+            OPERAND_FAMILY_MISMATCH,
+        ),
+        (
+            "n = Uuid legato",
+            plan(compare(
+                column("n"),
+                json!({"kind": "parameter", "name": "p"}),
+            )),
+            bag(ParameterValue::Uuid(uuid.to_owned())),
+            OPERAND_FAMILY_MISMATCH,
+        ),
+        (
+            "d = CAST(? AS decimal) oltre la scala",
+            plan(compare(
+                column("d"),
+                cast(json!({"kind": "parameter", "name": "p"}), "decimal"),
+            )),
+            bag(ParameterValue::Decimal("0.12345678901".to_owned())),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "d = CAST(F64 AS decimal)",
+            plan(compare(
+                column("d"),
+                cast(json!({"kind": "parameter", "name": "p"}), "decimal"),
+            )),
+            bag(ParameterValue::F64(0.123_456_789_01)),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "CAST(d DECIMAL(30, 12) AS decimal) = ?",
+            plan(compare(cast(column("d"), "decimal"), typed("decimal"))),
+            bag(ParameterValue::Decimal("0.123456789".to_owned())),
+            CAST_NOT_EXACT,
+        ),
+        (
+            "t.ñame = testo, legato dal server",
+            plan(compare(column("ñame"), typed("string"))),
+            bag(ParameterValue::String("01".to_owned())),
+            OPERAND_FAMILY_MISMATCH,
+        ),
+        (
+            "t.e non lega é",
+            plan(compare(column("e"), typed("integer"))),
+            bag(ParameterValue::I32(1)),
+            NAME_UNRESOLVED,
+        ),
+    ];
+    for (form, operation, parameters, message) in refused {
+        let error = geometry_operand_rows(provider, &operation, &parameters)
+            .await
+            .expect_err(form);
+        assert_eq!(
+            error.category,
+            ErrorCategory::InvalidPlan,
+            "{form}: {error:?}"
+        );
+        assert_eq!(error.message, message, "{form}: {error:?}");
+    }
+    let admitted = [
+        (
+            "t.ñame = intero, legato dal server",
+            plan(compare(column("ñame"), typed("integer"))),
+            bag(ParameterValue::I32(1)),
+            1,
+        ),
+        (
+            "d = CAST(? AS decimal) entro la scala",
+            plan(compare(
+                column("d"),
+                cast(json!({"kind": "parameter", "name": "p"}), "decimal"),
+            )),
+            bag(ParameterValue::Decimal("0.5".to_owned())),
+            2,
+        ),
+    ];
+    for (form, operation, parameters, expected) in admitted {
+        let count = geometry_operand_rows(provider, &operation, &parameters)
+            .await
+            .unwrap_or_else(|error| panic!("{form}: {error:?}"));
+        assert_eq!(count, expected, "{form}");
+    }
+    let mut teardown = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("pulizia");
+    let connection = teardown.connection_mut().expect("connessione");
+    connection.query_drop(cleanup).await.expect("pulizia");
+}
+
+/// Sedicesima lettura del 25/10 su `MySQL` e `MariaDB`
+/// (`PLENORA_MYSQL_PRODUCT`): un `CAST` a testo cambia la collation del
+/// confronto senza errore.
+///
+/// `CAST(x AS CHAR)` da al valore la collation della connessione con
+/// coercibilita implicita: una colonna `latin1_swedish_ci` (`'ü'` e `'y'`,
+/// `'u'`), una `utf8mb4_bin` (`'A'` e `'a'`) e su `MariaDB` una
+/// `utf8mb3_general_ci` (`'ß'`) rendono, sotto il `CAST` della colonna o del
+/// parametro, righe diverse dal confronto senza `CAST`, e l'errore 1267 non
+/// arriva (misurato qui). Su c0f82ba il piano `CAST(t.l AS string) = ?`
+/// passava (un `VARCHAR(8)` sta in `CHAR`); ora ogni `CAST` a testo si
+/// rifiuta (`CAST_TEXT_COLLATION`), per una colonna e per un parametro, e il
+/// confronto senza `CAST` resta.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_rilettura_sedici_cast_a_testo_e_collation() {
+    use plenora_database_core::cast_table::CAST_TEXT_COLLATION;
+    use plenora_database_core::provider::ParameterValue;
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+
+    let cancellation = CancellationToken::new();
+    let mariadb = environment("PLENORA_MYSQL_PRODUCT", "mysql") == "mariadb";
+    let cleanup = "DROP TABLE IF EXISTS _r16_t";
+    {
+        let mut setup = MysqlSession::open(&live_config(), &cancellation)
+            .await
+            .expect("setup");
+        let connection = setup.connection_mut().expect("connessione");
+        connection.query_drop(cleanup).await.expect("pulizia");
+        connection
+            .query_drop(
+                "CREATE TABLE _r16_t (id BIGINT PRIMARY KEY, \
+                 l VARCHAR(8) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL, \
+                 b VARCHAR(8) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, \
+                 m VARCHAR(8) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci NOT NULL) \
+                 ENGINE=InnoDB",
+            )
+            .await
+            .expect("tabella");
+        connection
+            .query_drop(
+                "INSERT INTO _r16_t VALUES (1, 'u', 'A', 's'), (2, 'ü', 'a', 'ß'), \
+                 (3, 'y', 'x', 'ss')",
+            )
+            .await
+            .expect("righe");
+        // La tabella del modulo `cast_table`, rimisurata: il confronto senza
+        // `CAST`, con il `CAST` della colonna e con quello del parametro.
+        for (column, value, under_cast) in [("l", "u", true), ("b", "a", true), ("m", "s", mariadb)]
+        {
+            let mut ids = Vec::new();
+            for sql in [
+                format!("SELECT id FROM _r16_t WHERE {column} = ? ORDER BY id"),
+                format!("SELECT id FROM _r16_t WHERE CAST({column} AS CHAR) = ? ORDER BY id"),
+                format!("SELECT id FROM _r16_t WHERE {column} = CAST(? AS CHAR) ORDER BY id"),
+            ] {
+                let found: Vec<i64> = connection
+                    .exec(sql.as_str(), (value,))
+                    .await
+                    .unwrap_or_else(|error| panic!("{sql}: {error:?}"));
+                ids.push(found);
+            }
+            let [bare, cast_column, cast_parameter] =
+                <[Vec<i64>; 3]>::try_from(ids).expect("tre misure");
+            if under_cast {
+                assert_ne!(
+                    bare, cast_column,
+                    "{column}: il CAST della colonna cambia la collation"
+                );
+            }
+            // Su `MySQL` anche il `CAST` del parametro cambia la collation
+            // dove i set di caratteri sono diversi (latin1 contro utf8mb4).
+            if column == "l" && !mariadb {
+                assert_ne!(
+                    bare, cast_parameter,
+                    "{column}: il CAST del parametro cambia la collation"
+                );
+            }
+        }
+    }
+    let database = environment("PLENORA_MYSQL_DATABASE", "dataflow_test");
+    let column =
+        |field: &str| json!({"kind": "column", "column": {"relation": "t", "field": field}});
+    let typed = || json!({"kind": "typed_parameter", "name": "p", "parameter_type": "string"});
+    let compare = |left: Value, right: Value| json!({"kind": "compare", "left": left, "operator": "eq", "right": right});
+    let cast = |expression: Value, target: &str| json!({"kind": "cast", "expression": expression, "target_type": target});
+    let plan = |filter: Value| -> plenora_database_core::query::QueryOperation {
+        serde_json::from_value(json!({
+            "source": {"object": {"catalog": null, "schema": database, "object": "_r16_t"}, "alias": "t"},
+            "projection": [{"expression": column("id"), "alias": "id"}],
+            "filter": filter, "having": null, "row_limit": null
+        }))
+        .expect("piano")
+    };
+    let bag = |value: &str| {
+        ParameterBag::new(BTreeMap::from([(
+            "p".to_owned(),
+            ParameterValue::String(value.to_owned()),
+        )]))
+    };
+    let provider = geometry_operand_provider();
+    let provider = provider.as_ref();
+    for (field, value) in [("l", "u"), ("b", "a"), ("m", "s")] {
+        let refused = [
+            (
+                "CAST(colonna AS string) = testo",
+                compare(cast(column(field), "string"), typed()),
+            ),
+            (
+                "colonna = CAST(:p AS string)",
+                compare(
+                    column(field),
+                    cast(json!({"kind": "parameter", "name": "p"}), "string"),
+                ),
+            ),
+            (
+                "CAST(colonna AS uuid) = testo",
+                compare(cast(column(field), "uuid"), typed()),
+            ),
+        ];
+        for (form, filter) in refused {
+            let error = geometry_operand_rows(provider, &plan(filter), &bag(value))
+                .await
+                .expect_err(form);
+            assert_eq!(
+                error.category,
+                ErrorCategory::InvalidPlan,
+                "{field} {form}: {error:?}"
+            );
+            assert_eq!(error.message, CAST_TEXT_COLLATION, "{field} {form}");
+        }
+    }
+    // Senza `CAST` il confronto usa la collation della colonna, e resta.
+    assert_eq!(
+        geometry_operand_rows(provider, &plan(compare(column("b"), typed())), &bag("a"))
+            .await
+            .expect("b = testo"),
+        1
+    );
+    let mut teardown = MysqlSession::open(&live_config(), &cancellation)
+        .await
+        .expect("pulizia");
+    let connection = teardown.connection_mut().expect("connessione");
+    connection.query_drop(cleanup).await.expect("pulizia");
 }

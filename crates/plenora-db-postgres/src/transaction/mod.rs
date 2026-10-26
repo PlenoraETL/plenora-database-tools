@@ -582,6 +582,7 @@ impl TransactionScope for PostgresTransaction {
     fn operand_catalog<'a>(
         &'a mut self,
         relations: &'a [(Option<String>, String)],
+        _names: &'a [String],
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, plenora_database_core::spatial_operand::OperandCatalog> {
         Box::pin(async move {
