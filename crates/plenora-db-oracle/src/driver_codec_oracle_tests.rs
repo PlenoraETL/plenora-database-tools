@@ -709,15 +709,20 @@ fn oson_binary_float_and_utc_offset_render_as_json_serialize() {
         node.extend_from_slice(&oracle_rs::types::encode_binary_float(value));
         oson_scalar(&node)
     };
-    // Base: 0.1 diventava 0.10000000149011612, 1/3 0.3333333432674408.
-    for (value, text) in [
-        (0.1_f32, "0.1"),
-        (1.0 / 3.0, "0.33333334"),
-        (-123_456.7, "-123456.7"),
-        (16_777_216.0, "16777216.0"),
+    // Terzo giro: il valore f32 conservato, esatto, allargato a f64 (la
+    // resa di JSON_SERIALIZE non si riproduce: deviazione dichiarata).
+    for value in [
+        0.1_f32,
+        1.0 / 3.0,
+        123_456_789.0,
+        f32::MAX,
+        f32::MIN_POSITIVE,
+        f32::from_bits(1),
+        f32::from_bits(0x007F_FFFF),
+        -123_456.7,
     ] {
         let decoded = decode_oson(float_node(value)).unwrap();
-        assert_eq!(decoded.to_string(), text, "{value}");
+        assert_eq!(decoded.as_f64(), Some(f64::from(value)), "{value}");
     }
     // TIMESTAMP WITH TIME ZONE a offset zero: `Z` (era `+00:00`).
     let mut node = vec![0x7C];

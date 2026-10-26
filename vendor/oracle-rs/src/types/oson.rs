@@ -68,6 +68,16 @@ const TYPE_EXTENDED: u8 = 0x7b;
 //   is a NUMBER no i64, u64 or f64 represents exactly. Scope: JSON reads.
 //   Re-entry: typed JSON values in the provider (serde_json without
 //   arbitrary precision cannot carry them).
+// - decoder, BINARY_FLOAT: deviation from the `JSON_SERIALIZE` rendering.
+//   Rule: the library returns the exact stored f32 widened to f64 (lossless).
+//   Scope: BINARY_FLOAT scalars inside JSON reads. Hazard: the text differs
+//   from `JSON_SERIALIZE`, whose float rendering is neither the shortest nor
+//   the exact decimal (stored 123456792 is written 123456792, stored
+//   1.401298464324817e-45 is written 1.4E-45, stored 0.1f32 is written 0.1):
+//   no rule reproduces it, and the shortest f32 decimal (round 2) changed
+//   the value (123456790, 1e-45). A client comparing text with the server's
+//   serialization sees a different string for the same value. Re-entry: a
+//   documented Oracle rendering algorithm, proved on every f32.
 
 /// Plenora fork: deepest nesting of objects and arrays the codec accepts in
 /// either direction. Both directions recurse; past this depth a document is
@@ -543,21 +553,11 @@ impl OsonDecoder {
                     .read_bytes(4)?
                     .try_into()
                     .map_err(|_| oson_error("invalid OSON BINARY_FLOAT"))?;
-                // Plenora fork: the shortest decimal that reads back as the
-                // same f32, as `JSON_SERIALIZE` writes it (0.1, 0.33333334);
-                // widening to f64 printed 0.10000000149011612. A decimal of at
-                // most nine significant digits is its own shortest f64.
-                let value = decode_binary_float(&bytes);
-                if !value.is_finite() {
-                    return Err(oson_error("non-finite OSON BINARY_FLOAT"));
-                }
-                value
-                    .to_string()
-                    .parse::<f64>()
-                    .ok()
-                    .and_then(serde_json::Number::from_f64)
+                // Plenora fork: the exact stored value, widened to f64
+                // (declared deviation from `JSON_SERIALIZE`, see the header).
+                serde_json::Number::from_f64(f64::from(decode_binary_float(&bytes)))
                     .map(serde_json::Value::Number)
-                    .ok_or_else(|| oson_error("invalid OSON BINARY_FLOAT"))
+                    .ok_or_else(|| oson_error("non-finite OSON BINARY_FLOAT"))
             }
 
             // Date types (convert to string for JSON)

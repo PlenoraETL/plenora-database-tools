@@ -76,6 +76,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_inline_lob_binds_are_refused_not_nulled",
         "live_pre_gregorian_dates_are_refused_by_the_provider",
         "live_timestamptz_binds_keep_the_instant_or_are_refused",
+        "live_binary_float_in_json_reads_the_stored_value",
     }
 )
 PYTHON_LIVE_EXPECTED = 7

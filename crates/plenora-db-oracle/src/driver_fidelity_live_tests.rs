@@ -677,11 +677,8 @@ async fn live_json_reads_match_json_serialize_or_are_refused() {
          'tzn' VALUE TIMESTAMP '2024-03-15 23:30:45 -05:30', \
          'b' VALUE HEXTORAW('0A0BFF'), 'f' VALUE TO_BINARY_DOUBLE(0.1), \
          'n' VALUE 0.1, 'i' VALUE 12345678901234, 'm' VALUE -1.5e-100 RETURNING JSON)",
-        // Secondo giro: BINARY_FLOAT reso con le cifre piu corte dell'f32
-        // (era l'f64 allargato, 0.10000000149011612) e offset zero come `Z`.
-        "JSON_OBJECT('g' VALUE TO_BINARY_FLOAT(0.1), 'h' VALUE TO_BINARY_FLOAT(1/3), \
-         'k' VALUE TO_BINARY_FLOAT('1.17549435E-38'), 'l' VALUE TO_BINARY_FLOAT(-123456.7), \
-         'z' VALUE TIMESTAMP '2024-03-15 14:30:45.5 +00:00' RETURNING JSON)",
+        // Secondo giro: offset zero come `Z`.
+        "JSON_OBJECT('z' VALUE TIMESTAMP '2024-03-15 14:30:45.5 +00:00' RETURNING JSON)",
         "JSON('{\"a\":[1,2,{\"b\":null,\"c\":true}],\"s\":\"\u{e8}\u{1F600}\"}')",
     ];
     for document in documents {
@@ -960,6 +957,42 @@ async fn live_pre_gregorian_dates_are_refused_by_the_provider() {
         )
         .await;
         assert_eq!(rows.is_ok(), accepted, "{query}: {rows:?}");
+    }
+}
+
+/// Terzo giro: un `BINARY_FLOAT` dentro un JSON si legge come il valore f32
+/// conservato, esatto: i suoi bit sono quelli che `DUMP` mostra per la
+/// stessa espressione (la resa testuale di `JSON_SERIALIZE` non si
+/// riproduce, deviazione dichiarata in `oson.rs`).
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_binary_float_in_json_reads_the_stored_value() {
+    let connection = driver().await;
+    for literal in [
+        "'123456789'",
+        "'1.4E-45'",
+        "'0.1'",
+        "1/3",
+        "'3.4028235E38'",
+        "'1.17549435E-38'",
+        "'1.1754942E-38'",
+        "'-123456.7'",
+    ] {
+        let row = single(
+            &connection,
+            &format!(
+                "SELECT DUMP(TO_BINARY_FLOAT({literal})), \
+                 JSON_OBJECT('f' VALUE TO_BINARY_FLOAT({literal}) RETURNING JSON) FROM DUAL"
+            ),
+            &[],
+        )
+        .await;
+        let wire: [u8; 4] = dump_bytes(&text(&row[0])).try_into().unwrap();
+        let stored = oracle_rs::types::decode_binary_float(&wire);
+        let Value::Json(json) = &row[1] else {
+            panic!("JSON atteso per {literal}");
+        };
+        assert_eq!(json["f"].as_f64(), Some(f64::from(stored)), "{literal}");
     }
 }
 
