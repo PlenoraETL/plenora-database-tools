@@ -45,7 +45,11 @@ REQUIRED_LIVE_TESTS = frozenset(
     {
         "live_caller_stream_fetch_failure_requires_recovery",
         "live_parameter_values_bind_exactly_or_are_refused",
-        "live_generated_values_bind_exactly_or_are_refused",
+        "live_generated_decimal_values_bind_exactly_or_are_refused",
+        "live_generated_float_values_bind_exactly_or_are_refused",
+        "live_generated_text_values_bind_exactly_or_are_refused",
+        "live_generated_binary_values_bind_exactly_or_are_refused",
+        "live_generated_temporal_values_bind_exactly_or_are_refused",
         "live_binary_double_negative_zero_is_measured",
         "live_invalid_text_bytes_are_refused_on_read",
         "live_thin_driver_crud_merge_stream_and_rollback",

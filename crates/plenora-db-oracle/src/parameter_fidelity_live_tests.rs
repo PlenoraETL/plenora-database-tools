@@ -412,7 +412,25 @@ async fn live_invalid_text_bytes_are_refused_on_read() {
 // Censimento generato (`plenora_database_testkit::parameter_sweep`)
 // ---------------------------------------------------------------------------
 
-const SWEEP_TABLE: &str = "PARAM_SWEEP";
+// Tabelle disgiunte: ogni famiglia gira in parallelo e riusa gli stessi ID.
+const SWEEP_FAMILIES: &[(&str, &[&str])] = &[
+    (
+        "PARAM_SWEEP_DECIMAL",
+        &["C_N", "C_N124", "C_N55", "C_NM2", "C_N10"],
+    ),
+    ("PARAM_SWEEP_FLOAT", &["C_BF", "C_BD"]),
+    (
+        "PARAM_SWEEP_TEXT",
+        &["C_V3B", "C_V3C", "C_C4", "C_NV3", "C_NC4"],
+    ),
+    ("PARAM_SWEEP_BINARY", &["C_R4"]),
+    (
+        "PARAM_SWEEP_TEMPORAL",
+        &["C_DT", "C_TS0", "C_TS3", "C_TS9", "C_TZ6"],
+    ),
+];
+const SWEEP_GROUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+const SWEEP_DDL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn sweep_value(column: &str) -> String {
     if column.starts_with("C_TZ") {
@@ -425,19 +443,19 @@ fn sweep_value(column: &str) -> String {
     }
 }
 
-fn sweep_native(kind: NativeSql, column: &str) -> String {
+fn sweep_native(table: &str, kind: NativeSql, column: &str) -> String {
     match kind {
         NativeSql::Insert => format!(
-            "INSERT INTO {SWEEP_TABLE} (ID, {column}) VALUES (:1, {})",
+            "INSERT INTO {table} (ID, {column}) VALUES (:1, {})",
             sweep_value(column)
         ),
-        NativeSql::Select => format!("SELECT {column} FROM {SWEEP_TABLE} WHERE ID = :1"),
+        NativeSql::Select => format!("SELECT {column} FROM {table} WHERE ID = :1"),
         NativeSql::Count => format!(
-            "SELECT COUNT(*) FROM {SWEEP_TABLE} WHERE ID = :1 AND {column} = {}",
+            "SELECT COUNT(*) FROM {table} WHERE ID = :1 AND {column} = {}",
             sweep_value(column)
         ),
-        NativeSql::Raw => format!("SELECT TO_CHAR({column}) FROM {SWEEP_TABLE} WHERE ID = :1"),
-        NativeSql::Delete => format!("DELETE FROM {SWEEP_TABLE} WHERE ID = :1"),
+        NativeSql::Raw => format!("SELECT TO_CHAR({column}) FROM {table} WHERE ID = :1"),
+        NativeSql::Delete => format!("DELETE FROM {table} WHERE ID = :1"),
     }
 }
 
@@ -563,7 +581,7 @@ fn sweep_columns() -> Vec<(
 /// La resa del server: i numeri con `TM9` (esatti), i floating point come i
 /// loro bit, il testo come i suoi byte UTF-8 (`UTL_I18N`, anche le forme
 /// nazionali), i temporali a nove cifre e gli istanti in UTC.
-fn sweep_raw(column: &str) -> String {
+fn sweep_raw(table: &str, column: &str) -> String {
     let expression = match column {
         // `CAST_FROM_BINARY_*` rende `-0` come `+0` (misurato): il segno di
         // zero si legge da `1 / x`.
@@ -582,7 +600,7 @@ fn sweep_raw(column: &str) -> String {
         "C_TZ6" => "TO_CHAR(SYS_EXTRACT_UTC(C_TZ6), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF9')".to_owned(),
         _ => format!("TO_CHAR({column}, 'TM9')"),
     };
-    format!("SELECT {expression} FROM {SWEEP_TABLE} WHERE ID = :1")
+    format!("SELECT {expression} FROM {table} WHERE ID = :1")
 }
 
 #[test]
@@ -618,6 +636,48 @@ fn generated_campaign_inventory() {
         totals[0], totals[1], totals[2], totals[3], totals[4]
     );
     assert_eq!(sweep_columns().len(), 18);
+    assert_eq!(totals[0], 889);
+    let mut assigned = std::collections::BTreeSet::new();
+    let mut tables = std::collections::BTreeSet::new();
+    for (table, names) in SWEEP_FAMILIES {
+        assert!(tables.insert(table), "tabella condivisa fra famiglie");
+        let mut count = 0;
+        for name in *names {
+            assert!(assigned.insert(*name), "colonna duplicata fra famiglie");
+            let (column, _) = sweep_columns()
+                .into_iter()
+                .find(|(c, _)| c.name == *name)
+                .expect("colonna della famiglia presente nel censimento");
+            count += values(column.kind).len();
+        }
+        println!("{table}: values={count}, paths=3, cases={}", count * 3);
+    }
+    assert_eq!(
+        assigned,
+        sweep_columns().iter().map(|(c, _)| c.name).collect()
+    );
+}
+
+/// DDL limitato anche fuori dai gruppi tipo/percorso. Solo il DROP iniziale
+/// puo fallire (tabella assente dopo una precedente esecuzione completata).
+async fn sweep_ddl(
+    provider: &crate::OracleProvider,
+    secret: &plenora_database_core::provider::SecretString,
+    sql: &str,
+    phase: &str,
+    optional: bool,
+) {
+    let cancellation = CancellationToken::new();
+    let result = tokio::time::timeout(
+        SWEEP_DDL_TIMEOUT,
+        provider.execute_ddl(secret, sql, &cancellation),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("timeout Oracle sweep DDL: fase={phase}"));
+    assert!(
+        optional || result.is_ok(),
+        "DDL Oracle sweep fallito: fase={phase}"
+    );
 }
 
 /// Il censimento generato: per ogni tipo di colonna, ogni valore generato
@@ -626,35 +686,40 @@ fn generated_campaign_inventory() {
 /// un numero dispari di zeri iniziali (il difetto 1 del terzo giro della
 /// #135, corretto su main nel fork da `fix/oracle-number-modulo`): fino a
 /// quell'unione la lettura di quei valori qui fallisce.
-#[tokio::test]
-#[ignore = "richiede Oracle Free live esplicito"]
-async fn live_generated_values_bind_exactly_or_are_refused() {
+#[allow(clippy::too_many_lines)]
+async fn generated_family(family: usize) {
     use plenora_database_testkit::parameter_sweep::{
         sweep, sweep_report, ServerFacts, SweepTarget,
     };
     let (provider, secret) = fixture();
-    let cancellation = CancellationToken::new();
-    let columns = sweep_columns();
+    let (table, names) = SWEEP_FAMILIES[family];
+    let columns = sweep_columns()
+        .into_iter()
+        .filter(|(column, _)| names.contains(&column.name))
+        .collect::<Vec<_>>();
+    let native = |kind, column: &str| sweep_native(table, kind, column);
+    let raw = |column: &str| sweep_raw(table, column);
     let definition = columns
         .iter()
         .map(|(column, sql)| format!("{} {sql}", column.name))
         .collect::<Vec<_>>()
         .join(", ");
-    let _ = provider
-        .execute_ddl(
-            &secret,
-            &format!("DROP TABLE {SWEEP_TABLE} PURGE"),
-            &cancellation,
-        )
-        .await;
-    provider
-        .execute_ddl(
-            &secret,
-            &format!("CREATE TABLE {SWEEP_TABLE} (ID NUMBER(10) PRIMARY KEY, {definition})"),
-            &cancellation,
-        )
-        .await
-        .expect("DDL tabella del censimento generato Oracle");
+    sweep_ddl(
+        &provider,
+        &secret,
+        &format!("DROP TABLE {table} PURGE"),
+        "iniziale",
+        true,
+    )
+    .await;
+    sweep_ddl(
+        &provider,
+        &secret,
+        &format!("CREATE TABLE {table} (ID NUMBER(10) PRIMARY KEY, {definition})"),
+        "creazione",
+        false,
+    )
+    .await;
     let schema = std::env::var("PLENORA_ORACLE_USER")
         .unwrap_or_else(|_| "plenora".to_owned())
         .to_ascii_uppercase();
@@ -671,69 +736,108 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
         FidelityPath::Portable,
         FidelityPath::Read,
     ];
-    for (column, _) in &columns {
+    for (column, sql_type) in &columns {
         let count = plenora_database_testkit::parameter_sweep::values(column.kind).len();
         for path in &paths {
-            // La lettura apre una sessione e i cataloghi per ogni filtro:
-            // parti piu piccole.
-            let size = if *path == FidelityPath::Read { 4 } else { 10 };
-            for start in (0..count).step_by(size) {
-                let started = std::time::Instant::now();
-                let (part_provider, part_secret) = fixture();
-                let target = SweepTarget {
-                    target: Target {
-                        provider: &part_provider,
-                        secret: &part_secret,
-                        limits: ResourceLimits::default(),
-                        table: ObjectRef {
-                            catalog: None,
-                            schema: Some(schema.clone()),
-                            object: SWEEP_TABLE.to_owned(),
+            tokio::time::timeout(SWEEP_GROUP_TIMEOUT, async {
+                // La lettura apre una sessione e i cataloghi per ogni filtro:
+                // parti piu piccole.
+                let size = if *path == FidelityPath::Read { 4 } else { 10 };
+                for start in (0..count).step_by(size) {
+                    let started = std::time::Instant::now();
+                    let (part_provider, part_secret) = fixture();
+                    let target = SweepTarget {
+                        target: Target {
+                            provider: &part_provider,
+                            secret: &part_secret,
+                            limits: ResourceLimits::default(),
+                            table: ObjectRef {
+                                catalog: None,
+                                schema: Some(schema.clone()),
+                                object: table.to_owned(),
+                            },
+                            id_column: "ID",
+                            native: &native,
+                            native_cross_type_declared: true,
                         },
-                        id_column: "ID",
-                        native: &sweep_native,
-                        native_cross_type_declared: true,
-                    },
-                    raw: &sweep_raw,
-                    part: Some(start..(start + size).min(count)),
-                    facts: ServerFacts {
-                        empty_is_null: true,
-                        native_declared: true,
-                        ..ServerFacts::default()
-                    },
-                };
-                outcomes.extend(
-                    sweep(
-                        &target,
-                        std::slice::from_ref(column),
-                        std::slice::from_ref(path),
-                    )
-                    .await,
-                );
-                eprintln!(
-                    "Oracle sweep {} {path:?} {start}..{} / {count}: {:.3}s",
-                    column.name,
-                    (start + size).min(count),
-                    started.elapsed().as_secs_f64()
-                );
-            }
+                        raw: &raw,
+                        part: Some(start..(start + size).min(count)),
+                        facts: ServerFacts {
+                            empty_is_null: true,
+                            native_declared: true,
+                            ..ServerFacts::default()
+                        },
+                    };
+                    outcomes.extend(
+                        sweep(
+                            &target,
+                            std::slice::from_ref(column),
+                            std::slice::from_ref(path),
+                        )
+                        .await,
+                    );
+                    eprintln!(
+                        "Oracle sweep {} {path:?} {start}..{} / {count}: {:.3}s",
+                        column.name,
+                        (start + size).min(count),
+                        started.elapsed().as_secs_f64()
+                    );
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                "timeout Oracle sweep: tipo={sql_type}, colonna={}, percorso={path:?}, limite={}s",
+                column.name, SWEEP_GROUP_TIMEOUT.as_secs()
+            )
+            });
         }
     }
     let outcomes = plenora_database_testkit::parameter_sweep::merge(outcomes);
-    provider
-        .execute_ddl(
-            &secret,
-            &format!("DROP TABLE {SWEEP_TABLE} PURGE"),
-            &cancellation,
-        )
-        .await
-        .expect("pulizia tabella del censimento generato Oracle");
+    sweep_ddl(
+        &provider,
+        &secret,
+        &format!("DROP TABLE {table} PURGE"),
+        "pulizia",
+        false,
+    )
+    .await;
     let (text, failures) = sweep_report(&outcomes);
     println!("{text}");
     assert!(
         failures.is_empty(),
         "valori generati non esatti su Oracle: {failures:#?}"
     );
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_generated_decimal_values_bind_exactly_or_are_refused() {
+    generated_family(0).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_generated_float_values_bind_exactly_or_are_refused() {
+    generated_family(1).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_generated_text_values_bind_exactly_or_are_refused() {
+    generated_family(2).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_generated_binary_values_bind_exactly_or_are_refused() {
+    generated_family(3).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_generated_temporal_values_bind_exactly_or_are_refused() {
+    generated_family(4).await;
 }
 
 /// `-0.0` in `BINARY_DOUBLE` e `BINARY_FLOAT`, misurato: con un letterale,

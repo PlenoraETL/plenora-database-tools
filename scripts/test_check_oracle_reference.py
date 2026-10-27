@@ -47,6 +47,28 @@ def check_captured_inventory() -> None:
     output = "\n".join(f"test {name} ... ok" for name in qualified)
     output += "\n\nsuccesses:\n---- captured stdout ----\nmisura -0.0\n"
     assert gate.validate_live_run(listing, output) == qualified
+    generated = {
+        f"live_generated_{family}_values_bind_exactly_or_are_refused"
+        for family in ("decimal", "float", "text", "binary", "temporal")
+    }
+    assert generated <= gate.REQUIRED_LIVE_TESTS
+    assert {name for name in names if name.startswith("live_generated_")} == generated
+    assert len(names) == 53  # 49 precedenti, meno il monolite, piu cinque famiglie.
+    for name in generated:
+        full = f"live_tests::parameter_fidelity::{name}"
+        # Anche se manca sia nella lista compilata sia negli esiti, il gate
+        # deve rilevare la famiglia persa rispetto al sorgente.
+        for broken_listing, broken_output in (
+            (listing, output.replace(f"test {full} ... ok", "")),
+            (listing.replace(f"{full}: test", ""),
+             output.replace(f"test {full} ... ok", "")),
+        ):
+            try:
+                gate.validate_live_run(broken_listing, broken_output)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError(f"famiglia assente accettata: {name}")
     for status in ("ignored", "FAILED", "misura -0.0\nok"):
         broken = output.replace(f"test {qualified[0]} ... ok", f"test {qualified[0]} ... {status}")
         try:
