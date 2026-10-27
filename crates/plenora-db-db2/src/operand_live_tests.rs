@@ -1323,11 +1323,13 @@ async fn live_rilettura_quindici_cast_e_nomi() {
         .expect_err("il bind incompatibile resta rifiutato");
     assert_eq!(refused.category, ErrorCategory::DataMapping);
     assert_eq!(refused.phase, ErrorPhase::Prepare);
-    // Il bind resta testo; l'arrotondamento e del CAST SQL esplicito.
+    // Sonda del solo server: il letterale statico non passa da SQLDescribeParam
+    // e dal binding esatto. Il rifiuto del parametro resta verificato sopra.
     let rounded = transaction
         .query(
-            &Statement::new("SELECT ID FROM PLENORA.R15_T WHERE D = CAST(CAST(? AS VARCHAR(64)) AS DECIMAL(31, 10))")
-                .with_params(vec![ParameterValue::String("0.12345678901".to_owned())]),
+            &Statement::new(
+                "SELECT ID FROM PLENORA.R15_T WHERE D = CAST(0.12345678901 AS DECIMAL(31, 10))",
+            ),
             &cancellation,
         )
         .await
@@ -1359,10 +1361,11 @@ async fn live_rilettura_quindici_cast_e_nomi() {
         )
         .await
         .expect_err("TIMESTAMP WITH TIME ZONE su Db2");
+    // Anche questa sonda riguarda il server: il bind di "01" su INTEGER
+    // e correttamente rifiutato, prima che si possa osservare il nome risolto.
     let trailing = transaction
         .query(
-            &Statement::new("SELECT ID FROM PLENORA.R15_T WHERE \"M\" = ?")
-                .with_params(vec![ParameterValue::String("01".to_owned())]),
+            &Statement::new("SELECT ID FROM PLENORA.R15_T WHERE \"M\" = '01'"),
             &cancellation,
         )
         .await

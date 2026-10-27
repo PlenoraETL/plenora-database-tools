@@ -2060,6 +2060,25 @@ async fn live_keyset_checkpoint_resumes_after_the_last_delivered_row() {
         .expect("rimuove fixture checkpoint");
 }
 
+async fn prepare_reset_rollback_fixture(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    table: &str,
+    cancellation: &CancellationToken,
+) {
+    let _ = provider
+        .execute_ddl(secret, &format!("DROP TABLE {table} PURGE"), cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            secret,
+            &format!("CREATE TABLE {table} (ID NUMBER(10))"),
+            cancellation,
+        )
+        .await
+        .expect("crea fixture rollback");
+}
+
 #[tokio::test]
 #[ignore = "richiede Oracle Free live esplicito"]
 async fn live_driver_errors_are_redacted() {
@@ -2072,17 +2091,7 @@ async fn live_driver_errors_are_redacted() {
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
     let table = "PLENORA_RESET_ROLLBACK";
-    let _ = provider
-        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
-        .await;
-    provider
-        .execute_ddl(
-            &secret,
-            &format!("CREATE TABLE {table} (ID NUMBER(10))"),
-            &cancellation,
-        )
-        .await
-        .expect("crea fixture rollback");
+    prepare_reset_rollback_fixture(&provider, &secret, table, &cancellation).await;
     let mut transaction = provider
         .begin_transaction(
             &secret,
