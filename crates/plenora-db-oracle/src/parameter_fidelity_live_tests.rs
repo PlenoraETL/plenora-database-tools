@@ -624,10 +624,13 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
         .unwrap_or_else(|_| "plenora".to_owned())
         .to_ascii_uppercase();
     let mut outcomes = Vec::new();
-    // Una sessione nuova ogni trenta valori di una colonna e di un percorso:
+    // Una sessione nuova ogni dieci valori di una colonna e di un percorso:
     // il fork non chiude sul server i cursori delle istruzioni (il limite
     // dichiarato del censimento a casi), e una sessione lunga arriva a
-    // ORA-01000. Le parti si riuniscono con `merge`.
+    // ORA-01000. Le parti si riuniscono con `merge`. Con trenta valori per
+    // parte (misurato il 26/10) i confronti di una decina di valori per
+    // colonna si interrompevano con ORA-01000 e restavano note: la prova
+    // perdeva i vicini senza fallire.
     let paths = [
         FidelityPath::Native,
         FidelityPath::Portable,
@@ -638,7 +641,7 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
         for path in &paths {
             // La lettura apre una sessione e i cataloghi per ogni filtro:
             // parti piu piccole.
-            let size = if *path == FidelityPath::Read { 10 } else { 30 };
+            let size = if *path == FidelityPath::Read { 4 } else { 10 };
             for start in (0..count).step_by(size) {
                 let (part_provider, part_secret) = fixture();
                 let target = SweepTarget {

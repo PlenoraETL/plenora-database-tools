@@ -337,7 +337,7 @@ pub async fn query_judged(
     let parameters =
         ParameterFamilies::from_positional(tx.provider_kind(), bind_names, &statement.params)?;
     verify_operands_bound(tx, plan, &parameters, cancellation).await?;
-    let admitted = admitted_for_plan(tx, statement, plan, cancellation).await?;
+    let admitted = admitted_for_plan(tx, statement, plan, bind_names, cancellation).await?;
     tx.query(&admitted, cancellation).await
 }
 
@@ -361,7 +361,7 @@ pub async fn execute_judged(
     let parameters =
         ParameterFamilies::from_positional(tx.provider_kind(), bind_names, &statement.params)?;
     verify_operands_bound(tx, plan, &parameters, cancellation).await?;
-    let admitted = admitted_for_plan(tx, statement, plan, cancellation).await?;
+    let admitted = admitted_for_plan(tx, statement, plan, bind_names, cancellation).await?;
     tx.execute(&admitted, cancellation).await
 }
 
@@ -405,17 +405,18 @@ pub async fn execute_admitted(
 /// - `Portable`: [`crate::admission_gate::portable`] sull'AST;
 /// - `Mutation`: [`crate::admission_gate::mutation`] con i valori dello
 ///   statement, nell'ordine dei bind del piano;
-/// - `Query`: il nome di ogni segnaposto lo sa soltanto il renderer: una
-///   query con parametri passa da [`crate::admission_gate::query`] e
-///   [`query_admitted`]; qui si ammette soltanto una query senza parametri.
+/// - `Query`: [`crate::admission_gate::query`] con i nomi dei segnaposto
+///   che il renderer ha reso (`bind_names`, gli stessi da cui la regola F
+///   legge le famiglie).
 ///
 /// # Errors
 ///
-/// Quelli del cancello; `InvalidPlan` per una query con parametri.
+/// Quelli del cancello.
 async fn admitted_for_plan(
     tx: &mut dyn TransactionScope,
     statement: &Statement,
     plan: &OperandPlan<'_>,
+    bind_names: &[String],
     cancellation: &CancellationToken,
 ) -> Result<Statement> {
     match plan {
@@ -425,11 +426,14 @@ async fn admitted_for_plan(
                 .await
                 .map(crate::admission_gate::Admitted::into_statement)
         }
-        OperandPlan::Query(_) if statement.params.is_empty() => Ok(statement.clone()),
-        OperandPlan::Query(_) => Err(DatabaseError::invalid_plan(
-            "query relazionale con parametri: ammetterla con admission_gate::query \
-             ed eseguirla con query_admitted",
-        )),
+        OperandPlan::Query(operation) => crate::admission_gate::query(
+            tx.provider_kind(),
+            operation,
+            statement.sql.clone(),
+            bind_names,
+            &statement.params,
+        )
+        .map(crate::admission_gate::Admitted::into_statement),
     }
 }
 

@@ -25,6 +25,28 @@ fn refused(value: &V, operand: &OperandType) -> bool {
 }
 
 #[test]
+fn negative_zero_is_preserved_or_refused_before_numeric_rewriting() {
+    for operand in [
+        BIGINT,
+        DECIMAL_12_4,
+        OperandType::UnboundedDecimal { digits: 38 },
+        OperandType::RoundedDecimal {
+            precision: 38,
+            rounding: 2,
+        },
+    ] {
+        assert!(refused(&V::F64(-0.0), &operand));
+        assert!(admit(P, &V::F64(0.0), &operand).is_ok());
+    }
+    for operand in [DOUBLE, REAL] {
+        let V::F64(number) = admit(P, &V::F64(-0.0), &operand).expect("zero con segno") else {
+            panic!("tipo floating point");
+        };
+        assert_eq!(number.to_bits(), (-0.0_f64).to_bits());
+    }
+}
+
+#[test]
 fn exact_decimal_expansion_of_doubles() {
     assert_eq!(
         exact_decimal_of_f64(0.1).map(|value| value.text()),

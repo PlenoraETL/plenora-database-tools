@@ -244,12 +244,6 @@ pub async fn query_stream(
         plenora_database_core::plan::ProviderKind::Postgres,
         &plenora_database_core::spatial_operand::OperandPlan::Query(operation),
     )?;
-    // I parametri tipati contro il loro CAST (`operand_admission`).
-    let parameters = &plenora_database_core::admission_gate::query_parameters(
-        plenora_database_core::plan::ProviderKind::Postgres,
-        operation,
-        parameters,
-    )?;
     // Le sonde spatial si giudicano prima della connessione; le colonne con
     // cui si confrontano, sul catalogo prima della query.
     let probes = crate::spatial_probe::plan_query_probes(
@@ -270,6 +264,13 @@ pub async fn query_stream(
         &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
     )
     .await?;
+    // Le regole F, T e C hanno giudicato i valori del chiamante; poi i
+    // parametri tipati si ammettono contro il loro CAST (`operand_admission`).
+    let parameters = &plenora_database_core::admission_gate::query_parameters(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        operation,
+        parameters,
+    )?;
     let bind_names = rendered
         .binds
         .iter()

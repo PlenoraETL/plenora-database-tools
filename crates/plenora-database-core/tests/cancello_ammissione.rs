@@ -311,8 +311,9 @@ fn the_judged_entry_points_admit_every_plan() {
             }
         }
     }
-    // Una query con parametri si ammette soltanto con i nomi del renderer
-    // (`admission_gate::query`).
+    // Una query con parametri si ammette con i nomi dei segnaposto che il
+    // renderer ha reso (`admission_gate::query`): un valore senza nome non
+    // si lega, e la query non si esegue.
     let query: plenora_database_core::relational::QueryOperation = serde_json::from_value(
         serde_json::json!({
             "source": {"object": {"catalog": null, "schema": "public", "object": "t"}, "alias": null},
@@ -330,12 +331,141 @@ fn the_judged_entry_points_admit_every_plan() {
         &mut finta,
         &Statement::new("SELECT id FROM t WHERE id = $1").with_params(vec![V::I32(1)]),
         Some(&OperandPlan::Query(&query)),
-        &["p".to_owned()],
+        &[],
         &cancellation,
     ))
-    .expect_err("query con parametri senza nomi");
+    .expect_err("un valore senza segnaposto");
     assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    assert_eq!(
+        error.message,
+        plenora_database_core::spatial_operand::BIND_LAYOUT_MISMATCH
+    );
     assert!(finta.eseguiti.is_empty());
+}
+
+/// La query relazionale ammette un parametro tipizzato sul tipo del suo
+/// `CAST` ([`plenora_database_core::cast_table::rendered_target`]), dopo la
+/// regola T sul valore del chiamante: `DECIMAL(38, 10)` arrotonderebbe
+/// undici cifre frazionarie.
+#[test]
+fn a_typed_query_parameter_is_admitted_on_its_cast() {
+    let query: plenora_database_core::relational::QueryOperation = serde_json::from_value(
+        serde_json::json!({
+            "source": {"object": {"catalog": null, "schema": "public", "object": "t"}, "alias": null},
+            "projection": [{"expression": {"kind": "column", "column": {"relation": null, "field": "id"}}, "alias": null}],
+            "filter": {
+                "kind": "compare",
+                "left": {"kind": "column", "column": {"relation": null, "field": "id"}},
+                "operator": "eq",
+                "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "decimal"}
+            },
+            "having": null,
+            "row_limit": null
+        }),
+    )
+    .expect("query");
+    let names = ["p".to_owned()];
+    let error = admission_gate::query(
+        ProviderKind::Postgres,
+        &query,
+        "SQL".to_owned(),
+        &names,
+        &[V::Decimal("0.12345678901".to_owned())],
+    )
+    .expect_err("undici cifre frazionarie in DECIMAL(38, 10)");
+    // La regola T (`typed_parameter`) giudica il valore del chiamante prima
+    // della riscrittura, e lo rifiuta gia lei.
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    assert_eq!(
+        error.message,
+        plenora_database_core::typed_parameter::TYPED_PARAMETER_MISMATCH
+    );
+    let admitted = admission_gate::query(
+        ProviderKind::Postgres,
+        &query,
+        "SQL".to_owned(),
+        &names,
+        &[V::Decimal("0.1234567891".to_owned())],
+    )
+    .expect("dieci cifre frazionarie");
+    assert_eq!(
+        admitted.statement().params,
+        vec![V::Decimal("0.1234567891".to_owned())]
+    );
+    // Entrambe le facade devono eseguire il valore ammesso e rifiutare
+    // quello inesatto prima che il finto registri uno statement.
+    let mut query = query;
+    query.filter = None;
+    query.projection[0].expression = QueryExpression::TypedParameter {
+        name: "p".to_owned(),
+        parameter_type: plenora_database_core::relational::QueryParameterType::Decimal,
+    };
+    for execute in [false, true] {
+        for (text, accepted) in [("0.1234567891", true), ("0.12345678901", false)] {
+            let mut finta = Finta {
+                eseguiti: Vec::new(),
+            };
+            let statement = Statement::new("SQL").with_params(vec![V::Decimal(text.to_owned())]);
+            let plan = plenora_database_core::spatial_operand::OperandPlan::Query(&query);
+            let cancellation = CancellationToken::new();
+            let result = if execute {
+                block_on(plenora_database_core::facade::execute_judged(
+                    &mut finta,
+                    &statement,
+                    Some(&plan),
+                    &names,
+                    &cancellation,
+                ))
+                .map(|_| ())
+            } else {
+                block_on(plenora_database_core::facade::query_judged(
+                    &mut finta,
+                    &statement,
+                    Some(&plan),
+                    &names,
+                    &cancellation,
+                ))
+                .map(|_| ())
+            };
+            assert_eq!(result.is_ok(), accepted, "{result:?}");
+            assert_eq!(finta.eseguiti.len(), usize::from(accepted));
+            if accepted {
+                assert_eq!(finta.eseguiti[0].params, statement.params);
+            }
+        }
+    }
+}
+
+#[test]
+fn repeated_query_binds_do_not_collapse_signed_zero() {
+    let query = serde_json::from_value(serde_json::json!({
+        "source": {"object": {"catalog": null, "schema": "public", "object": "t"}, "alias": null},
+        "projection": [{"expression": {"kind": "parameter", "name": "p"}, "alias": null}],
+        "filter": null, "having": null, "row_limit": null
+    }))
+    .expect("query");
+    for values in [
+        vec![V::F64(-0.0), V::F64(0.0)],
+        vec![V::F64(0.0), V::F64(-0.0)],
+        vec![
+            V::Json(serde_json::json!({"nested": [-0.0]})),
+            V::Json(serde_json::json!({"nested": [0.0]})),
+        ],
+    ] {
+        let error = admission_gate::query(
+            ProviderKind::Postgres,
+            &query,
+            "SQL".to_owned(),
+            &["p".to_owned(), "p".to_owned()],
+            &values,
+        )
+        .expect_err("zeri con segno diverso");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(
+            error.message,
+            "lo stesso parametro della query con valori diversi"
+        );
+    }
 }
 
 /// Un parametro tipizzato confrontato in un DML relazionale si rende

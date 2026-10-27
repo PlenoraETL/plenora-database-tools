@@ -23,7 +23,7 @@
 //! | facade `execute_portable*` (SDK Python `execute_portable_*`, CLI `portable-execute`, `testing`) | [`portable`] |
 //! | DML relazionale dello SDK (`execute` / `execute_returning_rows` con piano `mutation`) | [`mutation`] |
 //! | query relazionale dello SDK (piano `query`) | [`query`], eseguita con `facade::query_admitted` |
-//! | `facade::execute_judged` / `query_judged` con un piano | [`portable`], [`mutation`]; una query con parametri si rifiuta |
+//! | `facade::execute_judged` / `query_judged` con un piano | [`portable`], [`mutation`], [`query`] con i nomi dei bind del piano |
 //! | `Provider::query` (runtime) | [`query_parameters`] |
 //! | lettura plan-based (`Provider::read`, filtro) | [`read_filter`] |
 //! | parameter array e SQL del chiamante Db2 | [`described`], sul tipo che `SQLDescribeParam` da al segnaposto |
@@ -124,7 +124,18 @@ pub fn query(
     for (name, value) in bind_names.iter().zip(values) {
         if named
             .insert(name.clone(), value.clone())
-            .is_some_and(|previous| &previous != value)
+            .is_some_and(|previous| match (&previous, value) {
+                (ParameterValue::F64(left), ParameterValue::F64(right)) => {
+                    left.to_bits() != right.to_bits()
+                }
+                // Anche un numero JSON annidato puo portare -0.0:
+                // PartialEq lo considera uguale a +0.0 e perderebbe il segno.
+                #[allow(clippy::cmp_owned)] // Il confronto dei Value perde il segno di zero.
+                (ParameterValue::Json(left), ParameterValue::Json(right)) => {
+                    left.to_string() != right.to_string()
+                }
+                _ => &previous != value,
+            })
         {
             return Err(DatabaseError::invalid_plan(
                 "lo stesso parametro della query con valori diversi",

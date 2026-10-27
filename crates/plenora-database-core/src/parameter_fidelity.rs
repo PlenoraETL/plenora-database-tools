@@ -34,15 +34,15 @@
 //!   del chiamante di PostgreSQL (il segnaposto e descritto senza typmod: un
 //!   `numeric(12, 4)`, un `timestamp(0)` arrotondano l'assegnazione),
 //!   `MySQL`, `MariaDB`, SQL Server e Oracle (nessuna descrizione), i
-//!   parametri senza tipo delle `QueryOperation` relazionali e le mutazioni
-//!   relazionali dello SDK. Hazard: il valore arriva esatto nel proprio tipo,
+//!   parametri senza tipo delle `QueryOperation` relazionali.
+//!   Hazard: il valore arriva esatto nel proprio tipo,
 //!   ma l'assegnazione a una colonna piu stretta e il confronto fra tipi
 //!   diversi (un `BIGINT` con un `DOUBLE`, un `DOUBLE` con un `DECIMAL`)
 //!   seguono le regole del server, che arrotonda o converte. Rientro: la
 //!   descrizione dei segnaposto con il tipo completo
 //!   (`sp_describe_undeclared_parameters`, il typmod del bersaglio su
-//!   PostgreSQL) e il catalogo per le mutazioni dello SDK; chi vuole la
-//!   garanzia usa l'AST portable.
+//!   PostgreSQL); il DML dello SDK passa dal catalogo del cancello unico.
+//!   Chi vuole la garanzia usa l'AST portable.
 //! - **Collation e padding.** Gli spazi finali e le maiuscole di un testo, e
 //!   su SQL Server gli zeri finali di un binario (`0xAB01 = 0xAB0100` e vero,
 //!   misurato), si confrontano con le regole di padding e di collation della
@@ -50,7 +50,12 @@
 //!   Ambito: ogni percorso. Hazard: una chiave che differisce soltanto per
 //!   spazi, maiuscole o zeri finali ritrova la riga. Rientro: un confronto
 //!   binario esplicito (`DATALENGTH`, `COLLATE` binaria) nei renderer.
-//! - **Valori che il server normalizza.** `-0.0` si rifiuta dove il server lo
+//! - **Valori che il server normalizza.** `-0.0` si rifiuta
+//!   nell'ammissione a interi o decimali, che non
+//!   rappresentano il segno di zero; gli operandi floating point lo mantengono
+//!   fino al controllo del provider. Ambito: ogni ingresso del cancello.
+//!   Hazard: normalizzare prima del bind nasconderebbe la perdita al provider.
+//!   `-0.0` si rifiuta inoltre dove il server lo
 //!   conserva come `+0.0` (Db2, `MariaDB`, misurato). Su Oracle si rifiuta
 //!   per eccesso: il bind lo conserva in `BINARY_DOUBLE` ma `NUMBER`, `FLOAT`
 //!   e `BINARY_FLOAT` lo salvano `+0`, e il bind non conosce la colonna

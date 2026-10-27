@@ -191,12 +191,6 @@ pub(crate) async fn query_operation_with_profile(
 ) -> Result<Box<dyn BatchStream>> {
     let product = profile.product();
     validate_batch_rows(batch_rows)?;
-    // I parametri tipati contro il loro CAST (`operand_admission`).
-    let parameters = &plenora_database_core::admission_gate::query_parameters(
-        profile.kind(),
-        operation,
-        parameters,
-    )?;
     if cancellation.is_cancelled() {
         return Err(interruption_error(
             profile,
@@ -217,7 +211,9 @@ pub(crate) async fn query_operation_with_profile(
             "query {product} oltre il limite di placeholder del prepared statement"
         )));
     }
-    let bound = bind_parameters(&bind_names, parameters, profile.kind())?;
+    // Il layout dei bind si valida prima della rete, sui valori originali.
+    // Il binding eseguibile si costruisce dopo il giudizio e l'ammissione.
+    bind_parameters(&bind_names, parameters, profile.kind())?;
     ensure_active_read_budget(budget, profile)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;
@@ -248,6 +244,14 @@ pub(crate) async fn query_operation_with_profile(
         .await?;
         operands.judge_bound(&catalog, &families)?;
     }
+    // Le regole F, T e C hanno giudicato i valori del chiamante; poi i
+    // parametri tipati si ammettono contro il loro CAST (`operand_admission`).
+    let parameters = &plenora_database_core::admission_gate::query_parameters(
+        profile.kind(),
+        operation,
+        parameters,
+    )?;
+    let bound = bind_parameters(&bind_names, parameters, profile.kind())?;
     let statement = session.prepare_statement(&rendered.sql, &internal).await?;
     if usize::from(statement.num_params()) != bind_names.len() {
         return Err(read_error(

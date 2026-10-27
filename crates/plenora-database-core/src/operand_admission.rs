@@ -466,6 +466,11 @@ pub fn admit(
             }
         }
         (V::F64(number), _) => {
+            // Gli interi e i decimali non rappresentano il segno di zero.
+            // La normalizzazione decimale lo cancellerebbe prima del bind.
+            if *number == 0.0 && number.is_sign_negative() {
+                return Err(inexact());
+            }
             let exact = exact_decimal_of_f64(*number).ok_or_else(inexact)?;
             match operand {
                 O::Integer { min, max } => exact

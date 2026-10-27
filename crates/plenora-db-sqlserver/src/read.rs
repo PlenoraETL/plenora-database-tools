@@ -171,12 +171,6 @@ pub async fn read_query_operation(
 ) -> Result<Box<dyn BatchStream>> {
     validate_batch_rows(batch_rows)?;
     validate_query_sources(operation, database)?;
-    // I parametri tipati contro il loro CAST (`operand_admission`).
-    let parameters = &plenora_database_core::admission_gate::query_parameters(
-        plenora_database_core::plan::ProviderKind::Sqlserver,
-        operation,
-        parameters,
-    )?;
     budget.ensure_active()?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;
@@ -184,6 +178,13 @@ pub async fn read_query_operation(
     let mut pooled = pool.checkout(&internal).await?;
     crate::query::verify_scalar_operands(pooled.session_mut()?, operation, parameters, &internal)
         .await?;
+    // Le regole F, T e C hanno giudicato i valori del chiamante; poi i
+    // parametri tipati si ammettono contro il loro CAST (`operand_admission`).
+    let parameters = &plenora_database_core::admission_gate::query_parameters(
+        plenora_database_core::plan::ProviderKind::Sqlserver,
+        operation,
+        parameters,
+    )?;
     let spatial_validation = validate_spatial_inputs(
         pooled.session_mut()?,
         operation,

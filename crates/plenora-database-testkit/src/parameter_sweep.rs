@@ -1833,12 +1833,12 @@ async fn write_and_compare(
                     Ok(matched) => {
                         judge_match(&context, &written.stored, &w, kind, matched, outcome);
                     }
-                    // Il savepoint non si ripristina (SQL Server condanna la
-                    // transazione dopo un errore): i confronti restanti di
-                    // questo valore non si possono fare.
+                    // Il savepoint non si ripristina: i confronti restanti
+                    // non si possono fare. La campagna e incompleta, quindi
+                    // fallisce: una nota nasconderebbe i vicini non provati.
                     Err(reason) => {
                         outcome
-                            .notes
+                            .failures
                             .push(format!("confronti di {value:?} interrotti: {reason}"));
                         break;
                     }
@@ -2122,10 +2122,10 @@ async fn read_path(
                     }
                     // Un errore dopo l'invio (il limite dei cursori del fork
                     // Oracle, una connessione persa) e un errore, non un
-                    // silenzio: si registra e il confronto non decide.
+                    // silenzio: la campagna incompleta fallisce.
                     Err(error) => {
                         outcome
-                            .notes
+                            .failures
                             .push(format!("filtro con {w:?} fallito: {}", describe(&error)));
                         None
                     }
