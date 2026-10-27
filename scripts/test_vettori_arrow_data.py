@@ -36,6 +36,16 @@ DI_SCHEMA = {"expect": "invalid", "category": "schema"}
 
 
 class Verdetti(unittest.TestCase):
+    def test_pg14_view_keeps_rls_under_the_restricted_owner(self) -> None:
+        sql = next(row[1] for row in runner.SCENARI if row[0] == "regola-r-vista-rls-delete")
+        old = runner.prepara_vista_rls(sql, 140_000)
+        self.assertNotIn("security_invoker", old)
+        self.assertIn("ALTER VIEW {t} OWNER TO {r}", old)
+        self.assertIn("ENABLE ROW LEVEL SECURITY", old)
+        for version in (150_000, 180_000):
+            self.assertEqual(runner.prepara_vista_rls(sql, version), sql)
+
+
     def verdetto(self, vettore: dict, osservato: dict, *, di_schema: bool = False,
                  operazione: str = "write-postgres", limite: str | None = None) -> str:
         return runner.verdetto(operazione, vettore, osservato, Oracolo(di_schema), limite)

@@ -599,3 +599,21 @@ def test_a_probe_hidden_by_a_wrapper_is_refused_by_the_compiler() -> None:
         )
         with pytest.raises(p.PlenoraUnsupportedError, match="argomento geometrico"):
             compile_relational_query(within.to_json(), "postgres")
+
+
+def test_spatial_mapping_does_not_substitute_for_a_server_srid_proof() -> None:
+    """La dichiarazione ORM non apre scritture o predicati non qualificati."""
+    geometry = p.Geometry(srid=4326, geometry_type="point", semantics="geography")
+    features = p.table("FEATURES", "ID", "SHAPE")
+    value = geometry.bind("shape")
+    for statement in (
+        p.insert(features).values(SHAPE=value),
+        p.update(features).values(SHAPE=value),
+    ):
+        with pytest.raises(p.PlenoraUnsupportedError, match="senza verifica dello SRID"):
+            compile_relational_mutation(statement.to_json(), "oracle")
+    for function in ("intersects", "d_within"):
+        arguments = (p.bind("distance", p.BindType.FLOAT),) if function == "d_within" else ()
+        predicate = geometry.predicate(function, features.c.SHAPE, value, *arguments)
+        with pytest.raises(p.PlenoraUnsupportedError, match="non verifica lo SRID"):
+            compile_relational_query(p.select(features.c.ID).where(predicate).to_json(), "oracle")

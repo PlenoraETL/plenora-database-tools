@@ -271,7 +271,53 @@ async fn prepare(admin: &tokio_postgres::Client, setup: &str) {
     )
     .replace("{s}", SCHEMA)
     .replace("{r}", ROLE);
+    let version: i32 = admin
+        .query_one("SELECT current_setting('server_version_num')::int", &[])
+        .await
+        .expect("versione server")
+        .get(0);
+    let sql = view_setup_for_version(&sql, version);
     admin.batch_execute(&sql).await.expect("preparazione");
+    if setup.contains("WITH (security_invoker = true)") {
+        admin
+            .batch_execute(&format!("SET ROLE {ROLE}"))
+            .await
+            .expect("ruolo soggetto a RLS");
+        let visible = ids(admin, "v").await;
+        admin
+            .batch_execute("RESET ROLE")
+            .await
+            .expect("ripristino ruolo");
+        assert_eq!(visible, vec![1, 3], "la vista deve nascondere la riga 2");
+    }
+}
+
+/// PG14 non ha `security_invoker`: il proprietario della vista e il ruolo
+/// soggetto a RLS, non il proprietario della tabella. Stessa policy effettiva;
+/// da PG15 si continua a provare la forma invoker.
+fn view_setup_for_version(sql: &str, version: i32) -> String {
+    if version < 150_000 && sql.contains("WITH (security_invoker = true)") {
+        format!(
+            "{} GRANT CREATE ON SCHEMA {SCHEMA} TO {ROLE}; \
+             ALTER VIEW {SCHEMA}.v OWNER TO {ROLE}; \
+             REVOKE CREATE ON SCHEMA {SCHEMA} FROM {ROLE};",
+            sql.replace("WITH (security_invoker = true)", "")
+        )
+    } else {
+        sql.to_owned()
+    }
+}
+
+#[test]
+fn rls_view_setup_preserves_the_policy_role_on_supported_majors() {
+    let sql = "CREATE VIEW pln_regola_r.v WITH (security_invoker = true) AS SELECT * FROM pln_regola_r.t;";
+    let old = view_setup_for_version(sql, 140_000);
+    assert!(!old.contains("security_invoker"));
+    assert!(old.contains("ALTER VIEW pln_regola_r.v OWNER TO pln_regola_r_ruolo"));
+    for version in [150_000, 180_000] {
+        assert_eq!(view_setup_for_version(sql, version), sql);
+    }
+    assert_eq!(view_setup_for_version(TABLE, 140_000), TABLE);
 }
 
 #[tokio::test]

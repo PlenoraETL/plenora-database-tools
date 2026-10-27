@@ -876,6 +876,12 @@ e li verifica; un artefatto assente non è supporto implicito.
 
 ## Limitazioni
 
+- **Prova dello SRID nelle espressioni ORM** - il mapping e un indice non
+  sostituiscono una guardia qualificata. I rifiuti prima dell'esecuzione e le
+  condizioni di rientro sono dichiarati in
+  [`spatial_probe::admit_probe`](../plenora-database-core/src/spatial_probe.rs)
+  e nel [registro dei limiti](../../contracts/adoption-source.json).
+
 - **Oracle** - provider thin, Arrow e ORM Spatial sono qualificati sul
   riferimento AMD64 fissato dal gate. I nomi di tabella, schema e colonna
   Spatial creati dall'ORM devono essere canonici maiuscoli, coerentemente con

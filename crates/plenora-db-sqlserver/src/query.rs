@@ -1456,17 +1456,17 @@ const NAME_RESOLUTION_SQL: &str = concat!(
     relation_prelude!(),
     "IF @state = N'known' AND @temp = 0 \
     SELECT v.i, CAST(c.name AS nvarchar(128)) FROM (VALUES @VALUES@) v(i, n) \
-    JOIN sys.columns c ON c.object_id = @id AND (c.name = v.n COLLATE DATABASE_DEFAULT \
+    JOIN sys.all_columns c ON c.object_id = @id AND (c.name = v.n COLLATE DATABASE_DEFAULT \
         OR c.column_id = COLUMNPROPERTY(@id, v.n, 'ColumnId')); \
 ELSE IF @state = N'known' \
     SELECT v.i, CAST(c.name AS nvarchar(128)) FROM (VALUES @VALUES@) v(i, n) \
-    JOIN tempdb.sys.columns c ON c.object_id = @id AND (c.name = v.n \
+    JOIN tempdb.sys.all_columns c ON c.object_id = @id AND (c.name = v.n \
         OR c.name = v.n COLLATE DATABASE_DEFAULT); \
 ELSE SELECT CAST(NULL AS int), CAST(NULL AS nvarchar(128)) WHERE 1 = 0;"
 );
 
-/// Le colonne di una relazione (`@P1` schema, vuoto se assente; `@P2`
-/// oggetto) nell'ordine di `column_id`, con lo stato: `known`, `absent`
+/// Colonne utente e di sistema (`all_columns`/`all_objects`): `@P1` schema,
+/// vuoto se assente, `@P2` oggetto; ordine `column_id`, con lo stato: `known`, `absent`
 /// (`OBJECT_ID` non la trova: i riferimenti non si legano) o `unknown` (un
 /// sinonimo verso un altro database o un oggetto che non si risolve). Una
 /// colonna e geometrica se il suo tipo e `geometry` o `geography`: un alias
@@ -1506,7 +1506,7 @@ ELSE IF @temp = 1 \
         CAST(COALESCE(TYPE_NAME(c.system_type_id), ty.name) AS nvarchar(128)), \
         CAST(ty.name AS nvarchar(128)), CAST(c.max_length AS int), \
         CAST(c.precision AS int), CAST(c.scale AS int) \
-    FROM tempdb.sys.columns c JOIN tempdb.sys.types ty ON ty.user_type_id = c.user_type_id \
+    FROM tempdb.sys.all_columns c JOIN tempdb.sys.types ty ON ty.user_type_id = c.user_type_id \
     WHERE c.object_id = @id ORDER BY c.column_id; \
 ELSE \
     SELECT @state, CAST(c.name AS nvarchar(128)), \
@@ -1521,8 +1521,8 @@ ELSE \
         CAST(COALESCE(TYPE_NAME(c.system_type_id), ty.name) AS nvarchar(128)), \
         CAST(ty.name AS nvarchar(128)), CAST(c.max_length AS int), \
         CAST(c.precision AS int), CAST(c.scale AS int) \
-    FROM sys.columns c JOIN sys.types ty ON ty.user_type_id = c.user_type_id \
-    JOIN sys.objects o ON o.object_id = c.object_id \
+    FROM sys.all_columns c JOIN sys.types ty ON ty.user_type_id = c.user_type_id \
+    JOIN sys.all_objects o ON o.object_id = c.object_id \
     WHERE c.object_id = @id ORDER BY c.column_id;"
 );
 
