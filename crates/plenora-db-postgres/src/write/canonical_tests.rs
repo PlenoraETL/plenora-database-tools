@@ -417,3 +417,62 @@ fn char_n_completa_e_la_regola_s_lo_rifiuta() {
         std::iter::once(LeafLoss::Padded).collect()
     );
 }
+
+/// Regola S: alias testuali non diventano chiavi distinte per il core.
+#[test]
+fn chiavi_testuali_solo_con_uguaglianza_provata() {
+    use super::super::plan::WriteColumnPlan;
+    use arrow_array::StringArray;
+    let mut plan =
+        WriteColumnPlan::compile(&Field::new("k", DataType::Utf8, false)).expect("piano");
+    for strict in [false, true] {
+        for (symbol, typmod, value, accepted) in [
+            ("uuid_in", -1, "6f9619ff-8b86-d011-b42d-00c04fc964ff", true),
+            ("uuid_in", -1, "6F9619FF-8B86-D011-B42D-00C04FC964FF", false),
+            ("uuid_in", -1, "6f9619ff8b86d011b42d00c04fc964ff", false),
+            (
+                "uuid_in",
+                -1,
+                "{6f9619ff-8b86-d011-b42d-00c04fc964ff}",
+                false,
+            ),
+            ("numeric_in", -1, "01", false),
+            ("numeric_in", 327_686, "1.005", false),
+            ("int8in", -1, "+1", false),
+            ("boolin", -1, "yes", false),
+            ("byteain", -1, r"\x01", false),
+            ("inet_in", -1, "127.0.0.1", false),
+            ("timestamp_in", 0, "2026-01-01 10:00:00.4", false),
+            ("timestamptz_in", -1, "2026-01-01 11:00:00+01", false),
+            ("jsonb_in", -1, "{}", false),
+            ("textin", -1, "A", true),
+            ("varcharin", 7, "abc ", false),
+            ("bpcharin", 7, "ab", false),
+            ("bpcharin", 7, "abc", true),
+        ] {
+            plan.session_rule = Some(SessionRule {
+                leaves: vec![Leaf {
+                    class: classify(Some(symbol), typmod),
+                    shape: SessionShape::Scalar,
+                }],
+                strict,
+                key: true,
+            });
+            let array = StringArray::from(vec![value]);
+            assert_eq!(
+                super::check(&plan, &array, 0).is_ok(),
+                accepted,
+                "{symbol}, strict={strict}"
+            );
+        }
+        plan.session_rule = Some(SessionRule {
+            leaves: vec![Leaf {
+                class: classify(Some("timestamp_in"), 0),
+                shape: SessionShape::Scalar,
+            }],
+            strict,
+            key: true,
+        });
+        assert!(super::refuse_lossy(&[plan.clone()]).is_err());
+    }
+}

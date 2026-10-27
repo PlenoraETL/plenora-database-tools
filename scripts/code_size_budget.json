@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 143759,
-  "max_code_lines": 113527,
-  "rationale": "Merge della semantica delle scritture (#134: regole S e A, trigger e bulk) con Geometry Semantics e fedelta dei parametri di main (#133, #135, #136/#137). Cancello unico anche per le colonne Arrow misurate, codec esatti o rifiutati, senza duplicare le implementazioni comuni. Budget pari alla misura esatta di scripts/code_size.py, senza margine."
+  "max_physical_lines": 143828,
+  "max_code_lines": 113589,
+  "rationale": "Regola S dopo la seconda lettura #134: chiavi PostgreSQL testuali con uguaglianza provata (UUID in forma unica, alias non qualificati rifiutati) e controlli di esattezza SQL Server obbligatori sulle chiavi con ogni politica. Budget rigenerato dalla misura esatta di scripts/code_size.py, senza margine; test esclusi dalla misura."
 }

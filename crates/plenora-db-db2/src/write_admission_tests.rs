@@ -229,3 +229,35 @@ fn le_chiavi_di_testo_sotto_una_collation_non_binaria_si_rifiutano() {
 fn il_fixture_incorporato_e_valido() {
     admission_table().expect("fixture della regola A per Db2");
 }
+
+/// Scala, precisione temporale e UUID testuali non hanno conversioni implicite.
+#[test]
+fn le_chiavi_non_possono_perdere_precisione_o_cambiare_tipo() {
+    let measured = admission_table()
+        .expect("fixture")
+        .server("12.1")
+        .expect("server");
+    for (arrow, facts) in [
+        (
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            column("TIMESTAMP", 10, 0),
+        ),
+        (DataType::Decimal128(10, 3), column("DECIMAL", 10, 2)),
+        (DataType::Utf8, column("BINARY", 16, 0)),
+    ] {
+        let (key, dimensions) = admission_key(&arrow, &facts, &server());
+        let admitted =
+            plenora_database_core::admission_gate::write_column(&measured, &key, dimensions);
+        if matches!(arrow, DataType::Timestamp(_, _)) {
+            let rewrites = admitted.expect("precisione misurata come riscrittura");
+            let values =
+                plenora_database_core::arrow::array::TimestampMicrosecondArray::from(vec![
+                    400_000, 0,
+                ]);
+            assert!(rewrites.iter().any(|rewrite| rewrite.rewrites(&values, 0)));
+            assert!(!rewrites.iter().any(|rewrite| rewrite.rewrites(&values, 1)));
+        } else {
+            assert!(admitted.is_err(), "{key:?}");
+        }
+    }
+}

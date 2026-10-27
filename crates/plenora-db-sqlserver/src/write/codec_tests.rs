@@ -330,3 +330,43 @@ fn le_date_fuori_dagli_anni_di_sql_server_si_rifiutano_prima_del_driver() {
     assert!(datetimeoffset("2016-12-31T23:59:60Z").is_err());
     assert!(datetimeoffset("2016-12-31T23:59:59.9999999Z").is_ok());
 }
+
+/// Anche Compatible e Lossy devono conservare la chiave prima del predicato.
+#[test]
+fn le_chiavi_applicano_sempre_i_controlli_di_esattezza() {
+    let mut plan = text_plan("datetimeoffset", "datetimeoffset(0)", None, false);
+    plan.key_input_indices = vec![0];
+    plan.columns[0].kind = crate::SqlServerColumnKind::TimestampTz;
+    let batch = RecordBatch::try_new(
+        Arc::clone(&plan.input_schema),
+        vec![Arc::new(StringArray::from(vec!["2026-01-01T10:00:00.4Z"]))],
+    )
+    .expect("batch");
+    assert!(bind_row(&plan, &batch, 0).is_err());
+    assert!(bulk_rows(&plan, &batch).is_err());
+    let exact = datetimeoffset("2026-01-01T10:00:00Z").expect("data");
+    let fraction = datetimeoffset("2026-01-01T10:00:00.4Z").expect("data");
+    assert!(check_offset(&plan, &plan.columns[0], &exact).is_ok());
+    assert!(check_offset(&plan, &plan.columns[0], &fraction).is_err());
+    for (native, declaration) in [
+        ("datetime2", "datetime2(0)"),
+        ("time", "time(0)"),
+        ("datetime", "datetime"),
+        ("smalldatetime", "smalldatetime"),
+    ] {
+        plan.columns[0].native_type = native.to_owned();
+        plan.columns[0].native_declaration = declaration.to_owned();
+        assert!(check_temporal(&plan, &plan.columns[0], 1).is_err());
+        assert!(check_temporal(&plan, &plan.columns[0], 0).is_ok());
+    }
+    plan.columns[0].native_type = "varbinary".to_owned();
+    plan.columns[0].native_declaration = "varbinary(1)".to_owned();
+    assert!(check_binary(&plan, &plan.columns[0], &[1, 0]).is_err());
+    assert!(check_binary(&plan, &plan.columns[0], &[1]).is_ok());
+    plan.columns[0].native_type = "varchar".to_owned();
+    plan.columns[0].native_declaration = "varchar(3)".to_owned();
+    plan.columns[0].collation = Some("Latin1_General_CI_AS".to_owned());
+    assert!(check_text(&plan, &plan.columns[0], "abc ").is_err());
+    assert!(check_text(&plan, &plan.columns[0], "\u{4e2d}").is_err());
+    assert!(check_text(&plan, &plan.columns[0], "abc").is_ok());
+}

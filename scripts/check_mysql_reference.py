@@ -304,6 +304,7 @@ EXPECTED_UNIT_TESTS = {
     "write_admission::tests::il_testo_porta_il_charset_e_la_lunghezza_simbolica",
     "write_admission::tests::la_chiave_porta_column_type_per_intero",
     "write_admission::tests::la_major_e_major_punto_minor",
+    "write_admission::tests::le_chiavi_non_possono_perdere_precisione_o_cambiare_tipo",
     "write_admission::tests::ogni_major_qualificata_e_misurata",
     "write_admission::tests::una_major_non_misurata_si_rifiuta_con_ogni_politica",
     "write::tests::spatial_batch_enforces_exact_type_and_cumulative_component_budget",

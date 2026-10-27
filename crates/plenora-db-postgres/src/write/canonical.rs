@@ -198,6 +198,10 @@ pub(super) enum LeafClass {
     /// composto il tipo Arrow e quello della colonna, e la differenza di tipo
     /// non la dichiara.
     Rounding,
+    /// UUID: sulle chiavi solo la forma minuscola 8-4-4-4-12.
+    Uuid,
+    /// Testo interpretato: uguaglianza delle chiavi non provata per byte.
+    Parsed,
     /// Fuori dall'elenco chiuso.
     Unknown,
 }
@@ -331,6 +335,9 @@ pub(super) fn classify(symbol: Option<&str>, typmod: i32) -> LeafClass {
         "jsonb_in" => LeafClass::Jsonb,
         "float4in" | "float8in" => LeafClass::Rounding,
         "numeric_in" if typmod >= 0 => LeafClass::Rounding,
+        "uuid_in" => LeafClass::Uuid,
+        "boolin" | "int2in" | "int4in" | "int8in" | "numeric_in" | "inet_in" | "cidr_in"
+        | "macaddr_in" | "macaddr8_in" | "bit_in" | "varbit_in" | "byteain" => LeafClass::Parsed,
         _ if TEXT_INPUTS.contains(&symbol) => LeafClass::Text { max_chars: None },
         "date_in" => LeafClass::Session {
             leaf: SessionLeaf::Date,
@@ -644,7 +651,7 @@ pub(super) fn refuse_lossy(plans: &[WriteColumnPlan]) -> Result<()> {
         .iter()
         .filter_map(|plan| plan.session_rule.as_ref())
         .any(|rule| {
-            rule.strict
+            (rule.strict || rule.key)
                 && rule
                     .leaves
                     .iter()
@@ -749,6 +756,17 @@ pub(super) fn declared(plan: &WriteColumnPlan, strict: bool) -> Option<SessionRu
         "tsrange" => ("timestamp_in", true),
         "tstzrange" => ("timestamptz_in", true),
         "jsonb" => ("jsonb_in", false),
+        "uuid" => ("uuid_in", false),
+        "numeric" => ("numeric_in", false),
+        "boolean" => ("boolin", false),
+        "smallint" => ("int2in", false),
+        "integer" => ("int4in", false),
+        "bigint" => ("int8in", false),
+        "bytea" => ("byteain", false),
+        "inet" => ("inet_in", false),
+        "cidr" => ("cidr_in", false),
+        "macaddr" => ("macaddr_in", false),
+        "macaddr8" => ("macaddr8_in", false),
         "real" => ("float4in", false),
         "double precision" => ("float8in", false),
         _ if base.starts_with("numeric(") => {
@@ -835,6 +853,7 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
     let Some(rule) = plan.session_rule.as_ref() else {
         return Ok(());
     };
+    check_key(rule, array, row)?;
     // Mondo chiuso: `money` e i tipi fuori elenco non ricevono niente.
     if rule.leaves.iter().any(|leaf| {
         matches!(
@@ -852,8 +871,11 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
         // Un composto, un multirange o un array di range: soltanto testo,
         // e con `Strict` senza lunghezze massime da verificare per campo.
         let text_only = rule.leaves.iter().all(|leaf| match leaf.class {
-            LeafClass::Text { max_chars } => !(rule.strict && max_chars.is_some()),
-            LeafClass::Padded { .. } | LeafClass::Jsonb | LeafClass::Rounding => !rule.strict,
+            LeafClass::Text { max_chars } => !((rule.strict || rule.key) && max_chars.is_some()),
+            LeafClass::Uuid | LeafClass::Parsed => !rule.key,
+            LeafClass::Padded { .. } | LeafClass::Jsonb | LeafClass::Rounding => {
+                !(rule.strict || rule.key)
+            }
             _ => false,
         });
         return if text_only {
@@ -875,12 +897,12 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
     match leaf.class {
         LeafClass::Text { max_chars } => check_text(rule, max_chars, None, array, row),
         LeafClass::Padded { chars } => check_text(rule, Some(chars), Some(chars), array, row),
-        LeafClass::Jsonb => check_jsonb(plan, rule.strict, leaf.shape, array, row),
+        LeafClass::Jsonb => check_jsonb(plan, rule.strict || rule.key, leaf.shape, array, row),
         // Un valore Arrow tipizzato si converte da se, esatto o rifiutato
         // dal preflight; un testo con `Strict` no, nemmeno nei limiti di un
         // range (una struttura di testi).
         LeafClass::Rounding => {
-            if rule.strict && text_bearing(array.data_type()) {
+            if (rule.strict || rule.key) && text_bearing(array.data_type()) {
                 Err(lossy())
             } else {
                 Ok(())
@@ -890,9 +912,56 @@ pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Re
             leaf: session,
             fraction,
             ..
-        } => check_session(plan, rule.strict, leaf.shape, session, fraction, array, row),
+        } => check_session(
+            plan,
+            rule.strict || rule.key,
+            leaf.shape,
+            session,
+            fraction,
+            array,
+            row,
+        ),
+        LeafClass::Uuid | LeafClass::Parsed => Ok(()),
         LeafClass::Unknown => Err(refused()),
     }
+}
+
+/// Verifica l'uguaglianza delle chiavi prima della codifica del server.
+fn check_key(rule: &SessionRule, array: &dyn Array, row: usize) -> Result<()> {
+    // K usa i byte Arrow: solo testo scalare o UUID nella forma unica.
+    // Letterali, JSON, numeri e temporali testuali hanno alias; senza una
+    // canonicalizzazione dimostrata non sono chiavi, con nessuna politica.
+    if rule.key && text_bearing(array.data_type()) && !array.is_null(row) {
+        match rule.leaves.as_slice() {
+            [Leaf {
+                class: LeafClass::Text { .. } | LeafClass::Padded { .. },
+                shape: SessionShape::Scalar,
+            }] => {}
+            [Leaf {
+                class: LeafClass::Uuid,
+                shape: SessionShape::Scalar,
+            }] => {
+                let value = array
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(refused)?
+                    .value(row);
+                let canonical = value.len() == 36
+                    && value.bytes().enumerate().all(|(i, b)| {
+                        if [8, 13, 18, 23].contains(&i) {
+                            b == b'-'
+                        } else {
+                            b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+                        }
+                    });
+                if !canonical {
+                    return Err(rewritten(true));
+                }
+            }
+            _ => return Err(rewritten(true)),
+        }
+    }
+    Ok(())
 }
 
 /// Una foglia di testo: con `Strict`, la lunghezza massima (regola P) e,

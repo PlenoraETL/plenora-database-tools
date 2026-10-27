@@ -814,3 +814,37 @@ async fn live_a_xml_non_riscrive_il_testo_in_silenzio() {
     .is_empty());
     admin_batch(&mut admin, "DROP TABLE IF EXISTS [plenora_test].[r8_xml];").await;
 }
+
+/// La frazione della chiave non deve aggiornare il secondo intero vicino.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta fixture DML isolate"]
+async fn live_s_chiave_datetimeoffset_compatible_non_arrotonda() {
+    let _serial = SERIAL.lock().await;
+    let pool = SqlServerPool::new(live_config(), 2).expect("pool");
+    let mut admin = SqlServerSession::open(&live_config(), &CancellationToken::new())
+        .await
+        .expect("sessione");
+    admin_batch(
+        &mut admin,
+        "DROP TABLE IF EXISTS [plenora_test].[s_offset];
+         CREATE TABLE [plenora_test].[s_offset] (k datetimeoffset(0) PRIMARY KEY, v nvarchar(10));
+         INSERT INTO [plenora_test].[s_offset] VALUES ('2026-01-01T10:00:00+00:00', N'prima');",
+    )
+    .await;
+    for policy in [MappingPolicy::Compatible, MappingPolicy::Lossy] {
+        let mut upsert = keyed("s_offset", WriteMode::Upsert, &["k"], &[]);
+        upsert.mapping_policy = policy;
+        run_r8(
+            &pool,
+            &upsert,
+            text_rows(&[("k", &["2026-01-01T10:00:00.4+00:00"]), ("v", &["nuovo"])]),
+        )
+        .await
+        .expect_err("la chiave non si arrotonda");
+        assert_eq!(
+            admin_texts(&mut admin, "SELECT v FROM [plenora_test].[s_offset]").await,
+            vec!["prima"]
+        );
+    }
+    admin_batch(&mut admin, "DROP TABLE [plenora_test].[s_offset];").await;
+}

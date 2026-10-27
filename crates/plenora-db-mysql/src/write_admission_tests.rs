@@ -161,3 +161,36 @@ fn double_m_d_non_e_esatto() {
         assert_eq!(error.category, ErrorCategory::Unsupported);
     }
 }
+
+/// Entrambi i prodotti rifiutano le conversioni non esatte delle chiavi.
+#[test]
+fn le_chiavi_non_possono_perdere_precisione_o_cambiare_tipo() {
+    for (kind, major) in [
+        (ProviderKind::Mysql, "9.7"),
+        (ProviderKind::Mariadb, "12.3"),
+    ] {
+        let measured = admission_table(kind)
+            .expect("fixture")
+            .server(major)
+            .expect("server");
+        for (arrow, fact) in [
+            (
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                facts("datetime", "datetime(0)", None),
+            ),
+            (
+                DataType::Decimal128(10, 3),
+                facts("decimal", "decimal(10,2)", None),
+            ),
+            (DataType::Utf8, facts("binary", "binary(16)", None)),
+            (DataType::Utf8, facts("uuid", "uuid", None)),
+        ] {
+            let (key, dimensions) = admission_key(&arrow, &fact);
+            assert!(
+                plenora_database_core::admission_gate::write_column(&measured, &key, dimensions)
+                    .is_err(),
+                "{kind:?}: {key:?}"
+            );
+        }
+    }
+}

@@ -963,3 +963,48 @@ async fn live_la_query_rilegge_ogni_tipo_mappato() {
     }
     assert!(difformi.is_empty(), "{difformi:#?}");
 }
+
+/// UUID equivalenti non possono confermare due righe lasciandone una.
+#[tokio::test]
+async fn live_s_uuid_alias_non_sono_chiavi_distinte() {
+    let Some(dsn) = live_dsn() else {
+        return;
+    };
+    let _serial = SERIAL.lock().await;
+    let secret = SecretString::new(dsn);
+    let admin = PostgresProvider::connect(&secret).await.expect("client");
+    for alias in [
+        "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+        "6f9619ff8b86d011b42d00c04fc964ff",
+    ] {
+        setup(
+            &admin,
+            "CREATE TABLE {s}.k (id bigint, v uuid PRIMARY KEY);",
+        )
+        .await;
+        let provider = PostgresProvider::insecure_local();
+        let upsert = operation("k", WriteMode::Upsert, MappingPolicy::Strict);
+        let result = write_stream(
+            &provider,
+            &secret,
+            &upsert,
+            texts(&["6f9619ff-8b86-d011-b42d-00c04fc964ff", alias]),
+        )
+        .await;
+        let error = result.expect_err("alias della chiave");
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        assert!(error
+            .message
+            .contains(plenora_database_core::store_rewrite::REWRITTEN_KEY));
+        assert!(stored(&admin, "SELECT v::text FROM {s}.k").await.is_empty());
+        let canonical = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
+        let result = write_stream(&provider, &secret, &upsert, texts(&[canonical]))
+            .await
+            .expect("UUID canonico");
+        assert_eq!(result.status, WriteStatus::Committed);
+        assert_eq!(
+            stored(&admin, "SELECT v::text FROM {s}.k").await,
+            vec![canonical]
+        );
+    }
+}

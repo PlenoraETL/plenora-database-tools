@@ -103,3 +103,20 @@ fn una_major_non_misurata_si_rifiuta_con_ogni_politica() {
         .message
         .contains(plenora_database_core::write_admission::UNPROVEN_SERVER));
 }
+
+/// La scala Arrow non puo essere ridotta neppure da una politica non stretta.
+#[test]
+fn le_chiavi_decimali_non_possono_cambiare_scala() {
+    let measured = admission_table()
+        .expect("fixture")
+        .server("16")
+        .expect("server");
+    let (key, dimensions) = admission_key(
+        &DataType::Decimal128(10, 3),
+        &[leaf("numeric(10,2)", "b", 655_366, SessionShape::Scalar)],
+        &server(),
+    );
+    assert!(
+        plenora_database_core::admission_gate::write_column(&measured, &key, dimensions).is_err()
+    );
+}

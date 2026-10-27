@@ -619,7 +619,7 @@ fn timestamp(microseconds: i64) -> Result<DateTime<Utc>> {
 ///
 /// `data_mapping` con `plan::LOSSY_VALUE`.
 pub(super) fn check_text(plan: &WritePlan, column: &WriteColumnPlan, value: &str) -> Result<()> {
-    if !plan.strict {
+    if !plan.strict && !plan.key_input_indices.contains(&column.input_index) {
         return Ok(());
     }
     let Some(limit) = super::plan::text_limit(
@@ -654,7 +654,7 @@ pub(super) fn check_text(plan: &WritePlan, column: &WriteColumnPlan, value: &str
 ///
 /// `data_mapping` con `plan::LOSSY_VALUE`.
 pub(super) fn check_binary(plan: &WritePlan, column: &WriteColumnPlan, value: &[u8]) -> Result<()> {
-    if !plan.strict {
+    if !plan.strict && !plan.key_input_indices.contains(&column.input_index) {
         return Ok(());
     }
     match super::plan::binary_limit(&column.native_type, &column.native_declaration) {
@@ -679,7 +679,7 @@ pub(super) fn check_offset(
     else {
         return Ok(());
     };
-    if !plan.strict || scale >= 9 {
+    if (!plan.strict && !plan.key_input_indices.contains(&column.input_index)) || scale >= 9 {
         return Ok(());
     }
     let unit = 10_u32.pow(9 - scale);
@@ -708,7 +708,7 @@ pub(super) fn check_temporal(
     column: &WriteColumnPlan,
     microseconds: i64,
 ) -> Result<()> {
-    if !plan.strict {
+    if !plan.strict && !plan.key_input_indices.contains(&column.input_index) {
         return Ok(());
     }
     match super::plan::temporal_unit(&column.native_type, &column.native_declaration) {

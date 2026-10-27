@@ -133,3 +133,38 @@ fn ogni_float_dichiara_la_riscrittura_dello_zero_negativo() {
         vec![underflow, StoreRewrite::NegativeZero]
     );
 }
+
+/// Precisione e scala diverse non sono mai ammesse come conversioni esatte.
+#[test]
+fn le_chiavi_non_possono_perdere_precisione_o_cambiare_tipo() {
+    let measured = admission_table()
+        .expect("fixture")
+        .server("23")
+        .expect("server");
+    for (arrow, facts) in [
+        (
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            column("TIMESTAMP(0)", None, Some(0)),
+        ),
+        (
+            DataType::Decimal128(10, 3),
+            column("NUMBER", Some(10), Some(2)),
+        ),
+        (DataType::Utf8, column("RAW", None, None)),
+    ] {
+        let (key, dimensions) = admission_key(&arrow, &facts, &server());
+        let admitted =
+            plenora_database_core::admission_gate::write_column(&measured, &key, dimensions);
+        if matches!(arrow, DataType::Timestamp(_, _)) {
+            let rewrites = admitted.expect("precisione misurata come riscrittura");
+            let values =
+                plenora_database_core::arrow::array::TimestampMicrosecondArray::from(vec![
+                    400_000, 0,
+                ]);
+            assert!(rewrites.iter().any(|rewrite| rewrite.rewrites(&values, 0)));
+            assert!(!rewrites.iter().any(|rewrite| rewrite.rewrites(&values, 1)));
+        } else {
+            assert!(admitted.is_err(), "{key:?}");
+        }
+    }
+}
