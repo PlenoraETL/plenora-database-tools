@@ -152,6 +152,51 @@ fn una_coppia_misurata_come_rifiutata_si_rifiuta_nel_preflight() {
     assert_eq!(error.message, REFUSED_PAIR);
 }
 
+/// Il rifiuto dell'intera coppia non dipende dal valore del batch.
+#[test]
+fn coppie_chiuse_hanno_lo_stesso_errore_per_tutti_i_provider() {
+    for provider in [
+        ProviderKind::Postgres,
+        ProviderKind::Mysql,
+        ProviderKind::Mariadb,
+        ProviderKind::Sqlserver,
+        ProviderKind::Oracle,
+        ProviderKind::Db2,
+    ] {
+        for outcome in ["rifiuta", "illeggibile"] {
+            let keys = EXACT.replace("esatto", outcome);
+            let source = fixture(&keys).replace("oracle", provider_name(provider));
+            let table = AdmissionTable::parse(provider, source.as_bytes()).expect("fixture");
+            let server = table.server("23").expect("major");
+            let error = crate::admission_gate::write_column(
+                &server,
+                &key("float64", "BINARY_DOUBLE", None),
+                TargetDimensions::default(),
+            )
+            .expect_err("coppia chiusa");
+            assert_eq!(error.category, ErrorCategory::Unsupported);
+            assert_eq!(error.phase, ErrorPhase::Prepare);
+            assert_eq!(error.provider, Some(provider));
+            assert_eq!(error.remote_effect, crate::RemoteEffect::None);
+            assert_eq!(error.message, REFUSED_PAIR);
+        }
+        // Alcuni valori rifiutati dal codec non chiudono una coppia
+        // misurata esatta: la rappresentabilita resta un controllo per valore.
+        let keys = EXACT.replace("\"rifiutati\": []", "\"rifiutati\": [\"limite\"]");
+        let source = fixture(&keys).replace("oracle", provider_name(provider));
+        let table = AdmissionTable::parse(provider, source.as_bytes()).expect("fixture");
+        assert!(table
+            .server("23")
+            .expect("major")
+            .admit(
+                &key("float64", "BINARY_DOUBLE", None),
+                TargetDimensions::default(),
+            )
+            .expect("coppia ammessa")
+            .is_empty());
+    }
+}
+
 #[test]
 fn un_fixture_incoerente_non_ammette_niente() {
     let incoherent = [

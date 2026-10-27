@@ -23,7 +23,7 @@ use plenora_database_core::provider::{
 };
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::transaction::{Statement, TransactionOptions};
-use plenora_database_core::{CancellationToken, ErrorCategory, RemoteEffect};
+use plenora_database_core::{CancellationToken, ErrorCategory, ErrorPhase, RemoteEffect};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -545,7 +545,16 @@ async fn live_s_float_di_oracle_non_arrotonda_in_silenzio() {
         let error = write(&provider, &secret, &append, floats("F", vec![value]))
             .await
             .expect_err("FLOAT salverebbe 0");
-        assert_rewritten(&error, false);
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        assert_eq!(error.phase, ErrorPhase::Write);
+        assert_eq!(error.remote_effect, RemoteEffect::RolledBack);
+        if value == 0.0 {
+            assert_rewritten(&error, false);
+        } else {
+            // La coppia e ammessa: il codec NUMBER rifiuta questo valore
+            // fuori intervallo prima che il server possa azzerarlo.
+            assert_eq!(error.message, "conversione dati Oracle non completata");
+        }
     }
     let error = write(&provider, &secret, &append, floats("FP", vec![1.23]))
         .await

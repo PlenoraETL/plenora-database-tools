@@ -23,7 +23,9 @@ use plenora_database_core::protocol::contract_schema;
 use plenora_database_core::provider::{BatchStream, Provider, ProviderFuture, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::write_admission::{AdmissionKey, TargetDimensions};
-use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory};
+use plenora_database_core::{
+    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect,
+};
 use plenora_database_testkit::write_probe::{self, ProbeHooks, ProbeSpec, PROBE_TABLE};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -337,11 +339,13 @@ async fn live_a_db2_timestamp_3_non_tronca_in_silenzio() {
     .await
     .expect_err("un valore troncato al salvataggio non si scrive con Strict");
     assert_eq!(error.category, ErrorCategory::DataMapping, "{error:?}");
-    assert!(
-        error
-            .message
-            .contains(plenora_database_core::store_rewrite::REWRITTEN_VALUE),
-        "{error:?}"
+    // Il parametro viene rifiutato contro la precisione dell'operando,
+    // prima della guardia sulle riscritture del server.
+    assert_eq!(error.phase, ErrorPhase::Prepare);
+    assert_eq!(error.remote_effect, RemoteEffect::RolledBack);
+    assert_eq!(
+        error.message,
+        "timestamp oltre la precisione dell'operando: il server la arrotonderebbe"
     );
     assert_eq!(stored_text(&provider, &secret, table, 1).await, None);
     // Il controllo: un valore con tre cifre frazionarie si scrive e si

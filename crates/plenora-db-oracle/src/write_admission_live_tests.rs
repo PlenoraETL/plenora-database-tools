@@ -24,7 +24,9 @@ use plenora_database_core::protocol::contract_schema;
 use plenora_database_core::provider::{BatchStream, Provider, ProviderFuture, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::write_admission::{AdmissionKey, TargetDimensions};
-use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory};
+use plenora_database_core::{
+    CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect,
+};
 use plenora_database_testkit::write_probe::{self, ProbeHooks, ProbeSpec, PROBE_TABLE};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -394,21 +396,25 @@ async fn live_a_json_non_normalizza_i_numeri_in_silenzio() {
         &format!("CREATE TABLE {table} (ID NUMBER(19) PRIMARY KEY, V JSON)"),
     )
     .await;
+    // La coppia Utf8/JSON e chiusa: anche il documento semplice si
+    // rifiuta prima di leggere i valori, non solo i numeri non rappresentabili.
     for document in [
         r#"{"a":1.0}"#,
         r#"{"a":12345678901234567890123456789012345678901234567890}"#,
         r#"{"a":1e400}"#,
+        r#"{"a":1}"#,
     ] {
-        assert_rewritten(append(&hooks, table, Arc::new(StringArray::from(vec![document]))).await);
+        let error = append(&hooks, table, Arc::new(StringArray::from(vec![document])))
+            .await
+            .expect_err("coppia JSON non qualificata");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert_eq!(
+            error.message,
+            plenora_database_core::write_admission::REFUSED_PAIR
+        );
     }
-    assert_committed(
-        append(
-            &hooks,
-            table,
-            Arc::new(StringArray::from(vec![r#"{"a":1}"#])),
-        )
-        .await,
-    );
     drop_table(&hooks, table).await;
 }
 
