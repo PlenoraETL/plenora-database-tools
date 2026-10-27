@@ -184,9 +184,10 @@ def test_oracle_spatial_orm_crud_index_and_predicates() -> None:
                 assert loaded.SHAPE.srid == 4326
                 assert loaded.SHAPE.dimensions == "xy"
                 loaded.SHAPE = moved
+        # NUMBER frazionario -> Decimal -> str: preserva il decimale esatto.
         assert session.execute_scalar(
             'SELECT t."SHAPE".SDO_POINT.X FROM "PLENORA_PY_ORACLE_SPATIAL_ORM" t'
-        ) == 12.5
+        ) == "12.5"
 
         intersects = geometry.predicate(
             "intersects", OracleSpatialRecord.SHAPE, geometry.bind("reference")

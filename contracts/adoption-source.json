@@ -29,7 +29,7 @@
     {
       "rule": "GEO-000",
       "surface": "python_sdk",
-      "observed_behavior": "Relational and portable spatial compilation has no qualified catalog SRID proof for Oracle and Db2: ORM INSERT/UPDATE of spatial values and spatial predicates are refused with unsupported before execution, even with declared SRID and an index. Mapping and spatial metadata alone are not enforcement evidence. MariaDB has the same write limit; SQL Server and MariaDB predicates also require catalog proof. Hazard: conforming operations are refused, never silently executed. Reentry: a live-qualified server guard or catalog verification before compilation (spatial_probe::admit_probe).",
+      "observed_behavior": "Oracle/Db2 ORM spatial INSERT/UPDATE and predicates lack qualified catalog SRID proof and fail unsupported before execution, even with declared SRID/index. MariaDB shares the write limit; SQL Server/MariaDB predicates also need catalog proof. Mapping/metadata are not enforcement evidence. Hazard: conforming operations are refused, never silently executed. Reentry: live-qualified server guard or pre-compilation catalog verification (spatial_probe::admit_probe).",
       "tracking": "contracts/adoption-source.json#/requirements",
       "detectable_before_invocation": true
     },
