@@ -51,6 +51,11 @@ fn geometry_field(index: usize) -> Field {
         ),
         (protocol::GEOMETRY_TYPES.to_owned(), "polygon".to_owned()),
         (protocol::GEOMETRY_SRID.to_owned(), "4326".to_owned()),
+        (protocol::GEOMETRY_CRS_ID.to_owned(), "EPSG:4326".to_owned()),
+        (
+            protocol::GEOMETRY_AXIS_ORDER.to_owned(),
+            "lon_lat".to_owned(),
+        ),
         (
             protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
             "declared_unresolved".to_owned(),

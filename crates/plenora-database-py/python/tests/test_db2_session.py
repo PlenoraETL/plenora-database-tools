@@ -62,18 +62,16 @@ def test_db2_sync_spatial_capabilities_and_portable_predicate() -> None:
         assert spatial["spatial_index"] is False
         point = b"\x01" + struct.pack("<Idd", 1, 1.0, 2.0)
         reference = p.spatial.geometry(ewkb=point, srid=4326)
-        rows = (
-            session.select("SPATIAL_PROBE", "PLENORA_TEST")
-            .columns("ID")
-            .where_spatial("SHAPE", "intersects", reference)
-            .order_by("ID")
-            .all()
-        )
-        assert [row.as_dict() for row in rows] == [
-            {"ID": 1},
-            {"ID": 2},
-            {"ID": 4},
-        ]
+        # Regola delle sonde (spatial_probe::admit_probe): Db2 non prova lo
+        # SRID della colonna prima dell'esecuzione, la sonda si rifiuta.
+        with pytest.raises(p.PlenoraUnsupportedError, match="non verifica lo SRID"):
+            (
+                session.select("SPATIAL_PROBE", "PLENORA_TEST")
+                .columns("ID")
+                .where_spatial("SHAPE", "intersects", reference)
+                .order_by("ID")
+                .all()
+            )
     finally:
         session.close()
 

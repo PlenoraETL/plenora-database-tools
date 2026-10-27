@@ -67,7 +67,7 @@ Versione, digest, container e porta hanno una sola fonte:
 
 ## Sonde driver e provider
 
-Il catalogo compilato contiene 103 sonde. Il ruolo e letto
+Il catalogo compilato contiene 104 sonde. Il ruolo e letto
 dagli inventari del gate: una prova richiesta che cambia esito rende la
 campagna rossa; una sonda osservativa registra invece una differenza.
 
@@ -170,6 +170,7 @@ campagna rossa; una sonda osservativa registra invece una differenza.
 | provider | `provider.profile_write_spatial_create` | richiesta: accepted |
 | provider | `provider.profile_write_spatial_append` | richiesta: accepted |
 | provider | `provider.profile_write_spatial_mixed` | richiesta: accepted |
+| provider | `provider.profile_write_spatial_declared_srid` | richiesta: rejected |
 | provider | `provider.profile_write_spatial_index` | richiesta: accepted |
 | provider | `provider.profile_spatial_functions` | osservativa |
 | provider | `provider.profile_concurrent_readers` | osservativa |

@@ -118,6 +118,20 @@ pub fn proven_commit_rollback(error: &tokio_postgres::Error) -> Option<DatabaseE
 pub fn classify_error(phase: ErrorPhase, error: &tokio_postgres::Error) -> DatabaseError {
     let sqlstate = error.code().map(tokio_postgres::error::SqlState::code);
     let transport_closed = error.is_closed();
+    if sqlstate == Some("XX000")
+        && error
+            .as_db_error()
+            .is_some_and(|db| mixed_srid_message(db.message()))
+    {
+        return mixed_srid_error(phase);
+    }
+    if sqlstate == Some("22023")
+        && error
+            .as_db_error()
+            .is_some_and(|db| column_srid_message(db.message()))
+    {
+        return mixed_srid_error(phase);
+    }
     let mapping = resolve_mapping(sqlstate, transport_closed, phase);
     public_error_envelope(
         mapping.category,
@@ -125,6 +139,74 @@ pub fn classify_error(phase: ErrorPhase, error: &tokio_postgres::Error) -> Datab
         mapping.remote_effect,
         mapping.retry,
         mapping.message,
+    )
+}
+
+/// Il rifiuto `PostGIS` di due geometrie in sistemi diversi.
+///
+/// `PostGIS` lo emette con SQLSTATE `XX000` (`internal_error`), lo stesso di
+/// un difetto del server, e la CLI lo pubblicava `internal`, exit 70. Non e un
+/// difetto: e un confronto fra due CRS, e la guardia delle sonde portable e
+/// di `build_spatial_select` lo provoca di proposito quando lo SRID dichiarato
+/// non e quello della colonna. Il testo e quello di `liblwgeom`
+/// (`gserialized_error_if_srid_mismatch`), che `PostGIS` non traduce: il
+/// confronto si fa sulla frase, non sul payload, che non entra nel messaggio
+/// pubblico.
+fn mixed_srid_message(message: &str) -> bool {
+    message.contains("Operation on mixed SRID geometries")
+}
+
+/// Il rifiuto `PostGIS` di un valore con uno SRID diverso dal typmod della
+/// colonna in scrittura: la guardia del server della regola delle sonde per
+/// un valore scritto (`spatial_probe::ServerGuard::PostgresTypmodWrite`).
+/// `PostGIS` lo emette con 22023 (`invalid_parameter_value`), lo stesso di
+/// molti altri argomenti non validi, quindi si riconosce dalla frase di
+/// `postgis_valid_typmod`, non dal codice; il valore non entra nel messaggio
+/// pubblico. Senza voce era `protocol`.
+fn column_srid_message(message: &str) -> bool {
+    message.contains("does not match column SRID")
+}
+
+fn mixed_srid_error(phase: ErrorPhase) -> DatabaseError {
+    public_error_envelope(
+        ErrorCategory::Crs,
+        phase,
+        if phase_is_state_mutating(phase) {
+            RemoteEffect::RolledBack
+        } else {
+            RemoteEffect::None
+        },
+        RetryDisposition::Never,
+        "geometrie PostGIS in sistemi di riferimento diversi",
+    )
+}
+
+/// L'errore che `classify_error` pubblica per lo SQLSTATE `code` in
+/// `phase`, senza un errore del driver.
+///
+/// Serve al dry run, che decide sul catalogo un rifiuto che la scrittura
+/// riceverebbe dal server: con la stessa tabella, categoria, effetto, retry e
+/// messaggio sono quelli della scrittura per costruzione. Un codice fuori
+/// tabella e un difetto di chi chiama, e diventa `internal`.
+pub fn sqlstate_error(code: &str, phase: ErrorPhase) -> DatabaseError {
+    mapping_for_sqlstate(code).map_or_else(
+        || {
+            public_error(
+                ErrorCategory::Internal,
+                phase,
+                false,
+                "SQLSTATE PostgreSQL senza voce nella tabella del provider",
+            )
+        },
+        |mapping| {
+            public_error_envelope(
+                mapping.category,
+                phase,
+                mapping.remote_effect,
+                mapping.retry,
+                mapping.message,
+            )
+        },
     )
 }
 
@@ -420,11 +502,34 @@ fn mapping_for_sqlstate(code: &str) -> Option<Mapping> {
             remote_effect: RemoteEffect::None,
             message: "definizione tabella PostgreSQL non valida",
         },
+        // Una colonna che non riceve valori nominata dall'ingresso: generata
+        // (`GENERATED ALWAYS ... STORED`) o `IDENTITY ALWAYS` in un INSERT o
+        // in un UPDATE. Era `conflict`, che dice «vincolo violato dai dati»:
+        // qui nessun dato e in gioco, il piano nomina una colonna che non lo
+        // ammette, e lo stesso piano fallirebbe con ogni ingresso.
         "428C9" => Mapping {
-            category: ErrorCategory::Conflict,
+            category: ErrorCategory::InvalidPlan,
             retry: RetryDisposition::Never,
             remote_effect: RemoteEffect::RolledBack,
             message: "colonna generata (GENERATED ALWAYS) non scrivibile: escludila dalla lista colonne dell'INSERT/UPDATE",
+        },
+        // `ON CONFLICT` senza un vincolo unico che arbitri le chiavi, o una
+        // colonna generata nella lista di `COPY`: il piano nomina colonne che
+        // non si possono usare cosi. Senza voce era `protocol`.
+        "42P10" => Mapping {
+            category: ErrorCategory::InvalidPlan,
+            retry: RetryDisposition::Never,
+            remote_effect: RemoteEffect::None,
+            message: "colonne del piano non utilizzabili dal target PostgreSQL: chiavi senza vincolo unico che le arbitri o colonna generata",
+        },
+        // Il target non ammette il comando: una vista non aggiornabile
+        // (55000, «cannot insert into view»), `COPY` o `TRUNCATE` su una
+        // vista (42809). Senza voce era `protocol`.
+        "55000" | "42809" => Mapping {
+            category: ErrorCategory::Unsupported,
+            retry: RetryDisposition::Never,
+            remote_effect: RemoteEffect::None,
+            message: "oggetto PostgreSQL che non ammette l'operazione di scrittura",
         },
 
         // Class 53 — insufficient resources

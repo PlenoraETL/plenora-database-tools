@@ -26,6 +26,10 @@ LIVE_SOURCE = ROOT / "crates" / "plenora-db-db2" / "src" / "live_tests.rs"
 SPATIAL_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-db2" / "src" / "spatial_live_tests.rs"
 )
+OPERAND_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-db2" / "src" / "operand_live_tests.rs"
+)
+LIVE_SOURCES = (LIVE_SOURCE, SPATIAL_LIVE_SOURCE, OPERAND_LIVE_SOURCE)
 PYTHON_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-database-py" / "python" / "tests" / "test_db2_session.py"
 )
@@ -60,7 +64,13 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_keyset_checkpoint_persists_reopens_without_duplicates_or_gaps",
         "live_spatial_capabilities_and_streaming_wkb_are_evidence_backed",
         "live_spatial_write_round_trips_and_invalid_wkb_rolls_back",
-        "live_spatial_portable_predicates_execute_with_bound_wkb_and_srid",
+        "live_spatial_portable_predicates_are_refused_without_srid_proof",
+        "live_operand_catalog_judges_geometry_and_admits_scalars",
+        "live_binary_columns_of_derived_relations_are_judged_geometric",
+        "live_server_computed_binary_columns_are_judged_geometric",
+        "live_typed_parameters_refuse_values_of_another_type",
+        "live_rilettura_quindici_cast_e_nomi",
+        "live_rilettura_sedici_cte_con_spazi_finali",
     }
 )
 
@@ -101,7 +111,7 @@ def compose_exec(arguments: list[str], environment: dict[str, str]) -> str:
 
 def live_test_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE, SPATIAL_LIVE_SOURCE], keep=lambda name: name.startswith("live_")
+        list(LIVE_SOURCES), keep=lambda name: name.startswith("live_")
     )
 
 

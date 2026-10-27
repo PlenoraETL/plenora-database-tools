@@ -7,6 +7,7 @@ use plenora_database_core::arrow::array::Array;
 use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit};
 use plenora_database_core::arrow::RecordBatch;
 use plenora_database_core::field_contract::{validate_schema_contract, FieldContract};
+use plenora_database_core::geometry_value::{verify_value, ValueContract};
 use plenora_database_core::loss::{LossReport, MappingPolicy};
 use plenora_database_core::outcome::{RowCounts, WriteOutcome, WriteStatus};
 use plenora_database_core::plan::{
@@ -37,6 +38,9 @@ static EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 pub struct Db2WritePlan {
     mode: WriteMode,
     target: String,
+    /// Schema e nome del target come li legge il catalogo, per la regola R.
+    schema_name: String,
+    object_name: String,
     columns: Vec<WriteColumn>,
     keys: Vec<usize>,
     updates: Vec<usize>,
@@ -74,7 +78,7 @@ impl Db2WritePlan {
             .unwrap_or_else(|| config.username().to_ascii_uppercase());
         let target = renderer.quote_object(&ObjectName {
             catalog: None,
-            schema: Some(Identifier::new(schema_name)?),
+            schema: Some(Identifier::new(schema_name.clone())?),
             object: Identifier::new(operation.target.object.clone())?,
         })?;
         let columns = schema
@@ -131,6 +135,8 @@ impl Db2WritePlan {
         Ok(Self {
             mode: operation.mode,
             target,
+            schema_name,
+            object_name: operation.target.object.clone(),
             columns,
             keys,
             updates,
@@ -220,6 +226,11 @@ impl Db2WritePlan {
                 continue;
             };
             let array = batch.column(index);
+            // La verifica comune di ogni valore Arrow (GEO-008, GEO-009,
+            // GEO-011), con il contratto letto una volta per colonna.
+            let schema = batch.schema();
+            let field_contract = FieldContract::parse(schema.field(index))?;
+            let value_contract = ValueContract::of(&field_contract);
             for row in 0..batch.num_rows() {
                 if array.is_null(row) {
                     continue;
@@ -234,13 +245,14 @@ impl Db2WritePlan {
                 let remaining = budget
                     .remaining(ResourceKind::GeometryComponents)
                     .saturating_sub(components);
-                let inspection = plenora_database_core::ewkb::inspect_ewkb_detailed(
+                let inspection = verify_value(
+                    value_contract,
                     bytes,
                     remaining,
                     budget.limits().nesting_depth,
+                    ErrorPhase::Write,
                 )
                 .map_err(|mut error| {
-                    error.phase = ErrorPhase::Write;
                     error.provider = Some(ProviderKind::Db2);
                     error
                 })?;
@@ -262,6 +274,8 @@ impl Db2WritePlan {
                         "tipo geometry WKB non qualificato per Db2",
                     )
                 })?;
+                // Deviazione dichiarata (GEO-010, contracts/adoption-source.json): un tipo che Db2
+                // non scrive si rifiuta per valore, dentro la transazione annullata.
                 if !geometry_type_is_writable(geometry_type)
                     || contract
                         .exact_geometry_type
@@ -704,6 +718,16 @@ async fn execute_input(
     cancellation: &CancellationToken,
     declared_rows: u64,
 ) -> Result<(u64, u64)> {
+    // La regola R prima di ogni statement distruttivo: il DELETE di Replace,
+    // gli UPDATE e DELETE per chiave.
+    crate::row_visibility::enforce(
+        transaction,
+        &plan.schema_name,
+        &plan.object_name,
+        plan.mode,
+        cancellation,
+    )
+    .await?;
     if let Some(sql) = &plan.create_sql {
         transaction
             .execute_control_statement(sql.clone(), cancellation)
@@ -854,6 +878,11 @@ fn committed_outcome(
 ) -> Result<WriteOutcome> {
     let skipped = received.saturating_sub(affected.min(received));
     let (confirmed, inserted, updated, deleted) = match plan.mutation_columns() {
+        // Replace svuota il target con un DELETE le cui righe non sono
+        // dell'ingresso: il conteggio delle cancellate non si pubblica, come
+        // su SQL Server, PostgreSQL, MySQL e Oracle. Fino al 25/10 era
+        // `Some(0)`.
+        "inserted" if plan.mode == WriteMode::Replace => (received, Some(received), Some(0), None),
         "inserted" => (received, Some(received), Some(0), Some(0)),
         "updated" => (affected, Some(0), Some(affected), Some(0)),
         "deleted" => (affected, Some(0), Some(0), Some(affected)),
@@ -1036,6 +1065,8 @@ fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
                 "semantica geography Db2 non qualificata",
             ));
         }
+        // Deviazione dichiarata (GEO-007, contracts/adoption-source.json): solo WKB ISO,
+        // `ewkb` e un limite di supporto rifiutato prima di ogni effetto.
         if contract.encoding != Some("wkb") {
             return Err(prepare_error(
                 ErrorCategory::Unsupported,
@@ -1052,12 +1083,28 @@ fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
                 ));
             }
         };
-        let srid = contract.srid.ok_or_else(|| {
-            prepare_error(
-                ErrorCategory::Crs,
-                "write spatial Db2 richiede SRID dichiarato",
-            )
-        })?;
+        // GEO-001: il bersaglio vuole la longitudine (o l'easting) per prima.
+        contract
+            .ensure_east_first_axis("Db2")
+            .map_err(|mut error| {
+                error.provider = Some(ProviderKind::Db2);
+                error
+            })?;
+        // Soltanto lo SRID dichiarato: la derivazione da `EPSG:<n>` (GEO-008)
+        // non si applica dove il catalogo non la verifica (deviazione
+        // dichiarata su `declared_target_srid`).
+        let srid = contract
+            .declared_target_srid("Db2")
+            .map_err(|mut error| {
+                error.provider = Some(ProviderKind::Db2);
+                error
+            })?
+            .ok_or_else(|| {
+                prepare_error(
+                    ErrorCategory::Crs,
+                    "write spatial Db2 richiede SRID dichiarato",
+                )
+            })?;
         if srid == 0 || i32::try_from(srid).is_err() {
             return Err(prepare_error(
                 ErrorCategory::Crs,

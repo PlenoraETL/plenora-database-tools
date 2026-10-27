@@ -18,14 +18,21 @@
     "plenora-surface-bindings-v1",
     "plenora-composition-v1",
     "plenora-runtime-binding-v2",
-    "plenora-public-catalog-v2"
+    "plenora-public-catalog-v2",
+    "plenora-arrow-geometry-semantics-v1"
   ],
   "not_applicable": [
-    "plenora-arrow-geometry-semantics-v1",
     "plenora-interop-vectors-v1",
     "plenora-rest-arrow-adapter-v1"
   ],
   "deviations": [
+    {
+      "rule": "GEO-000",
+      "surface": "python_sdk",
+      "observed_behavior": "Oracle/Db2 ORM spatial INSERT/UPDATE and predicates lack qualified catalog SRID proof and fail unsupported before execution, even with declared SRID/index. MariaDB shares the write limit; SQL Server/MariaDB predicates also need catalog proof. Mapping/metadata are not enforcement evidence. Hazard: conforming operations are refused, never silently executed. Reentry: live-qualified server guard or pre-compilation catalog verification (spatial_probe::admit_probe).",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
     {
       "rule": "SURF-007",
       "surface": "cli",
@@ -58,6 +65,104 @@
       "rule": "SURF-006",
       "surface": "runtime",
       "observed_behavior": "database.query advertises the catalog JSON and Arrow outputs, but this binding produces only the JSON summary. Hazard: a consumer cannot obtain Arrow from this surface. Reentry: implement an Arrow result path under an explicit versioned selection contract; do not impose a JSON-only restriction on query@1.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "GEO-007",
+      "surface": "rust",
+      "observed_behavior": "The MySQL, MariaDB, SQL Server, Oracle and Db2 write adapters accept only plenora.geometry.encoding=wkb and refuse an ewkb geometry field with unsupported while preparing the write, before any effect. CLI, runtime and Python SDK reach the same adapters. Hazard: a conforming EWKB input is refused, never altered. Reentry: a lossless EWKB to WKB conversion qualified by each live gate. PostgreSQL accepts both encodings.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "GEO-010",
+      "surface": "rust",
+      "observed_behavior": "The MySQL, MariaDB, Oracle and Db2 write adapters accept a mixed declaration (any type, or a list) although the target stores only some types, and refuse a value of a type the target cannot store with data_mapping while writing, inside the rolled-back transaction, instead of refusing the field with unsupported before any effect. Hazard: the refusal comes later and as a value class, never as a silent write. Reentry: reject non-storable declared sets while preparing.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": false
+    },
+    {
+      "rule": "GEO-000",
+      "surface": "rust",
+      "observed_behavior": "Support limits of the write adapters, refused before any effect on conforming input: PostgreSQL refuses with crs, phase prepare, a resolved CRS whose SRID is not in the target spatial_ref_sys (the column would hold SRID 0, a CRS loss); MySQL, MariaDB, SQL Server, Oracle and Db2 refuse dimensions they cannot represent or unknown, several declared types and the srid_policy they do not qualify with unsupported; Db2 refuses geography. Reentry: per adapter, by its live gate.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "REJ-003",
+      "surface": "rust",
+      "observed_behavior": "A rejection decided by reading the target (an existing table, spatial_ref_sys, an existing geometry column) is reported with phase prepare, the phase in which database-tools reads the target, not connect or probe. remote_effect is none and retry never, as REJ-003 requires. Hazard: a consumer that keys on the phase label sees prepare. Reentry: map target reads before effect to probe across the adapters.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "GEO-013",
+      "surface": "rust",
+      "observed_behavior": "Read and query outputs assign plenora.field_id from the column origin (PostgreSQL attrelid/attnum) or from the field name (FNV-1a 31 bit), not the smallest unused non-negative integer in field order; an identity registered by a previous write is preserved. Hazard: two components producing the same table assign different ids. Reentry: a contract version that admits stable origin ids, or a positional assignment with a major release.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "GEO-014",
+      "surface": "rust",
+      "observed_behavior": "The MySQL, MariaDB and SQL Server readers declare plenora.geometry.precision=native although those servers store binary64 coordinates, for which GEO-014 requires float64. Hazard: a consumer may assume a grid or decimal coordinate model; the coordinate values are unchanged. Reentry: declare float64 for these adapters, decided by the project owner.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "GEO-016",
+      "surface": "rust",
+      "observed_behavior": "Component bounds on conforming geometry metadata: a negative SRID is refused with unsupported (no adapter represents it), a crs_id longer than 1024 characters or with control characters with crs, a CRS definition over 1 MiB with resource_limit, all before any effect. A schema without plenora.contract.version and without canonical keys is foreign Arrow and is read with the pre-contract legacy keys (plenora.srid, plenora.dimensions, plenora.geometry_type, plenora.spatial_semantics).",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "GEO-011",
+      "surface": "rust",
+      "observed_behavior": "Read and query outputs bound the geometry values the database returns (components, nesting, trailing bytes) but do not apply every GEO-011 well-formedness rule to them (ring closure, point counts, member types). Hazard: a value stored invalid by the database is published as is, and a consumer that claims this contract rejects it with data_mapping; nothing is altered. Reentry: apply plenora_database_core::geometry_value to read outputs once each live gate qualifies it.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": false
+    },
+    {
+      "rule": "GEO-008",
+      "surface": "rust",
+      "observed_behavior": "A geometry field whose crs_id is EPSG:<n> and whose plenora.geometry.srid is a different integer is refused with crs before any effect, on every Arrow ingress: database-tools writes the SRID as the CRS of the column and does not choose between two identities. Hazard: a conforming input that pairs a registry identifier with a different local SRID is refused, never written with either. Reentry: a contract rule on the relation between srid and crs_id.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "GEO-001",
+      "surface": "rust",
+      "observed_behavior": "Every write adapter stores the first WKB ordinate as x (longitude or easting); MySQL exchanges WKB with axis-order=long-lat (write, read, query, relational mutations, SDK) and reads x/y after ST_SRID(g,0). A lat_lon or northing_easting field is refused with unsupported before any effect, never swapped; unknown and other are written as stored. Hazard: an unknown or other field stored north-first lands swapped. Reentry: a contract version that refuses unknown.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "GEO-008",
+      "surface": "rust",
+      "observed_behavior": "An SRID derived from crs_id EPSG:<n> without plenora.geometry.srid is written only after the target catalog registers n as EPSG:n (PostgreSQL spatial_ref_sys, MySQL ST_SPATIAL_REFERENCE_SYSTEMS), otherwise crs before any effect. MariaDB, SQL Server, Oracle and Db2 do not derive and refuse with crs: no catalog, local ids, or a lookup not qualified live. Hazard: a conforming input is refused, never mislabelled. Reentry: a live qualified catalog lookup per adapter.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "GEO-000",
+      "surface": "rust",
+      "observed_behavior": "PostgreSQL write refuses before any effect, deciding from the schema: a LargeBinary geoarrow.wkb field (unsupported; the codecs read Binary), a geography field without SRID (crs; PostGIS would assign 4326) or with a projected axis order (unsupported); reading spatial_ref_sys, a geography SRID that is not geographic (unsupported). Reentry: LargeBinary codecs qualified by the live gate.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": true
+    },
+    {
+      "rule": "GEO-009",
+      "surface": "rust",
+      "observed_behavior": "PostgreSQL read and query publish a geometry column without SRID in the catalog (no typmod, or a computed geometry not inheriting a column SRID through preserving functions) with crs_resolution missing, and refuse with crs, phase read, a value that carries an SRID; a declared or inherited SRID must be on every value. Hazard: such columns, mixed-SRID tables included, need a typmod or a cast. Reentry: a contract version that admits per-value SRIDs.",
+      "tracking": "contracts/adoption-source.json#/requirements",
+      "detectable_before_invocation": false
+    },
+    {
+      "rule": "GEO-016",
+      "surface": "rust",
+      "observed_behavior": "A plenora.field_id registered in a PostgreSQL column comment by earlier versions with leading zeros (00<n>) is read and published in canonical form (<n>); new input with leading zeros stays a schema defect, and new registrations are canonical. Hazard: the published id text differs from the registered one, the identity is the same. Reentry: no comment registered by earlier versions remains.",
       "tracking": "contracts/adoption-source.json#/requirements",
       "detectable_before_invocation": true
     }
@@ -212,31 +317,181 @@
       "rule": "INTEROP-001",
       "status": "not_applicable",
       "scope": "component adoption",
-      "evidence": "Opt-in requires Arrow Geometry Semantics 1.0, not claimed by this component; no cross-component conformance asserted."
+      "evidence": "Arrow Geometry Semantics 1.0 is claimed, Interoperability Vectors 1.0 is not: no interoperability harness executes database-tools steps yet; no cross-component conformance asserted."
     },
     {
       "rule": "INTEROP-002",
       "status": "not_applicable",
       "scope": "component adoption",
-      "evidence": "Opt-in requires Arrow Geometry Semantics 1.0, not claimed by this component; no cross-component conformance asserted."
+      "evidence": "Arrow Geometry Semantics 1.0 is claimed, Interoperability Vectors 1.0 is not: no interoperability harness executes database-tools steps yet; no cross-component conformance asserted."
     },
     {
       "rule": "INTEROP-003",
       "status": "not_applicable",
       "scope": "component adoption",
-      "evidence": "Opt-in requires Arrow Geometry Semantics 1.0, not claimed by this component; no cross-component conformance asserted."
+      "evidence": "Arrow Geometry Semantics 1.0 is claimed, Interoperability Vectors 1.0 is not: no interoperability harness executes database-tools steps yet; no cross-component conformance asserted."
     },
     {
       "rule": "INTEROP-004",
       "status": "not_applicable",
       "scope": "component adoption",
-      "evidence": "Opt-in requires Arrow Geometry Semantics 1.0, not claimed by this component; no cross-component conformance asserted."
+      "evidence": "Arrow Geometry Semantics 1.0 is claimed, Interoperability Vectors 1.0 is not: no interoperability harness executes database-tools steps yet; no cross-component conformance asserted."
     },
     {
       "rule": "INTEROP-005",
       "status": "not_applicable",
       "scope": "component adoption",
-      "evidence": "Opt-in requires Arrow Geometry Semantics 1.0, not claimed by this component; no cross-component conformance asserted."
+      "evidence": "Arrow Geometry Semantics 1.0 is claimed, Interoperability Vectors 1.0 is not: no interoperability harness executes database-tools steps yet; no cross-component conformance asserted."
+    },
+    {
+      "rule": "GEO-000",
+      "status": "deviation",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "Input conformance shared in plenora_database_core::field_contract and geometry_value; support limits declared in deviations. scripts/vettori_arrow_data.py (arrow-data-v1, inspect-dataset and PostgreSQL write)."
+    },
+    {
+      "rule": "GEO-001",
+      "status": "deviation",
+      "scope": "Arrow ingress and egress",
+      "evidence": "Egress: axis_order is a closed value; readers declare unknown, never the registry order. Ingress: north-first orders are refused before any effect (see deviations); scripts/vettori_arrow_data.py compares the written coordinates."
+    },
+    {
+      "rule": "GEO-002",
+      "status": "implemented",
+      "scope": "Arrow egress: read, query and their IPC outputs",
+      "evidence": "No adapter derives axis_order from the CRS registry; PostGIS, MySQL, SQL Server, Oracle and Db2 readers declare unknown. MySQL exchanges WKB with axis-order=long-lat, so read and write agree on geographic SRS."
+    },
+    {
+      "rule": "GEO-003",
+      "status": "not_applicable",
+      "scope": "Arrow egress: read, query and their IPC outputs",
+      "evidence": "Verification rule for producers that declare a known order; database-tools declares unknown."
+    },
+    {
+      "rule": "GEO-004",
+      "status": "implemented",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "Writers record the SRID and never reject a field for a definition they cannot interpret; a consistent definition is accepted (arrow-data-v1 crs-* vectors)."
+    },
+    {
+      "rule": "GEO-005",
+      "status": "implemented",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "plenora_database_core::crs_definition reads top-level identifiers and well-formedness as the oracle; crs category."
+    },
+    {
+      "rule": "GEO-006",
+      "status": "not_applicable",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "No database-tools operation computes with coordinates."
+    },
+    {
+      "rule": "GEO-007",
+      "status": "deviation",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "PostgreSQL and inspect-dataset accept both encodings; other adapters see deviations."
+    },
+    {
+      "rule": "GEO-008",
+      "status": "deviation",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "SRID flag under wkb is data_mapping; the target SRID is declared or derived only from EPSG:<n> (FieldContract::target_srid_source) and a derived SRID is verified in the target catalog, otherwise crs. An EPSG crs_id with a different srid is refused (see deviations)."
+    },
+    {
+      "rule": "GEO-009",
+      "status": "deviation",
+      "scope": "Arrow ingress and egress",
+      "evidence": "Ingress: geometry_value::verify_value: SRID on a member data_mapping, different or undeclared SRID crs, a value without SRID takes the field SRID. Egress: see deviations (PostgreSQL)."
+    },
+    {
+      "rule": "GEO-010",
+      "status": "deviation",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "Lists of several types are valid and never narrowed; PostgreSQL stores them in a generic column. See deviations for the other adapters."
+    },
+    {
+      "rule": "GEO-011",
+      "status": "deviation",
+      "scope": "Arrow ingress and egress",
+      "evidence": "Ingress: geometry_value implements the well-formedness, type and dimension rules of the oracle (data_mapping). Egress: see deviations."
+    },
+    {
+      "rule": "GEO-012",
+      "status": "implemented",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "Several geoarrow.wkb fields are written independently (two-geometry-fields vector)."
+    },
+    {
+      "rule": "GEO-013",
+      "status": "deviation",
+      "scope": "Arrow egress: read, query and their IPC outputs",
+      "evidence": "See deviations: identities from origin or name hash."
+    },
+    {
+      "rule": "GEO-014",
+      "status": "deviation",
+      "scope": "Arrow egress: read, query and their IPC outputs",
+      "evidence": "PostgreSQL declares float64, Oracle and Db2 native; see deviations for MySQL, MariaDB and SQL Server."
+    },
+    {
+      "rule": "GEO-015",
+      "status": "not_applicable",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "No database-tools operation computes with coordinates in their CRS; the target database does."
+    },
+    {
+      "rule": "GEO-016",
+      "status": "deviation",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "Whole-value grammars for field id, SRID, version and crs_id; unknown plenora.geometry. keys are schema; component bounds and legacy registered field ids in deviations."
+    },
+    {
+      "rule": "GEO-017",
+      "status": "not_applicable",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "Comparison subset for GEO-015 only."
+    },
+    {
+      "rule": "GEO-018",
+      "status": "implemented",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "Value defects found while writing roll back the transaction and report rolled_back; schema classes are decided before connecting."
+    },
+    {
+      "rule": "GEO-019",
+      "status": "not_applicable",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "Closed grammar for GEO-015 only."
+    },
+    {
+      "rule": "GEO-020",
+      "status": "implemented",
+      "scope": "Arrow ingress and egress",
+      "evidence": "Local authorities never resolved nor promoted; readers write POSTGIS, MYSQL, MARIADB, MSSQL, ORACLE, DB2 as declared_unresolved; a resolved local authority is crs."
+    },
+    {
+      "rule": "REJ-001",
+      "status": "implemented",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "Categories of the table on every surface through the shared core. scripts/vettori_arrow_data.py (arrow-data-v1, inspect-dataset and PostgreSQL write)."
+    },
+    {
+      "rule": "REJ-002",
+      "status": "implemented",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "Version, vocabulary of every field, CRS, support, then values in row and field order."
+    },
+    {
+      "rule": "REJ-003",
+      "status": "deviation",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "Exit 3, retry never, remote_effect none or rolled_back; target reads are reported as prepare (see deviations)."
+    },
+    {
+      "rule": "REJ-004",
+      "status": "implemented",
+      "scope": "Arrow ingress: write (every adapter), inspect-dataset, runtime database.write",
+      "evidence": "scripts/vettori_arrow_data.py (arrow-data-v1, inspect-dataset, PostgreSQL write with the written coordinates, and the bulk-write dry run with the DSN, which must agree with the write on every vector: exit, category, phase and retry, remote_effect none, and the target catalog read on acceptance; the same agreement on the target scenarios: privileges including SELECT on the columns an upsert reads, missing schema or schema without USAGE, upsert without an immediate unique index, lossy mapping with a column missing from the target, field id registration without LOCK or ownership, row-level security, generated and IDENTITY ALWAYS columns in the input, non-updatable views, NOT NULL columns without default missing from the input, a COPY refused after the DELETE of a replace with the rows of the target unchanged, and rule R: replace, delete_by_keys and update refused before any effect when a row-level security policy, also restrictive or under a view, an ON DELETE rule or a BEFORE DELETE row trigger can hide rows from the destructive statement, with an AFTER trigger as the positive control); CI job public-contract and the release manifest run it."
     }
   ],
   "runtime_limits": {

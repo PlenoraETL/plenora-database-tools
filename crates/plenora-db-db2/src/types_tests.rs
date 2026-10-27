@@ -227,3 +227,69 @@ fn geometry_spec_without_srid_is_an_error_not_a_panic() {
     let error = spec.arrow_field().expect_err("geometry senza SRID");
     assert_eq!(error.category, ErrorCategory::Crs);
 }
+
+/// Ogni tipo `ST_` e geometrico per il filtro e l'ordinamento della
+/// lettura, anche quelli che la lettura non mappa (`ST_SURFACE`, misurato
+/// fra i tipi di `SYSIBM` il 25/10: fino ad allora un filtro su quella
+/// colonna passava); un `BLOB` lo e soltanto in una vista, dove puo essere
+/// una geometria resa da una funzione spatial.
+#[test]
+fn every_st_type_and_a_view_blob_are_refused_as_scalar_operands() {
+    let column = |name: &str, data_type: &str| Db2Column {
+        name: name.to_owned(),
+        ordinal: 3,
+        data_type: data_type.to_owned(),
+        length: 0,
+        scale: 0,
+        nullable: true,
+        default_expression: None,
+        generated: false,
+        identity: false,
+    };
+    let filtered = |field: &str| {
+        let mut operation = operation();
+        operation.filter = Some(plenora_database_core::plan::FilterExpression::Eq {
+            field: field.to_owned(),
+            parameter: "p".to_owned(),
+        });
+        operation
+    };
+    let ordered = |field: &str| {
+        let mut operation = operation();
+        operation.order_by = vec![OrderBy {
+            field: field.to_owned(),
+            direction: SortDirection::Asc,
+        }];
+        operation.row_offset = None;
+        operation
+    };
+    let geometry = plenora_database_core::spatial_probe::GEOMETRY_SCALAR_OPERAND;
+    for native in [
+        "ST_SURFACE",
+        "ST_CURVE",
+        "ST_MULTISURFACE",
+        "ST_RASTER",
+        "ST_POINT",
+    ] {
+        let mut table = description();
+        table.columns.push(column("S", native));
+        for plan in [filtered("S"), ordered("S")] {
+            let error = Db2ReadPlan::compile(&table, &plan, 4_096).expect_err(native);
+            assert_eq!(error.message, geometry, "{native}");
+        }
+    }
+    let mut view = description();
+    view.kind = "VIEW".to_owned();
+    view.columns.push(column("C", "BLOB"));
+    let error = Db2ReadPlan::compile(&view, &filtered("C"), 4_096).expect_err("BLOB di vista");
+    assert_eq!(error.message, geometry);
+    // In una tabella un BLOB resta il tipo dichiarato: il filtro arriva al
+    // rendering (che lo accetta o lo rifiuta per i propri motivi).
+    let mut table = description();
+    table.columns.push(column("C", "BLOB"));
+    let outcome = Db2ReadPlan::compile(&table, &filtered("C"), 4_096);
+    assert!(outcome
+        .as_ref()
+        .err()
+        .is_none_or(|error| error.message != geometry));
+}

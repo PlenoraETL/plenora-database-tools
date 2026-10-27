@@ -22,6 +22,7 @@ use plenora_database_core::arrow::array::{
 use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit};
 use plenora_database_core::arrow::RecordBatch;
 use plenora_database_core::field_contract::FieldContract;
+use plenora_database_core::geometry_value::{verify_value, ValueContract};
 use plenora_database_core::loss::{LossReport, MappingPolicy};
 use plenora_database_core::outcome::{
     CertainPhase, Recovery, RowCounts, WriteOutcome, WriteStatus,
@@ -41,6 +42,12 @@ struct MysqlWriteColumn {
     nullable: bool,
     quoted: String,
     spatial_srid: Option<u32>,
+    /// L'espressione che costruisce la geometria dal WKB legato, decisa dal
+    /// profilo (ordine degli assi compreso); `None` per una colonna scalare.
+    geometry_input_sql: Option<String>,
+    /// Lo SRID e derivato da `EPSG:<n>`: il preflight lo verifica nel
+    /// catalogo prima di ogni effetto (GEO-008).
+    spatial_srid_derived: bool,
     exact_geometry_type: Option<String>,
 }
 
@@ -76,7 +83,7 @@ fn compile_write_column(
 ) -> Result<MysqlWriteColumn> {
     let product = profile.product();
     let contract = FieldContract::parse(field)?;
-    let (kind, spatial_srid, exact_geometry_type) = if contract.spatial {
+    let (kind, spatial_srid, spatial_srid_derived, exact_geometry_type) = if contract.spatial {
         // Il primo cancello e il prodotto: leggere geometrie non dice nulla
         // su cosa il server accetti in ingresso, e senza quella prova il
         // piano si chiude qui invece che al primo INSERT.
@@ -86,6 +93,7 @@ fn compile_write_column(
             ));
         }
         if !contract.is_geometry()
+            // Deviazione dichiarata (GEO-007, contracts/adoption-source.json): solo WKB ISO.
             || contract.encoding != Some("wkb")
             || field.data_type() != &DataType::Binary
         {
@@ -107,9 +115,25 @@ fn compile_write_column(
                 "write spatial {product} qualifica soltanto geometrie XY"
             )));
         }
-        let srid = contract.srid.ok_or_else(|| {
+        // GEO-001: il bersaglio vuole la longitudine (o l'easting) per prima.
+        contract.ensure_east_first_axis(product)?;
+        // Lo SRID dichiarato o derivato da `EPSG:<n>` (GEO-008). Uno derivato
+        // lo verifica il catalogo, dove il prodotto ne ha uno; dove no
+        // (`MariaDB`) la derivazione non si applica.
+        let target = if profile.verifies_derived_srid() {
+            contract.target_srid_source()?
+        } else {
+            contract.declared_target_srid(product)?.map(|srid| {
+                plenora_database_core::field_contract::TargetSrid {
+                    srid,
+                    derived: false,
+                }
+            })
+        };
+        let target = target.ok_or_else(|| {
             crs_error(format!("write spatial {product} richiede SRID dichiarato"))
         })?;
+        let srid = target.srid;
         let exact = match contract.types_declaration {
             Some("mixed") => None,
             Some("exact") => {
@@ -129,16 +153,18 @@ fn compile_write_column(
                 )));
             }
         };
-        (MysqlColumnKind::Geometry, Some(srid), exact)
+        (MysqlColumnKind::Geometry, Some(srid), target.derived, exact)
     } else {
-        (write_column_kind(field)?, None, None)
+        (write_column_kind(field)?, None, false, None)
     };
     Ok(MysqlWriteColumn {
         name: field.name().clone(),
         kind,
         nullable: field.is_nullable(),
         quoted: renderer.quote_identifier(&mysql_identifier(field.name())?)?,
+        geometry_input_sql: spatial_srid.map(|srid| profile.geometry_from_wkb_sql(srid)),
         spatial_srid,
+        spatial_srid_derived,
         exact_geometry_type,
     })
 }
@@ -524,27 +550,13 @@ impl MysqlWritePlan {
             .columns
             .iter()
             .map(|column| {
-                column.spatial_srid.map_or_else(
-                    || "?".to_owned(),
-                    // `CAST(? AS BINARY)`, e il cast non e prudenza: e la sola
-                    // forma legata che entrambi i prodotti accettano.
-                    //
-                    // Un segnaposto non e un'espressione tipata, e la
-                    // differenza si vede solo su uno dei due. `MariaDB`
-                    // risponde 4079 —
-                    // `ER_ILLEGAL_PARAMETER_DATA_TYPE_FOR_OPERATION` — a
-                    // `ST_GeomFromWKB(?, <n>)` mentre accetta la stessa
-                    // funzione su un valore tipato; `MySQL` accetta entrambe.
-                    // Misurato da `raw.spatial_write_forms` sulle tre varianti:
-                    // nudo, con cast, e senza SRID.
-                    //
-                    // Il cast e condiviso invece di essere una decisione del
-                    // profilo perche una forma sola che vale su tutti e due e
-                    // meglio di due che divergono senza doverlo: l'SRID resta
-                    // memorizzato — 4326 su entrambi — e non c'e niente da
-                    // guadagnare tenendo due rendering.
-                    |srid| format!("ST_GeomFromWKB(CAST(? AS BINARY), {srid})"),
-                )
+                // Una colonna geometrica lega il WKB nell'espressione che il
+                // profilo decide (`geometry_from_wkb_sql`), cast e ordine degli
+                // assi compresi; una scalare lega il valore nudo.
+                column
+                    .geometry_input_sql
+                    .clone()
+                    .unwrap_or_else(|| "?".to_owned())
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -693,18 +705,24 @@ impl MysqlWritePlan {
                         "array geometry incoerente con il piano",
                     )
                 })?;
+            // La verifica comune di ogni valore Arrow (GEO-008, GEO-009,
+            // GEO-011), con il contratto letto una volta per colonna.
+            let schema = batch.schema();
+            let contract = FieldContract::parse(schema.field(index))?;
+            let value_contract = ValueContract::of(&contract);
             for row in 0..batch.num_rows() {
                 if values.is_null(row) {
                     continue;
                 }
                 let remaining = budget.remaining(ResourceKind::GeometryComponents);
-                let inspection = plenora_database_core::ewkb::inspect_ewkb_detailed(
+                let inspection = verify_value(
+                    value_contract,
                     values.value(row),
                     remaining,
                     budget.limits().nesting_depth,
+                    ErrorPhase::Write,
                 )
                 .map_err(|mut error| {
-                    error.phase = ErrorPhase::Write;
                     error.provider = Some(crate::profile::PROVISIONAL_KIND);
                     error
                 })?;
@@ -823,6 +841,31 @@ impl MysqlWritePlan {
             )));
         }
         Ok(())
+    }
+
+    /// Gli SRID derivati da `EPSG:<n>` che il preflight verifica nel catalogo,
+    /// senza ripetizioni e in ordine.
+    pub(super) fn derived_srids(&self) -> Vec<u32> {
+        let mut srids = self
+            .columns
+            .iter()
+            .filter(|column| column.spatial_srid_derived)
+            .filter_map(|column| column.spatial_srid)
+            .collect::<Vec<_>>();
+        srids.sort_unstable();
+        srids.dedup();
+        srids
+    }
+
+    /// Le colonne geometriche che la scrittura tocca, con lo SRID che vi
+    /// scrive: quello che il catalogo deve dichiarare, dove lo dichiara
+    /// (`catalog::verify_declared_column_srids`).
+    pub(super) fn geometry_column_srids(&self) -> Vec<(String, u32)> {
+        self.columns
+            .iter()
+            .filter(|column| column.kind == MysqlColumnKind::Geometry)
+            .filter_map(|column| column.spatial_srid.map(|srid| (column.name.clone(), srid)))
+            .collect()
     }
 
     pub(super) fn preflight(
@@ -971,11 +1014,16 @@ pub fn committed_outcome_for_mode(
             // Replace: il target e stato svuotato dal DELETE nella stessa
             // transazione, quindi le righe input sono esattamente le righe
             // finali. affected_or_inserted = righe inserite = received.
+            // Le righe che il DELETE ha tolto non sono dell'ingresso e il
+            // contratto non le conta fra le confermate: il conteggio delle
+            // cancellate non si pubblica (`None`), come SQL Server e
+            // PostgreSQL. Fino al 25/10 era `Some(0)` anche con righe
+            // cancellate.
             received,
             confirmed: received,
             inserted: Some(received),
             updated: Some(0),
-            deleted: Some(0),
+            deleted: None,
             failed: 0,
             skipped: 0,
         },

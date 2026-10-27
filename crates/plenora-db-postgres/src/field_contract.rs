@@ -19,7 +19,12 @@ pub struct FieldContract<'a> {
     pub type_kind: Option<&'a str>,
     pub geometry_type: Option<&'a str>,
     pub dimensions: Option<&'a str>,
+    /// Lo SRID dichiarato dal campo: quello con cui si confronta un valore
+    /// EWKB (GEO-009).
     pub srid: Option<u32>,
+    /// Lo SRID con cui la colonna registra il CRS
+    /// ([`CanonicalFieldContract::target_srid`], GEO-008).
+    pub target_srid: Option<u32>,
 }
 
 impl<'a> FieldContract<'a> {
@@ -43,6 +48,7 @@ impl<'a> FieldContract<'a> {
             geometry_type: canonical.geometry_types,
             dimensions: canonical.dimensions,
             srid: canonical.srid,
+            target_srid: canonical.target_srid()?,
         })
     }
 

@@ -17,10 +17,10 @@ use bytes::Bytes;
 #[cfg(test)]
 use bytes::BytesMut;
 use futures_util::SinkExt;
-use plenora_database_core::ewkb::{inspect_ewkb_detailed, EwkbInspection};
 use plenora_database_core::field_contract::validate_schema_contract;
 #[cfg(test)]
 use plenora_database_core::geometry::GEOARROW_WKB_EXTENSION_NAME;
+use plenora_database_core::geometry_value::verify_value;
 use plenora_database_core::outcome::{RowCounts, WriteOutcome, WriteStatus};
 use plenora_database_core::plan::{
     ObjectRef, ProviderKind, TransactionProfile, WriteMode, WriteOperation,
@@ -44,13 +44,16 @@ use tokio_postgres::types::{IsNull, Type};
 use tokio_postgres::Transaction;
 
 pub mod binary_codec;
+mod dry_run;
 mod plan;
 mod prepared_codec;
 mod recovery;
 mod resources;
 mod row_diagnostics;
 mod sql;
+pub mod target;
 mod value_codec;
+pub mod visibility;
 
 use binary_codec::binary_copy_value;
 #[cfg(test)]
@@ -58,6 +61,7 @@ use binary_codec::{
     decimal_string, encode_numeric_binary, interval_text, parse_numeric_components,
     PostgresIntervalBinary,
 };
+pub use dry_run::{verify_input, InputLimits, StatementGate};
 use plan::WriteColumnPlan;
 use prepared_codec::arrow_value;
 use recovery::{
@@ -376,7 +380,10 @@ pub async fn execute(
         {
             match result {
                 Ok(written) => written,
-                Err(error) => {
+                Err(BatchFailure::ServerAborted(error)) => {
+                    return Err(recovery.rollback_aborted(transaction, error).await);
+                }
+                Err(BatchFailure::Other(error)) => {
                     return Err(recovery.rollback_error(transaction, error).await);
                 }
             }
@@ -496,9 +503,13 @@ fn committed_outcome(
     confirmed: u64,
 ) -> WriteOutcome {
     let (inserted, updated, deleted) = match mode {
-        WriteMode::Create | WriteMode::Append | WriteMode::Replace | WriteMode::TruncateInsert => {
-            (Some(confirmed), Some(0), Some(0))
-        }
+        WriteMode::Create | WriteMode::Append => (Some(confirmed), Some(0), Some(0)),
+        // Lo svuotamento di Replace (`DELETE`) e di `TruncateInsert`
+        // (`TRUNCATE`) toglie righe che non sono dell'ingresso: il contratto
+        // non le conta fra le confermate (le mutazioni non possono superarle),
+        // quindi il conteggio delle cancellate non si pubblica, come fa SQL
+        // Server. Fino al 25/10 era `Some(0)` anche con righe cancellate.
+        WriteMode::Replace | WriteMode::TruncateInsert => (Some(confirmed), Some(0), None),
         WriteMode::Update => (Some(0), Some(confirmed), Some(0)),
         // PostgreSQL does not report whether an ON CONFLICT row was inserted or
         // updated without adding observable side effects to the statement.
@@ -630,8 +641,13 @@ fn enforce_input_limits(
                             "budget componenti geometriche esaurito",
                         ));
                     }
-                    let inspection = inspect_ewkb_detailed(value, remaining, max_geometry_depth)?;
-                    validate_ewkb_contract(&inspection, plan)?;
+                    let inspection = verify_value(
+                        plan.value_contract(),
+                        value,
+                        remaining,
+                        max_geometry_depth,
+                        ErrorPhase::Write,
+                    )?;
                     geometry_components = geometry_components
                         .checked_add(inspection.stats.components)
                         .ok_or_else(|| {
@@ -654,7 +670,14 @@ fn enforce_input_limits(
 /// riporta indietro anche le righe cancellate.
 ///
 /// `TruncateInsert` conserva `TRUNCATE`: su `PostgreSQL` e transazionale, quindi
-/// rollback-safe quanto il `DELETE` di Replace ma piu economico.
+/// rollback-safe quanto il `DELETE` di Replace ma piu economico, e non passa
+/// da policy RLS, regole o trigger di riga.
+///
+/// Replace, Update e `DeleteByKeys` passano dalla regola R
+/// (`plenora_database_core::row_visibility`, fatti in [`visibility`]): se una
+/// policy, una regola, un trigger di riga, una vista o una tabella esterna
+/// possono nascondere righe allo statement distruttivo, la scrittura si
+/// rifiuta prima di ogni effetto.
 async fn prepare_target(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
@@ -672,13 +695,19 @@ async fn prepare_target(
             )
             .await
         }
-        WriteMode::Replace => execute_sql(
-            transaction,
-            &format!("DELETE FROM {}", quote_object(&operation.target)?),
-            &[],
-        )
-        .await
-        .map(|_| ()),
+        // La regola R prima del `DELETE`, e di nuovo con il suo lock preso
+        // (`visibility::enforce`): un `DELETE` che non vede tutte le righe
+        // lascerebbe righe vecchie accanto alle nuove, con un COMMIT riuscito.
+        WriteMode::Replace => {
+            visibility::enforce(transaction, operation).await?;
+            execute_sql(
+                transaction,
+                &format!("DELETE FROM {}", quote_object(&operation.target)?),
+                &[],
+            )
+            .await?;
+            visibility::enforce(transaction, operation).await
+        }
         WriteMode::TruncateInsert => execute_sql(
             transaction,
             &format!("TRUNCATE TABLE {}", quote_object(&operation.target)?),
@@ -686,9 +715,12 @@ async fn prepare_target(
         )
         .await
         .map(|_| ()),
-        WriteMode::Append | WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys => {
-            Ok(())
+        // Prima dell'ingresso, con lo stesso esito del dry run; di nuovo a
+        // ogni statement preparato (`write_batch`), con il lock preso.
+        WriteMode::Update | WriteMode::DeleteByKeys => {
+            visibility::enforce(transaction, operation).await
         }
+        WriteMode::Append | WriteMode::Upsert => Ok(()),
     }
 }
 
@@ -733,6 +765,34 @@ async fn create_table(
     Ok(())
 }
 
+/// Perche un batch non e stato scritto.
+enum BatchFailure {
+    /// Il server ha risposto con un errore (uno SQLSTATE) a uno statement
+    /// della transazione esplicita: PostgreSQL l'ha abortita, e nessun COMMIT
+    /// potra piu renderne visibile un effetto, che il ROLLBACK si confermi o
+    /// no (vedi `recovery::PreCommitRecovery::rollback_aborted`).
+    ServerAborted(DatabaseError),
+    /// Ogni altro rifiuto: del provider, o del canale.
+    Other(DatabaseError),
+}
+
+impl From<DatabaseError> for BatchFailure {
+    fn from(error: DatabaseError) -> Self {
+        Self::Other(error)
+    }
+}
+
+/// L'errore del driver di uno statement del batch, classificato nella fase
+/// `phase`: un rifiuto del server abortisce la transazione.
+fn batch_failure(phase: ErrorPhase, error: &tokio_postgres::Error) -> BatchFailure {
+    let classified = classify_error(phase, error);
+    if error.as_db_error().is_some() {
+        BatchFailure::ServerAborted(classified)
+    } else {
+        BatchFailure::Other(classified)
+    }
+}
+
 async fn write_batch(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
@@ -740,7 +800,7 @@ async fn write_batch(
     batch: &RecordBatch,
     plans: &[WriteColumnPlan],
     insert_mode: PostgresInsertMode,
-) -> Result<u64> {
+) -> std::result::Result<u64, BatchFailure> {
     if matches!(
         operation.mode,
         WriteMode::Create | WriteMode::Append | WriteMode::Replace | WriteMode::TruncateInsert
@@ -762,7 +822,10 @@ async fn write_batch(
     let statement = transaction
         .prepare(&sql)
         .await
-        .map_err(|e| classify_error(ErrorPhase::Prepare, &e))?;
+        .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
+    // La preparazione ha preso il lock del target: la regola R si rilegge
+    // qui, dove un DDL concorrente non puo piu cambiarla fino al COMMIT.
+    visibility::enforce(transaction, operation).await?;
     let mut affected = 0;
     for row in 0..batch.num_rows() {
         let values = indexes
@@ -776,7 +839,7 @@ async fn write_batch(
         affected += transaction
             .execute(&statement, &refs)
             .await
-            .map_err(|e| classify_error(ErrorPhase::Write, &e))?;
+            .map_err(|e| batch_failure(ErrorPhase::Write, &e))?;
     }
     Ok(affected)
 }
@@ -786,7 +849,7 @@ async fn copy_binary_batch(
     target: &ObjectRef,
     batch: &RecordBatch,
     plans: &[WriteColumnPlan],
-) -> Result<u64> {
+) -> std::result::Result<u64, BatchFailure> {
     let renderer = renderer();
     let columns = batch
         .schema()
@@ -804,7 +867,7 @@ async fn copy_binary_batch(
             quote_object(target)?
         ))
         .await
-        .map_err(|e| classify_error(ErrorPhase::Prepare, &e))?;
+        .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
     let types = type_probe
         .columns()
         .iter()
@@ -817,7 +880,7 @@ async fn copy_binary_batch(
             columns.join(", ")
         ))
         .await
-        .map_err(|e| classify_error(ErrorPhase::Prepare, &e))?;
+        .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
     let writer = BinaryCopyInWriter::new(sink, &types);
     futures_util::pin_mut!(writer);
     for row in 0..batch.num_rows() {
@@ -838,13 +901,13 @@ async fn copy_binary_batch(
             .as_mut()
             .write(&refs)
             .await
-            .map_err(|e| classify_error(ErrorPhase::Write, &e))?;
+            .map_err(|e| batch_failure(ErrorPhase::Write, &e))?;
     }
     writer
         .as_mut()
         .finish()
         .await
-        .map_err(|e| classify_error(ErrorPhase::Write, &e))
+        .map_err(|e| batch_failure(ErrorPhase::Write, &e))
 }
 
 async fn copy_batch(
@@ -852,7 +915,7 @@ async fn copy_batch(
     target: &ObjectRef,
     batch: &RecordBatch,
     plans: &[WriteColumnPlan],
-) -> Result<u64> {
+) -> std::result::Result<u64, BatchFailure> {
     let renderer = renderer();
     let columns = batch
         .schema()
@@ -868,19 +931,23 @@ async fn copy_batch(
         quote_object(target)?,
         columns.join(", ")
     );
+    // Un `copy_in` rifiutato all'apertura lascia `tokio-postgres` 0.7.18 con
+    // la risposta del `CopyFail` che segue fuori sequenza: il ROLLBACK
+    // successivo fallisce con `UnexpectedMessage`. Il rifiuto del server ha
+    // gia abortito la transazione (`BatchFailure::ServerAborted`).
     let sink = transaction
         .copy_in(&sql)
         .await
-        .map_err(|e| classify_error(ErrorPhase::Prepare, &e))?;
+        .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
     futures_util::pin_mut!(sink);
     sink.as_mut()
         .send(Bytes::from(copy_buffer(batch, plans)?))
         .await
-        .map_err(|e| classify_error(ErrorPhase::Write, &e))?;
+        .map_err(|e| batch_failure(ErrorPhase::Write, &e))?;
     sink.as_mut()
         .finish()
         .await
-        .map_err(|e| classify_error(ErrorPhase::Write, &e))
+        .map_err(|e| batch_failure(ErrorPhase::Write, &e))
 }
 
 async fn create_spatial_indexes(
@@ -984,57 +1051,15 @@ async fn execute_sql(
         .map_err(|e| classify_error(ErrorPhase::Write, &e))
 }
 
-fn validate_ewkb_contract(inspection: &EwkbInspection, plan: &WriteColumnPlan) -> Result<()> {
-    let metadata = inspection.root;
-    if let Some(expected) = plan
-        .dimensions
-        .as_deref()
-        .filter(|value| *value != "unknown")
-    {
-        if expected != metadata.dimensions_label() {
-            return Err(spatial_mapping_error(
-                "dimensioni EWKB diverse dal contratto Arrow",
-            ));
-        }
-    }
-    let geometry_type = metadata
-        .geometry_type_name()
-        .ok_or_else(|| spatial_mapping_error("tipo geometry EWKB non supportato"))?;
-    let declared = &plan.geometry_types;
-    if !declared.is_empty()
-        && !declared
-            .iter()
-            .any(|expected| expected == "unknown" || expected.eq_ignore_ascii_case(geometry_type))
-    {
-        return Err(spatial_mapping_error(
-            "tipo EWKB diverso dal contratto Arrow",
-        ));
-    }
-    if plan.encoding.as_deref() == Some("wkb") {
-        // WKB ISO: lo SRID e quello dei metadati del campo (ARROW-VOCABULARY
-        // §3), e un valore che ne porta uno proprio — alla radice o in una
-        // geometria annidata — contraddice la dichiarazione.
-        if inspection.has_any_embedded_srid {
-            return Err(spatial_mapping_error(
-                "SRID incorporato in un valore dichiarato wkb",
-            ));
-        }
-        return Ok(());
-    }
-    if let Some(expected) = plan.srid {
-        if expected != 0 && metadata.srid != Some(expected) {
-            return Err(spatial_mapping_error(
-                "SRID EWKB diverso dal contratto Arrow",
-            ));
-        }
-    }
-    // Lo SRID di un EWKB sta sulla radice: uno annidato non e verificabile
-    // (il parser ne conta la presenza, non il valore) e PostGIS non lo
-    // produce. Si rifiuta invece di lasciarlo passare non confrontato.
-    if inspection.embedded_srid_count > u64::from(metadata.srid.is_some()) {
-        return Err(spatial_mapping_error("SRID EWKB in una geometria annidata"));
-    }
-    Ok(())
+/// Il type word della radice porta il flag SRID della forma estesa. Il valore
+/// e gia stato verificato ben formato, quindi i cinque byte ci sono.
+fn root_srid_flag(wkb: &[u8]) -> bool {
+    let word = match (wkb.first(), wkb.get(1..5)) {
+        (Some(1), Some(raw)) => raw.try_into().map(u32::from_le_bytes),
+        (Some(_), Some(raw)) => raw.try_into().map(u32::from_be_bytes),
+        _ => return false,
+    };
+    word.is_ok_and(|word| word & 0x2000_0000 != 0)
 }
 
 /// I valori `wkb` di un campo con SRID dichiarato, riscritti in EWKB.
@@ -1057,7 +1082,7 @@ fn stamp_declared_srid(
     }
     let mut columns = Vec::with_capacity(batch.num_columns());
     for (plan, array) in plans.iter().zip(batch.columns()) {
-        let Some(srid) = plan.srid.filter(|_| plan.needs_srid_stamp()) else {
+        let Some(srid) = plan.target_srid.filter(|_| plan.needs_srid_stamp()) else {
             columns.push(Arc::clone(array));
             continue;
         };
@@ -1068,23 +1093,22 @@ fn stamp_declared_srid(
         let stamped = binary
             .iter()
             .map(|value| {
+                // Un valore EWKB con SRID proprio e gia stato confrontato con
+                // quello del campo (`verify_value`) e resta com'e.
                 value
-                    .map(|wkb| plenora_database_core::ewkb::with_root_srid(wkb, srid, max_depth))
+                    .map(|wkb| {
+                        if root_srid_flag(wkb) {
+                            Ok(wkb.to_vec())
+                        } else {
+                            plenora_database_core::ewkb::with_root_srid(wkb, srid, max_depth)
+                        }
+                    })
                     .transpose()
             })
             .collect::<Result<BinaryArray>>()?;
         columns.push(Arc::new(stamped) as arrow_array::ArrayRef);
     }
     RecordBatch::try_new(batch.schema(), columns).map_err(|_| mapping_error())
-}
-
-fn spatial_mapping_error(message: &str) -> DatabaseError {
-    public_error(
-        ErrorCategory::DataMapping,
-        ErrorPhase::Write,
-        false,
-        message,
-    )
 }
 
 fn mapping_error() -> DatabaseError {

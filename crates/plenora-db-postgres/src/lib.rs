@@ -1,4 +1,4 @@
-//! Driver pilota PostgreSQL/PostGIS.
+//! Driver pilota PostgreSQL/`PostGIS`.
 //!
 //! Il driver di riferimento copre connessione, capability, introspezione, read
 //! batch-bounded verso Arrow/GeoArrow-WKB e tutte le modalità di scrittura
@@ -21,6 +21,7 @@ mod query_plan;
 mod read_stream;
 mod schema_cache;
 mod spatial;
+mod spatial_probe;
 mod transaction;
 mod types;
 mod write;
@@ -31,6 +32,152 @@ pub use spatial::{build_spatial_select, spatial_reference};
 pub use connection::{PostgresNetworkOptions, PostgresTlsConfig, PostgresTlsMode};
 pub use metrics::PostgresMetricsSnapshot;
 pub use schema_cache::PostgresSchemaToken;
+
+/// La compilazione offline del piano di scrittura: la prima cosa che
+/// `prepare_write` esegue, senza server.
+///
+/// Giudica lo schema (REJ-001), le chiavi del piano e ogni colonna come la
+/// scrittura (SRID di colonna, limiti di supporto decisi dallo schema). Un dry
+/// run che la salta direbbe `dry_run` su ingressi che la scrittura
+/// rifiuterebbe. Non legge il catalogo del bersaglio: i rifiuti decisi da
+/// `spatial_ref_sys` restano della scrittura (fase `prepare`).
+///
+/// # Errors
+///
+/// Gli stessi di `prepare_write` prima del contatto con il server.
+pub fn compile_write_plan(input_schema: &SchemaRef, operation: &WriteOperation) -> Result<()> {
+    write::prepare_state(input_schema, operation).map(|_| ())
+}
+
+/// Che cosa un dry run ha deciso, e che cosa no.
+#[derive(Debug, Clone)]
+pub struct PostgresWriteDryRun {
+    /// Batch dell'ingresso giudicati, ogni valore compreso.
+    pub batches: u64,
+    /// Righe dell'ingresso giudicate.
+    pub rows: u64,
+    /// `Some` se il catalogo del bersaglio e stato letto (con una DSN): il
+    /// `LossReport` che la scrittura avrebbe. `None` se il dry run e
+    /// offline, e le classi che decide il catalogo non sono state decise.
+    pub loss_report: Option<plenora_database_core::loss::LossReport>,
+    /// Se una policy di row-level security decide sull'ingresso: in quel
+    /// caso il dry run non decide l'esito, e lo dice. Offline e
+    /// `NotPerformed`: il catalogo non e stato letto.
+    pub row_security: write::target::RowSecurity,
+}
+
+impl PostgresProvider {
+    /// Il dry run della scrittura: decide cio che `prepare_write` e `write`
+    /// deciderebbero sullo stesso ingresso, senza effetti.
+    ///
+    /// Con `secret` esegue `prepare_write` stesso — compilazione del piano e
+    /// letture del catalogo (`spatial_ref_sys`, esistenza del target, colonne,
+    /// perdite di mapping), tutte in sola lettura — poi legge sul catalogo
+    /// cio che la scrittura chiede al target (`write::target`: schema,
+    /// privilegi, proprieta, colonne dello statement, indice unico
+    /// dell'upsert) e confronta gli id dei campi con quelli registrati. Ogni
+    /// rifiuto esce nel punto in cui la scrittura lo darebbe. Senza `secret`
+    /// compila soltanto il piano: il risultato lo dichiara (`loss_report:
+    /// None`) e non vale per le classi del catalogo. In entrambi i casi legge
+    /// ogni batch e ne giudica ogni valore con le funzioni della scrittura
+    /// (`write::dry_run`).
+    ///
+    /// Decide la regola R come la scrittura (`write::visibility`): Replace,
+    /// Update e `DeleteByKeys` che non vedrebbero tutte le righe si
+    /// rifiutano qui, con lo stesso errore.
+    ///
+    /// Non decide cio che decide il server scrivendo (l'elenco chiuso e in
+    /// `write::target`): gli altri trigger, vincoli `CHECK` ed esclusioni, unicita e
+    /// foreign key sui valori, vincoli differiti, conversioni della colonna,
+    /// timeout e lock concorrenti; e, dove una policy RLS decide sui valori,
+    /// l'esito della policy (`row_security: NotPerformed`).
+    ///
+    /// # Errors
+    ///
+    /// Il rifiuto che la scrittura darebbe, con categoria e fase della
+    /// scrittura e `remote_effect: none`.
+    pub async fn dry_run_write(
+        &self,
+        secret: Option<&SecretString>,
+        operation: &WriteOperation,
+        mut input: Box<dyn BatchStream>,
+        budget: &ResourceBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<PostgresWriteDryRun> {
+        let schema = input.schema();
+        let mut gate = write::StatementGate::default();
+        let mut row_security = write::target::RowSecurity::NotPerformed;
+        let (state, loss_report, prepared) = if let Some(secret) = secret {
+            let mut prepared = self
+                .prepare_write(secret, operation, Arc::clone(&schema), budget, cancellation)
+                .await?;
+            let state = prepared
+                .take_driver_state::<write::PreparedPostgresWrite>()
+                .ok_or_else(|| {
+                    DatabaseError::invalid_plan("stato prepared write PostgreSQL assente")
+                })?;
+            // Cio che la scrittura chiede al target, sul catalogo e nel suo
+            // ordine: DDL e svuotamento, poi la registrazione degli id dei
+            // campi, poi lo statement e la prima riga (`gate`).
+            let client = self.connect_session(secret).await?;
+            let row_scoped = operation.mode == plenora_database_core::plan::WriteMode::Append
+                && operation.transaction_profile
+                    == plenora_database_core::plan::TransactionProfile::SingleTransaction
+                && input.declared_input_rows().is_some();
+            let verdict = write::target::inspect(
+                client.client()?,
+                operation,
+                &schema,
+                write::target::WritePath::of(operation, row_scoped, self.insert_mode),
+                self.schema_evolution,
+            )
+            .await?;
+            if let Some(error) = verdict.before_input {
+                return Err(error);
+            }
+            field_identity::check(
+                client.client()?,
+                operation,
+                &schema,
+                verdict.may_lock,
+                verdict.owner,
+            )
+            .await?;
+            drop(client);
+            gate.at_statement = verdict.at_statement;
+            gate.at_first_row = verdict.at_first_row;
+            row_security = verdict.row_security;
+            let report = prepared.loss_report.clone();
+            (state, Some(report), Some(prepared))
+        } else {
+            (write::prepare_state(&schema, operation)?, None, None)
+        };
+        let control = BudgetCancellation::new(cancellation, budget)?;
+        let verified = write::verify_input(
+            &state,
+            operation,
+            input.as_mut(),
+            budget,
+            control.token(),
+            write::InputLimits {
+                insert_mode: self.insert_mode,
+                max_batch_bytes: self.max_batch_bytes,
+                max_wkb_cell_bytes: self.max_wkb_cell_bytes,
+            },
+            gate,
+        )
+        .await?;
+        // Le prenotazioni del piano restano vive mentre si giudica
+        // l'ingresso, come nella scrittura.
+        drop(prepared);
+        Ok(PostgresWriteDryRun {
+            batches: verified.batches,
+            rows: verified.rows,
+            loss_report,
+            row_security,
+        })
+    }
+}
 
 use arrow_schema::SchemaRef;
 #[cfg(test)]
@@ -837,6 +984,8 @@ impl Provider for PostgresProvider {
         Box::pin(async move {
             let control = BudgetCancellation::new(cancellation, budget)?;
             check_cancelled(control.token(), ErrorPhase::Prepare)?;
+            // La stessa compilazione di `compile_write_plan`, che il dry run
+            // della CLI esegue senza server.
             let driver_state = write::prepare_state(&input_schema, operation)?;
             let (operation_lease, columns_lease) =
                 ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
@@ -1012,3 +1161,7 @@ fn parse_decimal128(value: &str, scale: i8) -> Result<i128> {
 
 #[cfg(test)]
 mod test_suite;
+
+#[cfg(test)]
+#[path = "write_visibility_live_tests.rs"]
+mod write_visibility_live_tests;

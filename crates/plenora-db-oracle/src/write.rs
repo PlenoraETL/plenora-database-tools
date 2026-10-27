@@ -7,6 +7,7 @@ use plenora_database_core::arrow::array::Array;
 use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit};
 use plenora_database_core::arrow::RecordBatch;
 use plenora_database_core::field_contract::{validate_schema_contract, FieldContract};
+use plenora_database_core::geometry_value::{verify_value, ValueContract};
 use plenora_database_core::loss::{LossReport, MappingPolicy};
 use plenora_database_core::outcome::{RowCounts, WriteOutcome, WriteStatus};
 use plenora_database_core::plan::{
@@ -748,6 +749,16 @@ async fn execute_input(
     transaction
         .set_response_byte_limit(budget.limits().memory_bytes)
         .await?;
+    // La regola R prima di ogni statement distruttivo: il DELETE di Replace,
+    // gli UPDATE e DELETE per chiave.
+    crate::row_visibility::enforce(
+        transaction,
+        &plan.schema_name,
+        &plan.object_name,
+        plan.mode,
+        cancellation,
+    )
+    .await?;
     if plan.mode == WriteMode::Replace {
         transaction
             .execute(
@@ -868,6 +879,11 @@ impl OracleWritePlan {
                 continue;
             };
             let array = batch.column(column_index);
+            // La verifica comune di ogni valore Arrow (GEO-008, GEO-009,
+            // GEO-011), con il contratto letto una volta per colonna.
+            let schema = batch.schema();
+            let field_contract = FieldContract::parse(schema.field(column_index))?;
+            let value_contract = ValueContract::of(&field_contract);
             for row in 0..batch.num_rows() {
                 if array.is_null(row) {
                     continue;
@@ -882,13 +898,14 @@ impl OracleWritePlan {
                 let remaining = budget
                     .remaining(ResourceKind::GeometryComponents)
                     .saturating_sub(components);
-                let inspection = plenora_database_core::ewkb::inspect_ewkb_detailed(
+                let inspection = verify_value(
+                    value_contract,
                     bytes,
                     remaining,
                     budget.limits().nesting_depth,
+                    ErrorPhase::Write,
                 )
                 .map_err(|mut error| {
-                    error.phase = ErrorPhase::Write;
                     error.provider = Some(ProviderKind::Oracle);
                     error
                 })?;
@@ -910,6 +927,8 @@ impl OracleWritePlan {
                         "tipo geometry WKB non qualificato per Oracle",
                     )
                 })?;
+                // Deviazione dichiarata (GEO-010, contracts/adoption-source.json): un tipo che Oracle
+                // non scrive si rifiuta per valore, dentro la transazione annullata.
                 if !geometry_type_is_writable(geometry_type)
                     || contract
                         .exact_geometry_type
@@ -1148,81 +1167,7 @@ fn validate_write_spatial_policy(schema: &SchemaRef, policy: Option<SridPolicy>)
 fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
     let contract = FieldContract::parse(field)?;
     let spatial = if contract.spatial {
-        if contract.encoding != Some("wkb") {
-            return Err(prepare_error(
-                ErrorCategory::Unsupported,
-                "write spatial Oracle richiede WKB puro",
-            ));
-        }
-        let dimensions = match contract.dimensions {
-            Some("xy") => "xy",
-            Some("xyz") => "xyz",
-            _ => {
-                return Err(prepare_error(
-                    ErrorCategory::Unsupported,
-                    "write spatial Oracle qualifica soltanto XY o XYZ",
-                ))
-            }
-        };
-        let srid = contract.srid.ok_or_else(|| {
-            prepare_error(
-                ErrorCategory::Crs,
-                "write spatial Oracle richiede SRID dichiarato",
-            )
-        })?;
-        if srid == 0 || i32::try_from(srid).is_err() {
-            return Err(prepare_error(
-                ErrorCategory::Crs,
-                "SRID spatial Oracle fuori intervallo",
-            ));
-        }
-        let semantics = if contract.is_geography() {
-            if !plenora_database_core::spatial_policy::is_geographic_srid(srid) {
-                return Err(prepare_error(
-                    ErrorCategory::Crs,
-                    "geography Oracle richiede un SRID geografico qualificato",
-                ));
-            }
-            plenora_database_core::geometry::SpatialSemantics::Geography
-        } else {
-            plenora_database_core::geometry::SpatialSemantics::Geometry
-        };
-        if !matches!(field.data_type(), DataType::Binary | DataType::LargeBinary) {
-            return Err(prepare_error(
-                ErrorCategory::DataMapping,
-                "write spatial Oracle richiede Arrow Binary",
-            ));
-        }
-        let exact_geometry_type = match contract.types_declaration {
-            Some("mixed") => None,
-            Some("exact") => {
-                let kind = contract.geometry_types.ok_or_else(|| {
-                    prepare_error(
-                        ErrorCategory::DataMapping,
-                        "tipo geometry exact Oracle assente",
-                    )
-                })?;
-                if kind.contains(',') || !geometry_type_is_writable(kind) {
-                    return Err(prepare_error(
-                        ErrorCategory::Unsupported,
-                        "tipo geometry Oracle non qualificato",
-                    ));
-                }
-                Some(kind.to_owned())
-            }
-            _ => {
-                return Err(prepare_error(
-                    ErrorCategory::Unsupported,
-                    "dichiarazione tipi geometry Oracle non qualificata",
-                ))
-            }
-        };
-        Some(SpatialWriteColumn {
-            srid,
-            dimensions,
-            semantics,
-            exact_geometry_type,
-        })
+        Some(compile_spatial_column(field, &contract)?)
     } else {
         native_type(field.data_type())?;
         None
@@ -1234,6 +1179,105 @@ fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
         nullable: field.is_nullable(),
         spatial,
         float_digits: None,
+    })
+}
+
+fn compile_spatial_column(
+    field: &Field,
+    contract: &FieldContract<'_>,
+) -> Result<SpatialWriteColumn> {
+    // Deviazione dichiarata (GEO-007, contracts/adoption-source.json): solo WKB ISO,
+    // `ewkb` e un limite di supporto rifiutato prima di ogni effetto.
+    if contract.encoding != Some("wkb") {
+        return Err(prepare_error(
+            ErrorCategory::Unsupported,
+            "write spatial Oracle richiede WKB puro",
+        ));
+    }
+    let dimensions = match contract.dimensions {
+        Some("xy") => "xy",
+        Some("xyz") => "xyz",
+        _ => {
+            return Err(prepare_error(
+                ErrorCategory::Unsupported,
+                "write spatial Oracle qualifica soltanto XY o XYZ",
+            ))
+        }
+    };
+    // GEO-001: il bersaglio vuole la longitudine (o l'easting) per prima.
+    contract
+        .ensure_east_first_axis("Oracle")
+        .map_err(|mut error| {
+            error.provider = Some(ProviderKind::Oracle);
+            error
+        })?;
+    // Soltanto lo SRID dichiarato: la derivazione da `EPSG:<n>` (GEO-008)
+    // non si applica dove il catalogo non la verifica (deviazione
+    // dichiarata su `declared_target_srid`).
+    let srid = contract
+        .declared_target_srid("Oracle")
+        .map_err(|mut error| {
+            error.provider = Some(ProviderKind::Oracle);
+            error
+        })?
+        .ok_or_else(|| {
+            prepare_error(
+                ErrorCategory::Crs,
+                "write spatial Oracle richiede SRID dichiarato",
+            )
+        })?;
+    if srid == 0 || i32::try_from(srid).is_err() {
+        return Err(prepare_error(
+            ErrorCategory::Crs,
+            "SRID spatial Oracle fuori intervallo",
+        ));
+    }
+    let semantics = if contract.is_geography() {
+        if !plenora_database_core::spatial_policy::is_geographic_srid(srid) {
+            return Err(prepare_error(
+                ErrorCategory::Crs,
+                "geography Oracle richiede un SRID geografico qualificato",
+            ));
+        }
+        plenora_database_core::geometry::SpatialSemantics::Geography
+    } else {
+        plenora_database_core::geometry::SpatialSemantics::Geometry
+    };
+    if !matches!(field.data_type(), DataType::Binary | DataType::LargeBinary) {
+        return Err(prepare_error(
+            ErrorCategory::DataMapping,
+            "write spatial Oracle richiede Arrow Binary",
+        ));
+    }
+    let exact_geometry_type = match contract.types_declaration {
+        Some("mixed") => None,
+        Some("exact") => {
+            let kind = contract.geometry_types.ok_or_else(|| {
+                prepare_error(
+                    ErrorCategory::DataMapping,
+                    "tipo geometry exact Oracle assente",
+                )
+            })?;
+            if kind.contains(',') || !geometry_type_is_writable(kind) {
+                return Err(prepare_error(
+                    ErrorCategory::Unsupported,
+                    "tipo geometry Oracle non qualificato",
+                ));
+            }
+            Some(kind.to_owned())
+        }
+        _ => {
+            return Err(prepare_error(
+                ErrorCategory::Unsupported,
+                "dichiarazione tipi geometry Oracle non qualificata",
+            ))
+        }
+    };
+    Ok(SpatialWriteColumn {
+        srid,
+        dimensions,
+        semantics,
+        exact_geometry_type,
     })
 }
 
@@ -1438,6 +1482,10 @@ fn committed_outcome(
 ) -> Result<WriteOutcome> {
     let skipped = received.saturating_sub(affected.min(received));
     let (confirmed, inserted, updated, deleted) = match plan.mutation_kind() {
+        // Replace svuota il target con un DELETE le cui righe non sono
+        // dell'ingresso: il conteggio delle cancellate non si pubblica, come
+        // su SQL Server, PostgreSQL e MySQL. Fino al 25/10 era `Some(0)`.
+        "inserted" if plan.mode == WriteMode::Replace => (received, Some(received), Some(0), None),
         "inserted" => (received, Some(received), Some(0), Some(0)),
         "updated" => (affected, Some(0), Some(affected), Some(0)),
         "deleted" => (affected, Some(0), Some(0), Some(affected)),

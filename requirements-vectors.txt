@@ -1,0 +1,7 @@
+# Il runner dei vettori arrow-data-v1 di plenora-contracts
+# (`scripts/vettori_arrow_data.py`): pyarrow costruisce gli Arrow IPC dei
+# vettori, e serve soltanto a quello. Il pin e quello della suite SDK
+# (`requirements-sdk-tests.txt`), con la stessa chiusura transitiva: il runner
+# non introduce una versione che le altre prove non usano gia.
+-c requirements-transitive.txt
+pyarrow==25.0.1

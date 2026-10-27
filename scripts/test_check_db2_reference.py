@@ -33,9 +33,9 @@ class Db2ReferenceGateTests(unittest.TestCase):
             ),
         )
 
-    def test_inventory_has_all_sixteen_named_live_tests(self) -> None:
+    def test_inventory_has_all_twenty_two_named_live_tests(self) -> None:
         inventory = gate.live_test_inventory()
-        self.assertEqual(len(inventory), 16)
+        self.assertEqual(len(inventory), 22)
         self.assertLessEqual(gate.REQUIRED_LIVE_TESTS, inventory)
 
     def test_complete_named_run_passes(self) -> None:
@@ -57,7 +57,7 @@ class Db2ReferenceGateTests(unittest.TestCase):
 
     def test_every_live_test_carries_an_explicit_reason(self) -> None:
         reasons = {}
-        for source in (gate.LIVE_SOURCE, gate.SPATIAL_LIVE_SOURCE):
+        for source in gate.LIVE_SOURCES:
             reasons.update(
                 gate.live_inventory.ignore_reasons(source.read_text(encoding="utf-8"))
             )

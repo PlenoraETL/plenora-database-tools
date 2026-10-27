@@ -319,17 +319,21 @@ impl Session {
     /// I placeholder sono positional-style Postgres: `$1`, `$2`, ...
     /// I parametri sono una `list` Python (o None) con valori serializzabili
     /// per il type mapping (`py_convert`).
-    #[pyo3(signature = (sql, params=None))]
+    #[pyo3(signature = (sql, params=None, *, relational=None))]
     fn execute(
         &self,
         py: Python<'_>,
         sql: &str,
         params: Option<Bound<'_, PyList>>,
+        relational: Option<(String, String)>,
     ) -> PyResult<u64> {
         self.ensure_open()?;
         let statement = statement_from_python(sql, params.as_ref())?;
+        let plan = crate::relational_query::relational_plan(relational)?;
         self.run_tx(py, move |tx, cancel| {
-            Box::pin(async move { tx.execute(&statement, cancel).await })
+            Box::pin(async move {
+                crate::relational_query::execute(tx, &statement, plan.as_ref(), cancel).await
+            })
         })
     }
 
@@ -362,17 +366,21 @@ impl Session {
 
     /// Esegue una query e ritorna tutte le righe come lista di dict
     /// (`colonna` → `valore`).
-    #[pyo3(signature = (sql, params=None))]
+    #[pyo3(signature = (sql, params=None, *, relational=None))]
     fn execute_returning_rows<'py>(
         &self,
         py: Python<'py>,
         sql: &str,
         params: Option<Bound<'_, PyList>>,
+        relational: Option<(String, String)>,
     ) -> PyResult<Bound<'py, PyList>> {
         self.ensure_open()?;
         let statement = statement_from_python(sql, params.as_ref())?;
+        let plan = crate::relational_query::relational_plan(relational)?;
         let rows = self.run_tx(py, move |tx, cancel| {
-            Box::pin(async move { tx.query(&statement, cancel).await })
+            Box::pin(async move {
+                crate::relational_query::query_rows(tx, &statement, plan.as_ref(), cancel).await
+            })
         })?;
         rows_to_pylist(py, rows)
     }

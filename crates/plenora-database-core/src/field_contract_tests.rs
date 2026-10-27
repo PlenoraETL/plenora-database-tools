@@ -14,6 +14,19 @@ fn spatial_field(extra: &[(&str, &str)]) -> Field {
             protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
             "missing".to_owned(),
         ),
+        (
+            protocol::GEOARROW_EXTENSION_NAME.to_owned(),
+            GEOARROW_WKB_EXTENSION_NAME.to_owned(),
+        ),
+        (protocol::FIELD_ID.to_owned(), "0".to_owned()),
+        (
+            protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
+            "geometry".to_owned(),
+        ),
+        (
+            protocol::GEOMETRY_PRECISION.to_owned(),
+            "float64".to_owned(),
+        ),
     ]);
     metadata.extend(
         extra
@@ -36,8 +49,23 @@ fn current_schema(field: Field) -> Schema {
 #[test]
 fn current_contract_requires_schema_version() {
     let schema = Schema::new(vec![spatial_field(&[])]);
-    assert!(validate_schema_contract(&schema).is_err());
+    let error = validate_schema_contract(&schema).expect_err("versione assente");
+    // REJ-001: un difetto dei metadati dello schema, non di un valore.
+    assert_eq!(error.category, ErrorCategory::Schema);
     assert!(validate_schema_contract(&current_schema(spatial_field(&[]))).is_ok());
+}
+
+#[test]
+fn malformed_contract_version_is_a_schema_defect() {
+    for malformata in ["", "01", "0", "1.0", "v1", " 1", "-1"] {
+        let mut schema = current_schema(spatial_field(&[]));
+        schema.metadata.insert(
+            protocol::CONTRACT_VERSION_KEY.to_owned(),
+            malformata.to_owned(),
+        );
+        let error = validate_schema_contract(&schema).expect_err("versione malformata");
+        assert_eq!(error.category, ErrorCategory::Schema, "{malformata:?}");
+    }
 }
 
 #[test]
@@ -206,7 +234,8 @@ fn an_srid_outside_the_signed_32_bit_domain_is_rejected() {
         metadata.insert(key.to_owned(), value.to_owned());
     }
     let error = published(metadata).expect_err("fuori dal dominio i32");
-    assert_eq!(error.category, ErrorCategory::DataMapping);
+    // REJ-001: un valore fuori dalla grammatica del vocabolario e `schema`.
+    assert_eq!(error.category, ErrorCategory::Schema);
     let mut boundary = published_geometry();
     for (key, value) in [
         ("plenora.geometry.srid", "2147483647"),
@@ -255,4 +284,265 @@ fn an_empty_crs_definition_or_id_is_not_an_identity() {
     let mut empty_id = published_geometry();
     empty_id.insert("plenora.geometry.crs_id".to_owned(), String::new());
     assert!(published(empty_id).is_err(), "identificatore vuoto");
+}
+
+fn ingress(metadata: std::collections::HashMap<String, String>) -> Result<()> {
+    let field = Field::new("geom", DataType::Binary, true).with_metadata(metadata);
+    validate_schema_contract(&Schema::new_with_metadata(
+        vec![field],
+        std::collections::HashMap::from([(
+            protocol::CONTRACT_VERSION_KEY.to_owned(),
+            protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ))
+}
+
+fn with(changes: &[(&str, Option<&str>)]) -> std::collections::HashMap<String, String> {
+    let mut metadata = published_geometry();
+    for (key, value) in changes {
+        match value {
+            Some(value) => metadata.insert((*key).to_owned(), (*value).to_owned()),
+            None => metadata.remove(*key),
+        };
+    }
+    metadata
+}
+
+/// REJ-001, classe vocabolario: ogni difetto e `schema`. Fino al 24/10 erano
+/// `data_mapping`, la categoria di un valore, e alcuni passavano: `Point`
+/// (il catalogo dei tipi e case-sensitive), un field id `007`, una chiave
+/// `plenora.geometry.` sconosciuta, la precisione assente.
+#[test]
+fn every_vocabulary_defect_is_a_schema_defect() {
+    for (name, changes) in [
+        (
+            "tipo non canonico",
+            vec![("plenora.geometry.types", Some("Point"))],
+        ),
+        (
+            "tipi fuori ordine",
+            vec![("plenora.geometry.types", Some("polygon,point"))],
+        ),
+        ("lista vuota", vec![("plenora.geometry.types", Some(""))]),
+        ("field id con zeri", vec![("plenora.field_id", Some("007"))]),
+        ("field id assente", vec![("plenora.field_id", None)]),
+        (
+            "precisione assente",
+            vec![("plenora.geometry.precision", None)],
+        ),
+        (
+            "chiave sconosciuta",
+            vec![("plenora.geometry.colour", Some("red"))],
+        ),
+        (
+            "encoding fuori insieme",
+            vec![("plenora.geometry.encoding", Some("twkb"))],
+        ),
+        (
+            "srid con zeri",
+            vec![("plenora.geometry.srid", Some("04326"))],
+        ),
+        (
+            "srid con a capo",
+            vec![("plenora.geometry.srid", Some("4326\n"))],
+        ),
+        ("estensione assente", vec![("ARROW:extension:name", None)]),
+    ] {
+        let error = ingress(with(&changes)).expect_err(name);
+        assert_eq!(error.category, ErrorCategory::Schema, "{name}");
+    }
+    // Le chiavi native restano libere (ARROW-VOCABULARY §5).
+    ingress(with(&[("plenora.geometry.native.postgres", Some("x"))])).expect("chiave nativa");
+}
+
+/// REJ-001, classe CRS: ogni difetto di una chiave CRS e `crs`, GEO-005,
+/// GEO-016 e GEO-020 compresi.
+#[test]
+fn every_crs_defect_is_a_crs_defect() {
+    let wkt2 = r#"GEOGCRS["WGS 84",ID["EPSG",4326]]"#;
+    for (name, changes) in [
+        (
+            "crs_id senza autorita",
+            vec![("plenora.geometry.crs_id", Some(":4326"))],
+        ),
+        (
+            "crs_id con spazio",
+            vec![("plenora.geometry.crs_id", Some("EPSG:43 26"))],
+        ),
+        (
+            "risoluzione assente",
+            vec![("plenora.geometry.crs_resolution", None)],
+        ),
+        (
+            "assi fuori insieme",
+            vec![("plenora.geometry.axis_order", Some("xy"))],
+        ),
+        (
+            "catalogo locale risolto",
+            vec![("plenora.geometry.crs_id", Some("POSTGIS:4326"))],
+        ),
+        (
+            "definizione contraddittoria",
+            vec![
+                ("plenora.geometry.crs_id", Some("EPSG:3857")),
+                ("plenora.geometry.srid", None),
+                ("plenora.geometry.crs_definition", Some(wkt2)),
+                ("plenora.geometry.crs_definition_format", Some("wkt2")),
+            ],
+        ),
+        (
+            "definizione malformata",
+            vec![
+                ("plenora.geometry.crs_definition", Some("GEOGCRS[\"x\")")),
+                ("plenora.geometry.crs_definition_format", Some("wkt2")),
+            ],
+        ),
+    ] {
+        let error = ingress(with(&changes)).expect_err(name);
+        assert_eq!(error.category, ErrorCategory::Crs, "{name}");
+    }
+    // Un catalogo locale non risolto e conforme (GEO-020).
+    ingress(with(&[
+        (
+            "plenora.geometry.crs_resolution",
+            Some("declared_unresolved"),
+        ),
+        ("plenora.geometry.crs_id", Some("POSTGIS:4326")),
+    ]))
+    .expect("catalogo locale dichiarato");
+    // GEO-004: chi registra l'identita non rifiuta una definizione che non
+    // calcola, purche coerente.
+    ingress(with(&[
+        ("plenora.geometry.crs_definition", Some(wkt2)),
+        ("plenora.geometry.crs_definition_format", Some("wkt2")),
+    ]))
+    .expect("definizione coerente");
+}
+
+/// REJ-002: il vocabolario di ogni campo prima del CRS di qualunque campo.
+#[test]
+fn vocabulary_of_a_later_field_precedes_crs_of_an_earlier_one() {
+    let bad_crs = Field::new("a", DataType::Binary, true)
+        .with_metadata(with(&[("plenora.geometry.crs_id", Some(":x"))]));
+    let bad_vocabulary = Field::new("b", DataType::Binary, true).with_metadata(with(&[
+        ("plenora.field_id", Some("2")),
+        ("plenora.geometry.types", Some("Point")),
+    ]));
+    let error = validate_schema_contract(&Schema::new_with_metadata(
+        vec![bad_crs, bad_vocabulary],
+        std::collections::HashMap::from([(
+            protocol::CONTRACT_VERSION_KEY.to_owned(),
+            protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ))
+    .expect_err("due difetti");
+    assert_eq!(error.category, ErrorCategory::Schema);
+}
+
+/// ARROW-VOCABULARY §4: `missing` vieta identita e assi, non lo SRID.
+#[test]
+fn a_missing_crs_may_carry_a_numeric_srid() {
+    ingress(with(&[
+        ("plenora.geometry.crs_resolution", Some("missing")),
+        ("plenora.geometry.crs_id", None),
+        ("plenora.geometry.axis_order", None),
+    ]))
+    .expect("missing con SRID");
+}
+
+/// GEO-008: lo SRID del bersaglio e il dichiarato, o quello di `EPSG:<n>`;
+/// un catalogo locale non si deriva, e un CRS dichiarato senza SRID
+/// derivabile e `crs` invece di finire con SRID 0.
+#[test]
+fn the_target_srid_is_declared_or_derived_from_epsg_only() {
+    let target = |changes: &[(&str, Option<&str>)]| {
+        let field = Field::new("geom", DataType::Binary, true).with_metadata(with(changes));
+        FieldContract::parse(&field).and_then(FieldContract::target_srid)
+    };
+    assert_eq!(target(&[]).expect("dichiarato"), Some(4326));
+    assert_eq!(
+        target(&[("plenora.geometry.srid", None)]).expect("derivato"),
+        Some(4326)
+    );
+    for local in ["POSTGIS:4326", "MSSQL:4326"] {
+        let error = target(&[
+            ("plenora.geometry.srid", None),
+            (
+                "plenora.geometry.crs_resolution",
+                Some("declared_unresolved"),
+            ),
+            ("plenora.geometry.crs_id", Some(local)),
+        ])
+        .expect_err(local);
+        assert_eq!(error.category, ErrorCategory::Crs, "{local}");
+    }
+    assert_eq!(
+        target(&[
+            ("plenora.geometry.srid", None),
+            ("plenora.geometry.crs_resolution", Some("missing")),
+            ("plenora.geometry.crs_id", None),
+            ("plenora.geometry.axis_order", None),
+        ])
+        .expect("senza CRS"),
+        None
+    );
+}
+
+/// GEO-008: uno SRID derivato porta la propria provenienza, e un bersaglio
+/// senza catalogo in cui verificarlo lo rifiuta `crs`; uno dichiarato passa.
+#[test]
+fn a_derived_srid_is_marked_and_refused_where_unverifiable() {
+    let contract = |changes: &[(&str, Option<&str>)]| {
+        Field::new("geom", DataType::Binary, true).with_metadata(with(changes))
+    };
+    let declared = contract(&[]);
+    let declared = FieldContract::parse(&declared).expect("dichiarato");
+    assert_eq!(
+        declared.target_srid_source().expect("dichiarato"),
+        Some(TargetSrid {
+            srid: 4326,
+            derived: false
+        })
+    );
+    assert_eq!(
+        declared.declared_target_srid("Db2").expect("Db2"),
+        Some(4326)
+    );
+    let derived = contract(&[("plenora.geometry.srid", None)]);
+    let derived = FieldContract::parse(&derived).expect("derivato");
+    assert_eq!(
+        derived.target_srid_source().expect("derivato"),
+        Some(TargetSrid {
+            srid: 4326,
+            derived: true
+        })
+    );
+    let error = derived
+        .declared_target_srid("Db2")
+        .expect_err("derivato senza catalogo");
+    assert_eq!(error.category, ErrorCategory::Crs);
+}
+
+/// GEO-001: solo `lat_lon` e `northing_easting` sono irrappresentabili su un
+/// bersaglio est-primo; `unknown` e `other` passano con l'hazard dichiarato.
+#[test]
+fn only_north_first_axis_orders_are_unrepresentable() {
+    for (axis, representable) in [
+        ("lon_lat", true),
+        ("easting_northing", true),
+        ("unknown", true),
+        ("other", true),
+        ("lat_lon", false),
+        ("northing_easting", false),
+    ] {
+        let field = Field::new("geom", DataType::Binary, true)
+            .with_metadata(with(&[("plenora.geometry.axis_order", Some(axis))]));
+        let result = FieldContract::parse(&field)
+            .expect("campo conforme")
+            .ensure_east_first_axis("PostgreSQL");
+        assert_eq!(result.is_ok(), representable, "{axis}");
+        if let Err(error) = result {
+            assert_eq!(error.category, ErrorCategory::Unsupported);
+        }
+    }
 }

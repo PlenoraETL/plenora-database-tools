@@ -211,6 +211,18 @@ fn encoded_query_spatial_output_requires_and_applies_an_explicit_contract() {
     );
     assert_eq!(field.metadata()[protocol::GEOMETRY_DIMENSIONS], "xyzm");
     assert_eq!(field.metadata()[protocol::GEOMETRY_SRID], "4326");
+    // GEO-020: lo SRID di catalogo si dichiara con il nome di catalogo locale
+    // che il contratto elenca per SQL Server, `MSSQL`, mai risolto. Fino al
+    // 24/10 era `SQLSERVER:4326`, che per il contratto non e un catalogo
+    // locale.
+    assert_eq!(field.metadata()[protocol::GEOMETRY_CRS_ID], "MSSQL:4326");
+    assert_eq!(
+        field.metadata()[protocol::GEOMETRY_CRS_RESOLUTION],
+        "declared_unresolved"
+    );
+    assert!(plenora_database_core::crs_definition::is_local_authority(
+        &field.metadata()[protocol::GEOMETRY_CRS_ID]
+    ));
     assert_eq!(
         plan.columns[0].wire_encoding,
         SqlServerWireEncoding::Projected
@@ -299,4 +311,52 @@ fn create_type_compilation_rejects_sql_and_invalid_native_contracts() {
     let mismatch = Field::new("value", DataType::Utf8, true).with_metadata(metadata);
     let error = SqlServerColumnSpec::from_create_field(&mismatch).expect_err("native mismatch");
     assert_eq!(error.category, ErrorCategory::DataMapping);
+}
+
+/// La tabella delle famiglie di SQL Server nella lettura (regola F), la stessa
+/// del catalogo degli operandi; `timestamp`/`rowversion` e binario.
+#[test]
+fn ogni_tipo_ha_la_famiglia_della_tabella() {
+    use plenora_database_core::spatial_operand::OperandFamily::{
+        Binary, Geometry, Numeric, Other, Temporal, Text,
+    };
+    for (native, family) in [
+        ("geometry", Geometry),
+        ("geography", Geometry),
+        ("binary", Binary),
+        ("varbinary", Binary),
+        ("image", Binary),
+        ("timestamp", Binary),
+        ("rowversion", Binary),
+        ("sql_variant", Binary),
+        ("char", Text),
+        ("varchar", Text),
+        ("nchar", Text),
+        ("nvarchar", Text),
+        ("text", Text),
+        ("ntext", Text),
+        ("sysname", Text),
+        ("tinyint", Numeric),
+        ("smallint", Numeric),
+        ("int", Numeric),
+        ("bigint", Numeric),
+        ("decimal", Numeric),
+        ("numeric", Numeric),
+        ("money", Numeric),
+        ("smallmoney", Numeric),
+        ("float", Numeric),
+        ("real", Numeric),
+        ("bit", Numeric),
+        ("date", Temporal),
+        ("time", Temporal),
+        ("datetime", Temporal),
+        ("datetime2", Temporal),
+        ("smalldatetime", Temporal),
+        ("datetimeoffset", Temporal),
+        ("uniqueidentifier", Other),
+        ("xml", Other),
+    ] {
+        let column = &description(native, 0, 0).columns[0];
+        assert_eq!(read_family(column), family, "{native}");
+    }
 }

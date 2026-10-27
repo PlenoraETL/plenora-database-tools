@@ -940,6 +940,33 @@ impl TransactionScope for MysqlTransaction {
         })
     }
 
+    fn operand_catalog<'a>(
+        &'a mut self,
+        relations: &'a [(Option<String>, String)],
+        names: &'a [String],
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, plenora_database_core::spatial_operand::OperandCatalog> {
+        Box::pin(async move {
+            // Bordo della transazione: gli errori del catalogo portano il
+            // prodotto della sessione.
+            let kind = self.session.kind();
+            let outcome = async move {
+                if !self.open {
+                    return Err(closed_error(ErrorPhase::Prepare, self.session.kind()));
+                }
+                crate::catalog::transaction_operand_catalog(
+                    &mut self.session,
+                    relations,
+                    names,
+                    cancellation,
+                )
+                .await
+            }
+            .await;
+            crate::profile::attributed_kind(kind, outcome)
+        })
+    }
+
     fn execute_conditional_update<'a>(
         &'a mut self,
         request: ConditionalUpdate<'a>,

@@ -117,3 +117,87 @@ fn qualified_checkpoint_renders_as_a_bound_postgres_keyset() {
     );
     assert_eq!(plan.bind_names, ["__plenora_resume_0"]);
 }
+
+fn spatial_projection(
+    function: plenora_database_core::relational::SpatialFunction,
+    arguments: Vec<QueryExpression>,
+) -> plenora_database_core::relational::QueryProjection {
+    plenora_database_core::relational::QueryProjection {
+        expression: QueryExpression::Spatial {
+            function,
+            arguments,
+        },
+        alias: None,
+    }
+}
+
+fn geometry_column(relation: Option<&str>) -> QueryExpression {
+    QueryExpression::Column {
+        column: plenora_database_core::relational::ColumnRef {
+            relation: relation.map(str::to_owned),
+            field: "geom".to_owned(),
+        },
+    }
+}
+
+/// GEO-009: una geometria calcolata eredita lo SRID della colonna d'ingresso
+/// solo con la regola `preserves` e un solo argomento geometrico che sia una
+/// colonna di una relazione nota. Fino al 24/10 nessuna geometria calcolata
+/// dichiarava lo SRID, e i suoi valori EWKB lo portavano lo stesso.
+#[test]
+fn only_preserving_functions_of_one_known_column_inherit_the_srid() {
+    use plenora_database_core::relational::{QuerySource, SpatialFunction};
+    let operation = QueryOperation {
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("public".to_owned()),
+                object: "events".to_owned(),
+            },
+            alias: Some("e".to_owned()),
+        }),
+        derived_source: None,
+        projection: vec![
+            spatial_projection(SpatialFunction::Centroid, vec![geometry_column(Some("e"))]),
+            spatial_projection(SpatialFunction::Centroid, vec![geometry_column(None)]),
+            spatial_projection(
+                SpatialFunction::Intersection,
+                vec![geometry_column(Some("e")), geometry_column(Some("e"))],
+            ),
+            spatial_projection(SpatialFunction::Centroid, vec![geometry_column(Some("x"))]),
+            spatial_projection(SpatialFunction::Area, vec![geometry_column(Some("e"))]),
+            // Una funzione che preserva il frame di un'altra che lo preserva.
+            spatial_projection(
+                SpatialFunction::Centroid,
+                vec![QueryExpression::Spatial {
+                    function: SpatialFunction::Envelope,
+                    arguments: vec![geometry_column(Some("e"))],
+                }],
+            ),
+        ],
+        joins: Vec::new(),
+        filter: None,
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: None,
+        row_offset: None,
+        locking: None,
+        declared_crs: Vec::new(),
+    };
+    let inherited = inherited_geometries(&operation);
+    assert_eq!(
+        inherited
+            .iter()
+            .map(|geometry| geometry.position)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 5]
+    );
+    assert_eq!(inherited[0].schema.as_deref(), Some("public"));
+    assert_eq!(inherited[0].object, "events");
+    assert_eq!(inherited[0].column, "geom");
+}

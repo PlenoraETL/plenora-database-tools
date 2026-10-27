@@ -14,6 +14,7 @@ from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import check_sqlserver_reference as gate
+import check_sqlserver_matrix as matrix
 from scripts import compose_network as compose_network_module
 
 
@@ -49,6 +50,15 @@ def executable() -> list[str]:
 
 
 class RequiredLiveTests(unittest.TestCase):
+    def test_matrix_passes_every_collation_fixture_to_the_suite(self) -> None:
+        expected = matrix.expected_live_tests()
+        with patch.object(matrix, "run", return_value=live_output(expected)) as run:
+            matrix.run_suite(matrix.MATRIX[0])
+        command = run.call_args.args[0]
+        for database in ("CS_DATABASE=dataflow_cs", "AI_DATABASE=dataflow_ai"):
+            self.assertIn("PLENORA_SQLSERVER_" + database, command)
+
+
     def test_workflow_watches_the_public_cli_surface(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('      - "crates/plenora-database-cli/**"', workflow)

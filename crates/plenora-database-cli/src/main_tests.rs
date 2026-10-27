@@ -1132,9 +1132,10 @@ async fn a_non_conforming_geometry_schema_is_never_published() {
         let error = write_stream_to_ipc_as(&output, &mut stream, &CancellationToken::new(), format)
             .await
             .expect_err("schema non conforme pubblicato");
+        // REJ-001: una chiave obbligatoria del vocabolario assente e `schema`.
         assert_eq!(
             error.database_error().category,
-            ErrorCategory::DataMapping,
+            ErrorCategory::Schema,
             "{format:?}"
         );
         assert!(!output.exists());

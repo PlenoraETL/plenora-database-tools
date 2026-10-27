@@ -576,6 +576,13 @@ fn empty_in_predicate_is_rejected() {
     assert!(compile_portable(ProviderKind::Postgres, &stmt).is_err());
 }
 
+/// La sonda `PostGIS` del predicato portable: lo SRID dichiarato (`$2`)
+/// confrontato dal server con quello della colonna (`$3` relazione, `$4`
+/// colonna) prima di ogni riga.
+fn guarded_probe() -> String {
+    crate::spatial_probe::postgres_guarded_probe("$1", "$2::int4", "$3::text", "$4::text")
+}
+
 #[test]
 fn spatial_predicate_intersects_binds_ewkb() {
     use crate::geometry::{Dimensions, SpatialSemantics};
@@ -593,16 +600,26 @@ fn spatial_predicate_intersects_binds_ewkb() {
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     assert!(
-        compiled
-            .sql
-            .contains(r#"ST_Intersects("geom", ST_SetSRID(ST_GeomFromEWKB($1), $2)::geometry)"#),
+        compiled.sql.contains(&format!(
+            r#"ST_Intersects("geom", {}::geometry)"#,
+            guarded_probe()
+        )),
         "sql inatteso: {}",
         compiled.sql
     );
-    // Il costruttore spaziale occupa due bind: EWKB e SRID.
-    assert_eq!(compiled.params.len(), 2);
+    // Il costruttore spaziale occupa quattro bind: EWKB, SRID, e la tabella
+    // e la colonna di cui il server legge lo SRID.
+    assert_eq!(compiled.params.len(), 4);
     assert!(matches!(&compiled.params[0], ParameterValue::Bytes(b) if b == &ewkb_point_2d(4326)));
     assert!(matches!(&compiled.params[1], ParameterValue::I32(v) if *v == 4326));
+    assert_eq!(
+        compiled.params[2],
+        ParameterValue::String(r#""buildings""#.to_owned())
+    );
+    assert_eq!(
+        compiled.params[3],
+        ParameterValue::String("geom".to_owned())
+    );
 }
 
 #[test]
@@ -624,12 +641,13 @@ fn spatial_predicate_dwithin_binds_distance() {
         ))
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
-    assert!(compiled
-        .sql
-        .contains(r#"ST_DWithin("geom", ST_SetSRID(ST_GeomFromEWKB($1), $2)::geometry, $3)"#));
-    // Il terzo bind è la distanza, dopo EWKB e SRID.
-    assert_eq!(compiled.params.len(), 3);
-    assert!(matches!(&compiled.params[2], ParameterValue::F64(v) if *v == 250.0));
+    assert!(compiled.sql.contains(&format!(
+        r#"ST_DWithin("geom", {}::geometry, $5)"#,
+        guarded_probe()
+    )));
+    // Il quinto bind è la distanza, dopo i quattro della sonda.
+    assert_eq!(compiled.params.len(), 5);
+    assert!(matches!(&compiled.params[4], ParameterValue::F64(v) if *v == 250.0));
 }
 
 #[test]
@@ -673,7 +691,7 @@ fn spatial_bounding_box_uses_index_operator() {
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     assert!(compiled
         .sql
-        .contains(r#""geom" && ST_SetSRID(ST_GeomFromEWKB"#));
+        .contains(&format!(r#""geom" && {}::geometry"#, guarded_probe())));
 }
 
 #[test]
@@ -697,9 +715,9 @@ fn spatial_composes_with_scalar_predicates() {
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     assert!(compiled.sql.contains("ST_Intersects"));
-    // Il predicato scalare segue i due bind del riferimento spaziale.
-    assert!(compiled.sql.contains(r#""status" = $3"#));
-    assert_eq!(compiled.params.len(), 3);
+    // Il predicato scalare segue i quattro bind del riferimento spaziale.
+    assert!(compiled.sql.contains(r#""status" = $5"#));
+    assert_eq!(compiled.params.len(), 5);
 }
 
 // Semantica spaziale e unità di misura di DWithin.
@@ -722,9 +740,10 @@ fn spatial_geography_uses_geography_cast_postgres() {
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     // Fix #4: cast della colonna + del riferimento a geography.
     assert!(
-        compiled.sql.contains(
-            r#"ST_Intersects("geom"::geography, ST_SetSRID(ST_GeomFromEWKB($1), $2)::geography)"#
-        ),
+        compiled.sql.contains(&format!(
+            r#"ST_Intersects("geom"::geography, {}::geography)"#,
+            guarded_probe()
+        )),
         "sql inatteso: {}",
         compiled.sql
     );
@@ -749,11 +768,12 @@ fn spatial_dwithin_geography_wgs84_is_accepted_and_uses_meters() {
         .into_statement();
     let compiled = compile_portable(ProviderKind::Postgres, &stmt).unwrap();
     // Geography su 4326 → cast a geography, DWithin usa metri veri.
-    assert!(compiled.sql.contains(
-        r#"ST_DWithin("geom"::geography, ST_SetSRID(ST_GeomFromEWKB($1), $2)::geography, $3)"#
-    ));
-    // params: [0]=ewkb, [1]=srid, [2]=distance.
-    assert!(matches!(&compiled.params[2], ParameterValue::F64(v) if *v == 500.0));
+    assert!(compiled.sql.contains(&format!(
+        r#"ST_DWithin("geom"::geography, {}::geography, $5)"#,
+        guarded_probe()
+    )));
+    // params: [0]=ewkb, [1]=srid, [2]=tabella, [3]=colonna, [4]=distanza.
+    assert!(matches!(&compiled.params[4], ParameterValue::F64(v) if *v == 500.0));
 }
 
 #[test]
@@ -858,17 +878,29 @@ fn spatial_mysql_geography_is_accepted_as_hint_only() {
         ))
         .into_statement();
     let compiled = compile_portable(ProviderKind::Mysql, &stmt).unwrap();
-    // Nessun cast, solo ST_GeomFromWKB.
-    // MySQL costruisce la geometria passando WKB e SRID separatamente.
-    assert!(compiled
-        .sql
-        .contains("ST_Intersects(`geom`, ST_GeomFromWKB(?, ?))"));
+    // Nessun `::geography`, solo ST_GeomFromWKB.
+    // MySQL costruisce la geometria passando WKB e SRID separatamente, con la
+    // longitudine per prima anche su un SRS geografico (GEO-001).
+    assert!(compiled.sql.contains(
+        "ST_Intersects(`geom`, ST_GeomFromWKB(CAST(? AS BINARY), ?, 'axis-order=long-lat'))"
+    ));
     // Sanity: no `::geography`.
     assert!(!compiled.sql.contains("::geography"));
+    // MariaDB non confronta gli SRID: fino al 25/10 la stessa forma senza
+    // opzione, e una sonda 3857 contro una colonna `REF_SYSTEM_ID=4326`
+    // rendeva righe. Ora la regola delle sonde la rifiuta.
+    let error = compile_portable(ProviderKind::Mariadb, &stmt).expect_err("MariaDB");
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+    assert_eq!(error.message, crate::spatial_probe::PROBE_SRID_UNPROVEN);
 }
 
+/// Db2 e Oracle non hanno una guardia misurata che rifiuti uno SRID diverso
+/// prima di ogni riga, e il compilatore portable non ha il catalogo: la
+/// regola delle sonde li rifiuta. Fino al 25/10 compilavano
+/// `ST_INTERSECTS(.., ST_GEOMETRY(BLOB(HEXTORAW(?)), ?))` e
+/// `SDO_RELATE(.., FROM_WKBGEOMETRY(TO_BLOB(:1), :2), ..)`.
 #[test]
-fn spatial_db2_uses_integrated_geometry_and_hex_binary_binding() {
+fn spatial_db2_and_oracle_are_refused_without_a_proven_srid() {
     use crate::geometry::{Dimensions, SpatialSemantics};
     let bytes = ewkb_point_2d(4326);
     let stmt = select("features", vec!["id"])
@@ -883,47 +915,24 @@ fn spatial_db2_uses_integrated_geometry_and_hex_binary_binding() {
             },
         ))
         .into_statement();
-    let compiled = compile_portable(ProviderKind::Db2, &stmt).expect("spatial Db2");
-
-    assert_eq!(
-        compiled.sql,
-        "SELECT \"id\" FROM \"features\" WHERE (ST_INTERSECTS(\"shape\", ST_GEOMETRY(BLOB(HEXTORAW(?)), ?)) = 1)"
-    );
-    assert_eq!(
-        compiled.params,
-        vec![ParameterValue::Bytes(bytes), ParameterValue::I32(4326)]
-    );
+    let _ = &bytes;
+    for kind in [ProviderKind::Db2, ProviderKind::Oracle] {
+        let error = compile_portable(kind, &stmt).expect_err("sonda senza prova");
+        assert_eq!(
+            error.category,
+            crate::ErrorCategory::Unsupported,
+            "{kind:?}"
+        );
+        assert_eq!(error.message, crate::spatial_probe::PROBE_SRID_UNPROVEN);
+    }
 }
 
+/// Un valore spatial scritto su Oracle (e su Db2, `MariaDB`) senza catalogo:
+/// il server non e stato misurato (Oracle vincola lo SRID dei metadati
+/// soltanto con un indice spatial), e la regola delle sonde lo rifiuta. Fino
+/// al 25/10 era `FROM_WKBGEOMETRY(TO_BLOB(:1), 4326)`.
 #[test]
-fn spatial_oracle_uses_sdo_geometry_with_bound_wkb_and_srid() {
-    use crate::geometry::{Dimensions, SpatialSemantics};
-    let bytes = ewkb_point_2d(4326);
-    let statement = select("features", vec!["id"])
-        .where_(spatial(
-            "shape",
-            SpatialPredicate::Intersects,
-            SpatialReference {
-                ewkb: bytes.clone(),
-                srid: 4326,
-                dimensions: Dimensions::Xy,
-                semantics: SpatialSemantics::Geometry,
-            },
-        ))
-        .into_statement();
-    let compiled = compile_portable(ProviderKind::Oracle, &statement).expect("spatial Oracle");
-    assert_eq!(
-        compiled.sql,
-        "SELECT \"id\" FROM \"features\" WHERE (MDSYS.SDO_RELATE(\"shape\", MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(TO_BLOB(:1), :2), 'mask=ANYINTERACT') = 'TRUE')"
-    );
-    assert_eq!(
-        compiled.params,
-        vec![ParameterValue::Bytes(bytes), ParameterValue::I32(4326)]
-    );
-}
-
-#[test]
-fn spatial_oracle_geography_value_uses_the_same_sdo_constructor() {
+fn spatial_oracle_value_is_refused_without_a_proven_column_srid() {
     use crate::geometry::SpatialSemantics;
     let bytes = ewkb_point_2d(4326);
     let statement = PortableStatement::Insert(InsertStatement {
@@ -936,13 +945,73 @@ fn spatial_oracle_geography_value_uses_the_same_sdo_constructor() {
         }]],
         returning: Vec::new(),
     });
-    let compiled =
-        compile_portable(ProviderKind::Oracle, &statement).expect("valore geography Oracle");
-    assert_eq!(
-        compiled.sql,
-        "INSERT INTO \"features\" (\"shape\") VALUES (MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(TO_BLOB(:1), 4326))"
-    );
-    assert_eq!(compiled.params, vec![ParameterValue::Bytes(bytes)]);
+    let _ = &bytes;
+    let error =
+        compile_portable(ProviderKind::Oracle, &statement).expect_err("valore geography Oracle");
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+    assert_eq!(error.message, crate::spatial_probe::VALUE_SRID_UNPROVEN);
+}
+
+/// Un letterale con uno SRID proprio diverso da quello del `SpatialValue` si
+/// rifiuta compilando, su ogni dialetto: `PostGIS` lo sovrascriveva con
+/// `ST_SetSRID`, gli altri ignorano il `srid` di `ParameterValue::Wkb`.
+#[test]
+fn spatial_value_with_another_srid_is_refused_on_every_dialect() {
+    use crate::geometry::{Dimensions, SpatialSemantics};
+    let insert = |value: ParameterValue| {
+        PortableStatement::Insert(InsertStatement {
+            table: TableRef::new("features"),
+            columns: vec!["shape".to_owned()],
+            values: vec![vec![Expression::SpatialValue {
+                expression: Box::new(Expression::literal(value)),
+                srid: 4326,
+                semantics: SpatialSemantics::Geometry,
+            }]],
+            returning: Vec::new(),
+        })
+    };
+    let plain = ewkb_point_2d(4326)
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| !(5..9).contains(index))
+        .map(|(index, byte)| if index == 4 { 0 } else { byte })
+        .collect::<Vec<_>>();
+    for kind in [
+        ProviderKind::Postgres,
+        ProviderKind::Mysql,
+        ProviderKind::Mariadb,
+        ProviderKind::Sqlserver,
+        ProviderKind::Oracle,
+        ProviderKind::Db2,
+    ] {
+        for value in [
+            ParameterValue::Bytes(ewkb_point_2d(3857)),
+            ParameterValue::Wkb {
+                bytes: plain.clone(),
+                srid: Some(3857),
+                dimensions: Dimensions::Xy,
+                semantics: SpatialSemantics::Geometry,
+            },
+        ] {
+            let error = compile_portable(kind, &insert(value)).expect_err("SRID divergente");
+            assert_eq!(error.category, crate::ErrorCategory::Crs, "{kind:?}");
+        }
+        // Un WKB senza SRID prende quello dichiarato, dove la colonna e
+        // provata dal server; altrove la regola delle sonde lo rifiuta.
+        let written = compile_portable(kind, &insert(ParameterValue::Bytes(plain.clone())));
+        if matches!(
+            kind,
+            ProviderKind::Mariadb | ProviderKind::Oracle | ProviderKind::Db2
+        ) {
+            assert_eq!(
+                written.expect_err("SRID di colonna non provato").category,
+                crate::ErrorCategory::Unsupported,
+                "{kind:?}"
+            );
+        } else {
+            written.expect("WKB senza SRID prende quello dichiarato");
+        }
+    }
 }
 
 #[test]
@@ -1243,4 +1312,35 @@ fn every_portable_node_refuses_an_unknown_key() {
             "{name}: chiave sconosciuta accettata"
         );
     }
+}
+
+/// GEO-001: il valore spatial di una mutazione `MySQL` si costruisce con la
+/// longitudine per prima (`axis-order=long-lat`), o un SRS geografico
+/// leggerebbe la prima ordinata come latitudine; `MariaDB` resta senza
+/// opzione. Fino al 24/10 entrambi la omettevano.
+#[test]
+fn mysql_spatial_value_fixes_the_axis_order_and_mariadb_has_none() {
+    use crate::geometry::SpatialSemantics;
+    let bytes = ewkb_point_2d(4326);
+    let statement = PortableStatement::Insert(InsertStatement {
+        table: TableRef::new("features"),
+        columns: vec!["shape".to_owned()],
+        values: vec![vec![Expression::SpatialValue {
+            expression: Box::new(Expression::literal(ParameterValue::Bytes(bytes))),
+            srid: 4326,
+            semantics: SpatialSemantics::Geometry,
+        }]],
+        returning: Vec::new(),
+    });
+    let mysql = compile_portable(ProviderKind::Mysql, &statement).expect("valore MySQL");
+    assert_eq!(
+        mysql.sql,
+        "INSERT INTO `features` (`shape`) VALUES \
+         (ST_GeomFromWKB(CAST(? AS BINARY), 4326, 'axis-order=long-lat'))"
+    );
+    // `MariaDB` accetta un valore 3857 in una colonna `REF_SYSTEM_ID=4326`:
+    // senza catalogo il valore non si scrive (fino al 25/10 si scriveva).
+    let error = compile_portable(ProviderKind::Mariadb, &statement).expect_err("valore MariaDB");
+    assert_eq!(error.category, crate::ErrorCategory::Unsupported);
+    assert_eq!(error.message, crate::spatial_probe::VALUE_SRID_UNPROVEN);
 }

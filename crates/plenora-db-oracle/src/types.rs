@@ -76,7 +76,7 @@ impl OracleColumnSpec {
             value if value.starts_with("TIMESTAMP") && !value.contains("TIME ZONE") => {
                 OracleColumnKind::DateTime
             }
-            "SDO_GEOMETRY" => {
+            "SDO_GEOMETRY" if column.is_sdo_geometry() => {
                 if column.spatial_srid.is_none()
                     || !matches!(column.spatial_dimensions, Some(2 | 3))
                     || column.spatial_semantics.is_none()
@@ -224,12 +224,16 @@ impl OracleReadPlan {
             .iter()
             .map(OracleColumnSpec::from_catalog)
             .collect::<Result<Vec<_>>>()?;
+        // Le sonde del filtro sono gia confrontate con lo SRID del catalogo
+        // Spatial (`read::validate_spatial_filter`, prima di questa
+        // compilazione).
         let renderer = Renderer::new(
             Dialect::Oracle,
             DialectCapabilities {
                 spatial_intersects: true,
             },
-        );
+        )
+        .with_spatial_probes_verified();
         let mut projections = columns
             .iter()
             .map(|column| {
@@ -286,6 +290,35 @@ impl OracleReadPlan {
             .iter()
             .map(|column| column.name.as_str())
             .collect::<BTreeSet<_>>();
+        // Un campo geometrico sotto un operatore non spatial o in ORDER BY
+        // confronterebbe il formato interno del server con il valore legato
+        // (`spatial_operand`); un campo binario di una vista si giudica
+        // geometrico (regola B). La lettura giudica poi sul catalogo, che
+        // distingue anche le viste materializzate
+        // (`operand_catalog::ensure_scalar_read_fields`).
+        let view = description.kind == "VIEW";
+        plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+            ProviderKind::Oracle,
+            operation.filter.as_ref(),
+            &operation.order_by,
+            |field| {
+                description.columns.iter().any(|column| {
+                    column.name == field
+                        && (column.is_sdo_geometry()
+                            || crate::operand_catalog::column_is_geometric(
+                                plenora_database_core::spatial_operand::ColumnOrigin::of(
+                                    view,
+                                    column.virtual_column,
+                                ),
+                                &column.data_type,
+                                column.data_type_owner.as_deref(),
+                            ))
+                })
+            },
+            // La regola F la giudica la lettura sul catalogo, con i valori.
+            |_| Ok(None),
+            &plenora_database_core::spatial_operand::ParameterFamilies::default(),
+        )?;
         let bind_names = if let Some(filter) = &operation.filter {
             if !filter.all_fields(&|name| available.contains(name)) {
                 return Err(prepare_error(

@@ -150,10 +150,17 @@ pub async fn write(
                     None,
                 )?);
             }
+            // Lo SRID che la colonna riceverebbe, dichiarato o derivato da
+            // `EPSG:<n>` (GEO-008): un campo senza `srid` ma con `EPSG:4326`
+            // verso una colonna 4326 non perde niente.
+            let derived_srid = plenora_database_core::field_contract::FieldContract::parse(source)?
+                .target_srid()?
+                .map(|srid| srid.to_string());
             let source_srid = source
                 .metadata()
                 .get(protocol::GEOMETRY_SRID)
-                .or_else(|| source.metadata().get("plenora.srid"));
+                .or_else(|| source.metadata().get("plenora.srid"))
+                .or(derived_srid.as_ref());
             let target_srid = target_field
                 .metadata()
                 .get(protocol::GEOMETRY_SRID)
@@ -209,65 +216,93 @@ pub async fn write(
     Ok(report)
 }
 
+// Deviazione dichiarata (REJ-003, contracts/adoption-source.json): i rifiuti decisi
+// leggendo il bersaglio escono con fase `prepare`, non `probe`.
+/// Il CRS di ogni campo geometrico contro `spatial_ref_sys` del bersaglio,
+/// prima di ogni effetto.
+///
+/// - uno SRID **derivato** da `crs_id` `EPSG:<n>` (GEO-008) deve essere
+///   registrato come `EPSG:<n>`, qualunque sia lo stato di risoluzione: lo
+///   stesso numero puo nominare un altro CRS (`54009` e `ESRI:54009` in
+///   `PostGIS`) o nessuno;
+/// - un CRS `resolved` con `crs_id` deve coincidere con l'autorita
+///   registrata per il suo SRID;
+/// - una colonna `geography` vuole uno SRID geografico: uno proiettato e un
+///   limite del bersaglio (`unsupported`), uno sconosciuto un CRS che il
+///   bersaglio non conosce (`crs`). Senza questa lettura il rifiuto arrivava
+///   dalla DDL come `protocol`.
 async fn validate_resolved_crs_against_postgis(
     client: &PooledClient,
     input_schema: &SchemaRef,
 ) -> Result<()> {
+    let crs_error =
+        |message: &str| public_error(ErrorCategory::Crs, ErrorPhase::Prepare, false, message);
     for field in input_schema.fields() {
-        if field
-            .metadata()
-            .get(protocol::GEOMETRY_CRS_RESOLUTION)
-            .is_none_or(|value| value != "resolved")
-        {
+        let contract = plenora_database_core::field_contract::FieldContract::parse(field)?;
+        if !contract.spatial {
             continue;
         }
-        let srid = field
-            .metadata()
-            .get(protocol::GEOMETRY_SRID)
-            .and_then(|value| value.parse::<i32>().ok())
-            .ok_or_else(|| DatabaseError::invalid_plan("CRS resolved senza SRID valido"))?;
-        let declared_id = field
-            .metadata()
-            .get(protocol::GEOMETRY_CRS_ID)
-            .ok_or_else(|| DatabaseError::invalid_plan("CRS resolved senza identificatore"))?;
+        let resolved = contract.crs_resolution == Some("resolved") && contract.crs_id.is_some();
+        let geography = contract.is_geography();
+        // Lo SRID della colonna, dichiarato o derivato (GEO-008); lo schema e
+        // gia stato verificato da `write::prepare_state`.
+        let Some(target) = contract.target_srid_source()? else {
+            continue;
+        };
+        let Ok(srid) = i32::try_from(target.srid) else {
+            continue;
+        };
+        if srid == 0 || !(target.derived || resolved || geography) {
+            continue;
+        }
         let row = client
             .client()?
             .query_opt(
-                "SELECT auth_name, auth_srid
-                 FROM spatial_ref_sys
-                 WHERE srid = $1",
+                "SELECT auth_name, auth_srid, \
+                        (srtext LIKE 'GEOGCS%' OR srtext LIKE 'GEOGCRS%' \
+                         OR proj4text LIKE '%+proj=longlat%' \
+                         OR proj4text LIKE '%+proj=latlong%') \
+                 FROM spatial_ref_sys WHERE srid = $1",
                 &[&srid],
             )
             .await
             .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?
-            .ok_or_else(|| {
-                public_error(
-                    ErrorCategory::Crs,
-                    ErrorPhase::Prepare,
-                    false,
-                    "SRID resolved assente da spatial_ref_sys",
-                )
-            })?;
+            .ok_or_else(|| crs_error("SRID del campo assente da spatial_ref_sys"))?;
         let authority: Option<String> = row.get(0);
         let authority_code: Option<i32> = row.get(1);
-        let observed_id = authority
-            .filter(|value| !value.is_empty())
-            .zip(authority_code)
-            .map(|(name, code)| format!("{name}:{code}"))
-            .ok_or_else(|| {
-                public_error(
-                    ErrorCategory::Crs,
-                    ErrorPhase::Prepare,
-                    false,
-                    "spatial_ref_sys non risolve un authority ID",
-                )
-            })?;
-        if !declared_id.eq_ignore_ascii_case(&observed_id) {
+        let geographic: Option<bool> = row.get(2);
+        if target.derived
+            && !(authority
+                .as_deref()
+                .is_some_and(|name| name.eq_ignore_ascii_case("EPSG"))
+                && authority_code == Some(srid))
+        {
+            return Err(crs_error(
+                "SRID derivato da crs_id EPSG registrato in spatial_ref_sys con un'altra identita",
+            ));
+        }
+        // Una definizione senza identificatore non si confronta con il
+        // catalogo: il campo registra lo SRID che dichiara (GEO-004), e
+        // `resolved` qui vuol dire `resolved` con `crs_id`.
+        if let (true, Some(declared_id)) = (resolved, contract.crs_id) {
+            let observed_id = authority
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .zip(authority_code)
+                .map(|(name, code)| format!("{name}:{code}"))
+                .ok_or_else(|| crs_error("spatial_ref_sys non risolve un authority ID"))?;
+            if !declared_id.eq_ignore_ascii_case(&observed_id) {
+                return Err(crs_error(
+                    "identificatore CRS non coerente con spatial_ref_sys",
+                ));
+            }
+        }
+        if geography && geographic != Some(true) {
             return Err(public_error(
-                ErrorCategory::Crs,
+                ErrorCategory::Unsupported,
                 ErrorPhase::Prepare,
                 false,
-                "identificatore CRS non coerente con spatial_ref_sys",
+                "geography PostgreSQL richiede uno SRID geografico in spatial_ref_sys",
             ));
         }
     }

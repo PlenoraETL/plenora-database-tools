@@ -300,6 +300,8 @@ impl WriteResourceReservation {
 ///
 /// `ResourceLimit`, errore EWKB attribuito dal caller o rifiuto del contratto
 /// specifico restituito da `validate`.
+// Deviazione dichiarata (GEO-011, contracts/adoption-source.json): sulle uscite si
+// limitano struttura e risorse, non ogni regola di buona forma.
 pub fn inspect_spatial_arrays<'a, I, M, V>(
     arrays: I,
     component_limit: u64,

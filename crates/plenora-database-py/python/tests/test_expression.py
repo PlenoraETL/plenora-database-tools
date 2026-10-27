@@ -384,9 +384,12 @@ def test_result_cardinality_and_rows_are_immutable() -> None:
 
 def test_sync_execution_uses_compiled_sql_and_ordered_binds() -> None:
     class Native:
-        def execute_returning_rows(self, sql, values):
+        def execute_returning_rows(self, sql, values, *, relational=None):
             assert "$1" in sql
             assert values == [7]
+            # La regola S: l'IR accompagna lo SQL fino alla transazione, che
+            # lo giudica sul catalogo del provider prima di eseguire.
+            assert relational == ("query", statement.to_json())
             return [{"answer": values[0]}]
 
     statement = p.select(p.bind("answer", p.BindType.INTEGER).label("answer"))
@@ -395,12 +398,44 @@ def test_sync_execution_uses_compiled_sql_and_ordered_binds() -> None:
     ).one().as_dict() == {"answer": 7}
 
 
+def test_every_execution_passes_the_plan_to_the_transaction() -> None:
+    """Regola S: nessuna esecuzione dello SDK manda lo SQL senza il piano.
+
+    Su d11a957 `_execute_statement` chiamava `execute_returning_rows(sql,
+    values)` ed `execute(sql, values)`: la transazione non riceveva l'IR, e
+    una tabella non tipizzata o una colonna non mappata non si giudicavano.
+    """
+    calls: list[tuple[str, object]] = []
+
+    class Native:
+        def execute_returning_rows(self, sql, values, *, relational=None):
+            calls.append(("rows", relational))
+            return []
+
+        def execute(self, sql, values, *, relational=None):
+            calls.append(("count", relational))
+            return 1
+
+    items = p.table("items", "id", "g", "h", schema="public")
+    query = p.select(items.c.id).order_by(items.c.g)
+    update = p.update(items).values(id=p.bind("v", p.BindType.INTEGER)).where(
+        items.c.id == p.bind("k", p.BindType.INTEGER)
+    )
+    _execute_statement(Native(), query, None, "postgres")
+    _execute_statement(Native(), update, {"v": 1, "k": 2}, "postgres")
+    assert calls == [
+        ("rows", ("query", query.to_json())),
+        ("count", ("mutation", update.to_json())),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_async_execution_uses_the_same_compiler_and_result() -> None:
     class Native:
-        async def execute_returning_rows(self, sql, values):
+        async def execute_returning_rows(self, sql, values, *, relational=None):
             assert "@p1" in sql
             assert values == [8]
+            assert relational == ("query", statement.to_json())
             return [{"answer": values[0]}]
 
     statement = p.select(p.bind("answer", p.BindType.INTEGER).label("answer"))
@@ -442,3 +477,143 @@ def test_an_unknown_key_in_a_window_frame_bound_is_refused() -> None:
     bounds[0]["negate"] = True
     with pytest.raises(ValueError, match="IR relazionale non valido"):
         compile_relational_query(json.dumps(document), "postgres")
+
+
+def test_a_probe_under_a_scalar_comparison_is_refused_by_the_compiler() -> None:
+    """La regola P allo SDK: `g = ST_Centroid(sonda)` non si compila.
+
+    `=` non confronta gli SRID e `ST_Centroid` ha una sola geometria: fino
+    al 25/10 nessuno giudicava la sonda, e su una colonna 4326 una sonda 3857
+    rendeva zero righe senza errore. Ora il compilatore la rifiuta su ogni
+    dialetto, come `SpatialValue` e come bind nudo; la stessa sonda dentro
+    `ST_Intersects` resta ammessa su PostgreSQL, con la guardia sul typmod.
+    """
+    from plenora_database.expression import (
+        _spatial_function,
+        _spatial_predicate,
+        _spatial_value,
+    )
+
+    features = p.table("features", "id", "g", schema="public")
+
+    def declared() -> p.Expression:
+        return _spatial_value(p.bind("sonda", p.BindType.BINARY), 3857, "geometry")
+
+    for probe in (declared(), p.bind("sonda", p.BindType.BINARY)):
+        statement = p.select(features.c.id).where(
+            features.c.g == _spatial_function("centroid", probe)
+        )
+        for provider in ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"):
+            with pytest.raises(p.PlenoraUnsupportedError):
+                compile_relational_query(statement.to_json(), provider)
+    judged = p.select(features.c.id).where(
+        _spatial_predicate(
+            "intersects", features.c.g, _spatial_function("centroid", declared())
+        )
+    )
+    sql, _ = compile_relational_query(judged.to_json(), "postgres")
+    assert "postgis_typmod_srid" in sql
+
+
+def test_a_probe_outside_a_spatial_predicate_of_its_block_is_refused() -> None:
+    """La regola P strutturale allo SDK: le forme P1 e P2 non si compilano.
+
+    Una sonda nella projection di una subquery `IN` o di una sorgente
+    derivata nominata per alias non la confronta nessun nodo spatial: su
+    d30d1d2 si compilavano su ogni dialetto, e su una colonna 4326 una sonda
+    3857 rendeva zero righe senza errore. Anche la projection e l'`ORDER BY`
+    della query esterna si rifiutano; la stessa sonda in un predicato spatial
+    del blocco resta ammessa.
+    """
+    from plenora_database.expression import _spatial_function, _spatial_predicate, _spatial_value
+
+    features = p.table("features", "id", "g", schema="public").alias("t")
+
+    def declared() -> p.Expression:
+        return _spatial_value(p.bind("sonda", p.BindType.BINARY), 3857, "geometry")
+
+    projected = p.select(declared().label("s"))
+    derived = projected.subquery("d")
+    statements = {
+        "g IN (SELECT sonda)": p.select(features.c.id).where(
+            features.c.g.in_subquery(projected)
+        ),
+        "JOIN (SELECT sonda AS s) d ON t.g = d.s": p.select(features.c.id)
+        .select_from(features)
+        .join(derived, features.c.g == derived.c.s),
+        "JOIN (SELECT sonda AS s) d ON ST_Intersects(t.g, d.s)": p.select(features.c.id)
+        .select_from(features)
+        .join(derived, _spatial_predicate("intersects", features.c.g, derived.c.s)),
+        "SELECT ST_Distance(t.g, sonda)": p.select(
+            features.c.id,
+            _spatial_function("distance", features.c.g, declared()).label("m"),
+        ).select_from(features),
+    }
+    for name, statement in statements.items():
+        for provider in ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"):
+            with pytest.raises(p.PlenoraUnsupportedError):
+                compile_relational_query(statement.to_json(), provider)
+                pytest.fail(f"{name} {provider}: compilato")
+    judged = (
+        p.select(features.c.id)
+        .select_from(features)
+        .where(_spatial_predicate("intersects", features.c.g, declared()))
+    )
+    sql, _ = compile_relational_query(judged.to_json(), "postgres")
+    assert "postgis_typmod_srid" in sql
+
+
+def test_a_probe_hidden_by_a_wrapper_is_refused_by_the_compiler() -> None:
+    """Il mondo chiuso allo SDK: una sonda dietro CAST, COALESCE o CASE.
+
+    La settima rilettura, dall'API pubblica: un bind nascosto da un
+    involucro non spatial in posizione geometrica non era riconosciuto come
+    sonda, e su 9fb015b `Geometry(srid=4326).predicate("intersects", t.c.g,
+    p.bind("p", BindType.BINARY).cast(BindType.BINARY))` si compilava su
+    ogni dialetto; su PostGIS una sonda 3857 lontana rendeva zero righe
+    senza errore. Ora ogni argomento geometrico e una colonna, una funzione
+    spatial o una sonda diretta, e il resto si rifiuta compilando.
+    """
+    features = p.table("features", "id", "g", schema="public")
+    hidden = {
+        "CAST(:p AS BINARY)": p.bind("p", p.BindType.BINARY).cast(p.BindType.BINARY),
+        "CAST(:p AS STRING)": p.bind("p", p.BindType.STRING).cast(p.BindType.STRING),
+        "COALESCE(:p)": p.func.coalesce(p.bind("p", p.BindType.BINARY)),
+        "CASE WHEN id = :i THEN :p END": p.case(
+            (features.c.id == p.bind("i", p.BindType.INTEGER), p.bind("p", p.BindType.BINARY))
+        ),
+    }
+    for name, reference in hidden.items():
+        for function in ("intersects", "within"):
+            statement = p.select(features.c.id).where(
+                p.Geometry(srid=4326).predicate(function, features.c.g, reference)
+            )
+            for provider in ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"):
+                with pytest.raises(p.PlenoraUnsupportedError, match="argomento geometrico"):
+                    compile_relational_query(statement.to_json(), provider)
+                    pytest.fail(f"{name} {function} {provider}: compilato")
+        within = p.select(features.c.id).where(
+            p.Geometry(srid=4326).predicate(
+                "d_within", features.c.g, reference, p.bind("d", p.BindType.FLOAT)
+            )
+        )
+        with pytest.raises(p.PlenoraUnsupportedError, match="argomento geometrico"):
+            compile_relational_query(within.to_json(), "postgres")
+
+
+def test_spatial_mapping_does_not_substitute_for_a_server_srid_proof() -> None:
+    """La dichiarazione ORM non apre scritture o predicati non qualificati."""
+    geometry = p.Geometry(srid=4326, geometry_type="point", semantics="geography")
+    features = p.table("FEATURES", "ID", "SHAPE")
+    value = geometry.bind("shape")
+    for statement in (
+        p.insert(features).values(SHAPE=value),
+        p.update(features).values(SHAPE=value),
+    ):
+        with pytest.raises(p.PlenoraUnsupportedError, match="senza verifica dello SRID"):
+            compile_relational_mutation(statement.to_json(), "oracle")
+    for function in ("intersects", "d_within"):
+        arguments = (p.bind("distance", p.BindType.FLOAT),) if function == "d_within" else ()
+        predicate = geometry.predicate(function, features.c.SHAPE, value, *arguments)
+        with pytest.raises(p.PlenoraUnsupportedError, match="non verifica lo SRID"):
+            compile_relational_query(p.select(features.c.ID).where(predicate).to_json(), "oracle")

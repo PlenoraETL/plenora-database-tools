@@ -72,6 +72,13 @@ fn spatial_schema(
                 protocol::GEOMETRY_CRS_RESOLUTION.to_owned(),
                 "declared_unresolved".to_owned(),
             ),
+            // ARROW-VOCABULARY §4: un CRS dichiarato ha identita e ordine
+            // degli assi.
+            (protocol::GEOMETRY_CRS_ID.to_owned(), "DB2:4326".to_owned()),
+            (
+                protocol::GEOMETRY_AXIS_ORDER.to_owned(),
+                "unknown".to_owned(),
+            ),
             (
                 protocol::GEOMETRY_SPATIAL_SEMANTICS.to_owned(),
                 "geometry".to_owned(),
@@ -203,5 +210,64 @@ fn spatial_batch_is_checked_before_any_database_mutation() {
             .expect_err("dimensioni diverse")
             .category,
         ErrorCategory::DataMapping
+    );
+}
+
+/// `spatial_schema("xy", "point")` con i metadati di `SHAPE` cambiati.
+fn spatial_schema_with(
+    changes: &[(&str, Option<&str>)],
+) -> plenora_database_core::arrow::schema::SchemaRef {
+    let base = spatial_schema("xy", "point");
+    let fields = base
+        .fields()
+        .iter()
+        .map(|field| {
+            if field.name() != "SHAPE" {
+                return field.as_ref().clone();
+            }
+            let mut metadata = field.metadata().clone();
+            for &(key, value) in changes {
+                match value {
+                    Some(value) => metadata.insert(key.to_owned(), value.to_owned()),
+                    None => metadata.remove(key),
+                };
+            }
+            field.as_ref().clone().with_metadata(metadata)
+        })
+        .collect::<Vec<_>>();
+    Arc::new(
+        plenora_database_core::arrow::schema::Schema::new_with_metadata(
+            fields,
+            base.metadata().clone(),
+        ),
+    )
+}
+
+/// GEO-001 e GEO-008 su Db2, in compilazione e quindi prima di ogni effetto:
+/// un campo `lat_lon` e `unsupported` (Db2 memorizza la longitudine in `x`);
+/// uno SRID derivato da `EPSG:<n>` e `crs`, perche gli id SRS di Db2 sono
+/// locali all'installazione e la derivazione non si verifica. Fino al 24/10
+/// entrambi passavano.
+#[test]
+fn spatial_plan_refuses_north_first_axes_and_derived_srids() {
+    let mut write = operation(WriteMode::Append);
+    write.srid_policy = Some(SridPolicy::RequireMatch);
+    let lat_lon = spatial_schema_with(&[(protocol::GEOMETRY_AXIS_ORDER, Some("lat_lon"))]);
+    assert_eq!(
+        Db2WritePlan::compile(&config(), &lat_lon, &write)
+            .expect_err("lat_lon")
+            .category,
+        ErrorCategory::Unsupported
+    );
+    let derived = spatial_schema_with(&[
+        (protocol::GEOMETRY_SRID, None),
+        (protocol::GEOMETRY_CRS_ID, Some("EPSG:4326")),
+        (protocol::GEOMETRY_AXIS_ORDER, Some("lon_lat")),
+    ]);
+    let error = Db2WritePlan::compile(&config(), &derived, &write).expect_err("SRID derivato");
+    assert_eq!(error.category, ErrorCategory::Crs);
+    assert_eq!(
+        error.provider,
+        Some(plenora_database_core::plan::ProviderKind::Db2)
     );
 }

@@ -1,6 +1,6 @@
 use crate::catalog;
 use crate::connection::with_connection;
-use crate::error::{driver_error, interruption_error};
+use crate::error::{driver_error, interruption_error, task_error};
 use crate::{Db2ColumnKind, Db2Config, Db2ObjectDescription, Db2ReadPlan};
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use odbc_api::buffers::TextRowSet;
@@ -53,6 +53,15 @@ pub async fn read_operation(
     let description: Db2ObjectDescription = serde_json::from_value(inspection.document)
         .map_err(|_| read_error(ErrorCategory::Protocol, "catalogo Db2 non deserializzabile"))?;
     let plan = Db2ReadPlan::compile(&description, operation, budget.limits().cell_bytes)?;
+    verify_scalar_fields(
+        config,
+        secret,
+        &description,
+        operation,
+        parameters,
+        cancellation,
+    )
+    .await?;
     let bound = bind_parameters(&plan.bind_names, parameters)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let column_count = u64::try_from(plan.columns.len())
@@ -94,6 +103,62 @@ pub async fn read_operation(
         _columns_lease: columns_lease,
         finished: false,
     }))
+}
+
+/// I campi del filtro e dell'ordinamento giudicati sul catalogo
+/// (`crate::operand_catalog`), con lo stesso giudizio del tipo della
+/// transazione: la compilazione li ha gia giudicati sul nome del tipo della
+/// descrizione, che non dice lo schema del tipo ne la sua fonte. Una
+/// relazione che il catalogo non conosce piu rifiuta ogni campo.
+async fn verify_scalar_fields(
+    config: &Db2Config,
+    secret: &SecretString,
+    description: &Db2ObjectDescription,
+    operation: &ReadOperation,
+    parameters: &ParameterBag,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    if operation.filter.is_none() && operation.order_by.is_empty() {
+        return Ok(());
+    }
+    let config = config.clone();
+    let secret = secret.clone();
+    let (schema, object) = (description.schema.clone(), description.name.clone());
+    let mut task = tokio::task::spawn_blocking(move || {
+        with_connection(&config, &secret, |connection, timeout| {
+            crate::operand_catalog::read_columns(
+                &mut crate::operand_catalog::OdbcCatalog::new(connection, timeout),
+                &schema,
+                &object,
+            )
+        })
+    });
+    let columns = tokio::select! {
+        outcome = &mut task => outcome.map_err(|_| task_error(ErrorPhase::Prepare))??,
+        _ = cancellation.cancelled() => {
+            return Err(interruption_error(cancellation, ErrorPhase::Prepare));
+        }
+    };
+    plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+        plenora_database_core::plan::ProviderKind::Db2,
+        operation.filter.as_ref(),
+        &operation.order_by,
+        |field| {
+            columns.as_ref().is_none_or(|columns| {
+                columns
+                    .iter()
+                    .any(|column| column.is_geometric() && column.name == field)
+            })
+        },
+        |field| {
+            Ok(columns
+                .iter()
+                .flatten()
+                .find(|column| column.name == field)
+                .map(plenora_database_core::spatial_operand::CatalogColumn::field_family))
+        },
+        &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
+    )
 }
 
 pub fn bind_parameters(names: &[String], parameters: &ParameterBag) -> Result<Vec<String>> {

@@ -30,6 +30,8 @@ PYTHON_COMMAND = re.compile(
     r"\bpython(?:3)?\s+((?:scripts[\\/])[A-Za-z0-9_.\\/-]+\.py)"
 )
 PYTHON_FENCE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL)
+# Ogni carattere di controllo C0 tranne tab, a capo e ritorno carrello, e DEL.
+CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def method_call_blocks(text: str, method: str) -> list[str]:
@@ -366,6 +368,11 @@ def scan(root: Path = ROOT) -> tuple[int, list[Violation]]:
             continue
         if text.count("```") % 2:
             violations.append(Violation(path, "code fence non bilanciato"))
+        # Un `\v` o un `\a` scritti attraverso una stringa che li interpreta
+        # diventano byte di controllo: `scripts\vettori` era diventato
+        # `scripts<VT>ettori`. Nessuna guida ne contiene uno di proposito.
+        if CONTROL.search(text):
+            violations.append(Violation(path, "carattere di controllo nel testo"))
     violations += validate_links(root, documents)
     violations += validate_commands(root, documents)
     violations += validate_python_examples(documents)

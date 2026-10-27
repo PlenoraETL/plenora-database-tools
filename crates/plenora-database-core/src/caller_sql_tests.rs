@@ -443,3 +443,40 @@ fn unpolled_driver_future_is_not_a_send() {
         "default conservativo",
     );
 }
+
+/// Il default di `TransactionScope::operand_catalog` non legge niente: ogni
+/// relazione e sconosciuta, e a mondo chiuso un riferimento in posizione di
+/// operando si rifiuta; il wrapper lo inoltra senza aprire il marcatore.
+#[test]
+fn the_default_operand_catalog_knows_no_relation() {
+    let relations = [(Some("s".to_owned()), "t".to_owned())];
+    let cancellation = CancellationToken::new();
+    let operation: crate::relational::QueryOperation = serde_json::from_value(serde_json::json!({
+        "source": {"object": {"catalog": null, "schema": "s", "object": "t"}, "alias": null},
+        "projection": [{"expression": {"kind": "column", "column": {"relation": "t", "field": "id"}}, "alias": null}],
+        "filter": {"kind": "compare",
+            "left": {"kind": "column", "column": {"relation": "t", "field": "id"}},
+            "operator": "eq",
+            "right": {"kind": "parameter", "name": "p"}},
+        "having": null,
+        "row_limit": null
+    }))
+    .expect("query");
+    let operands = crate::spatial_operand::scalar_operands(ProviderKind::Postgres, &operation)
+        .expect("operandi");
+    let mut scope = FakeScope(Scenario::Validation, SendMarker::default());
+    let catalog =
+        block_on(scope.operand_catalog(&relations, &[], &cancellation)).expect("catalogo");
+    let error = operands.judge(&catalog).expect_err("sconosciuta");
+    assert_eq!(
+        error.message,
+        crate::spatial_operand::GEOMETRY_OPERAND_UNRESOLVED
+    );
+    let mut wrapped = CallerSqlTransaction::new(Box::new(FakeScope(
+        Scenario::Validation,
+        SendMarker::default(),
+    )));
+    let catalog =
+        block_on(wrapped.operand_catalog(&relations, &[], &cancellation)).expect("catalogo");
+    assert!(operands.judge(&catalog).is_err());
+}

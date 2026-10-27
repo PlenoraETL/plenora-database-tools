@@ -7,6 +7,7 @@ fn column(data_type: &str) -> OracleColumn {
         name: "TS".to_owned(),
         ordinal: 1,
         data_type: data_type.to_owned(),
+        data_type_owner: (data_type == "SDO_GEOMETRY").then(|| "MDSYS".to_owned()),
         data_length: 11,
         char_length: 0,
         precision: None,
@@ -66,4 +67,33 @@ fn geometry_spec_without_srid_is_an_error_not_a_panic() {
     };
     let error = spec.arrow_field().expect_err("geometry senza SRID");
     assert_eq!(error.category, plenora_database_core::ErrorCategory::Crs);
+}
+
+/// Un tipo `SDO_GEOMETRY` di un altro schema non e `MDSYS.SDO_GEOMETRY`:
+/// potrebbe avere un metodo `MAP` o `ORDER`, e la guardia del server sugli
+/// operandi scalari e misurata soltanto su quello di `MDSYS`. Non e una
+/// geometria del provider, e il tipo non e qualificato.
+#[test]
+fn sdo_geometry_of_another_owner_is_not_a_geometry() {
+    let mut omonimo = column("SDO_GEOMETRY");
+    omonimo.data_type_owner = Some("PLENORA".to_owned());
+    omonimo.spatial_srid = Some(4326);
+    omonimo.spatial_dimensions = Some(2);
+    omonimo.spatial_semantics = Some(SpatialSemantics::Geometry);
+    assert!(!omonimo.is_sdo_geometry());
+    let error = OracleColumnSpec::from_catalog(&omonimo).expect_err("tipo omonimo");
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::Unsupported
+    );
+    omonimo.data_type_owner = None;
+    assert!(!omonimo.is_sdo_geometry());
+    omonimo.data_type_owner = Some("MDSYS".to_owned());
+    assert!(omonimo.is_sdo_geometry());
+    assert_eq!(
+        OracleColumnSpec::from_catalog(&omonimo)
+            .expect("MDSYS.SDO_GEOMETRY")
+            .kind,
+        OracleColumnKind::Geometry
+    );
 }

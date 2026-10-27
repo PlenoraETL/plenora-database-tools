@@ -260,7 +260,10 @@ pub(crate) fn render_query_plan(
     let visible_columns = operation.projection.len();
     if geometries.is_empty() {
         return Ok(MysqlRenderedQuery {
-            rendered: mysql_renderer().render_query(operation)?,
+            rendered: mysql_renderer()
+                .with_wkb_axis_option(profile.wkb_axis_option())
+                .with_provider(profile.kind())
+                .render_query(operation)?,
             geometries: Vec::new(),
             crs_checks: Vec::new(),
             visible_columns,
@@ -268,7 +271,10 @@ pub(crate) fn render_query_plan(
     }
     let (checked, crs_checks) = append_crs_checks(operation, &geometries, profile)?;
     Ok(MysqlRenderedQuery {
-        rendered: mysql_renderer().render_query(&checked)?,
+        rendered: mysql_renderer()
+            .with_wkb_axis_option(profile.wkb_axis_option())
+            .with_provider(profile.kind())
+            .render_query(&checked)?,
         geometries: geometries
             .into_iter()
             .map(|geometry| MysqlQueryGeometry {

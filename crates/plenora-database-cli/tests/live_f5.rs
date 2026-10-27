@@ -476,6 +476,62 @@ fn f5_13_bulk_write_dry_run_does_not_touch_db() {
     ]);
     assert_eq!(out["status"], "dry_run");
     assert!(out["input_schema"]["fields"].is_array());
+    // Con la DSN il dry run legge il catalogo e giudica ogni riga.
+    assert_eq!(out["checks"]["catalog"], "performed");
+    assert_eq!(out["checks"]["values"], "performed");
+    // Un target nuovo non ha row-level security; i vincoli sui valori restano
+    // della scrittura.
+    assert_eq!(out["checks"]["row_security"], "not_applicable");
+    assert_eq!(out["checks"]["server"], "not_performed");
+    assert_eq!(out["input"]["rows"], 1);
+    assert!(out["loss_report"].is_object());
+
+    // Offline soltanto se chiesto, e lo dice lo stato. Una variabile DSN
+    // nominata ma assente e un errore di configurazione: fino al 25/10
+    // diventava un dry run offline con exit 0.
+    let offline = run_json(&[
+        "bulk-write",
+        "PLENORA_F5_13_UNSET_DSN",
+        op_path.to_str().unwrap(),
+        input_path.to_str().unwrap(),
+        "--dry-run",
+        "--offline",
+    ]);
+    assert_eq!(offline["status"], "dry_run_offline");
+    assert_eq!(offline["checks"]["catalog"], "not_performed");
+    assert_eq!(offline["checks"]["row_security"], "not_performed");
+    let output = cli(&[
+        "bulk-write",
+        "PLENORA_F5_13_UNSET_DSN",
+        op_path.to_str().unwrap(),
+        input_path.to_str().unwrap(),
+        "--dry-run",
+    ])
+    .output()
+    .expect("spawn CLI");
+    assert_eq!(output.status.code(), Some(2));
+    let refused: Value = serde_json::from_slice(&output.stdout).expect("busta JSON");
+    assert_eq!(refused["error"]["category"], "invalid_configuration");
+
+    // Uno schema che non esiste: la scrittura fallisce `not_found` in fase
+    // `write` al CREATE TABLE, il dry run lo dice leggendo il catalogo.
+    let mut missing_schema = write_op;
+    missing_schema["target"]["schema"] = Value::from("plenora_f5_13_schema_assente");
+    std::fs::write(
+        &op_path,
+        serde_json::to_vec_pretty(&missing_schema).unwrap(),
+    )
+    .unwrap();
+    let refused = run_json_err(&[
+        "bulk-write",
+        "PG_DSN",
+        op_path.to_str().unwrap(),
+        input_path.to_str().unwrap(),
+        "--dry-run",
+    ]);
+    assert_eq!(refused["error"]["category"], "not_found");
+    assert_eq!(refused["error"]["phase"], "write");
+    assert_eq!(refused["error"]["remote_effect"], "none");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -734,7 +790,12 @@ async fn live_registered_projection_schema_matches_rust_and_cli() {
             .await
             .expect("registered projection");
         let schema = stream.schema();
-        assert_eq!(schema.field(0).metadata()[FIELD_ID], registered);
+        // L'id registrato con zeri iniziali (la forma che le versioni
+        // precedenti scrivevano) si pubblica canonico: deviazione GEO-016.
+        assert_eq!(
+            schema.field(0).metadata()[FIELD_ID],
+            name_field_id("b").to_string()
+        );
         assert_eq!(
             schema.field(1).metadata()[FIELD_ID],
             (u64::from(name_field_id("b")) + 1).to_string()

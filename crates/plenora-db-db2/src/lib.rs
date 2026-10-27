@@ -7,9 +7,11 @@ mod catalog;
 mod config;
 mod connection;
 mod error;
+mod operand_catalog;
 mod provider;
 mod read;
 mod row_diagnostics;
+mod row_visibility;
 mod transaction;
 mod types;
 mod write;
@@ -30,6 +32,10 @@ mod catalog_tests;
 #[cfg(test)]
 #[path = "error_tests.rs"]
 mod error_tests;
+
+#[cfg(test)]
+#[path = "operand_catalog_tests.rs"]
+mod operand_catalog_tests;
 
 #[cfg(test)]
 #[path = "provider_tests.rs"]
@@ -58,3 +64,7 @@ mod live_tests;
 #[cfg(test)]
 #[path = "spatial_live_tests.rs"]
 mod spatial_live_tests;
+
+#[cfg(test)]
+#[path = "operand_live_tests.rs"]
+mod operand_live_tests;

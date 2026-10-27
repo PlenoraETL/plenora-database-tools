@@ -485,8 +485,50 @@ fn enforce_batch_limits(
         |error, row, column| {
             attribute_conversion_defect(diagnostics, columns, error, Some(row), Some(column))
         },
-        |_, _, _| Ok(()),
+        |inspection, _, column| published_srid_conforms(columns, inspection, column),
     )
+}
+
+/// GEO-009, regola del produttore: un valore EWKB con SRID esce solo da un
+/// campo che dichiara quello stesso SRID.
+///
+/// Una colonna senza typmod (o un'espressione di query) non ha SRID nel
+/// catalogo, e il campo si pubblica `crs_resolution=missing`; i suoi valori
+/// possono pero portarne uno ciascuno, anche diversi fra righe. Pubblicarli
+/// cosi dava uno schema non conforme, che la scrittura rifiuta come `crs`;
+/// toglierne lo SRID lo perderebbe in silenzio. Si rifiuta qui, con `crs` in
+/// fase `read`: chi legge dichiara lo SRID con un typmod o con un cast nella
+/// query (`col::geometry(Geometry,4326)`). Un valore con SRID 0 non ne porta
+/// (`ST_AsEWKB` lo omette) e passa.
+///
+/// Con uno SRID dichiarato ogni valore deve portare quello: un typmod lo
+/// garantisce gia, e una geometria calcolata che lo eredita
+/// (`query_plan::inherited_geometries`) lo deve dimostrare. Un valore senza
+/// SRID li avrebbe lo SRID del campo per GEO-009, cioe un CRS che nessuno ha
+/// verificato.
+fn published_srid_conforms(
+    columns: &[ColumnSpec],
+    inspection: &plenora_database_core::ewkb::EwkbInspection,
+    column: usize,
+) -> Result<()> {
+    let declared = columns.get(column).and_then(|spec| spec.spatial_srid);
+    match (declared, inspection.root.srid) {
+        (None, None | Some(0)) => Ok(()),
+        (Some(declared), Some(value)) if declared == value => Ok(()),
+        (None, Some(_)) => Err(public_error(
+            ErrorCategory::Crs,
+            ErrorPhase::Read,
+            false,
+            "colonna geometrica PostgreSQL senza SRID nel catalogo con valori dotati di SRID: \
+             dichiararlo con un typmod o con un cast nella query",
+        )),
+        (Some(_), _) => Err(public_error(
+            ErrorCategory::Crs,
+            ErrorPhase::Read,
+            false,
+            "valore geometrico PostgreSQL senza lo SRID dichiarato per la colonna",
+        )),
+    }
 }
 
 pub fn batch_memory_bytes(batch: &RecordBatch) -> u64 {

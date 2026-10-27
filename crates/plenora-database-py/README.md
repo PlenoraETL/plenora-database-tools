@@ -169,7 +169,12 @@ statement = p.select(
 
 `BindType` non accetta dichiarazioni SQL arbitrarie: il renderer traduce
 `BOOLEAN`, `INTEGER`, `BIG_INTEGER`, `FLOAT`, `STRING`, `BINARY`, `DATE`,
-`TIMESTAMP`, `TIMESTAMP_TZ`, `DECIMAL`, `UUID` e `JSON` per il dialect. Db2
+`TIMESTAMP`, `TIMESTAMP_TZ`, `DECIMAL`, `UUID` e `JSON` per il dialect, con la
+stessa forma nelle query e nei `WHERE` delle mutazioni. Il valore legato deve
+essere del tipo dichiarato: un `int` per `STRING`, un `float` per `INTEGER`, un
+`str` per `DATE` si rifiutano prima dell'esecuzione (`invalid_plan`), anche nei
+valori scritti; un `int` resta ammesso per `DECIMAL` e, entro 32 bit, per
+`FLOAT`. Db2
 rende la forma tipizzata con un `CAST` e `SYSIBM.SYSDUMMY1`.
 Oracle usa bind `:N`; il driver thin qualificato non conserva il tipo
 `TIMESTAMP WITH TIME ZONE` in scrittura, quindi quel bind resta fail-closed.
@@ -443,7 +448,11 @@ GeometryCollection, in XY o XYZ. X/Y/M e X/Y/Z/M restano chiusi perché GeoJSON
 non permette di distinguere in modo affidabile l'asse M. `encoding="wkb"` e
 `encoding="ewkb"` sono scelte esplicite: non tutti i provider qualificano la
 stessa forma spatial in scrittura. I batch portano `geoarrow.wkb`, SRID,
-dimensioni, semantica e dichiarazione del tipo nei metadata canonici.
+dimensioni, semantica e dichiarazione del tipo nei metadata canonici, e un
+`plenora.field_id` per campo, assegnato in ordine da 0 (Arrow Geometry
+Semantics 1.0, GEO-013). Il CRS si dichiara `missing` con lo SRID numerico:
+`JsonGeometry` conosce lo SRID, non l'identità del CRS né l'ordine degli assi
+che `declared_unresolved` richiederebbe.
 
 `JsonInputError` espone un codice stabile, l'indice del record e, quando il
 campo proviene dallo schema, il suo nome. Il messaggio non include mai il
@@ -866,6 +875,12 @@ leggono dagli asset della release e dal
 e li verifica; un artefatto assente non è supporto implicito.
 
 ## Limitazioni
+
+- **Prova dello SRID nelle espressioni ORM** - il mapping e un indice non
+  sostituiscono una guardia qualificata. I rifiuti prima dell'esecuzione e le
+  condizioni di rientro sono dichiarati in
+  [`spatial_probe::admit_probe`](../plenora-database-core/src/spatial_probe.rs)
+  e nel [registro dei limiti](../../contracts/adoption-source.json).
 
 - **Oracle** - provider thin, Arrow e ORM Spatial sono qualificati sul
   riferimento AMD64 fissato dal gate. I nomi di tabella, schema e colonna

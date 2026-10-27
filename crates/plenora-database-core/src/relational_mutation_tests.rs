@@ -110,20 +110,31 @@ fn qualified_spatial_values_keep_payloads_in_named_binds() {
     assert!(
         postgres
             .sql
-            .contains("ST_SetSRID(ST_GeomFromEWKB($1), 4326)"),
+            .contains(&crate::spatial_probe::postgres_spatial_value("$1", 4_326)),
         "{}",
         postgres.sql
     );
-    for provider in [ProviderKind::Mysql, ProviderKind::Mariadb] {
-        let lowered =
-            compile_relational_mutation(provider, &operation).expect("bind spatial MySQL/MariaDB");
-        assert_eq!(lowered.bind_names, ["shape"]);
-        assert!(
-            lowered
-                .sql
-                .contains("ST_GeomFromWKB(CAST(? AS BINARY), 4326)"),
-            "{}",
-            lowered.sql
+    // GEO-001: `MySQL` legge il WKB con la longitudine per prima anche su un
+    // SRS geografico.
+    let mysql =
+        compile_relational_mutation(ProviderKind::Mysql, &operation).expect("bind spatial MySQL");
+    assert_eq!(mysql.bind_names, ["shape"]);
+    assert!(
+        mysql
+            .sql
+            .contains("ST_GeomFromWKB(CAST(? AS BINARY), 4326, 'axis-order=long-lat')"),
+        "{}",
+        mysql.sql
+    );
+    // `MariaDB` non vincola lo SRID della colonna, Db2 non e misurato: senza
+    // catalogo il valore non si scrive (fino al 25/10 si scriveva).
+    for provider in [ProviderKind::Mariadb, ProviderKind::Db2] {
+        let error = compile_relational_mutation(provider, &operation)
+            .expect_err("SRID di colonna non provato");
+        assert_eq!(
+            error.category,
+            crate::ErrorCategory::Unsupported,
+            "{provider:?}"
         );
     }
     let sqlserver = compile_relational_mutation(ProviderKind::Sqlserver, &operation)
@@ -133,13 +144,6 @@ fn qualified_spatial_values_keep_payloads_in_named_binds() {
         sqlserver.sql.contains("geometry::STGeomFromWKB(@P1, 4326)"),
         "{}",
         sqlserver.sql
-    );
-    let db2 = compile_relational_mutation(ProviderKind::Db2, &operation).expect("bind spatial Db2");
-    assert_eq!(db2.bind_names, ["shape"]);
-    assert!(
-        db2.sql.contains("ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)"),
-        "{}",
-        db2.sql
     );
 
     let geography = MutationOperation::Insert(InsertOperation {
@@ -284,5 +288,57 @@ fn a_mutation_with_a_null_filter_touches_every_row() {
                 lowered.sql
             );
         }
+    }
+}
+
+/// Regola T (quattordicesima lettura del 25/10): un parametro tipizzato nel
+/// predicato si rende come lo rende il renderer delle query
+/// (`CastDialect::render`), in ogni dialetto; un valore scritto resta il solo
+/// segnaposto. Prima il predicato rendeva il segnaposto nudo, e su `MySQL`
+/// `name = ?` con un intero confrontava `'1'`, `'01'`, `'1.0'`.
+#[test]
+fn typed_parameters_in_predicates_render_the_query_form() {
+    use crate::relational::QueryParameterType;
+    use crate::typed_parameter::CastDialect;
+    let typed = |name: &str, parameter_type| QueryExpression::TypedParameter {
+        name: name.to_owned(),
+        parameter_type,
+    };
+    let operation = MutationOperation::Update(UpdateOperation {
+        target: target(),
+        assignments: vec![MutationAssignment {
+            column: "name".to_owned(),
+            value: typed("new", QueryParameterType::String),
+        }],
+        filter: Some(QueryExpression::Compare {
+            left: Box::new(column("name")),
+            operator: ComparisonOperator::Eq,
+            right: Box::new(typed("old", QueryParameterType::String)),
+        }),
+        returning: Vec::new(),
+    });
+    for (provider, placeholders) in [
+        (ProviderKind::Postgres, ["$1", "$2"]),
+        (ProviderKind::Mysql, ["?", "?"]),
+        (ProviderKind::Mariadb, ["?", "?"]),
+        (ProviderKind::Sqlserver, ["@P1", "@P2"]),
+        (ProviderKind::Oracle, [":1", ":2"]),
+        (ProviderKind::Db2, ["?", "?"]),
+    ] {
+        let lowered = compile_relational_mutation(provider, &operation).expect("update");
+        assert_eq!(lowered.bind_names, ["new", "old"], "{provider:?}");
+        let cast = CastDialect::of(provider).render(placeholders[1], QueryParameterType::String);
+        assert!(
+            lowered.sql.ends_with(&format!(" = {cast}")),
+            "{provider:?}: {}",
+            lowered.sql
+        );
+        assert!(
+            lowered
+                .sql
+                .contains(&format!(" = {} WHERE", placeholders[0])),
+            "{provider:?}: {}",
+            lowered.sql
+        );
     }
 }

@@ -7,14 +7,16 @@ use crate::ipc_input::IpcFileBatchStream;
 use crate::pfm::{pfm_budget, postgres_provider_for_pfm};
 use crate::{ensure_end, print_json, secret_from_env, CliError, CliResult};
 use plenora_database_core::loss::MappingPolicy;
+use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteMode, WriteOperation};
+use plenora_database_core::provider::SecretString;
 use plenora_database_core::provider::{BatchStream, Provider};
-use plenora_database_core::CancellationToken;
+use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase};
 use serde_json::json;
 use std::fs;
 
 // ============================================================================
-//  bulk-write DSN_ENV WRITE_OP.json INPUT.arrow [--dry-run]
+//  bulk-write DSN_ENV WRITE_OP.json INPUT.arrow [--dry-run [--offline]]
 // ============================================================================
 
 pub(crate) async fn bulk_write(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -41,7 +43,7 @@ pub(crate) async fn bulk_write(args: &mut impl Iterator<Item = String>) -> CliRe
 }
 
 // ============================================================================
-//  postgres-write-ipc DSN_ENV SCHEMA OBJECT INPUT.arrow --mode=create|append|... [--dry-run]
+//  postgres-write-ipc DSN_ENV SCHEMA OBJECT INPUT.arrow --mode=create|append|... [--dry-run [--offline]]
 // ============================================================================
 
 pub(crate) async fn postgres_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -50,11 +52,13 @@ pub(crate) async fn postgres_write_ipc(args: &mut impl Iterator<Item = String>) 
     let object = args.next().ok_or("manca l'oggetto")?;
     let input_path = args.next().ok_or("manca il percorso INPUT.arrow")?;
 
-    // Flag opzionali: --mode=..., --keys=..., --update-columns=..., --dry-run
+    // Flag opzionali: --mode=..., --keys=..., --update-columns=..., --dry-run,
+    // --offline
     let mut mode = WriteMode::Append;
     let mut keys: Vec<String> = Vec::new();
     let mut update_columns: Vec<String> = Vec::new();
     let mut dry_run = false;
+    let mut offline = false;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--mode" => {
@@ -70,6 +74,7 @@ pub(crate) async fn postgres_write_ipc(args: &mut impl Iterator<Item = String>) 
                 update_columns = value.split(',').map(|s| s.trim().to_owned()).collect();
             }
             "--dry-run" => dry_run = true,
+            "--offline" => offline = true,
             other => {
                 // Il nome dell'opzione non riconosciuta puo essere un
                 // qualunque argomento fuori posto: SQL, una DSN, un token.
@@ -94,8 +99,52 @@ pub(crate) async fn postgres_write_ipc(args: &mut impl Iterator<Item = String>) 
         create_spatial_index: false,
         allow_partial: false,
     };
+    let dry_run = DryRun::from_flags(dry_run, offline)?;
     let stream = IpcFileBatchStream::open(&input_path)?;
     execute_bulk_write(&dsn_env, operation, Box::new(stream), dry_run).await
+}
+
+/// Il dry run chiesto: nessuno, con il catalogo del target, o offline.
+///
+/// Offline e soltanto la scelta esplicita di `--offline`. Fino al 25/10 una
+/// variabile DSN nominata ma assente faceva cadere il dry run in offline
+/// senza errore, e chi lo usava per decidere se scrivere leggeva `dry_run`
+/// anche su un target che la scrittura avrebbe rifiutato.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DryRun {
+    No,
+    Catalog,
+    Offline,
+}
+
+impl DryRun {
+    fn from_flags(dry_run: bool, offline: bool) -> CliResult<Self> {
+        match (dry_run, offline) {
+            (false, false) => Ok(Self::No),
+            (true, false) => Ok(Self::Catalog),
+            (true, true) => Ok(Self::Offline),
+            (false, true) => Err("--offline vale soltanto con --dry-run".into()),
+        }
+    }
+}
+
+/// La DSN del dry run con il catalogo: presente e non vuota.
+fn dry_run_secret(dsn_env: &str) -> CliResult<SecretString> {
+    require_dsn(std::env::var_os(dsn_env).as_deref())?;
+    secret_from_env(dsn_env)
+}
+
+fn require_dsn(value: Option<&std::ffi::OsStr>) -> CliResult<()> {
+    if value.is_none_or(std::ffi::OsStr::is_empty) {
+        return Err(CliError::from(DatabaseError::new(
+            ErrorCategory::InvalidConfiguration,
+            ErrorPhase::Validate,
+            Some(ProviderKind::Postgres),
+            "variabile DSN assente o vuota: il dry run legge il catalogo del target, \
+             senza catalogo si chiede con --offline",
+        )));
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -106,11 +155,48 @@ async fn execute_bulk_write(
     dsn_env: &str,
     operation: WriteOperation,
     stream: Box<dyn BatchStream>,
-    dry_run: bool,
+    dry_run: DryRun,
 ) -> CliResult<()> {
-    if dry_run {
-        // Emette il piano che sarebbe applicato, senza toccare il DB.
+    if dry_run != DryRun::No {
+        // Il dry run decide cio che la scrittura deciderebbe, senza effetti
+        // (`PostgresProvider::dry_run_write`): compila il piano, legge il
+        // catalogo del bersaglio in sola lettura se la variabile DSN e
+        // impostata, e giudica ogni valore di ogni batch con le funzioni
+        // della scrittura. Fino al 24/10 compilava soltanto il piano: 13
+        // vettori arrow-data-v1 che la scrittura rifiuta (valori, catalogo)
+        // passavano il dry run con exit 0.
+        //
+        // Con il catalogo serve la DSN (`dry_run_secret`); offline solo con
+        // `--offline`, e lo dice lo stato (`dry_run_offline`) oltre a
+        // `checks`: le classi che decide `spatial_ref_sys` o il target non
+        // sono state decise.
         let schema = stream.schema();
+        let secret = match dry_run {
+            DryRun::Catalog => Some(dry_run_secret(dsn_env)?),
+            DryRun::No | DryRun::Offline => None,
+        };
+        let provider = postgres_provider_for_pfm()?;
+        let budget = pfm_budget()?;
+        let cancel = CancellationToken::new();
+        let decided = provider
+            .dry_run_write(secret.as_ref(), &operation, stream, &budget, &cancel)
+            .await?;
+        let loss_report = decided
+            .loss_report
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| {
+                CliError::from(format!(
+                    "loss report non serializzabile: {}",
+                    error.classify() as u8
+                ))
+            })?;
+        let (status, catalog) = if secret.is_some() {
+            ("dry_run", "performed")
+        } else {
+            ("dry_run_offline", "not_performed")
+        };
         let fields: Vec<serde_json::Value> = schema
             .fields()
             .iter()
@@ -123,9 +209,27 @@ async fn execute_bulk_write(
             })
             .collect();
         print_json(&json!({
-            "status": "dry_run",
+            "status": status,
             "operation": operation,
             "input_schema": { "fields": fields },
+            "input": { "batches": decided.batches, "rows": decided.rows },
+            // Che cosa il dry run ha deciso. `catalog` comprende l'elenco
+            // chiuso di cio che la scrittura chiede al target (schema,
+            // privilegi, row-level security, colonne generate e identita,
+            // viste, NOT NULL senza default, indice unico dell'upsert;
+            // `plenora_db_postgres::write::target`); `row_security` dice se
+            // una policy RLS decide sui valori (`not_performed`) o no;
+            // `server` resta della scrittura: trigger, CHECK ed esclusioni,
+            // unicita e foreign key sui valori, vincoli differiti,
+            // conversioni della colonna, timeout e lock.
+            "checks": {
+                "plan": "performed",
+                "values": "performed",
+                "catalog": catalog,
+                "row_security": decided.row_security.as_str(),
+                "server": "not_performed",
+            },
+            "loss_report": loss_report,
         }))?;
         return Ok(());
     }
@@ -170,13 +274,19 @@ fn parse_write_mode(value: &str) -> CliResult<WriteMode> {
     }
 }
 
-fn parse_dry_run(args: &mut impl Iterator<Item = String>) -> CliResult<bool> {
+fn parse_dry_run(args: &mut impl Iterator<Item = String>) -> CliResult<DryRun> {
     let rest: Vec<String> = args.by_ref().collect();
-    if rest.is_empty() {
-        return Ok(false);
-    }
-    if rest.len() == 1 && rest[0] == "--dry-run" {
-        return Ok(true);
+    match rest
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [] => return Ok(DryRun::No),
+        ["--dry-run"] => return Ok(DryRun::Catalog),
+        ["--dry-run", "--offline"] | ["--offline", "--dry-run"] => return Ok(DryRun::Offline),
+        ["--offline"] => return DryRun::from_flags(false, true),
+        _ => {}
     }
     // Cio che resta puo essere qualunque cosa il chiamante abbia scritto:
     // il conteggio e azionabile, l'elenco sarebbe payload.
@@ -193,3 +303,7 @@ fn parse_dry_run(args: &mut impl Iterator<Item = String>) -> CliResult<bool> {
 fn ensure_end_local(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
     ensure_end(args)
 }
+
+#[cfg(test)]
+#[path = "write_cmd_tests.rs"]
+mod tests;

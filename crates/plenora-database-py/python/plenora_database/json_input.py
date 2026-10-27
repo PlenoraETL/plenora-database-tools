@@ -279,6 +279,19 @@ class JsonInput(Generic[T]):
         metadata = None
         if any(isinstance(field.type_, JsonGeometry) for field in self.schema.fields):
             metadata = {b"plenora.contract.version": b"1"}
+            # Arrow Geometry Semantics 1.0, GEO-013: un campo prodotto da una
+            # sorgente senza identita riceve il piu piccolo intero non
+            # negativo non ancora usato, nell'ordine dei campi. Il vocabolario
+            # lo chiede a ogni campo geometria; lo si assegna a tutti.
+            fields = [
+                field.with_metadata(
+                    {
+                        **(field.metadata or {}),
+                        b"plenora.field_id": str(index).encode("ascii"),
+                    }
+                )
+                for index, field in enumerate(fields)
+            ]
         return pa.schema(fields, metadata=metadata)
 
     def _validate(self, record: Mapping[str, Any], index: int) -> dict[str, Any]:
@@ -572,7 +585,11 @@ def _arrow_field(field: JsonField, pa: Any) -> Any:
             b"plenora.geometry.dimensions": type_.dimensions.encode("ascii"),
             b"plenora.geometry.types_declaration": declaration.encode("ascii"),
             b"plenora.geometry.srid": str(type_.srid).encode("ascii"),
-            b"plenora.geometry.crs_resolution": b"declared_unresolved",
+            # Il dichiarante da soltanto lo SRID numerico, non l'identita del
+            # CRS: `declared_unresolved` chiederebbe un `crs_id` e un ordine
+            # degli assi che questo modulo non conosce (ARROW-VOCABULARY §4,
+            # GEO-002). `missing` con lo SRID e la dichiarazione esatta.
+            b"plenora.geometry.crs_resolution": b"missing",
             b"plenora.geometry.spatial_semantics": type_.semantics.encode("ascii"),
             b"plenora.geometry.precision": b"float64",
         }

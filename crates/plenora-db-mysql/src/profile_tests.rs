@@ -1,6 +1,7 @@
 use super::{
-    ProductProfile, COLUMN_ALIASES, INDEX_PART_ALIASES, MARIADB_PROFILE, MARIADB_STATEMENT_TIMEOUT,
-    MEASURED_SERVER_CODES, MYSQL_PROFILE, OBJECT_ALIASES, SCHEMA_ALIASES, SECOND_PRODUCT_PROFILE,
+    ProductProfile, COLUMN_ALIASES, DECLARED_SRID_ALIASES, INDEX_PART_ALIASES, MARIADB_PROFILE,
+    MARIADB_STATEMENT_TIMEOUT, MEASURED_SERVER_CODES, MYSQL_PROFILE, OBJECT_ALIASES,
+    SCHEMA_ALIASES, SECOND_PRODUCT_PROFILE, SRS_ALIASES,
 };
 use crate::types::MysqlColumnKind;
 use crate::MysqlConfig;
@@ -149,9 +150,12 @@ fn the_spatial_types_carry_the_srid_rule_that_qualifies_them() {
 
 #[test]
 fn the_expected_wkb_matches_the_projection_that_produces_it() {
+    // GEO-001: `MySQL` scambia il WKB con la longitudine per prima anche su un
+    // SRS geografico. Fino al 24/10 la proiezione non passava l'opzione, e un
+    // valore in EPSG:4326 usciva con la latitudine per prima.
     assert_eq!(
         MYSQL_PROFILE.geometry_projection("`geom`"),
-        "ST_AsBinary(`geom`) AS `geom`"
+        "ST_AsBinary(`geom`, 'axis-order=long-lat') AS `geom`"
     );
     // Cio che quella funzione produce: XY, nessun SRID incapsulato.
     assert!(!MYSQL_PROFILE.geometry_output_is_unexpected(None, "xy"));
@@ -506,6 +510,39 @@ fn every_catalog_query_exposes_the_aliases_its_reader_requires() {
     }
 }
 
+/// 3033 e 3643 sono la guardia del server della regola delle sonde
+/// (`ServerGuard::MysqlSrid`): un confronto fra due CRS, `crs` e non il
+/// verdetto generico `execution` (fino al 25/10). `MariaDB` non li emette e
+/// non li eredita.
+#[test]
+fn mysql_srid_mismatches_are_crs_and_mariadb_does_not_inherit_them() {
+    for code in [3_033, 3_643] {
+        let verdict = MYSQL_PROFILE.classify_server_code(code);
+        assert_eq!(verdict.category, ErrorCategory::Crs, "{code}");
+        assert!(verdict.message.contains("MySQL"), "{code}");
+        assert_eq!(
+            MARIADB_PROFILE.classify_server_code(code).category,
+            ErrorCategory::Execution,
+            "{code}"
+        );
+    }
+}
+
+/// Lo SRID dichiarato e non vincolato: `MariaDB` lo chiede al registro OGC
+/// con gli alias dichiarati, `MySQL` non lo chiede perche il server lo
+/// vincola (3643).
+#[test]
+fn only_mariadb_reads_the_declared_column_srid_and_with_the_declared_aliases() {
+    assert!(MYSQL_PROFILE.declared_column_srids_query().is_none());
+    let query = MARIADB_PROFILE
+        .declared_column_srids_query()
+        .expect("MariaDB dichiara REF_SYSTEM_ID senza vincolarlo");
+    for alias in DECLARED_SRID_ALIASES {
+        assert!(query.contains(format!("AS {alias}").as_str()), "{alias}");
+    }
+    assert!(query.contains("GEOMETRY_COLUMNS"));
+}
+
 #[test]
 fn the_catalog_reads_no_alias_the_contract_does_not_declare() {
     // L'altra direzione: un alias letto e non dichiarato sarebbe un
@@ -522,6 +559,8 @@ fn the_catalog_reads_no_alias_the_contract_does_not_declare() {
         .chain(OBJECT_ALIASES)
         .chain(COLUMN_ALIASES)
         .chain(INDEX_PART_ALIASES)
+        .chain(SRS_ALIASES)
+        .chain(DECLARED_SRID_ALIASES)
         .copied()
         .collect();
     let mut rest = catalog;
@@ -2055,11 +2094,31 @@ fn mariadb_attributes_only_the_row_causes_it_did_not_infer() {
 #[test]
 fn the_spatial_decisions_diverge_only_where_the_catalog_cannot_answer() {
     // Lettura: stessa funzione, stesso WKB atteso. `raw.spatial_functions`
-    // ha misurato `POINT srid=4326` e 21 byte sui tre riferimenti.
+    // ha misurato `POINT srid=4326` e 21 byte sui tre riferimenti. Diverge
+    // soltanto l'ordine degli assi: `MySQL` ha SRS geografici e vuole
+    // `axis-order=long-lat`, `MariaDB` non ha ne l'uno ne l'altra.
+    assert_eq!(
+        MARIADB_PROFILE.geometry_projection("`geom`"),
+        "ST_AsBinary(`geom`) AS `geom`"
+    );
     assert_eq!(
         MYSQL_PROFILE.geometry_projection("`geom`"),
-        MARIADB_PROFILE.geometry_projection("`geom`")
+        "ST_AsBinary(`geom`, 'axis-order=long-lat') AS `geom`"
     );
+    assert_eq!(
+        MYSQL_PROFILE.geometry_from_wkb_sql(4_326),
+        "ST_GeomFromWKB(CAST(? AS BINARY), 4326, 'axis-order=long-lat')"
+    );
+    assert_eq!(
+        MARIADB_PROFILE.geometry_from_wkb_sql(4_326),
+        "ST_GeomFromWKB(CAST(? AS BINARY), 4326)"
+    );
+    // GEO-008: soltanto `MySQL` ha il catalogo in cui verificare uno SRID
+    // derivato; GEO-020: ciascuno pubblica la propria autorita locale.
+    assert!(MYSQL_PROFILE.verifies_derived_srid());
+    assert!(!MARIADB_PROFILE.verifies_derived_srid());
+    assert_eq!(MYSQL_PROFILE.metadata_keys().crs_authority, "MYSQL");
+    assert_eq!(MARIADB_PROFILE.metadata_keys().crs_authority, "MARIADB");
     for (srid, dimensions) in [(None, "xy"), (Some(4_326), "xy"), (None, "xyz")] {
         assert_eq!(
             MYSQL_PROFILE.geometry_output_is_unexpected(srid, dimensions),

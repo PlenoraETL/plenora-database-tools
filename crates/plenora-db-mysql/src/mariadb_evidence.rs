@@ -659,6 +659,13 @@ async fn raw_type_probes(recorder: &mut Recorder, connection: &mut mysql_async::
     // entrambe le forme su tutti e tre i server e registra quale sia accettata
     // e cosa il registro renda dopo. Provarne una sola direbbe «non si puo»
     // avendo chiesto in una lingua sola.
+    //
+    // E `REF_SYSTEM_ID` in due posizioni: dopo `NOT NULL` e rifiutato con
+    // 1064, subito dopo il tipo e accettato e pubblicato in
+    // `GEOMETRY_COLUMNS.SRID` (misurato su 11.4 il 25/10). Fino al 25/10 la
+    // sonda provava soltanto la prima, e la conclusione «nessuna DDL dichiara
+    // uno SRID di colonna» veniva da li; dichiararlo pero non lo vincola, e
+    // la scrittura lo confronta da se (`verify_declared_column_srids`).
     let _ = connection
         .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SRID}"))
         .await;
@@ -671,6 +678,10 @@ async fn raw_type_probes(recorder: &mut Recorder, connection: &mut mysql_async::
         (
             "REF_SYSTEM_ID",
             format!("CREATE TABLE {SCRATCH_SRID} (shape GEOMETRY NOT NULL REF_SYSTEM_ID=4326)"),
+        ),
+        (
+            "REF_SYSTEM_ID dopo il tipo",
+            format!("CREATE TABLE {SCRATCH_SRID} (shape GEOMETRY REF_SYSTEM_ID=4326 NOT NULL)"),
         ),
     ] {
         let _ = connection
@@ -4797,8 +4808,9 @@ async fn replace_probes(
 
     // 1. Il target viene svuotato e riempito nella stessa transazione: cio che
     //    resta sono **solo** le righe in ingresso. Il conteggio delle
-    //    cancellate resta zero, e la sonda lo pretende invece di ignorarlo: e
-    //    cio che il contratto dichiara, e un valore diverso vorrebbe dire che
+    //    cancellate non si pubblica (`None`): le righe svuotate non sono
+    //    dell'ingresso, e uno zero direbbe che non ce n'erano. La sonda lo
+    //    pretende invece di ignorarlo: un valore diverso vorrebbe dire che
     //    l'esito ha cambiato significato.
     reset_scratch(connection, SCRATCH_REPLACE, "", &seed).await;
     let question = "svuota il target e ci mette le righe in ingresso, nella stessa transazione";
@@ -4808,7 +4820,7 @@ async fn replace_probes(
         confirmed: 2,
         inserted: Some(2),
         updated: Some(0),
-        deleted: Some(0),
+        deleted: None,
         skipped: 0,
     };
     match scripted_write(
@@ -7410,11 +7422,16 @@ fn spatial_write_field(srid: u32) -> plenora_database_core::arrow::schema::Field
     use plenora_database_core::arrow::schema::{DataType, Field};
     use plenora_database_core::protocol;
 
+    // `plenora.field_id` e obbligatoria su un campo geometrico da Geometry
+    // Semantics 1.0 (REJ-001, `field_contract::REQUIRED_NON_CRS_KEYS`):
+    // senza, ogni sonda di scrittura spatial di questa misura si fermava in
+    // `validate` con `schema` e non misurava piu il server.
     let metadata = std::collections::HashMap::from([
         (
             protocol::GEOARROW_EXTENSION_NAME.to_owned(),
             "geoarrow.wkb".to_owned(),
         ),
+        (protocol::FIELD_ID.to_owned(), "1".to_owned()),
         (protocol::GEOMETRY_ENCODING.to_owned(), "wkb".to_owned()),
         (protocol::GEOMETRY_DIMENSIONS.to_owned(), "xy".to_owned()),
         (
@@ -7431,6 +7448,14 @@ fn spatial_write_field(srid: u32) -> plenora_database_core::arrow::schema::Field
             "declared_unresolved".to_owned(),
         ),
         (protocol::GEOMETRY_SRID.to_owned(), srid.to_string()),
+        // Un CRS `declared_unresolved` porta l'identificatore e l'ordine
+        // degli assi (REJ-001); la longitudine per prima e cio che il WKB di
+        // questa misura ha (GEO-001).
+        (protocol::GEOMETRY_CRS_ID.to_owned(), format!("EPSG:{srid}")),
+        (
+            protocol::GEOMETRY_AXIS_ORDER.to_owned(),
+            "lon_lat".to_owned(),
+        ),
     ]);
     Field::new("shape", DataType::Binary, false).with_metadata(metadata)
 }
@@ -7679,6 +7704,22 @@ async fn spatial_write_probes(
         ),
     }
 
+    // Una colonna che dichiara uno SRID diverso da quello del contratto:
+    // `MySQL` la vincola e il preflight la rifiuta dal catalogo (`SRS_ID`);
+    // `MariaDB` la dichiara con `REF_SYSTEM_ID` senza vincolarla, e fino al
+    // 25/10 la scrittura vi metteva un valore 3857 in una colonna 4326 senza
+    // errore. La regola delle sonde vuole il confronto prima dell'effetto
+    // (`catalog::verify_declared_column_srids`): `crs`, e nessuna riga.
+    declared_srid_write_probe(
+        recorder,
+        &provider,
+        profile,
+        schema_name,
+        connection,
+        cancellation,
+    )
+    .await;
+
     // La quarta domanda: l'indice spaziale, chiesto dal piano e non scritto a
     // mano. `raw.spatial_index_forms` ha misurato che il server accetta la
     // clausola; questa misura che il **provider** la emette, e che l'indice
@@ -7767,6 +7808,113 @@ async fn spatial_index_of(connection: &mut mysql_async::Conn) -> String {
 }
 
 /// Una delle due scritture spatial, con cio che deve restare sul server.
+/// La tabella su cui si scrive in un sistema diverso da quello dichiarato.
+const SCRATCH_SPATIAL_DECLARED: &str = "plenora_driver_evidence_spatial_declared";
+
+/// Una append in 3857 verso una colonna dichiarata 4326, nella forma che il
+/// prodotto ammette: `SRID 4326` su `MySQL`, `REF_SYSTEM_ID=4326` dopo il
+/// tipo su `MariaDB`. Il rifiuto `crs` senza righe scritte e l'esito
+/// richiesto su entrambi.
+async fn declared_srid_write_probe(
+    recorder: &mut Recorder,
+    provider: &MysqlProvider,
+    profile: &'static dyn ProductProfile,
+    schema_name: &str,
+    connection: &mut mysql_async::Conn,
+    cancellation: &CancellationToken,
+) {
+    let probe = "provider.profile_write_spatial_declared_srid";
+    let question = "una append in un altro SRID verso una colonna che ne dichiara uno e rifiutata";
+    let declaration = if profile.kind() == ProviderKind::Mariadb {
+        "GEOMETRY REF_SYSTEM_ID=4326 NOT NULL"
+    } else {
+        "GEOMETRY NOT NULL SRID 4326"
+    };
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL_DECLARED}"))
+        .await;
+    if let Err(error) = connection
+        .query_drop(format!(
+            "CREATE TABLE {SCRATCH_SPATIAL_DECLARED} (id INT NOT NULL PRIMARY KEY, \
+             shape {declaration}) ENGINE=InnoDB"
+        ))
+        .await
+    {
+        recorder.accepted(
+            probe,
+            "provider",
+            "profilo",
+            question,
+            format!("DDL rifiutata: {}", condense(&error.to_string())),
+        );
+        return;
+    }
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some(schema_name.to_owned()),
+            object: SCRATCH_SPATIAL_DECLARED.to_owned(),
+        },
+        mode: WriteMode::Append,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: Vec::new(),
+        update_columns: Vec::new(),
+        srid_policy: Some(plenora_database_core::plan::SridPolicy::RequireMatch),
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    let written = scripted_write(
+        provider,
+        &operation,
+        spatial_write_schema(3_857),
+        vec![spatial_write_batch(3_857, &[1])],
+        1,
+        None,
+        cancellation,
+    )
+    .await;
+    let rows = connection
+        .query_first::<i64, _>(format!("SELECT COUNT(*) FROM {SCRATCH_SPATIAL_DECLARED}"))
+        .await
+        .ok()
+        .flatten();
+    let _ = connection
+        .query_drop(format!("DROP TABLE IF EXISTS {SCRATCH_SPATIAL_DECLARED}"))
+        .await;
+    match written {
+        Err(error) if error.category == ErrorCategory::Crs && rows == Some(0) => recorder.rejected(
+            probe,
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "{:?}/{:?}: {} — righe=0",
+                error.category, error.phase, error.message
+            )),
+            None,
+        ),
+        // Un rifiuto per un'altra ragione, o righe scritte, non e la prova.
+        Err(error) => recorder.accepted(
+            probe,
+            "provider",
+            "profilo",
+            question,
+            condense(&format!(
+                "atteso crs senza righe, misurato {:?}/{:?} righe={rows:?}",
+                error.category, error.phase
+            )),
+        ),
+        Ok(outcome) => recorder.accepted(
+            probe,
+            "provider",
+            "profilo",
+            question,
+            format!("{:?} — righe={rows:?}", outcome.status),
+        ),
+    }
+}
+
 struct SpatialWriteCase<'a> {
     probe: &'static str,
     question: &'static str,

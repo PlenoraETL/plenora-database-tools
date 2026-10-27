@@ -14,3 +14,6 @@ fuzz/coverage/
 fuzz/target/
 .claude/
 ~$*.docx
+# Il checkout fissato di plenora-contracts che i job dei contratti clonano
+# accanto ai sorgenti (`contracts/adoption-source.json` ne dice la revisione).
+.plenora-contracts/

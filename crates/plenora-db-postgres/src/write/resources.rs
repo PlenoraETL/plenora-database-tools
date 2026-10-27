@@ -12,14 +12,31 @@ pub(super) fn reserve_write_batch(
     runtime: &WriteRuntime,
     budget: &ResourceBudget,
 ) -> Result<WriteBatchResources> {
+    reserve_batch_within(
+        batch,
+        plans,
+        runtime.max_batch_bytes,
+        runtime.max_wkb_cell_bytes,
+        budget,
+    )
+}
+
+/// La prenotazione di [`reserve_write_batch`] con i limiti del provider
+/// espliciti: la stessa che il dry run applica senza una sessione.
+pub(super) fn reserve_batch_within(
+    batch: &RecordBatch,
+    plans: &[WriteColumnPlan],
+    max_batch_bytes: u64,
+    max_wkb_cell_bytes: u64,
+    budget: &ResourceBudget,
+) -> Result<WriteBatchResources> {
     let geometry_components = enforce_input_limits(
         batch,
         plans,
-        runtime
-            .max_batch_bytes
+        max_batch_bytes
             .min(budget.limits().memory_bytes)
             .min(budget.limits().output_bytes),
-        runtime.max_wkb_cell_bytes.min(budget.limits().cell_bytes),
+        max_wkb_cell_bytes.min(budget.limits().cell_bytes),
         budget.remaining(ResourceKind::GeometryComponents),
         budget.limits().nesting_depth,
     )?;

@@ -111,6 +111,14 @@ pub(crate) async fn portable_execute(args: &mut impl Iterator<Item = String>) ->
 
     let compiled = compile_portable(ProviderKind::Postgres, &ast)?;
     let stmt = Statement::new(compiled.sql.clone()).with_params(compiled.params);
+    // Il giudizio degli operandi geometrici sul catalogo della transazione,
+    // come la facade portable, prima di eseguire.
+    plenora_database_core::facade::verify_operands(
+        tx.as_mut(),
+        &plenora_database_core::spatial_operand::OperandPlan::Portable(&ast),
+        &cancel,
+    )
+    .await?;
 
     // Determina se lo statement produce righe:
     // - PortableStatement::Select → sempre

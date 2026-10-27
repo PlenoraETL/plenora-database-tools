@@ -2339,6 +2339,78 @@ def test_geometry_type_and_spatial_query_nodes() -> None:
     orm.rollback()
 
 
+# Il motivo del rifiuto, come lo scrive il core (`GEOMETRY_SCALAR_OPERAND`).
+_GEOMETRY_SCALAR_OPERAND = "operando geometrico sotto un operatore non spatial"
+_RELATIONAL_PROVIDERS = ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2")
+
+
+def test_geometry_attribute_under_scalar_operator_is_refused_compiling() -> None:
+    """Un attributo ``Geometry`` sotto un operatore non spatial non compila.
+
+    Fino al 25/10 ``Place.shape == bind(..., BINARY)`` diventava
+    ``shape = CAST(? AS BINARY)``: `MySQL` e `MariaDB` confrontano il proprio
+    formato interno con il valore legato e rendevano zero righe (``<>``
+    tutte) senza errore. Il mapping sa che la colonna e geometrica, e la
+    compilazione la rifiuta con il motivo del core su ogni provider; le
+    stesse forme su una colonna scalare restano.
+    """
+
+    from plenora_database.expression import (
+        _compile_mutation_statement,
+        _compile_statement,
+    )
+
+    shape = p.bind("shape", p.BindType.BINARY)
+    aliased = Place.__table__.alias("x")
+    derived = p.select(Place.shape.label("s")).subquery("d", "s")
+    refused = {
+        "=": p.select(Place.id).where(Place.shape == shape),
+        "<>": p.select(Place.id).where(Place.shape != shape),
+        "IN": p.select(Place.id).where(Place.shape.in_(shape)),
+        "BETWEEN": p.select(Place.id).where(Place.shape.between(shape, shape)),
+        "LIKE su CAST": p.select(Place.id).where(
+            Place.shape.cast(p.BindType.STRING).like(p.bind("shape", p.BindType.STRING))
+        ),
+        "ORDER BY": p.select(Place.id).order_by(Place.shape),
+        "GROUP BY": p.select(Place.id).group_by(Place.shape),
+        "alias": p.select(aliased.c.id).where(aliased.c.shape == shape),
+        "sorgente derivata": p.select(derived.c.s).where(derived.c.s == shape),
+    }
+    for provider in _RELATIONAL_PROVIDERS:
+        for form, statement in refused.items():
+            with pytest.raises(p.PlenoraUnsupportedError) as caught:
+                _compile_statement(statement, {"shape": b""}, provider)
+            assert _GEOMETRY_SCALAR_OPERAND in str(caught.value), (provider, form)
+        for mutation in (
+            p.delete(Place.__table__).where(Place.shape == shape),
+            p.update(Place.__table__)
+            .values(id=p.bind("id", p.BindType.BIG_INTEGER))
+            .where(Place.shape == shape),
+        ):
+            with pytest.raises(p.PlenoraUnsupportedError) as caught:
+                _compile_mutation_statement(
+                    mutation, {"shape": b"", "id": 1}, provider
+                )
+            assert _GEOMETRY_SCALAR_OPERAND in str(caught.value), provider
+
+    # Nessun falso rifiuto.
+    for provider in _RELATIONAL_PROVIDERS:
+        _compile_statement(
+            p.select(Place.id).where(Place.id == p.bind("id", p.BindType.BIG_INTEGER)),
+            {"id": 1},
+            provider,
+        )
+        _compile_statement(
+            p.select(Place.id).where(Place.shape.is_not_null()), {}, provider
+        )
+    # Il limite dichiarato: una tabella con soli nomi non porta tipi, e la
+    # colonna non si giudica.
+    untyped = p.table("orm_places", "id", "shape")
+    _compile_statement(
+        p.select(untyped.c.id).where(untyped.c.shape == shape), {"shape": b""}, "mysql"
+    )
+
+
 @pytest.mark.asyncio
 async def test_async_orm_reuses_mapping_uow_and_relationship_planner() -> None:
     transaction = _AsyncFakeTransaction([{"id": 91, "created_by": "database"}])
@@ -2682,6 +2754,34 @@ def test_live_mysql_family_geometry_orm_qualification(provider: str, connector) 
         with pytest.raises(p.OrmUnsupportedError, match="XY"):
             p.OrmMetadata(models=(LiveMysqlGeometryXyz,)).create_all(session)
 
+        if provider == "mariadb":
+            # La regola delle sonde: MariaDB accetta un valore in un altro
+            # sistema in una colonna `REF_SYSTEM_ID` e non confronta gli SRID
+            # nei predicati, e lo SDK non legge il catalogo. Fino al 25/10
+            # scrittura e predicato passavano.
+            with pytest.raises(p.PlenoraUnsupportedError):
+                with p.OrmSession(session) as orm:
+                    orm.add(
+                        LiveMysqlGeometry(
+                            id=1,
+                            point=point,
+                            line=line,
+                            polygon=polygon,
+                            optional_point=None,
+                        )
+                    )
+            assert (
+                session.execute_scalar("SELECT COUNT(*) FROM _plenora_orm_mysql_geometry")
+                == 0
+            )
+            predicate = _MYSQL_POINT.predicate(
+                "intersects", LiveMysqlGeometry.point, _MYSQL_POINT.bind("reference")
+            )
+            with p.OrmSession(session) as orm:
+                with pytest.raises(p.PlenoraUnsupportedError):
+                    orm.query(LiveMysqlGeometry).where(predicate).all({"reference": point})
+            return
+
         with p.OrmSession(session) as orm:
             orm.add(
                 LiveMysqlGeometry(
@@ -2744,6 +2844,11 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
             (9.10, 45.40),
         )
     )
+    predicate = _PORTABLE_POINT.predicate(
+        "intersects",
+        LivePortableGeometry.point,
+        _PORTABLE_POINT.bind("reference"),
+    )
     try:
         if provider == "db2":
             _drop_db2_models_if_present(
@@ -2752,6 +2857,27 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
         else:
             metadata.drop_all(session)
         metadata.create_all(session)
+        if provider == "db2":
+            # Db2 non e misurato: senza catalogo ne la scrittura ne il
+            # predicato provano lo SRID della colonna, e la regola delle
+            # sonde li rifiuta (fino al 25/10 passavano).
+            with pytest.raises(p.PlenoraUnsupportedError):
+                with p.OrmSession(session) as orm:
+                    orm.add(
+                        LivePortableGeometry(
+                            id=1,
+                            point=point,
+                            line=line,
+                            polygon=polygon,
+                            optional_point=None,
+                        )
+                    )
+            with p.OrmSession(session) as orm:
+                with pytest.raises(p.PlenoraUnsupportedError):
+                    orm.query(LivePortableGeometry).where(predicate).all(
+                        {"reference": point}
+                    )
+            return
         with pytest.raises(ValueError):
             LivePortableGeometry(
                 id=99,
@@ -2793,17 +2919,23 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
             loaded.point = moved_point
             loaded.optional_point = point
 
-        predicate = _PORTABLE_POINT.predicate(
-            "intersects",
-            LivePortableGeometry.point,
-            _PORTABLE_POINT.bind("reference"),
-        )
         with p.OrmSession(session) as orm:
-            [queried] = (
-                orm.query(LivePortableGeometry)
-                .where(predicate)
-                .all({"reference": moved_point})
-            )
+            if provider == "sqlserver":
+                # SQL Server rende `NULL` con SRID diversi, e lo SDK non
+                # legge il catalogo: il predicato si rifiuta (fino al 25/10
+                # passava, e una sonda in un altro sistema escludeva le righe).
+                with pytest.raises(p.PlenoraUnsupportedError):
+                    orm.query(LivePortableGeometry).where(predicate).all(
+                        {"reference": moved_point}
+                    )
+                queried = orm.get(LivePortableGeometry, 1)
+                assert queried is not None
+            else:
+                [queried] = (
+                    orm.query(LivePortableGeometry)
+                    .where(predicate)
+                    .all({"reference": moved_point})
+                )
             _assert_portable_wkb(queried.point.ewkb, _root_wkb(moved_point), provider)
             assert queried.optional_point is not None
             _assert_portable_wkb(
@@ -2857,11 +2989,12 @@ def test_live_sqlserver_geometry_orm_qualification() -> None:
             ),
         )
         with p.OrmSession(session) as orm:
-            [loaded] = (
-                orm.query(LiveSqlServerGeography)
-                .where(predicate)
-                .all({"reference": point})
-            )
+            # Il predicato si rifiuta senza catalogo (vedi sopra); la lettura
+            # per chiave porta lo stesso valore.
+            with pytest.raises(p.PlenoraUnsupportedError):
+                orm.query(LiveSqlServerGeography).where(predicate).all({"reference": point})
+            loaded = orm.get(LiveSqlServerGeography, 1)
+            assert loaded is not None
             assert loaded.shape.ewkb == _root_wkb(point)
             assert loaded.shape.semantics == "geography"
             orm.delete(loaded)

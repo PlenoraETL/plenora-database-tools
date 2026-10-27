@@ -192,7 +192,10 @@ fn live_iso_wkb_with_declared_crs_and_types_round_trips() {
             ("plenora.geometry.crs_resolution", "resolved"),
             ("plenora.geometry.crs_id", "EPSG:4326"),
             ("plenora.geometry.srid", "4326"),
-            ("plenora.geometry.axis_order", "lat_lon"),
+            // L'ordine memorizzato (12.5 e la longitudine di Roma), non
+            // quello del registro: `lat_lon` si rifiuta, perche PostGIS lo
+            // scriverebbe con gli assi scambiati (GEO-001).
+            ("plenora.geometry.axis_order", "lon_lat"),
         ]
         .map(|(key, value)| (key.to_owned(), value.to_owned())),
     ));

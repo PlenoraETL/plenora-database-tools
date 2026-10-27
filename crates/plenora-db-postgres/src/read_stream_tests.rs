@@ -119,3 +119,64 @@ fn unattributable_read_failures_never_invent_provenance() {
     assert_eq!(budget.category, ErrorCategory::ResourceLimit);
     assert!(budget.row_diagnostics().is_none());
 }
+
+/// Un punto EWKB XY little endian, con lo SRID se dato.
+fn ewkb_point(srid: Option<u32>) -> Vec<u8> {
+    let mut bytes = vec![1_u8];
+    let code = 1_u32 | if srid.is_some() { 0x2000_0000 } else { 0 };
+    bytes.extend_from_slice(&code.to_le_bytes());
+    if let Some(srid) = srid {
+        bytes.extend_from_slice(&srid.to_le_bytes());
+    }
+    bytes.extend_from_slice(&[0_u8; 16]);
+    bytes
+}
+
+/// GEO-009, regola del produttore: una colonna senza SRID nel catalogo (senza
+/// typmod) si pubblica `crs_resolution=missing`, e un suo valore con SRID si
+/// rifiuta `crs` in lettura invece di uscire in uno schema non conforme. Fino
+/// al 24/10 usciva, e la scrittura PostgreSQL lo rifiutava rileggendolo.
+#[test]
+fn a_typmod_less_column_with_srid_values_is_refused_at_read() {
+    let tracker = ReadDiagnosticsTracker::default();
+    let untyped = column("shape");
+    let mut typed = column("shape");
+    typed.spatial_srid = Some(4_326);
+    let batch = |values: Vec<Option<Vec<u8>>>| {
+        let array = arrow_array::BinaryArray::from_iter(values);
+        RecordBatch::try_new(
+            Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+                "shape",
+                arrow_schema::DataType::Binary,
+                true,
+            )])),
+            vec![Arc::new(array)],
+        )
+        .expect("batch")
+    };
+    let limits = |columns: &[ColumnSpec], batch: &RecordBatch| {
+        enforce_batch_limits(batch, columns, u64::MAX, u64::MAX, 1_000, 8, &tracker)
+    };
+    let with_srid = batch(vec![Some(ewkb_point(Some(4_326))), None]);
+    let error =
+        limits(std::slice::from_ref(&untyped), &with_srid).expect_err("SRID senza dichiarazione");
+    assert_eq!(error.category, ErrorCategory::Crs);
+    assert_eq!(error.phase, ErrorPhase::Read);
+    // Senza SRID nei valori (SRID 0, che `ST_AsEWKB` omette) la colonna passa.
+    limits(
+        std::slice::from_ref(&untyped),
+        &batch(vec![Some(ewkb_point(None))]),
+    )
+    .expect("nessuno SRID");
+    // Con uno SRID dichiarato: lo stesso passa, uno diverso o nessuno no.
+    limits(std::slice::from_ref(&typed), &with_srid).expect("SRID dichiarato");
+    for other in [Some(3_857), None] {
+        let other = batch(vec![Some(ewkb_point(other))]);
+        assert_eq!(
+            limits(std::slice::from_ref(&typed), &other)
+                .expect_err("SRID diverso o assente")
+                .category,
+            ErrorCategory::Crs
+        );
+    }
+}

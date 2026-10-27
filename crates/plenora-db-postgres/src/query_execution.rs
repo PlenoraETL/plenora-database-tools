@@ -140,7 +140,43 @@ pub async fn read_stream(
         }
     }
     let (available, _schema_token) = provider.cached_columns(&client, &operation.source).await?;
+    // La regola degli operandi geometrici sul tipo che contiene una
+    // geometria (array, dominio, composito, range), non soltanto sul tipo
+    // descritto: `geometry[]` si descrive come testo.
+    if operation.filter.is_some() || !operation.order_by.is_empty() {
+        let columns = crate::spatial_probe::relation_columns(
+            client.client()?,
+            operation.source.schema.as_deref(),
+            &operation.source.object,
+        )
+        .await?;
+        plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+            plenora_database_core::plan::ProviderKind::Postgres,
+            operation.filter.as_ref(),
+            &operation.order_by,
+            |field| {
+                columns
+                    .iter()
+                    .any(|column| column.is_geometric() && column.name == field)
+            },
+            |field| {
+                Ok(columns
+                    .iter()
+                    .find(|column| column.name == field)
+                    .map(plenora_database_core::spatial_operand::CatalogColumn::field_family))
+            },
+            &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
+        )?;
+    }
     let plan = plan_read(operation, &available)?;
+    // Ogni sonda spatial porta uno SRID esplicito, quello della colonna
+    // (typmod), e si lega come EWKB con quello SRID.
+    let parameters = &crate::spatial_probe::verify_read_filter(
+        operation.filter.as_ref(),
+        &available,
+        parameters,
+        budget.limits().nesting_depth,
+    )?;
     let columns = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, columns)?;
@@ -201,7 +237,32 @@ pub async fn query_stream(
     validate_stream_configuration(provider)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let rendered = render_query(operation)?;
+    // La regola T sui valori del chiamante (`typed_parameter`), prima di
+    // ogni altra cosa.
+    plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters).judge_typed(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        &plenora_database_core::spatial_operand::OperandPlan::Query(operation),
+    )?;
+    // Le sonde spatial si giudicano prima della connessione; le colonne con
+    // cui si confrontano, sul catalogo prima della query.
+    let probes = crate::spatial_probe::plan_query_probes(
+        operation,
+        parameters,
+        budget.limits().nesting_depth,
+    )?;
+    let parameters = &probes.parameters;
+    let operands = plenora_database_core::spatial_operand::scalar_operands(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        operation,
+    )?;
     let mut client = connect_cancel_safe(provider, secret, cancellation).await?;
+    crate::spatial_probe::verify_query_columns(client.client()?, &probes.columns).await?;
+    crate::spatial_probe::verify_scalar_operands(
+        client.client()?,
+        &operands,
+        &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
+    )
+    .await?;
     let bind_names = rendered
         .binds
         .iter()
@@ -232,6 +293,36 @@ pub async fn query_stream(
         .map(ColumnSpec::from_statement_column)
         .collect::<Result<Vec<_>>>()?;
     mark_query_spatial_columns(operation, &mut columns);
+    // GEO-009: lo SRID di una geometria calcolata che eredita quello della
+    // colonna d'ingresso, dal catalogo; la lettura lo verifica valore per
+    // valore. Senza, il campo resta `missing`.
+    for inherited in crate::query_plan::inherited_geometries(operation) {
+        // La relazione si risolve come la risolve la query: con lo schema
+        // dichiarato, o lungo `search_path` senza (`to_regclass`). Lo SRID e
+        // quello del typmod della colonna (0 senza typmod), `geometry` o
+        // `geography`.
+        let row = client
+            .client()?
+            .query_opt(
+                "SELECT postgis_typmod_srid(a.atttypmod) \
+                 FROM pg_catalog.pg_attribute a \
+                 WHERE a.attrelid = to_regclass(CASE WHEN $1::text IS NULL \
+                         THEN quote_ident($2::text) \
+                         ELSE quote_ident($1::text) || '.' || quote_ident($2::text) END) \
+                   AND a.attname = $3::text AND a.attnum > 0 AND NOT a.attisdropped \
+                   AND a.atttypid IN ('geometry'::regtype, 'geography'::regtype)",
+                &[&inherited.schema, &inherited.object, &inherited.column],
+            )
+            .await
+            .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
+        let srid = row
+            .and_then(|row| row.get::<_, Option<i32>>(0))
+            .and_then(|srid| u32::try_from(srid).ok())
+            .filter(|srid| *srid > 0);
+        if let Some(column) = columns.get_mut(inherited.position) {
+            column.spatial_srid = srid;
+        }
+    }
     for column in &mut columns {
         if let Some((relation, number)) = column.source {
             let row = client
@@ -243,8 +334,7 @@ pub async fn query_stream(
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?;
             let comment: Option<String> = row.get(0);
-            column.registered_field_id =
-                crate::field_identity::registered_id(comment.as_deref())?.map(str::to_owned);
+            column.registered_field_id = crate::field_identity::registered_id(comment.as_deref())?;
         }
     }
     let columns = without_shared_origins(columns);

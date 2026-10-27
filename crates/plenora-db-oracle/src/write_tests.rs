@@ -1,7 +1,7 @@
 use super::*;
 use crate::types::{OracleColumnKind, OracleColumnSpec};
 use plenora_database_core::plan::ObjectRef;
-use plenora_database_core::protocol::contract_schema;
+use plenora_database_core::protocol::{self, contract_schema};
 
 #[test]
 fn spatial_index_names_preserve_utf8_and_distinguish_long_identifiers() {
@@ -150,6 +150,46 @@ fn every_exit_after_the_create_carries_the_persistent_effect() {
             .expect_err("errore");
     assert_eq!(untouched.remote_effect, RemoteEffect::None);
     assert_eq!(untouched.retry, RetryDisposition::Safe);
+}
+
+/// Il campo geometria di `spatial_schema` con i metadati cambiati.
+fn spatial_field_with(changes: &[(&str, Option<&str>)]) -> Field {
+    let schema = spatial_schema();
+    let field = schema.field(1).clone();
+    let mut metadata = field.metadata().clone();
+    for &(key, value) in changes {
+        match value {
+            Some(value) => metadata.insert(key.to_owned(), value.to_owned()),
+            None => metadata.remove(key),
+        };
+    }
+    field.with_metadata(metadata)
+}
+
+/// GEO-001 e GEO-008 su Oracle, in compilazione: un campo `lat_lon` e
+/// `unsupported` (SDO memorizza la longitudine in `X`); uno SRID derivato da
+/// `EPSG:<n>` e `crs`, perche la lettura di `MDSYS` che lo verificherebbe
+/// non e qualificata live. Fino al 24/10 entrambi passavano.
+#[test]
+fn spatial_columns_refuse_north_first_axes_and_derived_srids() {
+    let renderer = renderer();
+    compile_column(&spatial_field_with(&[]), &renderer).expect("campo del catalogo");
+    let lat_lon = spatial_field_with(&[(protocol::GEOMETRY_AXIS_ORDER, Some("lat_lon"))]);
+    assert_eq!(
+        compile_column(&lat_lon, &renderer)
+            .expect_err("lat_lon")
+            .category,
+        ErrorCategory::Unsupported
+    );
+    let derived = spatial_field_with(&[
+        (protocol::GEOMETRY_SRID, None),
+        (protocol::GEOMETRY_CRS_RESOLUTION, Some("resolved")),
+        (protocol::GEOMETRY_CRS_ID, Some("EPSG:4326")),
+        (protocol::GEOMETRY_AXIS_ORDER, Some("lon_lat")),
+    ]);
+    let error = compile_column(&derived, &renderer).expect_err("SRID derivato");
+    assert_eq!(error.category, ErrorCategory::Crs);
+    assert_eq!(error.provider, Some(ProviderKind::Oracle));
 }
 
 #[test]

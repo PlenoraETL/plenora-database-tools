@@ -9,8 +9,8 @@ use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::identifier::{quote_identifier as core_quote, IdentifierDialect};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::ParameterValue;
-use plenora_database_core::spatial_policy;
 use plenora_database_core::transaction::Statement;
+use plenora_database_core::{spatial_policy, spatial_probe};
 use plenora_database_core::{DatabaseError, SpatialFilter, SpatialPredicate, SpatialReference};
 
 /// Delega validazione e quoting all'implementazione condivisa del core.
@@ -29,23 +29,21 @@ fn qualify_table(schema: Option<&str>, table: &str) -> Result<String, DatabaseEr
     }
 }
 
-fn ref_expr(index: usize, semantics: SpatialSemantics) -> String {
-    // Il cast usa la stessa policy spatial del compilatore portabile.
-    format!(
-        "ST_GeomFromEWKB(${index}){}",
-        spatial_policy::postgres_cast_for(semantics)
-    )
-}
-
 /// Costruisce un `SELECT projection FROM [schema.]table WHERE <predicate>`
-/// con la traduzione `PostGIS` del `SpatialFilter`. La geometria di
-/// riferimento viene passata come parametro `bytea` (`EWKB`).
+/// con la traduzione `PostGIS` del `SpatialFilter`.
+///
+/// La geometria di riferimento viene passata come parametro `bytea`
+/// (`EWKB`), con lo SRID dichiarato; il server lo confronta con quello della
+/// colonna (typmod) prima di ogni riga, e uno SRID diverso o una colonna
+/// senza SRID dichiarato fanno fallire lo statement con `crs`
+/// all'esecuzione.
 ///
 /// # Errors
 ///
 /// Ritorna `InvalidPlan` se il nome della tabella/colonna non è valido, se
-/// la projection è vuota, o se il predicato è mal-formato (es. `DWithin` con
-/// distanza negativa o non finita).
+/// la projection è vuota, se lo SRID o le dimensioni incorporati nell'EWKB
+/// divergono da quelli dichiarati, o se il predicato è mal-formato (es.
+/// `DWithin` con distanza negativa o non finita).
 pub fn build_spatial_select(
     schema: Option<&str>,
     table: &str,
@@ -61,11 +59,36 @@ pub fn build_spatial_select(
 
     // La policy condivisa copre distanza finita e positiva, DWithin geometry
     // con SRID geografico fail-closed e BoundingBox geography non supportato.
+    // `validate` confronta lo SRID dichiarato con quello incorporato
+    // nell'EWKB e le dimensioni: fino al 25/10 questo builder non lo
+    // chiamava, a differenza del compilatore portable.
+    filter.reference.validate()?;
     spatial_policy::validate_predicate(
         ProviderKind::Postgres,
         &filter.predicate,
         &filter.reference,
     )?;
+    // La regola delle sonde, come nel compilatore portable: chi esegue questo
+    // statement non ha letto il catalogo, e la sonda passa soltanto dalla
+    // guardia del server sul typmod della colonna, resa qui sotto. Una sonda
+    // senza SRID e `crs`.
+    spatial_probe::admit_probe(
+        ProviderKind::Postgres,
+        spatial_probe::ProbeEvidence::CompileOnly,
+        if matches!(filter.predicate, SpatialPredicate::BoundingBox) {
+            spatial_probe::ProbeUse::BoundingBox
+        } else {
+            spatial_probe::ProbeUse::Function
+        },
+        if filter.reference.srid == 0 {
+            spatial_probe::ProbeFrame::Missing
+        } else {
+            spatial_probe::ProbeFrame::Declared(filter.reference.srid)
+        },
+    )?;
+    let srid = i32::try_from(filter.reference.srid).map_err(|_| {
+        DatabaseError::invalid_plan("SRID oltre il range i32 supportato da PostGIS")
+    })?;
 
     // Validazione e quoting passano da un'unica funzione condivisa.
     let projection_sql = projection
@@ -74,11 +97,24 @@ pub fn build_spatial_select(
         .collect::<Result<Vec<_>, _>>()?
         .join(", ");
 
-    let mut params: Vec<ParameterValue> = Vec::with_capacity(2);
-    let geom_index = 1;
-    params.push(ParameterValue::Bytes(filter.reference.ewkb.clone()));
-
+    let relation = qualify_table(schema, table)?;
     let column_raw = quote_identifier(&filter.geometry_column)?;
+    // La sonda porta lo SRID dichiarato, e il server lo confronta con quello
+    // della colonna prima di ogni riga (`postgres_guarded_probe`). Fino al
+    // 25/10 era `ST_GeomFromEWKB($1)`: un WKB senza SRID arrivava con SRID 0,
+    // verso `geography` diventava 4326 per cast implicito, e `&&` non
+    // confrontava gli SRID.
+    let mut params: Vec<ParameterValue> = vec![
+        ParameterValue::Bytes(filter.reference.ewkb.clone()),
+        ParameterValue::I32(srid),
+        ParameterValue::String(relation.clone()),
+        ParameterValue::String(filter.geometry_column.clone()),
+    ];
+    let ref_sql = format!(
+        "{}{}",
+        spatial_probe::postgres_guarded_probe("$1", "$2::int4", "$3::text", "$4::text"),
+        spatial_policy::postgres_cast_for(filter.reference.semantics)
+    );
     let column = if filter.reference.semantics == SpatialSemantics::Geography {
         // Cast anche sulla colonna per operator resolution PostGIS
         // (allineato con compiler.rs).
@@ -86,7 +122,6 @@ pub fn build_spatial_select(
     } else {
         column_raw
     };
-    let ref_sql = ref_expr(geom_index, filter.reference.semantics);
 
     let where_sql = match &filter.predicate {
         SpatialPredicate::Intersects => format!("ST_Intersects({column}, {ref_sql})"),
@@ -95,16 +130,12 @@ pub fn build_spatial_select(
         SpatialPredicate::BoundingBox => format!("{column} && {ref_sql}"),
         SpatialPredicate::DWithin { distance_meters } => {
             // Distanza già validata (finita, non-negativa) da spatial_policy.
-            let dist_index = 2;
             params.push(ParameterValue::F64(*distance_meters));
-            format!("ST_DWithin({column}, {ref_sql}, ${dist_index})")
+            format!("ST_DWithin({column}, {ref_sql}, $5)")
         }
     };
 
-    let mut sql = format!(
-        "SELECT {projection_sql} FROM {} WHERE {where_sql}",
-        qualify_table(schema, table)?
-    );
+    let mut sql = format!("SELECT {projection_sql} FROM {relation} WHERE {where_sql}");
     if let Some(n) = limit {
         sql.push_str(" LIMIT ");
         sql.push_str(&n.to_string());

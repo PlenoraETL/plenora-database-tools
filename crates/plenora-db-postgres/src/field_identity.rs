@@ -5,22 +5,37 @@ use plenora_database_core::plan::{WriteMode, WriteOperation};
 use plenora_database_core::protocol::{canonical_field_id, FIELD_ID};
 use plenora_database_core::{ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
-use tokio_postgres::Transaction;
+use tokio_postgres::{Client, Transaction};
 
 const PREFIX: &str = "plenora.field_id.v1:";
+
+const COLUMN_COMMENT: &str = "SELECT col_description(a.attrelid, a.attnum) \
+     FROM pg_catalog.pg_attribute a \
+     WHERE a.attrelid = $1::text::regclass AND a.attname = $2 \
+     AND a.attnum > 0 AND NOT a.attisdropped";
 
 /// La prima riga e riservata; il resto del commento resta byte per byte.
 /// Un'intestazione riservata corrotta non diventa un nuovo id di provenienza.
 /// Limite dichiarato: se il commento o il prefisso vengono rimossi a mano,
 /// la colonna equivale a una mai registrata e usa il fallback di provenienza.
 /// Il commento non autentica l'identita e non rileva tale manomissione.
-pub fn registered_id(comment: Option<&str>) -> Result<Option<&str>> {
+///
+/// L'id si restituisce nella forma canonica (GEO-016: senza zeri iniziali).
+///
+/// # Deviazione dichiarata (GEO-016, contracts/adoption-source.json)
+///
+/// Le versioni precedenti registravano l'id cosi come arrivava, e `007` era
+/// un ingresso ammesso: un commento gia scritto in quella forma resta
+/// leggibile e si pubblica canonico (`7`), invece di rendere la tabella
+/// illeggibile. Un ingresso nuovo resta severo: `validate_schema_contract`
+/// rifiuta `007` prima che arrivi alla registrazione. Rientra quando nessun
+/// commento registrato dalle versioni precedenti puo piu essere letto.
+pub fn registered_id(comment: Option<&str>) -> Result<Option<String>> {
     let Some(value) = comment.and_then(|text| text.strip_prefix(PREFIX)) else {
         return Ok(None);
     };
     let (id, _) = value.split_once('\n').ok_or_else(invalid_comment)?;
-    canonical_field_id(id).ok_or_else(invalid_comment)?;
-    Ok(Some(id))
+    canonical_field_id(id).ok_or_else(invalid_comment).map(Some)
 }
 
 fn invalid_comment() -> plenora_database_core::DatabaseError {
@@ -34,7 +49,8 @@ fn invalid_comment() -> plenora_database_core::DatabaseError {
 
 fn registration(comment: Option<&str>, incoming: &str) -> Result<Option<String>> {
     if let Some(existing) = registered_id(comment)? {
-        if canonical_field_id(existing) != canonical_field_id(incoming) {
+        if Some(existing) != canonical_field_id(incoming) {
+            // Entrambi in forma canonica: `7` e `007` sono lo stesso id.
             return Err(public_error(
                 ErrorCategory::Conflict,
                 ErrorPhase::Write,
@@ -44,7 +60,8 @@ fn registration(comment: Option<&str>, incoming: &str) -> Result<Option<String>>
         }
         return Ok(None);
     }
-    canonical_field_id(incoming).ok_or_else(invalid_comment)?;
+    // Si registra la forma canonica, quella che la lettura pubblica.
+    let incoming = canonical_field_id(incoming).ok_or_else(invalid_comment)?;
     Ok(Some(format!(
         "{PREFIX}{incoming}\n{}",
         comment.unwrap_or("")
@@ -64,19 +81,8 @@ pub async fn register(
     {
         return Ok(());
     }
-    let renderer = Renderer::new(
-        Dialect::Postgres,
-        DialectCapabilities {
-            spatial_intersects: true,
-        },
-    );
-    let target = renderer.quote_object(&ObjectName {
-        catalog: None,
-        schema: Some(Identifier::new(
-            operation.target.schema.as_deref().unwrap_or("public"),
-        )?),
-        object: Identifier::new(operation.target.object.clone())?,
-    })?;
+    let renderer = renderer();
+    let target = quoted_target(&renderer, operation)?;
     // Serializza registrazione e confronto anche fra append concorrenti.
     transaction
         .batch_execute(&format!("LOCK TABLE {target} IN SHARE ROW EXCLUSIVE MODE"))
@@ -87,12 +93,7 @@ pub async fn register(
             continue;
         };
         let row = transaction
-            .query_one(
-                "SELECT col_description(a.attrelid, a.attnum) FROM pg_catalog.pg_attribute a \
-             WHERE a.attrelid = $1::text::regclass AND a.attname = $2 \
-             AND a.attnum > 0 AND NOT a.attisdropped",
-                &[&target, field.name()],
-            )
+            .query_one(COLUMN_COMMENT, &[&target, field.name()])
             .await
             .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
         let comment: Option<String> = row.get(0);
@@ -112,6 +113,85 @@ pub async fn register(
         }
     }
     Ok(())
+}
+
+/// La decisione di [`register`] senza registrare, per il dry run: legge i
+/// commenti delle colonne del target e rifiuta come la scrittura un id
+/// divergente o non registrabile. Senza `LOCK`: un dry run e una previsione,
+/// e un append concorrente puo ancora cambiare il commento prima della
+/// scrittura, che resta l'unica a decidere sotto lock.
+///
+/// `may_lock` dice se l'utente puo prendere il `LOCK` di [`register`]
+/// (`UPDATE`, `DELETE` o `TRUNCATE` sulla tabella), `owner` se puo scrivere
+/// `COMMENT ON COLUMN` (la proprieta della tabella): senza, la scrittura
+/// fallisce `authorization` in fase `write`, e il dry run lo dice nello
+/// stesso punto.
+pub async fn check(
+    client: &Client,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+    may_lock: bool,
+    owner: bool,
+) -> Result<()> {
+    if operation.mode == WriteMode::DeleteByKeys
+        || !schema
+            .fields()
+            .iter()
+            .any(|field| field.metadata().contains_key(FIELD_ID))
+    {
+        return Ok(());
+    }
+    let denied = || {
+        public_error(
+            ErrorCategory::Authorization,
+            ErrorPhase::Write,
+            false,
+            "permesso PostgreSQL insufficiente",
+        )
+    };
+    if !may_lock {
+        return Err(denied());
+    }
+    let target = quoted_target(&renderer(), operation)?;
+    for field in schema.fields() {
+        let Some(incoming) = field.metadata().get(FIELD_ID) else {
+            continue;
+        };
+        // Create fabbrica la tabella: nessuna colonna ha ancora un commento.
+        // Una colonna che l'evoluzione dello schema aggiungerebbe, neppure.
+        let comment: Option<String> = if operation.mode == WriteMode::Create {
+            None
+        } else {
+            client
+                .query_opt(COLUMN_COMMENT, &[&target, field.name()])
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Write, &error))?
+                .and_then(|row| row.get(0))
+        };
+        if registration(comment.as_deref(), incoming)?.is_some() && !owner {
+            return Err(denied());
+        }
+    }
+    Ok(())
+}
+
+const fn renderer() -> Renderer {
+    Renderer::new(
+        Dialect::Postgres,
+        DialectCapabilities {
+            spatial_intersects: true,
+        },
+    )
+}
+
+fn quoted_target(renderer: &Renderer, operation: &WriteOperation) -> Result<String> {
+    renderer.quote_object(&ObjectName {
+        catalog: None,
+        schema: Some(Identifier::new(
+            operation.target.schema.as_deref().unwrap_or("public"),
+        )?),
+        object: Identifier::new(operation.target.object.clone())?,
+    })
 }
 
 #[cfg(test)]

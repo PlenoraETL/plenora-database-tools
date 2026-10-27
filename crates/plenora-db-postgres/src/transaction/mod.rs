@@ -579,6 +579,30 @@ impl TransactionScope for PostgresTransaction {
         })
     }
 
+    fn operand_catalog<'a>(
+        &'a mut self,
+        relations: &'a [(Option<String>, String)],
+        _names: &'a [String],
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, plenora_database_core::spatial_operand::OperandCatalog> {
+        Box::pin(async move {
+            self.ensure_open(ErrorPhase::Prepare)?;
+            check_cancelled(cancellation, ErrorPhase::Prepare)?;
+            let client = self.client.client()?;
+            let read = crate::spatial_probe::operand_catalog(client, relations);
+            let Some(result) = select_with_cancellation(read, cancellation).await else {
+                self.client.invalidate();
+                self.open = false;
+                return Err(Self::interruption_error(
+                    cancellation,
+                    ErrorPhase::Prepare,
+                    "lettura del catalogo PostgreSQL cancellata",
+                ));
+            };
+            result
+        })
+    }
+
     fn execute_conditional_update<'a>(
         &'a mut self,
         request: ConditionalUpdate<'a>,

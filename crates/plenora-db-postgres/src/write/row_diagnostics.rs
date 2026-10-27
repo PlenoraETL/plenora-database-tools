@@ -260,16 +260,25 @@ async fn rollback_error(
     mut error: DatabaseError,
     execution_id: &str,
 ) -> DatabaseError {
-    let confirmed = transaction.rollback().await.is_ok();
+    let rollback = super::recovery::Rollback::of(transaction).await;
     error.provider = Some(ProviderKind::Postgres);
     error.execution_id = Some(execution_id.to_owned());
-    if confirmed {
-        error.remote_effect = RemoteEffect::RolledBack;
-        error.retry = RetryDisposition::Never;
-    } else {
-        error.phase = ErrorPhase::Rollback;
-        error.remote_effect = RemoteEffect::Unknown;
-        error.retry = RetryDisposition::Quarantine;
+    match rollback {
+        super::recovery::Rollback::Confirmed => {
+            error.remote_effect = RemoteEffect::RolledBack;
+            error.retry = RetryDisposition::Never;
+        }
+        // La sessione chiusa prima del COMMIT scarta la transazione: la
+        // stessa regola del percorso ordinario (`never_committed`).
+        super::recovery::Rollback::SessionClosed => {
+            error = super::recovery::never_committed(error);
+            error.retry = RetryDisposition::Never;
+        }
+        super::recovery::Rollback::Unconfirmed => {
+            error.phase = ErrorPhase::Rollback;
+            error.remote_effect = RemoteEffect::Unknown;
+            error.retry = RetryDisposition::Quarantine;
+        }
     }
     error
 }
@@ -482,12 +491,7 @@ impl RowScopedWriter for PostgresRowWriter<'_, '_> {
             loop {
                 match self.input.next_batch(self.cancellation).await {
                     Ok(Some(batch)) if batch.num_rows() == 0 => {}
-                    Ok(Some(_)) => {
-                        return Err(diagnostic_error(
-                            ErrorCategory::InvalidPlan,
-                            "input PostgreSQL oltre il totale dichiarato",
-                        ));
-                    }
+                    Ok(Some(_)) => return Err(input_beyond_declared_error()),
                     Ok(None) => return Ok(()),
                     Err(error) => return Err(provider_write_error(error)),
                 }
@@ -531,7 +535,7 @@ fn invalid_affected_rows(_affected: u64) -> DatabaseError {
     )
 }
 
-fn short_input_error() -> DatabaseError {
+pub(super) fn short_input_error() -> DatabaseError {
     diagnostic_error(
         ErrorCategory::InvalidPlan,
         "input PostgreSQL esaurito prima delle righe dichiarate",
@@ -542,11 +546,15 @@ fn validate_consumed_batch_end(end: u64, applied: u64) -> Result<()> {
     if end == applied {
         Ok(())
     } else {
-        Err(diagnostic_error(
-            ErrorCategory::InvalidPlan,
-            "input PostgreSQL oltre il totale dichiarato",
-        ))
+        Err(input_beyond_declared_error())
     }
+}
+
+pub(super) fn input_beyond_declared_error() -> DatabaseError {
+    diagnostic_error(
+        ErrorCategory::InvalidPlan,
+        "input PostgreSQL oltre il totale dichiarato",
+    )
 }
 
 fn batch_rows(batch: &RecordBatch) -> Result<u64> {
@@ -567,7 +575,7 @@ fn checked_batch_end(batch_start: u64, rows: u64) -> Result<u64> {
     })
 }
 
-const fn provider_write_error(mut error: DatabaseError) -> DatabaseError {
+pub(super) const fn provider_write_error(mut error: DatabaseError) -> DatabaseError {
     error.phase = ErrorPhase::Write;
     error.provider = Some(ProviderKind::Postgres);
     error

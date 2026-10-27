@@ -92,6 +92,7 @@ pub async fn read_operation(
     )
     .await?;
     let mut plan = SqlServerReadPlan::compile_operation(&description, operation)?;
+    crate::types::ensure_read_families(&description, operation, parameters)?;
     let column_count = u64::try_from(description.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
@@ -151,6 +152,8 @@ pub async fn read_query_operation(
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;
     let internal = budget_cancellation.token().clone();
     let mut pooled = pool.checkout(&internal).await?;
+    crate::query::verify_scalar_operands(pooled.session_mut()?, operation, parameters, &internal)
+        .await?;
     let spatial_validation = validate_spatial_inputs(
         pooled.session_mut()?,
         operation,

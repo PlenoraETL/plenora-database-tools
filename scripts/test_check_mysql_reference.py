@@ -318,8 +318,13 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             "live_tests::live_verified_tls_rejects_a_hostname_mismatch",
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
         )
-        # Le prove concorrenti verificano il recupero delle connessioni e del pool.
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 35)
+        # Le prove concorrenti verificano il recupero delle connessioni e del pool;
+        # l'ultima aggiunta e l'ordine degli assi geografici (GEO-001).
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 36)
+        self.assertIn(
+            "live_tests::live_geographic_axis_order_round_trips_and_derived_srid_is_verified",
+            gate.EXPECTED_LIVE_REFERENCE_TESTS,
+        )
 
     def test_gate_pins_the_query_operation_live_test_by_name(self) -> None:
         for name in (
@@ -2297,9 +2302,9 @@ class PythonSdkRunnerTests(unittest.TestCase):
         stabilization = sdk.SCOPE_CONTRACTS["stabilization"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (589, 16, 0))
+        self.assertEqual((live.passed, live.skipped, live.deselected), (595, 16, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (304, 301, 0)
+            (offline.passed, offline.skipped, offline.deselected), (310, 301, 0)
         )
         self.assertEqual(
             (
@@ -2311,7 +2316,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 603),
+            (2, 0, 609),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
         # il wheel standard salta Db2 e Oracle anche live, e nessuno

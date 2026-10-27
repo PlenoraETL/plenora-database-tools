@@ -344,6 +344,11 @@ jobs:
           python3 scripts/check_public_contracts.py \
             --contracts .plenora-contracts \
             --cli "$RUNNER_TEMP/released-cli/plenora-database"
+          python3 -m pip install --only-binary=":all:" -r requirements-vectors.txt
+          python3 scripts/vettori_arrow_data.py \
+            --contracts .plenora-contracts \
+            --cli "$RUNNER_TEMP/released-cli/plenora-database" \
+            --referto "$RUNNER_TEMP/vettori-arrow-data.json"
       - name: Generate the immutable adoption manifest
         shell: bash
         run: |
@@ -366,6 +371,7 @@ jobs:
             --verification "python3 scripts/check_public_contracts.py --contracts .plenora-contracts --cli $RUNNER_TEMP/released-cli/plenora-database" \
             --verification "cargo test --locked -p plenora-database-core --test public_rust_surface_v1" \
             --verification "bash .github/scripts/offline_suite.sh"             --verification "cargo test --locked -p plenora-database-engine --test runtime_vectors" \
+            --verification "python3 scripts/vettori_arrow_data.py --contracts .plenora-contracts --cli $RUNNER_TEMP/released-cli/plenora-database --referto $RUNNER_TEMP/vettori-arrow-data.json" \
             --schema .plenora-contracts/schemas/adoption-manifest-v4.schema.json \
             --output dist/plenora-database-${version}.adoption-manifest.json
       - name: Verify the collected SBOM before attestation

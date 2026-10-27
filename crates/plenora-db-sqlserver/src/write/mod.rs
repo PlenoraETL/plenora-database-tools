@@ -363,6 +363,15 @@ async fn compile_write_plan(
                 cancellation,
             )
             .await?;
+            lifecycle::validate_row_visibility(
+                pooled.session_mut()?,
+                schema,
+                &operation.target.object,
+                operation.mode,
+                ErrorPhase::Prepare,
+                cancellation,
+            )
+            .await?;
             let observed_spatial =
                 inspect_target_spatial_contracts(pooled.session_mut()?, &description, cancellation)
                     .await?;
@@ -752,6 +761,17 @@ async fn prepare_transaction_target(
         } => {
             lock_and_verify_schema(pooled, plan, lock_sql, schema_fingerprint, cancellation)
                 .await?;
+            // La regola R di nuovo con il lock preso: un predicato o un
+            // trigger creati dopo `prepare_write` non passano.
+            lifecycle::validate_row_visibility(
+                pooled.session_mut()?,
+                &plan.schema,
+                &plan.object,
+                plan.mode,
+                ErrorPhase::Write,
+                cancellation,
+            )
+            .await?;
             for sql in add_columns_sql {
                 pooled
                     .session_mut()?

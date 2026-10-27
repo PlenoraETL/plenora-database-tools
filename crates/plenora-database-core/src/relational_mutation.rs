@@ -87,7 +87,7 @@ fn upsert_statement(
         .map(|assignment| {
             Ok((
                 assignment.column.clone(),
-                value(&assignment.value, &operation.target, bind_names)?,
+                value(&assignment.value, &operation.target, bind_names, false)?,
             ))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -144,7 +144,7 @@ fn update_statement(
         .map(|assignment| {
             Ok((
                 assignment.column.clone(),
-                value(&assignment.value, &operation.target, bind_names)?,
+                value(&assignment.value, &operation.target, bind_names, false)?,
             ))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -211,13 +211,27 @@ fn insert_value(expression: &QueryExpression, bind_names: &mut Vec<String>) -> R
     }
 }
 
+/// Un valore di un'assegnazione (`compared` falso) o di un predicato
+/// (`compared` vero). Un parametro tipizzato confrontato si rende come lo
+/// rende il renderer delle query (`CastDialect::render`, regola T); scritto,
+/// con il solo segnaposto. Fino alla quattordicesima lettura del 25/10 il
+/// predicato rendeva il segnaposto nudo, e il server convertiva il valore
+/// legato verso la colonna.
 fn value(
     expression: &QueryExpression,
     target: &crate::plan::ObjectRef,
     bind_names: &mut Vec<String>,
+    compared: bool,
 ) -> Result<Expression> {
     match expression {
         QueryExpression::Parameter { name } => Ok(parameter(name, None, bind_names)),
+        QueryExpression::TypedParameter {
+            name,
+            parameter_type,
+        } if compared => {
+            bind_names.push(name.clone());
+            Ok(Expression::TypedParameter(*parameter_type))
+        }
         QueryExpression::TypedParameter {
             name,
             parameter_type,
@@ -267,8 +281,12 @@ fn spatial_value(
         ));
     };
     bind_names.push(name.clone());
+    // Sentinella non geometrica: il compilatore portable giudica lo SRID di
+    // un letterale geometrico, e questo non e un valore del chiamante.
     Ok(Expression::SpatialValue {
-        expression: Box::new(Expression::Literal(ParameterValue::Bytes(Vec::new()))),
+        expression: Box::new(Expression::Literal(ParameterValue::Null {
+            type_name: "bytea".to_owned(),
+        })),
         srid,
         semantics,
     })
@@ -286,7 +304,7 @@ fn predicate(
             right,
         } => {
             let column = column(left, target)?;
-            let value = value(right, target, bind_names)?;
+            let value = value(right, target, bind_names, true)?;
             Ok(match operator {
                 ComparisonOperator::Eq => Predicate::Eq { column, value },
                 ComparisonOperator::Ne => Predicate::Ne { column, value },
@@ -305,7 +323,7 @@ fn predicate(
                 column: column(expression, target)?,
                 values: values
                     .iter()
-                    .map(|expression| value(expression, target, bind_names))
+                    .map(|expression| value(expression, target, bind_names, true))
                     .collect::<Result<Vec<_>>>()?,
             };
             Ok(negate(predicate, *negated))
@@ -318,8 +336,8 @@ fn predicate(
         } => {
             let predicate = Predicate::Between {
                 column: column(expression, target)?,
-                low: value(lower, target, bind_names)?,
-                high: value(upper, target, bind_names)?,
+                low: value(lower, target, bind_names, true)?,
+                high: value(upper, target, bind_names, true)?,
             };
             Ok(negate(predicate, *negated))
         }
@@ -336,7 +354,7 @@ fn predicate(
             }
             let predicate = Predicate::Like {
                 column: column(expression, target)?,
-                pattern: value(pattern, target, bind_names)?,
+                pattern: value(pattern, target, bind_names, true)?,
             };
             Ok(negate(predicate, *negated))
         }

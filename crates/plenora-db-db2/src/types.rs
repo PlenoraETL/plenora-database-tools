@@ -284,6 +284,7 @@ impl Db2ReadPlan {
             .iter()
             .map(|column| column.name.as_str())
             .collect::<BTreeSet<_>>();
+        ensure_scalar_fields(description, operation)?;
         let bind_names = if let Some((filter_sql, filter_binds)) =
             render_filter(&renderer, operation.filter.as_ref(), &available_names)?
         {
@@ -450,6 +451,44 @@ fn canonical_geometry_type(native_type: &str) -> Option<&'static str> {
         "ST_GEOMCOLLECTION" => Some("geometrycollection"),
         _ => None,
     }
+}
+
+/// Un campo geometrico sotto un operatore non spatial o in ORDER BY
+/// confronterebbe il formato interno del server con il valore legato
+/// (`spatial_operand`).
+///
+/// Sul nome del tipo della descrizione, senza schema: ogni tipo `ST_` (anche
+/// `ST_SURFACE`, `ST_CURVE`, `ST_MULTICURVE`, `ST_MULTISURFACE`,
+/// `ST_RASTER`, che la lettura non mappa: fino al 25/10 un filtro su quelle
+/// colonne passava), e un `BLOB`, `BINARY` o `VARBINARY` di una vista, che
+/// puo essere una geometria resa da una funzione spatial o da un `CAST`
+/// (regola B, `crate::operand_catalog`; `FOR BIT DATA` e i tipi distinti li
+/// giudica il catalogo). Il nome non dice
+/// lo schema: un omonimo `ST_` di un altro schema si rifiuta anche se e
+/// scalare. La lettura poi giudica gli stessi campi sul catalogo, con lo
+/// schema e la fonte del tipo.
+fn ensure_scalar_fields(
+    description: &Db2ObjectDescription,
+    operation: &ReadOperation,
+) -> Result<()> {
+    let computed = description.kind == "VIEW";
+    plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+        plenora_database_core::plan::ProviderKind::Db2,
+        operation.filter.as_ref(),
+        &operation.order_by,
+        |field| {
+            description.columns.iter().any(|column| {
+                let native = column.data_type.to_ascii_uppercase();
+                column.name == field
+                    && (native.starts_with("ST_")
+                        || (computed && matches!(native.as_str(), "BLOB" | "BINARY" | "VARBINARY")))
+            })
+        },
+        // La regola F e le colonne generate le giudica la lettura sul
+        // catalogo, con i valori.
+        |_| Ok(None),
+        &plenora_database_core::spatial_operand::ParameterFamilies::default(),
+    )
 }
 
 fn render_filter(

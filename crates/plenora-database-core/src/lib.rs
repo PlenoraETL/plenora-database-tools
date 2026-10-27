@@ -5,8 +5,10 @@
 pub mod caller_sql;
 pub mod cancellation;
 pub mod capabilities;
+pub mod cast_table;
 pub mod checkpoint;
 pub mod conformance;
+pub mod crs_definition;
 pub mod ddl_residue;
 pub mod error;
 pub mod ewkb;
@@ -16,6 +18,7 @@ pub mod fingerprint;
 #[cfg(test)]
 mod fingerprint_tests;
 pub mod geometry;
+pub mod geometry_value;
 pub mod graph;
 pub mod identifier;
 pub mod limits;
@@ -35,12 +38,16 @@ pub mod relational_mutation;
 pub mod resource;
 pub mod row;
 pub mod row_diagnostics;
+pub mod row_visibility;
 pub mod session_context;
 pub mod spatial_catalog;
+pub mod spatial_operand;
 pub mod spatial_policy;
 pub mod spatial_predicate;
+pub mod spatial_probe;
 pub mod strict_json;
 pub mod transaction;
+pub mod typed_parameter;
 
 pub use cancellation::{CancellationReason, CancellationToken};
 pub use checkpoint::{ReadCheckpoint, READ_CHECKPOINT_SCHEMA_VERSION};

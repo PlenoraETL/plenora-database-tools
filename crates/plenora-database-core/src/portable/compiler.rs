@@ -121,6 +121,12 @@ impl ReturningForm {
 struct CompileContext {
     params: Vec<ParameterValue>,
     dialect: DialectKind,
+    /// La tabella dello statement, gia quotata: il predicato spatial
+    /// `PostgreSQL` vi legge lo SRID della colonna (`postgres_guarded_probe`).
+    relation: Option<String>,
+    /// Si sta compilando un predicato: un valore spatial qui sarebbe
+    /// confrontato, non scritto.
+    in_predicate: bool,
 }
 
 impl CompileContext {
@@ -128,6 +134,8 @@ impl CompileContext {
         Self {
             params: Vec::new(),
             dialect,
+            relation: None,
+            in_predicate: false,
         }
     }
 
@@ -223,6 +231,18 @@ impl From<DialectKind> for IdentifierDialect {
     }
 }
 
+/// Il dialetto della forma unica dei parametri tipizzati.
+const fn cast_dialect(dialect: DialectKind) -> crate::typed_parameter::CastDialect {
+    use crate::typed_parameter::CastDialect;
+    match dialect {
+        DialectKind::Postgres => CastDialect::Postgres,
+        DialectKind::Mysql | DialectKind::Mariadb => CastDialect::Mysql,
+        DialectKind::SqlServer => CastDialect::SqlServer,
+        DialectKind::Oracle => CastDialect::Oracle,
+        DialectKind::Db2 => CastDialect::Db2,
+    }
+}
+
 fn qualify_table(table: &TableRef, dialect: DialectKind) -> Result<String> {
     let table_id = quote_identifier(&table.name, dialect)?;
     if let Some(schema) = &table.schema {
@@ -236,6 +256,12 @@ fn qualify_table(table: &TableRef, dialect: DialectKind) -> Result<String> {
 fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<String> {
     match expr {
         Expression::Literal(v) => Ok(ctx.bind(v.clone())),
+        // La sentinella non e un valore del chiamante: serve al segnaposto,
+        // e la conversione la rende la forma unica del parametro tipizzato.
+        Expression::TypedParameter(parameter_type) => {
+            let placeholder = ctx.bind(ParameterValue::I64(0));
+            Ok(cast_dialect(ctx.dialect).render(&placeholder, *parameter_type))
+        }
         Expression::Column(name) => quote_identifier(name, ctx.dialect),
         Expression::SpatialValue {
             expression,
@@ -247,10 +273,45 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     "valore spatial richiede SRID positivo",
                 ));
             }
+            // Un valore spatial in un predicato si confronta con `=`, `IN`,
+            // `BETWEEN`: nessuno di questi confronta gli SRID, e un
+            // `PostGIS` `=` fra sistemi diversi e falso senza errore. Nel
+            // compilatore portable i predicati spatial passano da
+            // `Predicate::Spatial`; qui il valore e soltanto scritto.
+            if ctx.in_predicate {
+                return Err(DatabaseError::unsupported(
+                    dialect_provider(ctx.dialect),
+                    crate::ErrorPhase::Prepare,
+                    crate::spatial_probe::SPATIAL_VALUE_OUTSIDE_SPATIAL,
+                ));
+            }
+            // Un valore che porta uno SRID proprio deve avere quello
+            // dichiarato: `PostGIS` lo sovrascriverebbe con `ST_SetSRID`, e
+            // gli altri dialetti ignorano il `srid` di `ParameterValue::Wkb`.
+            // Il valore e noto qui; per i bind del path relazionale lo
+            // ripete il server (`postgres_spatial_value`).
+            if let Expression::Literal(literal) = expression.as_ref() {
+                crate::spatial_probe::check_spatial_value(
+                    dialect_provider(ctx.dialect),
+                    literal,
+                    *srid,
+                    u64::MAX,
+                )?;
+            }
+            // Scritto in una colonna: la regola delle sonde decide se lo
+            // SRID della colonna e provato (guardia del server su
+            // PostgreSQL e MySQL; MariaDB, Oracle e Db2 non lo vincolano o
+            // non sono misurati, e il compilatore non ha il catalogo).
+            crate::spatial_probe::admit_probe(
+                dialect_provider(ctx.dialect),
+                crate::spatial_probe::ProbeEvidence::CompileOnly,
+                crate::spatial_probe::ProbeUse::WriteValue,
+                crate::spatial_probe::ProbeFrame::Declared(*srid),
+            )?;
             let value = compile_expression(expression, ctx)?;
             match ctx.dialect {
                 DialectKind::Postgres => {
-                    let geometry = format!("ST_SetSRID(ST_GeomFromEWKB({value}), {srid})");
+                    let geometry = crate::spatial_probe::postgres_spatial_value(&value, *srid);
                     Ok(match semantics {
                         SpatialSemantics::Geometry => geometry,
                         SpatialSemantics::Geography => format!("({geometry})::geography"),
@@ -263,8 +324,14 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     // tipizzato. MariaDB rifiuta il placeholder nudo con
                     // 4079; la forma con CAST e stata misurata dalla sonda
                     // `raw.spatial_write_forms` ed e condivisa con il writer
-                    // Arrow dello stesso crate provider.
-                    Ok(format!("ST_GeomFromWKB(CAST({value} AS BINARY), {srid})"))
+                    // Arrow dello stesso crate provider. L'ordine degli assi
+                    // no: `MySQL` legge il WKB di un SRS geografico nell'ordine
+                    // del registro, e il valore ha la longitudine per prima
+                    // (GEO-001).
+                    Ok(format!(
+                        "ST_GeomFromWKB(CAST({value} AS BINARY), {srid}{})",
+                        wkb_axis_argument(ctx.dialect)
+                    ))
                 }
                 DialectKind::SqlServer => {
                     let constructor = match semantics {
@@ -293,6 +360,13 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
 }
 
 fn compile_predicate(pred: &Predicate, ctx: &mut CompileContext) -> Result<String> {
+    let outer = std::mem::replace(&mut ctx.in_predicate, true);
+    let compiled = compile_predicate_inner(pred, ctx);
+    ctx.in_predicate = outer;
+    compiled
+}
+
+fn compile_predicate_inner(pred: &Predicate, ctx: &mut CompileContext) -> Result<String> {
     match pred {
         Predicate::Eq { column, value } => {
             let c = quote_identifier(column, ctx.dialect)?;
@@ -395,11 +469,32 @@ fn compile_spatial(
     ctx: &mut CompileContext,
 ) -> Result<String> {
     let col = quote_identifier(column, ctx.dialect)?;
+    reference.validate()?;
+    // La regola delle sonde, la stessa del renderer relazionale: il
+    // compilatore portable non ha il catalogo, quindi una sonda e eseguibile
+    // soltanto dove una guardia del server misurata rifiuta un altro SRID
+    // prima di ogni riga (PostgreSQL con la guardia sul typmod, MySQL con
+    // 3033/3643). SQL Server, MariaDB, Oracle e Db2 la rifiutano qui: i loro
+    // predicati rendono `NULL` o righe con SRID diversi, o non sono misurati.
+    crate::spatial_probe::admit_probe(
+        dialect_provider(ctx.dialect),
+        crate::spatial_probe::ProbeEvidence::CompileOnly,
+        if matches!(predicate, SpatialPredicate::BoundingBox) {
+            crate::spatial_probe::ProbeUse::BoundingBox
+        } else {
+            crate::spatial_probe::ProbeUse::Function
+        },
+        if reference.srid == 0 {
+            crate::spatial_probe::ProbeFrame::Missing
+        } else {
+            crate::spatial_probe::ProbeFrame::Declared(reference.srid)
+        },
+    )?;
     match ctx.dialect {
-        DialectKind::Postgres => compile_spatial_postgres(&col, predicate, reference, ctx),
-        // `ST_GeomFromWKB` e i predicati spatial: nessuna divergenza misurata
-        // fra i due prodotti — `raw.spatial_functions` ha registrato lo stesso
-        // esito sui tre riferimenti.
+        DialectKind::Postgres => compile_spatial_postgres(column, &col, predicate, reference, ctx),
+        // La forma e la stessa sui due prodotti (`raw.spatial_functions`), lo
+        // SRID no: `MySQL` rifiuta due SRID diversi, `MariaDB` li confronta
+        // senza errore, e la regola delle sonde lo ha gia rifiutato sopra.
         DialectKind::Mysql | DialectKind::Mariadb => {
             compile_spatial_mysql(&col, predicate, reference, ctx)
         }
@@ -491,6 +586,24 @@ fn compile_spatial_db2(
 /// `geometry` e `geography` sono due tipi, e chiamare il metodo dell'uno su un
 /// valore dell'altro non compila. E' l'unica cosa che il piano deve dire e che
 /// negli altri dialetti non serviva.
+///
+/// # Limite dichiarato
+///
+/// - **Regola.** Nessun predicato spatial portable verso SQL Server: la
+///   regola delle sonde (`spatial_probe::admit_probe`) lo rifiuta prima di
+///   arrivare qui, perche il compilatore non ha il catalogo e SQL Server non
+///   ha una guardia che rifiuti uno SRID diverso.
+/// - **Ambito.** `where_spatial` dello SDK su Select, Update e Delete, la
+///   facade, le mutazioni relazionali verso SQL Server.
+/// - **Hazard evitato.** Con SRID diversi i metodi rendono `NULL` invece di
+///   un errore, e `= 1` esclude la riga (anche sotto `NOT`, con
+///   `STEnvelope`, su `geography` 4326 contro 4269): meno righe lette o
+///   toccate, con successo. Misurato su SQL Server 2022 il 25/10.
+/// - **Rientro.** Una guardia per valore (`STSrid`) che fallisca invece di
+///   escludere, misurata sul fixture SQL Server; oppure il path `query` del
+///   provider, che confronta gia gli SRID osservati nella colonna.
+///
+/// La forma resta qui, completa, per quel rientro.
 fn compile_spatial_sqlserver(
     col: &str,
     predicate: &SpatialPredicate,
@@ -537,6 +650,7 @@ fn compile_spatial_sqlserver(
 }
 
 fn compile_spatial_postgres(
+    column: &str,
     col: &str,
     predicate: &SpatialPredicate,
     reference: &SpatialReference,
@@ -578,8 +692,29 @@ fn compile_spatial_postgres(
         ))
     })?;
     let srid_placeholder = ctx.bind(ParameterValue::I32(srid_i32));
-    let geom_expr =
-        format!("ST_SetSRID(ST_GeomFromEWKB({geom_placeholder}), {srid_placeholder}){cast}");
+    // Lo SRID dichiarato contro quello della colonna, dal server prima di
+    // ogni riga: senza, `&&` confrontava una sonda 3857 con una colonna 4326
+    // senza errore, e un `ST_*` indicizzato rendeva zero righe quando la
+    // sonda non toccava i candidati dell'indice.
+    let relation = ctx.relation.clone().ok_or_else(|| {
+        DatabaseError::new(
+            crate::ErrorCategory::Internal,
+            crate::ErrorPhase::Prepare,
+            Some(ProviderKind::Postgres),
+            "predicato spatial PostgreSQL senza la tabella dello statement",
+        )
+    })?;
+    let relation = ctx.bind(ParameterValue::String(relation));
+    let column = ctx.bind(ParameterValue::String(column.to_owned()));
+    let geom_expr = format!(
+        "{}{cast}",
+        crate::spatial_probe::postgres_guarded_probe(
+            &geom_placeholder,
+            &format!("{srid_placeholder}::int4"),
+            &format!("{relation}::text"),
+            &format!("{column}::text"),
+        )
+    );
     match predicate {
         SpatialPredicate::Intersects => Ok(format!("ST_Intersects({col_cast}, {geom_expr})")),
         SpatialPredicate::Contains => Ok(format!("ST_Contains({col_cast}, {geom_expr})")),
@@ -591,6 +726,22 @@ fn compile_spatial_postgres(
                 "ST_DWithin({col_cast}, {geom_expr}, {dist_placeholder})"
             ))
         }
+    }
+}
+
+/// L'opzione d'ordine degli assi di `ST_GeomFromWKB`, gia preceduta dalla
+/// virgola.
+///
+/// `MySQL` 8+ interpreta il WKB di un SRS geografico nell'ordine del registro
+/// (`srid-defined`, latitudine prima per EPSG:4326); il WKB di questo
+/// componente ha la longitudine o l'easting per prima (GEO-001), quindi passa
+/// `axis-order=long-lat`, che su un SRS cartesiano non cambia nulla. `MariaDB`
+/// non ha semantica geografica ne l'argomento delle opzioni. Lo stesso valore
+/// del profilo del crate provider (`ProductProfile::wkb_axis_option`).
+const fn wkb_axis_argument(dialect: DialectKind) -> &'static str {
+    match dialect {
+        DialectKind::Mysql => ", 'axis-order=long-lat'",
+        _ => "",
     }
 }
 
@@ -622,7 +773,14 @@ fn compile_spatial_mysql(
         ))
     })?;
     let srid_placeholder = ctx.bind(ParameterValue::I32(srid_i32));
-    let geom_expr = format!("ST_GeomFromWKB({geom_placeholder}, {srid_placeholder})");
+    // `CAST(? AS BINARY)`: `MariaDB` rifiuta il segnaposto nudo con 4079
+    // (`raw.spatial_write_forms`), e la forma con il cast e quella che il
+    // valore spatial e il writer Arrow usano gia su entrambi i prodotti
+    // (misurata anche con l'opzione degli assi su `MySQL` 9.7.2).
+    let geom_expr = format!(
+        "ST_GeomFromWKB(CAST({geom_placeholder} AS BINARY), {srid_placeholder}{})",
+        wkb_axis_argument(ctx.dialect)
+    );
     match predicate {
         SpatialPredicate::Intersects => Ok(format!("ST_Intersects({col}, {geom_expr})")),
         SpatialPredicate::Contains => Ok(format!("ST_Contains({col}, {geom_expr})")),
@@ -825,6 +983,7 @@ fn compile_select(s: &SelectStatement, ctx: &mut CompileContext) -> Result<Strin
         _ => String::new(),
     };
     let mut sql = format!("SELECT {top}{projection} FROM {table}");
+    ctx.relation = Some(table);
     if let Some(filter) = &s.filter {
         let where_sql = compile_predicate(filter, ctx)?;
         push_sql(&mut sql, format_args!(" WHERE {where_sql}"))?;
@@ -914,6 +1073,7 @@ fn compile_update(s: &UpdateStatement, ctx: &mut CompileContext) -> Result<Strin
         sets?.join(", "),
         returning.inline()
     );
+    ctx.relation = Some(table);
     if let Some(filter) = &s.filter {
         let where_sql = compile_predicate(filter, ctx)?;
         push_sql(&mut sql, format_args!(" WHERE {where_sql}"))?;
@@ -926,6 +1086,7 @@ fn compile_delete(s: &DeleteStatement, ctx: &mut CompileContext) -> Result<Strin
     let table = qualify_table(&s.table, ctx.dialect)?;
     let returning = compile_returning(&s.returning, ctx.dialect, ReturningForm::Delete)?;
     let mut sql = format!("DELETE FROM {table}{}", returning.inline());
+    ctx.relation = Some(table);
     if let Some(filter) = &s.filter {
         let where_sql = compile_predicate(filter, ctx)?;
         push_sql(&mut sql, format_args!(" WHERE {where_sql}"))?;
@@ -1173,6 +1334,9 @@ fn compile_upsert_merge(
                 let column = quote_identifier(column, ctx.dialect)?;
                 let expression = match expression {
                     Expression::Literal(value) => ctx.bind(value.clone()),
+                    // Un valore scritto: il solo segnaposto (regola T); il
+                    // lowering rende tipizzati soltanto i predicati.
+                    Expression::TypedParameter(_) => ctx.bind(ParameterValue::I64(0)),
                     Expression::Column(name) => {
                         format!("T.{}", quote_identifier(name, ctx.dialect)?)
                     }

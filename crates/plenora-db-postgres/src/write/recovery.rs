@@ -90,6 +90,55 @@ pub(super) struct PreCommitRecovery<'a> {
     pub(super) execution_id: &'a str,
 }
 
+/// Come e finita una transazione che non ha mai inviato il COMMIT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Rollback {
+    /// Il server ha confermato il ROLLBACK.
+    Confirmed,
+    /// La sessione era gia chiusa: il ROLLBACK non e partito, e non serve.
+    /// Una transazione esplicita rende visibili i propri effetti soltanto
+    /// con il COMMIT, e il server scarta quella di una sessione che si
+    /// chiude; chi costruisce questo valore e raggiungibile solo prima del
+    /// COMMIT ([`PreCommitRecovery`], la diagnostica row-scoped), quindi
+    /// nessun effetto e visibile.
+    SessionClosed,
+    /// Il ROLLBACK e fallito su una sessione ancora aperta: l'effetto non e
+    /// provato (ERR-014).
+    Unconfirmed,
+}
+
+impl Rollback {
+    pub(super) async fn of(transaction: Transaction<'_>) -> Self {
+        match transaction.rollback().await {
+            Ok(()) => Self::Confirmed,
+            Err(error) if error.is_closed() => Self::SessionClosed,
+            Err(_) => Self::Unconfirmed,
+        }
+    }
+}
+
+/// L'errore di una scrittura la cui transazione non potra mai confermare un
+/// effetto: la sessione si e chiusa prima del COMMIT, o il server ha
+/// rifiutato uno statement e l'ha abortita. La fase resta quella in cui e
+/// fallita, nessun effetto e visibile (`none`), e una recovery non ha niente
+/// da verificare.
+///
+/// Fino al 25/10 usciva in fase `rollback` con effetto ignoto e
+/// `requires_recovery`: dopo un `copy_in` rifiutato all'apertura (per
+/// esempio Replace con DELETE e senza INSERT) `tokio-postgres` 0.7.18 riceve
+/// fuori sequenza la risposta al `CopyFail` che invia da se, e il ROLLBACK
+/// che seguiva falliva con `UnexpectedMessage`. Misurato sul fixture
+/// PostgreSQL 16 (scenario `replace-senza-insert` del runner dei vettori): le
+/// righe che il DELETE aveva cancellato sono ancora tutte nel target dopo il
+/// rifiuto.
+pub(super) fn never_committed(mut error: DatabaseError) -> DatabaseError {
+    error.remote_effect = RemoteEffect::None;
+    if error.retry == RetryDisposition::RequiresRecovery {
+        error.retry = RetryDisposition::Never;
+    }
+    error
+}
+
 impl PreCommitRecovery<'_> {
     pub(super) async fn rollback_cancellation(
         &self,
@@ -103,8 +152,12 @@ impl PreCommitRecovery<'_> {
             self.runtime.network_options.connect_timeout_ms,
         )
         .await;
-        let rollback_confirmed = transaction.rollback().await.is_ok();
-        let mut error = cancelled_write_error(self.cancellation, rollback_confirmed);
+        let rollback = Rollback::of(transaction).await;
+        let mut error = cancelled_write_error(self.cancellation, rollback == Rollback::Confirmed);
+        if rollback == Rollback::SessionClosed {
+            error = never_committed(error);
+            error.phase = ErrorPhase::Write;
+        }
         error.execution_id = Some(self.execution_id.to_owned());
         error
     }
@@ -114,10 +167,36 @@ impl PreCommitRecovery<'_> {
         transaction: Transaction<'_>,
         cause: &DatabaseError,
     ) -> DatabaseError {
-        let rollback_confirmed = transaction.rollback().await.is_ok();
-        let mut error = resource_write_error(cause, rollback_confirmed);
+        let rollback = Rollback::of(transaction).await;
+        let mut error = resource_write_error(cause, rollback == Rollback::Confirmed);
+        if rollback == Rollback::SessionClosed {
+            error = never_committed(error);
+            error.phase = ErrorPhase::Write;
+        }
         error.execution_id = Some(self.execution_id.to_owned());
         error
+    }
+
+    /// Il rifiuto di uno statement da parte del server, dentro la
+    /// transazione esplicita: PostgreSQL la porta nello stato abortito, in
+    /// cui ogni comando successivo e ignorato e un COMMIT diventa un
+    /// ROLLBACK. Il ROLLBACK confermato dice `rolled_back`, come in
+    /// [`Self::rollback_error`]; uno non confermato non toglie la prova,
+    /// che viene dal rifiuto e non dalla risposta al ROLLBACK.
+    pub(super) async fn rollback_aborted(
+        &self,
+        transaction: Transaction<'_>,
+        mut error: DatabaseError,
+    ) -> DatabaseError {
+        let rollback = Rollback::of(transaction).await;
+        error.provider = Some(ProviderKind::Postgres);
+        error.execution_id = Some(self.execution_id.to_owned());
+        if rollback == Rollback::Confirmed {
+            error.remote_effect = RemoteEffect::RolledBack;
+            error
+        } else {
+            never_committed(error)
+        }
     }
 
     pub(super) async fn rollback_error(
@@ -125,14 +204,16 @@ impl PreCommitRecovery<'_> {
         transaction: Transaction<'_>,
         mut error: DatabaseError,
     ) -> DatabaseError {
-        let rollback_confirmed = transaction.rollback().await.is_ok();
+        let rollback = Rollback::of(transaction).await;
         error.provider = Some(ProviderKind::Postgres);
         error.execution_id = Some(self.execution_id.to_owned());
-        if rollback_confirmed {
-            error.remote_effect = RemoteEffect::RolledBack;
-            error
-        } else {
-            error.after_unconfirmed_rollback()
+        match rollback {
+            Rollback::Confirmed => {
+                error.remote_effect = RemoteEffect::RolledBack;
+                error
+            }
+            Rollback::SessionClosed => never_committed(error),
+            Rollback::Unconfirmed => error.after_unconfirmed_rollback(),
         }
     }
 }

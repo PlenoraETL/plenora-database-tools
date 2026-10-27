@@ -268,16 +268,23 @@ impl AsyncSession {
         })
     }
 
-    #[pyo3(signature = (sql, params=None))]
+    #[pyo3(signature = (sql, params=None, *, relational=None))]
     fn execute<'py>(
         &self,
         py: Python<'py>,
         sql: &str,
         params: Option<Bound<'_, PyList>>,
+        relational: Option<(String, String)>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let statement = statement_from_python(sql, params.as_ref())?;
-        crate::async_session_ops::execute_with_backend(py, self.transaction_backend()?, statement)
+        let plan = crate::relational_query::relational_plan(relational)?;
+        crate::async_session_ops::execute_with_backend(
+            py,
+            self.transaction_backend()?,
+            statement,
+            plan,
+        )
     }
 
     #[pyo3(signature = (sql, params=None))]
@@ -296,19 +303,22 @@ impl AsyncSession {
         )
     }
 
-    #[pyo3(signature = (sql, params=None))]
+    #[pyo3(signature = (sql, params=None, *, relational=None))]
     fn execute_returning_rows<'py>(
         &self,
         py: Python<'py>,
         sql: &str,
         params: Option<Bound<'_, PyList>>,
+        relational: Option<(String, String)>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.ensure_open()?;
         let statement = statement_from_python(sql, params.as_ref())?;
+        let plan = crate::relational_query::relational_plan(relational)?;
         crate::async_session_ops::execute_rows_with_backend(
             py,
             self.transaction_backend()?,
             statement,
+            plan,
         )
     }
 

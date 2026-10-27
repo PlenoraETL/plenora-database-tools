@@ -1207,6 +1207,325 @@ fn resolve_spatial_source_parts<'a>(
     ))
 }
 
+/// La regola degli operandi geometrici sul catalogo
+/// (`plenora_database_core::spatial_operand`), a mondo chiuso: ogni colonna
+/// di ogni relazione nominata, con il flag geometrico. I nomi li lega il
+/// server (regola A, [`operand_catalog`]): un nome del piano che non e
+/// uguale per byte a una colonna si manda al server, che lo confronta con la
+/// collation del database.
+///
+/// SQL Server rifiuta da se il confronto e l'ordinamento di un tipo CLR, ma
+/// converte una geometria in testo (`CAST(g AS NVARCHAR) LIKE`): il rifiuto e
+/// lo stesso degli altri provider, prima della descrizione. Una relazione
+/// senza schema si risolve come la risolve la query, con lo schema di default
+/// dell'utente (`OBJECT_ID`); una tabella temporanea (`#t`) in `tempdb`; un
+/// sinonimo nel suo oggetto di base, se e nello stesso database (altrimenti
+/// le colonne non si leggono e nessun riferimento si risolve). Fino al 25/10
+/// un sinonimo non portava colonne e `CAST(s.g AS NVARCHAR) LIKE` passava.
+///
+/// Con i valori legati (`parameters`) giudica anche la regola F.
+///
+/// # Errors
+///
+/// `unsupported` per un operando geometrico o non risolto; `invalid_plan`
+/// per una conversione implicita fra famiglie di tipo; gli errori del
+/// catalogo.
+pub async fn verify_scalar_operands(
+    session: &mut SqlServerSession,
+    operation: &QueryOperation,
+    parameters: &plenora_database_core::provider::ParameterBag,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let families = plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters);
+    // La regola T (`typed_parameter`) anche senza operandi da leggere.
+    families.judge_typed(
+        ProviderKind::Sqlserver,
+        &plenora_database_core::spatial_operand::OperandPlan::Query(operation),
+    )?;
+    let operands = plenora_database_core::spatial_operand::scalar_operands(
+        ProviderKind::Sqlserver,
+        operation,
+    )?;
+    if operands.is_empty() {
+        return Ok(());
+    }
+    let names = operands.names().into_iter().collect::<Vec<_>>();
+    let catalog = operand_catalog(session, operands.relations(), &names, cancellation).await?;
+    operands.judge_bound(&catalog, &families)
+}
+
+/// Il catalogo delle relazioni (schema, oggetto) per il giudizio degli
+/// operandi geometrici, con [`RELATION_COLUMNS_SQL`]: la lettura del path
+/// query e di `TransactionScope::operand_catalog`.
+///
+/// I nomi `names` del piano che non sono uguali per byte a una colonna li
+/// lega il server ([`NAME_RESOLUTION_SQL`], regola A): misurato su SQL
+/// Server 2022 il 25/10, in un database `SQL_Latin1_General_CP1_CI_AS` una
+/// colonna `[ｎ]` (U+FF4E) si lega a `t.n` e una `[m ]` a `t.m`; in un
+/// database `Latin1_General_CI_AI` `[Ä]` si lega a `t.a`. Fino alla
+/// quindicesima lettura il giudizio confrontava per byte, e `t.n = '01'`
+/// su `[ｎ] nvarchar` non si giudicava.
+///
+/// # Errors
+///
+/// Gli errori del catalogo.
+pub async fn operand_catalog(
+    session: &mut SqlServerSession,
+    relations: &[(Option<String>, String)],
+    names: &[String],
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
+    use plenora_database_core::spatial_operand::{
+        CatalogColumn, ColumnOrigin, OperandCatalog, OperandFamily, RelationColumns,
+    };
+    let mut catalog = OperandCatalog::new(ProviderKind::Sqlserver);
+    for (schema, object) in relations {
+        let mut query = Query::new(RELATION_COLUMNS_SQL);
+        query.bind(schema.clone().unwrap_or_default());
+        query.bind(object.clone());
+        let results = session
+            .execute_query(query, ErrorPhase::Prepare, cancellation)
+            .await?;
+        let mut state = None;
+        let mut columns = Vec::new();
+        for row in results.iter().flatten() {
+            let row_state: &str = required(row, 0, "stato relazione")?;
+            state = Some(row_state.to_owned());
+            if let Some(column) = optional::<&str>(row, 1, "colonna")? {
+                let family = match required::<&str>(row, 2, "famiglia della colonna")? {
+                    "geometry" => OperandFamily::Geometry,
+                    "binary" => OperandFamily::Binary,
+                    "text" => OperandFamily::Text,
+                    "numeric" => OperandFamily::Numeric,
+                    "temporal" => OperandFamily::Temporal,
+                    "other" => OperandFamily::Other,
+                    _ => {
+                        return Err(query_error(
+                            ErrorCategory::Protocol,
+                            "famiglia di colonna SQL Server non riconosciuta",
+                        ))
+                    }
+                };
+                let origin = ColumnOrigin::of(
+                    required(row, 3, "relazione derivata")?,
+                    required(row, 4, "colonna calcolata")?,
+                );
+                let type_name: &str = required(row, 5, "tipo della colonna")?;
+                let identity: &str = required(row, 6, "tipo dell'utente della colonna")?;
+                let max_length: i32 = required(row, 7, "lunghezza della colonna")?;
+                let precision: i32 = required(row, 8, "precisione della colonna")?;
+                let scale: i32 = required(row, 9, "scala della colonna")?;
+                // La lunghezza in caratteri per un testo (`nchar`, `nvarchar`
+                // la dicono in byte), in byte per un binario; `MAX` e -1.
+                let wide = matches!(type_name, "nchar" | "nvarchar");
+                let length =
+                    u64::try_from(max_length)
+                        .ok()
+                        .map(|bytes| if wide { bytes / 2 } else { bytes });
+                let catalog_type = plenora_database_core::cast_table::CatalogType {
+                    name: type_name.to_owned(),
+                    length,
+                    precision: u64::try_from(precision).ok(),
+                    scale: Some(i64::from(scale)),
+                    ..plenora_database_core::cast_table::CatalogType::default()
+                };
+                columns.push(
+                    CatalogColumn::new(column.to_owned(), origin, family)
+                        .with_type(catalog_type, identity),
+                );
+            }
+        }
+        let known = matches!(state.as_deref(), Some("known")) && !columns.is_empty();
+        if known {
+            let unbound = names
+                .iter()
+                .filter(|name| !columns.iter().any(|column| column.name == **name))
+                .collect::<Vec<_>>();
+            for chunk in unbound.chunks(NAME_RESOLUTION_CHUNK) {
+                let bound =
+                    resolve_names(session, schema.as_deref(), object, chunk, cancellation).await?;
+                for (name, matched) in chunk.iter().zip(bound) {
+                    catalog.insert_resolution(
+                        schema.clone(),
+                        object.clone(),
+                        (*name).clone(),
+                        matched,
+                    );
+                }
+            }
+        }
+        let columns = match state.as_deref() {
+            Some("known") if !columns.is_empty() => RelationColumns::Known(columns),
+            None | Some("absent" | "known") => RelationColumns::Absent,
+            Some(_) => RelationColumns::Unknown,
+        };
+        catalog.insert(schema.clone(), object.clone(), columns);
+    }
+    Ok(catalog)
+}
+
+/// I nomi per lettura di [`NAME_RESOLUTION_SQL`]: due parametri per la
+/// relazione, uno per nome, entro il limite di 2100 di `sp_executesql`.
+const NAME_RESOLUTION_CHUNK: usize = 500;
+
+/// Le colonne che il server lega a ogni nome di `names` nella relazione:
+/// una lista per nome, nello stesso ordine.
+async fn resolve_names(
+    session: &mut SqlServerSession,
+    schema: Option<&str>,
+    object: &str,
+    names: &[&String],
+    cancellation: &CancellationToken,
+) -> Result<Vec<Vec<String>>> {
+    let values = (0..names.len())
+        .map(|index| format!("({index}, @P{})", index + 3))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut query = Query::new(NAME_RESOLUTION_SQL.replace("@VALUES@", &values));
+    query.bind(schema.unwrap_or_default().to_owned());
+    query.bind(object.to_owned());
+    for name in names {
+        query.bind((*name).clone());
+    }
+    let results = session
+        .execute_query(query, ErrorPhase::Prepare, cancellation)
+        .await?;
+    let mut bound = vec![Vec::new(); names.len()];
+    for row in results.iter().flatten() {
+        let index: i32 = required(row, 0, "posizione del nome")?;
+        let column: &str = required(row, 1, "colonna legata")?;
+        let slot = usize::try_from(index)
+            .ok()
+            .and_then(|index| bound.get_mut(index))
+            .ok_or_else(|| {
+                query_error(
+                    ErrorCategory::Protocol,
+                    "posizione del nome SQL Server fuori dalla lettura",
+                )
+            })?;
+        if !slot.iter().any(|seen| seen == column) {
+            slot.push(column.to_owned());
+        }
+    }
+    Ok(bound)
+}
+
+/// La relazione (`@P1` schema, vuoto se assente; `@P2` oggetto) risolta come
+/// la risolve la query: `@id`, `@temp` per una tabella temporanea, `@state`
+/// `known`, `absent` o `unknown` (un sinonimo verso un altro database o un
+/// oggetto che non si risolve).
+macro_rules! relation_prelude {
+    () => {
+        "SET NOCOUNT ON; \
+DECLARE @name nvarchar(300) = CASE WHEN @P1 = N'' THEN QUOTENAME(@P2) \
+    ELSE QUOTENAME(@P1) + N'.' + QUOTENAME(@P2) END; \
+DECLARE @id int = OBJECT_ID(@name); \
+DECLARE @temp bit = 0; \
+DECLARE @state nvarchar(16) = N'known'; \
+IF @id IS NULL AND @P1 = N'' AND LEFT(@P2, 1) = N'#' \
+BEGIN \
+    SET @id = OBJECT_ID(N'tempdb..' + QUOTENAME(@P2)); \
+    SET @temp = 1; \
+END; \
+IF @id IS NULL SET @state = N'absent'; \
+ELSE IF @temp = 0 AND EXISTS (SELECT 1 FROM sys.synonyms s WHERE s.object_id = @id) \
+BEGIN \
+    DECLARE @base nvarchar(1035) = \
+        (SELECT s.base_object_name FROM sys.synonyms s WHERE s.object_id = @id); \
+    IF PARSENAME(@base, 4) IS NOT NULL \
+        OR (PARSENAME(@base, 3) IS NOT NULL AND PARSENAME(@base, 3) <> DB_NAME()) \
+        SET @state = N'unknown'; \
+    ELSE \
+    BEGIN \
+        SET @id = OBJECT_ID(@base); \
+        IF @id IS NULL OR EXISTS (SELECT 1 FROM sys.synonyms s WHERE s.object_id = @id) \
+            SET @state = N'unknown'; \
+    END; \
+END; "
+    };
+}
+
+/// Le colonne che il server lega a ogni nome (`@P3`, ...; `@VALUES@` e la
+/// lista `(posizione, @Pn)`) nella relazione di [`relation_prelude`]: la
+/// colonna che `COLUMNPROPERTY` lega (il legame dei nomi del server) e
+/// quelle che il nome uguaglia con la collation del database
+/// (`COLLATE DATABASE_DEFAULT`); per una tabella temporanea, con la
+/// collation di `tempdb` e con quella del database. Due colonne per un nome,
+/// o due regole che non concordano, sono due righe: il giudizio rifiuta.
+const NAME_RESOLUTION_SQL: &str = concat!(
+    relation_prelude!(),
+    "IF @state = N'known' AND @temp = 0 \
+    SELECT v.i, CAST(c.name AS nvarchar(128)) FROM (VALUES @VALUES@) v(i, n) \
+    JOIN sys.all_columns c ON c.object_id = @id AND (c.name = v.n COLLATE DATABASE_DEFAULT \
+        OR c.column_id = COLUMNPROPERTY(@id, v.n, 'ColumnId')); \
+ELSE IF @state = N'known' \
+    SELECT v.i, CAST(c.name AS nvarchar(128)) FROM (VALUES @VALUES@) v(i, n) \
+    JOIN tempdb.sys.all_columns c ON c.object_id = @id AND (c.name = v.n \
+        OR c.name = v.n COLLATE DATABASE_DEFAULT); \
+ELSE SELECT CAST(NULL AS int), CAST(NULL AS nvarchar(128)) WHERE 1 = 0;"
+);
+
+/// Colonne utente e di sistema (`all_columns`/`all_objects`): `@P1` schema,
+/// vuoto se assente, `@P2` oggetto; ordine `column_id`, con lo stato: `known`, `absent`
+/// (`OBJECT_ID` non la trova: i riferimenti non si legano) o `unknown` (un
+/// sinonimo verso un altro database o un oggetto che non si risolve). Una
+/// colonna e geometrica se il suo tipo e `geometry` o `geography`: un alias
+/// di tipo su `geometry` il server non lo ammette («not a valid base type for
+/// the alias data type», misurato su SQL Server 2022 il 25/10). La famiglia
+/// (regola F, `spatial_operand::OperandFamily`) dal tipo di sistema
+/// (`system_type_id`, che un tipo alias eredita): binaria `image` 34,
+/// `sql_variant` 98 (che porta anche un `varbinary`), `varbinary` 165,
+/// `binary` 173, `timestamp`/`rowversion` 189 (fino al 25/10 mancava);
+/// testo `text` 35, `ntext` 99, `varchar` 167, `char` 175, `nvarchar` 231
+/// (anche `sysname`), `nchar` 239; numerica `tinyint` 48, `smallint` 52,
+/// `int` 56, `real` 59, `money` 60, `float` 62, `bit` 104, `decimal` 106,
+/// `numeric` 108, `smallmoney` 122, `bigint` 127; temporale `date` 40,
+/// `time` 41, `datetime2` 42, `datetimeoffset` 43, `smalldatetime` 58,
+/// `datetime` 61; il resto (`uniqueidentifier`, `xml`, i tipi CLR) «altra».
+/// L'origine (regola B per colonna): derivata in una vista (`V`) e per una
+/// colonna calcolata (`is_computed`, persistita o no). Poi il tipo per la
+/// regola C (il tipo di sistema, `max_length`, `precision`, `scale`) e
+/// l'identita per la regola B (il tipo dell'utente, `TYPE_NAME` di
+/// `user_type_id`: un tipo alias o CLR con il proprio nome).
+const RELATION_COLUMNS_SQL: &str = concat!(
+    relation_prelude!(),
+    "IF @state <> N'known' \
+    SELECT @state, CAST(NULL AS nvarchar(128)), CAST(NULL AS nvarchar(16)), \
+        CAST(NULL AS bit), CAST(NULL AS bit), CAST(NULL AS nvarchar(128)), \
+        CAST(NULL AS nvarchar(128)), CAST(NULL AS int), CAST(NULL AS int), CAST(NULL AS int); \
+ELSE IF @temp = 1 \
+    SELECT @state, CAST(c.name AS nvarchar(128)), \
+        CAST(CASE WHEN ty.name IN (N'geometry', N'geography') THEN N'geometry' \
+            WHEN c.system_type_id IN (34, 98, 165, 173, 189) THEN N'binary' \
+            WHEN c.system_type_id IN (35, 99, 167, 175, 231, 239) THEN N'text' \
+            WHEN c.system_type_id IN (48, 52, 56, 59, 60, 62, 104, 106, 108, 122, 127) \
+                THEN N'numeric' \
+            WHEN c.system_type_id IN (40, 41, 42, 43, 58, 61) THEN N'temporal' \
+            ELSE N'other' END AS nvarchar(16)), \
+        CAST(0 AS bit), CAST(c.is_computed AS bit), \
+        CAST(COALESCE(TYPE_NAME(c.system_type_id), ty.name) AS nvarchar(128)), \
+        CAST(ty.name AS nvarchar(128)), CAST(c.max_length AS int), \
+        CAST(c.precision AS int), CAST(c.scale AS int) \
+    FROM tempdb.sys.all_columns c JOIN tempdb.sys.types ty ON ty.user_type_id = c.user_type_id \
+    WHERE c.object_id = @id ORDER BY c.column_id; \
+ELSE \
+    SELECT @state, CAST(c.name AS nvarchar(128)), \
+        CAST(CASE WHEN ty.name IN (N'geometry', N'geography') THEN N'geometry' \
+            WHEN c.system_type_id IN (34, 98, 165, 173, 189) THEN N'binary' \
+            WHEN c.system_type_id IN (35, 99, 167, 175, 231, 239) THEN N'text' \
+            WHEN c.system_type_id IN (48, 52, 56, 59, 60, 62, 104, 106, 108, 122, 127) \
+                THEN N'numeric' \
+            WHEN c.system_type_id IN (40, 41, 42, 43, 58, 61) THEN N'temporal' \
+            ELSE N'other' END AS nvarchar(16)), \
+        CAST(CASE WHEN o.type = 'V' THEN 1 ELSE 0 END AS bit), CAST(c.is_computed AS bit), \
+        CAST(COALESCE(TYPE_NAME(c.system_type_id), ty.name) AS nvarchar(128)), \
+        CAST(ty.name AS nvarchar(128)), CAST(c.max_length AS int), \
+        CAST(c.precision AS int), CAST(c.scale AS int) \
+    FROM sys.all_columns c JOIN sys.types ty ON ty.user_type_id = c.user_type_id \
+    JOIN sys.all_objects o ON o.object_id = c.object_id \
+    WHERE c.object_id = @id ORDER BY c.column_id;"
+);
+
 async fn observe_spatial_srid(
     session: &mut SqlServerSession,
     source: &SpatialPhysicalSource,
@@ -1808,6 +2127,21 @@ where
     })
 }
 
+/// Il renderer del path query: le sonde che rende sono parametri `wkb` con
+/// SRID e semantica risolti, confrontati da `validate_spatial_inputs` con gli
+/// SRID osservati nella colonna prima dell'esecuzione; un `SpatialValue` o
+/// un'altra forma come operando e gia rifiutato li (`collect_spatial_use`).
+///
+/// # Limite dichiarato
+///
+/// - **Regola.** Lo SRID della colonna e quello dei valori osservati al
+///   preflight, non un vincolo: SQL Server non ha SRID di colonna.
+/// - **Ambito.** Path query di SQL Server con una sonda `wkb`.
+/// - **Hazard.** Una colonna vuota (o di soli `NULL`) al preflight non ha
+///   SRID da confrontare, e righe scritte fra il preflight e la query in un
+///   altro sistema renderebbero `NULL` nel predicato.
+/// - **Rientro.** Un vincolo `CHECK (col.STSrid = n)` letto dal catalogo, o
+///   preflight e query nella stessa transazione serializzabile.
 const fn sql_server_renderer() -> Renderer {
     Renderer::new(
         Dialect::SqlServer,
@@ -1815,6 +2149,7 @@ const fn sql_server_renderer() -> Renderer {
             spatial_intersects: true,
         },
     )
+    .with_spatial_probes_verified()
 }
 
 fn query_error(category: ErrorCategory, message: impl Into<String>) -> DatabaseError {

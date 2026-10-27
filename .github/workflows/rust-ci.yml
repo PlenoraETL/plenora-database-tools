@@ -53,6 +53,21 @@ jobs:
           python3 scripts/check_public_contracts.py
           --contracts .plenora-contracts
           --cli target/debug/plenora-database
+      # Arrow Geometry Semantics 1.0 si dichiara `conforming` nel manifesto: i
+      # vettori arrow-data-v1 del pin, letti e decodificati dal binario appena
+      # costruito (`inspect-dataset`), sono la prova offline che lo sostiene.
+      # La scrittura degli stessi vettori in PostgreSQL e nel gate live
+      # `postgres-assurance`. pyarrow serve solo a costruire gli IPC.
+      - name: Dipendenze del runner dei vettori
+        run: python3 -m pip install --only-binary=":all:" -r requirements-vectors.txt
+      - name: Self-test del runner dei vettori
+        run: python3 scripts/test_vettori_arrow_data.py
+      - name: Vettori arrow-data-v1 contro il binario
+        run: >-
+          python3 scripts/vettori_arrow_data.py
+          --contracts .plenora-contracts
+          --cli target/debug/plenora-database
+          --referto target/vettori-arrow-data.json
       # Il binding runtime esegue i vettori `database-*` del pin e scrive cio
       # che ha prodotto; lo script lo valida con gli schemi del checkout.
       - name: Vettori runtime del pin
@@ -123,6 +138,10 @@ jobs:
         run: python3 scripts/test_check_postgres_reference.py
       - name: scripts/test_check_postgres_hardening.py
         run: python3 scripts/test_check_postgres_hardening.py
+      # La tabella delle guardie del core contro le sonde del gate live
+      # `spatial-srid-probes`, senza server.
+      - name: scripts/test_sonde_srid_server.py
+        run: python3 scripts/test_sonde_srid_server.py
       - name: scripts/test_check_session_matrix.py
         run: python3 scripts/test_check_session_matrix.py
       - name: scripts/phase0_validate.py

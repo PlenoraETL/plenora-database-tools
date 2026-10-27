@@ -31,6 +31,8 @@ on:
       - "scripts/test_check_postgres_hardening.py"
       - "scripts/compose_network.py"
       - "scripts/live_inventory.py"
+      - "scripts/vettori_arrow_data.py"
+      - "requirements-vectors.txt"
       - "docker-compose.postgres-tls.yml"
       - "docker/postgres-tls/**"
   workflow_dispatch:
@@ -84,6 +86,39 @@ jobs:
         run: |
           python3 scripts/check_postgres_reference.py 2>&1 \
             | tee assurance-results/postgres-reference.log
+
+      # Arrow Geometry Semantics 1.0: gli stessi vettori arrow-data-v1 del job
+      # `public-contract` di rust-ci, qui anche scritti nel riferimento con
+      # `write` (REJ-003 con l'effetto remoto, e lo SRID delle righe scritte).
+      # Il binario si costruisce nel container del gate, sotto `target/`
+      # (ignorato da git), e gira sul runner verso la porta che il compose
+      # pubblica in loopback.
+      - name: checkout immutabile plenora-contracts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: PlenoraETL/plenora-contracts
+          ref: 3aec9f724f5a0ad21366f293895b4d0dbcd0aad1
+          path: .plenora-contracts
+
+      - name: vettori arrow-data-v1 scritti nel riferimento
+        env:
+          PLENORA_TLS_INSECURE_LOCAL: "1"
+          PLENORA_TEST_POSTGRES_DSN: >-
+            host=127.0.0.1 port=5432 user=dataflow
+            password=dataflow_test_2026 dbname=dataflow_test
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$(dirname "$GITHUB_WORKSPACE")/plenora-cargo-cache:/usr/local/cargo/registry" \
+            -w /workspace -e CARGO_TARGET_DIR=/workspace/target/vettori \
+            rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b9acbf \
+            cargo build --locked -p plenora-database-cli
+          python3 -m pip install --only-binary=":all:" -r requirements-vectors.txt
+          python3 scripts/vettori_arrow_data.py \
+            --contracts .plenora-contracts \
+            --cli target/vettori/debug/plenora-database \
+            --referto assurance-results/vettori-arrow-data.json \
+            --postgres-env PLENORA_TEST_POSTGRES_DSN
 
       # `git diff` vede solo i file gia tracciati: un file nuovo lasciato nel
       # worktree passerebbe inosservato. Gli artefatti in `assurance-results/`
