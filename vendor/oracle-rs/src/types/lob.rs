@@ -87,6 +87,9 @@ pub struct LobLocator {
     pub(crate) oracle_type: OracleType,
     /// Character set form (for CLOB/NCLOB distinction)
     pub(crate) _csfrm: u8,
+    /// Il charset della colonna come lo descrive il server (0 se non noto):
+    /// per un NCLOB e il charset nazionale, che decide la decodifica.
+    pub(crate) charset_id: u16,
 }
 
 impl LobLocator {
@@ -104,7 +107,15 @@ impl LobLocator {
             chunk_size,
             oracle_type,
             _csfrm: csfrm,
+            charset_id: 0,
         }
+    }
+
+    /// Il locator con il charset della colonna descritta.
+    #[must_use]
+    pub(crate) const fn with_charset(mut self, charset_id: u16) -> Self {
+        self.charset_id = charset_id;
+        self
     }
 
     /// Get the size of the LOB

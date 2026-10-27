@@ -512,3 +512,103 @@ fn live_write_accepts_the_arrow_stream_and_the_file() {
     ]);
     let _ = std::fs::remove_dir_all(directory);
 }
+
+/// Il difetto 2 del terzo giro della #135: `portable-execute` compilava ed
+/// eseguiva senza il cancello dell'ammissione, e una `numeric(12, 4)` o un
+/// `timestamp(0)` ricevevano il valore arrotondato con il commit. Ora ogni
+/// letterale si ammette sul tipo della colonna: il valore esatto si scrive,
+/// quello che il server arrotonderebbe si rifiuta prima dell'invio.
+#[ignore = "live: richiede Postgres su dataflow-postgres"]
+#[test]
+fn live_portable_execute_admits_literals_on_the_column_type() {
+    use plenora_database_core::portable::{
+        Expression, InsertStatement, PortableStatement, TableRef,
+    };
+    use plenora_database_core::provider::ParameterValue;
+    const TABLE: &str = "cli_portable_admission";
+    run(&[
+        "database-execute-ddl",
+        "postgres",
+        "PG_DSN",
+        &format!("DROP TABLE IF EXISTS public.{TABLE}"),
+    ]);
+    run(&[
+        "database-execute-ddl",
+        "postgres",
+        "PG_DSN",
+        &format!(
+            "CREATE TABLE public.{TABLE} (id integer PRIMARY KEY, d numeric(12, 4), \
+             ts timestamp(0))"
+        ),
+    ]);
+    let directory =
+        std::env::temp_dir().join(format!("plenora-cli-admission-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("cartella temporanea");
+    let execute = |id: i32, column: &str, value: ParameterValue| {
+        let statement = PortableStatement::Insert(InsertStatement {
+            table: TableRef {
+                schema: Some("public".to_owned()),
+                name: TABLE.to_owned(),
+            },
+            columns: vec!["id".to_owned(), column.to_owned()],
+            values: vec![vec![
+                Expression::Literal(ParameterValue::I32(id)),
+                Expression::Literal(value),
+            ]],
+            returning: Vec::new(),
+        });
+        let path = directory.join(format!("{id}.json"));
+        std::fs::write(&path, serde_json::to_vec(&statement).expect("JSON")).expect("scrive");
+        common::postgres_cli(&["portable-execute", "PG_DSN", path.to_str().expect("UTF-8")])
+            .output()
+            .expect("spawn CLI")
+    };
+    for (id, column, value) in [
+        (1, "d", ParameterValue::Decimal("1.23456".to_owned())),
+        (
+            2,
+            "ts",
+            ParameterValue::Timestamp("2024-01-01T10:20:30.6".to_owned()),
+        ),
+    ] {
+        let output = execute(id, column, value);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !output.status.success(),
+            "{column}: valore arrotondato scritto: {stdout}"
+        );
+        assert!(stdout.contains("data_mapping"), "{column}: {stdout}");
+    }
+    for (id, column, value) in [
+        (3, "d", ParameterValue::Decimal("1.2345".to_owned())),
+        (
+            4,
+            "ts",
+            ParameterValue::Timestamp("2024-01-01T10:20:30".to_owned()),
+        ),
+    ] {
+        let output = execute(id, column, value);
+        assert!(
+            output.status.success(),
+            "{column}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+    let count = run(&[
+        "database-execute-scalar",
+        "postgres",
+        "PG_DSN",
+        &format!(
+            "SELECT count(*) FROM public.{TABLE} WHERE (id = 3 AND d = 1.2345) \
+             OR (id = 4 AND ts = '2024-01-01 10:20:30') OR id IN (1, 2)"
+        ),
+    ]);
+    assert_eq!(count["value"]["value"], 2, "{count}");
+    run(&[
+        "database-execute-ddl",
+        "postgres",
+        "PG_DSN",
+        &format!("DROP TABLE IF EXISTS public.{TABLE}"),
+    ]);
+    let _ = std::fs::remove_dir_all(directory);
+}

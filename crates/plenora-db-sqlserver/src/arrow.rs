@@ -25,7 +25,9 @@ pub enum SqlServerColumnBuffer {
     Binary(BinaryBuilder),
     Date(Date32Builder, SqlServerWireEncoding),
     Time(Time64MicrosecondBuilder, SqlServerWireEncoding),
-    Timestamp(TimestampMicrosecondBuilder, SqlServerWireEncoding),
+    /// Il terzo campo: `datetime` o `smalldatetime` legacy
+    /// ([`canonical_legacy_datetime`]).
+    Timestamp(TimestampMicrosecondBuilder, SqlServerWireEncoding, bool),
     TimestampTz(StringBuilder, SqlServerWireEncoding, u8),
     Decimal(Decimal128Builder, i8, SqlServerWireEncoding),
 }
@@ -74,6 +76,7 @@ impl SqlServerColumnBuffer {
             SqlServerColumnKind::Timestamp => Self::Timestamp(
                 TimestampMicrosecondBuilder::with_capacity(capacity),
                 column.wire_encoding,
+                matches!(column.native_type.as_str(), "datetime" | "smalldatetime"),
             ),
             SqlServerColumnKind::TimestampTz => Self::TimestampTz(
                 StringBuilder::with_capacity(capacity, capacity.saturating_mul(40)),
@@ -133,7 +136,7 @@ impl SqlServerColumnBuffer {
                 builder.append_option(parsed);
                 Ok(())
             }
-            Self::Timestamp(builder, encoding) => {
+            Self::Timestamp(builder, encoding, legacy) => {
                 let parsed = match encoding {
                     SqlServerWireEncoding::Projected => {
                         let value: Option<&str> = get(row, index)?;
@@ -141,7 +144,9 @@ impl SqlServerColumnBuffer {
                     }
                     SqlServerWireEncoding::Native => {
                         let value: Option<NaiveDateTime> = get(row, index)?;
-                        value.map(timestamp_micros).transpose()?
+                        value
+                            .map(|value| native_timestamp(value, *legacy))
+                            .transpose()?
                     }
                 };
                 builder.append_option(parsed);
@@ -200,7 +205,7 @@ impl SqlServerColumnBuffer {
             Self::Binary(builder) => Arc::new(builder.finish()),
             Self::Date(builder, _) => Arc::new(builder.finish()),
             Self::Time(builder, _) => Arc::new(builder.finish()),
-            Self::Timestamp(builder, _) => Arc::new(builder.finish()),
+            Self::Timestamp(builder, _, _) => Arc::new(builder.finish()),
             Self::Decimal(builder, _, _) => Arc::new(builder.finish()),
         }
     }
@@ -314,6 +319,46 @@ fn parse_timestamp(value: &str) -> Result<i64> {
     let timestamp = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
         .map_err(|_| mapping_error("timestamp SQL Server non valido"))?;
     timestamp_micros(timestamp)
+}
+
+/// Un `datetime` legacy nel millisecondo che il server stesso rende.
+///
+/// Regola dichiarata. `datetime` conta 1/300 di secondo, un valore che
+/// nessuna frazione decimale rappresenta esatto (un tick vale 3,333... ms);
+/// `tiberius` lo porta a nanosecondi troncando (3333333 ns). Si legge allora
+/// come il millisecondo della resa canonica di SQL Server (`CONVERT` stile
+/// 121: `.000`, `.003`, `.007`): una biiezione con i tick, perche lo stesso
+/// millisecondo scritto in un `datetime` torna allo stesso tick. Ambito: la
+/// lettura di `datetime` e `smalldatetime` (il secondo e esatto al minuto).
+/// Hazard: il valore letto non e il tick ma la sua resa; un `datetime2`
+/// legato in un confronto con la colonna la confronta nel suo valore esatto
+/// (3,333 ms), non nella resa. Rientro: un tipo temporale razionale nel
+/// contratto.
+///
+/// # Errors
+///
+/// `DataMapping` se i nanosecondi non vengono da un tick.
+pub fn canonical_legacy_datetime(value: NaiveDateTime) -> Result<NaiveDateTime> {
+    let nanos = u64::from(value.nanosecond());
+    let ticks = (nanos * 300 + 500_000_000) / 1_000_000_000;
+    if ticks * 1_000_000_000 / 300 != nanos && (ticks * 1_000_000_000).div_ceil(300) != nanos {
+        return Err(mapping_error("datetime SQL Server senza un tick esatto"));
+    }
+    let millis = u32::try_from((ticks * 10 + 1) / 3)
+        .map_err(|_| mapping_error("datetime SQL Server senza un tick esatto"))?;
+    let base = value
+        .with_nanosecond(0)
+        .ok_or_else(|| mapping_error("datetime SQL Server non rappresentabile"))?;
+    base.checked_add_signed(chrono::Duration::milliseconds(i64::from(millis)))
+        .ok_or_else(|| mapping_error("datetime SQL Server non rappresentabile"))
+}
+
+fn native_timestamp(value: NaiveDateTime, legacy: bool) -> Result<i64> {
+    timestamp_micros(if legacy {
+        canonical_legacy_datetime(value)?
+    } else {
+        value
+    })
 }
 
 fn timestamp_micros(timestamp: NaiveDateTime) -> Result<i64> {

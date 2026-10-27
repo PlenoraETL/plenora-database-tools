@@ -33,7 +33,7 @@ fn repeated_binds_reuse_one_declared_parameter() {
 
     assert_eq!(
         bind_parameters(&names, &parameters).expect("bind ripetuto"),
-        ["7", "7"]
+        [ParameterValue::I32(7), ParameterValue::I32(7)]
     );
 }
 

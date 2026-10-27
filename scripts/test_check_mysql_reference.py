@@ -320,7 +320,7 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         )
         # Le prove concorrenti verificano il recupero delle connessioni e del pool;
         # l'ultima aggiunta e l'ordine degli assi geografici (GEO-001).
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 36)
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 38)
         self.assertIn(
             "live_tests::live_geographic_axis_order_round_trips_and_derived_srid_is_verified",
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
@@ -492,6 +492,13 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
 
     # --- runner -------------------------------------------------------------
 
+    def test_matrix_captures_diagnostics_before_inventory_validation(self) -> None:
+        from scripts import check_mysql_matrix as matrix
+        for arguments in (matrix.live_default_command(), matrix.live_reference_command()):
+            self.assertIn("--show-output", arguments)
+            self.assertNotIn("--nocapture", arguments)
+            self.assertIn("--test-threads=1", arguments)
+
     def test_gate_runs_three_serialized_suites_and_the_cli_probe(self) -> None:
         calls, run_cargo = gate_run_cargo()
 
@@ -511,6 +518,9 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         ]
         self.assertEqual(len(suites), 3)
         unit, live_default, live_reference = suites
+        for arguments in (live_default, live_reference):
+            self.assertIn("--show-output", arguments)
+            self.assertNotIn("--nocapture", arguments)
         self.assertIn("--skip", unit)
         self.assertNotIn("--ignored", live_default)
         self.assertIn("--test-threads=1", live_default)

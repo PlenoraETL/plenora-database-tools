@@ -57,6 +57,38 @@ impl TransactionScope for Finta {
         self.prodotto
     }
 
+    /// I tipi di `plain` (`id` intero, `name` testo) per il cancello
+    /// dell'ammissione; le altre relazioni non hanno tipi (soltanto `NULL`).
+    fn column_types<'a>(
+        &'a mut self,
+        relation: &'a (Option<String>, String),
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<plenora_database_core::operand_admission::RelationTypes>> {
+        use plenora_database_core::operand_admission::CatalogType;
+        let (integer, text) = match self.prodotto {
+            ProviderKind::Postgres => ("int4", "text"),
+            ProviderKind::Oracle => ("number", "varchar2"),
+            ProviderKind::Db2 => ("integer", "varchar"),
+            ProviderKind::Sqlserver => ("int", "nvarchar"),
+            _ => ("int", "varchar"),
+        };
+        let tipo = |name: &str, precision| CatalogType {
+            name: name.to_owned(),
+            precision,
+            scale: precision.map(|_| 0),
+            ..CatalogType::default()
+        };
+        let types = (relation.1 == "plain").then(|| {
+            [
+                ("id".to_owned(), tipo(integer, Some(10))),
+                ("name".to_owned(), tipo(text, None)),
+            ]
+            .into_iter()
+            .collect()
+        });
+        Box::pin(async move { Ok(types) })
+    }
+
     fn execute<'a>(
         &'a mut self,
         _statement: &'a Statement,
@@ -272,16 +304,36 @@ fn portable(value: &Value) -> PortableStatement {
 fn esito(prodotto: ProviderKind, plan: OperandPlan<'_>) -> (Result<(), DatabaseError>, usize) {
     let mut tx = finta(prodotto);
     let cancel = CancellationToken::new();
-    let statement = Statement::new("SELECT 1");
-    let outcome = match plan {
-        OperandPlan::Query(_) => {
-            block_on(query_judged(&mut tx, &statement, Some(&plan), &[], &cancel)).map(|_| ())
+    // Una mutazione passa dal cancello dell'ammissione con un valore per
+    // segnaposto: qui `NULL`, ammesso su ogni colonna.
+    let names = match plan {
+        OperandPlan::Mutation(operation) => {
+            plenora_database_core::compile_relational_mutation(prodotto, operation)
+                .map(|lowered| lowered.bind_names)
+                .unwrap_or_default()
         }
+        _ => Vec::new(),
+    };
+    let statement = Statement::new("SELECT 1").with_params(vec![
+        plenora_database_core::provider::ParameterValue::Null {
+            type_name: "text".to_owned(),
+        };
+        names.len()
+    ]);
+    let outcome = match plan {
+        OperandPlan::Query(_) => block_on(query_judged(
+            &mut tx,
+            &statement,
+            Some(&plan),
+            &names,
+            &cancel,
+        ))
+        .map(|_| ()),
         _ => block_on(execute_judged(
             &mut tx,
             &statement,
             Some(&plan),
-            &[],
+            &names,
             &cancel,
         ))
         .map(|_| ()),
@@ -607,13 +659,20 @@ fn un_valore_fuori_dal_tipo_dichiarato_si_rifiuta_prima_di_eseguire() {
         let cancel = CancellationToken::new();
         let statement = Statement::new("SQL").with_params(values);
         let outcome = match plan {
-            OperandPlan::Query(_) => block_on(query_judged(
-                &mut tx,
-                &statement,
-                Some(&plan),
+            // Una query con parametri passa dal cancello dell'ammissione
+            // (`admission_gate::query`), come nello SDK.
+            OperandPlan::Query(operation) => plenora_database_core::admission_gate::query(
+                prodotto,
+                operation,
+                statement.sql.clone(),
                 &names(&plan),
-                &cancel,
-            ))
+                &statement.params,
+            )
+            .and_then(|admitted| {
+                block_on(plenora_database_core::facade::query_admitted(
+                    &mut tx, &admitted, &plan, &cancel,
+                ))
+            })
             .map(|_| ()),
             _ => block_on(execute_judged(
                 &mut tx,

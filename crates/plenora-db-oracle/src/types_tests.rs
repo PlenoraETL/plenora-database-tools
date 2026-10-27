@@ -97,3 +97,91 @@ fn sdo_geometry_of_another_owner_is_not_a_geometry() {
         OracleColumnKind::Geometry
     );
 }
+
+/// Il bind di main 8.0.2 e testo UTF-8, non un TIMESTAMP TZ TTC a 13 byte.
+/// La lettura deve accompagnarlo con lo stesso modello SQL esplicito.
+#[test]
+fn filter_timestamptz_keeps_main_wire_bytes_and_explicit_conversion() {
+    use crate::{OracleObjectDescription, OracleReadPlan};
+    use oracle_rs::capabilities::Capabilities;
+    use oracle_rs::messages::{ExecuteMessage, ExecuteOptions};
+    use oracle_rs::statement::Statement;
+    use oracle_rs::Value;
+    use plenora_database_core::cast_table::OperandType;
+    use plenora_database_core::plan::{FilterExpression, ObjectRef, ProviderKind, ReadOperation};
+    use plenora_database_core::provider::{ParameterBag, ParameterValue};
+
+    let description = OracleObjectDescription {
+        schema: "PLENORA".to_owned(),
+        name: "EVENTS".to_owned(),
+        kind: "TABLE".to_owned(),
+        columns: vec![column("TIMESTAMP(6) WITH TIME ZONE")],
+        indexes: vec![],
+        schema_token: "fixture".to_owned(),
+    };
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("PLENORA".to_owned()),
+            object: "EVENTS".to_owned(),
+        },
+        projection: vec!["TS".to_owned()],
+        order_by: vec![],
+        row_limit: None,
+        row_offset: None,
+        filter: Some(FilterExpression::Eq {
+            field: "TS".to_owned(),
+            parameter: "p".to_owned(),
+        }),
+        declared_crs: vec![],
+    };
+    let expected_sql = "SELECT T.\"TS\" AS \"TS\" FROM \"PLENORA\".\"EVENTS\" T WHERE \"T\".\"TS\" = TO_TIMESTAMP_TZ(:1, 'YYYY-MM-DD\"T\"HH24:MI:SS.FFTZH:TZM')";
+    let packet = |sql: &str, values| {
+        let statement = Statement::new(sql);
+        let mut message = ExecuteMessage::new(&statement, ExecuteOptions::for_query(1));
+        message.set_bind_values(values);
+        message
+            .build_request(&Capabilities::new())
+            .expect("pacchetto TTC")
+    };
+    for offset in ["+02:00", "-05:30", "+00:00"] {
+        for (fraction, normalized) in [
+            ("", ".000000"),
+            (".000001", ".000001"),
+            (".123", ".123000"),
+            (".123001", ".123001"),
+        ] {
+            let value =
+                ParameterValue::TimestampTz(format!("2024-01-01T10:20:30{fraction}{offset}"));
+            let parameters = ParameterBag::new([("p".to_owned(), value.clone())].into());
+            let admitted = plenora_database_core::admission_gate::read_filter(
+                ProviderKind::Oracle,
+                operation.filter.as_ref(),
+                &parameters,
+                |_| Some(OperandType::TimestampTz { fraction_digits: 6 }),
+            )
+            .expect("ammissione");
+            assert_eq!(admitted.get("p"), Some(&value));
+            crate::parameter::reject_empty(admitted.get("p").unwrap()).expect("filtro");
+            let bound = crate::parameter::bind_parameters(&[admitted.get("p").unwrap().clone()])
+                .expect("bind filtro");
+            // Oracolo del percorso origin/main: parse_timestamp_tz formatta
+            // sei decimali e bind_parameter costruisce Value::String.
+            let main_bound = vec![Value::String(format!(
+                "2024-01-01T10:20:30{normalized}{offset}"
+            ))];
+            assert_eq!(
+                packet(expected_sql, bound.clone()),
+                packet(expected_sql, main_bound)
+            );
+            let plan = OracleReadPlan::compile_with_parameters(&description, &operation, &admitted)
+                .expect("piano");
+            assert_eq!(plan.bind_names, ["p"]);
+            assert_eq!(plan.sql, expected_sql);
+            assert_eq!(
+                packet(&plan.sql, bound.clone()),
+                packet(expected_sql, bound)
+            );
+        }
+    }
+}

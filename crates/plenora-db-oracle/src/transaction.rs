@@ -523,6 +523,22 @@ impl TransactionScope for OracleTransaction {
         })
     }
 
+    fn column_types<'a>(
+        &'a mut self,
+        relation: &'a (Option<String>, String),
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<plenora_database_core::operand_admission::RelationTypes>> {
+        Box::pin(async move {
+            crate::operand_catalog::ConnectionCatalog::new(
+                self.connection.connection()?,
+                self.operation_timeout,
+                cancellation,
+            )
+            .column_types(relation.0.as_deref(), &relation.1)
+            .await
+        })
+    }
+
     fn execute_conditional_update<'a>(
         &'a mut self,
         request: ConditionalUpdate<'a>,

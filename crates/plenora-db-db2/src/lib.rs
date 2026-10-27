@@ -8,6 +8,8 @@ mod config;
 mod connection;
 mod error;
 mod operand_catalog;
+mod parameter;
+mod parameter_catalog;
 mod provider;
 mod read;
 mod row_diagnostics;
@@ -68,3 +70,11 @@ mod spatial_live_tests;
 #[cfg(test)]
 #[path = "operand_live_tests.rs"]
 mod operand_live_tests;
+
+#[cfg(test)]
+#[path = "parameter_fidelity_live_tests.rs"]
+mod parameter_fidelity_live_tests;
+
+#[cfg(test)]
+#[path = "parameter_catalog_tests.rs"]
+mod parameter_catalog_tests;

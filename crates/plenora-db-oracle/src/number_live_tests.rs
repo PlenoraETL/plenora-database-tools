@@ -18,14 +18,13 @@ use plenora_database_core::arrow::array::{
 };
 use plenora_database_core::arrow::schema::{DataType, Field};
 use plenora_database_core::arrow::RecordBatch;
+use plenora_database_core::facade::{execute_portable, execute_portable_returning};
 use plenora_database_core::loss::MappingPolicy;
 use plenora_database_core::plan::{
-    FilterExpression, ObjectRef, ProviderKind, ReadOperation, TransactionProfile, WriteMode,
-    WriteOperation,
+    FilterExpression, ObjectRef, ReadOperation, TransactionProfile, WriteMode, WriteOperation,
 };
 use plenora_database_core::portable::{
-    compile_portable, eq, Expression, InsertStatement, PortableStatement, Projection,
-    SelectStatement, TableRef,
+    eq, Expression, InsertStatement, PortableStatement, Projection, SelectStatement, TableRef,
 };
 use plenora_database_core::protocol::contract_schema;
 use plenora_database_core::provider::{ParameterBag, ParameterValue, Provider, SecretString};
@@ -563,19 +562,14 @@ async fn portable_select_path(provider: &OracleProvider, secret: &SecretString) 
     let mut misses = Vec::new();
     let mut transaction = begin(provider, secret).await;
     for (index, probe) in PROBES.iter().enumerate() {
-        let select = compile_portable(
-            ProviderKind::Oracle,
-            &PortableStatement::Select(SelectStatement {
-                table: TableRef::new(KEYS),
-                projection: Projection::Columns(vec!["ID".to_owned()]),
-                filter: Some(eq("K", ParameterValue::Decimal((*probe).to_owned()))),
-                order_by: Vec::new(),
-                limit: None,
-            }),
-        )
-        .expect("compila select portabile");
-        let rows = transaction
-            .query(&select, &cancellation)
+        let select = PortableStatement::Select(SelectStatement {
+            table: TableRef::new(KEYS),
+            projection: Projection::Columns(vec!["ID".to_owned()]),
+            filter: Some(eq("K", ParameterValue::Decimal((*probe).to_owned()))),
+            order_by: Vec::new(),
+            limit: None,
+        });
+        let rows = execute_portable_returning(transaction.as_mut(), &select, &cancellation)
             .await
             .expect("select portabile");
         let ids = rows
@@ -687,21 +681,17 @@ async fn portable_insert_path(provider: &OracleProvider, secret: &SecretString) 
         .await
         .expect("svuota chiavi");
     for (index, probe) in PROBES.iter().enumerate() {
-        let insert = compile_portable(
-            ProviderKind::Oracle,
-            &PortableStatement::Insert(InsertStatement {
-                table: TableRef::new(KEYS),
-                columns: vec!["ID".to_owned(), "K".to_owned(), "LABEL".to_owned()],
-                values: vec![vec![
-                    Expression::literal(ParameterValue::I64(probe_id(index))),
-                    Expression::literal(ParameterValue::Decimal((*probe).to_owned())),
-                    Expression::literal(ParameterValue::String("portabile".to_owned())),
-                ]],
-                returning: Vec::new(),
-            }),
-        )
-        .expect("compila insert portabile");
-        if let Err(error) = transaction.execute(&insert, &cancellation).await {
+        let insert = PortableStatement::Insert(InsertStatement {
+            table: TableRef::new(KEYS),
+            columns: vec!["ID".to_owned(), "K".to_owned(), "LABEL".to_owned()],
+            values: vec![vec![
+                Expression::literal(ParameterValue::I64(probe_id(index))),
+                Expression::literal(ParameterValue::Decimal((*probe).to_owned())),
+                Expression::literal(ParameterValue::String("portabile".to_owned())),
+            ]],
+            returning: Vec::new(),
+        });
+        if let Err(error) = execute_portable(transaction.as_mut(), &insert, &cancellation).await {
             misses.push(format!("{probe}: insert rifiutato {error:?}"));
             break;
         }

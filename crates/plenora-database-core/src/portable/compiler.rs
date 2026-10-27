@@ -24,6 +24,39 @@ use crate::transaction::Statement;
 use crate::{DatabaseError, Result};
 use std::fmt::Write as _;
 
+/// Lo SQL compilato da un `PortableStatement`, **non** eseguibile.
+///
+/// I valori legati restano dentro: fuori dal core non si leggono e non si
+/// trasformano in uno [`Statement`]. Lo statement eseguibile di un AST
+/// portable esce soltanto dal cancello dell'ammissione
+/// ([`crate::admission_gate::portable`]), che ammette ogni letterale sul tipo
+/// della colonna che incontra. Cosi un percorso che compila ed esegue senza
+/// ammissione non compila (il difetto del terzo giro: `portable-execute`
+/// della CLI scriveva `numeric(12, 4)` e `timestamp(0)` arrotondati).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledPortable {
+    /// Lo SQL, per ispezione (`portable-compile`, prove di rendering).
+    pub sql: String,
+    pub(crate) params: Vec<ParameterValue>,
+}
+
+impl CompiledPortable {
+    /// Il numero di segnaposto legati.
+    #[must_use]
+    pub const fn param_count(&self) -> usize {
+        self.params.len()
+    }
+
+    /// Lo statement eseguibile: soltanto il cancello dell'ammissione lo
+    /// chiede, dopo aver ammesso i letterali.
+    pub(crate) fn into_admitted_statement(self) -> Statement {
+        Statement {
+            sql: self.sql,
+            params: self.params,
+        }
+    }
+}
+
 /// Compila un `PortableStatement` per il provider indicato.
 ///
 /// # Errors
@@ -31,7 +64,10 @@ use std::fmt::Write as _;
 /// - `Unsupported` se il provider non è supportato dal compilatore
 /// - `InvalidPlan` se lo statement viola un vincolo (columns vuoto,
 ///   values shape mismatch, identificatori non validi, ecc.)
-pub fn compile_portable(kind: ProviderKind, statement: &PortableStatement) -> Result<Statement> {
+pub fn compile_portable(
+    kind: ProviderKind,
+    statement: &PortableStatement,
+) -> Result<CompiledPortable> {
     let dialect = match kind {
         ProviderKind::Postgres => DialectKind::Postgres,
         ProviderKind::Mysql => DialectKind::Mysql,
@@ -55,7 +91,7 @@ pub fn compile_portable(kind: ProviderKind, statement: &PortableStatement) -> Re
         PortableStatement::Delete(s) => compile_delete(s, &mut ctx)?,
         PortableStatement::Upsert(s) => compile_upsert(s, &mut ctx)?,
     };
-    Ok(Statement {
+    Ok(CompiledPortable {
         sql,
         params: ctx.params,
     })
@@ -144,6 +180,15 @@ impl CompileContext {
     fn bind(&mut self, value: ParameterValue) -> String {
         let oracle_timestamp_tz =
             self.dialect == DialectKind::Oracle && matches!(&value, ParameterValue::TimestampTz(_));
+        // Un JSON spedito come stringa su `MySQL` resta una stringa, e
+        // `col_json = ?` non ritrova il documento: il testo si lega dentro un
+        // cast esplicito (regola di `crate::parameter_fidelity`). Il provider
+        // rifiuta il JSON nudo nello SQL del chiamante.
+        if let (DialectKind::Mysql, ParameterValue::Json(document)) = (self.dialect, &value) {
+            self.params
+                .push(ParameterValue::String(document.to_string()));
+            return "CAST(? AS JSON)".to_owned();
+        }
         self.params.push(value);
         let placeholder = match self.dialect {
             DialectKind::Postgres => format!("${}", self.params.len()),
@@ -185,6 +230,17 @@ fn push_sql(sql: &mut String, args: std::fmt::Arguments<'_>) -> Result<()> {
             "composizione dello statement SQL fallita",
         )
     })
+}
+
+/// L'esadecimale maiuscolo che `HEXTORAW` di Db2 legge.
+fn hex_upper(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 /// Il provider di un dialetto, totale: ogni dialetto ne ha uno.
@@ -308,7 +364,18 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                 crate::spatial_probe::ProbeUse::WriteValue,
                 crate::spatial_probe::ProbeFrame::Declared(*srid),
             )?;
-            let value = compile_expression(expression, ctx)?;
+            let value = match (ctx.dialect, expression.as_ref()) {
+                // `HEXTORAW(?)` legge testo esadecimale: il WKB si lega come
+                // tale, perche il provider Db2 lega i `Bytes` come binario
+                // vero (regola di `crate::parameter_fidelity`).
+                (
+                    DialectKind::Db2,
+                    Expression::Literal(
+                        ParameterValue::Bytes(bytes) | ParameterValue::Wkb { bytes, .. },
+                    ),
+                ) => ctx.bind(ParameterValue::String(hex_upper(bytes))),
+                _ => compile_expression(expression, ctx)?,
+            };
             match ctx.dialect {
                 DialectKind::Postgres => {
                     let geometry = crate::spatial_probe::postgres_spatial_value(&value, *srid);
@@ -552,7 +619,8 @@ fn compile_spatial_db2(
 ) -> Result<String> {
     reference.validate()?;
     spatial_policy::validate_predicate(ProviderKind::Db2, predicate, reference)?;
-    let geometry = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
+    // `HEXTORAW(?)` legge testo esadecimale, non i byte (vedi sopra).
+    let geometry = ctx.bind(ParameterValue::String(hex_upper(&reference.ewkb)));
     let srid = i32::try_from(reference.srid).map_err(|_| {
         DatabaseError::invalid_plan(format!(
             "SRID {} eccede il range i32 supportato da Db2 (max {})",

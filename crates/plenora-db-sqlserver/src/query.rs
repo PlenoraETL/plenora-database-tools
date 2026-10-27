@@ -1364,6 +1364,70 @@ pub async fn operand_catalog(
     Ok(catalog)
 }
 
+/// I tipi delle colonne di una relazione (`@P1` schema, vuoto se assente;
+/// `@P2` oggetto), con lunghezza in caratteri o byte, precisione e scala dal
+/// tipo di sistema, per l'ammissione dei letterali portable
+/// (`plenora_database_core::operand_admission`).
+const COLUMN_TYPES_SQL: &str = "SET NOCOUNT ON; DECLARE @name nvarchar(300) = CASE WHEN @P1 = N'' THEN QUOTENAME(@P2) \
+    ELSE QUOTENAME(@P1) + N'.' + QUOTENAME(@P2) END; SELECT c.name, COALESCE(TYPE_NAME(c.system_type_id), TYPE_NAME(c.user_type_id), N''), CAST(c.max_length AS int), \
+    CAST(c.precision AS int), CAST(c.scale AS int), \
+    CAST(COALESCE(COLLATIONPROPERTY(c.collation_name, 'CodePage'), 0) AS int) \
+    FROM sys.columns c WHERE c.object_id = OBJECT_ID(@name) ORDER BY c.column_id;";
+
+/// # Errors
+///
+/// Gli errori del catalogo.
+pub async fn column_types(
+    session: &mut SqlServerSession,
+    relation: &(Option<String>, String),
+    cancellation: &CancellationToken,
+) -> Result<Option<plenora_database_core::operand_admission::RelationTypes>> {
+    use plenora_database_core::operand_admission::{CatalogType, Charset, LengthUnit};
+    let mut query = Query::new(COLUMN_TYPES_SQL);
+    query.bind(relation.0.clone().unwrap_or_default());
+    query.bind(relation.1.clone());
+    let results = session
+        .execute_query(query, ErrorPhase::Prepare, cancellation)
+        .await?;
+    let mut types = plenora_database_core::operand_admission::RelationTypes::new();
+    for row in results.iter().flatten() {
+        let name: &str = required(row, 0, "colonna")?;
+        let type_name: &str = required(row, 1, "tipo")?;
+        let max_length: i32 = required(row, 2, "lunghezza")?;
+        let precision: i32 = required(row, 3, "precisione")?;
+        let scale: i32 = required(row, 4, "scala")?;
+        let code_page: i32 = required(row, 5, "codepage")?;
+        let wide = matches!(type_name, "nchar" | "nvarchar" | "ntext");
+        let length = u64::try_from(max_length)
+            .ok()
+            .map(|bytes| if wide { bytes / 2 } else { bytes });
+        // `nchar`/`nvarchar` contano le unita UTF-16; `char`/`varchar` i byte
+        // della codepage della collation (65001 per le collation `_UTF8`).
+        // Un carattere fuori dalla codepage il server lo sostituisce con il
+        // piu simile o con `?` (`'łę日x'` in CP1252 diventava `'l?x'`).
+        let (length_unit, charset) = match (wide, code_page) {
+            (true, _) => (LengthUnit::Utf16, Charset::Unicode),
+            (false, 65_001) => (LengthUnit::Bytes, Charset::Unicode),
+            (false, 1_252) => (LengthUnit::Bytes, Charset::Windows1252),
+            (false, _) => (LengthUnit::Bytes, Charset::Ascii),
+        };
+        types.insert(
+            name.to_owned(),
+            CatalogType {
+                name: type_name.to_owned(),
+                declaration: None,
+                length,
+                precision: u64::try_from(precision).ok(),
+                scale: Some(i64::from(scale)),
+                datetime_precision: None,
+                length_unit,
+                charset,
+            },
+        );
+    }
+    Ok((!types.is_empty()).then_some(types))
+}
+
 /// I nomi per lettura di [`NAME_RESOLUTION_SQL`]: due parametri per la
 /// relazione, uno per nome, entro il limite di 2100 di `sp_executesql`.
 const NAME_RESOLUTION_CHUNK: usize = 500;

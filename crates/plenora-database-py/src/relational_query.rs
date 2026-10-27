@@ -95,6 +95,26 @@ impl RelationalPlan {
         }
     }
 
+    /// La query del piano con i valori ricevuti, ammessa dal cancello
+    /// (`admission_gate::query`): i parametri tipizzati sul tipo del loro
+    /// `CAST`, nell'ordine dei segnaposto che il renderer rende (`names`, da
+    /// [`Self::ensure_renders`]). Una mutazione la ammette
+    /// `facade::execute_judged` (`admission_gate::mutation`).
+    fn admitted_query(
+        query: &QueryOperation,
+        provider: ProviderKind,
+        statement: &plenora_database_core::transaction::Statement,
+        names: &[String],
+    ) -> plenora_database_core::Result<plenora_database_core::admission_gate::Admitted> {
+        plenora_database_core::admission_gate::query(
+            provider,
+            query,
+            statement.sql.clone(),
+            names,
+            &statement.params,
+        )
+    }
+
     /// Lo SQL ricevuto e quello che il piano rende: altrimenti il giudizio
     /// sarebbe di un piano e l'esecuzione di un altro. Rende i nomi dei bind,
     /// da cui il giudizio legge le famiglie dei valori (regola F).
@@ -163,13 +183,34 @@ pub async fn query_rows(
     plan: Option<&RelationalPlan>,
     cancellation: &plenora_database_core::CancellationToken,
 ) -> plenora_database_core::Result<Vec<plenora_database_core::row::Row>> {
-    let binds = match plan {
-        Some(plan) => plan.ensure_renders(tx.provider_kind(), statement)?,
-        None => Vec::new(),
+    let Some(plan) = plan else {
+        return plenora_database_core::facade::query_judged(tx, statement, None, &[], cancellation)
+            .await;
     };
-    let plan = plan.map(RelationalPlan::as_plan);
-    plenora_database_core::facade::query_judged(tx, statement, plan.as_ref(), &binds, cancellation)
-        .await
+    let binds = plan.ensure_renders(tx.provider_kind(), statement)?;
+    match plan {
+        RelationalPlan::Query(query) => {
+            let admitted =
+                RelationalPlan::admitted_query(query, tx.provider_kind(), statement, &binds)?;
+            plenora_database_core::facade::query_admitted(
+                tx,
+                &admitted,
+                &plan.as_plan(),
+                cancellation,
+            )
+            .await
+        }
+        RelationalPlan::Mutation(_) => {
+            plenora_database_core::facade::query_judged(
+                tx,
+                statement,
+                Some(&plan.as_plan()),
+                &binds,
+                cancellation,
+            )
+            .await
+        }
+    }
 }
 
 /// `execute` di una transazione con il giudizio del piano, se c'e.
@@ -183,19 +224,40 @@ pub async fn execute(
     plan: Option<&RelationalPlan>,
     cancellation: &plenora_database_core::CancellationToken,
 ) -> plenora_database_core::Result<u64> {
-    let binds = match plan {
-        Some(plan) => plan.ensure_renders(tx.provider_kind(), statement)?,
-        None => Vec::new(),
+    let Some(plan) = plan else {
+        return plenora_database_core::facade::execute_judged(
+            tx,
+            statement,
+            None,
+            &[],
+            cancellation,
+        )
+        .await;
     };
-    let plan = plan.map(RelationalPlan::as_plan);
-    plenora_database_core::facade::execute_judged(
-        tx,
-        statement,
-        plan.as_ref(),
-        &binds,
-        cancellation,
-    )
-    .await
+    let binds = plan.ensure_renders(tx.provider_kind(), statement)?;
+    match plan {
+        RelationalPlan::Query(query) => {
+            let admitted =
+                RelationalPlan::admitted_query(query, tx.provider_kind(), statement, &binds)?;
+            plenora_database_core::facade::execute_admitted(
+                tx,
+                &admitted,
+                &plan.as_plan(),
+                cancellation,
+            )
+            .await
+        }
+        RelationalPlan::Mutation(_) => {
+            plenora_database_core::facade::execute_judged(
+                tx,
+                statement,
+                Some(&plan.as_plan()),
+                &binds,
+                cancellation,
+            )
+            .await
+        }
+    }
 }
 
 /// La query resa dal renderer canonico con la configurazione dello SDK.

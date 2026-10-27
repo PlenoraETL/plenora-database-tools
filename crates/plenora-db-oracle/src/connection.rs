@@ -21,9 +21,13 @@ pub async fn connect(
     driver_config.response_limit =
         usize::try_from(plenora_database_core::resource::ResourceLimits::default().memory_bytes)
             .unwrap_or(usize::MAX);
-    let operation = Connection::connect_with_config(driver_config);
+    // Il fork ignora connect_timeout: limitare TCP, TLS e l'intero handshake.
+    let timeout = driver_config.connect_timeout;
+    let operation = tokio::time::timeout(timeout, Connection::connect_with_config(driver_config));
     tokio::select! {
-        result = operation => result.map_err(|error| driver_error(ErrorPhase::Connect, &error)),
+        result = operation => result
+            .unwrap_or_else(|_| Err(oracle_rs::Error::ConnectionTimeout(timeout)))
+            .map_err(|error| driver_error(ErrorPhase::Connect, &error)),
         _ = cancellation.cancelled() => Err(interruption_error(cancellation, ErrorPhase::Connect)),
     }
 }

@@ -1,6 +1,7 @@
 use crate::connection::with_timeout_duration;
 use oracle_rs::types::{LobLocator, LobValue, OracleDate, OracleNumber, OracleTimestamp};
 use oracle_rs::{Connection, OracleType, Value};
+use plenora_database_core::parameter_fidelity::{canonical_uuid, reject_sub_microsecond};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
@@ -45,6 +46,9 @@ pub async fn bind_parameters_with_lobs(
         cancellation,
     };
     for parameter in parameters {
+        if !promote_write_lobs {
+            reject_empty(parameter)?;
+        }
         let blob = match parameter {
             ParameterValue::Wkb { bytes, .. } => Some(bytes.as_slice()),
             ParameterValue::Bytes(bytes) if promote_write_lobs => Some(bytes.as_slice()),
@@ -173,6 +177,30 @@ impl LobIo<'_> {
     }
 }
 
+/// Oracle conserva una stringa vuota, e un `RAW` vuoto, come `NULL`: il valore
+/// scritto non sarebbe quello bindato, e `col = :n` non lo ritroverebbe mai.
+///
+/// Vale per lo statement del chiamante e per il filtro della lettura
+/// (`promote_write_lobs` falso). Il percorso di scrittura Arrow, che promuove
+/// i binari a `BLOB` e binda le righe del parameter array con
+/// [`bind_parameters`], resta fuori: la sua regola per `''` e quella della
+/// scrittura, non di questo modulo.
+pub fn reject_empty(parameter: &ParameterValue) -> Result<()> {
+    let empty = match parameter {
+        ParameterValue::String(value)
+        | ParameterValue::Uuid(value)
+        | ParameterValue::Enum { label: value, .. } => value.is_empty(),
+        ParameterValue::Bytes(value) => value.is_empty(),
+        _ => false,
+    };
+    if empty {
+        return Err(mapping_error(
+            "parametro vuoto Oracle: stringa e RAW vuoti si conservano come NULL",
+        ));
+    }
+    Ok(())
+}
+
 fn lob_error(mut error: DatabaseError, message: &'static str) -> DatabaseError {
     message.clone_into(&mut error.message);
     error
@@ -193,9 +221,13 @@ fn bind_parameter(value: &ParameterValue) -> Result<Value> {
         ),
         ParameterValue::F64(value) if value.is_finite() => Ok(Value::Float(*value)),
         ParameterValue::F64(_) => Err(mapping_error("parametro float Oracle non finito")),
-        ParameterValue::String(value)
-        | ParameterValue::Uuid(value)
-        | ParameterValue::Enum { label: value, .. } => Ok(Value::String(value.clone())),
+        ParameterValue::String(value) | ParameterValue::Enum { label: value, .. } => {
+            Ok(Value::String(value.clone()))
+        }
+        ParameterValue::Uuid(value) => {
+            canonical_uuid(ProviderKind::Oracle, value)?;
+            Ok(Value::String(value.clone()))
+        }
         ParameterValue::Bytes(value) => Ok(Value::Bytes(value.clone())),
         // Lo stesso -0.0 dentro un documento JSON diventerebbe il NUMBER 0
         // dell'OSON. Il controllo sta qui e non solo nel codificatore OSON del
@@ -237,7 +269,13 @@ fn json_has_negative_zero(value: &serde_json::Value) -> bool {
     }
 }
 
+/// Testo per `TO_TIMESTAMP_TZ(:n, ORACLE_TIMESTAMP_TZ_FORMAT_MODEL)`:
+/// portable, filtro read e write emettono la conversione; lo statement
+/// nativo del chiamante deve scriverla. Un bind nudo dipenderebbe da
+/// `NLS_TIMESTAMP_TZ_FORMAT` e potrebbe fallire o leggere campi diversi.
+/// Il limite resta fino alla qualifica del binding TZ nativo nel driver.
 fn parse_timestamp_tz(value: &str) -> Result<String> {
+    reject_sub_microsecond(ProviderKind::Oracle, value)?;
     let timestamp = chrono::DateTime::parse_from_rfc3339(value)
         .map_err(|_| mapping_error("parametro timestamptz Oracle non valido"))?;
     // Stesse regole del timestamp senza fuso: microsecondo esatto, niente
@@ -246,14 +284,7 @@ fn parse_timestamp_tz(value: &str) -> Result<String> {
     // 1582-10-15, 1500-03-01 un istante dieci giorni dopo).
     exact_microsecond(chrono::Timelike::nanosecond(&timestamp))?;
     for date in [timestamp.naive_local().date(), timestamp.naive_utc().date()] {
-        crate::decode::require_gregorian(
-            chrono::Datelike::year(&date),
-            u8::try_from(chrono::Datelike::month(&date))
-                .map_err(|_| mapping_error("mese Oracle non rappresentabile"))?,
-            u8::try_from(chrono::Datelike::day(&date))
-                .map_err(|_| mapping_error("giorno Oracle non rappresentabile"))?,
-            ErrorPhase::Prepare,
-        )?;
+        gregorian_date(oracle_date(date)?)?;
     }
     Ok(timestamp.format("%Y-%m-%dT%H:%M:%S%.6f%:z").to_string())
 }
@@ -297,6 +328,10 @@ fn validate_decimal(value: &str) -> Result<()> {
 fn parse_date(value: &str) -> Result<OracleDate> {
     let date = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .map_err(|_| mapping_error("parametro date Oracle non valido"))?;
+    oracle_date(date)
+}
+
+fn oracle_date(date: chrono::NaiveDate) -> Result<OracleDate> {
     Ok(OracleDate::date(
         chrono::Datelike::year(&date),
         u8::try_from(chrono::Datelike::month(&date))
@@ -307,14 +342,14 @@ fn parse_date(value: &str) -> Result<OracleDate> {
 }
 
 fn parse_timestamp(value: &str) -> Result<OracleTimestamp> {
+    reject_sub_microsecond(ProviderKind::Oracle, value)?;
     let timestamp = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
         .map_err(|_| mapping_error("parametro timestamp Oracle non valido"))?;
+    let date = oracle_date(timestamp.date())?;
     Ok(OracleTimestamp::new(
-        chrono::Datelike::year(&timestamp),
-        u8::try_from(chrono::Datelike::month(&timestamp))
-            .map_err(|_| mapping_error("mese Oracle non rappresentabile"))?,
-        u8::try_from(chrono::Datelike::day(&timestamp))
-            .map_err(|_| mapping_error("giorno Oracle non rappresentabile"))?,
+        date.year,
+        date.month,
+        date.day,
         u8::try_from(chrono::Timelike::hour(&timestamp))
             .map_err(|_| mapping_error("ora Oracle non rappresentabile"))?,
         u8::try_from(chrono::Timelike::minute(&timestamp))
@@ -351,12 +386,7 @@ fn gregorian_date(date: OracleDate) -> Result<OracleDate> {
 }
 
 fn gregorian_timestamp(timestamp: OracleTimestamp) -> Result<OracleTimestamp> {
-    crate::decode::require_gregorian(
-        timestamp.year,
-        timestamp.month,
-        timestamp.day,
-        ErrorPhase::Prepare,
-    )?;
+    gregorian_date(timestamp.to_date())?;
     Ok(timestamp)
 }
 

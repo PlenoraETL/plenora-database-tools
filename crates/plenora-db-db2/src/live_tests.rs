@@ -12,8 +12,7 @@ use plenora_database_core::plan::{
     TransactionProfile, WriteMode, WriteOperation,
 };
 use plenora_database_core::portable::{
-    compile_portable, eq, select, Expression, InsertStatement, PortableStatement, TableRef,
-    UpsertStatement,
+    eq, select, Expression, InsertStatement, PortableStatement, TableRef, UpsertStatement,
 };
 use plenora_database_core::protocol::contract_schema;
 use plenora_database_core::provider::{
@@ -853,7 +852,13 @@ async fn live_portable_sql_executes_insert_merge_select_and_rollback() {
         .expect("transazione portable Db2");
 
     let insert = portable_probe_insert();
-    let insert = compile_portable(ProviderKind::Db2, &insert).expect("compila INSERT Db2");
+    let insert = plenora_database_core::admission_gate::portable(
+        transaction.as_mut(),
+        &insert,
+        &cancellation,
+    )
+    .await
+    .expect("compila INSERT Db2");
     assert_eq!(
         transaction
             .execute(&insert, &cancellation)
@@ -863,7 +868,13 @@ async fn live_portable_sql_executes_insert_merge_select_and_rollback() {
     );
 
     let upsert = portable_probe_upsert();
-    let upsert = compile_portable(ProviderKind::Db2, &upsert).expect("compila MERGE Db2");
+    let upsert = plenora_database_core::admission_gate::portable(
+        transaction.as_mut(),
+        &upsert,
+        &cancellation,
+    )
+    .await
+    .expect("compila MERGE Db2");
     assert_eq!(
         transaction
             .execute(&upsert, &cancellation)
@@ -877,8 +888,13 @@ async fn live_portable_sql_executes_insert_merge_select_and_rollback() {
         .where_(eq("ID", ParameterValue::I32(20)))
         .limit(1)
         .into_statement();
-    let compiled_select =
-        compile_portable(ProviderKind::Db2, &select_statement).expect("compila SELECT Db2");
+    let compiled_select = plenora_database_core::admission_gate::portable(
+        transaction.as_mut(),
+        &select_statement,
+        &cancellation,
+    )
+    .await
+    .expect("compila SELECT Db2");
     let rows = transaction
         .query(&compiled_select, &cancellation)
         .await
@@ -907,8 +923,13 @@ async fn live_portable_sql_executes_insert_merge_select_and_rollback() {
         .schema("PLENORA_TEST")
         .where_(eq("ID", ParameterValue::I32(20)))
         .into_statement();
-    let select =
-        compile_portable(ProviderKind::Db2, &select_statement).expect("compila verifica Db2");
+    let select = plenora_database_core::admission_gate::portable(
+        verification.as_mut(),
+        &select_statement,
+        &cancellation,
+    )
+    .await
+    .expect("compila verifica Db2");
     let rows = verification
         .query(&select, &cancellation)
         .await
@@ -1660,5 +1681,151 @@ async fn live_caller_query_worker_panic_requires_recovery() {
     assert_eq!(
         error.retry,
         plenora_database_core::RetryDisposition::RequiresRecovery
+    );
+}
+
+/// Il difetto 2 del secondo giro: il parameter-array legava i timestamp come
+/// testo senza il tipo del segnaposto, e una write Append di `.654321` in un
+/// TIMESTAMP(0) si confermava conservando `.00`. Ora ogni valore si ammette
+/// contro il tipo descritto (`operand_admission`); l'ammissione dello schema
+/// Arrow contro la tabella e la matrice della #134.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+#[ignore = "richiede Db2 LUW live esplicito"]
+async fn live_parameter_array_refuses_timestamps_beyond_the_column_precision() {
+    use plenora_database_core::arrow::array::TimestampMicrosecondArray;
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    for sql in [
+        "DROP TABLE IF EXISTS PLENORA_PARAM.STAMP_ARRAY",
+        "CREATE TABLE PLENORA_PARAM.STAMP_ARRAY (ID INTEGER NOT NULL, TS0 TIMESTAMP(0), TS3 TIMESTAMP(3))",
+    ] {
+        provider
+            .execute_ddl(&secret, sql, &cancellation)
+            .await
+            .expect("DDL tabella sonda Db2");
+    }
+    let schema = contract_schema(vec![
+        Field::new("ID", DataType::Int32, false),
+        Field::new(
+            "TS0",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        ),
+        Field::new(
+            "TS3",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        ),
+    ])
+    .expect("schema");
+    // 2024-01-01T10:20:30.654321 e 2024-01-01T10:20:30.000000.
+    let fractional = 1_704_104_430_654_321_i64;
+    let whole = 1_704_104_430_000_000_i64;
+    let batch = |ts0: i64, ts3: i64| {
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(TimestampMicrosecondArray::from(vec![Some(ts0)])),
+                Arc::new(TimestampMicrosecondArray::from(vec![Some(ts3)])),
+            ],
+        )
+        .expect("batch Db2")
+    };
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: Some("PLENORA".to_owned()),
+            schema: Some("PLENORA_PARAM".to_owned()),
+            object: "STAMP_ARRAY".to_owned(),
+        },
+        mode: WriteMode::Append,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: Vec::new(),
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget Db2");
+    let refused_zero = run_write(
+        &provider,
+        &secret,
+        &budget,
+        operation.clone(),
+        batch(fractional, whole),
+        &cancellation,
+    )
+    .await;
+    let refused_three = run_write(
+        &provider,
+        &secret,
+        &budget,
+        operation.clone(),
+        batch(whole, fractional),
+        &cancellation,
+    )
+    .await;
+    let accepted = run_write(
+        &provider,
+        &secret,
+        &budget,
+        operation,
+        batch(whole, whole),
+        &cancellation,
+    )
+    .await;
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione Db2");
+    let rows = transaction
+        .query(
+            &Statement::new(
+                "SELECT VARCHAR(TS0) || ' ' || VARCHAR(TS3) FROM PLENORA_PARAM.STAMP_ARRAY",
+            ),
+            &cancellation,
+        )
+        .await
+        .expect("rilettura Db2");
+    transaction.rollback(&cancellation).await.expect("rollback");
+    provider
+        .execute_ddl(
+            &secret,
+            "DROP TABLE PLENORA_PARAM.STAMP_ARRAY",
+            &cancellation,
+        )
+        .await
+        .expect("pulizia Db2");
+    assert_eq!(
+        refused_zero
+            .expect_err("TIMESTAMP(0) con frazione")
+            .category,
+        ErrorCategory::DataMapping
+    );
+    assert_eq!(
+        refused_three
+            .expect_err("TIMESTAMP(3) con sei cifre")
+            .category,
+        ErrorCategory::DataMapping
+    );
+    assert_eq!(
+        accepted.expect("valori esatti").status,
+        WriteStatus::Committed
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.values().to_vec())
+            .collect::<Vec<_>>(),
+        vec![vec![ParameterValue::String(
+            "2024-01-01-10.20.30 2024-01-01-10.20.30.000".to_owned()
+        )]]
     );
 }

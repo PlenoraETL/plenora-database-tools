@@ -1,7 +1,10 @@
 use super::{types::ColumnSpec, write};
 use bytes::BytesMut;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use plenora_database_core::plan::FilterExpression;
+use plenora_database_core::parameter_fidelity::{
+    canonical_uuid, reject_nul, reject_sub_microsecond,
+};
+use plenora_database_core::plan::{FilterExpression, ProviderKind};
 use plenora_database_core::provider::{ParameterBag, ParameterValue};
 use plenora_database_core::relational::SpatialFunction;
 use plenora_database_core::{DatabaseError, Result};
@@ -331,6 +334,7 @@ pub struct UuidParameter(pub [u8; 16]);
 
 impl UuidParameter {
     pub fn parse(value: &str) -> Result<Self> {
+        canonical_uuid(ProviderKind::Postgres, value)?;
         let compact = value
             .bytes()
             .filter(|byte| *byte != b'-')
@@ -434,29 +438,37 @@ pub fn bind_parameters(
                 ParameterValue::I32(value) => Box::new(IntegerParameter(i64::from(*value))),
                 ParameterValue::I64(value) => Box::new(IntegerParameter(*value)),
                 ParameterValue::F64(value) => Box::new(*value),
-                ParameterValue::String(value) => Box::new(value.clone()),
+                ParameterValue::String(value) => {
+                    reject_nul(ProviderKind::Postgres, value)?;
+                    Box::new(value.clone())
+                }
                 ParameterValue::Bytes(value) => Box::new(value.clone()),
                 ParameterValue::Date(value) => Box::new(
                     NaiveDate::parse_from_str(value, "%Y-%m-%d")
                         .map_err(|_| DatabaseError::invalid_plan("parametro date non valido"))?,
                 ),
-                ParameterValue::Timestamp(value) => Box::new(
+                ParameterValue::Timestamp(value) => Box::new({
+                    reject_sub_microsecond(ProviderKind::Postgres, value)?;
                     NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").map_err(|_| {
                         DatabaseError::invalid_plan("parametro timestamp non valido")
-                    })?,
-                ),
-                ParameterValue::TimestampTz(value) => Box::new(
+                    })?
+                }),
+                ParameterValue::TimestampTz(value) => Box::new({
+                    reject_sub_microsecond(ProviderKind::Postgres, value)?;
                     DateTime::parse_from_rfc3339(value)
                         .map_err(|_| {
                             DatabaseError::invalid_plan("parametro timestamptz non valido")
                         })?
-                        .with_timezone(&Utc),
-                ),
+                        .with_timezone(&Utc)
+                }),
                 ParameterValue::Json(value) => Box::new(value.clone()),
                 ParameterValue::Wkb { bytes, .. } => Box::new(bytes.clone()),
                 ParameterValue::Decimal(value) => Box::new(DecimalParameter::parse(value)?),
                 ParameterValue::Uuid(value) => Box::new(UuidParameter::parse(value)?),
-                ParameterValue::Enum { label, .. } => Box::new(label.clone()),
+                ParameterValue::Enum { label, .. } => {
+                    reject_nul(ProviderKind::Postgres, label)?;
+                    Box::new(label.clone())
+                }
                 ParameterValue::Null { type_name } => Box::new(TypedNull(type_name.clone())),
             };
             Ok(boxed)

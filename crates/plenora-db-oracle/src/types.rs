@@ -3,6 +3,8 @@ use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit}
 use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::plan::{ProviderKind, ReadOperation, SortDirection};
 use plenora_database_core::protocol::{self, contract_schema};
+use plenora_database_core::provider::{ParameterBag, ParameterValue};
+use plenora_database_core::relational::QueryParameterType;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{
     lower_filter, select_columns_by_name, Dialect, DialectCapabilities, FilterLowering, Identifier,
@@ -184,10 +186,21 @@ impl OracleReadPlan {
     /// # Errors
     ///
     /// Rifiuta projection, filtri, ordinamenti, CRS o tipi non qualificati.
-    #[allow(clippy::too_many_lines)]
     pub fn compile(
         description: &OracleObjectDescription,
         operation: &ReadOperation,
+    ) -> Result<Self> {
+        Self::compile_with_parameters(description, operation, &ParameterBag::default())
+    }
+
+    /// Dopo l'ammissione, il valore decide la conversione del bind. Il
+    /// TIMESTAMP TZ del driver e testo: senza modello esplicito il filtro
+    /// dipenderebbe da `NLS_TIMESTAMP_TZ_FORMAT`, a differenza della write.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn compile_with_parameters(
+        description: &OracleObjectDescription,
+        operation: &ReadOperation,
+        parameters: &ParameterBag,
     ) -> Result<Self> {
         if (operation.row_limit.is_some() || operation.row_offset.is_some())
             && operation.order_by.is_empty()
@@ -233,7 +246,14 @@ impl OracleReadPlan {
                 spatial_intersects: true,
             },
         )
-        .with_spatial_probes_verified();
+        .with_spatial_probes_verified()
+        .with_parameter_types(
+            parameters
+                .iter()
+                .filter(|(_, value)| matches!(value, ParameterValue::TimestampTz(_)))
+                .map(|(name, _)| (name.clone(), QueryParameterType::TimestampTz))
+                .collect(),
+        );
         let mut projections = columns
             .iter()
             .map(|column| {

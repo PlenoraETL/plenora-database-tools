@@ -8992,6 +8992,622 @@ async fn live_binary_columns_of_views_are_judged_geometric() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Fedelta dei parametri `MySQL` e `MariaDB`: ogni variante di `ParameterValue`
+// o arriva al server esatta, o e rifiutata prima dell'invio
+// (`plenora_database_testkit::parameter_fidelity`, con l'oracolo della resa
+// del server e i vicini generati per famiglia). Il prodotto si sceglie con
+// `PLENORA_MYSQL_PRODUCT`, come per gli altri test live del crate.
+// ---------------------------------------------------------------------------
+
+use crate::MariadbProvider;
+use plenora_database_core::provider::ParameterValue as FidelityValue;
+use plenora_database_testkit::parameter_fidelity::{
+    report as fidelity_report, run as fidelity_run, Case as FidelityCase, Expect as FidelityExpect,
+    FidelityPath, NativeSql as FidelitySql, Target as FidelityTarget,
+};
+
+const FIDELITY_TABLE: &str = "param_fidelity";
+
+fn fidelity_mariadb() -> bool {
+    environment("PLENORA_MYSQL_PRODUCT", "mysql") == "mariadb"
+}
+
+/// La resa canonica del server, indipendente dai decoder del repository.
+fn fidelity_raw(column: &str) -> String {
+    match column {
+        "B" | "S" => format!("HEX({column})"),
+        "TS" | "TS0" | "TZ" => format!("DATE_FORMAT({column}, '%Y-%m-%dT%H:%i:%s.%f')"),
+        _ => format!("CAST({column} AS CHAR)"),
+    }
+}
+
+fn fidelity_native(kind: FidelitySql, column: &str) -> String {
+    let table = FIDELITY_TABLE;
+    match kind {
+        FidelitySql::Insert => format!("INSERT INTO {table} (ID, {column}) VALUES (?, ?)"),
+        FidelitySql::Select => format!("SELECT {column} FROM {table} WHERE ID = ?"),
+        FidelitySql::Count => {
+            format!("SELECT COUNT(*) FROM {table} WHERE ID = ? AND {column} = ?")
+        }
+        FidelitySql::Raw => format!(
+            "SELECT COALESCE({}, '') FROM {table} WHERE ID = ?",
+            fidelity_raw(column)
+        ),
+        FidelitySql::Delete => format!("DELETE FROM {table} WHERE ID = ?"),
+    }
+}
+
+fn fidelity_text(value: &str) -> FidelityValue {
+    FidelityValue::String(value.to_owned())
+}
+
+fn fidelity_exact(value: &FidelityValue, raw: impl Into<String>) -> FidelityExpect {
+    FidelityExpect::exact(value.clone(), raw)
+}
+
+#[allow(clippy::too_many_lines)]
+fn fidelity_cases() -> Vec<FidelityCase> {
+    use FidelityValue as V;
+    let mariadb = fidelity_mariadb();
+    let mapping = FidelityExpect::Refused(ErrorCategory::DataMapping);
+    let unsupported = FidelityExpect::Refused(ErrorCategory::Unsupported);
+    let bytes = V::Bytes(vec![0xAB, 0x01]);
+    let nonbmp = fidelity_text("\u{e8}\u{1F600}");
+    let two_53 = 1_i64 << 53;
+    #[allow(clippy::cast_precision_loss)]
+    let float_two_53 = two_53 as f64;
+    let timestamp = V::Timestamp("2024-01-01T10:20:30.123456".to_owned());
+    let decimal = V::Decimal("12345.6789".to_owned());
+    let integer = |value: i64| V::I64(value);
+    vec![
+        FidelityCase::new(
+            "bytes 0xAB01 in VARBINARY",
+            "B",
+            bytes.clone(),
+            fidelity_exact(&bytes, "AB01"),
+        ),
+        FidelityCase::new(
+            "bytes vuoti",
+            "B",
+            V::Bytes(Vec::new()),
+            fidelity_exact(&V::Bytes(Vec::new()), ""),
+        ),
+        FidelityCase::new(
+            "testo non-BMP",
+            "S",
+            nonbmp.clone(),
+            fidelity_exact(&nonbmp, "C3A8F09F9880"),
+        ),
+        FidelityCase::new(
+            "testo vuoto",
+            "S",
+            fidelity_text(""),
+            fidelity_exact(&fidelity_text(""), ""),
+        ),
+        FidelityCase::new("testo con NUL", "S", fidelity_text("a\0b"), mapping.clone()),
+        FidelityCase::new(
+            "decimal esatto",
+            "D",
+            decimal,
+            fidelity_exact(&fidelity_text("12345.6789"), "12345.6789"),
+        )
+        // Il decoder transazionale rende il DECIMAL come testo, quello Arrow
+        // come Decimal128: lo stesso valore.
+        .on(
+            FidelityPath::Read,
+            fidelity_exact(&V::Decimal("12345.6789".to_owned()), "12345.6789"),
+        ),
+        FidelityCase::new(
+            "decimal oltre la scala della colonna",
+            "D",
+            V::Decimal("12345.67890001".to_owned()),
+            FidelityExpect::Assigned {
+                read: fidelity_text("12345.6789"),
+                raw: "12345.6789".to_owned(),
+            },
+        )
+        .on(FidelityPath::Portable, mapping.clone())
+        .on(FidelityPath::Read, mapping.clone()),
+        FidelityCase::new(
+            "decimal con esponente",
+            "D",
+            V::Decimal("1.5E2".to_owned()),
+            mapping.clone(),
+        ),
+        FidelityCase::new(
+            "double 0.1",
+            "F",
+            V::F64(0.1),
+            fidelity_exact(&V::F64(0.1), "0.1"),
+        ),
+        FidelityCase::new(
+            "double 2^53",
+            "F",
+            V::F64(float_two_53),
+            fidelity_exact(&V::F64(float_two_53), "9.007199254740992e15"),
+        ),
+        // Misurato: MariaDB conserva -0.0 come +0.0.
+        FidelityCase::new(
+            "double -0.0",
+            "F",
+            V::F64(-0.0),
+            if mariadb {
+                mapping.clone()
+            } else {
+                fidelity_exact(&V::F64(-0.0), "-0")
+            },
+        ),
+        FidelityCase::new("double NaN", "F", V::F64(f64::NAN), mapping.clone()),
+        FidelityCase::new(
+            "bigint 2^53 + 1",
+            "I",
+            integer(two_53 + 1),
+            fidelity_exact(&integer(two_53 + 1), (two_53 + 1).to_string()),
+        ),
+        FidelityCase::new(
+            "bigint minimo",
+            "I",
+            V::I64(i64::MIN),
+            fidelity_exact(&V::I64(i64::MIN), i64::MIN.to_string()),
+        ),
+        FidelityCase::new(
+            "boolean true",
+            "BO",
+            V::Bool(true),
+            fidelity_exact(&V::I64(1), "1"),
+        )
+        .on(FidelityPath::Read, fidelity_exact(&V::Bool(true), "1")),
+        FidelityCase::new(
+            "date",
+            "DT",
+            V::Date("2024-02-29".to_owned()),
+            fidelity_exact(&V::Date("2024-02-29".to_owned()), "2024-02-29"),
+        ),
+        FidelityCase::new(
+            "timestamp al microsecondo",
+            "TS",
+            timestamp.clone(),
+            fidelity_exact(&timestamp, "2024-01-01T10:20:30.123456"),
+        ),
+        FidelityCase::new(
+            "timestamp oltre la precisione della colonna",
+            "TS0",
+            V::Timestamp("2024-01-01T10:20:30.4".to_owned()),
+            FidelityExpect::Assigned {
+                read: V::Timestamp("2024-01-01T10:20:30".to_owned()),
+                raw: "2024-01-01T10:20:30.000000".to_owned(),
+            },
+        )
+        .on(FidelityPath::Portable, mapping.clone())
+        .on(FidelityPath::Read, mapping.clone()),
+        FidelityCase::new(
+            "timestamp sotto il microsecondo",
+            "TS",
+            V::Timestamp("2024-01-01T10:20:30.1234567".to_owned()),
+            mapping.clone(),
+        ),
+        // Su MySQL lo SQL del chiamante converte l'offset nel fuso della
+        // sessione (limite dichiarato); il portable non ha un tipo con fuso in
+        // cui ammetterlo. MariaDB non legge l'offset.
+        FidelityCase::new(
+            "timestamptz in TIMESTAMP",
+            "TZ",
+            V::TimestampTz("2024-01-01T10:20:30.123456+02:00".to_owned()),
+            if mariadb {
+                unsupported.clone()
+            } else {
+                FidelityExpect::Assigned {
+                    read: V::Timestamp("2024-01-01T08:20:30.123456".to_owned()),
+                    raw: "2024-01-01T08:20:30.123456".to_owned(),
+                }
+            },
+        )
+        .on(FidelityPath::Portable, mapping.clone())
+        .on(
+            FidelityPath::Read,
+            if mariadb {
+                unsupported.clone()
+            } else {
+                mapping.clone()
+            },
+        ),
+        FidelityCase::new(
+            "date inesistente",
+            "DT",
+            V::Date("2024-02-30".to_owned()),
+            mapping.clone(),
+        ),
+        FidelityCase::new(
+            "uuid",
+            "U",
+            V::Uuid("6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60".to_owned()),
+            fidelity_exact(
+                &fidelity_text("6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60"),
+                "6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60",
+            ),
+        ),
+        FidelityCase::new(
+            "uuid non canonico",
+            "U",
+            V::Uuid("6f1c2a2e7-d3b-4c55-9a1e-0b2c3d4e5f60".to_owned()),
+            mapping,
+        ),
+        FidelityCase::new(
+            "enum",
+            "S",
+            V::Enum {
+                type_name: "mood".to_owned(),
+                label: "happy".to_owned(),
+            },
+            fidelity_exact(&fidelity_text("happy"), "6861707079"),
+        )
+        .only(&[FidelityPath::Native, FidelityPath::Portable]),
+        // Su MySQL un JSON nudo resta una stringa: si rifiuta nello SQL del
+        // chiamante e nel filtro, il portable lo scrive `CAST(? AS JSON)`.
+        FidelityCase::new(
+            "json",
+            "J",
+            V::Json(serde_json::json!({"a": 1})),
+            if mariadb {
+                fidelity_exact(&fidelity_text("{\"a\":1}"), "{\"a\":1}")
+            } else {
+                unsupported
+            },
+        )
+        .on(
+            FidelityPath::Portable,
+            if mariadb {
+                fidelity_exact(&fidelity_text("{\"a\":1}"), "{\"a\":1}")
+            } else {
+                fidelity_exact(&fidelity_text("{\"a\": 1}"), "{\"a\": 1}")
+            },
+        ),
+        FidelityCase::new(
+            "NULL integer",
+            "N",
+            V::Null {
+                type_name: "integer".to_owned(),
+            },
+            fidelity_exact(
+                &V::Null {
+                    type_name: "unknown".to_owned(),
+                },
+                "",
+            ),
+        )
+        .only(&[FidelityPath::Native]),
+    ]
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live"]
+async fn live_parameter_values_bind_exactly_or_are_refused() {
+    let provider: Box<dyn Provider> = if fidelity_mariadb() {
+        Box::new(MariadbProvider::new(live_config(), 2).expect("provider MariaDB"))
+    } else {
+        Box::new(MysqlProvider::new(live_config(), 2).expect("provider MySQL"))
+    };
+    let secret = live_secret();
+    let cancellation = CancellationToken::new();
+    let json = if fidelity_mariadb() {
+        "LONGTEXT"
+    } else {
+        "JSON"
+    };
+    for sql in [
+        format!("DROP TABLE IF EXISTS {FIDELITY_TABLE}"),
+        format!(
+            "CREATE TABLE {FIDELITY_TABLE} (ID INT NOT NULL PRIMARY KEY, B VARBINARY(64), \
+             S VARCHAR(64) CHARACTER SET utf8mb4, D DECIMAL(12, 4), F DOUBLE, \
+             I BIGINT, N INT, BO BOOLEAN, DT DATE, TS DATETIME(6), TS0 DATETIME(0), \
+             TZ TIMESTAMP(6) NULL, U CHAR(36), J {json})"
+        ),
+    ] {
+        provider
+            .execute_ddl(&secret, &sql, &cancellation)
+            .await
+            .expect("DDL tabella sonda");
+    }
+    let target = FidelityTarget {
+        provider: provider.as_ref(),
+        secret: &secret,
+        limits: ResourceLimits::default(),
+        table: ObjectRef {
+            catalog: None,
+            schema: Some(environment("PLENORA_MYSQL_DATABASE", "dataflow_test")),
+            object: FIDELITY_TABLE.to_owned(),
+        },
+        id_column: "ID",
+        native: &fidelity_native,
+        native_cross_type_declared: true,
+    };
+    let outcomes = fidelity_run(&target, &fidelity_cases()).await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("DROP TABLE {FIDELITY_TABLE}"),
+            &cancellation,
+        )
+        .await
+        .expect("pulizia tabella sonda");
+    let (text, failures) = fidelity_report(&outcomes);
+    println!("{text}");
+    assert!(failures.is_empty(), "binding non esatti: {failures:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// Censimento generato (`plenora_database_testkit::parameter_sweep`)
+// ---------------------------------------------------------------------------
+
+const SWEEP_TABLE: &str = "param_sweep";
+
+fn sweep_native(kind: FidelitySql, column: &str) -> String {
+    let table = SWEEP_TABLE;
+    match kind {
+        FidelitySql::Insert => format!("INSERT INTO {table} (ID, {column}) VALUES (?, ?)"),
+        FidelitySql::Select => format!("SELECT {column} FROM {table} WHERE ID = ?"),
+        FidelitySql::Count => {
+            format!("SELECT COUNT(*) FROM {table} WHERE ID = ? AND {column} = ?")
+        }
+        FidelitySql::Raw => format!("SELECT CAST({column} AS CHAR) FROM {table} WHERE ID = ?"),
+        FidelitySql::Delete => format!("DELETE FROM {table} WHERE ID = ?"),
+    }
+}
+
+/// Le colonne del censimento: ogni parametrizzazione che il catalogo di
+/// `MySQL` e `MariaDB` riporta (precisione, scala, `FLOAT(M, D)`, lunghezza,
+/// charset).
+#[allow(clippy::too_many_lines)]
+fn sweep_columns() -> Vec<(
+    plenora_database_testkit::parameter_sweep::Column,
+    &'static str,
+)> {
+    use plenora_database_testkit::parameter_sweep::{Column, Kind, Render, Set, Unit};
+    let integer = |min: i128, max: i128| Kind::Integer { min, max };
+    let text = |length, padded, set| Kind::Text {
+        length,
+        padded,
+        unit: Unit::Characters,
+        set,
+    };
+    let column = |name, kind, render| Column { name, kind, render };
+    vec![
+        (
+            column("C_TI", integer(-128, 127), Render::Decimal),
+            "TINYINT",
+        ),
+        (
+            column("C_IU", integer(0, i128::from(u32::MAX)), Render::Decimal),
+            "INT UNSIGNED",
+        ),
+        (
+            column(
+                "C_BI",
+                integer(i128::from(i64::MIN), i128::from(i64::MAX)),
+                Render::Decimal,
+            ),
+            "BIGINT",
+        ),
+        (
+            column(
+                "C_F",
+                Kind::Float { bits: 24 },
+                Render::FloatText { bits: 53 },
+            ),
+            "FLOAT",
+        ),
+        (
+            column(
+                "C_F71",
+                Kind::ScaledFloat {
+                    bits: 24,
+                    precision: 7,
+                    scale: 1,
+                },
+                Render::FloatText { bits: 53 },
+            ),
+            "FLOAT(7, 1)",
+        ),
+        (
+            column(
+                "C_D",
+                Kind::Float { bits: 53 },
+                Render::FloatText { bits: 53 },
+            ),
+            "DOUBLE",
+        ),
+        (
+            column(
+                "C_D102",
+                Kind::ScaledFloat {
+                    bits: 53,
+                    precision: 10,
+                    scale: 2,
+                },
+                Render::FloatText { bits: 53 },
+            ),
+            "DOUBLE(10, 2)",
+        ),
+        (
+            column(
+                "C_N124",
+                Kind::Decimal {
+                    precision: 12,
+                    scale: 4,
+                },
+                Render::Decimal,
+            ),
+            "DECIMAL(12, 4)",
+        ),
+        (
+            column(
+                "C_N55",
+                Kind::Decimal {
+                    precision: 5,
+                    scale: 5,
+                },
+                Render::Decimal,
+            ),
+            "DECIMAL(5, 5)",
+        ),
+        (
+            column("C_V3", text(Some(3), false, Set::Unicode), Render::Utf8Hex),
+            "VARCHAR(3) CHARACTER SET utf8mb4",
+        ),
+        (
+            column("C_C4", text(Some(4), true, Set::Unicode), Render::Utf8Hex),
+            "CHAR(4) CHARACTER SET utf8mb4",
+        ),
+        (
+            column(
+                "C_L10",
+                text(Some(10), false, Set::Windows1252),
+                Render::Utf8Hex,
+            ),
+            "VARCHAR(10) CHARACTER SET latin1",
+        ),
+        (
+            column("C_M10", text(Some(10), false, Set::Bmp), Render::Utf8Hex),
+            "VARCHAR(10) CHARACTER SET utf8mb3",
+        ),
+        (
+            column(
+                "C_VB4",
+                Kind::Binary {
+                    length: Some(4),
+                    padded: false,
+                },
+                Render::BytesHex,
+            ),
+            "VARBINARY(4)",
+        ),
+        (
+            column(
+                "C_BN4",
+                Kind::Binary {
+                    length: Some(4),
+                    padded: true,
+                },
+                Render::BytesHex,
+            ),
+            "BINARY(4)",
+        ),
+        (column("C_DT", Kind::Date, Render::Date), "DATE"),
+        (
+            column("C_TS0", Kind::Timestamp { fraction: 0 }, Render::Timestamp),
+            "DATETIME(0)",
+        ),
+        (
+            column("C_TS3", Kind::Timestamp { fraction: 3 }, Render::Timestamp),
+            "DATETIME(3)",
+        ),
+        (
+            column("C_TS6", Kind::Timestamp { fraction: 6 }, Render::Timestamp),
+            "DATETIME(6)",
+        ),
+    ]
+}
+
+/// La resa del server: il testo come i suoi byte UTF-8 qualunque sia il
+/// charset della colonna, i floating point come il testo piu corto che li
+/// rilegge, i temporali alla precisione piena; `NULL` resta `NULL`.
+fn sweep_raw(column: &str) -> String {
+    let expression = match column {
+        // Un `FLOAT` reso come testo ha sei cifre: si allarga a `DOUBLE`,
+        // esatto, e il double si rende con il testo piu corto.
+        "C_F" | "C_F71" | "C_D" | "C_D102" => format!("CAST({column} * 1e0 AS CHAR)"),
+        "C_V3" | "C_C4" | "C_L10" | "C_M10" => format!("HEX(CONVERT({column} USING utf8mb4))"),
+        "C_VB4" | "C_BN4" => format!("HEX({column})"),
+        "C_DT" => format!("DATE_FORMAT({column}, '%Y-%m-%d')"),
+        "C_TS0" | "C_TS3" | "C_TS6" => format!("DATE_FORMAT({column}, '%Y-%m-%dT%H:%i:%s.%f')"),
+        _ => format!("CAST({column} AS CHAR)"),
+    };
+    format!("SELECT {expression} FROM {SWEEP_TABLE} WHERE ID = ?")
+}
+
+/// Il censimento generato: per ogni tipo di colonna, ogni valore generato
+/// per famiglia, su ogni percorso, contro la resa del server e il modello
+/// indipendente del tipo (`FLOAT(M, D)`, la lunghezza e il charset del testo
+/// compresi: i difetti 3 e 4 del terzo giro della #135).
+#[tokio::test]
+#[ignore = "live: richiede MySQL o MariaDB"]
+async fn live_generated_values_bind_exactly_or_are_refused() {
+    use plenora_database_testkit::parameter_sweep::{
+        sweep, sweep_report, ServerFacts, SweepTarget,
+    };
+    let provider: Box<dyn Provider> = if fidelity_mariadb() {
+        Box::new(MariadbProvider::new(live_config(), 2).expect("provider MariaDB"))
+    } else {
+        Box::new(MysqlProvider::new(live_config(), 2).expect("provider MySQL"))
+    };
+    let secret = live_secret();
+    let cancellation = CancellationToken::new();
+    let columns = sweep_columns();
+    let definition = columns
+        .iter()
+        .map(|(column, sql)| format!("{} {sql}", column.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    for sql in [
+        format!("DROP TABLE IF EXISTS {SWEEP_TABLE}"),
+        format!("CREATE TABLE {SWEEP_TABLE} (ID INT NOT NULL PRIMARY KEY, {definition})"),
+    ] {
+        provider
+            .execute_ddl(&secret, &sql, &cancellation)
+            .await
+            .expect("DDL tabella del censimento generato");
+    }
+    let target = SweepTarget {
+        target: FidelityTarget {
+            provider: provider.as_ref(),
+            secret: &secret,
+            limits: ResourceLimits::default(),
+            table: ObjectRef {
+                catalog: None,
+                schema: Some(environment("PLENORA_MYSQL_DATABASE", "dataflow_test")),
+                object: SWEEP_TABLE.to_owned(),
+            },
+            id_column: "ID",
+            native: &sweep_native,
+            native_cross_type_declared: true,
+        },
+        raw: &sweep_raw,
+        part: None,
+        facts: ServerFacts {
+            // `MariaDB` salva `-0.0` come `0` (misurato dalla #134).
+            normalizes_negative_zero: fidelity_mariadb(),
+            hides_padding: true,
+            native_declared: true,
+            ..ServerFacts::default()
+        },
+    };
+    let columns = columns
+        .into_iter()
+        .map(|(column, _)| column)
+        .collect::<Vec<_>>();
+    let outcomes = sweep(
+        &target,
+        &columns,
+        &[
+            FidelityPath::Native,
+            FidelityPath::Portable,
+            FidelityPath::Read,
+        ],
+    )
+    .await;
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {SWEEP_TABLE}"), &cancellation)
+        .await
+        .expect("pulizia tabella del censimento generato");
+    let (text, failures) = sweep_report(&outcomes);
+    println!("{text}");
+    assert!(
+        failures.is_empty(),
+        "valori generati non esatti: {failures:#?}"
+    );
+}
+
 /// Le righe di una lettura del provider, o il suo errore.
 async fn geometry_operand_read(
     provider: &dyn Provider,

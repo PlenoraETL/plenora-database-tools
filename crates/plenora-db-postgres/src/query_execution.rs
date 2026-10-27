@@ -177,6 +177,7 @@ pub async fn read_stream(
         parameters,
         budget.limits().nesting_depth,
     )?;
+    let parameters = &admit_read_filter(client.client()?, operation, parameters).await?;
     let columns = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, columns)?;
@@ -263,6 +264,13 @@ pub async fn query_stream(
         &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
     )
     .await?;
+    // Le regole F, T e C hanno giudicato i valori del chiamante; poi i
+    // parametri tipati si ammettono contro il loro CAST (`operand_admission`).
+    let parameters = &plenora_database_core::admission_gate::query_parameters(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        operation,
+        parameters,
+    )?;
     let bind_names = rendered
         .binds
         .iter()
@@ -445,6 +453,39 @@ fn without_shared_origins(mut columns: Vec<ColumnSpec>) -> Vec<ColumnSpec> {
         column.source = None;
     }
     columns
+}
+
+/// La regola dei parametri che incontrano un operando (`operand_admission`):
+/// ogni parametro del filtro si ammette contro il tipo del campo, con il
+/// typmod letto dal catalogo.
+async fn admit_read_filter(
+    client: &tokio_postgres::Client,
+    operation: &plenora_database_core::plan::ReadOperation,
+    parameters: &ParameterBag,
+) -> Result<ParameterBag> {
+    use plenora_database_core::admission_gate::read_filter as admit_filter;
+    use plenora_database_core::operand_admission::operand_type;
+    use plenora_database_core::plan::ProviderKind;
+    if operation.filter.is_none() {
+        return Ok(parameters.clone());
+    }
+    let types = crate::column_types::column_types(
+        client,
+        operation.source.schema.as_deref(),
+        &operation.source.object,
+    )
+    .await?
+    .unwrap_or_default();
+    admit_filter(
+        ProviderKind::Postgres,
+        operation.filter.as_ref(),
+        parameters,
+        |field| {
+            types
+                .get(field)
+                .map(|catalog| operand_type(ProviderKind::Postgres, catalog))
+        },
+    )
 }
 
 #[cfg(test)]

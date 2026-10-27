@@ -29,6 +29,9 @@ COMPOSE_FILE = ROOT / "docker-compose.oracle.yml"
 REFERENCE_FILE = ROOT / "docker" / "oracle" / "references.json"
 MYSQL_REFERENCE_FILE = ROOT / "docker" / "mysql" / "references.json"
 LIVE_SOURCE = ROOT / "crates" / "plenora-db-oracle" / "src" / "live_tests.rs"
+FIDELITY_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-oracle" / "src" / "parameter_fidelity_live_tests.rs"
+)
 NUMBER_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-oracle" / "src" / "number_live_tests.rs"
 )
@@ -41,6 +44,14 @@ TIMEOUT = 30 * 60
 REQUIRED_LIVE_TESTS = frozenset(
     {
         "live_caller_stream_fetch_failure_requires_recovery",
+        "live_parameter_values_bind_exactly_or_are_refused",
+        "live_generated_decimal_values_bind_exactly_or_are_refused",
+        "live_generated_float_values_bind_exactly_or_are_refused",
+        "live_generated_text_values_bind_exactly_or_are_refused",
+        "live_generated_binary_values_bind_exactly_or_are_refused",
+        "live_generated_temporal_values_bind_exactly_or_are_refused",
+        "live_binary_double_negative_zero_is_measured",
+        "live_invalid_text_bytes_are_refused_on_read",
         "live_thin_driver_crud_merge_stream_and_rollback",
         "live_driver_errors_are_redacted",
         "live_type_fidelity_includes_utc_timestamptz_and_lobs",
@@ -107,6 +118,12 @@ def run(command: list[str], *, environment: dict[str, str] | None = None) -> str
             env=merged_environment,
         )
     except subprocess.TimeoutExpired as error:
+        # TimeoutExpired conserva byte anche con text=True: non perdere
+        # l'ultimo test avviato quando il processo non arriva al riepilogo.
+        for partial in (error.stdout, error.stderr):
+            if partial:
+                print(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes)
+                      else partial, end="", flush=True)
         raise RuntimeError(f"timeout durante {command[0]}") from error
     output = f"{completed.stdout}{completed.stderr}"
     if output:
@@ -159,7 +176,7 @@ def reference_contract() -> dict[str, str]:
 
 def live_source_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE, NUMBER_LIVE_SOURCE, DRIVER_LIVE_SOURCE],
+        [LIVE_SOURCE, FIDELITY_LIVE_SOURCE, NUMBER_LIVE_SOURCE, DRIVER_LIVE_SOURCE],
         keep=lambda name: name.startswith("live_"),
     )
 
@@ -591,6 +608,7 @@ def main() -> int:
                 "--",
                 "--ignored",
                 "--test-threads=1",
+                "--show-output",
             ],
             environment=rust_environment,
         )

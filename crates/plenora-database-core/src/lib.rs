@@ -2,6 +2,7 @@
 //!
 //! Questo crate non contiene client, pool, runtime async o dialect SQL.
 
+pub mod admission_gate;
 pub mod caller_sql;
 pub mod cancellation;
 pub mod capabilities;
@@ -25,7 +26,9 @@ pub mod limits;
 pub mod loss;
 pub mod metrics_recorder;
 pub mod native_query_policy;
+pub mod operand_admission;
 pub mod outcome;
+pub mod parameter_fidelity;
 pub mod plan;
 pub mod portable;
 pub mod primary_key;

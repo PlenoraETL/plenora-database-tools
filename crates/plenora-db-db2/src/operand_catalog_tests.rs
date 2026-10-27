@@ -689,3 +689,37 @@ fn ogni_tipo_ha_la_famiglia_della_tabella() {
         attese
     );
 }
+
+#[test]
+fn admission_catalog_uses_documented_string_units_and_limits() {
+    use crate::operand_catalog::{catalog_type, COLUMN_TYPES_SQL};
+    use plenora_database_core::admission_gate::described as admit;
+    use plenora_database_core::operand_admission::operand_type;
+    use plenora_database_core::provider::ParameterValue;
+
+    // SYSCAT.COLUMNS (Db2 12.1): LENGTH e in byte, STRINGUNITSLENGTH
+    // e nella TYPESTRINGUNITS dichiarata. STRINGUNITS non e una colonna.
+    assert!(COLUMN_TYPES_SQL.contains("COALESCE(STRINGUNITSLENGTH, LENGTH)"));
+    assert!(COLUMN_TYPES_SQL.contains("COALESCE(TYPESTRINGUNITS, '')"));
+    assert!(!COLUMN_TYPES_SQL.contains("COALESCE(STRINGUNITS,"));
+    for (units, length, accepted, rejected) in [
+        ("CODEUNITS32", 2, "\u{65e5}\u{1f600}", "\u{65e5}\u{1f600}x"),
+        ("OCTETS", 4, "\u{1f600}", "\u{1f600}x"),
+        ("CODEUNITS16", 2, "\u{1f600}", "\u{1f600}x"),
+    ] {
+        let catalog = catalog_type("VARCHAR", length, 0, 1208, units);
+        let kind = operand_type(ProviderKind::Db2, &catalog);
+        assert!(admit(
+            ProviderKind::Db2,
+            &ParameterValue::String(accepted.to_owned()),
+            &kind
+        )
+        .is_ok());
+        assert!(admit(
+            ProviderKind::Db2,
+            &ParameterValue::String(rejected.to_owned()),
+            &kind
+        )
+        .is_err());
+    }
+}

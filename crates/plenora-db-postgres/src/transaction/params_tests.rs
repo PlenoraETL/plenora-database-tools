@@ -80,13 +80,16 @@ fn uuid_validates_length_36() {
         SqlParam::Uuid { .. }
     ));
 
-    let short = "not-a-uuid";
-    assert_eq!(
-        encode(&ParameterValue::Uuid(short.into()))
-            .unwrap_err()
-            .category,
-        ErrorCategory::Unsupported
-    );
+    // La forma canonica 8-4-4-4-12 (`parameter_fidelity::canonical_uuid`):
+    // un trattino spostato passava, perche il parser scartava i trattini.
+    for invalid in ["not-a-uuid", "111111112-222-3333-4444-555555555555"] {
+        assert_eq!(
+            encode(&ParameterValue::Uuid(invalid.into()))
+                .unwrap_err()
+                .category,
+            ErrorCategory::DataMapping
+        );
+    }
 }
 
 #[test]
@@ -154,7 +157,7 @@ fn uuid_invalid_hex_is_rejected() {
         "ZZZe8400-e29b-41d4-a716-446655440000".into(),
     ))
     .unwrap_err();
-    assert_eq!(err.category, ErrorCategory::Unsupported);
+    assert_eq!(err.category, ErrorCategory::DataMapping);
 }
 
 #[test]
@@ -287,4 +290,43 @@ fn integer_narrowing_is_range_checked_before_serialization() {
         .expect_err("i64 fuori range int4");
     assert_eq!(error.category, ErrorCategory::DataMapping);
     assert!(!error.message.contains(&sentinel.to_string()));
+}
+
+/// `chrono` tronca in silenzio le cifre oltre il microsecondo; un testo NUL
+/// arrivava al server e falliva dopo l'invio. Entrambi si rifiutano prima.
+#[test]
+fn sub_microsecond_temporals_and_nul_text_are_refused_before_sending() {
+    for value in [
+        ParameterValue::Timestamp("2026-01-01T10:20:30.1234567".into()),
+        ParameterValue::TimestampTz("2026-01-01T10:20:30.1234567+02:00".into()),
+        ParameterValue::String("a\0b".into()),
+        ParameterValue::Enum {
+            type_name: "mood".into(),
+            label: "a\0b".into(),
+        },
+    ] {
+        assert_eq!(
+            encode(&value).unwrap_err().category,
+            ErrorCategory::DataMapping,
+            "{value:?}"
+        );
+    }
+    assert!(encode(&ParameterValue::Timestamp(
+        "2026-01-01T10:20:30.123456000".into()
+    ))
+    .is_ok());
+}
+
+/// Un `float4` riceve soltanto un double che vi entra esatto: `0.1` diventava
+/// `0.100000001490116` senza errore.
+#[test]
+fn float4_targets_accept_only_exact_doubles() {
+    assert!(validate_parameter_targets(&[ParameterValue::F64(0.5)], &[Type::FLOAT4]).is_ok());
+    assert_eq!(
+        validate_parameter_targets(&[ParameterValue::F64(0.1)], &[Type::FLOAT4])
+            .unwrap_err()
+            .category,
+        ErrorCategory::DataMapping
+    );
+    assert!(validate_parameter_targets(&[ParameterValue::F64(0.1)], &[Type::FLOAT8]).is_ok());
 }

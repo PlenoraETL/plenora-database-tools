@@ -87,7 +87,28 @@ pub(crate) async fn read_operation_with_profile(
         DatabaseError::resource_limit(format!("numero colonne {product} non rappresentabile"))
     })?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
-    let parameters = bind_parameters(&plan.bind_names, parameters)?;
+    // La regola dei parametri che incontrano un operando
+    // (`operand_admission`): ogni parametro del filtro si ammette contro il
+    // tipo del campo, letto dal catalogo con precisione e scala.
+    let admitted = if operation.filter.is_some() {
+        let relation = (Some(schema.to_owned()), operation.source.object.clone());
+        let types = crate::catalog::transaction_column_types(&mut session, &relation, &internal)
+            .await?
+            .unwrap_or_default();
+        plenora_database_core::admission_gate::read_filter(
+            profile.kind(),
+            operation.filter.as_ref(),
+            parameters,
+            |field| {
+                types.get(field).map(|catalog| {
+                    plenora_database_core::operand_admission::operand_type(profile.kind(), catalog)
+                })
+            },
+        )?
+    } else {
+        parameters.clone()
+    };
+    let parameters = bind_parameters(&plan.bind_names, &admitted, profile.kind())?;
     let confirmation = crate::catalog::describe_object_with_profile(
         &mut session,
         schema,
@@ -190,7 +211,9 @@ pub(crate) async fn query_operation_with_profile(
             "query {product} oltre il limite di placeholder del prepared statement"
         )));
     }
-    let bound = bind_parameters(&bind_names, parameters)?;
+    // Il layout dei bind si valida prima della rete, sui valori originali.
+    // Il binding eseguibile si costruisce dopo il giudizio e l'ammissione.
+    bind_parameters(&bind_names, parameters, profile.kind())?;
     ensure_active_read_budget(budget, profile)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;
@@ -221,6 +244,14 @@ pub(crate) async fn query_operation_with_profile(
         .await?;
         operands.judge_bound(&catalog, &families)?;
     }
+    // Le regole F, T e C hanno giudicato i valori del chiamante; poi i
+    // parametri tipati si ammettono contro il loro CAST (`operand_admission`).
+    let parameters = &plenora_database_core::admission_gate::query_parameters(
+        profile.kind(),
+        operation,
+        parameters,
+    )?;
+    let bound = bind_parameters(&bind_names, parameters, profile.kind())?;
     let statement = session.prepare_statement(&rendered.sql, &internal).await?;
     if usize::from(statement.num_params()) != bind_names.len() {
         return Err(read_error(

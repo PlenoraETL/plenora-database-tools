@@ -10,7 +10,7 @@ use plenora_database_core::provider::{ParameterBag, Provider};
 use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
 use plenora_database_core::strict_json;
-use plenora_database_core::transaction::{Statement, TransactionOptions};
+use plenora_database_core::transaction::TransactionOptions;
 use plenora_database_core::CancellationToken;
 use serde_json::{json, Value};
 use std::fs;
@@ -109,8 +109,7 @@ pub(crate) async fn portable_execute(args: &mut impl Iterator<Item = String>) ->
         .begin_transaction(&secret, &opts, &budget, &cancel)
         .await?;
 
-    let compiled = compile_portable(ProviderKind::Postgres, &ast)?;
-    let stmt = Statement::new(compiled.sql.clone()).with_params(compiled.params);
+    compile_portable(ProviderKind::Postgres, &ast)?;
     // Il giudizio degli operandi geometrici sul catalogo della transazione,
     // come la facade portable, prima di eseguire.
     plenora_database_core::facade::verify_operands(
@@ -119,6 +118,11 @@ pub(crate) async fn portable_execute(args: &mut impl Iterator<Item = String>) ->
         &cancel,
     )
     .await?;
+    // Lo statement eseguibile esce soltanto dal cancello dell'ammissione:
+    // ogni letterale sul tipo della colonna che incontra (fino al terzo giro
+    // della #135 qui si eseguiva il compilato, e `numeric(12, 4)` e
+    // `timestamp(0)` si scrivevano arrotondati).
+    let stmt = plenora_database_core::admission_gate::portable(tx.as_mut(), &ast, &cancel).await?;
 
     // Determina se lo statement produce righe:
     // - PortableStatement::Select → sempre
@@ -155,7 +159,7 @@ pub(crate) async fn portable_execute(args: &mut impl Iterator<Item = String>) ->
     print_json(&json!({
         "status": crate::commit_status(&commit),
         "provider": ProviderKind::Postgres,
-        "compiled_sql": compiled.sql,
+        "compiled_sql": stmt.sql,
         "commit": commit,
         "result": payload,
     }))?;

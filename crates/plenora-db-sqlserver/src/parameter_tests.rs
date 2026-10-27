@@ -73,3 +73,44 @@ fn typed_binary_null_is_bound_and_declared_without_opening_unknown_types() {
     )]));
     assert!(parameter_declarations(&names, &unknown).is_err());
 }
+
+/// Un decimale in testo diventava il tipo della colonna confrontata, con la
+/// sua scala: si dichiara e si lega come `decimal` nativo con la propria.
+#[test]
+fn decimals_are_declared_with_their_own_scale() {
+    let parameters = ParameterBag::new(BTreeMap::from([
+        (
+            "exact".to_owned(),
+            ParameterValue::Decimal("12345.67890001".to_owned()),
+        ),
+        (
+            "integer".to_owned(),
+            ParameterValue::Decimal("-42.000".to_owned()),
+        ),
+    ]));
+    let declarations =
+        parameter_declarations(&["exact".to_owned(), "integer".to_owned()], &parameters)
+            .expect("declarations")
+            .expect("non-empty");
+    assert_eq!(declarations, "@p1 decimal(38, 8), @p2 decimal(38, 0)");
+    let numeric = decimal("12345.67890001").expect("decimal");
+    assert_eq!((numeric.value(), numeric.scale()), (1_234_567_890_001, 8));
+    assert!(decimal(&format!("1{}", "0".repeat(38))).is_err());
+}
+
+/// `float` non rappresenta NaN ne gli infiniti, e la precisione bindabile dei
+/// tipi temporali e il microsecondo: entrambi si rifiutano prima dell'invio.
+#[test]
+fn non_finite_floats_and_sub_microsecond_values_are_refused_before_io() {
+    for value in [
+        ParameterValue::F64(f64::NAN),
+        ParameterValue::F64(f64::NEG_INFINITY),
+        ParameterValue::Timestamp("2026-01-01T10:20:30.1234567".to_owned()),
+        ParameterValue::TimestampTz("2026-01-01T10:20:30.1234567+02:00".to_owned()),
+    ] {
+        let mut query = Query::new("SELECT @P1");
+        let error = bind_parameter(&mut query, &value).expect_err("rifiuto");
+        assert_eq!(error.category, ErrorCategory::DataMapping, "{value:?}");
+        assert!(parameter_type(&value).is_err(), "{value:?}");
+    }
+}

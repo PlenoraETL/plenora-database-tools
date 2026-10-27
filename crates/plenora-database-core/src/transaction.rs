@@ -387,6 +387,22 @@ pub trait TransactionScope: Send {
         Box::pin(async move { Ok(crate::spatial_operand::OperandCatalog::new(provider)) })
     }
 
+    /// I tipi delle colonne di una relazione (schema, oggetto), con
+    /// precisione, scala, lunghezza e precisione temporale, letti dal
+    /// catalogo del provider nella transazione: l'ammissione dei letterali
+    /// dell'AST portable (`operand_admission`). Non e SQL del chiamante: non
+    /// tocca il marcatore di [`Self::begin_caller_sql`].
+    ///
+    /// Il default non legge niente (`None`): ogni colonna e di tipo
+    /// sconosciuto e ogni letterale che non sia `NULL` si rifiuta.
+    fn column_types<'a>(
+        &'a mut self,
+        _relation: &'a (Option<String>, String),
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<crate::operand_admission::RelationTypes>> {
+        Box::pin(async move { Ok(None) })
+    }
+
     fn commit(
         self: Box<Self>,
         cancellation: &CancellationToken,

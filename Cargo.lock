@@ -1506,6 +1506,7 @@ dependencies = [
 name = "plenora-database-testkit"
 version = "8.0.2"
 dependencies = [
+ "chrono",
  "plenora-database-core",
  "serde",
  "serde_json",
@@ -1520,8 +1521,10 @@ dependencies = [
  "plenora-database-core",
  "plenora-database-engine",
  "plenora-database-sql",
+ "plenora-database-testkit",
  "serde",
  "serde_json",
+ "sqlparser",
  "tokio",
 ]
 
@@ -1536,6 +1539,7 @@ dependencies = [
  "plenora-database-core",
  "plenora-database-engine",
  "plenora-database-sql",
+ "plenora-database-testkit",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1550,6 +1554,7 @@ dependencies = [
  "plenora-database-core",
  "plenora-database-engine",
  "plenora-database-sql",
+ "plenora-database-testkit",
  "plenora-oracle-rs",
  "rustls",
  "serde",

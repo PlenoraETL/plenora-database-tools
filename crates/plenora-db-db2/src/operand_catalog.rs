@@ -479,6 +479,124 @@ impl<'c, 'e> OdbcCatalog<'c, 'e> {
     }
 }
 
+pub const COLUMN_TYPES_SQL: &str = "SELECT COLNAME, TYPENAME, \
+    VARCHAR(COALESCE(STRINGUNITSLENGTH, LENGTH)), VARCHAR(SCALE), \
+    VARCHAR(CODEPAGE), COALESCE(TYPESTRINGUNITS, '') FROM SYSCAT.COLUMNS \
+    WHERE TABSCHEMA = ? AND TABNAME = ? ORDER BY COLNO";
+
+impl OdbcCatalog<'_, '_> {
+    /// I tipi delle colonne di una relazione (`SYSCAT.COLUMNS`), con
+    /// lunghezza, scala e `FOR BIT DATA`, per l'ammissione dei letterali
+    /// portable (`plenora_database_core::operand_admission`). `None` per una
+    /// relazione che il catalogo non conosce.
+    ///
+    /// # Errors
+    ///
+    /// Gli errori del catalogo.
+    pub fn column_types(
+        &mut self,
+        schema: Option<&str>,
+        name: &str,
+    ) -> Result<Option<plenora_database_core::operand_admission::RelationTypes>> {
+        let schema = match schema {
+            Some(schema) => schema.to_owned(),
+            None => self.current_schema()?,
+        };
+        let rows = self.rows(COLUMN_TYPES_SQL, &[&schema, name], 6)?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let number = |row: &[Option<String>], index: usize| -> Result<u64> {
+            cell(row, index)
+                .map(str::trim)
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| malformed("numero del catalogo Db2 non leggibile"))
+        };
+        rows.iter()
+            .map(|row| {
+                let column = cell(row, 0)
+                    .ok_or_else(|| malformed("colonna Db2 senza nome"))?
+                    .to_owned();
+                let type_name = cell(row, 1)
+                    .ok_or_else(|| malformed("colonna Db2 senza tipo"))?
+                    .trim_end()
+                    .to_owned();
+                Ok((
+                    column,
+                    catalog_type(
+                        &type_name,
+                        number(row, 2)?,
+                        i64::try_from(number(row, 3)?).unwrap_or(i64::MAX),
+                        number(row, 4)?,
+                        cell(row, 5).unwrap_or_default().trim(),
+                    ),
+                ))
+            })
+            .collect::<Result<_>>()
+            .map(Some)
+    }
+}
+
+/// Il tipo del catalogo Db2: `LENGTH` e la precisione dei decimali e la
+/// lunghezza dei binari; per i testi si usa `STRINGUNITSLENGTH` se presente.
+/// `SCALE` e la scala o le cifre frazionarie
+/// di `TIMESTAMP`; un testo con `CODEPAGE` 0 e `FOR BIT DATA`, cioe binario.
+///
+/// Il `LENGTH` di un `DECFLOAT` sono i byte (8 o 16), non le cifre: le cifre
+/// sono 16 o 34 (fino al terzo giro della #135 un `DECFLOAT(16)` ammetteva
+/// soltanto 8 cifre, un rifiuto per eccesso). La lunghezza di un testo si
+/// conta nelle `TYPESTRINGUNITS` della colonna (`OCTETS` per difetto: i byte
+/// UTF-8 della codepage 1208), il charset e quello della `CODEPAGE`.
+#[must_use]
+pub fn catalog_type(
+    type_name: &str,
+    length: u64,
+    scale: i64,
+    codepage: u64,
+    string_units: &str,
+) -> plenora_database_core::operand_admission::CatalogType {
+    use plenora_database_core::operand_admission::{Charset, LengthUnit};
+    let upper = type_name.to_ascii_uppercase();
+    let bit_data = codepage == 0
+        && matches!(
+            upper.as_str(),
+            "CHARACTER" | "CHAR" | "VARCHAR" | "LONG VARCHAR" | "CLOB"
+        );
+    let name = match (upper.as_str(), bit_data) {
+        ("CHARACTER" | "CHAR", true) => "BINARY".to_owned(),
+        ("VARCHAR", true) => "VARBINARY".to_owned(),
+        ("CLOB", true) => "BLOB".to_owned(),
+        (name, _) => name.to_owned(),
+    };
+    let precision = match upper.as_str() {
+        "DECFLOAT" if length == 8 => 16,
+        "DECFLOAT" => 34,
+        _ => length,
+    };
+    let length_unit = match (string_units, upper.as_str()) {
+        ("CODEUNITS32", _) => LengthUnit::Characters,
+        ("OCTETS", _) => LengthUnit::Bytes,
+        ("CODEUNITS16", _) | (_, "GRAPHIC" | "VARGRAPHIC" | "LONG VARGRAPHIC" | "DBCLOB") => {
+            LengthUnit::Utf16
+        }
+        _ => LengthUnit::Bytes,
+    };
+    let charset = match codepage {
+        1208 | 1200 | 0 => Charset::Unicode,
+        _ => Charset::Ascii,
+    };
+    plenora_database_core::operand_admission::CatalogType {
+        name,
+        declaration: None,
+        length: Some(length),
+        precision: Some(precision),
+        scale: Some(scale),
+        datetime_precision: None,
+        length_unit,
+        charset,
+    }
+}
+
 /// Le righe il cui nome (le prime due colonne) e quello esatto.
 fn exact<'r>(
     rows: &'r [Vec<Option<String>>],

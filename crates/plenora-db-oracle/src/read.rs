@@ -64,7 +64,6 @@ pub async fn read_operation(
         validate_spatial_filter(&description, filter, parameters)?;
     }
     let plan = OracleReadPlan::compile(&description, operation)?;
-    let parameter_values = named_parameters(&plan.bind_names, parameters)?;
     let leases = ContractLeases::acquire(budget, plan.columns.len())?;
     let (operation_lease, columns_lease) = leases.into_parts();
     let mut deadline = DeadlineGuard::new(cancellation, budget)?;
@@ -88,6 +87,8 @@ pub async fn read_operation(
         parameters,
     )
     .await?;
+    let types = filter_types(raw, config, &plan, &internal).await?;
+    let (plan, parameter_values) = prepare_filter(&types, &description, operation, parameters)?;
     raw.set_response_byte_limit(
         usize::try_from(budget.limits().memory_bytes).unwrap_or(usize::MAX),
     )
@@ -285,15 +286,59 @@ const fn oracle_read_error(mut error: DatabaseError) -> DatabaseError {
     error
 }
 
+/// I tipi delle colonne lette per la regola dei parametri che incontrano un
+/// operando: dal catalogo della stessa sessione, con l'unita della lunghezza
+/// e il charset.
+async fn filter_types(
+    raw: &oracle_rs::Connection,
+    config: &OracleConfig,
+    plan: &OracleReadPlan,
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::operand_admission::RelationTypes> {
+    Ok(crate::operand_catalog::ConnectionCatalog::new(
+        raw,
+        config.operation_timeout(),
+        cancellation,
+    )
+    .column_types(Some(&plan.schema_name), &plan.object_name)
+    .await?
+    .unwrap_or_default())
+}
+
+/// La regola dei parametri che incontrano un operando (`operand_admission`):
+/// ogni parametro del filtro si ammette contro il tipo del campo, con
+/// lunghezza, precisione e scala del catalogo.
+fn prepare_filter(
+    types: &plenora_database_core::operand_admission::RelationTypes,
+    description: &OracleObjectDescription,
+    operation: &ReadOperation,
+    parameters: &ParameterBag,
+) -> Result<(OracleReadPlan, Vec<ParameterValue>)> {
+    use plenora_database_core::admission_gate::read_filter as admit_filter;
+    use plenora_database_core::operand_admission::operand_type;
+    let admitted = admit_filter(
+        ProviderKind::Oracle,
+        operation.filter.as_ref(),
+        parameters,
+        |field| {
+            types
+                .get(field)
+                .map(|catalog| operand_type(ProviderKind::Oracle, catalog))
+        },
+    )?;
+    let plan = OracleReadPlan::compile_with_parameters(description, operation, &admitted)?;
+    let values = named_parameters(&plan.bind_names, &admitted)?;
+    Ok((plan, values))
+}
+
 fn named_parameters(names: &[String], parameters: &ParameterBag) -> Result<Vec<ParameterValue>> {
-    let unique = names.iter().collect::<BTreeSet<_>>();
-    if unique.len() != parameters.len() {
+    if names.iter().collect::<BTreeSet<_>>().len() != parameters.len() {
         return Err(read_error(
             ErrorCategory::InvalidPlan,
             "parametri Oracle mancanti o eccedenti",
         ));
     }
-    let values = names
+    names
         .iter()
         .map(|name| {
             parameters.get(name).cloned().ok_or_else(|| {
@@ -303,8 +348,7 @@ fn named_parameters(names: &[String], parameters: &ParameterBag) -> Result<Vec<P
                 )
             })
         })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(values)
+        .collect()
 }
 
 struct OracleBatchStream {
@@ -592,7 +636,13 @@ impl Values {
                 }
                 Arc::new(builder.finish())
             }
-            Self::Timestamp(values, _) => Arc::new(TimestampMicrosecondArray::from(values)),
+            // Il `TIMESTAMP WITH TIME ZONE` e un istante UTC: l'array porta il
+            // fuso dello schema (`types.rs`), altrimenti il batch non si
+            // costruiva e ogni lettura Arrow della colonna falliva.
+            Self::Timestamp(values, true) => {
+                Arc::new(TimestampMicrosecondArray::from(values).with_timezone("UTC"))
+            }
+            Self::Timestamp(values, false) => Arc::new(TimestampMicrosecondArray::from(values)),
         };
         Ok(array)
     }

@@ -427,6 +427,7 @@ pub struct SqlServerSpatialParameter {
 pub struct Renderer {
     dialect: Dialect,
     capabilities: DialectCapabilities,
+    parameter_types: BTreeMap<String, QueryParameterType>,
     sql_server_spatial_parameters: BTreeMap<String, SqlServerSpatialParameter>,
     /// La semantica di ogni colonna spatial che il piano nomina.
     ///
@@ -472,6 +473,7 @@ impl Renderer {
         Self {
             dialect,
             capabilities,
+            parameter_types: BTreeMap::new(),
             sql_server_spatial_parameters: BTreeMap::new(),
             sql_server_spatial_columns: BTreeMap::new(),
             wkb_axis_option: match dialect {
@@ -491,6 +493,18 @@ impl Renderer {
         provider: plenora_database_core::plan::ProviderKind,
     ) -> Self {
         self.provider = Some(provider);
+        self
+    }
+
+    /// Tipi dei bind che richiedono una conversione SQL esplicita. Il
+    /// chiamante li ricava dai valori ammessi, non dal tipo della colonna:
+    /// un testo confrontato con un timestamp resta un testo.
+    #[must_use]
+    pub fn with_parameter_types(
+        mut self,
+        parameter_types: BTreeMap<String, QueryParameterType>,
+    ) -> Self {
+        self.parameter_types = parameter_types;
         self
     }
 
@@ -1217,11 +1231,17 @@ impl Renderer {
                     Ok(field)
                 }
             }
-            QueryExpression::Parameter { name } => Ok(self.bind(name, binds)),
-            QueryExpression::TypedParameter {
-                name,
-                parameter_type,
-            } => Ok(self.render_typed_parameter(name, *parameter_type, binds)),
+            QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. } => {
+                let value = self.bind(name, binds);
+                let kind = match expression {
+                    QueryExpression::TypedParameter { parameter_type, .. } => Some(parameter_type),
+                    _ => self.parameter_types.get(name),
+                };
+                Ok(match kind {
+                    Some(kind) => self.cast_dialect().render(&value, *kind),
+                    None => value,
+                })
+            }
             QueryExpression::Arithmetic {
                 left,
                 operator,
@@ -1310,19 +1330,7 @@ impl Renderer {
         }
     }
 
-    /// La forma unica di un parametro tipizzato
-    /// (`plenora_database_core::typed_parameter::CastDialect::render`), la
-    /// stessa dei predicati del lowering delle mutazioni (regola T).
-    fn render_typed_parameter(
-        &self,
-        name: &str,
-        parameter_type: plenora_database_core::relational::QueryParameterType,
-        binds: &mut RenderState,
-    ) -> String {
-        let value = self.bind(name, binds);
-        self.cast_dialect().render(&value, parameter_type)
-    }
-
+    /// Il dialetto della regola T condivisa con il lowering delle mutazioni.
     const fn cast_dialect(&self) -> plenora_database_core::typed_parameter::CastDialect {
         use plenora_database_core::typed_parameter::CastDialect;
         match self.dialect {
@@ -1362,21 +1370,10 @@ impl Renderer {
     ) -> Result<String> {
         let value = self.render_query_expression(expression, binds)?;
         if self.dialect == Dialect::Oracle {
-            match target_type {
-                QueryParameterType::Boolean => return Ok(format!("TO_BOOLEAN({value})")),
-                QueryParameterType::TimestampTz => {
-                    return Ok(format!(
-                        "TO_TIMESTAMP_TZ({value}, '{}')",
-                        plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
-                    ))
-                }
-                _ => {}
-            }
+            return Ok(self.cast_dialect().render(&value, target_type));
         }
-        Ok(format!(
-            "CAST({value} AS {})",
-            self.render_parameter_type(target_type)
-        ))
+        let native_type = self.cast_dialect().type_name(target_type);
+        Ok(format!("CAST({value} AS {native_type})"))
     }
 
     fn render_case(
@@ -1474,10 +1471,6 @@ impl Renderer {
                 "bind spatial OLTP non qualificato per il provider",
             )),
         }
-    }
-
-    const fn render_parameter_type(&self, parameter_type: QueryParameterType) -> &'static str {
-        self.cast_dialect().type_name(parameter_type)
     }
 
     /// La regola P sul piano intero, prima di rendere: una sonda e ammessa

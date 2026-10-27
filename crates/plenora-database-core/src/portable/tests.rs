@@ -1344,3 +1344,33 @@ fn mysql_spatial_value_fixes_the_axis_order_and_mariadb_has_none() {
     assert_eq!(error.category, crate::ErrorCategory::Unsupported);
     assert_eq!(error.message, crate::spatial_probe::VALUE_SRID_UNPROVEN);
 }
+
+/// Su `MySQL` un JSON spedito come stringa resta una stringa: il compilatore
+/// lo lega come testo dentro `CAST(? AS JSON)` (regola di
+/// `crate::parameter_fidelity`). `MariaDB` conserva JSON come testo e lo
+/// lascia com'e.
+#[test]
+fn mysql_json_literals_bind_inside_an_explicit_cast() {
+    let statement = select("documents", vec!["id"])
+        .where_(eq(
+            "body",
+            ParameterValue::Json(serde_json::json!({"a": 1})),
+        ))
+        .into_statement();
+    let mysql = compile_portable(ProviderKind::Mysql, &statement).expect("json MySQL");
+    assert!(
+        mysql.sql.ends_with("WHERE `body` = CAST(? AS JSON)"),
+        "{}",
+        mysql.sql
+    );
+    assert_eq!(
+        mysql.params,
+        vec![ParameterValue::String("{\"a\":1}".to_owned())]
+    );
+    let mariadb = compile_portable(ProviderKind::Mariadb, &statement).expect("json MariaDB");
+    assert!(mariadb.sql.ends_with("WHERE `body` = ?"), "{}", mariadb.sql);
+    assert!(matches!(
+        mariadb.params.as_slice(),
+        [ParameterValue::Json(_)]
+    ));
+}

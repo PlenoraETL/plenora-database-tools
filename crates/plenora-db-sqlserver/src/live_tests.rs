@@ -11611,3 +11611,7 @@ async fn live_rilettura_sedici_cte_e_collation_del_cast() {
         .await
         .expect("pulizia");
 }
+
+#[cfg(test)]
+#[path = "parameter_fidelity_live_tests.rs"]
+mod parameter_fidelity;
