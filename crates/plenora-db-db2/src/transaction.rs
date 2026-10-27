@@ -217,7 +217,10 @@ impl Db2Transaction {
                 // temporale e scala comprese. Il testo legato senza tipo
                 // lasciava al server la conversione: un timestamp
                 // `.654321` in un TIMESTAMP(0) si conservava `.00`.
-                let encoded = ArrayColumns::encode(&admit_rows(&mut prepared, &rows)?, columns)?;
+                let catalog =
+                    crate::parameter_catalog::text_operands(connection, timeout, &sql, columns)?;
+                let encoded =
+                    ArrayColumns::encode(&admit_rows(&mut prepared, &rows, &catalog)?, columns)?;
                 let mut inserter = prepared
                     .into_column_inserter(encoded.rows, encoded.descriptions())
                     .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
@@ -499,6 +502,7 @@ fn array_text(value: &ParameterValue) -> Result<Option<String>> {
 fn admit_rows(
     prepared: &mut Prepared<odbc_api::handles::StatementImpl<'_>>,
     rows: &[Vec<ParameterValue>],
+    catalog: &[Option<plenora_database_core::operand_admission::OperandType>],
 ) -> Result<Vec<Vec<ParameterValue>>> {
     let count = prepared
         .num_params()
@@ -522,15 +526,21 @@ fn admit_rows(
             }
             row.iter()
                 .zip(&operands)
-                .map(|(value, described)| crate::parameter::admit_described(value, described))
+                .zip(catalog)
+                .map(|((value, described), kind)| {
+                    crate::parameter::admit_with_catalog(value, described, kind.as_ref())
+                })
                 .collect()
         })
         .collect()
 }
 
 /// Lo statement preparato con ogni parametro legato sul tipo che il server
-/// descrive per il suo segnaposto (`crate::parameter::bind`).
+/// descrive per il suo segnaposto (`crate::parameter::bind_with_catalog`).
 pub fn bind_described(
+    connection: &Connection<'_>,
+    timeout: usize,
+    sql: &str,
     prepared: &mut Prepared<odbc_api::handles::StatementImpl<'_>>,
     values: &[ParameterValue],
 ) -> Result<Vec<crate::parameter::Bound>> {
@@ -544,14 +554,30 @@ pub fn bind_described(
             "numero di parametri Db2 diverso dai segnaposto",
         ));
     }
+    let described = (1..=count)
+        .map(|index| {
+            prepared
+                .describe_param(index)
+                .map(|parameter| parameter.data_type)
+                .map_err(|error| driver_error(&error, ErrorPhase::Prepare))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let catalog = if described.iter().any(|kind| {
+        matches!(
+            crate::parameter::operand_of(kind),
+            plenora_database_core::operand_admission::OperandType::Text { .. }
+        )
+    }) {
+        crate::parameter_catalog::text_operands(connection, timeout, sql, values.len())?
+    } else {
+        vec![None; values.len()]
+    };
     values
         .iter()
-        .zip(1_u16..)
-        .map(|(value, index)| {
-            let described = prepared
-                .describe_param(index)
-                .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
-            crate::parameter::bind(value, &described.data_type)
+        .zip(&described)
+        .zip(&catalog)
+        .map(|((value, described), kind)| {
+            crate::parameter::bind_with_catalog(value, described, kind.as_ref())
         })
         .collect()
 }
@@ -586,7 +612,7 @@ fn execute_statement(
     let mut statement = connection
         .prepare(sql)
         .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
-    let parameters = bind_described(&mut statement, values)?;
+    let parameters = bind_described(connection, timeout, sql, &mut statement, values)?;
     statement
         .set_query_timeout_sec(timeout)
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
@@ -633,7 +659,7 @@ fn query_rows(
     let mut statement = connection
         .prepare(sql)
         .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
-    let parameters = bind_described(&mut statement, values)?;
+    let parameters = bind_described(connection, timeout, sql, &mut statement, values)?;
     statement
         .set_query_timeout_sec(timeout)
         .map_err(|error| driver_error(&error, ErrorPhase::Read))?;

@@ -302,3 +302,80 @@ fn described_text_capacity_cannot_prove_a_larger_codeunits32_limit() {
         }
     }
 }
+
+#[test]
+fn catalog_units_disambiguate_identical_cli_capacities_without_truncation() {
+    use super::{admit_with_catalog, bind_with_catalog};
+    use crate::operand_catalog::catalog_type;
+    use plenora_database_core::operand_admission::operand_type;
+    use plenora_database_core::plan::ProviderKind;
+
+    for type_name in ["CHAR", "VARCHAR", "CLOB", "GRAPHIC", "VARGRAPHIC", "DBCLOB"] {
+        for (units, length, accepted, rejected) in [
+            ("OCTETS", 12, "abc         ", "abc          "),
+            (
+                "CODEUNITS16",
+                6,
+                "\u{1f600}\u{1f600}\u{1f600}",
+                "\u{1f600}\u{1f600}\u{1f600} ",
+            ),
+            ("CODEUNITS32", 3, "\u{1f600}\u{1f600}\u{1f600}", "abc "),
+        ] {
+            let kind = operand_type(
+                ProviderKind::Db2,
+                &catalog_type(type_name, length, 0, 1208, units),
+            );
+            let described = match type_name {
+                "CHAR" => DataType::Char {
+                    length: NonZeroUsize::new(12),
+                },
+                "VARCHAR" => DataType::Varchar {
+                    length: NonZeroUsize::new(12),
+                },
+                other => DataType::Other {
+                    data_type: match other {
+                        "CLOB" => SqlDataType(-99),
+                        "GRAPHIC" => SqlDataType(-95),
+                        "VARGRAPHIC" => SqlDataType(-96),
+                        "DBCLOB" => SqlDataType(-350),
+                        _ => unreachable!("matrice chiusa"),
+                    },
+                    column_size: NonZeroUsize::new(12),
+                    decimal_digits: 0,
+                },
+            };
+            for (value, expected) in [(accepted, true), (rejected, false)] {
+                let value = ParameterValue::String(value.to_owned());
+                assert_eq!(
+                    admit_with_catalog(&value, &described, Some(&kind)).is_ok(),
+                    expected,
+                    "{type_name} {units}"
+                );
+                assert_eq!(
+                    bind_with_catalog(&value, &described, Some(&kind)).is_ok(),
+                    expected,
+                    "{type_name} {units}"
+                );
+            }
+        }
+    }
+    assert!(!matches!(
+        operand_type(ProviderKind::Db2, &catalog_type("CLOB", 12, 0, 0, "OCTETS")),
+        plenora_database_core::operand_admission::OperandType::Text { .. }
+    ));
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+    let kind = operand_type(
+        ProviderKind::Db2,
+        &catalog_type("CHAR", 36, 0, 1208, "OCTETS"),
+    );
+    let described = DataType::Char {
+        length: NonZeroUsize::new(36),
+    };
+    for value in [
+        ParameterValue::Uuid(uuid.to_owned()),
+        ParameterValue::String(uuid.to_owned()),
+    ] {
+        assert!(bind_with_catalog(&value, &described, Some(&kind)).is_ok());
+        assert!(admit_with_catalog(&value, &described, Some(&kind)).is_ok());
+    }
+}

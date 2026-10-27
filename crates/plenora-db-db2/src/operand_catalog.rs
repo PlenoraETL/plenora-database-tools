@@ -565,6 +565,7 @@ pub fn catalog_type(
     let name = match (upper.as_str(), bit_data) {
         ("CHARACTER" | "CHAR", true) => "BINARY".to_owned(),
         ("VARCHAR", true) => "VARBINARY".to_owned(),
+        ("CLOB", true) => "BLOB".to_owned(),
         (name, _) => name.to_owned(),
     };
     let precision = match upper.as_str() {
@@ -574,7 +575,10 @@ pub fn catalog_type(
     };
     let length_unit = match (string_units, upper.as_str()) {
         ("CODEUNITS32", _) => LengthUnit::Characters,
-        ("CODEUNITS16", _) | (_, "GRAPHIC" | "VARGRAPHIC" | "DBCLOB") => LengthUnit::Utf16,
+        ("OCTETS", _) => LengthUnit::Bytes,
+        ("CODEUNITS16", _) | (_, "GRAPHIC" | "VARGRAPHIC" | "LONG VARGRAPHIC" | "DBCLOB") => {
+            LengthUnit::Utf16
+        }
         _ => LengthUnit::Bytes,
     };
     let charset = match codepage {

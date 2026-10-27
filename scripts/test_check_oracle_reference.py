@@ -40,8 +40,26 @@ def check_timeout_output() -> None:
             assert output.getvalue() == expected
 
 
+def check_captured_inventory() -> None:
+    names = sorted(gate.live_source_inventory())
+    qualified = [f"live_tests::parameter_fidelity::{name}" for name in names]
+    listing = "\n".join(f"{name}: test" for name in qualified)
+    output = "\n".join(f"test {name} ... ok" for name in qualified)
+    output += "\n\nsuccesses:\n---- captured stdout ----\nmisura -0.0\n"
+    assert gate.validate_live_run(listing, output) == qualified
+    for status in ("ignored", "FAILED", "misura -0.0\nok"):
+        broken = output.replace(f"test {qualified[0]} ... ok", f"test {qualified[0]} ... {status}")
+        try:
+            gate.validate_live_run(listing, broken)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("un test senza esito esatto deve fallire il gate")
+
+
 def main() -> int:
     check_timeout_output()
+    check_captured_inventory()
     reference = gate.reference_contract()
     assert reference["server_major"] == "23"
     assert reference["platform"] == "linux/amd64"
@@ -52,7 +70,8 @@ def main() -> int:
         encoding="utf-8"
     )
     assert 'TemporaryDirectory(prefix="plenora-oracle-wheel-")' in gate_source
-    assert '"--nocapture"' in gate_source
+    assert '"--show-output"' in gate_source
+    assert '"--nocapture"' not in gate_source
     workflow = (ROOT / ".github/workflows/oracle-assurance.yml").read_text(
         encoding="utf-8"
     )

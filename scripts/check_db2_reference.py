@@ -83,6 +83,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_binary_columns_of_derived_relations_are_judged_geometric",
         "live_parameter_values_bind_exactly_or_are_refused",
         "live_generated_values_bind_exactly_or_are_refused",
+        "live_text_catalog_units_preserve_boundaries_without_false_refusals",
         "live_arrow_read_returns_floating_point_values_exactly",
         "live_sub_microsecond_timestamps_are_refused_on_read",
         "live_parameter_array_refuses_timestamps_beyond_the_column_precision",

@@ -11,7 +11,7 @@
 //! Qui ogni valore si lega in due tempi. [`validate`] rifiuta, prima di
 //! qualunque connessione, cio che nessun segnaposto Db2 riceve esatto (JSON,
 //! `TimestampTz`, WKB, double non finiti o `-0.0`, frazioni oltre il
-//! microsecondo, decimali fuori dalla forma posizionale). [`bind`] riceve poi
+//! microsecondo, decimali fuori dalla forma posizionale). [`bind_with_catalog`] riceve poi
 //! il tipo che il server descrive per il segnaposto (`SQLDescribeParam`) e
 //! sceglie il tipo C del binding: binario per i byte, `f64`/`f32` per i
 //! floating point, interi nativi, testo soltanto dove il testo e il valore o
@@ -34,7 +34,10 @@ use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 
 const PROVIDER: ProviderKind = ProviderKind::Db2;
-// Discriminator IBM CLI dei LOB: BLOB, CLOB e DBCLOB.
+// Discriminator IBM CLI dei testi grafici e dei LOB.
+const SQL_GRAPHIC: SqlDataType = SqlDataType(-95);
+const SQL_VARGRAPHIC: SqlDataType = SqlDataType(-96);
+const SQL_LONGVARGRAPHIC: SqlDataType = SqlDataType(-97);
 const SQL_BLOB: SqlDataType = SqlDataType(-98);
 const SQL_CLOB: SqlDataType = SqlDataType(-99);
 const SQL_DBCLOB: SqlDataType = SqlDataType(-350);
@@ -158,7 +161,12 @@ pub fn operand_of(described: &DataType) -> OperandType {
         // Il segnaposto descrive `CHAR` e `VARCHAR` in byte della codepage
         // 1208 (la connessione la verifica), `GRAPHIC` in unita UTF-16.
         DataType::Char { length: size } => text(length(size), true, LengthUnit::Bytes),
-        DataType::WChar { length: size } => text(length(size), true, LengthUnit::Utf16),
+        DataType::WChar { length: size }
+        | DataType::Other {
+            data_type: SQL_GRAPHIC,
+            column_size: size,
+            ..
+        } => text(length(size), true, LengthUnit::Utf16),
         DataType::Varchar { length: size }
         | DataType::LongVarchar { length: size }
         | DataType::Other {
@@ -169,7 +177,7 @@ pub fn operand_of(described: &DataType) -> OperandType {
         DataType::WVarchar { length: size }
         | DataType::WLongVarchar { length: size }
         | DataType::Other {
-            data_type: SQL_DBCLOB,
+            data_type: SQL_VARGRAPHIC | SQL_LONGVARGRAPHIC | SQL_DBCLOB,
             column_size: size,
             ..
         } => text(length(size), false, LengthUnit::Utf16),
@@ -204,7 +212,7 @@ pub fn operand_of(described: &DataType) -> OperandType {
 }
 
 /// Il valore che un segnaposto descritto riceve, per il binding a colonne dei
-/// parameter array: la stessa regola di [`bind`]. Un testo su un segnaposto
+/// parameter array: la stessa regola di [`bind_with_catalog`]. Un testo su un segnaposto
 /// binario (`HEXTORAW(?)` del WKB, una colonna `FOR BIT DATA`) resta testo,
 /// e arriva come i suoi byte UTF-8; ogni altro valore passa da [`admit`]
 /// sul tipo descritto, con precisione e scala.
@@ -249,6 +257,27 @@ pub fn admit_described(value: &ParameterValue, described: &DataType) -> Result<P
     Ok(admitted)
 }
 
+/// Il catalogo risolve l'unita solo per un bind diretto a una colonna
+/// testuale; gli altri tipi continuano a dipendere dal descrittore.
+pub fn admit_with_catalog(
+    value: &ParameterValue,
+    described: &DataType,
+    catalog: Option<&OperandType>,
+) -> Result<ParameterValue> {
+    validate_one(value)?;
+    if let (OperandType::Text { .. }, Some(kind @ OperandType::Text { .. })) =
+        (operand_of(described), catalog)
+    {
+        return admit(PROVIDER, value, kind);
+    }
+    admit_described(value, described)
+}
+
+#[cfg(test)]
+pub fn bind(value: &ParameterValue, described: &DataType) -> Result<Bound> {
+    bind_with_catalog(value, described, None)
+}
+
 /// Il binding di un valore sul tipo descritto del segnaposto: prima la regola
 /// unica ([`admit`], che lo riscrive nel tipo dell'operando o lo rifiuta),
 /// poi il tipo C esatto del valore ammesso.
@@ -257,7 +286,11 @@ pub fn admit_described(value: &ParameterValue, described: &DataType) -> Result<P
 ///
 /// `DataMapping` in fase `Prepare` se il tipo descritto non riceve il valore
 /// esatto.
-pub fn bind(value: &ParameterValue, described: &DataType) -> Result<Bound> {
+pub fn bind_with_catalog(
+    value: &ParameterValue,
+    described: &DataType,
+    catalog: Option<&OperandType>,
+) -> Result<Bound> {
     validate_one(value)?;
     // Un testo su un segnaposto binario (una colonna FOR BIT DATA, un `LIKE`
     // su un CAST di una geometria) arriva come i suoi byte UTF-8, che la
@@ -273,7 +306,7 @@ pub fn bind(value: &ParameterValue, described: &DataType) -> Result<Bound> {
     {
         return Ok(text(text_value.clone()));
     }
-    let admitted = admit_described(value, described)?;
+    let admitted = admit_with_catalog(value, described, catalog)?;
     match admitted {
         ParameterValue::Null { .. } => Ok(if is_binary(described) {
             Box::new(Option::<Vec<u8>>::None.into_parameter())

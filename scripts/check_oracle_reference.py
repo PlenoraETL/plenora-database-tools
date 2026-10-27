@@ -604,7 +604,7 @@ def main() -> int:
                 "--",
                 "--ignored",
                 "--test-threads=1",
-                "--nocapture",
+                "--show-output",
             ],
             environment=rust_environment,
         )

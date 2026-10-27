@@ -1524,6 +1524,7 @@ dependencies = [
  "plenora-database-testkit",
  "serde",
  "serde_json",
+ "sqlparser",
  "tokio",
 ]
 

@@ -487,7 +487,7 @@ def run_live_cli_probe() -> None:
             "--",
             "--ignored",
             "--exact",
-            "--nocapture",
+            "--show-output",
         ],
         capture=True,
     )

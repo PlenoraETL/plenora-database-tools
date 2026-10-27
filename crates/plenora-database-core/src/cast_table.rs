@@ -582,8 +582,8 @@ fn db2(name: &str, catalog: &CatalogType) -> OperandType {
         "decfloat" => OperandType::UnboundedDecimal {
             digits: u32::try_from(catalog.precision.unwrap_or(34)).unwrap_or(34),
         },
-        "character" | "char" => text_of(catalog.length, true, catalog),
-        "varchar" => text_of(catalog.length, false, catalog),
+        "character" | "char" | "graphic" => text_of(catalog.length, true, catalog),
+        "varchar" | "clob" | "vargraphic" | "dbclob" => text_of(catalog.length, false, catalog),
         "binary" => OperandType::Binary {
             length: catalog.length,
             padded: true,

@@ -905,3 +905,92 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
         "valori generati non esatti su Db2: {failures:#?}"
     );
 }
+
+/// Stessa capacita CLI, diverse unita: sia l'ammissione al limite sia il
+/// rifiuto dello spazio finale oltre limite sono obbligatori.
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+async fn live_text_catalog_units_preserve_boundaries_without_false_refusals() {
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cases = [
+        ("CHAR(12 OCTETS)", "abc         "),
+        ("VARCHAR(12 OCTETS)", "abc         "),
+        ("CLOB(12 OCTETS)", "abc         "),
+        ("CHAR(3 CODEUNITS32)", "a\u{1f600}b"),
+        ("VARCHAR(3 CODEUNITS32)", "a\u{1f600}b"),
+        ("CLOB(3 CODEUNITS32)", "a\u{1f600}b"),
+        ("GRAPHIC(3 CODEUNITS16)", "a\u{1f600}"),
+        ("VARGRAPHIC(3 CODEUNITS16)", "a\u{1f600}"),
+        ("DBCLOB(3 CODEUNITS16)", "a\u{1f600}"),
+        ("GRAPHIC(3 CODEUNITS32)", "a\u{1f600}b"),
+        ("VARGRAPHIC(3 CODEUNITS32)", "a\u{1f600}b"),
+        ("DBCLOB(3 CODEUNITS32)", "a\u{1f600}b"),
+    ];
+    let definition = cases
+        .iter()
+        .enumerate()
+        .map(|(i, (kind, _))| format!("C{i} {kind}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    ddl(
+        &provider,
+        &secret,
+        &[
+            format!("DROP TABLE IF EXISTS {SCHEMA}.TEXT_UNITS"),
+            format!("CREATE TABLE {SCHEMA}.TEXT_UNITS ({definition})"),
+        ],
+    )
+    .await;
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let cancellation = CancellationToken::new();
+    for (i, (kind, value)) in cases.iter().enumerate() {
+        let mut tx = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .expect("transazione");
+        let sql = format!("INSERT INTO {SCHEMA}.TEXT_UNITS (C{i}) VALUES (?)");
+        tx.execute(
+            &Statement::new(&sql).with_params(vec![text(value)]),
+            &cancellation,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{kind}: {error}"));
+        let rows = tx
+            .query(
+                &Statement::new(format!(
+                    "SELECT HEX(VARCHAR(C{i})) FROM {SCHEMA}.TEXT_UNITS"
+                )),
+                &cancellation,
+            )
+            .await
+            .expect("byte conservati");
+        assert_eq!(rows.len(), 1, "{kind}");
+        assert_eq!(rows[0].values(), &[text(&utf8_hex(value))], "{kind}");
+        let error = tx
+            .execute(
+                &Statement::new(sql).with_params(vec![text(&format!("{value} "))]),
+                &cancellation,
+            )
+            .await
+            .expect_err("spazio oltre limite");
+        assert_eq!(error.category, ErrorCategory::DataMapping, "{kind}");
+        assert_eq!(
+            error.phase,
+            plenora_database_core::ErrorPhase::Prepare,
+            "{kind}"
+        );
+        tx.rollback(&cancellation).await.expect("rollback");
+    }
+    ddl(
+        &provider,
+        &secret,
+        &[format!("DROP TABLE {SCHEMA}.TEXT_UNITS")],
+    )
+    .await;
+}

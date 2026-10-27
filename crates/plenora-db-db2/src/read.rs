@@ -292,7 +292,13 @@ fn pump_rows(
         let mut statement = connection
             .prepare(&plan.sql)
             .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
-        let bound = crate::transaction::bind_described(&mut statement, parameters)?;
+        let bound = crate::transaction::bind_described(
+            connection,
+            timeout,
+            &plan.sql,
+            &mut statement,
+            parameters,
+        )?;
         statement
             .set_query_timeout_sec(timeout)
             .map_err(|error| driver_error(&error, ErrorPhase::Read))?;

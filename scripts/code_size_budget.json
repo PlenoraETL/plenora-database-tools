@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 130226,
-  "max_code_lines": 104500,
-  "rationale": "Merge di origin/main (Oracle #136/#137, release 8.0.2 e Geometry Semantics #133) nella #135: conservate le guardie di fedelta dei parametri e i codec esatti o rifiutati. Soglie rigenerate dalla misura di scripts/code_size.py sul prodotto integrato; conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 130552,
+  "max_code_lines": 104803,
+  "rationale": "Correzioni della CI live della #135: unita di lunghezza dal catalogo Db2 per CHAR/VARCHAR/GRAPHIC/VARGRAPHIC/CLOB/DBCLOB, conversione TO_TIMESTAMP_TZ nei filtri Oracle, runner con --show-output e le loro regressioni. Soglie rigenerate dalla misura di scripts/code_size.py; conteggio e perimetro invariati, nessun margine aggiunto."
 }

@@ -171,6 +171,8 @@ class RequiredLiveTests(unittest.TestCase):
         )
         self.assertIn("live_database_probe_sqlserver_private_ca", arguments)
         self.assertIn("--exact", arguments)
+        self.assertIn("--show-output", arguments)
+        self.assertNotIn("--nocapture", arguments)
         self.assertIn("--ignored", arguments)
 
 
