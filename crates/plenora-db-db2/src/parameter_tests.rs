@@ -232,3 +232,73 @@ fn nulls_follow_the_described_marker() {
     assert!(bind(&null, &varbinary()).is_ok());
     assert!(bind(&null, &DataType::Integer).is_ok());
 }
+
+#[test]
+fn server_conversion_probes_must_keep_the_marker_type_exact() {
+    // I tre test live degli operandi devono chiedere conversioni al SQL,
+    // senza affidarle al driver: nessuna deroga al binding esatto.
+    let decimal = DataType::Decimal {
+        precision: 31,
+        scale: 10,
+    };
+    for value in [
+        ParameterValue::String("0.12345678901".to_owned()),
+        ParameterValue::Decimal("0.12345678901".to_owned()),
+    ] {
+        assert_eq!(refused(&value, &decimal), ErrorCategory::DataMapping);
+    }
+    assert!(bind(
+        &ParameterValue::Decimal("0.1234567890".to_owned()),
+        &decimal
+    )
+    .is_ok());
+    assert_eq!(
+        refused(&ParameterValue::String("01".to_owned()), &DataType::Integer),
+        ErrorCategory::DataMapping
+    );
+    assert_eq!(
+        refused(&ParameterValue::I64(1), &varchar()),
+        ErrorCategory::DataMapping
+    );
+    assert!(bind(
+        &ParameterValue::String("0.12345678901".to_owned()),
+        &varchar()
+    )
+    .is_ok());
+    assert!(bind(&ParameterValue::String("01".to_owned()), &varchar()).is_ok());
+    assert!(bind(&ParameterValue::I64(1), &DataType::BigInt).is_ok());
+}
+
+#[test]
+fn described_text_capacity_cannot_prove_a_larger_codeunits32_limit() {
+    for described in [
+        DataType::Varchar {
+            length: NonZeroUsize::new(12),
+        },
+        DataType::WVarchar {
+            length: NonZeroUsize::new(6),
+        },
+        DataType::WVarchar {
+            length: NonZeroUsize::new(12),
+        },
+        DataType::Other {
+            data_type: SqlDataType(-99),
+            column_size: NonZeroUsize::new(12),
+            decimal_digits: 0,
+        },
+        DataType::Other {
+            data_type: SqlDataType(-350),
+            column_size: NonZeroUsize::new(6),
+            decimal_digits: 0,
+        },
+    ] {
+        for value in ["abc ", "abc   ", "xxx "] {
+            let value = ParameterValue::String(value.to_owned());
+            assert_eq!(refused(&value, &described), ErrorCategory::DataMapping);
+            assert!(super::admit_described(&value, &described).is_err());
+        }
+        for value in ["abc", "a ", "\u{1f600}\u{1f600}\u{1f600}"] {
+            assert!(bind(&ParameterValue::String(value.to_owned()), &described).is_ok());
+        }
+    }
+}

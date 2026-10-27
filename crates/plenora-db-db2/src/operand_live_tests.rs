@@ -1160,10 +1160,24 @@ async fn live_typed_parameters_refuse_values_of_another_type() {
         )
         .await
         .expect("transazione regola T Db2");
-    let silent = transaction
+    let refused = transaction
         .query(
             &Statement::new("SELECT ID FROM PLENORA.TIPI_T WHERE NAME = ? ORDER BY ID")
                 .with_params(vec![ParameterValue::I64(1)]),
+            &cancellation,
+        )
+        .await
+        .expect_err("il bind incompatibile resta rifiutato");
+    assert_eq!(refused.category, ErrorCategory::DataMapping);
+    assert_eq!(refused.phase, ErrorPhase::Prepare);
+    // Il CAST esplicito mantiene il tipo del bind: la conversione sotto prova
+    // appartiene al SQL del chiamante, non al binding esatto.
+    let silent = transaction
+        .query(
+            &Statement::new(
+                "SELECT ID FROM PLENORA.TIPI_T WHERE NAME = CAST(CAST(? AS BIGINT) AS VARCHAR(10)) ORDER BY ID",
+            )
+            .with_params(vec![ParameterValue::I64(1)]),
             &cancellation,
         )
         .await
@@ -1171,7 +1185,7 @@ async fn live_typed_parameters_refuse_values_of_another_type() {
     assert_eq!(
         identificativi(&silent),
         vec!["1".to_owned()],
-        "il segnaposto prende il tipo della colonna, e il server converte il valore"
+        "il CAST converte esplicitamente il bind intero in testo"
     );
     let statement =
         |value: ParameterValue| Statement::new(lowered.sql.clone()).with_params(vec![value]);
@@ -1299,9 +1313,20 @@ async fn live_rilettura_quindici_cast_e_nomi() {
         .expect_err("DECIMAL(38, 10) su Db2");
     // L'errore del server, non un rifiuto del giudizio.
     assert_ne!(wide.category, ErrorCategory::InvalidPlan, "{wide:?}");
-    let rounded = transaction
+    let refused = transaction
         .query(
             &Statement::new("SELECT ID FROM PLENORA.R15_T WHERE D = CAST(? AS DECIMAL(31, 10))")
+                .with_params(vec![ParameterValue::String("0.12345678901".to_owned())]),
+            &cancellation,
+        )
+        .await
+        .expect_err("il bind incompatibile resta rifiutato");
+    assert_eq!(refused.category, ErrorCategory::DataMapping);
+    assert_eq!(refused.phase, ErrorPhase::Prepare);
+    // Il bind resta testo; l'arrotondamento e del CAST SQL esplicito.
+    let rounded = transaction
+        .query(
+            &Statement::new("SELECT ID FROM PLENORA.R15_T WHERE D = CAST(CAST(? AS VARCHAR(64)) AS DECIMAL(31, 10))")
                 .with_params(vec![ParameterValue::String("0.12345678901".to_owned())]),
             &cancellation,
         )
@@ -1467,11 +1492,19 @@ async fn live_rilettura_sedici_cte_con_spazi_finali() {
         )
         .await
         .expect("transazione");
+    let refused = transaction.query(
+        &Statement::new("WITH \"R16E \" AS (SELECT ID, ID AS N FROM PLENORA.R16E) SELECT X.ID FROM \"R16E\" X WHERE X.N = ?").with_params(vec![ParameterValue::String("01".to_owned())]),
+        &cancellation,
+    ).await.expect_err("il bind incompatibile resta rifiutato");
+    assert_eq!(refused.category, ErrorCategory::DataMapping);
+    assert_eq!(refused.phase, ErrorPhase::Prepare);
+    // Il CAST esplicito mantiene il tipo del bind: la conversione sotto prova
+    // appartiene al SQL del chiamante, non al binding esatto.
     let silent = transaction
         .query(
             &Statement::new(
                 "WITH \"R16E \" AS (SELECT ID, ID AS N FROM PLENORA.R16E) \
-                 SELECT X.ID FROM \"R16E\" X WHERE X.N = ?",
+                 SELECT X.ID FROM \"R16E\" X WHERE X.N = CAST(? AS VARCHAR(10))",
             )
             .with_params(vec![ParameterValue::String("01".to_owned())]),
             &cancellation,

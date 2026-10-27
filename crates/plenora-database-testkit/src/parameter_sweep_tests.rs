@@ -149,3 +149,25 @@ fn every_family_generates_the_classes_the_points_missed() {
         );
     }
 }
+
+#[test]
+fn db2_timestamp_fraction_starts_after_seconds_not_after_hours() {
+    for text in [
+        "2024-01-01-10.20.30",
+        "2024-01-01T10:20:30",
+        "2024-01-01 10:20:30",
+    ] {
+        assert_eq!(
+            super::parse_timestamp(text),
+            super::parse_timestamp("2024-01-01T10:20:30.000000")
+        );
+    }
+    let expected = super::parse_timestamp("2024-01-01T10:20:30.123400").expect("ISO");
+    for text in [
+        "2024-01-01-10.20.30.123400",
+        "2024-01-01-10.20.30.123400000000",
+    ] {
+        assert_eq!(super::parse_timestamp(text), Some(expected));
+    }
+    assert!(super::parse_timestamp("2024-01-01-10.20.30.123400000001").is_none());
+}

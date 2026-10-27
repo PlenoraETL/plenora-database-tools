@@ -479,8 +479,9 @@ impl<'c, 'e> OdbcCatalog<'c, 'e> {
     }
 }
 
-const COLUMN_TYPES_SQL: &str = "SELECT COLNAME, TYPENAME, VARCHAR(LENGTH), VARCHAR(SCALE), \
-    VARCHAR(CODEPAGE), COALESCE(STRINGUNITS, '') FROM SYSCAT.COLUMNS \
+pub const COLUMN_TYPES_SQL: &str = "SELECT COLNAME, TYPENAME, \
+    VARCHAR(COALESCE(STRINGUNITSLENGTH, LENGTH)), VARCHAR(SCALE), \
+    VARCHAR(CODEPAGE), COALESCE(TYPESTRINGUNITS, '') FROM SYSCAT.COLUMNS \
     WHERE TABSCHEMA = ? AND TABNAME = ? ORDER BY COLNO";
 
 impl OdbcCatalog<'_, '_> {
@@ -537,13 +538,14 @@ impl OdbcCatalog<'_, '_> {
 }
 
 /// Il tipo del catalogo Db2: `LENGTH` e la precisione dei decimali e la
-/// lunghezza dei testi e dei binari, `SCALE` la scala o le cifre frazionarie
+/// lunghezza dei binari; per i testi si usa `STRINGUNITSLENGTH` se presente.
+/// `SCALE` e la scala o le cifre frazionarie
 /// di `TIMESTAMP`; un testo con `CODEPAGE` 0 e `FOR BIT DATA`, cioe binario.
 ///
 /// Il `LENGTH` di un `DECFLOAT` sono i byte (8 o 16), non le cifre: le cifre
 /// sono 16 o 34 (fino al terzo giro della #135 un `DECFLOAT(16)` ammetteva
 /// soltanto 8 cifre, un rifiuto per eccesso). La lunghezza di un testo si
-/// conta nelle `STRINGUNITS` della colonna (`OCTETS` per difetto: i byte
+/// conta nelle `TYPESTRINGUNITS` della colonna (`OCTETS` per difetto: i byte
 /// UTF-8 della codepage 1208), il charset e quello della `CODEPAGE`.
 #[must_use]
 pub fn catalog_type(

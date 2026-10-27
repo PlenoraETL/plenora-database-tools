@@ -159,12 +159,20 @@ pub fn operand_of(described: &DataType) -> OperandType {
         // 1208 (la connessione la verifica), `GRAPHIC` in unita UTF-16.
         DataType::Char { length: size } => text(length(size), true, LengthUnit::Bytes),
         DataType::WChar { length: size } => text(length(size), true, LengthUnit::Utf16),
-        DataType::Varchar { length: size } | DataType::LongVarchar { length: size } => {
-            text(length(size), false, LengthUnit::Bytes)
-        }
-        DataType::WVarchar { length: size } | DataType::WLongVarchar { length: size } => {
-            text(length(size), false, LengthUnit::Utf16)
-        }
+        DataType::Varchar { length: size }
+        | DataType::LongVarchar { length: size }
+        | DataType::Other {
+            data_type: SQL_CLOB,
+            column_size: size,
+            ..
+        } => text(length(size), false, LengthUnit::Bytes),
+        DataType::WVarchar { length: size }
+        | DataType::WLongVarchar { length: size }
+        | DataType::Other {
+            data_type: SQL_DBCLOB,
+            column_size: size,
+            ..
+        } => text(length(size), false, LengthUnit::Utf16),
         DataType::Binary { length: size } => OperandType::Binary {
             length: length(size),
             padded: true,
@@ -182,10 +190,6 @@ pub fn operand_of(described: &DataType) -> OperandType {
             length: None,
             padded: false,
         },
-        DataType::Other {
-            data_type: SQL_CLOB | SQL_DBCLOB,
-            ..
-        } => text(None, false, LengthUnit::Bytes),
         DataType::Other {
             data_type: SQL_DECFLOAT,
             column_size,
@@ -214,7 +218,35 @@ pub fn admit_described(value: &ParameterValue, described: &DataType) -> Result<P
     if matches!(value, ParameterValue::String(_)) && is_binary(described) {
         return Ok(value.clone());
     }
-    admit(PROVIDER, value, &operand_of(described))
+    let operand = operand_of(described);
+    let admitted = admit(PROVIDER, value, &operand)?;
+    // SQLDescribeParam non espone TYPESTRINGUNITS: la capacita in byte
+    // puo descrivere OCTETS oppure quattro byte per CODEUNITS32. Si prova
+    // anche il limite minimo di caratteri, senza indovinare l'unita.
+    // Per GRAPHIC il limite puo essere espresso in unita UTF-16 (due per
+    // carattere) o byte. Il catalogo portable conserva l'unita esatta.
+    if let OperandType::Text {
+        length: Some(length),
+        unit,
+        ..
+    } = operand
+    {
+        let divisor = if unit == LengthUnit::Utf16 { 2 } else { 4 };
+        let divisor = if length.is_multiple_of(4) { 4 } else { divisor };
+        if length.is_multiple_of(divisor) {
+            admit(
+                PROVIDER,
+                &admitted,
+                &OperandType::Text {
+                    length: Some(length / divisor),
+                    padded: false,
+                    unit: LengthUnit::Characters,
+                    charset: Charset::Unicode,
+                },
+            )?;
+        }
+    }
+    Ok(admitted)
 }
 
 /// Il binding di un valore sul tipo descritto del segnaposto: prima la regola
@@ -241,7 +273,7 @@ pub fn bind(value: &ParameterValue, described: &DataType) -> Result<Bound> {
     {
         return Ok(text(text_value.clone()));
     }
-    let admitted = admit(PROVIDER, value, &operand_of(described))?;
+    let admitted = admit_described(value, described)?;
     match admitted {
         ParameterValue::Null { .. } => Ok(if is_binary(described) {
             Box::new(Option::<Vec<u8>>::None.into_parameter())

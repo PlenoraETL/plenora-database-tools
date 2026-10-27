@@ -2063,6 +2063,10 @@ async fn live_keyset_checkpoint_resumes_after_the_last_delivered_row() {
 #[tokio::test]
 #[ignore = "richiede Oracle Free live esplicito"]
 async fn live_driver_errors_are_redacted() {
+    // Solo fasi statiche: anche se il gate scade, il log identifica l'await
+    // raggiunto senza esporre SQL, credenziali o il messaggio del driver.
+    let phase = |name| eprintln!("live_driver_errors_are_redacted: {name}");
+    phase("preparazione fixture");
     let (config, secret) = fixture_config();
     let provider = OracleProvider::new_with_pool(config, 1).expect("pool per verifica rollback");
     let cancellation = CancellationToken::new();
@@ -2101,6 +2105,7 @@ async fn live_driver_errors_are_redacted() {
         .await
         .expect("sessione prima del reset");
     let marker = "PLENORA_SECRET_IDENTIFIER_79F";
+    phase("query inesistente e reset");
     let error = transaction
         .query(
             &Statement::new(format!("SELECT * FROM {marker}")),
@@ -2110,6 +2115,7 @@ async fn live_driver_errors_are_redacted() {
         .expect_err("tabella inesistente");
     assert!(!error.message.contains(marker));
     assert!(error.message.contains("ORA-00942"));
+    phase("riuso della sessione dopo il reset");
     // NUMBER(10) dichiara scala zero per la verifica I64; il literal non la garantisce.
     // Il reset mantiene utilizzabile la stessa sessione prima del rollback.
     let rows = transaction
@@ -2129,11 +2135,13 @@ async fn live_driver_errors_are_redacted() {
         .await
         .expect("scrittura ancora pendente dopo il reset");
     assert_eq!(pending.len(), 1);
+    phase("rollback della scrittura pendente");
     let rollback = transaction.rollback(&cancellation).await;
     if let Err(error) = &rollback {
         assert!(!error.message.contains(marker));
     }
     rollback.expect("rollback confermato dopo il reset");
+    phase("riacquisizione e verifica della stessa sessione");
     let mut verification = provider
         .begin_transaction(
             &secret,
@@ -2161,6 +2169,7 @@ async fn live_driver_errors_are_redacted() {
         .rollback(&cancellation)
         .await
         .expect("chiude verifica");
+    phase("rimozione fixture");
     provider
         .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
         .await

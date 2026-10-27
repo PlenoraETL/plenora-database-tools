@@ -619,7 +619,9 @@ fn budget(target: &Target<'_>) -> std::result::Result<ResourceBudget, String> {
         .map_err(|error| format!("budget: {}", describe(&error)))
 }
 
-async fn begin(target: &Target<'_>) -> std::result::Result<Box<dyn TransactionScope>, String> {
+pub(crate) async fn begin(
+    target: &Target<'_>,
+) -> std::result::Result<Box<dyn TransactionScope>, String> {
     let budget = budget(target)?;
     target
         .provider
@@ -633,7 +635,7 @@ async fn begin(target: &Target<'_>) -> std::result::Result<Box<dyn TransactionSc
         .map_err(|error| format!("apertura transazione: {}", describe(&error)))
 }
 
-fn describe(error: &DatabaseError) -> String {
+pub(crate) fn describe(error: &DatabaseError) -> String {
     format!("{:?}/{:?}: {}", error.category, error.phase, error.message)
 }
 
@@ -650,27 +652,22 @@ fn refused(result: &std::result::Result<u64, DatabaseError>, category: ErrorCate
     }
 }
 
-fn count_of(rows: &[Row]) -> std::result::Result<u64, String> {
-    let value = rows
-        .first()
-        .and_then(|row| row.values().first())
-        .ok_or_else(|| "conteggio senza righe".to_owned())?;
-    match value {
-        ParameterValue::I32(count) => {
-            u64::try_from(*count).map_err(|_| "conteggio negativo".into())
+pub(crate) fn count_of(rows: &[Row]) -> Result<u64, String> {
+    match rows.first().and_then(|row| row.values().first()) {
+        Some(ParameterValue::I32(count)) => {
+            u64::try_from(*count).map_err(|_| "conteggio".to_owned())
         }
-        ParameterValue::I64(count) => {
-            u64::try_from(*count).map_err(|_| "conteggio negativo".into())
+        Some(ParameterValue::I64(count)) => {
+            u64::try_from(*count).map_err(|_| "conteggio".to_owned())
         }
-        ParameterValue::Decimal(text) => text
-            .trim()
-            .parse::<u64>()
-            .map_err(|_| format!("conteggio non intero: {text}")),
-        other => Err(format!("conteggio di tipo inatteso: {other:?}")),
+        Some(ParameterValue::Decimal(text)) => {
+            text.trim().parse().map_err(|_| "conteggio".to_owned())
+        }
+        other => Err(format!("conteggio inatteso: {other:?}")),
     }
 }
 
-async fn query_first(
+pub(crate) async fn query_first(
     scope: &mut dyn TransactionScope,
     statement: Statement,
 ) -> std::result::Result<ParameterValue, String> {
@@ -849,7 +846,7 @@ async fn native_steps(
     Ok(())
 }
 
-fn portable_table(target: &Target<'_>) -> TableRef {
+pub(crate) fn portable_table(target: &Target<'_>) -> TableRef {
     TableRef {
         schema: target.table.schema.clone(),
         name: target.table.object.clone(),
@@ -871,15 +868,7 @@ async fn portable_steps(
     id: i32,
     notes: &mut Vec<String>,
 ) -> Probe {
-    let insert = PortableStatement::Insert(InsertStatement {
-        table: portable_table(target),
-        columns: vec![target.id_column.to_owned(), case.column.to_owned()],
-        values: vec![vec![
-            Expression::literal(ParameterValue::I32(id)),
-            Expression::literal(case.value.clone()),
-        ]],
-        returning: Vec::new(),
-    });
+    let insert = insert_statement(target, case.column, id, &case.value);
     let inserted = execute_portable(scope, &insert, &CancellationToken::new()).await;
     let (raw, distinct) = match case.expect_on(FidelityPath::Portable) {
         Expect::Refused(category) => return refused(&inserted, *category),
@@ -937,15 +926,7 @@ async fn read(target: &Target<'_>, case: &Case, id: i32, notes: &mut Vec<String>
     // Un valore che lo SQL del chiamante rifiuta prima dell'invio (il limite
     // dichiarato) si scrive con il portable, che legge il catalogo.
     if matches!(&inserted, Err(error) if error.phase == ErrorPhase::Prepare) {
-        let insert = PortableStatement::Insert(InsertStatement {
-            table: portable_table(target),
-            columns: vec![target.id_column.to_owned(), case.column.to_owned()],
-            values: vec![vec![
-                Expression::literal(ParameterValue::I32(id)),
-                Expression::literal(case.value.clone()),
-            ]],
-            returning: Vec::new(),
-        });
+        let insert = insert_statement(target, case.column, id, &case.value);
         inserted = execute_portable(scope.as_mut(), &insert, &CancellationToken::new()).await;
     }
     if let Err(error) = inserted {
@@ -1092,6 +1073,23 @@ async fn delete(target: &Target<'_>, column: &str, id: i32) -> Probe {
         .await
         .map(|_| ())
         .map_err(|error| format!("commit pulizia: {}", describe(&error)))
+}
+
+pub(crate) fn insert_statement(
+    target: &Target<'_>,
+    column: &str,
+    id: i32,
+    value: &ParameterValue,
+) -> PortableStatement {
+    PortableStatement::Insert(InsertStatement {
+        table: portable_table(target),
+        columns: vec![target.id_column.to_owned(), column.to_owned()],
+        values: vec![vec![
+            Expression::literal(ParameterValue::I32(id)),
+            Expression::literal(value.clone()),
+        ]],
+        returning: Vec::new(),
+    })
 }
 
 #[cfg(test)]

@@ -32,7 +32,10 @@
 //! ([`ServerFacts`]: il testo vuoto `NULL` di Oracle, il `-0.0` normalizzato,
 //! il limite dello SQL del chiamante) diventano note, mai silenzio.
 
-use crate::parameter_fidelity::{neighbours, FidelityPath, NativeSql, Neighbour, Target};
+use crate::parameter_fidelity::{
+    begin, count_of, describe, insert_statement, neighbours, portable_table,
+    query_first as first_value, FidelityPath, NativeSql, Neighbour, Target,
+};
 use chrono::{Duration, NaiveDate, NaiveDateTime};
 use plenora_database_core::arrow::array::{
     Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
@@ -42,12 +45,10 @@ use plenora_database_core::arrow::array::{
 use plenora_database_core::arrow::DataType;
 use plenora_database_core::facade::{execute_portable, execute_portable_returning};
 use plenora_database_core::plan::{FilterExpression, ReadOperation};
-use plenora_database_core::portable::{
-    and, eq, Expression, InsertStatement, PortableStatement, Projection, SelectStatement, TableRef,
-};
+use plenora_database_core::portable::{and, eq, PortableStatement, Projection, SelectStatement};
 use plenora_database_core::provider::{ParameterBag, ParameterValue as V};
 use plenora_database_core::resource::ResourceBudget;
-use plenora_database_core::transaction::{Statement, TransactionOptions, TransactionScope};
+use plenora_database_core::transaction::{Statement, TransactionScope};
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorPhase};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -545,8 +546,8 @@ fn holds(set: Set, character: char) -> bool {
 fn parse_timestamp(text: &str) -> Option<NaiveDateTime> {
     let text = text.trim();
     // Db2 rende fino a 12 cifre: oltre le nove devono essere zeri.
-    let text = match text.split_once('.') {
-        Some((head, fraction)) if fraction.len() > 9 => {
+    let text = match text.get(..19).zip(text.get(20..)) {
+        Some((head, fraction)) if text.as_bytes().get(19) == Some(&b'.') && fraction.len() > 9 => {
             if !fraction[9..].bytes().all(|b| b == b'0') {
                 return None;
             }
@@ -558,9 +559,6 @@ fn parse_timestamp(text: &str) -> Option<NaiveDateTime> {
         "%Y-%m-%dT%H:%M:%S%.f",
         "%Y-%m-%d %H:%M:%S%.f",
         "%Y-%m-%d-%H.%M.%S%.f",
-        "%Y-%m-%d-%H.%M.%S",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
     ]
     .iter()
     .find_map(|format| NaiveDateTime::parse_from_str(&text, format).ok())
@@ -1334,38 +1332,20 @@ pub fn sweep_report(outcomes: &[SweepOutcome]) -> (String, Vec<String>) {
     (text, failures)
 }
 
-fn describe(error: &DatabaseError) -> String {
-    format!("{:?}/{:?}: {}", error.category, error.phase, error.message)
-}
-
-fn budget(target: &Target<'_>) -> Result<ResourceBudget, String> {
-    ResourceBudget::new(target.limits.clone()).map_err(|error| describe(&error))
-}
-
-async fn begin(target: &Target<'_>) -> Result<Box<dyn TransactionScope>, String> {
-    let budget = budget(target)?;
-    target
-        .provider
-        .begin_transaction(
-            target.secret,
-            &TransactionOptions::default(),
-            &budget,
-            &CancellationToken::new(),
-        )
-        .await
-        .map_err(|error| format!("apertura transazione: {}", describe(&error)))
-}
-
 /// Una istruzione dentro un savepoint: un errore del server non interrompe
 /// la transazione dei valori successivi.
 async fn guarded<T>(
     scope: &mut dyn TransactionScope,
+    isolated: bool,
     run: impl for<'s> FnOnce(
         &'s mut dyn TransactionScope,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<T, DatabaseError>> + Send + 's>,
     >,
 ) -> Result<Result<T, DatabaseError>, String> {
+    if isolated {
+        return Ok(run(scope).await);
+    }
     let cancel = CancellationToken::new();
     scope
         .savepoint("plenora_sweep", &cancel)
@@ -1385,45 +1365,6 @@ async fn guarded<T>(
     };
     closed.map_err(|error| format!("savepoint: {}", describe(&error)))?;
     Ok(outcome)
-}
-
-fn portable_table(target: &Target<'_>) -> TableRef {
-    TableRef {
-        schema: target.table.schema.clone(),
-        name: target.table.object.clone(),
-    }
-}
-
-fn insert_statement(target: &Target<'_>, column: &str, id: i32, value: &V) -> PortableStatement {
-    PortableStatement::Insert(InsertStatement {
-        table: portable_table(target),
-        columns: vec![target.id_column.to_owned(), column.to_owned()],
-        values: vec![vec![
-            Expression::literal(V::I32(id)),
-            Expression::literal(value.clone()),
-        ]],
-        returning: Vec::new(),
-    })
-}
-
-fn count_of(rows: &[plenora_database_core::Row]) -> Result<u64, String> {
-    match rows.first().and_then(|row| row.values().first()) {
-        Some(V::I32(count)) => u64::try_from(*count).map_err(|_| "conteggio".to_owned()),
-        Some(V::I64(count)) => u64::try_from(*count).map_err(|_| "conteggio".to_owned()),
-        Some(V::Decimal(text)) => text.trim().parse().map_err(|_| "conteggio".to_owned()),
-        other => Err(format!("conteggio inatteso: {other:?}")),
-    }
-}
-
-async fn first_value(scope: &mut dyn TransactionScope, statement: Statement) -> Result<V, String> {
-    let rows = scope
-        .query(&statement, &CancellationToken::new())
-        .await
-        .map_err(|error| format!("rilettura: {}", describe(&error)))?;
-    rows.first()
-        .and_then(|row| row.values().first())
-        .cloned()
-        .ok_or_else(|| "rilettura senza righe".to_owned())
 }
 
 /// I confronti di un valore: i vicini generati per famiglia e i valori
@@ -1740,7 +1681,7 @@ async fn stored_row(
     Ok(Written { stored })
 }
 
-/// Un confronto `col = w` nella transazione del valore, dentro un savepoint:
+/// Un confronto `col = w` nella propria transazione, annullata dal chiamante:
 /// `None` se il confronto e rifiutato prima dell'invio o fallisce sul server.
 async fn compare(
     sweep: &SweepTarget<'_>,
@@ -1752,10 +1693,11 @@ async fn compare(
     outcome: &mut SweepOutcome,
 ) -> Result<Option<u64>, String> {
     let target = &sweep.target;
+    let isolated = scope.provider_kind() == plenora_database_core::plan::ProviderKind::Sqlserver;
     let rows = if native {
         let statement = Statement::new((target.native)(NativeSql::Count, column.name))
             .with_params(vec![V::I32(id), w.clone()]);
-        guarded(scope, move |scope| {
+        guarded(scope, isolated, move |scope| {
             Box::pin(async move { scope.query(&statement, &CancellationToken::new()).await })
         })
         .await?
@@ -1771,7 +1713,7 @@ async fn compare(
             order_by: Vec::new(),
             limit: None,
         });
-        guarded(scope, move |scope| {
+        guarded(scope, isolated, move |scope| {
             Box::pin(async move {
                 execute_portable_returning(scope, &select, &CancellationToken::new()).await
             })
@@ -1791,9 +1733,9 @@ async fn compare(
     }
 }
 
-/// I percorsi di scrittura: una transazione per valore (un errore del server
-/// la interrompe su PostgreSQL e la condanna su SQL Server), annullata alla
-/// fine.
+/// SQL Server richiede una transazione nuova per ogni confronto: un errore
+/// rende la sessione inutilizzabile fino al rollback completo. Gli altri
+/// provider isolano il confronto nel savepoint. Nessun vicino viene saltato.
 async fn write_and_compare(
     sweep: &SweepTarget<'_>,
     column: &Column,
@@ -1801,7 +1743,6 @@ async fn write_and_compare(
     base: i32,
     outcome: &mut SweepOutcome,
 ) -> Result<(), String> {
-    let target = &sweep.target;
     let native = path == FidelityPath::Native;
     let set = values(column.kind);
     for (index, value) in set.iter().enumerate() {
@@ -1809,46 +1750,71 @@ async fn write_and_compare(
             continue;
         }
         let id = base + i32::try_from(index).unwrap_or(0);
-        let mut scope = begin(target).await?;
-        let result: Result<(), String> = async {
-            if let Err(error) = write_value(sweep, scope.as_mut(), column, path, id, value).await {
-                judge_refusal(column, value, &error, sweep.facts, outcome);
-                return Ok(());
+        let mut probes = vec![(value.clone(), Neighbour::SameType)];
+        probes.extend(comparisons(&set, index));
+        let mut written = None;
+        let mut scope = begin(&sweep.target).await?;
+        let isolated =
+            scope.provider_kind() == plenora_database_core::plan::ProviderKind::Sqlserver;
+        for (probe, (w, kind)) in probes.into_iter().enumerate() {
+            if probe > 0 && isolated {
+                scope
+                    .rollback(&CancellationToken::new())
+                    .await
+                    .map_err(|error| format!("rollback confronto: {}", describe(&error)))?;
+                scope = begin(&sweep.target).await?;
             }
-            outcome.accepted += 1;
-            let written = stored_row(sweep, scope.as_mut(), column, id, outcome).await?;
-            if !judge_write(column, value, &written.stored, sweep.facts, native, outcome) {
-                return Ok(());
+            let result: Result<bool, String> = async {
+                if let Err(error) = if probe == 0 || isolated {
+                    write_value(sweep, scope.as_mut(), column, path, id, value).await
+                } else {
+                    Ok(1)
+                } {
+                    if probe == 0 {
+                        judge_refusal(column, value, &error, sweep.facts, outcome);
+                        return Ok(false);
+                    }
+                    return Err(format!(
+                        "ricreazione riga per confronto: {}",
+                        describe(&error)
+                    ));
+                }
+                if probe == 0 {
+                    outcome.accepted += 1;
+                }
+                if probe == 0 || isolated {
+                    let row = stored_row(sweep, scope.as_mut(), column, id, outcome).await?;
+                    if !judge_write(column, value, &row.stored, sweep.facts, native, outcome) {
+                        return Ok(false);
+                    }
+                    written = Some(row);
+                }
+                let written = written.as_ref().ok_or("riga del confronto assente")?;
+                let context = Context {
+                    column,
+                    facts: sweep.facts,
+                    native,
+                    what: if native { "col = ?" } else { "eq portable" },
+                };
+                let matched =
+                    compare(sweep, scope.as_mut(), column, native, id, &w, outcome).await?;
+                judge_match(&context, &written.stored, &w, kind, matched, outcome);
+                Ok(true)
             }
-            let mut probes = vec![(value.clone(), Neighbour::SameType)];
-            probes.extend(comparisons(&set, index));
-            let context = Context {
-                column,
-                facts: sweep.facts,
-                native,
-                what: if native { "col = ?" } else { "eq portable" },
-            };
-            for (w, kind) in probes {
-                match compare(sweep, scope.as_mut(), column, native, id, &w, outcome).await {
-                    Ok(matched) => {
-                        judge_match(&context, &written.stored, &w, kind, matched, outcome);
-                    }
-                    // Il savepoint non si ripristina: i confronti restanti
-                    // non si possono fare. La campagna e incompleta, quindi
-                    // fallisce: una nota nasconderebbe i vicini non provati.
-                    Err(reason) => {
-                        outcome
-                            .failures
-                            .push(format!("confronti di {value:?} interrotti: {reason}"));
-                        break;
-                    }
+            .await;
+            match result {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(reason) => {
+                    let _ = scope.rollback(&CancellationToken::new()).await;
+                    return Err(reason);
                 }
             }
-            Ok(())
         }
-        .await;
-        let _ = scope.rollback(&CancellationToken::new()).await;
-        result?;
+        scope
+            .rollback(&CancellationToken::new())
+            .await
+            .map_err(|error| format!("rollback confronto: {}", describe(&error)))?;
     }
     Ok(())
 }
@@ -2196,13 +2162,13 @@ async fn write_all_in_one(
             let id = base + i32::try_from(index).unwrap_or(0);
             let native = Statement::new((target.native)(NativeSql::Insert, column.name))
                 .with_params(vec![V::I32(id), value.clone()]);
-            let mut inserted = guarded(scope.as_mut(), move |scope| {
+            let mut inserted = guarded(scope.as_mut(), false, move |scope| {
                 Box::pin(async move { scope.execute(&native, &CancellationToken::new()).await })
             })
             .await?;
             if matches!(&inserted, Err(error) if error.phase == ErrorPhase::Prepare) {
                 let insert = insert_statement(target, column.name, id, value);
-                inserted = guarded(scope.as_mut(), move |scope| {
+                inserted = guarded(scope.as_mut(), false, move |scope| {
                     Box::pin(async move {
                         execute_portable(scope, &insert, &CancellationToken::new()).await
                     })
@@ -2267,3 +2233,7 @@ pub async fn sweep(
 #[cfg(test)]
 #[path = "parameter_sweep_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "parameter_sweep_transaction_tests.rs"]
+mod transaction_tests;

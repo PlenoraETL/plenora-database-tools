@@ -104,6 +104,12 @@ def run(
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as error:
+        # TimeoutExpired conserva byte anche con text=True: non perdere
+        # l'ultimo test avviato quando il processo non arriva al riepilogo.
+        for partial in (error.stdout, error.stderr):
+            if partial:
+                print(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes)
+                      else partial, end="", flush=True)
         raise RuntimeError(
             f"timeout dopo {timeout_seconds}s durante {command[0]}"
         ) from error

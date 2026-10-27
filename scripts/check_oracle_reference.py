@@ -114,6 +114,12 @@ def run(command: list[str], *, environment: dict[str, str] | None = None) -> str
             env=merged_environment,
         )
     except subprocess.TimeoutExpired as error:
+        # TimeoutExpired conserva byte anche con text=True: non perdere
+        # l'ultimo test avviato quando il processo non arriva al riepilogo.
+        for partial in (error.stdout, error.stderr):
+            if partial:
+                print(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes)
+                      else partial, end="", flush=True)
         raise RuntimeError(f"timeout durante {command[0]}") from error
     output = f"{completed.stdout}{completed.stderr}"
     if output:
@@ -598,6 +604,7 @@ def main() -> int:
                 "--",
                 "--ignored",
                 "--test-threads=1",
+                "--nocapture",
             ],
             environment=rust_environment,
         )
