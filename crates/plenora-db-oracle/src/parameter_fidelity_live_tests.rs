@@ -585,6 +585,41 @@ fn sweep_raw(column: &str) -> String {
     format!("SELECT {expression} FROM {SWEEP_TABLE} WHERE ID = :1")
 }
 
+#[test]
+fn generated_campaign_inventory() {
+    use plenora_database_testkit::parameter_fidelity::neighbours;
+    use plenora_database_testkit::parameter_sweep::values;
+    let mut totals = [0_usize; 5];
+    for (column, _) in sweep_columns() {
+        let set = values(column.kind);
+        let count = set.len();
+        let probes = set
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                1 + neighbours(value).len()
+                    + usize::from(index > 0)
+                    + usize::from(index + 1 < count)
+            })
+            .sum::<usize>();
+        let parts = 2 * count.div_ceil(10) + count.div_ceil(4);
+        let old_deletes = count * count.div_ceil(4);
+        println!("{}: values={count}, write_probes_per_path={probes}, parts={parts}, old_cleanup={old_deletes}, cleanup={count}", column.name);
+        for (total, value) in
+            totals
+                .iter_mut()
+                .zip([count, probes, parts, old_deletes, count.div_ceil(4)])
+        {
+            *total += value;
+        }
+    }
+    println!(
+        "totals: values={}, write_probes_per_path={}, parts={}, old_cleanup={}, read_parts={}",
+        totals[0], totals[1], totals[2], totals[3], totals[4]
+    );
+    assert_eq!(sweep_columns().len(), 18);
+}
+
 /// Il censimento generato: per ogni tipo di colonna, ogni valore generato
 /// per famiglia, su ogni percorso, contro la resa del server e il modello
 /// indipendente del tipo. Prova anche i decoder dei `NUMBER` con |x| < 1 e
@@ -643,6 +678,7 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
             // parti piu piccole.
             let size = if *path == FidelityPath::Read { 4 } else { 10 };
             for start in (0..count).step_by(size) {
+                let started = std::time::Instant::now();
                 let (part_provider, part_secret) = fixture();
                 let target = SweepTarget {
                     target: Target {
@@ -673,6 +709,12 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
                         std::slice::from_ref(path),
                     )
                     .await,
+                );
+                eprintln!(
+                    "Oracle sweep {} {path:?} {start}..{} / {count}: {:.3}s",
+                    column.name,
+                    (start + size).min(count),
+                    started.elapsed().as_secs_f64()
                 );
             }
         }

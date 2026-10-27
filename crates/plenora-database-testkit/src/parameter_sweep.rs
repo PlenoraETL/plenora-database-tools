@@ -198,6 +198,11 @@ pub struct SweepTarget<'a> {
 }
 
 impl SweepTarget<'_> {
+    fn range(&self, count: usize) -> std::ops::Range<usize> {
+        let part = self.part.clone().unwrap_or(0..count);
+        part.start.min(count)..part.end.min(count).max(part.start.min(count))
+    }
+
     fn includes(&self, index: usize) -> bool {
         self.part.as_ref().is_none_or(|part| part.contains(&index))
     }
@@ -1868,8 +1873,10 @@ async fn read_path(
     let target = &sweep.target;
     let set = values(column.kind);
     let mut written: BTreeMap<i32, (usize, Stored)> = BTreeMap::new();
-    // Le righe che un giro interrotto avesse lasciato.
-    let ids = (0..set.len())
+    // Pulizia e lettura limitate alla parte: niente cancellazioni quadratiche.
+    let range = sweep.range(set.len());
+    let ids = range
+        .clone()
         .map(|index| base + i32::try_from(index).unwrap_or(0))
         .collect::<Vec<_>>();
     delete_rows(target, column, &ids).await?;
@@ -1937,7 +1944,8 @@ async fn read_path(
         }
     }
     let probe: Result<(), String> = async {
-        let last = base + i32::try_from(set.len()).unwrap_or(0);
+        let first = base + i32::try_from(range.start).unwrap_or(0);
+        let last = base + i32::try_from(range.end).unwrap_or(0);
         let range = FilterExpression::And {
             args: vec![
                 FilterExpression::Gte {
@@ -1951,7 +1959,7 @@ async fn read_path(
             ],
         };
         let parameters = BTreeMap::from([
-            ("low".to_owned(), V::I32(base)),
+            ("low".to_owned(), V::I32(first)),
             ("high".to_owned(), V::I32(last)),
         ]);
         // Un errore rifiuta la lettura intera: si legge riga per riga, e
@@ -2108,19 +2116,7 @@ async fn read_path(
         Ok(())
     }
     .await;
-    let mut cleanup = begin(target).await?;
-    for id in written.keys() {
-        let statement = Statement::new((target.native)(NativeSql::Delete, column.name))
-            .with_params(vec![V::I32(*id)]);
-        if let Err(error) = cleanup.execute(&statement, &CancellationToken::new()).await {
-            let _ = cleanup.rollback(&CancellationToken::new()).await;
-            return Err(format!("pulizia: {}", describe(&error)));
-        }
-    }
-    cleanup
-        .commit(&CancellationToken::new())
-        .await
-        .map_err(|error| format!("commit pulizia: {}", describe(&error)))?;
+    delete_rows(target, column, &written.keys().copied().collect::<Vec<_>>()).await?;
     probe
 }
 

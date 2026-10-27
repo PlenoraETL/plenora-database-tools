@@ -19,6 +19,8 @@ struct Evidence {
     opened: usize,
     compared: usize,
     rolled_back: usize,
+    deleted: Vec<V>,
+    read_parameters: Vec<ParameterBag>,
 }
 struct Fake {
     evidence: Arc<Mutex<Evidence>>,
@@ -70,11 +72,21 @@ impl Provider for Fake {
         &'a self,
         _secret: &'a SecretString,
         _operation: &'a ReadOperation,
-        _parameters: &'a ParameterBag,
+        parameters: &'a ParameterBag,
         _budget: &'a ResourceBudget,
         _cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Box<dyn BatchStream>> {
-        Box::pin(async { Err(refusal()) })
+        self.evidence
+            .lock()
+            .expect("evidence")
+            .read_parameters
+            .push(parameters.clone());
+        Box::pin(async {
+            Err(DatabaseError {
+                phase: ErrorPhase::Prepare,
+                ..refusal()
+            })
+        })
     }
     fn prepare_write<'a>(
         &'a self,
@@ -119,10 +131,17 @@ impl TransactionScope for Scope {
     }
     fn execute<'a>(
         &'a mut self,
-        _statement: &'a Statement,
+        statement: &'a Statement,
         _cancel: &'a CancellationToken,
     ) -> ProviderFuture<'a, u64> {
         assert!(!self.poisoned);
+        if statement.sql == "Delete" {
+            self.evidence
+                .lock()
+                .expect("evidence")
+                .deleted
+                .extend(statement.params.clone());
+        }
         Box::pin(async { Ok(1) })
     }
     fn query<'a>(
@@ -186,7 +205,7 @@ impl TransactionScope for Scope {
         self: Box<Self>,
         _cancellation: &CancellationToken,
     ) -> ProviderFuture<'_, CommitOutcome> {
-        Box::pin(async { Err(refusal()) })
+        Box::pin(async { Ok(CommitOutcome::Committed) })
     }
     fn rollback(self: Box<Self>, _cancel: &CancellationToken) -> ProviderFuture<'_, ()> {
         self.evidence.lock().expect("evidence").rolled_back += 1;
@@ -198,6 +217,56 @@ impl TransactionScope for Scope {
             }
         })
     }
+}
+
+#[test]
+fn read_partition_only_cleans_and_reads_its_own_ids() {
+    let evidence = Arc::new(Mutex::new(Evidence::default()));
+    let provider = Fake {
+        evidence: Arc::clone(&evidence),
+        rollback_fails: false,
+    };
+    let secret = SecretString::new("unused");
+    let sweep = SweepTarget {
+        target: Target {
+            provider: &provider,
+            secret: &secret,
+            limits: ResourceLimits::default(),
+            table: ObjectRef {
+                catalog: None,
+                schema: None,
+                object: "t".to_owned(),
+            },
+            id_column: "id",
+            native: &|op, _| format!("{op:?}"),
+            native_cross_type_declared: false,
+        },
+        raw: &|_| "raw".to_owned(),
+        facts: ServerFacts::default(),
+        part: Some(1..2),
+    };
+    let column = Column {
+        name: "v",
+        kind: Kind::Integer {
+            min: -100,
+            max: 100,
+        },
+        render: Render::Decimal,
+    };
+    let mut outcome = SweepOutcome::default();
+    let mut future = Box::pin(read_path(&sweep, &column, 100, &mut outcome));
+    assert!(matches!(
+        future
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop())),
+        std::task::Poll::Ready(Ok(()))
+    ));
+    let evidence = evidence.lock().expect("evidence");
+    // Una cancellazione iniziale e una finale, mai gli altri ID della famiglia.
+    assert_eq!(evidence.deleted, vec![V::I32(101), V::I32(101)]);
+    assert_eq!(evidence.read_parameters.len(), 1);
+    assert_eq!(evidence.read_parameters[0].get("low"), Some(&V::I32(101)));
+    assert_eq!(evidence.read_parameters[0].get("high"), Some(&V::I32(102)));
 }
 
 #[test]
