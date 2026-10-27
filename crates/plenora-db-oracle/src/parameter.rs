@@ -269,17 +269,11 @@ fn json_has_negative_zero(value: &serde_json::Value) -> bool {
     }
 }
 
-/// Il testo nel modello `ORACLE_TIMESTAMP_TZ_FORMAT_MODEL`, per il
-/// `TO_TIMESTAMP_TZ(:n, modello)` che lo converte.
-///
-/// Limite dichiarato (regola di `plenora_database_core::parameter_fidelity`):
-/// il binding e esatto soltanto dentro quella conversione esplicita, che il
-/// portable scrive da se e che lo statement del chiamante deve scrivere.
-/// Ambito: un `:n` nudo confrontato o assegnato a un `TIMESTAMP WITH TIME
-/// ZONE`. Hazard: Oracle converte il testo con l'`NLS_TIMESTAMP_TZ_FORMAT`
-/// della sessione; con quello di default rifiuta (ORA-01843), con un modello
-/// diverso potrebbe leggere altri campi. Rientro: un binding nativo di
-/// `TIMESTAMP WITH TIME ZONE` nel fork di `oracle-rs`.
+/// Testo per `TO_TIMESTAMP_TZ(:n, ORACLE_TIMESTAMP_TZ_FORMAT_MODEL)`:
+/// portable, filtro read e write emettono la conversione; lo statement
+/// nativo del chiamante deve scriverla. Un bind nudo dipenderebbe da
+/// `NLS_TIMESTAMP_TZ_FORMAT` e potrebbe fallire o leggere campi diversi.
+/// Il limite resta fino alla qualifica del binding TZ nativo nel driver.
 fn parse_timestamp_tz(value: &str) -> Result<String> {
     reject_sub_microsecond(ProviderKind::Oracle, value)?;
     let timestamp = chrono::DateTime::parse_from_rfc3339(value)
@@ -290,14 +284,7 @@ fn parse_timestamp_tz(value: &str) -> Result<String> {
     // 1582-10-15, 1500-03-01 un istante dieci giorni dopo).
     exact_microsecond(chrono::Timelike::nanosecond(&timestamp))?;
     for date in [timestamp.naive_local().date(), timestamp.naive_utc().date()] {
-        crate::decode::require_gregorian(
-            chrono::Datelike::year(&date),
-            u8::try_from(chrono::Datelike::month(&date))
-                .map_err(|_| mapping_error("mese Oracle non rappresentabile"))?,
-            u8::try_from(chrono::Datelike::day(&date))
-                .map_err(|_| mapping_error("giorno Oracle non rappresentabile"))?,
-            ErrorPhase::Prepare,
-        )?;
+        gregorian_date(oracle_date(date)?)?;
     }
     Ok(timestamp.format("%Y-%m-%dT%H:%M:%S%.6f%:z").to_string())
 }
@@ -341,6 +328,10 @@ fn validate_decimal(value: &str) -> Result<()> {
 fn parse_date(value: &str) -> Result<OracleDate> {
     let date = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .map_err(|_| mapping_error("parametro date Oracle non valido"))?;
+    oracle_date(date)
+}
+
+fn oracle_date(date: chrono::NaiveDate) -> Result<OracleDate> {
     Ok(OracleDate::date(
         chrono::Datelike::year(&date),
         u8::try_from(chrono::Datelike::month(&date))
@@ -354,12 +345,11 @@ fn parse_timestamp(value: &str) -> Result<OracleTimestamp> {
     reject_sub_microsecond(ProviderKind::Oracle, value)?;
     let timestamp = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
         .map_err(|_| mapping_error("parametro timestamp Oracle non valido"))?;
+    let date = oracle_date(timestamp.date())?;
     Ok(OracleTimestamp::new(
-        chrono::Datelike::year(&timestamp),
-        u8::try_from(chrono::Datelike::month(&timestamp))
-            .map_err(|_| mapping_error("mese Oracle non rappresentabile"))?,
-        u8::try_from(chrono::Datelike::day(&timestamp))
-            .map_err(|_| mapping_error("giorno Oracle non rappresentabile"))?,
+        date.year,
+        date.month,
+        date.day,
         u8::try_from(chrono::Timelike::hour(&timestamp))
             .map_err(|_| mapping_error("ora Oracle non rappresentabile"))?,
         u8::try_from(chrono::Timelike::minute(&timestamp))
@@ -396,12 +386,7 @@ fn gregorian_date(date: OracleDate) -> Result<OracleDate> {
 }
 
 fn gregorian_timestamp(timestamp: OracleTimestamp) -> Result<OracleTimestamp> {
-    crate::decode::require_gregorian(
-        timestamp.year,
-        timestamp.month,
-        timestamp.day,
-        ErrorPhase::Prepare,
-    )?;
+    gregorian_date(timestamp.to_date())?;
     Ok(timestamp)
 }
 

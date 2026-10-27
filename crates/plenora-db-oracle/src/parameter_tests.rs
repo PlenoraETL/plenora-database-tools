@@ -113,3 +113,31 @@ fn negative_zero_is_refused_because_oracle_cannot_store_it() {
         Value::Float(value) if value.to_bits() == 0
     ));
 }
+
+/// DATE e TIMESTAMP hanno un codec TTC nativo: non vanno convertiti in
+/// testo per uniformarli al TZ. I byte conservano il microsecondo esatto.
+#[test]
+fn native_temporal_bind_bytes_stay_native() {
+    use oracle_rs::types::{OracleDate, OracleTimestamp};
+    let values = bind_parameters(&[
+        ParameterValue::Date("2024-02-29".to_owned()),
+        ParameterValue::Timestamp("2024-02-29T10:20:30.000001".to_owned()),
+    ])
+    .unwrap();
+    let Value::Date(date) = &values[0] else {
+        panic!("DATE non nativo")
+    };
+    assert_eq!(
+        date.to_oracle_bytes().unwrap(),
+        OracleDate::date(2024, 2, 29).to_oracle_bytes().unwrap()
+    );
+    let Value::Timestamp(timestamp) = &values[1] else {
+        panic!("TIMESTAMP non nativo")
+    };
+    assert_eq!(
+        timestamp.to_oracle_bytes().unwrap(),
+        OracleTimestamp::new(2024, 2, 29, 10, 20, 30, 1)
+            .to_oracle_bytes()
+            .unwrap()
+    );
+}

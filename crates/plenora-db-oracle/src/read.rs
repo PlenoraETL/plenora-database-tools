@@ -88,8 +88,7 @@ pub async fn read_operation(
     )
     .await?;
     let types = filter_types(raw, config, &plan, &internal).await?;
-    let admitted = admit_read_filter(&types, operation, parameters)?;
-    let parameter_values = named_parameters(&plan.bind_names, &admitted)?;
+    let (plan, parameter_values) = prepare_filter(&types, &description, operation, parameters)?;
     raw.set_response_byte_limit(
         usize::try_from(budget.limits().memory_bytes).unwrap_or(usize::MAX),
     )
@@ -309,15 +308,15 @@ async fn filter_types(
 /// La regola dei parametri che incontrano un operando (`operand_admission`):
 /// ogni parametro del filtro si ammette contro il tipo del campo, con
 /// lunghezza, precisione e scala del catalogo.
-fn admit_read_filter(
+fn prepare_filter(
     types: &plenora_database_core::operand_admission::RelationTypes,
+    description: &OracleObjectDescription,
     operation: &ReadOperation,
     parameters: &ParameterBag,
-) -> Result<ParameterBag> {
+) -> Result<(OracleReadPlan, Vec<ParameterValue>)> {
     use plenora_database_core::admission_gate::read_filter as admit_filter;
     use plenora_database_core::operand_admission::operand_type;
-    use plenora_database_core::plan::ProviderKind;
-    admit_filter(
+    let admitted = admit_filter(
         ProviderKind::Oracle,
         operation.filter.as_ref(),
         parameters,
@@ -326,18 +325,20 @@ fn admit_read_filter(
                 .get(field)
                 .map(|catalog| operand_type(ProviderKind::Oracle, catalog))
         },
-    )
+    )?;
+    let plan = OracleReadPlan::compile_with_parameters(description, operation, &admitted)?;
+    let values = named_parameters(&plan.bind_names, &admitted)?;
+    Ok((plan, values))
 }
 
 fn named_parameters(names: &[String], parameters: &ParameterBag) -> Result<Vec<ParameterValue>> {
-    let unique = names.iter().collect::<BTreeSet<_>>();
-    if unique.len() != parameters.len() {
+    if names.iter().collect::<BTreeSet<_>>().len() != parameters.len() {
         return Err(read_error(
             ErrorCategory::InvalidPlan,
             "parametri Oracle mancanti o eccedenti",
         ));
     }
-    let values = names
+    names
         .iter()
         .map(|name| {
             parameters.get(name).cloned().ok_or_else(|| {
@@ -347,8 +348,7 @@ fn named_parameters(names: &[String], parameters: &ParameterBag) -> Result<Vec<P
                 )
             })
         })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(values)
+        .collect()
 }
 
 struct OracleBatchStream {
