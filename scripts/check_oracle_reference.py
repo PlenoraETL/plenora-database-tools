@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -194,24 +195,29 @@ def live_source_inventory() -> set[str]:
     )
 
 
-def validate_live_run(listing: str, output: str) -> list[str]:
+def validate_live_listing(listing: str) -> set[str]:
     source = live_source_inventory()
     listed = live_inventory.listed_tests(listing, keep=lambda name: "live_" in name)
-    executed = live_inventory.executed_tests(output)
     listed_leaves = {live_inventory.leaf(name) for name in listed}
     if source != listed_leaves:
         raise RuntimeError(
             f"inventario live Oracle divergente: mancanti={sorted(source - listed_leaves)}, "
             f"inattesi={sorted(listed_leaves - source)}"
         )
+    missing = REQUIRED_LIVE_TESTS - listed_leaves
+    if missing:
+        raise RuntimeError(f"oracoli live Oracle mancanti: {sorted(missing)}")
+    return listed
+
+
+def validate_live_run(listing: str, output: str) -> list[str]:
+    listed = validate_live_listing(listing)
+    executed = live_inventory.executed_tests(output)
     if listed != executed:
         raise RuntimeError(
             f"esecuzione live Oracle incompleta: mancanti={sorted(listed - executed)}, "
             f"inattesi={sorted(executed - listed)}"
         )
-    missing = REQUIRED_LIVE_TESTS - listed_leaves
-    if missing:
-        raise RuntimeError(f"oracoli live Oracle mancanti: {sorted(missing)}")
     return sorted(listed)
 
 
@@ -554,6 +560,32 @@ def build_and_run_python_live(environment: dict[str, str]) -> str:
     )
 
 
+def run_live_campaign(listing: str, environment: dict[str, str]) -> str:
+    """Un budget per test; inventario completo e nessuna selezione manuale.
+
+    PR #134: 63/67 esiti prima del timeout aggregato di 1800s, durante
+    live_sonde_scritture_server. Il budget del singolo processo resta 1800s;
+    le durate misurate permettono di distinguere una sonda lenta dalla somma.
+    """
+    names = sorted(validate_live_listing(listing))
+    outputs: list[str] = []
+    for name in names:
+        started = time.monotonic()
+        print(f"oracle live: inizio {name}; budget={TIMEOUT}s", flush=True)
+        try:
+            output = run(
+                ["cargo", "test", "--locked", "-p", "plenora-db-oracle",
+                 name, "--", "--exact", "--ignored", "--test-threads=1", "--show-output"],
+                environment=environment,
+            )
+            if live_inventory.executed_tests(output) != {name}:
+                raise RuntimeError(f"esecuzione live Oracle incompleta: {name}")
+            outputs.append(output)
+        finally:
+            print(f"oracle live: fine {name}; durata={time.monotonic() - started:.2f}s", flush=True)
+    return "\n".join(outputs)
+
+
 def main() -> int:
     steps: list[str] = []
     try:
@@ -611,21 +643,7 @@ def main() -> int:
             ],
             environment=rust_environment,
         )
-        live = run(
-            [
-                "cargo",
-                "test",
-                "--locked",
-                "-p",
-                "plenora-db-oracle",
-                "live_",
-                "--",
-                "--ignored",
-                "--test-threads=1",
-                "--show-output",
-            ],
-            environment=rust_environment,
-        )
+        live = run_live_campaign(listing, rust_environment)
         executed = validate_live_run(listing, live)
         steps.append("live_inventory_matches_sources_and_run")
         run(

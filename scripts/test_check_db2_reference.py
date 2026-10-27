@@ -34,6 +34,19 @@ def qualified(names: set[str]) -> set[str]:
 
 
 class Db2ReferenceGateTests(unittest.TestCase):
+    def test_capture_preserves_progress_and_exact_results(self) -> None:
+        source = Path(gate.__file__).read_text(encoding="utf-8")
+        self.assertIn('"--show-output"', source)
+        self.assertNotIn('"--nocapture"', source)
+        names = sorted(qualified(gate.live_test_inventory()))
+        listing = "\n".join(f"{name}: test" for name in names)
+        output = "\n".join(f"test {name} ... ok" for name in names)
+        output += "\n\nsuccesses:\ncensimento parametri: C_TS6 Native: fine\n"
+        self.assertEqual(gate.validate_live_run(listing, output), names)
+        for status in ("ignored", "FAILED", "ok censimento parametri: inizio\nok"):
+            with self.assertRaises(RuntimeError):
+                gate.validate_live_run(listing, output.replace(f"test {names[0]} ... ok", f"test {names[0]} ... {status}"))
+
     def test_live_timeout_reaches_docker_without_changing_other_steps(self) -> None:
         with patch.object(gate.subprocess, "run", return_value=CompletedProcess([], 0, "", "")) as run:
             gate.compose_exec(["cargo", "test"], gate.DB2_ENV, timeout=gate.LIVE_TIMEOUT)

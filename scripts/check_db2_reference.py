@@ -371,7 +371,7 @@ def main() -> int:
                 "--",
                 "--ignored",
                 "--test-threads=1",
-                "--nocapture",
+                "--show-output",
             ],
             DB2_ENV,
             timeout=LIVE_TIMEOUT,

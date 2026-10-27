@@ -318,6 +318,7 @@ def main() -> int:
                     "plenora-db-postgres",
                     "--",
                     "--include-ignored",
+                    "--show-output",
                 ],
                 dsn,
             ),
@@ -366,7 +367,7 @@ def main() -> int:
             cargo([
                 "test", "-p", "plenora-db-postgres",
                 "live_copy_vs_prepared_benchmark", "--",
-                "--ignored", "--nocapture",
+                "--ignored", "--show-output",
             ], dsn),
             capture=True,
         )

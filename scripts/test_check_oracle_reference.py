@@ -79,7 +79,37 @@ def check_captured_inventory() -> None:
             raise AssertionError("un test senza esito esatto deve fallire il gate")
 
 
+def check_campaign() -> None:
+    names = sorted(f"live_tests::{name}" for name in gate.live_source_inventory())
+    listing = "\n".join(f"{name}: test" for name in names)
+    def execute(command, *, environment):
+        assert command[-5:] == ["--", "--exact", "--ignored", "--test-threads=1", "--show-output"]
+        assert environment == {"fixture": "test"}
+        return f"test {command[5]} ... ok\n\nsuccesses:\ncensimento parametri: fine\n"
+    with patch.object(gate, "run", side_effect=execute) as run, redirect_stdout(io.StringIO()):
+        output = gate.run_live_campaign(listing, {"fixture": "test"})
+        assert run.call_count == len(names)
+        assert [call.args[0][5] for call in run.call_args_list] == names
+    assert gate.validate_live_run(listing, output) == names
+    for result in ("", f"test {names[0]} ... ignored", f"test {names[0]} ... FAILED"):
+        with patch.object(gate, "run", return_value=result), redirect_stdout(io.StringIO()):
+            try:
+                gate.run_live_campaign(listing, {})
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("esito mancante accettato")
+    with patch.object(gate, "run", side_effect=RuntimeError("timeout")) as run, redirect_stdout(io.StringIO()):
+        try:
+            gate.run_live_campaign(listing, {})
+        except RuntimeError:
+            assert run.call_count == 1
+        else:
+            raise AssertionError("timeout accettato")
+
+
 def main() -> int:
+    check_campaign()
     check_timeout_output()
     check_captured_inventory()
     reference = gate.reference_contract()
