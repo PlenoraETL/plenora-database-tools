@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts import live_inventory  # noqa: E402
+from scripts import live_inventory, check_sqlserver_reference  # noqa: E402
 PASSWORD = "DataFlow_Test_2026!"
 NETWORK = "plenora-sqlserver-matrix"
 RUST_IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b9acbf"
@@ -57,7 +57,7 @@ def expected_live_tests() -> set[str]:
 
     declared = {
         live_inventory.leaf(name)
-        for name in live_inventory.source_inventory([LIVE_TEST_SOURCE])
+        for name in check_sqlserver_reference.live_test_inventory()
     }
     if not declared:
         raise RuntimeError("inventario dei test live SQL Server vuoto")

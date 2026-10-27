@@ -274,6 +274,7 @@ PRODOTTI: dict[str, Prodotto] = {
                   ". ~/sqllib/db2profile && { db2 activate database plenora; "
                   "test $? -le 2; }"),),
         test_env={
+            "DB2CODEPAGE": "1208",
             "PLENORA_DB2_HOST": "127.0.0.1",
             "PLENORA_DB2_PORT": "50000",
             "PLENORA_DB2_DATABASE": "plenora",
@@ -376,6 +377,7 @@ def sonda(docker: Docker, nome: str, prodotto: Prodotto, porta: int, immagine: s
         ambiente = {chiave: valore.replace("{porta}", str(porta))
                     for chiave, valore in prodotto.test_env.items()}
         ambiente["PLENORA_SONDE_SCRITTURE_IMMAGINE"] = immagine
+        ambiente["PLENORA_SONDE_SCRITTURE_TRACCIA"] = "1"
         if prodotto.ca_nel_container:
             ca = docker.run(["exec", nome, "cat", prodotto.ca_nel_container])
             if ca.returncode != 0 or "BEGIN CERTIFICATE" not in ca.stdout:
@@ -483,14 +485,14 @@ def main() -> int:
             if immagine:
                 docker.run(["stop", nome], timeout=180)
         if documento is None:
-            print(log[-4000:], file=sys.stderr)
+            print(log, file=sys.stderr)
             print(f"{opzioni.server} {immagine or nome}: nessun referto", file=sys.stderr)
             return 2
         print(f"{opzioni.server} {immagine or nome}: {riassunto(documento)}")
         misure.append(documento)
         if uscita != 0:
             difformi.append(immagine or nome)
-            print(log[-4000:], file=sys.stderr)
+            print(log, file=sys.stderr)
     if opzioni.referto:
         opzioni.referto.write_text(json.dumps({"schema_version": 1, "server": opzioni.server,
                                                "misure": misure}, ensure_ascii=False,

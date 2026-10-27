@@ -248,6 +248,7 @@ def test_environments(
     user = container_variable(container, "APP_USER")
     password = container_variable(container, "APP_USER_PASSWORD")
     rust = {
+        "PLENORA_SONDE_SCRITTURE_TRACCIA": "1",
         "PLENORA_ORACLE_HOST": "127.0.0.1",
         "PLENORA_ORACLE_PORT": "1521",
         "PLENORA_ORACLE_SERVICE": reference["service"],

@@ -50,6 +50,16 @@ def executable() -> list[str]:
 
 
 class RequiredLiveTests(unittest.TestCase):
+    def test_inventory_includes_split_modules_in_both_gates(self) -> None:
+        expected = {
+            "live_s_chiave_datetimeoffset_compatible_non_arrotonda",
+            "live_generated_values_bind_exactly_or_are_refused",
+            "live_chiave_ripetuta_nell_ingresso_rifiuta",
+        }
+        self.assertLessEqual(expected, gate.live_test_inventory())
+        self.assertLessEqual(expected, matrix.expected_live_tests())
+
+
     def test_matrix_passes_every_collation_fixture_to_the_suite(self) -> None:
         expected = matrix.expected_live_tests()
         with patch.object(matrix, "run", return_value=live_output(expected)) as run:

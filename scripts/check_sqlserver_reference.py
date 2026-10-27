@@ -61,7 +61,10 @@ REQUIRED_LIVE_TESTS = frozenset(
 def live_test_inventory() -> set[str]:
     """Legge i nomi dei test live dai sorgenti per verificarne identita ed esito."""
 
-    return live_inventory.source_inventory([LIVE_TEST_SOURCE, FIDELITY_LIVE_SOURCE])
+    return live_inventory.source_inventory(
+        list(LIVE_TEST_SOURCE.parent.rglob("*.rs")),
+        keep=lambda name: name.startswith("live_") or name in SKIPPED_LIVE_TESTS,
+    )
 
 
 def skipped_with_reasons() -> dict[str, str]:

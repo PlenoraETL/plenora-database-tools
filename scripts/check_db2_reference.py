@@ -52,6 +52,8 @@ PYTHON_LIVE_SOURCE = (
 WHEEL_NAMER = ROOT / "scripts" / "name_db2_wheel.py"
 RESULT = ROOT / "assurance-results" / "db2-reference.json"
 TIMEOUT = 20 * 60
+# La suite include i censimenti completi di parametri e scritture.
+LIVE_TIMEOUT = 120 * 60
 # Il client CLI scambia il testo nella codepage della locale: con quella POSIX
 # del container il testo UTF-8 arrivava doppiamente codificato, e l'adapter
 # ora rifiuta la connessione (`connection::verify_utf8_codepage`).
@@ -106,7 +108,7 @@ REQUIRED_LIVE_TESTS = frozenset(
 )
 
 
-def run(command: list[str], *, capture: bool = True) -> str:
+def run(command: list[str], *, capture: bool = True, timeout: int = TIMEOUT) -> str:
     """Esegue un passo con timeout e rende visibile tutto il suo output."""
 
     try:
@@ -116,7 +118,7 @@ def run(command: list[str], *, capture: bool = True) -> str:
             check=False,
             text=True,
             capture_output=capture,
-            timeout=TIMEOUT,
+            timeout=timeout,
             env=os.environ.copy(),
         )
     except subprocess.TimeoutExpired as error:
@@ -126,7 +128,7 @@ def run(command: list[str], *, capture: bool = True) -> str:
             if partial:
                 print(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes)
                       else partial, end="", flush=True)
-        raise RuntimeError(f"timeout durante {command[0]}") from error
+        raise RuntimeError(f"timeout dopo {timeout}s durante {command[0]}") from error
     output = f"{completed.stdout}{completed.stderr}" if capture else ""
     if output:
         print(output, end="")
@@ -139,11 +141,13 @@ def compose(arguments: list[str]) -> list[str]:
     return ["docker", "compose", "-f", str(COMPOSE_FILE), *arguments]
 
 
-def compose_exec(arguments: list[str], environment: dict[str, str]) -> str:
+def compose_exec(
+    arguments: list[str], environment: dict[str, str], *, timeout: int = TIMEOUT
+) -> str:
     env_args = [
         item for pair in environment.items() for item in ("-e", f"{pair[0]}={pair[1]}")
     ]
-    return run(compose(["exec", "-T", *env_args, "db2", *arguments]))
+    return run(compose(["exec", "-T", *env_args, "db2", *arguments]), timeout=timeout)
 
 
 def live_test_inventory() -> set[str]:
@@ -367,8 +371,10 @@ def main() -> int:
                 "--",
                 "--ignored",
                 "--test-threads=1",
+                "--nocapture",
             ],
             DB2_ENV,
+            timeout=LIVE_TIMEOUT,
         )
         executed = validate_live_run(listing, live)
         steps.append("live_inventory_matches_sources_and_run")

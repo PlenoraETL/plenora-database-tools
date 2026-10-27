@@ -71,6 +71,14 @@ def coerente(documento: dict, prodotto: str) -> list[str]:
 
 
 class Fixture(unittest.TestCase):
+    def test_db2_client_uses_the_qualified_utf8_codepage(self) -> None:
+        from check_db2_reference import DB2_CODEPAGE
+        self.assertEqual(
+            sonde.PRODOTTI["db2"].test_env["DB2CODEPAGE"],
+            DB2_CODEPAGE["DB2CODEPAGE"],
+        )
+
+
     def test_ogni_prodotto_ha_un_fixture_coerente(self) -> None:
         for prodotto in sonde.PRODOTTI:
             with self.subTest(prodotto=prodotto):

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
+from subprocess import CompletedProcess
 from pathlib import Path
 
 import check_db2_reference as gate
@@ -32,6 +34,14 @@ def qualified(names: set[str]) -> set[str]:
 
 
 class Db2ReferenceGateTests(unittest.TestCase):
+    def test_live_timeout_reaches_docker_without_changing_other_steps(self) -> None:
+        with patch.object(gate.subprocess, "run", return_value=CompletedProcess([], 0, "", "")) as run:
+            gate.compose_exec(["cargo", "test"], gate.DB2_ENV, timeout=gate.LIVE_TIMEOUT)
+            self.assertEqual(run.call_args.kwargs["timeout"], gate.LIVE_TIMEOUT)
+            gate.compose_exec(["cargo", "test"], gate.DB2_ENV)
+            self.assertEqual(run.call_args.kwargs["timeout"], gate.TIMEOUT)
+
+
     def test_python_live_inventory_includes_the_orm_gate(self) -> None:
         self.assertEqual(gate.PYTHON_LIVE_EXPECTED, 9)
         self.assertEqual(
