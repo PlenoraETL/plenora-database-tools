@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 try:  # importabile come scripts.<modulo> e come script semplice
     from . import strict_json
@@ -30,6 +31,12 @@ MYSQL_REFERENCE_FILE = ROOT / "docker" / "mysql" / "references.json"
 LIVE_SOURCE = ROOT / "crates" / "plenora-db-oracle" / "src" / "live_tests.rs"
 FIDELITY_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-oracle" / "src" / "parameter_fidelity_live_tests.rs"
+)
+NUMBER_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-oracle" / "src" / "number_live_tests.rs"
+)
+DRIVER_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-oracle" / "src" / "driver_fidelity_live_tests.rs"
 )
 PYTHON_TESTS = ROOT / "crates" / "plenora-database-py" / "python" / "tests"
 RESULT = ROOT / "assurance-results" / "oracle-reference.json"
@@ -62,9 +69,28 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_operand_catalog_refuses_derived_binary_and_resolves_public_sdo_geometry",
         "live_server_computed_binary_columns_are_judged_geometric",
         "live_text_columns_compared_with_binary_values_are_refused",
+        "live_number_binds_match_server_text_dump_and_equality",
+        "live_number_every_public_bind_path_is_exact",
+        "live_number_infinities_and_invalid_bytes_fail_every_read",
+        "live_number_inside_json_reads_back_exactly_or_fails",
+        "live_number_float_columns_read_and_write_exactly_or_fail",
+        "live_duplicate_columns_keep_their_value_across_fetch_pages",
+        "live_dates_bind_exactly_on_every_year_boundary_of_the_server_calendar",
+        "live_timestamps_bind_and_read_exactly_at_every_fractional_precision",
+        "live_text_and_raw_binds_cross_every_length_prefix",
+        "live_text_of_every_length_reads_exactly",
+        "live_json_binds_round_trip_through_json_serialize",
+        "live_json_reads_match_json_serialize_or_are_refused",
+        "live_scalar_types_read_exactly_or_are_refused",
+        "live_describe_keeps_signed_scale_and_refuses_unknown_types",
+        "live_clob_chunks_with_supplementary_characters_are_contiguous",
+        "live_inline_lob_binds_are_refused_not_nulled",
+        "live_pre_gregorian_dates_are_refused_by_the_provider",
+        "live_timestamptz_binds_keep_the_instant_or_are_refused",
+        "live_binary_float_in_json_reads_the_stored_value",
     }
 )
-PYTHON_LIVE_EXPECTED = 6
+PYTHON_LIVE_EXPECTED = 7
 SERVER_VERSION_SQL = (
     "SELECT VERSION FROM PRODUCT_COMPONENT_VERSION "
     "WHERE PRODUCT LIKE 'Oracle%Database%' FETCH FIRST 1 ROW ONLY"
@@ -140,7 +166,8 @@ def reference_contract() -> dict[str, str]:
 
 def live_source_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE, FIDELITY_LIVE_SOURCE], keep=lambda name: name.startswith("live_")
+        [LIVE_SOURCE, FIDELITY_LIVE_SOURCE, NUMBER_LIVE_SOURCE, DRIVER_LIVE_SOURCE],
+        keep=lambda name: name.startswith("live_"),
     )
 
 
@@ -319,6 +346,125 @@ def run_cli_probe(environment: dict[str, str]) -> dict[str, object]:
     raise RuntimeError("probe CLI Oracle senza documento JSON")
 
 
+CLI_NUMBER_TABLE = "PLENORA_CLI_NUMBER"
+# Decimali in (-1, 1) con zeri dopo il punto pari e dispari: il codec NUMBER
+# del driver salvava quelli dispari per dieci volte se stessi (0.05 come .5).
+CLI_NUMBER_PROBES = ("0.05", "0.5", "-0.05", "-0.5", "0.0005", "0.005", "0.07", "1.5")
+
+
+def cli_scalar_value(output: str) -> object:
+    """Il campo ``value`` dell'ultimo documento JSON stampato dalla CLI."""
+
+    for line in reversed(output.splitlines()):
+        try:
+            document = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(document, dict) and "value" in document:
+            return document["value"]
+    raise RuntimeError("scalare CLI Oracle senza documento JSON")
+
+
+def run_cli_number_probe(environment: dict[str, str]) -> None:
+    """Decimali legati dalla CLI pubblica e riletti dal server, piu il rifiuto
+    di -infinito e +infinito in lettura."""
+
+    environment = environment | {
+        "PLENORA_ORACLE_CLI_SECRET": environment["PLENORA_ORACLE_PASSWORD"]
+    }
+    binary = str(ROOT / "target" / "debug" / "plenora-database")
+    connection = [
+        "127.0.0.1",
+        environment["PLENORA_ORACLE_SERVICE"],
+        environment["PLENORA_ORACLE_USER"],
+        environment["PLENORA_ORACLE_PORT"],
+        "--tls-mode",
+        "disable",
+    ]
+
+    def command(name: str, argument: str) -> list[str]:
+        return [binary, name, "oracle", "PLENORA_ORACLE_CLI_SECRET", argument, *connection]
+
+    try:
+        run(command("database-execute-ddl", f"DROP TABLE {CLI_NUMBER_TABLE} PURGE"),
+            environment=environment)
+    except RuntimeError:
+        pass
+    run(
+        command(
+            "database-execute-ddl",
+            f"CREATE TABLE {CLI_NUMBER_TABLE} (ID NUMBER(10) PRIMARY KEY, D NUMBER)",
+        ),
+        environment=environment,
+    )
+    try:
+        statement = {
+            "type": "insert",
+            "table": {"name": CLI_NUMBER_TABLE},
+            "columns": ["ID", "D"],
+            "values": [
+                [
+                    {"kind": "literal", "value": {"type": "i64", "value": index}},
+                    {"kind": "literal", "value": {"type": "decimal", "value": text}},
+                ]
+                for index, text in enumerate(CLI_NUMBER_PROBES, start=1)
+            ],
+        }
+        with tempfile.TemporaryDirectory(prefix="plenora-oracle-cli-") as temporary:
+            path = Path(temporary) / "insert.json"
+            path.write_text(json.dumps(statement), encoding="utf-8")
+            run(command("database-portable-execute", str(path)), environment=environment)
+        stored = cli_scalar_value(
+            run(
+                command(
+                    "database-execute-scalar",
+                    "SELECT LISTAGG(TO_CHAR(D, 'TM9'), '|') WITHIN GROUP (ORDER BY ID) "
+                    f"FROM {CLI_NUMBER_TABLE}",
+                ),
+                environment=environment,
+            )
+        )
+        texts = stored.get("value") if isinstance(stored, dict) else stored
+        if not isinstance(texts, str):
+            raise RuntimeError("rilettura NUMBER CLI Oracle non testuale")
+        if [Decimal(text) for text in texts.split("|")] != [
+            Decimal(text) for text in CLI_NUMBER_PROBES
+        ]:
+            raise RuntimeError("decimali CLI Oracle salvati diversi da quelli legati")
+    finally:
+        run(command("database-execute-ddl", f"DROP TABLE {CLI_NUMBER_TABLE} PURGE"),
+            environment=environment)
+    for raw in ("00", "FF65"):
+        # Il rifiuto deve essere quello della mappatura dati: un errore di
+        # trasporto o di esecuzione non proverebbe niente.
+        completed = subprocess.run(
+            command(
+                "database-execute-scalar",
+                f"SELECT UTL_RAW.CAST_TO_NUMBER(HEXTORAW('{raw}')) FROM DUAL",
+            ),
+            cwd=ROOT,
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=TIMEOUT,
+            env=os.environ | environment,
+        )
+        if completed.returncode == 0:
+            raise RuntimeError("la CLI Oracle ha letto un infinito come numero")
+        categories = set()
+        for line in f"{completed.stdout}{completed.stderr}".splitlines():
+            try:
+                document = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(document, dict) and isinstance(document.get("error"), dict):
+                categories.add(document["error"].get("category"))
+        if categories != {"data_mapping"}:
+            raise RuntimeError(
+                "la CLI Oracle ha rifiutato un infinito senza errore data_mapping"
+            )
+
+
 def build_and_run_python_live(environment: dict[str, str]) -> str:
     with tempfile.TemporaryDirectory(prefix="plenora-oracle-wheel-") as temporary:
         wheel_dir = Path(temporary)
@@ -471,6 +617,8 @@ def main() -> int:
         )
         probe = run_cli_probe(rust_environment)
         steps.append("public_cli_probe")
+        run_cli_number_probe(rust_environment)
+        steps.append("public_cli_number_probe")
         server_version = build_and_run_python_live(python_environment)
         if not server_version.startswith(reference["server_major"] + "."):
             raise RuntimeError("major Oracle avviata diversa dal riferimento")

@@ -222,9 +222,13 @@ pub fn decode_vector(data: &[u8]) -> Result<OracleVector> {
     let num_elements = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
     pos += 4;
 
-    // Skip norm bytes if present
+    // Skip norm bytes if present. Plenora fork: checked, the slice below
+    // used to panic on a header shorter than the norm it announced.
     if (flags & VECTOR_FLAG_NORM_RESERVED) != 0 || (flags & VECTOR_FLAG_NORM) != 0 {
         pos += 8;
+        if data.len() < pos {
+            return Err(Error::Protocol("Vector data too short".to_string()));
+        }
     }
 
     // Check if sparse
@@ -270,6 +274,24 @@ fn decode_vector_values(
     num_elements: usize,
     format: VectorFormat,
 ) -> Result<VectorData> {
+    // Plenora fork: the values fill the data exactly. A server count is not
+    // trusted for an allocation before it is checked against the bytes, a
+    // BINARY vector is a whole number of bytes, and trailing bytes are an
+    // error instead of being ignored.
+    let width_bits: usize = match format {
+        VectorFormat::Float32 => 32,
+        VectorFormat::Float64 => 64,
+        VectorFormat::Int8 => 8,
+        VectorFormat::Binary => 1,
+    };
+    let expected_bits = num_elements
+        .checked_mul(width_bits)
+        .ok_or_else(|| Error::Protocol("Vector size overflow".to_string()))?;
+    if expected_bits % 8 != 0 || data.len() != expected_bits / 8 {
+        return Err(Error::Protocol(
+            "Vector data does not match its dimensions".to_string(),
+        ));
+    }
     match format {
         VectorFormat::Float32 => {
             let mut values = Vec::with_capacity(num_elements);
@@ -278,7 +300,10 @@ fn decode_vector_values(
                 if data.len() < offset + 4 {
                     return Err(Error::Protocol("Vector FLOAT32 data truncated".to_string()));
                 }
-                values.push(decode_binary_float(&data[offset..offset + 4]));
+                let bytes: &[u8; 4] = data[offset..offset + 4]
+                    .try_into()
+                    .map_err(|_| Error::Protocol("Vector FLOAT32 data truncated".to_string()))?;
+                values.push(decode_binary_float(bytes));
             }
             Ok(VectorData::Float32(values))
         }
@@ -289,7 +314,10 @@ fn decode_vector_values(
                 if data.len() < offset + 8 {
                     return Err(Error::Protocol("Vector FLOAT64 data truncated".to_string()));
                 }
-                values.push(decode_binary_double(&data[offset..offset + 8]));
+                let bytes: &[u8; 8] = data[offset..offset + 8]
+                    .try_into()
+                    .map_err(|_| Error::Protocol("Vector FLOAT64 data truncated".to_string()))?;
+                values.push(decode_binary_double(bytes));
             }
             Ok(VectorData::Float64(values))
         }

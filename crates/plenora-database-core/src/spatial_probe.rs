@@ -461,16 +461,16 @@ pub const GEOMETRY_SCALAR_OPERAND: &str =
 ///
 /// # Limite dichiarato
 ///
-/// - **Regola.** Su SQL Server un valore scritto non si confronta con uno
-///   SRID di colonna ([`Admission::ValueCarriesFrame`]).
-/// - **Ambito.** `INSERT`/`UPDATE` del compilatore portable verso SQL Server
-///   (mutazioni relazionali dello SDK, facade).
-/// - **Hazard.** Una colonna che il chiamante usa in un solo sistema puo
-///   ricevere un valore in un altro: le letture del provider la rifiutano poi
-///   (`SRID misti`), ma un `SELECT` compilato senza provider non lo vede.
-/// - **Rientro.** Un vincolo `CHECK (col.STSrid = n)` letto dal catalogo, o
-///   la lettura degli SRID della colonna prima della scrittura come fa il
-///   path query.
+/// Senza prova di catalogo, Oracle, Db2 e MariaDB rifiutano scritture spatial
+/// e predicati; SQL Server rifiuta i predicati. Mapping, SRID e indice non
+/// provano il vincolo. Hazard: rifiuto di operazioni conformi. Rientro: verifica
+/// di catalogo prima della compilazione o guardia qualificata live.
+/// Registro SDK: `contracts/adoption-source.json` (GEO-000).
+/// SQL Server: `INSERT`/`UPDATE` portable (SDK, facade) ammette invece
+/// [`Admission::ValueCarriesFrame`] senza confronto con uno SRID di colonna.
+/// Hazard: SRID misti, rifiutati dalle letture del provider ma non rilevati
+/// da un `SELECT` compilato senza provider. Rientro: `CHECK (col.STSrid = n)`
+/// letto dal catalogo, o lettura degli SRID prima di scrivere come nel path query.
 ///
 /// # Errors
 ///

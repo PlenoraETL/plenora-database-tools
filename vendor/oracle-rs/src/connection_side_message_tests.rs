@@ -134,7 +134,7 @@ fn sync_pairs_before_completion_are_consumed_by_framing_and_parsers() {
         packet.extend_from_slice(&payload);
         assert!(conn.parse_dml_response(&packet, &caps).is_ok());
         assert!(conn.parse_batch_response(&packet, 1, false, &caps).is_ok());
-        assert!(conn.parse_fetch_response(&packet, &[], &caps).is_ok());
+        assert!(conn.parse_fetch_response(&packet, &[], &caps, None).is_ok());
         assert!(conn.parse_query_response(&packet, &caps).is_ok());
         assert!(conn.parse_plsql_response(&packet, &caps, &[]).is_ok());
         for kind in [OracleType::Blob, OracleType::Clob] {

@@ -130,20 +130,20 @@ impl ProtocolMessage {
             buf.skip(num_elem * 5)?;
         }
 
-        // FDO (Format Description Object) data
+        // FDO (Format Description Object) data. Plenora fork: the national
+        // character set id is required, as in python-oracledb; a short FDO
+        // used to leave the AL16UTF16 default in place without checking.
         let fdo_length = buf.read_u16_be()? as usize;
-        if fdo_length > 0 {
-            let fdo_data = buf.read_bytes_vec(fdo_length)?;
-            // Extract ncharset_id from FDO
-            // Position: 6 + fdo[5] + fdo[6], then 3 more bytes for the actual value
-            if fdo_data.len() > 6 {
-                let offset = 6 + fdo_data[5] as usize + fdo_data[6] as usize;
-                if offset + 5 <= fdo_data.len() {
-                    caps.ncharset_id =
-                        ((fdo_data[offset + 3] as u16) << 8) | (fdo_data[offset + 4] as u16);
-                }
-            }
-        }
+        let fdo_data = buf.read_bytes_vec(fdo_length)?;
+        // Position: 6 + fdo[5] + fdo[6], then 3 more bytes for the actual value
+        let ncharset = fdo_data
+            .get(5..7)
+            .map(|lengths| 6 + usize::from(lengths[0]) + usize::from(lengths[1]))
+            .and_then(|offset| fdo_data.get(offset + 3..offset + 5))
+            .ok_or_else(|| {
+                Error::Protocol("protocol response without the national character set".into())
+            })?;
+        caps.ncharset_id = u16::from_be_bytes([ncharset[0], ncharset[1]]);
 
         // Server compile capabilities (length-prefixed)
         self.server_compile_caps = buf.read_bytes_with_length()?;
@@ -244,8 +244,10 @@ mod tests {
         // Num elements (LE)
         payload.extend_from_slice(&0u16.to_le_bytes());
 
-        // FDO length
-        payload.extend_from_slice(&0u16.to_be_bytes());
+        // FDO carrying the national character set AL16UTF16 (2000) at
+        // 6 + fdo[5] + fdo[6] + 3
+        payload.extend_from_slice(&11u16.to_be_bytes());
+        payload.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0x07, 0xD0]);
 
         // No compile caps (null indicator)
         payload.push(255);
@@ -294,8 +296,10 @@ mod tests {
         // Num elements
         payload.extend_from_slice(&0u16.to_le_bytes());
 
-        // FDO length (empty)
-        payload.extend_from_slice(&0u16.to_be_bytes());
+        // FDO carrying the national character set AL16UTF16 (2000) at
+        // 6 + fdo[5] + fdo[6] + 3
+        payload.extend_from_slice(&11u16.to_be_bytes());
+        payload.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0x07, 0xD0]);
 
         // Compile caps (length-prefixed)
         let mut compile_caps = vec![0u8; ccap_index::MAX];

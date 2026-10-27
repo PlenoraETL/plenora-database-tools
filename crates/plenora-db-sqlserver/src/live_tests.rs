@@ -288,6 +288,47 @@ impl Drop for TcpCutProxy {
     }
 }
 
+/// Le viste di sistema si risolvono da `OBJECT_ID` ma non da `sys.columns`.
+/// Prova anche i nomi non esatti e mantiene il rifiuto delle conversioni.
+async fn system_view_operands(session: &mut SqlServerSession, cancellation: &CancellationToken) {
+    use plenora_database_core::spatial_operand::OPERAND_FAMILY_MISMATCH;
+    use serde_json::json;
+
+    for (schema, object, field) in [
+        ("information_schema", "tables", "table_schema"),
+        ("sys", "objects", "NAME"),
+    ] {
+        let mut operation: QueryOperation = serde_json::from_value(json!({
+            "source": {"object": {"schema": schema, "object": object}, "alias": "t"},
+            "projection": [{"expression": {"kind": "column", "column": {
+                "relation": "t", "field": field}}, "alias": "value"}],
+            "filter": {"kind": "compare", "operator": "eq",
+                "left": {"kind": "column", "column": {"relation": "t", "field": field}},
+                "right": {"kind": "typed_parameter", "name": "p", "parameter_type": "string"}}
+        }))
+        .expect("piano della vista di sistema");
+        let text = ParameterBag::new(BTreeMap::from([(
+            "p".to_owned(),
+            ParameterValue::String("dbo".to_owned()),
+        )]));
+        crate::query::verify_scalar_operands(session, &operation, &text, cancellation)
+            .await
+            .expect("colonna di sistema risolta anche senza nome esatto");
+        if let Some(QueryExpression::Compare { right, .. }) = &mut operation.filter {
+            **right = QueryExpression::TypedParameter {
+                name: "p".to_owned(),
+                parameter_type: plenora_database_core::query::QueryParameterType::Integer,
+            };
+        }
+        let number = ParameterBag::new(BTreeMap::from([("p".to_owned(), ParameterValue::I64(1))]));
+        let error =
+            crate::query::verify_scalar_operands(session, &operation, &number, cancellation)
+                .await
+                .expect_err("la vista di sistema non esenta dal giudizio di famiglia");
+        assert_eq!(error.message, OPERAND_FAMILY_MISMATCH);
+    }
+}
+
 #[tokio::test]
 #[ignore = "richiede SQL Server live esplicito"]
 async fn live_reference_probe_and_catalog() {
@@ -299,6 +340,7 @@ async fn live_reference_probe_and_catalog() {
     .await
     .expect("open live SQL Server");
 
+    system_view_operands(&mut session, &cancellation).await;
     let probe = probe_server(&mut session, &cancellation)
         .await
         .expect("probe live");

@@ -161,14 +161,33 @@ def test_oracle_spatial_orm_crud_index_and_predicates() -> None:
         metadata.create_all(session)
         assert session.provider_capabilities["spatial"]["geometry"] is True
         assert session.provider_capabilities["spatial"]["geography"] is True
-        with p.OrmSession(session) as orm:
-            orm.add(OracleSpatialRecord(ID=1, SHAPE=point))
-        with p.OrmSession(session) as orm:
-            loaded = orm.get(OracleSpatialRecord, 1)
-            assert loaded is not None
-            assert loaded.SHAPE.srid == 4326
-            assert loaded.SHAPE.dimensions == "xy"
-            loaded.SHAPE = moved
+        # Il mapping e USER_SDO_GEOM_METADATA non sono una prova del vincolo
+        # SRID. Il compilatore non legge il catalogo: INSERT/UPDATE restano
+        # chiusi finche una guardia qualificata non fornisce quella prova.
+        with pytest.raises(p.PlenoraUnsupportedError, match="senza verifica dello SRID"):
+            with p.OrmSession(session) as orm:
+                orm.add(OracleSpatialRecord(ID=1, SHAPE=point))
+        assert session.execute_scalar(
+            'SELECT COUNT(*) FROM "PLENORA_PY_ORACLE_SPATIAL_ORM"'
+        ) == 0
+        # Fixture nativo esplicito per continuare a provare lettura e DELETE
+        # ORM, che non scrivono valori geometrici ne confrontano geometrie.
+        session.execute_sql(
+            'INSERT INTO "PLENORA_PY_ORACLE_SPATIAL_ORM" ("ID", "SHAPE") VALUES '
+            '(1, MDSYS.SDO_GEOMETRY(2001, 4326, '
+            'MDSYS.SDO_POINT_TYPE(12.5, 41.9, NULL), NULL, NULL))'
+        )
+        with pytest.raises(p.PlenoraUnsupportedError, match="senza verifica dello SRID"):
+            with p.OrmSession(session) as orm:
+                loaded = orm.get(OracleSpatialRecord, 1)
+                assert loaded is not None
+                assert loaded.SHAPE.srid == 4326
+                assert loaded.SHAPE.dimensions == "xy"
+                loaded.SHAPE = moved
+        # NUMBER frazionario -> Decimal -> str: preserva il decimale esatto.
+        assert session.execute_scalar(
+            'SELECT t."SHAPE".SDO_POINT.X FROM "PLENORA_PY_ORACLE_SPATIAL_ORM" t'
+        ) == "12.5"
 
         intersects = geometry.predicate(
             "intersects", OracleSpatialRecord.SHAPE, geometry.bind("reference")
@@ -179,19 +198,16 @@ def test_oracle_spatial_orm_crud_index_and_predicates() -> None:
             geometry.bind("reference"),
             p.bind("distance", p.BindType.FLOAT),
         )
+        for predicate, parameters in (
+            (intersects, {"reference": moved}),
+            (within, {"reference": moved, "distance": 1.0}),
+        ):
+            with pytest.raises(p.PlenoraUnsupportedError, match="non verifica lo SRID"):
+                with p.OrmSession(session) as orm:
+                    orm.query(OracleSpatialRecord).where(predicate).all(parameters)
         with p.OrmSession(session) as orm:
-            [loaded] = (
-                orm.query(OracleSpatialRecord)
-                .where(intersects)
-                .all({"reference": moved})
-            )
-            assert loaded.SHAPE.srid == 4326
-            [nearby] = (
-                orm.query(OracleSpatialRecord)
-                .where(within)
-                .all({"reference": moved, "distance": 1.0})
-            )
-            assert nearby.ID == 1
+            loaded = orm.get(OracleSpatialRecord, 1)
+            assert loaded is not None
             orm.delete(loaded)
         assert session.execute_scalar(
             'SELECT COUNT(*) FROM "PLENORA_PY_ORACLE_SPATIAL_ORM"'
@@ -257,5 +273,61 @@ def test_oracle_generated_identity_defaults_and_timestamptz_bind() -> None:
     finally:
         try:
             _drop_probe(session, OracleGeneratedEvent.__tablename__)
+        finally:
+            session.close()
+
+
+# Decimali in (-1, 1) con zeri dopo il punto pari e dispari: il ramo che il
+# codec NUMBER del driver salvava per dieci volte se stesso (0.05 come .5).
+_NUMBER_PROBES = ("0.05", "0.5", "-0.05", "-0.5", "0.0005", "0.005", "0.07", "1.5", "1E-130")
+
+
+def test_oracle_decimal_binds_and_reads_are_exact() -> None:
+    from decimal import Decimal
+
+    session = connect_oracle_reference()
+    name = "PLENORA_PY_ORACLE_NUMBER"
+    try:
+        _drop_probe(session, name)
+        session.execute_ddl(
+            f'CREATE TABLE "{name}" ("ID" NUMBER(10) PRIMARY KEY, "D" NUMBER)'
+        )
+        for identity, text in enumerate(_NUMBER_PROBES, start=1):
+            session.execute_sql(
+                f'INSERT INTO "{name}" ("ID", "D") VALUES (:1, :2)',
+                [identity, p.decimal(text)],
+            )
+        for identity, text in enumerate(_NUMBER_PROBES, start=1):
+            # Il server, senza il decoder del driver.
+            server = session.execute_scalar(
+                f"SELECT TO_CHAR(\"D\", 'TM9') FROM \"{name}\" WHERE \"ID\" = :1",
+                [identity],
+            )
+            assert Decimal(server) == Decimal(text), (text, server)
+            # Uguaglianza con il valore legato: esattamente la propria riga.
+            assert session.execute_scalar(
+                f'SELECT COUNT(*) FROM "{name}" WHERE "D" = :1',
+                [p.decimal(text)],
+            ) == 1, text
+            # Il decoder del driver.
+            read = session.execute_scalar(
+                f'SELECT "D" FROM "{name}" WHERE "ID" = :1', [identity]
+            )
+            assert Decimal(str(read)) == Decimal(text), (text, read)
+    finally:
+        try:
+            _drop_probe(session, name)
+        finally:
+            session.close()
+    # -infinito e +infinito non sono decimali: la lettura fallisce, non rende
+    # "" o 1e126. Una sessione per lettura: l'errore la chiude.
+    for raw in ("00", "FF65"):
+        session = connect_oracle_reference()
+        try:
+            with pytest.raises(p.PlenoraDataMappingError) as raised:
+                session.execute_scalar(
+                    f"SELECT UTL_RAW.CAST_TO_NUMBER(HEXTORAW('{raw}')) FROM DUAL"
+                )
+            assert raised.value.category == "data_mapping"
         finally:
             session.close()

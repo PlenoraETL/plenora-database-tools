@@ -6,6 +6,55 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## 8.0.2 — 2026-10-26
+
+Patch: due correzioni nel driver Oracle vendorizzato, nessun cambiamento di
+contratto.
+
+### Correzioni
+
+- **NUMBER in (-1, 1) salvato per dieci volte se stesso** (#136): in
+  `vendor/oracle-rs/src/types/number.rs`, `decimal_point_index % 2 == 1` per
+  allineare la coppia in base 100 usava il modulo con segno di Rust, mentre
+  python-oracledb (da cui il codice è portato) non lo ha mai negativo. Ogni
+  decimale in (-1, 1) con un numero dispari di zeri dopo la virgola saltava
+  l'allineamento e arrivava al server moltiplicato per dieci, senza errore
+  (0.05 salvato come `.5`, -0.05 come `-.5`, 1e-130 come 1e-129); un
+  confronto `WHERE D = :1` con 0.05 trovava la riga 0.5. Difetto silenzioso
+  presente su ogni rilascio con provider Oracle da 3.1.0 a 8.0.1. La fix usa
+  `rem_euclid`/`div_euclid` ed è accompagnata dall'audit dell'intero codec
+  NUMBER: lettura degli infiniti (`±∞`) e di byte fuori dominio, prima
+  accettati come valori finiti o come `0`, ora rifiutati con `data_mapping`;
+  `FLOAT(b)`, BINARY_DOUBLE e BINARY_FLOAT in lettura non passano più da
+  `CAST(... AS NUMBER)` (azzerava |x| < 1e-130) e un valore è reso come f64
+  solo se ricostruibile esattamente, altrimenti `data_mapping`; -0.0 è
+  rifiutato su ogni percorso di bind e di lettura, compreso dentro un
+  documento JSON legato (Oracle non conserva -0.0 in nessun tipo). Il
+  parsing dei numeri in JSON (contratti, letterali CLI, parametri `json`,
+  piani, payload) era inoltre impreciso perché `serde_json` compilava senza
+  la feature `float_roundtrip`: il parser veloce non arrotondava
+  correttamente circa un numero su quattro; la feature è ora attiva nel
+  workspace e nel fuzz.
+- **Ogni codec del driver Oracle vendorizzato esatto o rifiutato** (#137):
+  audit completo di `vendor/oracle-rs` con la stessa regola del NUMBER.
+  Corretti, fra gli altri: colonne duplicate fra pagine di fetch tornate
+  NULL; anno della data con `as u8` (anni fuori 1..=9999 in panic o
+  troncati) e calendario giuliano/gregoriano di Oracle non riprodotto, ora
+  validato e rifiutato prima del 1582-10-15; frazioni di timestamp oltre il
+  microsecondo troncate in silenzio, incluso timestamptz; encoder OSON con
+  lunghezza del nome, conteggio chiavi e id di campo troncati `as u8`
+  (chiave di 300 byte diventava di 44); BINARY_DOUBLE/BINARY_FLOAT NaN e
+  ±Inf dentro OSON resi come JSON `null`; JSON SQL NULL letto come stringa
+  `"null"` invece di `Value::Null`; offset del CLOB in code point invece di
+  unità UTF-16 con caratteri fuori BMP; tipo di colonna ignoto descritto
+  come VARCHAR2; interi TTC con segno letto come positivo. BINARY_FLOAT
+  dentro OSON rende ora il valore f32 conservato allargato a f64 — non la
+  resa più corta né quella esatta di `JSON_SERIALIZE` — con la deviazione
+  dichiarata nell'intestazione di `oson.rs` (regola, ambito, hazard,
+  rientro). Restano fuori da questa correzione, trovati e non corretti: il
+  fork non chiude i cursori sul server (ORA-01000 dopo circa 300 istruzioni
+  sulla stessa connessione), classe diversa da una PR a parte.
+
 ## 8.0.1 — 2026-10-21
 
 Patch: quattro correzioni, nessun cambiamento di contratto.
