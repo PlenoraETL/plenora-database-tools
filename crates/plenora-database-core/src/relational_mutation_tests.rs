@@ -290,3 +290,55 @@ fn a_mutation_with_a_null_filter_touches_every_row() {
         }
     }
 }
+
+/// Regola T (quattordicesima lettura del 25/10): un parametro tipizzato nel
+/// predicato si rende come lo rende il renderer delle query
+/// (`CastDialect::render`), in ogni dialetto; un valore scritto resta il solo
+/// segnaposto. Prima il predicato rendeva il segnaposto nudo, e su `MySQL`
+/// `name = ?` con un intero confrontava `'1'`, `'01'`, `'1.0'`.
+#[test]
+fn typed_parameters_in_predicates_render_the_query_form() {
+    use crate::relational::QueryParameterType;
+    use crate::typed_parameter::CastDialect;
+    let typed = |name: &str, parameter_type| QueryExpression::TypedParameter {
+        name: name.to_owned(),
+        parameter_type,
+    };
+    let operation = MutationOperation::Update(UpdateOperation {
+        target: target(),
+        assignments: vec![MutationAssignment {
+            column: "name".to_owned(),
+            value: typed("new", QueryParameterType::String),
+        }],
+        filter: Some(QueryExpression::Compare {
+            left: Box::new(column("name")),
+            operator: ComparisonOperator::Eq,
+            right: Box::new(typed("old", QueryParameterType::String)),
+        }),
+        returning: Vec::new(),
+    });
+    for (provider, placeholders) in [
+        (ProviderKind::Postgres, ["$1", "$2"]),
+        (ProviderKind::Mysql, ["?", "?"]),
+        (ProviderKind::Mariadb, ["?", "?"]),
+        (ProviderKind::Sqlserver, ["@P1", "@P2"]),
+        (ProviderKind::Oracle, [":1", ":2"]),
+        (ProviderKind::Db2, ["?", "?"]),
+    ] {
+        let lowered = compile_relational_mutation(provider, &operation).expect("update");
+        assert_eq!(lowered.bind_names, ["new", "old"], "{provider:?}");
+        let cast = CastDialect::of(provider).render(placeholders[1], QueryParameterType::String);
+        assert!(
+            lowered.sql.ends_with(&format!(" = {cast}")),
+            "{provider:?}: {}",
+            lowered.sql
+        );
+        assert!(
+            lowered
+                .sql
+                .contains(&format!(" = {} WHERE", placeholders[0])),
+            "{provider:?}: {}",
+            lowered.sql
+        );
+    }
+}

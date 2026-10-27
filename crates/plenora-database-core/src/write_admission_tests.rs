@@ -50,9 +50,9 @@ fn una_coppia_o_una_major_non_misurate_si_rifiutano_senza_dati() {
         key("float64", "BINARY_FLOAT", None),
         key("float64", "BINARY_DOUBLE", Some(4)),
     ] {
-        let error = server
-            .admit(&unmeasured, TargetDimensions::default())
-            .expect_err("non misurata");
+        let error =
+            crate::admission_gate::write_column(&server, &unmeasured, TargetDimensions::default())
+                .expect_err("non misurata");
         assert_eq!(error.category, ErrorCategory::Unsupported);
         assert_eq!(error.phase, ErrorPhase::Prepare);
         assert_eq!(error.message, UNPROVEN_PAIR);

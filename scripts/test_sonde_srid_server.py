@@ -100,6 +100,43 @@ class TabellaDelleGuardie(unittest.TestCase):
             for sonda in definizione.sonde:
                 self.assertIn(sonda.atteso[0], {"errore", "righe", "ok"}, sonda.nome)
                 self.assertIn(sonda.prova, {"guardia", "senza-guardia", "controllo", "catalogo"})
+                for _, atteso, prova in sonda.da_versione:
+                    self.assertIn(atteso[0], {"errore", "righe", "ok"}, sonda.nome)
+                    # Un fatto di versione non fa di un prodotto senza
+                    # guardia un prodotto con la guardia.
+                    self.assertIn(prova, {"guardia-parziale", "senza-guardia", "controllo",
+                                          "catalogo"}, sonda.nome)
+
+
+class DaVersione(unittest.TestCase):
+    """L'atteso che cambia con la versione misurata del server."""
+
+    @staticmethod
+    def mbr_mariadb() -> sonde.Sonda:
+        return next(sonda for sonda in sonde.SERVER["mariadb"].sonde
+                    if sonda.nome == "MBRIntersects, sonda 3857")
+
+    def test_mariadb_12_3_confronta_gli_srid_in_mbrintersects(self) -> None:
+        sonda = self.mbr_mariadb()
+        self.assertEqual(sonda.attesa((12, 3, 2)), (("errore", {"3033"}), "guardia-parziale"))
+        self.assertEqual(sonda.attesa((11, 8, 8)), (("righe", 1), "senza-guardia"))
+        self.assertEqual(sonda.attesa((10, 11, 19)), (("righe", 1), "senza-guardia"))
+        # Senza versione misurata vale l'atteso scritto: il gate e rosso su
+        # 12.3, non verde per una versione che non ha letto.
+        self.assertEqual(sonda.attesa(None), (("righe", 1), "senza-guardia"))
+
+    def test_la_versione_si_legge_dalle_prime_cifre(self) -> None:
+        class Finto:
+            def __init__(self, uscita: str) -> None:
+                self.uscita = uscita
+
+            def exec(self, argv, timeout=120):  # noqa: ARG002 - firma di Docker.exec
+                return completato(0, self.uscita)
+
+        self.assertEqual(sonde.versione(Finto("12.3.2-MariaDB-ubu2404\n"), "mariadb"),
+                         (12, 3, 2))
+        self.assertIsNone(sonde.versione(Finto("senza cifre\n"), "mariadb"))
+        self.assertIsNone(sonde.versione(Finto("16.4\n"), "postgres"))
 
 
 if __name__ == "__main__":

@@ -150,11 +150,15 @@ async fn value_from_driver(
         Value::Float(value) if value.is_finite() => Ok(ParameterValue::F64(value)),
         Value::Float(_) => Err(mapping_error(phase, "risultato float Oracle non finito")),
         Value::Number(value) => Ok(decode_number(value.as_str().to_owned(), number_scale)),
-        Value::Date(value) => Ok(ParameterValue::Timestamp(format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-            value.year, value.month, value.day, value.hour, value.minute, value.second
-        ))),
+        Value::Date(value) => {
+            require_gregorian(value.year, value.month, value.day, phase)?;
+            Ok(ParameterValue::Timestamp(format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+                value.year, value.month, value.day, value.hour, value.minute, value.second
+            )))
+        }
         Value::Timestamp(value) if oracle_type == OracleType::TimestampTz => {
+            require_gregorian(value.year, value.month, value.day, phase)?;
             decode_timestamp_tz(value, phase).map(ParameterValue::TimestampTz)
         }
         Value::Timestamp(_) if oracle_type == OracleType::TimestampLtz => {
@@ -164,22 +168,24 @@ async fn value_from_driver(
                 "TIMESTAMP WITH LOCAL TIME ZONE Oracle non qualificato",
             ))
         }
-        Value::Timestamp(value) => Ok(ParameterValue::Timestamp(format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}",
-            value.year,
-            value.month,
-            value.day,
-            value.hour,
-            value.minute,
-            value.second,
-            value.microsecond
-        ))),
-        Value::RowId(value) => Ok(value.to_string().map_or_else(
-            || ParameterValue::Null {
-                type_name: oracle_type_name(oracle_type).to_owned(),
-            },
-            ParameterValue::String,
-        )),
+        Value::Timestamp(value) => {
+            require_gregorian(value.year, value.month, value.day, phase)?;
+            Ok(ParameterValue::Timestamp(format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}",
+                value.year,
+                value.month,
+                value.day,
+                value.hour,
+                value.minute,
+                value.second,
+                value.microsecond
+            )))
+        }
+        // Un ROWID che non si rende in testo e un errore: diventava NULL.
+        Value::RowId(value) => value
+            .to_string()
+            .map(ParameterValue::String)
+            .ok_or_else(|| mapping_error(phase, "ROWID Oracle non rappresentabile")),
         Value::Boolean(value) => Ok(ParameterValue::Bool(value)),
         Value::Json(value) => Ok(ParameterValue::Json(value)),
         Value::Lob(value) => {
@@ -203,6 +209,31 @@ async fn value_from_driver(
             ))
         }
     }
+}
+
+/// Limite dichiarato: date Oracle prima del 1582-10-15.
+///
+/// - Regola: una data o un timestamp si scambia con Oracle soltanto dal
+///   1582-10-15 (primo giorno gregoriano) in poi.
+/// - Ambito: parametri `date`/`timestamp` legati dal provider e valori
+///   `DATE`/`TIMESTAMP`/`TIMESTAMP WITH TIME ZONE` letti.
+/// - Hazard: Oracle conta i giorni con il calendario giuliano fino al
+///   1582-10-04 e numera gli anni senza lo zero (-1 e l'1 a.C.); chrono, e con
+///   lui Arrow, usa il gregoriano prolettico con l'anno astronomico. Prima del
+///   1582-10-15 la stessa etichetta anno-mese-giorno e un altro giorno nei due
+///   calendari. Fino alla 8.0.1 passava etichetta per etichetta (un altro
+///   giorno, in silenzio) e un anno negativo mandava in panic il driver.
+/// - Rientro: una conversione esatta fra i due calendari (giorno giuliano),
+///   provata con `TO_CHAR(D, 'J')`, e la scelta del titolare fra semantica
+///   dell'etichetta e dell'istante.
+pub fn require_gregorian(year: i32, month: u8, day: u8, phase: ErrorPhase) -> Result<()> {
+    if (year, month, day) < (1582, 10, 15) {
+        return Err(mapping_error(
+            phase,
+            "data Oracle prima del 1582-10-15: calendario giuliano, non rappresentabile esatta",
+        ));
+    }
+    Ok(())
 }
 
 fn decode_timestamp_tz(

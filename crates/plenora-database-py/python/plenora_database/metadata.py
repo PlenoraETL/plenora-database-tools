@@ -275,6 +275,9 @@ def _table(raw: Any) -> Table:
     )
     for column, (_, metadata) in zip(table.columns, reflected_columns, strict=True):
         object.__setattr__(column, "metadata", metadata)
+        # Una colonna spatial riflessa e geometrica per la compilazione: sotto
+        # un operatore non spatial si rifiuta (`expression._geometry_columns`).
+        object.__setattr__(column, "_geometry", metadata.spatial is not None)
     object.__setattr__(
         table,
         "metadata",

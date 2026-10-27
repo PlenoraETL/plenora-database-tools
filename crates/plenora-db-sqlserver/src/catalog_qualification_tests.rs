@@ -40,6 +40,7 @@ fn sources(directory: &Path, out: &mut Vec<std::path::PathBuf>) {
 fn qualified(name: &str) -> bool {
     let first = name.chars().next().unwrap_or(' ');
     name.starts_with("sys.")
+        || name.starts_with("tempdb.sys.")
         || name.starts_with("INFORMATION_SCHEMA.")
         || matches!(first, '@' | '#' | '{' | '[' | '(' | '"')
         || LOCAL_NAMES.contains(&name)
@@ -83,6 +84,9 @@ fn la_guardia_riconosce_un_nome_senza_schema() {
     assert!(!qualified("objects"));
     assert!(!qualified("dbo.objects"));
     assert!(qualified("sys.objects"));
+    assert!(qualified("tempdb.sys.all_columns"));
+    assert!(!qualified("tempdb.objects"));
+    assert!(!qualified("tempdb.dbo.objects"));
     assert!(qualified("INFORMATION_SCHEMA.COLUMNS"));
     assert!(qualified("{quoted_object}"));
     assert!(qualified("target"));

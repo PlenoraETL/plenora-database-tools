@@ -18,9 +18,18 @@ def geometry_wkb(ewkb: bytes) -> bytes: ...
 
 def validate_ewkb_reference(ewkb: bytes, srid: int, dimensions: str) -> None: ...
 
-def compile_relational_query(ast_json: str, provider_name: str) -> tuple[str, list[str]]: ...
+# Compilazione senza esecuzione: non legge il catalogo. Lo SQL reso non ha il
+# giudizio degli operandi geometrici sulle colonne del provider, che fa
+# soltanto l'esecuzione (`relational=` di `execute`/`execute_returning_rows`).
+def compile_relational_query(
+    ast_json: str,
+    provider_name: str,
+    geometry_columns: list[tuple[str | None, str, str]] | None = None,
+) -> tuple[str, list[str]]: ...
 def compile_relational_mutation(
-    ast_json: str, provider_name: str
+    ast_json: str,
+    provider_name: str,
+    geometry_columns: list[tuple[str | None, str, str]] | None = None,
 ) -> tuple[str, list[str], bool]: ...
 
 def create_engine(
@@ -251,10 +260,20 @@ class DatabaseSession:
     def __enter__(self) -> DatabaseSession: ...
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool: ...
     def __repr__(self) -> str: ...
-    def execute(self, sql: str, params: list | None = None) -> int: ...
+    def execute(
+        self,
+        sql: str,
+        params: list | None = None,
+        *,
+        relational: tuple[str, str] | None = None,
+    ) -> int: ...
     def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
     def execute_returning_rows(
-        self, sql: str, params: list | None = None
+        self,
+        sql: str,
+        params: list | None = None,
+        *,
+        relational: tuple[str, str] | None = None,
     ) -> list[dict]: ...
     def execute_ddl(self, sql: str) -> None: ...
     def inspect_catalogs(self) -> list[str]: ...
@@ -311,10 +330,20 @@ class AsyncDatabaseSession:
         self, exc_type: object, exc_value: object, traceback: object
     ) -> Any: ...  # awaitable → bool
     def __repr__(self) -> str: ...
-    def execute(self, sql: str, params: list | None = None) -> Any: ...  # awaitable → int
+    def execute(
+        self,
+        sql: str,
+        params: list | None = None,
+        *,
+        relational: tuple[str, str] | None = None,
+    ) -> Any: ...  # awaitable → int
     def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...  # awaitable → Any
     def execute_returning_rows(
-        self, sql: str, params: list | None = None
+        self,
+        sql: str,
+        params: list | None = None,
+        *,
+        relational: tuple[str, str] | None = None,
     ) -> Any: ...  # awaitable → list[dict]
     def execute_ddl(self, sql: str) -> Any: ...  # awaitable → None
     def inspect_catalogs(self) -> Any: ...  # awaitable → list[str]
@@ -379,10 +408,20 @@ class Session:
     def __enter__(self) -> Session: ...
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool: ...
     def __repr__(self) -> str: ...
-    def execute(self, sql: str, params: list | None = None) -> int: ...
+    def execute(
+        self,
+        sql: str,
+        params: list | None = None,
+        *,
+        relational: tuple[str, str] | None = None,
+    ) -> int: ...
     def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
     def execute_returning_rows(
-        self, sql: str, params: list | None = None
+        self,
+        sql: str,
+        params: list | None = None,
+        *,
+        relational: tuple[str, str] | None = None,
     ) -> list[dict]: ...
     def execute_ddl(self, sql: str) -> None: ...
     def cypher(
@@ -438,10 +477,20 @@ class Session:
 class Transaction:
     @property
     def is_active(self) -> bool: ...
-    def execute(self, sql: str, params: list | None = None) -> int: ...
+    def execute(
+        self,
+        sql: str,
+        params: list | None = None,
+        *,
+        relational: tuple[str, str] | None = None,
+    ) -> int: ...
     def execute_scalar(self, sql: str, params: list | None = None) -> Any: ...
     def execute_returning_rows(
-        self, sql: str, params: list | None = None
+        self,
+        sql: str,
+        params: list | None = None,
+        *,
+        relational: tuple[str, str] | None = None,
     ) -> list[dict]: ...
     def execute_portable_rows(self, ast_json: str) -> list[dict]: ...
     def execute_portable_count(self, ast_json: str) -> int: ...
@@ -507,12 +556,22 @@ class AsyncSession:
         self, exc_type: object, exc_value: object, traceback: object
     ) -> Any: ...  # awaitable → bool
     def __repr__(self) -> str: ...
-    def execute(self, sql: str, params: list | None = None) -> Any: ...  # awaitable → int
+    def execute(
+        self,
+        sql: str,
+        params: list | None = None,
+        *,
+        relational: tuple[str, str] | None = None,
+    ) -> Any: ...  # awaitable → int
     def execute_scalar(
         self, sql: str, params: list | None = None
     ) -> Any: ...  # awaitable → Any
     def execute_returning_rows(
-        self, sql: str, params: list | None = None
+        self,
+        sql: str,
+        params: list | None = None,
+        *,
+        relational: tuple[str, str] | None = None,
     ) -> Any: ...  # awaitable → list[dict]
     def execute_ddl(self, sql: str) -> Any: ...  # awaitable → None
     def inspect_catalogs(self) -> Any: ...  # awaitable → list[str]
@@ -611,12 +670,22 @@ class AsyncTransaction:
     ) -> Any: ...
     @property
     def is_active(self) -> Any: ...  # awaitable → bool (nota: lock async)
-    def execute(self, sql: str, params: list | None = None) -> Any: ...  # awaitable → int
+    def execute(
+        self,
+        sql: str,
+        params: list | None = None,
+        *,
+        relational: tuple[str, str] | None = None,
+    ) -> Any: ...  # awaitable → int
     def execute_scalar(
         self, sql: str, params: list | None = None
     ) -> Any: ...  # awaitable → Any
     def execute_returning_rows(
-        self, sql: str, params: list | None = None
+        self,
+        sql: str,
+        params: list | None = None,
+        *,
+        relational: tuple[str, str] | None = None,
     ) -> Any: ...  # awaitable → list[dict]
     def execute_portable_rows(self, ast_json: str) -> Any: ...  # awaitable → list[dict]
     def execute_portable_count(self, ast_json: str) -> Any: ...  # awaitable → int

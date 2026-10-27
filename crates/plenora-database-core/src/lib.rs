@@ -2,9 +2,11 @@
 //!
 //! Questo crate non contiene client, pool, runtime async o dialect SQL.
 
+pub mod admission_gate;
 pub mod caller_sql;
 pub mod cancellation;
 pub mod capabilities;
+pub mod cast_table;
 pub mod checkpoint;
 pub mod conformance;
 pub mod crs_definition;
@@ -24,7 +26,9 @@ pub mod limits;
 pub mod loss;
 pub mod metrics_recorder;
 pub mod native_query_policy;
+pub mod operand_admission;
 pub mod outcome;
+pub mod parameter_fidelity;
 pub mod plan;
 pub mod portable;
 pub mod primary_key;
@@ -40,12 +44,14 @@ pub mod row_diagnostics;
 pub mod row_visibility;
 pub mod session_context;
 pub mod spatial_catalog;
+pub mod spatial_operand;
 pub mod spatial_policy;
 pub mod spatial_predicate;
 pub mod spatial_probe;
 pub mod store_rewrite;
 pub mod strict_json;
 pub mod transaction;
+pub mod typed_parameter;
 pub mod write_admission;
 pub mod write_keys;
 

@@ -173,6 +173,23 @@ impl TransactionScope for CallerSqlTransaction {
         })
     }
 
+    fn operand_catalog<'a>(
+        &'a mut self,
+        relations: &'a [(Option<String>, String)],
+        names: &'a [String],
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, crate::spatial_operand::OperandCatalog> {
+        self.inner.operand_catalog(relations, names, cancellation)
+    }
+
+    fn column_types<'a>(
+        &'a mut self,
+        relation: &'a (Option<String>, String),
+        cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<crate::operand_admission::RelationTypes>> {
+        self.inner.column_types(relation, cancellation)
+    }
+
     fn savepoint<'a>(
         &'a mut self,
         name: &'a str,

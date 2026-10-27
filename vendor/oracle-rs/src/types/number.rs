@@ -13,6 +13,9 @@ use crate::error::{Error, Result};
 /// Maximum number of digits in an Oracle NUMBER
 const MAX_DIGITS: usize = 40;
 
+/// Maximum number of base-100 mantissa bytes in an Oracle NUMBER
+const MAX_MANTISSA_BYTES: usize = 20;
+
 /// Maximum characters in a number string representation
 const MAX_STRING_CHARS: usize = 172;
 
@@ -91,17 +94,19 @@ pub fn decode_oracle_number(data: &[u8]) -> Result<OracleNumber> {
 
     let mut decimal_point_index = (exponent * 2 + 2) as i32;
 
-    // Special case: single byte means zero (positive) or -1e126 (negative)
+    // Special case: a single byte is zero (0x80) or -infinity (0x00).
+    //
+    // Plenora fork: upstream returned -infinity as an empty value flagged
+    // `is_max_negative`, which callers reading `value` saw as "" and then as
+    // 0. Infinity is not a decimal number, and any other single byte is not an
+    // Oracle NUMBER: both are refused.
     if data.len() == 1 {
-        if is_positive {
+        if exponent_byte == 128 {
             return Ok(OracleNumber::new("0"));
-        } else {
-            return Ok(OracleNumber {
-                value: String::new(),
-                is_integer: false,
-                is_max_negative: true,
-            });
         }
+        return Err(Error::DataConversionError(
+            "Oracle NUMBER infinity or invalid single byte".to_string(),
+        ));
     }
 
     // Check for trailing 102 byte in negative numbers
@@ -111,14 +116,33 @@ pub fn decode_oracle_number(data: &[u8]) -> Result<OracleNumber> {
         data.len() - 1
     };
 
+    // Plenora fork: a negative value made only of the exponent and the 102
+    // terminator, or a mantissa longer than 20 base-100 digits, is not an
+    // Oracle NUMBER. Decoding it would print "0" or digits Oracle never
+    // stored, so it is refused.
+    if mantissa_len == 0 || mantissa_len > MAX_MANTISSA_BYTES {
+        return Err(Error::DataConversionError(
+            "Invalid Oracle NUMBER mantissa length".to_string(),
+        ));
+    }
+
     // Decode mantissa digits
     let mut digits = Vec::with_capacity(MAX_DIGITS);
     for i in 0..mantissa_len {
         let byte = data[i + 1];
-        let value = if is_positive {
-            byte.wrapping_sub(1)
-        } else {
-            101u8.wrapping_sub(byte)
+        // Plenora fork: a base-100 digit is 0..=99, stored as 1..=100 when
+        // positive and 2..=101 when negative. Upstream also took the value
+        // 100 (positive 101, negative 1) as an "overflow" digit: that is how
+        // +infinity ([255, 101]) decoded to a finite 1e126 and [193, 2, 101]
+        // to 11. Any other byte used to wrap around and print a non-digit.
+        let value = match (is_positive, byte) {
+            (true, 1..=100) => byte - 1,
+            (false, 2..=101) => 101 - byte,
+            _ => {
+                return Err(Error::DataConversionError(
+                    "Invalid Oracle NUMBER mantissa byte".to_string(),
+                ))
+            }
         };
 
         // First digit of the pair
@@ -126,11 +150,6 @@ pub fn decode_oracle_number(data: &[u8]) -> Result<OracleNumber> {
         // Handle leading zeros
         if digit1 == 0 && digits.is_empty() {
             decimal_point_index -= 1;
-        } else if digit1 == 10 {
-            // Overflow case
-            digits.push(1);
-            digits.push(0);
-            decimal_point_index += 1;
         } else if digit1 != 0 || !digits.is_empty() {
             digits.push(digit1);
         }
@@ -195,6 +214,55 @@ pub fn decode_oracle_number(data: &[u8]) -> Result<OracleNumber> {
     })
 }
 
+/// Plenora fork: true when two decimal texts (plain or with an exponent)
+/// denote the same value. Used to refuse a lossy `f64` instead of returning
+/// it as if it were the stored NUMBER.
+pub(crate) fn same_decimal_value(left: &str, right: &str) -> bool {
+    match (canonical_decimal(left), canonical_decimal(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Sign, significant digits and the decimal exponent of their first digit;
+/// zero is `(false, [], 0)`. `None` for text that is not a finite decimal.
+fn canonical_decimal(text: &str) -> Option<(bool, Vec<u8>, i64)> {
+    let (negative, unsigned) = match text.as_bytes().first()? {
+        b'-' => (true, &text[1..]),
+        b'+' => (false, &text[1..]),
+        _ => (false, text),
+    };
+    let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
+        Some(index) => (
+            &unsigned[..index],
+            unsigned[index + 1..].parse::<i64>().ok()?,
+        ),
+        None => (unsigned, 0),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if whole.is_empty() && fraction.is_empty() {
+        return None;
+    }
+    let mut digits = Vec::with_capacity(whole.len() + fraction.len());
+    for byte in whole.bytes().chain(fraction.bytes()) {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        digits.push(byte - b'0');
+    }
+    let mut point = i64::try_from(whole.len()).ok()?.checked_add(exponent)?;
+    let leading = digits.iter().take_while(|digit| **digit == 0).count();
+    digits.drain(..leading);
+    point -= i64::try_from(leading).ok()?;
+    while digits.last() == Some(&0) {
+        digits.pop();
+    }
+    if digits.is_empty() {
+        return Some((false, digits, 0));
+    }
+    Some((negative, digits, point))
+}
+
 /// Encode a number string to Oracle NUMBER wire format
 pub fn encode_oracle_number(value: &str) -> Result<Vec<u8>> {
     let value = value.trim();
@@ -216,13 +284,18 @@ pub fn encode_oracle_number(value: &str) -> Result<Vec<u8>> {
 
     // Check for negative sign
     let is_negative = bytes.first() == Some(&b'-');
-    if is_negative {
+    // Plenora fork: an explicit '+' is accepted, as the decimal validation of
+    // the Oracle provider already does.
+    if is_negative || bytes.first() == Some(&b'+') {
         pos += 1;
     }
 
     // Parse digits before decimal point
     let mut digits = Vec::with_capacity(MAX_DIGITS);
     let mut decimal_point_index: i32;
+    // Plenora fork: count every mantissa digit, zeros included, so that "-",
+    // "." or "e5" are refused instead of being encoded as zero.
+    let mut mantissa_digits = 0_usize;
 
     while pos < bytes.len() {
         let b = bytes[pos];
@@ -239,6 +312,7 @@ pub fn encode_oracle_number(value: &str) -> Result<Vec<u8>> {
         if digit != 0 || !digits.is_empty() {
             digits.push(digit);
         }
+        mantissa_digits += 1;
         pos += 1;
     }
     decimal_point_index = digits.len() as i32;
@@ -263,8 +337,15 @@ pub fn encode_oracle_number(value: &str) -> Result<Vec<u8>> {
             } else {
                 digits.push(digit);
             }
+            mantissa_digits += 1;
             pos += 1;
         }
+    }
+
+    if mantissa_digits == 0 {
+        return Err(Error::DataConversionError(
+            "Number has no digits".to_string(),
+        ));
     }
 
     // Parse exponent
@@ -296,7 +377,24 @@ pub fn encode_oracle_number(value: &str) -> Result<Vec<u8>> {
             .parse()
             .map_err(|_| Error::DataConversionError("Invalid exponent".to_string()))?;
 
-        decimal_point_index += if exp_negative { -exp } else { exp };
+        // Plenora fork: checked, so an extreme exponent is refused instead of
+        // wrapping (release) or panicking (debug).
+        decimal_point_index = if exp_negative {
+            decimal_point_index.checked_sub(exp)
+        } else {
+            decimal_point_index.checked_add(exp)
+        }
+        .ok_or_else(|| {
+            Error::DataConversionError("Number out of range for Oracle NUMBER".to_string())
+        })?;
+    }
+
+    // Plenora fork: trailing bytes after the mantissa or the exponent
+    // ("1e5x", "1e5.3") were silently dropped.
+    if pos != bytes.len() {
+        return Err(Error::DataConversionError(
+            "Invalid character in number".to_string(),
+        ));
     }
 
     // Remove trailing zeros
@@ -316,10 +414,13 @@ pub fn encode_oracle_number(value: &str) -> Result<Vec<u8>> {
         return Ok(vec![128]);
     }
 
-    // Adjust for odd exponent. `rem_euclid`, non `%`: con un esponente
-    // negativo dispari (`0.01`, `0.000123`) `%` dava `-1` e la cifra si
-    // spostava di una posizione decimale (`0.01` si salvava come `0.1`;
-    // misurato il 25/10 dalla sonda della regola A su Oracle 23).
+    // Adjust for odd exponent.
+    //
+    // Plenora fork: python-oracledb writes `decimal_point_index % 2 == 1`,
+    // where Python's `%` is never negative. Rust's `%` keeps the sign of the
+    // dividend, so `-1 % 2 == -1` and every value in (-1, 1) with an odd
+    // number of zeros after the point skipped the alignment: 0.05 was sent as
+    // 0.5. `rem_euclid` is the Python modulo.
     let prepend_zero = decimal_point_index.rem_euclid(2) == 1;
     if prepend_zero && !digits.is_empty() {
         digits.push(0);
@@ -333,11 +434,23 @@ pub fn encode_oracle_number(value: &str) -> Result<Vec<u8>> {
 
     let num_pairs = digits.len() / 2;
 
+    // Plenora fork: 40 significant digits that are not aligned to a base-100
+    // pair need 21 mantissa bytes, which Oracle cannot store. Refused rather
+    // than sent.
+    if num_pairs > MAX_MANTISSA_BYTES {
+        return Err(Error::DataConversionError(
+            "Number has too many digits for Oracle NUMBER".to_string(),
+        ));
+    }
+
     // Build result
     let mut result = Vec::with_capacity(num_pairs + 2);
 
-    // Encode exponent
-    let exponent_on_wire = ((decimal_point_index / 2) + 192) as i8;
+    // Encode exponent. After the alignment above the index is even, so the
+    // division is exact for negative indexes as well (Rust `/` truncates
+    // toward zero, Python `//` floors: they only agree on exact quotients).
+    debug_assert_eq!(decimal_point_index.rem_euclid(2), 0);
+    let exponent_on_wire = (decimal_point_index.div_euclid(2) + 192) as i8;
     let exponent_byte = if is_negative {
         !exponent_on_wire as u8
     } else {
@@ -614,5 +727,99 @@ mod tests {
         assert_eq!(twelve34.len(), 3);
         assert_eq!(twelve34[1], 13, "First base-100 digit 12, stored as 13");
         assert_eq!(twelve34[2], 35, "Second base-100 digit 34, stored as 35");
+    }
+
+    /// Plenora fork: bytes checked against `DUMP()` on Oracle Free 23ai.
+    /// Before the fix every value with an odd count of zeros after the point
+    /// was encoded as ten times itself (0.05 as [192, 51], i.e. 0.5).
+    #[test]
+    fn plenora_fork_values_below_one_match_oracle_dump() {
+        let cases: [(&str, &[u8]); 12] = [
+            ("0.05", &[192, 6]),
+            ("-0.05", &[63, 96, 102]),
+            ("0.5", &[192, 51]),
+            ("-0.5", &[63, 51, 102]),
+            ("0.0005", &[191, 6]),
+            ("0.005", &[191, 51]),
+            ("0.07", &[192, 8]),
+            ("0.0123", &[192, 2, 24]),
+            ("1E-130", &[128, 2]),
+            ("5e-130", &[128, 6]),
+            ("-1E-130", &[127, 100, 102]),
+            ("9.9e125", &[255, 100]),
+        ];
+        for (text, expected) in cases {
+            let encoded = encode_oracle_number(text).unwrap();
+            assert_eq!(encoded, expected, "{text}");
+        }
+        assert_eq!(decode_oracle_number(&[192, 6]).unwrap().value, "0.05");
+        assert_eq!(decode_oracle_number(&[63, 96, 102]).unwrap().value, "-0.05");
+    }
+
+    #[test]
+    fn plenora_fork_malformed_text_and_bytes_are_refused() {
+        for text in [
+            "-",
+            "+",
+            ".",
+            "-.",
+            "e5",
+            "1e5x",
+            "1e5.3",
+            "1.2.3",
+            "1e2147483647",
+            "0.1e-2147483648",
+            "1e126",
+            "1e-131",
+        ] {
+            assert!(encode_oracle_number(text).is_err(), "{text}");
+        }
+        assert_eq!(
+            encode_oracle_number("+5").unwrap(),
+            encode_oracle_number("5").unwrap()
+        );
+        // 40 significant digits that do not fill whole base-100 pairs need 21
+        // mantissa bytes: refused, never sent.
+        assert!(encode_oracle_number("1.234567890123456789012345678901234567891").is_err());
+        assert!(encode_oracle_number("12.34567890123456789012345678901234567891").is_ok());
+        for bytes in [
+            &[193_u8, 0][..],
+            &[193, 102],
+            &[62, 102],
+            &[62, 0, 102],
+            // -infinity, +infinity, the old "overflow" digit anywhere.
+            &[0],
+            &[255, 101],
+            &[193, 2, 101],
+            &[193, 101],
+            &[62, 1, 102],
+            &[62, 100, 1, 102],
+            // A single byte other than zero.
+            &[129],
+            &[127],
+            &[
+                193, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+            ],
+        ] {
+            assert!(decode_oracle_number(bytes).is_err(), "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn plenora_fork_same_decimal_value_compares_by_value() {
+        assert!(same_decimal_value("0.05", "5e-2"));
+        assert!(same_decimal_value("-0.0", "0"));
+        assert!(same_decimal_value(
+            "1.2345678901234568e29",
+            "123456789012345680000000000000"
+        ));
+        assert!(!same_decimal_value(
+            "1.2345678901234568e29",
+            "123456789012345678901234567890"
+        ));
+        assert!(!same_decimal_value("0.5", "0.05"));
+        assert!(!same_decimal_value("-1", "1"));
+        assert!(!same_decimal_value("", "0"));
+        assert!(!same_decimal_value("-", "0"));
     }
 }

@@ -398,15 +398,15 @@ impl<'a> PageFraming<'a> {
                         if self.columns.is_empty() {
                             return Err(Error::Protocol("Oracle row without column layout".into()));
                         }
-                        // Qui conta solo il confine del messaggio: le colonne
-                        // ripetute si saltano con un valore segnaposto.
-                        let placeholder = vec![Value::Null; self.columns.len()];
+                        // Framing only advances over the row: a duplicate
+                        // column carries no bytes and its value is discarded.
+                        let discarded = vec![Value::Null; self.columns.len()];
                         Connection::parse_row_data_with_bitvector(
                             &mut buf,
                             &self.columns,
                             caps,
                             self.bit_vector.as_deref(),
-                            Some(&placeholder),
+                            Some(&discarded),
                         )?;
                         clear_bits = true;
                     }
@@ -593,17 +593,19 @@ impl ConnectionInner {
         }
         let attached = self.attach_close_cursors(data)?;
         let data = attached.as_deref().unwrap_or(data);
-        // Oltre l'SDU negoziata il server chiude la connessione: la richiesta
-        // DATA si divide in pacchetti, come fa python-oracledb.
+        // Plenora fork: a DATA packet longer than the negotiated SDU (an
+        // execute with binds above about 8 KB) was written as one frame and
+        // the server dropped the connection. It is sent as SDU-sized frames,
+        // the data flags on the first, as python-oracledb does.
         if data.len() > self.sdu_size as usize
-            && data.len() > PACKET_HEADER_SIZE + 2
-            && data[4] == PacketType::Data as u8
+            && data.get(4) == Some(&(PacketType::Data as u8))
+            && data.len() >= PACKET_HEADER_SIZE + 2
         {
             let flags =
                 u16::from_be_bytes([data[PACKET_HEADER_SIZE], data[PACKET_HEADER_SIZE + 1]]);
-            return self
-                .send_multi_packet(&data[PACKET_HEADER_SIZE + 2..], flags)
-                .await;
+            // Boxed: inlined, this rare path would enlarge every future that
+            // sends a packet.
+            return Box::pin(self.send_multi_packet(&data[PACKET_HEADER_SIZE + 2..], flags)).await;
         }
         // Moving the socket into the future makes both errors and cancellation fatal.
         let mut stream = self.stream.take().ok_or(Error::ConnectionClosed)?;
@@ -1261,6 +1263,11 @@ impl Connection {
                     // Update server info
                     inner.server_info.protocol_version = accept.protocol_version;
                     inner.server_info.supports_oob = accept.supports_oob;
+                    // Plenora fork: an SDU too small for a packet header and
+                    // the data flags made `send_multi_packet` underflow.
+                    if accept.sdu <= (PACKET_HEADER_SIZE + 2) as u32 {
+                        return Err(Error::Protocol("server SDU too small".to_string()));
+                    }
                     inner.sdu_size = accept.sdu;
 
                     inner.state = ConnectionState::Connected;
@@ -1345,11 +1352,15 @@ impl Connection {
         let payload = &response[PACKET_HEADER_SIZE..];
         let mut protocol_msg = ProtocolMessage::new();
         protocol_msg.parse_response(payload, &mut inner.capabilities)?;
-        // Il testo nazionale si decodifica come UTF-16 (`decode_text`): con un
-        // altro charset nazionale (`UTF8`) i byte si rileggerebbero come altri
-        // caratteri senza errore. Come python-oracledb thin (DPY-3012), la
-        // connessione si rifiuta (seconda rilettura del round 8).
-        inner.capabilities.check_ncharset_id()?;
+        // Plenora fork: NCHAR, NVARCHAR2 and NCLOB are decoded as AL16UTF16
+        // (`decode_column_text`, `parse_lob_read_response`); a database with
+        // another national character set is refused at connect time, as
+        // python-oracledb does (DPY-3012), instead of being decoded wrongly.
+        if inner.capabilities.ncharset_id != crate::constants::charset::UTF16 {
+            return Err(Error::FeatureNotSupported(
+                "national character set other than AL16UTF16".to_string(),
+            ));
+        }
 
         // Update server info with banner
         if let Some(banner) = &protocol_msg.server_banner {
@@ -2106,8 +2117,9 @@ impl Connection {
         payload: &[u8],
         columns: &[ColumnInfo],
         caps: &Capabilities,
+        previous: Option<Vec<Value>>,
     ) -> Result<QueryResult> {
-        self.parse_fetch_response_after(payload, columns, caps, None)
+        self.parse_fetch_response_after(payload, columns, caps, previous)
     }
 
     /// Risposta FETCH, con l'ultima riga della pagina
@@ -3245,13 +3257,13 @@ impl Connection {
             };
 
             if is_duplicate {
-                // Copy value from previous row
-                // Un duplicato senza riga precedente non ha valore: NULL
-                // sarebbe un dato inventato.
+                // Copy value from previous row. Plenora fork: a duplicate
+                // without a previous value is a protocol error; it used to
+                // become NULL in silence.
                 let previous = previous_values
                     .and_then(|prev| prev.get(col_idx))
                     .ok_or_else(|| {
-                        Error::Protocol("Oracle duplicate column without previous row".into())
+                        Error::Protocol("duplicate column without a previous row".to_string())
                     })?;
                 values.push(previous.clone());
             } else {
@@ -3302,25 +3314,33 @@ impl Connection {
                         let num = crate::types::decode_oracle_number(&bytes)?;
                         Ok(Value::String(num.value))
                     }
+                    // Il testo si decodifica esatto o non si decodifica: una
+                    // sostituzione con U+FFFD cambierebbe il valore in silenzio.
+                    // La forma nazionale (`csfrm` 2) viaggia in UTF-16BE.
                     OracleType::Varchar | OracleType::Char | OracleType::Long => {
-                        decode_text(&bytes, col.csfrm).map(Value::String)
+                        decode_column_text(&bytes, col.csfrm, col.charset_id).map(Value::String)
                     }
-                    // BINARY_DOUBLE e BINARY_FLOAT nel formato binario Oracle:
-                    // finivano nel ramo testo come byte qualunque.
                     OracleType::BinaryDouble => {
                         let bytes: [u8; 8] = bytes.as_slice().try_into().map_err(|_| {
-                            Error::Protocol("Oracle BINARY_DOUBLE with invalid length".into())
+                            Error::DataConversionError("BINARY_DOUBLE senza 8 byte".to_string())
                         })?;
                         Ok(Value::Float(crate::types::decode_binary_double(&bytes)))
                     }
                     OracleType::BinaryFloat => {
                         let bytes: [u8; 4] = bytes.as_slice().try_into().map_err(|_| {
-                            Error::Protocol("Oracle BINARY_FLOAT with invalid length".into())
+                            Error::DataConversionError("BINARY_FLOAT senza 4 byte".to_string())
                         })?;
                         Ok(Value::Float(f64::from(crate::types::decode_binary_float(
                             &bytes,
                         ))))
                     }
+                    OracleType::Boolean => match bytes.last() {
+                        Some(1) => Ok(Value::Boolean(true)),
+                        Some(0) => Ok(Value::Boolean(false)),
+                        _ => Err(Error::DataConversionError(
+                            "BOOLEAN Oracle non decodificabile".to_string(),
+                        )),
+                    },
                     OracleType::Raw | OracleType::LongRaw => {
                         // RAW/LONG RAW types - return as bytes
                         Ok(Value::Bytes(bytes.to_vec()))
@@ -3340,10 +3360,11 @@ impl Connection {
                         let ts = crate::types::decode_oracle_timestamp(&bytes)?;
                         Ok(Value::Timestamp(ts))
                     }
-                    _ => {
-                        // Altri tipi come testo, solo se il testo e valido.
-                        decode_text(&bytes, col.csfrm).map(Value::String)
-                    }
+                    // Un tipo senza decoder non diventa testo per caso: i
+                    // suoi byte letti come UTF-8 sarebbero un valore falso.
+                    _ => Err(Error::DataConversionError(
+                        "tipo di colonna Oracle senza decoder".to_string(),
+                    )),
                 }
             }
         }
@@ -3440,10 +3461,14 @@ impl Connection {
                 let is_collection = !data.is_empty() && (data[0] & 0x08) != 0;
 
                 if is_collection {
-                    // Get element type from column info or default to VARCHAR
-                    let element_type = col
-                        .element_type
-                        .unwrap_or(crate::constants::OracleType::Varchar);
+                    // Plenora fork: the element type must be known. The
+                    // describe parser never sets it, and the VARCHAR default
+                    // decoded every collection as one of strings.
+                    let element_type = col.element_type.ok_or_else(|| {
+                        Error::DataConversionError(
+                            "collection column without its element type".to_string(),
+                        )
+                    })?;
 
                     // Determine collection type from pickle flags
                     // Collection flags are after header - but we'll default for now
@@ -3456,18 +3481,11 @@ impl Connection {
                         element_type,
                     );
 
-                    match decode_collection(&obj_type, &data) {
-                        Ok(collection) => Ok(Value::Collection(collection)),
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to decode collection: {}, data: {:02x?}",
-                                e,
-                                &data[..std::cmp::min(20, data.len())]
-                            );
-                            // Return raw bytes as fallback
-                            Ok(Value::Bytes(data))
-                        }
-                    }
+                    // Plenora fork: a collection that does not decode is an
+                    // error. It used to come back as its raw pickle bytes,
+                    // indistinguishable from a RAW value (and the warning
+                    // logged data bytes, against the no-data-in-errors rule).
+                    decode_collection(&obj_type, &data).map(Value::Collection)
                 } else {
                     // Regular object type - not yet fully implemented
                     let mut obj = DbObject::new(&type_name);
@@ -3498,8 +3516,10 @@ impl Connection {
         let num_bytes = buf.read_ub4()?;
 
         if num_bytes == 0 {
-            // SQL NULL resta NULL anche per JSON: il JSON `null` e un valore
-            // diverso, e confonderli cambiava il dato riletto.
+            // Plenora fork: SQL NULL in a JSON column is `Value::Null`. It was
+            // `Value::Json(Null)`, the JSON literal `null`, so a NULL row read
+            // back as the text "null" and could not be told from a stored
+            // JSON null.
             if col.oracle_type == OracleType::Json
                 || col.is_json
                 || col.oracle_type == OracleType::Vector
@@ -3528,11 +3548,21 @@ impl Connection {
             // Read and discard the LOB locator
             let _locator = buf.read_bytes_with_length()?;
 
-            // Un OSON assente o non decodificabile e un errore, non `null`.
-            let data = data_bytes
-                .filter(|data| !data.is_empty())
-                .ok_or_else(|| Error::Protocol("Oracle JSON value without OSON data".into()))?;
-            return OsonDecoder::decode(bytes::Bytes::from(data)).map(Value::Json);
+            if let Some(data) = data_bytes {
+                if !data.is_empty() {
+                    // Decode OSON to JSON.
+                    //
+                    // Plenora fork: upstream logged the failure and returned
+                    // JSON null, so a document whose NUMBER cannot be read
+                    // exactly (or any undecodable document) reached the caller
+                    // as a valid null. The error now reaches the caller.
+                    return OsonDecoder::decode(bytes::Bytes::from(data)).map(Value::Json);
+                }
+            }
+            // Plenora fork: a JSON value without OSON bytes is not the JSON
+            // literal `null` (SQL NULL is `num_bytes == 0`, above); it was
+            // returned as `Value::Json(Null)`.
+            return Err(Error::Protocol("JSON value without OSON data".to_string()));
         }
 
         // Handle VECTOR columns - decode vector binary format
@@ -3540,10 +3570,12 @@ impl Connection {
             // Read and discard LOB locator (not needed for VECTOR)
             let _locator = buf.read_bytes_with_length()?;
 
-            let data = data_bytes
-                .filter(|data| !data.is_empty())
-                .ok_or_else(|| Error::Protocol("Oracle VECTOR value without data".into()))?;
-            return decode_vector(&data).map(Value::Vector);
+            // Plenora fork: a VECTOR that does not decode is an error, it
+            // used to become NULL.
+            return match data_bytes {
+                Some(data) if !data.is_empty() => decode_vector(&data).map(Value::Vector),
+                _ => Err(Error::Protocol("VECTOR value without data".to_string())),
+            };
         }
 
         // Create a LOB locator for fetching the data later
@@ -3555,7 +3587,8 @@ impl Connection {
                     chunk_size,
                     col.oracle_type,
                     col.csfrm,
-                );
+                )
+                .with_charset(col.charset_id);
                 return Ok(Value::Lob(LobValue::locator(locator)));
             }
         }
@@ -3565,8 +3598,9 @@ impl Connection {
             return Ok(Value::Lob(LobValue::Empty));
         }
 
-        // Empty LOB (shouldn't normally reach here)
-        Ok(Value::Lob(LobValue::Empty))
+        // Plenora fork: a LOB with a size but no locator cannot be read; it
+        // used to be reported as an empty LOB.
+        Err(Error::Protocol("LOB value without a locator".to_string()))
     }
 
     /// Parse error info message and extract cursor_id
@@ -3828,17 +3862,23 @@ impl Connection {
 
         for _col_idx in 0..num_columns {
             // Parse column metadata per Python's _process_metadata
+            // Plenora fork: precision and scale (after the flags) are SB1.
+            // Read as unsigned, a NUMBER without scale (-127) reported 129 and
+            // NUMBER(p,-2) 254.
             let ora_type_num = buf.read_u8()?;
             buf.skip_ub1()?; // flags
-            let precision = buf.read_u8()?; // precision as SB1
-            let scale = buf.read_u8()?; // scale as SB1
+            let precision = i16::from(i8::from_be_bytes([buf.read_u8()?])); // precision as SB1
+            let scale = i16::from(i8::from_be_bytes([buf.read_u8()?])); // scale as SB1
             let buffer_size = buf.read_ub4()?;
 
             buf.skip_ub4()?; // max_num_array_elements
             buf.skip_ub8()?; // cont_flags
             let _oid = buf.read_bytes_with_length()?; // OID
             buf.skip_ub2()?; // version
-            buf.skip_ub2()?; // charset_id
+                             // La forma e l'id del charset decidono la decodifica del testo
+                             // (`decode_column_text`): scartarli faceva leggere un NVARCHAR2
+                             // in AL16UTF16 come UTF-8, `'ab'` diventava "\0a\0b".
+            let charset_id = buf.read_ub2()?; // charset_id
             let csfrm = buf.read_u8()?; // charset form
             let max_size = buf.read_ub4()?;
 
@@ -3847,9 +3887,14 @@ impl Connection {
                 buf.skip_ub4()?; // oaccolid
             }
 
+            // Plenora fork: a column without a name (below) is a protocol
+            // error; it used to become "", colliding with any other unnamed
+            // column.
             let _nulls_allowed = buf.read_u8()?;
             buf.skip_ub1()?; // v7 length of name
-            let name = buf.read_string_with_ub4_length()?.unwrap_or_default();
+            let name = buf
+                .read_string_with_ub4_length()?
+                .ok_or_else(|| Error::Protocol("column without a name".to_string()))?;
             let _schema = buf.read_string_with_ub4_length()?; // schema
             let _type_name = buf.read_string_with_ub4_length()?; // type_name
             buf.skip_ub2()?; // column position
@@ -3886,17 +3931,22 @@ impl Connection {
                 buf.skip_ub1()?; // vector_flags
             }
 
-            // Convert data type to OracleType
-            let oracle_type = crate::constants::OracleType::try_from(ora_type_num)
-                .unwrap_or(crate::constants::OracleType::Varchar);
+            // Convert data type to OracleType. Plenora fork: an unknown type
+            // is refused; it used to be described as VARCHAR2 and its bytes
+            // decoded as text.
+            let oracle_type = crate::constants::OracleType::try_from(ora_type_num)?;
 
             let mut col = ColumnInfo::new(&name, oracle_type);
             // NCHAR, NVARCHAR2 e NCLOB arrivano nel charset nazionale
             // (AL16UTF16): senza il form il testo si decodificava come UTF-8.
             col.csfrm = csfrm;
             col.data_size = if max_size > 0 { max_size } else { buffer_size };
+            // Identity casts: kept as upstream wrote them (the values are
+            // already signed i16 above).
             col.precision = precision as i16;
             col.scale = scale as i16;
+            col.csfrm = csfrm;
+            col.charset_id = charset_id;
             columns.push(col);
         }
 
@@ -4206,8 +4256,12 @@ impl Connection {
 
         inner
             .receive_lob_response(locator.locator_bytes().len(), true, 0, |payload, caps| {
+                // Plenora fork: checked, the amount is a u64 on the wire.
                 self.parse_lob_amount_response(payload, locator, caps)
-                    .map(|v| v as u32)
+                    .and_then(|v| {
+                        u32::try_from(v)
+                            .map_err(|_| Error::Protocol("LOB chunk size beyond u32".to_string()))
+                    })
             })
             .await
     }
@@ -4316,15 +4370,26 @@ impl Connection {
                 if locator.is_blob() || locator.is_bfile() {
                     Ok(LobData::Bytes(bytes::Bytes::from(data)))
                 } else {
-                    // CLOB in UTF-16 se NCLOB o charset a larghezza variabile
-                    // (python-oracledb thin), altrimenti UTF-8; mai con
-                    // sostituzioni silenziose.
-                    let form = if locator.is_nchar() || locator.uses_var_length_charset() {
-                        crate::constants::csfrm::NCHAR
+                    // CLOB - decode based on encoding
+                    // Un CLOB si decodifica esatto o non si decodifica: la
+                    // sostituzione con U+FFFD e il byte dispari scartato
+                    // cambiavano il valore in silenzio (`61FF62` -> "a\u{FFFD}b").
+                    // Un NCLOB (forma nazionale) si decodifica sul charset
+                    // nazionale che il server descrive per la colonna:
+                    // AL16UTF16, l'unico misurato; un altro si rifiuta invece
+                    // di indovinare (`decode_column_text`). Un CLOB del
+                    // database a lunghezza variabile viaggia in UTF-16 (il
+                    // flag del locator).
+                    let text = if locator._csfrm == 2 {
+                        decode_column_text(&data, 2, locator.charset_id)?
+                    } else if locator.uses_var_length_charset() {
+                        decode_column_text(&data, 2, 2000)?
                     } else {
-                        crate::constants::csfrm::IMPLICIT
+                        String::from_utf8(data.to_vec()).map_err(|_| {
+                            Error::DataConversionError("CLOB Oracle non UTF-8".to_string())
+                        })?
                     };
-                    decode_text(&data, form).map(LobData::String)
+                    Ok(LobData::String(text))
                 }
             }
             None => {
@@ -4940,6 +5005,7 @@ impl Connection {
         }
 
         inner.state = ConnectionState::Closed;
+        inner.last_rows.clear();
 
         // Close the TCP stream
         if let Some(stream) = inner.stream.take() {
@@ -5011,27 +5077,6 @@ fn parse_type_name(type_name: &str, default_schema: &str) -> (String, String) {
     }
 }
 
-/// Testo di una colonna o di un LOB: UTF-16 big endian nel charset nazionale
-/// (`csfrm` NCHAR, AL16UTF16), UTF-8 altrimenti. Un testo non valido e un
-/// errore: la sostituzione con U+FFFD cambiava il dato in silenzio.
-pub(crate) fn decode_text(bytes: &[u8], csfrm: u8) -> Result<String> {
-    if csfrm == crate::constants::csfrm::NCHAR {
-        if bytes.len() % 2 != 0 {
-            return Err(Error::DataConversionError(
-                "Oracle national text with odd length".into(),
-            ));
-        }
-        let units = bytes
-            .chunks_exact(2)
-            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]));
-        return char::decode_utf16(units)
-            .collect::<std::result::Result<String, _>>()
-            .map_err(|_| Error::DataConversionError("Oracle national text is not UTF-16".into()));
-    }
-    String::from_utf8(bytes.to_vec())
-        .map_err(|_| Error::DataConversionError("Oracle text is not UTF-8".into()))
-}
-
 /// Convert an Oracle type name from data dictionary to OracleType enum
 fn oracle_type_from_name(type_name: &str) -> crate::constants::OracleType {
     use crate::constants::OracleType;
@@ -5057,6 +5102,10 @@ fn oracle_type_from_name(type_name: &str) -> crate::constants::OracleType {
         _ => OracleType::Varchar,         // Default to VARCHAR for unknown types
     }
 }
+
+#[cfg(test)]
+#[path = "describe_fidelity_tests.rs"]
+mod describe_fidelity_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5131,7 +5180,7 @@ mod tests {
                     ));
                 } else {
                     assert_eq!(
-                        conn.parse_fetch_response(&packet, &[], &caps)
+                        conn.parse_fetch_response(&packet, &[], &caps, None)
                             .unwrap()
                             .has_more_rows,
                         code == 0
@@ -5487,7 +5536,7 @@ mod tests {
                     assert_eq!(&response[8..], payload);
                     for result in [
                         conn.parse_query_response_with_columns(&response[8..], &caps, &columns),
-                        conn.parse_fetch_response(&response[8..], &columns, &caps),
+                        conn.parse_fetch_response(&response[8..], &columns, &caps, None),
                     ] {
                         let result = result.unwrap();
                         assert_eq!(result.rows.len(), 1);
@@ -5608,13 +5657,15 @@ mod tests {
             let query = conn.parse_query_response(&packet, &caps).unwrap();
             assert_eq!(query.has_more_rows, more);
             assert_eq!(query.cursor_id, 42);
-            let fetch = conn.parse_fetch_response(&packet, &[], &caps).unwrap();
+            let fetch = conn
+                .parse_fetch_response(&packet, &[], &caps, None)
+                .unwrap();
             assert_eq!(fetch.has_more_rows, more);
         }
         let packet = completion_packet(1476, 102);
         for result in [
             conn.parse_query_response(&packet, &caps),
-            conn.parse_fetch_response(&packet, &[], &caps),
+            conn.parse_fetch_response(&packet, &[], &caps, None),
             conn.parse_error_response(&packet, &caps),
         ] {
             assert!(matches!(result, Err(Error::OracleError { code: 1476, .. })));
@@ -5637,7 +5688,7 @@ mod tests {
             let result = if delivered == 0 {
                 conn.parse_query_response_with_columns(&packet, &caps, &columns)
             } else {
-                conn.parse_fetch_response(&packet, &columns, &caps)
+                conn.parse_fetch_response(&packet, &columns, &caps, None)
             }
             .unwrap();
             assert_eq!(result.rows.len(), size);
@@ -5646,7 +5697,7 @@ mod tests {
         }
         assert_eq!(delivered, 102);
         assert!(matches!(
-            conn.parse_fetch_response(&completion_packet(1476, 102), &columns, &caps),
+            conn.parse_fetch_response(&completion_packet(1476, 102), &columns, &caps, None),
             Err(Error::OracleError { code: 1476, .. })
         ));
     }
@@ -5662,7 +5713,9 @@ mod tests {
             completion_packet(0, 100)[..15].to_vec(),
         ] {
             assert!(conn.parse_query_response(&packet, &caps).is_err());
-            assert!(conn.parse_fetch_response(&packet, &[], &caps).is_err());
+            assert!(conn
+                .parse_fetch_response(&packet, &[], &caps, None)
+                .is_err());
         }
     }
 
@@ -5804,3 +5857,38 @@ mod tests {
         assert_eq!(collected.len(), 2);
     }
 }
+
+/// Il testo di una colonna `VARCHAR2`/`CHAR`/`LONG` e delle forme nazionali,
+/// esatto: UTF-16BE per AL16UTF16 (`charset_id` 2000, il charset nazionale di
+/// default), UTF-8 per la forma del database (il server la converte nel
+/// charset del client, AL32UTF8). La forma nazionale con un charset diverso
+/// da AL16UTF16 (UTF8, 871) si rifiuta: non e misurata, e decodificarla come
+/// UTF-8 o come UTF-16 sarebbe indovinare (terzo giro della #135).
+pub(crate) fn decode_column_text(bytes: &[u8], csfrm: u8, charset_id: u16) -> Result<String> {
+    let utf16 = match (csfrm, charset_id) {
+        (_, 2000) => true,
+        (2, _) => {
+            return Err(Error::DataConversionError(
+                "charset nazionale Oracle diverso da AL16UTF16: non qualificato".to_string(),
+            ))
+        }
+        _ => false,
+    };
+    if utf16 {
+        let (pairs, remainder) = bytes.as_chunks::<2>();
+        if !remainder.is_empty() {
+            return Err(Error::DataConversionError(
+                "testo Oracle nazionale con byte dispari".to_string(),
+            ));
+        }
+        return char::decode_utf16(pairs.iter().map(|pair| u16::from_be_bytes(*pair)))
+            .collect::<std::result::Result<String, _>>()
+            .map_err(|_| Error::DataConversionError("testo Oracle UTF-16 non valido".to_string()));
+    }
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| Error::DataConversionError("testo Oracle UTF-8 non valido".to_string()))
+}
+
+#[cfg(test)]
+#[path = "text_decoding_tests.rs"]
+mod text_decoding_tests;

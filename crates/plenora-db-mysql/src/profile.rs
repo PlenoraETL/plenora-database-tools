@@ -153,6 +153,17 @@ pub(crate) trait ProductProfile: Send + Sync {
     /// Le parti di indice, ordinate per indice e posizione.
     fn object_indexes_query(&self) -> &'static str;
 
+    /// I tipi delle colonne di una relazione, con precisione, scala,
+    /// lunghezza e precisione temporale, per l'ammissione dei letterali e dei
+    /// filtri (`plenora_database_core::operand_admission`). Lo schema assente
+    /// e quello della sessione.
+    fn column_types_query(&self) -> &'static str {
+        "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, CHARACTER_MAXIMUM_LENGTH, \
+    NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION, CHARACTER_SET_NAME \
+    FROM information_schema.COLUMNS \
+    WHERE TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ?"
+    }
+
     /// Se il prodotto pubblica le parti funzionali di un indice.
     ///
     /// Un indice funzionale ha parti senza nome di colonna: `columns` non lo

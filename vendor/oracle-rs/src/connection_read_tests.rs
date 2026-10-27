@@ -24,6 +24,7 @@ fn national_text_is_utf16_and_invalid_text_is_an_error() {
     for text in ["a", "\u{e8}\u{e0}", "\u{1F600}x", "a\0b", "a   "] {
         let mut column = ColumnInfo::new("N", OracleType::Varchar);
         column.csfrm = crate::constants::csfrm::NCHAR;
+        column.charset_id = 2000;
         let value = column_value(&column, &length_prefixed(&utf16_be(text))).unwrap();
         assert!(
             matches!(&value, Value::String(read) if read == text),
@@ -35,9 +36,9 @@ fn national_text_is_utf16_and_invalid_text_is_an_error() {
     }
     // Lunghezza dispari, surrogato isolato, UTF-8 non valido: errori.
     let nchar = crate::constants::csfrm::NCHAR;
-    assert!(decode_text(&[0, 0x61, 0], nchar).is_err());
-    assert!(decode_text(&[0xD8, 0x3D], nchar).is_err());
-    assert!(decode_text(&[0xC3, 0x28], crate::constants::csfrm::IMPLICIT).is_err());
+    assert!(decode_column_text(&[0, 0x61, 0], nchar, 2000).is_err());
+    assert!(decode_column_text(&[0xD8, 0x3D], nchar, 2000).is_err());
+    assert!(decode_column_text(&[0xC3, 0x28], crate::constants::csfrm::IMPLICIT, 873).is_err());
     let plain = ColumnInfo::new("S", OracleType::Varchar);
     assert!(column_value(&plain, &length_prefixed(&[0xFF, 0x61])).is_err());
 }

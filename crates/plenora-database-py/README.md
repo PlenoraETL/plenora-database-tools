@@ -43,7 +43,9 @@ Il runtime Db2 richiede unixODBC e il client IBM Db2 12.1 sul sistema. Il
 driver `libdb2o` deve essere registrato in `odbcinst.ini` con il nome
 `IBM DB2 ODBC DRIVER`, che e il default usato dall'adapter; `DB2DIR`,
 `IBM_DB_HOME` e il percorso delle librerie devono puntare all'installazione
-IBM. La qualifica live dell'asset avviene prima che il workflow lo alleghi alla
+IBM. Il client deve scambiare il testo in UTF-8: `DB2CODEPAGE=1208` oppure una
+locale UTF-8. Con un'altra codepage l'adapter rifiuta la connessione
+(`invalid_configuration`), perche il testo arriverebbe al database convertito. La qualifica live dell'asset avviene prima che il workflow lo alleghi alla
 release; Windows resta build-only e non e distribuito come runtime Db2.
 
 ### Da sorgenti (dev)
@@ -169,7 +171,12 @@ statement = p.select(
 
 `BindType` non accetta dichiarazioni SQL arbitrarie: il renderer traduce
 `BOOLEAN`, `INTEGER`, `BIG_INTEGER`, `FLOAT`, `STRING`, `BINARY`, `DATE`,
-`TIMESTAMP`, `TIMESTAMP_TZ`, `DECIMAL`, `UUID` e `JSON` per il dialect. Db2
+`TIMESTAMP`, `TIMESTAMP_TZ`, `DECIMAL`, `UUID` e `JSON` per il dialect, con la
+stessa forma nelle query e nei `WHERE` delle mutazioni. Il valore legato deve
+essere del tipo dichiarato: un `int` per `STRING`, un `float` per `INTEGER`, un
+`str` per `DATE` si rifiutano prima dell'esecuzione (`invalid_plan`), anche nei
+valori scritti; un `int` resta ammesso per `DECIMAL` e, entro 32 bit, per
+`FLOAT`. Db2
 rende la forma tipizzata con un `CAST` e `SYSIBM.SYSDUMMY1`.
 Oracle usa bind `:N`; il driver thin qualificato non conserva il tipo
 `TIMESTAMP WITH TIME ZONE` in scrittura, quindi quel bind resta fail-closed.
@@ -870,6 +877,12 @@ leggono dagli asset della release e dal
 e li verifica; un artefatto assente non è supporto implicito.
 
 ## Limitazioni
+
+- **Prova dello SRID nelle espressioni ORM** - il mapping e un indice non
+  sostituiscono una guardia qualificata. I rifiuti prima dell'esecuzione e le
+  condizioni di rientro sono dichiarati in
+  [`spatial_probe::admit_probe`](../plenora-database-core/src/spatial_probe.rs)
+  e nel [registro dei limiti](../../contracts/adoption-source.json).
 
 - **Oracle** - provider thin, Arrow e ORM Spatial sono qualificati sul
   riferimento AMD64 fissato dal gate. I nomi di tabella, schema e colonna

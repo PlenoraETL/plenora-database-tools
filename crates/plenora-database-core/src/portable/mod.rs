@@ -74,6 +74,13 @@ pub enum Expression {
         srid: u32,
         semantics: crate::geometry::SpatialSemantics,
     },
+    /// Un parametro tipizzato del predicato di una mutazione relazionale
+    /// (`relational_mutation`): un segnaposto reso con
+    /// [`CastDialect::render`](crate::typed_parameter::CastDialect::render),
+    /// la forma del renderer delle query (regola T). Lo costruisce soltanto
+    /// il lowering, e non e del contratto seriale.
+    #[serde(skip)]
+    TypedParameter(crate::relational::QueryParameterType),
 }
 
 impl Expression {
@@ -386,7 +393,7 @@ pub const fn or(predicates: Vec<Predicate>) -> Predicate {
 }
 
 mod compiler;
-pub use compiler::compile_portable;
+pub use compiler::{compile_portable, CompiledPortable};
 
 #[cfg(test)]
 mod tests;

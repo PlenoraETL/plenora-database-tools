@@ -12,11 +12,23 @@ import check_db2_reference as gate
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "db2-assurance.yml"
 
 
+FIDELITY_TESTS = {
+    "live_parameter_values_bind_exactly_or_are_refused",
+    "live_arrow_read_returns_floating_point_values_exactly",
+    "live_sub_microsecond_timestamps_are_refused_on_read",
+    "live_generated_values_bind_exactly_or_are_refused",
+    "live_text_catalog_units_preserve_boundaries_without_false_refusals",
+}
+
+
+def module_of(name: str) -> str:
+    if name in FIDELITY_TESTS:
+        return "parameter_fidelity_live_tests"
+    return "spatial_live_tests" if name.startswith("live_spatial_") else "live_tests"
+
+
 def qualified(names: set[str]) -> set[str]:
-    return {
-        f"{'spatial_live_tests' if name.startswith('live_spatial_') else 'live_tests'}::{name}"
-        for name in names
-    }
+    return {f"{module_of(name)}::{name}" for name in names}
 
 
 class Db2ReferenceGateTests(unittest.TestCase):
@@ -33,9 +45,9 @@ class Db2ReferenceGateTests(unittest.TestCase):
             ),
         )
 
-    def test_inventory_has_all_nineteen_named_live_tests(self) -> None:
+    def test_inventory_has_all_named_live_tests(self) -> None:
         inventory = gate.live_test_inventory()
-        self.assertEqual(len(inventory), 19)
+        self.assertEqual(len(inventory), 31)
         self.assertLessEqual(gate.REQUIRED_LIVE_TESTS, inventory)
 
     def test_complete_named_run_passes(self) -> None:
@@ -57,12 +69,7 @@ class Db2ReferenceGateTests(unittest.TestCase):
 
     def test_every_live_test_carries_an_explicit_reason(self) -> None:
         reasons = {}
-        for source in (
-            gate.LIVE_SOURCE,
-            gate.SPATIAL_LIVE_SOURCE,
-            gate.REWRITE_LIVE_SOURCE,
-            gate.ADMISSION_LIVE_SOURCE,
-        ):
+        for source in gate.LIVE_SOURCES:
             reasons.update(
                 gate.live_inventory.ignore_reasons(source.read_text(encoding="utf-8"))
             )

@@ -104,7 +104,8 @@ fn date_e_istanti_fuori_dall_intervallo_di_oracle_si_rifiutano() {
     for value in ["0000-01-01", "-0001-12-31", "10000-01-01"] {
         assert!(date(value).is_err(), "{value}");
     }
-    assert!(date("0001-01-01").is_ok());
+    assert!(date("0001-01-01").is_err());
+    assert!(date("1582-10-15").is_ok());
     assert!(date("9999-12-31").is_ok());
     assert!(instant("0000-06-01T00:00:00").is_err());
     assert!(instant("2026-01-01T00:00:00.123456789").is_err());
@@ -117,4 +118,85 @@ fn date_e_istanti_fuori_dall_intervallo_di_oracle_si_rifiutano() {
 fn lo_zero_negativo_si_rifiuta_al_bind() {
     assert!(bind_parameters(&[ParameterValue::F64(-0.0)]).is_err());
     assert!(bind_parameters(&[ParameterValue::F64(0.0)]).is_ok());
+}
+
+/// La precisione bindabile e il microsecondo (regola di
+/// `plenora_database_core::parameter_fidelity`): la decima cifra non si tronca.
+#[test]
+fn sub_microsecond_timestamps_and_non_canonical_uuids_are_refused() {
+    for value in [
+        ParameterValue::Timestamp("2026-03-19T10:11:12.1234567".to_owned()),
+        ParameterValue::TimestampTz("2026-03-19T10:11:12.1234567+02:00".to_owned()),
+        ParameterValue::Uuid("6f1c2a2e7-d3b-4c55-9a1e-0b2c3d4e5f60".to_owned()),
+    ] {
+        let error = bind_parameters(std::slice::from_ref(&value)).expect_err("rifiuto");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::DataMapping
+        );
+    }
+    assert!(bind_parameters(&[ParameterValue::Timestamp(
+        "2026-03-19T10:11:12.123456000".to_owned()
+    )])
+    .is_ok());
+}
+
+/// Oracle conserva `''` e un `RAW` vuoto come `NULL`: sul percorso dei
+/// parametri si rifiutano, prima dell'invio.
+#[test]
+fn empty_text_and_bytes_are_refused_on_the_parameter_path() {
+    for value in [
+        ParameterValue::String(String::new()),
+        ParameterValue::Bytes(Vec::new()),
+        ParameterValue::Enum {
+            type_name: "mood".to_owned(),
+            label: String::new(),
+        },
+    ] {
+        let error = crate::parameter::reject_empty(&value).expect_err("vuoto");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::DataMapping
+        );
+    }
+    assert!(crate::parameter::reject_empty(&ParameterValue::String(" ".to_owned())).is_ok());
+}
+
+#[test]
+fn negative_zero_is_refused_because_oracle_cannot_store_it() {
+    // Misurato: BINARY_FLOAT, FLOAT e NUMBER lo salvano +0; BINARY_DOUBLE con
+    // byte non canonici che il server non trova uguali a 0.
+    assert!(bind_parameters(&[ParameterValue::F64(-0.0)]).is_err());
+    assert!(matches!(
+        bind_parameters(&[ParameterValue::F64(0.0)]).expect("+0")[0],
+        Value::Float(value) if value.to_bits() == 0
+    ));
+}
+
+/// DATE e TIMESTAMP hanno un codec TTC nativo: non vanno convertiti in
+/// testo per uniformarli al TZ. I byte conservano il microsecondo esatto.
+#[test]
+fn native_temporal_bind_bytes_stay_native() {
+    use oracle_rs::types::{OracleDate, OracleTimestamp};
+    let values = bind_parameters(&[
+        ParameterValue::Date("2024-02-29".to_owned()),
+        ParameterValue::Timestamp("2024-02-29T10:20:30.000001".to_owned()),
+    ])
+    .unwrap();
+    let Value::Date(date) = &values[0] else {
+        panic!("DATE non nativo")
+    };
+    assert_eq!(
+        date.to_oracle_bytes().unwrap(),
+        OracleDate::date(2024, 2, 29).to_oracle_bytes().unwrap()
+    );
+    let Value::Timestamp(timestamp) = &values[1] else {
+        panic!("TIMESTAMP non nativo")
+    };
+    assert_eq!(
+        timestamp.to_oracle_bytes().unwrap(),
+        OracleTimestamp::new(2024, 2, 29, 10, 20, 30, 1)
+            .to_oracle_bytes()
+            .unwrap()
+    );
 }

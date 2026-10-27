@@ -7,6 +7,7 @@
 use crate::portable::{compile_portable, PortableStatement};
 use crate::provider::ParameterValue;
 use crate::row::Row;
+use crate::spatial_operand::{OperandPlan, ParameterFamilies};
 use crate::transaction::{Statement, TransactionScope};
 use crate::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
 
@@ -248,8 +249,192 @@ pub async fn execute_portable(
             "execute_portable non accetta statement con RETURNING: usa execute_portable_returning",
         ));
     }
-    let compiled = compile_portable(tx.provider_kind(), statement)?;
+    compile_portable(tx.provider_kind(), statement)?;
+    verify_operands(tx, &OperandPlan::Portable(statement), cancellation).await?;
+    let compiled = crate::admission_gate::portable(tx, statement, cancellation).await?;
     tx.execute(&compiled, cancellation).await
+}
+
+/// Il giudizio degli operandi geometrici di `plan`, prima di eseguirne lo SQL.
+///
+/// Il catalogo e quello che il provider legge nella transazione
+/// ([`TransactionScope::operand_catalog`]); il giudizio e la stessa
+/// [`ScalarOperands::judge`](crate::spatial_operand::ScalarOperands::judge)
+/// dei provider, per ogni relazione nominata, con le colonne del catalogo e
+/// non con quelle che il chiamante dichiara. Un provider che non legge il
+/// catalogo rende ogni relazione sconosciuta: un riferimento in posizione di
+/// operando si rifiuta. I parametri senza tipo dichiarato non hanno famiglia
+/// nota: [`verify_operands_bound`].
+///
+/// # Errors
+///
+/// Quelli di [`verify_operands_bound`].
+pub async fn verify_operands(
+    tx: &mut dyn TransactionScope,
+    plan: &OperandPlan<'_>,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    verify_operands_bound(tx, plan, &ParameterFamilies::default(), cancellation).await
+}
+
+/// [`verify_operands`] con le famiglie dei valori legati ai parametri del
+/// piano (la regola F, `spatial_operand`).
+///
+/// # Errors
+///
+/// `unsupported` per un operando geometrico, un riferimento non risolto in
+/// un piano che puo contenere una geometria, una forma di nomi ambigua;
+/// `invalid_plan` per una conversione implicita fra famiglie di tipo; gli
+/// errori della lettura del catalogo.
+pub async fn verify_operands_bound(
+    tx: &mut dyn TransactionScope,
+    plan: &OperandPlan<'_>,
+    parameters: &ParameterFamilies,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let provider = tx.provider_kind();
+    // La regola T prima del catalogo: anche un piano senza operandi da
+    // leggere porta parametri tipizzati, e i valori scritti.
+    parameters.judge_typed(provider, plan)?;
+    let operands = plan.operands(provider)?;
+    // Ogni provider giudica sul catalogo, Oracle compreso: la guardia del
+    // server (`spatial_operand::operand_server_guard`) non protegge la
+    // geometria che una vista rende binaria (regola B).
+    if operands.is_empty() {
+        return Ok(());
+    }
+    // Regola A: ogni nome del piano va al server, che lega le colonne.
+    let names = operands.names().into_iter().collect::<Vec<_>>();
+    let catalog = tx
+        .operand_catalog(operands.relations(), &names, cancellation)
+        .await?;
+    operands.judge_bound(&catalog, parameters)
+}
+
+/// Esegue lo SQL compilato da `plan` che rende righe, dopo
+/// [`verify_operands_bound`] e il cancello dell'ammissione
+/// (`admitted_for_plan`).
+///
+/// `plan` assente: SQL del chiamante, senza giudizio. `bind_names`: i nomi
+/// dei parametri del piano nell'ordine dei valori di `statement` (quelli che
+/// il renderer ha reso), da cui le famiglie dei valori legati: la regola F
+/// giudica i valori del chiamante, l'ammissione li riscrive nel tipo
+/// dell'operando, e valgono tutte e due.
+///
+/// # Errors
+///
+/// Quelli di [`verify_operands_bound`], del cancello e del driver.
+pub async fn query_judged(
+    tx: &mut dyn TransactionScope,
+    statement: &Statement,
+    plan: Option<&OperandPlan<'_>>,
+    bind_names: &[String],
+    cancellation: &CancellationToken,
+) -> Result<Vec<Row>> {
+    let Some(plan) = plan else {
+        return tx.query(statement, cancellation).await;
+    };
+    let parameters =
+        ParameterFamilies::from_positional(tx.provider_kind(), bind_names, &statement.params)?;
+    verify_operands_bound(tx, plan, &parameters, cancellation).await?;
+    let admitted = admitted_for_plan(tx, statement, plan, bind_names, cancellation).await?;
+    tx.query(&admitted, cancellation).await
+}
+
+/// Esegue lo SQL compilato da `plan` che rende un conteggio, dopo
+/// [`verify_operands_bound`] e il cancello dell'ammissione: come
+/// [`query_judged`].
+///
+/// # Errors
+///
+/// Quelli di [`verify_operands_bound`], del cancello e del driver.
+pub async fn execute_judged(
+    tx: &mut dyn TransactionScope,
+    statement: &Statement,
+    plan: Option<&OperandPlan<'_>>,
+    bind_names: &[String],
+    cancellation: &CancellationToken,
+) -> Result<u64> {
+    let Some(plan) = plan else {
+        return tx.execute(statement, cancellation).await;
+    };
+    let parameters =
+        ParameterFamilies::from_positional(tx.provider_kind(), bind_names, &statement.params)?;
+    verify_operands_bound(tx, plan, &parameters, cancellation).await?;
+    let admitted = admitted_for_plan(tx, statement, plan, bind_names, cancellation).await?;
+    tx.execute(&admitted, cancellation).await
+}
+
+/// Esegue una query relazionale ammessa dal cancello
+/// ([`crate::admission_gate::query`]) dopo [`verify_operands_bound`], con
+/// le famiglie dei valori del chiamante che il cancello ha tenuto.
+///
+/// # Errors
+///
+/// Quelli di [`verify_operands_bound`] e del driver.
+pub async fn query_admitted(
+    tx: &mut dyn TransactionScope,
+    admitted: &crate::admission_gate::Admitted,
+    plan: &OperandPlan<'_>,
+    cancellation: &CancellationToken,
+) -> Result<Vec<Row>> {
+    verify_operands_bound(tx, plan, admitted.families(), cancellation).await?;
+    tx.query(admitted.statement(), cancellation).await
+}
+
+/// Come [`query_admitted`], per uno statement che rende un conteggio.
+///
+/// # Errors
+///
+/// Quelli di [`verify_operands_bound`] e del driver.
+pub async fn execute_admitted(
+    tx: &mut dyn TransactionScope,
+    admitted: &crate::admission_gate::Admitted,
+    plan: &OperandPlan<'_>,
+    cancellation: &CancellationToken,
+) -> Result<u64> {
+    verify_operands_bound(tx, plan, admitted.families(), cancellation).await?;
+    tx.execute(admitted.statement(), cancellation).await
+}
+
+/// Lo statement di un piano passato dal cancello dell'ammissione, in modo
+/// che nessun ingresso pubblico esegua un piano senza ammetterlo (seconda
+/// lettura del terzo giro della #135: `execute_judged` con un piano
+/// `Mutation` eseguiva `1.23456` in un `numeric(12, 4)` come `1.2346`).
+///
+/// - `Portable`: [`crate::admission_gate::portable`] sull'AST;
+/// - `Mutation`: [`crate::admission_gate::mutation`] con i valori dello
+///   statement, nell'ordine dei bind del piano;
+/// - `Query`: [`crate::admission_gate::query`] con i nomi dei segnaposto
+///   che il renderer ha reso (`bind_names`, gli stessi da cui la regola F
+///   legge le famiglie).
+///
+/// # Errors
+///
+/// Quelli del cancello.
+async fn admitted_for_plan(
+    tx: &mut dyn TransactionScope,
+    statement: &Statement,
+    plan: &OperandPlan<'_>,
+    bind_names: &[String],
+    cancellation: &CancellationToken,
+) -> Result<Statement> {
+    match plan {
+        OperandPlan::Portable(ast) => crate::admission_gate::portable(tx, ast, cancellation).await,
+        OperandPlan::Mutation(operation) => {
+            crate::admission_gate::mutation(tx, operation, &statement.params, cancellation)
+                .await
+                .map(crate::admission_gate::Admitted::into_statement)
+        }
+        OperandPlan::Query(operation) => crate::admission_gate::query(
+            tx.provider_kind(),
+            operation,
+            statement.sql.clone(),
+            bind_names,
+            &statement.params,
+        )
+        .map(crate::admission_gate::Admitted::into_statement),
+    }
 }
 
 /// Compila ed esegue un `PortableStatement` che restituisce righe:
@@ -276,7 +461,9 @@ pub async fn execute_portable_returning(
             "execute_portable_returning richiede RETURNING (o SELECT)",
         ));
     }
-    let compiled = compile_portable(tx.provider_kind(), statement)?;
+    compile_portable(tx.provider_kind(), statement)?;
+    verify_operands(tx, &OperandPlan::Portable(statement), cancellation).await?;
+    let compiled = crate::admission_gate::portable(tx, statement, cancellation).await?;
     tx.query(&compiled, cancellation).await
 }
 

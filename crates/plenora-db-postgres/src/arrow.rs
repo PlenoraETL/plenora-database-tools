@@ -166,14 +166,7 @@ impl ColumnBuffer {
     pub fn append(&mut self, row: &Row, index: usize) -> Result<u64> {
         match self {
             Self::Bool(builder) => append_option(builder, row.try_get(index)),
-            // `int2` si legge come `i16` e si allarga: il codec di `i32`
-            // accetta soltanto `int4`, e fino al 25/10 ogni lettura di una
-            // colonna `smallint` falliva (`data_mapping`).
-            Self::I32(builder) if is_int2(row, index, &Type::INT2) => append_option(
-                builder,
-                row.try_get::<_, Option<i16>>(index)
-                    .map(|value| value.map(i32::from)),
-            ),
+            Self::I32(builder) if is_int2(row, index) => append_option(builder, int2(row, index)),
             Self::I32(builder) => append_option(builder, row.try_get(index)),
             Self::I64(builder) => append_option(builder, row.try_get(index)),
             Self::F32(builder) => append_option(builder, row.try_get(index)),
@@ -270,15 +263,9 @@ impl ColumnBuffer {
                 Ok(17)
             }
             Self::BoolArray(builder) => append_list(builder, row.try_get(index)),
-            Self::I32Array(builder) if is_int2(row, index, &Type::INT2_ARRAY) => append_list(
-                builder,
-                row.try_get::<_, Option<Vec<Option<i16>>>>(index)
-                    .map(|value| {
-                        value.map(|items| {
-                            items.into_iter().map(|item| item.map(i32::from)).collect()
-                        })
-                    }),
-            ),
+            Self::I32Array(builder) if is_int2(row, index) => {
+                append_list(builder, int2_array(row, index))
+            }
             Self::I32Array(builder) => append_list(builder, row.try_get(index)),
             Self::I64Array(builder) => append_list(builder, row.try_get(index)),
             Self::F32Array(builder) => append_list(builder, row.try_get(index)),
@@ -408,6 +395,30 @@ fn append_composite(
     }
     builder.append(document.is_some());
     Ok(estimated_bytes)
+}
+
+/// `int2` e `int4` vanno nello stesso `Int32`: `int2` si legge come `i16` (il
+/// driver rifiuta `i32` su `INT2`, e ogni lettura Arrow di una colonna `int2`
+/// falliva) e si allarga senza perdita.
+fn int2(row: &Row, index: usize) -> std::result::Result<Option<i32>, tokio_postgres::Error> {
+    row.try_get::<_, Option<i16>>(index)
+        .map(|value| value.map(i32::from))
+}
+
+/// `int2[]` come `int2`.
+fn int2_array(
+    row: &Row,
+    index: usize,
+) -> std::result::Result<Option<Vec<Option<i32>>>, tokio_postgres::Error> {
+    row.try_get::<_, Option<Vec<Option<i16>>>>(index)
+        .map(|value| value.map(|items| items.into_iter().map(|item| item.map(i32::from)).collect()))
+}
+
+/// Se la colonna `index` della riga e `int2` o `int2[]`.
+fn is_int2(row: &Row, index: usize) -> bool {
+    row.columns()
+        .get(index)
+        .is_some_and(|column| matches!(*column.type_(), Type::INT2 | Type::INT2_ARRAY))
 }
 
 fn append_list<T, B>(
@@ -567,13 +578,6 @@ impl<'a> FromSql<'a> for ServerText {
     fn accepts(ty: &Type) -> bool {
         matches!(*ty, Type::JSON | Type::JSONB | Type::UUID)
     }
-}
-
-/// Se la colonna `index` della riga ha il tipo `expected` (`int2`, `_int2`).
-fn is_int2(row: &Row, index: usize, expected: &Type) -> bool {
-    row.columns()
-        .get(index)
-        .is_some_and(|column| column.type_() == expected)
 }
 
 fn append_option<B, T>(

@@ -312,3 +312,51 @@ fn create_type_compilation_rejects_sql_and_invalid_native_contracts() {
     let error = SqlServerColumnSpec::from_create_field(&mismatch).expect_err("native mismatch");
     assert_eq!(error.category, ErrorCategory::DataMapping);
 }
+
+/// La tabella delle famiglie di SQL Server nella lettura (regola F), la stessa
+/// del catalogo degli operandi; `timestamp`/`rowversion` e binario.
+#[test]
+fn ogni_tipo_ha_la_famiglia_della_tabella() {
+    use plenora_database_core::spatial_operand::OperandFamily::{
+        Binary, Geometry, Numeric, Other, Temporal, Text,
+    };
+    for (native, family) in [
+        ("geometry", Geometry),
+        ("geography", Geometry),
+        ("binary", Binary),
+        ("varbinary", Binary),
+        ("image", Binary),
+        ("timestamp", Binary),
+        ("rowversion", Binary),
+        ("sql_variant", Binary),
+        ("char", Text),
+        ("varchar", Text),
+        ("nchar", Text),
+        ("nvarchar", Text),
+        ("text", Text),
+        ("ntext", Text),
+        ("sysname", Text),
+        ("tinyint", Numeric),
+        ("smallint", Numeric),
+        ("int", Numeric),
+        ("bigint", Numeric),
+        ("decimal", Numeric),
+        ("numeric", Numeric),
+        ("money", Numeric),
+        ("smallmoney", Numeric),
+        ("float", Numeric),
+        ("real", Numeric),
+        ("bit", Numeric),
+        ("date", Temporal),
+        ("time", Temporal),
+        ("datetime", Temporal),
+        ("datetime2", Temporal),
+        ("smalldatetime", Temporal),
+        ("datetimeoffset", Temporal),
+        ("uniqueidentifier", Other),
+        ("xml", Other),
+    ] {
+        let column = &description(native, 0, 0).columns[0];
+        assert_eq!(read_family(column), family, "{native}");
+    }
+}

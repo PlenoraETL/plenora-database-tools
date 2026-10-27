@@ -211,7 +211,9 @@ impl Db2WritePlan {
                 crate::write_admission::admission_key(&column.data_type, fact, server);
             rewrites.push(ColumnRewrites {
                 field: index,
-                rewrites: measured.admit(&key, dimensions)?,
+                rewrites: plenora_database_core::admission_gate::write_column(
+                    &measured, &key, dimensions,
+                )?,
                 target_type: key.nativo,
             });
         }
@@ -1066,12 +1068,33 @@ pub fn batch_values(batch: &RecordBatch, plan: &Db2WritePlan) -> Result<Vec<Vec<
                 .columns()
                 .iter()
                 .zip(batch.schema().fields().iter().zip(&plan.columns))
-                .map(|(array, (field, _column))| {
-                    arrow_parameter_value(array.as_ref(), field, row, ' ').map_err(db2_write_error)
+                .map(|(array, (field, column))| {
+                    let value = arrow_parameter_value(array.as_ref(), field, row, ' ')
+                        .map_err(db2_write_error)?;
+                    // Il segnaposto spatial e `HEXTORAW(?)`: riceve il testo
+                    // esadecimale del WKB. Ogni altro byte e un binario vero,
+                    // legato come tale (`crate::parameter`).
+                    Ok(match (value, &column.spatial) {
+                        (ParameterValue::Bytes(bytes), Some(_)) => {
+                            ParameterValue::String(hex_upper(&bytes))
+                        }
+                        (value, _) => value,
+                    })
                 })
                 .collect()
         })
         .collect()
+}
+
+/// L'esadecimale maiuscolo che `HEXTORAW` legge.
+pub fn hex_upper(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 const fn db2_write_error(mut error: DatabaseError) -> DatabaseError {

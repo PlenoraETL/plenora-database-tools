@@ -105,7 +105,54 @@ pub fn open_connection(
             "timeout operazione Db2 non rappresentabile",
         )
     })?;
+    verify_utf8_codepage(&connection, timeout)?;
     Ok((connection, timeout))
+}
+
+/// Il testo della sonda di codepage: un carattere fuori da ASCII e uno fuori
+/// dal piano multilingue di base.
+pub const CODEPAGE_PROBE: &str = "\u{e8}\u{1F600}";
+const CODEPAGE_PROBE_SQL: &str = "VALUES (HEX(CAST(? AS VARCHAR(16))), \
+    CHARACTER_LENGTH(CAST(? AS VARCHAR(16)), CODEUNITS32), CAST(? AS VARCHAR(16)))";
+
+/// Rifiuta una connessione il cui testo non viaggia in UTF-8.
+///
+/// Il driver CLI scambia il testo nella codepage del client, che deriva dalla
+/// locale del processo o da `DB2CODEPAGE`. Misurato con la locale POSIX: una
+/// `e` accentata bindata in UTF-8 arrivava al database come due caratteri
+/// Latin-1 (`C383C2A8`), si rileggeva identica, e quindi restava invisibile a
+/// ogni prova di andata e ritorno. La sonda lega il testo e ne legge i byte
+/// che il database conserva, la lunghezza in caratteri e il testo riletto:
+/// tutti e tre devono essere quelli di UTF-8, altrimenti nessun testo e
+/// esatto su questa connessione (regola di
+/// `plenora_database_core::parameter_fidelity`).
+fn verify_utf8_codepage(connection: &Connection<'_>, timeout: usize) -> Result<()> {
+    let rows = query_text(
+        connection,
+        CODEPAGE_PROBE_SQL,
+        &[CODEPAGE_PROBE, CODEPAGE_PROBE, CODEPAGE_PROBE],
+        timeout,
+        3,
+        64,
+    );
+    if rows.is_ok_and(|rows| codepage_probe_is_utf8(&rows)) {
+        Ok(())
+    } else {
+        Err(DatabaseError::new(
+            ErrorCategory::InvalidConfiguration,
+            ErrorPhase::Connect,
+            Some(ProviderKind::Db2),
+            "client Db2 con codepage diversa da UTF-8: impostare DB2CODEPAGE=1208 o una locale UTF-8",
+        ))
+    }
+}
+
+/// Il verdetto della sonda: byte UTF-8, due caratteri, testo riletto uguale.
+pub fn codepage_probe_is_utf8(rows: &[Vec<Option<String>>]) -> bool {
+    matches!(rows, [row] if row.len() == 3
+        && row[0].as_deref() == Some("C3A8F09F9880")
+        && row[1].as_deref().map(str::trim) == Some("2")
+        && row[2].as_deref() == Some(CODEPAGE_PROBE))
 }
 
 pub fn query_text(

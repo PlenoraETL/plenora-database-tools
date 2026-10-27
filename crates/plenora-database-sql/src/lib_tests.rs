@@ -2042,3 +2042,57 @@ fn mysql_x_and_y_read_the_stored_first_ordinate() {
         mariadb.sql
     );
 }
+
+/// Ogni occorrenza ha il proprio bind: annidamento, IN e BETWEEN non
+/// devono lasciare una conversione implicita o sostituire SQL testuale.
+#[test]
+fn oracle_filter_converts_every_timestamp_tz_occurrence() {
+    let renderer = Renderer::new(
+        Dialect::Oracle,
+        DialectCapabilities {
+            spatial_intersects: false,
+        },
+    )
+    .with_parameter_types([("tz".to_owned(), QueryParameterType::TimestampTz)].into());
+    let expression = Expression::And(vec![
+        Expression::Compare {
+            field: identifier("TS"),
+            operator: ComparisonOperator::Gte,
+            parameter: "tz".to_owned(),
+        },
+        Expression::Or(vec![
+            Expression::In {
+                field: identifier("TS"),
+                parameters: vec!["tz".to_owned(), "tz".to_owned()],
+            },
+            Expression::Between {
+                field: identifier("TS"),
+                lower_parameter: "tz".to_owned(),
+                upper_parameter: "tz".to_owned(),
+            },
+        ]),
+        Expression::Compare {
+            field: identifier(":1"),
+            operator: ComparisonOperator::Eq,
+            parameter: "text".to_owned(),
+        },
+    ]);
+    let result = renderer
+        .render_filter_for_relation(&expression, &identifier("T"))
+        .unwrap();
+    assert_eq!(
+        result
+            .binds
+            .iter()
+            .map(|bind| bind.name.as_str())
+            .collect::<Vec<_>>(),
+        ["tz", "tz", "tz", "tz", "tz", "text"]
+    );
+    for ordinal in 1..=5 {
+        assert!(result.sql.contains(&format!(
+            "TO_TIMESTAMP_TZ(:{ordinal}, 'YYYY-MM-DD\"T\"HH24:MI:SS.FFTZH:TZM')"
+        )));
+    }
+    assert_eq!(result.sql.matches("TO_TIMESTAMP_TZ").count(), 5);
+    assert!(result.sql.contains("\"T\".\":1\" = :6"));
+}

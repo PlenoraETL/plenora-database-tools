@@ -290,7 +290,9 @@ fn admit(
             continue;
         };
         let (key, dimensions) = admission_key(field.data_type(), column, server);
-        let rewrites = measured.admit(&key, dimensions).map_err(in_phase)?;
+        let rewrites =
+            plenora_database_core::admission_gate::write_column(&measured, &key, dimensions)
+                .map_err(in_phase)?;
         if !rewrites
             .iter()
             .all(|rewrite| rewrite.admits(field.data_type()))

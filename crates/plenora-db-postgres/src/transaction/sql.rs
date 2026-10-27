@@ -59,10 +59,13 @@ pub(super) fn phase_of(sql: &str) -> ErrorPhase {
     }
 }
 
+/// Un parametro che non si codifica: l'errore nasce prima dell'invio, quindi
+/// in fase `Prepare`, non `Write`, che lascerebbe pensare a uno statement
+/// partito.
 pub(super) fn unsupported_param(message: &str) -> DatabaseError {
     public_error(
         ErrorCategory::Unsupported,
-        ErrorPhase::Write,
+        ErrorPhase::Prepare,
         false,
         message,
     )

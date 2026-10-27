@@ -200,6 +200,28 @@ impl MysqlReadPlan {
             renderer.quote_object(&object)?
         );
         let mut bind_names = Vec::new();
+        // Un campo geometrico sotto un operatore non spatial o in ORDER BY
+        // confronterebbe il formato interno del server con il valore legato
+        // (`spatial_operand`); un campo binario di una vista o generato si
+        // giudica geometrico (regola B, `catalog_column_is_geometric`). La
+        // regola F la giudica la lettura con i valori (`ensure_read_families`).
+        plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+            profile.kind(),
+            operation.filter.as_ref(),
+            &operation.order_by,
+            |field| {
+                available
+                    .iter()
+                    .zip(&description.columns)
+                    .any(|(column, catalog)| {
+                        column.name == field
+                            && (column.kind == MysqlColumnKind::Geometry
+                                || read_column_type(description, catalog, profile).is_geometric())
+                    })
+            },
+            |_| Ok(None),
+            &plenora_database_core::spatial_operand::ParameterFamilies::default(),
+        )?;
         if let Some(filter) = &operation.filter {
             ensure_filter_columns(filter, &available)?;
             let rendered_filter = renderer.render_filter(&convert_filter(filter)?)?;
@@ -734,6 +756,64 @@ fn prepare_error(category: ErrorCategory, message: impl Into<String>) -> Databas
         ErrorPhase::Prepare,
         Some(crate::profile::PROVISIONAL_KIND),
         message,
+    )
+}
+
+/// Il tipo di una colonna della descrizione per il giudizio degli operandi
+/// (`spatial_operand`): derivata in una relazione derivata (una vista, una
+/// `MERGE`, una tabella di un altro server: `catalog::is_derived_relation`) o
+/// se il server la calcola
+/// (`catalog::is_computed_column`), con la famiglia del suo tipo
+/// (`catalog::type_family`).
+pub fn read_column_type(
+    description: &crate::catalog::MysqlObjectDescription,
+    column: &crate::catalog::MysqlColumn,
+    profile: &dyn crate::profile::ProductProfile,
+) -> plenora_database_core::spatial_operand::ColumnType {
+    use plenora_database_core::spatial_operand::{ColumnOrigin, ColumnType};
+    ColumnType::new(
+        ColumnOrigin::of(
+            crate::catalog::is_derived_relation(&description.kind, description.engine.as_deref()),
+            crate::catalog::is_computed_column(&column.extra, &column.generation_expression)
+                || (profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb
+                    && crate::catalog::mariadb_default_may_compute(
+                        column.default_expression.as_deref(),
+                    )),
+        ),
+        crate::catalog::type_family(&column.data_type, profile),
+    )
+}
+
+/// La regola F di una lettura (`spatial_operand::ensure_scalar_filter_fields`),
+/// con le famiglie dei valori legati: un campo e un parametro di famiglie
+/// diverse si rifiutano prima della query.
+///
+/// # Errors
+///
+/// `invalid_plan` per una conversione implicita fra famiglie.
+pub fn ensure_read_families(
+    description: &crate::catalog::MysqlObjectDescription,
+    operation: &ReadOperation,
+    parameters: &plenora_database_core::provider::ParameterBag,
+    profile: &dyn crate::profile::ProductProfile,
+) -> Result<()> {
+    use plenora_database_core::spatial_operand::{exact_column, ParameterFamilies};
+    plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+        profile.kind(),
+        operation.filter.as_ref(),
+        &operation.order_by,
+        |_| false,
+        |field| {
+            Ok(
+                exact_column(&description.columns, |column| &column.name, field).map(|column| {
+                    (
+                        read_column_type(description, column, profile).family,
+                        Some(column.native_declaration.to_ascii_lowercase()),
+                    )
+                }),
+            )
+        },
+        &ParameterFamilies::from_bag(parameters),
     )
 }
 

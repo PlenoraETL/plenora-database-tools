@@ -427,6 +427,7 @@ pub struct SqlServerSpatialParameter {
 pub struct Renderer {
     dialect: Dialect,
     capabilities: DialectCapabilities,
+    parameter_types: BTreeMap<String, QueryParameterType>,
     sql_server_spatial_parameters: BTreeMap<String, SqlServerSpatialParameter>,
     /// La semantica di ogni colonna spatial che il piano nomina.
     ///
@@ -472,6 +473,7 @@ impl Renderer {
         Self {
             dialect,
             capabilities,
+            parameter_types: BTreeMap::new(),
             sql_server_spatial_parameters: BTreeMap::new(),
             sql_server_spatial_columns: BTreeMap::new(),
             wkb_axis_option: match dialect {
@@ -491,6 +493,18 @@ impl Renderer {
         provider: plenora_database_core::plan::ProviderKind,
     ) -> Self {
         self.provider = Some(provider);
+        self
+    }
+
+    /// Tipi dei bind che richiedono una conversione SQL esplicita. Il
+    /// chiamante li ricava dai valori ammessi, non dal tipo della colonna:
+    /// un testo confrontato con un timestamp resta un testo.
+    #[must_use]
+    pub fn with_parameter_types(
+        mut self,
+        parameter_types: BTreeMap<String, QueryParameterType>,
+    ) -> Self {
+        self.parameter_types = parameter_types;
         self
     }
 
@@ -1217,11 +1231,17 @@ impl Renderer {
                     Ok(field)
                 }
             }
-            QueryExpression::Parameter { name } => Ok(self.bind(name, binds)),
-            QueryExpression::TypedParameter {
-                name,
-                parameter_type,
-            } => Ok(self.render_typed_parameter(name, *parameter_type, binds)),
+            QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. } => {
+                let value = self.bind(name, binds);
+                let kind = match expression {
+                    QueryExpression::TypedParameter { parameter_type, .. } => Some(parameter_type),
+                    _ => self.parameter_types.get(name),
+                };
+                Ok(match kind {
+                    Some(kind) => self.cast_dialect().render(&value, *kind),
+                    None => value,
+                })
+            }
             QueryExpression::Arithmetic {
                 left,
                 operator,
@@ -1310,29 +1330,18 @@ impl Renderer {
         }
     }
 
-    fn render_typed_parameter(
-        &self,
-        name: &str,
-        parameter_type: plenora_database_core::relational::QueryParameterType,
-        binds: &mut RenderState,
-    ) -> String {
-        let value = self.bind(name, binds);
-        if self.dialect == Dialect::Oracle {
-            match parameter_type {
-                QueryParameterType::Boolean => return format!("TO_BOOLEAN({value})"),
-                QueryParameterType::TimestampTz => {
-                    return format!(
-                        "TO_TIMESTAMP_TZ({value}, '{}')",
-                        plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
-                    )
-                }
-                _ => {}
-            }
+    /// Il dialetto della regola T condivisa con il lowering delle mutazioni.
+    const fn cast_dialect(&self) -> plenora_database_core::typed_parameter::CastDialect {
+        use plenora_database_core::typed_parameter::CastDialect;
+        match self.dialect {
+            Dialect::Postgres => CastDialect::Postgres,
+            Dialect::Mysql => CastDialect::Mysql,
+            Dialect::SqlServer => CastDialect::SqlServer,
+            Dialect::Oracle => CastDialect::Oracle,
+            Dialect::Db2 => CastDialect::Db2,
+            Dialect::Sqlite => CastDialect::Sqlite,
+            Dialect::Duckdb => CastDialect::Duckdb,
         }
-        format!(
-            "CAST({value} AS {})",
-            self.render_parameter_type(parameter_type)
-        )
     }
 
     fn render_arithmetic(
@@ -1361,21 +1370,10 @@ impl Renderer {
     ) -> Result<String> {
         let value = self.render_query_expression(expression, binds)?;
         if self.dialect == Dialect::Oracle {
-            match target_type {
-                QueryParameterType::Boolean => return Ok(format!("TO_BOOLEAN({value})")),
-                QueryParameterType::TimestampTz => {
-                    return Ok(format!(
-                        "TO_TIMESTAMP_TZ({value}, '{}')",
-                        plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
-                    ))
-                }
-                _ => {}
-            }
+            return Ok(self.cast_dialect().render(&value, target_type));
         }
-        Ok(format!(
-            "CAST({value} AS {})",
-            self.render_parameter_type(target_type)
-        ))
+        let native_type = self.cast_dialect().type_name(target_type);
+        Ok(format!("CAST({value} AS {native_type})"))
     }
 
     fn render_case(
@@ -1475,78 +1473,6 @@ impl Renderer {
         }
     }
 
-    const fn render_parameter_type(&self, parameter_type: QueryParameterType) -> &'static str {
-        match parameter_type {
-            QueryParameterType::Boolean => match self.dialect {
-                Dialect::Mysql => "SIGNED",
-                Dialect::SqlServer => "BIT",
-                _ => "BOOLEAN",
-            },
-            QueryParameterType::Integer => match self.dialect {
-                Dialect::Mysql => "SIGNED",
-                Dialect::Oracle => "NUMBER(10)",
-                _ => "INTEGER",
-            },
-            QueryParameterType::BigInteger => match self.dialect {
-                Dialect::Mysql => "SIGNED",
-                Dialect::Oracle => "NUMBER(19)",
-                _ => "BIGINT",
-            },
-            QueryParameterType::Float => match self.dialect {
-                Dialect::Postgres => "DOUBLE PRECISION",
-                Dialect::SqlServer => "FLOAT",
-                Dialect::Sqlite => "REAL",
-                Dialect::Oracle => "BINARY_DOUBLE",
-                _ => "DOUBLE",
-            },
-            QueryParameterType::String => match self.dialect {
-                Dialect::Postgres | Dialect::Sqlite => "TEXT",
-                Dialect::Mysql => "CHAR",
-                Dialect::SqlServer => "NVARCHAR(MAX)",
-                Dialect::Duckdb => "VARCHAR",
-                Dialect::Oracle => "VARCHAR2(4000)",
-                Dialect::Db2 => "VARCHAR(32672)",
-            },
-            QueryParameterType::Binary => match self.dialect {
-                Dialect::Postgres => "BYTEA",
-                Dialect::Mysql => "BINARY",
-                Dialect::SqlServer => "VARBINARY(MAX)",
-                Dialect::Sqlite | Dialect::Duckdb => "BLOB",
-                Dialect::Oracle => "RAW(2000)",
-                Dialect::Db2 => "VARCHAR(32672) FOR BIT DATA",
-            },
-            QueryParameterType::Date => "DATE",
-            QueryParameterType::Timestamp => match self.dialect {
-                Dialect::Mysql => "DATETIME(6)",
-                Dialect::SqlServer => "DATETIME2",
-                Dialect::Sqlite => "TEXT",
-                _ => "TIMESTAMP",
-            },
-            QueryParameterType::TimestampTz => match self.dialect {
-                Dialect::Postgres | Dialect::Sqlite | Dialect::Duckdb => "TIMESTAMPTZ",
-                Dialect::SqlServer => "DATETIMEOFFSET",
-                Dialect::Oracle | Dialect::Db2 => "TIMESTAMP WITH TIME ZONE",
-                Dialect::Mysql => "DATETIME(6)",
-            },
-            QueryParameterType::Decimal => match self.dialect {
-                Dialect::Oracle => "NUMBER(38, 10)",
-                _ => "DECIMAL(38, 10)",
-            },
-            QueryParameterType::Uuid => match self.dialect {
-                Dialect::Postgres => "UUID",
-                Dialect::SqlServer => "UNIQUEIDENTIFIER",
-                Dialect::Oracle => "VARCHAR2(36)",
-                _ => "CHAR(36)",
-            },
-            QueryParameterType::Json => match self.dialect {
-                Dialect::Postgres => "JSONB",
-                Dialect::Mysql | Dialect::Sqlite | Dialect::Duckdb => "JSON",
-                Dialect::SqlServer => "NVARCHAR(MAX)",
-                Dialect::Oracle | Dialect::Db2 => "CLOB",
-            },
-        }
-    }
-
     /// La regola P sul piano intero, prima di rendere: una sonda e ammessa
     /// soltanto come argomento di un nodo spatial che la giudica, in un
     /// predicato del blocco la cui FROM contiene la colonna confrontata
@@ -1555,12 +1481,19 @@ impl Renderer {
     /// al 25/10 il renderer guardava soltanto gli operandi di un operatore non
     /// spatial, e una sonda nella projection di una subquery `IN` o di una
     /// sorgente derivata nominata per alias rendeva zero righe senza errore.
+    ///
+    /// Poi la regola degli operandi geometrici, nella parte che non chiede un
+    /// catalogo (`spatial_operand::scalar_operands`): una funzione spatial che
+    /// rende una geometria o un valore spatial sotto un operatore non spatial
+    /// si rifiuta qui, per ogni dialetto; le colonne le giudica il provider.
     fn judge_probe_positions(&self, query: &QueryOperation) -> Result<()> {
         plenora_database_core::spatial_probe::judge_probe_positions(
             self.provider_kind(),
             self.probe_evidence,
             query,
-        )
+        )?;
+        plenora_database_core::spatial_operand::scalar_operands(self.provider_kind(), query)
+            .map(|_| ())
     }
 
     fn render_predicate_expression(
@@ -2376,6 +2309,15 @@ impl Renderer {
     ) -> Result<RenderedSql> {
         let mut binds = RenderState::default();
         let relational = simple_expression_to_relational_with_relation(expression, relation);
+        // La stessa regola P delle query, sul predicato isolato: ogni colonna
+        // e della relazione filtrata (qualificata con `relation`, o senza
+        // qualificazione se il chiamante non la nomina).
+        plenora_database_core::spatial_probe::judge_probe_predicate(
+            self.provider_kind(),
+            self.probe_evidence,
+            &relational,
+            relation.map_or("", Identifier::as_str),
+        )?;
         let sql = self.render_query_expression(&relational, &mut binds)?;
         self.validate_bind_count(&binds)?;
         Ok(RenderedSql {

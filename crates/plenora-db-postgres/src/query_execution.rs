@@ -139,6 +139,34 @@ pub async fn read_stream(
     };
     let operation = &resolved;
     let (available, _schema_token) = provider.cached_columns(&client, &operation.source).await?;
+    // La regola degli operandi geometrici sul tipo che contiene una
+    // geometria (array, dominio, composito, range), non soltanto sul tipo
+    // descritto: `geometry[]` si descrive come testo.
+    if operation.filter.is_some() || !operation.order_by.is_empty() {
+        let columns = crate::spatial_probe::relation_columns(
+            client.client()?,
+            operation.source.schema.as_deref(),
+            &operation.source.object,
+        )
+        .await?;
+        plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+            plenora_database_core::plan::ProviderKind::Postgres,
+            operation.filter.as_ref(),
+            &operation.order_by,
+            |field| {
+                columns
+                    .iter()
+                    .any(|column| column.is_geometric() && column.name == field)
+            },
+            |field| {
+                Ok(columns
+                    .iter()
+                    .find(|column| column.name == field)
+                    .map(plenora_database_core::spatial_operand::CatalogColumn::field_family))
+            },
+            &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
+        )?;
+    }
     let plan = plan_read(operation, &available)?;
     // Ogni sonda spatial porta uno SRID esplicito, quello della colonna
     // (typmod), e si lega come EWKB con quello SRID.
@@ -148,6 +176,7 @@ pub async fn read_stream(
         parameters,
         budget.limits().nesting_depth,
     )?;
+    let parameters = &admit_read_filter(client.client()?, operation, parameters).await?;
     let columns = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, columns)?;
@@ -208,6 +237,12 @@ pub async fn query_stream(
     validate_stream_configuration(provider)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let rendered = render_query(operation)?;
+    // La regola T sui valori del chiamante (`typed_parameter`), prima di
+    // ogni altra cosa.
+    plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters).judge_typed(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        &plenora_database_core::spatial_operand::OperandPlan::Query(operation),
+    )?;
     // Le sonde spatial si giudicano prima della connessione; le colonne con
     // cui si confrontano, sul catalogo prima della query.
     let probes = crate::spatial_probe::plan_query_probes(
@@ -216,8 +251,25 @@ pub async fn query_stream(
         budget.limits().nesting_depth,
     )?;
     let parameters = &probes.parameters;
+    let operands = plenora_database_core::spatial_operand::scalar_operands(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        operation,
+    )?;
     let mut client = connect_cancel_safe(provider, secret, cancellation).await?;
     crate::spatial_probe::verify_query_columns(client.client()?, &probes.columns).await?;
+    crate::spatial_probe::verify_scalar_operands(
+        client.client()?,
+        &operands,
+        &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
+    )
+    .await?;
+    // Le regole F, T e C hanno giudicato i valori del chiamante; poi i
+    // parametri tipati si ammettono contro il loro CAST (`operand_admission`).
+    let parameters = &plenora_database_core::admission_gate::query_parameters(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        operation,
+        parameters,
+    )?;
     let bind_names = rendered
         .binds
         .iter()
@@ -415,6 +467,39 @@ fn without_shared_origins(mut columns: Vec<ColumnSpec>) -> Vec<ColumnSpec> {
         column.source = None;
     }
     columns
+}
+
+/// La regola dei parametri che incontrano un operando (`operand_admission`):
+/// ogni parametro del filtro si ammette contro il tipo del campo, con il
+/// typmod letto dal catalogo.
+async fn admit_read_filter(
+    client: &tokio_postgres::Client,
+    operation: &plenora_database_core::plan::ReadOperation,
+    parameters: &ParameterBag,
+) -> Result<ParameterBag> {
+    use plenora_database_core::admission_gate::read_filter as admit_filter;
+    use plenora_database_core::operand_admission::operand_type;
+    use plenora_database_core::plan::ProviderKind;
+    if operation.filter.is_none() {
+        return Ok(parameters.clone());
+    }
+    let types = crate::column_types::column_types(
+        client,
+        operation.source.schema.as_deref(),
+        &operation.source.object,
+    )
+    .await?
+    .unwrap_or_default();
+    admit_filter(
+        ProviderKind::Postgres,
+        operation.filter.as_ref(),
+        parameters,
+        |field| {
+            types
+                .get(field)
+                .map(|catalog| operand_type(ProviderKind::Postgres, catalog))
+        },
+    )
 }
 
 #[cfg(test)]

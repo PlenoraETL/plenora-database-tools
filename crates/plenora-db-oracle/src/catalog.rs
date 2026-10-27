@@ -21,7 +21,14 @@ const DESCRIBE_RELATION_SQL: &str = "SELECT OWNER, OBJECT_NAME, OBJECT_TYPE FROM
 // `DATA_DEFAULT` è LONG e il driver thin non lo qualifica; non viene letto e
 // resta esplicitamente `null` nel documento, invece di convertirlo in modo
 // lossy o promettere una colonna `DATA_DEFAULT_VC` non presente su ogni major.
-const DESCRIBE_COLUMNS_SQL: &str = "SELECT COLUMN_NAME, COLUMN_ID, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE, NULLABLE, CAST(NULL AS VARCHAR2(1)) AS DATA_DEFAULT, IDENTITY_COLUMN, CAST('NO' AS VARCHAR2(3)) AS VIRTUAL_COLUMN, CHAR_LENGTH FROM ALL_TAB_COLUMNS WHERE OWNER = :1 AND TABLE_NAME = :2 ORDER BY COLUMN_ID";
+//
+// `DATA_TYPE_OWNER` si legge risolto, come nel catalogo degli operandi
+// (`operand_catalog::COLUMNS_SQL`): una colonna dichiarata `SDO_GEOMETRY`
+// senza schema ha proprietario `PUBLIC` (il sinonimo pubblico, misurato il
+// 25/10), e vale `MDSYS` soltanto se il sinonimo omonimo, senza database link,
+// arriva all'omonimo di `MDSYS`. Due sinonimi sono un errore del server
+// (una subquery scalare), non una scelta.
+const DESCRIBE_COLUMNS_SQL: &str = "SELECT C.COLUMN_NAME, C.COLUMN_ID, C.DATA_TYPE, C.DATA_LENGTH, C.DATA_PRECISION, C.DATA_SCALE, C.NULLABLE, CAST(NULL AS VARCHAR2(1)) AS DATA_DEFAULT, C.IDENTITY_COLUMN, CAST('NO' AS VARCHAR2(3)) AS VIRTUAL_COLUMN, C.CHAR_LENGTH, COALESCE((SELECT S.TABLE_OWNER FROM ALL_SYNONYMS S WHERE S.OWNER = C.DATA_TYPE_OWNER AND S.SYNONYM_NAME = C.DATA_TYPE AND S.TABLE_NAME = C.DATA_TYPE AND S.DB_LINK IS NULL), C.DATA_TYPE_OWNER) AS DATA_TYPE_OWNER FROM ALL_TAB_COLUMNS C WHERE C.OWNER = :1 AND C.TABLE_NAME = :2 ORDER BY C.COLUMN_ID";
 const DESCRIBE_INDEXES_SQL: &str = "SELECT i.INDEX_NAME, i.UNIQUENESS, CASE WHEN c.CONSTRAINT_TYPE = 'P' THEN 'Y' ELSE 'N' END, ic.COLUMN_POSITION, ic.COLUMN_NAME, ic.DESCEND, i.INDEX_TYPE, i.ITYP_OWNER, i.ITYP_NAME FROM ALL_INDEXES i JOIN ALL_IND_COLUMNS ic ON ic.INDEX_OWNER = i.OWNER AND ic.INDEX_NAME = i.INDEX_NAME LEFT JOIN ALL_CONSTRAINTS c ON c.OWNER = i.OWNER AND c.INDEX_NAME = i.INDEX_NAME AND c.CONSTRAINT_TYPE = 'P' WHERE i.TABLE_OWNER = :1 AND i.TABLE_NAME = :2 AND i.INDEX_TYPE <> 'LOB' ORDER BY i.INDEX_NAME, ic.COLUMN_POSITION";
 const DESCRIBE_SPATIAL_SQL: &str = "SELECT m.COLUMN_NAME, m.SRID, (SELECT COUNT(*) FROM TABLE(m.DIMINFO)) FROM ALL_SDO_GEOM_METADATA m WHERE m.OWNER = :1 AND m.TABLE_NAME = :2 ORDER BY m.COLUMN_NAME";
 
@@ -39,6 +46,11 @@ pub struct OracleColumn {
     pub name: String,
     pub ordinal: u64,
     pub data_type: String,
+    /// Il proprietario del tipo (`ALL_TAB_COLUMNS.DATA_TYPE_OWNER`, risolto
+    /// attraverso il sinonimo omonimo del tipo): `MDSYS` per `SDO_GEOMETRY`,
+    /// anche dichiarato senza schema, assente per i tipi predefiniti.
+    #[serde(default)]
+    pub data_type_owner: Option<String>,
     pub data_length: u64,
     pub char_length: u64,
     pub precision: Option<u64>,
@@ -53,6 +65,18 @@ pub struct OracleColumn {
     pub spatial_dimensions: Option<u8>,
     #[serde(default)]
     pub spatial_semantics: Option<SpatialSemantics>,
+}
+
+impl OracleColumn {
+    /// La colonna e `MDSYS.SDO_GEOMETRY`: il nome del tipo e il suo
+    /// proprietario. Un tipo omonimo di un altro schema non e una geometria
+    /// del provider, e non e il tipo su cui e misurata la guardia del server
+    /// (`spatial_operand::operand_server_guard`): potrebbe avere un metodo
+    /// `MAP` o `ORDER`, e il server lo confronterebbe senza errore.
+    #[must_use]
+    pub fn is_sdo_geometry(&self) -> bool {
+        self.data_type == "SDO_GEOMETRY" && self.data_type_owner.as_deref() == Some("MDSYS")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,10 +222,7 @@ pub async fn describe_object(
     if columns.is_empty() {
         return Err(mapping_error("oggetto Oracle descritto senza colonne"));
     }
-    if columns
-        .iter()
-        .any(|column| column.data_type.eq_ignore_ascii_case("SDO_GEOMETRY"))
-    {
+    if columns.iter().any(OracleColumn::is_sdo_geometry) {
         let rows = query(
             config,
             connection,
@@ -311,6 +332,7 @@ fn column_description(row: &Row) -> Result<OracleColumn> {
         name: required_string(row, 0, "colonna Oracle senza nome")?,
         ordinal: required_u64(row, 1, "ordinale colonna Oracle non rappresentabile")?,
         data_type: required_string(row, 2, "colonna Oracle senza tipo")?,
+        data_type_owner: optional_string(row, 11)?,
         data_length: required_u64(row, 3, "lunghezza colonna Oracle non rappresentabile")?,
         precision: optional_u64(row, 4, "precisione colonna Oracle non rappresentabile")?,
         scale: optional_i64(row, 5, "scala colonna Oracle non rappresentabile")?,
@@ -353,10 +375,7 @@ fn apply_spatial_metadata(columns: &mut [OracleColumn], rows: &[Row]) -> Result<
                 .map_err(|_| mapping_error("dimensionalita spatial Oracle oltre u8"))?,
         );
     }
-    for column in columns
-        .iter()
-        .filter(|column| column.data_type.eq_ignore_ascii_case("SDO_GEOMETRY"))
-    {
+    for column in columns.iter().filter(|column| column.is_sdo_geometry()) {
         if column.spatial_srid.is_none()
             || column.spatial_dimensions.is_none()
             || column.spatial_semantics.is_none()

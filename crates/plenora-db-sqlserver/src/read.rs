@@ -101,6 +101,7 @@ pub async fn read_operation(
     )
     .await?;
     let mut plan = SqlServerReadPlan::compile_operation(&description, operation)?;
+    crate::types::ensure_read_families(&description, operation, parameters)?;
     let column_count = u64::try_from(description.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne non rappresentabile"))?;
     let columns_lease = budget.try_lease(ResourceKind::Columns, column_count)?;
@@ -127,11 +128,35 @@ pub async fn read_operation(
             "schema SQL Server cambiato durante la preparazione",
         ));
     }
+    // La regola dei parametri che incontrano un operando
+    // (`operand_admission`): ogni parametro del filtro si ammette contro il
+    // tipo del campo, letto dal catalogo con precisione e scala.
+    let admitted = if operation.filter.is_some() {
+        let relation = (Some(schema.to_owned()), operation.source.object.clone());
+        let types = crate::query::column_types(pooled.session_mut()?, &relation, &internal)
+            .await?
+            .unwrap_or_default();
+        plenora_database_core::admission_gate::read_filter(
+            plenora_database_core::plan::ProviderKind::Sqlserver,
+            operation.filter.as_ref(),
+            parameters,
+            |field| {
+                types.get(field).map(|catalog| {
+                    plenora_database_core::operand_admission::operand_type(
+                        plenora_database_core::plan::ProviderKind::Sqlserver,
+                        catalog,
+                    )
+                })
+            },
+        )?
+    } else {
+        parameters.clone()
+    };
 
     start_plan_stream(
         pooled,
         plan,
-        parameters,
+        &admitted,
         batch_rows,
         budget,
         internal,
@@ -160,6 +185,15 @@ pub async fn read_query_operation(
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;
     let internal = budget_cancellation.token().clone();
     let mut pooled = pool.checkout(&internal).await?;
+    crate::query::verify_scalar_operands(pooled.session_mut()?, operation, parameters, &internal)
+        .await?;
+    // Le regole F, T e C hanno giudicato i valori del chiamante; poi i
+    // parametri tipati si ammettono contro il loro CAST (`operand_admission`).
+    let parameters = &plenora_database_core::admission_gate::query_parameters(
+        plenora_database_core::plan::ProviderKind::Sqlserver,
+        operation,
+        parameters,
+    )?;
     let spatial_validation = validate_spatial_inputs(
         pooled.session_mut()?,
         operation,

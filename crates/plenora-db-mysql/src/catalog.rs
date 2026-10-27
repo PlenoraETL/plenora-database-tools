@@ -742,6 +742,458 @@ pub(crate) async fn verify_declared_column_srids(
     Ok(())
 }
 
+/// Le colonne delle relazioni `relations` (schema, oggetto; lo schema
+/// assente e `database`), nell'ordine della tabella e con il flag
+/// geometrico: la regola degli operandi geometrici (`spatial_operand`) le
+/// giudica a mondo chiuso prima di preparare una query.
+///
+/// Si leggono con `SHOW COLUMNS`, che risolve il nome come lo risolve la
+/// query: una tabella `TEMPORARY` della sessione che ne nasconde una di base
+/// omonima, e le maiuscole secondo `lower_case_table_names`. Fino al 25/10 si
+/// leggeva `INFORMATION_SCHEMA.COLUMNS`, che elenca la tabella di base: con
+/// `t(g INT)` e una `TEMPORARY t(g POINT)`, `ORDER BY t.g` si giudicava sulla
+/// colonna intera e il server ordinava la geometria. Una tabella assente
+/// fallisce come fallirebbe la query.
+///
+/// I nomi `names` del piano che non sono uguali per byte a una colonna li
+/// lega il server (regola A, [`resolve_names`]): misurato su `MariaDB` 12.3
+/// il 25/10, `INFORMATION_SCHEMA.COLUMNS` uguaglia `e` a una colonna `é`, che
+/// la query non lega (1054), e `ñAME` lega `Ñame`; il giudizio non piega i
+/// nomi (fino alla quindicesima lettura li piegava senza maiuscole).
+///
+/// # Errors
+///
+/// Gli errori del catalogo.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn relation_columns(
+    session: &mut MysqlSession,
+    profile: &dyn crate::profile::ProductProfile,
+    database: &str,
+    relations: &[(Option<String>, String)],
+    names: &[String],
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
+    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
+    let mut catalog = OperandCatalog::new(profile.kind());
+    for (schema, object) in relations {
+        let wanted_schema = schema.as_deref().unwrap_or(database);
+        let columns = show_columns(session, profile, wanted_schema, object, cancellation).await?;
+        if let RelationColumns::Known(known) = &columns {
+            let unbound = names
+                .iter()
+                .filter(|name| !known.iter().any(|column| column.name == **name))
+                .collect::<Vec<_>>();
+            let bound =
+                resolve_names(session, wanted_schema, object, &unbound, cancellation).await?;
+            for (name, matched) in unbound.into_iter().zip(bound) {
+                catalog.insert_resolution(schema.clone(), object.clone(), name.clone(), matched);
+            }
+        }
+        catalog.insert(schema.clone(), object.clone(), columns);
+    }
+    Ok(catalog)
+}
+
+/// Le colonne che il server lega a ogni nome nella relazione: il prepare di
+/// `SELECT nome FROM relazione` (senza eseguire) e l'`org_name` dei suoi
+/// metadati, la colonna del catalogo. Prima tutti i nomi insieme; se il
+/// server non ne lega uno, uno per uno: un nome che il server non lega non
+/// lega niente.
+async fn resolve_names(
+    session: &mut MysqlSession,
+    schema: &str,
+    object: &str,
+    names: &[&String],
+    cancellation: &CancellationToken,
+) -> Result<Vec<Vec<String>>> {
+    use plenora_database_core::identifier::{quote_identifier, IdentifierDialect};
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let relation = format!(
+        "{}.{}",
+        quote_identifier(IdentifierDialect::Mysql, schema)?,
+        quote_identifier(IdentifierDialect::Mysql, object)?
+    );
+    let select = |names: &[&String]| -> Result<String> {
+        let projection = names
+            .iter()
+            .map(|name| quote_identifier(IdentifierDialect::Mysql, name))
+            .collect::<Result<Vec<_>>>()?
+            .join(", ");
+        Ok(format!("SELECT {projection} FROM {relation}"))
+    };
+    if let Some(origins) = session
+        .prepared_column_origins(&select(names)?, cancellation)
+        .await?
+    {
+        if origins.len() == names.len() {
+            return Ok(origins.into_iter().map(|origin| vec![origin]).collect());
+        }
+        return Err(mapping_error(
+            "metadati del prepare MySQL diversi dai nomi della projection",
+        ));
+    }
+    let mut bound = Vec::with_capacity(names.len());
+    for name in names {
+        let origins = session
+            .prepared_column_origins(&select(&[name])?, cancellation)
+            .await?
+            .unwrap_or_default();
+        bound.push(origins);
+    }
+    Ok(bound)
+}
+
+/// Il catalogo di [`relation_columns`] dentro una transazione: il database
+/// di default e quello della connessione (`DATABASE()`), letto soltanto se
+/// una relazione non nomina lo schema. Senza database di default una
+/// relazione senza schema non si conosce, e nessun suo riferimento si
+/// risolve. E la lettura di `TransactionScope::operand_catalog`.
+///
+/// # Errors
+///
+/// Gli errori del catalogo.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn transaction_operand_catalog(
+    session: &mut MysqlSession,
+    relations: &[(Option<String>, String)],
+    names: &[String],
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
+    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
+    let profile = session.profile();
+    let database = if relations.iter().any(|(schema, _)| schema.is_none()) {
+        let rows = session
+            .query_rows("SELECT DATABASE()", ErrorPhase::Prepare, cancellation)
+            .await?;
+        match rows.first() {
+            Some(row) => optional::<String, _>(row, 0, "DATABASE()")?,
+            None => None,
+        }
+    } else {
+        None
+    };
+    let Some(database) = database else {
+        let qualified = relations
+            .iter()
+            .filter(|(schema, _)| schema.is_some())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut catalog = if qualified.is_empty() {
+            OperandCatalog::new(profile.kind())
+        } else {
+            relation_columns(session, profile, "", &qualified, names, cancellation).await?
+        };
+        for (schema, object) in relations.iter().filter(|(schema, _)| schema.is_none()) {
+            catalog.insert(schema.clone(), object.clone(), RelationColumns::Unknown);
+        }
+        return Ok(catalog);
+    };
+    relation_columns(session, profile, &database, relations, names, cancellation).await
+}
+
+/// I tipi delle colonne di una relazione, con precisione, scala, lunghezza e
+/// precisione temporale (`information_schema.COLUMNS`), per l'ammissione dei
+/// letterali portable (`plenora_database_core::operand_admission`). `None`
+/// per una relazione che il catalogo non conosce.
+///
+/// # Errors
+///
+/// Gli errori del catalogo in fase `prepare`.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn transaction_column_types(
+    session: &mut MysqlSession,
+    relation: &(Option<String>, String),
+    cancellation: &CancellationToken,
+) -> Result<Option<plenora_database_core::operand_admission::RelationTypes>> {
+    use plenora_database_core::operand_admission::{CatalogType, Charset};
+    let rows = session
+        .exec_rows(
+            session.profile().column_types_query(),
+            mysql_async::Params::Positional(vec![
+                relation
+                    .0
+                    .as_ref()
+                    .map_or(mysql_async::Value::NULL, |schema| {
+                        mysql_async::Value::Bytes(schema.as_bytes().to_vec())
+                    }),
+                mysql_async::Value::Bytes(relation.1.as_bytes().to_vec()),
+            ]),
+            ErrorPhase::Prepare,
+            cancellation,
+        )
+        .await?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    rows.iter()
+        .map(|row| {
+            let name = optional::<String, _>(row, 0, "COLUMN_NAME")?
+                .ok_or_else(|| mapping_error("campo catalogo COLUMN_NAME nullo".to_owned()))?;
+            let catalog = CatalogType {
+                name: optional::<String, _>(row, 1, "DATA_TYPE")?.unwrap_or_default(),
+                declaration: optional::<String, _>(row, 2, "COLUMN_TYPE")?,
+                length: optional::<u64, _>(row, 3, "CHARACTER_MAXIMUM_LENGTH")?,
+                precision: optional::<u64, _>(row, 4, "NUMERIC_PRECISION")?,
+                scale: optional::<i64, _>(row, 5, "NUMERIC_SCALE")?,
+                datetime_precision: optional::<u64, _>(row, 6, "DATETIME_PRECISION")?,
+                // La lunghezza in caratteri; il charset della colonna decide
+                // quali caratteri conserva (`utf8mb3` soltanto il piano di
+                // base, `latin1` e Windows-1252).
+                length_unit: plenora_database_core::operand_admission::LengthUnit::Characters,
+                charset: match optional::<String, _>(row, 7, "CHARACTER_SET_NAME")?.as_deref() {
+                    None | Some("utf8mb4") => Charset::Unicode,
+                    Some("utf8mb3" | "utf8") => Charset::UnicodeBmp,
+                    Some("latin1") => Charset::Windows1252,
+                    Some(_) => Charset::Ascii,
+                },
+            };
+            Ok((name, catalog))
+        })
+        .collect::<Result<_>>()
+        .map(Some)
+}
+
+/// I tipi binari di `SHOW COLUMNS` (il nome prima della lunghezza): un
+/// `CHAR` o `VARCHAR` con `CHARACTER SET binary` si descrive `binary` o
+/// `varbinary`.
+const BINARY_TYPES: [&str; 6] = [
+    "binary",
+    "varbinary",
+    "tinyblob",
+    "blob",
+    "mediumblob",
+    "longblob",
+];
+
+/// Il nome del tipo prima della lunghezza, senza maiuscole.
+fn base_type(data_type: &str) -> String {
+    data_type
+        .split(|character: char| !character.is_ascii_alphabetic())
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+/// I tipi testo (`ENUM` e `SET` si confrontano come testo).
+const TEXT_TYPES: [&str; 8] = [
+    "char",
+    "varchar",
+    "tinytext",
+    "text",
+    "mediumtext",
+    "longtext",
+    "enum",
+    "set",
+];
+
+/// I tipi numerici (`BIT`, `BOOL`, `YEAR` sono interi nella regola F).
+const NUMERIC_TYPES: [&str; 16] = [
+    "tinyint",
+    "smallint",
+    "mediumint",
+    "int",
+    "integer",
+    "bigint",
+    "decimal",
+    "numeric",
+    "dec",
+    "fixed",
+    "float",
+    "double",
+    "real",
+    "bit",
+    "bool",
+    "year",
+];
+
+/// I tipi temporali.
+const TEMPORAL_TYPES: [&str; 4] = ["date", "time", "datetime", "timestamp"];
+
+/// La famiglia di un tipo per la regola F (`spatial_operand::OperandFamily`):
+/// un tipo spatial del prodotto geometrico, poi binaria, testo, numerica,
+/// temporale; il resto (`JSON`, `VECTOR`, `UUID` e `INET` di `MariaDB`)
+/// «altra». Un `CHAR`/`VARCHAR` con `CHARACTER SET binary` si descrive
+/// `binary`/`varbinary`.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn type_family(
+    data_type: &str,
+    profile: &dyn crate::profile::ProductProfile,
+) -> plenora_database_core::spatial_operand::OperandFamily {
+    use plenora_database_core::spatial_operand::OperandFamily;
+    let base = base_type(data_type);
+    let base = base.as_str();
+    if profile.is_spatial_native_type(base) {
+        OperandFamily::Geometry
+    } else if BINARY_TYPES.contains(&base) {
+        OperandFamily::Binary
+    } else if TEXT_TYPES.contains(&base) {
+        OperandFamily::Text
+    } else if NUMERIC_TYPES.contains(&base) {
+        OperandFamily::Numeric
+    } else if TEMPORAL_TYPES.contains(&base) {
+        OperandFamily::Temporal
+    } else {
+        OperandFamily::Other
+    }
+}
+
+/// Il tipo per la regola C (`plenora_database_core::cast_table`) dal `Type`
+/// di `SHOW COLUMNS` (`decimal(30,12)`, `varchar(10)`, `int unsigned`,
+/// `datetime(6)`): il nome prima della lunghezza, la dichiarazione intera
+/// (che dice `unsigned`), la lunghezza di un testo o binario, precisione e
+/// scala di un decimale, le cifre frazionarie di un temporale.
+#[must_use]
+pub fn catalog_type(declared: &str) -> plenora_database_core::cast_table::CatalogType {
+    let name = base_type(declared);
+    let arguments = declared
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(arguments, _)| {
+            arguments
+                .split(',')
+                .map(|argument| argument.trim().parse::<u64>().ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let first = arguments.first().copied().flatten();
+    let second = arguments.get(1).copied().flatten();
+    let mut catalog = plenora_database_core::cast_table::CatalogType {
+        name: name.clone(),
+        declaration: Some(declared.to_ascii_lowercase()),
+        ..plenora_database_core::cast_table::CatalogType::default()
+    };
+    match name.as_str() {
+        "decimal" | "numeric" | "dec" | "fixed" => {
+            catalog.precision = first;
+            catalog.scale = second.and_then(|scale| i64::try_from(scale).ok());
+        }
+        "char" | "varchar" | "binary" | "varbinary" => catalog.length = first,
+        "datetime" | "timestamp" | "time" => catalog.datetime_precision = first,
+        _ => {}
+    }
+    catalog
+}
+
+/// La colonna la calcola il server (regola B per colonna): `Extra` dice
+/// `VIRTUAL GENERATED`, `STORED GENERATED` o `DEFAULT_GENERATED` (un default
+/// di espressione, che puo leggere altre colonne) su `MySQL`, `VIRTUAL
+/// GENERATED`, `STORED GENERATED` o `PERSISTENT` su `MariaDB`; o il catalogo
+/// ne da l'espressione (`GENERATION_EXPRESSION`).
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn is_computed_column(extra: &str, generation_expression: &str) -> bool {
+    let extra = extra.to_ascii_uppercase();
+    extra.contains("GENERATED")
+        || extra.contains("VIRTUAL")
+        || extra.contains("PERSISTENT")
+        || !generation_expression.trim().is_empty()
+}
+
+/// Su `MariaDB` un default di espressione puo leggere altre colonne
+/// (`w BLOB DEFAULT (ST_AsBinary(g))`, misurato su 12.3.2 il 25/10: il
+/// server riempie `w` dalla geometria) e il catalogo non lo distingue da un
+/// letterale: `Extra` e vuoto, `IS_GENERATED` e `NEVER`, e `SHOW COLUMNS`
+/// stampa i letterali senza apici. Ogni default presente (non `NULL`) si
+/// giudica quindi calcolato: conta soltanto per la famiglia binaria (regola
+/// B), dove il costo e il rifiuto di una colonna binaria con un default
+/// letterale. Su `MySQL` lo dice `DEFAULT_GENERATED` ([`is_computed_column`]).
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn mariadb_default_may_compute(default: Option<&str>) -> bool {
+    default.is_some_and(|default| !default.trim().eq_ignore_ascii_case("NULL"))
+}
+
+/// I motori le cui righe stanno in altre relazioni ([`VIEW_SQL`]).
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) const DERIVED_ENGINES: [&str; 4] = ["MRG_MYISAM", "FEDERATED", "CONNECT", "SPIDER"];
+
+/// Una relazione derivata dalla descrizione (`TABLE_TYPE`, `ENGINE`): la
+/// stessa regola di [`VIEW_SQL`] per il percorso di lettura.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn is_derived_relation(kind: &str, engine: Option<&str>) -> bool {
+    matches!(kind, "VIEW" | "SYSTEM VIEW")
+        || engine.is_some_and(|engine| {
+            DERIVED_ENGINES
+                .iter()
+                .any(|derived| engine.eq_ignore_ascii_case(derived))
+        })
+}
+
+/// Una relazione derivata con quel nome, senza maiuscole
+/// (`lower_case_table_names` decide se il server le distingue; senza, il
+/// giudizio e piu severo, non meno): una vista, o una tabella le cui righe
+/// stanno in altre relazioni, una `MERGE` (`MRG_MyISAM`, l'unione di tabelle
+/// `MyISAM` che possono avere colonne generate dove la `MERGE` le dichiara
+/// memorizzate) o una tabella di un altro server (`FEDERATED`, `CONNECT`,
+/// `SPIDER`). Le partizioni di una tabella ne condividono la definizione, e
+/// le colonne generate. Fino alla quattordicesima lettura del 25/10 guardava
+/// soltanto le viste.
+const VIEW_SQL: &str = "SELECT 1 FROM INFORMATION_SCHEMA.TABLES \
+    WHERE LOWER(TABLE_SCHEMA) = LOWER(?) AND LOWER(TABLE_NAME) = LOWER(?) \
+    AND (TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW') \
+        OR UPPER(ENGINE) IN ('MRG_MYISAM', 'FEDERATED', 'CONNECT', 'SPIDER'))";
+
+/// `SHOW COLUMNS` di una relazione, risolta come la risolve la query.
+async fn show_columns(
+    session: &mut MysqlSession,
+    profile: &dyn crate::profile::ProductProfile,
+    schema: &str,
+    object: &str,
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::spatial_operand::RelationColumns> {
+    use plenora_database_core::identifier::{quote_identifier, IdentifierDialect};
+    use plenora_database_core::spatial_operand::{CatalogColumn, ColumnOrigin};
+    let sql = format!(
+        "SHOW COLUMNS FROM {}.{}",
+        quote_identifier(IdentifierDialect::Mysql, schema)?,
+        quote_identifier(IdentifierDialect::Mysql, object)?
+    );
+    let rows = session
+        .query_rows(&sql, ErrorPhase::Prepare, cancellation)
+        .await?;
+    // La regola B (`spatial_operand::catalog_column_is_geometric`): una vista
+    // del nome, anche soltanto senza maiuscole, o una colonna generata.
+    // `SHOW COLUMNS` legge una tabella `TEMPORARY` che ne nasconde una
+    // omonima, che `TABLES` non elenca: una vista omonima la fa giudicare
+    // derivata, un rifiuto in piu.
+    let derived = if rows.is_empty() {
+        false
+    } else {
+        let views = session
+            .exec_rows(
+                VIEW_SQL,
+                Params::Positional(vec![Value::from(schema), Value::from(object)]),
+                ErrorPhase::Prepare,
+                cancellation,
+            )
+            .await?;
+        !views.is_empty()
+    };
+    let mut columns = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let column: String = required(row, 0, "Field")?;
+        let declared: String = required(row, 1, "Type")?;
+        let extra: String = required(row, 5, "Extra")?;
+        let default: Option<String> = required(row, 4, "Default")?;
+        let computed = is_computed_column(&extra, "")
+            || (profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb
+                && mariadb_default_may_compute(default.as_deref()));
+        columns.push(
+            CatalogColumn::new(
+                column,
+                ColumnOrigin::of(derived, computed),
+                type_family(&declared, profile),
+            )
+            .with_type(catalog_type(&declared), &declared),
+        );
+    }
+    Ok(if columns.is_empty() {
+        plenora_database_core::spatial_operand::RelationColumns::Absent
+    } else {
+        plenora_database_core::spatial_operand::RelationColumns::Known(columns)
+    })
+}
+
 fn mapping_error(message: impl Into<String>) -> DatabaseError {
     DatabaseError::new(
         ErrorCategory::DataMapping,

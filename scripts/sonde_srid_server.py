@@ -20,10 +20,14 @@ Per ciascun prodotto:
   vuota; la scrittura di un valore in un altro SRID e rifiutata dal typmod;
 - `mysql`: 3033 o 3643 in ogni funzione e in `MBRIntersects`, anche
   indicizzati, sotto `NOT`, su una tabella vuota, e in scrittura;
-- `mariadb`: nessuna guardia: `ST_Intersects`, `MBRIntersects`, `ST_Within`
-  fra una sonda 3857 e una colonna `REF_SYSTEM_ID=4326` rendono righe, e un
-  valore 3857 entra nella colonna; `GEOMETRY_COLUMNS.SRID` pubblica 4326, ed e
-  da li che la scrittura del provider confronta lo SRID;
+- `mariadb`: nessuna guardia: `ST_Intersects`, `ST_Within` fra una sonda
+  3857 e una colonna `REF_SYSTEM_ID=4326` rendono righe, e un valore 3857
+  entra nella colonna; `GEOMETRY_COLUMNS.SRID` pubblica 4326, ed e da li che
+  la scrittura del provider confronta lo SRID. `MBRIntersects` rende righe
+  fino a 11.8 (misurato su 10.11.19 e 11.8.8) e dalla 12.3 rifiuta SRID
+  diversi con 3033 (misurato su 12.3.2, 25/10): e una guardia di un solo
+  operatore, non del prodotto, e la regola delle sonde continua a rifiutare
+  ogni sonda `MariaDB` senza catalogo (`server_guard`);
 - `sqlserver`: nessuna guardia: con SRID diversi `STIntersects` rende `NULL`,
   la riga resta fuori anche sotto `NOT` e con `STEnvelope`, su `geography`
   4326 contro 4269, e un `UPDATE` non tocca niente con successo.
@@ -64,12 +68,25 @@ class Sonda:
     `prova` e la voce della tabella delle guardie che la misura sostiene:
     `guardia` (il server rifiuta), `senza-guardia` (il server non confronta),
     `controllo` (lo SRID giusto passa), `catalogo` (cio che il provider
-    legge per confrontare da se)."""
+    legge per confrontare da se), `guardia-parziale` (il server rifiuta in
+    quell'operatore soltanto: non e una guardia del prodotto, e la tabella
+    del core non la conta)."""
 
     nome: str
     sql: str
     atteso: tuple
     prova: str
+    # Un fatto che cambia con la versione del server: `((versione minima,
+    # atteso, prova), ...)`, dalla piu recente; la prima la cui versione
+    # minima non supera quella misurata (`SELECT VERSION()`) sostituisce
+    # `atteso` e `prova`. Senza versione misurata vale `atteso`.
+    da_versione: tuple = ()
+
+    def attesa(self, versione: tuple[int, ...] | None) -> tuple[tuple, str]:
+        for minima, atteso, prova in self.da_versione:
+            if versione is not None and versione >= minima:
+                return atteso, prova
+        return self.atteso, self.prova
 
 
 @dataclass(frozen=True)
@@ -220,9 +237,12 @@ SERVER: dict[str, Server] = {
             Sonda("ST_Intersects, sonda 3857",
                   "SELECT count(*) FROM t WHERE ST_Intersects(g, ST_GeomFromText('POINT(1 1)', 3857))",
                   ("righe", 1), "senza-guardia"),
+            # 12.3 confronta gli SRID in `MBRIntersects` (3033, «given two
+            # geometries of different srids»); 10.11 e 11.8 no.
             Sonda("MBRIntersects, sonda 3857",
                   "SELECT count(*) FROM t WHERE MBRIntersects(g, ST_GeomFromText('POINT(1 1)', 3857))",
-                  ("righe", 1), "senza-guardia"),
+                  ("righe", 1), "senza-guardia",
+                  da_versione=(((12, 3), ("errore", {"3033"}), "guardia-parziale"),)),
             Sonda("ST_Within, sonda 3857",
                   "SELECT count(*) FROM t WHERE ST_Within(g, ST_Buffer(ST_GeomFromText('POINT(1 1)', 3857), 1))",
                   ("righe", 1), "senza-guardia"),
@@ -387,17 +407,31 @@ def riferimenti(server: str, radice: Path = ROOT) -> list[str]:
     return [immagini[0]]
 
 
-def misura(docker: Docker, server: str, attesa: int) -> list[dict]:
+def versione(docker: Docker, server: str) -> tuple[int, ...] | None:
+    """La versione del server, come la dichiara: le prime cifre di
+    `SELECT VERSION()` (`12.3.2-MariaDB-...`), o `None` se non si legge."""
+    if server not in {"mysql", "mariadb"}:
+        return None
+    completato = docker.exec(client(server, "SELECT VERSION()", database=False))
+    trovata = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", completato.stdout or "")
+    if completato.returncode != 0 or not trovata:
+        return None
+    return tuple(int(parte) for parte in trovata.groups())
+
+
+def misura(docker: Docker, server: str, attesa: int) -> tuple[tuple[int, ...] | None, list[dict]]:
     attendi(docker, server, attesa)
     prepara(docker, server)
+    misurata = versione(docker, server)
     esiti = []
     for sonda in SERVER[server].sonde:
+        atteso, prova = sonda.attesa(misurata)
         osservato = esito(server, docker.exec(client(server, sonda.sql)))
-        esiti.append({"sonda": sonda.nome, "prova": sonda.prova,
-                      "atteso": [sonda.atteso[0], sorted(sonda.atteso[1])
-                                 if isinstance(sonda.atteso[1], set) else sonda.atteso[1]],
-                      "osservato": osservato, "conforme": verdetto(sonda.atteso, osservato)})
-    return esiti
+        esiti.append({"sonda": sonda.nome, "prova": prova,
+                      "atteso": [atteso[0], sorted(atteso[1])
+                                 if isinstance(atteso[1], set) else atteso[1]],
+                      "osservato": osservato, "conforme": verdetto(atteso, osservato)})
+    return misurata, esiti
 
 
 def main() -> int:
@@ -436,16 +470,17 @@ def main() -> int:
                       file=sys.stderr)
                 return 2
         try:
-            esiti = misura(docker, opzioni.server, opzioni.attesa)
+            misurata, esiti = misura(docker, opzioni.server, opzioni.attesa)
         finally:
             if immagine:
                 docker.run(["stop", nome], timeout=120)
-        print(f"{opzioni.server} {immagine or nome}:")
+        etichetta = ".".join(map(str, misurata)) if misurata else "versione non letta"
+        print(f"{opzioni.server} {immagine or nome} ({etichetta}):")
         for riga in esiti:
             print(f"  {'ok ' if riga['conforme'] else 'NO '} [{riga['prova']}] {riga['sonda']}: "
                   f"{riga['osservato']}")
         referto.append({"immagine": immagine, "container": None if immagine else nome,
-                        "esiti": esiti})
+                        "versione": etichetta if misurata else None, "esiti": esiti})
     if opzioni.referto:
         opzioni.referto.write_text(json.dumps({"schema_version": 1, "server": opzioni.server,
                                                "misure": referto}, ensure_ascii=False, indent=2)

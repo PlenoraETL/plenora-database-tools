@@ -319,13 +319,8 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
         )
         # Le prove concorrenti verificano il recupero delle connessioni e del pool;
-        # poi l'ordine degli assi geografici (GEO-001) e, il 25/10, le tre prove
-        # delle regole W1/W2 e della regola R sulla scrittura, e le otto della
-        # seconda rilettura (regole K e V, sessione, isolamento), e le due
-        # della terza (regole P e K2), e le due della quarta (S6 e regola T), e
-        # le sei della regola A (la sonda, `DOUBLE(M,D)`, `DATETIME(3)`, i tipi
-        # di Create) e della regola K sotto collation.
-        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 58)
+        # Operandi geometrici e semantica delle scritture conservano tutte le prove.
+        self.assertEqual(len(gate.EXPECTED_LIVE_REFERENCE_TESTS), 60)
         self.assertIn(
             "live_tests::live_geographic_axis_order_round_trips_and_derived_srid_is_verified",
             gate.EXPECTED_LIVE_REFERENCE_TESTS,
@@ -497,6 +492,13 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
 
     # --- runner -------------------------------------------------------------
 
+    def test_matrix_captures_diagnostics_before_inventory_validation(self) -> None:
+        from scripts import check_mysql_matrix as matrix
+        for arguments in (matrix.live_default_command(), matrix.live_reference_command()):
+            self.assertIn("--show-output", arguments)
+            self.assertNotIn("--nocapture", arguments)
+            self.assertIn("--test-threads=1", arguments)
+
     def test_gate_runs_three_serialized_suites_and_the_cli_probe(self) -> None:
         calls, run_cargo = gate_run_cargo()
 
@@ -516,6 +518,9 @@ class MysqlReferenceFixtureTests(unittest.TestCase):
         ]
         self.assertEqual(len(suites), 3)
         unit, live_default, live_reference = suites
+        for arguments in (live_default, live_reference):
+            self.assertIn("--show-output", arguments)
+            self.assertNotIn("--nocapture", arguments)
         self.assertIn("--skip", unit)
         self.assertNotIn("--ignored", live_default)
         self.assertIn("--test-threads=1", live_default)
@@ -2307,9 +2312,9 @@ class PythonSdkRunnerTests(unittest.TestCase):
         stabilization = sdk.SCOPE_CONTRACTS["stabilization"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (589, 15, 0))
+        self.assertEqual((live.passed, live.skipped, live.deselected), (595, 16, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (304, 300, 0)
+            (offline.passed, offline.skipped, offline.deselected), (310, 301, 0)
         )
         self.assertEqual(
             (
@@ -2321,7 +2326,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 602),
+            (2, 0, 609),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
         # il wheel standard salta Db2 e Oracle anche live, e nessuno

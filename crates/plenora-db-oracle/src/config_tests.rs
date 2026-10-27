@@ -6,6 +6,46 @@ use std::time::Duration;
 #[path = "tls_pem_tests.rs"]
 mod tls_pem_tests;
 
+#[tokio::test]
+async fn connection_timeout_bounds_a_silent_handshake() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener locale");
+    let config = OracleConfig::new("127.0.0.1", "unused", "unused")
+        .with_port(listener.local_addr().expect("indirizzo locale").port())
+        .with_tls_mode(OracleTlsMode::Disable)
+        .with_timeouts(Duration::from_millis(100), Duration::from_secs(30));
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accetta TCP");
+        let mut bytes = Vec::new();
+        // Legge senza rispondere: termina quando il client scade e chiude TCP.
+        tokio::io::AsyncReadExt::read_to_end(&mut socket, &mut bytes)
+            .await
+            .expect("chiusura TCP");
+        assert!(!bytes.is_empty(), "handshake iniziato");
+    });
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::connection::connect(
+            &config,
+            &SecretString::new("unused"),
+            &plenora_database_core::CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("il connect deve avere una scadenza");
+    let error = result.err().expect("il server non risponde");
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::Timeout
+    );
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Connect);
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .expect("socket rilasciato")
+        .expect("server locale");
+}
+
 #[test]
 fn debug_redacts_the_username_and_never_contains_a_secret() {
     let config = OracleConfig::new("db.internal", "FREEPDB1", "app_user");

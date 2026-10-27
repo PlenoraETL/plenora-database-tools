@@ -673,6 +673,35 @@ impl TransactionScope for OwnedSessionTransaction {
         })
     }
 
+    fn operand_catalog<'a>(
+        &'a mut self,
+        relations: &'a [(Option<String>, String)],
+        names: &'a [String],
+        cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<
+        'a,
+        plenora_database_core::spatial_operand::OperandCatalog,
+    > {
+        Box::pin(async move {
+            let linked = CancellationToken::linked(&[&self.cancellation, cancellation]);
+            self.scope.operand_catalog(relations, names, &linked).await
+        })
+    }
+
+    fn column_types<'a>(
+        &'a mut self,
+        relation: &'a (Option<String>, String),
+        cancellation: &'a CancellationToken,
+    ) -> plenora_database_core::provider::ProviderFuture<
+        'a,
+        Option<plenora_database_core::operand_admission::RelationTypes>,
+    > {
+        Box::pin(async move {
+            let linked = CancellationToken::linked(&[&self.cancellation, cancellation]);
+            self.scope.column_types(relation, &linked).await
+        })
+    }
+
     fn commit(
         self: Box<Self>,
         cancellation: &CancellationToken,

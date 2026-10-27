@@ -14,6 +14,7 @@ mod config;
 mod connection;
 mod decode;
 mod error;
+mod operand_catalog;
 mod parameter;
 mod pool;
 mod provider;
@@ -47,6 +48,10 @@ mod parameter_tests;
 mod types_tests;
 
 #[cfg(test)]
+#[path = "operand_catalog_tests.rs"]
+mod operand_catalog_tests;
+
+#[cfg(test)]
 #[path = "live_tests.rs"]
 mod live_tests;
 
@@ -57,3 +62,19 @@ mod write_rewrite_live_tests;
 #[cfg(test)]
 #[path = "write_admission_live_tests.rs"]
 mod write_admission_live_tests;
+
+#[cfg(test)]
+#[path = "number_oracle_tests.rs"]
+mod number_oracle_tests;
+
+#[cfg(test)]
+#[path = "number_live_tests.rs"]
+mod number_live_tests;
+
+#[cfg(test)]
+#[path = "driver_fidelity_live_tests.rs"]
+mod driver_fidelity_live_tests;
+
+#[cfg(test)]
+#[path = "driver_codec_oracle_tests.rs"]
+mod driver_codec_oracle_tests;

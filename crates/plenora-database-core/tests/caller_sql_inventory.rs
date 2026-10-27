@@ -165,9 +165,42 @@ fn every_transaction_sql_method_is_wrapped() {
             "rollback_to_savepoint",
             "release_savepoint",
             "execute_conditional_update",
+            "operand_catalog",
+            "column_types",
             "commit",
             "rollback"
         ]
+    );
+    // `operand_catalog` legge il catalogo per il giudizio degli operandi
+    // geometrici: e SQL del provider, non del chiamante, e il wrapper lo
+    // inoltra senza aprire il marcatore.
+    let wrapper_source = include_str!("../src/caller_sql.rs");
+    let forwarded = wrapper_source
+        .split_once("fn operand_catalog<'")
+        .expect("operand_catalog inoltrato")
+        .1;
+    let forwarded = forwarded.split("\n    fn ").next().expect("corpo");
+    assert!(
+        forwarded.contains("self.inner.operand_catalog(")
+            && !forwarded.contains("begin_caller_sql"),
+        "operand_catalog"
+    );
+    // `column_types` legge i tipi del catalogo per l'ammissione dei
+    // letterali portable: stessa regola di `operand_catalog`.
+    let forwarded = wrapper_source
+        .split_once("fn column_types<'")
+        .expect("column_types inoltrato")
+        .1;
+    let forwarded = forwarded
+        .split(
+            "
+    fn ",
+        )
+        .next()
+        .expect("corpo");
+    assert!(
+        forwarded.contains("self.inner.column_types(") && !forwarded.contains("begin_caller_sql"),
+        "column_types"
     );
     let wrapper = include_str!("../src/caller_sql.rs");
     for method in [

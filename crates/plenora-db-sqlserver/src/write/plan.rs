@@ -377,7 +377,8 @@ impl WritePlan {
                 })?;
             let field = self.input_schema.field(column.input_index);
             let (key, dimensions) = super::admission::admission_key(field.data_type(), fact);
-            column.rewrites = measured.admit(&key, dimensions)?;
+            column.rewrites =
+                plenora_database_core::admission_gate::write_column(&measured, &key, dimensions)?;
         }
         let guard = plenora_database_core::store_rewrite::RewriteGuard::new(
             plenora_database_core::plan::ProviderKind::Sqlserver,

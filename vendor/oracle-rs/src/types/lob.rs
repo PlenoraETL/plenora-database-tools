@@ -87,6 +87,9 @@ pub struct LobLocator {
     pub(crate) oracle_type: OracleType,
     /// Character set form (for CLOB/NCLOB distinction)
     pub(crate) _csfrm: u8,
+    /// Il charset della colonna come lo descrive il server (0 se non noto):
+    /// per un NCLOB e il charset nazionale, che decide la decodifica.
+    pub(crate) charset_id: u16,
 }
 
 impl LobLocator {
@@ -104,7 +107,15 @@ impl LobLocator {
             chunk_size,
             oracle_type,
             _csfrm: csfrm,
+            charset_id: 0,
         }
+    }
+
+    /// Il locator con il charset della colonna descritta.
+    #[must_use]
+    pub(crate) const fn with_charset(mut self, charset_id: u16) -> Self {
+        self.charset_id = charset_id;
+        self
     }
 
     /// Get the size of the LOB
@@ -149,6 +160,22 @@ impl LobLocator {
         } else {
             false
         }
+    }
+
+    /// Plenora fork: the CLOB amount of `text`, in the unit the server counts
+    /// offsets and lengths in. With a variable-length character set the CLOB
+    /// travels as AL16UTF16 and Oracle counts UTF-16 code units, so a
+    /// character outside the BMP counts two; counting code points instead
+    /// placed the next chunk of a multi-chunk write one unit too early per
+    /// such character, overwriting the previous one.
+    pub fn clob_amount(&self, text: &str) -> u64 {
+        let units = if self.uses_var_length_charset() {
+            text.encode_utf16().count()
+        } else {
+            text.chars().count()
+        };
+        // usize is at most 64 bits on every supported target.
+        units as u64
     }
 
     /// Check if the LOB uses a variable-length character set (like UTF-16)
@@ -218,10 +245,12 @@ impl LobLocator {
             return None;
         }
 
-        // Read directory name
-        let dir_name =
-            String::from_utf8_lossy(&self.locator[dir_name_offset..dir_name_offset + dir_name_len])
-                .to_string();
+        // Read directory name. Plenora fork: a name that is not UTF-8 makes
+        // the locator unreadable (`None`) instead of being replaced.
+        let dir_name = String::from_utf8(
+            self.locator[dir_name_offset..dir_name_offset + dir_name_len].to_vec(),
+        )
+        .ok()?;
 
         // Read file name length (big-endian uint16)
         let file_name_len = u16::from_be_bytes([
@@ -236,10 +265,10 @@ impl LobLocator {
         }
 
         // Read file name
-        let file_name = String::from_utf8_lossy(
-            &self.locator[file_name_offset..file_name_offset + file_name_len],
+        let file_name = String::from_utf8(
+            self.locator[file_name_offset..file_name_offset + file_name_len].to_vec(),
         )
-        .to_string();
+        .ok()?;
 
         Some((dir_name, file_name))
     }
@@ -319,9 +348,9 @@ impl LobValue {
         match self {
             Self::Null => Ok(None),
             Self::Empty => Ok(Some(String::new())),
-            Self::Inline(data) => String::from_utf8(data.to_vec())
-                .map(Some)
-                .map_err(|_| Error::DataConversionError("CLOB data is not valid UTF-8".into())),
+            Self::Inline(data) => String::from_utf8(data.to_vec()).map(Some).map_err(|_| {
+                Error::DataConversionError("CLOB inline Oracle non UTF-8".to_string())
+            }),
             Self::Locator(_) => Err(Error::Protocol(
                 "LOB data requires explicit read operation".to_string(),
             )),

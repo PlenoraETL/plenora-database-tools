@@ -28,6 +28,9 @@ EXPECTED_IMAGE = (
     "sha256:e07b9699a2b749969f19d86563ceeea22bd3a69f7f1db85a8d1ac4bdaf0c6f56"
 )
 LIVE_TEST_SOURCE = ROOT / "crates" / "plenora-db-sqlserver" / "src" / "live_tests.rs"
+FIDELITY_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-sqlserver" / "src" / "parameter_fidelity_live_tests.rs"
+)
 
 # I due test che **questa** matrice non puo eseguire. Il motivo non e scritto
 # qui: viene dal loro `#[ignore = "..."]`, cosi non puo divergere dal codice.
@@ -44,6 +47,8 @@ SKIPPED_LIVE_TESTS = (
 REQUIRED_LIVE_TESTS = frozenset(
     {
         "live_caller_stream_cancellation_requires_recovery",
+        "live_parameter_values_bind_exactly_or_are_refused",
+        "live_generated_values_bind_exactly_or_are_refused",
         "live_native_query_policy_guards_every_transaction_entrypoint",
         "live_a_native_batch_error_after_a_write_is_not_reported_as_no_effect",
         "live_provider_execute_ddl_creates_and_drops_table",
@@ -56,7 +61,7 @@ REQUIRED_LIVE_TESTS = frozenset(
 def live_test_inventory() -> set[str]:
     """Legge i nomi dei test live dai sorgenti per verificarne identita ed esito."""
 
-    return live_inventory.source_inventory([LIVE_TEST_SOURCE])
+    return live_inventory.source_inventory([LIVE_TEST_SOURCE, FIDELITY_LIVE_SOURCE])
 
 
 def skipped_with_reasons() -> dict[str, str]:
@@ -99,6 +104,12 @@ def run(
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as error:
+        # TimeoutExpired conserva byte anche con text=True: non perdere
+        # l'ultimo test avviato quando il processo non arriva al riepilogo.
+        for partial in (error.stdout, error.stderr):
+            if partial:
+                print(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes)
+                      else partial, end="", flush=True)
         raise RuntimeError(
             f"timeout dopo {timeout_seconds}s durante {command[0]}"
         ) from error
@@ -146,6 +157,8 @@ def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
         environment = os.environ.copy()
         environment.setdefault("PLENORA_SQLSERVER_HOST", "127.0.0.1")
         environment.setdefault("PLENORA_SQLSERVER_DATABASE", "dataflow_test")
+        environment.setdefault("PLENORA_SQLSERVER_CS_DATABASE", "dataflow_cs")
+        environment.setdefault("PLENORA_SQLSERVER_AI_DATABASE", "dataflow_ai")
         environment.setdefault("PLENORA_SQLSERVER_USER", "dataflow")
         environment.setdefault("PLENORA_SQLSERVER_PASSWORD", DEFAULT_PASSWORD)
         environment["PLENORA_SQLSERVER_PRIVATE_CA"] = str(PRIVATE_CA)
@@ -170,6 +183,14 @@ def cargo(arguments: list[str]) -> tuple[list[str], dict[str, str] | None]:
         "PLENORA_SQLSERVER_HOST=sqlserver",
         "-e",
         "PLENORA_SQLSERVER_DATABASE=dataflow_test",
+        "-e",
+        # Il database CS di docker/sqlserver/init/002: senza, i due test live
+        # sulle regole di nome di un database case sensitive fallirebbero.
+        "PLENORA_SQLSERVER_CS_DATABASE=dataflow_cs",
+        "-e",
+        # Il database CI_AI di docker/sqlserver/init/003: il legame dei nomi
+        # del server con la collation (regola A).
+        "PLENORA_SQLSERVER_AI_DATABASE=dataflow_ai",
         "-e",
         "PLENORA_SQLSERVER_USER=dataflow",
         "-e",
@@ -466,7 +487,7 @@ def run_live_cli_probe() -> None:
             "--",
             "--ignored",
             "--exact",
-            "--nocapture",
+            "--show-output",
         ],
         capture=True,
     )

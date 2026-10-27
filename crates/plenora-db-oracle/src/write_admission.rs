@@ -14,17 +14,10 @@
 //! (`plenora_database_core::store_rewrite`, «dove si leggono le
 //! riscritture»).
 //!
-//! # Limite dichiarato: il calendario prima del 1582
-//!
-//! - **Regola**: una data o un istante si scrive con la sua etichetta civile
-//!   (`1500-01-01`), e la sonda la misura esatta perche si rilegge uguale.
-//! - **Ambito**: `DATE` e `TIMESTAMP(p)` prima del 1582-10-15: Oracle conta i
-//!   giorni nel calendario giuliano, Arrow nel gregoriano prolettico; il buco
-//!   1582-10-05..14 non esiste in Oracle (`buco_1582` nella batteria). Gli
-//!   anni fuori da 1-9999 si rifiutano (`crate::parameter`).
-//! - **Hazard**: l'aritmetica delle date nel server (differenze, intervalli)
-//!   attraverso il 1582 da giorni diversi da quelli di Arrow.
-//! - **Rientro**: rifiutare le date prima del 1582-10-15, o convertirle.
+//! Il bind applica inoltre i rifiuti di fedelta di `crate::parameter`:
+//! le misure storiche non autorizzano date prima del calendario gregoriano
+//! ne altri valori che il codec rifiuta. Il fixture e necessario, non
+//! sufficiente a scavalcare un rifiuto del percorso effettivo.
 //!
 //! # Limite dichiarato: lo zero negativo
 //!

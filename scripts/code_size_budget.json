@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 121099,
-  "max_code_lines": 96905,
-  "rationale": "Regola S (un valore che il server riscrive al salvataggio e una perdita: rifiutato con Strict, dichiarato con le altre politiche, mai una chiave): il modulo store_rewrite del core, il testo e il binario vuoti di Oracle, CHAR(n) completato su Oracle, PostgreSQL, SQL Server e Db2, binary(n) e ANSI_PADDING OFF su SQL Server, gli spazi oltre la lunghezza e la semantica VARCHAR2 di Db2 lette nella transazione, FLOAT di Oracle, -0.0 di Db2 e MariaDB; gli spazi e gli 0x00 finali delle chiavi nella regola K; le prove live. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 119913 -> 121099 (+1186), righe di codice 96120 -> 96905 (+785). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 143759,
+  "max_code_lines": 113527,
+  "rationale": "Merge della semantica delle scritture (#134: regole S e A, trigger e bulk) con Geometry Semantics e fedelta dei parametri di main (#133, #135, #136/#137). Cancello unico anche per le colonne Arrow misurate, codec esatti o rifiutati, senza duplicare le implementazioni comuni. Budget pari alla misura esatta di scripts/code_size.py, senza margine."
 }

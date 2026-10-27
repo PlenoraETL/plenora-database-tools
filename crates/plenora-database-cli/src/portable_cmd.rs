@@ -64,7 +64,7 @@ pub(crate) fn portable_compile(args: &mut impl Iterator<Item = String>) -> CliRe
         "status": "ok",
         "provider": kind,
         "sql": compiled.sql,
-        "param_count": compiled.params.len(),
+        "param_count": compiled.param_count(),
         // Non stampiamo i params: possono contenere valori sensibili.
     }))
 }

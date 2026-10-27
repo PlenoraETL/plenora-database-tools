@@ -698,6 +698,16 @@ SCENARI_RLS_DICHIARATA = {"rls-con-policy-append"}
 SCENARI_DEL_TARGET = "dry-run-postgres-target"
 
 
+def prepara_vista_rls(sql: str, versione: int) -> str:
+    """PG14: vista posseduta dal ruolo soggetto alla policy della base."""
+    if versione < 150_000 and "WITH (security_invoker = true)" in sql:
+        return (sql.replace("WITH (security_invoker = true)", "")
+                + "; GRANT CREATE ON SCHEMA public TO {r};"
+                + " ALTER VIEW {t} OWNER TO {r};"
+                + " REVOKE CREATE ON SCHEMA public FROM {r}")
+    return sql
+
+
 class Scenari:
     """Gli scenari del target: la scrittura e il dry run, stesso ingresso e
     stessa DSN, devono concordare come sui vettori (`accordo_dry_run`)."""
@@ -761,6 +771,7 @@ class Scenari:
 
     def esegui(self) -> list[dict]:
         righe = []
+        versione = self.postgres.scalare("SELECT current_setting('server_version_num')::int4")
         self.ruolo(True)
         try:
             for nome, preparazione, mode, campi, chiavi, policy, utente in SCENARI:
@@ -771,7 +782,7 @@ class Scenari:
                 if preparazione:
                     # `{t}` e' l'oggetto della scrittura; in `append-altrove`
                     # `{b}` e' il suo schema e `{t}` il nome nudo.
-                    self.ddl(preparazione.format(
+                    self.ddl(prepara_vista_rls(preparazione, versione).format(
                         t=tabella if mode == "append-altrove" else f"public.{tabella}",
                         b=self.AUSILIARIO if mode == "append-altrove"
                         else f"public.{self.AUSILIARIO}",

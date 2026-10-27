@@ -629,6 +629,62 @@ impl MysqlSession {
         }
     }
 
+    /// Le colonne del catalogo che il server lega alla projection di `sql`
+    /// (`org_name` dei metadati del prepare, senza eseguire), nell'ordine;
+    /// `None` se il server non lega un nome (1054, colonna sconosciuta). La
+    /// regola A di `spatial_operand`: il nome lo lega il server.
+    pub(crate) async fn prepared_column_origins(
+        &mut self,
+        sql: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<Vec<String>>> {
+        /// `ER_BAD_FIELD_ERROR`.
+        const UNKNOWN_COLUMN: u16 = 1054;
+        let profile = self.profile;
+        self.require_ready(ErrorPhase::Prepare)?;
+        let connection = self
+            .connection
+            .as_mut()
+            .ok_or_else(|| state_error(ErrorPhase::Prepare, profile))?;
+        let prepare = connection.prep(sql);
+        let outcome = tokio::select! {
+            _ = cancellation.cancelled() => {
+                self.quarantine().await;
+                return Err(interruption_error(self.profile, cancellation, ErrorPhase::Prepare, RemoteEffect::None));
+            }
+            result = tokio::time::timeout(self.operation_timeout, prepare) => result,
+        };
+        let statement = match outcome {
+            Ok(Ok(statement)) => statement,
+            Ok(Err(error)) if server_code(&error) == Some(UNKNOWN_COLUMN) => return Ok(None),
+            Ok(Err(error)) => {
+                if error.is_fatal() {
+                    self.quarantine().await;
+                }
+                return Err(driver_error(
+                    self.profile,
+                    &error,
+                    ErrorPhase::Prepare,
+                    RemoteEffect::None,
+                ));
+            }
+            Err(_) => {
+                self.quarantine().await;
+                return Err(timeout_error(
+                    self.profile,
+                    ErrorPhase::Prepare,
+                    RemoteEffect::None,
+                ));
+            }
+        };
+        let origins = statement
+            .columns()
+            .iter()
+            .map(|column| column.org_name_str().into_owned())
+            .collect();
+        Ok(Some(origins))
+    }
+
     pub(crate) async fn pump_exec_rows<S>(
         &mut self,
         statement: S,

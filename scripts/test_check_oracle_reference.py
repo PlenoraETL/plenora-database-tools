@@ -4,6 +4,10 @@
 from __future__ import annotations
 
 import json
+import io
+import subprocess
+from contextlib import redirect_stdout
+from unittest.mock import patch
 import sys
 from pathlib import Path
 
@@ -14,7 +18,70 @@ from scripts import strict_json
 import scripts.check_oracle_reference as gate
 
 
+def check_timeout_output() -> None:
+    from scripts import check_db2_reference, check_sqlserver_reference
+
+    for module, kwargs in [
+        (gate, {}),
+        (check_db2_reference, {}),
+        (check_sqlserver_reference, {"capture": True, "timeout_seconds": 1}),
+    ]:
+        for stdout, stderr in [(b"test live_probe ...", b"diagnostic\n"), ("partial", None)]:
+            output = io.StringIO()
+            timeout = subprocess.TimeoutExpired(["cargo"], 1, output=stdout, stderr=stderr)
+            with patch.object(module.subprocess, "run", side_effect=timeout), redirect_stdout(output):
+                try:
+                    module.run(["cargo"], **kwargs)
+                except RuntimeError as error:
+                    assert "timeout" in str(error)
+                else:
+                    raise AssertionError("un timeout deve fallire il gate")
+            expected = "test live_probe ...diagnostic\n" if isinstance(stdout, bytes) else stdout
+            assert output.getvalue() == expected
+
+
+def check_captured_inventory() -> None:
+    names = sorted(gate.live_source_inventory())
+    qualified = [f"live_tests::parameter_fidelity::{name}" for name in names]
+    listing = "\n".join(f"{name}: test" for name in qualified)
+    output = "\n".join(f"test {name} ... ok" for name in qualified)
+    output += "\n\nsuccesses:\n---- captured stdout ----\nmisura -0.0\n"
+    assert gate.validate_live_run(listing, output) == qualified
+    generated = {
+        f"live_generated_{family}_values_bind_exactly_or_are_refused"
+        for family in ("decimal", "float", "text", "binary", "temporal")
+    }
+    assert generated <= gate.REQUIRED_LIVE_TESTS
+    assert {name for name in names if name.startswith("live_generated_")} == generated
+    assert len(names) == 67  # Famiglie dei parametri e semantica delle scritture.
+    for name in generated:
+        full = f"live_tests::parameter_fidelity::{name}"
+        # Anche se manca sia nella lista compilata sia negli esiti, il gate
+        # deve rilevare la famiglia persa rispetto al sorgente.
+        for broken_listing, broken_output in (
+            (listing, output.replace(f"test {full} ... ok", "")),
+            (listing.replace(f"{full}: test", ""),
+             output.replace(f"test {full} ... ok", "")),
+        ):
+            try:
+                gate.validate_live_run(broken_listing, broken_output)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError(f"famiglia assente accettata: {name}")
+    for status in ("ignored", "FAILED", "misura -0.0\nok"):
+        broken = output.replace(f"test {qualified[0]} ... ok", f"test {qualified[0]} ... {status}")
+        try:
+            gate.validate_live_run(listing, broken)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("un test senza esito esatto deve fallire il gate")
+
+
 def main() -> int:
+    check_timeout_output()
+    check_captured_inventory()
     reference = gate.reference_contract()
     assert reference["server_major"] == "23"
     assert reference["platform"] == "linux/amd64"
@@ -25,6 +92,8 @@ def main() -> int:
         encoding="utf-8"
     )
     assert 'TemporaryDirectory(prefix="plenora-oracle-wheel-")' in gate_source
+    assert '"--show-output"' in gate_source
+    assert '"--nocapture"' not in gate_source
     workflow = (ROOT / ".github/workflows/oracle-assurance.yml").read_text(
         encoding="utf-8"
     )

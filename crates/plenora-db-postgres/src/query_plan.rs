@@ -206,6 +206,22 @@ fn build_read_sql(
         renderer.quote_object(&source)?
     );
     let mut bind_names = Vec::new();
+    // Un campo geometrico sotto un operatore non spatial o in ORDER BY: la
+    // stessa regola degli altri provider (`spatial_operand`).
+    plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+        plenora_database_core::plan::ProviderKind::Postgres,
+        operation.filter.as_ref(),
+        &operation.order_by,
+        |field| {
+            available_columns.iter().any(|column| {
+                column.name == field
+                    && matches!(column.kind, ColumnKind::Geometry | ColumnKind::Geography)
+            })
+        },
+        // La regola F la giudica l'esecuzione, sul catalogo e con i valori.
+        |_| Ok(None),
+        &plenora_database_core::spatial_operand::ParameterFamilies::default(),
+    )?;
     if let Some(filter) = &operation.filter {
         ensure_filter_columns(filter, available_columns)?;
         let rendered_filter = renderer.render_filter(&convert_filter(filter)?)?;

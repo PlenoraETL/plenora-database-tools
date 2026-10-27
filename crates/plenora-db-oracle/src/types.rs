@@ -3,6 +3,8 @@ use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit}
 use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::plan::{ProviderKind, ReadOperation, SortDirection};
 use plenora_database_core::protocol::{self, contract_schema};
+use plenora_database_core::provider::{ParameterBag, ParameterValue};
+use plenora_database_core::relational::QueryParameterType;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use plenora_database_sql::{
     lower_filter, select_columns_by_name, Dialect, DialectCapabilities, FilterLowering, Identifier,
@@ -62,6 +64,8 @@ impl OracleColumnSpec {
             }
             "NUMBER" => decimal_kind(column)?,
             "BINARY_FLOAT" => OracleColumnKind::F32,
+            // FLOAT(b) e un NUMBER decimale: resta Float64 per compatibilita,
+            // ma la read lo converte solo quando il valore e ricostruibile.
             "BINARY_DOUBLE" | "FLOAT" => OracleColumnKind::F64,
             "CHAR" | "NCHAR" | "VARCHAR2" | "NVARCHAR2" | "CLOB" | "NCLOB" | "JSON" => {
                 OracleColumnKind::Utf8
@@ -74,7 +78,7 @@ impl OracleColumnSpec {
             value if value.starts_with("TIMESTAMP") && !value.contains("TIME ZONE") => {
                 OracleColumnKind::DateTime
             }
-            "SDO_GEOMETRY" => {
+            "SDO_GEOMETRY" if column.is_sdo_geometry() => {
                 if column.spatial_srid.is_none()
                     || !matches!(column.spatial_dimensions, Some(2 | 3))
                     || column.spatial_semantics.is_none()
@@ -182,10 +186,21 @@ impl OracleReadPlan {
     /// # Errors
     ///
     /// Rifiuta projection, filtri, ordinamenti, CRS o tipi non qualificati.
-    #[allow(clippy::too_many_lines)]
     pub fn compile(
         description: &OracleObjectDescription,
         operation: &ReadOperation,
+    ) -> Result<Self> {
+        Self::compile_with_parameters(description, operation, &ParameterBag::default())
+    }
+
+    /// Dopo l'ammissione, il valore decide la conversione del bind. Il
+    /// TIMESTAMP TZ del driver e testo: senza modello esplicito il filtro
+    /// dipenderebbe da `NLS_TIMESTAMP_TZ_FORMAT`, a differenza della write.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn compile_with_parameters(
+        description: &OracleObjectDescription,
+        operation: &ReadOperation,
+        parameters: &ParameterBag,
     ) -> Result<Self> {
         if (operation.row_limit.is_some() || operation.row_offset.is_some())
             && operation.order_by.is_empty()
@@ -231,7 +246,14 @@ impl OracleReadPlan {
                 spatial_intersects: true,
             },
         )
-        .with_spatial_probes_verified();
+        .with_spatial_probes_verified()
+        .with_parameter_types(
+            parameters
+                .iter()
+                .filter(|(_, value)| matches!(value, ParameterValue::TimestampTz(_)))
+                .map(|(name, _)| (name.clone(), QueryParameterType::TimestampTz))
+                .collect(),
+        );
         let mut projections = columns
             .iter()
             .map(|column| {
@@ -245,6 +267,14 @@ impl OracleReadPlan {
                     Ok(format!(
                         "CASE WHEN {source} THEN 1 WHEN NOT {source} THEN 0 END AS {quoted}"
                     ))
+                } else if matches!(
+                    column.native_type.as_str(),
+                    "BINARY_FLOAT" | "BINARY_DOUBLE"
+                ) {
+                    // I byte salvati, da `DUMP()`: `CAST(... AS NUMBER)`
+                    // azzerava ogni |x| < 1e-130 e `UTL_RAW.CAST_FROM_BINARY_*`
+                    // rendeva +0 per un -0.0 salvato non canonico.
+                    Ok(format!("DUMP({source}) AS {quoted}"))
                 } else {
                     // BINARY_FLOAT e BINARY_DOUBLE si leggono nel formato
                     // binario: CAST AS NUMBER falliva oltre 1E126, azzerava i
@@ -283,6 +313,35 @@ impl OracleReadPlan {
             .iter()
             .map(|column| column.name.as_str())
             .collect::<BTreeSet<_>>();
+        // Un campo geometrico sotto un operatore non spatial o in ORDER BY
+        // confronterebbe il formato interno del server con il valore legato
+        // (`spatial_operand`); un campo binario di una vista si giudica
+        // geometrico (regola B). La lettura giudica poi sul catalogo, che
+        // distingue anche le viste materializzate
+        // (`operand_catalog::ensure_scalar_read_fields`).
+        let view = description.kind == "VIEW";
+        plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+            ProviderKind::Oracle,
+            operation.filter.as_ref(),
+            &operation.order_by,
+            |field| {
+                description.columns.iter().any(|column| {
+                    column.name == field
+                        && (column.is_sdo_geometry()
+                            || crate::operand_catalog::column_is_geometric(
+                                plenora_database_core::spatial_operand::ColumnOrigin::of(
+                                    view,
+                                    column.virtual_column,
+                                ),
+                                &column.data_type,
+                                column.data_type_owner.as_deref(),
+                            ))
+                })
+            },
+            // La regola F la giudica la lettura sul catalogo, con i valori.
+            |_| Ok(None),
+            &plenora_database_core::spatial_operand::ParameterFamilies::default(),
+        )?;
         let bind_names = if let Some(filter) = &operation.filter {
             if !filter.all_fields(&|name| available.contains(name)) {
                 return Err(prepare_error(

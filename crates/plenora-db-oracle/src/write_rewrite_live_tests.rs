@@ -549,8 +549,12 @@ async fn live_s_float_di_oracle_non_arrotonda_in_silenzio() {
     }
     let error = write(&provider, &secret, &append, floats("FP", vec![1.23]))
         .await
-        .expect_err("FLOAT(10) arrotonda");
-    assert_eq!(error.category, ErrorCategory::DataMapping, "{error:?}");
+        .expect_err("FLOAT(10) non misurato");
+    assert_eq!(error.category, ErrorCategory::Unsupported, "{error:?}");
+    assert_eq!(
+        error.message,
+        plenora_database_core::write_admission::UNPROVEN_PAIR
+    );
     assert_eq!(
         count(
             &provider,
@@ -560,30 +564,20 @@ async fn live_s_float_di_oracle_non_arrotonda_in_silenzio() {
         .await,
         0
     );
-    // Il controllo: BINARY_DOUBLE conserva -0.0 (la codifica interna di
-    // Oracle inverte i bit dei negativi: 0x7FFF... e -0.0) e 1e-300, FLOAT
-    // un valore nel proprio intervallo.
-    write(
-        &provider,
-        &secret,
-        &append,
-        floats("FB", vec![-0.0, 1e-300]),
-    )
-    .await
-    .expect("BINARY_DOUBLE");
+    // Il round trip dei byte non prova un valore confrontabile in Oracle:
+    // anche BINARY_DOUBLE rifiuta -0.0, con ogni politica.
+    let error = write(&provider, &secret, &append, floats("FB", vec![-0.0]))
+        .await
+        .expect_err("zero negativo non canonico");
+    assert_rewritten(&error, false);
+    write(&provider, &secret, &append, floats("FB", vec![0.0, 1e-300]))
+        .await
+        .expect("BINARY_DOUBLE canonico");
     assert_eq!(
-        count(
-            &provider,
-            &secret,
-            &format!(
-                "SELECT COUNT(*) AS N FROM {table} WHERE ID = 1 \
-                 AND DUMP(FB) = 'Typ=101 Len=8: 127,255,255,255,255,255,255,255' \
-                 AND EXISTS (SELECT 1 FROM {table} WHERE ID = 2 AND FB > 0)"
-            )
-        )
-        .await,
-        1,
-        "BINARY_DOUBLE conserva il segno di zero e 1e-300"
+        count(&provider, &secret,
+            &format!("SELECT COUNT(*) AS N FROM {table} WHERE (ID = 1 AND FB = 0) OR (ID = 2 AND FB > 0)")
+        ).await,
+        2
     );
     dml(&provider, &secret, &format!("DELETE FROM {table}")).await;
     write(&provider, &secret, &append, floats("F", vec![0.1, 1e-100]))

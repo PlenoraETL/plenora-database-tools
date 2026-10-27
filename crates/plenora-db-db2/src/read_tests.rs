@@ -33,7 +33,7 @@ fn repeated_binds_reuse_one_declared_parameter() {
 
     assert_eq!(
         bind_parameters(&names, &parameters).expect("bind ripetuto"),
-        ["7", "7"]
+        [ParameterValue::I32(7), ParameterValue::I32(7)]
     );
 }
 
@@ -62,7 +62,7 @@ fn db2_cli_hex_wkb_decodes_without_accepting_malformed_payloads() {
 
 #[test]
 fn un_timestamp_oltre_il_microsecondo_non_si_tronca_in_lettura() {
-    use crate::read::has_sub_microsecond_digits;
+    use plenora_database_core::parameter_fidelity::has_sub_microsecond as has_sub_microsecond_digits;
     assert!(has_sub_microsecond_digits("2026-01-01-00.00.00.123456789"));
     assert!(has_sub_microsecond_digits(
         "2026-01-01 00:00:00.000000000001"

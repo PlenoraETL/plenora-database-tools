@@ -7,6 +7,9 @@ mod catalog;
 mod config;
 mod connection;
 mod error;
+mod operand_catalog;
+mod parameter;
+mod parameter_catalog;
 mod provider;
 mod read;
 mod row_diagnostics;
@@ -32,6 +35,10 @@ mod catalog_tests;
 #[cfg(test)]
 #[path = "error_tests.rs"]
 mod error_tests;
+
+#[cfg(test)]
+#[path = "operand_catalog_tests.rs"]
+mod operand_catalog_tests;
 
 #[cfg(test)]
 #[path = "provider_tests.rs"]
@@ -76,3 +83,15 @@ mod write_admission_live_tests;
 #[cfg(test)]
 #[path = "write_keys_collation_tests.rs"]
 mod write_keys_collation_tests;
+
+#[cfg(test)]
+#[path = "operand_live_tests.rs"]
+mod operand_live_tests;
+
+#[cfg(test)]
+#[path = "parameter_fidelity_live_tests.rs"]
+mod parameter_fidelity_live_tests;
+
+#[cfg(test)]
+#[path = "parameter_catalog_tests.rs"]
+mod parameter_catalog_tests;

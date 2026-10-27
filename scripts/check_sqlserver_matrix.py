@@ -184,6 +184,8 @@ def run_suite(entry: MatrixEntry) -> None:
         "-w", "/workspace",
         "-e", f"PLENORA_SQLSERVER_HOST={entry.container}",
         "-e", "PLENORA_SQLSERVER_DATABASE=dataflow_test",
+        "-e", "PLENORA_SQLSERVER_CS_DATABASE=dataflow_cs",
+        "-e", "PLENORA_SQLSERVER_AI_DATABASE=dataflow_ai",
         "-e", "PLENORA_SQLSERVER_USER=dataflow",
         "-e", f"PLENORA_SQLSERVER_PASSWORD={PASSWORD}",
         "-e", f"PLENORA_SQLSERVER_EXPECTED_MAJOR={entry.major}",

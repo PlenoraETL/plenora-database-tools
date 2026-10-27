@@ -14,10 +14,11 @@
 //! Nessuna soglia e' codificata qui: il binario misura e basta. I budget
 //! prestazionali sono una decisione di prodotto e vanno fissati altrove.
 
+use plenora_database_core::geometry::SpatialSemantics;
 use plenora_database_core::plan::{ComparisonOperator, ObjectRef, SortDirection};
 use plenora_database_core::query::{
     ColumnRef, JoinKind, QueryExpression, QueryJoin, QueryOperation, QueryOrdering,
-    QueryProjection, QuerySource, ScalarFunction,
+    QueryProjection, QuerySource, ScalarFunction, SpatialFunction,
 };
 use plenora_database_sql::{
     Dialect, DialectCapabilities, Expression, Identifier, ObjectName, Ordering, Renderer, Select,
@@ -60,23 +61,62 @@ fn select(columns: usize, terms: usize) -> Select {
     }
 }
 
-/// SELECT con predicato spatial: forma tipica di una lettura geografica.
-fn spatial_select() -> Select {
-    Select {
-        source: object("public", "parcels"),
-        projection: vec![identifier("id"), identifier("geom")],
-        filter: Some(Expression::And(vec![
-            Expression::IsNotNull(identifier("geom")),
-            Expression::SpatialIntersects {
-                field: identifier("geom"),
-                wkb_parameter: "bbox".to_owned(),
+/// SELECT con sonda a SRID dichiarato: le guardie del server restano attive.
+/// La forma relazionale esprime il frame che il bind WKB nudo non dichiara.
+fn spatial_select() -> QueryOperation {
+    QueryOperation {
+        declared_crs: Vec::new(),
+        common_table_expressions: Vec::new(),
+        source: Some(QuerySource {
+            object: ObjectRef {
+                catalog: None,
+                schema: Some("public".to_owned()),
+                object: "parcels".to_owned(),
             },
-        ])),
-        order_by: vec![Ordering {
-            field: identifier("id"),
+            alias: Some("p".to_owned()),
+        }),
+        derived_source: None,
+        projection: ["id", "geom"]
+            .into_iter()
+            .map(|field| QueryProjection {
+                expression: column("p", field),
+                alias: None,
+            })
+            .collect(),
+        joins: Vec::new(),
+        filter: Some(QueryExpression::And {
+            arguments: vec![
+                QueryExpression::IsNull {
+                    expression: Box::new(column("p", "geom")),
+                    negated: true,
+                },
+                QueryExpression::Spatial {
+                    function: SpatialFunction::Intersects,
+                    arguments: vec![
+                        column("p", "geom"),
+                        QueryExpression::SpatialValue {
+                            expression: Box::new(QueryExpression::Parameter {
+                                name: "bbox".to_owned(),
+                            }),
+                            srid: 4_326,
+                            semantics: SpatialSemantics::Geometry,
+                        },
+                    ],
+                },
+            ],
+        }),
+        group_by: Vec::new(),
+        having: None,
+        order_by: vec![QueryOrdering {
+            expression: column("p", "id"),
             direction: SortDirection::Asc,
         }],
-        limit: Some(1_000),
+        distinct: false,
+        distinct_on: Vec::new(),
+        set_operations: Vec::new(),
+        row_limit: Some(1_000),
+        row_offset: None,
+        locking: None,
     }
 }
 
@@ -342,7 +382,7 @@ fn main() {
             repetitions,
             || {
                 renderer
-                    .render_select(&spatial)
+                    .render_query(&spatial)
                     .expect("SELECT spatial renderizzabile")
                     .sql
                     .len()

@@ -7,6 +7,7 @@
 mod age;
 mod arrow;
 mod catalog;
+mod column_types;
 mod connection;
 mod control;
 mod error;
@@ -1345,3 +1346,7 @@ mod write_r7_live_tests;
 #[cfg(test)]
 #[path = "write_admission_live_tests.rs"]
 mod write_admission_live_tests;
+
+#[cfg(test)]
+#[path = "parameter_fidelity_live_tests.rs"]
+mod parameter_fidelity_live_tests;

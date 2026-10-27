@@ -509,6 +509,235 @@ pub async fn verify_query_columns(
     Ok(())
 }
 
+/// La regola degli operandi geometrici sul catalogo
+/// (`plenora_database_core::spatial_operand`), a mondo chiuso: ogni colonna
+/// di ogni relazione nominata, con il flag geometrico.
+///
+/// Una colonna e geometrica se il suo tipo **contiene** `geometry` o
+/// `geography`: il tipo stesso, un dominio, un array (`typelem`), un tipo
+/// composito (gli attributi di `typrelid`), un range (`rngsubtype`), a ogni
+/// profondita. Fino al 25/10 si guardavano soltanto il tipo e il dominio, e
+/// `ORDER BY t.ga` su un `geometry[]` ordinava per byte.
+///
+/// `PostGIS` rifiuta da se `geometry = bytea` e `geometry = text` («operator
+/// is not unique», misurato su 3.6 il 25/10), ma ordina per geometria, la
+/// confronta con un bind non tipizzato e accetta `CAST(g AS TEXT) LIKE`: il
+/// rifiuto e lo stesso degli altri provider, prima della query. Il tipo si
+/// riconosce per nome e non con `'geometry'::regtype`, che senza `PostGIS`
+/// farebbe fallire ogni query. Una relazione che `to_regclass` non trova e
+/// assente: i suoi riferimenti non si legano, e si rifiutano.
+///
+/// Con le famiglie dei valori legati (`parameters`) giudica anche la regola F
+/// (nessuna conversione implicita fra famiglie di tipo).
+///
+/// # Errors
+///
+/// `unsupported` per un operando geometrico o non risolto; `invalid_plan`
+/// per una conversione implicita; gli errori del catalogo in fase `prepare`.
+pub async fn verify_scalar_operands(
+    client: &tokio_postgres::Client,
+    operands: &plenora_database_core::spatial_operand::ScalarOperands,
+    parameters: &plenora_database_core::spatial_operand::ParameterFamilies,
+) -> Result<()> {
+    if operands.is_empty() {
+        return Ok(());
+    }
+    let catalog = operand_catalog(client, operands.relations()).await?;
+    operands.judge_bound(&catalog, parameters)
+}
+
+/// Il catalogo delle relazioni (schema, oggetto) per il giudizio degli
+/// operandi geometrici: le colonne di [`relation_columns`], `Absent` per una
+/// relazione che `to_regclass` non trova. E la lettura del path query e di
+/// `TransactionScope::operand_catalog`.
+///
+/// # Errors
+///
+/// Gli errori del catalogo in fase `prepare`.
+pub async fn operand_catalog(
+    client: &tokio_postgres::Client,
+    relations: &[(Option<String>, String)],
+) -> Result<plenora_database_core::spatial_operand::OperandCatalog> {
+    use plenora_database_core::spatial_operand::{OperandCatalog, RelationColumns};
+    let mut catalog = OperandCatalog::new(PROVIDER);
+    for (schema, object) in relations {
+        let columns = relation_columns(client, schema.as_deref(), object).await?;
+        let columns = if columns.is_empty() {
+            RelationColumns::Absent
+        } else {
+            RelationColumns::Known(columns)
+        };
+        catalog.insert(schema.clone(), object.clone(), columns);
+    }
+    Ok(catalog)
+}
+
+/// Le colonne di una relazione, con origine e famiglia
+/// (`spatial_operand::CatalogColumn`); vuote se `to_regclass` non la trova.
+/// La famiglia: geometrica se il tipo contiene una geometria, binaria se
+/// contiene `bytea` (`ST_AsBinary(g)`, `g::bytea`, un dominio su `bytea`),
+/// altrimenti dalla categoria del tipo (`typcategory`, che un dominio eredita
+/// dal tipo di base): `N` e `B` numerica, `S` testo, `D` temporale, il resto
+/// «altra». L'origine e derivata in una vista, in una vista materializzata,
+/// in una tabella esterna e per una colonna generata (`attgenerated` non
+/// vuoto, `STORED` e, dal 18, `VIRTUAL`), anche soltanto in una tabella
+/// figlia o in una partizione ([`RELATION_COLUMNS_SQL`]): la regola B per
+/// colonna.
+///
+/// # Errors
+///
+/// Gli errori del catalogo in fase `prepare`; `protocol` per una famiglia che
+/// il catalogo rende e il giudizio non conosce.
+pub async fn relation_columns(
+    client: &tokio_postgres::Client,
+    schema: Option<&str>,
+    object: &str,
+) -> Result<Vec<plenora_database_core::spatial_operand::CatalogColumn>> {
+    use plenora_database_core::spatial_operand::{CatalogColumn, ColumnOrigin, OperandFamily};
+    let rows = client
+        .query(RELATION_COLUMNS_SQL, &[&schema, &object])
+        .await
+        .map_err(|error| crate::error::classify_error(ErrorPhase::Prepare, &error))?;
+    rows.iter()
+        .map(|row| {
+            let family = match row.get::<_, &str>(1) {
+                "geometry" => OperandFamily::Geometry,
+                "binary" => OperandFamily::Binary,
+                "text" => OperandFamily::Text,
+                "numeric" => OperandFamily::Numeric,
+                "temporal" => OperandFamily::Temporal,
+                "other" => OperandFamily::Other,
+                _ => {
+                    return Err(plenora_database_core::DatabaseError::new(
+                        plenora_database_core::ErrorCategory::Protocol,
+                        ErrorPhase::Prepare,
+                        Some(PROVIDER),
+                        "famiglia di colonna PostgreSQL non riconosciuta",
+                    ))
+                }
+            };
+            let origin = ColumnOrigin::of(row.get::<_, bool>(2), row.get::<_, bool>(3));
+            let catalog = catalog_type(&row.get::<_, String>(4), row.get::<_, i32>(5));
+            Ok(CatalogColumn::new(row.get::<_, String>(0), origin, family)
+                .with_type(catalog, &row.get::<_, String>(6)))
+        })
+        .collect()
+}
+
+/// Il tipo del catalogo dal nome del tipo base e dal typmod: precisione e
+/// scala di `numeric`, lunghezza di `varchar` e `bpchar`, precisione di
+/// `timestamp` (la stessa lettura dell'ammissione dei parametri della PR
+/// #135, `column_types::catalog_type`).
+#[must_use]
+pub fn catalog_type(name: &str, typmod: i32) -> plenora_database_core::cast_table::CatalogType {
+    let mut catalog = plenora_database_core::cast_table::CatalogType {
+        name: name.to_owned(),
+        ..plenora_database_core::cast_table::CatalogType::default()
+    };
+    if typmod < 0 {
+        return catalog;
+    }
+    match name {
+        "numeric" => {
+            let packed = typmod - 4;
+            catalog.precision = u64::try_from((packed >> 16) & 0xffff).ok();
+            // La scala e un intero a 11 bit con segno (PostgreSQL 15).
+            let scale = packed & 0x7ff;
+            catalog.scale = Some(i64::from(if scale > 1023 { scale - 2048 } else { scale }));
+        }
+        "varchar" | "bpchar" => catalog.length = u64::try_from(typmod - 4).ok(),
+        "timestamp" | "timestamptz" => catalog.datetime_precision = u64::try_from(typmod).ok(),
+        _ => {}
+    }
+    catalog
+}
+
+/// Le colonne di una relazione (schema, oggetto) nell'ordine di `attnum`; la
+/// famiglia: geometrica o binaria se il loro tipo contiene una geometria o
+/// `bytea` (la chiusura di `typbasetype`, `typelem`, gli attributi di
+/// `typrelid`, `rngsubtype` e, per un multirange, il suo range,
+/// `rngmultitypid`, da `PostgreSQL` 14), altrimenti da `typcategory`.
+///
+/// L'origine guarda ogni relazione di cui il riferimento puo rendere le
+/// righe: la relazione e i suoi discendenti (`pg_inherits`, ricorsivo: le
+/// tabelle figlie di un'ereditarieta e le partizioni, a ogni livello). La
+/// colonna e derivata se una di loro e una vista, una vista materializzata o
+/// una tabella esterna (`relkind` `v`, `m`, `f`: le righe di una tabella
+/// esterna le rende un altro server, e il catalogo non dice come), o se in
+/// una di loro la colonna omonima e generata (`attgenerated`). Il tipo della
+/// colonna e lo stesso in ogni discendente: `PostgreSQL` rifiuta un figlio o
+/// una partizione con un tipo diverso per una colonna ereditata, e
+/// `ALTER COLUMN TYPE` su una colonna ereditata. La colonna `rngmultitypid`
+/// si legge da `to_jsonb` della riga di `pg_range`: prima del 14 non esiste,
+/// e non esistono multirange da seguire. Fino al 25/10 il multirange di un
+/// range di geometrie non si riconosceva, e la colonna generata di una tabella
+/// era scalare; fino alla quattordicesima lettura del 25/10 l'origine era
+/// della sola relazione nominata, e su `PostgreSQL` 14 e 15 (il 16 rifiuta
+/// lo schema) `p.w = :wkb` su un padre con una figlia o una partizione dalla
+/// colonna binaria generata rendeva una riga su due.
+///
+/// Le ultime tre colonne sono il tipo per la regola C e l'identita per la
+/// regola B: il nome del tipo base (`enum` per un enumerato, il tipo di un
+/// dominio), il typmod (del dominio, se la colonna e di un dominio) e
+/// `format_type` della colonna (il nome completo: un dominio o un enumerato
+/// con il proprio nome).
+const RELATION_COLUMNS_SQL: &str = "\
+WITH RECURSIVE named AS ( \
+    SELECT to_regclass(CASE WHEN $1::text IS NULL \
+            THEN quote_ident($2::text) \
+            ELSE quote_ident($1::text) || '.' || quote_ident($2::text) END) AS oid \
+), tree(oid) AS ( \
+    SELECT oid FROM named WHERE oid IS NOT NULL \
+    UNION \
+    SELECT i.inhrelid FROM pg_catalog.pg_inherits i JOIN tree t ON i.inhparent = t.oid \
+), columns AS ( \
+    SELECT a.attnum, a.attname::text AS name, a.atttypid, a.atttypmod, \
+        EXISTS (SELECT 1 FROM tree t JOIN pg_catalog.pg_class k ON k.oid = t.oid \
+            WHERE k.relkind IN ('v', 'm', 'f')) AS derived, \
+        EXISTS (SELECT 1 FROM tree t JOIN pg_catalog.pg_attribute d ON d.attrelid = t.oid \
+            WHERE d.attname = a.attname AND d.attnum > 0 AND NOT d.attisdropped \
+              AND d.attgenerated <> '') AS generated \
+    FROM pg_catalog.pg_attribute a \
+    WHERE a.attrelid = (SELECT oid FROM named) \
+      AND a.attnum > 0 AND NOT a.attisdropped \
+), reach(attnum, oid) AS ( \
+    SELECT attnum, atttypid FROM columns \
+    UNION \
+    SELECT r.attnum, n.oid \
+    FROM reach r \
+    JOIN pg_catalog.pg_type t ON t.oid = r.oid \
+    CROSS JOIN LATERAL ( \
+        SELECT t.typbasetype AS oid \
+        UNION ALL SELECT t.typelem \
+        UNION ALL SELECT a.atttypid FROM pg_catalog.pg_attribute a \
+            WHERE t.typrelid <> 0 AND a.attrelid = t.typrelid \
+              AND a.attnum > 0 AND NOT a.attisdropped \
+        UNION ALL SELECT g.rngsubtype FROM pg_catalog.pg_range g WHERE g.rngtypid = t.oid \
+        UNION ALL SELECT g.rngtypid FROM pg_catalog.pg_range g \
+            WHERE t.typtype = 'm' AND (to_jsonb(g) ->> 'rngmultitypid')::oid = t.oid \
+    ) n \
+    WHERE n.oid <> 0 \
+) \
+SELECT c.name, CASE WHEN EXISTS ( \
+    SELECT 1 FROM reach r JOIN pg_catalog.pg_type t ON t.oid = r.oid \
+    WHERE r.attnum = c.attnum AND t.typname IN ('geometry', 'geography') \
+) THEN 'geometry' WHEN EXISTS ( \
+    SELECT 1 FROM reach r \
+    WHERE r.attnum = c.attnum AND r.oid = 'pg_catalog.bytea'::pg_catalog.regtype \
+) THEN 'binary' ELSE ( \
+    SELECT CASE t.typcategory WHEN 'N' THEN 'numeric' WHEN 'B' THEN 'numeric' \
+        WHEN 'S' THEN 'text' WHEN 'D' THEN 'temporal' ELSE 'other' END \
+    FROM pg_catalog.pg_type t WHERE t.oid = c.atttypid \
+) END, c.derived, c.generated, \
+    (SELECT CASE WHEN b.typtype = 'e' THEN 'enum' ELSE b.typname::text END \
+     FROM pg_catalog.pg_type t JOIN pg_catalog.pg_type b \
+       ON b.oid = CASE WHEN t.typbasetype <> 0 THEN t.typbasetype ELSE t.oid END \
+     WHERE t.oid = c.atttypid), \
+    (SELECT CASE WHEN t.typbasetype <> 0 THEN t.typtypmod ELSE c.atttypmod END \
+     FROM pg_catalog.pg_type t WHERE t.oid = c.atttypid), \
+    pg_catalog.format_type(c.atttypid, c.atttypmod) \
+FROM columns c ORDER BY c.attnum";
+
 #[cfg(test)]
 #[path = "spatial_probe_tests.rs"]
 mod tests;

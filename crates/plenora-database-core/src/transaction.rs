@@ -367,6 +367,47 @@ pub trait TransactionScope: Send {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, ()>;
 
+    /// Le colonne delle relazioni (schema, oggetto) come il piano le nomina,
+    /// lette dal catalogo del provider nella transazione: il giudizio degli
+    /// operandi geometrici (`spatial_operand::ScalarOperands::judge`) dei
+    /// percorsi che eseguono SQL compilato (SDK, ORM, facade e CLI portable).
+    /// Non e SQL del chiamante: non tocca il marcatore di
+    /// [`Self::begin_caller_sql`].
+    ///
+    /// `names` sono i nomi di colonna che il piano scrive
+    /// (`spatial_operand::ScalarOperands::names`): dove il server lega i nomi
+    /// con regole proprie (`spatial_operand::server_resolves_names`) il
+    /// provider li manda al server e registra le colonne che lega (regola A).
+    ///
+    /// Il default non legge niente: un catalogo vuoto, in cui ogni relazione
+    /// e `Unknown`. A mondo chiuso, un riferimento in posizione di operando su
+    /// una relazione che non si conosce si rifiuta.
+    fn operand_catalog<'a>(
+        &'a mut self,
+        _relations: &'a [(Option<String>, String)],
+        _names: &'a [String],
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, crate::spatial_operand::OperandCatalog> {
+        let provider = self.provider_kind();
+        Box::pin(async move { Ok(crate::spatial_operand::OperandCatalog::new(provider)) })
+    }
+
+    /// I tipi delle colonne di una relazione (schema, oggetto), con
+    /// precisione, scala, lunghezza e precisione temporale, letti dal
+    /// catalogo del provider nella transazione: l'ammissione dei letterali
+    /// dell'AST portable (`operand_admission`). Non e SQL del chiamante: non
+    /// tocca il marcatore di [`Self::begin_caller_sql`].
+    ///
+    /// Il default non legge niente (`None`): ogni colonna e di tipo
+    /// sconosciuto e ogni letterale che non sia `NULL` si rifiuta.
+    fn column_types<'a>(
+        &'a mut self,
+        _relation: &'a (Option<String>, String),
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<crate::operand_admission::RelationTypes>> {
+        Box::pin(async move { Ok(None) })
+    }
+
     fn commit(
         self: Box<Self>,
         cancellation: &CancellationToken,

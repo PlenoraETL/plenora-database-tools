@@ -377,7 +377,9 @@ pub fn admit(
         let (key, dimensions) = admission_key(field.data_type(), fact);
         rewrites.push(ColumnRewrites {
             field: *index,
-            rewrites: measured.admit(&key, dimensions)?,
+            rewrites: plenora_database_core::admission_gate::write_column(
+                &measured, &key, dimensions,
+            )?,
             target_type: key.nativo,
         });
     }

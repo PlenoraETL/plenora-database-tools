@@ -1,10 +1,10 @@
 use crate::catalog;
 use crate::connection::with_connection;
-use crate::error::{driver_error, interruption_error};
+use crate::error::{driver_error, interruption_error, task_error};
 use crate::{Db2ColumnKind, Db2Config, Db2ObjectDescription, Db2ReadPlan};
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use odbc_api::buffers::TextRowSet;
-use odbc_api::{Cursor, IntoParameter};
+use odbc_api::Cursor;
 use plenora_database_core::arrow::array::builder::{BinaryBuilder, StringBuilder};
 use plenora_database_core::arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array,
@@ -53,7 +53,34 @@ pub async fn read_operation(
     let description: Db2ObjectDescription = serde_json::from_value(inspection.document)
         .map_err(|_| read_error(ErrorCategory::Protocol, "catalogo Db2 non deserializzabile"))?;
     let plan = Db2ReadPlan::compile(&description, operation, budget.limits().cell_bytes)?;
-    let bound = bind_parameters(&plan.bind_names, parameters)?;
+    verify_scalar_fields(
+        config,
+        secret,
+        &description,
+        operation,
+        parameters,
+        cancellation,
+    )
+    .await?;
+    let types = column_types(config, secret, &description, cancellation).await?;
+    refuse_bit_data(&plan, &description, &types)?;
+    // La regola dei parametri che incontrano un operando
+    // (`operand_admission`): ogni parametro del filtro si ammette contro il
+    // tipo del campo, con lunghezza, scala e `FOR BIT DATA` del catalogo.
+    let admitted = plenora_database_core::admission_gate::read_filter(
+        plenora_database_core::plan::ProviderKind::Db2,
+        operation.filter.as_ref(),
+        parameters,
+        |field| {
+            types.get(field).map(|catalog| {
+                plenora_database_core::operand_admission::operand_type(
+                    plenora_database_core::plan::ProviderKind::Db2,
+                    catalog,
+                )
+            })
+        },
+    )?;
+    let bound = bind_parameters(&plan.bind_names, &admitted)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let column_count = u64::try_from(plan.columns.len())
         .map_err(|_| DatabaseError::resource_limit("numero colonne Db2 non rappresentabile"))?;
@@ -96,7 +123,120 @@ pub async fn read_operation(
     }))
 }
 
-pub fn bind_parameters(names: &[String], parameters: &ParameterBag) -> Result<Vec<String>> {
+/// I tipi delle colonne dell'oggetto letto dal catalogo, con `FOR BIT DATA`
+/// (`CODEPAGE` 0), che la descrizione non porta.
+async fn column_types(
+    config: &Db2Config,
+    secret: &SecretString,
+    description: &Db2ObjectDescription,
+    cancellation: &CancellationToken,
+) -> Result<plenora_database_core::operand_admission::RelationTypes> {
+    let config = config.clone();
+    let secret = secret.clone();
+    let (schema, object) = (description.schema.clone(), description.name.clone());
+    let mut task = tokio::task::spawn_blocking(move || {
+        with_connection(&config, &secret, |connection, timeout| {
+            crate::operand_catalog::OdbcCatalog::new(connection, timeout)
+                .column_types(Some(&schema), &object)
+        })
+    });
+    let types = tokio::select! {
+        outcome = &mut task => outcome.map_err(|_| task_error(ErrorPhase::Prepare))??,
+        _ = cancellation.cancelled() => {
+            return Err(interruption_error(cancellation, ErrorPhase::Prepare));
+        }
+    };
+    Ok(types.unwrap_or_default())
+}
+
+/// Una colonna `FOR BIT DATA` proiettata: il driver la rende come testo
+/// esadecimale (misurato, `0xAB01` letto `"AB01"`), e la lettura Arrow la
+/// dichiarava `Utf8`. Come `BINARY` e `VARBINARY` non e qualificata.
+fn refuse_bit_data(
+    plan: &Db2ReadPlan,
+    description: &Db2ObjectDescription,
+    types: &plenora_database_core::operand_admission::RelationTypes,
+) -> Result<()> {
+    let bit_data = |name: &str| {
+        let declared = description
+            .columns
+            .iter()
+            .find(|column| column.name == name)
+            .map(|column| column.data_type.to_ascii_uppercase());
+        let catalog = types.get(name).map(|catalog| catalog.name.as_str());
+        matches!(declared.as_deref(), Some("CHARACTER" | "CHAR" | "VARCHAR"))
+            && matches!(catalog, Some("BINARY" | "VARBINARY"))
+    };
+    if plan.columns.iter().any(|column| bit_data(&column.name)) {
+        return Err(DatabaseError::unsupported(
+            plenora_database_core::plan::ProviderKind::Db2,
+            ErrorPhase::Prepare,
+            "colonna FOR BIT DATA Db2 non ancora qualificata per Arrow",
+        ));
+    }
+    Ok(())
+}
+
+/// I campi del filtro e dell'ordinamento giudicati sul catalogo
+/// (`crate::operand_catalog`), con lo stesso giudizio del tipo della
+/// transazione: la compilazione li ha gia giudicati sul nome del tipo della
+/// descrizione, che non dice lo schema del tipo ne la sua fonte. Una
+/// relazione che il catalogo non conosce piu rifiuta ogni campo.
+async fn verify_scalar_fields(
+    config: &Db2Config,
+    secret: &SecretString,
+    description: &Db2ObjectDescription,
+    operation: &ReadOperation,
+    parameters: &ParameterBag,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    if operation.filter.is_none() && operation.order_by.is_empty() {
+        return Ok(());
+    }
+    let config = config.clone();
+    let secret = secret.clone();
+    let (schema, object) = (description.schema.clone(), description.name.clone());
+    let mut task = tokio::task::spawn_blocking(move || {
+        with_connection(&config, &secret, |connection, timeout| {
+            crate::operand_catalog::read_columns(
+                &mut crate::operand_catalog::OdbcCatalog::new(connection, timeout),
+                &schema,
+                &object,
+            )
+        })
+    });
+    let columns = tokio::select! {
+        outcome = &mut task => outcome.map_err(|_| task_error(ErrorPhase::Prepare))??,
+        _ = cancellation.cancelled() => {
+            return Err(interruption_error(cancellation, ErrorPhase::Prepare));
+        }
+    };
+    plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
+        plenora_database_core::plan::ProviderKind::Db2,
+        operation.filter.as_ref(),
+        &operation.order_by,
+        |field| {
+            columns.as_ref().is_none_or(|columns| {
+                columns
+                    .iter()
+                    .any(|column| column.is_geometric() && column.name == field)
+            })
+        },
+        |field| {
+            Ok(columns
+                .iter()
+                .flatten()
+                .find(|column| column.name == field)
+                .map(plenora_database_core::spatial_operand::CatalogColumn::field_family))
+        },
+        &plenora_database_core::spatial_operand::ParameterFamilies::from_bag(parameters),
+    )
+}
+
+/// I valori del filtro nell'ordine dei segnaposto, gia validati: il binding
+/// sul tipo descritto avviene sulla connessione della lettura
+/// (`crate::parameter`).
+pub fn bind_parameters(names: &[String], parameters: &ParameterBag) -> Result<Vec<ParameterValue>> {
     let unique = names.iter().collect::<BTreeSet<_>>();
     if unique.len() != parameters.len() {
         return Err(read_error(
@@ -114,21 +254,17 @@ pub fn bind_parameters(names: &[String], parameters: &ParameterBag) -> Result<Ve
                 )
             })?;
             match value {
-                ParameterValue::Bool(value) => Ok(value.to_string()),
-                ParameterValue::I32(value) => Ok(value.to_string()),
-                ParameterValue::I64(value) => Ok(value.to_string()),
-                ParameterValue::F64(value) if value.is_finite() => Ok(value.to_string()),
-                ParameterValue::String(value)
-                | ParameterValue::Date(value)
-                | ParameterValue::Timestamp(value)
-                | ParameterValue::Decimal(value)
-                | ParameterValue::Uuid(value) => Ok(value.clone()),
-                ParameterValue::Enum { label, .. } => Ok(label.clone()),
-                _ => Err(DatabaseError::unsupported(
+                // Il NULL non ritrova nessuna riga con `=`: si rifiuta come
+                // prima, invece di un filtro vuoto che sembri una risposta.
+                ParameterValue::Null { .. } => Err(DatabaseError::unsupported(
                     plenora_database_core::plan::ProviderKind::Db2,
                     ErrorPhase::Prepare,
                     "tipo parametro Db2 non ancora qualificato",
                 )),
+                value => {
+                    crate::parameter::validate(std::slice::from_ref(value))?;
+                    Ok(value.clone())
+                }
             }
         })
         .collect()
@@ -139,7 +275,7 @@ fn pump_rows(
     config: &Db2Config,
     secret: &SecretString,
     plan: &Db2ReadPlan,
-    parameters: &[String],
+    parameters: &[ParameterValue],
     cancellation: &CancellationToken,
     mut demands: mpsc::Receiver<ReadDemand>,
     results: &mpsc::Sender<Result<Option<RecordBatch>>>,
@@ -153,13 +289,22 @@ fn pump_rows(
                 "schema Db2 cambiato durante la preparazione",
             ));
         }
-        let parameters: Vec<_> = parameters
-            .iter()
-            .map(|parameter| parameter.as_str().into_parameter())
-            .collect();
+        let mut statement = connection
+            .prepare(&plan.sql)
+            .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
+        let bound = crate::transaction::bind_described(
+            connection,
+            timeout,
+            &plan.sql,
+            &mut statement,
+            parameters,
+        )?;
+        statement
+            .set_query_timeout_sec(timeout)
+            .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
         let mut cursor = Some(
-            connection
-                .execute(&plan.sql, parameters.as_slice(), Some(timeout))
+            statement
+                .execute(bound.as_slice())
                 .map_err(|error| driver_error(&error, ErrorPhase::Read))?
                 .ok_or_else(|| {
                     read_error(ErrorCategory::Protocol, "lettura Db2 senza result set")
@@ -525,26 +670,11 @@ pub fn parse_date(value: &str) -> Result<i32> {
     Ok(date.num_days_from_ce() - UNIX_EPOCH_DAYS_FROM_CE)
 }
 
-/// Se il testo di un `TIMESTAMP(p)` con `p > 6` ha cifre non nulle oltre
-/// il microsecondo. Arrow e il contratto pubblicano `Timestamp(us)`, e
-/// `timestamp_micros` (o il formato a sei cifre della query) le scartava in
-/// silenzio: `.123456789` di un `TIMESTAMP(9)` si rileggeva `.123456`.
-#[must_use]
-pub fn has_sub_microsecond_digits(value: &str) -> bool {
-    value
-        .rsplit_once('.')
-        .map(|(_, fraction)| fraction.trim())
-        .is_some_and(|fraction| {
-            fraction.chars().all(|c| c.is_ascii_digit())
-                && fraction.chars().skip(6).any(|digit| digit != '0')
-        })
-}
-
 pub fn parse_timestamp(value: &str) -> Result<i64> {
-    if has_sub_microsecond_digits(value) {
-        return Err(mapping(
-            "TIMESTAMP Db2 con cifre oltre il microsecondo: Arrow le perderebbe",
-        ));
+    // Arrow porta il microsecondo: le cifre oltre si rifiutano, non si
+    // troncano.
+    if plenora_database_core::parameter_fidelity::has_sub_microsecond(value) {
+        return Err(mapping("TIMESTAMP Db2 oltre il microsecondo"));
     }
     let timestamp = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
         .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d-%H.%M.%S%.f"))

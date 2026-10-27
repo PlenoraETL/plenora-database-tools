@@ -77,7 +77,7 @@ def live_default_command() -> list[str]:
         "live_",
         "--locked",
         "--",
-        "--nocapture",
+        "--show-output",
         "--test-threads=1",
     ]
 
@@ -93,7 +93,7 @@ def live_reference_command() -> list[str]:
         "--locked",
         "--",
         "--ignored",
-        "--nocapture",
+        "--show-output",
         "--test-threads=1",
     ]
 

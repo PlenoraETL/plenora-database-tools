@@ -1556,10 +1556,9 @@ mod live {
 
     // === PortableStatement AST end-to-end ===
 
-    use plenora_database_core::plan::ProviderKind;
     use plenora_database_core::portable::{
-        and as p_and, compile_portable, eq as p_eq, select as p_select, Direction, Expression,
-        InsertStatement, PortableStatement, TableRef, UpdateStatement,
+        and as p_and, eq as p_eq, select as p_select, Direction, Expression, InsertStatement,
+        PortableStatement, TableRef, UpdateStatement,
     };
 
     #[tokio::test]
@@ -1590,7 +1589,9 @@ mod live {
             ],
             returning: Vec::new(),
         });
-        let stmt = compile_portable(ProviderKind::Postgres, &insert).expect("compile insert");
+        let stmt = plenora_database_core::admission_gate::portable(tx.as_mut(), &insert, &cancel)
+            .await
+            .expect("compile insert");
         let inserted = tx.execute(&stmt, &cancel).await.expect("insert");
         assert_eq!(inserted, 2);
 
@@ -1607,7 +1608,9 @@ mod live {
             ])),
             returning: Vec::new(),
         });
-        let stmt = compile_portable(ProviderKind::Postgres, &update).expect("compile update");
+        let stmt = plenora_database_core::admission_gate::portable(tx.as_mut(), &update, &cancel)
+            .await
+            .expect("compile update");
         let updated = tx.execute(&stmt, &cancel).await.expect("update");
         assert_eq!(updated, 1);
 
@@ -1617,7 +1620,9 @@ mod live {
             .order_by("id", Direction::Asc)
             .limit(10)
             .into_statement();
-        let stmt = compile_portable(ProviderKind::Postgres, &select).expect("compile select");
+        let stmt = plenora_database_core::admission_gate::portable(tx.as_mut(), &select, &cancel)
+            .await
+            .expect("compile select");
         let rows = tx.query(&stmt, &cancel).await.expect("select");
         assert_eq!(rows.len(), 1);
         assert!(matches!(&rows[0]["id"], ParameterValue::I32(1)));
@@ -1652,7 +1657,9 @@ mod live {
             ]],
             returning: Vec::new(),
         });
-        let stmt = compile_portable(ProviderKind::Postgres, &insert).expect("compile");
+        let stmt = plenora_database_core::admission_gate::portable(tx.as_mut(), &insert, &cancel)
+            .await
+            .expect("compile");
         tx.execute(&stmt, &cancel).await.expect("insert");
 
         // UPSERT sulla stessa chiave con DO UPDATE.
@@ -1670,7 +1677,9 @@ mod live {
             )],
             returning: Vec::new(),
         });
-        let stmt = compile_portable(ProviderKind::Postgres, &upsert).expect("compile upsert");
+        let stmt = plenora_database_core::admission_gate::portable(tx.as_mut(), &upsert, &cancel)
+            .await
+            .expect("compile upsert");
         let affected = tx.execute(&stmt, &cancel).await.expect("upsert");
         assert_eq!(affected, 1);
 
@@ -1678,7 +1687,9 @@ mod live {
         let sel = p_select("f1c_upsert", vec!["v"])
             .where_(p_eq("id", ParameterValue::I32(1)))
             .into_statement();
-        let stmt = compile_portable(ProviderKind::Postgres, &sel).expect("compile select");
+        let stmt = plenora_database_core::admission_gate::portable(tx.as_mut(), &sel, &cancel)
+            .await
+            .expect("compile select");
         let rows = tx.query(&stmt, &cancel).await.expect("select");
         assert!(matches!(
             &rows[0]["v"],

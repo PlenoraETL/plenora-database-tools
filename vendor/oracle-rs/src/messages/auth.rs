@@ -357,7 +357,7 @@ impl AuthMessage {
         self.write_key_value(&mut buf, "SESSION_CLIENT_VERSION", "54530048", 0)?;
 
         // Timezone alter session
-        let tz_stmt = self.get_alter_timezone_statement();
+        let tz_stmt = self.get_alter_timezone_statement()?;
         self.write_key_value(&mut buf, "AUTH_ALTER_SESSION", &tz_stmt, 1)?;
 
         encode_packet(PacketType::Data, buf.as_slice(), large_sdu)
@@ -651,25 +651,35 @@ impl AuthMessage {
     }
 
     /// Get timezone alter session statement
-    fn get_alter_timezone_statement(&self) -> String {
+    ///
+    /// Plenora fork: the sign comes from the offset, not from its truncated
+    /// hours (an offset in (-1 h, 0) was sent as `+00:MM`), and an offset with
+    /// a seconds component, which `TIME_ZONE` cannot express, is refused.
+    fn get_alter_timezone_statement(&self) -> Result<String> {
         // Try to get timezone from environment or use local time
         if let Ok(tz) = std::env::var("ORA_SDTZ") {
-            return format!("ALTER SESSION SET TIME_ZONE='{}'\x00", tz);
+            return Ok(format!("ALTER SESSION SET TIME_ZONE='{}'\x00", tz));
         }
 
         // Use local timezone offset
         let now = chrono::Local::now();
-        let offset = now.offset().local_minus_utc();
-        let hours = offset / 3600;
-        let minutes = (offset.abs() % 3600) / 60;
-        let sign = if hours >= 0 { '+' } else { '-' };
+        Self::time_zone_statement(now.offset().local_minus_utc())
+    }
 
-        format!(
+    fn time_zone_statement(offset: i32) -> Result<String> {
+        if offset % 60 != 0 {
+            return Err(Error::FeatureNotSupported(
+                "local time zone offset with seconds: set ORA_SDTZ".to_string(),
+            ));
+        }
+        let sign = if offset < 0 { '-' } else { '+' };
+        let magnitude = offset.unsigned_abs();
+        Ok(format!(
             "ALTER SESSION SET TIME_ZONE='{}{:02}:{:02}'\x00",
             sign,
-            hours.abs(),
-            minutes
-        )
+            magnitude / 3600,
+            (magnitude % 3600) / 60
+        ))
     }
 
     /// Clear sensitive data
@@ -689,6 +699,34 @@ impl Drop for AuthMessage {
 mod tests {
     use super::*;
     use crate::constants::PACKET_HEADER_SIZE;
+
+    /// Plenora fork: il segno viene dall'offset (base: un offset in (-1 h, 0)
+    /// era scritto `+00:MM`), e un offset con i secondi si rifiuta.
+    #[test]
+    fn plenora_fork_time_zone_statement_keeps_the_sign_and_refuses_seconds() {
+        for (offset, expected) in [
+            (0, "+00:00"),
+            (3_600, "+01:00"),
+            (-1_800, "-00:30"),
+            (-2_700, "-00:45"),
+            (-12_600, "-03:30"),
+            (19_800, "+05:30"),
+            (50_400, "+14:00"),
+        ] {
+            let statement = AuthMessage::time_zone_statement(offset).unwrap();
+            assert_eq!(
+                statement,
+                format!("ALTER SESSION SET TIME_ZONE='{expected}' "),
+                "{offset}"
+            );
+        }
+        for offset in [1, -59, 3_601, -1_801] {
+            assert!(
+                AuthMessage::time_zone_statement(offset).is_err(),
+                "{offset}"
+            );
+        }
+    }
 
     #[test]
     fn phase_two_packet_bytes_both_sdu_formats() {
