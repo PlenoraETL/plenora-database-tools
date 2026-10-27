@@ -249,13 +249,24 @@ fn le_chiavi_non_possono_perdere_precisione_o_cambiare_tipo() {
         let admitted =
             plenora_database_core::admission_gate::write_column(&measured, &key, dimensions);
         if matches!(arrow, DataType::Timestamp(_, _)) {
-            let rewrites = admitted.expect("precisione misurata come riscrittura");
-            let values =
-                plenora_database_core::arrow::array::TimestampMicrosecondArray::from(vec![
-                    400_000, 0,
-                ]);
-            assert!(rewrites.iter().any(|rewrite| rewrite.rewrites(&values, 0)));
-            assert!(!rewrites.iter().any(|rewrite| rewrite.rewrites(&values, 1)));
+            // La sonda ora incontra la guardia del parametro descritto:
+            // nessuna riscrittura arriva al server, ma la frazione resta vietata.
+            assert!(admitted.expect("precisione misurata").is_empty());
+            let described = odbc_api::DataType::Timestamp { precision: 0 };
+            let fractional = plenora_database_core::provider::ParameterValue::Timestamp(
+                "1970-01-01T00:00:00.400000".to_owned(),
+            );
+            let error = crate::parameter::admit_described(&fractional, &described)
+                .expect_err("la frazione non puo sparire");
+            assert_eq!(error.category, ErrorCategory::DataMapping);
+            assert_eq!(error.phase, ErrorPhase::Prepare);
+            let exact = plenora_database_core::provider::ParameterValue::Timestamp(
+                "1970-01-01T00:00:00".to_owned(),
+            );
+            assert_eq!(
+                crate::parameter::admit_described(&exact, &described).expect("secondo intero"),
+                exact
+            );
         } else {
             assert!(admitted.is_err(), "{key:?}");
         }

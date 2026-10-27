@@ -237,6 +237,45 @@ pub fn single_text(rows: &[plenora_database_core::row::Row]) -> Option<String> {
     }
 }
 
+/// Misura il driver senza le guardie del prodotto, sempre con rollback.
+pub async fn measure_raw(
+    provider: &Db2Provider,
+    secret: &SecretString,
+    sql: &str,
+    value: ParameterValue,
+    query: &str,
+) -> Option<String> {
+    use odbc_api::{parameter::InputParameter, IntoParameter};
+    let config = provider.config().clone();
+    let secret = secret.clone();
+    let sql = sql.to_owned();
+    let query = query.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let (connection, timeout) = crate::connection::open_connection(&config, &secret)
+            .expect("connessione della misura ODBC");
+        connection.set_autocommit(false).expect("autocommit off");
+        let value: Box<dyn InputParameter> = match value {
+            ParameterValue::String(value) => Box::new(value.into_parameter()),
+            ParameterValue::F64(value) => Box::new(value),
+            _ => panic!("tipo non previsto dalla misura"),
+        };
+        let parameters: Vec<Box<dyn InputParameter>> = vec![Box::new(1_i32), value];
+        let written = connection.execute(&sql, parameters.as_slice(), Some(timeout));
+        let rows = written.map(|cursor| {
+            drop(cursor);
+            crate::connection::query_text(&connection, &query, &[], timeout, 1, 64)
+        });
+        connection.rollback().expect("rollback della misura ODBC");
+        rows.expect("scrittura ODBC")
+            .expect("lettura ODBC")
+            .into_iter()
+            .next()
+            .and_then(|row| row.into_iter().next().flatten())
+    })
+    .await
+    .expect("worker della misura ODBC")
+}
+
 pub fn assert_rewritten(error: &plenora_database_core::DatabaseError, key: bool) {
     assert_eq!(error.category, ErrorCategory::DataMapping, "{error:?}");
     assert_eq!(error.provider, Some(ProviderKind::Db2));
@@ -262,65 +301,30 @@ async fn live_s_db2_char_e_spazi_oltre_la_lunghezza_non_si_riscrivono() {
         "ID INTEGER NOT NULL PRIMARY KEY, V VARCHAR(3), C CHAR(3), K CHAR(3), D DOUBLE",
     )
     .await;
-    // La misura sul percorso dei bind, in una transazione annullata.
+    // L'oracolo usa ODBC direttamente: l'API pubblica deve rifiutare
+    // proprio i valori di cui qui misuriamo la riscrittura del server.
     let insert =
         |column: &str| format!("INSERT INTO DB2INST1.{table} (ID, {column}) VALUES (?, ?)");
-    let measured = run(
-        &provider,
-        &secret,
-        &[(
-            &insert("V"),
-            vec![
-                ParameterValue::I32(1),
-                ParameterValue::String("abc   ".to_owned()),
-            ],
-        )],
-        Some(&format!("SELECT V FROM DB2INST1.{table} WHERE ID = 1")),
-        false,
-    )
-    .await;
-    assert_eq!(
-        single_text(&measured).as_deref(),
-        Some("abc"),
-        "Db2 tronca gli spazi"
-    );
-    let measured = run(
-        &provider,
-        &secret,
-        &[(
-            &insert("C"),
-            vec![
-                ParameterValue::I32(1),
-                ParameterValue::String("a".to_owned()),
-            ],
-        )],
-        Some(&format!("SELECT C FROM DB2INST1.{table} WHERE ID = 1")),
-        false,
-    )
-    .await;
-    assert_eq!(
-        single_text(&measured).as_deref(),
-        Some("a  "),
-        "CHAR(3) completa"
-    );
-    let measured = run(
-        &provider,
-        &secret,
-        &[(
-            &insert("D"),
-            vec![ParameterValue::I32(1), ParameterValue::F64(-0.0)],
-        )],
-        Some(&format!(
-            "SELECT VARCHAR(HEX(D), 16) FROM DB2INST1.{table} WHERE ID = 1"
-        )),
-        false,
-    )
-    .await;
-    assert_eq!(
-        single_text(&measured).as_deref(),
-        Some("0000000000000000"),
-        "Db2 salva -0.0 come 0"
-    );
+    for (column, value, expression, expected) in [
+        ("V", ParameterValue::String("abc   ".to_owned()), "V", "abc"),
+        ("C", ParameterValue::String("a".to_owned()), "C", "a  "),
+        (
+            "D",
+            ParameterValue::F64(-0.0),
+            "VARCHAR(HEX(D), 16)",
+            "0000000000000000",
+        ),
+    ] {
+        let measured = measure_raw(
+            &provider,
+            &secret,
+            &insert(column),
+            value,
+            &format!("SELECT {expression} FROM DB2INST1.{table} WHERE ID = 1"),
+        )
+        .await;
+        assert_eq!(measured.as_deref(), Some(expected), "{column}");
+    }
     // Il carattere NUL si conserva (la classe dei testi, misurata).
     let measured = run(
         &provider,
@@ -355,7 +359,14 @@ async fn live_s_db2_char_e_spazi_oltre_la_lunghezza_non_si_riscrivono() {
         )
         .await
         .expect_err("valore riscritto");
-        assert_rewritten(&error, false);
+        if column == "C" && value == "a" {
+            assert_rewritten(&error, false);
+        } else {
+            assert_eq!(error.category, ErrorCategory::DataMapping, "{error:?}");
+            assert_eq!(error.provider, Some(ProviderKind::Db2));
+            assert_eq!(error.remote_effect, RemoteEffect::RolledBack, "{error:?}");
+            assert_eq!(error.message, "testo oltre la lunghezza della colonna: il server lo troncherebbe o lo rifiuterebbe");
+        }
     }
     let error = write(
         &provider,
@@ -365,7 +376,8 @@ async fn live_s_db2_char_e_spazi_oltre_la_lunghezza_non_si_riscrivono() {
     )
     .await
     .expect_err("-0.0 diventerebbe 0");
-    assert_rewritten(&error, false);
+    assert_eq!(error.category, ErrorCategory::DataMapping, "{error:?}");
+    assert_eq!(error.remote_effect, RemoteEffect::RolledBack, "{error:?}");
     // Una chiave completata: Upsert e Update rifiutano con ogni politica.
     for mode in [WriteMode::Upsert, WriteMode::Update] {
         let error = write(

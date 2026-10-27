@@ -12,7 +12,7 @@
 //! rifiuta nel preflight come non provata, prima ancora della regola S.
 
 use super::write_rewrite_live_tests::{
-    batch, environment, operation, provider, reset, run, single_text, text, write,
+    batch, environment, measure_raw, operation, provider, reset, run, single_text, text, write,
 };
 use plenora_database_core::plan::WriteMode;
 use plenora_database_core::provider::ParameterValue;
@@ -46,23 +46,15 @@ async fn db2_ora_a_testo_sotto_varchar2_compat_non_misurato_si_rifiuta() {
         Some("ON")
     );
     // La misura sul percorso dei bind: il testo vuoto diventa NULL.
-    let measured = run(
+    let measured = measure_raw(
         &provider,
         &secret,
-        &[(
-            &format!("INSERT INTO DB2INST1.{table} (ID, V) VALUES (?, ?)"),
-            vec![
-                ParameterValue::I32(1),
-                ParameterValue::String(String::new()),
-            ],
-        )],
-        Some(&format!(
-            "SELECT COUNT(*) FROM DB2INST1.{table} WHERE ID = 1 AND V IS NULL"
-        )),
-        false,
+        &format!("INSERT INTO DB2INST1.{table} (ID, V) VALUES (?, ?)"),
+        ParameterValue::String(String::new()),
+        &format!("SELECT VARCHAR(COUNT(*)) FROM DB2INST1.{table} WHERE ID = 1 AND V IS NULL"),
     )
     .await;
-    assert_eq!(measured[0].get_index(0), Some(&ParameterValue::I32(1)));
+    assert_eq!(measured.as_deref(), Some("1"));
     // Ogni scrittura di testo, anche il testo pieno, non e misurata sotto
     // `varchar2_compat = ON`: rifiutata nel preflight con ogni mode.
     for (column, mode, keys, value) in [

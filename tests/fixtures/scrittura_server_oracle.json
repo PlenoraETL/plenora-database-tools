@@ -1236,14 +1236,13 @@
     {
      "arrow": "float64",
      "nativo": "FLOAT(126)",
-     "esito": "riscrive",
-     "riscritture": [
-      {
-       "classe": "underflow",
-       "min_abs": "1e-130"
-      }
-     ],
-     "riscritti": [
+     "esito": "esatto",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [
+      "zero_negativo",
+      "massimo",
+      "minimo",
       "normale_minimo",
       "subnormale_minimo",
       "subnormale",
@@ -1251,13 +1250,9 @@
       "e_meno_200",
       "e_meno_150",
       "e_meno_131",
-      "meno_e_meno_200"
-     ],
-     "rifiutati": [
-      "zero_negativo",
-      "massimo",
-      "minimo",
+      "e_126",
       "e_200",
+      "meno_e_meno_200",
       "infinito",
       "meno_infinito",
       "nan"
@@ -8893,26 +8888,32 @@
     {
      "arrow": "utf8",
      "nativo": "JSON",
-     "esito": "riscrive",
-     "riscritture": [
-      {
-       "classe": "json_numeri"
-      }
-     ],
-     "riscritti": [
+     "esito": "illeggibile",
+     "riscritture": [],
+     "riscritti": [],
+     "rifiutati": [
+      "oggetto",
       "uno_virgola_zero",
       "esponente",
       "fuori_double",
       "cinquanta_cifre",
-      "zero_negativo"
-     ],
-     "rifiutati": [
-      "chiave_ripetuta"
-     ],
-     "per_eccesso": [
+      "zero_negativo",
       "frazione",
-      "diciassette_cifre"
-     ]
+      "diciassette_cifre",
+      "intero_breve",
+      "ordine",
+      "chiave_ripetuta",
+      "spazi",
+      "escape",
+      "non_bmp",
+      "annidato",
+      "lista",
+      "scalare_stringa",
+      "scalare_null",
+      "oggetto_vuoto",
+      "nullo"
+     ],
+     "per_eccesso": []
     },
     {
      "arrow": "binary",
@@ -9057,8 +9058,11 @@
      "riscritture": [],
      "riscritti": [],
      "rifiutati": [
+      "giuliano",
+      "anno_1",
       "anno_0",
-      "prima_dell_anno_0"
+      "prima_dell_anno_0",
+      "buco_1582"
      ],
      "per_eccesso": []
     },
@@ -9087,7 +9091,9 @@
       "prima_epoca_mezzo"
      ],
      "rifiutati": [
+      "anno_1",
       "anno_0",
+      "anno_1582_giuliano",
       "anno_9999_fine"
      ],
      "per_eccesso": []
@@ -9326,7 +9332,9 @@
       "prima_epoca_micro"
      ],
      "rifiutati": [
+      "anno_1",
       "anno_0",
+      "anno_1582_giuliano",
       "anno_9999_fine"
      ],
      "per_eccesso": []
@@ -9564,7 +9572,9 @@
       "prima_epoca_micro"
      ],
      "rifiutati": [
+      "anno_1",
       "anno_0",
+      "anno_1582_giuliano",
       "anno_9999_fine"
      ],
      "per_eccesso": []
@@ -9801,7 +9811,9 @@
       "prima_epoca_micro"
      ],
      "rifiutati": [
+      "anno_1",
       "anno_0",
+      "anno_1582_giuliano",
       "anno_9999_fine"
      ],
      "per_eccesso": []
@@ -10037,7 +10049,9 @@
       "prima_epoca_micro"
      ],
      "rifiutati": [
+      "anno_1",
       "anno_0",
+      "anno_1582_giuliano",
       "anno_9999_fine"
      ],
      "per_eccesso": []
@@ -10272,7 +10286,9 @@
       "prima_epoca_micro"
      ],
      "rifiutati": [
+      "anno_1",
       "anno_0",
+      "anno_1582_giuliano",
       "anno_9999_fine"
      ],
      "per_eccesso": []
@@ -10497,7 +10513,9 @@
      "riscritture": [],
      "riscritti": [],
      "rifiutati": [
-      "anno_0"
+      "anno_1",
+      "anno_0",
+      "anno_1582_giuliano"
      ],
      "per_eccesso": []
     },
@@ -10721,7 +10739,9 @@
      "riscritture": [],
      "riscritti": [],
      "rifiutati": [
-      "anno_0"
+      "anno_1",
+      "anno_0",
+      "anno_1582_giuliano"
      ],
      "per_eccesso": []
     },
@@ -10945,7 +10965,9 @@
      "riscritture": [],
      "riscritti": [],
      "rifiutati": [
-      "anno_0"
+      "anno_1",
+      "anno_0",
+      "anno_1582_giuliano"
      ],
      "per_eccesso": []
     },
@@ -11169,7 +11191,9 @@
      "riscritture": [],
      "riscritti": [],
      "rifiutati": [
-      "anno_0"
+      "anno_1",
+      "anno_0",
+      "anno_1582_giuliano"
      ],
      "per_eccesso": []
     },
