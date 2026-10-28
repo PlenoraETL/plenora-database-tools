@@ -343,6 +343,11 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
                 )));
             }
         };
+        if let Err(error) =
+            super::intermediate::verify_parameters(plans, &indexes, statement.params())
+        {
+            return Err(Box::new((transaction, error)));
+        }
         // La preparazione ha preso il lock del target: la regola R si rilegge
         // qui, dove un DDL concorrente non puo piu cambiarla fino al COMMIT.
         match select_with_cancellation(

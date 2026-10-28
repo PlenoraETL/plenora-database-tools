@@ -6,6 +6,7 @@ use plenora_database_core::{ErrorCategory, ErrorPhase, Result};
 
 #[derive(Debug, Clone)]
 pub(super) struct WriteColumnPlan {
+    pub(super) target_type: Option<super::intermediate::TargetType>,
     pub(super) data_type: DataType,
     pub(super) postgres_type: String,
     pub(super) native_declaration_sql: Option<String>,
@@ -60,6 +61,7 @@ impl WriteColumnPlan {
         let contract = FieldContract::parse(field)?;
         ensure_spatial_support(&contract)?;
         Ok(Self {
+            target_type: None,
             data_type: field.data_type().clone(),
             postgres_type: pg_type(&contract)?,
             native_declaration_sql: native_declaration_sql(&contract),

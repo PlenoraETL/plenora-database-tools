@@ -141,8 +141,8 @@ macro_rules! key_semantics {
 /// Per ogni chiave, l'operatore di uguaglianza (strategia 3 della famiglia
 /// btree) dell'opclass dell'indice che prova l'unicita, qualificato con il
 /// suo schema, e il tipo, qualificato, a cui si portano i due lati del
-/// confronto: quello dell'opclass, o il tipo base della colonna se l'opclass
-/// e polimorfica (`anyarray`, `anyenum`, ...).
+/// confronto. Si ammette soltanto quando coincide con l'OID della colonna:
+/// un alias binario o il tipo base di un dominio non provano l'identita.
 const KEY_EQUALITY_SQL: &str = concat!(
     "\
 WITH target AS (
@@ -171,7 +171,7 @@ SELECT DISTINCT ON (a.attname) a.attname::pg_catalog.text,
                                             THEN CASE WHEN y.typtype = 'd' THEN y.typbasetype ELSE y.oid END
                                             ELSE oc.opcintype END
   JOIN pg_catalog.pg_namespace tn ON tn.oid = t.typnamespace
- WHERE k.position <= i.indnkeyatts AND ",
+ WHERE t.oid = a.atttypid AND k.position <= i.indnkeyatts AND ",
     keys_index!("$3"),
     " AND ",
     key_semantics!(),
@@ -498,11 +498,12 @@ pub fn refusal(operation: &WriteOperation, facts: TargetFacts) -> Option<Databas
 }
 
 /// L'uguaglianza con cui lo statement confronta una chiave: l'operatore,
-/// qualificato con il suo schema (`"pg_catalog".=`), e il tipo qualificato a
-/// cui si portano i due lati.
+/// qualificato con il suo schema (`"pg_catalog".=`), e il tipo qualificato
+/// dell'opclass. Il predicato usa invece il descrittore del target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyEquality {
     pub operator: String,
+    /// Conservato nel risultato pubblico; non genera cast intermedi.
     pub cast: String,
 }
 
@@ -664,8 +665,9 @@ pub async fn refuse_nondeterministic_keys<C: GenericClient + Sync>(
 ///   transazione della scrittura e nel dry run con la DSN.
 /// - **Hazard**: si rifiutano anche indici equivalenti che non sono quelli
 ///   predefiniti (`varchar_ops`, un alias di `text_ops` che non e
-///   predefinito) e le chiavi su un dominio di un dominio, che la lettura
-///   non risolve fino al tipo base.
+///   predefinito). Update e `DeleteByKeys` rifiutano anche l'opclass che
+///   richiede un tipo diverso dalla colonna, inclusi varchar verso text e
+///   domini verso il tipo base, prima di inviare i valori.
 /// - **Rientro**: un confronto per famiglia di operatori invece che per
 ///   opclass, e la risoluzione ricorsiva dei domini.
 ///

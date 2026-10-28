@@ -867,7 +867,7 @@ fn gli_statement_sul_target_non_dipendono_dal_search_path() {
     assert_eq!(
         sql,
         "UPDATE \"public\".\"t\" SET \"at\" = $1 \
-         WHERE \"id\"::pg_catalog.int8 OPERATOR(pg_catalog.=) $2::pg_catalog.int8"
+         WHERE \"id\" OPERATOR(pg_catalog.=) $2"
     );
     assert_eq!(indexes, vec![1, 0]);
     assert_eq!(plans[1].postgres_type, "pg_catalog.date");

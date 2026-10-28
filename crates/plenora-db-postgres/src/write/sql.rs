@@ -167,8 +167,8 @@ pub(super) fn statement(
 ///   `COPY` in testo lo faceva gia; `CopyBinary` codifica il testo soltanto
 ///   verso testo, enum, `json`, `jsonb` e `uuid`
 ///   (`binary_codec::binary_copy_value`). Le chiavi di Update e
-///   `DeleteByKeys` si confrontano con l'operatore della regola K2, con i due
-///   lati portati al tipo della sua opclass.
+///   `DeleteByKeys` si confrontano con l'operatore della regola K2 e il
+///   parametro nel tipo del target (`super::intermediate`).
 /// - **Hazard**: un campo che dichiara un tipo diverso da quello della
 ///   colonna non si rifiuta: il tipo dichiarato non conta, e il testo si
 ///   legge come la colonna lo legge (un `jsonb` dichiarato verso `text`
@@ -189,8 +189,9 @@ pub(super) fn placeholder_expression(plan: &WriteColumnPlan, ordinal: usize) -> 
 }
 
 /// Il confronto delle chiavi di Update e `DeleteByKeys`, con l'uguaglianza
-/// dell'indice che ne prova l'unicita (regola K2): i due lati portati al tipo
-/// dell'opclass, l'operatore qualificato con il suo schema. Il testo non
+/// dell'indice che ne prova l'unicita (regola K2): la colonna resta intatta,
+/// il parametro prende tipo, typmod e collation del target. L'operatore
+/// qualificato deve accettare lo stesso tipo (guardia nel catalogo). Il testo non
 /// dipende dal `search_path` (regola Q2). Una chiave senza l'uguaglianza
 /// letta dal catalogo si rifiuta: nessun ripiego su un `=` risolto dalla
 /// sessione.
@@ -207,21 +208,23 @@ fn key_predicates(
         .map(|(offset, key)| {
             let id = Identifier::new(key.clone())?;
             let quoted = renderer.quote_identifier(&id)?;
-            let equality = schema
+            let plan = schema
                 .index_of(key)
                 .ok()
                 .and_then(|index| plans.get(index))
-                .and_then(|plan| plan.key_equality.as_ref())
-                .ok_or_else(|| {
-                    DatabaseError::invalid_plan(
-                        "uguaglianza della chiave PostgreSQL non letta dal catalogo",
-                    )
-                })?;
+                .ok_or_else(super::intermediate::unsupported)?;
+            let equality = plan
+                .key_equality
+                .as_ref()
+                .ok_or_else(super::intermediate::unsupported)?;
+            let ordinal = first + offset;
+            let parameter = plan
+                .target_type
+                .as_ref()
+                .map_or_else(|| format!("${ordinal}"), |target| target.parameter(ordinal));
             Ok(format!(
-                "{quoted}::{cast} OPERATOR({operator}) ${ordinal}::{cast}",
-                cast = equality.cast,
+                "{quoted} OPERATOR({operator}) {parameter}",
                 operator = equality.operator,
-                ordinal = first + offset
             ))
         })
         .collect();

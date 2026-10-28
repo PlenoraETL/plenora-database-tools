@@ -48,6 +48,7 @@ pub mod binary_codec;
 mod canonical;
 pub use canonical::{reduced_temporal, LeafLoss};
 mod dry_run;
+mod intermediate;
 mod plan;
 mod prepared_codec;
 mod recovery;
@@ -643,6 +644,7 @@ async fn assign_session_rules<C: tokio_postgres::GenericClient + Sync>(
     schema: &SchemaRef,
     plans: &mut [WriteColumnPlan],
 ) -> Result<()> {
+    intermediate::assign(client, operation, schema, plans).await?;
     let (rules, leaves) =
         canonical::rules_with_leaves(client, operation, schema, ErrorPhase::Write).await?;
     canonical::assign(plans, schema, &rules);
@@ -686,6 +688,7 @@ pub async fn assign_dry_run_session_rules(
 ) -> Result<()> {
     canonical::assign_declared(&mut state.column_plans, operation);
     if let (Some(client), false) = (client, operation.mode == WriteMode::Create) {
+        intermediate::assign(client, operation, schema, &mut state.column_plans).await?;
         let (rules, leaves) =
             canonical::rules_with_leaves(client, operation, schema, ErrorPhase::Write).await?;
         canonical::assign(&mut state.column_plans, schema, &rules);
@@ -1197,6 +1200,7 @@ async fn write_batch(
         .prepare(&sql)
         .await
         .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
+    intermediate::verify_parameters(plans, &indexes, statement.params())?;
     // La preparazione ha preso il lock del target: la regola R si rilegge
     // qui, dove un DDL concorrente non puo piu cambiarla fino al COMMIT.
     visibility::enforce(transaction, operation, &[]).await?;
@@ -1253,6 +1257,8 @@ async fn copy_binary_batch(
         .iter()
         .map(|column| column.type_().clone())
         .collect::<Vec<_>>();
+    let indexes = (0..plans.len()).collect::<Vec<_>>();
+    intermediate::verify_parameters(plans, &indexes, &types)?;
     let sink = transaction
         .copy_in(&format!(
             "COPY {} ({}) FROM STDIN BINARY",
