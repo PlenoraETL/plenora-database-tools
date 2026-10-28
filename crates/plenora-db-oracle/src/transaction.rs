@@ -32,6 +32,10 @@ pub struct OracleTransaction {
 }
 
 impl OracleTransaction {
+    pub(crate) fn catalog_connection(&self) -> Result<&Connection> {
+        self.connection.connection()
+    }
+
     pub async fn begin(
         config: &OracleConfig,
         pool: &Arc<OraclePool>,
@@ -115,10 +119,14 @@ impl OracleTransaction {
         cancellation: &CancellationToken,
     ) -> Result<u64> {
         enforce_policy(self.native_query_policy, &statement.sql)?;
+        // Il writer ammette i soli target scalari descritti dal catalogo:
+        // RAW resta Bytes, il testo resta String. La promozione generalizzata
+        // a BLOB/CLOB cambierebbe il tipo prima del CAST del target. WKB usa
+        // ancora il locator dedicato del costruttore SDO_GEOMETRY.
         let values = bind_parameters_with_lobs(
             self.connection.connection()?,
             &statement.params,
-            true,
+            false,
             &mut self.lob_cache,
             self.operation_timeout,
             ErrorPhase::Write,

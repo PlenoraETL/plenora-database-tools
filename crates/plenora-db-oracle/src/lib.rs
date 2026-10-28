@@ -24,6 +24,7 @@ mod transaction;
 mod types;
 mod write;
 mod write_admission;
+mod write_intermediate;
 
 pub use catalog::{OracleColumn, OracleIndex, OracleObjectDescription, OracleObjectSummary};
 pub use config::{OracleConfig, OracleTlsMode};

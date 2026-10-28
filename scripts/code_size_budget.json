@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 144011,
-  "max_code_lines": 113732,
-  "rationale": "Identita PostgreSQL: descrittore del catalogo condiviso, verifica degli OID dei parametri e di COPY binario, predicati con typmod e collation del target. Misura esatta di scripts/code_size.py senza margine; test esclusi. Correzione strutturale ancora parziale."
+  "max_physical_lines": 144173,
+  "max_code_lines": 113877,
+  "rationale": "Identita Oracle: descrittore unico dal catalogo per operandi DML e array DML, rifiuto dei tipi intermedi non qualificati, verifica del catalogo nella transazione prima del carico. Invariante offline sulle matrici Oracle e PostgreSQL, esteso alle chiavi e ammissione bulk SQL Server. Misura esatta di scripts/code_size.py senza margine; test esclusi. Db2 e bind diretti MySQL restano fuori da questa modifica."
 }

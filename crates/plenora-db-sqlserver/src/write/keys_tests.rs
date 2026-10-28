@@ -47,6 +47,108 @@ fn plan(columns: Vec<WriteColumnPlan>, keys: Vec<usize>) -> WritePlan {
 }
 
 #[test]
+fn fixture_matrix_preserves_key_tables_and_checks_bulk_admission() {
+    let fixture: serde_json::Value =
+        serde_json::from_slice(crate::write::admission::FIXTURE).unwrap();
+    let forms = fixture["misure"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|m| m["chiavi"].as_array().unwrap())
+        .map(|k| k["nativo"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut bulk_accepted = 0;
+    let mut bulk_refused = 0;
+    for native in &forms {
+        let declaration = native
+            .split(';')
+            .next()
+            .unwrap()
+            .replace("(n)", "(137)")
+            .replace("real(24)", "real");
+        let family = declaration.split('(').next().unwrap();
+        let collation = matches!(
+            family,
+            "char" | "varchar" | "text" | "nchar" | "nvarchar" | "ntext"
+        )
+        .then_some(if native.contains("cp=65001") {
+            "Latin1_General_100_CI_AS_SC_UTF8"
+        } else {
+            "SQL_Latin1_General_CP1_CI_AS"
+        });
+        let kind = match family {
+            "bigint" => SqlServerColumnKind::I64,
+            "int" => SqlServerColumnKind::I32,
+            "smallint" => SqlServerColumnKind::I16,
+            "tinyint" => SqlServerColumnKind::U8,
+            "bit" => SqlServerColumnKind::Bool,
+            "real" => SqlServerColumnKind::F32,
+            "float" => SqlServerColumnKind::F64,
+            "date" => SqlServerColumnKind::Date,
+            "time" => SqlServerColumnKind::Time,
+            "datetimeoffset" => SqlServerColumnKind::TimestampTz,
+            "datetime" | "datetime2" | "smalldatetime" => SqlServerColumnKind::Timestamp,
+            "binary" | "varbinary" | "image" => SqlServerColumnKind::Binary,
+            "decimal" | "numeric" => {
+                let (p, s) = declaration
+                    .split_once('(')
+                    .unwrap()
+                    .1
+                    .trim_end_matches(')')
+                    .split_once(',')
+                    .unwrap();
+                SqlServerColumnKind::Decimal {
+                    precision: p.trim().parse().unwrap(),
+                    scale: s.trim().parse().unwrap(),
+                }
+            }
+            "money" => SqlServerColumnKind::Decimal {
+                precision: 19,
+                scale: 4,
+            },
+            "smallmoney" => SqlServerColumnKind::Decimal {
+                precision: 10,
+                scale: 4,
+            },
+            "char" | "varchar" | "text" | "nchar" | "nvarchar" | "ntext" | "xml"
+            | "uniqueidentifier" => SqlServerColumnKind::Utf8,
+            _ => panic!("unmapped fixture type: {native}"),
+        };
+        let mut plan = plan(vec![column("k", kind, &declaration, collation)], vec![0]);
+        let keys = create_sql(&plan);
+        if matches!(family, "text" | "ntext" | "image") {
+            assert_eq!(keys.unwrap_err().category, ErrorCategory::Unsupported);
+        } else {
+            let expected = collation.map_or_else(
+                || declaration.clone(),
+                |c| format!("{declaration} COLLATE {c}"),
+            );
+            assert!(keys.unwrap().contains(&format!("[k0] {expected} NULL")));
+        }
+        plan.mode = WriteMode::Append;
+        plan.bulk_columns_aligned = true;
+        match crate::write::plan::validate_bulk_profile(&plan) {
+            Ok(()) => {
+                assert_eq!(plan.columns[0].native_declaration, declaration);
+                assert_eq!(plan.columns[0].collation.as_deref(), collation);
+                bulk_accepted += 1;
+            }
+            Err(error) => {
+                assert_eq!(error.category, ErrorCategory::Unsupported);
+                assert_eq!(error.phase, ErrorPhase::Prepare);
+                bulk_refused += 1;
+            }
+        }
+    }
+    eprintln!(
+        "SQL Server: {} key-table cases; bulk {} admitted, {} refused",
+        forms.len(),
+        bulk_accepted,
+        bulk_refused
+    );
+}
+
+#[test]
 fn la_tabella_delle_chiavi_ha_il_tipo_e_la_collation_del_target() {
     let plan = plan(
         vec![

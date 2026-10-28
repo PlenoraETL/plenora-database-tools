@@ -181,10 +181,9 @@ impl LobIo<'_> {
 /// scritto non sarebbe quello bindato, e `col = :n` non lo ritroverebbe mai.
 ///
 /// Vale per lo statement del chiamante e per il filtro della lettura
-/// (`promote_write_lobs` falso). Il percorso di scrittura Arrow, che promuove
-/// i binari a `BLOB` e binda le righe del parameter array con
-/// [`bind_parameters`], resta fuori: la sua regola per `''` e quella della
-/// scrittura, non di questo modulo.
+/// (`promote_write_lobs` falso), e per il DML scalare del writer. Il parameter
+/// array usa [`bind_parameters`]; la guardia delle riscritture del writer
+/// controlla il vuoto prima di scegliere uno dei due percorsi.
 pub fn reject_empty(parameter: &ParameterValue) -> Result<()> {
     let empty = match parameter {
         ParameterValue::String(value)
