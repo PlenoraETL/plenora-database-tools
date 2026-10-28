@@ -340,6 +340,16 @@ proprio workflow in `.github/workflows/python-wheel.yml`.
 Il percorso offline canonico è lo sweep. I gate live sono separati per
 provider: un risultato verde su un database non qualifica gli altri.
 
+La sweep legge tutti i workflow YAML e conserva i programmi `run` interi,
+compresi argomenti e ambiente. Le esclusioni motivate e le celle di matrice
+non riproducibili localmente compaiono nel resoconto: `non eseguito qui` non
+vale come prova superata. I log completi e il referto sono in `target/sweep/`.
+Le dipendenze devono essere disponibili nella cache locale; la sweep non le
+scarica. Per il checkout contrattuale si puo impostare
+`SWEEP_CONTRACTS_REPOSITORY` a un checkout locale di plenora-contracts:
+la sweep ne verifica il commit e l'assenza di modifiche, poi lo legge senza
+creare un worktree o cambiare il checkout. La guida eseguibile resta `scripts/sweep.py`.
+
 ```powershell
 python scripts\sweep.py                    # intera suite offline locale
 python scripts\phase0_validate.py          # contratti, esempi, golden, domini
