@@ -168,3 +168,18 @@ fn an_abandoned_commit_reports_what_the_rollback_proved() {
     assert_eq!(unconfirmed.retry, RetryDisposition::RequiresRecovery);
     assert_eq!(unconfirmed.phase, ErrorPhase::Rollback);
 }
+
+#[test]
+fn array_bind_descriptions_preserve_target_types_and_reject_missing_metadata() {
+    use odbc_api::DataType;
+    use plenora_database_core::provider::ParameterValue;
+    let rows = vec![vec![ParameterValue::I32(1), ParameterValue::F64(1.5)]];
+    let columns = ArrayColumns::encode(&rows, 2).unwrap();
+    let targets = [DataType::SmallInt, DataType::Real];
+    let descriptors = columns.descriptions(&targets).unwrap();
+    assert_eq!(
+        descriptors.iter().map(|d| d.data_type).collect::<Vec<_>>(),
+        targets
+    );
+    assert!(columns.descriptions(&targets[..1]).is_err());
+}

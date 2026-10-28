@@ -99,14 +99,16 @@ fn point_xy() -> Vec<u8> {
 
 #[test]
 fn append_plan_accepts_the_qualified_scalar_subset() {
-    let plan = Db2WritePlan::compile(&config(), &schema(), &operation(WriteMode::Append))
+    let mut plan = Db2WritePlan::compile(&config(), &schema(), &operation(WriteMode::Append))
         .expect("piano append Db2");
+    assert!(plan.array_insert_sql().is_err());
+    plan.test_catalog();
     assert_eq!(
-        plan.array_insert_sql(),
-        "INSERT INTO \"APP\".\"TARGET\" (\"ID\", \"VALUE\") VALUES (?, ?)"
+        plan.array_insert_sql().unwrap(),
+        "INSERT INTO \"APP\".\"TARGET\" (\"ID\", \"VALUE\") VALUES (CAST(? AS INTEGER), CAST(? AS CLOB(193 OCTETS)))"
     );
     assert_eq!(
-        plan.array_insert_sql().matches('?').count(),
+        plan.array_insert_sql().unwrap().matches('?').count(),
         2,
         "il numero di placeholder resta quello delle colonne, non delle righe"
     );
@@ -162,12 +164,15 @@ fn spatial_append_uses_integrated_constructor_and_declared_srid() {
     let mut write = operation(WriteMode::Append);
     write.srid_policy = Some(SridPolicy::RequireMatch);
     let plan = Db2WritePlan::compile(&config(), &schema, &write).expect("piano spatial Db2");
+    let mut plan = plan;
+    plan.test_catalog();
     let statement = plan.insert_statement(&[vec![
         plenora_database_core::provider::ParameterValue::I32(1),
         plenora_database_core::provider::ParameterValue::Bytes(point_xy()),
     ]]);
 
     assert!(statement
+        .unwrap()
         .sql
         .contains("ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)"));
 }

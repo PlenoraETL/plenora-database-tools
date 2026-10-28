@@ -291,6 +291,18 @@ pub fn bind_with_catalog(
     described: &DataType,
     catalog: Option<&OperandType>,
 ) -> Result<Bound> {
+    let value = bind_value_with_catalog(value, described, catalog)?;
+    Ok(Box::new(odbc_api::parameter::WithDataType {
+        value,
+        data_type: *described,
+    }))
+}
+
+fn bind_value_with_catalog(
+    value: &ParameterValue,
+    described: &DataType,
+    catalog: Option<&OperandType>,
+) -> Result<Bound> {
     validate_one(value)?;
     // Un testo su un segnaposto binario (una colonna FOR BIT DATA, un `LIKE`
     // su un CAST di una geometria) arriva come i suoi byte UTF-8, che la

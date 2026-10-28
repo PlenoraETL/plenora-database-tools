@@ -379,3 +379,27 @@ fn catalog_units_disambiguate_identical_cli_capacities_without_truncation() {
         assert!(admit_with_catalog(&value, &described, Some(&kind)).is_ok());
     }
 }
+
+#[test]
+fn sql_bind_type_is_the_described_target_not_the_c_buffer() {
+    for (value, target) in [
+        (ParameterValue::I32(1), DataType::SmallInt),
+        (
+            ParameterValue::Decimal("1.25".into()),
+            DataType::Decimal {
+                precision: 12,
+                scale: 4,
+            },
+        ),
+        (ParameterValue::String("abc".into()), varchar()),
+        (
+            ParameterValue::Null {
+                type_name: "string".into(),
+            },
+            varchar(),
+        ),
+    ] {
+        let bound = bind(&value, &target).unwrap();
+        assert_eq!(bound.data_type(), target);
+    }
+}

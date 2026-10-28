@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 144173,
-  "max_code_lines": 113877,
-  "rationale": "Identita Oracle: descrittore unico dal catalogo per operandi DML e array DML, rifiuto dei tipi intermedi non qualificati, verifica del catalogo nella transazione prima del carico. Invariante offline sulle matrici Oracle e PostgreSQL, esteso alle chiavi e ammissione bulk SQL Server. Misura esatta di scripts/code_size.py senza margine; test esclusi. Db2 e bind diretti MySQL restano fuori da questa modifica."
+  "max_physical_lines": 144347,
+  "max_code_lines": 114041,
+  "rationale": "Identita Db2: descrittore unico dal catalogo per DML, predicati e bulk, bind SQL scalari e array dal tipo descritto, verifica del catalogo nella transazione e rifiuto senza metadati esatti. Misura esatta di scripts/code_size.py senza margine; test esclusi. Bind diretti MySQL/MariaDB e percorso LOB Oracle restano fuori da questa modifica."
 }

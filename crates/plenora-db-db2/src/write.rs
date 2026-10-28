@@ -32,6 +32,9 @@ use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName,
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "write_intermediate.rs"]
+mod intermediate;
+
 const ARRAY_BIND_ROWS: usize = 4_096;
 static EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -64,6 +67,7 @@ struct WriteColumn {
     data_type: DataType,
     nullable: bool,
     spatial: Option<SpatialWriteColumn>,
+    target_type: Option<intermediate::TargetType>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +178,15 @@ impl Db2WritePlan {
         facts: &[crate::write_admission::ColumnFacts],
         server: &crate::write_admission::ServerFacts,
     ) -> Result<()> {
+        for column in &mut self.columns {
+            if column.spatial.is_none() {
+                let fact = facts
+                    .iter()
+                    .find(|fact| fact.name == column.name)
+                    .ok_or_else(intermediate::unsupported)?;
+                column.target_type = Some(intermediate::TargetType::from_catalog(fact)?);
+            }
+        }
         let key_columns = self
             .keys
             .iter()
@@ -218,6 +231,33 @@ impl Db2WritePlan {
             });
         }
         self.rewrites = rewrites;
+        Ok(())
+    }
+
+    pub(crate) fn verify_catalog(
+        &self,
+        connection: &odbc_api::Connection<'_>,
+        timeout: usize,
+    ) -> Result<()> {
+        let facts = crate::write_admission::column_facts(
+            connection,
+            timeout,
+            &self.schema_name,
+            &self.object_name,
+        )?;
+        for column in &self.columns {
+            if column.spatial.is_some() {
+                continue;
+            }
+            let fact = facts
+                .iter()
+                .find(|fact| fact.name == column.name)
+                .ok_or_else(intermediate::unsupported)?;
+            let actual = intermediate::TargetType::from_catalog(fact)?;
+            if column.target_type.as_ref() != Some(&actual) {
+                return Err(intermediate::unsupported());
+            }
+        }
         Ok(())
     }
 
@@ -405,7 +445,7 @@ impl Db2WritePlan {
         Ok(())
     }
 
-    pub(crate) fn insert_statement(&self, rows: &[Vec<ParameterValue>]) -> Statement {
+    pub(crate) fn insert_statement(&self, rows: &[Vec<ParameterValue>]) -> Result<Statement> {
         let columns = self
             .columns
             .iter()
@@ -416,19 +456,19 @@ impl Db2WritePlan {
             .columns
             .iter()
             .map(WriteColumn::placeholder)
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>>>()?
             .join(", ");
         let placeholders = std::iter::repeat_n(format!("({row_placeholders})"), rows.len())
             .collect::<Vec<_>>()
             .join(", ");
-        Statement::new(format!(
+        Ok(Statement::new(format!(
             "INSERT INTO {} ({columns}) VALUES {placeholders}",
             self.target
         ))
-        .with_params(rows.iter().flatten().cloned().collect())
+        .with_params(rows.iter().flatten().cloned().collect()))
     }
 
-    pub(crate) fn array_insert_sql(&self) -> String {
+    pub(crate) fn array_insert_sql(&self) -> Result<String> {
         let columns = self
             .columns
             .iter()
@@ -439,52 +479,52 @@ impl Db2WritePlan {
             .columns
             .iter()
             .map(WriteColumn::placeholder)
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>>>()?
             .join(", ");
-        format!(
+        Ok(format!(
             "INSERT INTO {} ({columns}) VALUES ({placeholders})",
             self.target
-        )
+        ))
     }
 
-    fn update_statement(&self, row: &[ParameterValue]) -> Statement {
+    fn update_statement(&self, row: &[ParameterValue]) -> Result<Statement> {
         let assignments = self
             .updates
             .iter()
             .map(|index| {
-                format!(
+                Ok(format!(
                     "{} = {}",
                     self.columns[*index].quoted,
-                    self.columns[*index].placeholder()
-                )
+                    self.columns[*index].placeholder()?
+                ))
             })
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>>>()?
             .join(", ");
-        let predicate = self.key_predicate();
+        let predicate = self.key_predicate()?;
         let params = self
             .updates
             .iter()
             .chain(&self.keys)
             .map(|index| row[*index].clone())
             .collect();
-        Statement::new(format!(
+        Ok(Statement::new(format!(
             "UPDATE {} SET {assignments} WHERE {predicate}",
             self.target
         ))
-        .with_params(params)
+        .with_params(params))
     }
 
-    fn delete_statement(&self, row: &[ParameterValue]) -> Statement {
+    fn delete_statement(&self, row: &[ParameterValue]) -> Result<Statement> {
         let params = self.keys.iter().map(|index| row[*index].clone()).collect();
-        Statement::new(format!(
+        Ok(Statement::new(format!(
             "DELETE FROM {} WHERE {}",
             self.target,
-            self.key_predicate()
+            self.key_predicate()?
         ))
-        .with_params(params)
+        .with_params(params))
     }
 
-    fn upsert_statement(&self, row: &[ParameterValue]) -> Statement {
+    fn upsert_statement(&self, row: &[ParameterValue]) -> Result<Statement> {
         let source_columns = self
             .columns
             .iter()
@@ -495,7 +535,7 @@ impl Db2WritePlan {
             .columns
             .iter()
             .map(WriteColumn::placeholder)
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>>>()?
             .join(", ");
         let predicate = self
             .keys
@@ -525,21 +565,28 @@ impl Db2WritePlan {
             .map(|column| format!("S.{}", column.quoted))
             .collect::<Vec<_>>()
             .join(", ");
-        Statement::new(format!(
+        Ok(Statement::new(format!(
             "MERGE INTO {} AS T USING (VALUES ({placeholders})) AS S ({source_columns}) \
              ON {predicate} WHEN MATCHED THEN UPDATE SET {updates} \
              WHEN NOT MATCHED THEN INSERT ({source_columns}) VALUES ({insert_values})",
             self.target
         ))
-        .with_params(row.to_vec())
+        .with_params(row.to_vec()))
     }
 
-    fn key_predicate(&self) -> String {
-        self.keys
+    fn key_predicate(&self) -> Result<String> {
+        Ok(self
+            .keys
             .iter()
-            .map(|index| format!("{} = ?", self.columns[*index].quoted))
-            .collect::<Vec<_>>()
-            .join(" AND ")
+            .map(|index| {
+                Ok(format!(
+                    "{} = {}",
+                    self.columns[*index].quoted,
+                    self.columns[*index].placeholder()?
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(" AND "))
     }
 
     const fn mutation_columns(&self) -> &'static str {
@@ -553,11 +600,16 @@ impl Db2WritePlan {
 }
 
 impl WriteColumn {
-    fn placeholder(&self) -> String {
-        self.spatial.as_ref().map_or_else(
-            || "?".to_owned(),
-            |spatial| format!("ST_GEOMETRY(BLOB(HEXTORAW(?)), {})", spatial.srid),
-        )
+    fn placeholder(&self) -> Result<String> {
+        if let Some(spatial) = &self.spatial {
+            Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW(?)), {})", spatial.srid))
+        } else {
+            Ok(self
+                .target_type
+                .as_ref()
+                .ok_or_else(intermediate::unsupported)?
+                .operand())
+        }
     }
 
     fn native_type(&self) -> Result<String> {
@@ -666,32 +718,15 @@ pub async fn execute_write(
         cancellation,
     )
     .await?;
-    // La regola S nella transazione della scrittura, con le riscritture
-    // misurate per la chiave d'ammissione del preflight (regola A): un valore
-    // che Db2 riscriverebbe al salvataggio si rifiuta prima del primo
-    // statement che lo lega. La semantica `VARCHAR2` (`varchar2_compat`) e
-    // nella chiave; si rilegge qui e deve essere quella del preflight.
-    let guard = match varchar2_compat(&mut transaction, cancellation)
-        .await
-        .and_then(|varchar2| {
-            if plan.varchar2_compat == Some(varchar2) {
-                Ok(())
-            } else {
-                Err(write_error(
-                    ErrorCategory::Unsupported,
-                    "semantica VARCHAR2 di Db2 (varchar2_compat) diversa da quella del \
-                     preflight: la chiave d'ammissione (regola A) non e provata",
-                ))
-            }
-        })
-        .and_then(|()| {
-            RewriteGuard::new(
-                ProviderKind::Db2,
-                &prepared.input_schema,
-                &prepared.operation,
-                plan.rewrites.clone(),
-            )
-        }) {
+    let guard = match execution_guard(
+        &mut transaction,
+        &plan,
+        &prepared.input_schema,
+        &prepared.operation,
+        cancellation,
+    )
+    .await
+    {
         Ok(guard) => guard,
         Err(error) => return Err(rollback_and_shape(Box::new(transaction), error).await),
     };
@@ -737,6 +772,33 @@ pub async fn execute_write(
         affected,
     )
     .await
+}
+
+/// Verifica il catalogo e la semantica della connessione prima del carico.
+async fn execution_guard(
+    transaction: &mut Db2Transaction,
+    plan: &Db2WritePlan,
+    input_schema: &SchemaRef,
+    operation: &WriteOperation,
+    cancellation: &CancellationToken,
+) -> Result<RewriteGuard> {
+    if plan.create_sql.is_none() {
+        transaction
+            .verify_write_plan(plan.clone(), cancellation)
+            .await?;
+    }
+    if plan.varchar2_compat != Some(varchar2_compat(transaction, cancellation).await?) {
+        return Err(write_error(
+            ErrorCategory::Unsupported,
+            "semantica VARCHAR2 di Db2 diversa dal preflight: ammissione non provata",
+        ));
+    }
+    RewriteGuard::new(
+        ProviderKind::Db2,
+        input_schema,
+        operation,
+        plan.rewrites.clone(),
+    )
 }
 
 async fn finish_commit(
@@ -874,6 +936,9 @@ async fn execute_input(
         transaction
             .execute_control_statement(sql.clone(), cancellation)
             .await?;
+        transaction
+            .verify_write_plan(plan.clone(), cancellation)
+            .await?;
     } else if plan.mode == WriteMode::Replace {
         execute_statement(
             transaction,
@@ -925,7 +990,7 @@ async fn execute_batch(
     match plan.mode {
         WriteMode::Append | WriteMode::Create | WriteMode::Replace => {
             let mut affected = 0_u64;
-            let sql = plan.array_insert_sql();
+            let sql = plan.array_insert_sql()?;
             for chunk in rows.chunks(ARRAY_BIND_ROWS) {
                 affected = affected
                     .checked_add(
@@ -974,12 +1039,12 @@ async fn execute_rows<F>(
     statement: F,
 ) -> Result<u64>
 where
-    F: Fn(&[ParameterValue]) -> Statement,
+    F: Fn(&[ParameterValue]) -> Result<Statement>,
 {
     let mut affected = 0_u64;
     for row in rows {
         affected = affected
-            .checked_add(execute_statement(transaction, statement(row), cancellation).await?)
+            .checked_add(execute_statement(transaction, statement(row)?, cancellation).await?)
             .ok_or_else(|| {
                 write_error(
                     ErrorCategory::ResourceLimit,
@@ -1315,6 +1380,7 @@ fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
         None
     };
     Ok(WriteColumn {
+        target_type: None,
         name: field.name().clone(),
         quoted: renderer.quote_identifier(&Identifier::new(field.name().clone())?)?,
         data_type: field.data_type().clone(),
@@ -1579,3 +1645,7 @@ fn write_error(category: ErrorCategory, message: &'static str) -> DatabaseError 
         message,
     )
 }
+
+#[cfg(test)]
+#[path = "write_intermediate_tests.rs"]
+mod intermediate_tests;
