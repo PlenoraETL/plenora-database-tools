@@ -12804,3 +12804,34 @@ async fn live_rilettura_sedici_cast_a_testo_e_collation() {
     let connection = teardown.connection_mut().expect("connessione");
     connection.query_drop(cleanup).await.expect("pulizia");
 }
+
+/// Una coda di spazi oltre TEXT deve arrivare intatta a MEDIUMTEXT/LONGTEXT.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_update_staging_conserva_testo_oltre_65535_byte() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let value = format!("{} ", "a".repeat(65_535));
+    for native in ["MEDIUMTEXT", "LONGTEXT"] {
+        let ddl = [
+            format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+            format!("CREATE TABLE `{SEMANTICA_TABLE}` (id BIGINT PRIMARY KEY, label {native} CHARACTER SET utf8mb4) ENGINE=InnoDB"),
+            format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES (1, 'prima')"),
+        ];
+        let ddl = ddl.iter().map(String::as_str).collect::<Vec<_>>();
+        semantica_prepare(&mut connection, &ddl).await;
+        let outcome = semantica_write(
+            plenora_database_core::plan::WriteMode::Update,
+            &[(1, &value)],
+        )
+        .await
+        .expect("update senza perdita");
+        assert_eq!(outcome.rows.confirmed, 1);
+        let actual: Vec<String> = connection
+            .query(format!("SELECT label FROM `{SEMANTICA_TABLE}`"))
+            .await
+            .expect("rilettura");
+        assert_eq!(actual.as_slice(), std::slice::from_ref(&value));
+    }
+    semantica_cleanup(&mut connection).await;
+}

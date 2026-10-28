@@ -98,27 +98,16 @@ pub(super) fn create_sql(plan: &WritePlan) -> Result<String> {
             ));
         }
         let name = renderer.quote_identifier(&sql_identifier(&format!("k{ordinal}"))?)?;
-        let collation = match &column.collation {
-            Some(collation) => {
-                super::plan::validate_collation_name(collation)?;
-                format!(" COLLATE {collation}")
-            }
-            None if matches!(
-                column.native_type.as_str(),
-                "char" | "varchar" | "nchar" | "nvarchar" | "text" | "ntext"
-            ) =>
-            {
-                return Err(plan_error(
-                    ErrorCategory::Unsupported,
-                    "collation della colonna chiave SQL Server non provata",
-                ));
-            }
-            None => String::new(),
-        };
-        definitions.push(format!(
-            "{name} {}{collation} NULL",
-            column.native_declaration
-        ));
+        let declaration = super::sql::intermediate_declaration(column)?;
+        if column.collation.is_none()
+            && matches!(column.native_type.as_str(), "nchar" | "nvarchar" | "ntext")
+        {
+            return Err(plan_error(
+                ErrorCategory::Unsupported,
+                "collation della colonna chiave SQL Server non provata",
+            ));
+        }
+        definitions.push(format!("{name} {declaration} NULL"));
         names.push(name);
     }
     Ok(format!(
@@ -168,7 +157,7 @@ pub(super) async fn register(
                     ordinal += 1;
                     expression
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
             tuples.push(format!("({})", expressions.join(", ")));
         }
         let mut query = Query::new(format!(

@@ -1883,33 +1883,9 @@ impl MysqlWritePlan {
             if !indexable || self.columns[*index].name == REPEATS_COLUMN {
                 return Err(unsupported(UNCOMPARABLE_COLLATION_KEY));
             }
-            let column_type = server.native_declaration.trim().to_ascii_lowercase();
-            if column_type.is_empty()
-                || !column_type.bytes().all(|byte| {
-                    byte.is_ascii_lowercase()
-                        || byte.is_ascii_digit()
-                        || matches!(byte, b'(' | b')' | b',' | b' ')
-                })
-            {
-                return Err(mapping_error(
-                    "tipo della colonna chiave non rappresentabile",
-                ));
-            }
-            let collation = match (server.character_set.as_deref(), server.collation.as_deref()) {
-                (Some(charset), Some(collation))
-                    if plain_name(charset) && plain_name(collation) =>
-                {
-                    format!(" CHARACTER SET {charset} COLLATE {collation}")
-                }
-                (None, None) => String::new(),
-                _ => {
-                    return Err(mapping_error(
-                        "collation della colonna chiave non rappresentabile",
-                    ))
-                }
-            };
+            let declaration = intermediate_declaration(server)?;
             let quoted = self.columns[*index].quoted.clone();
-            lines.push(format!("    {quoted} {column_type}{collation} NULL"));
+            lines.push(format!("    {quoted} {declaration} NULL"));
             quoted_keys.push(quoted);
         }
         lines.push(format!("    `{REPEATS_COLUMN}` BIGINT NOT NULL DEFAULT 0"));
@@ -2435,8 +2411,45 @@ pub(crate) fn build_create_table_sql(
     ))
 }
 
+/// La dichiarazione di ogni colonna intermedia viene dal catalogo del target.
+/// Non si ricostruiscono lunghezze, precisioni o charset dal tipo Arrow.
+fn intermediate_declaration(column: &crate::MysqlColumn) -> Result<String> {
+    let declaration = column.native_declaration.trim();
+    if declaration.is_empty()
+        || !declaration
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'(' | b')' | b',' | b' '))
+    {
+        return Err(unsupported(
+            "tipo intermedio del target non rappresentabile",
+        ));
+    }
+    let metadata = match (column.character_set.as_deref(), column.collation.as_deref()) {
+        (Some(charset), Some(collation)) if plain_name(charset) && plain_name(collation) => {
+            format!(" CHARACTER SET {charset} COLLATE {collation}")
+        }
+        (None, None)
+            if !matches!(
+                column.data_type.to_ascii_lowercase().as_str(),
+                "char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext"
+            ) =>
+        {
+            String::new()
+        }
+        _ => {
+            return Err(unsupported(
+                "charset o collation del tipo intermedio non provati",
+            ))
+        }
+    };
+    let spatial = column
+        .spatial_srid
+        .map_or_else(String::new, |srid| format!(" SRID {srid}"));
+    Ok(format!("{declaration}{metadata}{spatial}"))
+}
+
 /// Genera `CREATE TEMPORARY TABLE staging_name (...)` con la stessa
-/// struttura dello schema Arrow.
+/// struttura delle colonne del target lette dal catalogo.
 ///
 /// Serve a `WriteMode::Update`, che accumula le righe in staging e poi
 /// esegue un `UPDATE JOIN`.
@@ -2470,41 +2483,14 @@ pub(crate) fn build_temp_staging_sql(
     let lines: Vec<String> = columns
         .iter()
         .map(|c| {
-            let ty = mysql_column_ddl(
-                &c.kind,
-                c.spatial_srid,
-                c.exact_geometry_type.as_deref(),
-                profile,
-            );
-            let null = if c.nullable { "NULL" } else { "NOT NULL" };
-            // Le colonne testuali dello staging hanno charset e collation
-            // della colonna del target: lo `UPDATE ... JOIN` confronta le
-            // chiavi come le confronta il target, e due valori che il target
-            // tratta come una chiave sola (`'a'` e `'A'` sotto una collation
-            // `_ci`) si vedono uguali anche nel conteggio delle coppie
-            // (`render_staging_pairs`). Charset e collation vengono dal
-            // catalogo, che li rilegge da `information_schema.COLUMNS`: nomi
-            // di soli `[A-Za-z0-9_]`, controllati prima di entrare nel DDL.
-            let text_metadata = target
+            let server = target
                 .columns
                 .iter()
                 .find(|column| column.name == c.name)
-                .and_then(|column| {
-                    column
-                        .character_set
-                        .as_deref()
-                        .zip(column.collation.as_deref())
-                })
-                .filter(|(charset, collation)| plain_name(charset) && plain_name(collation));
-            let collation = if c.kind == MysqlColumnKind::Utf8 {
-                let (charset, collation) = text_metadata.ok_or_else(|| {
-                    unsupported("charset o collation della colonna di staging non provati")
-                })?;
-                format!(" CHARACTER SET {charset} COLLATE {collation}")
-            } else {
-                String::new()
-            };
-            Ok(format!("    {} {ty}{collation} {null}", c.quoted))
+                .ok_or_else(|| unsupported("colonna di staging assente dal catalogo"))?;
+            let declaration = intermediate_declaration(server)?;
+            let null = if c.nullable { "NULL" } else { "NOT NULL" };
+            Ok(format!("    {} {declaration} {null}", c.quoted))
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(format!(

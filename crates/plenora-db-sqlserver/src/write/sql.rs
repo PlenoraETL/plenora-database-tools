@@ -50,7 +50,7 @@ pub(super) fn compile_row_statement(
                     format!("campo write assente dallo schema Arrow: {name}"),
                 )
             })?;
-        Ok(placeholder_expression(&columns[index], ordinals[index]))
+        placeholder_expression(&columns[index], ordinals[index])
     };
     let quoted_for = |name: &str| -> Result<String> {
         let identifier = sql_identifier(name)?;
@@ -75,7 +75,7 @@ pub(super) fn compile_row_statement(
         .iter()
         .zip(&ordinals)
         .map(|(column, ordinal)| placeholder_expression(column, *ordinal))
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     // `OUTPUT` senza `INTO` e rifiutato da SQL Server (334) su una tabella
     // con un trigger abilitato: fino al 25/10 Append, `TruncateInsert`,
     // Update e `DeleteByKeys` fallivano con un trigger AFTER qualunque.
@@ -184,20 +184,34 @@ pub(super) fn compile_row_statement(
     })
 }
 
-pub(super) fn placeholder_expression(column: &WriteColumnPlan, ordinal: usize) -> String {
+/// Tipo intermedio del target: unica fonte per parametri e tabella delle chiavi.
+pub(super) fn intermediate_declaration(column: &WriteColumnPlan) -> Result<String> {
+    if matches!(column.native_type.as_str(), "text" | "ntext" | "image") {
+        return Err(plan_error(
+            ErrorCategory::Unsupported,
+            "tipo legacy SQL Server non rappresentabile in un parametro del target",
+        ));
+    }
+    let collation = match &column.collation {
+        Some(name) => {
+            super::plan::validate_collation_name(name)?;
+            format!(" COLLATE {name}")
+        }
+        None if matches!(column.native_type.as_str(), "char" | "varchar" | "text") => {
+            return Err(plan_error(
+                ErrorCategory::Unsupported,
+                "collation del tipo intermedio SQL Server non provata",
+            ));
+        }
+        None => String::new(),
+    };
+    Ok(format!("{}{collation}", column.native_declaration))
+}
+
+pub(super) fn placeholder_expression(column: &WriteColumnPlan, ordinal: usize) -> Result<String> {
     let placeholder = format!("@P{ordinal}");
-    match column.kind {
-        SqlServerColumnKind::Decimal { .. } | SqlServerColumnKind::TimestampTz => {
-            format!("CONVERT({}, {placeholder})", column.native_declaration)
-        }
-        SqlServerColumnKind::Utf8 if column.native_type == "uniqueidentifier" => {
-            format!("CONVERT(uniqueidentifier, {placeholder})")
-        }
-        // Lo stile 1 conserva gli spazi dei nodi di testo (regola J,
-        // `plan::rule_p`); lo stile 0 li toglieva.
-        SqlServerColumnKind::Utf8 if column.native_type == "xml" => {
-            format!("CONVERT(xml, {placeholder}, 1)")
-        }
+    let declaration = intermediate_declaration(column)?;
+    let expression = match column.kind {
         SqlServerColumnKind::Geometry => format!(
             "geometry::STGeomFromWKB({placeholder}, @P{})",
             ordinal.saturating_add(1)
@@ -206,8 +220,30 @@ pub(super) fn placeholder_expression(column: &WriteColumnPlan, ordinal: usize) -
             "geography::STGeomFromWKB({placeholder}, @P{})",
             ordinal.saturating_add(1)
         ),
-        _ => placeholder,
-    }
+        _ => {
+            // La collation prima della conversione seleziona anche la code page:
+            // convertirla dopo soltanto userebbe quella del database corrente.
+            let source = if matches!(column.native_type.as_str(), "char" | "varchar") {
+                format!(
+                    "{placeholder} COLLATE {}",
+                    column.collation.as_deref().unwrap_or_default()
+                )
+            } else {
+                placeholder
+            };
+            let style = if column.native_type == "xml" {
+                ", 1"
+            } else {
+                ""
+            };
+            let converted = format!("CONVERT({}, {source}{style})", column.native_declaration);
+            match declaration.strip_prefix(&column.native_declaration) {
+                Some(suffix) => format!("{converted}{suffix}"),
+                None => converted,
+            }
+        }
+    };
+    Ok(expression)
 }
 
 #[cfg(test)]

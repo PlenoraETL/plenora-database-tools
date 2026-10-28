@@ -380,7 +380,22 @@ impl WritePlan {
             column.rewrites =
                 plenora_database_core::admission_gate::write_column(&measured, &key, dimensions)?;
         }
-        let guard = plenora_database_core::store_rewrite::RewriteGuard::new(
+        let guard = self.rewrite_guard(operation)?;
+        self.precision_losses
+            .extend(guard.losses().into_iter().map(|mut loss| {
+                loss.source_type = usize::try_from(loss.field_id)
+                    .ok()
+                    .and_then(|index| self.input_schema.fields().get(index))
+                    .map(|field| field.data_type().to_string());
+                loss
+            }));
+        Ok(())
+    }
+    pub(super) fn rewrite_guard(
+        &self,
+        operation: &WriteOperation,
+    ) -> Result<plenora_database_core::store_rewrite::RewriteGuard> {
+        Ok(plenora_database_core::store_rewrite::RewriteGuard::new(
             plenora_database_core::plan::ProviderKind::Sqlserver,
             &self.input_schema,
             operation,
@@ -392,16 +407,15 @@ impl WritePlan {
                     rewrites: column.rewrites.clone(),
                 })
                 .collect(),
-        )?;
-        self.precision_losses
-            .extend(guard.losses().into_iter().map(|mut loss| {
-                loss.source_type = usize::try_from(loss.field_id)
-                    .ok()
-                    .and_then(|index| self.input_schema.fields().get(index))
-                    .map(|field| field.data_type().to_string());
-                loss
-            }));
-        Ok(())
+        )?
+        .with_text_units(self.columns.iter().filter_map(|column| {
+            text_limit(
+                &column.native_type,
+                &column.native_declaration,
+                column.collation.as_deref(),
+            )
+            .map(|limit| (column.input_index, limit.length_unit()))
+        })))
     }
 }
 
@@ -771,6 +785,7 @@ pub(super) fn validate_bulk_profile(plan: &WritePlan) -> Result<()> {
         ));
     }
     for column in &plan.columns {
+        super::sql::intermediate_declaration(column)?;
         let supported = match column.kind {
             SqlServerColumnKind::Bool
             | SqlServerColumnKind::U8
@@ -1276,16 +1291,6 @@ impl CodePage {
             Self::Windows1252 => value.chars().all(windows_1252),
         }
     }
-
-    /// La lunghezza di `value` nell'unita della colonna: byte UTF-8, un byte
-    /// per carattere in Windows-1252 e in ASCII.
-    #[must_use]
-    pub(super) fn bytes(self, value: &str) -> usize {
-        match self {
-            Self::Unicode => value.len(),
-            Self::Windows1252 | Self::Ascii => value.chars().count(),
-        }
-    }
 }
 
 /// Un carattere che Windows-1252 rappresenta: ASCII, `U+00A0`-`U+00FF` e i 27
@@ -1309,6 +1314,17 @@ pub(super) struct TextLimit {
     pub(super) unit: TextUnit,
     /// La code page della collation: un carattere fuori diventa `?`.
     pub(super) code_page: CodePage,
+}
+
+impl TextLimit {
+    pub(super) const fn length_unit(self) -> plenora_database_core::store_rewrite::TextLengthUnit {
+        use plenora_database_core::store_rewrite::TextLengthUnit;
+        match (self.unit, self.code_page) {
+            (TextUnit::Utf16, _) => TextLengthUnit::Utf16,
+            (TextUnit::Bytes, CodePage::Unicode) => TextLengthUnit::Utf8Bytes,
+            (TextUnit::Bytes, _) => TextLengthUnit::SingleByte,
+        }
+    }
 }
 
 /// La regola P sul testo, dal tipo nativo, dalla dichiarazione e dalla

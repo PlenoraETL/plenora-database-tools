@@ -848,3 +848,56 @@ async fn live_s_chiave_datetimeoffset_compatible_non_arrotonda() {
     }
     admin_batch(&mut admin, "DROP TABLE [plenora_test].[s_offset];").await;
 }
+
+/// Un predicato Unicode non deve sostituire l'uguaglianza dell'indice varchar.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta fixture DML isolate"]
+async fn live_varchar_sql_collation_preserva_chiavi_distinte() {
+    let _serial = SERIAL.lock().await;
+    let pool = SqlServerPool::new(live_config(), 2).expect("pool");
+    let mut admin = SqlServerSession::open(&live_config(), &CancellationToken::new())
+        .await
+        .expect("sessione");
+    admin_batch(&mut admin, "DROP TABLE IF EXISTS [plenora_test].[intermediate_varchar]; CREATE TABLE [plenora_test].[intermediate_varchar] (k varchar(10) COLLATE SQL_Latin1_General_CP1_CI_AS PRIMARY KEY, v nvarchar(10));").await;
+    let upsert = keyed("intermediate_varchar", WriteMode::Upsert, &["k"], &["v"]);
+    run_r8(
+        &pool,
+        &upsert,
+        text_rows(&[("k", &["We\u{df}els", "Wessels"]), ("v", &["uno", "due"])]),
+    )
+    .await
+    .expect("due chiavi distinte");
+    let update = keyed("intermediate_varchar", WriteMode::Update, &["k"], &["v"]);
+    run_r8(
+        &pool,
+        &update,
+        text_rows(&[("k", &["Wessels"]), ("v", &["tre"])]),
+    )
+    .await
+    .expect("update della sola chiave");
+    assert_eq!(
+        admin_texts(
+            &mut admin,
+            "SELECT v FROM [plenora_test].[intermediate_varchar] ORDER BY v"
+        )
+        .await,
+        ["tre", "uno"]
+    );
+    let delete = keyed("intermediate_varchar", WriteMode::DeleteByKeys, &["k"], &[]);
+    run_r8(&pool, &delete, text_rows(&[("k", &["Wessels"])]))
+        .await
+        .expect("delete della sola chiave");
+    assert_eq!(
+        admin_texts(
+            &mut admin,
+            "SELECT v FROM [plenora_test].[intermediate_varchar]"
+        )
+        .await,
+        ["uno"]
+    );
+    admin_batch(
+        &mut admin,
+        "DROP TABLE [plenora_test].[intermediate_varchar];",
+    )
+    .await;
+}

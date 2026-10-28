@@ -92,8 +92,8 @@
 //! - **Regola**: un valore che il tipo del target potrebbe riscrivere si
 //!   tratta come riscritto.
 //! - **Ambito**: [`StoreRewrite::PadText`] conta i caratteri anche dove la
-//!   colonna conta i byte (`CHAR(3 BYTE)` su Oracle, `char(n)` di SQL Server
-//!   fuori da UTF-8); [`StoreRewrite::Underflow`] usa una soglia per eccesso.
+//!   colonna conta i byte (`CHAR(3 BYTE)` su Oracle, tipi di provider senza
+//!   unita esplicita nella guardia); [`StoreRewrite::Underflow`] usa una soglia per eccesso.
 //! - **Hazard**: piu stretto: si rifiuta anche un valore che riempirebbe la
 //!   colonna in byte con meno caratteri, o un float appena sopra il minimo
 //!   del tipo.
@@ -135,6 +135,28 @@ pub const REWRITTEN_VALUE: &str = "il server riscriverebbe al salvataggio il val
 /// Il motivo pubblico del rifiuto di una chiave riscritta, con ogni politica.
 pub const REWRITTEN_KEY: &str = "il server riscriverebbe al salvataggio il valore di una \
      chiave in uno diverso (regola S): la regola K non lo prova, con nessuna politica";
+
+/// Unita con cui il target misura il testo. Le code page a byte singolo
+/// richiedono prima la verifica di rappresentabilita del provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextLengthUnit {
+    Characters,
+    Utf16,
+    Utf8Bytes,
+    SingleByte,
+}
+
+impl TextLengthUnit {
+    /// Lunghezza nell'unita del target, condivisa da ammissione e regola S.
+    #[must_use]
+    pub fn count(self, value: &str) -> usize {
+        match self {
+            Self::Characters | Self::SingleByte => value.chars().count(),
+            Self::Utf16 => value.encode_utf16().count(),
+            Self::Utf8Bytes => value.len(),
+        }
+    }
+}
 
 /// Una riscrittura che il tipo del target applica al salvataggio.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -254,6 +276,12 @@ impl StoreRewrite {
     /// Se il valore non nullo di `array` alla riga `row` sarebbe riscritto.
     #[must_use]
     pub fn rewrites(self, array: &dyn Array, row: usize) -> bool {
+        self.rewrites_in_unit(array, row, TextLengthUnit::Characters)
+    }
+
+    /// Valuta il riempimento nell'unita della colonna letta dal catalogo.
+    #[must_use]
+    pub fn rewrites_in_unit(self, array: &dyn Array, row: usize, unit: TextLengthUnit) -> bool {
         if self == Self::Every {
             return !array.is_null(row);
         }
@@ -261,7 +289,7 @@ impl StoreRewrite {
             (Self::EmptyToNull, Value::Text(text)) => text.is_empty(),
             (Self::EmptyToNull, Value::Bytes(bytes)) => bytes.is_empty(),
             (Self::PadText { chars }, Value::Text(text)) => {
-                u64::try_from(text.chars().count()).unwrap_or(u64::MAX) < chars
+                u64::try_from(unit.count(text)).unwrap_or(u64::MAX) < chars
             }
             (Self::PadBinary { bytes: length }, Value::Bytes(bytes)) => {
                 u64::try_from(bytes.len()).unwrap_or(u64::MAX) < length
@@ -397,6 +425,7 @@ pub struct RewriteGuard {
     provider: ProviderKind,
     columns: Vec<(ColumnRewrites, bool)>,
     strict: bool,
+    text_units: std::collections::HashMap<usize, TextLengthUnit>,
 }
 
 impl RewriteGuard {
@@ -442,7 +471,19 @@ impl RewriteGuard {
             provider,
             columns: guarded,
             strict: operation.mapping_policy == MappingPolicy::Strict,
+            text_units: std::collections::HashMap::new(),
         })
+    }
+
+    /// Imposta le unita lette dal catalogo per le colonne testuali.
+    /// Le colonne non indicate conservano il conteggio in caratteri.
+    #[must_use]
+    pub fn with_text_units(
+        mut self,
+        units: impl IntoIterator<Item = (usize, TextLengthUnit)>,
+    ) -> Self {
+        self.text_units = units.into_iter().collect();
+        self
     }
 
     /// Nessuna colonna con una riscrittura.
@@ -469,11 +510,16 @@ impl RewriteGuard {
                 if array.is_null(row) {
                     continue;
                 }
-                if column
-                    .rewrites
-                    .iter()
-                    .any(|rewrite| rewrite.rewrites(array.as_ref(), row))
-                {
+                if column.rewrites.iter().any(|rewrite| {
+                    rewrite.rewrites_in_unit(
+                        array.as_ref(),
+                        row,
+                        self.text_units
+                            .get(&column.field)
+                            .copied()
+                            .unwrap_or(TextLengthUnit::Characters),
+                    )
+                }) {
                     return Err(rewritten(self.provider, *key));
                 }
             }

@@ -242,3 +242,17 @@ fn le_classi_della_regola_a_riconoscono_i_valori_che_si_riscrivono() {
     assert!(StoreRewrite::Every.admits(&DataType::Decimal128(5, 2)));
     assert!(!StoreRewrite::FractionalSeconds { digits: 3 }.admits(&DataType::Utf8));
 }
+
+#[test]
+fn padding_uses_target_units_for_supplementary_and_multibyte_text() {
+    use super::TextLengthUnit;
+    let emoji = StringArray::from(vec!["\u{1f600}"]);
+    for (unit, length) in [
+        (TextLengthUnit::Characters, 1),
+        (TextLengthUnit::Utf16, 2),
+        (TextLengthUnit::Utf8Bytes, 4),
+    ] {
+        assert!(!StoreRewrite::PadText { chars: length }.rewrites_in_unit(&emoji, 0, unit));
+        assert!(StoreRewrite::PadText { chars: length + 1 }.rewrites_in_unit(&emoji, 0, unit));
+    }
+}

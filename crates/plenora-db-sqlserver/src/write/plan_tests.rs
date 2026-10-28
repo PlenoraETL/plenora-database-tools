@@ -664,7 +664,7 @@ fn la_regola_p_sul_testo_dipende_da_collation_e_lunghezza() {
     assert!(latin.code_page.represents("caff\u{e8} \u{20ac}"));
     assert!(!latin.code_page.represents("\u{416}\u{20ac}\u{4e2d}"));
     assert!(!latin.code_page.represents("\u{81}"));
-    assert_eq!(latin.code_page.bytes("caff\u{e8}"), 5);
+    assert_eq!(latin.length_unit().count("caff\u{e8}"), 5);
     let greek = text_limit("varchar", "varchar(20)", Some("Greek_CI_AS")).expect("greco");
     assert_eq!(greek.code_page, CodePage::Ascii);
     assert!(!greek.code_page.represents("caff\u{e8}"));
@@ -690,4 +690,47 @@ fn la_lunghezza_dei_binari_viene_dalla_dichiarazione() {
     assert_eq!(binary_limit("varbinary", "varbinary(max)"), None);
     assert_eq!(binary_limit("image", "image"), None);
     assert_eq!(binary_limit("varchar", "varchar(10)"), None);
+}
+
+/// Ammissione e regola S concordano su un emoji che occupa nchar(2).
+#[test]
+fn admission_and_rewrite_guard_share_utf16_units() {
+    let field = Field::new("v", DataType::Utf8, false).with_metadata(HashMap::from([
+        (
+            protocol::SQLSERVER_NATIVE_TYPE.to_owned(),
+            "nchar".to_owned(),
+        ),
+        (
+            protocol::SQLSERVER_NATIVE_DECLARATION.to_owned(),
+            "nchar(2)".to_owned(),
+        ),
+        (
+            protocol::SQLSERVER_COLLATION.to_owned(),
+            "Latin1_General_100_CI_AS_SC".to_owned(),
+        ),
+    ]));
+    let schema = Arc::new(plenora_database_core::arrow::Schema::new(vec![field]));
+    let operation = operation(WriteMode::Create);
+    let mut plan = WritePlan::compile_create(&operation, Arc::clone(&schema)).expect("piano");
+    let facts = super::super::admission::created_facts(
+        "v",
+        "nchar",
+        "nchar(2)",
+        Some("Latin1_General_100_CI_AS_SC"),
+        Some(1200),
+        false,
+    );
+    plan.admit(&operation, &[facts], "16").expect("ammissione");
+    let guard = plan.rewrite_guard(&operation).expect("guardia");
+    assert!(!guard.is_empty());
+    for (value, accepted) in [("\u{1f600}", true), ("a", false)] {
+        let batch = plenora_database_core::arrow::RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(
+                plenora_database_core::arrow::array::StringArray::from(vec![value]),
+            )],
+        )
+        .expect("batch");
+        assert_eq!(guard.check(&batch).is_ok(), accepted);
+    }
 }

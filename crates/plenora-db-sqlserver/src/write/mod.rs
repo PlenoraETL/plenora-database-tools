@@ -512,23 +512,7 @@ async fn write_prepared_inner(
     // chiave con ogni politica, prima del COMMIT.
     let mut input = plenora_database_core::store_rewrite::guard_input(
         input,
-        plenora_database_core::store_rewrite::RewriteGuard::new(
-            plenora_database_core::plan::ProviderKind::Sqlserver,
-            &prepared.plan.input_schema,
-            &prepared.operation,
-            prepared
-                .plan
-                .columns
-                .iter()
-                .map(
-                    |column| plenora_database_core::store_rewrite::ColumnRewrites {
-                        field: column.input_index,
-                        target_type: column.native_declaration.clone(),
-                        rewrites: column.rewrites.clone(),
-                    },
-                )
-                .collect(),
-        )?,
+        prepared.plan.rewrite_guard(&prepared.operation)?,
     );
     let diagnostic_input = input
         .declared_input_rows()

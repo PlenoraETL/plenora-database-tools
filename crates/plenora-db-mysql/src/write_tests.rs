@@ -1845,3 +1845,76 @@ fn lo_staging_non_sostituisce_metadati_testuali_assenti_o_invalidi() {
         assert!(sql.contains("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"));
     }
 }
+
+/// Lo staging non restringe nessuna famiglia testuale rispetto al catalogo.
+#[test]
+fn staging_conserva_tipo_lunghezza_charset_e_collation() {
+    let input = schema(vec![Field::new("label", DataType::Utf8, true)]);
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        for (family, declaration) in [
+            ("varchar", "varchar(1234)"),
+            ("tinytext", "tinytext"),
+            ("text", "text"),
+            ("mediumtext", "mediumtext"),
+            ("longtext", "longtext"),
+        ] {
+            let target = base_table(vec![text_column(family, declaration)]);
+            let sql = build_temp_staging_sql(&input, "staging", "warehouse", profile, &target)
+                .expect("tipo del catalogo");
+            assert!(sql.contains(&format!(
+                "`label` {declaration} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL"
+            )));
+        }
+    }
+}
+
+/// Tutte le forme di tipo misurate conservano la dichiarazione nello staging.
+#[test]
+fn staging_preserves_every_measured_catalog_type() {
+    for (fixture, profile, expected) in [
+        (
+            crate::write_admission::MYSQL_FIXTURE,
+            &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+            800,
+        ),
+        (
+            crate::write_admission::MARIADB_FIXTURE,
+            &crate::profile::MARIADB_PROFILE as &dyn crate::profile::ProductProfile,
+            801,
+        ),
+    ] {
+        let fixture: serde_json::Value = serde_json::from_slice(fixture).expect("fixture");
+        let natives = fixture["misure"]
+            .as_array()
+            .expect("misure")
+            .iter()
+            .flat_map(|measurement| measurement["chiavi"].as_array().expect("chiavi"))
+            .map(|key| key["nativo"].as_str().expect("nativo"))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(natives.len(), expected);
+        for native in natives {
+            let mut pieces = native.split(';');
+            let declaration = pieces.next().expect("tipo").replace("(n)", "(137)");
+            let family = declaration.split(['(', ' ']).next().expect("famiglia");
+            let mut column = text_column(family, &declaration);
+            let charset = pieces.next();
+            column.character_set = charset.map(str::to_owned);
+            column.collation = charset.map(|name| format!("{name}_bin"));
+            let expected_type = match charset {
+                Some(name) => format!("{declaration} CHARACTER SET {name} COLLATE {name}_bin"),
+                None => declaration.clone(),
+            };
+            let target = base_table(vec![column]);
+            let input = schema(vec![Field::new("label", DataType::Utf8, true)]);
+            let sql = build_temp_staging_sql(&input, "staging", "warehouse", profile, &target)
+                .expect("staging dal catalogo");
+            assert!(
+                sql.contains(&format!("`label` {expected_type} NULL")),
+                "{native}: {sql}"
+            );
+        }
+    }
+}

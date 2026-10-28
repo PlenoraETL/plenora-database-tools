@@ -633,10 +633,7 @@ pub(super) fn check_text(plan: &WritePlan, column: &WriteColumnPlan, value: &str
         return Err(mapping_error(super::plan::LOSSY_VALUE));
     }
     if let Some(max) = limit.max {
-        let length = match limit.unit {
-            super::plan::TextUnit::Bytes => limit.code_page.bytes(value),
-            super::plan::TextUnit::Utf16 => value.encode_utf16().count(),
-        };
+        let length = limit.length_unit().count(value);
         if length > max {
             return Err(mapping_error(super::plan::LOSSY_VALUE));
         }
