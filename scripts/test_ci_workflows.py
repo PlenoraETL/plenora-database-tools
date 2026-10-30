@@ -1712,110 +1712,184 @@ class PythonGateDependencyTests(unittest.TestCase):
                 f"forma non riconosciuta: {command}",
             )
 
-class TheSweepCoversTheFastCi(unittest.TestCase):
-    """`scripts/sweep.py` esegue cio che la CI eseguira, o dichiara perche no.
+class TheSweepCoversAllOfflineCi(unittest.TestCase):
+    """Il piano eseguibile conserva ogni job, comando e argomento dei workflow."""
 
-    La spazzata locale e affidabile soltanto se resta equivalente ai gate
-    offline della CI. Un passo presente da una sola parte rende il controllo
-    locale un sottoinsieme e deve essere una scelta esplicita.
-
-    Questa guardia confronta i due elenchi per **impronta** — il percorso dello
-    script, o il sottocomando cargo — e non per stringa: la CI scrive `python3`
-    e la spazzata usa l'interprete corrente, e pretendere l'uguaglianza
-    letterale farebbe fallire su una differenza che non riguarda nessuno.
-    """
-
-    WORKFLOW = ROOT / ".github" / "workflows" / "rust-ci.yml"
-
-    #: I passi della CI che la spazzata non esegue, e perche.
-    DECLARED_ABSENT = {
-        "cargo:fetch": "prepara la cache in CI; lo sweep e il gate avvisi restano offline",
-        "pip": "installa le dipendenze dei self-test; su una macchina di sviluppo ci sono gia",
-        "wheel": "costruisce e installa il wheel: vuole maturin e minuti, non secondi",
-        "offline_suite": "gira sul wheel appena installato, quindi dipende dal passo sopra",
-        "clippy-adapters": "clippy su ogni adapter isolato: la stessa domanda del clippy di workspace, moltiplicata per i tempi di build",
-    }
-
-    def fingerprint(self, command: str) -> str | None:
-        """Cio che identifica un passo, ignorando come e stato invocato."""
-
-        command = command.strip()
-        # L'ordine conta: `pip install dist/*.whl` e il wheel, non le
-        # dipendenze, e il controllo generico su `pip install` lo
-        # rivendicherebbe per primo.
-        if "maturin" in command or "dist/*.whl" in command:
-            return "wheel"
-        if "pip install" in command:
-            return "pip"
-        if "offline_suite" in command:
-            return "offline_suite"
-        match = re.search(r"(scripts/[\w./]+\.py)", command)
-        if match:
-            return match.group(1)
-        match = re.search(r"unittest\s+(?:discover\s+-s\s+)?([\w./]+)", command)
-        if match:
-            return f"unittest:{match.group(1)}"
-        match = re.search(r"\bcargo (\w+)", command)
-        if match:
-            return f"cargo:{match.group(1)}"
-        return None
-
-    def test_every_static_ci_step_is_swept_or_declared(self) -> None:
-        # Il modulo si carica dal **percorso**, non dal nome: la CI esegue
-        # questo file come script — `python3 scripts/test_ci_workflows.py` —
-        # e in quel modo `sys.path[0]` e `scripts/`, quindi il pacchetto
-        # `scripts` non esiste e l'import per nome fallisce. Caricarlo dal
-        # percorso funziona in entrambi i modi.
+    @classmethod
+    def setUpClass(cls) -> None:
         specification = importlib.util.spec_from_file_location(
             "plenora_sweep", ROOT / "scripts" / "sweep.py"
         )
-        sweep = importlib.util.module_from_spec(specification)
-        specification.loader.exec_module(sweep)
-        swept = {
-            self.fingerprint(" ".join(command)) for _, command in sweep.STEPS
+        cls.sweep = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(cls.sweep)
+
+    def test_every_offline_job_and_command_is_in_the_executable_plan(self) -> None:
+        jobs = self.sweep.discover()
+        plan = self.sweep.build_plan(jobs)
+        self.assertTrue(plan)
+        self.assertEqual(self.sweep.coverage_errors(jobs, plan), [])
+        # Il lato CI e letto anche dal parser della suite: non basta che due
+        # funzioni della sweep perdano gli stessi passi o gli stessi file.
+        expected = {
+            f"{path.name}/{name}": job
+            for path in workflow_files()
+            for name, job in parsed_jobs(path.read_text(encoding="utf-8")).items()
         }
-        swept.discard(None)
-        self.assertTrue(swept, "la spazzata non dichiara nessun passo")
+        self.assertEqual(set(jobs), set(expected))
+        for key, job in expected.items():
+            if key not in self.sweep.EXCLUDED:
+                self.assertEqual(plan[key]["job"], job, key)
 
-        workflow = self.WORKFLOW.read_text(encoding="utf-8")
-        # Il blocco `run: |` multilinea e il clippy per adapter: si riconosce
-        # dal corpo, perche la riga `run:` da sola non dice niente.
-        if "cargo clippy" in workflow and "run: |" in workflow:
-            swept.add("clippy-adapters")
+    def test_removing_any_offline_job_fails_coverage(self) -> None:
+        jobs = self.sweep.discover()
+        plan = self.sweep.build_plan(jobs)
+        for key in plan:
+            with self.subTest(job=key):
+                missing = dict(plan)
+                del missing[key]
+                self.assertTrue(self.sweep.coverage_errors(jobs, missing))
 
-        mancanti: list[str] = []
-        for command in re.findall(r"^\s+run: (.+)$", workflow, re.M):
-            impronta = self.fingerprint(command)
-            if impronta is None:
-                # `run: |` apre un blocco: il suo corpo e gia coperto sopra.
-                continue
-            if impronta in swept or impronta in self.DECLARED_ABSENT:
-                continue
-            mancanti.append(f"{impronta}  ({command.strip()[:60]})")
+    def test_arguments_environment_order_and_actions_are_not_fingerprints(self) -> None:
+        jobs = self.sweep.discover()
+        key = "rust-ci.yml/public-contract"
+        for field, replacement in (
+            ("run", "cargo test --workspace -- --skip live_"),
+            ("env", {"PLENORA_RUNTIME_EVIDENCE": "wrong"}),
+        ):
+            plan = self.sweep.build_plan(jobs)
+            step = next(s for s in plan[key]["job"]["steps"] if "runtime_vectors" in s.get("run", ""))
+            step[field] = replacement
+            self.assertTrue(self.sweep.coverage_errors(jobs, plan))
+        plan = self.sweep.build_plan(jobs)
+        plan[key]["job"]["steps"].reverse()
+        self.assertTrue(self.sweep.coverage_errors(jobs, plan))
+        plan = self.sweep.build_plan(jobs)
+        plan[key]["job"]["steps"].pop(1)  # checkout del pin
+        self.assertTrue(self.sweep.coverage_errors(jobs, plan))
 
-        self.assertEqual(
-            mancanti,
-            [],
-            "questi passi della CI non sono nella spazzata e non dichiarano "
-            f"perche: {mancanti}. Chi li aggiunge alla CI li aggiunge a "
-            "scripts/sweep.py, o scrive qui la ragione per cui restano fuori.",
-        )
+    def test_new_yaml_workflow_folded_literal_and_alias_are_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "new.yaml"
+            path.write_text("""jobs:
+  new-offline:
+    steps:
+      - &build
+        run: >-
+          cargo build --release --locked
+          --examples
+      - run: |
+          target/release/examples/bench_new 2000 7
+          cargo test --locked -p example --test vectors
+      - *build
+""", encoding="utf-8")
+            jobs = self.sweep.discover(Path(temporary))
+            plan = self.sweep.build_plan(jobs, {})
+            steps = plan["new.yaml/new-offline"]["job"]["steps"]
+            self.assertEqual(steps[0]["run"], "cargo build --release --locked --examples")
+            self.assertIn("bench_new 2000 7\n", steps[1]["run"])
+            self.assertEqual(steps[0], steps[2])
+            self.assertTrue(self.sweep.coverage_errors(jobs, {}, {}))
+            steps[1]["run"] = steps[1]["run"].replace("2000 7", "20 1")
+            self.assertTrue(self.sweep.coverage_errors(jobs, plan, {}))
 
-    def test_no_declared_absence_has_disappeared(self) -> None:
-        """Un passo dichiarato assente e sparito dalla CI e una riga scaduta."""
+    def test_stale_or_comment_only_exclusion_is_rejected(self) -> None:
+        jobs = {"new.yml/test": {"job": {"name": "docker compose", "steps": [{"run": "cargo test"}]}}}
+        for excluded in ({"gone": ("cargo", "network")}, {"new.yml/test": ("docker compose", "Docker")}):
+            with self.assertRaises(ValueError):
+                self.sweep.build_plan(jobs, excluded)
 
-        workflow = self.WORKFLOW.read_text(encoding="utf-8")
-        impronte = {
-            self.fingerprint(command)
-            for command in re.findall(r"^\s+run: (.+)$", workflow, re.M)
+    def test_unknown_action_is_not_a_success(self) -> None:
+        with self.assertRaises(ValueError):
+            self.sweep.action({"uses": "new/action@commit"}, {})
+
+    def test_subprocess_preserves_arguments_and_evidence_environment(self) -> None:
+        from unittest.mock import patch
+        env = {"PLENORA_RUNTIME_EVIDENCE": "target/runtime-evidence"}
+        command = "cargo test --locked -p plenora-database-engine --test runtime_vectors"
+        with patch.object(self.sweep, "run") as run:
+            self.sweep.execute({"run": command}, env, {})
+        self.assertEqual(run.call_args.args[0], command.split())
+        self.assertEqual(run.call_args.args[1], env)
+
+    def test_microbench_shell_retains_every_example_and_arguments(self) -> None:
+        from unittest.mock import patch
+        job = self.sweep.discover()["rust-microbench.yml/measure"]["job"]
+        step = next(step for step in job["steps"] if "2000 7" in step.get("run", ""))
+        with patch.object(self.sweep, "run") as run:
+            self.sweep.execute(step, {}, {})
+        self.assertTrue(run.call_args.args[0][-1].endswith(step["run"]))
+        self.assertIn("pipefail", run.call_args.args[0])
+
+
+    def test_failed_build_blocks_consumers_but_not_other_jobs(self) -> None:
+        import contextlib
+        import io
+        import json
+        import subprocess
+        from unittest.mock import patch
+        jobs = {
+            "a.yml/build": {"env": {}, "defaults": {}, "job": {"steps": [
+                {"run": "cargo build --release --examples"},
+                {"run": "target/release/examples/bench_new 2000 7"},
+            ]}},
+            "b.yml/test": {"env": {}, "defaults": {}, "job": {"steps": [
+                {"run": "python scripts/test_ci_workflows.py"},
+            ]}},
         }
-        impronte.discard(None)
-        scadute = sorted(set(self.DECLARED_ABSENT) - impronte - {"clippy-adapters"})
-        self.assertEqual(
-            scadute,
-            [],
-            f"questi passi sono dichiarati assenti ma la CI non li esegue piu: {scadute}",
-        )
+        with tempfile.TemporaryDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(temporary)
+            with patch.object(self.sweep, "ROOT", root), patch.object(self.sweep, "EXCLUDED", {}), \
+                 patch.object(self.sweep, "discover", return_value=jobs), \
+                 patch.object(self.sweep, "run", return_value=subprocess.CompletedProcess([], 0, "sha", "")), \
+                 patch.object(self.sweep, "execute", side_effect=[
+                     subprocess.CompletedProcess([], 1, "", "build failed"),
+                     subprocess.CompletedProcess([], 0, "", ""),
+                 ]) as execute:
+                self.assertEqual(self.sweep.main(), 1)
+                self.assertEqual(execute.call_count, 2)
+            results = json.loads((root / "target/sweep/results.json").read_text(encoding="utf-8"))
+            self.assertEqual([r["status"] for r in results], ["ROTTO", "non eseguito qui", "ok"])
+
+    def test_missing_action_prerequisite_makes_sweep_incomplete(self) -> None:
+        import contextlib
+        import io
+        import subprocess
+        from unittest.mock import patch
+        jobs = {"new.yml/gate": {"env": {}, "defaults": {}, "job": {"steps": [
+            {"uses": "unknown/prerequisite@commit"}, {"run": "cargo test --locked"},
+        ]}}}
+        with tempfile.TemporaryDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(self.sweep, "ROOT", Path(temporary)), patch.object(self.sweep, "EXCLUDED", {}), \
+                 patch.object(self.sweep, "discover", return_value=jobs), \
+                 patch.object(self.sweep, "run", return_value=subprocess.CompletedProcess([], 0, "sha", "")):
+                self.assertEqual(self.sweep.main(), 2)
+
+
+    def test_shell_uses_resolved_executable_not_windows_wsl_search(self) -> None:
+        from unittest.mock import patch
+        with patch.object(self.sweep.shutil, "which", return_value="C:/Git/bin/bash.exe"), \
+             patch.object(self.sweep, "run") as run:
+            self.sweep.execute({"run": "cargo test\ncargo check\n"}, {}, {})
+        self.assertEqual(run.call_args.args[0][0], "C:/Git/bin/bash.exe")
+
+    def test_single_command_bash_also_uses_the_resolved_shell(self) -> None:
+        from unittest.mock import patch
+        with patch.object(self.sweep.shutil, "which", return_value="C:/Git/bin/bash.exe"), \
+             patch.object(self.sweep, "run") as run:
+            self.sweep.execute({"run": "bash .github/scripts/offline_suite.sh"}, {}, {})
+        self.assertEqual(run.call_args.args[0], ["C:/Git/bin/bash.exe", ".github/scripts/offline_suite.sh"])
+
+
+    def test_wheel_install_is_fresh_and_isolated(self) -> None:
+        from unittest.mock import patch
+        original = {"run": "python -m pip install dist/*.whl"}
+        with patch.object(self.sweep, "run") as run:
+            self.sweep.execute(original, {"SWEEP_WHEEL_SITE": "temporary/site-packages"}, {})
+        command, env, _ = run.call_args.args
+        self.assertIn("--force-reinstall --no-deps dist/*.whl", command[-1])
+        self.assertEqual(env["PIP_TARGET"], "temporary/site-packages")
+        self.assertEqual(original["run"], "python -m pip install dist/*.whl")
+
 
 
 if __name__ == "__main__":
