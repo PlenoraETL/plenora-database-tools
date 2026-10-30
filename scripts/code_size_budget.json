@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 106765,
-  "max_code_lines": 87889,
-  "rationale": "Correzione spatial Db2 8.0.3: codifica esadecimale esplicita soltanto nei bind consumati da HEXTORAW del writer Arrow e dei predicati portabili; le espressioni spatial conservano i bind binari con CAST AS BLOB. Soglie allineate alla misura di scripts/code_size.py: righe fisiche 106730 -> 106765, righe di codice 87859 -> 87889. Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 106840,
+  "max_code_lines": 87952,
+  "rationale": "Correttiva Db2 8.0.3: i costruttori spatial portable e nominati usano HEXTORAW con esadecimale esplicito; il layout SDK separa le occorrenze spatial dai normali bind binari omonimi. Soglie allineate alla misura di scripts/code_size.py, senza modificare perimetro o aggiungere margine."
 }

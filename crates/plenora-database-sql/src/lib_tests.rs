@@ -185,7 +185,7 @@ fn sqlserver_and_db2_spatial_values_keep_the_frame_outside_the_bind() {
         ),
         (
             Dialect::Db2,
-            "ST_GEOMETRY(CAST(? AS BLOB), 4326) AS \"shape\"",
+            "ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326) AS \"shape\"",
         ),
     ] {
         let rendered = Renderer::new(

@@ -15,6 +15,7 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - "crates/plenora-database-core/**"
+      - "crates/plenora-database-sql/**"
       - "crates/plenora-database-cli/**"
       - "crates/plenora-database-py/**"
       - "crates/plenora-db-db2/**"

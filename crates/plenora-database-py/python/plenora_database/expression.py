@@ -1361,6 +1361,64 @@ class FunctionNamespace:
 func = FunctionNamespace()
 
 
+def _spatial_bind_layout(ast: dict[str, Any], provider: str) -> dict[str, str]:
+    """Separa le occorrenze spatial Db2 dai bind binari ordinari omonimi."""
+    if provider != "db2":
+        return {}
+    names: set[str] = set()
+
+    def collect(node: Any) -> None:
+        if isinstance(node, dict):
+            if node.get("kind") in {"parameter", "typed_parameter"}:
+                names.add(node["name"])
+            for child in node.values():
+                collect(child)
+        elif isinstance(node, list):
+            for child in node:
+                collect(child)
+
+    collect(ast)
+    aliases: dict[str, str] = {}
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            if node.get("kind") == "spatial_value":
+                expression = node["expression"]
+                if expression.get("kind") in {"parameter", "typed_parameter"}:
+                    ordinal = len(aliases)
+                    name = f"_db2_spatial_{ordinal}"
+                    while name in names:
+                        ordinal += 1
+                        name = f"_db2_spatial_{ordinal}"
+                    names.add(name)
+                    aliases[name] = expression["name"]
+                    expression["name"] = name
+            for child in node.values():
+                visit(child)
+        elif isinstance(node, list):
+            for child in node:
+                visit(child)
+
+    visit(ast)
+    return aliases
+
+
+def _ordered_bind_values(
+    values: dict[str, Any], bind_names: list[str], aliases: dict[str, str]
+) -> list[Any]:
+    if set(values) != {aliases.get(name, name) for name in bind_names}:
+        raise ValueError("insieme dei bind incompatibile con lo statement")
+    ordered = []
+    for name in bind_names:
+        value = values[aliases.get(name, name)]
+        if name in aliases and value is not None:
+            if not isinstance(value, (bytes, bytearray, memoryview)):
+                raise TypeError("il bind spatial Db2 richiede WKB binario")
+            value = bytes(value).hex().upper()
+        ordered.append(value)
+    return ordered
+
+
 def _compile_statement(
     statement: SelectStatement,
     parameters: Mapping[str, Any] | None,
@@ -1375,10 +1433,10 @@ def _compile_statement(
     values = {} if parameters is None else dict(parameters)
     if not all(isinstance(name, str) for name in values):
         raise TypeError("i nomi dei bind devono essere stringhe")
-    sql, bind_names = compile_relational_query(statement.to_json(), provider)
-    if set(values) != set(bind_names):
-        raise ValueError("insieme dei bind incompatibile con lo statement")
-    return sql, [values[name] for name in bind_names]
+    ast = statement.to_ast()
+    aliases = _spatial_bind_layout(ast, provider)
+    sql, bind_names = compile_relational_query(json.dumps(ast), provider)
+    return sql, _ordered_bind_values(values, bind_names, aliases)
 
 
 def _compile_mutation_statement(
@@ -1397,12 +1455,10 @@ def _compile_mutation_statement(
     values = {} if parameters is None else dict(parameters)
     if not all(isinstance(name, str) for name in values):
         raise TypeError("i nomi dei bind devono essere stringhe")
-    sql, bind_names, returns_rows = compile_relational_mutation(
-        statement.to_json(), provider
-    )
-    if set(values) != set(bind_names):
-        raise ValueError("insieme dei bind incompatibile con lo statement")
-    return sql, [values[name] for name in bind_names], returns_rows
+    ast = statement.to_ast()
+    aliases = _spatial_bind_layout(ast, provider)
+    sql, bind_names, returns_rows = compile_relational_mutation(json.dumps(ast), provider)
+    return sql, _ordered_bind_values(values, bind_names, aliases), returns_rows
 
 
 def _execute_statement(

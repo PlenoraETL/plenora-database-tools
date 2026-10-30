@@ -2793,23 +2793,26 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
             loaded.point = moved_point
             loaded.optional_point = point
 
-        predicate = _PORTABLE_POINT.predicate(
-            "intersects",
-            LivePortableGeometry.point,
-            _PORTABLE_POINT.bind("reference"),
-        )
-        with p.OrmSession(session) as orm:
-            [queried] = (
-                orm.query(LivePortableGeometry)
-                .where(predicate)
-                .all({"reference": moved_point})
+        predicates = ("intersects", "contains", "within") if provider == "db2" else ("intersects",)
+        for predicate_name in predicates:
+            predicate = _PORTABLE_POINT.predicate(
+                predicate_name,
+                LivePortableGeometry.point,
+                _PORTABLE_POINT.bind("reference"),
             )
-            _assert_portable_wkb(queried.point.ewkb, _root_wkb(moved_point), provider)
-            assert queried.optional_point is not None
-            _assert_portable_wkb(
-                queried.optional_point.ewkb, _root_wkb(point), provider
-            )
-            queried.optional_point = None
+            with p.OrmSession(session) as orm:
+                [queried] = (
+                    orm.query(LivePortableGeometry)
+                    .where(predicate)
+                    .all({"reference": moved_point})
+                )
+                _assert_portable_wkb(queried.point.ewkb, _root_wkb(moved_point), provider)
+                assert queried.optional_point is not None
+                _assert_portable_wkb(
+                    queried.optional_point.ewkb, _root_wkb(point), provider
+                )
+                if predicate_name == predicates[-1]:
+                    queried.optional_point = None
 
         with p.OrmSession(session) as orm:
             loaded = orm.get(LivePortableGeometry, 1)

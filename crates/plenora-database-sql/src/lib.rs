@@ -1284,7 +1284,15 @@ impl Renderer {
         semantics: SpatialSemantics,
         binds: &mut Vec<BindParameter>,
     ) -> Result<String> {
-        let value = self.render_query_expression(expression, binds)?;
+        let value = match (self.dialect, expression) {
+            // Il tipo WKB dell'IR non deve introdurre un CAST binario intorno
+            // al testo esadecimale richiesto da HEXTORAW.
+            (
+                Dialect::Db2,
+                QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. },
+            ) => self.bind(name, binds),
+            _ => self.render_query_expression(expression, binds)?,
+        };
         match (self.dialect, semantics) {
             (Dialect::Postgres, SpatialSemantics::Geometry) => {
                 Ok(format!("ST_SetSRID(ST_GeomFromEWKB({value}), {srid})"))
@@ -1302,8 +1310,8 @@ impl Renderer {
                 Ok(format!("geography::STGeomFromWKB({value}, {srid})"))
             }
             (Dialect::Db2, SpatialSemantics::Geometry) => {
-                // Anche i bind nominati restano WKB binario al confine del driver.
-                Ok(format!("ST_GEOMETRY(CAST({value} AS BLOB), {srid})"))
+                // Il chiamante codifica questo bind WKB in testo esadecimale.
+                Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW({value})), {srid})"))
             }
             (Dialect::Oracle, SpatialSemantics::Geometry | SpatialSemantics::Geography) => {
                 Ok(format!("MDSYS.SDO_UTIL.FROM_WKBGEOMETRY({value}, {srid})"))

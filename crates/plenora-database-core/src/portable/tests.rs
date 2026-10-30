@@ -901,7 +901,7 @@ fn spatial_db2_uses_integrated_geometry_and_hex_binary_binding() {
 }
 
 #[test]
-fn db2_spatial_value_and_user_bytes_keep_exact_binary_binds() {
+fn db2_spatial_value_encodes_hex_without_changing_user_bytes() {
     use crate::geometry::SpatialSemantics;
     let bytes = ewkb_point_2d(4326);
     let user_bytes = vec![0, 0xff, 0x80, 0xab, 1];
@@ -919,14 +919,16 @@ fn db2_spatial_value_and_user_bytes_keep_exact_binary_binds() {
         returning: Vec::new(),
     });
     let compiled = compile_portable(ProviderKind::Db2, &statement).expect("spatial Db2");
-    assert_eq!(compiled.sql, "INSERT INTO \"features\" (\"shape\", \"payload\") VALUES (ST_GEOMETRY(CAST(? AS BLOB), 4326), ?)");
-    assert_eq!(
-        compiled.params,
-        vec![
-            ParameterValue::Bytes(bytes),
-            ParameterValue::Bytes(user_bytes)
-        ]
-    );
+    assert_eq!(compiled.sql, "INSERT INTO \"features\" (\"shape\", \"payload\") VALUES (ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326), ?)");
+    let ParameterValue::String(hex) = &compiled.params[0] else {
+        panic!("il costruttore spatial richiede testo");
+    };
+    let decoded: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).expect("hex"))
+        .collect();
+    assert_eq!(decoded, bytes);
+    assert_eq!(compiled.params[1], ParameterValue::Bytes(user_bytes));
 }
 
 #[test]

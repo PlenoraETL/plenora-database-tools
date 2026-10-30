@@ -137,7 +137,7 @@ fn qualified_spatial_values_keep_payloads_in_named_binds() {
     let db2 = compile_relational_mutation(ProviderKind::Db2, &operation).expect("bind spatial Db2");
     assert_eq!(db2.bind_names, ["shape"]);
     assert!(
-        db2.sql.contains("ST_GEOMETRY(CAST(? AS BLOB), 4326)"),
+        db2.sql.contains("ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)"),
         "{}",
         db2.sql
     );
