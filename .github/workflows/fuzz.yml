@@ -18,12 +18,12 @@ name: fuzz
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
     paths:
       - 'fuzz/**'
       - '.github/workflows/fuzz.yml'
   push:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
     paths:
       - 'fuzz/**'
       - '.github/workflows/fuzz.yml'

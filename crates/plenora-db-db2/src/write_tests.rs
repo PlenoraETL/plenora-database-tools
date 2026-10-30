@@ -155,14 +155,46 @@ fn spatial_append_uses_integrated_constructor_and_declared_srid() {
     let mut write = operation(WriteMode::Append);
     write.srid_policy = Some(SridPolicy::RequireMatch);
     let plan = Db2WritePlan::compile(&config(), &schema, &write).expect("piano spatial Db2");
-    let statement = plan.insert_statement(&[vec![
-        plenora_database_core::provider::ParameterValue::I32(1),
-        plenora_database_core::provider::ParameterValue::Bytes(point_xy()),
-    ]]);
+    let bytes = point_xy();
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+            Arc::new(BinaryArray::from(vec![Some(bytes.as_slice()), None])) as ArrayRef,
+        ],
+    )
+    .expect("batch spatial");
+    let rows = crate::write::batch_values(&batch, &plan).expect("bind spatial");
+    let encoded = crate::transaction::encode_parameters(&rows[0]).expect("array spatial");
+    assert_eq!(
+        crate::read::decode_hex_binary(encoded[1].as_ref().expect("WKB").as_bytes()).expect("hex"),
+        bytes
+    );
+    assert_eq!(
+        crate::transaction::encode_parameters(&rows[1]).expect("NULL spatial")[1],
+        None
+    );
+    let statement = plan.insert_statement(&rows);
+    assert_eq!(
+        statement.params,
+        rows.into_iter().flatten().collect::<Vec<_>>()
+    );
+    assert!(plan
+        .array_insert_sql()
+        .contains("ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)"));
 
     assert!(statement
         .sql
         .contains("ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)"));
+}
+
+#[test]
+fn ordinary_arrow_binary_is_not_encoded_as_spatial_hex() {
+    let schema =
+        contract_schema(vec![Field::new("VALUE", DataType::Binary, true)]).expect("schema");
+    let error = Db2WritePlan::compile(&config(), &schema, &operation(WriteMode::Append))
+        .expect_err("binario Arrow non qualificato");
+    assert_eq!(error.category, ErrorCategory::Unsupported);
 }
 
 #[test]

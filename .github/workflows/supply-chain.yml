@@ -12,9 +12,9 @@ name: supply-chain
 
 on:
   push:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
   schedule:
     # Lunedi 05:17 UTC. Minuto non tondo: gli orari tondi sono i piu
     # congestionati su Actions e le corse schedulate vengono rimandate.

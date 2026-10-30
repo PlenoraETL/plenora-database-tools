@@ -6,6 +6,29 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## 8.0.3 — non pubblicata
+
+Correttiva 8.x, senza porting della revisione 9.0.0 e senza cambiamenti del
+contratto pubblico.
+
+- **Corruzione silenziosa dei parametri Bytes Db2 in ogni versione dalla 0.12.0 alla 8.0.2**
+  (ogni release con le transazioni Db2):
+  il bind trasformava i byte in testo esadecimale VARCHAR. Su `FOR BIT DATA`,
+  `Bytes([0xAB, 0x01])` salvava quattro byte `41423031` anziche due `AB01`;
+  anche i predicati cercavano il valore sbagliato. Execute e query ora usano
+  buffer binari ODBC; il parameter-array testuale rifiuta Bytes prima
+  dell'esecuzione con Unsupported/Prepare, senza payload nell'errore.
+  String conserva il proprio comportamento. La correzione non ripara i dati
+  gia scritti: occorre verificarli rispetto alla sorgente originale e
+  riscrivere quelli alterati, senza dedurre il tipo dal solo testo salvato.
+  Regressioni offline e live permanenti coprono il bind e i predicati.
+
+- **Bind ORM Geometry e binario omonimi**: difetto preesistente nel codice
+  dei tag da `py-v0.12.0` a `py-v8.0.2`. La normalizzazione EWKB/WKB poteva
+  alterare anche il confronto binario; ora rifiuta esplicitamente gli usi
+  incompatibili prima dell'esecuzione, senza payload nell'errore. Prove
+  offline sync/async per ogni provider; PostgreSQL conserva l'EWKB originale.
+
 ## 8.0.2 — non pubblicata
 
 Patch: due correzioni nel driver Oracle vendorizzato, nessun cambiamento di

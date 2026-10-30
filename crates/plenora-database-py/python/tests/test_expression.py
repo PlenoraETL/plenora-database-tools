@@ -442,3 +442,39 @@ def test_an_unknown_key_in_a_window_frame_bound_is_refused() -> None:
     bounds[0]["negate"] = True
     with pytest.raises(ValueError, match="IR relazionale non valido"):
         compile_relational_query(json.dumps(document), "postgres")
+
+
+@pytest.mark.parametrize("payload", [b"\x00\xff\x80AB01", None])
+def test_db2_spatial_bind_occurrences_preserve_ordinary_binary(payload) -> None:
+    from plenora_database.expression import _spatial_value
+
+    source = p.table("features", "shape", "payload")
+    binary = p.bind("_db2_spatial_0", p.BindType.BINARY)
+    spatial = _spatial_value(binary, 4326, "geometry")
+    parameters = {"_db2_spatial_0": payload}
+    expected = None if payload is None else payload.hex().upper()
+    query = p.select(binary.label("raw"), spatial.label("shape"), binary.label("again"))
+    before = query.to_json()
+    sql, values = _compile_statement(query, parameters, "db2")
+    assert "ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)" in sql
+    assert values == [payload, expected, payload]
+    assert query.to_json() == before
+    assert parameters == {"_db2_spatial_0": payload}
+    for statement in (
+        p.insert(source).values(shape=spatial, payload=binary),
+        p.update(source).values(shape=spatial, payload=binary),
+    ):
+        sql, values, _ = _compile_mutation_statement(statement, parameters, "db2")
+        assert "ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)" in sql
+        assert values == [expected, payload]
+    _, values = _compile_statement(query, parameters, "postgres")
+    assert values == [payload, payload, payload]
+
+
+def test_db2_spatial_bind_rejects_text_without_exposing_payload() -> None:
+    from plenora_database.expression import _spatial_value
+
+    query = p.select(_spatial_value(p.bind("shape", p.BindType.BINARY), 4326, "geometry"))
+    with pytest.raises(TypeError) as error:
+        _compile_statement(query, {"shape": "private-wkb"}, "db2")
+    assert "private-wkb" not in str(error.value)

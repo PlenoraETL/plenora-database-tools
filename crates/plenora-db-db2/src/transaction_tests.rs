@@ -52,12 +52,46 @@ fn unsupported_transaction_options_fail_before_the_network() {
 }
 
 #[test]
-fn binary_parameters_are_encoded_as_uppercase_hex() {
-    assert_eq!(
-        encode_parameters(&[ParameterValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef])])
-            .expect("binary bind Db2"),
-        vec![Some("DEADBEEF".to_owned())]
-    );
+fn binary_parameters_preserve_bytes_and_odbc_type() {
+    use crate::transaction::{encode_bound_parameters, BoundParameter};
+    for bytes in [
+        vec![],
+        vec![0xab, 0x01],
+        vec![0, 0xff, 0x80, 0],
+        (0..=255).collect(),
+    ] {
+        let encoded = encode_bound_parameters(&[
+            ParameterValue::String("AB01".to_owned()),
+            ParameterValue::Bytes(bytes.clone()),
+        ])
+        .expect("bind misto");
+        assert_eq!(encoded[0], BoundParameter::Text(Some("AB01".to_owned())));
+        assert_eq!(encoded[1], BoundParameter::Binary(bytes));
+        assert!(matches!(
+            encoded[1].as_odbc().data_type(),
+            DataType::Varbinary { .. }
+        ));
+        assert!(!matches!(
+            encoded[0].as_odbc().data_type(),
+            DataType::Varbinary { .. }
+        ));
+    }
+}
+
+#[test]
+fn text_array_encoding_rejects_binary_before_execution_without_payload() {
+    for bytes in [vec![], b"SECRET".to_vec(), vec![0xab, 0x01]] {
+        let error = encode_parameters(&[
+            ParameterValue::String("SECRET".to_owned()),
+            ParameterValue::Bytes(bytes),
+        ])
+        .expect_err("array binario non qualificato");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert!(!error.message.contains("SECRET"));
+        assert!(!error.message.contains("AB01"));
+    }
 }
 
 #[test]

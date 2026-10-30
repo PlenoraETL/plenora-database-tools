@@ -2725,6 +2725,7 @@ def _geometry_query_parameters(
     if provider not in _WKB_ORM_PROVIDERS or parameters is None:
         return parameters
     spatial_binds: dict[str, tuple[int, str]] = {}
+    ordinary_binds: set[str] = set()
 
     def visit(value: Any) -> None:
         if isinstance(value, Mapping):
@@ -2748,6 +2749,11 @@ def _geometry_query_parameters(
                     raise OrmMappingError(
                         "bind Geometry ORM riusato con frame incompatibili"
                     )
+                # Il parametro interno appartiene solo a questa occorrenza
+                # spatial, non e un secondo uso ordinario dello stesso nome.
+                return
+            if value.get("kind") in {"parameter", "typed_parameter"}:
+                ordinary_binds.add(value["name"])
             for nested in value.values():
                 visit(nested)
         elif isinstance(value, list):
@@ -2755,6 +2761,10 @@ def _geometry_query_parameters(
                 visit(nested)
 
     visit(statement.to_ast())
+    if ordinary_binds.intersection(spatial_binds):
+        raise OrmMappingError(
+            "bind Geometry ORM riusato in contesti incompatibili"
+        )
     if not spatial_binds:
         return parameters
     normalized = dict(parameters)

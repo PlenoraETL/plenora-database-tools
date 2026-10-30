@@ -5,9 +5,9 @@ name: rust-ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
 
 # Sola lettura del contenuto: nessun job qui scrive sul repository, pubblica
 # pacchetti o commenta le PR.

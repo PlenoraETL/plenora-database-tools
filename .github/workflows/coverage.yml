@@ -5,9 +5,9 @@ name: coverage
 # prova.
 on:
   push:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
   workflow_dispatch:
 
 permissions:

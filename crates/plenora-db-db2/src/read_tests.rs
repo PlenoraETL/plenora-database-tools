@@ -51,6 +51,18 @@ fn extra_parameters_fail_before_the_network() {
 }
 
 #[test]
+fn text_read_parameters_reject_user_bytes_without_hex_conversion() {
+    let parameters = ParameterBag::new(BTreeMap::from([(
+        "payload".to_owned(),
+        ParameterValue::Bytes(vec![0xab, 1, 0, 0xff]),
+    )]));
+    let error =
+        bind_parameters(&["payload".to_owned()], &parameters).expect_err("bind binario testuale");
+    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert!(!error.message.contains("AB01"));
+}
+
+#[test]
 fn db2_cli_hex_wkb_decodes_without_accepting_malformed_payloads() {
     let point = decode_hex_binary(b"0101000000000000000000F03F0000000000000040")
         .expect("WKB point esadecimale");
@@ -58,4 +70,17 @@ fn db2_cli_hex_wkb_decodes_without_accepting_malformed_payloads() {
     assert_eq!(&point[..5], &[1, 1, 0, 0, 0]);
     assert!(decode_hex_binary(b"010").is_err());
     assert!(decode_hex_binary(b"01GG").is_err());
+}
+
+#[test]
+fn binary_read_parameters_fail_before_io_without_payload() {
+    let parameters = ParameterBag::new(BTreeMap::from([(
+        "value".to_owned(),
+        ParameterValue::Bytes(b"SECRET".to_vec()),
+    )]));
+    let error = bind_parameters(&["value".to_owned()], &parameters)
+        .expect_err("read binaria non qualificata");
+    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+    assert!(!error.message.contains("SECRET"));
 }

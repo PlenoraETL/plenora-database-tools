@@ -1662,3 +1662,222 @@ async fn live_caller_query_worker_panic_requires_recovery() {
         plenora_database_core::RetryDisposition::RequiresRecovery
     );
 }
+
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live con fixture"]
+async fn live_binary_parameters_preserve_bytes_and_predicates() {
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget Db2");
+    for (object, column_type, bytes, expected_hex) in [
+        (
+            "BIND_VARBIT",
+            "VARCHAR(16) FOR BIT DATA",
+            vec![0xab, 1],
+            "AB01",
+        ),
+        ("BIND_BLOB", "BLOB(16)", vec![0xab, 1, 0, 0xff], "AB0100FF"),
+        (
+            "BIND_BINARY",
+            "BINARY(4)",
+            vec![0xab, 1, 0, 0xff],
+            "AB0100FF",
+        ),
+        ("BIND_TEXT", "VARCHAR(16)", b"AB01".to_vec(), "41423031"),
+    ] {
+        drop_table_if_present(&provider, &secret, &budget, &cancellation, object).await;
+        let mut tx = crate::transaction::Db2Transaction::begin(
+            provider.config(),
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione bind");
+        tx.execute_control_statement(
+            format!("CREATE TABLE PLENORA_TEST.{object} (ID INTEGER, V {column_type})"),
+            &cancellation,
+        )
+        .await
+        .expect("tabella bind");
+        let insert = format!("INSERT INTO PLENORA_TEST.{object} VALUES (?, ?)");
+        let result = tx
+            .execute(
+                &Statement::new(&insert).with_params(vec![
+                    ParameterValue::I32(2),
+                    ParameterValue::Bytes(bytes.clone()),
+                ]),
+                &cancellation,
+            )
+            .await;
+        // Un rifiuto del driver e ammissibile solo sulle destinazioni non
+        // varbit: non deve mascherare errori SQL, di rete o di fixture.
+        let inserted = result.is_ok();
+        if let Err(error) = result {
+            assert_ne!(object, "BIND_VARBIT");
+            assert_eq!(error.category, ErrorCategory::Execution);
+            assert_eq!(error.phase, ErrorPhase::Write);
+            assert_eq!(
+                error.message,
+                "errore Db2 redatto (SQLSTATE 07006, codice -301)"
+            );
+            let rows = tx
+                .query(
+                    &Statement::new(format!("SELECT ID FROM PLENORA_TEST.{object}")),
+                    &cancellation,
+                )
+                .await
+                .expect("nessuna riga dopo rifiuto");
+            assert!(rows.is_empty());
+        } else {
+            let rows = tx
+                .query(
+                    &Statement::new(format!(
+                "SELECT HEX(V) AS HEXV, LENGTH(V) AS LENV FROM PLENORA_TEST.{object} WHERE ID = 2"
+            )),
+                    &cancellation,
+                )
+                .await
+                .expect("byte salvati");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(
+                rows[0].get("HEXV"),
+                Some(&ParameterValue::String(expected_hex.to_owned()))
+            );
+            assert_eq!(
+                rows[0].get("LENV"),
+                Some(&ParameterValue::I32(
+                    i32::try_from(bytes.len()).expect("lunghezza")
+                ))
+            );
+        }
+        if object == "BIND_TEXT" {
+            assert_binary_text_predicate(&mut tx, &insert, object, &cancellation, inserted).await;
+        }
+        if object == "BIND_VARBIT" {
+            assert_binary_varbit_predicates(&mut tx, &insert, object, &cancellation).await;
+        }
+        Box::new(tx)
+            .rollback(&cancellation)
+            .await
+            .expect("rollback bind");
+        drop_table_if_present(&provider, &secret, &budget, &cancellation, object).await;
+    }
+}
+
+async fn assert_binary_text_predicate(
+    tx: &mut crate::transaction::Db2Transaction,
+    insert: &str,
+    object: &str,
+    cancellation: &CancellationToken,
+    inserted: bool,
+) {
+    tx.execute(
+        &Statement::new(insert).with_params(vec![
+            ParameterValue::I32(3),
+            ParameterValue::String("41423031".to_owned()),
+        ]),
+        cancellation,
+    )
+    .await
+    .expect("testo esadecimale distinto");
+    let result = tx
+        .query(
+            &Statement::new(format!("SELECT ID FROM PLENORA_TEST.{object} WHERE V = ?"))
+                .with_params(vec![ParameterValue::Bytes(b"AB01".to_vec())]),
+            cancellation,
+        )
+        .await;
+    match result {
+        Ok(rows) => {
+            // Un bind binario puo essere accettato come byte del testo,
+            // ma non deve cercare la stringa esadecimale 41423031.
+            assert_eq!(rows.len(), usize::from(inserted));
+            if inserted {
+                assert_eq!(rows[0].get("ID"), Some(&ParameterValue::I32(2)));
+            }
+        }
+        Err(error) => assert_eq!(
+            error.message,
+            "errore Db2 redatto (SQLSTATE 07006, codice -301)"
+        ),
+    }
+}
+
+async fn assert_binary_varbit_predicates(
+    tx: &mut crate::transaction::Db2Transaction,
+    insert: &str,
+    object: &str,
+    cancellation: &CancellationToken,
+) {
+    tx.execute(
+        &Statement::new(insert).with_params(vec![
+            ParameterValue::I32(1),
+            ParameterValue::String("AB01".to_owned()),
+        ]),
+        cancellation,
+    )
+    .await
+    .expect("testo invariato");
+    tx.execute_control_statement(
+        format!("INSERT INTO PLENORA_TEST.{object} VALUES (10, X'41423031'), (11, X'AB01')"),
+        cancellation,
+    )
+    .await
+    .expect("oracoli SQL indipendenti");
+    for (parameter, expected) in [
+        (ParameterValue::Bytes(vec![0xab, 1]), vec![2, 11]),
+        (ParameterValue::String("AB01".to_owned()), vec![1, 10]),
+    ] {
+        let rows = tx
+            .query(
+                &Statement::new(format!(
+                    "SELECT ID FROM PLENORA_TEST.{object} WHERE V = ? ORDER BY ID"
+                ))
+                .with_params(vec![parameter]),
+                cancellation,
+            )
+            .await
+            .expect("predicato tipizzato");
+        let ids: Vec<_> = rows.iter().map(|row| row.get("ID").cloned()).collect();
+        assert_eq!(
+            ids,
+            expected
+                .into_iter()
+                .map(|id| Some(ParameterValue::I32(id)))
+                .collect::<Vec<_>>()
+        );
+    }
+    let error = tx
+        .execute_parameter_array(
+            insert.to_owned(),
+            vec![
+                vec![
+                    ParameterValue::I32(20),
+                    ParameterValue::String("SECRET".to_owned()),
+                ],
+                vec![
+                    ParameterValue::I32(21),
+                    ParameterValue::Bytes(vec![0xab, 1]),
+                ],
+            ],
+            cancellation,
+        )
+        .await
+        .expect_err("array misto rifiutato prima della prima riga");
+    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert_eq!(error.phase, ErrorPhase::Prepare);
+    assert!(!error.message.contains("SECRET"));
+    let rows = tx
+        .query(
+            &Statement::new(format!(
+                "SELECT ID FROM PLENORA_TEST.{object} WHERE ID >= 20"
+            )),
+            cancellation,
+        )
+        .await
+        .expect("array senza effetti");
+    assert!(rows.is_empty());
+}

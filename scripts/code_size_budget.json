@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 106718,
-  "max_code_lines": 87852,
-  "rationale": "fix/oracle-number-modulo (PR #136): il codec NUMBER del fork oracle-rs (vendor/, fuori dal perimetro) allinea l'esponente con rem_euclid e rifiuta infiniti e cifre fuori dominio. Nel perimetro: lib.rs aggancia i moduli #[cfg(test)] dell'oracolo NUMBER; read.rs rifiuta il testo senza cifre e le cifre oltre la precisione Decimal128 (secondo giro), legge BINARY_FLOAT/BINARY_DOUBLE dai byte IEEE e converte FLOAT(b) in Float64 solo se il valore e ricostruibile (terzo giro); write.rs lega un Float64 diretto a FLOAT(b) come decimale piu breve, o lo rifiuta; quarto giro: criterio iniettivo per FLOAT(b), BINARY_* letti da DUMP() con rifiuto del -0.0 non canonico, -0.0 rifiutato a ogni bind; quinto giro: anche dentro un documento JSON legato. Soglie riallineate alla misura reale di scripts/code_size.py: righe fisiche 106627 -> 106718 (+91), righe di codice 87801 -> 87852 (+51). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 106850,
+  "max_code_lines": 87960,
+  "rationale": "Correttiva Db2 8.0.3: i costruttori spatial portable e nominati usano HEXTORAW con esadecimale esplicito; il layout SDK separa le occorrenze spatial dai normali bind binari omonimi. Soglie allineate alla misura di scripts/code_size.py, senza modificare perimetro o aggiungere margine. Guardia ORM 8.0.3 sugli usi geometrici e ordinari omonimi: +10 righe fisiche e +8 di codice, senza margine aggiuntivo."
 }

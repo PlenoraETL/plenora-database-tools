@@ -12,9 +12,9 @@ name: mysql-static-gate
 
 on:
   push:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
 
 # Sola lettura: il gate non scrive sul repository e non commenta le PR.
 permissions:

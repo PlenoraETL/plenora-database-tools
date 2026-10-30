@@ -745,6 +745,95 @@ class _AsyncFakeSession:
         return self.transaction
 
 
+class GeometryBindRecord(p.DeclarativeBase):
+    __tablename__ = "orm_geometry_bind_records"
+
+    id: p.Mapped[int] = p.mapped_column(primary_key=True)
+    shape: p.Mapped[p.SpatialReference] = p.mapped_column(
+        p.Geometry(srid=4326, geometry_type="point"), nullable=False
+    )
+    raw: p.Mapped[bytes] = p.mapped_column(nullable=False)
+
+
+@pytest.mark.parametrize("provider", ("postgres", "mysql", "mariadb", "sqlserver", "oracle", "db2"))
+@pytest.mark.parametrize("asynchronous", (False, True), ids=("sync", "async"))
+@pytest.mark.asyncio
+async def test_geometry_bind_reuse_preserves_bytes_or_rejects(provider, asynchronous) -> None:
+    from plenora_database.expression import BindParameter, _compile_statement
+
+    class UntypedBind(BindParameter):
+        def _ast(self):
+            return {"kind": "parameter", "name": self.name}
+
+    transaction = _AsyncFakeTransaction() if asynchronous else _FakeTransaction()
+    session = (
+        _AsyncFakeSession(transaction, provider)
+        if asynchronous else _FakeSession(transaction, provider)
+    )
+    orm = p.AsyncOrmSession(session) if asynchronous else p.OrmSession(session)
+    geometry = p.Geometry(srid=4326)
+    spatial = geometry.predicate("intersects", GeometryBindRecord.shape, geometry.bind("g"))
+    spatial = spatial & spatial
+    ewkb = _ewkb_point(9.19, 45.46)
+    parameters = {"g": ewkb}
+
+    # Both traversal orders, untyped binds and nested queries share the name.
+    ordinary = (
+        GeometryBindRecord.raw == p.bind("g", p.BindType.BINARY),
+        GeometryBindRecord.raw == UntypedBind("g", p.BindType.BINARY),
+        p.select(p.bind("g", p.BindType.BINARY)).exists(),
+    )
+    conflicts = [predicate for other in ordinary for predicate in (spatial & other, other & spatial)]
+    for frame in (p.Geometry(srid=3857), p.Geometry(srid=4326, semantics="geography")):
+        conflicts.append(spatial & frame.predicate("intersects", GeometryBindRecord.shape, frame.bind("g")))
+
+    for predicate in conflicts:
+        for method in ("all", "count", "exists", "update", "delete"):
+            arguments = ({"raw": b"replacement"}, parameters) if method == "update" else (parameters,)
+            query = orm.query(GeometryBindRecord).where(predicate)
+            before = len(transaction.executed)
+            if provider == "postgres":
+                transaction.rows = [{"count": 0}] if method == "count" else []
+                result = getattr(query, method)(*arguments)
+                if asynchronous:
+                    await result
+                assert transaction.executed[-1][1]["g"] == ewkb
+                if method == "all":
+                    statement, bound = transaction.executed[-1]
+                    _, ordered = _compile_statement(statement, bound, provider)
+                    assert ordered and all(value == ewkb for value in ordered)
+            else:
+                with pytest.raises(p.OrmMappingError) as error:
+                    result = getattr(query, method)(*arguments)
+                    if asynchronous:
+                        await result
+                assert str(error.value) in {
+                    "bind Geometry ORM riusato in contesti incompatibili",
+                    "bind Geometry ORM riusato con frame incompatibili",
+                }
+                assert len(transaction.executed) == before
+            assert parameters == {"g": ewkb}
+
+    # Repeated compatible geometry binds still work, and a distinct binary
+    # bind carrying the very same EWKB must retain its original bytes.
+    query = orm.query(GeometryBindRecord).where(spatial & (GeometryBindRecord.raw == p.bind("raw", p.BindType.BINARY)))
+    parameters["raw"] = ewkb
+    result = query.all(parameters)
+    if asynchronous:
+        await result
+    statement, normalized = transaction.executed[-1]
+    expected_geometry = ewkb if provider == "postgres" else _root_wkb(ewkb)
+    assert normalized == {"g": expected_geometry, "raw": ewkb}
+    _, ordered = _compile_statement(statement, normalized, provider)
+    expected_bind = expected_geometry.hex().upper() if provider == "db2" else expected_geometry
+    assert ordered == [expected_bind, expected_bind, ewkb]
+    assert parameters == {"g": ewkb, "raw": ewkb}
+    if asynchronous:
+        await orm.rollback()
+    else:
+        orm.rollback()
+
+
 def test_declarative_mapping_reuses_canonical_table_and_columns() -> None:
     assert Account.__table__.schema == "app"
     assert Account.__table__.name == "orm_accounts"
@@ -2793,23 +2882,26 @@ def _exercise_live_portable_geometry(provider: str, connector) -> None:
             loaded.point = moved_point
             loaded.optional_point = point
 
-        predicate = _PORTABLE_POINT.predicate(
-            "intersects",
-            LivePortableGeometry.point,
-            _PORTABLE_POINT.bind("reference"),
-        )
-        with p.OrmSession(session) as orm:
-            [queried] = (
-                orm.query(LivePortableGeometry)
-                .where(predicate)
-                .all({"reference": moved_point})
+        predicates = ("intersects", "contains", "within") if provider == "db2" else ("intersects",)
+        for predicate_name in predicates:
+            predicate = _PORTABLE_POINT.predicate(
+                predicate_name,
+                LivePortableGeometry.point,
+                _PORTABLE_POINT.bind("reference"),
             )
-            _assert_portable_wkb(queried.point.ewkb, _root_wkb(moved_point), provider)
-            assert queried.optional_point is not None
-            _assert_portable_wkb(
-                queried.optional_point.ewkb, _root_wkb(point), provider
-            )
-            queried.optional_point = None
+            with p.OrmSession(session) as orm:
+                [queried] = (
+                    orm.query(LivePortableGeometry)
+                    .where(predicate)
+                    .all({"reference": moved_point})
+                )
+                _assert_portable_wkb(queried.point.ewkb, _root_wkb(moved_point), provider)
+                assert queried.optional_point is not None
+                _assert_portable_wkb(
+                    queried.optional_point.ewkb, _root_wkb(point), provider
+                )
+                if predicate_name == predicates[-1]:
+                    queried.optional_point = None
 
         with p.OrmSession(session) as orm:
             loaded = orm.get(LivePortableGeometry, 1)

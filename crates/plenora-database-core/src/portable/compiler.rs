@@ -247,7 +247,16 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     "valore spatial richiede SRID positivo",
                 ));
             }
-            let value = compile_expression(expression, ctx)?;
+            let value = if ctx.dialect == DialectKind::Db2 {
+                match expression.as_ref() {
+                    Expression::Literal(ParameterValue::Bytes(bytes)) => {
+                        ctx.bind(ParameterValue::String(db2_spatial_hex(bytes)))
+                    }
+                    _ => compile_expression(expression, ctx)?,
+                }
+            } else {
+                compile_expression(expression, ctx)?
+            };
             match ctx.dialect {
                 DialectKind::Postgres => {
                     let geometry = format!("ST_SetSRID(ST_GeomFromEWKB({value}), {srid})");
@@ -274,6 +283,7 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     Ok(format!("{constructor}({value}, {srid})"))
                 }
                 DialectKind::Db2 if *semantics == SpatialSemantics::Geometry => {
+                    // Stesso costruttore qualificato dai predicati e dal writer Arrow.
                     Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW({value})), {srid})"))
                 }
                 // Oracle conserva entrambe le semantiche nel tipo
@@ -457,7 +467,8 @@ fn compile_spatial_db2(
 ) -> Result<String> {
     reference.validate()?;
     spatial_policy::validate_predicate(ProviderKind::Db2, predicate, reference)?;
-    let geometry = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
+    // Questo costruttore richiede testo esadecimale, non un bind binario.
+    let geometry = ctx.bind(ParameterValue::String(db2_spatial_hex(&reference.ewkb)));
     let srid = i32::try_from(reference.srid).map_err(|_| {
         DatabaseError::invalid_plan(format!(
             "SRID {} eccede il range i32 supportato da Db2 (max {})",
@@ -1338,4 +1349,18 @@ fn compile_upsert(s: &UpsertStatement, ctx: &mut CompileContext) -> Result<Strin
     }
     sql.push_str(compile_returning(&s.returning, ctx.dialect, ReturningForm::Upsert)?.suffix());
     Ok(sql)
+}
+
+// Solo i costruttori spatial Db2 consumano esadecimale; i BLOB restano binari.
+fn db2_spatial_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    bytes
+        .iter()
+        .flat_map(|byte| {
+            [
+                char::from(HEX[usize::from(byte >> 4)]),
+                char::from(HEX[usize::from(byte & 15)]),
+            ]
+        })
+        .collect()
 }

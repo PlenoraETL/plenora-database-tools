@@ -9,7 +9,9 @@ use plenora_database_core::plan::{
     DeclaredCrs, FilterExpression, ObjectRef, OrderBy, ProviderKind, ReadOperation, SortDirection,
     SridPolicy, TransactionProfile, WriteMode, WriteOperation,
 };
-use plenora_database_core::portable::{compile_portable, select, spatial};
+use plenora_database_core::portable::{
+    compile_portable, select, spatial, Expression, InsertStatement, PortableStatement, TableRef,
+};
 use plenora_database_core::protocol::{self, contract_schema};
 use plenora_database_core::provider::{
     BatchStream, ParameterBag, ParameterValue, Provider, ProviderFuture, SecretString,
@@ -432,6 +434,56 @@ async fn live_spatial_portable_predicates_execute_with_bound_wkb_and_srid() {
     let secret = secret();
     let budget = budget();
     let cancellation = CancellationToken::new();
+    // Il DML portable deve usare lo stesso trasporto testuale dei predicati.
+    let insert = PortableStatement::Insert(InsertStatement {
+        table: TableRef {
+            schema: Some("PLENORA_TEST".to_owned()),
+            name: "SPATIAL_PROBE".to_owned(),
+        },
+        columns: vec!["ID".to_owned(), "SHAPE".to_owned()],
+        values: vec![vec![
+            Expression::Literal(ParameterValue::I32(990)),
+            Expression::SpatialValue {
+                expression: Box::new(Expression::Literal(ParameterValue::Bytes(point_xy(
+                    1.0, 2.0,
+                )))),
+                srid: 4326,
+                semantics: SpatialSemantics::Geometry,
+            },
+        ]],
+        returning: Vec::new(),
+    });
+    let insert = compile_portable(ProviderKind::Db2, &insert).expect("compila INSERT spatial");
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione INSERT spatial");
+    transaction
+        .execute(&insert, &cancellation)
+        .await
+        .expect("INSERT spatial portable");
+    let rows = transaction
+        .query(
+            &Statement::new("SELECT ST_SRID(SHAPE) AS SRID, ST_ASBINARY(SHAPE) AS WKB FROM PLENORA_TEST.SPATIAL_PROBE WHERE ID = 990"),
+            &cancellation,
+        )
+        .await
+        .expect("legge geometria inserita");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("SRID"), Some(&ParameterValue::I32(4326)));
+    assert_eq!(
+        rows[0].get("WKB"),
+        Some(&ParameterValue::Bytes(point_xy(1.0, 2.0)))
+    );
+    transaction
+        .rollback(&cancellation)
+        .await
+        .expect("rollback INSERT spatial");
     for predicate in [
         SpatialPredicate::Intersects,
         SpatialPredicate::Contains,

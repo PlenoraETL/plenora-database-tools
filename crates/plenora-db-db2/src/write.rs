@@ -897,8 +897,28 @@ pub fn batch_values(batch: &RecordBatch, plan: &Db2WritePlan) -> Result<Vec<Vec<
                 .columns()
                 .iter()
                 .zip(batch.schema().fields().iter().zip(&plan.columns))
-                .map(|(array, (field, _column))| {
-                    arrow_parameter_value(array.as_ref(), field, row, ' ').map_err(db2_write_error)
+                .map(|(array, (field, column))| {
+                    let value = arrow_parameter_value(array.as_ref(), field, row, ' ')
+                        .map_err(db2_write_error)?;
+                    // Solo il placeholder spatial consuma testo tramite HEXTORAW.
+                    // I binari ordinari e i NULL conservano il proprio tipo.
+                    Ok(match value {
+                        ParameterValue::Bytes(bytes) if column.spatial.is_some() => {
+                            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                            ParameterValue::String(
+                                bytes
+                                    .iter()
+                                    .flat_map(|byte| {
+                                        [
+                                            char::from(HEX[usize::from(byte >> 4)]),
+                                            char::from(HEX[usize::from(byte & 15)]),
+                                        ]
+                                    })
+                                    .collect(),
+                            )
+                        }
+                        value => value,
+                    })
                 })
                 .collect()
         })

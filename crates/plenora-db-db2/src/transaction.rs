@@ -3,6 +3,7 @@ use crate::error::{driver_error, interruption_error, task_error};
 use crate::read::decode_hex_binary;
 use crate::Db2Config;
 use odbc_api::buffers::TextRowSet;
+use odbc_api::parameter::InputParameter;
 use odbc_api::{sys::SqlDataType, Connection, Cursor, DataType, IntoParameter, ResultSetMetadata};
 use plenora_database_core::caller_sql::SendMarker;
 use plenora_database_core::native_query_policy::{
@@ -365,38 +366,55 @@ pub fn isolation_statement(options: &TransactionOptions) -> Option<&'static str>
 }
 
 pub fn encode_parameters(values: &[ParameterValue]) -> Result<Vec<Option<String>>> {
+    values.iter().map(encode_text_parameter).collect()
+}
+
+fn encode_text_parameter(value: &ParameterValue) -> Result<Option<String>> {
+    match value {
+        ParameterValue::Bool(value) => Ok(Some(value.to_string())),
+        ParameterValue::I32(value) => Ok(Some(value.to_string())),
+        ParameterValue::I64(value) => Ok(Some(value.to_string())),
+        ParameterValue::F64(value) if value.is_finite() => Ok(Some(value.to_string())),
+        ParameterValue::String(value)
+        | ParameterValue::Date(value)
+        | ParameterValue::Timestamp(value)
+        | ParameterValue::Decimal(value)
+        | ParameterValue::Uuid(value) => Ok(Some(value.clone())),
+        ParameterValue::Enum { label, .. } => Ok(Some(label.clone())),
+        ParameterValue::Null { .. } => Ok(None),
+        _ => Err(DatabaseError::unsupported(
+            ProviderKind::Db2,
+            ErrorPhase::Prepare,
+            "tipo parametro transazionale Db2 non ancora qualificato",
+        )),
+    }
+}
+
+// Il parameter-array usa un inserter testuale: encode_parameters rifiuta Bytes.
+// Execute/query conservano invece il buffer e il discriminator SQL_VARBINARY.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BoundParameter {
+    Text(Option<String>),
+    Binary(Vec<u8>),
+}
+
+pub fn encode_bound_parameters(values: &[ParameterValue]) -> Result<Vec<BoundParameter>> {
     values
         .iter()
         .map(|value| match value {
-            ParameterValue::Bool(value) => Ok(Some(value.to_string())),
-            ParameterValue::I32(value) => Ok(Some(value.to_string())),
-            ParameterValue::I64(value) => Ok(Some(value.to_string())),
-            ParameterValue::F64(value) if value.is_finite() => Ok(Some(value.to_string())),
-            ParameterValue::String(value)
-            | ParameterValue::Date(value)
-            | ParameterValue::Timestamp(value)
-            | ParameterValue::Decimal(value)
-            | ParameterValue::Uuid(value) => Ok(Some(value.clone())),
-            ParameterValue::Enum { label, .. } => Ok(Some(label.clone())),
-            ParameterValue::Bytes(value) => Ok(Some(hex_encode(value))),
-            ParameterValue::Null { .. } => Ok(None),
-            _ => Err(DatabaseError::unsupported(
-                ProviderKind::Db2,
-                ErrorPhase::Prepare,
-                "tipo parametro transazionale Db2 non ancora qualificato",
-            )),
+            ParameterValue::Bytes(bytes) => Ok(BoundParameter::Binary(bytes.clone())),
+            _ => encode_text_parameter(value).map(BoundParameter::Text),
         })
         .collect()
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+impl BoundParameter {
+    pub fn as_odbc(&self) -> Box<dyn InputParameter + '_> {
+        match self {
+            Self::Text(value) => Box::new(value.as_deref().into_parameter()),
+            Self::Binary(value) => Box::new(value.as_slice().into_parameter()),
+        }
     }
-    encoded
 }
 
 fn execute_control(
@@ -422,14 +440,11 @@ fn execute_statement(
     connection: &Connection<'_>,
     timeout: usize,
     sql: &str,
-    parameters: &[Option<String>],
+    parameters: &[BoundParameter],
     requires_row_count: bool,
     sent: &SendMarker,
 ) -> Result<u64> {
-    let parameters: Vec<_> = parameters
-        .iter()
-        .map(|parameter| parameter.as_deref().into_parameter())
-        .collect();
+    let parameters: Vec<_> = parameters.iter().map(BoundParameter::as_odbc).collect();
     let mut statement = connection
         .preallocate()
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
@@ -473,13 +488,10 @@ fn query_rows(
     connection: &Connection<'_>,
     timeout: usize,
     sql: &str,
-    parameters: &[Option<String>],
+    parameters: &[BoundParameter],
     sent: &SendMarker,
 ) -> Result<Vec<Row>> {
-    let parameters: Vec<_> = parameters
-        .iter()
-        .map(|parameter| parameter.as_deref().into_parameter())
-        .collect();
+    let parameters: Vec<_> = parameters.iter().map(BoundParameter::as_odbc).collect();
     sent.mark_sent();
     let mut cursor = connection
         .execute(sql, parameters.as_slice(), Some(timeout))
@@ -694,7 +706,7 @@ impl TransactionScope for Db2Transaction {
         Box::pin(async move {
             enforce_policy(self.native_query_policy, &statement.sql)?;
             let sql = statement.sql.clone();
-            let parameters = encode_parameters(&statement.params)?;
+            let parameters = encode_bound_parameters(&statement.params)?;
             let requires_row_count = db2_statement_requires_row_count(&sql);
             let sent = self.sent.clone();
             self.run(
@@ -723,7 +735,7 @@ impl TransactionScope for Db2Transaction {
         Box::pin(async move {
             enforce_policy(self.native_query_policy, &statement.sql)?;
             let sql = statement.sql.clone();
-            let parameters = encode_parameters(&statement.params)?;
+            let parameters = encode_bound_parameters(&statement.params)?;
             let sent = self.sent.clone();
             self.run(
                 ErrorPhase::Read,
