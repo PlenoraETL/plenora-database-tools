@@ -889,9 +889,43 @@ fn spatial_db2_uses_integrated_geometry_and_hex_binary_binding() {
         compiled.sql,
         "SELECT \"id\" FROM \"features\" WHERE (ST_INTERSECTS(\"shape\", ST_GEOMETRY(BLOB(HEXTORAW(?)), ?)) = 1)"
     );
+    let ParameterValue::String(hex) = &compiled.params[0] else {
+        panic!("HEXTORAW richiede testo");
+    };
+    let decoded: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).expect("hex WKB"))
+        .collect();
+    assert_eq!(decoded, bytes);
+    assert_eq!(compiled.params[1..], [ParameterValue::I32(4326)]);
+}
+
+#[test]
+fn db2_spatial_value_and_user_bytes_keep_exact_binary_binds() {
+    use crate::geometry::SpatialSemantics;
+    let bytes = ewkb_point_2d(4326);
+    let user_bytes = vec![0, 0xff, 0x80, 0xab, 1];
+    let statement = PortableStatement::Insert(InsertStatement {
+        table: TableRef::new("features"),
+        columns: vec!["shape".to_owned(), "payload".to_owned()],
+        values: vec![vec![
+            Expression::SpatialValue {
+                expression: Box::new(Expression::literal(ParameterValue::Bytes(bytes.clone()))),
+                srid: 4326,
+                semantics: SpatialSemantics::Geometry,
+            },
+            Expression::literal(ParameterValue::Bytes(user_bytes.clone())),
+        ]],
+        returning: Vec::new(),
+    });
+    let compiled = compile_portable(ProviderKind::Db2, &statement).expect("spatial Db2");
+    assert_eq!(compiled.sql, "INSERT INTO \"features\" (\"shape\", \"payload\") VALUES (ST_GEOMETRY(CAST(? AS BLOB), 4326), ?)");
     assert_eq!(
         compiled.params,
-        vec![ParameterValue::Bytes(bytes), ParameterValue::I32(4326)]
+        vec![
+            ParameterValue::Bytes(bytes),
+            ParameterValue::Bytes(user_bytes)
+        ]
     );
 }
 

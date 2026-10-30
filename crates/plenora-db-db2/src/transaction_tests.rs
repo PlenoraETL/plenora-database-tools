@@ -54,7 +54,12 @@ fn unsupported_transaction_options_fail_before_the_network() {
 #[test]
 fn binary_parameters_preserve_bytes_and_odbc_type() {
     use crate::transaction::{encode_bound_parameters, BoundParameter};
-    for bytes in [vec![], vec![0xab, 0x01], vec![0, 0xff, 0x80, 0]] {
+    for bytes in [
+        vec![],
+        vec![0xab, 0x01],
+        vec![0, 0xff, 0x80, 0],
+        (0..=255).collect(),
+    ] {
         let encoded = encode_bound_parameters(&[
             ParameterValue::String("AB01".to_owned()),
             ParameterValue::Bytes(bytes.clone()),

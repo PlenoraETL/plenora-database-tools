@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 106730,
-  "max_code_lines": 87859,
-  "rationale": "fix/db2-bytes-803: execute e query Db2 conservano Bytes in un buffer binario ODBC distinto dal testo; il parameter-array testuale li rifiuta prima dell'esecuzione. Codec testuale condiviso e rimozione di hex_encode. Soglie riallineate alla misura di scripts/code_size.py: righe fisiche 106718 -> 106730 (+12), righe di codice 87852 -> 87859 (+7). Conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 106765,
+  "max_code_lines": 87889,
+  "rationale": "Correzione spatial Db2 8.0.3: codifica esadecimale esplicita soltanto nei bind consumati da HEXTORAW del writer Arrow e dei predicati portabili; le espressioni spatial conservano i bind binari con CAST AS BLOB. Soglie allineate alla misura di scripts/code_size.py: righe fisiche 106730 -> 106765, righe di codice 87859 -> 87889. Conteggio e perimetro invariati, nessun margine aggiunto."
 }

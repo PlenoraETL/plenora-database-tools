@@ -51,6 +51,18 @@ fn extra_parameters_fail_before_the_network() {
 }
 
 #[test]
+fn text_read_parameters_reject_user_bytes_without_hex_conversion() {
+    let parameters = ParameterBag::new(BTreeMap::from([(
+        "payload".to_owned(),
+        ParameterValue::Bytes(vec![0xab, 1, 0, 0xff]),
+    )]));
+    let error =
+        bind_parameters(&["payload".to_owned()], &parameters).expect_err("bind binario testuale");
+    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert!(!error.message.contains("AB01"));
+}
+
+#[test]
 fn db2_cli_hex_wkb_decodes_without_accepting_malformed_payloads() {
     let point = decode_hex_binary(b"0101000000000000000000F03F0000000000000040")
         .expect("WKB point esadecimale");

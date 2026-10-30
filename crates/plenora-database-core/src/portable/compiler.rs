@@ -274,7 +274,8 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     Ok(format!("{constructor}({value}, {srid})"))
                 }
                 DialectKind::Db2 if *semantics == SpatialSemantics::Geometry => {
-                    Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW({value})), {srid})"))
+                    // L'espressione conserva il bind binario; nessuna codifica testuale.
+                    Ok(format!("ST_GEOMETRY(CAST({value} AS BLOB), {srid})"))
                 }
                 // Oracle conserva entrambe le semantiche nel tipo
                 // `SDO_GEOMETRY`; geography e resa esplicita da SRID e policy
@@ -455,9 +456,22 @@ fn compile_spatial_db2(
     reference: &SpatialReference,
     ctx: &mut CompileContext,
 ) -> Result<String> {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
     reference.validate()?;
     spatial_policy::validate_predicate(ProviderKind::Db2, predicate, reference)?;
-    let geometry = ctx.bind(ParameterValue::Bytes(reference.ewkb.clone()));
+    // Questo costruttore richiede testo esadecimale, non un bind binario.
+    let geometry = ctx.bind(ParameterValue::String(
+        reference
+            .ewkb
+            .iter()
+            .flat_map(|byte| {
+                [
+                    char::from(HEX[usize::from(byte >> 4)]),
+                    char::from(HEX[usize::from(byte & 15)]),
+                ]
+            })
+            .collect(),
+    ));
     let srid = i32::try_from(reference.srid).map_err(|_| {
         DatabaseError::invalid_plan(format!(
             "SRID {} eccede il range i32 supportato da Db2 (max {})",

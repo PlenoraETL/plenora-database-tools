@@ -1302,7 +1302,8 @@ impl Renderer {
                 Ok(format!("geography::STGeomFromWKB({value}, {srid})"))
             }
             (Dialect::Db2, SpatialSemantics::Geometry) => {
-                Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW({value})), {srid})"))
+                // Anche i bind nominati restano WKB binario al confine del driver.
+                Ok(format!("ST_GEOMETRY(CAST({value} AS BLOB), {srid})"))
             }
             (Dialect::Oracle, SpatialSemantics::Geometry | SpatialSemantics::Geography) => {
                 Ok(format!("MDSYS.SDO_UTIL.FROM_WKBGEOMETRY({value}, {srid})"))
