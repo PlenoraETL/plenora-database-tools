@@ -631,6 +631,7 @@ fn unique_index(name: &str, columns: &[&str]) -> crate::MysqlIndex {
         unique: true,
         column_backed: true,
         columns: columns.iter().map(|c| (*c).to_owned()).collect(),
+        prefix: false,
     }
 }
 
@@ -931,28 +932,29 @@ fn server_preflight_keeps_unqualified_write_targets_closed() {
     }
 }
 
+/// Fino al 25/10 il preflight ammetteva soltanto `datetime(6)` e
+/// `timestamp(6)`, per nome. La scala frazionaria e ora nella chiave della
+/// regola A (`crate::write_admission`): il preflight lascia passare ogni
+/// precisione e la misura decide (`datetime(3)` riscrive le cifre oltre il
+/// millesimo, `FractionalSeconds`, e `Strict` rifiuta quei valori).
 #[test]
-fn server_preflight_requires_microsecond_temporal_precision() {
+fn server_preflight_leaves_the_temporal_precision_to_rule_a() {
     let plan = append_plan(vec![Field::new(
         "moment",
         DataType::Timestamp(TimeUnit::Microsecond, None),
         true,
     )]);
-    for precision in [None, Some(0), Some(3)] {
-        let mut column = server_column("moment", "datetime", "datetime", true);
+    for (precision, declaration) in [
+        (Some(0), "datetime"),
+        (Some(3), "datetime(3)"),
+        (Some(6), "datetime(6)"),
+    ] {
+        let mut column = server_column("moment", "datetime", declaration, true);
         column.datetime_precision = precision;
-        assert_eq!(
-            plan.preflight(&base_table(vec![column]), &crate::profile::MYSQL_PROFILE)
-                .expect_err("precisione temporale lossy")
-                .category,
-            ErrorCategory::DataMapping
-        );
+        assert!(plan
+            .preflight(&base_table(vec![column]), &crate::profile::MYSQL_PROFILE)
+            .is_ok());
     }
-    let mut exact = server_column("moment", "datetime", "datetime(6)", true);
-    exact.datetime_precision = Some(6);
-    assert!(plan
-        .preflight(&base_table(vec![exact]), &crate::profile::MYSQL_PROFILE)
-        .is_ok());
 }
 
 /// Un COMMIT interrotto non e un rollback: l'esito resta ignoto e non
@@ -1474,8 +1476,41 @@ fn upsert_preflight_rejects_a_conflicting_extra_unique_index() {
     let error = plan
         .preflight(&target, &crate::profile::MYSQL_PROFILE)
         .expect_err("unique index in conflitto");
-    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert_eq!(error.category, ErrorCategory::Schema);
     assert_eq!(error.phase, ErrorPhase::Prepare);
+    assert!(error
+        .message
+        .ends_with(plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX));
+}
+
+/// S6: un unique index su un **prefisso** delle keys entra in conflitto fra
+/// valori interi diversi con lo stesso prefisso: l'Upsert si rifiuta, anche
+/// quando e l'unico indice e le sue colonne sono le keys.
+#[test]
+fn upsert_preflight_rejects_a_unique_index_on_a_key_prefix() {
+    let plan = upsert_plan(
+        vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("label", DataType::Utf8, true),
+        ],
+        vec!["id".to_owned()],
+    );
+    let mut prefix = unique_index("prefisso", &["id"]);
+    prefix.prefix = true;
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        let target = base_table_with_indexes(identity_target(), vec![prefix.clone()]);
+        let error = plan
+            .preflight(&target, profile)
+            .expect_err("unique index su un prefisso");
+        assert_eq!(error.category, ErrorCategory::Schema);
+        assert_eq!(error.provider, Some(profile.kind()));
+        assert!(error
+            .message
+            .ends_with(plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX));
+    }
 }
 
 /// Nessun unique index sulle keys → l'Upsert inserirebbe duplicati.
@@ -1494,6 +1529,7 @@ fn upsert_preflight_rejects_keys_without_a_backing_unique_index() {
         unique: false,
         column_backed: true,
         columns: vec!["id".to_owned()],
+        prefix: false,
     };
     let target = base_table_with_indexes(identity_target(), vec![non_unique]);
     let error = plan
@@ -1518,6 +1554,7 @@ fn upsert_preflight_rejects_a_functional_unique_index() {
         unique: true,
         column_backed: false,
         columns: Vec::new(),
+        prefix: false,
     };
     let target = base_table_with_indexes(
         identity_target(),
@@ -1526,7 +1563,7 @@ fn upsert_preflight_rejects_a_functional_unique_index() {
     let error = plan
         .preflight(&target, &crate::profile::MYSQL_PROFILE)
         .expect_err("unique index funzionale");
-    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert_eq!(error.category, ErrorCategory::Schema);
 }
 
 /// Un unique index composito ridondante sulle **stesse** colonne delle
@@ -1640,4 +1677,284 @@ fn derived_srid_is_verified_on_mysql_and_refused_on_mariadb() {
         plan.render_insert(1).expect("insert geometry"),
         "INSERT INTO `warehouse`.`events` (`geom`) VALUES (ST_GeomFromWKB(CAST(? AS BINARY), 4326));"
     );
+}
+
+/// La regola K: Update e `DeleteByKeys` vogliono un indice unico fatto di
+/// sole colonne, con le colonne uguali (come insieme) alle chiavi.
+#[test]
+fn la_regola_k_vuole_un_indice_unico_sulle_chiavi() {
+    let kind = plenora_database_core::plan::ProviderKind::Mysql;
+    let functional = crate::MysqlIndex {
+        name: "uq_expr".to_owned(),
+        unique: true,
+        column_backed: false,
+        columns: vec!["id".to_owned()],
+        prefix: false,
+    };
+    let non_unique = crate::MysqlIndex {
+        name: "idx_id".to_owned(),
+        unique: false,
+        column_backed: true,
+        columns: vec!["id".to_owned()],
+        prefix: false,
+    };
+    for mode in [WriteMode::Update, WriteMode::DeleteByKeys] {
+        let mut operation = append_operation();
+        operation.mode = mode;
+        operation.keys = vec!["id".to_owned()];
+        for (name, indexes, admitted) in [
+            ("primaria", vec![unique_index("PRIMARY", &["id"])], true),
+            ("non unico", vec![non_unique.clone()], false),
+            ("funzionale", vec![functional.clone()], false),
+            (
+                "piu largo",
+                vec![unique_index("uq", &["id", "label"])],
+                false,
+            ),
+            ("nessuno", Vec::new(), false),
+        ] {
+            let target = base_table_with_indexes(identity_target(), indexes);
+            let outcome =
+                super::validate_unique_keys(&target, &operation, kind, ErrorPhase::Prepare);
+            assert_eq!(outcome.is_ok(), admitted, "{mode:?} {name}");
+            if let Err(error) = outcome {
+                assert_eq!(error.category, ErrorCategory::Schema);
+                assert!(error
+                    .message
+                    .ends_with(plenora_database_core::write_keys::KEYS_WITHOUT_UNIQUE_INDEX));
+            }
+        }
+    }
+    let mut composite = append_operation();
+    composite.mode = WriteMode::Update;
+    composite.keys = vec!["label".to_owned(), "id".to_owned()];
+    let target = base_table_with_indexes(
+        identity_target(),
+        vec![unique_index("uq", &["id", "label"])],
+    );
+    assert!(super::validate_unique_keys(&target, &composite, kind, ErrorPhase::Prepare).is_ok());
+    let target = base_table_with_indexes(identity_target(), Vec::new());
+    assert!(
+        super::validate_unique_keys(&target, &append_operation(), kind, ErrorPhase::Prepare)
+            .is_ok(),
+        "Append non e una mode della regola K"
+    );
+}
+
+fn text_column(data_type: &str, declaration: &str) -> crate::MysqlColumn {
+    crate::MysqlColumn {
+        name: "label".to_owned(),
+        ordinal: 1,
+        data_type: data_type.to_owned(),
+        native_declaration: declaration.to_owned(),
+        nullable: true,
+        default_expression: None,
+        character_set: Some("utf8mb4".to_owned()),
+        collation: Some("utf8mb4_0900_ai_ci".to_owned()),
+        numeric_precision: None,
+        numeric_scale: None,
+        datetime_precision: None,
+        spatial_srid: None,
+        extra: String::new(),
+        generation_expression: String::new(),
+    }
+}
+
+/// La regola P: su 1b02559 `abc` con tre spazi verso `VARCHAR(3)` diventava
+/// `abc` con il COMMIT (il server tronca gli spazi finali anche con
+/// `STRICT_TRANS_TABLES`). Ora un testo piu lungo della colonna si rifiuta.
+#[test]
+fn la_regola_p_rifiuta_il_testo_piu_lungo_della_colonna() {
+    let varchar = text_limit(&text_column("varchar", "varchar(3)"));
+    assert_eq!(varchar, Some(TextLimit::Chars(3)));
+    assert!(check_text(varchar, "abc   ").is_err());
+    assert!(check_text(varchar, "ab ").is_ok());
+    // I caratteri, non i byte, per `VARCHAR(n)`.
+    assert!(check_text(varchar, "\u{416}\u{20ac}\u{4e2d}").is_ok());
+    let tiny = text_limit(&text_column("tinytext", "tinytext"));
+    assert_eq!(tiny, Some(TextLimit::Bytes(255)));
+    assert!(check_text(tiny, &"\u{20ac}".repeat(86)).is_err());
+    assert!(check_text(tiny, &"\u{20ac}".repeat(85)).is_ok());
+    assert_eq!(text_limit(&text_column("longtext", "longtext")), None);
+    let error = check_text(varchar, "abcd").expect_err("rifiuto");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert!(error.message.ends_with(LOSSY_VALUE));
+}
+
+#[test]
+fn le_chiavi_testuali_senza_collation_si_rifiutano_in_ogni_mode() {
+    let plan = append_plan(vec![Field::new("label", DataType::Utf8, true)]);
+    for mode in [
+        WriteMode::Upsert,
+        WriteMode::Update,
+        WriteMode::DeleteByKeys,
+    ] {
+        let mut operation = append_operation();
+        operation.mode = mode;
+        operation.keys = vec!["label".to_owned()];
+        for missing_charset in [false, true] {
+            let mut text = text_column("varchar", "varchar(10)");
+            if missing_charset {
+                text.character_set = None;
+            } else {
+                text.collation = None;
+            }
+            let target = base_table(vec![text]);
+            let error = plan
+                .key_collation_guard(&operation, &target, "warehouse", "test")
+                .expect_err("confronto della chiave non provato");
+            assert_eq!(error.category, ErrorCategory::Unsupported);
+        }
+    }
+}
+
+#[test]
+fn lo_staging_non_sostituisce_metadati_testuali_assenti_o_invalidi() {
+    let schema = Arc::new(Schema::new(vec![Field::new("label", DataType::Utf8, true)]));
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        for invalid in [None, Some(""), Some("utf8mb4; DROP")] {
+            for charset in [false, true] {
+                let mut text = text_column("varchar", "varchar(10)");
+                if charset {
+                    text.character_set = invalid.map(ToOwned::to_owned);
+                } else {
+                    text.collation = invalid.map(ToOwned::to_owned);
+                }
+                let error = build_temp_staging_sql(
+                    &schema,
+                    "staging",
+                    "warehouse",
+                    profile,
+                    &base_table(vec![text]),
+                )
+                .expect_err("nessun default implicito per il testo");
+                assert_eq!(error.category, ErrorCategory::Unsupported);
+            }
+        }
+        let sql = build_temp_staging_sql(
+            &schema,
+            "staging",
+            "warehouse",
+            profile,
+            &base_table(vec![text_column("varchar", "varchar(10)")]),
+        )
+        .expect("metadati completi");
+        assert!(sql.contains("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"));
+    }
+}
+
+/// Lo staging non restringe nessuna famiglia testuale rispetto al catalogo.
+#[test]
+fn staging_conserva_tipo_lunghezza_charset_e_collation() {
+    let input = schema(vec![Field::new("label", DataType::Utf8, true)]);
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        for (family, declaration) in [
+            ("varchar", "varchar(1234)"),
+            ("tinytext", "tinytext"),
+            ("text", "text"),
+            ("mediumtext", "mediumtext"),
+            ("longtext", "longtext"),
+        ] {
+            let target = base_table(vec![text_column(family, declaration)]);
+            let sql = build_temp_staging_sql(&input, "staging", "warehouse", profile, &target)
+                .expect("tipo del catalogo");
+            assert!(sql.contains(&format!(
+                "`label` {declaration} CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL"
+            )));
+        }
+    }
+}
+
+/// Tutte le forme di tipo misurate conservano la dichiarazione nello staging.
+#[test]
+fn staging_preserves_every_measured_catalog_type() {
+    for (fixture, profile, expected) in [
+        (
+            crate::write_admission::MYSQL_FIXTURE,
+            &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+            800,
+        ),
+        (
+            crate::write_admission::MARIADB_FIXTURE,
+            &crate::profile::MARIADB_PROFILE as &dyn crate::profile::ProductProfile,
+            801,
+        ),
+    ] {
+        let fixture: serde_json::Value = serde_json::from_slice(fixture).expect("fixture");
+        let natives = fixture["misure"]
+            .as_array()
+            .expect("misure")
+            .iter()
+            .flat_map(|measurement| measurement["chiavi"].as_array().expect("chiavi"))
+            .map(|key| key["nativo"].as_str().expect("nativo"))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(natives.len(), expected);
+        for native in natives {
+            let mut pieces = native.split(';');
+            let declaration = pieces.next().expect("tipo").replace("(n)", "(137)");
+            let family = declaration.split(['(', ' ']).next().expect("famiglia");
+            let mut column = text_column(family, &declaration);
+            let charset = pieces.next();
+            column.character_set = charset.map(str::to_owned);
+            column.collation = charset.map(|name| format!("{name}_bin"));
+            let expected_type = match charset {
+                Some(name) => format!("{declaration} CHARACTER SET {name} COLLATE {name}_bin"),
+                None => declaration.clone(),
+            };
+            let target = base_table(vec![column]);
+            let input = schema(vec![Field::new("label", DataType::Utf8, true)]);
+            let sql = build_temp_staging_sql(&input, "staging", "warehouse", profile, &target)
+                .expect("staging dal catalogo");
+            assert!(
+                sql.contains(&format!("`label` {expected_type} NULL")),
+                "{native}: {sql}"
+            );
+            // Tutti i percorsi caricano la stessa dichiarazione e applicano
+            // colonne materializzate: mai un parametro in un predicato.
+            for mode in [
+                WriteMode::Append,
+                WriteMode::Create,
+                WriteMode::Replace,
+                WriteMode::TruncateInsert,
+                WriteMode::Upsert,
+                WriteMode::Update,
+                WriteMode::DeleteByKeys,
+            ] {
+                let mut plan = MysqlWritePlan::compile_with_profile(
+                    &input,
+                    &append_operation(),
+                    "warehouse",
+                    profile,
+                )
+                .unwrap();
+                plan.mode = mode;
+                plan.update_key_columns = vec!["`label`".into()];
+                plan.update_set_columns = vec!["`label`".into()];
+                plan.upsert_update_columns = vec!["`label`".into()];
+                for rows in [1, 37] {
+                    let load = plan.render_insert_into_staging("`staging`", rows).unwrap();
+                    assert_eq!(load.matches('?').count(), rows);
+                    let apply = if mode == WriteMode::Update {
+                        plan.render_update_from_staging("`staging`")
+                    } else {
+                        plan.render_apply_staging("`staging`")
+                    };
+                    assert!(!apply.contains('?'), "{native}: {apply}");
+                    assert!(apply.contains("`staging`"));
+                    if mode == WriteMode::DeleteByKeys {
+                        assert!(apply.contains("t.`label` = s.`label`"));
+                    }
+                    if mode == WriteMode::Upsert {
+                        assert!(apply.contains("ON DUPLICATE KEY UPDATE"));
+                    }
+                }
+            }
+        }
+    }
 }

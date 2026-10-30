@@ -897,7 +897,7 @@ fn spatial_mysql_geography_is_accepted_as_hint_only() {
 /// Db2 e Oracle non hanno una guardia misurata che rifiuti uno SRID diverso
 /// prima di ogni riga, e il compilatore portable non ha il catalogo: la
 /// regola delle sonde li rifiuta. Fino al 25/10 compilavano
-/// `ST_INTERSECTS(.., ST_GEOMETRY(BLOB(HEXTORAW(?)), ?))` e
+/// `ST_INTERSECTS(.., ST_GEOMETRY(BLOB(HEXTORAW(CAST(? AS VARCHAR(32672)))), ?))` e
 /// `SDO_RELATE(.., FROM_WKBGEOMETRY(TO_BLOB(:1), :2), ..)`.
 #[test]
 fn spatial_db2_and_oracle_are_refused_without_a_proven_srid() {

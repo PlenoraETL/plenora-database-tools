@@ -1459,9 +1459,9 @@ impl Renderer {
             (Dialect::SqlServer, SpatialSemantics::Geography) => {
                 Ok(format!("geography::STGeomFromWKB({value}, {srid})"))
             }
-            (Dialect::Db2, SpatialSemantics::Geometry) => {
-                Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW({value})), {srid})"))
-            }
+            (Dialect::Db2, SpatialSemantics::Geometry) => Ok(format!(
+                "ST_GEOMETRY(BLOB(HEXTORAW(CAST({value} AS VARCHAR(32672)))), {srid})"
+            )),
             (Dialect::Oracle, SpatialSemantics::Geometry | SpatialSemantics::Geography) => {
                 Ok(format!("MDSYS.SDO_UTIL.FROM_WKBGEOMETRY({value}, {srid})"))
             }

@@ -23,6 +23,8 @@ mod row_visibility;
 mod transaction;
 mod types;
 mod write;
+mod write_admission;
+mod write_intermediate;
 
 pub use catalog::{OracleColumn, OracleIndex, OracleObjectDescription, OracleObjectSummary};
 pub use config::{OracleConfig, OracleTlsMode};
@@ -55,6 +57,14 @@ mod operand_catalog_tests;
 mod live_tests;
 
 #[cfg(test)]
+#[path = "write_rewrite_live_tests.rs"]
+mod write_rewrite_live_tests;
+
+#[cfg(test)]
+#[path = "write_admission_live_tests.rs"]
+mod write_admission_live_tests;
+
+#[cfg(test)]
 #[path = "number_oracle_tests.rs"]
 mod number_oracle_tests;
 
@@ -69,3 +79,10 @@ mod driver_fidelity_live_tests;
 #[cfg(test)]
 #[path = "driver_codec_oracle_tests.rs"]
 mod driver_codec_oracle_tests;
+
+#[cfg(test)]
+#[path = "catalog_tests.rs"]
+mod catalog_tests;
+
+#[cfg(test)]
+mod write_probe_tests;

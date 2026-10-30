@@ -1,7 +1,7 @@
 use crate::config::SqlServerConfig;
 use crate::error::{driver_error, interruption_error, timeout_error};
 use crate::recovery::{TransactionEvent, TransactionState};
-use crate::session::{SessionState, SESSION_BOOTSTRAP_SQL};
+use crate::session::{options_pinned, SessionState, SESSION_BOOTSTRAP_SQL, SESSION_OPTIONS_SQL};
 use crate::types::SqlServerColumnSpec;
 use futures_util::future::FutureExt;
 use futures_util::TryStreamExt;
@@ -108,7 +108,76 @@ impl SqlServerSession {
                 cancellation,
             )
             .await?;
+        // La regola W2: la sessione ha le impostazioni del bootstrap, o non
+        // si usa.
+        session.verify_pinned_options(cancellation).await?;
         Ok(session)
+    }
+
+    /// La regola W2: `@@OPTIONS` dice le impostazioni del bootstrap
+    /// ([`options_pinned`]); altrimenti la sessione si scarta.
+    async fn verify_pinned_options(&mut self, cancellation: &CancellationToken) -> Result<()> {
+        let options = self
+            .execute_query(
+                tiberius::Query::new(SESSION_OPTIONS_SQL),
+                ErrorPhase::Prepare,
+                cancellation,
+            )
+            .await?
+            .first()
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.try_get::<i32, _>(0).ok().flatten());
+        if options.is_some_and(options_pinned) {
+            return Ok(());
+        }
+        self.quarantine();
+        Err(plenora_database_core::DatabaseError::unsupported(
+            plenora_database_core::plan::ProviderKind::Sqlserver,
+            ErrorPhase::Connect,
+            format!(
+                "sessione SQL Server rifiutata: {}",
+                plenora_database_core::row_visibility::SESSION_WITHOUT_GUARANTEES
+            ),
+        ))
+    }
+
+    /// Fissa il livello di isolamento sulla sessione, fuori da una
+    /// transazione, e lo rilegge da `sys.dm_exec_sessions`
+    /// ([`crate::session::isolation_batch`]).
+    ///
+    /// # Errors
+    ///
+    /// `unsupported` (la sessione si scarta) se il livello in vigore non e
+    /// quello chiesto o non si legge; l'errore del batch o della lettura
+    /// altrimenti.
+    pub(crate) async fn pin_isolation(
+        &mut self,
+        level: plenora_database_core::transaction::IsolationLevel,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.require_state(SessionState::Ready, ErrorPhase::Prepare)?;
+        let (batch, expected) = crate::session::isolation_batch(level);
+        self.run_control(batch, ErrorPhase::Prepare, RemoteEffect::None, cancellation)
+            .await?;
+        let effective = self
+            .execute_query(
+                tiberius::Query::new(crate::session::ISOLATION_LEVEL_SQL),
+                ErrorPhase::Prepare,
+                cancellation,
+            )
+            .await?
+            .first()
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.try_get::<i32, _>(0).ok().flatten());
+        if effective == Some(expected) {
+            return Ok(());
+        }
+        self.quarantine();
+        Err(DatabaseError::unsupported(
+            plenora_database_core::plan::ProviderKind::Sqlserver,
+            ErrorPhase::Prepare,
+            "livello di isolamento SQL Server chiesto non verificato sulla sessione",
+        ))
     }
 
     #[must_use]
@@ -269,9 +338,28 @@ impl SqlServerSession {
         Ok(())
     }
 
+    /// Un batch semplice (non `sp_executesql`) nella transazione della
+    /// scrittura: una tabella temporanea creata dentro una RPC sparisce alla
+    /// fine della chiamata, una creata da un batch semplice dura quanto la
+    /// sessione (la regola K sotto la collation, `crate::write`).
+    ///
+    /// # Errors
+    ///
+    /// Gli errori del batch; la sessione si scarta come per i batch di
+    /// controllo.
+    pub(crate) async fn execute_simple_batch(
+        &mut self,
+        sql: String,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.require_state(SessionState::Transaction, ErrorPhase::Write)?;
+        self.run_control(&sql, ErrorPhase::Write, RemoteEffect::Unknown, cancellation)
+            .await
+    }
+
     async fn run_control(
         &mut self,
-        sql: &'static str,
+        sql: &str,
         phase: ErrorPhase,
         remote_effect: RemoteEffect,
         cancellation: &CancellationToken,
@@ -650,7 +738,7 @@ enum WriteQueryOutcome {
     Driver(tiberius::error::Error),
 }
 
-async fn execute_and_drain(client: &mut TdsClient, sql: &'static str) -> tiberius::Result<()> {
+async fn execute_and_drain<'a>(client: &'a mut TdsClient, sql: &'a str) -> tiberius::Result<()> {
     client.simple_query(sql).await?.into_results().await?;
     Ok(())
 }

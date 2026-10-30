@@ -122,46 +122,46 @@ pub async fn describe_object_metadata(
     client: &Client,
     source: &ObjectRef,
 ) -> Result<ObjectMetadata> {
-    let schema = source.schema.as_deref().unwrap_or("public");
+    let schema = crate::target_schema::schema_of(source)?;
     let relation = client
         .query_one(
             r"
             SELECT
-                c.relkind::text,
+                c.relkind::pg_catalog.text,
                 c.relispartition,
-                pg_get_partkeydef(c.oid),
-                CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid, true) END,
-                obj_description(c.oid, 'pg_class'),
+                pg_catalog.pg_get_partkeydef(c.oid),
+                CASE WHEN c.relkind IN ('v', 'm') THEN pg_catalog.pg_get_viewdef(c.oid, true) END,
+                pg_catalog.obj_description(c.oid, 'pg_class'),
                 c.relrowsecurity,
                 c.relforcerowsecurity,
-                c.relreplident::text,
-                c.relpersistence::text,
+                c.relreplident::pg_catalog.text,
+                c.relpersistence::pg_catalog.text,
                 c.relispopulated,
-                pg_get_expr(c.relpartbound, c.oid, true),
-                pg_get_userbyid(c.relowner),
-                COALESCE(ts.spcname, current_setting('default_tablespace')),
+                pg_catalog.pg_get_expr(c.relpartbound, c.oid, true),
+                pg_catalog.pg_get_userbyid(c.relowner),
+                COALESCE(ts.spcname, pg_catalog.current_setting('default_tablespace')),
                 (
-                    SELECT jsonb_agg(
-                        jsonb_build_object(
+                    SELECT pg_catalog.jsonb_agg(
+                        pg_catalog.jsonb_build_object(
                             'schema', pn.nspname,
                             'name', pc.relname
                         )
                         ORDER BY pn.nspname, pc.relname
-                    )::text
+                    )::pg_catalog.text
                     FROM pg_catalog.pg_inherits inh
                     JOIN pg_catalog.pg_class pc ON pc.oid = inh.inhparent
                     JOIN pg_catalog.pg_namespace pn ON pn.oid = pc.relnamespace
                     WHERE inh.inhrelid = c.oid
                 ),
                 (
-                    SELECT jsonb_agg(
-                        jsonb_build_object(
+                    SELECT pg_catalog.jsonb_agg(
+                        pg_catalog.jsonb_build_object(
                             'schema', cn.nspname,
                             'name', cc.relname,
-                            'bound', pg_get_expr(cc.relpartbound, cc.oid, true)
+                            'bound', pg_catalog.pg_get_expr(cc.relpartbound, cc.oid, true)
                         )
                         ORDER BY cn.nspname, cc.relname
-                    )::text
+                    )::pg_catalog.text
                     FROM pg_catalog.pg_inherits inh
                     JOIN pg_catalog.pg_class cc ON cc.oid = inh.inhrelid
                     JOIN pg_catalog.pg_namespace cn ON cn.oid = cc.relnamespace
@@ -198,28 +198,28 @@ pub async fn describe_object_metadata(
             r"
             SELECT
                 con.conname,
-                con.contype::text,
-                pg_get_constraintdef(con.oid, true),
+                con.contype::pg_catalog.text,
+                pg_catalog.pg_get_constraintdef(con.oid, true),
                 con.convalidated,
                 con.condeferrable,
                 con.condeferred,
                 (
-                    SELECT jsonb_agg(a.attname ORDER BY key.ordinality)::text
-                    FROM unnest(con.conkey) WITH ORDINALITY AS key(attnum, ordinality)
+                    SELECT pg_catalog.jsonb_agg(a.attname ORDER BY key.ordinality)::pg_catalog.text
+                    FROM pg_catalog.unnest(con.conkey) WITH ORDINALITY AS key(attnum, ordinality)
                     JOIN pg_catalog.pg_attribute a
                       ON a.attrelid = con.conrelid AND a.attnum = key.attnum
                 ),
                 rn.nspname,
                 rc.relname,
                 (
-                    SELECT jsonb_agg(a.attname ORDER BY key.ordinality)::text
-                    FROM unnest(con.confkey) WITH ORDINALITY AS key(attnum, ordinality)
+                    SELECT pg_catalog.jsonb_agg(a.attname ORDER BY key.ordinality)::pg_catalog.text
+                    FROM pg_catalog.unnest(con.confkey) WITH ORDINALITY AS key(attnum, ordinality)
                     JOIN pg_catalog.pg_attribute a
                       ON a.attrelid = con.confrelid AND a.attnum = key.attnum
                 ),
-                con.confupdtype::text,
-                con.confdeltype::text,
-                con.confmatchtype::text
+                con.confupdtype::pg_catalog.text,
+                con.confdeltype::pg_catalog.text,
+                con.confmatchtype::pg_catalog.text
             FROM pg_catalog.pg_constraint con
             JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -261,16 +261,16 @@ pub async fn describe_object_metadata(
                 ix.indisunique,
                 ix.indisvalid,
                 am.amname,
-                pg_get_indexdef(i.oid),
+                pg_catalog.pg_get_indexdef(i.oid),
                 ix.indisready,
                 ix.indisclustered,
-                pg_get_expr(ix.indpred, ix.indrelid, true),
-                pg_relation_size(i.oid)::bigint,
+                pg_catalog.pg_get_expr(ix.indpred, ix.indrelid, true),
+                pg_catalog.pg_relation_size(i.oid)::bigint,
                 (
-                    SELECT jsonb_agg(
-                        jsonb_build_object(
+                    SELECT pg_catalog.jsonb_agg(
+                        pg_catalog.jsonb_build_object(
                             'position', keys.ordinality,
-                            'expression', pg_get_indexdef(
+                            'expression', pg_catalog.pg_get_indexdef(
                                 ix.indexrelid,
                                 keys.ordinality::integer,
                                 true
@@ -279,14 +279,14 @@ pub async fn describe_object_metadata(
                             'included', keys.ordinality > ix.indnkeyatts
                         )
                         ORDER BY keys.ordinality
-                    )::text
-                    FROM unnest(ix.indclass) WITH ORDINALITY
+                    )::pg_catalog.text
+                    FROM pg_catalog.unnest(ix.indclass) WITH ORDINALITY
                         AS keys(opclass_oid, ordinality)
                     JOIN pg_catalog.pg_opclass opc ON opc.oid = keys.opclass_oid
                 ),
                 EXISTS (
                     SELECT 1
-                    FROM unnest(ix.indclass) AS opclass_oid
+                    FROM pg_catalog.unnest(ix.indclass) AS opclass_oid
                     JOIN pg_catalog.pg_opclass opc ON opc.oid = opclass_oid
                     WHERE opc.opcname ILIKE ANY (
                         ARRAY['%geometry%', '%geography%', '%box2d%', '%box3d%']
@@ -329,20 +329,20 @@ pub async fn describe_object_metadata(
             SELECT
                 p.polname,
                 p.polpermissive,
-                p.polcmd::text,
+                p.polcmd::pg_catalog.text,
                 (
-                    SELECT jsonb_agg(
-                        CASE WHEN role_oid = 0 THEN 'PUBLIC' ELSE r.rolname END
+                    SELECT pg_catalog.jsonb_agg(
+                        CASE WHEN role_oid = 0::pg_catalog.oid THEN 'PUBLIC' ELSE r.rolname END
                         ORDER BY CASE
-                            WHEN role_oid = 0 THEN 'PUBLIC'
+                            WHEN role_oid = 0::pg_catalog.oid THEN 'PUBLIC'
                             ELSE r.rolname
                         END
-                    )::text
-                    FROM unnest(p.polroles) AS roles(role_oid)
+                    )::pg_catalog.text
+                    FROM pg_catalog.unnest(p.polroles) AS roles(role_oid)
                     LEFT JOIN pg_catalog.pg_roles r ON r.oid = roles.role_oid
                 ),
-                pg_get_expr(p.polqual, p.polrelid, true),
-                pg_get_expr(p.polwithcheck, p.polrelid, true)
+                pg_catalog.pg_get_expr(p.polqual, p.polrelid, true),
+                pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid, true)
             FROM pg_catalog.pg_policy p
             JOIN pg_catalog.pg_class c ON c.oid = p.polrelid
             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -371,12 +371,12 @@ pub async fn describe_object_metadata(
             r"
             SELECT
                 COALESCE(grantee.rolname, 'PUBLIC'),
-                upper(acl.privilege_type),
+                pg_catalog.upper(acl.privilege_type),
                 acl.is_grantable
             FROM pg_catalog.pg_class c
             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-            CROSS JOIN LATERAL aclexplode(
-                COALESCE(c.relacl, acldefault('r', c.relowner))
+            CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(c.relacl, pg_catalog.acldefault('r', c.relowner))
             ) acl
             LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid = acl.grantee
             WHERE n.nspname = $1 AND c.relname = $2

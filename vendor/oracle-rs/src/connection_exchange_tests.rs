@@ -23,7 +23,7 @@ async fn send_errors_and_cancellation_discard_socket_at_every_await() {
     for multi in [false, true] {
         for at_flush in [false, true] {
             for cancel in [false, true] {
-                let mut inner = ConnectionInner::new_with_cache(0);
+                let mut inner = ConnectionInner::new();
                 inner.sdu_size = 12;
                 inner.stream = Some(OracleStream::WriteFault(WriteFault {
                     at_flush,
@@ -334,39 +334,6 @@ fn describe_number() -> Vec<u8> {
     b.write_string_with_length(Some("N")).unwrap();
     b.write_bytes(&[0; 10]).unwrap(); // schema/type, position/flags, describe tail
     b.as_slice().to_vec()
-}
-
-#[tokio::test]
-async fn repeated_query_uses_cached_layout_without_describe_on_nonfinal_page() {
-    for execute in [false, true] {
-        let (conn, mut peer) = synthetic_connection(false).await;
-        {
-            let mut inner = conn.inner.lock().await;
-            inner.statement_cache = Some(StatementCache::new(4));
-            inner.capabilities.ttc_field_version = 16;
-            inner.capabilities.supports_end_of_response = false;
-        }
-        for first in [true, false] {
-            let mut data = if first { describe_number() } else { Vec::new() };
-            data.extend_from_slice(&io_vector_frame(&[32], 1));
-            data.extend_from_slice(&[7, 2, 193, 2]);
-            data.extend_from_slice(&completion_packet(0, 1)[2..]);
-            peer.write_all(&ConnectionInner::build_data_chunk(&data, 0, false).unwrap())
-                .await
-                .unwrap();
-            let result = if execute {
-                conn.execute("SELECT n FROM t", &[]).await
-            } else {
-                conn.query("SELECT n FROM t", &[]).await
-            }
-            .unwrap();
-            assert!(result.has_more_rows);
-            assert_eq!(result.columns[0].name, "N");
-            assert_eq!(result.rows.len(), 1);
-            assert_eq!(result.rows[0].get(0).and_then(Value::as_str), Some("1"));
-        }
-        assert!(conn.inner.lock().await.stream.is_some());
-    }
 }
 
 #[tokio::test]

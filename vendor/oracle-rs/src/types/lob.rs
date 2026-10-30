@@ -143,6 +143,11 @@ impl LobLocator {
         self.oracle_type == OracleType::Clob
     }
 
+    /// Check if this is an NCLOB (national character set form)
+    pub fn is_nchar(&self) -> bool {
+        self._csfrm == crate::constants::csfrm::NCHAR
+    }
+
     /// Check if this is a BFILE
     pub fn is_bfile(&self) -> bool {
         self.oracle_type == OracleType::Bfile

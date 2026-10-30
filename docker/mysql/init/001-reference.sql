@@ -6,6 +6,10 @@ GRANT SELECT ON performance_schema.prepared_statements_instances TO 'dataflow'@'
 GRANT SELECT ON performance_schema.events_statements_current TO 'dataflow'@'%';
 GRANT SELECT ON performance_schema.threads TO 'dataflow'@'%';
 
+-- La regola W2 si prova spegnendo `foreign_key_checks` e `unique_checks` a
+-- livello globale: la sessione della scrittura li deve fissare comunque.
+GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO 'dataflow'@'%';
+
 -- Il provider apre ogni sessione con time_zone = '+00:00'. La fixture usa lo
 -- stesso fuso, cosi il valore TIMESTAMP letto non dipende dal fuso di sistema
 -- del container che esegue questo script di bootstrap.

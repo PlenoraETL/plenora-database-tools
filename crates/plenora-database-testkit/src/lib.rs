@@ -4,6 +4,12 @@ mod conformance;
 pub mod parameter_fidelity;
 pub mod parameter_sweep;
 pub mod row_diagnostics;
+// La sonda della regola A gira soltanto dentro le prove live dei provider e non
+// fa parte di alcun artefatto pubblicato: una misura che non si puo fare deve
+// fermare il gate, e in una prova lo si ferma con un panic. La regola
+// anti-panic della spazzata vale per il codice di prodotto.
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+pub mod write_probe;
 
 pub use conformance::{
     operation_id, validate_capabilities, validate_connection, validate_inspection,

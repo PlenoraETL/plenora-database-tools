@@ -562,3 +562,32 @@ fn a_scale_without_precision_keeps_the_scale() {
     assert!(refused(&V::Decimal("1.234".to_owned()), &scaled));
     assert!(admit(P, &V::Decimal("1.23".to_owned()), &scaled).is_ok());
 }
+
+/// Il catalogo impedisce conversioni implicite testo/binario su tutti i
+/// provider, anche quando lo SQL nativo delega conversioni al server.
+#[test]
+fn catalog_admission_never_reinterprets_text_as_binary() {
+    let binary = OperandType::Binary {
+        length: Some(64),
+        padded: false,
+    };
+    for provider in [
+        ProviderKind::Db2,
+        ProviderKind::Oracle,
+        ProviderKind::Sqlserver,
+        ProviderKind::Postgres,
+        ProviderKind::Mysql,
+        ProviderKind::Mariadb,
+    ] {
+        for text in ["AB01", "not hex", "\u{e9}", "\u{1f600}"] {
+            assert_eq!(
+                admit(provider, &V::String(text.into()), &binary)
+                    .unwrap_err()
+                    .category,
+                ErrorCategory::DataMapping
+            );
+            let bytes = V::Bytes(text.as_bytes().to_vec());
+            assert_eq!(admit(provider, &bytes, &binary).unwrap(), bytes);
+        }
+    }
+}

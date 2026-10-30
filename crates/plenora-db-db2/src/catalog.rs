@@ -8,27 +8,34 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const LIST_CATALOGS_SQL: &str = "SELECT CURRENT SERVER FROM SYSIBM.SYSDUMMY1";
-const LIST_SCHEMAS_SQL: &str = "SELECT TRIM(SCHEMANAME) \
+const LIST_SCHEMAS_SQL: &str = "SELECT SCHEMANAME \
     FROM SYSCAT.SCHEMATA \
     WHERE SCHEMANAME NOT LIKE 'SYS%' \
       AND SCHEMANAME NOT IN ('NULLID', 'SQLJ') \
     ORDER BY SCHEMANAME";
-const LIST_OBJECTS_SQL: &str = "SELECT TRIM(TABSCHEMA), TRIM(TABNAME), \
+const LIST_OBJECTS_SQL: &str = "SELECT TABSCHEMA, TABNAME, \
     CASE TYPE WHEN 'T' THEN 'TABLE' WHEN 'V' THEN 'VIEW' ELSE TRIM(TYPE) END \
     FROM SYSCAT.TABLES \
     WHERE TABSCHEMA = ? AND TYPE IN ('T', 'V') \
     ORDER BY TABNAME";
-const DESCRIBE_RELATION_SQL: &str = "SELECT TRIM(TABSCHEMA), TRIM(TABNAME), \
+const DESCRIBE_RELATION_SQL: &str = "SELECT TABSCHEMA, TABNAME, \
     CASE TYPE WHEN 'T' THEN 'TABLE' WHEN 'V' THEN 'VIEW' ELSE TRIM(TYPE) END \
     FROM SYSCAT.TABLES \
     WHERE TABSCHEMA = ? AND TABNAME = ? AND TYPE IN ('T', 'V')";
-const DESCRIBE_COLUMNS_SQL: &str = "SELECT TRIM(COLNAME), COLNO + 1, \
-    TRIM(TYPENAME), LENGTH, SCALE, NULLS, DEFAULT, GENERATED, IDENTITY \
+// Un testo `FOR BIT DATA` (`CODEPAGE = 0`) e un binario: il catalogo lo
+// chiama `CHARACTER` o `VARCHAR`, e la lettura del testo ne restituiva la
+// forma esadecimale come se fosse il testo (`'a'` si rileggeva `'61'`),
+// misurato il 25/10 su Db2 12.1.5 dalla sonda della regola A. Il tipo
+// pubblicato lo dice, e lettura e scrittura non lo trattano come testo.
+const DESCRIBE_COLUMNS_SQL: &str = "SELECT COLNAME, COLNO + 1, \
+    CASE WHEN TYPESCHEMA = 'SYSIBM' AND CODEPAGE = 0 AND TYPENAME IN ('CHARACTER', 'VARCHAR', 'LONG VARCHAR', 'CLOB') \
+    THEN TYPENAME || ' FOR BIT DATA' ELSE TYPENAME END, \
+    LENGTH, SCALE, NULLS, DEFAULT, GENERATED, IDENTITY \
     FROM SYSCAT.COLUMNS \
     WHERE TABSCHEMA = ? AND TABNAME = ? \
     ORDER BY COLNO";
-const DESCRIBE_INDEXES_SQL: &str = "SELECT TRIM(i.INDNAME), i.UNIQUERULE, \
-    k.COLSEQ, TRIM(k.COLNAME), k.COLORDER \
+const DESCRIBE_INDEXES_SQL: &str = "SELECT i.INDNAME, i.UNIQUERULE, \
+    k.COLSEQ, k.COLNAME, k.COLORDER \
     FROM SYSCAT.INDEXES AS i \
     JOIN SYSCAT.INDEXCOLUSE AS k \
       ON k.INDSCHEMA = i.INDSCHEMA AND k.INDNAME = i.INDNAME \
@@ -214,7 +221,7 @@ pub fn describe_object(
     })
 }
 
-fn object_summary(row: &[Option<String>]) -> Result<Db2ObjectSummary> {
+pub fn object_summary(row: &[Option<String>]) -> Result<Db2ObjectSummary> {
     Ok(Db2ObjectSummary {
         schema: required_text(row, 0, "oggetto Db2 senza schema")?,
         name: required_text(row, 1, "oggetto Db2 senza nome")?,
@@ -222,7 +229,7 @@ fn object_summary(row: &[Option<String>]) -> Result<Db2ObjectSummary> {
     })
 }
 
-fn column_description(row: &[Option<String>]) -> Result<Db2Column> {
+pub fn column_description(row: &[Option<String>]) -> Result<Db2Column> {
     Ok(Db2Column {
         name: required_text(row, 0, "colonna Db2 senza nome")?,
         ordinal: parse_number(row, 1, "ordinale colonna Db2 non rappresentabile")?,

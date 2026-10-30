@@ -1,7 +1,4 @@
-use super::{
-    mapping_error,
-    plan::{ColumnSemantics, WriteColumnPlan},
-};
+use super::{mapping_error, plan::WriteColumnPlan};
 use crate::field_contract::FieldContract;
 use arrow_schema::{DataType, IntervalUnit, SchemaRef, TimeUnit};
 use plenora_database_core::plan::{ObjectRef, WriteMode, WriteOperation};
@@ -54,6 +51,8 @@ pub(super) fn statement(
             let predicates = key_predicates(
                 &renderer,
                 &operation.keys,
+                schema,
+                plans,
                 operation.update_columns.len() + 1,
             )?;
             Ok((
@@ -70,7 +69,7 @@ pub(super) fn statement(
             format!(
                 "DELETE FROM {} WHERE {}",
                 quote_object(target)?,
-                key_predicates(&renderer, &operation.keys, 1)?
+                key_predicates(&renderer, &operation.keys, schema, plans, 1)?
             ),
             operation
                 .keys
@@ -137,53 +136,108 @@ pub(super) fn statement(
     }
 }
 
-pub(super) fn placeholder_expression(plan: &WriteColumnPlan, ordinal: usize) -> String {
-    if plan.semantics == ColumnSemantics::Geometry {
-        format!("ST_GeomFromEWKB(${ordinal})")
-    } else if plan.semantics == ColumnSemantics::Geography {
-        format!("ST_GeomFromEWKB(${ordinal})::geography")
-    } else if matches!(plan.data_type, DataType::Decimal128(_, _)) {
-        format!("${ordinal}::text::numeric")
-    } else if matches!(plan.data_type, DataType::Utf8)
-        && matches!(plan.native_type.as_deref(), Some("json" | "jsonb" | "uuid"))
-    {
-        format!(
-            "${ordinal}::text::{}",
-            plan.native_type.as_deref().unwrap_or("text")
-        )
-    } else if matches!(
-        plan.data_type,
-        DataType::Utf8 | DataType::List(_) | DataType::Struct(_)
-    ) {
-        plan.native_declaration_sql.as_deref().map_or_else(
-            || format!("${ordinal}"),
-            |declaration| {
-                if declaration == "text" {
-                    format!("${ordinal}")
-                } else {
-                    format!("${ordinal}::text::{declaration}")
-                }
-            },
-        )
-    } else {
-        format!("${ordinal}")
-    }
+/// Il server tipizza il parametro con la colonna, non con i metadata Arrow.
+/// Testo, decimali, liste e letterali usano la funzione d'ingresso del target;
+/// i valori tipizzati e `PostGIS` usano il suo formato binario. L'OID inferito
+/// viene verificato prima dei valori anche nel percorso row-scoped.
+/// Le regole di canonicalita e perdita si applicano al catalogo del target.
+pub(super) fn placeholder_expression(_plan: &WriteColumnPlan, ordinal: usize) -> String {
+    // Anche PostGIS riceve direttamente EWKB nel tipo del target, come COPY.
+    // Un costruttore SQL darebbe invece al parametro il tipo bytea.
+    format!("${ordinal}")
 }
 
-fn key_predicates(renderer: &Renderer, keys: &[String], first: usize) -> Result<String> {
+/// Il confronto delle chiavi di Update e `DeleteByKeys`, con l'uguaglianza
+/// dell'indice che ne prova l'unicita (regola K2): la colonna resta intatta,
+/// il parametro prende tipo, typmod e collation del target. L'operatore
+/// qualificato deve accettare lo stesso tipo (guardia nel catalogo). Il testo non
+/// dipende dal `search_path` (regola Q2). Una chiave senza l'uguaglianza
+/// letta dal catalogo si rifiuta: nessun ripiego su un `=` risolto dalla
+/// sessione.
+fn key_predicates(
+    renderer: &Renderer,
+    keys: &[String],
+    schema: &SchemaRef,
+    plans: &[WriteColumnPlan],
+    first: usize,
+) -> Result<String> {
     let items: Result<Vec<String>> = keys
         .iter()
         .enumerate()
         .map(|(offset, key)| {
             let id = Identifier::new(key.clone())?;
             let quoted = renderer.quote_identifier(&id)?;
-            Ok(format!("{quoted} = ${}", first + offset))
+            let plan = schema
+                .index_of(key)
+                .ok()
+                .and_then(|index| plans.get(index))
+                .ok_or_else(super::intermediate::unsupported)?;
+            let equality = plan
+                .key_equality
+                .as_ref()
+                .ok_or_else(super::intermediate::unsupported)?;
+            let ordinal = first + offset;
+            let parameter = plan
+                .target_type
+                .as_ref()
+                .map_or_else(|| format!("${ordinal}"), |target| target.parameter(ordinal));
+            Ok(format!(
+                "{quoted} OPERATOR({operator}) {parameter}",
+                operator = equality.operator,
+            ))
         })
         .collect();
     Ok(items?.join(" AND "))
 }
 
+/// I tipi di `pg_catalog` che lo SQL della scrittura nomina e che non sono
+/// parole chiave della grammatica (`integer`, `boolean`, `numeric(p,s)`,
+/// `timestamp ...`, `time ...`, `interval`, `character varying` il parser li
+/// risolve in `pg_catalog` da se).
+const UNRESERVED_BUILTINS: &[&str] = &[
+    "text",
+    "bytea",
+    "date",
+    "timestamptz",
+    "uuid",
+    "json",
+    "jsonb",
+    "inet",
+    "cidr",
+    "int4range",
+    "int8range",
+    "numrange",
+    "tsrange",
+    "tstzrange",
+    "daterange",
+];
+
+/// La regola Q2 negli statement sul target, che girano con il `search_path`
+/// della sessione: un tipo di `pg_catalog` che non e una parola chiave si
+/// qualifica (`pg_catalog.date[]`), cosi uno schema della sessione con un
+/// tipo omonimo non lo sostituisce. Gli altri nomi restano come sono.
+pub(super) fn qualify_builtin(declaration: &str) -> String {
+    let base = declaration.trim_end_matches("[]");
+    let suffix = &declaration[base.len()..];
+    if UNRESERVED_BUILTINS.contains(&base) {
+        format!("pg_catalog.{base}{suffix}")
+    } else {
+        declaration.to_owned()
+    }
+}
+
+/// Il tipo con cui `CREATE TABLE` e l'evoluzione dello schema dichiarano la
+/// colonna, con i tipi di `pg_catalog` qualificati ([`qualify_builtin`]).
 pub(super) fn pg_type(contract: &FieldContract<'_>) -> Result<String> {
+    let declared = pg_type_unqualified(contract)?;
+    Ok(if contract.is_geometry() || contract.is_geography() {
+        declared
+    } else {
+        qualify_builtin(&declared)
+    })
+}
+
+fn pg_type_unqualified(contract: &FieldContract<'_>) -> Result<String> {
     if contract.is_geometry() || contract.is_geography() {
         let base = if contract.is_geography() {
             "geography"

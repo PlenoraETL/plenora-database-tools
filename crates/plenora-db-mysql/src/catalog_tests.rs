@@ -1,14 +1,25 @@
 use super::*;
 
-/// Le cinque colonne che entrambe le query di indice espongono, nello
-/// stesso ordine in cui il contratto degli alias le dichiara.
+/// Le sei colonne che entrambe le query di indice espongono, nello stesso
+/// ordine in cui il contratto degli alias le dichiara.
 fn index_row(name: &str, sequence: i64, column: Value, expression: Value) -> Row {
+    index_row_with_sub_part(name, sequence, column, expression, Value::NULL)
+}
+
+fn index_row_with_sub_part(
+    name: &str,
+    sequence: i64,
+    column: Value,
+    expression: Value,
+    sub_part: Value,
+) -> Row {
     let wire: std::sync::Arc<[mysql_async::Column]> = [
         "index_name",
         "non_unique",
         "seq_in_index",
         "column_name",
         "expression",
+        "sub_part",
     ]
     .into_iter()
     .map(|alias| {
@@ -23,6 +34,7 @@ fn index_row(name: &str, sequence: i64, column: Value, expression: Value) -> Row
             Value::Int(sequence),
             column,
             expression,
+            sub_part,
         ],
         wire,
     )
@@ -43,6 +55,35 @@ fn a_functional_index_is_described_where_the_product_publishes_its_parts() {
     assert_eq!(indexes.len(), 1);
     assert!(!indexes[0].column_backed);
     assert!(indexes[0].columns.is_empty());
+}
+
+/// S6: una parte su un prefisso di colonna (`SUB_PART`, `UNIQUE (code(2))`)
+/// segna l'indice: per l'Upsert non e la chiave intera.
+#[test]
+fn a_prefix_part_marks_the_index() {
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        let rows = vec![
+            index_row_with_sub_part(
+                "prefisso",
+                1,
+                Value::Bytes(b"code".to_vec()),
+                Value::NULL,
+                Value::Int(2),
+            ),
+            index_row("intero", 1, Value::Bytes(b"code".to_vec()), Value::NULL),
+        ];
+        let indexes = build_indexes(&rows, profile).expect("indici");
+        assert!(indexes[0].prefix && indexes[0].column_backed);
+        assert_eq!(indexes[0].columns, ["code"]);
+        assert!(!indexes[1].prefix);
+        // Nel documento il campo compare soltanto quando e vero.
+        let document = serde_json::to_value(&indexes).expect("documento");
+        assert_eq!(document[0]["prefix"], true);
+        assert!(document[1].get("prefix").is_none());
+    }
 }
 
 #[test]
@@ -105,6 +146,7 @@ fn schema_token_is_stable_and_sensitive() {
         unique: true,
         column_backed: true,
         columns: vec!["id".to_owned()],
+        prefix: false,
     };
     let first = schema_token(
         "data",
@@ -150,6 +192,7 @@ fn schema_token_is_stable_and_sensitive() {
                 unique: true,
                 column_backed: true,
                 columns: vec!["code".to_owned()],
+                prefix: false,
             },
         ],
     )
@@ -157,6 +200,80 @@ fn schema_token_is_stable_and_sensitive() {
     assert_eq!(first, same);
     assert_ne!(first, changed);
     assert_ne!(first, index_changed);
+}
+
+/// La regola Q su `MySQL`/`MariaDB`: ogni relazione di catalogo che la
+/// libreria interroga porta lo schema (`information_schema.`,
+/// `performance_schema.`, `mysql.`). Una tabella dello schema corrente con lo
+/// stesso nome (`dataflow_test.columns`) non deve poter rispondere al posto
+/// del catalogo.
+///
+/// Le funzioni no: una funzione memorizzata con il nome di una funzione del
+/// server si chiama soltanto qualificata (`db.database()`), e la chiamata
+/// senza schema resta quella del server. Misurato il 25/10 su `MySQL` 9.7 e
+/// `MariaDB` 12.3 con `CREATE FUNCTION database()` e `concat_ws(a, b, c)`
+/// nello schema corrente: `DATABASE()` e `CONCAT_WS(...)` restituivano i
+/// valori del server.
+#[test]
+fn le_relazioni_di_catalogo_sono_qualificate() {
+    const SOURCES: &[(&str, &str)] = &[
+        ("catalog.rs", include_str!("catalog.rs")),
+        ("profile.rs", include_str!("profile.rs")),
+        ("provider.rs", include_str!("provider.rs")),
+        ("read.rs", include_str!("read.rs")),
+        ("query.rs", include_str!("query.rs")),
+        ("session.rs", include_str!("session.rs")),
+        ("transaction.rs", include_str!("transaction.rs")),
+        ("types.rs", include_str!("types.rs")),
+        ("write.rs", include_str!("write.rs")),
+        ("row_diagnostics.rs", include_str!("row_diagnostics.rs")),
+        ("pool.rs", include_str!("pool.rs")),
+    ];
+    const CATALOG: &[&str] = &[
+        "columns",
+        "statistics",
+        "tables",
+        "schemata",
+        "triggers",
+        "user_privileges",
+        "schema_privileges",
+        "table_privileges",
+        "column_privileges",
+        "geometry_columns",
+        "st_spatial_reference_systems",
+        "st_geometry_columns",
+        "routines",
+        "views",
+        "key_column_usage",
+        "table_constraints",
+        "referential_constraints",
+        "check_constraints",
+        "processlist",
+        "threads",
+        "prepared_statements_instances",
+        "events_statements_current",
+        "user",
+        "db",
+        "spatial_ref_sys",
+    ];
+    let mut unqualified = Vec::new();
+    for (file, source) in SOURCES {
+        let lower = source.to_ascii_lowercase();
+        for keyword in ["from ", "join "] {
+            for (at, _) in lower.match_indices(keyword) {
+                let rest = &lower[at + keyword.len()..];
+                let word: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
+                    .collect();
+                if CATALOG.contains(&word.as_str()) {
+                    let line = lower[..at].matches('\n').count() + 1;
+                    unqualified.push(format!("{file}:{line}: {word}"));
+                }
+            }
+        }
+    }
+    assert!(unqualified.is_empty(), "{}", unqualified.join("\n"));
 }
 
 /// La tabella delle famiglie di `MySQL` e `MariaDB` (regola F) e le colonne

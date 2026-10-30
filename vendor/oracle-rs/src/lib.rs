@@ -258,6 +258,10 @@ pub use serde_json;
 /// restano distinti dagli errori Oracle. Query e fetch distinguono il termine
 /// della pagina dall'esaurimento del cursore (ORA-01403), con completamento
 /// obbligatorio e parser condiviso; FETCH include sequenza e token TTC.
+/// I cursori server che il client non usa piu (statement eseguito, fallito,
+/// risultato esaurito, cursore scrollabile chiuso) si chiudono col piggyback
+/// `CLOSE_CURSORS` davanti alla chiamata successiva, come in python-oracledb
+/// thin; nessun cursore si riusa fra esecuzioni.
 ///
 /// `plenora-db-oracle` lo legge in compilazione: contro l'`oracle-rs`
 /// pubblicato, che non lo dichiara, la build fallisce invece di produrre un

@@ -1213,7 +1213,8 @@ async fn live_number_float_columns_read_and_write_exactly_or_fail() {
     }
 
     // 4. Valori che il FLOAT di destinazione non conserva: rifiuto esplicito,
-    //    non zero ne arrotondamento.
+    //    non zero ne arrotondamento. FLOAT(10) non ha una misura nella
+    //    matrice Arrow: il cancello lo rifiuta gia nel preflight.
     for (column, value) in [("F", 1e-300_f64), ("F10", 0.123_45)] {
         reset_floats(&provider, &secret).await;
         let outcome = arrow_write(
@@ -1224,7 +1225,11 @@ async fn live_number_float_columns_read_and_write_exactly_or_fail() {
         )
         .await;
         match outcome {
-            Err(error) if error.contains("DataMapping") => {}
+            Err(error)
+                if column == "F10"
+                    && error.contains("Unsupported")
+                    && error.contains(plenora_database_core::write_admission::UNPROVEN_PAIR) => {}
+            Err(error) if column == "F" && error.contains("DataMapping") => {}
             other => misses.push(format!("{column} {value:e}: {other:?}")),
         }
     }

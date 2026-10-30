@@ -16,13 +16,13 @@ pub async fn capability_document(client: &Client) -> Result<ProviderCapabilities
         .query_one(
             r"
             SELECT
-                current_setting('server_version'),
+                pg_catalog.current_setting('server_version'),
                 COALESCE(
-                  (SELECT extversion FROM pg_extension WHERE extname = 'postgis'),
+                  (SELECT extversion FROM pg_catalog.pg_extension WHERE extname = 'postgis'),
                   ''
                 ),
                 COALESCE(
-                  (SELECT extversion FROM pg_extension WHERE extname = 'age'),
+                  (SELECT extversion FROM pg_catalog.pg_extension WHERE extname = 'age'),
                   ''
                 )
             ",
@@ -180,26 +180,26 @@ async fn postgis_overloads(client: &Client) -> Result<BTreeMap<String, Vec<Overl
         .query(
             r"
             SELECT
-                lower(p.proname),
+                pg_catalog.lower(p.proname),
                 (p.pronargs - p.pronargdefaults)::int,
                 p.pronargs::int,
                 ARRAY(
-                    SELECT format_type(argument, NULL)
-                    FROM unnest(p.proargtypes) AS argument
+                    SELECT pg_catalog.format_type(argument, NULL)
+                    FROM pg_catalog.unnest(p.proargtypes) AS argument
                 )
-            FROM pg_proc p
-            JOIN pg_depend d
-              ON d.classid = 'pg_proc'::regclass
+            FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_depend d
+              ON d.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass
              AND d.objid = p.oid
-             AND d.refclassid = 'pg_extension'::regclass
+             AND d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass
              AND d.deptype = 'e'
-            JOIN pg_extension e ON e.oid = d.refobjid
+            JOIN pg_catalog.pg_extension e ON e.oid = d.refobjid
             WHERE e.extname = 'postgis'
               AND p.prokind IN ('f', 'a', 'w')
               -- Il renderer emette i nomi **non qualificati**: una funzione
               -- che appartiene all'estensione ma sta in uno schema fuori dal
               -- `search_path` esiste e non e invocabile dal SQL generato.
-              AND pg_function_is_visible(p.oid)
+              AND pg_catalog.pg_function_is_visible(p.oid)
             ",
             &[],
         )
@@ -235,42 +235,42 @@ async fn postgis_shapes(client: &Client) -> Result<(bool, bool, bool, bool)> {
             r"
             WITH gist_default AS (
                 SELECT t.typname
-                FROM pg_opclass oc
-                JOIN pg_am am ON am.oid = oc.opcmethod
-                JOIN pg_type t ON t.oid = oc.opcintype
+                FROM pg_catalog.pg_opclass oc
+                JOIN pg_catalog.pg_am am ON am.oid = oc.opcmethod
+                JOIN pg_catalog.pg_type t ON t.oid = oc.opcintype
                 -- L'opclass **stessa** deve appartenere all'estensione: legare
                 -- solo il tipo lasciava passare qualunque opclass GiST definita
                 -- da chiunque.
-                JOIN pg_depend doc
-                  ON doc.classid = 'pg_opclass'::regclass AND doc.objid = oc.oid
-                 AND doc.refclassid = 'pg_extension'::regclass AND doc.deptype = 'e'
-                JOIN pg_extension e ON e.oid = doc.refobjid
-                JOIN pg_depend dt
-                  ON dt.classid = 'pg_type'::regclass AND dt.objid = t.oid
-                 AND dt.refclassid = 'pg_extension'::regclass AND dt.deptype = 'e'
+                JOIN pg_catalog.pg_depend doc
+                  ON doc.classid = 'pg_catalog.pg_opclass'::pg_catalog.regclass AND doc.objid = oc.oid
+                 AND doc.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass AND doc.deptype = 'e'
+                JOIN pg_catalog.pg_extension e ON e.oid = doc.refobjid
+                JOIN pg_catalog.pg_depend dt
+                  ON dt.classid = 'pg_catalog.pg_type'::pg_catalog.regclass AND dt.objid = t.oid
+                 AND dt.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass AND dt.deptype = 'e'
                 WHERE e.extname = 'postgis'
                   AND am.amname = 'gist'
                   -- Il renderer emette `USING GIST (campo)` senza nominare
                   -- un'opclass, quindi dipende da quella predefinita e visibile.
                   AND oc.opcdefault
-                  AND pg_opclass_is_visible(oc.oid)
-                  AND pg_type_is_visible(t.oid)
+                  AND pg_catalog.pg_opclass_is_visible(oc.oid)
+                  AND pg_catalog.pg_type_is_visible(t.oid)
             )
             SELECT
-                EXISTS(SELECT 1 FROM pg_type t
-                       JOIN pg_depend d
-                         ON d.classid = 'pg_type'::regclass AND d.objid = t.oid
-                        AND d.refclassid = 'pg_extension'::regclass AND d.deptype = 'e'
-                       JOIN pg_extension e ON e.oid = d.refobjid
+                EXISTS(SELECT 1 FROM pg_catalog.pg_type t
+                       JOIN pg_catalog.pg_depend d
+                         ON d.classid = 'pg_catalog.pg_type'::pg_catalog.regclass AND d.objid = t.oid
+                        AND d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass AND d.deptype = 'e'
+                       JOIN pg_catalog.pg_extension e ON e.oid = d.refobjid
                        WHERE e.extname = 'postgis' AND t.typname = 'geometry'
-                         AND pg_type_is_visible(t.oid)),
-                EXISTS(SELECT 1 FROM pg_type t
-                       JOIN pg_depend d
-                         ON d.classid = 'pg_type'::regclass AND d.objid = t.oid
-                        AND d.refclassid = 'pg_extension'::regclass AND d.deptype = 'e'
-                       JOIN pg_extension e ON e.oid = d.refobjid
+                         AND pg_catalog.pg_type_is_visible(t.oid)),
+                EXISTS(SELECT 1 FROM pg_catalog.pg_type t
+                       JOIN pg_catalog.pg_depend d
+                         ON d.classid = 'pg_catalog.pg_type'::pg_catalog.regclass AND d.objid = t.oid
+                        AND d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass AND d.deptype = 'e'
+                       JOIN pg_catalog.pg_extension e ON e.oid = d.refobjid
                        WHERE e.extname = 'postgis' AND t.typname = 'geography'
-                         AND pg_type_is_visible(t.oid)),
+                         AND pg_catalog.pg_type_is_visible(t.oid)),
                 -- Un'opclass GiST predefinita **per ciascuna semantica**:
                 -- `create_spatial_indexes` costruisce un indice su ogni colonna
                 -- spatial, incluse le `geography`, e una sola prova sul tipo

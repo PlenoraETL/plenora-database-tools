@@ -96,7 +96,10 @@ impl SqlServerPool {
             .filter(SqlServerSession::is_reusable);
         let session = match session {
             Some(session) => session,
-            None => SqlServerSession::open(&self.config, cancellation).await?,
+            // In una `Box`: l'apertura (TLS, login, bootstrap e la sua
+            // verifica) e il future piu grande del checkout, e ogni scrittura
+            // e lettura lo conterrebbe per intero.
+            None => Box::pin(SqlServerSession::open(&self.config, cancellation)).await?,
         };
         Ok(PooledSqlServerSession {
             session: Some(session),

@@ -99,14 +99,16 @@ fn point_xy() -> Vec<u8> {
 
 #[test]
 fn append_plan_accepts_the_qualified_scalar_subset() {
-    let plan = Db2WritePlan::compile(&config(), &schema(), &operation(WriteMode::Append))
+    let mut plan = Db2WritePlan::compile(&config(), &schema(), &operation(WriteMode::Append))
         .expect("piano append Db2");
+    assert!(plan.array_insert_sql().is_err());
+    plan.test_catalog();
     assert_eq!(
-        plan.array_insert_sql(),
-        "INSERT INTO \"APP\".\"TARGET\" (\"ID\", \"VALUE\") VALUES (?, ?)"
+        plan.array_insert_sql().unwrap(),
+        "INSERT INTO \"APP\".\"TARGET\" (\"ID\", \"VALUE\") VALUES (CAST(? AS INTEGER), CAST(? AS CLOB(193 OCTETS)))"
     );
     assert_eq!(
-        plan.array_insert_sql().matches('?').count(),
+        plan.array_insert_sql().unwrap().matches('?').count(),
         2,
         "il numero di placeholder resta quello delle colonne, non delle righe"
     );
@@ -162,14 +164,21 @@ fn spatial_append_uses_integrated_constructor_and_declared_srid() {
     let mut write = operation(WriteMode::Append);
     write.srid_policy = Some(SridPolicy::RequireMatch);
     let plan = Db2WritePlan::compile(&config(), &schema, &write).expect("piano spatial Db2");
+    let mut plan = plan;
+    plan.test_catalog();
     let statement = plan.insert_statement(&[vec![
         plenora_database_core::provider::ParameterValue::I32(1),
         plenora_database_core::provider::ParameterValue::Bytes(point_xy()),
     ]]);
 
     assert!(statement
+        .unwrap()
         .sql
-        .contains("ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)"));
+        .contains("ST_GEOMETRY(BLOB(HEXTORAW(CAST(? AS VARCHAR(32672)))), 4326)"));
+    assert!(plan
+        .array_insert_sql()
+        .unwrap()
+        .contains("ST_GEOMETRY(BLOB(HEXTORAW(CAST(? AS VARCHAR(32672)))), 4326)"));
 }
 
 #[test]
@@ -270,4 +279,30 @@ fn spatial_plan_refuses_north_first_axes_and_derived_srids() {
         error.provider,
         Some(plenora_database_core::plan::ProviderKind::Db2)
     );
+}
+
+#[test]
+fn varchar2_compat_si_legge_o_la_regola_s_non_e_provata() {
+    use crate::write::parse_varchar2_compat;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::row::Row;
+    let row = |value: ParameterValue| {
+        Row::try_new(Arc::from(vec!["VALUE".to_owned()]), vec![value]).expect("riga")
+    };
+    let text = |value: &str| row(ParameterValue::String(value.to_owned()));
+    assert!(!parse_varchar2_compat(&[text("OFF")]).expect("OFF"));
+    assert!(parse_varchar2_compat(&[text("ON ")]).expect("ON"));
+    assert!(parse_varchar2_compat(&[text("OFF"), text("ON")]).expect("un membro ON"));
+    for unproven in [
+        Vec::new(),
+        vec![text("")],
+        vec![text("YES")],
+        vec![row(ParameterValue::Null {
+            type_name: "VARCHAR".to_owned(),
+        })],
+        vec![text("ON"), row(ParameterValue::I32(1))],
+    ] {
+        let error = parse_varchar2_compat(&unproven).expect_err("non provata");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
 }

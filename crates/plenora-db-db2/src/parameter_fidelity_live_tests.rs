@@ -880,16 +880,20 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
         .into_iter()
         .map(|(column, _)| column)
         .collect::<Vec<_>>();
-    let outcomes = sweep(
-        &target,
-        &columns,
-        &[
+    let mut outcomes = Vec::new();
+    for column in &columns {
+        for path in [
             FidelityPath::Native,
             FidelityPath::Portable,
             FidelityPath::Read,
-        ],
-    )
-    .await;
+        ] {
+            // Solo contesto operativo: il timeout deve localizzare la prova
+            // anche quando non si arriva al referto finale.
+            eprintln!("censimento parametri: {} {path:?}: inizio", column.name);
+            outcomes.extend(sweep(&target, std::slice::from_ref(column), &[path]).await);
+            eprintln!("censimento parametri: {} {path:?}: fine", column.name);
+        }
+    }
     provider
         .execute_ddl(
             &secret,

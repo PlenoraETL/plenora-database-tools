@@ -99,7 +99,7 @@ impl OracleProvider {
         &self.config
     }
 
-    fn pool_for(&self, secret: &SecretString) -> Result<Arc<OraclePool>> {
+    pub(crate) fn pool_for(&self, secret: &SecretString) -> Result<Arc<OraclePool>> {
         let fingerprint: [u8; 32] = Sha256::digest(secret.expose().as_bytes()).into();
         let mut cached = lock_recover(&self.cached_pool);
         if let Some(candidate) = cached.as_ref() {
@@ -228,6 +228,17 @@ impl Provider for OracleProvider {
     ) -> ProviderFuture<'a, WriteOutcome> {
         Box::pin(async move {
             let pool = self.pool_for(secret)?;
+            // La regola K: una chiave ripetuta nell'ingresso di una mode per
+            // chiavi rifiuta la scrittura prima del COMMIT.
+            let input = plenora_database_core::write_keys::guard_input_keys(
+                prepared.operation.mode,
+                &prepared.operation.keys,
+                input,
+                budget,
+                // Un indice B-tree Oracle non registra le chiavi tutte `NULL`
+                // e confronta le altre con i `NULL` uguali.
+                plenora_database_core::write_keys::NullKeys::EqualUnlessAllNull,
+            )?;
             crate::write::execute_write(
                 &self.config,
                 &pool,

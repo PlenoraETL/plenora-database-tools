@@ -27,7 +27,7 @@
 //! | `Provider::query` (runtime) | [`query_parameters`] |
 //! | lettura plan-based (`Provider::read`, filtro) | [`read_filter`] |
 //! | parameter array e SQL del chiamante Db2 | [`described`], sul tipo che `SQLDescribeParam` da al segnaposto |
-//! | scrittura Arrow (`Provider::write`) | la regola delle scritture della #134 (`store_rewrite`) |
+//! | scrittura Arrow (`Provider::write`) | [`write_column`], poi `store_rewrite::RewriteGuard` sui valori |
 //! | SQL del chiamante (`TransactionScope::execute`/`query`) su PostgreSQL, `MySQL`, `MariaDB`, SQL Server, Oracle | limite dichiarato in [`crate::operand_admission`] |
 //!
 //! [`CompiledPortable`]: crate::portable::CompiledPortable
@@ -43,6 +43,26 @@ use crate::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result}
 pub use crate::operand_admission::{
     admit as described, admit_filter as read_filter, admit_typed_parameters as query_parameters,
 };
+
+/// Ammette una colonna Arrow sul target misurato e restituisce le sole
+/// riscritture da giudicare sui valori con `store_rewrite::RewriteGuard`.
+///
+/// Il giudizio sul tipo avviene una volta: qui per Arrow, con `described`
+/// per i parametri. La misura non scavalca i rifiuti del codec effettivo
+/// (per esempio -0.0 Oracle) ne quelli dei descrittori ODBC di Db2.
+/// Non si riapplica l'ammissione dei parametri ai valori Arrow: la politica
+/// delle perdite e quella della scrittura e le chiavi restano senza perdita.
+///
+/// # Errors
+///
+/// I rifiuti di [`crate::write_admission::ServerAdmission::admit`].
+pub fn write_column(
+    measured: &crate::write_admission::ServerAdmission<'_>,
+    key: &crate::write_admission::AdmissionKey,
+    dimensions: crate::write_admission::TargetDimensions,
+) -> Result<Vec<crate::store_rewrite::StoreRewrite>> {
+    measured.admit(key, dimensions)
+}
 
 /// Lo statement eseguibile di un AST portable: ogni letterale ammesso sul
 /// tipo della colonna che incontra, letto dal catalogo della transazione

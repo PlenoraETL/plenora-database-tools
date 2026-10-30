@@ -554,7 +554,7 @@ fn validate_write(write: &WriteOperation, plan: &Plan) -> Result<()> {
             "update richiede update_columns",
         ));
     }
-    Ok(())
+    plenora_database_core::write_keys::refuse_key_in_update_columns(write)
 }
 
 #[allow(clippy::too_many_lines)]

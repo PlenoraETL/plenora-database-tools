@@ -57,6 +57,7 @@ EXCLUDED = {
     "sqlserver-assurance.yml/sqlserver": ("docker compose", "fixture SQL Server in Docker"),
     "sqlserver-matrix.yml/matrix": ("scripts/check_sqlserver_matrix.py", "matrice SQL Server live"),
     "supply-chain.yml/cargo-deny": ("scripts/check_cargo_deny.py", "cargo deny eseguito in Docker con database RustSec"),
+    "write-admission-probes.yml/probes": ("scripts/sonde_scritture_server.py", "sonde contro database live"),
 }
 
 

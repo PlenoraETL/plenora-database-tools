@@ -276,6 +276,9 @@ impl OracleReadPlan {
                     // rendeva +0 per un -0.0 salvato non canonico.
                     Ok(format!("DUMP({source}) AS {quoted}"))
                 } else {
+                    // BINARY_FLOAT e BINARY_DOUBLE si leggono nel formato
+                    // binario: CAST AS NUMBER falliva oltre 1E126, azzerava i
+                    // valori sotto 1E-130 e perdeva lo zero negativo.
                     Ok(format!("{source} AS {quoted}"))
                 }
             })

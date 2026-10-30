@@ -16,6 +16,7 @@ use plenora_database_core::plan::{
 use plenora_database_core::primary_key::validate_create_primary_key;
 use plenora_database_core::provider::{BatchStream, ParameterValue, PreparedWrite};
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
+use plenora_database_core::store_rewrite::{ColumnRewrites, RewriteGuard};
 use plenora_database_core::transaction::{CommitOutcome, Statement, TransactionScope};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result,
@@ -44,6 +45,11 @@ pub struct OracleWritePlan {
     updates: Vec<usize>,
     create_sql: Option<String>,
     create_spatial_index: bool,
+    /// Le riscritture al salvataggio del target (regola S,
+    /// `plenora_database_core::store_rewrite`), misurate (regola A,
+    /// [`crate::write_admission`]) per la chiave d'ammissione di ogni colonna,
+    /// dal catalogo nel preflight o dai tipi di Create.
+    rewrites: Vec<ColumnRewrites>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +64,7 @@ struct WriteColumn {
     /// come `BINARY_DOUBLE`, il server lo convertiva in NUMBER azzerando in
     /// silenzio ogni |x| < 1e-130 e arrotondandolo alle cifre di `FLOAT(b)`.
     float_digits: Option<usize>,
+    target_type: Option<crate::write_intermediate::TargetType>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +74,9 @@ struct SpatialWriteColumn {
     semantics: plenora_database_core::geometry::SpatialSemantics,
     exact_geometry_type: Option<String>,
 }
+
+#[path = "write_lob.rs"]
+mod lob;
 
 impl OracleWritePlan {
     fn compile(
@@ -137,6 +147,9 @@ impl OracleWritePlan {
         let create_sql = (operation.mode == WriteMode::Create)
             .then(|| create_table_sql(&target, &columns, &keys))
             .transpose()?;
+        // Le riscritture vengono dalla regola A, nel preflight (o per i tipi
+        // di Create, in `prepare_write`).
+        let rewrites = Vec::new();
         Ok(Self {
             mode: operation.mode,
             target,
@@ -147,10 +160,15 @@ impl OracleWritePlan {
             updates,
             create_sql,
             create_spatial_index: operation.create_spatial_index,
+            rewrites,
         })
     }
 
-    fn preflight(&mut self, target: &OracleObjectDescription) -> Result<LossReport> {
+    fn preflight(
+        &mut self,
+        target: &OracleObjectDescription,
+        policy: MappingPolicy,
+    ) -> Result<LossReport> {
         if target.kind != "TABLE" {
             return Err(prepare_error(
                 ErrorCategory::Unsupported,
@@ -234,19 +252,132 @@ impl OracleWritePlan {
             WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys
         ) && !target_has_unique_key(target, &self.keys, &self.columns)
         {
+            // La regola K (`plenora_database_core::write_keys`), con la
+            // categoria di SQL Server e degli altri provider (`schema`; fino
+            // al 25/10 qui era `unsupported`).
             return Err(prepare_error(
-                ErrorCategory::Unsupported,
+                ErrorCategory::Schema,
                 "le chiavi Oracle devono corrispondere a un indice univoco",
             ));
         }
+        // La politica e quella richiesta: fino al 25/10 il report diceva
+        // sempre `Strict` (`validate_operation` ammette soltanto `Strict`).
         Ok(LossReport {
             schema_version: 2,
-            policy: MappingPolicy::Strict,
+            policy,
             losses: Vec::new(),
         })
     }
 
-    fn insert_statement(&self, row: &[ParameterValue]) -> Statement {
+    /// La regola A ([`crate::write_admission`]): ogni colonna non spatial
+    /// cerca la propria chiave d'ammissione nel fixture della major del
+    /// server, e le riscritture misurate diventano quelle della regola S.
+    /// Una chiave non misurata rifiuta la scrittura con ogni politica.
+    ///
+    /// La tabella della sonda (`cfg(test)`) non applica la regola: e la misura
+    /// che la regola legge.
+    fn admit(
+        &mut self,
+        facts: &[crate::write_admission::ColumnFacts],
+        server: &crate::write_admission::ServerFacts,
+    ) -> Result<()> {
+        #[cfg(test)]
+        if plenora_database_testkit::write_probe::is_probe_table(&self.object_name) {
+            self.assign_target_types(facts, server)?;
+            self.rewrites = Vec::new();
+            return Ok(());
+        }
+        let measured = crate::write_admission::admission_table()?.server(&server.major)?;
+        let keys = self
+            .keys
+            .iter()
+            .filter_map(|index| {
+                let name = &self.columns[*index].name;
+                facts.iter().find(|candidate| &candidate.name == name)
+            })
+            .collect::<Vec<_>>();
+        crate::write_admission::refuse_non_binary_keys(&keys, server)?;
+        let mut rewrites = Vec::with_capacity(self.columns.len());
+        for (index, column) in self.columns.iter().enumerate() {
+            if column.spatial.is_some() {
+                continue;
+            }
+            let fact = facts
+                .iter()
+                .find(|candidate| candidate.name == column.name)
+                .ok_or_else(|| {
+                    prepare_error(ErrorCategory::DataMapping, "colonna target Oracle mancante")
+                })?;
+            let (key, dimensions) =
+                crate::write_admission::admission_key(&column.data_type, fact, server);
+            rewrites.push(ColumnRewrites {
+                field: index,
+                rewrites: crate::write_admission::store_rewrites(
+                    plenora_database_core::admission_gate::write_column(
+                        &measured, &key, dimensions,
+                    )?,
+                    &column.data_type,
+                ),
+                target_type: key.nativo,
+            });
+        }
+        self.assign_target_types(facts, server)?;
+        self.rewrites = rewrites;
+        Ok(())
+    }
+
+    // L'ammissione della coppia precede la rappresentazione del parametro:
+    // un tipo chiuso conserva la diagnosi comune, senza saltare la guardia.
+    fn assign_target_types(
+        &mut self,
+        facts: &[crate::write_admission::ColumnFacts],
+        server: &crate::write_admission::ServerFacts,
+    ) -> Result<()> {
+        for column in &mut self.columns {
+            if column.spatial.is_none() {
+                let fact = facts
+                    .iter()
+                    .find(|fact| fact.name == column.name)
+                    .ok_or_else(crate::write_intermediate::unsupported)?;
+                if fact.data_type == "CLOB" && server.charset != "AL32UTF8" {
+                    return Err(crate::write_intermediate::unsupported());
+                }
+                column.target_type =
+                    Some(crate::write_intermediate::TargetType::from_catalog(fact)?);
+            }
+        }
+        if self.columns.iter().enumerate().any(|(i, column)| {
+            column
+                .target_type
+                .as_ref()
+                .is_some_and(|t| t.lob_type().is_some())
+                && (self.keys.contains(&i)
+                    || (self.mode == WriteMode::Upsert && !self.updates.contains(&i)))
+        }) {
+            return Err(crate::write_intermediate::unsupported());
+        }
+        Ok(())
+    }
+
+    /// I fatti delle colonne che `mode=create` crea.
+    fn create_facts(&self) -> Result<Vec<crate::write_admission::ColumnFacts>> {
+        self.columns
+            .iter()
+            .filter(|column| column.spatial.is_none())
+            .map(|column| {
+                crate::write_admission::create_facts(&column.name, &column.data_type).ok_or_else(
+                    || {
+                        prepare_error(
+                            ErrorCategory::Unsupported,
+                            "tipo Arrow non qualificato per write Oracle",
+                        )
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn insert_statement(&self, row: &[ParameterValue]) -> Result<Statement> {
         let columns = self
             .columns
             .iter()
@@ -258,41 +389,41 @@ impl OracleWritePlan {
             .iter()
             .enumerate()
             .map(|(index, column)| column.placeholder(index + 1))
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>>>()?
             .join(", ");
-        Statement::new(format!(
+        Ok(Statement::new(format!(
             "INSERT INTO {} ({columns}) VALUES ({placeholders})",
             self.target
         ))
-        .with_params(row.to_vec())
+        .with_params(row.to_vec()))
     }
 
-    fn update_statement(&self, row: &[ParameterValue]) -> Statement {
+    fn update_statement(&self, row: &[ParameterValue]) -> Result<Statement> {
         let assignments = self
             .updates
             .iter()
             .enumerate()
             .map(|(position, index)| {
-                format!(
+                Ok(format!(
                     "{} = {}",
                     self.columns[*index].quoted,
-                    self.columns[*index].placeholder(position + 1)
-                )
+                    self.columns[*index].placeholder(position + 1)?
+                ))
             })
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>>>()?
             .join(", ");
         let predicate = self
             .keys
             .iter()
             .enumerate()
             .map(|(position, index)| {
-                format!(
-                    "{} = :{}",
+                Ok(format!(
+                    "{} = {}",
                     self.columns[*index].quoted,
-                    self.updates.len() + position + 1
-                )
+                    self.columns[*index].placeholder(self.updates.len() + position + 1)?
+                ))
             })
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>>>()?
             .join(" AND ");
         let params = self
             .updates
@@ -300,34 +431,46 @@ impl OracleWritePlan {
             .chain(&self.keys)
             .map(|index| row[*index].clone())
             .collect();
-        Statement::new(format!(
+        Ok(Statement::new(format!(
             "UPDATE {} SET {assignments} WHERE {predicate}",
             self.target
         ))
-        .with_params(params)
+        .with_params(params))
     }
 
-    fn delete_statement(&self, row: &[ParameterValue]) -> Statement {
+    fn delete_statement(&self, row: &[ParameterValue]) -> Result<Statement> {
         let predicate = self
             .keys
             .iter()
             .enumerate()
-            .map(|(position, index)| format!("{} = :{}", self.columns[*index].quoted, position + 1))
-            .collect::<Vec<_>>()
+            .map(|(position, index)| {
+                Ok(format!(
+                    "{} = {}",
+                    self.columns[*index].quoted,
+                    self.columns[*index].placeholder(position + 1)?
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
             .join(" AND ");
-        Statement::new(format!("DELETE FROM {} WHERE {predicate}", self.target))
-            .with_params(self.keys.iter().map(|index| row[*index].clone()).collect())
+        Ok(
+            Statement::new(format!("DELETE FROM {} WHERE {predicate}", self.target))
+                .with_params(self.keys.iter().map(|index| row[*index].clone()).collect()),
+        )
     }
 
-    fn upsert_statement(&self, row: &[ParameterValue]) -> Statement {
+    fn upsert_statement(&self, row: &[ParameterValue]) -> Result<Statement> {
         let source = self
             .columns
             .iter()
             .enumerate()
             .map(|(position, column)| {
-                format!("{} AS {}", column.placeholder(position + 1), column.quoted)
+                Ok(format!(
+                    "{} AS {}",
+                    column.placeholder(position + 1)?,
+                    column.quoted
+                ))
             })
-            .collect::<Vec<_>>()
+            .collect::<Result<Vec<_>>>()?
             .join(", ");
         let predicate = self
             .keys
@@ -363,13 +506,13 @@ impl OracleWritePlan {
             .map(|column| format!("S.{}", column.quoted))
             .collect::<Vec<_>>()
             .join(", ");
-        Statement::new(format!(
+        Ok(Statement::new(format!(
             "MERGE INTO {} T USING (SELECT {source} FROM DUAL) S ON ({predicate}) \
              WHEN MATCHED THEN UPDATE SET {updates} \
              WHEN NOT MATCHED THEN INSERT ({names}) VALUES ({values})",
             self.target
         ))
-        .with_params(row.to_vec())
+        .with_params(row.to_vec()))
     }
 
     const fn mutation_kind(&self) -> &'static str {
@@ -383,27 +526,47 @@ impl OracleWritePlan {
 }
 
 impl WriteColumn {
-    fn placeholder(&self, position: usize) -> String {
-        self.spatial.as_ref().map_or_else(
-            || {
-                if self.data_type == DataType::Boolean {
-                    format!("TO_BOOLEAN(:{position})")
-                } else if matches!(self.data_type, DataType::Timestamp(_, Some(_))) {
-                    format!(
-                        "TO_TIMESTAMP_TZ(:{position}, '{}')",
-                        plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
-                    )
+    fn parameter(&self, value: ParameterValue) -> Result<ParameterValue> {
+        match (&self.spatial, self.float_digits, value) {
+            (Some(spatial), _, ParameterValue::Bytes(bytes)) => Ok(ParameterValue::Wkb {
+                bytes,
+                srid: Some(spatial.srid),
+                dimensions: if spatial.dimensions == "xyz" {
+                    plenora_database_core::geometry::Dimensions::Xyz
                 } else {
-                    format!(":{position}")
-                }
-            },
-            |spatial| {
-                format!(
-                    "MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(:{position}, {})",
-                    spatial.srid
-                )
-            },
-        )
+                    plenora_database_core::geometry::Dimensions::Xy
+                },
+                semantics: spatial.semantics,
+            }),
+            (_, Some(digits), ParameterValue::F64(value)) => {
+                float_as_decimal(value, digits).map(ParameterValue::Decimal)
+            }
+            (_, _, value) => Ok(value),
+        }
+    }
+
+    fn placeholder(&self, position: usize) -> Result<String> {
+        if let Some(spatial) = &self.spatial {
+            return Ok(format!(
+                "MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(:{position}, {})",
+                spatial.srid
+            ));
+        }
+        let target = self
+            .target_type
+            .as_ref()
+            .ok_or_else(crate::write_intermediate::unsupported)?;
+        let input = if self.data_type == DataType::Boolean {
+            format!("TO_BOOLEAN(:{position})")
+        } else if matches!(self.data_type, DataType::Timestamp(_, Some(_))) {
+            format!(
+                "TO_TIMESTAMP_TZ(:{position}, '{}')",
+                plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
+            )
+        } else {
+            format!(":{position}")
+        };
+        Ok(target.operand(&input))
     }
 
     fn native_type(&self) -> Result<String> {
@@ -433,14 +596,21 @@ pub async fn prepare_write(
     let mut plan = OracleWritePlan::compile(config, &input_schema, operation)?;
     let (operation_lease, columns_lease) =
         ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
-    let loss_report = if operation.mode == WriteMode::Create {
+    // La regola A: la major e i charset del server, e i fatti delle colonne
+    // del target (o dei tipi di Create), sulla stessa sessione del catalogo.
+    let mut connection = pool.checkout(cancellation).await?;
+    let server =
+        crate::write_admission::server_facts(config, connection.connection()?, cancellation)
+            .await?;
+    let mut loss_report = if operation.mode == WriteMode::Create {
+        let facts = plan.create_facts()?;
+        plan.admit(&facts, &server)?;
         LossReport {
             schema_version: 2,
-            policy: MappingPolicy::Strict,
+            policy: operation.mapping_policy,
             losses: Vec::new(),
         }
     } else {
-        let mut connection = pool.checkout(cancellation).await?;
         let target = describe_object(
             config,
             connection.connection()?,
@@ -449,10 +619,32 @@ pub async fn prepare_write(
             cancellation,
         )
         .await?;
-        connection.allow_reuse();
-        drop(connection);
-        plan.preflight(&target)?
+        let facts = crate::write_admission::column_facts(
+            config,
+            connection.connection()?,
+            &plan.schema_name,
+            &plan.object_name,
+            cancellation,
+        )
+        .await?;
+        let report = plan.preflight(&target, operation.mapping_policy)?;
+        plan.admit(&facts, &server)?;
+        report
     };
+    connection.allow_reuse();
+    drop(connection);
+    // La regola S: con una politica non stretta le riscritture sono perdite
+    // dichiarate (oggi `validate_operation` ammette soltanto `Strict`, e la
+    // lista resta vuota).
+    loss_report.losses.extend(
+        RewriteGuard::new(
+            ProviderKind::Oracle,
+            &input_schema,
+            operation,
+            plan.rewrites.clone(),
+        )?
+        .losses(),
+    );
     loss_report.validate()?;
     Ok(PreparedWrite::new(
         operation.clone(),
@@ -499,6 +691,19 @@ pub async fn execute_write(
     let plan = prepared
         .take_driver_state::<OracleWritePlan>()
         .ok_or_else(|| write_error(ErrorCategory::InvalidPlan, "piano preparato Oracle assente"))?;
+    // La regola S: un valore che Oracle riscriverebbe al salvataggio (il
+    // testo vuoto e il binario vuoto come `NULL`, `CHAR(n)` completato con
+    // spazi, un float sotto il minimo di `FLOAT`) si rifiuta con `Strict`, e
+    // in una chiave con ogni politica, prima del COMMIT.
+    let input = plenora_database_core::store_rewrite::guard_input(
+        input,
+        RewriteGuard::new(
+            ProviderKind::Oracle,
+            &prepared.input_schema,
+            &prepared.operation,
+            plan.rewrites.clone(),
+        )?,
+    );
     if plan.create_sql.is_none() {
         return Box::pin(load_target(
             config,
@@ -585,15 +790,54 @@ async fn load_target(
         cancellation,
     )
     .await?;
-    let execution = execute_input(
-        &mut transaction,
-        plan,
-        &prepared.input_schema,
-        input.as_mut(),
-        budget,
-        cancellation,
-        declared_rows,
-    )
+    // Il piano preparato e Create non sostituiscono i fatti della sessione
+    // che scrive: rileggere prima anche del DELETE di Replace.
+    let execution = async {
+        let facts = crate::write_admission::column_facts(
+            config,
+            transaction.catalog_connection()?,
+            &plan.schema_name,
+            &plan.object_name,
+            cancellation,
+        )
+        .await?;
+        let server = crate::write_admission::server_facts(
+            config,
+            transaction.catalog_connection()?,
+            cancellation,
+        )
+        .await?;
+        for column in &plan.columns {
+            if column
+                .target_type
+                .as_ref()
+                .is_some_and(|t| t.declaration == "CLOB")
+                && server.charset != "AL32UTF8"
+            {
+                return Err(crate::write_intermediate::unsupported());
+            }
+            if column.spatial.is_none() {
+                let fact = facts
+                    .iter()
+                    .find(|fact| fact.name == column.name)
+                    .ok_or_else(crate::write_intermediate::unsupported)?;
+                let actual = crate::write_intermediate::TargetType::from_catalog(fact)?;
+                if column.target_type.as_ref() != Some(&actual) {
+                    return Err(crate::write_intermediate::unsupported());
+                }
+            }
+        }
+        execute_input(
+            &mut transaction,
+            plan,
+            &prepared.input_schema,
+            input.as_mut(),
+            budget,
+            cancellation,
+            declared_rows,
+        )
+        .await
+    }
     .await;
     let (received, affected) = match execution {
         Ok(counts) => counts,
@@ -781,18 +1025,36 @@ async fn execute_input(
             .iter()
             .map(|row| match plan.mode {
                 WriteMode::Append | WriteMode::Create | WriteMode::Replace => {
-                    Ok(plan.insert_statement(row))
+                    plan.insert_statement(row)
                 }
-                WriteMode::Update => Ok(plan.update_statement(row)),
-                WriteMode::Upsert => Ok(plan.upsert_statement(row)),
-                WriteMode::DeleteByKeys => Ok(plan.delete_statement(row)),
+                WriteMode::Update => plan.update_statement(row),
+                WriteMode::Upsert => plan.upsert_statement(row),
+                WriteMode::DeleteByKeys => plan.delete_statement(row),
                 WriteMode::TruncateInsert => Err(write_error(
                     ErrorCategory::Unsupported,
                     "truncate_insert Oracle non qualificato",
                 )),
             })
             .collect::<Result<Vec<_>>>()?;
-        let changed = execute_statements(transaction, &statements, cancellation).await?;
+        let changed = if plan.columns.iter().any(|c| {
+            c.target_type
+                .as_ref()
+                .is_some_and(|t| t.lob_type().is_some())
+        }) {
+            let mut count = 0;
+            for statement in &statements {
+                let (statement, verification) = lob::verified_statement(plan, statement)?;
+                count = checked_dml_count(
+                    count,
+                    transaction
+                        .execute_verified_lob_dml(&statement, &verification, cancellation)
+                        .await?,
+                )?;
+            }
+            count
+        } else {
+            execute_statements(transaction, &statements, cancellation).await?
+        };
         affected = affected.checked_add(changed).ok_or_else(|| {
             write_error(
                 ErrorCategory::ResourceLimit,
@@ -972,12 +1234,7 @@ fn batch_values(batch: &RecordBatch, plan: &OracleWritePlan) -> Result<Vec<Vec<P
                 .map(|(array, (field, column))| {
                     let value = arrow_parameter_value(array.as_ref(), field, row, 'T')
                         .map_err(oracle_write_error)?;
-                    match (column.float_digits, value) {
-                        (Some(digits), ParameterValue::F64(value)) => {
-                            float_as_decimal(value, digits).map(ParameterValue::Decimal)
-                        }
-                        (_, value) => Ok(value),
-                    }
+                    column.parameter(value)
                 })
                 .collect()
         })
@@ -1024,6 +1281,7 @@ fn validate_operation(
     schema: &SchemaRef,
     operation: &WriteOperation,
 ) -> Result<()> {
+    plenora_database_core::write_keys::refuse_key_in_update_columns(operation)?;
     if operation
         .target
         .catalog
@@ -1179,6 +1437,7 @@ fn compile_column(field: &Field, renderer: &Renderer) -> Result<WriteColumn> {
         nullable: field.is_nullable(),
         spatial,
         float_digits: None,
+        target_type: None,
     })
 }
 
@@ -1541,3 +1800,7 @@ fn write_error(category: ErrorCategory, message: &'static str) -> DatabaseError 
 #[cfg(test)]
 #[path = "write_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "write_intermediate_tests.rs"]
+mod intermediate_tests;

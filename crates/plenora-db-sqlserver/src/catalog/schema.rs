@@ -868,6 +868,120 @@ fn spatial_index(row: &tiberius::Row) -> Result<Option<SqlServerSpatialIndex>> {
     }
 }
 
+/// La regola T: lo schema di un oggetto, una volta per operazione, come lo
+/// risolverebbe la sessione.
+///
+/// Uno schema nominato si usa com'e. Senza schema SQL Server risolve un nome
+/// nello schema predefinito dell'utente, poi in `dbo`; fino al 25/10 la
+/// lettura, la descrizione e la validazione spatial delle query nominavano
+/// sempre `dbo`: con `DEFAULT_SCHEMA = app` e le tabelle `app.r4t` e
+/// `dbo.r4t`, `{object: "r4t"}` si leggeva e si descriveva in `dbo`, mentre
+/// lo SQL del chiamante e il testo di una `QueryOperation` senza schema
+/// leggevano `app.r4t`. `OBJECT_ID(QUOTENAME(@P1))` risolve il nome con le
+/// regole della sessione; un oggetto che la sessione non vede si rifiuta.
+///
+/// # Errors
+///
+/// `not_found` se la sessione non risolve il nome; l'errore classificato
+/// della lettura.
+pub async fn resolve_schema(
+    session: &mut SqlServerSession,
+    schema: Option<&str>,
+    object: &str,
+    cancellation: &CancellationToken,
+) -> Result<String> {
+    if let Some(schema) = schema {
+        return Ok(schema.to_owned());
+    }
+    let mut query = Query::new("SELECT OBJECT_SCHEMA_NAME(OBJECT_ID(QUOTENAME(@P1)));");
+    query.bind(object.to_owned());
+    let rows = one_result(
+        session
+            .execute_query(query, ErrorPhase::Probe, cancellation)
+            .await?,
+    )?;
+    rows.first()
+        .map(|row| optional_text(row, 0, "schema"))
+        .transpose()?
+        .flatten()
+        .ok_or_else(|| {
+            plenora_database_core::DatabaseError::new(
+                plenora_database_core::ErrorCategory::NotFound,
+                ErrorPhase::Prepare,
+                Some(plenora_database_core::plan::ProviderKind::Sqlserver),
+                "oggetto SQL Server senza schema non risolto dalla sessione",
+            )
+        })
+}
+
+/// I fatti di una colonna che decidono che cosa il server ne salva, per la
+/// chiave d'ammissione della regola A della scrittura
+/// (`crate::write::admission`): il tipo di `sys.types`, lunghezza, precisione
+/// e scala, la collation e la sua code page, `is_ansi_padded` e la
+/// nullabilita (con `ANSI_PADDING OFF` un `char(n)` nullable toglie gli spazi
+/// finali, uno `NOT NULL` completa).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlServerWriteFacts {
+    pub name: String,
+    pub native_type: String,
+    pub max_length: i16,
+    pub precision: u8,
+    pub scale: u8,
+    pub collation: Option<String>,
+    /// `COLLATIONPROPERTY(collation, 'CodePage')`: 65001 per le `_UTF8`, 0
+    /// per le collation soltanto Unicode, assente senza collation.
+    pub code_page: Option<i32>,
+    pub ansi_padded: bool,
+    pub nullable: bool,
+}
+
+/// I fatti della regola A ([`SqlServerWriteFacts`]) per ogni colonna del
+/// target. Non entrano nel documento di describe ne nel token strutturale.
+///
+/// # Errors
+///
+/// Gli errori della lettura del catalogo.
+pub async fn load_write_facts(
+    session: &mut SqlServerSession,
+    schema: &str,
+    object: &str,
+    cancellation: &CancellationToken,
+) -> Result<Vec<SqlServerWriteFacts>> {
+    let rows = execute_bound(
+        session,
+        r"
+SELECT c.name, ty.name, c.max_length, c.precision, c.scale, c.collation_name,
+       CONVERT(int, COLLATIONPROPERTY(c.collation_name, N'CodePage')),
+       c.is_ansi_padded, c.is_nullable
+FROM sys.objects AS o
+JOIN sys.schemas AS s ON s.schema_id = o.schema_id
+JOIN sys.columns AS c ON c.object_id = o.object_id
+JOIN sys.types AS ty ON ty.user_type_id = c.user_type_id
+WHERE s.name = @P1 AND o.name = @P2
+ORDER BY c.column_id;
+",
+        schema,
+        object,
+        cancellation,
+    )
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok(SqlServerWriteFacts {
+                name: text(row, 0, "column_name")?,
+                native_type: text(row, 1, "native_type")?,
+                max_length: required(row, 2, "max_length")?,
+                precision: required(row, 3, "precision")?,
+                scale: required(row, 4, "scale")?,
+                collation: optional_text(row, 5, "collation")?,
+                code_page: super::optional(row, 6, "code_page")?,
+                ansi_padded: required(row, 7, "is_ansi_padded")?,
+                nullable: required(row, 8, "is_nullable")?,
+            })
+        })
+        .collect()
+}
+
 async fn execute_bound(
     session: &mut SqlServerSession,
     sql: &'static str,

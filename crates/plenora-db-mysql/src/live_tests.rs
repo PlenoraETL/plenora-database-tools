@@ -1,16 +1,32 @@
 #![allow(clippy::significant_drop_tightening)]
 
+use crate::MariadbProvider;
 use crate::{
     describe_object, list_objects, list_schemas, probe_server, MysqlConfig, MysqlProvider,
     MysqlSession,
 };
 use mysql_async::prelude::Queryable;
+use plenora_database_core::arrow::array::{
+    ArrayRef, Float32Array, Float64Array, Int64Array, StringArray, TimestampMicrosecondArray,
+};
+use plenora_database_core::arrow::schema::{DataType, Field, SchemaRef, TimeUnit};
+use plenora_database_core::arrow::RecordBatch;
+use plenora_database_core::loss::MappingPolicy;
+use plenora_database_core::outcome::{WriteOutcome, WriteStatus};
 use plenora_database_core::plan::{ObjectRef, Operation, ProviderKind, ReadOperation};
+use plenora_database_core::plan::{TransactionProfile, WriteMode, WriteOperation};
+use plenora_database_core::protocol::contract_schema;
+use plenora_database_core::provider::{BatchStream, ProviderFuture};
 use plenora_database_core::provider::{ParameterBag, Provider, SecretString};
+use plenora_database_core::write_admission::{AdmissionKey, TargetDimensions};
 use plenora_database_core::{
     CancellationToken, ErrorCategory, ReadCheckpoint, ResourceBudget, ResourceLimits,
 };
+use plenora_database_core::{DatabaseError, RemoteEffect};
 use plenora_database_engine::{Engine, Observation};
+use plenora_database_testkit::write_probe::{self, ProbeHooks, ProbeSpec, PROBE_TABLE};
+use std::collections::VecDeque;
+use std::sync::Arc;
 
 const DEFAULT_PASSWORD: &str = "DataFlow_Test_2026!";
 
@@ -328,6 +344,7 @@ async fn live_pool_reset_reapplies_deterministic_session_bootstrap() {
     assert!(sql_mode.contains("STRICT_TRANS_TABLES"));
     assert!(sql_mode.contains("ERROR_FOR_DIVISION_BY_ZERO"));
     assert!(sql_mode.contains("NO_ENGINE_SUBSTITUTION"));
+    assert!(sql_mode.contains("NO_AUTO_VALUE_ON_ZERO"));
     drop(connection);
     pool.disconnect().await.expect("disconnect pool MySQL");
 }
@@ -5265,7 +5282,10 @@ async fn live_v12_write_upsert_rejects_conflicting_unique_index() {
     else {
         panic!("prepare upsert deve fallire fail-closed sull'indice in conflitto");
     };
-    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert_eq!(error.category, ErrorCategory::Schema);
+    assert!(error
+        .message
+        .ends_with(plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX));
 
     let mut check = MysqlSession::open(&live_config(), &cancellation)
         .await
@@ -8097,6 +8117,2209 @@ async fn live_caller_query_decode_failure_requires_recovery() {
     tx.rollback(&cancellation).await.expect("rollback");
 }
 
+// --- Le regole W1/W2 e la regola R della scrittura ----------------------
+//
+// Le regole W1/W2 e la regola R della scrittura su `MySQL`, contro il
+// fixture live: la sessione applica le foreign key anche con il valore
+// globale spento, Update conta le righe trovate e non soltanto quelle
+// cambiate, e un trigger `BEFORE` sull'evento distruttivo rifiuta la mode
+// prima di ogni effetto.
+//
+// Gli ingressi sono quelli della rilettura del 25/10 su 15b57f8 (`MySQL`
+// 9.7): con `SET GLOBAL foreign_key_checks = 0` Append committava un orfano;
+// Update `(1,'a'),(2,'z')` su `(1,a),(2,b),(3,a)` pubblicava `confirmed 1
+// skipped 1` (la chiave 1, presente e invariata, come assente); con un
+// `BEFORE UPDATE` che fa `SET NEW.label = OLD.label` pubblicava `confirmed
+// 0 skipped 1`.
+/// Le prove condividono le tabelle e, per W2, il valore globale.
+static SEMANTICA_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+const SEMANTICA_TABLE: &str = "write_semantica";
+const SEMANTICA_PARENT: &str = "write_semantica_padre";
+
+fn semantica_schema(
+    mode: plenora_database_core::plan::WriteMode,
+) -> plenora_database_core::arrow::SchemaRef {
+    use plenora_database_core::protocol;
+    let mut fields = vec![plenora_database_core::arrow::schema::Field::new(
+        "id",
+        plenora_database_core::arrow::schema::DataType::Int64,
+        false,
+    )];
+    if mode != plenora_database_core::plan::WriteMode::DeleteByKeys {
+        fields.push(plenora_database_core::arrow::schema::Field::new(
+            "label",
+            plenora_database_core::arrow::schema::DataType::Utf8,
+            true,
+        ));
+    }
+    std::sync::Arc::new(
+        plenora_database_core::arrow::schema::Schema::new_with_metadata(
+            fields,
+            std::collections::HashMap::from([(
+                protocol::CONTRACT_VERSION_KEY.to_owned(),
+                protocol::CONTRACT_VERSION.to_owned(),
+            )]),
+        ),
+    )
+}
+
+fn semantica_batch(
+    mode: plenora_database_core::plan::WriteMode,
+    values: &[(i64, &str)],
+) -> plenora_database_core::arrow::RecordBatch {
+    let mut columns: Vec<std::sync::Arc<dyn plenora_database_core::arrow::array::Array>> =
+        vec![std::sync::Arc::new(
+            plenora_database_core::arrow::array::Int64Array::from(
+                values.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            ),
+        )];
+    if mode != plenora_database_core::plan::WriteMode::DeleteByKeys {
+        columns.push(std::sync::Arc::new(
+            plenora_database_core::arrow::array::StringArray::from(
+                values
+                    .iter()
+                    .map(|(_, label)| Some(*label))
+                    .collect::<Vec<_>>(),
+            ),
+        ));
+    }
+    plenora_database_core::arrow::RecordBatch::try_new(semantica_schema(mode), columns)
+        .expect("batch")
+}
+
+fn semantica_operation(
+    mode: plenora_database_core::plan::WriteMode,
+) -> plenora_database_core::plan::WriteOperation {
+    let keyed = matches!(
+        mode,
+        plenora_database_core::plan::WriteMode::Update
+            | plenora_database_core::plan::WriteMode::DeleteByKeys
+            | plenora_database_core::plan::WriteMode::Upsert
+    );
+    plenora_database_core::plan::WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some("dataflow_test".to_owned()),
+            object: SEMANTICA_TABLE.to_owned(),
+        },
+        mode,
+        mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
+        transaction_profile: plenora_database_core::plan::TransactionProfile::SingleTransaction,
+        keys: if keyed {
+            vec!["id".to_owned()]
+        } else {
+            Vec::new()
+        },
+        update_columns: if mode == plenora_database_core::plan::WriteMode::Update {
+            vec!["label".to_owned()]
+        } else {
+            Vec::new()
+        },
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    }
+}
+
+/// Il prodotto in prova: `MySQL`, o `MariaDB` con `PLENORA_MYSQL_PRODUCT=mariadb`
+/// (lo stesso fixture TLS, un'altra porta). Le stesse prove valgono per
+/// entrambi: la regola R e il bootstrap sono condivisi.
+fn semantica_mariadb() -> bool {
+    std::env::var("PLENORA_MYSQL_PRODUCT").is_ok_and(|product| product == "mariadb")
+}
+
+async fn semantica_write(
+    mode: plenora_database_core::plan::WriteMode,
+    values: &[(i64, &str)],
+) -> plenora_database_core::Result<plenora_database_core::outcome::WriteOutcome> {
+    if semantica_mariadb() {
+        let provider = crate::MariadbProvider::new(live_config(), 1).expect("provider");
+        return semantica_write_with(&provider, mode, values).await;
+    }
+    let provider = MysqlProvider::new(live_config(), 1).expect("provider");
+    semantica_write_with(&provider, mode, values).await
+}
+
+async fn semantica_write_with(
+    provider: &dyn Provider,
+    mode: plenora_database_core::plan::WriteMode,
+    values: &[(i64, &str)],
+) -> plenora_database_core::Result<plenora_database_core::outcome::WriteOutcome> {
+    let cancellation = CancellationToken::new();
+    let budget = write_budget();
+    let operation = semantica_operation(mode);
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            &operation,
+            semantica_schema(mode),
+            &budget,
+            &cancellation,
+        )
+        .await?;
+    let input = VecBatchStream {
+        schema: semantica_schema(mode),
+        batches: std::collections::VecDeque::from(vec![semantica_batch(mode, values)]),
+    };
+    provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(input),
+            &budget,
+            &cancellation,
+        )
+        .await
+}
+
+async fn semantica_admin() -> mysql_async::Conn {
+    mysql_async::Conn::new(live_config().driver_opts("MySQL").expect("opzioni"))
+        .await
+        .expect("connessione di servizio")
+}
+
+/// Il target `(1,a),(2,b),(3,a)` e la preparazione dello scenario.
+async fn semantica_prepare(connection: &mut mysql_async::Conn, setup: &[&str]) {
+    for sql in [
+        format!("DROP TABLE IF EXISTS `{SEMANTICA_TABLE}`"),
+        format!("DROP TABLE IF EXISTS `{SEMANTICA_PARENT}`"),
+        format!("CREATE TABLE `{SEMANTICA_PARENT}` (id BIGINT NOT NULL PRIMARY KEY) ENGINE=InnoDB"),
+        format!("INSERT INTO `{SEMANTICA_PARENT}` VALUES (1), (2), (3), (10)"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (id BIGINT NOT NULL PRIMARY KEY, label VARCHAR(64) NULL) \
+             ENGINE=InnoDB"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES (1, 'a'), (2, 'b'), (3, 'a')"),
+    ] {
+        connection.query_drop(sql).await.expect("preparazione");
+    }
+    for sql in setup {
+        connection
+            .query_drop(*sql)
+            .await
+            .expect("preparazione dello scenario");
+    }
+}
+
+async fn semantica_rows(connection: &mut mysql_async::Conn) -> Vec<String> {
+    connection
+        .query::<String, _>(format!(
+            "SELECT CONCAT(id, ':', IFNULL(label, '<null>')) FROM `{SEMANTICA_TABLE}` ORDER BY id"
+        ))
+        .await
+        .expect("righe")
+}
+
+async fn semantica_cleanup(connection: &mut mysql_async::Conn) {
+    for sql in [
+        format!("DROP TABLE IF EXISTS `{SEMANTICA_TABLE}`"),
+        format!("DROP TABLE IF EXISTS `{SEMANTICA_PARENT}`"),
+    ] {
+        connection.query_drop(sql).await.expect("pulizia");
+    }
+}
+
+/// S5: Update conta le righe che trova (`CLIENT_FOUND_ROWS`), anche quando
+/// il valore non cambia.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_update_conta_le_righe_trovate_non_soltanto_quelle_cambiate() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    semantica_prepare(&mut connection, &[]).await;
+    let written = semantica_write(
+        plenora_database_core::plan::WriteMode::Update,
+        &[(1, "a"), (2, "z"), (99, "z")],
+    )
+    .await;
+    let after = semantica_rows(&mut connection).await;
+    semantica_cleanup(&mut connection).await;
+    let counted = written.as_ref().is_ok_and(|outcome| {
+        (
+            outcome.rows.confirmed,
+            outcome.rows.updated,
+            outcome.rows.skipped,
+        ) == (2, Some(2), 1)
+    });
+    assert!(
+        counted && after == ["1:a", "2:z", "3:a"],
+        "{:?}, righe {after:?}",
+        written.map(|outcome| outcome.rows)
+    );
+}
+
+/// La regola R su `MySQL`: un trigger `BEFORE` sull'evento distruttivo della
+/// mode (`BEFORE UPDATE` per Update, `BEFORE DELETE` per Replace e
+/// `DeleteByKeys`) puo neutralizzare la riga senza un errore (`SET NEW.c =
+/// OLD.c`): la mode si rifiuta prima di ogni effetto, come in PostgreSQL. Un
+/// `BEFORE INSERT` (la riga e scritta, con i valori che il trigger decide) e
+/// i trigger `AFTER` restano ammessi, con i conteggi delle righe scritte.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_regola_r_before_sull_evento_distruttivo_rifiuta() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let neutralize = format!(
+        "CREATE TRIGGER `{SEMANTICA_TABLE}_neutro` BEFORE UPDATE ON `{SEMANTICA_TABLE}` \
+         FOR EACH ROW SET NEW.label = OLD.label"
+    );
+    let before_delete = format!(
+        "CREATE TRIGGER `{SEMANTICA_TABLE}_nota` BEFORE DELETE ON `{SEMANTICA_TABLE}` \
+         FOR EACH ROW SET @plenora_nota = OLD.id"
+    );
+    let before_insert = format!(
+        "CREATE TRIGGER `{SEMANTICA_TABLE}_maiuscolo` BEFORE INSERT ON `{SEMANTICA_TABLE}` \
+         FOR EACH ROW SET NEW.label = UPPER(NEW.label)"
+    );
+    let after_update = format!(
+        "CREATE TRIGGER `{SEMANTICA_TABLE}_dopo` AFTER UPDATE ON `{SEMANTICA_TABLE}` \
+         FOR EACH ROW SET @plenora_nota = NEW.id"
+    );
+    let mut difformi = Vec::new();
+    for (name, setup, mode, values) in [
+        (
+            "before-update",
+            &neutralize,
+            plenora_database_core::plan::WriteMode::Update,
+            &[(2, "z")][..],
+        ),
+        (
+            "before-delete-delete",
+            &before_delete,
+            plenora_database_core::plan::WriteMode::DeleteByKeys,
+            &[(2, "z")][..],
+        ),
+        (
+            "before-delete-replace",
+            &before_delete,
+            plenora_database_core::plan::WriteMode::Replace,
+            &[(10, "z")][..],
+        ),
+    ] {
+        semantica_prepare(&mut connection, &[setup.as_str()]).await;
+        let before = semantica_rows(&mut connection).await;
+        let written = semantica_write(mode, values).await;
+        let after = semantica_rows(&mut connection).await;
+        let refused = written.as_ref().err().is_some_and(|error| {
+            error.category == ErrorCategory::Unsupported
+                && error
+                    .message
+                    .ends_with(plenora_database_core::row_visibility::HIDDEN_BY_TRIGGER)
+        });
+        if !refused || after != before {
+            difformi.push(format!(
+                "{name}: {:?}, {before:?} -> {after:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    for (name, setup, mode, values, expected, confirmed) in [
+        (
+            "before-insert",
+            &before_insert,
+            plenora_database_core::plan::WriteMode::Append,
+            &[(10, "y"), (11, "z")][..],
+            &["1:a", "2:b", "3:a", "10:Y", "11:Z"][..],
+            2,
+        ),
+        (
+            "after-update",
+            &after_update,
+            plenora_database_core::plan::WriteMode::Update,
+            &[(2, "z")][..],
+            &["1:a", "2:z", "3:a"][..],
+            1,
+        ),
+    ] {
+        semantica_prepare(&mut connection, &[setup.as_str()]).await;
+        let written = semantica_write(mode, values).await;
+        let after = semantica_rows(&mut connection).await;
+        if !written
+            .as_ref()
+            .is_ok_and(|outcome| outcome.rows.confirmed == confirmed)
+            || after != expected
+        {
+            difformi.push(format!(
+                "{name}: {:?}, righe {after:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    semantica_cleanup(&mut connection).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// W2: la sessione della scrittura fissa `foreign_key_checks = 1` e
+/// `unique_checks = 1` qualunque sia il valore globale, e su `MariaDB`
+/// `check_constraint_checks = 1`. L'account della fixture `MySQL` ha
+/// `SYSTEM_VARIABLES_ADMIN` (`docker/mysql/init`) per spegnerli; la prova li
+/// riaccende prima di ogni verifica.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e cambia un valore globale"]
+async fn live_w2_foreign_key_checks_fissato_anche_con_il_globale_spento() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    semantica_prepare(
+        &mut connection,
+        &[&format!(
+            "ALTER TABLE `{SEMANTICA_TABLE}` ADD CONSTRAINT `{SEMANTICA_TABLE}_padre` FOREIGN KEY (id) \
+             REFERENCES `{SEMANTICA_PARENT}` (id)"
+        )],
+    )
+    .await;
+    connection
+        .query_drop("SET GLOBAL foreign_key_checks = 0, GLOBAL unique_checks = 0")
+        .await
+        .expect("valore globale spento");
+    // 99 non ha un padre.
+    let written = semantica_write(
+        plenora_database_core::plan::WriteMode::Append,
+        &[(10, "y"), (99, "z")],
+    )
+    .await;
+    connection
+        .query_drop("SET GLOBAL foreign_key_checks = 1, GLOBAL unique_checks = 1")
+        .await
+        .expect("valore globale ripristinato");
+    let after = semantica_rows(&mut connection).await;
+    let mut difformi = Vec::new();
+    if written.is_ok() || after != ["1:a", "2:b", "3:a"] {
+        difformi.push(format!(
+            "foreign_key_checks: {:?}, righe {after:?}",
+            written.map(|outcome| outcome.rows)
+        ));
+    }
+    // `sql_select_limit` globale: la sessione del pool lo riporta al massimo.
+    connection
+        .query_drop("SET GLOBAL sql_select_limit = 1")
+        .await
+        .expect("limite globale");
+    let pool = mysql_async::Pool::new(
+        live_config()
+            .pooled_driver_opts(1, "MySQL")
+            .expect("opzioni del pool"),
+    );
+    let read = match pool.get_conn().await {
+        Ok(mut pooled) => pooled
+            .query::<i64, _>(format!("SELECT id FROM `{SEMANTICA_TABLE}`"))
+            .await
+            .map(|ids| ids.len()),
+        Err(error) => Err(error),
+    };
+    connection
+        .query_drop("SET GLOBAL sql_select_limit = DEFAULT")
+        .await
+        .expect("limite globale ripristinato");
+    pool.disconnect().await.expect("pool chiuso");
+    if !matches!(read, Ok(3)) {
+        difformi.push(format!("sql_select_limit: {read:?}"));
+    }
+    if semantica_mariadb() {
+        semantica_prepare(
+            &mut connection,
+            &[&format!(
+                "ALTER TABLE `{SEMANTICA_TABLE}` ADD CONSTRAINT `{SEMANTICA_TABLE}_corto` CHECK (id < 50)"
+            )],
+        )
+        .await;
+        connection
+            .query_drop("SET GLOBAL check_constraint_checks = 0")
+            .await
+            .expect("valore globale spento");
+        let written = semantica_write(
+            plenora_database_core::plan::WriteMode::Append,
+            &[(10, "y"), (99, "z")],
+        )
+        .await;
+        connection
+            .query_drop("SET GLOBAL check_constraint_checks = 1")
+            .await
+            .expect("valore globale ripristinato");
+        let after = semantica_rows(&mut connection).await;
+        if written.is_ok() || after != ["1:a", "2:b", "3:a"] {
+            difformi.push(format!(
+                "check_constraint_checks: {:?}, righe {after:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    semantica_cleanup(&mut connection).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+// ---- Seconda rilettura del 25/10 (su 675e322) ----
+//
+// Gli ingressi sono quelli verificati live dalla rilettura: `MySQL` 9.7 e
+// `MariaDB` 12.3; ciascun esito qui sotto era un `committed` con un
+// conteggio o un valore falso.
+
+fn semantica_provider() -> Box<dyn Provider> {
+    if semantica_mariadb() {
+        Box::new(crate::MariadbProvider::new(live_config(), 1).expect("provider"))
+    } else {
+        Box::new(MysqlProvider::new(live_config(), 1).expect("provider"))
+    }
+}
+
+/// Una scrittura con uno schema e un batch qualunque, sul prodotto in prova.
+async fn semantica_write_batch(
+    operation: &plenora_database_core::plan::WriteOperation,
+    batch: plenora_database_core::arrow::RecordBatch,
+) -> plenora_database_core::Result<plenora_database_core::outcome::WriteOutcome> {
+    let provider = semantica_provider();
+    let cancellation = CancellationToken::new();
+    let budget = write_budget();
+    let schema = batch.schema();
+    let prepared = provider
+        .prepare_write(
+            &live_secret(),
+            operation,
+            std::sync::Arc::clone(&schema),
+            &budget,
+            &cancellation,
+        )
+        .await?;
+    provider
+        .write(
+            &live_secret(),
+            prepared,
+            Box::new(VecBatchStream {
+                schema,
+                batches: std::collections::VecDeque::from(vec![batch]),
+            }),
+            &budget,
+            &cancellation,
+        )
+        .await
+}
+
+/// S6: senza `NO_AUTO_VALUE_ON_ZERO` uno 0 scritto in una colonna
+/// `AUTO_INCREMENT` diventava il prossimo valore della sequenza, con Append e
+/// con Upsert `committed`. Ora resta 0.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_s6_zero_in_auto_increment_resta_zero() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let autoinc = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, \
+             label VARCHAR(64) NULL) ENGINE=InnoDB"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES (1, 'a'), (2, 'b'), (3, 'a')"),
+    ];
+    let autoinc: Vec<&str> = autoinc.iter().map(String::as_str).collect();
+    let mut difformi = Vec::new();
+    for mode in [
+        plenora_database_core::plan::WriteMode::Append,
+        plenora_database_core::plan::WriteMode::Upsert,
+    ] {
+        semantica_prepare(&mut connection, &autoinc).await;
+        let written = semantica_write(mode, &[(0, "zero")]).await;
+        let after = semantica_rows(&mut connection).await;
+        if written.is_err() || after != ["0:zero", "1:a", "2:b", "3:a"] {
+            difformi.push(format!(
+                "{mode:?}: {:?}, righe {after:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    semantica_cleanup(&mut connection).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// La regola K: Update e `DeleteByKeys` su chiavi senza un indice unico del
+/// target. Con `(1,a),(1,b),(2,c)` e `KEY (id)` non unico, Update di
+/// `(1,z),(99,q)` dava `confirmed 2 skipped 0` (due righe toccate dalla 1,
+/// la 99 assente), `DeleteByKeys` di `1, 99` lo stesso. Ora si rifiutano
+/// prima di ogni effetto (`schema`, come SQL Server).
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_regola_k_chiavi_senza_indice_unico_rifiutano() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let nonunique = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (id BIGINT NOT NULL, label VARCHAR(64) NULL, \
+             KEY (id)) ENGINE=InnoDB"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES (1, 'a'), (1, 'b'), (2, 'c')"),
+    ];
+    let nonunique: Vec<&str> = nonunique.iter().map(String::as_str).collect();
+    let mut difformi = Vec::new();
+    for mode in [
+        plenora_database_core::plan::WriteMode::Update,
+        plenora_database_core::plan::WriteMode::DeleteByKeys,
+    ] {
+        semantica_prepare(&mut connection, &nonunique).await;
+        let written = semantica_write(mode, &[(1, "z"), (99, "q")]).await;
+        let after = semantica_rows(&mut connection).await;
+        let refused = written.as_ref().err().is_some_and(|error| {
+            error.category == ErrorCategory::Schema
+                && error
+                    .message
+                    .ends_with(plenora_database_core::write_keys::KEYS_WITHOUT_UNIQUE_INDEX)
+        });
+        if !refused || after != ["1:a", "1:b", "2:c"] {
+            difformi.push(format!(
+                "{mode:?}: {:?}, righe {after:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    semantica_cleanup(&mut connection).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// S7: una chiave ripetuta nell'ingresso. Update di `(1,x),(1,y)` dava
+/// `confirmed 1 skipped 1` con il target `1:x` (lo staging e lo `UPDATE ...
+/// JOIN` applicano una riga sola), dove PostgreSQL e SQL Server davano
+/// `confirmed 2` e `1:y`. La regola ora e una, in ogni provider: si rifiuta.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_chiavi_ripetute_nell_ingresso_rifiutano() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let mut difformi = Vec::new();
+    for mode in [
+        plenora_database_core::plan::WriteMode::Update,
+        plenora_database_core::plan::WriteMode::Upsert,
+        plenora_database_core::plan::WriteMode::DeleteByKeys,
+    ] {
+        semantica_prepare(&mut connection, &[]).await;
+        let written = semantica_write(mode, &[(1, "x"), (1, "y")]).await;
+        let after = semantica_rows(&mut connection).await;
+        let refused = written.as_ref().err().is_some_and(|error| {
+            error.category == ErrorCategory::DataMapping
+                && error
+                    .message
+                    .ends_with(plenora_database_core::write_keys::DUPLICATE_INPUT_KEYS)
+        });
+        if !refused || after != ["1:a", "2:b", "3:a"] {
+            difformi.push(format!(
+                "{mode:?}: {:?}, righe {after:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    semantica_cleanup(&mut connection).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// Due chiavi diverse come valori e uguali per la collation della colonna
+/// (`'a'` e `'A'` sotto una collation `_ci`): il core non le vede ripetute,
+/// lo `UPDATE ... JOIN` ne applicava una e contava l'altra `skipped`. Ora le
+/// coppie dello staging contro le righe trovate lo scoprono, e la scrittura
+/// si rifiuta come per una chiave ripetuta.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_chiavi_uguali_per_la_collation_rifiutano() {
+    use plenora_database_core::arrow::array::{Array, StringArray};
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let keyed = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (code VARCHAR(16) NOT NULL PRIMARY KEY, \
+             label VARCHAR(64) NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES ('a', 'prima'), ('b', 'seconda')"),
+    ];
+    let keyed: Vec<&str> = keyed.iter().map(String::as_str).collect();
+    semantica_prepare(&mut connection, &keyed).await;
+    let schema = std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("code", DataType::Utf8, false),
+            Field::new("label", DataType::Utf8, true),
+        ],
+        std::collections::HashMap::from([(
+            plenora_database_core::protocol::CONTRACT_VERSION_KEY.to_owned(),
+            plenora_database_core::protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ));
+    let batch = plenora_database_core::arrow::RecordBatch::try_new(
+        schema,
+        vec![
+            std::sync::Arc::new(StringArray::from(vec!["a", "A"])) as std::sync::Arc<dyn Array>,
+            std::sync::Arc::new(StringArray::from(vec![Some("x"), Some("y")])),
+        ],
+    )
+    .expect("batch");
+    let mut operation = semantica_operation(plenora_database_core::plan::WriteMode::Update);
+    operation.keys = vec!["code".to_owned()];
+    let written = semantica_write_batch(&operation, batch).await;
+    let after = connection
+        .query::<String, _>(format!(
+            "SELECT CONCAT(code, ':', label) FROM `{SEMANTICA_TABLE}` ORDER BY code"
+        ))
+        .await
+        .expect("righe");
+    semantica_cleanup(&mut connection).await;
+    let refused = written.as_ref().err().is_some_and(|error| {
+        error.category == ErrorCategory::DataMapping
+            && error
+                .message
+                .ends_with(plenora_database_core::write_keys::DUPLICATE_INPUT_KEYS)
+    });
+    assert!(
+        refused && after == ["a:prima", "b:seconda"],
+        "{:?}, righe {after:?}",
+        written.map(|outcome| outcome.rows)
+    );
+}
+
+/// La sessione che vede un trigger `BEFORE INSERT` della scrittura: fuso,
+/// charset di connessione, `autocommit`, `foreign_key_checks`, `sql_mode` e
+/// i byte del valore, con la sessione fresca, con i valori globali cambiati
+/// e su una connessione del pool riusata dopo un `SET SESSION` del chiamante
+/// (sonda M4 della rilettura).
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e cambia valori globali"]
+async fn live_w2_sessione_della_scrittura_fissa_fuso_e_charset() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut admin = semantica_admin().await;
+    let capture = [
+        format!("ALTER TABLE `{SEMANTICA_TABLE}` MODIFY label VARCHAR(1000) NULL"),
+        format!(
+            "CREATE TRIGGER `{SEMANTICA_TABLE}_cattura` BEFORE INSERT ON `{SEMANTICA_TABLE}` \
+             FOR EACH ROW SET NEW.label = CONCAT_WS('|', @@session.time_zone, \
+             @@session.character_set_client, @@session.character_set_connection, \
+             @@session.character_set_results, @@session.autocommit + 0, \
+             @@session.foreign_key_checks + 0, \
+             FIND_IN_SET('STRICT_TRANS_TABLES', @@session.sql_mode) > 0, \
+             FIND_IN_SET('NO_AUTO_VALUE_ON_ZERO', @@session.sql_mode) > 0, HEX(NEW.label))"
+        ),
+    ];
+    let capture: Vec<&str> = capture.iter().map(String::as_str).collect();
+    let expected = "10:+00:00|utf8mb4|utf8mb4|utf8mb4|1|1|1|1|C3A8";
+    let mut difformi = Vec::new();
+    let mut check = |name: &str, written: &plenora_database_core::Result<u64>, rows: &[String]| {
+        let row = rows.iter().find(|row| row.starts_with("10:"));
+        if written.is_err() || row.map(String::as_str) != Some(expected) {
+            difformi.push(format!("{name}: {written:?} {row:?}"));
+        }
+    };
+    let append = plenora_database_core::plan::WriteMode::Append;
+    semantica_prepare(&mut admin, &capture).await;
+    let written = semantica_write(append, &[(10, "\u{e8}")])
+        .await
+        .map(|outcome| outcome.rows.confirmed);
+    check("fresca", &written, &semantica_rows(&mut admin).await);
+    admin
+        .query_drop(
+            "SET GLOBAL time_zone = '+05:00', GLOBAL character_set_client = 'latin1', \
+             GLOBAL character_set_connection = 'latin1', GLOBAL character_set_results = 'latin1', \
+             GLOBAL collation_connection = 'latin1_swedish_ci'",
+        )
+        .await
+        .expect("globali cambiati");
+    semantica_prepare(&mut admin, &capture).await;
+    let written = semantica_write(append, &[(10, "\u{e8}")])
+        .await
+        .map(|outcome| outcome.rows.confirmed);
+    check("globali", &written, &semantica_rows(&mut admin).await);
+    semantica_prepare(&mut admin, &capture).await;
+    let provider = semantica_provider();
+    let ddl = provider
+        .execute_ddl(
+            &live_secret(),
+            "SET SESSION time_zone = '+03:00', SESSION sql_mode = '', \
+             SESSION foreign_key_checks = 0, NAMES latin1",
+            &CancellationToken::new(),
+        )
+        .await;
+    let written = semantica_write_with(provider.as_ref(), append, &[(10, "\u{e8}")])
+        .await
+        .map(|outcome| outcome.rows.confirmed);
+    check(
+        &format!("riuso dopo {ddl:?}"),
+        &written,
+        &semantica_rows(&mut admin).await,
+    );
+    admin
+        .query_drop(
+            "SET GLOBAL time_zone = 'SYSTEM', GLOBAL character_set_client = 'utf8mb4', \
+             GLOBAL character_set_connection = 'utf8mb4', GLOBAL character_set_results = 'utf8mb4', \
+             GLOBAL collation_connection = DEFAULT",
+        )
+        .await
+        .expect("globali ripristinati");
+    semantica_cleanup(&mut admin).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// L'isolamento chiesto a `begin_transaction` e quello della transazione,
+/// riletto dentro la transazione.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito"]
+async fn live_isolamento_richiesto_e_quello_effettivo() {
+    use plenora_database_core::transaction::IsolationLevel;
+    let provider = semantica_provider();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let variable = if semantica_mariadb() {
+        "@@session.tx_isolation"
+    } else {
+        "@@session.transaction_isolation"
+    };
+    let mut difformi = Vec::new();
+    for (level, expected) in [
+        (IsolationLevel::Serializable, "SERIALIZABLE"),
+        (IsolationLevel::ReadCommitted, "READ-COMMITTED"),
+        (IsolationLevel::RepeatableRead, "REPEATABLE-READ"),
+        (IsolationLevel::ReadUncommitted, "READ-UNCOMMITTED"),
+    ] {
+        let options = plenora_database_core::transaction::TransactionOptions {
+            isolation: Some(level),
+            ..plenora_database_core::transaction::TransactionOptions::default()
+        };
+        let mut tx = provider
+            .begin_transaction(&live_secret(), &options, &budget, &cancellation)
+            .await
+            .expect("begin");
+        let rows = tx
+            .query(
+                &plenora_database_core::transaction::Statement {
+                    sql: format!("SELECT {variable}"),
+                    params: Vec::new(),
+                },
+                &cancellation,
+            )
+            .await
+            .expect("lettura");
+        let observed = format!("{rows:?}");
+        if !observed.contains(expected) {
+            difformi.push(format!("{level:?}: {observed}"));
+        }
+        tx.rollback(&cancellation).await.expect("rollback");
+    }
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// `CLIENT_FOUND_ROWS` e lo SQL del chiamante: `execute_conditional_update`
+/// confronta le righe che il `WHERE` trova, cambiate o no. Un UPDATE che
+/// riscrive lo stesso valore riesce (fino al 25/10 era una modifica
+/// concorrente); uno che non trova la versione attesa resta una modifica
+/// concorrente.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_update_condizionale_conta_le_righe_trovate() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    semantica_prepare(&mut connection, &[]).await;
+    let provider = semantica_provider();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let options = plenora_database_core::transaction::TransactionOptions::default();
+    let statement = |label: &str, version: &str| plenora_database_core::transaction::Statement {
+        sql: format!("UPDATE `{SEMANTICA_TABLE}` SET label = ? WHERE id = 1 AND label = ?"),
+        params: vec![
+            plenora_database_core::provider::ParameterValue::String(label.to_owned()),
+            plenora_database_core::provider::ParameterValue::String(version.to_owned()),
+        ],
+    };
+    let mut tx = provider
+        .begin_transaction(&live_secret(), &options, &budget, &cancellation)
+        .await
+        .expect("begin");
+    let same = statement("a", "a");
+    let unchanged = tx
+        .execute_conditional_update(
+            plenora_database_core::transaction::ConditionalUpdate {
+                update: &same,
+                key_probe: None,
+                expected_affected_rows: 1,
+            },
+            &cancellation,
+        )
+        .await;
+    let stale = statement("z", "vecchia");
+    let concurrent = tx
+        .execute_conditional_update(
+            plenora_database_core::transaction::ConditionalUpdate {
+                update: &stale,
+                key_probe: None,
+                expected_affected_rows: 1,
+            },
+            &cancellation,
+        )
+        .await;
+    let affected = tx.execute(&same, &cancellation).await;
+    tx.rollback(&cancellation).await.expect("rollback");
+    semantica_cleanup(&mut connection).await;
+    assert!(unchanged.is_ok(), "{unchanged:?}");
+    assert_eq!(
+        concurrent.map_err(|error| error.category),
+        Err(ErrorCategory::ConcurrentModification)
+    );
+    assert_eq!(
+        affected.ok(),
+        Some(1),
+        "le righe trovate, non soltanto le cambiate"
+    );
+}
+
+/// Lo staging di Update confronta le chiavi con la collation del target: con
+/// una chiave sotto una collation che distingue le maiuscole, `'a'` e `'A'`
+/// sono due righe e Update le aggiorna entrambe, ciascuna con il proprio
+/// valore. Con lo staging nella collation predefinita del server il
+/// confronto mescolava due collation diverse.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_staging_di_update_confronta_con_la_collation_del_target() {
+    use plenora_database_core::arrow::array::{Array, StringArray};
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let keyed = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (code VARCHAR(16) CHARACTER SET utf8mb4 \
+             COLLATE {} NOT NULL PRIMARY KEY, label VARCHAR(64) NULL) ENGINE=InnoDB",
+            if semantica_mariadb() {
+                "utf8mb4_uca1400_as_cs"
+            } else {
+                "utf8mb4_0900_as_cs"
+            }
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES ('a', 'prima'), ('A', 'seconda')"),
+    ];
+    let keyed: Vec<&str> = keyed.iter().map(String::as_str).collect();
+    semantica_prepare(&mut connection, &keyed).await;
+    let schema = std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("code", DataType::Utf8, false),
+            Field::new("label", DataType::Utf8, true),
+        ],
+        std::collections::HashMap::from([(
+            plenora_database_core::protocol::CONTRACT_VERSION_KEY.to_owned(),
+            plenora_database_core::protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ));
+    let batch = plenora_database_core::arrow::RecordBatch::try_new(
+        schema,
+        vec![
+            std::sync::Arc::new(StringArray::from(vec!["a", "A"])) as std::sync::Arc<dyn Array>,
+            std::sync::Arc::new(StringArray::from(vec![Some("x"), Some("y")])),
+        ],
+    )
+    .expect("batch");
+    let mut operation = semantica_operation(plenora_database_core::plan::WriteMode::Update);
+    operation.keys = vec!["code".to_owned()];
+    let written = semantica_write_batch(&operation, batch).await;
+    let after = connection
+        .query::<String, _>(format!(
+            "SELECT CONCAT(code, ':', label) FROM `{SEMANTICA_TABLE}` ORDER BY code"
+        ))
+        .await
+        .expect("righe");
+    semantica_cleanup(&mut connection).await;
+    assert!(
+        written
+            .as_ref()
+            .is_ok_and(|outcome| (outcome.rows.confirmed, outcome.rows.skipped) == (2, 0))
+            && after == ["a:x", "A:y"],
+        "{:?}, righe {after:?}",
+        written.map(|outcome| outcome.rows)
+    );
+}
+
+// ---- Terza rilettura del 25/10 (su 1b02559) ----
+
+/// La regola P: `abc` con tre spazi verso `VARCHAR(3)` diventava `abc` con
+/// il COMMIT, anche con `STRICT_TRANS_TABLES` (il server tronca gli spazi
+/// finali con una nota). Ora un testo piu lungo della colonna si rifiuta
+/// prima di ogni effetto, in ogni mode che scrive valori.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_p_spazi_finali_oltre_la_lunghezza_rifiutano() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let short = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (id BIGINT NOT NULL PRIMARY KEY, \
+             label VARCHAR(3) NULL) ENGINE=InnoDB"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES (1, 'a'), (2, 'b'), (3, 'a')"),
+    ];
+    let short: Vec<&str> = short.iter().map(String::as_str).collect();
+    let mut difformi = Vec::new();
+    for (mode, id) in [
+        (plenora_database_core::plan::WriteMode::Append, 10),
+        (plenora_database_core::plan::WriteMode::Upsert, 1),
+        (plenora_database_core::plan::WriteMode::Update, 1),
+    ] {
+        semantica_prepare(&mut connection, &short).await;
+        let written = semantica_write(mode, &[(id, "abc   ")]).await;
+        let after = semantica_rows(&mut connection).await;
+        let refused = written.as_ref().err().is_some_and(|error| {
+            error.category == ErrorCategory::DataMapping
+                && error.message.ends_with(crate::write::LOSSY_VALUE)
+        });
+        if !refused || after != ["1:a", "2:b", "3:a"] {
+            difformi.push(format!(
+                "{mode:?}: {:?}, righe {after:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+        // Entro la lunghezza il valore si scrive com'e.
+        let written = semantica_write(mode, &[(id, "ab ")]).await;
+        if written.is_err() {
+            difformi.push(format!("{mode:?} entro la lunghezza: {written:?}"));
+        }
+    }
+    semantica_cleanup(&mut connection).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// La regola K2 su `MySQL` e `MariaDB`: un indice `UNIQUE` su un prefisso
+/// della chiave prova l'unicita della colonna intera (prefissi unici, valori
+/// unici, con la collation della colonna), e Update conferma la riga sola.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_k2_indice_unico_su_un_prefisso_prova_la_chiave() {
+    use plenora_database_core::arrow::array::{Array, StringArray};
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let keyed = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (code VARCHAR(10) NOT NULL, label VARCHAR(64) NULL, \
+             UNIQUE KEY prefisso (code(2))) ENGINE=InnoDB"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES ('ab1', 'prima'), ('cd1', 'seconda')"),
+    ];
+    let keyed: Vec<&str> = keyed.iter().map(String::as_str).collect();
+    semantica_prepare(&mut connection, &keyed).await;
+    let schema = std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("code", DataType::Utf8, false),
+            Field::new("label", DataType::Utf8, true),
+        ],
+        std::collections::HashMap::from([(
+            plenora_database_core::protocol::CONTRACT_VERSION_KEY.to_owned(),
+            plenora_database_core::protocol::CONTRACT_VERSION.to_owned(),
+        )]),
+    ));
+    let batch = plenora_database_core::arrow::RecordBatch::try_new(
+        schema,
+        vec![
+            std::sync::Arc::new(StringArray::from(vec!["ab1", "zz9"])) as std::sync::Arc<dyn Array>,
+            std::sync::Arc::new(StringArray::from(vec![Some("x"), Some("y")])),
+        ],
+    )
+    .expect("batch");
+    let mut operation = semantica_operation(plenora_database_core::plan::WriteMode::Update);
+    operation.keys = vec!["code".to_owned()];
+    let written = semantica_write_batch(&operation, batch).await;
+    let after = connection
+        .query::<String, _>(format!(
+            "SELECT CONCAT(code, ':', label) FROM `{SEMANTICA_TABLE}` ORDER BY code"
+        ))
+        .await
+        .expect("righe");
+    semantica_cleanup(&mut connection).await;
+    assert!(
+        written
+            .as_ref()
+            .is_ok_and(|outcome| (outcome.rows.confirmed, outcome.rows.skipped) == (1, 1))
+            && after == ["ab1:x", "cd1:seconda"],
+        "{:?}, righe {after:?}",
+        written.map(|outcome| outcome.rows)
+    );
+}
+
+// ---- Quarta rilettura del 25/10 (su 04029d4) ----
+
+/// La regola K2 nell'Upsert: `ON DUPLICATE KEY UPDATE` scatta su un indice
+/// `UNIQUE` di un **prefisso** della chiave quando due valori diversi hanno
+/// lo stesso prefisso. Con `UNIQUE (code(2))` e la riga `('ab1', 'prima')`,
+/// l'Upsert di `('ab2', 'nuovo')` aggiornava `ab1` in `nuovo` e non scriveva
+/// `ab2`, con il COMMIT. Ora l'Upsert si rifiuta prima di ogni effetto, come
+/// con un secondo indice unico (`id` PRIMARY KEY e `UNIQUE (email)`).
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+#[allow(clippy::too_many_lines)]
+async fn live_s6_upsert_rifiuta_un_indice_unico_che_non_e_la_chiave() {
+    use plenora_database_core::arrow::array::{Array, Int64Array, StringArray};
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let metadata = std::collections::HashMap::from([(
+        plenora_database_core::protocol::CONTRACT_VERSION_KEY.to_owned(),
+        plenora_database_core::protocol::CONTRACT_VERSION.to_owned(),
+    )]);
+    let mut difformi = Vec::new();
+
+    // Un prefisso della chiave.
+    let prefisso = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (code VARCHAR(10) NOT NULL, label VARCHAR(64) NULL, \
+             UNIQUE KEY prefisso (code(2))) ENGINE=InnoDB"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES ('ab1', 'prima')"),
+    ];
+    let prefisso: Vec<&str> = prefisso.iter().map(String::as_str).collect();
+    semantica_prepare(&mut connection, &prefisso).await;
+    let schema = std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("code", DataType::Utf8, false),
+            Field::new("label", DataType::Utf8, true),
+        ],
+        metadata.clone(),
+    ));
+    let batch = plenora_database_core::arrow::RecordBatch::try_new(
+        schema,
+        vec![
+            std::sync::Arc::new(StringArray::from(vec!["ab2"])) as std::sync::Arc<dyn Array>,
+            std::sync::Arc::new(StringArray::from(vec![Some("nuovo")])),
+        ],
+    )
+    .expect("batch");
+    let mut operation = semantica_operation(plenora_database_core::plan::WriteMode::Upsert);
+    operation.keys = vec!["code".to_owned()];
+    let written = semantica_write_batch(&operation, batch).await;
+    let after = connection
+        .query::<String, _>(format!(
+            "SELECT CONCAT(code, ':', label) FROM `{SEMANTICA_TABLE}` ORDER BY code"
+        ))
+        .await
+        .expect("righe");
+    if !written.as_ref().err().is_some_and(|error| {
+        error.category == ErrorCategory::Schema
+            && error
+                .message
+                .ends_with(plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX)
+    }) || after != ["ab1:prima"]
+    {
+        difformi.push(format!(
+            "prefisso: {:?}, righe {after:?}",
+            written.map(|outcome| outcome.rows)
+        ));
+    }
+
+    // Un secondo indice unico, su un'altra colonna.
+    let secondo = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (id BIGINT NOT NULL PRIMARY KEY, \
+             email VARCHAR(64) NOT NULL, UNIQUE KEY posta (email)) ENGINE=InnoDB"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES (1, 'a@x')"),
+    ];
+    let secondo: Vec<&str> = secondo.iter().map(String::as_str).collect();
+    semantica_prepare(&mut connection, &secondo).await;
+    let schema = std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("email", DataType::Utf8, false),
+        ],
+        metadata,
+    ));
+    let batch = plenora_database_core::arrow::RecordBatch::try_new(
+        schema,
+        vec![
+            std::sync::Arc::new(Int64Array::from(vec![2])) as std::sync::Arc<dyn Array>,
+            std::sync::Arc::new(StringArray::from(vec!["a@x"])),
+        ],
+    )
+    .expect("batch");
+    let operation = semantica_operation(plenora_database_core::plan::WriteMode::Upsert);
+    let written = semantica_write_batch(&operation, batch).await;
+    let after = connection
+        .query::<String, _>(format!(
+            "SELECT CONCAT(id, ':', email) FROM `{SEMANTICA_TABLE}` ORDER BY id"
+        ))
+        .await
+        .expect("righe");
+    if !written.as_ref().err().is_some_and(|error| {
+        error.category == ErrorCategory::Schema
+            && error
+                .message
+                .ends_with(plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX)
+    }) || after != ["1:a@x"]
+    {
+        difformi.push(format!(
+            "secondo indice: {:?}, righe {after:?}",
+            written.map(|outcome| outcome.rows)
+        ));
+    }
+    semantica_cleanup(&mut connection).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+/// La regola T su `MySQL` e `MariaDB`: un `ObjectRef` senza schema si
+/// risolve una volta, nel database della configurazione, che e quello della
+/// sessione (`DATABASE()`, `db_name` all'apertura); describe, lettura e
+/// scrittura nominano la stessa tabella, e ogni statement la qualifica.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_t_target_senza_schema_si_risolve_nel_database_della_sessione() {
+    use plenora_database_core::arrow::array::Int64Array;
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    semantica_prepare(&mut connection, &[]).await;
+    let session_database = connection
+        .query_first::<Option<String>, _>("SELECT DATABASE()")
+        .await
+        .expect("DATABASE()")
+        .flatten();
+    let provider = semantica_provider();
+    let cancellation = CancellationToken::new();
+    let source = ObjectRef {
+        catalog: None,
+        schema: None,
+        object: SEMANTICA_TABLE.to_owned(),
+    };
+    let described = provider
+        .inspect(
+            &live_secret(),
+            &Operation::DatabaseDescribeObject {
+                source: source.clone(),
+            },
+            &cancellation,
+        )
+        .await
+        .expect("describe senza schema");
+    let mut operation = semantica_operation(plenora_database_core::plan::WriteMode::Append);
+    operation.target = source.clone();
+    let written = semantica_write_batch(
+        &operation,
+        semantica_batch(plenora_database_core::plan::WriteMode::Append, &[(7, "t")]),
+    )
+    .await;
+    let budget = write_budget();
+    let mut stream = provider
+        .read(
+            &live_secret(),
+            &ReadOperation {
+                source,
+                projection: vec!["id".to_owned()],
+                order_by: Vec::new(),
+                row_limit: None,
+                row_offset: None,
+                filter: None,
+                declared_crs: Vec::new(),
+            },
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("lettura senza schema");
+    let mut ids = Vec::new();
+    while let Some(batch) = stream.next_batch(&cancellation).await.expect("batch") {
+        let column = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("id");
+        ids.extend(column.values().iter().copied());
+    }
+    drop(stream);
+    ids.sort_unstable();
+    let after = semantica_rows(&mut connection).await;
+    semantica_cleanup(&mut connection).await;
+    assert_eq!(session_database.as_deref(), Some("dataflow_test"));
+    assert_eq!(described.document["schema"], "dataflow_test");
+    assert!(written.is_ok(), "{written:?}");
+    assert_eq!(after, ["1:a", "2:b", "3:a", "7:t"]);
+    assert_eq!(ids, [1, 2, 3, 7]);
+}
+
+/// La regola S e gli spazi finali delle chiavi (sesta rilettura del 25/10):
+/// sotto una collation `PAD SPACE` (`utf8mb4_general_ci`) `'x'` e `'x '` sono
+/// la stessa voce dell'indice, e l'Upsert di entrambe confermava 2 con una
+/// sola riga; il core confronta ora le chiavi senza gli spazi finali e
+/// rifiuta. Il `DOUBLE` di `MySQL` conserva `-0.0` (quello di `MariaDB` lo
+/// salva come `0`, e la regola S lo rifiuta) e il testo conserva il carattere
+/// NUL; `CHAR`, `BINARY`, `ENUM` e `SET` non sono tipi scrivibili.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+#[allow(clippy::too_many_lines)]
+async fn live_s_spazi_finali_delle_chiavi_e_meno_zero() {
+    use plenora_database_core::arrow::array::{Array, Float64Array, StringArray};
+    use plenora_database_core::arrow::schema::{DataType, Field, Schema};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let setup = [
+        format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+        format!(
+            "CREATE TABLE `{SEMANTICA_TABLE}` (code VARCHAR(16) NOT NULL PRIMARY KEY, \
+             label VARCHAR(64) NULL, d DOUBLE NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 \
+             COLLATE utf8mb4_general_ci"
+        ),
+        format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES ('x', 'prima', NULL)"),
+    ];
+    let setup: Vec<&str> = setup.iter().map(String::as_str).collect();
+    semantica_prepare(&mut connection, &setup).await;
+    let metadata = std::collections::HashMap::from([(
+        plenora_database_core::protocol::CONTRACT_VERSION_KEY.to_owned(),
+        plenora_database_core::protocol::CONTRACT_VERSION.to_owned(),
+    )]);
+    let schema = std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("code", DataType::Utf8, false),
+            Field::new("label", DataType::Utf8, true),
+        ],
+        metadata.clone(),
+    ));
+    let batch = |codes: Vec<&str>, labels: Vec<&str>| {
+        plenora_database_core::arrow::RecordBatch::try_new(
+            std::sync::Arc::clone(&schema),
+            vec![
+                std::sync::Arc::new(StringArray::from(codes)) as std::sync::Arc<dyn Array>,
+                std::sync::Arc::new(StringArray::from(labels)),
+            ],
+        )
+        .expect("batch")
+    };
+    let mut difformi = Vec::new();
+    for mode in [
+        plenora_database_core::plan::WriteMode::Upsert,
+        plenora_database_core::plan::WriteMode::Update,
+    ] {
+        let mut operation = semantica_operation(mode);
+        operation.keys = vec!["code".to_owned()];
+        operation.update_columns = Vec::new();
+        let written =
+            semantica_write_batch(&operation, batch(vec!["x", "x "], vec!["uno", "due"])).await;
+        let refused = written.as_ref().err().is_some_and(|error| {
+            error.category == ErrorCategory::DataMapping
+                && error
+                    .message
+                    .ends_with(plenora_database_core::write_keys::DUPLICATE_INPUT_KEYS)
+        });
+        if !refused {
+            difformi.push(format!(
+                "{mode:?}: {:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    // Il NUL e -0.0 si conservano.
+    let append = semantica_operation(plenora_database_core::plan::WriteMode::Append);
+    if let Err(error) = semantica_write_batch(&append, batch(vec!["n"], vec!["a\0b"])).await {
+        difformi.push(format!("NUL: {error:?}"));
+    }
+    let floats = std::sync::Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("code", DataType::Utf8, false),
+            Field::new("d", DataType::Float64, true),
+        ],
+        metadata,
+    ));
+    let zero = plenora_database_core::arrow::RecordBatch::try_new(
+        floats,
+        vec![
+            std::sync::Arc::new(StringArray::from(vec!["z"])) as std::sync::Arc<dyn Array>,
+            std::sync::Arc::new(Float64Array::from(vec![-0.0])),
+        ],
+    )
+    .expect("batch");
+    // `MariaDB` salva -0.0 come 0 (anche da uno statement preparato): la
+    // regola S lo rifiuta. `MySQL` lo conserva.
+    let written = semantica_write_batch(&append, zero).await;
+    let zero_row = if semantica_mariadb() {
+        let refused = written.as_ref().is_err_and(|error| {
+            error.category == ErrorCategory::DataMapping
+                && error
+                    .message
+                    .contains(plenora_database_core::store_rewrite::REWRITTEN_VALUE)
+        });
+        if !refused {
+            difformi.push(format!(
+                "-0.0 MariaDB: {:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+        None
+    } else {
+        if let Err(error) = written {
+            difformi.push(format!("-0.0: {error:?}"));
+        }
+        Some("z:-:-0")
+    };
+    let after = connection
+        .query::<String, _>(format!(
+            "SELECT CONCAT(code, ':', IFNULL(label, '-'), ':', IFNULL(CONCAT(d), '-')) \
+             FROM `{SEMANTICA_TABLE}` ORDER BY code"
+        ))
+        .await
+        .expect("righe");
+    semantica_cleanup(&mut connection).await;
+    let expected: Vec<&str> = ["n:a\0b:-", "x:prima:-"]
+        .into_iter()
+        .chain(zero_row)
+        .collect();
+    if after != expected {
+        difformi.push(format!("righe {after:?}"));
+    }
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+// ---------------------------------------------------------------------------
+// La regola A su `MySQL` e `MariaDB`, live
+// (`plenora_database_core::write_admission`), e la regola K sotto la
+// collation della colonna (`crate::write::KeyCollationGuard`).
+//
+// - [`live_sonde_scritture_server`]: la sonda. Misura ogni chiave
+//   d'ammissione di [`specs`] con il percorso di scrittura della libreria,
+//   scrive il referto (`PLENORA_SONDE_SCRITTURE_REFERTO`) e verifica che il
+//   server dia ancora il fixture: e l'oracolo di regressione. La esegue
+//   `scripts/sonde_scritture_server.py`, per `MySQL` e (con
+//   `PLENORA_MYSQL_PRODUCT=mariadb`) per `MariaDB`.
+// - I difetti della settima rilettura indipendente del 25/10 (su 092c859,
+//   `Strict`, `committed` e `LossReport` vuoto): `DOUBLE(M,D)` e
+//   `FLOAT(M,D)` che arrotondano e perdono `-0`; l'Upsert di `'a'` e `'A'`
+//   su una chiave `varchar` sotto una collation `_ai_ci`, che contava 2.
+//
+// La connessione e quella della suite live (la stessa configurazione), con la CA
+// privata obbligatoria: in CI la CA la genera, per ogni container usa e getta,
+// `scripts/sonde_scritture_server.py`.
+
+enum RegolaAProduct {
+    Mysql(MysqlProvider),
+    Mariadb(MariadbProvider),
+}
+
+struct RegolaAHooks {
+    product: RegolaAProduct,
+    secret: SecretString,
+    database: String,
+}
+
+impl RegolaAHooks {
+    fn new() -> Self {
+        // La sonda apre centinaia di sessioni: tempi larghi, perche un host
+        // carico non diventi una misura mancata.
+        let config = live_config().with_timeouts(
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(120),
+            std::time::Duration::from_secs(60),
+        );
+        let database = config.database().to_owned();
+        let product = if semantica_mariadb() {
+            RegolaAProduct::Mariadb(MariadbProvider::new(config, 2).expect("provider MariaDB"))
+        } else {
+            RegolaAProduct::Mysql(MysqlProvider::new(config, 2).expect("provider MySQL"))
+        };
+        Self {
+            product,
+            secret: live_secret(),
+            database,
+        }
+    }
+
+    const fn inner(&self) -> &MysqlProvider {
+        match &self.product {
+            RegolaAProduct::Mysql(provider) => provider,
+            RegolaAProduct::Mariadb(provider) => &provider.0,
+        }
+    }
+
+    fn kind(&self) -> ProviderKind {
+        self.provider().kind()
+    }
+
+    fn profile(&self) -> &'static dyn crate::profile::ProductProfile {
+        if self.kind() == ProviderKind::Mariadb {
+            &crate::profile::MARIADB_PROFILE
+        } else {
+            &crate::profile::MYSQL_PROFILE
+        }
+    }
+
+    async fn server(&self) -> crate::write_admission::ServerFacts {
+        let cancellation = CancellationToken::new();
+        let pool = self.inner().pool_for(&self.secret).expect("pool");
+        let mut session = pool.checkout(&cancellation).await.expect("sessione");
+        crate::write_admission::server_facts(&mut session, &cancellation)
+            .await
+            .expect("versione del server")
+    }
+
+    async fn admin(&self) -> mysql_async::Conn {
+        mysql_async::Conn::new(
+            live_config()
+                .driver_opts(self.profile().product())
+                .expect("opzioni"),
+        )
+        .await
+        .expect("connessione di servizio")
+    }
+}
+
+impl ProbeHooks for RegolaAHooks {
+    fn provider(&self) -> &dyn Provider {
+        match &self.product {
+            RegolaAProduct::Mysql(provider) => provider,
+            RegolaAProduct::Mariadb(provider) => provider,
+        }
+    }
+
+    fn secret(&self) -> &SecretString {
+        &self.secret
+    }
+
+    fn schema(&self) -> Option<String> {
+        Some(self.database.clone())
+    }
+
+    fn columns(&self) -> (&'static str, &'static str) {
+        ("ID", "V")
+    }
+
+    fn create_sql(&self, natives: &[String]) -> Vec<String> {
+        let columns = natives
+            .iter()
+            .enumerate()
+            .map(|(index, native)| format!("V{index} {native}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        vec![format!(
+            "CREATE TABLE {PROBE_TABLE} (ID BIGINT NOT NULL PRIMARY KEY, {columns}) \
+             ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        )]
+    }
+
+    fn drop_sql(&self) -> String {
+        format!("DROP TABLE IF EXISTS {PROBE_TABLE}")
+    }
+
+    fn truncate_sql(&self) -> String {
+        format!("TRUNCATE TABLE {PROBE_TABLE}")
+    }
+
+    fn admission_keys<'a>(
+        &'a self,
+        columns: &'a [(String, DataType)],
+    ) -> ProviderFuture<'a, Vec<(AdmissionKey, TargetDimensions)>> {
+        Box::pin(async move {
+            let cancellation = CancellationToken::new();
+            let pool = self.inner().pool_for(&self.secret)?;
+            let mut session = pool.checkout(&cancellation).await?;
+            let target = crate::catalog::describe_object_with_profile(
+                &mut session,
+                &self.database,
+                PROBE_TABLE,
+                self.profile(),
+                &cancellation,
+            )
+            .await?;
+            let json = crate::write_admission::json_valid_columns(
+                &mut session,
+                &self.database,
+                PROBE_TABLE,
+                &cancellation,
+            )
+            .await?;
+            drop(session);
+            let facts = crate::write_admission::target_facts(&target, &json);
+            Ok(columns
+                .iter()
+                .map(|(name, arrow)| {
+                    let value = facts
+                        .iter()
+                        .find(|column| &column.name == name)
+                        .expect("colonna della sonda");
+                    crate::write_admission::admission_key(arrow, value)
+                })
+                .collect())
+        })
+    }
+}
+
+/// Le lunghezze massime misurate: la tabella della sonda ha anche `ID
+/// BIGINT`, e la riga di `InnoDB` sta in 65535 byte.
+const VARCHAR_MAX_UTF8MB4: u64 = 16_380;
+const VARCHAR_MAX_LATIN1: u64 = 65_000;
+const VARBINARY_MAX: u64 = 65_000;
+
+/// Le chiavi che `MySQL` e `MariaDB` ammettono in scrittura: ogni altra coppia
+/// resta rifiutata (mondo chiuso). L'ordine tiene separate le colonne lunghe
+/// (due `varchar` lunghi nella stessa tabella supererebbero la riga).
+#[allow(clippy::too_many_lines)]
+fn regola_a_specs(kind: ProviderKind) -> Vec<ProbeSpec> {
+    let mut specs = vec![ProbeSpec::new("TINYINT(1)", DataType::Boolean)];
+    specs.push(ProbeSpec::new("TINYINT", DataType::Int8));
+    for native in ["TINYINT UNSIGNED", "TINYINT ZEROFILL"] {
+        specs.push(ProbeSpec::new(native, DataType::UInt8));
+    }
+    specs.push(ProbeSpec::new("SMALLINT", DataType::Int16));
+    for native in ["SMALLINT UNSIGNED", "SMALLINT ZEROFILL"] {
+        specs.push(ProbeSpec::new(native, DataType::UInt16));
+    }
+    for native in ["MEDIUMINT", "INT"] {
+        specs.push(ProbeSpec::new(native, DataType::Int32));
+    }
+    for native in [
+        "MEDIUMINT UNSIGNED",
+        "INT UNSIGNED",
+        "MEDIUMINT ZEROFILL",
+        "INT ZEROFILL",
+    ] {
+        specs.push(ProbeSpec::new(native, DataType::UInt32));
+    }
+    specs.push(ProbeSpec::new("BIGINT", DataType::Int64));
+    for native in ["BIGINT UNSIGNED", "BIGINT ZEROFILL"] {
+        specs.push(ProbeSpec::new(native, DataType::UInt64));
+    }
+    // `FLOAT(M,D)` e `DOUBLE(M,D)` su rappresentanti: ogni altra coppia
+    // `(M,D)` resta non misurata, quindi rifiutata.
+    for native in [
+        "FLOAT",
+        "FLOAT UNSIGNED",
+        "FLOAT(7,3)",
+        "FLOAT(10,2)",
+        "FLOAT(12,0)",
+    ] {
+        specs.push(ProbeSpec::new(native, DataType::Float32));
+    }
+    for native in [
+        "DOUBLE",
+        "DOUBLE UNSIGNED",
+        "DOUBLE(10,2)",
+        "DOUBLE(16,4)",
+        "DOUBLE(22,0)",
+        "DOUBLE(255,30)",
+    ] {
+        specs.push(ProbeSpec::new(native, DataType::Float64));
+    }
+    for precision in 1..=38_u8 {
+        for scale in 0..=precision.min(30) {
+            specs.push(ProbeSpec::new(
+                format!("DECIMAL({precision},{scale})"),
+                DataType::Decimal128(precision, i8::try_from(scale).expect("scala")),
+            ));
+        }
+    }
+    specs.push(ProbeSpec::new("DATE", DataType::Date32));
+    for precision in 0..=6 {
+        specs.push(ProbeSpec::new(
+            format!("DATETIME({precision})"),
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        ));
+    }
+    for precision in 0..=6 {
+        specs.push(ProbeSpec::new(
+            format!("TIMESTAMP({precision}) NULL"),
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        ));
+    }
+    let varchar = |length: u64, charset: &str| {
+        ProbeSpec::new(
+            format!("VARCHAR({length}) CHARACTER SET {charset}"),
+            DataType::Utf8,
+        )
+        .with_dimension(length)
+    };
+    specs.push(varchar(1, "utf8mb4"));
+    specs.push(varchar(1, "latin1"));
+    specs.push(varchar(10, "utf8mb4"));
+    specs.push(varchar(10, "latin1"));
+    specs.push(ProbeSpec::new(
+        "TINYTEXT CHARACTER SET utf8mb4",
+        DataType::Utf8,
+    ));
+    specs.push(varchar(VARCHAR_MAX_UTF8MB4, "utf8mb4"));
+    specs.push(ProbeSpec::new("TEXT CHARACTER SET utf8mb4", DataType::Utf8));
+    specs.push(varchar(VARCHAR_MAX_LATIN1, "latin1"));
+    for native in [
+        "MEDIUMTEXT CHARACTER SET utf8mb4",
+        "LONGTEXT CHARACTER SET utf8mb4",
+        "TINYTEXT CHARACTER SET latin1",
+        "TEXT CHARACTER SET latin1",
+        "MEDIUMTEXT CHARACTER SET latin1",
+        "LONGTEXT CHARACTER SET latin1",
+    ] {
+        specs.push(ProbeSpec::new(native, DataType::Utf8));
+    }
+    if kind == ProviderKind::Mariadb {
+        // Il tipo `JSON` di `MariaDB`: un `LONGTEXT` con `CHECK (json_valid)`.
+        specs.push(ProbeSpec::new("JSON", DataType::Utf8).document());
+    }
+    for length in [1_u64, 10] {
+        specs.push(
+            ProbeSpec::new(format!("VARBINARY({length})"), DataType::Binary).with_dimension(length),
+        );
+    }
+    specs.push(ProbeSpec::new("TINYBLOB", DataType::Binary));
+    specs.push(
+        ProbeSpec::new(format!("VARBINARY({VARBINARY_MAX})"), DataType::Binary)
+            .with_dimension(VARBINARY_MAX),
+    );
+    for native in ["BLOB", "MEDIUMBLOB", "LONGBLOB"] {
+        specs.push(ProbeSpec::new(native, DataType::Binary));
+    }
+    specs
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live esplicito"]
+async fn live_sonde_scritture_server() {
+    let hooks = RegolaAHooks::new();
+    let server = hooks.server().await;
+    let kind = hooks.kind();
+    let measured = write_probe::measure_server(
+        &hooks,
+        &regola_a_specs(kind),
+        &server.major,
+        &server.version,
+    )
+    .await;
+    write_probe::report_and_check(&measured, crate::write_admission::fixture(kind));
+}
+
+struct RegolaABatches {
+    schema: SchemaRef,
+    queue: VecDeque<RecordBatch>,
+    rows: u64,
+}
+
+impl BatchStream for RegolaABatches {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+
+    fn next_batch<'a>(
+        &'a mut self,
+        _cancellation: &'a CancellationToken,
+    ) -> ProviderFuture<'a, Option<RecordBatch>> {
+        Box::pin(async move { Ok(self.queue.pop_front()) })
+    }
+
+    fn declared_input_rows(&self) -> Option<u64> {
+        Some(self.rows)
+    }
+}
+
+async fn regola_a_ddl(hooks: &RegolaAHooks, sql: &str) {
+    hooks
+        .provider()
+        .execute_ddl(&hooks.secret, sql, &CancellationToken::new())
+        .await
+        .unwrap_or_else(|error| panic!("DDL: {error:?}"));
+}
+
+async fn regola_a_drop_table(hooks: &RegolaAHooks, table: &str) {
+    let _ = hooks
+        .provider()
+        .execute_ddl(
+            &hooks.secret,
+            &format!("DROP TABLE IF EXISTS {table}"),
+            &CancellationToken::new(),
+        )
+        .await;
+}
+
+fn regola_a_operation(
+    hooks: &RegolaAHooks,
+    table: &str,
+    mode: WriteMode,
+    keys: &[&str],
+    policy: MappingPolicy,
+) -> WriteOperation {
+    WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some(hooks.database.clone()),
+            object: table.to_owned(),
+        },
+        mode,
+        mapping_policy: policy,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: keys.iter().map(|key| (*key).to_owned()).collect(),
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    }
+}
+
+async fn regola_a_write(
+    hooks: &RegolaAHooks,
+    operation: &WriteOperation,
+    fields: Vec<Field>,
+    columns: Vec<ArrayRef>,
+) -> Result<WriteOutcome, DatabaseError> {
+    let schema = contract_schema(fields).expect("schema");
+    let batch = RecordBatch::try_new(schema, columns).expect("batch");
+    let rows = batch.num_rows() as u64;
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let prepared = hooks
+        .provider()
+        .prepare_write(
+            &hooks.secret,
+            operation,
+            batch.schema(),
+            &budget,
+            &cancellation,
+        )
+        .await?;
+    assert!(
+        prepared.loss_report.losses.is_empty(),
+        "Strict: nessuna perdita dichiarata"
+    );
+    hooks
+        .provider()
+        .write(
+            &hooks.secret,
+            prepared,
+            Box::new(RegolaABatches {
+                schema: batch.schema(),
+                rows,
+                queue: VecDeque::from([batch]),
+            }),
+            &budget,
+            &cancellation,
+        )
+        .await
+}
+
+/// Append `Strict` di `(ID, V)`.
+async fn regola_a_append(
+    hooks: &RegolaAHooks,
+    table: &str,
+    value: ArrayRef,
+) -> Result<WriteOutcome, DatabaseError> {
+    let rows = value.len();
+    let ids = Int64Array::from((0..i64::try_from(rows).expect("righe")).collect::<Vec<_>>());
+    regola_a_write(
+        hooks,
+        &regola_a_operation(hooks, table, WriteMode::Append, &[], MappingPolicy::Strict),
+        vec![
+            Field::new("ID", DataType::Int64, false),
+            Field::new("V", value.data_type().clone(), true),
+        ],
+        vec![Arc::new(ids), value],
+    )
+    .await
+}
+
+fn regola_a_assert_rewritten(result: Result<WriteOutcome, DatabaseError>) {
+    let error = result.expect_err("un valore riscritto al salvataggio non si scrive con Strict");
+    assert_eq!(error.category, ErrorCategory::DataMapping, "{error:?}");
+    assert!(
+        error
+            .message
+            .contains(plenora_database_core::store_rewrite::REWRITTEN_VALUE),
+        "{error:?}"
+    );
+}
+
+async fn regola_a_count(hooks: &RegolaAHooks, table: &str) -> u64 {
+    let mut connection = hooks.admin().await;
+    let rows: Option<u64> = connection
+        .query_first(format!("SELECT COUNT(*) FROM {table}"))
+        .await
+        .expect("conteggio");
+    drop(connection);
+    rows.expect("una riga")
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live esplicito"]
+async fn live_a_double_m_d_non_arrotonda_in_silenzio() {
+    let hooks = RegolaAHooks::new();
+    let table = "PLN_A_DOUBLE_MD";
+    regola_a_drop_table(&hooks, table).await;
+    regola_a_ddl(
+        &hooks,
+        &format!(
+            "CREATE TABLE {table} (ID BIGINT NOT NULL PRIMARY KEY, V DOUBLE(10,2) NULL) \
+             ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    // Su 092c859: `committed`, `LossReport` vuoto, `1.234` riletto `1.23` e
+    // `-0` riletto `0`.
+    for value in [1.234_f64, -0.0, 1.0 / 3.0] {
+        regola_a_assert_rewritten(
+            regola_a_append(&hooks, table, Arc::new(Float64Array::from(vec![value]))).await,
+        );
+    }
+    // Con le altre politiche la scrittura non e qualificata su questo
+    // provider (`validate_operation`): rifiutata, mai `committed`.
+    let compatible = regola_a_write(
+        &hooks,
+        &regola_a_operation(
+            &hooks,
+            table,
+            WriteMode::Append,
+            &[],
+            MappingPolicy::Compatible,
+        ),
+        vec![
+            Field::new("ID", DataType::Int64, false),
+            Field::new("V", DataType::Float64, true),
+        ],
+        vec![
+            Arc::new(Int64Array::from(vec![9])),
+            Arc::new(Float64Array::from(vec![1.234])),
+        ],
+    )
+    .await
+    .expect_err("Compatible non e qualificata");
+    assert_eq!(compatible.category, ErrorCategory::Unsupported);
+    assert_eq!(
+        regola_a_count(&hooks, table).await,
+        0,
+        "nessuna riga scritta"
+    );
+    regola_a_drop_table(&hooks, table).await;
+
+    let table = "PLN_A_FLOAT_MD";
+    regola_a_drop_table(&hooks, table).await;
+    regola_a_ddl(
+        &hooks,
+        &format!(
+            "CREATE TABLE {table} (ID BIGINT NOT NULL PRIMARY KEY, V FLOAT(7,3) NULL) \
+             ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    for value in [1.234_567_f32, -0.0] {
+        regola_a_assert_rewritten(
+            regola_a_append(&hooks, table, Arc::new(Float32Array::from(vec![value]))).await,
+        );
+    }
+    assert_eq!(
+        regola_a_count(&hooks, table).await,
+        0,
+        "nessuna riga scritta"
+    );
+    regola_a_drop_table(&hooks, table).await;
+
+    // Una scala non misurata non si ammette: la coppia non e provata.
+    let table = "PLN_A_DOUBLE_NM";
+    regola_a_drop_table(&hooks, table).await;
+    regola_a_ddl(
+        &hooks,
+        &format!(
+            "CREATE TABLE {table} (ID BIGINT NOT NULL PRIMARY KEY, V DOUBLE(11,3) NULL) \
+             ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    let error = regola_a_append(&hooks, table, Arc::new(Float64Array::from(vec![1.5])))
+        .await
+        .expect_err("coppia non misurata");
+    assert_eq!(error.category, ErrorCategory::Unsupported, "{error:?}");
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+    regola_a_drop_table(&hooks, table).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live esplicito"]
+async fn live_a_datetime_3_non_arrotonda_in_silenzio() {
+    let hooks = RegolaAHooks::new();
+    let table = "PLN_A_DATETIME3";
+    regola_a_drop_table(&hooks, table).await;
+    regola_a_ddl(
+        &hooks,
+        &format!(
+            "CREATE TABLE {table} (ID BIGINT NOT NULL PRIMARY KEY, V DATETIME(3) NULL) \
+             ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    // 2026-01-01T00:00:00.123456: `DATETIME(3)` lo salverebbe come .123.
+    let micro = 1_767_225_600_123_456_i64;
+    regola_a_assert_rewritten(
+        regola_a_append(
+            &hooks,
+            table,
+            Arc::new(TimestampMicrosecondArray::from(vec![micro])),
+        )
+        .await,
+    );
+    let outcome = regola_a_append(
+        &hooks,
+        table,
+        Arc::new(TimestampMicrosecondArray::from(vec![micro - 456])),
+    )
+    .await
+    .expect("un istante al millisecondo si scrive");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    regola_a_drop_table(&hooks, table).await;
+}
+
+/// L'Upsert e `DeleteByKeys` di chiavi che il target confronta uguali.
+#[allow(clippy::too_many_lines)]
+async fn regola_a_collation_case(hooks: &RegolaAHooks, collation: Option<&str>) -> Vec<String> {
+    let table = "PLN_K_COLLATION";
+    regola_a_drop_table(hooks, table).await;
+    let collate = collation.map_or_else(String::new, |name| format!(" COLLATE {name}"));
+    regola_a_ddl(
+        hooks,
+        &format!(
+            "CREATE TABLE {table} (code VARCHAR(16) CHARACTER SET utf8mb4{collate} NOT NULL \
+             PRIMARY KEY, label VARCHAR(16) NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        ),
+    )
+    .await;
+    regola_a_ddl(hooks, &format!("INSERT INTO {table} VALUES ('z', 'prima')")).await;
+    let mut difformi = Vec::new();
+    let fields = || {
+        vec![
+            Field::new("code", DataType::Utf8, false),
+            Field::new("label", DataType::Utf8, true),
+        ]
+    };
+    for codes in [["a", "A"], ["a", "\u{e0}"]] {
+        let written = regola_a_write(
+            hooks,
+            &regola_a_operation(
+                hooks,
+                table,
+                WriteMode::Upsert,
+                &["code"],
+                MappingPolicy::Strict,
+            ),
+            fields(),
+            vec![
+                Arc::new(StringArray::from(codes.to_vec())),
+                Arc::new(StringArray::from(vec!["x", "y"])),
+            ],
+        )
+        .await;
+        let refused = written.as_ref().err().is_some_and(|error| {
+            error.category == ErrorCategory::DataMapping
+                && error.remote_effect == RemoteEffect::RolledBack
+                && error
+                    .message
+                    .ends_with(plenora_database_core::write_keys::DUPLICATE_INPUT_KEYS)
+        });
+        // `'a'` e `'à'` sono la stessa voce sotto `_ai_ci` e `general_ci`.
+        if !refused {
+            difformi.push(format!(
+                "Upsert {codes:?} {collation:?}: {:?}",
+                written.map(|outcome| outcome.rows)
+            ));
+        }
+    }
+    let deleted = regola_a_write(
+        hooks,
+        &regola_a_operation(
+            hooks,
+            table,
+            WriteMode::DeleteByKeys,
+            &["code"],
+            MappingPolicy::Strict,
+        ),
+        vec![Field::new("code", DataType::Utf8, false)],
+        vec![Arc::new(StringArray::from(vec!["z", "Z"]))],
+    )
+    .await;
+    let refused = deleted.as_ref().err().is_some_and(|error| {
+        error.category == ErrorCategory::DataMapping
+            && error.remote_effect == RemoteEffect::RolledBack
+            && error
+                .message
+                .ends_with(plenora_database_core::write_keys::DUPLICATE_INPUT_KEYS)
+    });
+    if !refused {
+        difformi.push(format!(
+            "DeleteByKeys {collation:?}: {:?}",
+            deleted.map(|outcome| outcome.rows)
+        ));
+    }
+    if regola_a_count(hooks, table).await != 1 {
+        difformi.push(format!("{collation:?}: il target e cambiato"));
+    }
+    // Chiavi distinte anche per la collation: si scrivono.
+    let written = regola_a_write(
+        hooks,
+        &regola_a_operation(
+            hooks,
+            table,
+            WriteMode::Upsert,
+            &["code"],
+            MappingPolicy::Strict,
+        ),
+        fields(),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b", "Z"])),
+            Arc::new(StringArray::from(vec!["x", "y", "dopo"])),
+        ],
+    )
+    .await;
+    match written {
+        Ok(outcome) if outcome.status == WriteStatus::Committed && outcome.rows.confirmed == 3 => {}
+        other => difformi.push(format!(
+            "Upsert distinte {collation:?}: {:?}",
+            other.map(|outcome| outcome.rows)
+        )),
+    }
+    regola_a_drop_table(hooks, table).await;
+    difformi
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live esplicito"]
+async fn live_k_chiavi_uguali_per_la_collation_si_rifiutano() {
+    let hooks = RegolaAHooks::new();
+    let mut difformi = Vec::new();
+    // La collation predefinita di `utf8mb4` (`utf8mb4_0900_ai_ci` su `MySQL`
+    // 8+, `utf8mb4_uca1400_ai_ci` su `MariaDB` 11.8+, `utf8mb4_general_ci`
+    // su `MariaDB` 10.11) e `utf8mb4_general_ci`.
+    difformi.extend(regola_a_collation_case(&hooks, None).await);
+    difformi.extend(regola_a_collation_case(&hooks, Some("utf8mb4_general_ci")).await);
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live esplicito"]
+async fn live_k_una_chiave_text_sotto_collation_non_binaria_si_rifiuta() {
+    let hooks = RegolaAHooks::new();
+    let table = "PLN_K_TEXT";
+    regola_a_drop_table(&hooks, table).await;
+    regola_a_ddl(
+        &hooks,
+        &format!(
+            "CREATE TABLE {table} (code TEXT CHARACTER SET utf8mb4 NOT NULL, \
+             UNIQUE KEY (code(8))) ENGINE=InnoDB"
+        ),
+    )
+    .await;
+    let deleted = regola_a_write(
+        &hooks,
+        &regola_a_operation(
+            &hooks,
+            table,
+            WriteMode::DeleteByKeys,
+            &["code"],
+            MappingPolicy::Strict,
+        ),
+        vec![Field::new("code", DataType::Utf8, false)],
+        vec![Arc::new(StringArray::from(vec!["a"]))],
+    )
+    .await
+    .expect_err("la chiave non si confronta sotto la collation");
+    assert_eq!(deleted.category, ErrorCategory::Unsupported, "{deleted:?}");
+    assert_eq!(deleted.message, crate::write::UNCOMPARABLE_COLLATION_KEY);
+    regola_a_drop_table(&hooks, table).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede MySQL o MariaDB live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_a_i_tipi_di_create_sono_quelli_del_catalogo() {
+    use plenora_database_core::arrow::array::{
+        BinaryArray, BooleanArray, Date32Array, Decimal128Array, Int16Array, Int32Array, Int8Array,
+        UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+    };
+    let hooks = RegolaAHooks::new();
+    let table = "PLN_A_CREATE";
+    regola_a_drop_table(&hooks, table).await;
+    let fields = vec![
+        Field::new("ID", DataType::Int64, false),
+        Field::new("b", DataType::Boolean, true),
+        Field::new("i8", DataType::Int8, true),
+        Field::new("u8", DataType::UInt8, true),
+        Field::new("i16", DataType::Int16, true),
+        Field::new("u16", DataType::UInt16, true),
+        Field::new("i32", DataType::Int32, true),
+        Field::new("u32", DataType::UInt32, true),
+        Field::new("u64", DataType::UInt64, true),
+        Field::new("f32", DataType::Float32, true),
+        Field::new("f64", DataType::Float64, true),
+        Field::new("t", DataType::Utf8, true),
+        Field::new("bin", DataType::Binary, true),
+        Field::new("d", DataType::Date32, true),
+        Field::new("ts", DataType::Timestamp(TimeUnit::Microsecond, None), true),
+        Field::new("dec", DataType::Decimal128(10, 2), true),
+    ];
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(Int64Array::from(vec![1])),
+        Arc::new(BooleanArray::from(vec![true])),
+        Arc::new(Int8Array::from(vec![-1])),
+        Arc::new(UInt8Array::from(vec![1])),
+        Arc::new(Int16Array::from(vec![-1])),
+        Arc::new(UInt16Array::from(vec![1])),
+        Arc::new(Int32Array::from(vec![-1])),
+        Arc::new(UInt32Array::from(vec![1])),
+        Arc::new(UInt64Array::from(vec![1])),
+        Arc::new(Float32Array::from(vec![1.5])),
+        Arc::new(Float64Array::from(vec![1.5])),
+        Arc::new(StringArray::from(vec!["a"])),
+        Arc::new(BinaryArray::from(vec![&b"a"[..]])),
+        Arc::new(Date32Array::from(vec![1])),
+        Arc::new(TimestampMicrosecondArray::from(vec![1_000_000])),
+        Arc::new(
+            Decimal128Array::from(vec![150])
+                .with_precision_and_scale(10, 2)
+                .expect("decimal"),
+        ),
+    ];
+    let outcome = regola_a_write(
+        &hooks,
+        &regola_a_operation(
+            &hooks,
+            table,
+            WriteMode::Create,
+            &["ID"],
+            MappingPolicy::Strict,
+        ),
+        fields.clone(),
+        columns,
+    )
+    .await
+    .expect("Create con ogni tipo scrivibile");
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    // La scrittura ha gia confrontato le riscritture dei tipi di Create con
+    // quelle del catalogo; qui si confrontano i fatti, tipo per tipo.
+    let cancellation = CancellationToken::new();
+    let pool = hooks.inner().pool_for(&hooks.secret).expect("pool");
+    let mut session = pool.checkout(&cancellation).await.expect("sessione");
+    let target = crate::catalog::describe_object_with_profile(
+        &mut session,
+        &hooks.database,
+        table,
+        hooks.profile(),
+        &cancellation,
+    )
+    .await
+    .expect("catalogo");
+    drop(session);
+    let catalog = crate::write_admission::target_facts(&target, &std::collections::BTreeSet::new());
+    let schema = contract_schema(fields).expect("schema");
+    let mut difformi = Vec::new();
+    for field in schema.fields() {
+        let column = crate::types::MysqlColumnSpec::from_catalog_declaring(
+            target
+                .columns
+                .iter()
+                .find(|column| &column.name == field.name())
+                .expect("colonna"),
+            hooks.profile(),
+            None,
+        )
+        .expect("spec");
+        let expected =
+            crate::write_admission::create_facts(field.name(), &column.kind, hooks.kind())
+                .expect("tipo di Create");
+        let found = catalog
+            .iter()
+            .find(|facts| &facts.name == field.name())
+            .expect("fatti");
+        if &expected != found {
+            difformi.push(format!("{}: {expected:?} contro {found:?}", field.name()));
+        }
+    }
+    regola_a_drop_table(&hooks, table).await;
+    assert!(difformi.is_empty(), "{}", difformi.join("\n"));
+}
+
 /// Il provider dei test sugli operandi geometrici: `MySQL`, o `MariaDB` con
 /// `PLENORA_MYSQL_PRODUCT=mariadb` contro una fixture `MariaDB`.
 fn geometry_operand_provider() -> Box<dyn Provider> {
@@ -9000,7 +11223,6 @@ async fn live_binary_columns_of_views_are_judged_geometric() {
 // `PLENORA_MYSQL_PRODUCT`, come per gli altri test live del crate.
 // ---------------------------------------------------------------------------
 
-use crate::MariadbProvider;
 use plenora_database_core::provider::ParameterValue as FidelityValue;
 use plenora_database_testkit::parameter_fidelity::{
     report as fidelity_report, run as fidelity_run, Case as FidelityCase, Expect as FidelityExpect,
@@ -10581,4 +12803,35 @@ async fn live_rilettura_sedici_cast_a_testo_e_collation() {
         .expect("pulizia");
     let connection = teardown.connection_mut().expect("connessione");
     connection.query_drop(cleanup).await.expect("pulizia");
+}
+
+/// Una coda di spazi oltre TEXT deve arrivare intatta a MEDIUMTEXT/LONGTEXT.
+#[tokio::test]
+#[ignore = "richiede MySQL live esplicito e muta tabelle di prova"]
+async fn live_update_staging_conserva_testo_oltre_65535_byte() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut connection = semantica_admin().await;
+    let value = format!("{} ", "a".repeat(65_535));
+    for native in ["MEDIUMTEXT", "LONGTEXT"] {
+        let ddl = [
+            format!("DROP TABLE `{SEMANTICA_TABLE}`"),
+            format!("CREATE TABLE `{SEMANTICA_TABLE}` (id BIGINT PRIMARY KEY, label {native} CHARACTER SET utf8mb4) ENGINE=InnoDB"),
+            format!("INSERT INTO `{SEMANTICA_TABLE}` VALUES (1, 'prima')"),
+        ];
+        let ddl = ddl.iter().map(String::as_str).collect::<Vec<_>>();
+        semantica_prepare(&mut connection, &ddl).await;
+        let outcome = semantica_write(
+            plenora_database_core::plan::WriteMode::Update,
+            &[(1, &value)],
+        )
+        .await
+        .expect("update senza perdita");
+        assert_eq!(outcome.rows.confirmed, 1);
+        let actual: Vec<String> = connection
+            .query(format!("SELECT label FROM `{SEMANTICA_TABLE}`"))
+            .await
+            .expect("rilettura");
+        assert_eq!(actual.as_slice(), std::slice::from_ref(&value));
+    }
+    semantica_cleanup(&mut connection).await;
 }

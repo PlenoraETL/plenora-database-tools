@@ -106,3 +106,22 @@ fn schema_token_is_stable_and_observes_column_and_index_changes() {
     assert_eq!(first, same);
     assert_ne!(first, changed);
 }
+
+#[test]
+fn describe_preserves_catalog_identifier_bytes() {
+    for name in [" C", "C ", " C ", "C"] {
+        let row =
+            [name, "1", " type ", "4", "0", "Y", "default", "", "N"].map(|v| Some(v.to_owned()));
+        let column = crate::catalog::column_description(&row).unwrap();
+        assert_eq!(column.name, name);
+        assert_eq!(column.data_type, " type ");
+        let row = [" schema ", name, "TABLE"].map(|v| Some(v.to_owned()));
+        let object = crate::catalog::object_summary(&row).unwrap();
+        assert_eq!(object.schema, " schema ");
+        assert_eq!(object.name, name);
+        let row = [name, "U", "1", name, "A"].map(|v| Some(v.to_owned()));
+        let indexes = build_indexes(&[row.to_vec()]).unwrap();
+        assert_eq!(indexes[0].name, name);
+        assert_eq!(indexes[0].columns, [name]);
+    }
+}

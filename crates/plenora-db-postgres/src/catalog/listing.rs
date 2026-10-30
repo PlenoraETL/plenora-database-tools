@@ -7,7 +7,7 @@ use tokio_postgres::Client;
 pub async fn list_catalogs(client: &Client) -> Result<Vec<String>> {
     let rows = client
         .query(
-            "SELECT datname FROM pg_database WHERE datallowconn ORDER BY datname",
+            "SELECT datname FROM pg_catalog.pg_database WHERE datallowconn ORDER BY datname",
             &[],
         )
         .await
@@ -39,7 +39,7 @@ pub async fn list_objects(client: &Client, schema: &str) -> Result<Vec<Value>> {
     let rows = client
         .query(
             r"
-            SELECT c.relname, c.relkind::text, c.relispartition
+            SELECT c.relname, c.relkind::pg_catalog.text, c.relispartition
             FROM pg_catalog.pg_class c
             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname = $1

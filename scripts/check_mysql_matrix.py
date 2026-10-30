@@ -58,6 +58,9 @@ def server_command(entry: MatrixEntry) -> list[str]:
         "--require-secure-transport=ON",
         "--local-infile=OFF",
         f"--sql-mode={SQL_MODE}",
+        # Come il compose: l'account della fixture crea i trigger delle prove
+        # della regola R anche con il log binario acceso.
+        "--log-bin-trust-function-creators=ON",
         "--ssl-ca=/etc/mysql/tls/ca.pem",
         "--ssl-cert=/etc/mysql/tls/server.pem",
         "--ssl-key=/etc/mysql/tls/server.key",

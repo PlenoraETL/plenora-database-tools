@@ -77,7 +77,108 @@ pub async fn bind_parameters_with_lobs(
     Ok(values)
 }
 
+/// Il descrittore del target decide il bind, anche per NULL e LOB corti/vuoti.
+/// Ogni locator viene riletto prima di usarlo nel DML della stessa transazione.
+pub async fn bind_target_lobs(
+    connection: &Connection,
+    parameters: &[ParameterValue],
+    kinds: &[Option<OracleType>],
+    cache: &mut LobCache,
+    timeout: Duration,
+    cancellation: &plenora_database_core::CancellationToken,
+) -> Result<Vec<Value>> {
+    if parameters.len() != kinds.len() {
+        return Err(mapping_error("descrittori LOB incoerenti"));
+    }
+    let io = LobIo {
+        connection,
+        timeout,
+        phase: ErrorPhase::Write,
+        cancellation,
+    };
+    let mut blobs = 0;
+    let mut clobs = 0;
+    let mut values = Vec::with_capacity(parameters.len());
+    for (parameter, kind) in parameters.iter().zip(kinds) {
+        let value = match (kind, parameter) {
+            (Some(OracleType::Blob), ParameterValue::Bytes(bytes))
+            | (None, ParameterValue::Wkb { bytes, .. }) => {
+                let value = io.bind_blob(bytes, &mut cache.blobs, blobs).await?;
+                blobs += 1;
+                value
+            }
+            (Some(OracleType::Clob), ParameterValue::String(text)) => {
+                let value = io.bind_clob(text, &mut cache.clobs, clobs).await?;
+                clobs += 1;
+                value
+            }
+            (Some(OracleType::Blob | OracleType::Clob), ParameterValue::Null { .. }) => {
+                Value::Lob(LobValue::Null)
+            }
+            (None, value) => {
+                reject_empty(value)?;
+                bind_parameter(value)?
+            }
+            _ => {
+                return Err(mapping_error(
+                    "valore incompatibile con il tipo LOB del target",
+                ))
+            }
+        };
+        if kind.is_some() {
+            if let Value::Lob(LobValue::Locator(locator)) = &value {
+                io.verify(locator, parameter).await?;
+            }
+        }
+        values.push(value);
+    }
+    Ok(values)
+}
+
 impl LobIo<'_> {
+    async fn verify(&self, locator: &LobLocator, expected: &ParameterValue) -> Result<()> {
+        let length = with_timeout_duration(
+            self.timeout,
+            self.phase,
+            self.cancellation,
+            self.connection.lob_length(locator),
+        )
+        .await
+        .map_err(|e| lob_error(e, "rilettura lunghezza LOB fallita"))?;
+        let expected_length = match expected {
+            ParameterValue::Bytes(bytes) => u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            ParameterValue::String(text) => locator.clob_amount(text),
+            _ => return Err(mapping_error("tipo LOB incoerente")),
+        };
+        if length != expected_length {
+            return Err(mapping_error("lunghezza LOB riletta diversa"));
+        }
+        if length == 0 {
+            return Ok(());
+        }
+        let actual = with_timeout_duration(
+            self.timeout,
+            self.phase,
+            self.cancellation,
+            self.connection.read_lob_range(locator, 1, length),
+        )
+        .await
+        .map_err(|e| lob_error(e, "rilettura contenuto LOB fallita"))?;
+        let equal = match (expected, actual) {
+            (ParameterValue::Bytes(expected), oracle_rs::types::LobData::Bytes(actual)) => {
+                expected.as_slice() == actual.as_ref()
+            }
+            (ParameterValue::String(expected), oracle_rs::types::LobData::String(actual)) => {
+                expected == &actual
+            }
+            _ => false,
+        };
+        if !equal {
+            return Err(mapping_error("contenuto LOB riletto diverso"));
+        }
+        Ok(())
+    }
+
     async fn bind_blob(
         &self,
         bytes: &[u8],
@@ -181,10 +282,9 @@ impl LobIo<'_> {
 /// scritto non sarebbe quello bindato, e `col = :n` non lo ritroverebbe mai.
 ///
 /// Vale per lo statement del chiamante e per il filtro della lettura
-/// (`promote_write_lobs` falso). Il percorso di scrittura Arrow, che promuove
-/// i binari a `BLOB` e binda le righe del parameter array con
-/// [`bind_parameters`], resta fuori: la sua regola per `''` e quella della
-/// scrittura, non di questo modulo.
+/// (`promote_write_lobs` falso), e per il DML scalare del writer. Il parameter
+/// array usa [`bind_parameters`]; la guardia delle riscritture del writer
+/// controlla il vuoto prima di scegliere uno dei due percorsi.
 pub fn reject_empty(parameter: &ParameterValue) -> Result<()> {
     let empty = match parameter {
         ParameterValue::String(value)
@@ -325,6 +425,18 @@ fn validate_decimal(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Gli anni che un `DATE` Oracle scrive come Arrow li intende: da 1 a 9999.
+/// Prima dell'anno 1 chrono conta gli anni in modo astronomico (l'anno 0
+/// esiste) e Oracle no, e la codifica del driver (`(anno / 100) as u8 + 100`)
+/// andava in panic (seconda rilettura del round 8): si rifiuta.
+fn oracle_year(year: i32) -> Result<i32> {
+    if (1..=9999).contains(&year) {
+        Ok(year)
+    } else {
+        Err(mapping_error("anno fuori dall'intervallo 1-9999 di Oracle"))
+    }
+}
+
 fn parse_date(value: &str) -> Result<OracleDate> {
     let date = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .map_err(|_| mapping_error("parametro date Oracle non valido"))?;
@@ -332,6 +444,7 @@ fn parse_date(value: &str) -> Result<OracleDate> {
 }
 
 fn oracle_date(date: chrono::NaiveDate) -> Result<OracleDate> {
+    oracle_year(chrono::Datelike::year(&date))?;
     Ok(OracleDate::date(
         chrono::Datelike::year(&date),
         u8::try_from(chrono::Datelike::month(&date))

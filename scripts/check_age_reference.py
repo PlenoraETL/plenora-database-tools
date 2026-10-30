@@ -55,7 +55,7 @@ def cargo_command() -> list[str]:
         LIVE_TEST,
         "--",
         "--exact",
-        "--nocapture",
+        "--show-output",
     ]
 
 

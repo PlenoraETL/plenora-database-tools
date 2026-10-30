@@ -2567,6 +2567,1010 @@ async fn live_cached_query_reexecutes_with_an_unexhausted_first_page() {
     connection.close().await.expect("chiusura cache probe");
 }
 
+// Margine di cursori della sessione: apre cursori DBMS_SQL fino a ORA-01000 e
+// li richiude. Le viste V$ non sono leggibili dall'utente di prova.
+fn margine_cursori_sql(function: &str) -> String {
+    format!(
+        "CREATE OR REPLACE FUNCTION {function} RETURN NUMBER IS
+  TYPE t_cursori IS TABLE OF INTEGER INDEX BY PLS_INTEGER;
+  cursori t_cursori;
+  n PLS_INTEGER := 0;
+BEGIN
+  BEGIN
+    LOOP
+      EXIT WHEN n >= 100000;
+      cursori(n + 1) := DBMS_SQL.OPEN_CURSOR;
+      n := n + 1;
+    END LOOP;
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF SQLCODE != -1000 THEN
+        RAISE;
+      END IF;
+  END;
+  FOR i IN 1 .. n LOOP
+    DBMS_SQL.CLOSE_CURSOR(cursori(i));
+  END LOOP;
+  RETURN n;
+END;"
+    )
+}
+
+// Senza ORA-01000 la misura non dice niente: open_cursors e 300 sul fixture.
+fn margine_valido(margine: i64) -> i64 {
+    assert!(
+        (1..100_000).contains(&margine),
+        "misura del margine non valida: {margine}"
+    );
+    margine
+}
+
+async fn margine_cursori(
+    transaction: &mut dyn plenora_database_core::transaction::TransactionScope,
+    cancellation: &CancellationToken,
+) -> i64 {
+    let rows = transaction
+        .query(
+            &Statement::new("SELECT PLN_CUR_MARGINE_P() AS N FROM DUAL"),
+            cancellation,
+        )
+        .await
+        .expect("misura del margine di cursori");
+    margine_valido(match rows[0].get("N") {
+        Some(ParameterValue::I64(value)) => *value,
+        Some(ParameterValue::Decimal(value)) => value.parse().expect("margine intero"),
+        other => panic!("margine di cursori non numerico: {other:?}"),
+    })
+}
+
+// Una sequenza di chiamate di ogni genere sulla stessa sessione: query di
+// testo distinto e ripetuto, query a piu pagine lette fino in fondo, DML,
+// savepoint, statement falliti al parse e all'esecuzione (il PL/SQL lo
+// esercita il test del driver: lo scope transazionale rifiuta BEGIN).
+async fn chiamate_miste(
+    transaction: &mut dyn plenora_database_core::transaction::TransactionScope,
+    cancellation: &CancellationToken,
+    table: &str,
+    round: i64,
+) -> usize {
+    let text = round % 50;
+    let rows = transaction
+        .query(
+            &Statement::new(format!("SELECT {text} + :1 AS N FROM DUAL"))
+                .with_params(vec![ParameterValue::I64(round)]),
+            cancellation,
+        )
+        .await
+        .expect("query di testo ripetuto");
+    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(text + round)));
+    transaction
+        .execute(
+            &Statement::new(format!("INSERT INTO {table} (ID, V) VALUES (:1, :2)")).with_params(
+                vec![
+                    ParameterValue::I64(round),
+                    ParameterValue::String(format!("v{round}")),
+                ],
+            ),
+            cancellation,
+        )
+        .await
+        .expect("insert");
+    let updated = transaction
+        .execute(
+            &Statement::new(format!("UPDATE {table} SET V = :1 WHERE ID = :2")).with_params(vec![
+                ParameterValue::String(format!("w{round}")),
+                ParameterValue::I64(round),
+            ]),
+            cancellation,
+        )
+        .await
+        .expect("update");
+    assert_eq!(updated, 1);
+    let deleted = transaction
+        .execute(
+            &Statement::new(format!("DELETE FROM {table} WHERE ID = :1"))
+                .with_params(vec![ParameterValue::I64(-1 - text)]),
+            cancellation,
+        )
+        .await
+        .expect("delete");
+    assert_eq!(deleted, 0);
+    let duplicate = transaction
+        .execute(
+            &Statement::new(format!("INSERT INTO {table} (ID, V) VALUES (:1, 'x')"))
+                .with_params(vec![ParameterValue::I64(round)]),
+            cancellation,
+        )
+        .await;
+    assert!(
+        duplicate.is_err(),
+        "la chiave duplicata fallisce all'esecuzione"
+    );
+    let missing = transaction
+        .query(
+            &Statement::new(format!("SELECT * FROM PLN_CUR_ASSENTE_{text}")),
+            cancellation,
+        )
+        .await;
+    assert!(missing.is_err(), "la tabella assente fallisce al parse");
+    let mut calls = 6;
+    if round % 10 == 0 {
+        // Oltre la prima pagina (100 righe): fetch_more fino all'esaurimento.
+        let rows = transaction
+            .query(
+                &Statement::new("SELECT LEVEL AS N FROM DUAL CONNECT BY LEVEL <= 250"),
+                cancellation,
+            )
+            .await
+            .expect("query a piu pagine");
+        assert_eq!(rows.len(), 250);
+        transaction
+            .savepoint("PLN_CUR_SP", cancellation)
+            .await
+            .expect("savepoint");
+        transaction
+            .rollback_to_savepoint("PLN_CUR_SP", cancellation)
+            .await
+            .expect("rollback al savepoint");
+        calls += 3;
+    }
+    calls
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_cursori_server_chiusi_su_connessione_riusata() {
+    // Difetto del 25/10: il driver thin non chiudeva mai i cursori server e
+    // dopo ~26 scritture sulla stessa connessione del pool arrivava ORA-01000,
+    // anche nel ROLLBACK. Qui oltre 1000 chiamate in una sessione sola, poi
+    // transazioni successive sul pool con COMMIT e ROLLBACK.
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let table = "PLN_CUR_RIUSO";
+    let _ = provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            &secret,
+            &format!("CREATE TABLE {table} (ID NUMBER(10) PRIMARY KEY, V VARCHAR2(40))"),
+            &cancellation,
+        )
+        .await
+        .expect("crea la tabella dei cursori");
+    provider
+        .execute_ddl(
+            &secret,
+            &margine_cursori_sql("PLN_CUR_MARGINE_P"),
+            &cancellation,
+        )
+        .await
+        .expect("crea la funzione del margine");
+
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione lunga");
+    let before = margine_cursori(transaction.as_mut(), &cancellation).await;
+    let mut calls = 0;
+    for round in 0..200 {
+        calls += chiamate_miste(transaction.as_mut(), &cancellation, table, round).await;
+    }
+    assert!(calls >= 1000, "{calls} chiamate");
+    let after = margine_cursori(transaction.as_mut(), &cancellation).await;
+    assert!(
+        before - after <= 5,
+        "cursori rimasti aperti dopo {calls} chiamate: margine {before} -> {after}"
+    );
+    transaction
+        .rollback(&cancellation)
+        .await
+        .expect("rollback dopo le chiamate");
+
+    // Transazioni successive: la connessione del pool si riusa, con COMMIT e
+    // ROLLBACK alternati come le scritture Append.
+    for round in 0..40_i64 {
+        let mut transaction = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .expect("transazione sul pool");
+        chiamate_miste(transaction.as_mut(), &cancellation, table, 1_000 + round).await;
+        if round % 2 == 0 {
+            let outcome = transaction.commit(&cancellation).await.expect("commit");
+            assert_eq!(outcome, CommitOutcome::Committed);
+        } else {
+            transaction.rollback(&cancellation).await.expect("rollback");
+        }
+    }
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione finale");
+    let last = margine_cursori(transaction.as_mut(), &cancellation).await;
+    assert!(
+        before - last <= 5,
+        "cursori rimasti aperti sul pool: margine {before} -> {last}"
+    );
+    transaction
+        .rollback(&cancellation)
+        .await
+        .expect("chiude la transazione finale");
+    provider
+        .execute_ddl(&secret, "DROP FUNCTION PLN_CUR_MARGINE_P", &cancellation)
+        .await
+        .expect("rimuove la funzione del margine");
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .expect("rimuove la tabella dei cursori");
+}
+
+async fn margine_driver(connection: &oracle_rs::Connection) -> i64 {
+    let result = connection
+        .query("SELECT PLN_CUR_MARGINE_D() AS N FROM DUAL", &[])
+        .await
+        .expect("misura del margine dal driver");
+    let text = result.rows[0]
+        .get(0)
+        .and_then(oracle_rs::Value::as_str)
+        .expect("margine come testo")
+        .to_owned();
+    margine_valido(text.parse().expect("margine intero"))
+}
+
+// Un giro di chiamate su ogni percorso del driver; torna quante sono.
+async fn giro_driver(connection: &oracle_rs::Connection, table: &str, round: i64) -> usize {
+    let text = round % 30;
+    connection
+        .query(
+            &format!("SELECT {text} + :1 AS N FROM DUAL"),
+            &[oracle_rs::Value::Integer(round)],
+        )
+        .await
+        .expect("query");
+    connection
+        .execute(
+            &format!("INSERT INTO {table} (ID, V) VALUES (:1, :2)"),
+            &[
+                oracle_rs::Value::Integer(round),
+                oracle_rs::Value::String(format!("v{round}")),
+            ],
+        )
+        .await
+        .expect("insert");
+    connection
+        .execute_dml_sql(
+            &format!("UPDATE {table} SET V = 'w' WHERE ID = :1"),
+            &[oracle_rs::Value::Integer(round)],
+        )
+        .await
+        .expect("update");
+    connection
+        .execute_plsql("BEGIN NULL; END;", &[])
+        .await
+        .expect("PL/SQL");
+    let batch = oracle_rs::BatchBuilder::new(format!("UPDATE {table} SET V = :1 WHERE ID = :2"))
+        .add_row(vec![
+            oracle_rs::Value::String("b".to_owned()),
+            oracle_rs::Value::Integer(round),
+        ])
+        .build();
+    connection.execute_batch(&batch).await.expect("batch");
+    assert!(connection
+        .execute(
+            &format!("INSERT INTO {table} (ID, V) VALUES (:1, 'x')"),
+            &[oracle_rs::Value::Integer(round)],
+        )
+        .await
+        .is_err());
+    assert!(connection
+        .query(&format!("SELECT * FROM PLN_CUR_ASSENTE_{text}"), &[])
+        .await
+        .is_err());
+    assert!(connection
+        .execute_plsql("BEGIN RAISE_APPLICATION_ERROR(-20001, 'x'); END;", &[])
+        .await
+        .is_err());
+    let mut calls = 8;
+    if round % 10 == 0 {
+        let mut page = connection
+            .query("SELECT LEVEL AS N FROM DUAL CONNECT BY LEVEL <= 250", &[])
+            .await
+            .expect("prima pagina");
+        let mut rows = page.rows.len();
+        while page.has_more_rows {
+            page = connection
+                .fetch_more(page.cursor_id, &page.columns, 64)
+                .await
+                .expect("pagina successiva");
+            rows += page.rows.len();
+        }
+        assert_eq!(rows, 250);
+        let mut scrollable = connection
+            .open_scrollable_cursor("SELECT LEVEL AS N FROM DUAL CONNECT BY LEVEL <= 5")
+            .await
+            .expect("cursore scrollabile");
+        connection
+            .scroll(&mut scrollable, oracle_rs::FetchOrientation::Last, 0)
+            .await
+            .expect("scroll");
+        connection
+            .close_cursor(&mut scrollable)
+            .await
+            .expect("chiusura scrollabile");
+        connection.commit().await.expect("commit");
+        calls += 5;
+    } else if round % 2 == 0 {
+        connection.rollback().await.expect("rollback");
+        calls += 1;
+    }
+    calls
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_driver_chiude_i_cursori_di_ogni_percorso() {
+    // La stessa classe su ogni percorso del driver thin: query, DML, DDL,
+    // PL/SQL, batch, fetch_more, cursori scrollabili, errori,
+    // COMMIT e ROLLBACK. La statement cache configurata (4, meno dei testi
+    // distinti) non cambia niente: la connessione non riusa cursori.
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    provider
+        .execute_ddl(
+            &secret,
+            &margine_cursori_sql("PLN_CUR_MARGINE_D"),
+            &cancellation,
+        )
+        .await
+        .expect("crea la funzione del margine");
+    let (config, secret) = fixture_config();
+    let driver = config
+        .driver_config(&secret)
+        .expect("driver config")
+        .into_inner()
+        .with_statement_cache_size(4);
+    let connection = oracle_rs::Connection::connect_with_config(driver)
+        .await
+        .expect("connessione del driver");
+    let table = "PLN_CUR_DRIVER";
+    let _ = connection
+        .execute(&format!("DROP TABLE {table} PURGE"), &[])
+        .await;
+    connection
+        .execute(
+            &format!("CREATE TABLE {table} (ID NUMBER(10) PRIMARY KEY, V VARCHAR2(40))"),
+            &[],
+        )
+        .await
+        .expect("DDL dal driver");
+    let before = margine_driver(&connection).await;
+    let mut calls = 0;
+    for round in 0..150_i64 {
+        calls += giro_driver(&connection, table, round).await;
+    }
+    assert!(calls >= 1000, "{calls} chiamate");
+    let after = margine_driver(&connection).await;
+    assert!(
+        before - after <= 5,
+        "cursori rimasti aperti dopo {calls} chiamate: margine {before} -> {after}"
+    );
+    connection
+        .execute(&format!("DROP TABLE {table} PURGE"), &[])
+        .await
+        .expect("rimuove la tabella del driver");
+    connection
+        .execute("DROP FUNCTION PLN_CUR_MARGINE_D", &[])
+        .await
+        .expect("rimuove la funzione del margine");
+    connection.close().await.expect("chiusura del driver");
+}
+
+async fn entro_dieci_secondi<T>(
+    future: impl std::future::Future<Output = oracle_rs::Result<T>>,
+    what: &str,
+) -> T {
+    tokio::time::timeout(std::time::Duration::from_secs(10), future)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: il server aspetta ancora dati"))
+        .unwrap_or_else(|error| panic!("{what}: {error:?}"))
+}
+
+// Testo, RAW e JSON di `length` byte: scritti e riletti interi.
+async fn bind_lunghi_sql(connection: &oracle_rs::Connection, table: &str, id: i64, length: usize) {
+    let text = "x".repeat(length);
+    let raw = vec![0xAB_u8; length.min(2000)];
+    let json = serde_json::json!({ "k": "y".repeat(length.min(3000)) });
+    entro_dieci_secondi(
+        connection.execute(
+            &format!("INSERT INTO {table} (ID, S, R) VALUES (:1, :2, :3)"),
+            &[
+                oracle_rs::Value::Integer(id),
+                oracle_rs::Value::String(text.clone()),
+                oracle_rs::Value::Bytes(raw),
+            ],
+        ),
+        &format!("insert di {length} byte"),
+    )
+    .await;
+    // JSON (OSON) dopo il descrittore: la stessa codifica a pezzi.
+    entro_dieci_secondi(
+        connection.execute(
+            &format!("UPDATE {table} SET J = :1 WHERE ID = :2"),
+            &[oracle_rs::Value::Json(json), oracle_rs::Value::Integer(id)],
+        ),
+        &format!("JSON di {} byte di testo", length.min(3000)),
+    )
+    .await;
+    let row = entro_dieci_secondi(
+        connection.query(
+            &format!(
+                "SELECT LENGTH(S) AS S, UTL_RAW.LENGTH(R) AS R, \
+                 LENGTH(JSON_VALUE(J, '$.k' RETURNING VARCHAR2(4000))) AS J \
+                 FROM {table} WHERE ID = :1 AND S = :2"
+            ),
+            &[
+                oracle_rs::Value::Integer(id),
+                oracle_rs::Value::String(text.clone()),
+            ],
+        ),
+        &format!("rilettura di {length} byte"),
+    )
+    .await;
+    assert_eq!(row.rows.len(), 1, "{length} byte: valore non intero");
+    let lengths: Vec<_> = (0..3)
+        .map(|index| {
+            row.rows[0]
+                .get(index)
+                .and_then(oracle_rs::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(
+        lengths,
+        vec![
+            Some(length.to_string()),
+            Some(length.min(2000).to_string()),
+            Some(length.min(3000).to_string()),
+        ]
+    );
+}
+
+// Un pezzo intero (32767 byte) nel percorso PL/SQL, oltre l'SDU.
+async fn bind_lunghi_plsql(
+    connection: &oracle_rs::Connection,
+    table: &str,
+    id: i64,
+    length: usize,
+) {
+    let text = "x".repeat(length);
+    entro_dieci_secondi(
+        connection.execute_plsql(
+            &format!("BEGIN INSERT INTO {table} (ID, N) VALUES (:1, LENGTH(:2)); END;"),
+            &[
+                oracle_rs::BindParam::input(oracle_rs::Value::Integer(id)),
+                oracle_rs::BindParam::input(oracle_rs::Value::String(text)),
+            ],
+        ),
+        "PL/SQL con 32767 byte",
+    )
+    .await;
+    let row = entro_dieci_secondi(
+        connection.query(
+            &format!("SELECT N FROM {table} WHERE ID = :1"),
+            &[oracle_rs::Value::Integer(id)],
+        ),
+        "rilettura PL/SQL",
+    )
+    .await;
+    assert_eq!(
+        row.rows[0].get(0).and_then(oracle_rs::Value::as_str),
+        Some("32767")
+    );
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_bind_oltre_252_byte_si_scrivono_interi() {
+    // Difetto del 25/10 (sonda VARCHAR2): un bind testo o binario oltre 252
+    // byte partiva senza il terminatore dei pezzi e il server restava in
+    // "SQL*Net more data from client" fino al timeout.
+    let (config, secret) = fixture_config();
+    let driver = config
+        .driver_config(&secret)
+        .expect("driver config")
+        .into_inner();
+    let connection = oracle_rs::Connection::connect_with_config(driver)
+        .await
+        .expect("connessione del driver");
+    let table = "PLN_CUR_LUNGHI";
+    let _ = connection
+        .execute(&format!("DROP TABLE {table} PURGE"), &[])
+        .await;
+    entro_dieci_secondi(
+        connection.execute(
+            &format!(
+                "CREATE TABLE {table} (ID NUMBER(10) PRIMARY KEY, S VARCHAR2(4000 BYTE), \
+                 R RAW(2000), J JSON, N NUMBER(10))"
+            ),
+            &[],
+        ),
+        "DDL",
+    )
+    .await;
+    for (id, length) in [252_usize, 253, 300, 2000, 4000, 32_767]
+        .into_iter()
+        .enumerate()
+    {
+        let id = i64::try_from(id).expect("id");
+        if length <= 4000 {
+            bind_lunghi_sql(&connection, table, id, length).await;
+        } else {
+            bind_lunghi_plsql(&connection, table, id, length).await;
+        }
+    }
+    connection.rollback().await.expect("rollback");
+    connection
+        .execute(&format!("DROP TABLE {table} PURGE"), &[])
+        .await
+        .expect("rimuove la tabella dei bind lunghi");
+    connection.close().await.expect("chiusura del driver");
+}
+
+// Valori riletti dal percorso read Arrow della libreria (stesso decoder della
+// sonda), per un oggetto dello schema di prova.
+async fn leggi_tabella(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    table: &str,
+) -> plenora_database_core::Result<Vec<RecordBatch>> {
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let read = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: None,
+            object: table.to_owned(),
+        },
+        projection: Vec::new(),
+        filter: None,
+        order_by: vec![OrderBy {
+            field: "ID".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        row_limit: None,
+        row_offset: None,
+        declared_crs: Vec::new(),
+    };
+    let mut stream = provider
+        .read(
+            secret,
+            &read,
+            &ParameterBag::default(),
+            &budget,
+            &cancellation,
+        )
+        .await?;
+    let mut batches = Vec::new();
+    while let Some(batch) = stream.next_batch(&cancellation).await? {
+        batches.push(batch);
+    }
+    Ok(batches)
+}
+
+async fn tabella_di_prova(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    table: &str,
+    ddl: &str,
+    rows: &[String],
+) {
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let _ = provider
+        .execute_ddl(secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await;
+    provider
+        .execute_ddl(
+            secret,
+            &format!("CREATE TABLE {table} ({ddl})"),
+            &cancellation,
+        )
+        .await
+        .expect("crea la tabella di prova");
+    let mut transaction = provider
+        .begin_transaction(
+            secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione di carico");
+    for row in rows {
+        transaction
+            .execute(
+                &Statement::new(format!("INSERT INTO {table} VALUES ({row})")),
+                &cancellation,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("insert {row}: {error:?}"));
+    }
+    let outcome = transaction.commit(&cancellation).await.expect("commit");
+    assert_eq!(outcome, CommitOutcome::Committed);
+}
+
+// Testo ASCII di ASCIISTR (`\XXXX` per ogni unita UTF-16 non ASCII): il
+// valore del server senza passare dal charset nazionale del driver.
+fn da_asciistr(value: &str) -> String {
+    let mut units = Vec::new();
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            let hex: String = chars.by_ref().take(4).collect();
+            units.push(u16::from_str_radix(&hex, 16).expect("escape ASCIISTR"));
+        } else {
+            units.push(u16::try_from(u32::from(c)).expect("ASCIISTR e ASCII"));
+        }
+    }
+    String::from_utf16(&units).expect("UTF-16 di ASCIISTR")
+}
+
+fn testi(rows: &[plenora_database_core::row::Row], column: &str) -> Vec<Option<String>> {
+    rows.iter()
+        .map(|row| match row.get(column) {
+            Some(ParameterValue::String(value)) => Some(value.clone()),
+            Some(ParameterValue::Null { .. }) => None,
+            other => panic!("{column}: valore non testuale {other:?}"),
+        })
+        .collect()
+}
+
+fn colonna_testo(batches: &[RecordBatch], index: usize) -> Vec<Option<String>> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let values = batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("colonna testo Arrow");
+            (0..values.len())
+                .map(|row| (!values.is_null(row)).then(|| values.value(row).to_owned()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+async fn interroga(
+    provider: &OracleProvider,
+    secret: &SecretString,
+    sql: &str,
+) -> Vec<plenora_database_core::row::Row> {
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut transaction = provider
+        .begin_transaction(
+            secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione di lettura");
+    let rows = transaction
+        .query(&Statement::new(sql), &cancellation)
+        .await
+        .unwrap_or_else(|error| panic!("query di lettura: {error:?}"));
+    transaction
+        .rollback(&cancellation)
+        .await
+        .expect("chiude la lettura");
+    rows
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_testo_nazionale_si_rilegge_uguale() {
+    // Difetto del 25/10 (sonda): NCHAR, NVARCHAR2 e NCLOB (AL16UTF16) si
+    // rileggevano come UTF-8 con sostituzioni, cioe diversi dal salvato.
+    let (provider, secret) = fixture();
+    let table = "PLN_CUR_NAZ";
+    tabella_di_prova(
+        &provider,
+        &secret,
+        table,
+        "ID NUMBER(10) PRIMARY KEY, A NVARCHAR2(20), B NCHAR(4), C NCLOB",
+        &[
+            "1, N'a', N'a', TO_NCLOB(N'a')".to_owned(),
+            "2, UNISTR('\\00E8\\00E0'), UNISTR('\\00E8'), TO_NCLOB(UNISTR('\\00E8\\00E0'))"
+                .to_owned(),
+            "3, UNISTR('\\D83D\\DE00x'), UNISTR('\\D83D\\DE00'), \
+             TO_NCLOB(UNISTR('\\D83D\\DE00x'))"
+                .to_owned(),
+            "4, UNISTR('a\\0000b'), UNISTR('a\\0000'), TO_NCLOB(UNISTR('a\\0000b'))".to_owned(),
+            "5, NULL, NULL, EMPTY_CLOB()".to_owned(),
+            "6, NULL, NULL, NULL".to_owned(),
+        ],
+    )
+    .await;
+    let reference = interroga(
+        &provider,
+        &secret,
+        &format!(
+            "SELECT ASCIISTR(A) AS A, ASCIISTR(B) AS B, \
+             ASCIISTR(DBMS_LOB.SUBSTR(C, 4000)) AS C, \
+             CAST(CASE WHEN C IS NULL THEN 0 ELSE 1 END AS NUMBER(1)) AS C_PRESENTE FROM {table} ORDER BY ID"
+        ),
+    )
+    .await;
+    let expected = ["A", "B", "C"].map(|column| {
+        testi(&reference, column)
+            .into_iter()
+            .map(|value| value.map(|value| da_asciistr(&value)))
+            .collect::<Vec<_>>()
+    });
+    // L'NCLOB vuoto (EMPTY_CLOB) e una stringa vuota, non NULL.
+    let mut expected = expected;
+    expected[2][4] = Some(String::new());
+    assert_eq!(expected[0][0].as_deref(), Some("a"));
+    assert_eq!(expected[0][2].as_deref(), Some("\u{1F600}x"));
+    assert_eq!(expected[0][3].as_deref(), Some("a\0b"));
+    assert_eq!(
+        reference[4].get("C_PRESENTE"),
+        Some(&ParameterValue::I64(1))
+    );
+
+    let direct = interroga(
+        &provider,
+        &secret,
+        &format!("SELECT A, B, C FROM {table} ORDER BY ID"),
+    )
+    .await;
+    let batches = leggi_tabella(&provider, &secret, table)
+        .await
+        .expect("read Arrow del testo nazionale");
+    for (index, column) in ["A", "B", "C"].into_iter().enumerate() {
+        assert_eq!(testi(&direct, column), expected[index], "query {column}");
+        assert_eq!(
+            colonna_testo(&batches, index + 1),
+            expected[index],
+            "read Arrow {column}"
+        );
+    }
+    drop_tabella(&provider, &secret, table).await;
+}
+
+async fn drop_tabella(provider: &OracleProvider, secret: &SecretString, table: &str) {
+    provider
+        .execute_ddl(
+            secret,
+            &format!("DROP TABLE {table} PURGE"),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("rimuove la tabella di prova");
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_binary_double_e_float_si_rileggono_al_bit() {
+    // Difetto del 25/10 (sonda): la read convertiva BINARY_DOUBLE in NUMBER e
+    // falliva oltre 1E126 (o azzerava sotto 1E-130); la query lo decodificava
+    // come testo.
+    let (provider, secret) = fixture();
+    let table = "PLN_CUR_BIN";
+    let doubles: [u64; 8] = [
+        0,
+        1,                     // il subnormale minimo
+        0x000F_FFFF_FFFF_FFFF, // il subnormale massimo
+        0x0010_0000_0000_0000, // MIN_POSITIVE
+        0x7FEF_FFFF_FFFF_FFFF, // MAX
+        0xFFEF_FFFF_FFFF_FFFF, // -MAX
+        0x3FB9_9999_9999_999A, // 0.1
+        0xBFF8_0000_0000_0000, // -1.5
+    ];
+    let floats: [u32; 8] = [
+        0,
+        1,
+        0x007F_FFFF,
+        0x0080_0000,
+        0x7F7F_FFFF,
+        0xFF7F_FFFF,
+        0x3DCC_CCCD,
+        0xBFC0_0000,
+    ];
+    let rows = doubles
+        .iter()
+        .zip(floats)
+        .enumerate()
+        .map(|(id, (double, float))| {
+            format!(
+                "{id}, UTL_RAW.CAST_TO_BINARY_DOUBLE(HEXTORAW('{double:016X}')), \
+                 UTL_RAW.CAST_TO_BINARY_FLOAT(HEXTORAW('{float:08X}'))"
+            )
+        })
+        .collect::<Vec<_>>();
+    tabella_di_prova(
+        &provider,
+        &secret,
+        table,
+        "ID NUMBER(10) PRIMARY KEY, D BINARY_DOUBLE, F BINARY_FLOAT",
+        &rows,
+    )
+    .await;
+    let batches = leggi_tabella(&provider, &secret, table)
+        .await
+        .expect("read Arrow dei binari");
+    let read_doubles: Vec<u64> = batches
+        .iter()
+        .flat_map(|batch| {
+            let values = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .expect("BINARY_DOUBLE Arrow");
+            values
+                .values()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let read_floats: Vec<u32> = batches
+        .iter()
+        .flat_map(|batch| {
+            let values = batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .expect("BINARY_FLOAT Arrow");
+            values
+                .values()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(read_doubles, doubles);
+    assert_eq!(read_floats, floats);
+    let direct = interroga(
+        &provider,
+        &secret,
+        &format!("SELECT D, F FROM {table} ORDER BY ID"),
+    )
+    .await;
+    for (index, row) in direct.iter().enumerate() {
+        assert_eq!(
+            row.get("D"),
+            Some(&ParameterValue::F64(f64::from_bits(doubles[index]))),
+            "query BINARY_DOUBLE"
+        );
+        assert_eq!(
+            row.get("F"),
+            Some(&ParameterValue::F64(f64::from(f32::from_bits(
+                floats[index]
+            )))),
+            "query BINARY_FLOAT"
+        );
+    }
+    drop_tabella(&provider, &secret, table).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_istanti_con_fuso_json_null_e_nanosecondi() {
+    // Difetti del 25/10 (sonda): TIMESTAMP WITH TIME ZONE non si leggeva in
+    // Arrow (colonna senza fuso contro lo schema UTC); il JSON SQL NULL si
+    // rileggeva come JSON `null`; i nanosecondi si troncavano in silenzio.
+    let (provider, secret) = fixture();
+    let table = "PLN_CUR_TZ";
+    tabella_di_prova(
+        &provider,
+        &secret,
+        table,
+        "ID NUMBER(10) PRIMARY KEY, T TIMESTAMP(6) WITH TIME ZONE, J JSON",
+        &[
+            "1, TIMESTAMP '2026-01-01 00:00:00.123456 +00:00', NULL".to_owned(),
+            "2, TIMESTAMP '2026-07-01 12:00:00 +02:00', JSON('null')".to_owned(),
+            "3, TIMESTAMP '2026-01-01 00:00:00 -05:30', JSON('{\"a\":1}')".to_owned(),
+            "4, NULL, NULL".to_owned(),
+        ],
+    )
+    .await;
+    let batches = leggi_tabella(&provider, &secret, table)
+        .await
+        .expect("read Arrow con fuso");
+    let instants: Vec<Option<i64>> = batches
+        .iter()
+        .flat_map(|batch| {
+            let values = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .expect("istanti Arrow");
+            assert_eq!(values.timezone(), Some("UTC"));
+            (0..values.len())
+                .map(|row| (!values.is_null(row)).then(|| values.value(row)))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(
+        instants,
+        vec![
+            Some(1_767_225_600_123_456),
+            Some(1_782_900_000_000_000),
+            Some(1_767_245_400_000_000),
+            None,
+        ]
+    );
+    assert_eq!(
+        colonna_testo(&batches, 2),
+        vec![
+            None,
+            Some("null".to_owned()),
+            Some("{\"a\":1}".to_owned()),
+            None
+        ]
+    );
+    let direct = interroga(
+        &provider,
+        &secret,
+        &format!("SELECT J FROM {table} ORDER BY ID"),
+    )
+    .await;
+    assert!(matches!(
+        direct[0].get("J"),
+        Some(ParameterValue::Null { .. })
+    ));
+    assert_eq!(
+        direct[1].get("J"),
+        Some(&ParameterValue::Json(serde_json::Value::Null))
+    );
+    drop_tabella(&provider, &secret, table).await;
+
+    // Una regione nominata e i nanosecondi non stanno nel valore letto: si
+    // rifiutano in modo esplicito.
+    let table = "PLN_CUR_TZR";
+    tabella_di_prova(
+        &provider,
+        &secret,
+        table,
+        "ID NUMBER(10) PRIMARY KEY, T TIMESTAMP(6) WITH TIME ZONE",
+        &["1, TIMESTAMP '2026-07-01 12:00:00 Europe/Rome'".to_owned()],
+    )
+    .await;
+    assert!(leggi_tabella(&provider, &secret, table).await.is_err());
+    drop_tabella(&provider, &secret, table).await;
+    let table = "PLN_CUR_NS";
+    tabella_di_prova(
+        &provider,
+        &secret,
+        table,
+        "ID NUMBER(10) PRIMARY KEY, T TIMESTAMP(9)",
+        &["1, TIMESTAMP '2026-01-01 00:00:00.123456789'".to_owned()],
+    )
+    .await;
+    assert!(leggi_tabella(&provider, &secret, table).await.is_err());
+    drop_tabella(&provider, &secret, table).await;
+}
+
 /// Le forme della guardia del server sugli operandi scalari, con lo SQL
 /// reso e gli esiti misurati (`scripts/sonde_operandi_server.py`).
 const FIXTURE_GUARDIA: &str = include_str!("../../../tests/fixtures/operandi_server_guard.json");

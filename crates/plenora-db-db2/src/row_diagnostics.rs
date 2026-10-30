@@ -112,7 +112,7 @@ impl RowScopedWriter for Db2RowWriter<'_> {
                     .as_ref()
                     .and_then(|batch| batch.get(offset))
                     .ok_or_else(|| row_error("riga Db2 assente dopo il posizionamento"))?;
-                self.plan.insert_statement(std::slice::from_ref(row))
+                self.plan.insert_statement(std::slice::from_ref(row))?
             };
             let application = match self
                 .transaction

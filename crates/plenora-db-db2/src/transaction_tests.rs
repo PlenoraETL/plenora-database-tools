@@ -52,7 +52,7 @@ fn unsupported_transaction_options_fail_before_the_network() {
 }
 
 /// Il parameter-array non ha una forma testuale esatta per i byte: le
-/// colonne spatial arrivano gia esadecimali per `HEXTORAW(?)`, ogni altro
+/// colonne spatial arrivano gia esadecimali per `HEXTORAW(CAST(? AS VARCHAR(32672)))`, ogni altro
 /// binario si rifiuta invece di diventare il testo delle sue cifre.
 #[test]
 fn parameter_arrays_refuse_bytes_and_mixed_double_columns() {
@@ -167,4 +167,51 @@ fn an_abandoned_commit_reports_what_the_rollback_proved() {
     assert_eq!(unconfirmed.remote_effect, RemoteEffect::Unknown);
     assert_eq!(unconfirmed.retry, RetryDisposition::RequiresRecovery);
     assert_eq!(unconfirmed.phase, ErrorPhase::Rollback);
+}
+
+#[test]
+fn array_bind_descriptions_preserve_target_types_and_reject_missing_metadata() {
+    use odbc_api::DataType;
+    use plenora_database_core::provider::ParameterValue;
+    let rows = vec![vec![ParameterValue::I32(1), ParameterValue::F64(1.5)]];
+    let columns = ArrayColumns::encode(&rows, 2).unwrap();
+    let targets = [DataType::SmallInt, DataType::Real];
+    let descriptors = columns.descriptions(&targets).unwrap();
+    assert_eq!(
+        descriptors.iter().map(|d| d.data_type).collect::<Vec<_>>(),
+        targets
+    );
+    assert!(columns.descriptions(&targets[..1]).is_err());
+}
+
+#[test]
+fn parameter_array_never_sends_character_buffers_to_binary_targets() {
+    let rows = vec![vec![ParameterValue::String("AB01".into())]];
+    let columns = ArrayColumns::encode(&rows, 1).unwrap();
+    for target in [
+        DataType::Binary {
+            length: std::num::NonZeroUsize::new(4),
+        },
+        DataType::Varbinary {
+            length: std::num::NonZeroUsize::new(64),
+        },
+        DataType::LongVarbinary { length: None },
+        DataType::Other {
+            data_type: odbc_api::sys::SqlDataType(-98),
+            column_size: None,
+            decimal_digits: 0,
+        },
+    ] {
+        assert!(columns.descriptions(&[target]).is_err());
+        let admitted = crate::parameter::admit_described(&rows[0][0], &target).unwrap();
+        assert!(ArrayColumns::encode(&[vec![admitted]], 1).is_err());
+    }
+    let target = DataType::Varchar {
+        length: std::num::NonZeroUsize::new(32672),
+    };
+    let admitted = crate::parameter::admit_described(&rows[0][0], &target).unwrap();
+    assert!(ArrayColumns::encode(&[vec![admitted]], 1)
+        .unwrap()
+        .descriptions(&[target])
+        .is_ok());
 }

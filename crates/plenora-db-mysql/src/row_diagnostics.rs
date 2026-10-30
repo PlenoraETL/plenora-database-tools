@@ -29,6 +29,7 @@ use plenora_database_core::{
 pub struct MysqlRowWriter<'a> {
     session: &'a mut MysqlSession,
     plan: &'a MysqlWritePlan,
+    staging: &'a str,
     input: &'a mut dyn BatchStream,
     schema: &'a SchemaRef,
     budget: &'a ResourceBudget,
@@ -42,6 +43,7 @@ pub struct MysqlRowWriter<'a> {
 }
 
 impl<'a> MysqlRowWriter<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub const fn new(
         session: &'a mut MysqlSession,
         plan: &'a MysqlWritePlan,
@@ -50,10 +52,12 @@ impl<'a> MysqlRowWriter<'a> {
         budget: &'a ResourceBudget,
         cancellation: &'a CancellationToken,
         constraint_column: Option<String>,
+        staging: &'a str,
     ) -> Self {
         Self {
             session,
             plan,
+            staging,
             input,
             schema,
             budget,
@@ -129,15 +133,33 @@ impl RowScopedWriter for MysqlRowWriter<'_> {
                     .as_ref()
                     .ok_or_else(|| row_error("batch assente dopo il posizionamento"))?;
                 (
-                    self.plan.render_insert(1)?,
+                    self.plan.render_insert_into_staging(self.staging, 1)?,
                     self.plan.bind_chunk(batch, offset, 1)?,
                 )
             };
-            if let Some(cause) = self
+            self.session
+                .exec_write(
+                    &format!("DELETE FROM {}", self.staging),
+                    mysql_async::Params::Empty,
+                    ErrorPhase::Write,
+                    self.cancellation,
+                )
+                .await?;
+            let mut cause = self
                 .session
                 .exec_row_write(&sql, parameters, self.cancellation)
-                .await?
-            {
+                .await?;
+            if cause.is_none() {
+                cause = self
+                    .session
+                    .exec_row_write(
+                        &self.plan.render_apply_staging(self.staging),
+                        mysql_async::Params::Empty,
+                        self.cancellation,
+                    )
+                    .await?;
+            }
+            if let Some(cause) = cause {
                 Ok(RowApplication::Rejected(RowRejection {
                     cause: cause.to_owned(),
                     column: self.constraint_column.clone(),

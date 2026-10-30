@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 130552,
-  "max_code_lines": 104803,
-  "rationale": "Correzioni della CI live della #135: unita di lunghezza dal catalogo Db2 per CHAR/VARCHAR/GRAPHIC/VARGRAPHIC/CLOB/DBCLOB, conversione TO_TIMESTAMP_TZ nei filtri Oracle, runner con --show-output e le loro regressioni. Soglie rigenerate dalla misura di scripts/code_size.py; conteggio e perimetro invariati, nessun margine aggiunto."
+  "max_physical_lines": 145053,
+  "max_code_lines": 114657,
+  "rationale": "Misura esatta senza margine: MySQL/MariaDB materializzano tutti i bind nelle colonne di staging dichiarate dal catalogo, inclusi bulk e diagnostica; Oracle lega CLOB/BLOB tramite locator tipizzati e verifica lunghezza e contenuto del locator e del target nella transazione; Db2 prova la collation dal tipo built-in anche per Create. NCLOB resta rifiutato con evidenza del limite del fork. Test esclusi dalla misura. Il testkit separa la misura diretta con rollback dal writer e dalle sue guardie; gli oracoli dei provider sono moduli cfg(test). Il catalogo dei parametri Db2 conserva i CAST, incluse le unita Db2 non lette dal parser generico, e concede il limite della colonna solo quando ogni CAST coincide con il tipo intermedio di catalogo. Budget riallineato alla misura esatta, senza margine. Identita esatte dei cataloghi Db2 e Oracle; CAST e descrittore Db2 derivati dalla stessa riga, collisioni rifiutate prima del bind. Correzione fedelta Db2: testo su target binario ammesso come byte UTF-8 con limiti e padding; array senza buffer binario rifiutati; marker HEXTORAW tipizzati in writer e compilatori. NULL legacy SQL Server qualificati. Budget riallineato alla misura esatta senza margine."
 }

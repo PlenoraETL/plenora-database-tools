@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,6 +30,12 @@ COMPOSE_FILE = ROOT / "docker-compose.oracle.yml"
 REFERENCE_FILE = ROOT / "docker" / "oracle" / "references.json"
 MYSQL_REFERENCE_FILE = ROOT / "docker" / "mysql" / "references.json"
 LIVE_SOURCE = ROOT / "crates" / "plenora-db-oracle" / "src" / "live_tests.rs"
+REWRITE_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-oracle" / "src" / "write_rewrite_live_tests.rs"
+)
+ADMISSION_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-oracle" / "src" / "write_admission_live_tests.rs"
+)
 FIDELITY_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-oracle" / "src" / "parameter_fidelity_live_tests.rs"
 )
@@ -69,6 +76,13 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_closed_capabilities_fail_closed_and_match_ddl_semantics",
         "live_xyz_wkb_roundtrip_matches_declared_dimension",
         "live_every_declared_spatial_function_executes_on_geometry_and_geography",
+        # La regola A: la sonda e l'oracolo di regressione del fixture, e i
+        # difetti della settima rilettura.
+        "live_sonde_scritture_server",
+        "live_a_timestamp_3_non_arrotonda_in_silenzio",
+        "live_a_json_non_normalizza_i_numeri_in_silenzio",
+        "live_a_binary_float_non_perde_lo_zero_negativo_in_silenzio",
+        "live_a_timestamp_con_zona_locale_si_rifiuta_nel_preflight",
         "live_operand_server_guard_rejects_every_measured_form",
         "live_operand_catalog_refuses_derived_binary_and_resolves_public_sdo_geometry",
         "live_server_computed_binary_columns_are_judged_geometric",
@@ -176,29 +190,34 @@ def reference_contract() -> dict[str, str]:
 
 def live_source_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE, FIDELITY_LIVE_SOURCE, NUMBER_LIVE_SOURCE, DRIVER_LIVE_SOURCE],
+        [LIVE_SOURCE, FIDELITY_LIVE_SOURCE, NUMBER_LIVE_SOURCE, DRIVER_LIVE_SOURCE, REWRITE_LIVE_SOURCE, ADMISSION_LIVE_SOURCE],
         keep=lambda name: name.startswith("live_"),
     )
 
 
-def validate_live_run(listing: str, output: str) -> list[str]:
+def validate_live_listing(listing: str) -> set[str]:
     source = live_source_inventory()
     listed = live_inventory.listed_tests(listing, keep=lambda name: "live_" in name)
-    executed = live_inventory.executed_tests(output)
     listed_leaves = {live_inventory.leaf(name) for name in listed}
     if source != listed_leaves:
         raise RuntimeError(
             f"inventario live Oracle divergente: mancanti={sorted(source - listed_leaves)}, "
             f"inattesi={sorted(listed_leaves - source)}"
         )
+    missing = REQUIRED_LIVE_TESTS - listed_leaves
+    if missing:
+        raise RuntimeError(f"oracoli live Oracle mancanti: {sorted(missing)}")
+    return listed
+
+
+def validate_live_run(listing: str, output: str) -> list[str]:
+    listed = validate_live_listing(listing)
+    executed = live_inventory.executed_tests(output)
     if listed != executed:
         raise RuntimeError(
             f"esecuzione live Oracle incompleta: mancanti={sorted(listed - executed)}, "
             f"inattesi={sorted(executed - listed)}"
         )
-    missing = REQUIRED_LIVE_TESTS - listed_leaves
-    if missing:
-        raise RuntimeError(f"oracoli live Oracle mancanti: {sorted(missing)}")
     return sorted(listed)
 
 
@@ -235,6 +254,7 @@ def test_environments(
     user = container_variable(container, "APP_USER")
     password = container_variable(container, "APP_USER_PASSWORD")
     rust = {
+        "PLENORA_SONDE_SCRITTURE_TRACCIA": "1",
         "PLENORA_ORACLE_HOST": "127.0.0.1",
         "PLENORA_ORACLE_PORT": "1521",
         "PLENORA_ORACLE_SERVICE": reference["service"],
@@ -540,6 +560,32 @@ def build_and_run_python_live(environment: dict[str, str]) -> str:
     )
 
 
+def run_live_campaign(listing: str, environment: dict[str, str]) -> str:
+    """Un budget per test; inventario completo e nessuna selezione manuale.
+
+    PR #134: 63/67 esiti prima del timeout aggregato di 1800s, durante
+    live_sonde_scritture_server. Il budget del singolo processo resta 1800s;
+    le durate misurate permettono di distinguere una sonda lenta dalla somma.
+    """
+    names = sorted(validate_live_listing(listing))
+    outputs: list[str] = []
+    for name in names:
+        started = time.monotonic()
+        print(f"oracle live: inizio {name}; budget={TIMEOUT}s", flush=True)
+        try:
+            output = run(
+                ["cargo", "test", "--locked", "-p", "plenora-db-oracle",
+                 name, "--", "--exact", "--ignored", "--test-threads=1", "--show-output"],
+                environment=environment,
+            )
+            if live_inventory.executed_tests(output) != {name}:
+                raise RuntimeError(f"esecuzione live Oracle incompleta: {name}")
+            outputs.append(output)
+        finally:
+            print(f"oracle live: fine {name}; durata={time.monotonic() - started:.2f}s", flush=True)
+    return "\n".join(outputs)
+
+
 def main() -> int:
     steps: list[str] = []
     try:
@@ -597,21 +643,7 @@ def main() -> int:
             ],
             environment=rust_environment,
         )
-        live = run(
-            [
-                "cargo",
-                "test",
-                "--locked",
-                "-p",
-                "plenora-db-oracle",
-                "live_",
-                "--",
-                "--ignored",
-                "--test-threads=1",
-                "--show-output",
-            ],
-            environment=rust_environment,
-        )
+        live = run_live_campaign(listing, rust_environment)
         executed = validate_live_run(listing, live)
         steps.append("live_inventory_matches_sources_and_run")
         run(

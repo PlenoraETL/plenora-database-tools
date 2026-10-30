@@ -59,3 +59,50 @@ fn db2_cli_hex_wkb_decodes_without_accepting_malformed_payloads() {
     assert!(decode_hex_binary(b"010").is_err());
     assert!(decode_hex_binary(b"01GG").is_err());
 }
+
+#[test]
+fn un_timestamp_oltre_il_microsecondo_non_si_tronca_in_lettura() {
+    use plenora_database_core::parameter_fidelity::has_sub_microsecond as has_sub_microsecond_digits;
+    assert!(has_sub_microsecond_digits("2026-01-01-00.00.00.123456789"));
+    assert!(has_sub_microsecond_digits(
+        "2026-01-01 00:00:00.000000000001"
+    ));
+    assert!(!has_sub_microsecond_digits("2026-01-01-00.00.00.123456000"));
+    assert!(!has_sub_microsecond_digits("2026-01-01-00.00.00.123"));
+    assert!(!has_sub_microsecond_digits("2026-01-01-00.00.00"));
+    let error = parse_timestamp("2026-01-01-00.00.00.123456789").expect_err("cifre perse");
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::DataMapping
+    );
+    assert_eq!(
+        parse_timestamp("1970-01-01-00.00.00.000001000").expect("zeri oltre il microsecondo"),
+        1
+    );
+    let error = crate::transaction::canonical_timestamp("2026-08-27-12.34.56.123456789")
+        .expect_err("cifre perse");
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::DataMapping
+    );
+}
+
+#[test]
+fn un_float_della_query_si_legge_esatto_e_finito() {
+    use crate::transaction::decode_float;
+    use plenora_database_core::provider::ParameterValue;
+    let value = 0.1 + 0.2;
+    assert_eq!(
+        decode_float(Some(value), odbc_api::DataType::Double).expect("float"),
+        ParameterValue::F64(value)
+    );
+    assert_eq!(
+        decode_float(Some(f64::MAX), odbc_api::DataType::Double).expect("massimo"),
+        ParameterValue::F64(f64::MAX)
+    );
+    assert!(matches!(
+        decode_float(None, odbc_api::DataType::Real).expect("NULL"),
+        ParameterValue::Null { .. }
+    ));
+    assert!(decode_float(Some(f64::NAN), odbc_api::DataType::Double).is_err());
+}

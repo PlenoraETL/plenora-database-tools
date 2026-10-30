@@ -61,6 +61,65 @@ fn timestamptz_is_validated_and_normalized_for_explicit_oracle_conversion() {
     ));
 }
 
+/// Il codec `NUMBER` del driver: con un esponente negativo dispari la cifra si
+/// spostava di una posizione decimale (`0.01` si salvava come `0.1`, con
+/// `Strict` e `committed`; misurato il 25/10 dalla sonda della regola A).
+#[test]
+fn number_con_esponente_negativo_dispari_conserva_la_posizione_delle_cifre() {
+    use oracle_rs::types::{decode_oracle_number, encode_oracle_number};
+    assert_eq!(encode_oracle_number("0.01").expect("0.01"), vec![192, 2]);
+    assert_eq!(
+        encode_oracle_number("-0.01").expect("-0.01"),
+        vec![63, 100, 102]
+    );
+    for value in [
+        "0.01",
+        "0.001",
+        "0.0001",
+        "0.000123",
+        "-0.01",
+        "-0.000123",
+        "1e-3",
+        "1.5e-5",
+        "0.1",
+        "12.34",
+        "100",
+    ] {
+        let decoded = decode_oracle_number(&encode_oracle_number(value).expect("codifica"))
+            .expect("decodifica");
+        let expected: f64 = value.parse().expect("numero");
+        assert!(
+            (decoded.to_f64().expect("f64") - expected).abs() <= expected.abs() * 1e-15,
+            "{value}"
+        );
+    }
+}
+
+/// Seconda rilettura del round 8: un anno fuori da 1-9999 mandava in panic la
+/// codifica del driver; una frazione sotto il microsecondo si perdeva.
+#[test]
+fn date_e_istanti_fuori_dall_intervallo_di_oracle_si_rifiutano() {
+    let date = |value: &str| bind_parameters(&[ParameterValue::Date(value.to_owned())]);
+    let instant = |value: &str| bind_parameters(&[ParameterValue::Timestamp(value.to_owned())]);
+    for value in ["0000-01-01", "-0001-12-31", "10000-01-01"] {
+        assert!(date(value).is_err(), "{value}");
+    }
+    assert!(date("0001-01-01").is_err());
+    assert!(date("1582-10-15").is_ok());
+    assert!(date("9999-12-31").is_ok());
+    assert!(instant("0000-06-01T00:00:00").is_err());
+    assert!(instant("2026-01-01T00:00:00.123456789").is_err());
+    assert!(instant("2026-01-01T00:00:00.123456").is_ok());
+}
+
+/// Oracle non conserva `-0.0` in nessun tipo (PR #136, misurato): si rifiuta
+/// al bind invece di salvarsi in una forma non canonica o come `+0`.
+#[test]
+fn lo_zero_negativo_si_rifiuta_al_bind() {
+    assert!(bind_parameters(&[ParameterValue::F64(-0.0)]).is_err());
+    assert!(bind_parameters(&[ParameterValue::F64(0.0)]).is_ok());
+}
+
 /// La precisione bindabile e il microsecondo (regola di
 /// `plenora_database_core::parameter_fidelity`): la decima cifra non si tronca.
 #[test]

@@ -61,8 +61,11 @@ const BOOTSTRAP_CONTRACT: &[(&str, &str)] = &[
     ("time_zone", "+00:00"),
     (
         "sql_mode",
-        "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+        "NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
     ),
+    ("foreign_key_checks", "1"),
+    ("unique_checks", "1"),
+    ("sql_select_limit", "18446744073709551615"),
 ];
 
 /// La query che rilegge esattamente le variabili del contratto.

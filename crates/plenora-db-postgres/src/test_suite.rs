@@ -3311,17 +3311,16 @@ mod tests {
                         schema: Some("plenora_fixture".to_owned()),
                         object: "advanced_types".to_owned(),
                     },
+                    // Le colonne di coppie misurate (regola A): il dominio
+                    // (letto come testo verso un `integer`), il `numeric`
+                    // senza typmod (letto con la scala del valore, anche
+                    // negativa), gli array, i range e il composto si
+                    // rifiutano, qui sotto.
                     projection: vec![
                         "status".to_owned(),
-                        "domain_value".to_owned(),
-                        "rounded_amount".to_owned(),
-                        "integer_values".to_owned(),
-                        "text_values".to_owned(),
-                        "integer_window".to_owned(),
-                        "timestamp_window".to_owned(),
                         "duration".to_owned(),
                         "local_time".to_owned(),
-                        "profile".to_owned(),
+                        "external_id".to_owned(),
                     ],
                     order_by: Vec::new(),
                     row_limit: Some(1),
@@ -3349,6 +3348,57 @@ mod tests {
             create_spatial_index: false,
             allow_partial: false,
         };
+        // La regola A: una colonna di una coppia non misurata rifiuta Create
+        // nel preflight, con ogni politica (fino al 25/10 il roundtrip
+        // comprendeva il dominio, gli array, i range e il composto).
+        for unmeasured in [
+            "domain_value",
+            "rounded_amount",
+            "integer_values",
+            "text_values",
+            "integer_window",
+            "timestamp_window",
+            "profile",
+        ] {
+            let stream = provider
+                .read_with_test_budget(
+                    &secret,
+                    &ReadOperation {
+                        source: ObjectRef {
+                            catalog: None,
+                            schema: Some("plenora_fixture".to_owned()),
+                            object: "advanced_types".to_owned(),
+                        },
+                        projection: vec![unmeasured.to_owned()],
+                        order_by: Vec::new(),
+                        row_limit: Some(1),
+                        row_offset: None,
+                        filter: None,
+                        declared_crs: Vec::new(),
+                    },
+                    &ParameterBag::default(),
+                    &cancellation,
+                )
+                .await
+                .expect("advanced source");
+            let error = provider
+                .prepare_write_with_test_budget(
+                    &secret,
+                    &advanced_operation,
+                    stream.schema(),
+                    &cancellation,
+                )
+                .await
+                .err()
+                .expect("coppia non misurata");
+            assert_eq!(error.category, ErrorCategory::Unsupported, "{unmeasured}");
+            assert!(
+                error
+                    .message
+                    .contains(plenora_database_core::write_admission::UNPROVEN_PAIR),
+                "{unmeasured}: {error:?}"
+            );
+        }
         let advanced_prepared = provider
             .prepare_write_with_test_budget(
                 &secret,
@@ -3402,7 +3452,7 @@ mod tests {
                 expression: QueryExpression::Column {
                     column: ColumnRef {
                         relation: None,
-                        field: "integer_values".to_owned(),
+                        field: "duration".to_owned(),
                     },
                 },
                 alias: Some("renamed".to_owned()),
@@ -3426,8 +3476,8 @@ mod tests {
         assert_eq!(
             queried.schema().field(0).metadata()[protocol::FIELD_ID],
             original_schema
-                .field_with_name("integer_values")
-                .expect("array field")
+                .field_with_name("duration")
+                .expect("interval field")
                 .metadata()[protocol::FIELD_ID]
         );
         assert_eq!(
@@ -3553,15 +3603,9 @@ mod tests {
             .query_one(
                 "SELECT
                     target.status = source.status
-                    AND target.domain_value = source.domain_value
-                    AND target.rounded_amount = source.rounded_amount
-                    AND target.integer_values = source.integer_values
-                    AND target.text_values = source.text_values
-                    AND target.integer_window = source.integer_window
-                    AND target.timestamp_window = source.timestamp_window
                     AND target.duration = source.duration
                     AND target.local_time = source.local_time
-                    AND target.profile = source.profile
+                    AND target.external_id = source.external_id
                  FROM plenora_fixture.advanced_roundtrip AS target
                  CROSS JOIN plenora_fixture.advanced_types AS source",
                 &[],
@@ -3580,16 +3624,11 @@ mod tests {
                         schema: Some("plenora_fixture".to_owned()),
                         object: "advanced_types".to_owned(),
                     },
+                    // Le colonne di coppie misurate (regola A).
                     projection: vec![
                         "external_id".to_owned(),
-                        "rounded_amount".to_owned(),
-                        "integer_values".to_owned(),
-                        "text_values".to_owned(),
-                        "integer_window".to_owned(),
-                        "timestamp_window".to_owned(),
                         "duration".to_owned(),
                         "local_time".to_owned(),
-                        "profile".to_owned(),
                     ],
                     order_by: Vec::new(),
                     row_limit: Some(1),
@@ -3630,14 +3669,8 @@ mod tests {
             .query_one(
                 "SELECT
                     target.external_id = source.external_id
-                    AND target.rounded_amount = source.rounded_amount
-                    AND target.integer_values = source.integer_values
-                    AND target.text_values = source.text_values
-                    AND target.integer_window = source.integer_window
-                    AND target.timestamp_window = source.timestamp_window
                     AND target.duration = source.duration
                     AND target.local_time = source.local_time
-                    AND target.profile = source.profile
                  FROM plenora_fixture.advanced_binary_roundtrip AS target
                  CROSS JOIN plenora_fixture.advanced_types AS source",
                 &[],

@@ -151,6 +151,19 @@ impl Db2Transaction {
         }
     }
 
+    pub(crate) async fn verify_write_plan(
+        &mut self,
+        plan: crate::write::Db2WritePlan,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.run(
+            ErrorPhase::Prepare,
+            cancellation,
+            move |connection, timeout| plan.verify_catalog(connection, timeout),
+        )
+        .await
+    }
+
     async fn control(
         &mut self,
         sql: String,
@@ -221,8 +234,19 @@ impl Db2Transaction {
                     crate::parameter_catalog::text_operands(connection, timeout, &sql, columns)?;
                 let encoded =
                     ArrayColumns::encode(&admit_rows(&mut prepared, &rows, &catalog)?, columns)?;
+                let targets = (1..=columns)
+                    .map(|index| {
+                        let ordinal = u16::try_from(index)
+                            .map_err(|_| array_error("troppi parametri Db2"))?;
+                        prepared
+                            .describe_param(ordinal)
+                            .map(|description| description.data_type)
+                            .map_err(|error| driver_error(&error, ErrorPhase::Prepare))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let descriptions = encoded.descriptions(&targets)?;
                 let mut inserter = prepared
-                    .into_column_inserter(encoded.rows, encoded.descriptions())
+                    .into_column_inserter(encoded.rows, descriptions)
                     .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
                 inserter.set_num_rows(encoded.rows);
                 encoded.fill(&mut inserter)?;
@@ -415,24 +439,44 @@ impl ArrayColumns {
         })
     }
 
-    fn descriptions(&self) -> Vec<BindParamDesc> {
-        self.columns
+    pub(crate) fn descriptions(&self, targets: &[DataType]) -> Result<Vec<BindParamDesc>> {
+        if targets.len() != self.columns.len() {
+            return Err(array_error("descrittori parameter-array Db2 incompleti"));
+        }
+        // Il buffer testuale non puo essere rivestito da un target binario:
+        // IBM CLI lo leggerebbe come esadecimale, anche senza ammissione.
+        if targets.iter().any(|target| {
+            matches!(
+                crate::parameter::operand_of(target),
+                plenora_database_core::operand_admission::OperandType::Binary { .. }
+            )
+        }) {
+            return Err(array_error(
+                "target binario senza buffer binario nel parameter-array Db2",
+            ));
+        }
+        Ok(self
+            .columns
             .iter()
-            .map(|column| match column {
-                ArrayColumn::Double(_) => BindParamDesc {
-                    buffer_desc: BufferDesc::F64 { nullable: true },
-                    data_type: DataType::Double,
-                },
-                ArrayColumn::Text(values) => BindParamDesc::text(
-                    values
-                        .iter()
-                        .filter_map(|value| value.as_ref().map(String::len))
-                        .max()
-                        .unwrap_or(1)
-                        .max(1),
-                ),
+            .zip(targets)
+            .map(|(column, target)| {
+                let buffer_desc = match column {
+                    ArrayColumn::Double(_) => BufferDesc::F64 { nullable: true },
+                    ArrayColumn::Text(values) => BufferDesc::Text {
+                        max_str_len: values
+                            .iter()
+                            .filter_map(|value| value.as_ref().map(String::len))
+                            .max()
+                            .unwrap_or(1)
+                            .max(1),
+                    },
+                };
+                BindParamDesc {
+                    buffer_desc,
+                    data_type: *target,
+                }
             })
-            .collect()
+            .collect())
     }
 
     fn fill<S>(
@@ -477,7 +521,7 @@ fn array_error(message: &'static str) -> DatabaseError {
 
 /// Il testo di un valore del parameter-array, gia validato. I byte non hanno
 /// una forma testuale esatta: le colonne spatial arrivano gia come testo
-/// esadecimale per `HEXTORAW(?)`, e una colonna binaria scalare non e
+/// esadecimale per `HEXTORAW(CAST(? AS VARCHAR(32672)))`, e una colonna binaria scalare non e
 /// ammessa dal piano.
 fn array_text(value: &ParameterValue) -> Result<Option<String>> {
     match value {
@@ -769,17 +813,7 @@ fn decode_cell(
             "buffer query Db2 di tipo inatteso",
         )
     };
-    let float = |value: f64| {
-        if value.is_finite() {
-            Ok(ParameterValue::F64(value))
-        } else {
-            Err(transaction_error(
-                ErrorCategory::DataMapping,
-                ErrorPhase::Read,
-                "float query Db2 non finito",
-            ))
-        }
-    };
+    let float = |value| decode_float(Some(value), data_type);
     match floating(data_type) {
         Some(Floating::Double) => {
             let slice = column.as_nullable_slice::<f64>().ok_or_else(unavailable)?;
@@ -805,6 +839,28 @@ fn decode_cell(
             }
             decode_value(slice.get(row), data_type)
         }
+    }
+}
+
+/// Un float letto come `SQL_C_DOUBLE`: esatto, e soltanto finito.
+///
+/// # Errors
+///
+/// `data_mapping` se il valore non e finito.
+pub fn decode_float(value: Option<f64>, data_type: DataType) -> Result<ParameterValue> {
+    let Some(value) = value else {
+        return Ok(ParameterValue::Null {
+            type_name: type_name(data_type).to_owned(),
+        });
+    };
+    if value.is_finite() {
+        Ok(ParameterValue::F64(value))
+    } else {
+        Err(transaction_error(
+            ErrorCategory::DataMapping,
+            ErrorPhase::Read,
+            "float query Db2 non finito",
+        ))
     }
 }
 

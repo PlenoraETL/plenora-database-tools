@@ -36,6 +36,11 @@ def output(names: tuple[str, ...]) -> str:
 
 
 class RequiredLiveTests(unittest.TestCase):
+    def test_harness_keeps_progress_separate_from_results(self) -> None:
+        source = Path(gate.__file__).read_text(encoding="utf-8")
+        self.assertIn('"--show-output"', source)
+        self.assertNotIn('"--nocapture"', source)
+
     def test_the_three_row_diagnostics_tests_are_pinned(self) -> None:
         self.assertEqual(set(gate.REQUIRED_LIVE_TESTS), set(REQUIRED_LIVE))
 
