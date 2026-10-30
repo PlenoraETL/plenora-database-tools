@@ -5,7 +5,7 @@ name: db2-assurance
 # Solo il job Linux apre connessioni: Windows resta una prova build-only.
 on:
   push:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
   pull_request:
     paths:
       - "requirements-*.txt"

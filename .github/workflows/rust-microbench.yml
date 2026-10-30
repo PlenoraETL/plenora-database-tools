@@ -4,9 +4,9 @@ name: rust-microbench
 # indica che l'harness non compila o non produce misure, non una regressione.
 on:
   push:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "manutenzione/**"]
   workflow_dispatch:
 
 permissions:
