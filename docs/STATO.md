@@ -14,17 +14,17 @@ python scripts\render_state.py
 
 | crate | versione |
 | --- | --- |
-| `plenora-database-cli` | 8.0.2 |
-| `plenora-database-core` | 8.0.2 |
-| `plenora-database-engine` | 8.0.2 |
-| `plenora-database-py` | 8.0.2 |
-| `plenora-database-sql` | 8.0.2 |
-| `plenora-database-testkit` | 8.0.2 |
-| `plenora-db-db2` | 8.0.2 |
-| `plenora-db-mysql` | 8.0.2 |
-| `plenora-db-oracle` | 8.0.2 |
-| `plenora-db-postgres` | 8.0.2 |
-| `plenora-db-sqlserver` | 8.0.2 |
+| `plenora-database-cli` | 8.0.3 |
+| `plenora-database-core` | 8.0.3 |
+| `plenora-database-engine` | 8.0.3 |
+| `plenora-database-py` | 8.0.3 |
+| `plenora-database-sql` | 8.0.3 |
+| `plenora-database-testkit` | 8.0.3 |
+| `plenora-db-db2` | 8.0.3 |
+| `plenora-db-mysql` | 8.0.3 |
+| `plenora-db-oracle` | 8.0.3 |
+| `plenora-db-postgres` | 8.0.3 |
+| `plenora-db-sqlserver` | 8.0.3 |
 
 ## Contratto attivo
 
@@ -188,7 +188,7 @@ MySQL e MariaDB condividono un crate e restano quindi una riga sola.
 | MySQL + MariaDB | 308 |
 | SQL Server | 160 |
 | Oracle Database Free | 108 |
-| IBM Db2 LUW | 67 |
+| IBM Db2 LUW | 70 |
 
 ### Famiglie del gate MySQL
 
