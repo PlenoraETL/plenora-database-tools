@@ -213,7 +213,62 @@ pub fn column_facts(
         512,
     )
     .map_err(|_| unproven_facts())?;
-    rows.iter().map(|row| parse_column(row)).collect()
+    let mut facts = rows
+        .iter()
+        .map(|row| parse_column(row))
+        .collect::<Result<Vec<_>>>()?;
+    resolve_type_collations(connection, timeout, &mut facts)?;
+    Ok(facts)
+}
+
+/// Prova la collation del CAST e della Create dal tipo built-in del database.
+/// La collation di una colonna esistente deve concordare; un dato assente non
+/// viene sostituito da IDENTITY o dalla collation delle tabelle di catalogo.
+pub fn resolve_type_collations(
+    connection: &odbc_api::Connection<'_>,
+    timeout: usize,
+    facts: &mut [ColumnFacts],
+) -> Result<()> {
+    for column in facts
+        .iter_mut()
+        .filter(|c| matches!(c.type_name.as_str(), "CHARACTER" | "VARCHAR" | "CLOB"))
+    {
+        let rows = query_text(connection,
+            "SELECT CODEPAGE, TRIM(COLLATIONSCHEMA), TRIM(COLLATIONNAME) FROM SYSCAT.DATATYPES WHERE TYPESCHEMA = ? AND TYPENAME = ? AND METATYPE = 'S'",
+            &[&column.type_schema, &column.type_name], timeout, 3, 512)
+            .map_err(|_| unproven_facts())?;
+        apply_type_collation(column, &rows)?;
+    }
+    Ok(())
+}
+
+/// Fatti del tipo nella stessa connessione: esattamente una riga completa.
+fn apply_type_collation(column: &mut ColumnFacts, rows: &[Vec<Option<String>>]) -> Result<()> {
+    let [row] = rows else {
+        return Err(unproven_facts());
+    };
+    let codepage = required_text(row, 0, "codepage del tipo assente")
+        .map_err(|_| unproven_facts())?
+        .parse::<u64>()
+        .map_err(|_| unproven_facts())?;
+    let schema =
+        required_text(row, 1, "schema collation del tipo assente").map_err(|_| unproven_facts())?;
+    let name = required_text(row, 2, "collation del tipo assente").map_err(|_| unproven_facts())?;
+    let collation = format!("{}.{}", schema.trim(), name.trim());
+    if column.type_schema != "SYSIBM"
+        || codepage != column.codepage
+        || schema.trim() != "SYSIBM"
+        || name.trim().is_empty()
+        || !name
+            .trim()
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        || (!column.collation.is_empty() && column.collation != collation)
+    {
+        return Err(unproven_facts());
+    }
+    column.collation = collation;
+    Ok(())
 }
 
 /// Una riga di [`COLUMN_FACTS_SQL`].

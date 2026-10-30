@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 144347,
-  "max_code_lines": 114041,
-  "rationale": "Identita Db2: descrittore unico dal catalogo per DML, predicati e bulk, bind SQL scalari e array dal tipo descritto, verifica del catalogo nella transazione e rifiuto senza metadati esatti. Misura esatta di scripts/code_size.py senza margine; test esclusi. Bind diretti MySQL/MariaDB e percorso LOB Oracle restano fuori da questa modifica."
+  "max_physical_lines": 144751,
+  "max_code_lines": 114395,
+  "rationale": "Misura esatta senza margine: MySQL/MariaDB materializzano tutti i bind nelle colonne di staging dichiarate dal catalogo, inclusi bulk e diagnostica; Oracle lega CLOB/BLOB tramite locator tipizzati e verifica lunghezza e contenuto del locator e del target nella transazione; Db2 prova la collation dal tipo built-in anche per Create. NCLOB resta rifiutato con evidenza del limite del fork. Test esclusi dalla misura."
 }

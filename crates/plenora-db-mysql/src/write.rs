@@ -34,6 +34,7 @@ use plenora_database_core::{
     DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, Result, RetryDisposition,
 };
 use plenora_database_sql::ObjectName;
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone)]
 struct MysqlWriteColumn {
@@ -651,6 +652,7 @@ impl MysqlWritePlan {
     /// # Errors
     ///
     /// Fallisce chiuso fuori dai limiti di binding di `MySQL`.
+    #[cfg(test)]
     pub(super) fn render_insert(&self, rows: usize) -> Result<String> {
         let on_duplicate = self.upsert_on_duplicate_clause();
         self.render_insert_generic(&self.quoted_target, rows, on_duplicate.as_deref())
@@ -728,61 +730,44 @@ impl MysqlWritePlan {
         crate::MAX_BIND_PARAMETERS / self.columns.len()
     }
 
-    /// Renderizza `DELETE FROM target WHERE (k1, k2, ...) IN ((?, ?, ...), ...)`
-    /// per WriteMode::DeleteByKeys. Il numero di colonne dello schema
-    /// coincide con quello delle keys (`MysqlWritePlan::compile` fa la check).
-    ///
-    /// # Errors
-    ///
-    /// Fallisce fuori dai limiti di binding di `MySQL`.
-    pub(super) fn render_delete_by_keys(&self, rows: usize) -> Result<String> {
-        if rows == 0 {
-            return Err(prepare_error(
-                ErrorCategory::InvalidPlan,
-                "DELETE richiede almeno una riga di keys",
-            ));
+    /// Applica soltanto valori materializzati con il tipo esatto del catalogo.
+    /// Nessun parametro del protocollo partecipa a confronti con il target.
+    pub(super) fn render_apply_staging(&self, staging: &str) -> String {
+        if self.mode == WriteMode::DeleteByKeys {
+            let predicate = self
+                .columns
+                .iter()
+                .map(|c| format!("t.{0} = s.{0}", c.quoted))
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            return format!(
+                "DELETE t FROM {} AS t JOIN {staging} AS s ON {predicate}",
+                self.quoted_target
+            );
         }
-        let placeholder_count = rows.checked_mul(self.columns.len()).ok_or_else(|| {
-            prepare_error(
-                ErrorCategory::ResourceLimit,
-                "overflow nel conteggio dei placeholder",
-            )
-        })?;
-        if placeholder_count > crate::MAX_BIND_PARAMETERS {
-            return Err(prepare_error(
-                ErrorCategory::ResourceLimit,
-                format!(
-                    "DELETE con {placeholder_count} placeholder oltre il limite di {}",
-                    crate::MAX_BIND_PARAMETERS
-                ),
-            ));
-        }
-        let keys_tuple = self
+        let columns = self
             .columns
             .iter()
             .map(|c| c.quoted.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let row_placeholders = self
-            .columns
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(", ");
         let mut sql = format!(
-            "DELETE FROM {} WHERE ({keys_tuple}) IN (",
+            "INSERT INTO {} ({columns}) SELECT {columns} FROM {staging} WHERE TRUE",
             self.quoted_target
         );
-        for row in 0..rows {
-            if row > 0 {
-                sql.push_str(", ");
+        if let Some(clause) = self.upsert_on_duplicate_clause() {
+            sql.push_str(" ON DUPLICATE KEY UPDATE ");
+            if self.upsert_update_columns.is_empty() {
+                // INSERT SELECT espone anche le chiavi dello staging: il no-op
+                // deve riferirsi esplicitamente alla colonna del target.
+                if let Some(key) = self.upsert_keys_quoted.first() {
+                    let _ = write!(sql, "{key}={}.{key}", self.quoted_target);
+                }
+            } else {
+                sql.push_str(&clause);
             }
-            sql.push('(');
-            sql.push_str(&row_placeholders);
-            sql.push(')');
         }
-        sql.push_str(");");
-        Ok(sql)
+        sql
     }
 
     /// Il piano con le lunghezze massime delle colonne di testo del target

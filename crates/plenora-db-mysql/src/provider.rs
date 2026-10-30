@@ -1040,11 +1040,9 @@ async fn execute_mysql_write_after_ddl(
         .await?;
     }
 
-    // Update scrive il bulk nella tabella temporanea e applica poi UPDATE JOIN
-    // al target.
-    let update_staging_quoted: Option<String> = if operation.mode
-        == plenora_database_core::plan::WriteMode::Update
-    {
+    // Ogni bind entra in una colonna dichiarata dal catalogo. Il DML sul
+    // target usa soltanto quelle colonne, anche nei predicati DeleteByKeys.
+    let staging_quoted = {
         let seed = format!(
             "{}-{}",
             std::process::id(),
@@ -1062,9 +1060,7 @@ async fn execute_mysql_write_after_ddl(
             .exec_control(&staging_ddl, ErrorPhase::Prepare, token)
             .await?;
         let quoted = crate::write::quote_staging_name(&staging_name, provider.config.database())?;
-        Some(quoted)
-    } else {
-        None
+        quoted
     };
 
     // La regola K sotto la collation della colonna, per Upsert e
@@ -1149,11 +1145,12 @@ async fn execute_mysql_write_after_ddl(
             policy,
             declared_rows,
             &execution_id,
+            &staging_quoted,
         )
         .await;
         return result;
     }
-    let effective_staging = update_staging_quoted.as_deref();
+    let effective_staging = Some(staging_quoted.as_str());
     let progress = match write_input_batches(
         session,
         input.as_mut(),
@@ -1179,7 +1176,8 @@ async fn execute_mysql_write_after_ddl(
     // affected = updated_target_rows).
     let mut final_affected = progress.inserted;
     if operation.mode == plenora_database_core::plan::WriteMode::Update {
-        if let Some(staging) = update_staging_quoted.as_deref() {
+        {
+            let staging = staging_quoted.as_str();
             // Le coppie prima dello `UPDATE`, nella stessa transazione: il
             // confronto con le righe trovate scopre le chiavi uguali per la
             // collation del target che il core non vede ripetute.
@@ -1318,6 +1316,7 @@ async fn diagnostic_mysql_write(
     policy: plenora_database_core::row_diagnostics::RowDiagnosticsPolicy,
     declared_rows: u64,
     execution_id: &str,
+    staging: &str,
 ) -> Result<WriteOutcome> {
     // Il codice MySQL prova la classe; la colonna arriva esclusivamente dal
     // contratto dichiarato della sorgente, già verificato contro lo schema
@@ -1337,6 +1336,7 @@ async fn diagnostic_mysql_write(
             budget,
             cancellation,
             constraint_column,
+            staging,
         );
         let diagnosed = plenora_database_core::row_diagnostics::diagnose_row_scoped_write(
             &mut writer,
@@ -1488,17 +1488,38 @@ async fn write_batch_chunks_for_mode(
                 return Err(crate::write::repeated_key_error(session.kind()));
             }
         }
+        let staging = staging_override.ok_or_else(|| unsupported("staging tipizzato assente"))?;
+        if mode != plenora_database_core::plan::WriteMode::Update {
+            session
+                .exec_write(
+                    &format!("DELETE FROM {staging}"),
+                    mysql_async::Params::Empty,
+                    ErrorPhase::Write,
+                    cancellation,
+                )
+                .await?;
+        }
         let parameters = plan.bind_chunk(batch, start, rows)?;
-        let sql = if mode == plenora_database_core::plan::WriteMode::DeleteByKeys {
-            plan.render_delete_by_keys(rows)?
-        } else if let Some(staging) = staging_override {
-            plan.render_insert_into_staging(staging, rows)?
-        } else {
-            plan.render_insert(rows)?
-        };
-        let affected = session
-            .exec_write(&sql, parameters, ErrorPhase::Write, cancellation)
+        let loaded = session
+            .exec_write(
+                &plan.render_insert_into_staging(staging, rows)?,
+                parameters,
+                ErrorPhase::Write,
+                cancellation,
+            )
             .await?;
+        let affected = if mode == plenora_database_core::plan::WriteMode::Update {
+            loaded
+        } else {
+            session
+                .exec_write(
+                    &plan.render_apply_staging(staging),
+                    mysql_async::Params::Empty,
+                    ErrorPhase::Write,
+                    cancellation,
+                )
+                .await?
+        };
         affected_total = affected_total.checked_add(affected).ok_or_else(|| {
             provider_error(
                 ErrorCategory::ResourceLimit,

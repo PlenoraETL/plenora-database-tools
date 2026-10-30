@@ -37,6 +37,24 @@
 //! colonna non c'e (la fixture `Free` ha `MAX_STRING_SIZE = STANDARD`, che non
 //! le ammette): la prova e unitaria.
 
+//! # Limite dichiarato: NCLOB nel writer
+//!
+//! - **Ambito**: anche Create e bulk; NCLOB resta Unsupported/Prepare.
+//! - **Prova nel fork**: `messages/lob_op.rs::new_create_temp` sceglie sempre
+//!   csfrm=1 per Clob; `messages/execute.rs::write_bind_params` e
+//!   `infer_bind_metadata` forzano csfrm=1 e charset UTF8. `BindParam` non
+//!   espone charset o forma nazionale. `connection.rs::parse_temp_lob_response`
+//!   scarta il charset restituito. Un locator NCLOB non basta a correggere
+//!   i metadati del bind: verrebbe dichiarato CLOB.
+//! - **Rientro**: charset e csfrm espliciti dal target fino al wire, creazione
+//!   NCLOB, rilettura esatta di lunghezza e contenuto nella transazione e
+//!   regressioni per NULL, vuoto, Unicode fuori BMP e piu chunk.
+//! - CLOB richiede AL32UTF8 verificato; BLOB non ha charset. Il percorso in
+//!   `write_lob` e `parameter::bind_target_lobs` verifica locator e target.
+//! - Le chiavi LOB restano escluse. Upsert con LOB esclusi dagli aggiornamenti
+//!   resta chiuso: il controllo del target richiede distinguere INSERT da
+//!   UPDATE del MERGE per verificare anche quei campi senza falsi rifiuti.
+
 use crate::catalog::{optional_i64, optional_string, optional_u64, query, required_string};
 use crate::config::OracleConfig;
 use plenora_database_core::arrow::schema::{DataType, TimeUnit};

@@ -1,6 +1,6 @@
 //! Descrittore di catalogo comune a DML, predicati e parameter-array.
 //! Il writer non crea staging o tabelle di chiavi. La collation Db2 e
-//! ereditata dal database; i testi si ammettono solo in UTF-8 binario.
+//! ereditata dal database; i testi richiedono UTF-8 e la collation provata del tipo built-in.
 use crate::write_admission::ColumnFacts;
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
@@ -39,7 +39,10 @@ impl TargetType {
             "TIMESTAMP" if (0..=12).contains(&facts.scale) => format!("TIMESTAMP({})", facts.scale),
             "CHARACTER" | "VARCHAR" | "CLOB"
                 if facts.codepage == 1208
-                    && facts.collation == "SYSIBM.IDENTITY"
+                    && facts.collation.strip_prefix("SYSIBM.").is_some_and(|name| {
+                        !name.is_empty()
+                            && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                    })
                     && facts.string_units_length > 0
                     && matches!(facts.string_units.as_str(), "OCTETS" | "CODEUNITS32") =>
             {

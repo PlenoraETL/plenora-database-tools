@@ -650,7 +650,8 @@ pub async fn prepare_write(
         let (connection, timeout) = open_connection(&config, &secret)?;
         let server = crate::write_admission::server_facts(&connection, timeout)?;
         let report = if mode == WriteMode::Create {
-            let facts = plan_for_probe.create_facts(&server)?;
+            let mut facts = plan_for_probe.create_facts(&server)?;
+            crate::write_admission::resolve_type_collations(&connection, timeout, &mut facts)?;
             plan_for_probe.admit(&facts, &server)?;
             LossReport {
                 schema_version: 2,

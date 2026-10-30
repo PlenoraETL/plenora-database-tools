@@ -90,7 +90,7 @@ fn fixture_native_forms_cross_every_sql_path_have_identity_or_refusal() {
             let (facts, expected) = catalog(native, length);
             let mut plan = plan();
             let descriptor = TargetType::from_catalog(&facts);
-            let reject = matches!(facts.data_type.as_str(), "BLOB" | "CLOB" | "NCLOB" | "JSON")
+            let reject = matches!(facts.data_type.as_str(), "NCLOB" | "JSON")
                 || facts.data_type.contains("LOCAL TIME ZONE");
             if reject {
                 let error = descriptor.unwrap_err();
@@ -118,6 +118,11 @@ fn fixture_native_forms_cross_every_sql_path_have_identity_or_refusal() {
                     refused += 1;
                 } else {
                     let statement = statement.unwrap();
+                    if matches!(facts.data_type.as_str(), "BLOB" | "CLOB") {
+                        assert!(!statement.sql.contains("CAST(:"));
+                        accepted += 1;
+                        continue;
+                    }
                     for ordinal in 1..=statement.params.len() {
                         assert!(
                             statement
@@ -192,4 +197,51 @@ fn raw_and_spatial_bytes_choose_distinct_bind_representations() {
         column.placeholder(1).unwrap(),
         "MDSYS.SDO_UTIL.FROM_WKBGEOMETRY(:1, 4326)"
     );
+}
+
+#[test]
+fn lob_write_uses_typed_locators_and_reads_target_inside_transaction() {
+    for native in ["BLOB", "CLOB"] {
+        for mode in [
+            WriteMode::Append,
+            WriteMode::Create,
+            WriteMode::Replace,
+            WriteMode::Update,
+            WriteMode::Upsert,
+        ] {
+            let mut plan = plan();
+            plan.mode = mode;
+            plan.columns[0].target_type =
+                Some(TargetType::from_catalog(&catalog("NUMBER(10,0)", 7).0).unwrap());
+            plan.columns[1].target_type =
+                Some(TargetType::from_catalog(&catalog(native, 7).0).unwrap());
+            let row = [
+                ParameterValue::I64(1),
+                ParameterValue::String(String::new()),
+            ];
+            let statement = match mode {
+                WriteMode::Update => plan.update_statement(&row),
+                WriteMode::Upsert => plan.upsert_statement(&row),
+                _ => plan.insert_statement(&row),
+            }
+            .unwrap();
+            let (statement, verification) = lob::verified_statement(&plan, &statement).unwrap();
+            assert!(!statement.sql.contains("VARCHAR2"));
+            assert!(verification.declarations.contains(native));
+            assert!(verification.after.contains("SELECT V INTO plenora_lob_"));
+            assert!(verification.after.contains("DBMS_LOB.GETLENGTH"));
+            assert!(verification.after.contains("DBMS_LOB.COMPARE"));
+            assert!(verification.after.contains("IS NULL"));
+            assert!(verification.after.contains("RAISE_APPLICATION_ERROR"));
+            let index = usize::from(mode != WriteMode::Update);
+            assert_eq!(
+                verification.types[index],
+                plan.columns[1].target_type.as_ref().unwrap().lob_type()
+            );
+            assert_eq!(
+                statement.sql.contains("RETURNING ROWID"),
+                mode != WriteMode::Upsert
+            );
+        }
+    }
 }

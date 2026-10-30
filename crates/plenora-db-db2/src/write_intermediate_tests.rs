@@ -135,7 +135,7 @@ fn unproven_catalog_is_refused_without_payload() {
     for change in 0..4 {
         let mut facts = catalog("VARCHAR(n OCTETS);cp=1208", 7).0;
         match change {
-            0 => facts.collation = "SYSIBM.SYSTEM_1252".into(),
+            0 => facts.collation.clear(),
             1 => facts.codepage = 1252,
             2 => facts.type_schema = "payload".into(),
             _ => facts.string_units.clear(),

@@ -22,6 +22,14 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Dichiarazioni e controlli prodotti dal descrittore del target, mai dal payload.
+#[derive(Default)]
+pub struct LobVerification {
+    pub types: Vec<Option<oracle_rs::OracleType>>,
+    pub declarations: String,
+    pub after: String,
+}
+
 pub struct OracleTransaction {
     sent: SendMarker,
     connection: PooledOracleConnection,
@@ -118,29 +126,53 @@ impl OracleTransaction {
         statement: &Statement,
         cancellation: &CancellationToken,
     ) -> Result<u64> {
+        self.execute_verified_lob_dml(statement, &LobVerification::default(), cancellation)
+            .await
+    }
+
+    pub(crate) async fn execute_verified_lob_dml(
+        &mut self,
+        statement: &Statement,
+        verification: &LobVerification,
+        cancellation: &CancellationToken,
+    ) -> Result<u64> {
         enforce_policy(self.native_query_policy, &statement.sql)?;
         // Il writer ammette i soli target scalari descritti dal catalogo:
         // RAW resta Bytes, il testo resta String. La promozione generalizzata
         // a BLOB/CLOB cambierebbe il tipo prima del CAST del target. WKB usa
         // ancora il locator dedicato del costruttore SDO_GEOMETRY.
-        let values = bind_parameters_with_lobs(
-            self.connection.connection()?,
-            &statement.params,
-            false,
-            &mut self.lob_cache,
-            self.operation_timeout,
-            ErrorPhase::Write,
-            cancellation,
-        )
-        .await?;
+        let values = if verification.types.is_empty() {
+            bind_parameters_with_lobs(
+                self.connection.connection()?,
+                &statement.params,
+                false,
+                &mut self.lob_cache,
+                self.operation_timeout,
+                ErrorPhase::Write,
+                cancellation,
+            )
+            .await?
+        } else {
+            crate::parameter::bind_target_lobs(
+                self.connection.connection()?,
+                &statement.params,
+                &verification.types,
+                &mut self.lob_cache,
+                self.operation_timeout,
+                cancellation,
+            )
+            .await?
+        };
         let sql = format!(
             "DECLARE
                plenora_affected NUMBER := 0;
                plenora_code NUMBER := 0;
+               {}
              BEGIN
                BEGIN
                  {};
                  plenora_affected := SQL%ROWCOUNT;
+                 {}
                EXCEPTION WHEN OTHERS THEN
                  plenora_code := SQLCODE;
                  ROLLBACK;
@@ -149,11 +181,12 @@ impl OracleTransaction {
                  'PLENORA|' || TO_CHAR(plenora_code) || '|' || TO_CHAR(plenora_affected)
                );
              END;",
-            statement.sql
+            verification.declarations, statement.sql, verification.after
         );
         let params = values
             .into_iter()
-            .map(|value| match value {
+            .enumerate()
+            .map(|(index, value)| match value {
                 Value::Lob(LobValue::Locator(locator)) => {
                     let oracle_type = locator.oracle_type();
                     BindParam {
@@ -163,7 +196,14 @@ impl OracleTransaction {
                         buffer_size: 112,
                     }
                 }
-                value => BindParam::input(value),
+                value => {
+                    let mut param = BindParam::input(value);
+                    if let Some(Some(kind)) = verification.types.get(index) {
+                        param.oracle_type = *kind;
+                        param.buffer_size = 112;
+                    }
+                    param
+                }
             })
             .collect::<Vec<_>>();
         timed(

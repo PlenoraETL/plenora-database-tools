@@ -1,6 +1,6 @@
 //! Il tipo dell'operando SQL viene dal catalogo, mai dal tipo Arrow del bind.
-//! LOB, LONG e JSON non hanno qui un CAST identico qualificato: si rifiutano
-//! prima del DML, anche per array DML. Oracle non usa staging/GTT nel writer.
+//! CLOB/BLOB usano locator tipizzati e verifica transazionale, senza CAST.
+//! NCLOB, LONG e JSON restano chiusi. Oracle non usa staging/GTT nel writer.
 
 use crate::write_admission::ColumnFacts;
 use plenora_database_core::plan::ProviderKind;
@@ -59,7 +59,7 @@ impl TargetType {
                 format!("{native}({length}{unit})")
             }
             "RAW" if facts.data_length > 0 => format!("RAW({})", facts.data_length),
-            "BOOLEAN" | "BINARY_FLOAT" | "BINARY_DOUBLE" | "DATE" => native,
+            "BOOLEAN" | "BINARY_FLOAT" | "BINARY_DOUBLE" | "DATE" | "CLOB" | "BLOB" => native,
             _ if (0..=9).any(|p| {
                 [
                     format!("TIMESTAMP({p})"),
@@ -78,7 +78,18 @@ impl TargetType {
         })
     }
 
+    pub(super) fn lob_type(&self) -> Option<oracle_rs::OracleType> {
+        match self.declaration.as_str() {
+            "CLOB" => Some(oracle_rs::OracleType::Clob),
+            "BLOB" => Some(oracle_rs::OracleType::Blob),
+            _ => None,
+        }
+    }
+
     pub(super) fn operand(&self, input: &str) -> String {
+        if self.lob_type().is_some() {
+            return input.to_owned();
+        }
         let cast = format!("CAST({input} AS {})", self.declaration);
         self.collation.as_ref().map_or_else(
             || cast.clone(),

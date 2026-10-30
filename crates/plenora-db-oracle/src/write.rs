@@ -75,6 +75,9 @@ struct SpatialWriteColumn {
     exact_geometry_type: Option<String>,
 }
 
+#[path = "write_lob.rs"]
+mod lob;
+
 impl OracleWritePlan {
     fn compile(
         config: &OracleConfig,
@@ -284,9 +287,30 @@ impl OracleWritePlan {
                     .iter()
                     .find(|fact| fact.name == column.name)
                     .ok_or_else(crate::write_intermediate::unsupported)?;
+                if fact.data_type == "CLOB" && server.charset != "AL32UTF8" {
+                    return Err(crate::write_intermediate::unsupported());
+                }
                 column.target_type =
                     Some(crate::write_intermediate::TargetType::from_catalog(fact)?);
             }
+        }
+        if self.keys.iter().any(|i| {
+            self.columns[*i]
+                .target_type
+                .as_ref()
+                .is_some_and(|t| t.lob_type().is_some())
+        }) {
+            return Err(crate::write_intermediate::unsupported());
+        }
+        if self.mode == WriteMode::Upsert
+            && self.columns.iter().enumerate().any(|(i, c)| {
+                c.target_type
+                    .as_ref()
+                    .is_some_and(|t| t.lob_type().is_some())
+                    && !self.updates.contains(&i)
+            })
+        {
+            return Err(crate::write_intermediate::unsupported());
         }
         #[cfg(test)]
         if plenora_database_testkit::write_probe::is_probe_table(&self.object_name) {
@@ -773,7 +797,21 @@ async fn load_target(
             cancellation,
         )
         .await?;
+        let server = crate::write_admission::server_facts(
+            config,
+            transaction.catalog_connection()?,
+            cancellation,
+        )
+        .await?;
         for column in &plan.columns {
+            if column
+                .target_type
+                .as_ref()
+                .is_some_and(|t| t.declaration == "CLOB")
+                && server.charset != "AL32UTF8"
+            {
+                return Err(crate::write_intermediate::unsupported());
+            }
             if column.spatial.is_none() {
                 let fact = facts
                     .iter()
@@ -994,7 +1032,25 @@ async fn execute_input(
                 )),
             })
             .collect::<Result<Vec<_>>>()?;
-        let changed = execute_statements(transaction, &statements, cancellation).await?;
+        let changed = if plan.columns.iter().any(|c| {
+            c.target_type
+                .as_ref()
+                .is_some_and(|t| t.lob_type().is_some())
+        }) {
+            let mut count = 0;
+            for statement in &statements {
+                let (statement, verification) = lob::verified_statement(plan, statement)?;
+                count = checked_dml_count(
+                    count,
+                    transaction
+                        .execute_verified_lob_dml(&statement, &verification, cancellation)
+                        .await?,
+                )?;
+            }
+            count
+        } else {
+            execute_statements(transaction, &statements, cancellation).await?
+        };
         affected = affected.checked_add(changed).ok_or_else(|| {
             write_error(
                 ErrorCategory::ResourceLimit,

@@ -1915,6 +1915,46 @@ fn staging_preserves_every_measured_catalog_type() {
                 sql.contains(&format!("`label` {expected_type} NULL")),
                 "{native}: {sql}"
             );
+            // Tutti i percorsi caricano la stessa dichiarazione e applicano
+            // colonne materializzate: mai un parametro in un predicato.
+            for mode in [
+                WriteMode::Append,
+                WriteMode::Create,
+                WriteMode::Replace,
+                WriteMode::TruncateInsert,
+                WriteMode::Upsert,
+                WriteMode::Update,
+                WriteMode::DeleteByKeys,
+            ] {
+                let mut plan = MysqlWritePlan::compile_with_profile(
+                    &input,
+                    &append_operation(),
+                    "warehouse",
+                    profile,
+                )
+                .unwrap();
+                plan.mode = mode;
+                plan.update_key_columns = vec!["`label`".into()];
+                plan.update_set_columns = vec!["`label`".into()];
+                plan.upsert_update_columns = vec!["`label`".into()];
+                for rows in [1, 37] {
+                    let load = plan.render_insert_into_staging("`staging`", rows).unwrap();
+                    assert_eq!(load.matches('?').count(), rows);
+                    let apply = if mode == WriteMode::Update {
+                        plan.render_update_from_staging("`staging`")
+                    } else {
+                        plan.render_apply_staging("`staging`")
+                    };
+                    assert!(!apply.contains('?'), "{native}: {apply}");
+                    assert!(apply.contains("`staging`"));
+                    if mode == WriteMode::DeleteByKeys {
+                        assert!(apply.contains("t.`label` = s.`label`"));
+                    }
+                    if mode == WriteMode::Upsert {
+                        assert!(apply.contains("ON DUPLICATE KEY UPDATE"));
+                    }
+                }
+            }
         }
     }
 }

@@ -272,3 +272,51 @@ fn le_chiavi_non_possono_perdere_precisione_o_cambiare_tipo() {
         }
     }
 }
+
+#[test]
+fn type_catalog_recovers_create_and_missing_column_collation_without_defaults() {
+    for collation in ["IDENTITY", "IDENTITY_16BIT", "CLDR181_S1"] {
+        let rows = vec![vec![
+            Some("1208".into()),
+            Some("SYSIBM".into()),
+            Some(collation.into()),
+        ]];
+        for mut facts in [
+            text("VARCHAR", 193, "OCTETS", 193),
+            create_facts("V", &DataType::Utf8, &server()).unwrap(),
+        ] {
+            facts.collation.clear();
+            apply_type_collation(&mut facts, &rows).unwrap();
+            assert_eq!(facts.collation, format!("SYSIBM.{collation}"));
+            apply_type_collation(&mut facts, &rows).unwrap();
+            facts.collation = "SYSIBM.CONFLICT".into();
+            assert!(apply_type_collation(&mut facts, &rows).is_err());
+        }
+    }
+}
+
+#[test]
+fn missing_ambiguous_or_conflicting_type_catalog_stays_closed() {
+    let valid = vec![
+        Some("1208".into()),
+        Some("SYSIBM".into()),
+        Some("IDENTITY".into()),
+    ];
+    for rows in [
+        vec![],
+        vec![valid.clone(), valid],
+        vec![vec![Some("1208".into()), None, None]],
+        vec![vec![
+            Some("1252".into()),
+            Some("SYSIBM".into()),
+            Some("IDENTITY".into()),
+        ]],
+    ] {
+        let mut facts = text("VARCHAR", 193, "OCTETS", 193);
+        facts.collation.clear();
+        let error = apply_type_collation(&mut facts, &rows).unwrap_err();
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert!(facts.collation.is_empty());
+    }
+}
