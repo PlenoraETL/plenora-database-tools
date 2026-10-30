@@ -6,7 +6,7 @@ use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct TargetType {
+pub struct TargetType {
     declaration: String,
     facts: ColumnFacts,
 }
@@ -20,7 +20,7 @@ pub(super) fn unsupported() -> DatabaseError {
 }
 
 impl TargetType {
-    pub(super) fn from_catalog(facts: &ColumnFacts) -> Result<Self> {
+    pub(crate) fn from_catalog(facts: &ColumnFacts) -> Result<Self> {
         if facts.type_schema != "SYSIBM" {
             return Err(unsupported());
         }
@@ -59,7 +59,7 @@ impl TargetType {
         })
     }
 
-    pub(super) fn operand(&self) -> String {
+    pub(crate) fn operand(&self) -> String {
         format!("CAST(? AS {})", self.declaration)
     }
 }

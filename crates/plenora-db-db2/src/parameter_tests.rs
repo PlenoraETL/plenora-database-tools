@@ -403,3 +403,68 @@ fn sql_bind_type_is_the_described_target_not_the_c_buffer() {
         assert_eq!(bound.data_type(), target);
     }
 }
+
+/// Regressione AB01: controlla il tipo C oltre al tipo SQL del segnaposto.
+#[test]
+fn text_on_binary_uses_utf8_bytes_and_enforces_length_and_padding() {
+    for text in ["AB01", "not hex", "\u{e9}", "\u{1f600}", "a\0b", ""] {
+        let value = ParameterValue::String(text.into());
+        let target = varbinary();
+        assert_eq!(
+            super::admit_described(&value, &target).unwrap(),
+            ParameterValue::Bytes(text.as_bytes().to_vec())
+        );
+        let bound = bind(&value, &target).unwrap();
+        assert_eq!(bound.cdata_type(), odbc_api::sys::CDataType::Binary);
+        assert_eq!(bound.data_type(), target);
+    }
+    for target in [
+        DataType::Binary {
+            length: NonZeroUsize::new(4),
+        },
+        DataType::Varbinary {
+            length: NonZeroUsize::new(4),
+        },
+        DataType::LongVarbinary {
+            length: NonZeroUsize::new(4),
+        },
+        DataType::Other {
+            data_type: SqlDataType(-98),
+            column_size: NonZeroUsize::new(4),
+            decimal_digits: 0,
+        },
+    ] {
+        for (text, fits) in [
+            ("AB01", true),
+            ("\u{e9}\u{e9}", true),
+            ("\u{e9}\u{e9}\u{e9}", false),
+            ("ABCDE", false),
+        ] {
+            let value = ParameterValue::String(text.into());
+            assert_eq!(bind(&value, &target).is_ok(), fits);
+            assert_eq!(super::admit_described(&value, &target).is_ok(), fits);
+        }
+    }
+    for text in ["", "A", "\u{e9}"] {
+        let value = ParameterValue::String(text.into());
+        assert!(bind(
+            &value,
+            &DataType::Binary {
+                length: NonZeroUsize::new(4)
+            }
+        )
+        .is_err());
+    }
+    for value in [
+        ParameterValue::Uuid("550e8400-e29b-41d4-a716-446655440000".into()),
+        ParameterValue::Enum {
+            type_name: "kind".into(),
+            label: "AB01".into(),
+        },
+    ] {
+        assert_eq!(
+            bind(&value, &varbinary()).unwrap().cdata_type(),
+            odbc_api::sys::CDataType::Binary
+        );
+    }
+}

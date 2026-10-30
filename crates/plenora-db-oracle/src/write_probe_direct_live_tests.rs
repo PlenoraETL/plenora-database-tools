@@ -1,28 +1,17 @@
 //! DML del driver senza CAST o guardie del writer, sempre con rollback.
 use super::*;
+use crate::write_probe_tests::{probe_failure, probe_kind, probe_value};
 use plenora_database_core::arrow::array::Array;
 use write_probe::{direct_error, direct_value, DirectObservation};
 
 pub(super) async fn observe(
     hooks: &Hooks,
+    spec: &ProbeSpec,
     values: &dyn Array,
     row: usize,
 ) -> plenora_database_core::Result<DirectObservation> {
-    let field = Field::new("V0", values.data_type().clone(), true);
-    let value = if matches!(values.data_type(), DataType::Timestamp(_, Some(_)))
-        && !values.is_null(row)
-    {
-        let array = values
-            .as_any()
-            .downcast_ref::<TimestampMicrosecondArray>()
-            .expect("timestamp");
-        let instant = chrono::DateTime::from_timestamp_micros(array.value(row)).expect("istante");
-        plenora_database_core::provider::ParameterValue::String(
-            instant.format("%Y-%m-%dT%H:%M:%S%.6f+00:00").to_string(),
-        )
-    } else {
-        plenora_database_engine::arrow_write::arrow_parameter_value(values, &field, row, 'T')?
-    };
+    eprintln!("sonda Oracle tipo={} indice={row}: avvio", probe_kind(spec));
+    let value = probe_value(spec, values, row)?;
     let operand = if matches!(values.data_type(), DataType::Timestamp(_, Some(_))) {
         format!(
             "TO_TIMESTAMP_TZ(:1, '{}')",
@@ -85,6 +74,9 @@ pub(super) async fn observe(
         .await;
         (rows, true)
     };
+    if let Err(error) = &observed {
+        eprintln!("{}", probe_failure(spec, row, error));
+    }
     crate::connection::with_timeout(
         config,
         ErrorPhase::Rollback,
@@ -92,7 +84,9 @@ pub(super) async fn observe(
         raw.rollback(),
     )
     .await
-    .expect("rollback confermato dell'oracolo");
+    .inspect_err(|error| {
+        eprintln!("rollback fallito: {}", probe_failure(spec, row, error));
+    })?;
     lease.allow_reuse();
     drop(lease);
     Ok(match observed {

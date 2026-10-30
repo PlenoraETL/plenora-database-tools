@@ -24,6 +24,21 @@
 //! `NULL`) non cambia cio che si salva e non e nella chiave: decide la regola
 //! K delle chiavi di testo (`crate::write`, «chiavi di testo sotto una
 //! collation non binaria»).
+//!
+//! # Limite dichiarato: l'identita degli identificatori delimitati
+//!
+//! - **Regola**: i nomi dei cataloghi (campi VARCHAR) si conservano byte per
+//!   byte, mai ripuliti con `TRIM`: in Db2 gli spazi iniziali di un
+//!   identificatore delimitato sono significativi, quelli finali sono
+//!   conservati ma non distintivi nella risoluzione SQL.
+//! - **Ambito**: target, colonna, CAST e descrittore dei parametri (scalari e
+//!   array), fatti del writer, operandi, describe.
+//! - **Hazard**: un nome normalizzato puo associare il limite del CAST ai
+//!   fatti di un'altra colonna (`" C"` e `C`): valore accettato e troncato.
+//! - **Rifiuto**: un'identita ambigua, duplicata o trovata solo grazie agli
+//!   spazi finali non autorizza un descrittore ([`identity_error`], senza nomi).
+//! - **Rientro**: una prova riproducibile che il server risolve verso una sola
+//!   riga di catalogo, condivisa dai percorsi scalari e array.
 
 use crate::connection::{query_text, required_text};
 use plenora_database_core::arrow::schema::{DataType, TimeUnit};
@@ -95,7 +110,7 @@ impl ColumnFacts {
     #[must_use]
     pub fn binary_collation(&self) -> bool {
         matches!(
-            self.collation.to_ascii_uppercase().as_str(),
+            self.collation.as_str(),
             "SYSIBM.IDENTITY" | "SYSIBM.IDENTITY_16BIT"
         )
     }
@@ -108,9 +123,9 @@ const SERVER_PARAMETERS_SQL: &str = "SELECT TRIM(NAME), TRIM(VARCHAR(VALUE, 256)
     FROM SYSIBMADM.DBCFG \
     WHERE NAME IN ('codepage', 'codeset', 'string_units', 'varchar2_compat')";
 
-const COLUMN_FACTS_SQL: &str = "SELECT TRIM(COLNAME), TRIM(TYPESCHEMA), TRIM(TYPENAME), \
+const COLUMN_FACTS_SQL: &str = "SELECT COLNAME, TYPESCHEMA, TYPENAME, \
     LENGTH, SCALE, CODEPAGE, COALESCE(TRIM(TYPESTRINGUNITS), ''), COALESCE(STRINGUNITSLENGTH, 0), \
-    COALESCE(TRIM(COLLATIONSCHEMA) || '.' || TRIM(COLLATIONNAME), '') \
+    COALESCE(COLLATIONSCHEMA || '.' || COLLATIONNAME, ''), TABSCHEMA, TABNAME \
     FROM SYSCAT.COLUMNS WHERE TABSCHEMA = ? AND TABNAME = ? ORDER BY COLNO";
 
 const PARAMETERS: [&str; 4] = ["codepage", "codeset", "string_units", "varchar2_compat"];
@@ -209,16 +224,45 @@ pub fn column_facts(
         COLUMN_FACTS_SQL,
         &[schema, object],
         timeout,
-        9,
+        11,
         512,
     )
     .map_err(|_| unproven_facts())?;
-    let mut facts = rows
-        .iter()
-        .map(|row| parse_column(row))
-        .collect::<Result<Vec<_>>>()?;
+    let mut facts = parse_columns(&rows, schema, object)?;
     resolve_type_collations(connection, timeout, &mut facts)?;
     Ok(facts)
+}
+
+/// L'identita del target e delle colonne non si deduce dal confronto SQL
+/// con riempimento. La forma normalizzata serve solo a rilevare collisioni.
+pub fn parse_columns(
+    rows: &[Vec<Option<String>>],
+    schema: &str,
+    object: &str,
+) -> Result<Vec<ColumnFacts>> {
+    let mut names = std::collections::BTreeSet::new();
+    rows.iter()
+        .map(|row| {
+            if row.get(9).and_then(Option::as_deref) != Some(schema)
+                || row.get(10).and_then(Option::as_deref) != Some(object)
+            {
+                return Err(identity_error());
+            }
+            let fact = parse_column(row)?;
+            if !names.insert(fact.name.trim_end_matches(' ').to_owned()) {
+                return Err(identity_error());
+            }
+            Ok(fact)
+        })
+        .collect()
+}
+
+pub fn identity_error() -> DatabaseError {
+    DatabaseError::unsupported(
+        ProviderKind::Db2,
+        ErrorPhase::Prepare,
+        "identita del catalogo Db2 ambigua o non esatta",
+    )
 }
 
 /// Prova la collation del CAST e della Create dal tipo built-in del database.
@@ -234,7 +278,7 @@ pub fn resolve_type_collations(
         .filter(|c| matches!(c.type_name.as_str(), "CHARACTER" | "VARCHAR" | "CLOB"))
     {
         let rows = query_text(connection,
-            "SELECT CODEPAGE, TRIM(COLLATIONSCHEMA), TRIM(COLLATIONNAME) FROM SYSCAT.DATATYPES WHERE TYPESCHEMA = ? AND TYPENAME = ? AND METATYPE = 'S'",
+            "SELECT CODEPAGE, COLLATIONSCHEMA, COLLATIONNAME FROM SYSCAT.DATATYPES WHERE TYPESCHEMA = ? AND TYPENAME = ? AND METATYPE = 'S'",
             &[&column.type_schema, &column.type_name], timeout, 3, 512)
             .map_err(|_| unproven_facts())?;
         apply_type_collation(column, &rows)?;
@@ -254,15 +298,12 @@ fn apply_type_collation(column: &mut ColumnFacts, rows: &[Vec<Option<String>>]) 
     let schema =
         required_text(row, 1, "schema collation del tipo assente").map_err(|_| unproven_facts())?;
     let name = required_text(row, 2, "collation del tipo assente").map_err(|_| unproven_facts())?;
-    let collation = format!("{}.{}", schema.trim(), name.trim());
+    let collation = format!("{schema}.{name}");
     if column.type_schema != "SYSIBM"
         || codepage != column.codepage
-        || schema.trim() != "SYSIBM"
-        || name.trim().is_empty()
-        || !name
-            .trim()
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        || schema != "SYSIBM"
+        || name.is_empty()
+        || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
         || (!column.collation.is_empty() && column.collation != collation)
     {
         return Err(unproven_facts());
@@ -285,7 +326,7 @@ pub fn parse_column(row: &[Option<String>]) -> Result<ColumnFacts> {
     Ok(ColumnFacts {
         name: text(0)?,
         type_schema: text(1)?,
-        type_name: text(2)?.to_ascii_uppercase(),
+        type_name: text(2)?,
         length: number(3)?,
         scale: text(4)?.parse().map_err(|_| unproven_facts())?,
         codepage: number(5)?,
@@ -299,7 +340,6 @@ pub fn parse_column(row: &[Option<String>]) -> Result<ColumnFacts> {
         collation: row
             .get(8)
             .and_then(Option::as_deref)
-            .map(str::trim)
             .unwrap_or_default()
             .to_owned(),
     })
@@ -320,7 +360,7 @@ pub fn admission_key(
     facts: &ColumnFacts,
     server: &ServerFacts,
 ) -> (AdmissionKey, TargetDimensions) {
-    let type_name = if facts.type_schema.eq_ignore_ascii_case("SYSIBM") {
+    let type_name = if facts.type_schema == "SYSIBM" {
         facts.type_name.clone()
     } else {
         format!("{}.{}", facts.type_schema, facts.type_name)

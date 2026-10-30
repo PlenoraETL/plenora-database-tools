@@ -171,8 +171,12 @@ fn decimal(value: &str) -> Result<Numeric> {
 
 fn bind_null_parameter(query: &mut Query<'static>, type_name: &str) -> Result<()> {
     match type_name {
-        "binary" | "varbinary" => {
+        "binary" | "varbinary" | "image" => {
             query.bind(Option::<Vec<u8>>::None);
+            Ok(())
+        }
+        "text" | "ntext" => {
+            query.bind(Option::<String>::None);
             Ok(())
         }
         _ => Err(unsupported(
@@ -183,7 +187,8 @@ fn bind_null_parameter(query: &mut Query<'static>, type_name: &str) -> Result<()
 
 fn null_parameter_type(type_name: &str) -> Result<&'static str> {
     match type_name {
-        "binary" | "varbinary" => Ok("varbinary(max)"),
+        "binary" | "varbinary" | "image" => Ok("varbinary(max)"),
+        "text" | "ntext" => Ok("nvarchar(max)"),
         _ => Err(unsupported(
             "NULL bindato SQL Server richiede un tipo target qualificato",
         )),

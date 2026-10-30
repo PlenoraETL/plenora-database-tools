@@ -79,3 +79,10 @@ mod driver_fidelity_live_tests;
 #[cfg(test)]
 #[path = "driver_codec_oracle_tests.rs"]
 mod driver_codec_oracle_tests;
+
+#[cfg(test)]
+#[path = "catalog_tests.rs"]
+mod catalog_tests;
+
+#[cfg(test)]
+mod write_probe_tests;

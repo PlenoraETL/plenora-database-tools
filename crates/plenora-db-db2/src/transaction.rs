@@ -443,6 +443,18 @@ impl ArrayColumns {
         if targets.len() != self.columns.len() {
             return Err(array_error("descrittori parameter-array Db2 incompleti"));
         }
+        // Il buffer testuale non puo essere rivestito da un target binario:
+        // IBM CLI lo leggerebbe come esadecimale, anche senza ammissione.
+        if targets.iter().any(|target| {
+            matches!(
+                crate::parameter::operand_of(target),
+                plenora_database_core::operand_admission::OperandType::Binary { .. }
+            )
+        }) {
+            return Err(array_error(
+                "target binario senza buffer binario nel parameter-array Db2",
+            ));
+        }
         Ok(self
             .columns
             .iter()
@@ -509,7 +521,7 @@ fn array_error(message: &'static str) -> DatabaseError {
 
 /// Il testo di un valore del parameter-array, gia validato. I byte non hanno
 /// una forma testuale esatta: le colonne spatial arrivano gia come testo
-/// esadecimale per `HEXTORAW(?)`, e una colonna binaria scalare non e
+/// esadecimale per `HEXTORAW(CAST(? AS VARCHAR(32672)))`, e una colonna binaria scalare non e
 /// ammessa dal piano.
 fn array_text(value: &ParameterValue) -> Result<Option<String>> {
     match value {

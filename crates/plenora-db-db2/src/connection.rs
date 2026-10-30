@@ -230,7 +230,6 @@ pub fn required_text(
 ) -> Result<String> {
     row.get(column)
         .and_then(|value| value.as_deref())
-        .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| malformed_probe(message))

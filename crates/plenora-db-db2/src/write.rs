@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "write_intermediate.rs"]
-mod intermediate;
+pub mod intermediate;
 
 const ARRAY_BIND_ROWS: usize = 4_096;
 static EXECUTION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -602,7 +602,13 @@ impl Db2WritePlan {
 impl WriteColumn {
     fn placeholder(&self) -> Result<String> {
         if let Some(spatial) = &self.spatial {
-            Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW(?)), {})", spatial.srid))
+            // Il CAST evita l'inferenza binaria del marker HEXTORAW. La
+            // capacita descritta viene verificata prima del bind, anche
+            // negli array; WKB oltre quel limite si rifiuta senza troncare.
+            Ok(format!(
+                "ST_GEOMETRY(BLOB(HEXTORAW(CAST(? AS VARCHAR(32672)))), {})",
+                spatial.srid
+            ))
         } else {
             Ok(self
                 .target_type
@@ -1137,7 +1143,7 @@ pub fn batch_values(batch: &RecordBatch, plan: &Db2WritePlan) -> Result<Vec<Vec<
                 .map(|(array, (field, column))| {
                     let value = arrow_parameter_value(array.as_ref(), field, row, ' ')
                         .map_err(db2_write_error)?;
-                    // Il segnaposto spatial e `HEXTORAW(?)`: riceve il testo
+                    // Il segnaposto spatial e `HEXTORAW(CAST(? AS VARCHAR(32672)))`: riceve il testo
                     // esadecimale del WKB. Ogni altro byte e un binario vero,
                     // legato come tale (`crate::parameter`).
                     Ok(match (value, &column.spatial) {

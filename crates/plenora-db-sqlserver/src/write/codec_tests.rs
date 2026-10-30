@@ -370,3 +370,26 @@ fn le_chiavi_applicano_sempre_i_controlli_di_esattezza() {
     assert!(check_text(&plan, &plan.columns[0], "\u{4e2d}").is_err());
     assert!(check_text(&plan, &plan.columns[0], "abc").is_ok());
 }
+
+/// I sei casi riscritti dalla sonda diretta text CP1252 restano chiusi
+/// nel writer Strict, sia scalare sia bulk, senza dipendere dal fixture.
+#[test]
+fn strict_legacy_text_rejects_all_six_rewritten_unicode_cases() {
+    let plan = text_plan("text", "text", Some("SQL_Latin1_General_CP1_CI_AS"), true);
+    for text in [
+        "\u{3a9}\u{416}\u{142}\u{20ac}",
+        "\u{1f600}\u{1d11e}",
+        "e\u{301}",
+        "\u{feff}a",
+        "\u{fffd}",
+        "a\u{2028}b",
+    ] {
+        let batch = RecordBatch::try_new(
+            Arc::clone(&plan.input_schema),
+            vec![Arc::new(StringArray::from(vec![Some(text)]))],
+        )
+        .unwrap();
+        assert!(bind_row(&plan, &batch, 0).is_err());
+        assert!(bulk_rows(&plan, &batch).is_err());
+    }
+}

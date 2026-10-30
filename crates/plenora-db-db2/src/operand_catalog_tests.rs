@@ -723,3 +723,22 @@ fn admission_catalog_uses_documented_string_units_and_limits() {
         .is_err());
     }
 }
+
+#[test]
+fn text_catalog_keeps_names_and_refuses_ambiguous_or_foreign_identities() {
+    use crate::operand_catalog::column_types_rows;
+    let row = |name: &str, schema: &str| {
+        [
+            name, "VARCHAR", "4", "0", "1208", "OCTETS", schema, " S ", " T ",
+        ]
+        .map(|v| Some(v.to_owned()))
+        .to_vec()
+    };
+    let types =
+        column_types_rows(&[row(" C", "SYSIBM"), row("C ", "SYSIBM")], " S ", " T ").unwrap();
+    assert!(types.contains_key(" C") && types.contains_key("C "));
+    assert!(!types.contains_key("C"));
+    assert!(column_types_rows(&[row("C", "SYSIBM"), row("C ", "SYSIBM")], " S ", " T ").is_err());
+    assert!(column_types_rows(&[row("C", "SYSIBM ")], " S ", " T ").is_err());
+    assert!(column_types_rows(&[row("C", "SYSIBM")], " S", " T ").is_err());
+}

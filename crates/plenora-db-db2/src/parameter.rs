@@ -193,9 +193,10 @@ pub fn operand_of(described: &DataType) -> OperandType {
         }
         DataType::Other {
             data_type: SQL_BLOB,
+            column_size: size,
             ..
         } => OperandType::Binary {
-            length: None,
+            length: length(size),
             padded: false,
         },
         DataType::Other {
@@ -213,9 +214,8 @@ pub fn operand_of(described: &DataType) -> OperandType {
 
 /// Il valore che un segnaposto descritto riceve, per il binding a colonne dei
 /// parameter array: la stessa regola di [`bind_with_catalog`]. Un testo su un segnaposto
-/// binario (`HEXTORAW(?)` del WKB, una colonna `FOR BIT DATA`) resta testo,
-/// e arriva come i suoi byte UTF-8; ogni altro valore passa da [`admit`]
-/// sul tipo descritto, con precisione e scala.
+/// binario diventa byte UTF-8 prima del bind C binario. Anche lunghezza e
+/// padding passano da [`admit`]; il driver non interpreta cifre esadecimali.
 ///
 /// # Errors
 ///
@@ -223,8 +223,17 @@ pub fn operand_of(described: &DataType) -> OperandType {
 /// esatto.
 pub fn admit_described(value: &ParameterValue, described: &DataType) -> Result<ParameterValue> {
     validate_one(value)?;
-    if matches!(value, ParameterValue::String(_)) && is_binary(described) {
-        return Ok(value.clone());
+    if is_binary(described) {
+        if let ParameterValue::String(text)
+        | ParameterValue::Uuid(text)
+        | ParameterValue::Enum { label: text, .. } = value
+        {
+            return admit(
+                PROVIDER,
+                &ParameterValue::Bytes(text.as_bytes().to_vec()),
+                &operand_of(described),
+            );
+        }
     }
     let operand = operand_of(described);
     let admitted = admit(PROVIDER, value, &operand)?;
@@ -257,8 +266,8 @@ pub fn admit_described(value: &ParameterValue, described: &DataType) -> Result<P
     Ok(admitted)
 }
 
-/// Il catalogo risolve l'unita solo per un bind diretto a una colonna
-/// testuale; gli altri tipi continuano a dipendere dal descrittore.
+/// Il catalogo risolve l'unita per bind diretti o CAST identici alla colonna
+/// testuale; senza questa prova continua a valere il descrittore.
 pub fn admit_with_catalog(
     value: &ParameterValue,
     described: &DataType,
@@ -304,20 +313,6 @@ fn bind_value_with_catalog(
     catalog: Option<&OperandType>,
 ) -> Result<Bound> {
     validate_one(value)?;
-    // Un testo su un segnaposto binario (una colonna FOR BIT DATA, un `LIKE`
-    // su un CAST di una geometria) arriva come i suoi byte UTF-8, che la
-    // codepage verificata alla connessione garantisce: e il valore del testo.
-    if let (
-        ParameterValue::String(text_value)
-        | ParameterValue::Uuid(text_value)
-        | ParameterValue::Enum {
-            label: text_value, ..
-        },
-        true,
-    ) = (value, is_binary(described))
-    {
-        return Ok(text(text_value.clone()));
-    }
     let admitted = admit_with_catalog(value, described, catalog)?;
     match admitted {
         ParameterValue::Null { .. } => Ok(if is_binary(described) {

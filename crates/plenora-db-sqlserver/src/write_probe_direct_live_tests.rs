@@ -5,12 +5,16 @@ use write_probe::{direct_error, direct_value, DirectObservation};
 
 pub(super) async fn observe(
     hooks: &Hooks,
+    native: &str,
     values: &dyn Array,
     row: usize,
 ) -> plenora_database_core::Result<DirectObservation> {
     let field = Field::new("V0", values.data_type().clone(), true);
-    let value =
+    let mut value =
         plenora_database_engine::arrow_write::arrow_parameter_value(values, &field, row, 'T')?;
+    if let plenora_database_core::provider::ParameterValue::Null { type_name } = &mut value {
+        *type_name = native.to_owned();
+    }
     let cancellation = CancellationToken::new();
     let budget = ResourceBudget::new(ResourceLimits::default())?;
     let mut transaction = hooks

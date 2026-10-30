@@ -438,14 +438,14 @@ fn build_indexes(rows: &[Row]) -> Result<Vec<OracleIndex>> {
 
 pub fn required_string(row: &Row, index: usize, message: &'static str) -> Result<String> {
     match row.get_index(index) {
-        Some(ParameterValue::String(value)) => Ok(value.trim().to_owned()),
+        Some(ParameterValue::String(value)) => Ok(value.clone()),
         _ => Err(mapping_error(message)),
     }
 }
 
 pub fn optional_string(row: &Row, index: usize) -> Result<Option<String>> {
     match row.get_index(index) {
-        Some(ParameterValue::String(value)) => Ok(Some(value.trim().to_owned())),
+        Some(ParameterValue::String(value)) => Ok(Some(value.clone())),
         Some(ParameterValue::Null { .. }) => Ok(None),
         _ => Err(mapping_error(
             "campo testuale catalogo Oracle non rappresentabile",

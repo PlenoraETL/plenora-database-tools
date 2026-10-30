@@ -105,7 +105,7 @@ impl ProbeHooks for Hooks {
             .next()
             .unwrap_or_default();
         matches!(native, "text" | "ntext" | "image")
-            .then(|| Box::pin(direct::observe(self, values, row)) as ProviderFuture<'a, _>)
+            .then(|| Box::pin(direct::observe(self, native, values, row)) as ProviderFuture<'a, _>)
     }
 
     fn admission_keys<'a>(

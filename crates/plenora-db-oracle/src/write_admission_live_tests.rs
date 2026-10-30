@@ -119,7 +119,7 @@ impl ProbeHooks for Hooks {
             DataType::Utf8 | DataType::Binary | DataType::LargeBinary
         ) || native.contains("WITH LOCAL TIME ZONE")
         {
-            Some(Box::pin(direct::observe(self, values, row)))
+            Some(Box::pin(direct::observe(self, spec, values, row)))
         } else {
             None
         }

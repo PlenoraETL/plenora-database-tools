@@ -320,3 +320,35 @@ fn missing_ambiguous_or_conflicting_type_catalog_stays_closed() {
         assert!(facts.collation.is_empty());
     }
 }
+
+#[test]
+fn catalog_names_are_exact_and_collisions_fail_closed() {
+    let row = |name: &str| {
+        [
+            name,
+            " type schema ",
+            " type ",
+            "4",
+            "0",
+            "1208",
+            "OCTETS",
+            "4",
+            " collation ",
+            " schema ",
+            " table ",
+        ]
+        .map(|v| Some(v.to_owned()))
+        .to_vec()
+    };
+    let facts = parse_columns(&[row(" C"), row("C ")], " schema ", " table ").unwrap();
+    assert_eq!(facts[0].name, " C");
+    assert_eq!(facts[1].name, "C ");
+    assert_eq!(facts[0].type_schema, " type schema ");
+    assert_eq!(facts[0].type_name, " type ");
+    assert_eq!(facts[0].collation, " collation ");
+    for rows in [vec![row("C"), row("C")], vec![row("C"), row("C ")]] {
+        assert!(parse_columns(&rows, " schema ", " table ").is_err());
+    }
+    assert!(parse_columns(&[row("C")], " schema", " table ").is_err());
+    assert!(parse_columns(&[row("C")], " schema ", " table").is_err());
+}

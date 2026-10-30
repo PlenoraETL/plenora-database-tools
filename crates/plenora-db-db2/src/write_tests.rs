@@ -174,7 +174,11 @@ fn spatial_append_uses_integrated_constructor_and_declared_srid() {
     assert!(statement
         .unwrap()
         .sql
-        .contains("ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)"));
+        .contains("ST_GEOMETRY(BLOB(HEXTORAW(CAST(? AS VARCHAR(32672)))), 4326)"));
+    assert!(plan
+        .array_insert_sql()
+        .unwrap()
+        .contains("ST_GEOMETRY(BLOB(HEXTORAW(CAST(? AS VARCHAR(32672)))), 4326)"));
 }
 
 #[test]

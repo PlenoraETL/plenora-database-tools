@@ -365,7 +365,7 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                 crate::spatial_probe::ProbeFrame::Declared(*srid),
             )?;
             let value = match (ctx.dialect, expression.as_ref()) {
-                // `HEXTORAW(?)` legge testo esadecimale: il WKB si lega come
+                // `HEXTORAW(CAST(? AS VARCHAR(32672)))` legge testo esadecimale: il WKB si lega come
                 // tale, perche il provider Db2 lega i `Bytes` come binario
                 // vero (regola di `crate::parameter_fidelity`).
                 (
@@ -407,9 +407,9 @@ fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<Str
                     };
                     Ok(format!("{constructor}({value}, {srid})"))
                 }
-                DialectKind::Db2 if *semantics == SpatialSemantics::Geometry => {
-                    Ok(format!("ST_GEOMETRY(BLOB(HEXTORAW({value})), {srid})"))
-                }
+                DialectKind::Db2 if *semantics == SpatialSemantics::Geometry => Ok(format!(
+                    "ST_GEOMETRY(BLOB(HEXTORAW(CAST({value} AS VARCHAR(32672)))), {srid})"
+                )),
                 // Oracle conserva entrambe le semantiche nel tipo
                 // `SDO_GEOMETRY`; geography e resa esplicita da SRID e policy
                 // delle operazioni, non da un costruttore distinto.
@@ -619,7 +619,7 @@ fn compile_spatial_db2(
 ) -> Result<String> {
     reference.validate()?;
     spatial_policy::validate_predicate(ProviderKind::Db2, predicate, reference)?;
-    // `HEXTORAW(?)` legge testo esadecimale, non i byte (vedi sopra).
+    // `HEXTORAW(CAST(? AS VARCHAR(32672)))` legge testo esadecimale, non i byte (vedi sopra).
     let geometry = ctx.bind(ParameterValue::String(hex_upper(&reference.ewkb)));
     let srid = i32::try_from(reference.srid).map_err(|_| {
         DatabaseError::invalid_plan(format!(
@@ -629,7 +629,8 @@ fn compile_spatial_db2(
         ))
     })?;
     let srid = ctx.bind(ParameterValue::I32(srid));
-    let reference = format!("ST_GEOMETRY(BLOB(HEXTORAW({geometry})), {srid})");
+    let reference =
+        format!("ST_GEOMETRY(BLOB(HEXTORAW(CAST({geometry} AS VARCHAR(32672)))), {srid})");
     let function = match predicate {
         SpatialPredicate::Intersects => "ST_INTERSECTS",
         SpatialPredicate::Contains => "ST_CONTAINS",
