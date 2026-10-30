@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 106840,
-  "max_code_lines": 87952,
-  "rationale": "Correttiva Db2 8.0.3: i costruttori spatial portable e nominati usano HEXTORAW con esadecimale esplicito; il layout SDK separa le occorrenze spatial dai normali bind binari omonimi. Soglie allineate alla misura di scripts/code_size.py, senza modificare perimetro o aggiungere margine."
+  "max_physical_lines": 106850,
+  "max_code_lines": 87960,
+  "rationale": "Correttiva Db2 8.0.3: i costruttori spatial portable e nominati usano HEXTORAW con esadecimale esplicito; il layout SDK separa le occorrenze spatial dai normali bind binari omonimi. Soglie allineate alla misura di scripts/code_size.py, senza modificare perimetro o aggiungere margine. Guardia ORM 8.0.3 sugli usi geometrici e ordinari omonimi: +10 righe fisiche e +8 di codice, senza margine aggiuntivo."
 }

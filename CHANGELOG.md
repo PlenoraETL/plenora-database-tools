@@ -23,6 +23,12 @@ contratto pubblico.
   riscrivere quelli alterati, senza dedurre il tipo dal solo testo salvato.
   Regressioni offline e live permanenti coprono il bind e i predicati.
 
+- **Bind ORM Geometry e binario omonimi**: difetto preesistente nel codice
+  dei tag da `py-v0.12.0` a `py-v8.0.2`. La normalizzazione EWKB/WKB poteva
+  alterare anche il confronto binario; ora rifiuta esplicitamente gli usi
+  incompatibili prima dell'esecuzione, senza payload nell'errore. Prove
+  offline sync/async per ogni provider; PostgreSQL conserva l'EWKB originale.
+
 ## 8.0.2 — non pubblicata
 
 Patch: due correzioni nel driver Oracle vendorizzato, nessun cambiamento di
