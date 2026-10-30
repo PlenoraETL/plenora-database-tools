@@ -1,7 +1,8 @@
 //! La regola A su Oracle, live (`plenora_database_core::write_admission`).
 //!
 //! - [`live_sonde_scritture_server`]: la sonda. Misura ogni chiave
-//!   d'ammissione di [`specs`] con il percorso di scrittura della libreria,
+//!   d'ammissione di [`specs`], usando anche l'oracolo diretto per le coppie
+//!   che le guardie o i tipi intermedi della libreria non lasciano misurare,
 //!   scrive il referto (`PLENORA_SONDE_SCRITTURE_REFERTO`) e verifica che il
 //!   server dia ancora il fixture: e l'oracolo di regressione. La esegue
 //!   `scripts/sonde_scritture_server.py`.
@@ -101,6 +102,27 @@ impl ProbeHooks for Hooks {
 
     fn truncate_sql(&self) -> String {
         format!("TRUNCATE TABLE {PROBE_TABLE}")
+    }
+
+    fn direct_probe<'a>(
+        &'a self,
+        spec: &'a ProbeSpec,
+        values: &'a dyn plenora_database_core::arrow::array::Array,
+        row: usize,
+    ) -> Option<ProviderFuture<'a, write_probe::DirectObservation>> {
+        let native = spec.native_ddl.as_str();
+        if native == "CLOB" || native == "BLOB" {
+            return None; // I locator qualificati sono parte del trasporto LOB.
+        }
+        if matches!(
+            spec.arrow,
+            DataType::Utf8 | DataType::Binary | DataType::LargeBinary
+        ) || native.contains("WITH LOCAL TIME ZONE")
+        {
+            Some(Box::pin(direct::observe(self, values, row)))
+        } else {
+            None
+        }
     }
 
     fn admission_keys<'a>(
@@ -501,3 +523,7 @@ async fn live_a_timestamp_con_zona_locale_si_rifiuta_nel_preflight() {
     );
     drop_table(&hooks, table).await;
 }
+
+#[cfg(test)]
+#[path = "write_probe_direct_live_tests.rs"]
+mod direct;

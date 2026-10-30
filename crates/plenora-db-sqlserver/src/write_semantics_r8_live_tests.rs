@@ -2,7 +2,8 @@
 //! la collation su SQL Server, live.
 //!
 //! - [`live_sonde_scritture_server`]: la sonda. Misura ogni chiave
-//!   d'ammissione di [`specs`] con il percorso di scrittura della libreria,
+//!   d'ammissione di [`specs`], usando anche l'oracolo diretto per le coppie
+//!   che le guardie o i tipi intermedi della libreria non lasciano misurare,
 //!   scrive il referto (`PLENORA_SONDE_SCRITTURE_REFERTO`) e verifica che il
 //!   server dia ancora il fixture: e l'oracolo di regressione. La esegue
 //!   `scripts/sonde_scritture_server.py`, e gira con la suite live di ogni
@@ -90,6 +91,21 @@ impl ProbeHooks for Hooks {
 
     fn truncate_sql(&self) -> String {
         format!("TRUNCATE TABLE [dbo].[{PROBE_TABLE}];")
+    }
+
+    fn direct_probe<'a>(
+        &'a self,
+        spec: &'a ProbeSpec,
+        values: &'a dyn Array,
+        row: usize,
+    ) -> Option<ProviderFuture<'a, write_probe::DirectObservation>> {
+        let native = spec
+            .native_ddl
+            .split_whitespace()
+            .next()
+            .unwrap_or_default();
+        matches!(native, "text" | "ntext" | "image")
+            .then(|| Box::pin(direct::observe(self, values, row)) as ProviderFuture<'a, _>)
     }
 
     fn admission_keys<'a>(
@@ -901,3 +917,7 @@ async fn live_varchar_sql_collation_preserva_chiavi_distinte() {
     )
     .await;
 }
+
+#[cfg(test)]
+#[path = "write_probe_direct_live_tests.rs"]
+mod direct;

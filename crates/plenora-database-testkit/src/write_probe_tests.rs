@@ -244,3 +244,77 @@ fn le_batterie_di_tinyint_time_e_dei_domini_esistono() {
         assert_eq!(battery.names.last().map(String::as_str), Some("nullo"));
     }
 }
+
+#[test]
+fn oracolo_distingue_rifiuto_riscrittura_e_lettura_non_qualificata() {
+    use plenora_database_core::provider::ParameterValue;
+    let spec = ProbeSpec::new("RAW(10)", DataType::Binary).with_dimension(10);
+    let battery = Battery {
+        names: vec!["vuoto".to_owned(), "uno".to_owned()],
+        values: Arc::new(BinaryArray::from(vec![b"".as_slice(), b"a".as_slice()])),
+    };
+    let key = AdmissionKey {
+        arrow: "binary".to_owned(),
+        nativo: "RAW(n)".to_owned(),
+        dimensione: Some(10),
+    };
+    let read = (
+        BTreeMap::from([(0, (0, 0)), (1, (1, 0))]),
+        vec![
+            vec![direct_value(&ParameterValue::Null {
+                type_name: "raw".to_owned(),
+            })],
+            vec![direct_value(&ParameterValue::Bytes(b"a".to_vec()))],
+        ],
+    );
+    let measured = verdict(
+        &spec,
+        &battery,
+        key.clone(),
+        TargetDimensions::default(),
+        &[false, false],
+        Some(&read),
+        0,
+    );
+    assert_eq!(measured.esito, MeasuredOutcome::Riscrive);
+    assert_eq!(measured.riscritture, vec![MeasuredRewrite::VuotoANull]);
+    assert_eq!(measured.riscritti, vec!["vuoto"]);
+    assert!(measured.rifiutati.is_empty());
+    let unreadable = verdict(
+        &spec,
+        &battery,
+        key.clone(),
+        TargetDimensions::default(),
+        &[false, false],
+        None,
+        0,
+    );
+    assert_eq!(unreadable.esito, MeasuredOutcome::Illeggibile);
+    let refused = verdict(
+        &spec,
+        &battery,
+        key,
+        TargetDimensions::default(),
+        &[true, true],
+        None,
+        0,
+    );
+    assert_eq!(refused.esito, MeasuredOutcome::Rifiuta);
+    assert_eq!(unreadable.rifiutati, refused.rifiutati);
+    assert_ne!(
+        unreadable, refused,
+        "l'ammissione non sostituisce la misura"
+    );
+}
+
+#[test]
+#[should_panic(expected = "errore di trasporto")]
+fn errore_di_rete_dell_oracolo_non_diventa_rifiuto_del_server() {
+    let error = plenora_database_core::DatabaseError::new(
+        plenora_database_core::ErrorCategory::Io,
+        plenora_database_core::ErrorPhase::Read,
+        None,
+        "connessione interrotta",
+    );
+    let _ = direct_error(&error, true);
+}

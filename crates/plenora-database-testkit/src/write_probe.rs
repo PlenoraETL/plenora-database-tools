@@ -1,7 +1,9 @@
 //! La sonda della regola A (`plenora_database_core::write_admission`).
 //!
 //! Per ogni chiave d'ammissione, una batteria fissa di valori limite scritta
-//! con il percorso di scrittura della libreria e riletta con la sua lettura.
+//! con il writer oppure con l'oracolo diretto del provider e rollback.
+//! L'oracolo diretto separa la misura del server dall'ammissione della libreria:
+//! una coppia chiusa dal preflight deve comunque essere misurabile.
 //!
 //! Il driver e comune ai provider: crea la tabella `ID` + `V` con il tipo
 //! nativo della chiave, legge dal provider la chiave d'ammissione che il
@@ -149,6 +151,16 @@ pub trait ProbeHooks: Send + Sync {
     fn drop_sql(&self) -> String;
     /// Lo statement che la svuota.
     fn truncate_sql(&self) -> String;
+    /// Oracolo diretto con rollback, indipendente dai tipi intermedi.
+    fn direct_probe<'a>(
+        &'a self,
+        _spec: &'a ProbeSpec,
+        _values: &'a dyn Array,
+        _row: usize,
+    ) -> Option<ProviderFuture<'a, DirectObservation>> {
+        None
+    }
+
     /// Le chiavi d'ammissione e le dimensioni che il preflight calcolerebbe
     /// per ogni colonna `(nome, tipo Arrow dell'ingresso)`, dal catalogo e
     /// nello stesso ordine.
@@ -157,6 +169,10 @@ pub trait ProbeHooks: Send + Sync {
         columns: &'a [(String, DataType)],
     ) -> ProviderFuture<'a, Vec<(AdmissionKey, TargetDimensions)>>;
 }
+
+#[path = "write_probe_direct.rs"]
+mod direct;
+pub use direct::{direct_error, direct_value, DirectObservation};
 
 /// Un valore della batteria e il suo esito.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1685,6 +1701,21 @@ async fn measure_group(
         assert_eq!(key.arrow, arrow_key(&spec.arrow), "{}", spec.native_ddl);
         assert_eq!(key.dimensione, spec.dimension, "{}", spec.native_ddl);
     }
+    if group.iter().any(|(spec, battery)| {
+        hooks
+            .direct_probe(spec, battery.values.as_ref(), 0)
+            .is_some()
+    }) {
+        if group.len() > 1 {
+            assert!(ddl(hooks, &hooks.drop_sql()).await, "pulizia oracolo");
+            return None;
+        }
+        let (spec, battery) = group[0];
+        let (key, dimensions) = keys.into_iter().next().expect("chiave");
+        return Some(vec![
+            direct::measure(hooks, spec, battery, key, dimensions).await,
+        ]);
+    }
     let batteries = group.iter().map(|(_, battery)| battery).collect::<Vec<_>>();
     let rows = batteries[0].names.len();
     let mut refused = vec![false; rows];
@@ -1936,7 +1967,7 @@ pub fn report_and_check(measured: &ServerMeasurement, fixture: &[u8]) {
     let differences = differences(expected, measured);
     assert!(
         differences.is_empty(),
-        "la misura del server non coincide con il fixture:\n{}",
+        "la misura del server (non l'ammissione della libreria) non coincide con il fixture:\n{}",
         differences.join("\n")
     );
 }
