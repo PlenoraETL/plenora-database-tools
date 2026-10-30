@@ -1,6 +1,9 @@
 use super::*;
 use arrow_schema::{DataType, Field, Schema};
-use plenora_database_core::{plan::WriteMode, ErrorCategory};
+use plenora_database_core::{
+    plan::{WriteMode, WriteOperation},
+    ErrorCategory,
+};
 use std::sync::Arc;
 
 fn target(oid: u32, declaration: &str, collation: Option<&str>) -> TargetType {
@@ -66,6 +69,66 @@ fn same_wire_representation_does_not_prove_same_sql_type() {
         assert!(target(expected.oid(), expected.name(), None)
             .verify(&actual)
             .is_err());
+    }
+}
+
+#[test]
+fn copy_describes_domain_parameters_without_erasing_the_domain() {
+    let mut plan = WriteColumnPlan::compile(&Field::new("v", DataType::Utf8, true)).unwrap();
+    assert!(copy_type_probe(std::slice::from_ref(&plan), "\"app\".\"t\"").is_err());
+    let domain = Type::new(
+        "checked_text".to_owned(),
+        900_002,
+        tokio_postgres::types::Kind::Domain(Type::TEXT),
+        "app".to_owned(),
+    );
+    plan.target_type = Some(target(domain.oid(), "\"app\".\"checked_text\"", None));
+    assert_eq!(
+        copy_type_probe(std::slice::from_ref(&plan), "\"app\".\"t\"").unwrap(),
+        "SELECT $1::\"app\".\"checked_text\" FROM \"app\".\"t\" LIMIT 0"
+    );
+    verify_parameters(std::slice::from_ref(&plan), &[0], &[domain]).unwrap();
+    assert!(verify_parameters(&[plan], &[0], &[Type::TEXT]).is_err());
+}
+
+#[test]
+fn prepared_spatial_values_use_the_target_binary_type_including_nulls() {
+    use arrow_array::BinaryArray;
+    use bytes::BytesMut;
+    use tokio_postgres::types::{IsNull, Kind};
+    for (native, semantics) in [
+        ("geometry", super::super::plan::ColumnSemantics::Geometry),
+        ("geography", super::super::plan::ColumnSemantics::Geography),
+    ] {
+        let mut plan = WriteColumnPlan::compile(&Field::new("v", DataType::Binary, true)).unwrap();
+        plan.semantics = semantics;
+        let actual = Type::new(native.to_owned(), 900_003, Kind::Simple, "gis".to_owned());
+        plan.target_type = Some(target(actual.oid(), &format!("\"gis\".{native}"), None));
+        let bytes = [1_u8, 2, 3];
+        let array = BinaryArray::from(vec![Some(bytes.as_slice()), None]);
+        assert_eq!(super::super::sql::placeholder_expression(&plan, 1), "$1");
+        verify_parameters(
+            std::slice::from_ref(&plan),
+            &[0],
+            std::slice::from_ref(&actual),
+        )
+        .unwrap();
+        assert!(verify_parameters(std::slice::from_ref(&plan), &[0], &[Type::BYTEA]).is_err());
+        for row in 0..2 {
+            let value = super::super::prepared_codec::arrow_value(&array, &plan, row).unwrap();
+            let mut encoded = BytesMut::new();
+            let null = value.to_sql_checked(&actual, &mut encoded).unwrap();
+            if row == 0 {
+                assert!(matches!(null, IsNull::No));
+                assert_eq!(encoded.as_ref(), bytes);
+            } else {
+                assert!(matches!(null, IsNull::Yes));
+                assert!(encoded.is_empty());
+            }
+            assert!(value
+                .to_sql_checked(&Type::BYTEA, &mut BytesMut::new())
+                .is_err());
+        }
     }
 }
 

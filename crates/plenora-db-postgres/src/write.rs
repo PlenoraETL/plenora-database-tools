@@ -644,7 +644,7 @@ async fn assign_session_rules<C: tokio_postgres::GenericClient + Sync>(
     schema: &SchemaRef,
     plans: &mut [WriteColumnPlan],
 ) -> Result<()> {
-    intermediate::assign(client, operation, schema, plans).await?;
+    intermediate::assign(client, &operation.target, schema, plans).await?;
     let (rules, leaves) =
         canonical::rules_with_leaves(client, operation, schema, ErrorPhase::Write).await?;
     canonical::assign(plans, schema, &rules);
@@ -688,7 +688,7 @@ pub async fn assign_dry_run_session_rules(
 ) -> Result<()> {
     canonical::assign_declared(&mut state.column_plans, operation);
     if let (Some(client), false) = (client, operation.mode == WriteMode::Create) {
-        intermediate::assign(client, operation, schema, &mut state.column_plans).await?;
+        intermediate::assign(client, &operation.target, schema, &mut state.column_plans).await?;
         let (rules, leaves) =
             canonical::rules_with_leaves(client, operation, schema, ErrorPhase::Write).await?;
         canonical::assign(&mut state.column_plans, schema, &rules);
@@ -1245,20 +1245,20 @@ async fn copy_binary_batch(
         })
         .collect::<Result<Vec<_>>>()?;
     let type_probe = transaction
-        .prepare(&format!(
-            "SELECT {} FROM {} LIMIT 0",
-            columns.join(", "),
-            quote_object(target)?
-        ))
+        .prepare(&intermediate::copy_type_probe(
+            plans,
+            &quote_object(target)?,
+        )?)
         .await
         .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
-    let types = type_probe
-        .columns()
-        .iter()
-        .map(|column| column.type_().clone())
-        .collect::<Vec<_>>();
+    let types = type_probe.params().to_vec();
     let indexes = (0..plans.len()).collect::<Vec<_>>();
     intermediate::verify_parameters(plans, &indexes, &types)?;
+    // Dopo il lock della SELECT, rileggere gli OID reali delle colonne:
+    // il tipo nominato nella sonda non prova da solo quello del target.
+    let mut current = plans.to_vec();
+    intermediate::assign(transaction, target, batch.schema_ref(), &mut current).await?;
+    intermediate::verify_parameters(&current, &indexes, &types)?;
     let sink = transaction
         .copy_in(&format!(
             "COPY {} ({}) FROM STDIN BINARY",

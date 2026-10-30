@@ -1,5 +1,5 @@
 use super::{
-    binary_codec::{decimal_string, postgres_interval},
+    binary_codec::{decimal_string, postgres_interval, EwkbBinary},
     mapping_error,
     plan::{ColumnSemantics, WriteColumnPlan},
     temporal_range_error,
@@ -146,7 +146,11 @@ fn typed_value(
                 .as_any()
                 .downcast_ref::<BinaryArray>()
                 .ok_or_else(mapping_error)?;
-            Box::new((!typed.is_null(row)).then(|| typed.value(row).to_vec()))
+            if plan.is_spatial() {
+                Box::new((!typed.is_null(row)).then(|| EwkbBinary(typed.value(row).to_vec())))
+            } else {
+                Box::new((!typed.is_null(row)).then(|| typed.value(row).to_vec()))
+            }
         }
         DataType::Date32 => {
             let typed = array

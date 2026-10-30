@@ -1,7 +1,4 @@
-use super::{
-    mapping_error,
-    plan::{ColumnSemantics, WriteColumnPlan},
-};
+use super::{mapping_error, plan::WriteColumnPlan};
 use crate::field_contract::FieldContract;
 use arrow_schema::{DataType, IntervalUnit, SchemaRef, TimeUnit};
 use plenora_database_core::plan::{ObjectRef, WriteMode, WriteOperation};
@@ -139,53 +136,15 @@ pub(super) fn statement(
     }
 }
 
-/// Il segnaposto di un valore (regola F): il parametro nudo, che il server
-/// tipizza con il tipo della colonna. I valori di testo (`Utf8`, i decimali,
-/// le liste, i range e i composti resi come letterali) viaggiano in formato
-/// testo (`prepared_codec::TextParam`) e li legge la funzione d'ingresso della
-/// colonna, come in `COPY`; gli altri in binario, con il tipo della colonna.
-///
-/// Fino al 25/10 (quarta rilettura, S2) un testo con
-/// `plenora.postgres.native_type` passava dal tipo dichiarato
-/// (`$1::pg_catalog.text::numeric(5,2)`) e poi da quello della colonna: verso
-/// una colonna `text` '1.005' diventava '1.01', '16777217' dichiarato `real`
-/// '1.6777216e+07', un `timetz` prendeva l'offset della sessione, `jsonb`
-/// toglieva la chiave ripetuta, con Prepared e Upsert in ogni politica e il
-/// `LossReport` vuoto, mentre `COPY` scriveva il testo com'era. Ora la
-/// libreria non chiede mai al server di convertire un valore in un tipo
-/// diverso da quello della colonna: il tipo dichiarato serve soltanto a
-/// creare la colonna (Create, evoluzione) e alle regole che il dry run senza
-/// catalogo conosce. Per costruzione le regole V2 e P (`super::canonical`)
-/// valgono sulla catena effettiva, che e la sola colonna.
-///
-/// # Limite dichiarato
-///
-/// - **Regola F**: il valore arriva alla colonna con il tipo della colonna;
-///   la libreria lo converte esattamente (i valori Arrow tipizzati, in
-///   binario) o lo manda come testo alla funzione d'ingresso della colonna.
-/// - **Ambito**: INSERT, UPDATE e upsert preparati, anche row-scoped;
-///   `COPY` in testo lo faceva gia; `CopyBinary` codifica il testo soltanto
-///   verso testo, enum, `json`, `jsonb` e `uuid`
-///   (`binary_codec::binary_copy_value`). Le chiavi di Update e
-///   `DeleteByKeys` si confrontano con l'operatore della regola K2 e il
-///   parametro nel tipo del target (`super::intermediate`).
-/// - **Hazard**: un campo che dichiara un tipo diverso da quello della
-///   colonna non si rifiuta: il tipo dichiarato non conta, e il testo si
-///   legge come la colonna lo legge (un `jsonb` dichiarato verso `text`
-///   scrive il testo com'e, chiavi ripetute comprese).
-/// - **Rientro**: un `LossReport` che segnali il tipo dichiarato diverso da
-///   quello della colonna.
-pub(super) fn placeholder_expression(plan: &WriteColumnPlan, ordinal: usize) -> String {
-    if plan.semantics == ColumnSemantics::Geometry {
-        format!("{}ST_GeomFromEWKB(${ordinal})", plan.postgis)
-    } else if plan.semantics == ColumnSemantics::Geography {
-        format!(
-            "{postgis}ST_GeomFromEWKB(${ordinal})::{postgis}geography",
-            postgis = plan.postgis
-        )
-    } else {
-        format!("${ordinal}")
-    }
+/// Il server tipizza il parametro con la colonna, non con i metadata Arrow.
+/// Testo, decimali, liste e letterali usano la funzione d'ingresso del target;
+/// i valori tipizzati e `PostGIS` usano il suo formato binario. L'OID inferito
+/// viene verificato prima dei valori anche nel percorso row-scoped.
+/// Le regole di canonicalita e perdita si applicano al catalogo del target.
+pub(super) fn placeholder_expression(_plan: &WriteColumnPlan, ordinal: usize) -> String {
+    // Anche PostGIS riceve direttamente EWKB nel tipo del target, come COPY.
+    // Un costruttore SQL darebbe invece al parametro il tipo bytea.
+    format!("${ordinal}")
 }
 
 /// Il confronto delle chiavi di Update e `DeleteByKeys`, con l'uguaglianza

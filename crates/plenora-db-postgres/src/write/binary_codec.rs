@@ -113,7 +113,7 @@ fn verbatim_format(target_type: &Type) -> Option<Verbatim> {
 }
 
 #[derive(Debug)]
-struct EwkbBinary(Vec<u8>);
+pub(super) struct EwkbBinary(pub(super) Vec<u8>);
 
 impl ToSql for EwkbBinary {
     fn to_sql(

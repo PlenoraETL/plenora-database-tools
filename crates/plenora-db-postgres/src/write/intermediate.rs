@@ -6,7 +6,7 @@
 
 use super::plan::WriteColumnPlan;
 use arrow_schema::SchemaRef;
-use plenora_database_core::plan::{ProviderKind, WriteOperation};
+use plenora_database_core::plan::{ObjectRef, ProviderKind};
 use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 use tokio_postgres::{types::Type, GenericClient};
 
@@ -20,18 +20,16 @@ pub(super) struct TargetType {
 impl TargetType {
     pub(super) fn parameter(&self, ordinal: usize) -> String {
         let value = format!("${ordinal}::{}", self.declaration);
-        self.collation.as_ref().map_or_else(
-            || value.clone(),
-            |collation| format!("({value} COLLATE {collation})"),
-        )
+        match &self.collation {
+            Some(collation) => format!("({value} COLLATE {collation})"),
+            None => value,
+        }
     }
 
     pub(super) fn verify(&self, actual: &Type) -> Result<()> {
-        if self.oid == actual.oid() {
-            Ok(())
-        } else {
-            Err(unsupported())
-        }
+        (self.oid == actual.oid())
+            .then_some(())
+            .ok_or_else(unsupported)
     }
 }
 
@@ -61,17 +59,14 @@ const CATALOG_SQL: &str = "SELECT a.attname::pg_catalog.text, a.atttypid,
 
 pub(super) async fn assign<C: GenericClient + Sync>(
     client: &C,
-    operation: &WriteOperation,
+    target: &ObjectRef,
     schema: &SchemaRef,
     plans: &mut [WriteColumnPlan],
 ) -> Result<()> {
     let rows = client
         .query(
             CATALOG_SQL,
-            &[
-                &crate::target_schema::schema_of(&operation.target)?,
-                &operation.target.object,
-            ],
+            &[&crate::target_schema::schema_of(target)?, &target.object],
         )
         .await
         .map_err(|error| crate::error::classify_error(ErrorPhase::Prepare, &error))?;
@@ -98,14 +93,31 @@ pub(super) fn verify_parameters(
     if indexes.len() != types.len() {
         return Err(unsupported());
     }
-    for (index, actual) in indexes.iter().zip(types) {
+    indexes.iter().zip(types).try_for_each(|(index, actual)| {
         let plan = plans.get(*index).ok_or_else(unsupported)?;
         plan.target_type
             .as_ref()
             .ok_or_else(unsupported)?
-            .verify(actual)?;
-    }
-    Ok(())
+            .verify(actual)
+    })
+}
+
+/// Describe dei parametri conserva l'OID del dominio; `RowDescription` di una
+/// SELECT di colonne espone invece il tipo base. Non usare quest'ultimo per
+/// provare l'identita del target COPY.
+pub(super) fn copy_type_probe(plans: &[WriteColumnPlan], target: &str) -> Result<String> {
+    let parameters = plans
+        .iter()
+        .enumerate()
+        .map(|(index, plan)| {
+            plan.target_type
+                .as_ref()
+                .map(|target| target.parameter(index + 1))
+                .ok_or_else(unsupported)
+        })
+        .collect::<Result<Vec<_>>>()?
+        .join(", ");
+    Ok(format!("SELECT {parameters} FROM {target} LIMIT 0"))
 }
 
 #[cfg(test)]

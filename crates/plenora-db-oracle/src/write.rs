@@ -281,39 +281,9 @@ impl OracleWritePlan {
         facts: &[crate::write_admission::ColumnFacts],
         server: &crate::write_admission::ServerFacts,
     ) -> Result<()> {
-        for column in &mut self.columns {
-            if column.spatial.is_none() {
-                let fact = facts
-                    .iter()
-                    .find(|fact| fact.name == column.name)
-                    .ok_or_else(crate::write_intermediate::unsupported)?;
-                if fact.data_type == "CLOB" && server.charset != "AL32UTF8" {
-                    return Err(crate::write_intermediate::unsupported());
-                }
-                column.target_type =
-                    Some(crate::write_intermediate::TargetType::from_catalog(fact)?);
-            }
-        }
-        if self.keys.iter().any(|i| {
-            self.columns[*i]
-                .target_type
-                .as_ref()
-                .is_some_and(|t| t.lob_type().is_some())
-        }) {
-            return Err(crate::write_intermediate::unsupported());
-        }
-        if self.mode == WriteMode::Upsert
-            && self.columns.iter().enumerate().any(|(i, c)| {
-                c.target_type
-                    .as_ref()
-                    .is_some_and(|t| t.lob_type().is_some())
-                    && !self.updates.contains(&i)
-            })
-        {
-            return Err(crate::write_intermediate::unsupported());
-        }
         #[cfg(test)]
         if plenora_database_testkit::write_probe::is_probe_table(&self.object_name) {
+            self.assign_target_types(facts, server)?;
             self.rewrites = Vec::new();
             return Ok(());
         }
@@ -351,7 +321,41 @@ impl OracleWritePlan {
                 target_type: key.nativo,
             });
         }
+        self.assign_target_types(facts, server)?;
         self.rewrites = rewrites;
+        Ok(())
+    }
+
+    // L'ammissione della coppia precede la rappresentazione del parametro:
+    // un tipo chiuso conserva la diagnosi comune, senza saltare la guardia.
+    fn assign_target_types(
+        &mut self,
+        facts: &[crate::write_admission::ColumnFacts],
+        server: &crate::write_admission::ServerFacts,
+    ) -> Result<()> {
+        for column in &mut self.columns {
+            if column.spatial.is_none() {
+                let fact = facts
+                    .iter()
+                    .find(|fact| fact.name == column.name)
+                    .ok_or_else(crate::write_intermediate::unsupported)?;
+                if fact.data_type == "CLOB" && server.charset != "AL32UTF8" {
+                    return Err(crate::write_intermediate::unsupported());
+                }
+                column.target_type =
+                    Some(crate::write_intermediate::TargetType::from_catalog(fact)?);
+            }
+        }
+        if self.columns.iter().enumerate().any(|(i, column)| {
+            column
+                .target_type
+                .as_ref()
+                .is_some_and(|t| t.lob_type().is_some())
+                && (self.keys.contains(&i)
+                    || (self.mode == WriteMode::Upsert && !self.updates.contains(&i)))
+        }) {
+            return Err(crate::write_intermediate::unsupported());
+        }
         Ok(())
     }
 
