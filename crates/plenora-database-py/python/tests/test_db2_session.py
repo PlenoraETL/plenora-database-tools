@@ -193,3 +193,28 @@ async def test_async_db2_engine_uses_the_core_lifecycle() -> None:
                 await session.execute(statement, {"identity": 1})
             ).scalar_one() == "alpha"
         assert engine.statistics()["active_sessions"] == 0
+
+
+def test_db2_sync_exact_temporal_and_duplicate_names() -> None:
+    session = connect_db2_reference()
+    try:
+        rows = session.query_sql("SELECT CAST('2026-10-31-12.34.56.123456789012' AS TIMESTAMP(12)) AS T FROM SYSIBM.SYSDUMMY1")
+        assert rows[0]["T"] == "2026-10-31T12:34:56.123456789012"
+        with pytest.raises(p.PlenoraDataMappingError, match="alias"):
+            session.query_sql("SELECT 1 AS X, 2 AS X FROM SYSIBM.SYSDUMMY1")
+        assert session.query_sql("SELECT 1 AS A, 2 AS B FROM SYSIBM.SYSDUMMY1") == [{"A": 1, "B": 2}]
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_db2_async_exact_temporal_and_duplicate_names() -> None:
+    session = await aconnect_db2_reference()
+    try:
+        rows = await session.query_sql("SELECT CAST('2026-10-31-12.34.56.123456789012' AS TIMESTAMP(12)) AS T FROM SYSIBM.SYSDUMMY1")
+        assert rows[0]["T"] == "2026-10-31T12:34:56.123456789012"
+        with pytest.raises(p.PlenoraDataMappingError, match="alias"):
+            await session.query_sql("SELECT 1 AS X, 2 AS X FROM SYSIBM.SYSDUMMY1")
+        assert await session.query_sql("SELECT 1 AS A, 2 AS B FROM SYSIBM.SYSDUMMY1") == [{"A": 1, "B": 2}]
+    finally:
+        session.close()

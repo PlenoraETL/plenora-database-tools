@@ -9174,3 +9174,79 @@ async fn live_caller_stream_cancellation_requires_recovery() {
         plenora_database_core::RetryDisposition::RequiresRecovery
     );
 }
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito"]
+async fn live_exact_temporal_query_stream_and_duplicate_names() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let provider = live_provider();
+    let secret = live_secret();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    for fraction in ["1234567", "9999999", "0000005", "0000010"] {
+        let statement = Statement::new(format!(
+            "SELECT CAST('2026-10-31T12:34:56.{fraction}' AS datetime2(7)) AS dt, \
+             CAST('12:34:56.{fraction}' AS time(7)) AS tm, \
+             CAST('2026-10-31T12:34:56.{fraction}+02:00' AS datetimeoffset(7)) AS tz"
+        ));
+        let expected_fraction = if fraction == "0000010" {
+            "000001".to_owned()
+        } else {
+            format!("{fraction}00")
+        };
+        let rows = tx
+            .query(&statement, &cancellation)
+            .await
+            .expect("query esatta");
+        assert_eq!(
+            rows[0].get_index(0),
+            Some(&ParameterValue::Timestamp(format!(
+                "2026-10-31T12:34:56.{expected_fraction}"
+            )))
+        );
+        assert_eq!(
+            rows[0].get_index(1),
+            Some(&ParameterValue::String(format!(
+                "12:34:56.{expected_fraction}"
+            )))
+        );
+        let ParameterValue::TimestampTz(tz) = &rows[0].values()[2] else {
+            panic!("timestamp con fuso")
+        };
+        let instant = chrono::DateTime::parse_from_rfc3339(tz).expect("RFC3339");
+        assert_eq!(
+            chrono::Timelike::nanosecond(&instant),
+            fraction.parse::<u32>().expect("frazione") * 100
+        );
+        let mut stream = tx
+            .query_stream(&statement, 2, &cancellation)
+            .await
+            .expect("stream");
+        assert_eq!(
+            stream.next_batch(&cancellation).await.expect("lettura"),
+            Some(rows)
+        );
+    }
+    let rows = tx
+        .query(&Statement::new("SELECT 1 AS x, 2 AS x"), &cancellation)
+        .await
+        .expect("riga posizionale");
+    assert_eq!(
+        rows[0].values(),
+        &[ParameterValue::I32(1), ParameterValue::I32(2)]
+    );
+    assert!(rows[0]
+        .try_get("x")
+        .expect_err("ambiguita")
+        .message
+        .contains("alias"));
+    tx.rollback(&cancellation).await.expect("rollback");
+}

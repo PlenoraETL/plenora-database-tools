@@ -639,16 +639,34 @@ pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<Paramet
 }
 
 pub fn canonical_timestamp(value: &str) -> Result<String> {
-    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d-%H.%M.%S%.f"))
-        .map(|value| value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string())
-        .map_err(|_| {
-            transaction_error(
-                ErrorCategory::DataMapping,
-                ErrorPhase::Read,
-                "timestamp query Db2 non rappresentabile",
-            )
-        })
+    let invalid = || {
+        transaction_error(
+            ErrorCategory::DataMapping,
+            ErrorPhase::Read,
+            "timestamp query Db2 non rappresentabile",
+        )
+    };
+    // Chrono conserva solo nove cifre: separare prima la frazione Db2 (0..12).
+    let whole = value.get(..19).ok_or_else(invalid)?;
+    let suffix = value.get(19..).ok_or_else(invalid)?;
+    let fraction = if suffix.is_empty() {
+        ""
+    } else {
+        suffix
+            .strip_prefix('.')
+            .filter(|s| !s.is_empty())
+            .ok_or_else(invalid)?
+    };
+    if fraction.len() > 12 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    let timestamp = chrono::NaiveDateTime::parse_from_str(whole, "%Y-%m-%d %H:%M:%S")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(whole, "%Y-%m-%d-%H.%M.%S"))
+        .map_err(|_| invalid())?;
+    Ok(format!(
+        "{}.{fraction:0<6}",
+        timestamp.format("%Y-%m-%dT%H:%M:%S")
+    ))
 }
 
 const fn type_name(data_type: DataType) -> &'static str {

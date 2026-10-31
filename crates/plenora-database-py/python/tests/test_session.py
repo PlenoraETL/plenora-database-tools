@@ -86,3 +86,32 @@ def test_repr_contains_key_metadata() -> None:
         assert "Session" in r
         assert "server_version" in r
         assert "closed=false" in r or "closed=False" in r
+
+
+def test_postgres_sync_duplicate_result_names_require_aliases() -> None:
+    from ._harness import connect_postgres
+    import plenora_database as database
+
+    session = connect_postgres()
+    try:
+        with pytest.raises(database.PlenoraDataMappingError, match="alias"):
+            session.query_sql("SELECT 1 AS x, 2 AS x")
+        rows = session.query_sql("SELECT 1 AS a, 2 AS b")
+        assert list(rows[0].values()) == [1, 2]
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_async_duplicate_result_names_require_aliases() -> None:
+    from ._harness import aconnect_postgres
+    import plenora_database as database
+
+    session = await aconnect_postgres()
+    try:
+        with pytest.raises(database.PlenoraDataMappingError, match="alias"):
+            await session.query_sql("SELECT 1 AS x, 2 AS x")
+        rows = await session.query_sql("SELECT 1 AS a, 2 AS b")
+        assert list(rows[0].values()) == [1, 2]
+    finally:
+        session.close()

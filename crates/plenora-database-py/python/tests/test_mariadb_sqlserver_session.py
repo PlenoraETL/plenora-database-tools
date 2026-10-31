@@ -148,3 +148,57 @@ async def test_sqlserver_async_capabilities_inspect_and_ddl() -> None:
             await session.execute_ddl(f"DROP TABLE IF EXISTS {qualified}")
         finally:
             session.close()
+
+
+def test_sqlserver_sync_exact_temporal_and_duplicate_names() -> None:
+    session = connect_sqlserver_reference()
+    try:
+        rows = session.query_sql("SELECT CAST('2026-10-31T12:34:56.1234567' AS datetime2(7)) AS T")
+        assert rows[0]["T"] == "2026-10-31T12:34:56.123456700"
+        with pytest.raises(p.PlenoraDataMappingError, match="alias"):
+            session.query_sql("SELECT 1 AS X, 2 AS X")
+        assert session.query_sql("SELECT 1 AS A, 2 AS B") == [{"A": 1, "B": 2}]
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_sqlserver_async_exact_temporal_and_duplicate_names() -> None:
+    session = await aconnect_sqlserver_reference()
+    try:
+        rows = await session.query_sql("SELECT CAST('2026-10-31T12:34:56.1234567' AS datetime2(7)) AS T")
+        assert rows[0]["T"] == "2026-10-31T12:34:56.123456700"
+        with pytest.raises(p.PlenoraDataMappingError, match="alias"):
+            await session.query_sql("SELECT 1 AS X, 2 AS X")
+        assert await session.query_sql("SELECT 1 AS A, 2 AS B") == [{"A": 1, "B": 2}]
+    finally:
+        session.close()
+
+
+def test_mariadb_sync_duplicate_result_names_require_aliases() -> None:
+    from ._harness import connect_mariadb_reference
+    import plenora_database as database
+
+    session = connect_mariadb_reference()
+    try:
+        with pytest.raises(database.PlenoraDataMappingError, match="alias"):
+            session.query_sql("SELECT 1 AS x, 2 AS x")
+        rows = session.query_sql("SELECT 1 AS a, 2 AS b")
+        assert list(rows[0].values()) == [1, 2]
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_mariadb_async_duplicate_result_names_require_aliases() -> None:
+    from ._harness import aconnect_mariadb_reference
+    import plenora_database as database
+
+    session = await aconnect_mariadb_reference()
+    try:
+        with pytest.raises(database.PlenoraDataMappingError, match="alias"):
+            await session.query_sql("SELECT 1 AS x, 2 AS x")
+        rows = await session.query_sql("SELECT 1 AS a, 2 AS b")
+        assert list(rows[0].values()) == [1, 2]
+    finally:
+        session.close()

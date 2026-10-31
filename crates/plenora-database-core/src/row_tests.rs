@@ -133,3 +133,34 @@ fn columns_and_values_are_accessible_for_manual_serialization() {
     assert!(text.contains("id"));
     assert!(text.contains("plenora"));
 }
+#[test]
+fn duplicate_names_refuse_lookup_but_preserve_positions() {
+    let row = crate::Row::try_new(
+        std::sync::Arc::from(vec![
+            "SECRET".to_owned(),
+            "SECRET".to_owned(),
+            "unique".to_owned(),
+        ]),
+        vec![
+            crate::provider::ParameterValue::I32(1),
+            crate::provider::ParameterValue::I32(2),
+            crate::provider::ParameterValue::I32(3),
+        ],
+    )
+    .expect("riga posizionale");
+    assert_eq!(
+        row.get_index(0),
+        Some(&crate::provider::ParameterValue::I32(1))
+    );
+    assert_eq!(
+        row.get_index(1),
+        Some(&crate::provider::ParameterValue::I32(2))
+    );
+    for name in ["SECRET", "unique", "absent"] {
+        assert!(row.get(name).is_none());
+        let error = row.try_get(name).expect_err("mapping ambiguo");
+        assert_eq!(error.category, crate::ErrorCategory::DataMapping);
+        assert!(error.message.contains("alias"));
+        assert!(!error.message.contains("SECRET"));
+    }
+}

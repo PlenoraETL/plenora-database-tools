@@ -2489,3 +2489,34 @@ async fn live_cached_query_reexecutes_with_an_unexhausted_first_page() {
     }
     connection.close().await.expect("chiusura cache probe");
 }
+#[tokio::test]
+#[ignore = "richiede Oracle live esplicito"]
+async fn live_duplicate_result_names_preserve_positions() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let rows = tx
+        .query(
+            &Statement::new("SELECT 1 AS X, 2 AS X FROM DUAL"),
+            &cancellation,
+        )
+        .await
+        .expect("posizioni");
+    assert_eq!(rows[0].values().len(), 2);
+    assert_ne!(rows[0].get_index(0), rows[0].get_index(1));
+    assert!(rows[0]
+        .try_get("X")
+        .expect_err("ambiguita")
+        .message
+        .contains("alias"));
+    tx.rollback(&cancellation).await.expect("rollback");
+}

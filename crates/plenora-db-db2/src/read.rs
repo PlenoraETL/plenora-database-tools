@@ -526,8 +526,13 @@ pub fn parse_date(value: &str) -> Result<i32> {
 }
 
 pub fn parse_timestamp(value: &str) -> Result<i64> {
-    let timestamp = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
-        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d-%H.%M.%S%.f"))
+    let canonical = crate::transaction::canonical_timestamp(value)?;
+    if canonical.bytes().skip(26).any(|byte| byte != b'0') {
+        return Err(mapping(
+            "TIMESTAMP Db2 non rappresentabile esattamente in microsecondi",
+        ));
+    }
+    let timestamp = NaiveDateTime::parse_from_str(&canonical[..26], "%Y-%m-%dT%H:%M:%S%.f")
         .map_err(|_| mapping("TIMESTAMP Db2 non rappresentabile"))?;
     Ok(timestamp.and_utc().timestamp_micros())
 }
