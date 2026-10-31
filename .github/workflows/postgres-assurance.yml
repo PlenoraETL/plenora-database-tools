@@ -1,48 +1,12 @@
 name: postgres-assurance
 
-# Campagna PostgreSQL/PostGIS del riferimento e dell'hardening TLS. I gate
-# avviano le proprie fixture e lanciano Cargo dentro la rete Compose; il runner
-# richiede Docker e Python, non una toolchain Rust locale.
-
+# MISURA TEMPORANEA 8.0.4: solo ramo misura/804. Il passo del gate e
+# sostituito dalla sola esecuzione dei test misura_804.
 on:
-  push:
-    branches:
-      - main
-      - "manutenzione/**"
-  pull_request:
-    paths:
-      - "requirements-*.txt"
-      - ".github/workflows/postgres-assurance.yml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "catalog/spatial-functions.v1.json"
-      - "contracts/v2/**"
-      - "crates/plenora-database-cli/**"
-      - "crates/plenora-database-core/**"
-      - "crates/plenora-database-engine/**"
-      - "crates/plenora-database-sql/**"
-      - "crates/plenora-database-testkit/**"
-      - "crates/plenora-db-postgres/**"
-      - "docker-compose.postgres.yml"
-      - "docker/postgres/init/**"
-      - "scripts/check_postgres_reference.py"
-      - "scripts/test_check_postgres_reference.py"
-      - "scripts/check_postgres_hardening.py"
-      - "scripts/test_check_postgres_hardening.py"
-      - "scripts/compose_network.py"
-      - "scripts/live_inventory.py"
-      - "docker-compose.postgres-tls.yml"
-      - "docker/postgres-tls/**"
   workflow_dispatch:
 
-# Sola lettura: la campagna non scrive sul repository.
 permissions:
   contents: read
-
-concurrency:
-  group: postgres-assurance-${{ github.ref }}
-  cancel-in-progress: true
 
 defaults:
   run:
@@ -50,7 +14,7 @@ defaults:
 
 jobs:
   postgres:
-    name: gate riferimento PostgreSQL + PostGIS
+    name: misura 804 PostgreSQL
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -58,137 +22,23 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
-      # Un gate Python installa le proprie dipendenze prima di girare. Senza,
-      # basta che uno degli script importi qualcosa che ne dipenda — anche
-      # indirettamente, come `render_state` che importa `phase0_validate` —
-      # perche il job fallisca all'import invece che su una verifica.
       - name: dipendenze dei gate Python
         run: python3 -m pip install -r requirements-self-tests.txt
-
-      # Il self-test precede l'avvio delle fixture per fallire rapidamente.
-      - name: self-test del gate
-        run: python3 scripts/test_check_postgres_reference.py
-
       - name: avvia il riferimento
         run: |
-          mkdir -p assurance-results
           docker compose -f docker-compose.postgres.yml config --quiet
           docker compose -f docker-compose.postgres.yml up -d --wait
-
-      # Il gate monta questa directory come cache del registry cargo: se non
-      # esiste, `docker run -v` la creerebbe come root e il cargo dentro il
-      # container non potrebbe scriverci.
       - name: cache del registry cargo
         run: mkdir -p "$(dirname "$GITHUB_WORKSPACE")/plenora-cargo-cache"
-
-      - name: check_postgres_reference.py
+      - name: misura 804
         run: |
-          python3 scripts/check_postgres_reference.py 2>&1 \
-            | tee assurance-results/postgres-reference.log
-
-      # `git diff` vede solo i file gia tracciati: un file nuovo lasciato nel
-      # worktree passerebbe inosservato. Gli artefatti in `assurance-results/`
-      # restano invisibili perche `.gitignore` li esclude, ed e voluto.
-      - name: il candidato non e cambiato
-        run: |
-          residuo="$(git status --porcelain=v1 -uall)"
-          if [ -n "$residuo" ]; then
-            echo "::error::il gate ha lasciato modifiche o file nuovi nel worktree"
-            printf '%s\n' "$residuo"
-            git diff -- . || true
-            exit 1
-          fi
-
-      - name: diagnostica
-        if: failure()
-        run: |
-          docker ps -a > assurance-results/postgres-containers.txt
-          docker compose -f docker-compose.postgres.yml logs --no-color \
-            > assurance-results/postgres-compose.log 2>&1 || true
-
-      - name: verdetto
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: postgres-assurance-${{ github.sha }}
-          path: assurance-results/
-          if-no-files-found: error
-          retention-days: 90
-
-      # Niente `--remove-orphans`: i compose del repository dichiarano progetti
-      # distinti, e su una macchina con piu riferimenti attivi quel flag
-      # cancella i container degli altri provider. In CI sarebbe innocuo, ma il
-      # comando viene copiato in locale.
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, ".")
+          from scripts import check_postgres_reference as g
+          g.run(g.cargo(["test", "--locked", "-p", "plenora-db-postgres", "--lib", "misura_804",
+                         "--", "--ignored", "--nocapture", "--test-threads=1"], g.DEFAULT_DSN))
+          PY
       - name: ferma il riferimento
         if: always()
         run: docker compose -f docker-compose.postgres.yml down --volumes || true
-
-  # Job separato: prova TLS privato, mTLS, verifica dell'hostname e recovery e
-  # mantiene il proprio verdetto distinto dal gate del riferimento.
-  hardening:
-    name: gate hardening PostgreSQL (TLS privato + mTLS)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      # Un gate Python installa le proprie dipendenze prima di girare. Senza,
-      # basta che uno degli script importi qualcosa che ne dipenda — anche
-      # indirettamente, come `render_state` che importa `phase0_validate` —
-      # perche il job fallisca all'import invece che su una verifica.
-      - name: dipendenze dei gate Python
-        run: python3 -m pip install -r requirements-self-tests.txt
-
-      - name: self-test del gate
-        run: python3 scripts/test_check_postgres_hardening.py
-
-      # Il gate ispeziona **entrambi** i container: il riferimento plaintext lo
-      # avvia questo passo, quello TLS lo avvia il gate stesso.
-      - name: avvia il riferimento plaintext
-        run: |
-          mkdir -p assurance-results
-          docker compose -f docker-compose.postgres.yml config --quiet
-          docker compose -f docker-compose.postgres-tls.yml config --quiet
-          docker compose -f docker-compose.postgres.yml up -d --wait
-
-      - name: cache del registry cargo
-        run: mkdir -p "$(dirname "$GITHUB_WORKSPACE")/plenora-cargo-cache"
-
-      - name: check_postgres_hardening.py
-        run: |
-          python3 scripts/check_postgres_hardening.py 2>&1 \
-            | tee assurance-results/postgres-hardening.log
-
-      - name: il candidato non e cambiato
-        run: |
-          residuo="$(git status --porcelain=v1 -uall)"
-          if [ -n "$residuo" ]; then
-            echo "::error::il gate ha lasciato modifiche o file nuovi nel worktree"
-            printf '%s\n' "$residuo"
-            git diff -- . || true
-            exit 1
-          fi
-
-      - name: diagnostica
-        if: failure()
-        run: |
-          docker ps -a > assurance-results/hardening-containers.txt
-          docker compose -f docker-compose.postgres-tls.yml logs --no-color \
-            > assurance-results/hardening-compose.log 2>&1 || true
-
-      - name: verdetto
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: postgres-hardening-${{ github.sha }}
-          path: assurance-results/
-          if-no-files-found: error
-          retention-days: 90
-
-      - name: ferma i riferimenti
-        if: always()
-        run: |
-          docker compose -f docker-compose.postgres-tls.yml down --volumes || true
-          docker compose -f docker-compose.postgres.yml down --volumes || true

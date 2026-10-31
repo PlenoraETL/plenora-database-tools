@@ -1,42 +1,12 @@
 name: db2-assurance
 
-# Qualifica Linux x86_64 contro Db2 LUW Community 12.1 e verifica su Windows
-# che la feature dedicata compili e che il wheel carichi il percorso nativo.
-# Solo il job Linux apre connessioni: Windows resta una prova build-only.
+# MISURA TEMPORANEA 8.0.4: solo ramo misura/804. Il passo del gate e
+# sostituito dalla sola esecuzione dei test misura_804.
 on:
-  push:
-    branches: [main, "manutenzione/**"]
-  pull_request:
-    paths:
-      - "requirements-*.txt"
-      - ".github/workflows/db2-assurance.yml"
-      - ".github/scripts/verify_wheel.py"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "crates/plenora-database-core/**"
-      - "crates/plenora-database-sql/**"
-      - "crates/plenora-database-cli/**"
-      - "crates/plenora-database-py/**"
-      - "crates/plenora-db-db2/**"
-      - "docker-compose.db2.yml"
-      - "docker/db2-client/**"
-      - "scripts/check_db2_reference.py"
-      - "scripts/test_check_db2_reference.py"
-      - "scripts/name_db2_wheel.py"
-      - "scripts/test_name_db2_wheel.py"
-      - "scripts/live_inventory.py"
-      - "requirements-sdk-build.txt"
-      - "requirements-sdk-tests.txt"
-      - "requirements-self-tests.txt"
   workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: db2-assurance-${{ github.ref }}
-  cancel-in-progress: true
 
 defaults:
   run:
@@ -44,74 +14,30 @@ defaults:
 
 jobs:
   db2-linux:
-    name: Db2 12.1 Linux x86_64
+    name: misura 804 Db2 12.1
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: dipendenze dei gate Python
-        run: python3 -m pip install -r requirements-self-tests.txt
-      - name: self-test del gate
-        run: |
-          python3 scripts/test_check_db2_reference.py
-          python3 scripts/test_name_db2_wheel.py
       - name: build e avvio del riferimento
         run: |
-          mkdir -p assurance-results
           docker compose -f docker-compose.db2.yml config --quiet
           docker compose -f docker-compose.db2.yml up -d --build --wait --wait-timeout 900
-      - name: gate Db2
+      - name: misura 804 Rust
         run: |
-          python3 scripts/check_db2_reference.py 2>&1 \
-            | tee assurance-results/db2-reference.log
-      - name: il candidato non e cambiato
-        run: test -z "$(git status --porcelain=v1 -uall)"
-      - name: diagnostica
-        if: failure()
-        run: |
-          docker ps -a > assurance-results/db2-containers.txt
-          docker compose -f docker-compose.db2.yml logs --no-color \
-            > assurance-results/db2-compose.log 2>&1 || true
-      - name: verdetto
+          docker compose -f docker-compose.db2.yml exec -T \
+            -e PLENORA_DB2_HOST=127.0.0.1 -e PLENORA_DB2_DATABASE=plenora \
+            -e PLENORA_DB2_USER=db2inst1 -e PLENORA_DB2_PASSWORD=plenora_test \
+            db2 cargo test --locked -p plenora-db-db2 --lib misura_804 \
+            -- --ignored --nocapture --test-threads=1
+      - name: misura 804 SDK
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: db2-assurance-${{ github.sha }}
-          path: assurance-results/
-          if-no-files-found: error
-          retention-days: 90
+        run: |
+          docker compose -f docker-compose.db2.yml exec -T \
+            -e PLENORA_TEST_DB2_HOST=127.0.0.1 -e PLENORA_TEST_DB2_DATABASE=plenora \
+            -e PLENORA_TEST_DB2_USER=db2inst1 -e PLENORA_TEST_DB2_PASSWORD=plenora_test \
+            -e PLENORA_TEST_DB2_PORT=50000 -e PLENORA_TEST_DB2_TLS_MODE=insecure_local \
+            db2 sh -lc 'rm -rf /tmp/mis804 && mkdir -p /tmp/mis804/misura_tests && cp -R /workspace/crates/plenora-database-py/python/tests/. /tmp/mis804/misura_tests/ && cd /tmp && python3.12 /workspace/scripts/misura_804_sdk_db2.py'
       - name: ferma il riferimento
         if: always()
         run: docker compose -f docker-compose.db2.yml down --volumes || true
-
-  db2-windows-build:
-    name: Db2 feature Windows x86_64 (build-only)
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: build del wheel con feature DB2
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
-        with:
-          maturin-version: '1.15.0'
-          command: build
-          args: >-
-            --release
-            --locked
-            --features db2
-            --out dist
-            --manifest-path crates/plenora-database-py/Cargo.toml
-          rust-toolchain: '1.98.1'
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: caricamento e profilo della feature DB2
-        shell: bash
-        env:
-          PLENORA_EXPECT_DB2_RUNTIME: '1'
-        run: |
-          python -m pip install dist/*.whl
-          python .github/scripts/verify_wheel.py

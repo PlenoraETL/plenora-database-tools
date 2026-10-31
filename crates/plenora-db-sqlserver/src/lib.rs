@@ -53,3 +53,6 @@ pub const MAX_BIND_PARAMETERS: usize = 2_100;
 
 /// Limite T-SQL per ogni parte di un identificatore regolare.
 pub const MAX_IDENTIFIER_CHARACTERS: usize = 128;
+
+#[cfg(test)]
+mod misura_804;

@@ -58,3 +58,6 @@ mod live_tests;
 #[cfg(test)]
 #[path = "spatial_live_tests.rs"]
 mod spatial_live_tests;
+
+#[cfg(test)]
+mod misura_804;

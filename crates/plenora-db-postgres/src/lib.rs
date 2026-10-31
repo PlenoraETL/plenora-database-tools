@@ -1012,3 +1012,6 @@ fn parse_decimal128(value: &str, scale: i8) -> Result<i128> {
 
 #[cfg(test)]
 mod test_suite;
+
+#[cfg(test)]
+mod misura_804;

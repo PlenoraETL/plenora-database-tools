@@ -1,47 +1,12 @@
 name: mariadb-evidence
 
-# Campagna live dell'evidenza MariaDB sui tre riferimenti.
-#
-# Le sonde verificano classificazione degli errori, catalogo, filtri e rifiuti
-# che mantengono chiuse le capability non provate. Il runner fallisce se manca
-# una prova necessaria e richiede tutti i riferimenti dichiarati.
-#
-# Il self-test statico gira su ogni PR e verifica il **giudizio** su documenti
-# costruiti a mano; non puo accorgersi che il comportamento e cambiato, perche
-# non tocca un server. La campagna live collega invece ogni capability
-# pubblicata a una corsa riproducibile su runner puliti.
-#
-# Non gira su ogni push perché accende tutti i riferimenti. È schedulata e
-# resta disponibile su richiesta.
-#
-# Il ciclo di vita delle fixture non e qui: sta in
-# `scripts/fixture_campaign.py`, condiviso con la campagna di sessione e
-# eseguibile identico in locale. Uno YAML che accende container e una decisione
-# senza test.
-#
-# Il documento dichiara il commit misurato, e la campagna verifica che il
-# repository non si sia mosso: due istantanee, una prima di accendere e una
-# dopo l'ultima sonda. Vedono un `HEAD` diverso alla fine e una modifica
-# rimasta nell'albero; non vedono cio che e transitorio — un file modificato e
-# rimesso identico, o un `HEAD` che va da A a B e torna ad A. Qui la
-# distinzione non esiste, perche il checkout e fresco e nessuno tocca l'albero
-# mentre la corsa gira; in locale la garanzia e quella, e chiuderla del tutto
-# vorrebbe dire misurare da un checkout immutabile.
-
+# MISURA TEMPORANEA 8.0.4: solo ramo misura/804. Il passo del gate e
+# sostituito dalla sola esecuzione dei test misura_804.
 on:
-  schedule:
-    # Lunedi mattina, un'ora dopo la matrice di sessione: le due campagne
-    # accendono gli stessi container e non devono incrociarsi.
-    - cron: '17 6 * * 1'
   workflow_dispatch:
 
-# Sola lettura: la campagna misura, non scrive sul repository.
 permissions:
   contents: read
-
-concurrency:
-  group: mariadb-evidence-${{ github.ref }}
-  cancel-in-progress: true
 
 defaults:
   run:
@@ -49,7 +14,7 @@ defaults:
 
 jobs:
   mariadb-evidence:
-    name: evidenza del driver sui tre riferimenti
+    name: misura 804 MariaDB
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -57,35 +22,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
-      # Un gate Python installa le proprie dipendenze prima di girare. Senza,
-      # basta che uno degli script importi qualcosa che ne dipenda — anche
-      # indirettamente, come `render_state` che importa `phase0_validate` —
-      # perche il job fallisca all'import invece che su una verifica.
       - name: dipendenze dei gate Python
         run: python3 -m pip install -r requirements-self-tests.txt
-
-      - name: self-test del runner e della campagna
-        run: python3 scripts/test_check_mariadb_reference.py
-
-      # Log e diagnostica vivono **fuori** dal repository. Scriverli dentro
-      # sporcherebbe l'albero, e il preflight della campagna — che pretende un
-      # albero pulito — rifiuterebbe proprio quel file: un gate che non puo
-      # passare per costruzione.
-      # La directory è preparazione, non misura: resta in un passo separato
-      # perché il gate qualificante deve essere il primo comando del suo `run`.
-      - name: directory di diagnostica
-        run: mkdir -p "$RUNNER_TEMP/mariadb-evidence"
-
-      - name: campagna live sui tre riferimenti
-        run: |
-          python3 scripts/check_mariadb_campaign.py \
-            --diagnostics "$RUNNER_TEMP/mariadb-evidence" 2>&1 \
-            | tee "$RUNNER_TEMP/mariadb-evidence/mariadb-evidence.log"
-
-      - name: diagnostica
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: mariadb-evidence-results
-          path: ${{ runner.temp }}/mariadb-evidence/
-          retention-days: 7
+      - name: misura 804
+        run: python3 scripts/misura_804_mariadb.py
