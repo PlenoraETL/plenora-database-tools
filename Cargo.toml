@@ -13,7 +13,7 @@ members = [
     "crates/plenora-database-cli",
     "crates/plenora-database-py",
 ]
-exclude = ["vendor/oracle-rs"]
+exclude = ["vendor/oracle-rs", "vendor/odbc-api"]
 
 # `default-members` mantiene leggero il percorso ordinario; adapter opzionali e
 # binding restano selezionabili esplicitamente. La scelta governa la build, non
@@ -104,7 +104,15 @@ mysql_async = { version = "=0.37.1", default-features = false, features = ["mini
 mysql_common = { version = "=0.37.3", default-features = false }
 # DB2 usa il driver manager ODBC dinamico. Niente feature `prompt` (UI) e
 # niente unixODBC statico: il runtime IBM resta un prerequisito separato.
-odbc-api = { version = "=29.0.0", default-features = false, features = ["odbc_version_3_80"] }
+# Fork locale di odbc-api 29.0.0, approvato dal titolare: gli avvisi di
+# SQLExecute/SQLExecDirect e SQLFetch devono essere osservabili prima che
+# un'altra chiamata ODBC li cancelli (troncamento e conversioni non esatte).
+# API strict opt-in; API e buffer upstream restano invariati. Il path vale
+# anche per i consumer esterni. Delta chiuso: scripts/check_odbc_fork.py e
+# assurance/registries/odbc-api-fork.json; licenze upstream conservate.
+# Rientro: release upstream con diagnostici equivalenti e prove Db2 verdi
+# per esecuzione e fetch, inclusi 01004 e conversioni della codepage.
+odbc-api = { path = "vendor/odbc-api", version = "=29.0.0", default-features = false, features = ["odbc_version_3_80"] }
 # Driver thin asincrono: parla TNS senza Oracle Instant Client, quindi il
 # supporto Oracle non introduce una seconda famiglia di wheel native.
 #
@@ -138,7 +146,7 @@ plenora-db-mysql = { path = "crates/plenora-db-mysql" }
 plenora-db-db2 = { path = "crates/plenora-db-db2" }
 plenora-db-oracle = { path = "crates/plenora-db-oracle" }
 
-# Le dipendenze di `vendor/oracle-rs` restano intervalli (`"0.8"`, `"1"`):
+# Le dipendenze di `vendor/oracle-rs` e `vendor/odbc-api` restano intervalli (`"0.8"`, `"1"`):
 # il manifest e quello pubblicato upstream, toccato solo dove serve il fork
 # (nome del pacchetto e codice), cosi un nuovo vendoring resta un diff
 # leggibile. Le versioni effettive le fissa `Cargo.lock`, che i build e i test

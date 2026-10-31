@@ -51,18 +51,27 @@ fn unsupported_transaction_options_fail_before_the_network() {
     );
 }
 
-/// Il parameter-array non ha una forma testuale esatta per i byte: le
-/// colonne spatial arrivano gia esadecimali per `HEXTORAW(CAST(? AS VARCHAR(32672)))`, ogni altro
-/// binario si rifiuta invece di diventare il testo delle sue cifre.
+/// Il tipo C binario conserva i byte dopo l'ammissione del descrittore,
+/// anche quando IBM descrive come binario il marker dell'espressione spatial.
 #[test]
-fn parameter_arrays_refuse_bytes_and_mixed_double_columns() {
+fn parameter_arrays_bind_bytes_as_binary_and_refuse_mixed_columns() {
     let bytes = vec![vec![ParameterValue::Bytes(vec![0xde, 0xad])]];
-    assert_eq!(
-        ArrayColumns::encode(&bytes, 1)
-            .err()
-            .map(|error| error.category),
-        Some(ErrorCategory::DataMapping)
-    );
+    let columns = ArrayColumns::encode(&bytes, 1).unwrap();
+    let binary = DataType::Varbinary {
+        length: std::num::NonZeroUsize::new(2),
+    };
+    assert!(matches!(
+        columns.descriptions(&[binary]).unwrap()[0].buffer_desc,
+        odbc_api::buffers::BufferDesc::Binary { max_bytes: 2 }
+    ));
+    assert!(columns
+        .descriptions(&[DataType::Varchar { length: None }])
+        .is_err());
+    let mixed_bytes = vec![
+        bytes[0].clone(),
+        vec![ParameterValue::String("dead".into())],
+    ];
+    assert!(ArrayColumns::encode(&mixed_bytes, 1).is_err());
     let mixed = vec![
         vec![ParameterValue::F64(0.5)],
         vec![ParameterValue::String("0.5".to_owned())],
@@ -204,7 +213,11 @@ fn parameter_array_never_sends_character_buffers_to_binary_targets() {
     ] {
         assert!(columns.descriptions(&[target]).is_err());
         let admitted = crate::parameter::admit_described(&rows[0][0], &target).unwrap();
-        assert!(ArrayColumns::encode(&[vec![admitted]], 1).is_err());
+        let encoded = ArrayColumns::encode(&[vec![admitted]], 1).unwrap();
+        assert!(matches!(
+            encoded.descriptions(&[target]).unwrap()[0].buffer_desc,
+            odbc_api::buffers::BufferDesc::Binary { .. }
+        ));
     }
     let target = DataType::Varchar {
         length: std::num::NonZeroUsize::new(32672),

@@ -591,3 +591,79 @@ fn catalog_admission_never_reinterprets_text_as_binary() {
         }
     }
 }
+
+#[test]
+fn db2_opaque_catalog_type_is_refused_only_when_used_including_null_and_keys() {
+    use crate::portable::{Direction, Predicate, UpsertStatement};
+    let types = RelationTypes::from([
+        (
+            "ID".to_owned(),
+            CatalogType {
+                name: "INTEGER".to_owned(),
+                ..CatalogType::default()
+            },
+        ),
+        ("X".to_owned(), CatalogType::default()),
+    ]);
+    let provider = ProviderKind::Db2;
+    let null = V::Null {
+        type_name: "INTEGER".to_owned(),
+    };
+    let id = select("T", vec!["ID"])
+        .where_(eq("ID", V::I32(1)))
+        .into_statement();
+    assert!(admit_portable(provider, &id, &types).is_ok());
+    let key = PortableStatement::Upsert(UpsertStatement {
+        table: TableRef::new("T"),
+        columns: vec!["ID".to_owned()],
+        values: vec![vec![Expression::Literal(V::I32(1))]],
+        conflict_target: vec!["X".to_owned()],
+        update_on_conflict: vec![],
+        returning: vec![],
+    });
+    let insert = PortableStatement::Insert(InsertStatement {
+        table: TableRef::new("T"),
+        columns: vec!["X".to_owned()],
+        values: vec![vec![Expression::Literal(null.clone())]],
+        returning: vec![],
+    });
+    for statement in [
+        select("T", vec!["X"]).into_statement(),
+        PortableStatement::Select(crate::portable::SelectStatement {
+            table: TableRef::new("T"),
+            projection: crate::portable::Projection::All,
+            filter: None,
+            order_by: vec![],
+            limit: None,
+        }),
+        select("T", vec!["ID"])
+            .where_(eq("X", null.clone()))
+            .into_statement(),
+        select("T", vec!["ID"])
+            .where_(Predicate::IsNull {
+                column: "X".to_owned(),
+            })
+            .into_statement(),
+        select("T", vec!["ID"])
+            .where_(Predicate::Eq {
+                column: "ID".to_owned(),
+                value: Expression::Column("X".to_owned()),
+            })
+            .into_statement(),
+        select("T", vec!["ID"])
+            .order_by("X", Direction::Asc)
+            .into_statement(),
+        key,
+        insert,
+    ] {
+        let error = admit_portable(provider, &statement, &types).unwrap_err();
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, crate::ErrorPhase::Prepare);
+        assert_eq!(
+            error.message,
+            "tipo Db2 non built-in non qualificato per lo statement"
+        );
+    }
+    // Il contratto generico Unknown/NULL resta invariato.
+    assert_eq!(admit(provider, &null, &OperandType::Unknown).unwrap(), null);
+}

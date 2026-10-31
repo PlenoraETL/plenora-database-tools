@@ -19,6 +19,12 @@ pub fn driver_error(error: &OdbcError, phase: ErrorPhase) -> DatabaseError {
                 ("57014" | "HYT00" | "HYT01", _) => ErrorCategory::Timeout,
                 (value, _) if value.starts_with("08") => ErrorCategory::Io,
                 (value, _) if value.starts_with("22") => ErrorCategory::DataMapping,
+                (value, _)
+                    if value.starts_with("01")
+                        && matches!(phase, ErrorPhase::Read | ErrorPhase::Probe) =>
+                {
+                    ErrorCategory::DataMapping
+                }
                 (value, _) if value.starts_with("42") => ErrorCategory::Schema,
                 _ => ErrorCategory::Execution,
             };

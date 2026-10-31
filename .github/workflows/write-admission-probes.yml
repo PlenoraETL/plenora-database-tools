@@ -20,7 +20,7 @@ on:
       - ".github/workflows/write-admission-probes.yml"
       - "crates/plenora-database-core/src/write_admission.rs"
       - "crates/plenora-database-core/src/store_rewrite.rs"
-      - "crates/plenora-database-testkit/src/write_probe.rs"
+      - "crates/plenora-database-testkit/src/write_probe*.rs"
       - "crates/plenora-db-*/src/write*.rs"
       - "crates/plenora-db-*/src/write/**"
       - "crates/plenora-db-*/src/catalog/**"

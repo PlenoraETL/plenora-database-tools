@@ -10,9 +10,9 @@ fn text(value: &str) -> String {
 fn index_rows_are_grouped_in_catalog_order() {
     let rows = vec![
         vec![
-            Some(text("PK_ITEMS")),
+            Some(text(" PK_ITEMS ")),
             Some(text("P")),
-            Some(text("1")),
+            Some(text(" 1 ")),
             Some(text("ID")),
             Some(text("A")),
         ],
@@ -34,6 +34,7 @@ fn index_rows_are_grouped_in_catalog_order() {
 
     let indexes = build_indexes(&rows).expect("indici Db2");
     assert_eq!(indexes.len(), 2);
+    assert_eq!(indexes[0].name, " PK_ITEMS ");
     assert!(indexes[0].primary && indexes[0].unique);
     assert_eq!(indexes[0].columns, ["ID"]);
     assert!(indexes[1].unique && !indexes[1].primary);
@@ -123,5 +124,26 @@ fn describe_preserves_catalog_identifier_bytes() {
         let indexes = build_indexes(&[row.to_vec()]).unwrap();
         assert_eq!(indexes[0].name, name);
         assert_eq!(indexes[0].columns, [name]);
+    }
+}
+
+#[test]
+fn catalog_padding_is_removed_only_for_fixed_character_descriptors() {
+    use crate::connection::catalog_text;
+    use odbc_api::DataType;
+    for kind in [
+        DataType::Char { length: None },
+        DataType::WChar { length: None },
+    ] {
+        assert_eq!(catalog_text(" SYSIBM  ", kind), " SYSIBM");
+        assert_eq!(catalog_text("X\t ", kind), "X\t");
+    }
+    for kind in [
+        DataType::Varchar { length: None },
+        DataType::WVarchar { length: None },
+    ] {
+        for name in [" S ", " T ", " C ", "SYSIBM  ", "IDENTITY ", "\t "] {
+            assert_eq!(catalog_text(name, kind), name);
+        }
     }
 }

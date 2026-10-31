@@ -26,7 +26,17 @@ Il grafo e quello delle feature di release definite nello script, non la
 risoluzione unificata di tutto il workspace. E una copertura conservativa
 dei crate runtime: non pretende di misurare quali funzioni sopravvivono a LTO.
 I crate del prodotto sono riconosciuti tramite `workspace_members`; il fork
-Oracle escluso dal workspace conserva quindi i propri avvisi upstream.
+Oracle e quello ODBC, esclusi dal workspace, conservano i propri avvisi upstream.
+
+Il fork `odbc-api` e approvato dal titolare. Motivazione e criterio di rientro
+sono accanto alla dipendenza in [`Cargo.toml`](../Cargo.toml). Il delta esatto
+rispetto al pacchetto 29.0.0 e dichiarato nel
+[registro del fork](../assurance/registries/odbc-api-fork.json): la
+[guardia](../scripts/check_odbc_fork.py) controlla ogni file, incluse aggiunte
+e rimozioni, e confronta anche la cache upstream quando disponibile.
+`rust-ci` esegue la guardia e il suo self-test; il confronto con la cache
+si richiede localmente con `--require-upstream`. Un nuovo vendoring richiede
+la revisione del delta, non una lista di file liberamente modificabili.
 
 La raccolta include LICENSE/LICENCE, NOTICE, COPYING, COPYRIGHT, UNLICENSE
 anche nelle sottodirectory e il `license-file`. Le impronte SHA-256

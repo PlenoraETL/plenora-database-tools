@@ -1,6 +1,6 @@
 //! DML del driver senza CAST o guardie del writer, sempre con rollback.
 use super::*;
-use crate::write_probe_tests::{probe_failure, probe_kind, probe_value};
+use crate::write_probe_tests::{probe_failure, probe_kind, probe_operand, probe_value};
 use plenora_database_core::arrow::array::Array;
 use write_probe::{direct_error, direct_value, DirectObservation};
 
@@ -18,7 +18,7 @@ pub(super) async fn observe(
             plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
         )
     } else {
-        ":1".to_owned()
+        probe_operand(spec).to_owned()
     };
     let cancellation = CancellationToken::new();
     let config = hooks.provider.config();

@@ -120,3 +120,15 @@ fn cancellation_and_deadline_keep_distinct_public_categories() {
     let deadline_error = interruption_error(&deadline, ErrorPhase::Read);
     assert_eq!(deadline_error.category, ErrorCategory::Timeout);
 }
+
+#[test]
+fn read_conversion_warnings_are_mapping_errors_without_vendor_payload() {
+    for phase in [ErrorPhase::Read, ErrorPhase::Probe] {
+        for state in [*b"01517", *b"01004", *b"01S07"] {
+            let error = driver_error(&diagnostic(state, 335, "secret-cell-value"), phase);
+            assert_eq!(error.category, ErrorCategory::DataMapping);
+            assert_eq!(error.phase, phase);
+            assert!(!error.message.contains("secret-cell-value"));
+        }
+    }
+}

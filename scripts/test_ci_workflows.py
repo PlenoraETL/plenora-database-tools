@@ -1890,6 +1890,18 @@ class TheSweepCoversAllOfflineCi(unittest.TestCase):
         self.assertEqual(env["PIP_TARGET"], "temporary/site-packages")
         self.assertEqual(original["run"], "python -m pip install dist/*.whl")
 
+    def test_output_relocation_preserves_arguments_and_rejects_external_roots(self) -> None:
+        root = self.sweep.ROOT / "target/sweep/artifacts"
+        env = {"SWEEP_ARTIFACT_ROOT": str(root)}
+        command = "maturin build --out dist && python check.py benchmark-results/a.json"
+        changed = self.sweep.local_outputs(command, env)
+        self.assertIn(f"--out {root.as_posix()}/dist", changed)
+        self.assertIn(f"{root.as_posix()}/benchmark-results/a.json", changed)
+        self.assertEqual(self.sweep.local_outputs(command, {}), command)
+        with self.assertRaises(ValueError):
+            self.sweep.local_outputs(command, {"SWEEP_ARTIFACT_ROOT": str(self.sweep.ROOT)})
+
+
 
 
 if __name__ == "__main__":

@@ -739,12 +739,47 @@ pub fn admit_filter(
 /// come li legge `TransactionScope::column_types`.
 pub type RelationTypes = BTreeMap<String, CatalogType>;
 
+// Il catalogo Db2 conserva con nome vuoto un tipo esplicitamente non
+// built-in. Non e un tipo assente: neppure NULL ne qualifica l'uso.
+fn check_column(provider: ProviderKind, column: &str, types: &RelationTypes) -> Result<()> {
+    if provider == ProviderKind::Db2 && types.get(column).is_some_and(|kind| kind.name.is_empty()) {
+        return Err(DatabaseError::unsupported(
+            provider,
+            ErrorPhase::Prepare,
+            "tipo Db2 non built-in non qualificato per lo statement",
+        ));
+    }
+    Ok(())
+}
+
+fn check_columns(provider: ProviderKind, columns: &[String], types: &RelationTypes) -> Result<()> {
+    columns
+        .iter()
+        .try_for_each(|column| check_column(provider, column, types))
+}
+
+fn check_expression(
+    provider: ProviderKind,
+    expression: &Expression,
+    types: &RelationTypes,
+) -> Result<()> {
+    match expression {
+        Expression::Column(field) => check_column(provider, field, types),
+        Expression::SpatialValue { expression, .. } => {
+            check_expression(provider, expression, types)
+        }
+        Expression::Literal(_) | Expression::TypedParameter(_) => Ok(()),
+    }
+}
+
 fn admit_expression(
     provider: ProviderKind,
     expression: &mut Expression,
     column: &str,
     types: &RelationTypes,
 ) -> Result<()> {
+    check_column(provider, column, types)?;
+    check_expression(provider, expression, types)?;
     // Una colonna non e un valore; un `SpatialValue` ha la regola delle
     // sonde (`spatial_probe`), che ne giudica SRID e frame.
     if let Expression::Literal(value) = expression {
@@ -768,9 +803,12 @@ fn admit_predicate(
         | Predicate::Lte { column, value }
         | Predicate::Gt { column, value }
         | Predicate::Gte { column, value } => admit_expression(provider, value, column, types),
-        Predicate::In { column, values } => values
-            .iter_mut()
-            .try_for_each(|value| admit_expression(provider, value, column, types)),
+        Predicate::In { column, values } => {
+            check_column(provider, column, types)?;
+            values
+                .iter_mut()
+                .try_for_each(|value| admit_expression(provider, value, column, types))
+        }
         Predicate::Between { column, low, high } => {
             admit_expression(provider, low, column, types)?;
             admit_expression(provider, high, column, types)
@@ -779,10 +817,13 @@ fn admit_predicate(
             .iter_mut()
             .try_for_each(|predicate| admit_predicate(provider, predicate, types)),
         Predicate::Not { predicate } => admit_predicate(provider, predicate, types),
-        Predicate::Like { .. }
-        | Predicate::IsNull { .. }
-        | Predicate::IsNotNull { .. }
-        | Predicate::Spatial { .. } => Ok(()),
+        Predicate::Like { column, pattern } => {
+            check_column(provider, column, types)?;
+            check_expression(provider, pattern, types)
+        }
+        Predicate::IsNull { column }
+        | Predicate::IsNotNull { column }
+        | Predicate::Spatial { column, .. } => check_column(provider, column, types),
     }
 }
 
@@ -792,6 +833,7 @@ fn admit_rows(
     rows: &mut [Vec<Expression>],
     types: &RelationTypes,
 ) -> Result<()> {
+    check_columns(provider, columns, types)?;
     for row in rows {
         for (column, value) in columns.iter().zip(row.iter_mut()) {
             admit_expression(provider, value, column, types)?;
@@ -838,25 +880,43 @@ pub fn admit_portable(
     let mut admitted = statement.clone();
     match &mut admitted {
         PortableStatement::Select(select) => {
+            match &select.projection {
+                crate::portable::Projection::All => {
+                    for column in types.keys() {
+                        check_column(provider, column, types)?;
+                    }
+                }
+                crate::portable::Projection::Columns(columns) => {
+                    check_columns(provider, columns, types)?;
+                }
+            }
+            for order in &select.order_by {
+                check_column(provider, &order.column, types)?;
+            }
             if let Some(filter) = select.filter.as_mut() {
                 admit_predicate(provider, filter, types)?;
             }
         }
         PortableStatement::Insert(insert) => {
+            check_columns(provider, &insert.returning, types)?;
             admit_rows(provider, &insert.columns, &mut insert.values, types)?;
         }
         PortableStatement::Update(update) => {
+            check_columns(provider, &update.returning, types)?;
             admit_assignments(provider, &mut update.assignments, types)?;
             if let Some(filter) = update.filter.as_mut() {
                 admit_predicate(provider, filter, types)?;
             }
         }
         PortableStatement::Delete(delete) => {
+            check_columns(provider, &delete.returning, types)?;
             if let Some(filter) = delete.filter.as_mut() {
                 admit_predicate(provider, filter, types)?;
             }
         }
         PortableStatement::Upsert(upsert) => {
+            check_columns(provider, &upsert.returning, types)?;
+            check_columns(provider, &upsert.conflict_target, types)?;
             admit_rows(provider, &upsert.columns, &mut upsert.values, types)?;
             admit_assignments(provider, &mut upsert.update_on_conflict, types)?;
         }

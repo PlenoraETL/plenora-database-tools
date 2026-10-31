@@ -739,6 +739,101 @@ fn text_catalog_keeps_names_and_refuses_ambiguous_or_foreign_identities() {
     assert!(types.contains_key(" C") && types.contains_key("C "));
     assert!(!types.contains_key("C"));
     assert!(column_types_rows(&[row("C", "SYSIBM"), row("C ", "SYSIBM")], " S ", " T ").is_err());
-    assert!(column_types_rows(&[row("C", "SYSIBM ")], " S ", " T ").is_err());
+    assert!(column_types_rows(&[row("C", "SYSIBM ")], " S ", " T ").is_ok());
+    assert!(
+        column_types_rows(&[row("C", " SYSIBM")], " S ", " T ").unwrap()["C"]
+            .name
+            .is_empty()
+    );
     assert!(column_types_rows(&[row("C", "SYSIBM")], " S", " T ").is_err());
+}
+
+#[test]
+fn padded_system_schema_is_scalar_without_normalizing_application_identifiers() {
+    let mut catalog = Finto::new();
+    catalog.table(
+        " S ",
+        " T ",
+        &[
+            ("ID", "SYSIBM   ", "INTEGER"),
+            (" G", "SYSIBM   ", "ST_GEOMETRY"),
+            ("U", " SYSIBM", "INTEGER"),
+        ],
+    );
+    assert!(giudizio(&mut catalog, Some(" S "), " T ", "ID").is_ok());
+    let geometric = geometric_columns(&mut catalog, " S ", " T ")
+        .unwrap()
+        .unwrap();
+    assert_eq!(geometric, [" G", "U"]);
+    assert!(giudizio(&mut catalog, Some(" S "), " T ", " G").is_err());
+    assert!(giudizio(&mut catalog, Some(" S"), " T ", "ID").is_err());
+}
+
+#[test]
+fn non_builtin_columns_do_not_poison_unrelated_reads_and_never_gain_builtin_identity() {
+    use plenora_database_core::operand_admission::{operand_type, OperandType};
+    use plenora_database_core::plan::{FilterExpression, OrderBy, ReadOperation, SortDirection};
+    use plenora_database_core::{ErrorCategory, ErrorPhase};
+    let row = |column: &str, schema: &str| {
+        [column, "INTEGER", "4", "0", "0", "", schema, "S", "T"]
+            .map(|value| Some(value.to_owned()))
+            .to_vec()
+    };
+    for schema in ["APP", " SYSIBM", "sysibm"] {
+        let types = crate::operand_catalog::column_types_rows(
+            &[row("ID", "SYSIBM "), row("X", schema)],
+            "S",
+            "T",
+        )
+        .unwrap();
+        assert_eq!(
+            operand_type(ProviderKind::Db2, &types["X"]),
+            OperandType::Unknown
+        );
+        let error = plenora_database_core::admission_gate::described(
+            ProviderKind::Db2,
+            &plenora_database_core::provider::ParameterValue::I32(1),
+            &operand_type(ProviderKind::Db2, &types["X"]),
+        )
+        .unwrap_err();
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        let base: ReadOperation = serde_json::from_value(serde_json::json!({
+            "source": {"schema": "S", "object": "T"}, "projection": ["ID"]
+        }))
+        .unwrap();
+        crate::read::verify_read_types(&base, &types).unwrap();
+        let mut projection = base.clone();
+        projection.projection = vec!["X".to_owned()];
+        let mut wildcard = base.clone();
+        wildcard.projection.clear();
+        let mut order = base.clone();
+        order.order_by = vec![OrderBy {
+            field: "X".to_owned(),
+            direction: SortDirection::Asc,
+        }];
+        let mut filter = base;
+        filter.filter = Some(FilterExpression::And {
+            args: vec![FilterExpression::IsNull {
+                field: "X".to_owned(),
+            }],
+        });
+        for operation in [projection, wildcard, order, filter] {
+            let error = crate::read::verify_read_types(&operation, &types).unwrap_err();
+            assert_eq!(error.category, ErrorCategory::Unsupported);
+            assert_eq!(error.phase, ErrorPhase::Prepare);
+            assert_eq!(
+                error.message,
+                "tipo Db2 non built-in non qualificato per la lettura"
+            );
+        }
+        let mut malformed = row("X", schema);
+        malformed[6] = None;
+        assert_eq!(
+            crate::operand_catalog::column_types_rows(&[malformed], "S", "T")
+                .unwrap_err()
+                .category,
+            ErrorCategory::Protocol
+        );
+    }
 }

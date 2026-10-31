@@ -167,6 +167,15 @@ fn i_parametri_del_database_sono_completi_e_uguali_fra_i_membri() {
     ];
     let parameters = parse_parameters(&rows).expect("parametri");
     assert_eq!(parameters["codepage"], "1208");
+    for name in ["codepage ", " codepage", "codepage\t"] {
+        let mut altered = rows.clone();
+        altered[0][0] = Some(name.into());
+        assert!(parse_parameters(&altered).is_err());
+    }
+    let mut altered = rows.clone();
+    altered[1][1] = Some("UTF-8 ".into());
+    assert_eq!(parse_parameters(&altered).unwrap()["codeset"], "UTF-8 ");
+
     rows.push(row("codepage", "1208"));
     assert!(parse_parameters(&rows).is_ok(), "due membri uguali");
     rows.push(row("codepage", "819"));
@@ -351,4 +360,54 @@ fn catalog_names_are_exact_and_collisions_fail_closed() {
     }
     assert!(parse_columns(&[row("C")], " schema", " table ").is_err());
     assert!(parse_columns(&[row("C")], " schema ", " table").is_err());
+}
+
+#[test]
+fn system_schema_padding_and_numeric_format_do_not_change_application_names() {
+    let row = [
+        " C ",
+        "SYSIBM   ",
+        "TIMESTAMP",
+        " 10 ",
+        " 3 ",
+        " 0 ",
+        "",
+        " 0 ",
+        "",
+        " S ",
+        " T ",
+    ]
+    .map(|value| Some(value.to_owned()))
+    .to_vec();
+    let facts = parse_columns(&[row], " S ", " T ").unwrap();
+    assert_eq!(facts[0].name, " C ");
+    assert_eq!(facts[0].type_schema, "SYSIBM");
+    assert_eq!(facts[0].scale, 3);
+    assert!(crate::write::intermediate::TargetType::from_catalog(&facts[0]).is_ok());
+    for name in [" SYSIBM", "SYSIBM\t", "MINE ", " MINE"] {
+        assert_eq!(crate::connection::system_schema(name), name);
+    }
+}
+
+#[test]
+fn bit_data_does_not_require_a_text_collation() {
+    for name in ["CHARACTER", "VARCHAR", "CLOB"] {
+        let mut facts = text(name, 64, "OCTETS", 64);
+        assert!(needs_type_collation(&facts));
+        facts.codepage = 0;
+        facts.collation.clear();
+        assert!(!needs_type_collation(&facts));
+    }
+}
+
+#[test]
+fn non_builtin_integer_is_not_admitted_as_a_write_or_key_target() {
+    let mut facts = column("INTEGER", 4, 0);
+    facts.type_schema = "APP".to_owned();
+    let table = admission_table().unwrap();
+    let measured = table.server("12.1").unwrap();
+    let (key, dimensions) = admission_key(&DataType::Int32, &facts, &server());
+    let error = plenora_database_core::admission_gate::write_column(&measured, &key, dimensions)
+        .unwrap_err();
+    assert_eq!(error.category, ErrorCategory::Unsupported);
 }

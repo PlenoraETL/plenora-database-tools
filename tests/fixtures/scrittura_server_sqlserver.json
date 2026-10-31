@@ -15882,10 +15882,13 @@
     {
      "arrow": "utf8",
      "nativo": "text;cp=1252;ansi_padding=off;null",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "non_ascii"
+      }
+     ],
+     "riscritti": [
       "fuori_latin1",
       "non_bmp",
       "combinante",
@@ -15893,7 +15896,12 @@
       "sostituzione",
       "separatore_riga"
      ],
-     "per_eccesso": []
+     "rifiutati": [],
+     "per_eccesso": [
+      "latino",
+      "precomposto",
+      "lungo_multibyte"
+     ]
     },
     {
      "arrow": "utf8",
@@ -17300,19 +17308,28 @@
     {
      "arrow": "utf8",
      "nativo": "text;cp=1252;ansi_padding=off;not null",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "non_ascii"
+      }
+     ],
+     "riscritti": [
       "fuori_latin1",
       "non_bmp",
       "combinante",
       "bom",
       "sostituzione",
-      "separatore_riga",
+      "separatore_riga"
+     ],
+     "rifiutati": [
       "nullo"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "latino",
+      "precomposto",
+      "lungo_multibyte"
+     ]
     },
     {
      "arrow": "utf8",
@@ -33403,10 +33420,13 @@
     {
      "arrow": "utf8",
      "nativo": "text;cp=1252;ansi_padding=off;null",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "non_ascii"
+      }
+     ],
+     "riscritti": [
       "fuori_latin1",
       "non_bmp",
       "combinante",
@@ -33414,7 +33434,12 @@
       "sostituzione",
       "separatore_riga"
      ],
-     "per_eccesso": []
+     "rifiutati": [],
+     "per_eccesso": [
+      "latino",
+      "precomposto",
+      "lungo_multibyte"
+     ]
     },
     {
      "arrow": "utf8",
@@ -34821,19 +34846,28 @@
     {
      "arrow": "utf8",
      "nativo": "text;cp=1252;ansi_padding=off;not null",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "non_ascii"
+      }
+     ],
+     "riscritti": [
       "fuori_latin1",
       "non_bmp",
       "combinante",
       "bom",
       "sostituzione",
-      "separatore_riga",
+      "separatore_riga"
+     ],
+     "rifiutati": [
       "nullo"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "latino",
+      "precomposto",
+      "lungo_multibyte"
+     ]
     },
     {
      "arrow": "utf8",
@@ -50924,10 +50958,13 @@
     {
      "arrow": "utf8",
      "nativo": "text;cp=1252;ansi_padding=off;null",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "non_ascii"
+      }
+     ],
+     "riscritti": [
       "fuori_latin1",
       "non_bmp",
       "combinante",
@@ -50935,7 +50972,12 @@
       "sostituzione",
       "separatore_riga"
      ],
-     "per_eccesso": []
+     "rifiutati": [],
+     "per_eccesso": [
+      "latino",
+      "precomposto",
+      "lungo_multibyte"
+     ]
     },
     {
      "arrow": "utf8",
@@ -52342,19 +52384,28 @@
     {
      "arrow": "utf8",
      "nativo": "text;cp=1252;ansi_padding=off;not null",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "non_ascii"
+      }
+     ],
+     "riscritti": [
       "fuori_latin1",
       "non_bmp",
       "combinante",
       "bom",
       "sostituzione",
-      "separatore_riga",
+      "separatore_riga"
+     ],
+     "rifiutati": [
       "nullo"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "latino",
+      "precomposto",
+      "lungo_multibyte"
+     ]
     },
     {
      "arrow": "utf8",

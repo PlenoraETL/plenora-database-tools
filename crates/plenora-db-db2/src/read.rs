@@ -52,6 +52,8 @@ pub async fn read_operation(
     .await?;
     let description: Db2ObjectDescription = serde_json::from_value(inspection.document)
         .map_err(|_| read_error(ErrorCategory::Protocol, "catalogo Db2 non deserializzabile"))?;
+    let types = column_types(config, secret, &description, cancellation).await?;
+    verify_read_types(operation, &types)?;
     let plan = Db2ReadPlan::compile(&description, operation, budget.limits().cell_bytes)?;
     verify_scalar_fields(
         config,
@@ -62,7 +64,6 @@ pub async fn read_operation(
         cancellation,
     )
     .await?;
-    let types = column_types(config, secret, &description, cancellation).await?;
     refuse_bit_data(&plan, &description, &types)?;
     // La regola dei parametri che incontrano un operando
     // (`operand_admission`): ogni parametro del filtro si ammette contro il
@@ -147,6 +148,36 @@ async fn column_types(
         }
     };
     Ok(types.unwrap_or_default())
+}
+
+/// Un tipo non built-in resta opaco; solo i campi usati richiedono prova.
+pub fn verify_read_types(
+    operation: &ReadOperation,
+    types: &plenora_database_core::operand_admission::RelationTypes,
+) -> Result<()> {
+    let supported = |field: &str| types.get(field).is_none_or(|kind| !kind.name.is_empty());
+    let projection = if operation.projection.is_empty() {
+        types.values().all(|kind| !kind.name.is_empty())
+    } else {
+        operation.projection.iter().all(|field| supported(field))
+    };
+    if !projection
+        || !operation
+            .order_by
+            .iter()
+            .all(|order| supported(&order.field))
+        || !operation
+            .filter
+            .as_ref()
+            .is_none_or(|filter| filter.all_fields(&supported))
+    {
+        return Err(DatabaseError::unsupported(
+            plenora_database_core::plan::ProviderKind::Db2,
+            ErrorPhase::Prepare,
+            "tipo Db2 non built-in non qualificato per la lettura",
+        ));
+    }
+    Ok(())
 }
 
 /// Una colonna `FOR BIT DATA` proiettata: il driver la rende come testo
@@ -302,14 +333,15 @@ fn pump_rows(
         statement
             .set_query_timeout_sec(timeout)
             .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
-        let mut cursor = Some(
-            statement
-                .execute(bound.as_slice())
-                .map_err(|error| driver_error(&error, ErrorPhase::Read))?
-                .ok_or_else(|| {
-                    read_error(ErrorCategory::Protocol, "lettura Db2 senza result set")
-                })?,
-        );
+        let mut active = statement
+            .execute_strict(bound.as_slice())
+            .map_err(|error| driver_error(&error, ErrorPhase::Read))?
+            .ok_or_else(|| read_error(ErrorCategory::Protocol, "lettura Db2 senza result set"))?;
+        crate::exact_read::check(
+            &odbc_api::handles::AsStatementRef::as_stmt_ref(&mut active),
+            ErrorPhase::Read,
+        )?;
+        let mut cursor = Some(active);
         while let Some(demand) = demands.blocking_recv() {
             if cancellation.is_cancelled() {
                 return Err(interruption_error(cancellation, ErrorPhase::Read));
@@ -322,9 +354,7 @@ fn pump_rows(
             let mut block = active
                 .bind_buffer(buffer)
                 .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
-            let batch = block
-                .fetch()
-                .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
+            let batch = crate::exact_read::fetch(&mut block, ErrorPhase::Read)?;
             let decoded = batch.map(|batch| decode_batch(batch, plan)).transpose()?;
             let (active, buffer) = block
                 .unbind()

@@ -394,7 +394,7 @@ applica in modo fail-closed: un report senza file, con un file fuori dai
 sorgenti dichiarati o senza file di uno di essi non sostiene un verdetto.
 
 Il denominatore Rust esclude solo testkit, binding misurato a parte, il codice
-vendorizzato (`vendor/`, il fork di `oracle-rs`) e specifici moduli
+vendorizzato (`vendor/`, i fork di `oracle-rs` e `odbc-api`) e specifici moduli
 `#[cfg(test)]`; il runtime dei provider e dei comandi CLI resta incluso. Anche
 il report del binding esclude `vendor/`.
 La branch coverage e vincolante per l'SDK Python. Non fa parte del gate Rust

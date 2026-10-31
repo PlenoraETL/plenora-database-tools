@@ -45,6 +45,7 @@ LIVE_SOURCES = (
     FIDELITY_LIVE_SOURCE,
     REWRITE_LIVE_SOURCE,
     ADMISSION_LIVE_SOURCE,
+    ROOT / "crates" / "plenora-db-db2" / "src" / "long_read_live_tests.rs",
 )
 PYTHON_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-database-py" / "python" / "tests" / "test_db2_session.py"
@@ -78,6 +79,9 @@ REQUIRED_LIVE_TESTS = frozenset(
     {
         "live_caller_query_worker_panic_requires_recovery",
         "live_reference_probe_catalog_and_capabilities",
+        "live_catalog_padding_and_mixed_binary_text_are_exact",
+        "live_long_text_is_complete_or_refused_never_truncated",
+        "live_invalid_server_text_is_refused_by_catalog_transaction_and_arrow",
         "live_errors_classify_security_and_missing_objects_without_payloads",
         "live_portable_sql_executes_insert_merge_select_and_rollback",
         "live_transaction_commit_rollback_savepoint_and_typed_query",
@@ -154,6 +158,30 @@ def live_test_inventory() -> set[str]:
     return live_inventory.source_inventory(
         list(LIVE_SOURCES), keep=lambda name: name.startswith("live_")
     )
+
+
+def rerun_exact_tests(names: tuple[str, ...]) -> int:
+    """Raccoglie ogni esito, anche dopo exit nonzero, timeout o prova assente."""
+    results = []
+    for name in names:
+        print(name, flush=True)
+        try:
+            output = compose_exec(
+                ["cargo", "test", "--locked", "-p", "plenora-db-db2", "--lib", name,
+                 "--", "--exact", "--ignored", "--test-threads=1", "--show-output"],
+                {**DB2_ENV, "CARGO_BUILD_JOBS": os.environ.get("CARGO_BUILD_JOBS", "4")}, timeout=LIVE_TIMEOUT,
+            )
+            passed = (
+                f"test {name} ... ok" in output.splitlines()
+                and bool(re.search(r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", output, re.MULTILINE))
+            )
+            status = "passed" if passed else "incomplete"
+        except (RuntimeError, OSError):
+            status = "failed"
+        results.append({"test": name, "status": status})
+        print(f"{status}: {name}", flush=True)
+    print(json.dumps({"exact_tests": results}, ensure_ascii=False, indent=2), flush=True)
+    return int(any(result["status"] != "passed" for result in results) or not results)
 
 
 def validate_live_run(listing: str, output: str) -> list[str]:
@@ -302,7 +330,7 @@ PYTHON_LIVE_TARGETS = (
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_migration_dag_is_idempotent_and_reversible",
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_advanced_orm_qualification",
 )
-PYTHON_LIVE_EXPECTED = 9
+PYTHON_LIVE_EXPECTED = 10
 
 
 def run_python_live() -> None:

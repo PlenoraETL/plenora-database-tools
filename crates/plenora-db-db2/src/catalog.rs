@@ -13,13 +13,13 @@ const LIST_SCHEMAS_SQL: &str = "SELECT SCHEMANAME \
     WHERE SCHEMANAME NOT LIKE 'SYS%' \
       AND SCHEMANAME NOT IN ('NULLID', 'SQLJ') \
     ORDER BY SCHEMANAME";
-const LIST_OBJECTS_SQL: &str = "SELECT TABSCHEMA, TABNAME, \
-    CASE TYPE WHEN 'T' THEN 'TABLE' WHEN 'V' THEN 'VIEW' ELSE TRIM(TYPE) END \
+const LIST_OBJECTS_SQL: &str = "SELECT RTRIM(TABSCHEMA), RTRIM(TABNAME), \
+    CASE TYPE WHEN 'T' THEN 'TABLE' WHEN 'V' THEN 'VIEW' ELSE RTRIM(TYPE) END \
     FROM SYSCAT.TABLES \
     WHERE TABSCHEMA = ? AND TYPE IN ('T', 'V') \
     ORDER BY TABNAME";
-const DESCRIBE_RELATION_SQL: &str = "SELECT TABSCHEMA, TABNAME, \
-    CASE TYPE WHEN 'T' THEN 'TABLE' WHEN 'V' THEN 'VIEW' ELSE TRIM(TYPE) END \
+const DESCRIBE_RELATION_SQL: &str = "SELECT RTRIM(TABSCHEMA), RTRIM(TABNAME), \
+    CASE TYPE WHEN 'T' THEN 'TABLE' WHEN 'V' THEN 'VIEW' ELSE RTRIM(TYPE) END \
     FROM SYSCAT.TABLES \
     WHERE TABSCHEMA = ? AND TABNAME = ? AND TYPE IN ('T', 'V')";
 // Un testo `FOR BIT DATA` (`CODEPAGE = 0`) e un binario: il catalogo lo
@@ -298,6 +298,7 @@ where
     T: std::str::FromStr,
 {
     required_text(row, column, message)?
+        .trim()
         .parse()
         .map_err(|_| mapping_error(message))
 }
@@ -306,7 +307,7 @@ fn flag(row: &[Option<String>], column: usize, field: &'static str) -> Result<bo
     match row
         .get(column)
         .and_then(|value| value.as_deref())
-        .map(str::trim)
+        .map(|value| value.trim_end_matches(' '))
     {
         Some("Y" | "A" | "D") => Ok(true),
         Some("N" | "") => Ok(false),

@@ -52,8 +52,8 @@ use plenora_database_core::{CancellationToken, ErrorCategory, ErrorPhase, Result
 /// regola R leggeva un catalogo illeggibile e ogni scrittura si rifiutava (la
 /// stessa classe della regola S, `crate::write`).
 pub const FACTS_SQL: &str = "SELECT \
-    COALESCE((SELECT TRIM(TYPE) FROM SYSCAT.TABLES WHERE TABSCHEMA = ? AND TABNAME = ?), '-'), \
-    COALESCE((SELECT NULLIF(TRIM(CONTROL), '') FROM SYSCAT.TABLES \
+    COALESCE((SELECT RTRIM(TYPE) FROM SYSCAT.TABLES WHERE TABSCHEMA = ? AND TABNAME = ?), '-'), \
+    COALESCE((SELECT NULLIF(RTRIM(CONTROL), '') FROM SYSCAT.TABLES \
       WHERE TABSCHEMA = ? AND TABNAME = ?), '-'), \
     CASE WHEN EXISTS (SELECT 1 FROM SYSCAT.TRIGGERS \
       WHERE TABSCHEMA = ? AND TABNAME = ? AND TRIGEVENT IN (?, 'M')) THEN 'Y' ELSE 'N' END, \
@@ -117,7 +117,7 @@ pub fn filters_from_row(rows: &[Row]) -> Option<RowFilters> {
         return Some(unreadable);
     };
     let text = |index: usize| match row.get_index(index) {
-        Some(ParameterValue::String(value)) => Some(value.trim().to_owned()),
+        Some(ParameterValue::String(value)) => Some(value.trim_end_matches(' ').to_owned()),
         _ => None,
     };
     let (Some(kind), Some(control), Some(trigger), Some(instead)) =

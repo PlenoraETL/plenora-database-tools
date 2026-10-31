@@ -1,7 +1,7 @@
 use crate::config::Db2Config;
 use crate::error::{driver_error, interruption_error, task_error};
 use odbc_api::buffers::TextRowSet;
-use odbc_api::{Connection, ConnectionOptions, Cursor, IntoParameter};
+use odbc_api::{Connection, ConnectionOptions, Cursor, DataType, IntoParameter, ResultSetMetadata};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::provider::SecretString;
 use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
@@ -135,7 +135,17 @@ fn verify_utf8_codepage(connection: &Connection<'_>, timeout: usize) -> Result<(
         3,
         64,
     );
-    if rows.is_ok_and(|rows| codepage_probe_is_utf8(&rows)) {
+    codepage_probe_result(rows)
+}
+
+pub fn codepage_probe_result(rows: Result<Vec<Vec<Option<String>>>>) -> Result<()> {
+    // Un errore di lettura non dimostra una codepage diversa: resta bloccante,
+    // ma conserva la categoria e il contesto redatto del punto che ha fallito.
+    let rows = rows.map_err(|mut error| {
+        error.phase = ErrorPhase::Connect;
+        error
+    })?;
+    if codepage_probe_is_utf8(&rows) {
         Ok(())
     } else {
         Err(DatabaseError::new(
@@ -167,10 +177,37 @@ pub fn query_text(
         .iter()
         .map(|parameter| parameter.into_parameter())
         .collect();
-    let cursor = connection
-        .execute(sql, parameters.as_slice(), Some(timeout))
+    // Conserva l'ordine del percorso diretto: bind prima della compilazione
+    // SQL. La sonda della codepage deve misurare quei byte, senza introdurre
+    // l'inferenza dei marker di SQLPrepare prima del bind.
+    let mut statement = connection
+        .preallocate()
+        .map_err(|error| driver_error(&error, ErrorPhase::Probe))?;
+    statement
+        .set_query_timeout_sec(timeout)
+        .map_err(|error| driver_error(&error, ErrorPhase::Probe))?;
+    let mut cursor = statement
+        .into_cursor_strict(sql, parameters.as_slice())
         .map_err(|error| driver_error(&error, ErrorPhase::Probe))?
         .ok_or_else(|| malformed_probe("query catalogo Db2 senza result set"))?;
+    crate::exact_read::check(
+        &odbc_api::handles::AsStatementRef::as_stmt_ref(&mut cursor),
+        ErrorPhase::Probe,
+    )?;
+    let column_types = (1..=expected_columns)
+        .map(|index| {
+            let ordinal = u16::try_from(index)
+                .map_err(|_| malformed_probe("troppe colonne del catalogo Db2"))?;
+            let kind = cursor
+                .col_data_type(ordinal)
+                .map_err(|error| driver_error(&error, ErrorPhase::Probe))?;
+            crate::exact_read::check(
+                &odbc_api::handles::AsStatementRef::as_stmt_ref(&mut cursor),
+                ErrorPhase::Probe,
+            )?;
+            Ok(kind)
+        })
+        .collect::<Result<Vec<_>>>()?;
     // Il CLI IBM restituisce SQL_NO_TOTAL su SQLGetData anche per queste
     // colonne corte. Un rowset associato usa SQLBindCol, evita quel percorso
     // incompatibile e impone contemporaneamente un limite verificabile.
@@ -181,13 +218,10 @@ pub fn query_text(
         .bind_buffer(buffer)
         .map_err(|error| driver_error(&error, ErrorPhase::Probe))?;
     let mut rows = Vec::new();
-    while let Some(batch) = cursor
-        .fetch()
-        .map_err(|error| driver_error(&error, ErrorPhase::Probe))?
-    {
+    while let Some(batch) = crate::exact_read::fetch(&mut cursor, ErrorPhase::Probe)? {
         for row_index in 0..batch.num_rows() {
             let mut row = Vec::with_capacity(batch.num_cols());
-            for column in 0..batch.num_cols() {
+            for (column, kind) in column_types.iter().enumerate() {
                 if batch
                     .indicator_at(column, row_index)
                     .is_truncated(batch.max_len(column))
@@ -204,8 +238,15 @@ pub fn query_text(
                     .at(column, row_index)
                     .map(|value| {
                         std::str::from_utf8(value)
-                            .map(str::to_owned)
-                            .map_err(|_| malformed_probe("query catalogo Db2 con testo non UTF-8"))
+                            .map(|text| catalog_text(text, *kind).to_owned())
+                            .map_err(|_| {
+                                DatabaseError::new(
+                                    ErrorCategory::DataMapping,
+                                    ErrorPhase::Probe,
+                                    Some(ProviderKind::Db2),
+                                    "query catalogo Db2 con testo non UTF-8",
+                                )
+                            })
                     })
                     .transpose()?;
                 row.push(value);
@@ -216,11 +257,34 @@ pub fn query_text(
     Ok(rows)
 }
 
+/// Solo il descrittore CHAR prova un riempimento fisso. I nomi SYSCAT,
+/// `DBCFG.NAME/VALUE` ed `ENV_GET_INST_INFO.SERVICE_LEVEL` sono VARCHAR secondo
+/// IBM LUW 12.1: nessun trim per quei descrittori, ne per i nomi dell'utente.
+/// Un nome CHAR con spazi espliciti resta rifiutato dal confronto esatto
+/// con il piano; non si normalizza il piano per farlo coincidere.
+pub fn catalog_text(value: &str, kind: DataType) -> &str {
+    match kind {
+        DataType::Char { .. } | DataType::WChar { .. } => value.trim_end_matches(' '),
+        _ => value,
+    }
+}
+
 pub fn exactly_one<T>(mut rows: Vec<T>, message: &'static str) -> Result<T> {
     if rows.len() != 1 {
         return Err(malformed_probe(message));
     }
     Ok(rows.remove(0))
+}
+
+/// Canonicalizza soltanto lo schema riservato dei tipi di sistema.
+/// Db2 puo conservarne il padding nel catalogo; nessun nome applicativo
+/// (ne gli spazi iniziali) deve essere normalizzato per dedurne l'identita.
+pub fn system_schema(value: &str) -> &str {
+    if value.trim_end_matches(' ') == "SYSIBM" {
+        "SYSIBM"
+    } else {
+        value
+    }
 }
 
 pub fn required_text(

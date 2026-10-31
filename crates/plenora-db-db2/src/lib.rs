@@ -7,6 +7,7 @@ mod catalog;
 mod config;
 mod connection;
 mod error;
+mod exact_read;
 mod operand_catalog;
 mod parameter;
 mod parameter_catalog;
@@ -95,3 +96,7 @@ mod parameter_fidelity_live_tests;
 #[cfg(test)]
 #[path = "parameter_catalog_tests.rs"]
 mod parameter_catalog_tests;
+
+#[cfg(test)]
+#[path = "exact_read_tests.rs"]
+mod exact_read_tests;

@@ -191,3 +191,14 @@ async def test_async_db2_engine_uses_the_core_lifecycle() -> None:
                 await session.execute(statement, {"identity": 1})
             ).scalar_one() == "alpha"
         assert engine.statistics()["active_sessions"] == 0
+
+
+def test_db2_text_is_exact_or_explicitly_refused() -> None:
+    session = connect_db2_reference()
+    try:
+        expected = " ?\ufffd\u00e8\U0001f600 \\ "
+        assert session.execute_scalar("VALUES CAST(? AS VARCHAR(80))", [expected]) == expected
+        with pytest.raises(p.PlenoraDataMappingError):
+            session.execute_scalar("VALUES CAST(X'FF' AS VARCHAR(1))")
+    finally:
+        session.close()

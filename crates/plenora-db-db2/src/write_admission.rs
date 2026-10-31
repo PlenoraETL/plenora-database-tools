@@ -27,10 +27,10 @@
 //!
 //! # Limite dichiarato: l'identita degli identificatori delimitati
 //!
-//! - **Regola**: i nomi dei cataloghi (campi VARCHAR) si conservano byte per
-//!   byte, mai ripuliti con `TRIM`: in Db2 gli spazi iniziali di un
-//!   identificatore delimitato sono significativi, quelli finali sono
-//!   conservati ma non distintivi nella risoluzione SQL.
+//! - **Regola**: COLNAME e gli spazi iniziali degli identificatori si
+//!   conservano byte per byte. Schema, tabella e tipo qualificato usano la
+//!   stessa forma SQL di `operand_catalog::RELATION_SQL` (spazi finali non
+//!   distintivi per Db2). Il nome nel piano resta confrontato byte per byte.
 //! - **Ambito**: target, colonna, CAST e descrittore dei parametri (scalari e
 //!   array), fatti del writer, operandi, describe.
 //! - **Hazard**: un nome normalizzato puo associare il limite del CAST ai
@@ -39,8 +39,10 @@
 //!   spazi finali non autorizza un descrittore ([`identity_error`], senza nomi).
 //! - **Rientro**: una prova riproducibile che il server risolve verso una sola
 //!   riga di catalogo, condivisa dai percorsi scalari e array.
+//! - Lo schema riservato `SYSIBM` dei tipi e delle collation tollera il
+//!   padding finale; questa eccezione non si applica ai nomi applicativi.
 
-use crate::connection::{query_text, required_text};
+use crate::connection::{query_text, required_text, system_schema};
 use plenora_database_core::arrow::schema::{DataType, TimeUnit};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::write_admission::{
@@ -119,13 +121,13 @@ impl ColumnFacts {
 const SERVER_VERSION_SQL: &str = "SELECT SERVICE_LEVEL \
     FROM TABLE (SYSPROC.ENV_GET_INST_INFO()) AS INSTANCE_INFO";
 
-const SERVER_PARAMETERS_SQL: &str = "SELECT TRIM(NAME), TRIM(VARCHAR(VALUE, 256)) \
+const SERVER_PARAMETERS_SQL: &str = "SELECT NAME, VALUE \
     FROM SYSIBMADM.DBCFG \
     WHERE NAME IN ('codepage', 'codeset', 'string_units', 'varchar2_compat')";
 
-const COLUMN_FACTS_SQL: &str = "SELECT COLNAME, TYPESCHEMA, TYPENAME, \
-    LENGTH, SCALE, CODEPAGE, COALESCE(TRIM(TYPESTRINGUNITS), ''), COALESCE(STRINGUNITSLENGTH, 0), \
-    COALESCE(COLLATIONSCHEMA || '.' || COLLATIONNAME, ''), TABSCHEMA, TABNAME \
+const COLUMN_FACTS_SQL: &str = "SELECT COLNAME, RTRIM(TYPESCHEMA), RTRIM(TYPENAME), \
+    LENGTH, SCALE, CODEPAGE, COALESCE(TYPESTRINGUNITS, ''), COALESCE(STRINGUNITSLENGTH, 0), \
+    COALESCE(COLLATIONSCHEMA || '.' || COLLATIONNAME, ''), RTRIM(TABSCHEMA), RTRIM(TABNAME) \
     FROM SYSCAT.COLUMNS WHERE TABSCHEMA = ? AND TABNAME = ? ORDER BY COLNO";
 
 const PARAMETERS: [&str; 4] = ["codepage", "codeset", "string_units", "varchar2_compat"];
@@ -273,10 +275,7 @@ pub fn resolve_type_collations(
     timeout: usize,
     facts: &mut [ColumnFacts],
 ) -> Result<()> {
-    for column in facts
-        .iter_mut()
-        .filter(|c| matches!(c.type_name.as_str(), "CHARACTER" | "VARCHAR" | "CLOB"))
-    {
+    for column in facts.iter_mut().filter(|c| needs_type_collation(c)) {
         let rows = query_text(connection,
             "SELECT CODEPAGE, COLLATIONSCHEMA, COLLATIONNAME FROM SYSCAT.DATATYPES WHERE TYPESCHEMA = ? AND TYPENAME = ? AND METATYPE = 'S'",
             &[&column.type_schema, &column.type_name], timeout, 3, 512)
@@ -286,6 +285,10 @@ pub fn resolve_type_collations(
     Ok(())
 }
 
+fn needs_type_collation(column: &ColumnFacts) -> bool {
+    column.codepage != 0 && matches!(column.type_name.as_str(), "CHARACTER" | "VARCHAR" | "CLOB")
+}
+
 /// Fatti del tipo nella stessa connessione: esattamente una riga completa.
 fn apply_type_collation(column: &mut ColumnFacts, rows: &[Vec<Option<String>>]) -> Result<()> {
     let [row] = rows else {
@@ -293,11 +296,13 @@ fn apply_type_collation(column: &mut ColumnFacts, rows: &[Vec<Option<String>>]) 
     };
     let codepage = required_text(row, 0, "codepage del tipo assente")
         .map_err(|_| unproven_facts())?
+        .trim()
         .parse::<u64>()
         .map_err(|_| unproven_facts())?;
     let schema =
         required_text(row, 1, "schema collation del tipo assente").map_err(|_| unproven_facts())?;
     let name = required_text(row, 2, "collation del tipo assente").map_err(|_| unproven_facts())?;
+    let schema = system_schema(&schema);
     let collation = format!("{schema}.{name}");
     if column.type_schema != "SYSIBM"
         || codepage != column.codepage
@@ -322,26 +327,28 @@ pub fn parse_column(row: &[Option<String>]) -> Result<ColumnFacts> {
         required_text(row, index, "fatto di colonna Db2 non letto").map_err(|_| unproven_facts())
     };
     let number =
-        |index: usize| -> Result<u64> { text(index)?.parse().map_err(|_| unproven_facts()) };
+        |index: usize| -> Result<u64> { text(index)?.trim().parse().map_err(|_| unproven_facts()) };
     Ok(ColumnFacts {
         name: text(0)?,
-        type_schema: text(1)?,
+        type_schema: system_schema(&text(1)?).to_owned(),
         type_name: text(2)?,
         length: number(3)?,
-        scale: text(4)?.parse().map_err(|_| unproven_facts())?,
+        scale: text(4)?.trim().parse().map_err(|_| unproven_facts())?,
         codepage: number(5)?,
         string_units: row
             .get(6)
             .and_then(Option::as_deref)
-            .map(str::trim)
             .unwrap_or_default()
             .to_ascii_uppercase(),
         string_units_length: number(7)?,
         collation: row
             .get(8)
             .and_then(Option::as_deref)
-            .unwrap_or_default()
-            .to_owned(),
+            .map(|value| match value.split_once('.') {
+                Some((schema, name)) => format!("{}.{name}", system_schema(schema)),
+                None => value.to_owned(),
+            })
+            .unwrap_or_default(),
     })
 }
 

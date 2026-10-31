@@ -8,8 +8,8 @@ dipendenze `path` e quelle ereditate con `workspace = true` sono escluse:
 le prime non hanno una versione da fissare, le seconde la prendono da
 `[workspace.dependencies]`, che questa guardia controlla.
 
-Fuori perimetro, dichiarato: `vendor/oracle-rs/Cargo.toml` e il manifest
-upstream del fork con intervalli, le cui versioni effettive fissa
+Fuori perimetro, dichiarato: `vendor/oracle-rs/Cargo.toml` e
+`vendor/odbc-api/Cargo.toml` sono manifest upstream dei fork con intervalli, le cui versioni effettive fissa
 `Cargo.lock` (il motivo e scritto accanto alla dipendenza `oracle-rs` nel
 manifest del workspace).
 

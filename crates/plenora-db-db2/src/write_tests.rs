@@ -207,6 +207,21 @@ fn spatial_batch_is_checked_before_any_database_mutation() {
     .expect("batch valido");
     plan.validate_spatial_batch(&valid, &budget)
         .expect("WKB conforme");
+    // Lo stesso trasporto usato dal writer: il costruttore riceve testo
+    // esadecimale esplicito, anche quando i Bytes ordinari restano binari.
+    let values = crate::write::batch_values(&valid, &plan).unwrap();
+    assert_eq!(
+        values[0][0],
+        plenora_database_core::provider::ParameterValue::I32(1)
+    );
+    let plenora_database_core::provider::ParameterValue::String(hex) = &values[0][1] else {
+        panic!("il costruttore spatial richiede testo esadecimale");
+    };
+    let decoded = (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(decoded, point_xy());
 
     let wrong_dimensions = spatial_schema("xyz", "point");
     let wrong_plan =

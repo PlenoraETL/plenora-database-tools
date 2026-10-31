@@ -1,0 +1,69 @@
+//! # About
+//!
+//! `odbc-api` enables you to write applications which utilize ODBC (Open Database Connectivity)
+//! standard to access databases. See the [`guide`] for more information and code
+//! examples.
+
+mod catalog;
+mod columnar_bulk_inserter;
+mod connection;
+mod conversion;
+mod cursor;
+mod driver_complete_option;
+mod environment;
+mod error;
+mod execute;
+mod fixed_sized;
+mod into_parameter;
+mod narrow;
+mod nullable;
+mod parameter_collection;
+mod preallocated;
+mod preallocated_polling;
+mod prepared;
+mod result_set_metadata;
+mod shared_connection;
+mod sleep;
+
+pub mod buffers;
+pub mod guide;
+pub mod handles;
+pub mod parameter;
+
+pub use self::{
+    catalog::{ColumnsRow, ForeignKeysRow, PrimaryKeysRow, TablesRow},
+    columnar_bulk_inserter::{
+        BoundInputSlice, ColumnarBulkInserter, InOrder, InputParameterMapping,
+    },
+    connection::{Connection, ConnectionOptions, ConnectionTransitions, escape_attribute_value},
+    conversion::{decimal_text_to_i32, decimal_text_to_i64, decimal_text_to_i128},
+    cursor::{
+        BlockCursor, BlockCursorIterator, BlockCursorPolling, ConcurrentBlockCursor, Cursor,
+        CursorImpl, CursorPolling, CursorRow, OwnedCursor, RowSetBuffer, TruncationInfo,
+    },
+    driver_complete_option::DriverCompleteOption,
+    environment::{DataSourceInfo, DriverInfo, Environment, environment},
+    error::{Error, TooLargeBufferSize},
+    fixed_sized::{Bit, Pod},
+    handles::{ColumnDescription, DataType, Nullability},
+    into_parameter::IntoParameter,
+    narrow::Narrow,
+    nullable::Nullable,
+    parameter::{InOut, Out, OutputParameter},
+    parameter_collection::{ParameterCollection, ParameterCollectionRef, ParameterTupleElement},
+    preallocated::Preallocated,
+    preallocated_polling::PreallocatedPolling,
+    prepared::{BindParamDesc, Prepared},
+    result_set_metadata::ResultSetMetadata,
+    shared_connection::SharedConnection,
+    sleep::Sleep,
+};
+
+/// Reexports `odbc-sys` as sys to enable applications to always use the same version as this
+/// crate.
+pub use odbc_sys as sys;
+pub use widestring::{Utf16Str, Utf16String};
+
+// Reexport fetch if derive feature is enabled
+#[cfg(feature = "derive")]
+pub use odbc_api_derive::Fetch;

@@ -18,6 +18,7 @@ on:
       - "crates/plenora-database-cli/**"
       - "crates/plenora-database-py/**"
       - "crates/plenora-db-db2/**"
+      - "vendor/odbc-api/**"
       - "docker-compose.db2.yml"
       - "docker/db2-client/**"
       - "scripts/check_db2_reference.py"

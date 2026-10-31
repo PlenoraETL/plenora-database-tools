@@ -162,6 +162,10 @@ jobs:
         run: python3 scripts/check_dependency_pins.py
       - name: scripts/test_check_dependency_pins.py
         run: python3 scripts/test_check_dependency_pins.py
+      - name: scripts/check_odbc_fork.py
+        run: python3 scripts/check_odbc_fork.py
+      - name: scripts/test_check_odbc_fork.py
+        run: python3 scripts/test_check_odbc_fork.py
       - name: scripts/test_check_consumer_fork.py
         run: python3 scripts/test_check_consumer_fork.py
       - name: scripts/check_comments.py

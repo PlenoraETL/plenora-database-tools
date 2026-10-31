@@ -46,7 +46,7 @@ fn probe_diagnostics_do_not_expose_payload_or_driver_messages() {
 }
 
 pub fn probe_value(
-    spec: &ProbeSpec,
+    _spec: &ProbeSpec,
     values: &dyn Array,
     row: usize,
 ) -> plenora_database_core::Result<plenora_database_core::provider::ParameterValue> {
@@ -63,34 +63,36 @@ pub fn probe_value(
     } else {
         let value =
             plenora_database_engine::arrow_write::arrow_parameter_value(values, &field, row, 'T')?;
-        // Sopra 4000 byte la sonda promuove String a un locator CLOB.
-        // Il fork non sa legarlo come NCLOB (write_admission): non e una
-        // misura del server. Si interrompe prima del checkout, senza referto.
-        if probe_kind(spec) == "NCLOB"
-            && matches!(&value, plenora_database_core::provider::ParameterValue::String(text) if text.len() > 4_000)
-        {
-            return Err(DatabaseError::unsupported(
-                plenora_database_core::plan::ProviderKind::Oracle,
-                ErrorPhase::Prepare,
-                "sonda NCLOB senza trasporto nazionale LOB qualificato",
-            ));
-        }
         Ok(value)
     }
 }
 
+/// Il locator resta CLOB sul wire; la conversione nazionale e del server.
+/// Non qualifica il writer NCLOB: la sonda deve ancora rileggere il valore.
+pub fn probe_operand(spec: &ProbeSpec) -> &'static str {
+    if probe_kind(spec) == "NCLOB" {
+        "TO_NCLOB(:1)"
+    } else {
+        ":1"
+    }
+}
+
 #[test]
-fn nclob_probe_cannot_promote_text_to_an_unqualified_clob_locator() {
+fn nclob_probe_uses_explicit_server_conversion_without_national_locator() {
     let spec = ProbeSpec::new("NCLOB", DataType::Utf8);
     for text in ["x".repeat(4_001), "\u{e9}".repeat(2_001)] {
-        let array = StringArray::from(vec![Some(text)]);
-        let error = probe_value(&spec, &array, 0).unwrap_err();
-        assert_eq!(error.category, ErrorCategory::Unsupported);
-        assert_eq!(error.phase, ErrorPhase::Prepare);
+        let array = StringArray::from(vec![Some(text.clone())]);
+        let value = probe_value(&spec, &array, 0).unwrap();
+        assert_eq!(
+            value,
+            plenora_database_core::provider::ParameterValue::String(text)
+        );
+        assert_eq!(probe_operand(&spec), "TO_NCLOB(:1)");
     }
     let boundary = StringArray::from(vec![Some("x".repeat(4_000)), None]);
     assert!(probe_value(&spec, &boundary, 0).is_ok());
     assert!(probe_value(&spec, &boundary, 1).is_ok());
-    let clob = ProbeSpec::new("CLOB", DataType::Utf8);
-    assert!(probe_value(&clob, &StringArray::from(vec!["x".repeat(4_001)]), 0).is_ok());
+    for native in ["CLOB", "BLOB", "VARCHAR2(10)"] {
+        assert_eq!(probe_operand(&ProbeSpec::new(native, DataType::Utf8)), ":1");
+    }
 }

@@ -389,8 +389,8 @@ pub fn isolation_statement(options: &TransactionOptions) -> Option<&'static str>
 }
 
 /// Le colonne di un parameter-array, ciascuna con il tipo C del proprio
-/// binding: `f64` per i double, che in testo perderebbero il valore, testo
-/// per il resto. Le righe arrivano dalla write Arrow, il cui piano ha gia
+/// binding: `f64` per i double, binario per i byte, testo per il resto.
+/// Le righe arrivano dalla write Arrow, il cui piano ha gia
 /// confrontato i tipi con la tabella: qui si sceglie soltanto la forma esatta.
 pub struct ArrayColumns {
     rows: usize,
@@ -399,6 +399,7 @@ pub struct ArrayColumns {
 
 enum ArrayColumn {
     Double(Vec<Option<f64>>),
+    Binary(Vec<Option<Vec<u8>>>),
     Text(Vec<Option<String>>),
 }
 
@@ -406,7 +407,7 @@ impl ArrayColumns {
     /// # Errors
     ///
     /// I rifiuti di `crate::parameter::validate`, e `DataMapping` per una
-    /// colonna che mescola double e altri tipi o per byte non esadecimali.
+    /// colonna che mescola double, byte e altri tipi.
     pub fn encode(rows: &[Vec<ParameterValue>], columns: usize) -> Result<Self> {
         for row in rows {
             crate::parameter::validate(row)?;
@@ -425,6 +426,18 @@ impl ArrayColumns {
                         })
                         .collect::<Result<Vec<_>>>()
                         .map(ArrayColumn::Double)
+                } else if rows
+                    .iter()
+                    .any(|row| matches!(row[column], ParameterValue::Bytes(_)))
+                {
+                    rows.iter()
+                        .map(|row| match &row[column] {
+                            ParameterValue::Bytes(value) => Ok(Some(value.clone())),
+                            ParameterValue::Null { .. } => Ok(None),
+                            _ => Err(array_error("colonna parameter-array Db2 con tipi misti")),
+                        })
+                        .collect::<Result<Vec<_>>>()
+                        .map(ArrayColumn::Binary)
                 } else {
                     rows.iter()
                         .map(|row| array_text(&row[column]))
@@ -445,14 +458,15 @@ impl ArrayColumns {
         }
         // Il buffer testuale non puo essere rivestito da un target binario:
         // IBM CLI lo leggerebbe come esadecimale, anche senza ammissione.
-        if targets.iter().any(|target| {
-            matches!(
+        if self.columns.iter().zip(targets).any(|(column, target)| {
+            let binary_target = matches!(
                 crate::parameter::operand_of(target),
                 plenora_database_core::operand_admission::OperandType::Binary { .. }
-            )
+            );
+            matches!(column, ArrayColumn::Binary(_)) != binary_target
         }) {
             return Err(array_error(
-                "target binario senza buffer binario nel parameter-array Db2",
+                "buffer e target binario discordi nel parameter-array Db2",
             ));
         }
         Ok(self
@@ -462,6 +476,15 @@ impl ArrayColumns {
             .map(|(column, target)| {
                 let buffer_desc = match column {
                     ArrayColumn::Double(_) => BufferDesc::F64 { nullable: true },
+                    ArrayColumn::Binary(values) => BufferDesc::Binary {
+                        max_bytes: values
+                            .iter()
+                            .flatten()
+                            .map(Vec::len)
+                            .max()
+                            .unwrap_or(1)
+                            .max(1),
+                    },
                     ArrayColumn::Text(values) => BufferDesc::Text {
                         max_str_len: values
                             .iter()
@@ -491,6 +514,15 @@ impl ArrayColumns {
     {
         for (index, column) in self.columns.iter().enumerate() {
             match column {
+                ArrayColumn::Binary(values) => {
+                    let mut slice = inserter
+                        .column_mut(index)
+                        .as_binary()
+                        .ok_or_else(|| array_error("buffer binario Db2 non disponibile"))?;
+                    for (row, value) in values.iter().enumerate() {
+                        slice.set_cell(row, value.as_deref());
+                    }
+                }
                 ArrayColumn::Double(values) => {
                     let mut slice = inserter
                         .column_mut(index)
@@ -519,10 +551,8 @@ fn array_error(message: &'static str) -> DatabaseError {
     transaction_error(ErrorCategory::DataMapping, ErrorPhase::Write, message)
 }
 
-/// Il testo di un valore del parameter-array, gia validato. I byte non hanno
-/// una forma testuale esatta: le colonne spatial arrivano gia come testo
-/// esadecimale per `HEXTORAW(CAST(? AS VARCHAR(32672)))`, e una colonna binaria scalare non e
-/// ammessa dal piano.
+/// Il testo di un valore del parameter-array, gia validato. I byte hanno
+/// un buffer C binario separato: non diventano mai testo esadecimale qui.
 fn array_text(value: &ParameterValue) -> Result<Option<String>> {
     match value {
         ParameterValue::Null { .. } => Ok(None),
@@ -709,7 +739,7 @@ fn query_rows(
         .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
     sent.mark_sent();
     let mut cursor = statement
-        .execute(parameters.as_slice())
+        .execute_strict(parameters.as_slice())
         .map_err(|error| driver_error(&error, ErrorPhase::Read))?
         .ok_or_else(|| {
             transaction_error(
@@ -718,6 +748,10 @@ fn query_rows(
                 "query transazionale Db2 senza result set",
             )
         })?;
+    crate::exact_read::check(
+        &odbc_api::handles::AsStatementRef::as_stmt_ref(&mut cursor),
+        ErrorPhase::Read,
+    )?;
     let column_count = usize::try_from(
         cursor
             .num_result_cols()
@@ -740,16 +774,16 @@ fn query_rows(
                 "indice colonna Db2 non rappresentabile",
             )
         })?;
-        names.push(
-            cursor
-                .col_name(index)
-                .map_err(|error| driver_error(&error, ErrorPhase::Read))?,
-        );
+        names.push(crate::exact_read::column_name(&mut cursor, index)?);
         types.push(
             cursor
                 .col_data_type(index)
                 .map_err(|error| driver_error(&error, ErrorPhase::Read))?,
         );
+        crate::exact_read::check(
+            &odbc_api::handles::AsStatementRef::as_stmt_ref(&mut cursor),
+            ErrorPhase::Read,
+        )?;
     }
     let columns: Arc<[String]> = names.into();
     // I floating point si leggono nel loro tipo C: il testo del driver ha
@@ -770,10 +804,7 @@ fn query_rows(
         .bind_buffer(buffer)
         .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
     let mut rows = Vec::new();
-    while let Some(batch) = blocks
-        .fetch()
-        .map_err(|error| driver_error(&error, ErrorPhase::Read))?
-    {
+    while let Some(batch) = crate::exact_read::fetch(&mut blocks, ErrorPhase::Read)? {
         for row_index in 0..batch.num_rows() {
             let values = types
                 .iter()
