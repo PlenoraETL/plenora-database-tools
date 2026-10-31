@@ -124,20 +124,10 @@ pub(crate) async fn portable_execute(args: &mut impl Iterator<Item = String>) ->
     };
     let payload = if has_rows {
         let rows = tx.query(&stmt, &cancel).await?;
-        let out: Vec<Value> = rows
+        let out = rows
             .iter()
-            .map(|r| {
-                let mut obj = serde_json::Map::new();
-                for (i, col) in r.columns().iter().enumerate() {
-                    let value = r
-                        .get_index(i)
-                        .and_then(|v| serde_json::to_value(v).ok())
-                        .unwrap_or(Value::Null);
-                    obj.insert(col.clone(), value);
-                }
-                Value::Object(obj)
-            })
-            .collect();
+            .map(crate::query_cmd::row_to_json)
+            .collect::<CliResult<Vec<_>>>()?;
         json!({ "kind": "rows", "rows": out, "count": rows.len() })
     } else {
         let affected = tx.execute(&stmt, &cancel).await?;
@@ -152,4 +142,22 @@ pub(crate) async fn portable_execute(args: &mut impl Iterator<Item = String>) ->
         "result": payload,
     }))?;
     crate::commit_exit(&commit)
+}
+
+/// Costruisce il mapping solo dopo aver escluso nomi ambigui.
+pub(crate) fn row_to_json(row: &plenora_database_core::row::Row) -> CliResult<Value> {
+    row.validate_names()?;
+    let mut object = serde_json::Map::new();
+    for (name, value) in row.columns().iter().zip(row.values()) {
+        let value = serde_json::to_value(value).map_err(|_| {
+            plenora_database_core::DatabaseError::new(
+                plenora_database_core::ErrorCategory::DataMapping,
+                plenora_database_core::ErrorPhase::Read,
+                None,
+                "valore del risultato non serializzabile in JSON",
+            )
+        })?;
+        object.insert(name.clone(), value);
+    }
+    Ok(Value::Object(object))
 }

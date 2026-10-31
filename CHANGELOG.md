@@ -15,18 +15,28 @@ Correttiva minima 8.x autorizzata, senza porting di #134.
   Le query conservano le cifre nella stringa restituita; Arrow Db2 rifiuta
   esplicitamente i valori non rappresentabili al microsecondo, anche quando
   la prima cifra significativa e oltre la nona. Precisione dichiarata alta
-  con cifre residue tutte zero resta accettata. SQL Server datetimeoffset
-  conserva l'istante esatto; il decoder Oracle gia rifiuta i nanosecondi non
-  rappresentabili. Le letture precedenti vanno riverificate alla sorgente.
+  con cifre residue tutte zero resta accettata. Il decoder Oracle gia rifiuta
+  i nanosecondi non rappresentabili. Le letture precedenti vanno riverificate alla sorgente.
+- **Fuso datetimeoffset SQL Server applicato due volte**: verificato nei sorgenti
+  di tutti i tag `py-v0.12.0`–`py-v8.0.3`, con `tiberius 0.12.3` fino alla
+  5.0.1 e `tiberius-ng 0.13.1` dalla 6.0.0. Il decoder UTC sottraeva l'offset
+  dal tempo wire gia UTC: `12:34:56.1234567+02:00` diventava
+  `08:34:56.123456700Z` invece di `10:34:56.123456700Z`.
+  Query, stream e SDK ora decodificano con `FixedOffset` e convertono in UTC.
+  Le regressioni confrontano l'istante completo con offset positivi, negativi
+  e zero e con l'oracolo server `CONVERT`/`SWITCHOFFSET`; riverificare alla
+  sorgente anche le letture precedenti senza perdita di cifre frazionarie.
 - **Colonne omonime**: il mapping SDK sovrascriveva un valore nei tag
   `py-v0.12.0`–`py-v8.0.3`; `Row::get` sceglieva il primo nei tag
   `py-v0.1.0`–`py-v8.0.3`. Ora il mapping sync/async rifiuta l'ambiguita
-  suggerendo alias distinti, senza nomi o valori nell'errore. In Rust il nuovo
+  suggerendo alias distinti, senza nomi o valori nell'errore. La stessa
+  validazione precede anche i mapping JSON CLI `execute-sql` e
+  `portable-execute`, che sovrascrivevano le colonne omonime. In Rust il nuovo
   `Row::try_get` restituisce l'errore; `get` conserva la firma `Option` e rende
   `None` per un risultato ambiguo. Posizioni e descrittori restano utilizzabili.
   Gli schemi Arrow con nomi duplicati sono rifiutati anche con field_id distinti,
   impedendo a `column_by_name` di scegliere il primo (percorso PostgreSQL
-  verificato nei tag `py-v0.12.0`?`py-v8.0.3`). Nessuna modifica agli
+  verificato nei tag `py-v0.12.0`–`py-v8.0.3`). Nessuna modifica agli
   schemi di contratto o ai risultati con nomi distinti.
 - Regressioni offline e live permanenti, incluse query, stream SQL Server,
   Arrow Db2 e PostgreSQL e SDK sincrono/asincrono, negli inventari dei gate.

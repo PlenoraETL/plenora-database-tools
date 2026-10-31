@@ -269,20 +269,10 @@ pub(crate) async fn execute_sql_cmd(args: &mut impl Iterator<Item = String>) -> 
     let payload = match head.as_str() {
         "SELECT" | "WITH" | "VALUES" | "TABLE" | "SHOW" => {
             let rows = tx.query(&stmt, &ctx.cancel).await?;
-            let out: Vec<_> = rows
+            let out = rows
                 .iter()
-                .map(|r| {
-                    let mut obj = serde_json::Map::new();
-                    for (i, col) in r.columns().iter().enumerate() {
-                        let value = r
-                            .get_index(i)
-                            .and_then(|v| serde_json::to_value(v).ok())
-                            .unwrap_or(serde_json::Value::Null);
-                        obj.insert(col.clone(), value);
-                    }
-                    serde_json::Value::Object(obj)
-                })
-                .collect();
+                .map(crate::query_cmd::row_to_json)
+                .collect::<CliResult<Vec<_>>>()?;
             json!({ "kind": "rows", "rows": out, "count": rows.len() })
         }
         _ => {

@@ -155,6 +155,22 @@ def test_sqlserver_sync_exact_temporal_and_duplicate_names() -> None:
     try:
         rows = session.query_sql("SELECT CAST('2026-10-31T12:34:56.1234567' AS datetime2(7)) AS T")
         assert rows[0]["T"] == "2026-10-31T12:34:56.123456700"
+        for offset, utc in [("+02:00", "2026-10-31T10:34:56"),
+                            ("-05:30", "2026-10-31T18:04:56"),
+                            ("+00:00", "2026-10-31T12:34:56"),
+                            ("+14:00", "2026-10-30T22:34:56"),
+                            ("-12:00", "2026-11-01T00:34:56")]:
+            sql = (
+                "SELECT v AS T, CONVERT(varchar(33), "
+                "CAST(SWITCHOFFSET(v, '+00:00') AS datetime2(7)), 126) AS oracle_utc "
+                f"FROM (VALUES (CAST('2026-10-31T12:34:56.1234567{offset}' "
+                "AS datetimeoffset(7)))) AS source(v)"
+            )
+            rows = session.query_sql(sql)
+            # Confronto testuale: datetime Python troncherebbe la settima cifra.
+            assert rows[0]["T"] == utc + ".123456700+00:00"
+            assert rows[0]["oracle_utc"] == utc + ".1234567"
+
         with pytest.raises(p.PlenoraDataMappingError, match="alias"):
             session.query_sql("SELECT 1 AS X, 2 AS X")
         assert session.query_sql("SELECT 1 AS A, 2 AS B") == [{"A": 1, "B": 2}]
@@ -168,6 +184,22 @@ async def test_sqlserver_async_exact_temporal_and_duplicate_names() -> None:
     try:
         rows = await session.query_sql("SELECT CAST('2026-10-31T12:34:56.1234567' AS datetime2(7)) AS T")
         assert rows[0]["T"] == "2026-10-31T12:34:56.123456700"
+        for offset, utc in [("+02:00", "2026-10-31T10:34:56"),
+                            ("-05:30", "2026-10-31T18:04:56"),
+                            ("+00:00", "2026-10-31T12:34:56"),
+                            ("+14:00", "2026-10-30T22:34:56"),
+                            ("-12:00", "2026-11-01T00:34:56")]:
+            sql = (
+                "SELECT v AS T, CONVERT(varchar(33), "
+                "CAST(SWITCHOFFSET(v, '+00:00') AS datetime2(7)), 126) AS oracle_utc "
+                f"FROM (VALUES (CAST('2026-10-31T12:34:56.1234567{offset}' "
+                "AS datetimeoffset(7)))) AS source(v)"
+            )
+            rows = await session.query_sql(sql)
+            # Confronto testuale: datetime Python troncherebbe la settima cifra.
+            assert rows[0]["T"] == utc + ".123456700+00:00"
+            assert rows[0]["oracle_utc"] == utc + ".1234567"
+
         with pytest.raises(p.PlenoraDataMappingError, match="alias"):
             await session.query_sql("SELECT 1 AS X, 2 AS X")
         assert await session.query_sql("SELECT 1 AS A, 2 AS B") == [{"A": 1, "B": 2}]

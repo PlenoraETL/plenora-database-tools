@@ -9192,48 +9192,58 @@ async fn live_exact_temporal_query_stream_and_duplicate_names() {
         .await
         .expect("transazione");
     for fraction in ["1234567", "9999999", "0000005", "0000010"] {
-        let statement = Statement::new(format!(
+        for offset in ["+02:00", "-05:30", "+00:00", "+14:00", "-12:00"] {
+            let statement = Statement::new(format!(
             "SELECT CAST('2026-10-31T12:34:56.{fraction}' AS datetime2(7)) AS dt, \
              CAST('12:34:56.{fraction}' AS time(7)) AS tm, \
-             CAST('2026-10-31T12:34:56.{fraction}+02:00' AS datetimeoffset(7)) AS tz"
+             v AS tz, CONVERT(varchar(33), CAST(SWITCHOFFSET(v, '+00:00') AS datetime2(7)), 126) AS oracle_utc \
+             FROM (VALUES (CAST('2026-10-31T12:34:56.{fraction}{offset}' AS datetimeoffset(7)))) AS source(v)"
         ));
-        let expected_fraction = if fraction == "0000010" {
-            "000001".to_owned()
-        } else {
-            format!("{fraction}00")
-        };
-        let rows = tx
-            .query(&statement, &cancellation)
-            .await
-            .expect("query esatta");
-        assert_eq!(
-            rows[0].get_index(0),
-            Some(&ParameterValue::Timestamp(format!(
-                "2026-10-31T12:34:56.{expected_fraction}"
-            )))
-        );
-        assert_eq!(
-            rows[0].get_index(1),
-            Some(&ParameterValue::String(format!(
-                "12:34:56.{expected_fraction}"
-            )))
-        );
-        let ParameterValue::TimestampTz(tz) = &rows[0].values()[2] else {
-            panic!("timestamp con fuso")
-        };
-        let instant = chrono::DateTime::parse_from_rfc3339(tz).expect("RFC3339");
-        assert_eq!(
-            chrono::Timelike::nanosecond(&instant),
-            fraction.parse::<u32>().expect("frazione") * 100
-        );
-        let mut stream = tx
-            .query_stream(&statement, 2, &cancellation)
-            .await
-            .expect("stream");
-        assert_eq!(
-            stream.next_batch(&cancellation).await.expect("lettura"),
-            Some(rows)
-        );
+            let expected_fraction = if fraction == "0000010" {
+                "000001".to_owned()
+            } else {
+                format!("{fraction}00")
+            };
+            let rows = tx
+                .query(&statement, &cancellation)
+                .await
+                .expect("query esatta");
+            assert_eq!(
+                rows[0].get_index(0),
+                Some(&ParameterValue::Timestamp(format!(
+                    "2026-10-31T12:34:56.{expected_fraction}"
+                )))
+            );
+            assert_eq!(
+                rows[0].get_index(1),
+                Some(&ParameterValue::String(format!(
+                    "12:34:56.{expected_fraction}"
+                )))
+            );
+            let ParameterValue::TimestampTz(tz) = &rows[0].values()[2] else {
+                panic!("timestamp con fuso")
+            };
+            let instant = chrono::DateTime::parse_from_rfc3339(tz).expect("RFC3339");
+            let expected = chrono::DateTime::parse_from_rfc3339(&format!(
+                "2026-10-31T12:34:56.{fraction}{offset}"
+            ))
+            .expect("istante atteso");
+            assert_eq!(instant, expected, "istante intero, offset {offset}");
+            let ParameterValue::String(oracle) = &rows[0].values()[3] else {
+                panic!("oracolo server testuale")
+            };
+            let oracle = chrono::NaiveDateTime::parse_from_str(oracle, "%Y-%m-%dT%H:%M:%S%.f")
+                .expect("oracolo UTC");
+            assert_eq!(instant.naive_utc(), oracle, "SWITCHOFFSET, offset {offset}");
+            let mut stream = tx
+                .query_stream(&statement, 2, &cancellation)
+                .await
+                .expect("stream");
+            assert_eq!(
+                stream.next_batch(&cancellation).await.expect("lettura"),
+                Some(rows)
+            );
+        }
     }
     let rows = tx
         .query(&Statement::new("SELECT 1 AS x, 2 AS x"), &cancellation)

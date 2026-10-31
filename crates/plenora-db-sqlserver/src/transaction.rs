@@ -330,12 +330,14 @@ fn decode_cell(
                 || null_value(kind),
                 |value| ParameterValue::Timestamp(format_query_timestamp(value)),
             )),
+        // Il wire contiene gia UTC: il decoder Utc di tiberius sottrae
+        // nuovamente il fuso. FixedOffset conserva invece lo stesso istante.
         Ct::DatetimeOffsetn => Ok(row
-            .try_get::<chrono::DateTime<chrono::Utc>, _>(index)
+            .try_get::<chrono::DateTime<chrono::FixedOffset>, _>(index)
             .map_err(|_| decode_mapping_error(index, "datetimeoffset"))?
             .map_or_else(
                 || null_value(kind),
-                |value| ParameterValue::TimestampTz(value.to_rfc3339()),
+                |value| ParameterValue::TimestampTz(value.with_timezone(&chrono::Utc).to_rfc3339()),
             )),
         Ct::Daten => Ok(row
             .try_get::<chrono::NaiveDate, _>(index)
