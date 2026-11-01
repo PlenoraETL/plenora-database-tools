@@ -133,7 +133,7 @@ where
             &SqlText::new(fk_schema_name),
             &SqlText::new(fk_table_name),
         )
-        .into_result(&statement)?;
+        .into_result_strict(&statement, "ODBC")?;
 
     // We assume foreign keys always creates a result set, since it works like a SELECT statement.
     debug_assert_ne!(statement.num_result_cols().unwrap(), 0);

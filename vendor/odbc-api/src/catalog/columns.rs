@@ -157,7 +157,7 @@ where
 {
     statement
         .columns(catalog_name, schema_name, table_name, column_name)
-        .into_result(&statement)?;
+        .into_result_strict(&statement, "ODBC")?;
 
     // We assume columns always creates a result set, since it works like a SELECT statement.
     debug_assert_ne!(statement.num_result_cols().unwrap(), 0);

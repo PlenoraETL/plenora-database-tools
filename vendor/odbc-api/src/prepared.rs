@@ -74,7 +74,8 @@ where
     pub fn describe_param(&mut self, parameter_number: u16) -> Result<ColumnType, Error> {
         let mut stmt = self.as_stmt_ref();
 
-        stmt.describe_param(parameter_number).into_result(&stmt)
+        stmt.describe_param(parameter_number)
+            .into_result_strict(&stmt, "ODBC")
     }
 
     /// Describe one parameter, rejecting warnings before another call.
@@ -110,7 +111,7 @@ where
     /// used to prepare the statement.
     pub fn num_params(&mut self) -> Result<u16, Error> {
         let mut stmt = self.as_stmt_ref();
-        stmt.num_params().into_result(&stmt)
+        stmt.num_params().into_result_strict(&stmt, "ODBC")
     }
 
     /// Number of placeholders which must be provided with [`Self::execute`] in order to execute
@@ -380,14 +381,16 @@ where
     /// ```
     pub fn row_count(&mut self) -> Result<Option<usize>, Error> {
         let mut stmt = self.statement.as_stmt_ref();
-        stmt.row_count().into_result(&stmt).map(|count| {
-            // ODBC returns -1 in case a row count is not available
-            if count == -1 {
-                None
-            } else {
-                Some(count.try_into().unwrap())
-            }
-        })
+        stmt.row_count()
+            .into_result_strict(&stmt, "ODBC")
+            .map(|count| {
+                // ODBC returns -1 in case a row count is not available
+                if count == -1 {
+                    None
+                } else {
+                    Some(count.try_into().unwrap())
+                }
+            })
     }
 
     /// Use this to limit the time the query is allowed to take, before responding with data to the
@@ -402,7 +405,8 @@ where
     /// <https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlsetstmtattr-function>
     pub fn set_query_timeout_sec(&mut self, timeout_sec: usize) -> Result<(), Error> {
         let mut stmt = self.statement.as_stmt_ref();
-        stmt.set_query_timeout_sec(timeout_sec).into_result(&stmt)
+        stmt.set_query_timeout_sec(timeout_sec)
+            .into_result_strict(&stmt, "ODBC")
     }
 
     /// The number of seconds to wait for a SQL statement to execute before returning to the
@@ -414,7 +418,7 @@ where
     /// <https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlsetstmtattr-function>
     pub fn query_timeout_sec(&mut self) -> Result<usize, Error> {
         let mut stmt = self.statement.as_stmt_ref();
-        stmt.query_timeout_sec().into_result(&stmt)
+        stmt.query_timeout_sec().into_result_strict(&stmt, "ODBC")
     }
 }
 

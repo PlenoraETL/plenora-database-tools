@@ -54,7 +54,7 @@ impl Descriptor<'_> {
                 precision as Pointer,
                 IS_SMALLINT,
             )
-            .into_sql_result("SQLSetDescField")
+            .into_sql_result_strict(self, "SQLSetDescField")
         }
     }
 
@@ -69,7 +69,7 @@ impl Descriptor<'_> {
                 scale as Pointer,
                 IS_SMALLINT,
             )
-            .into_sql_result("SQLSetDescField")
+            .into_sql_result_strict(self, "SQLSetDescField")
         }
     }
 
@@ -89,7 +89,7 @@ impl Descriptor<'_> {
                 IS_SMALLINT,
             )
         }
-        .into_sql_result("SQLSetDescField")
+        .into_sql_result_strict(self, "SQLSetDescField")
     }
 
     /// Data pointer filled with values from the source when fetching data.
@@ -107,7 +107,7 @@ impl Descriptor<'_> {
                 IS_POINTER,
             )
         }
-        .into_sql_result("SQLSetDescField")
+        .into_sql_result_strict(self, "SQLSetDescField")
     }
 }
 

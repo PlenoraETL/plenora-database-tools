@@ -168,3 +168,83 @@ fn le_chiavi_non_possono_perdere_precisione_o_cambiare_tipo() {
         }
     }
 }
+
+/// Il referto reale `JSON_SERIALIZE` deve arrivare fino alla regola S.
+#[test]
+fn json_nativo_rifiuta_i_numeri_riscritti_dal_server() {
+    use plenora_database_core::arrow::{array::StringArray, schema::Field, RecordBatch};
+    use plenora_database_core::loss::MappingPolicy;
+    use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteMode, WriteOperation};
+    use plenora_database_core::store_rewrite::{ColumnRewrites, RewriteGuard, StoreRewrite};
+    use std::sync::Arc;
+
+    let (key, dimensions) = admission_key(&DataType::Utf8, &column("JSON", None, None), &server());
+    let measured = admission_table()
+        .expect("fixture")
+        .server("23")
+        .expect("major");
+    let rewrites = store_rewrites(
+        plenora_database_core::admission_gate::write_column(&measured, &key, dimensions)
+            .expect("JSON misurato"),
+        &DataType::Utf8,
+    );
+    assert_eq!(rewrites, vec![StoreRewrite::JsonNumbers]);
+    let schema = Arc::new(plenora_database_core::arrow::schema::Schema::new(vec![
+        Field::new("V", DataType::Utf8, true),
+    ]));
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: None,
+            object: "JSON_TARGET".to_owned(),
+        },
+        mode: WriteMode::Append,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: Vec::new(),
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    let guard = RewriteGuard::new(
+        ProviderKind::Oracle,
+        &schema,
+        &operation,
+        vec![ColumnRewrites {
+            field: 0,
+            target_type: key.nativo,
+            rewrites,
+        }],
+    )
+    .expect("guard");
+    // I cinque casi riscritti del referto, anche annidati in un documento.
+    for number in [
+        "1.0",
+        "1e2",
+        "1e400",
+        "12345678901234567890123456789012345678901234567890",
+        "-0",
+    ] {
+        let document = format!(r#"{{"private-marker":[{number}]}}"#);
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(StringArray::from(vec![document.as_str()]))],
+        )
+        .expect("batch");
+        let error = guard.check(&batch).expect_err("numero riscritto rifiutato");
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        assert!(!error.message.contains("private-marker"));
+    }
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::new(StringArray::from(vec![
+            Some(r#"{"n":12,"s":"1e400"}"#),
+            None,
+        ]))],
+    )
+    .expect("batch");
+    guard
+        .check(&batch)
+        .expect("intero breve, stringa e NULL conservati");
+}

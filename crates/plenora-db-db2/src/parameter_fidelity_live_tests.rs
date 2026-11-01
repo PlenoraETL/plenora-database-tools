@@ -18,6 +18,49 @@ use plenora_database_testkit::parameter_fidelity::{
 const SCHEMA: &str = "PLENORA_PARAM";
 const TABLE: &str = "FIDELITY";
 
+/// Real aggregate warning and compiled SIGNAL: diagnostics precede the next call.
+#[test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+fn live_odbc_warnings_are_classified_before_next_call() {
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let (connection, timeout) =
+        crate::connection::open_connection(provider.config(), &secret).expect("connessione Db2");
+    // BEGIN ATOMIC is inlined SQL: SIGNAL cannot emit class 01/02 there.
+    // https://www.ibm.com/docs/en/db2/11.5.x?topic=statements-signal
+    // Use the real NULL-elimination warning, already in the closed whitelist.
+    let aggregate = "SELECT SUM(V) FROM (VALUES (1), (CAST(NULL AS INTEGER))) AS T(V)";
+    let rows = crate::connection::query_text(&connection, aggregate, &[], timeout, 1, 16)
+        .expect("avviso informativo ammesso anche nel percorso pubblico");
+    assert_eq!(rows, [vec![Some("1".to_owned())]]);
+
+    // Without ATOMIC this is compiled SQL, where application warnings are valid.
+    let mut prepared = connection
+        .prepare("BEGIN SIGNAL SQLSTATE '01ZZZ' SET MESSAGE_TEXT = 'private-warning-marker'; END")
+        .expect("prepare SIGNAL compilato");
+    let error = prepared
+        .execute(())
+        .map(drop)
+        .expect_err("avviso sconosciuto rifiutato");
+    assert!(!error.to_string().contains("private-warning-marker"));
+    assert!(
+        matches!(error, odbc_api::Error::Diagnostics { ref record, .. }
+        if record.state.as_str() == "01ZZZ" && record.native_error == 438),
+        "diagnostico SIGNAL: {error}"
+    );
+    drop(prepared);
+    let rows = crate::connection::query_text(
+        &connection,
+        "VALUES CAST('complete' AS VARCHAR(8))",
+        &[],
+        timeout,
+        1,
+        16,
+    )
+    .expect("bind e fetch completi dopo SIGNAL");
+    assert_eq!(rows, [vec![Some("complete".to_owned())]]);
+}
+
 fn environment(name: &str, fallback: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| fallback.to_owned())
 }

@@ -2,7 +2,7 @@ use std::io;
 
 use thiserror::Error as ThisError;
 
-use crate::handles::{Diagnostics, Record as DiagnosticRecord, SqlResult, log_diagnostics};
+use crate::handles::{Diagnostics, Record as DiagnosticRecord, SqlResult};
 
 /// Error indicating a failed allocation for a column buffer
 #[derive(Debug)]
@@ -174,7 +174,7 @@ impl SqlResult<()> {
     pub fn into_result_bool(self, handle: &impl Diagnostics) -> Result<bool, Error> {
         self.on_success(|| true)
             .on_no_data(|| false)
-            .into_result(handle)
+            .into_result_strict(handle, "ODBC")
     }
 }
 
@@ -187,98 +187,45 @@ impl<T> SqlResult<T> {
         handle: &impl Diagnostics,
         function: &'static str,
     ) -> Result<T, Error> {
-        if let SqlResult::SuccessWithInfo(value) = self {
-            let mut found = false;
-            for number in 1..=i16::MAX {
-                let Some(record) = handle.diagnostic_record(number, &mut []) else {
-                    break;
-                };
-                found = true;
-                if record.state.prevents_exact_result() {
-                    return Err(Error::Diagnostics {
-                        record: crate::handles::Record {
-                            state: record.state,
-                            native_error: record.native_error,
-                            message: Vec::new(),
-                        },
-                        function,
-                    });
-                }
-                // Preserve operational diagnostics without requesting payload text.
-                log::warn!(
-                    "{}: SQLSTATE {}, native code {}",
-                    function,
-                    record.state.as_str(),
-                    record.native_error
-                );
+        match self.check_strict(handle, function) {
+            SqlResult::Success(value) => Ok(value),
+            SqlResult::Rejected {
+                function,
+                diagnostic: Some((state, native_error)),
+            } => Err(Error::Diagnostics {
+                function,
+                record: DiagnosticRecord {
+                    state,
+                    native_error,
+                    message: Vec::new(),
+                },
+            }),
+            SqlResult::Rejected {
+                function,
+                diagnostic: None,
+            } => Err(Error::NoDiagnostics { function }),
+            _ => {
+                panic!("Unexpected ODBC control state; handle NoData/NeedData/StillExecuting first")
             }
-            return if found {
-                Ok(value)
-            } else {
-                Err(Error::NoDiagnostics { function })
-            };
         }
-        self.into_result(handle)
     }
 
-    /// `true` for [`Self::SuccessWithInfo`] and [`Self::Error`]. If `true` one might expect
-    /// diagnostic records to be present. If `false` it would indicate their absense.
+    /// Whether diagnostics have not yet been captured.
     pub fn has_diganostics(&self) -> bool {
         matches!(
             self,
-            SqlResult::SuccessWithInfo(_) | SqlResult::Error { function: _ }
+            SqlResult::SuccessWithInfo(_) | SqlResult::Error { .. }
         )
     }
 
-    /// [`Self::Success`] and [`Self::SuccessWithInfo`] are mapped to Ok. In case of
-    /// [`Self::SuccessWithInfo`] any diagnostics are logged. [`Self::Error`] is mapped to error.
-    /// Other states [`Self::NoData]` and [`Self::NeedData`] would lead to a panic. Most ODBC
-    /// functions are not suppossed to return these status codes.
+    /// Compatibility entry point; all results use the same strict classifier.
     pub fn into_result(self, handle: &impl Diagnostics) -> Result<T, Error> {
-        if self.has_diganostics() {
-            log_diagnostics(handle);
-        }
-        self.into_result_without_logging(handle)
+        self.into_result_strict(handle, "ODBC")
     }
 
-    /// [`Self::Success`] and [`Self::SuccessWithInfo`] are mapped to Ok. [`Self::Error`] is mapped
-    /// to error. Other states [`Self::NoData]` and [`Self::NeedData`] would lead to a panic. Most
-    /// ODBC functions are not suppossed to return these status codes.
-    ///
-    /// In case of [`Self::Error`] or [`Self::SuccessWithInfo`] no logging of diagnostic records is
-    /// performed by this method. You may want to use [Self::into_result`] instead.
+    /// Compatibility entry point; disabling logging never disables validation.
     pub fn into_result_without_logging(self, handle: &impl Diagnostics) -> Result<T, Error> {
-        match self {
-            // The function has been executed successfully. Holds result.
-            SqlResult::Success(value) | SqlResult::SuccessWithInfo(value) => Ok(value),
-            SqlResult::Error { function } => {
-                let mut record = DiagnosticRecord::with_capacity(512);
-                if record.fill_from(handle, 1) {
-                    Err(Error::Diagnostics { record, function })
-                } else {
-                    // Anecdotal ways to reach this code paths:
-                    //
-                    // * Inserting a 64Bit integers into an Oracle Database.
-                    // * Specifying invalid drivers (e.g. missing .so the driver itself depends on)
-                    Err(Error::NoDiagnostics { function })
-                }
-            }
-            SqlResult::NoData => {
-                panic!(
-                    "Unexepcted SQL_NO_DATA returned by ODBC function. Use `SqlResult::on_no_data` \
-                    to handle it."
-                )
-            }
-            SqlResult::NeedData => {
-                panic!(
-                    "Unexpected SQL_NEED_DATA returned by ODBC function. Use \
-                    `SqlResult::on_need_data` to handle it."
-                )
-            }
-            SqlResult::StillExecuting => panic!(
-                "SqlResult must not be converted to result while the function is still executing."
-            ),
-        }
+        self.into_result_strict(handle, "ODBC")
     }
 
     /// Maps [`SqlResult::Success`] and [`SqlResult::SuccessWithInfo`] to `Some`. Maps

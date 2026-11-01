@@ -10,8 +10,7 @@ use crate::{
     connection::ConnectionOptions,
     error::ExtendResult,
     handles::{
-        self, OutputStringBuffer, SqlChar, SqlResult, SqlText, State, SzBuffer, log_diagnostics,
-        slice_to_utf8,
+        self, OutputStringBuffer, SqlChar, SqlResult, SqlText, State, SzBuffer, slice_to_utf8,
     },
 };
 use log::debug;
@@ -112,8 +111,10 @@ impl Environment {
         scheme: odbc_sys::AttrConnectionPooling,
     ) -> Result<(), Error> {
         match unsafe { handles::Environment::set_connection_pooling(scheme) } {
-            SqlResult::Error { .. } => Err(Error::FailedSettingConnectionPooling),
-            SqlResult::Success(()) | SqlResult::SuccessWithInfo(()) => Ok(()),
+            SqlResult::Error { .. } | SqlResult::Rejected { .. } => {
+                Err(Error::FailedSettingConnectionPooling)
+            }
+            SqlResult::Success(()) => Ok(()),
             other => {
                 panic!("Unexpected return value `{other:?}`.")
             }
@@ -137,7 +138,7 @@ impl Environment {
     pub fn set_connection_pooling_matching(&mut self, matching: AttrCpMatch) -> Result<(), Error> {
         self.environment
             .set_connection_pooling_matching(matching)
-            .into_result(&self.environment)
+            .into_result_strict(&self.environment, "ODBC")
     }
 
     /// Entry point into this API. Allocates a new ODBC Environment and declares to the driver
@@ -157,11 +158,9 @@ impl Environment {
 
         let environment = match result {
             SqlResult::Success(env) => env,
-            SqlResult::SuccessWithInfo(env) => {
-                log_diagnostics(&env);
-                env
+            SqlResult::Error { .. } | SqlResult::Rejected { .. } => {
+                return Err(Error::FailedAllocatingEnvironment);
             }
-            SqlResult::Error { .. } => return Err(Error::FailedAllocatingEnvironment),
             other => panic!("Unexpected return value '{other:?}'"),
         };
 
@@ -172,7 +171,7 @@ impl Environment {
 
         let result = environment
             .declare_version(ODBC_API_VERSION)
-            .into_result(&environment);
+            .into_result_strict(&environment, "ODBC");
 
         // Status code S1009 has been seen with unixODBC 2.3.1. S1009 meant (among other things)
         // invalid attribute. If we see this then we try to declare the ODBC version it is of course
@@ -254,7 +253,7 @@ impl Environment {
 
         connection
             .connect(&data_source_name, &user, &pwd)
-            .into_result(&connection)?;
+            .into_result_strict(&connection, "ODBC")?;
         Ok(Connection::new(connection))
     }
 
@@ -298,7 +297,7 @@ impl Environment {
 
         connection
             .connect_with_connection_string(&connection_string)
-            .into_result(&connection)?;
+            .into_result_strict(&connection, "ODBC")?;
         Ok(Connection::new(connection))
     }
 
@@ -500,7 +499,7 @@ impl Environment {
                 .drivers_buffer_len(FetchOrientation::First)
                 .map(Some)
                 .on_no_data(|| None)
-                .into_result(&self.environment)?
+                .into_result_strict(&self.environment, "ODBC")?
             {
                 res
             } else {
@@ -513,7 +512,7 @@ impl Environment {
                 .environment
                 .drivers_buffer_len(FetchOrientation::Next)
                 .or_no_data()
-                .into_result(&self.environment)?
+                .into_result_strict(&self.environment, "ODBC")?
             {
                 desc_len = max(candidate_desc_len, desc_len);
                 attr_len = max(candidate_attr_len, attr_len);
@@ -613,7 +612,7 @@ impl Environment {
                 .environment
                 .data_source_buffer_len(direction)
                 .or_no_data()
-                .into_result(&self.environment)?
+                .into_result_strict(&self.environment, "ODBC")?
             {
                 res
             } else {
@@ -626,7 +625,7 @@ impl Environment {
                 .environment
                 .drivers_buffer_len(FetchOrientation::Next)
                 .or_no_data()
-                .into_result(&self.environment)?
+                .into_result_strict(&self.environment, "ODBC")?
             {
                 server_name_len = max(candidate_name_len, server_name_len);
                 driver_len = max(candidate_decs_len, driver_len);
@@ -667,7 +666,7 @@ impl Environment {
         let _lock = self.internal_state.lock().unwrap();
         self.environment
             .allocate_connection()
-            .into_result(&self.environment)
+            .into_result_strict(&self.environment, "ODBC")
     }
 }
 

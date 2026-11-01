@@ -30,7 +30,7 @@ pub trait ResultSetMetadata: AsStatementRef {
     ) -> Result<(), Error> {
         let mut stmt = self.as_stmt_ref();
         stmt.describe_col(column_number, column_description)
-            .into_result(&stmt)
+            .into_result_strict(&stmt, "ODBC")
     }
 
     /// Number of columns in result set. Can also be used to see whether executing a prepared
@@ -41,7 +41,7 @@ pub trait ResultSetMetadata: AsStatementRef {
     /// <https://docs.microsoft.com/en-us/sql/odbc/reference/syntax/sqlnumresultcols-function>
     fn num_result_cols(&mut self) -> Result<i16, Error> {
         let mut stmt = self.as_stmt_ref();
-        stmt.num_result_cols().into_result(&stmt)
+        stmt.num_result_cols().into_result_strict(&stmt, "ODBC")
     }
 
     /// Read the result-column count without accepting warnings.
@@ -57,7 +57,8 @@ pub trait ResultSetMetadata: AsStatementRef {
     /// `column_number`: Index of the column, starting at 1.
     fn column_is_unsigned(&mut self, column_number: u16) -> Result<bool, Error> {
         let mut stmt = self.as_stmt_ref();
-        stmt.is_unsigned_column(column_number).into_result(&stmt)
+        stmt.is_unsigned_column(column_number)
+            .into_result_strict(&stmt, "ODBC")
     }
 
     /// Size in bytes of the columns. For variable sized types this is the maximum size, excluding a
@@ -67,7 +68,7 @@ pub trait ResultSetMetadata: AsStatementRef {
     fn col_octet_length(&mut self, column_number: u16) -> Result<Option<NonZeroUsize>, Error> {
         let mut stmt = self.as_stmt_ref();
         stmt.col_octet_length(column_number)
-            .into_result(&stmt)
+            .into_result_strict(&stmt, "ODBC")
             .map(|signed| NonZeroUsize::new(signed.max(0) as usize))
     }
 
@@ -78,7 +79,7 @@ pub trait ResultSetMetadata: AsStatementRef {
     fn col_display_size(&mut self, column_number: u16) -> Result<Option<NonZeroUsize>, Error> {
         let mut stmt = self.as_stmt_ref();
         stmt.col_display_size(column_number)
-            .into_result(&stmt)
+            .into_result_strict(&stmt, "ODBC")
             // Map negative values to `0`. `0` is used by MSSQL to indicate a missing upper bound
             // `-4` (`NO_TOTAL`) is used by MySQL to do the same. Mapping them both to the same
             // value allows for less error prone generic applications. Making this value `None`
@@ -95,14 +96,16 @@ pub trait ResultSetMetadata: AsStatementRef {
     /// precision of the fractional seconds component.
     fn col_precision(&mut self, column_number: u16) -> Result<isize, Error> {
         let mut stmt = self.as_stmt_ref();
-        stmt.col_precision(column_number).into_result(&stmt)
+        stmt.col_precision(column_number)
+            .into_result_strict(&stmt, "ODBC")
     }
 
     /// The applicable scale for a numeric data type. For DECIMAL and NUMERIC data types, this is
     /// the defined scale. It is undefined for all other data types.
     fn col_scale(&mut self, column_number: u16) -> Result<isize, Error> {
         let mut stmt = self.as_stmt_ref();
-        stmt.col_scale(column_number).into_result(&stmt)
+        stmt.col_scale(column_number)
+            .into_result_strict(&stmt, "ODBC")
     }
 
     /// Nullability of the column.
@@ -113,7 +116,8 @@ pub trait ResultSetMetadata: AsStatementRef {
     /// <https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlcolattribute-function>
     fn col_nullability(&mut self, column_number: u16) -> Result<Nullability, Error> {
         let mut stmt = self.as_stmt_ref();
-        stmt.col_nullability(column_number).into_result(&stmt)
+        stmt.col_nullability(column_number)
+            .into_result_strict(&stmt, "ODBC")
     }
 
     /// The column alias, if it applies. If the column alias does not apply, the column name is
@@ -121,7 +125,8 @@ pub trait ResultSetMetadata: AsStatementRef {
     fn col_name(&mut self, column_number: u16) -> Result<String, Error> {
         let mut stmt = self.as_stmt_ref();
         let mut buf = vec![0; 1024];
-        stmt.col_name(column_number, &mut buf).into_result(&stmt)?;
+        stmt.col_name(column_number, &mut buf)
+            .into_result_strict(&stmt, "ODBC")?;
         Ok(slice_to_utf8(&buf).unwrap())
     }
 
@@ -140,7 +145,9 @@ pub trait ResultSetMetadata: AsStatementRef {
         // Maybe we can unify this with [`DataType::new`].
 
         let mut stmt = self.as_stmt_ref();
-        let kind = stmt.col_concise_type(column_number).into_result(&stmt)?;
+        let kind = stmt
+            .col_concise_type(column_number)
+            .into_result_strict(&stmt, "ODBC")?;
         let dt = match kind {
             SqlDataType::UNKNOWN_TYPE => DataType::Unknown,
             SqlDataType::EXT_VAR_BINARY => DataType::Varbinary {
@@ -449,7 +456,7 @@ where
 
             let result = stmt
                 .col_name(self.column, &mut self.buffer)
-                .into_result(&stmt)
+                .into_result_strict(&stmt, "ODBC")
                 .map(|()| slice_to_utf8(&self.buffer).unwrap());
             self.column += 1;
             Some(result)

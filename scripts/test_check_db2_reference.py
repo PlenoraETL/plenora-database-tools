@@ -72,7 +72,9 @@ class Db2ReferenceGateTests(unittest.TestCase):
         statement = (vendor / "handles/statement.rs").read_text(encoding="utf-8")
         for name in ["col_name", "describe_col"]:
             body = statement.split(f"fn {name}_checked", 1)[1].split("\n    }", 1)[0]
-            self.assertIn("strict && matches!(res, SqlResult::SuccessWithInfo(_))", body)
+            self.assertIn(".into_sql_result_strict(self,", body)
+            self.assertNotIn("SuccessWithInfo", body)
+            self.assertIn("if res.is_err()", body)
         for name in ["parameter_collection.rs", "parameter_collection/tuple.rs", "parameter/blob.rs"]:
             binding = (vendor / name).read_text(encoding="utf-8")
             self.assertNotIn(".into_result(stmt)", binding)
@@ -155,7 +157,8 @@ class Db2ReferenceGateTests(unittest.TestCase):
 
     def test_inventory_has_all_named_live_tests(self) -> None:
         inventory = gate.live_test_inventory()
-        self.assertEqual(len(inventory), 36)
+        self.assertEqual(len(inventory), 37)
+        self.assertIn("live_odbc_warnings_are_classified_before_next_call", inventory)
         self.assertLessEqual(gate.REQUIRED_LIVE_TESTS, inventory)
 
     def test_complete_named_run_passes(self) -> None:

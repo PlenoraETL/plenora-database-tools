@@ -72,7 +72,7 @@ where
         if let Err(e) = self
             .statement
             .end_cursor_scope()
-            .into_result(&self.statement)
+            .into_result_strict(&self.statement, "ODBC")
         {
             // Avoid panicking, if we already have a panic. We don't want to mask the original
             // error.

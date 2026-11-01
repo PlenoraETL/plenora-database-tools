@@ -243,3 +243,58 @@ fn la_chiave_arrow_porta_unita_zona_e_precisione() {
     assert_eq!(arrow_key(&DataType::Decimal128(10, 2)), "decimal128(10,2)");
     assert_eq!(arrow_key(&DataType::Float32), "float32");
 }
+
+/// Le coppie JSON native non ereditano la prova dei tipi testuali.
+#[test]
+fn json_nativo_e_misurato_con_guardia_o_resta_chiuso() {
+    for (provider, source, native, measured) in [
+        (
+            ProviderKind::Oracle,
+            include_bytes!("../../../tests/fixtures/scrittura_server_oracle.json").as_slice(),
+            "JSON",
+            true,
+        ),
+        (
+            ProviderKind::Postgres,
+            include_bytes!("../../../tests/fixtures/scrittura_server_postgres.json").as_slice(),
+            "scalare:jsonb;UTF8",
+            true,
+        ),
+        (
+            ProviderKind::Mysql,
+            include_bytes!("../../../tests/fixtures/scrittura_server_mysql.json").as_slice(),
+            "json;utf8mb4",
+            false,
+        ),
+        (
+            ProviderKind::Sqlserver,
+            include_bytes!("../../../tests/fixtures/scrittura_server_sqlserver.json").as_slice(),
+            "json",
+            false,
+        ),
+        (
+            ProviderKind::Db2,
+            include_bytes!("../../../tests/fixtures/scrittura_server_db2.json").as_slice(),
+            "JSON",
+            false,
+        ),
+    ] {
+        let table = AdmissionTable::parse(provider, source).expect("fixture");
+        for measurement in &table.fixture().misure {
+            let server = table.server(&measurement.server_major).expect("major");
+            let result = crate::admission_gate::write_column(
+                &server,
+                &key("utf8", native, None),
+                TargetDimensions::default(),
+            );
+            if measured {
+                assert_eq!(result.expect("misurato"), vec![StoreRewrite::JsonNumbers]);
+            } else {
+                let error = result.expect_err("nessuna prova della coppia JSON nativa");
+                assert_eq!(error.category, ErrorCategory::Unsupported);
+                assert_eq!(error.phase, ErrorPhase::Prepare);
+                assert_eq!(error.remote_effect, crate::RemoteEffect::None);
+            }
+        }
+    }
+}

@@ -72,7 +72,7 @@ where
             &SqlText::new(table_name),
             &SqlText::new(table_type),
         )
-        .into_result(&statement)?;
+        .into_result_strict(&statement, "ODBC")?;
 
     // We assume tables always creates a result set, since it works like a SELECT statement.
     debug_assert_ne!(statement.num_result_cols().unwrap(), 0);

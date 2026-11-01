@@ -31,7 +31,7 @@ pub use self::{
     environment::Environment,
     logging::{log_diagnostic_record, log_diagnostics},
     sql_char::{OutputStringBuffer, SqlChar, SqlText, SzBuffer, slice_to_cow_utf8, slice_to_utf8},
-    sql_result::SqlResult,
+    sql_result::{ExtSqlReturn, SqlResult},
     statement::{AsStatementRef, ColumnType, Statement, StatementImpl, StatementRef},
     statement_connection::{StatementConnection, StatementParent},
 };

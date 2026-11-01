@@ -78,7 +78,7 @@ impl Environment {
                 odbc_sys::IS_INTEGER,
             )
         }
-        .into_sql_result("SQLSetEnvAttr")
+        .into_sql_result_strict(&super::sql_result::NoDiagnostics, "SQLSetEnvAttr")
     }
 
     pub fn set_connection_pooling_matching(&mut self, matching: AttrCpMatch) -> SqlResult<()> {
@@ -90,7 +90,7 @@ impl Environment {
                 odbc_sys::IS_INTEGER,
             )
         }
-        .into_sql_result("SQLSetEnvAttr")
+        .into_sql_result_strict(self, "SQLSetEnvAttr")
     }
 
     /// An allocated ODBC Environment handle
@@ -106,7 +106,7 @@ impl Environment {
             let mut handle = Handle::null();
             let result: SqlResult<()> =
                 SQLAllocHandle(HandleType::Env, Handle::null(), &mut handle)
-                    .into_sql_result("SQLAllocHandle");
+                    .into_sql_result_strict(&super::sql_result::NoDiagnostics, "SQLAllocHandle");
             result.on_success(|| Environment {
                 handle: handle.as_henv(),
             })
@@ -123,7 +123,7 @@ impl Environment {
                 version.into(),
                 0,
             )
-            .into_sql_result("SQLSetEnvAttr")
+            .into_sql_result_strict(self, "SQLSetEnvAttr")
         }
     }
 
@@ -132,7 +132,7 @@ impl Environment {
         let mut handle = Handle::null();
         unsafe {
             SQLAllocHandle(HandleType::Dbc, self.as_handle(), &mut handle)
-                .into_sql_result("SQLAllocHandle")
+                .into_sql_result_strict(self, "SQLAllocHandle")
                 .on_success(|| {
                     let handle = handle.as_hdbc();
                     #[cfg(not(feature = "structured_logging"))]
@@ -196,7 +196,7 @@ impl Environment {
                 null_mut(),
             )
         }
-        .into_sql_result("SQLDrivers")
+        .into_sql_result_strict(self, "SQLDrivers")
     }
 
     /// Use together with [`Environment::drivers_buffer_fill`] to list drivers descriptions and
@@ -240,7 +240,7 @@ impl Environment {
                 &mut length_attributes,
             )
         }
-        .into_sql_result("SQLDrivers")
+        .into_sql_result_strict(self, "SQLDrivers")
         .on_success(|| (length_description, length_attributes))
     }
 
@@ -284,7 +284,7 @@ impl Environment {
                 &mut length_description,
             )
         }
-        .into_sql_result("SQLDataSources")
+        .into_sql_result_strict(self, "SQLDataSources")
         .on_success(|| (length_name, length_description))
     }
 
@@ -325,6 +325,6 @@ impl Environment {
                 null_mut(),
             )
         }
-        .into_sql_result("SQLDataSources")
+        .into_sql_result_strict(self, "SQLDataSources")
     }
 }

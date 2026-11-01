@@ -181,7 +181,11 @@ pub unsafe trait FetchRowMember: CDataMut + Copy {
         col_index: u16,
         cursor: &mut StatementRef<'_>,
     ) -> Result<(), Error> {
-        unsafe { cursor.bind_col(col_index, self).into_result(cursor) }
+        unsafe {
+            cursor
+                .bind_col(col_index, self)
+                .into_result_strict(cursor, "ODBC")
+        }
     }
 }
 

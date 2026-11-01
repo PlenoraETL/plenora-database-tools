@@ -20,7 +20,11 @@ use std::{
 
 impl Drop for Connection<'_> {
     fn drop(&mut self) {
-        match self.connection.disconnect().into_result(&self.connection) {
+        match self
+            .connection
+            .disconnect()
+            .into_result_strict(&self.connection, "ODBC")
+        {
             Ok(()) => (),
             Err(Error::Diagnostics {
                 record,
@@ -48,7 +52,11 @@ impl Drop for Connection<'_> {
                     );
                 }
                 // Transaction might be rolled back or suspended. Now let's try again to disconnect.
-                if let Err(e) = self.connection.disconnect().into_result(&self.connection) {
+                if let Err(e) = self
+                    .connection
+                    .disconnect()
+                    .into_result_strict(&self.connection, "ODBC")
+                {
                     // Avoid panicking, if we already have a panic. We don't want to mask the
                     // original error.
                     if !panicking() {
@@ -226,7 +234,9 @@ impl<'c> Connection<'c> {
         }
         let query = SqlText::new(query);
         let mut statement = self.allocate_statement()?;
-        statement.set_async_enable(true).into_result(&statement)?;
+        statement
+            .set_async_enable(true)
+            .into_result_strict(&statement, "ODBC")?;
         execute_with_parameters_polling(statement, Some(&query), params, sleep).await
     }
 
@@ -351,7 +361,7 @@ impl<'c> Connection<'c> {
     pub fn prepare(&self, query: &str) -> Result<Prepared<StatementImpl<'_>>, Error> {
         let query = SqlText::new(query);
         let mut stmt = self.allocate_statement()?;
-        stmt.prepare(&query).into_result(&stmt)?;
+        stmt.prepare(&query).into_result_strict(&stmt, "ODBC")?;
         Ok(Prepared::new(stmt))
     }
 
@@ -407,7 +417,7 @@ impl<'c> Connection<'c> {
     ) -> Result<Prepared<StatementConnection<Connection<'c>>>, Error> {
         let query = SqlText::new(query);
         let mut stmt = self.allocate_statement()?;
-        stmt.prepare(&query).into_result(&stmt)?;
+        stmt.prepare(&query).into_result_strict(&stmt, "ODBC")?;
         // Safe: `handle` is a valid statement, and we are giving up ownership of `self`.
         let stmt = unsafe { StatementConnection::new(stmt.into_sys(), self) };
         Ok(Prepared::new(stmt))
@@ -475,28 +485,36 @@ impl<'c> Connection<'c> {
     pub fn set_autocommit(&self, enabled: bool) -> Result<(), Error> {
         self.connection
             .set_autocommit(enabled)
-            .into_result(&self.connection)
+            .into_result_strict(&self.connection, "ODBC")
     }
 
     /// To commit a transaction in manual-commit mode.
     pub fn commit(&self) -> Result<(), Error> {
-        self.connection.commit().into_result(&self.connection)
+        self.connection
+            .commit()
+            .into_result_strict(&self.connection, "ODBC")
     }
 
     /// To rollback a transaction in manual-commit mode.
     pub fn rollback(&self) -> Result<(), Error> {
-        self.connection.rollback().into_result(&self.connection)
+        self.connection
+            .rollback()
+            .into_result_strict(&self.connection, "ODBC")
     }
 
     /// Indicates the state of the connection. If `true` the connection has been lost. If `false`,
     /// the connection is still active.
     pub fn is_dead(&self) -> Result<bool, Error> {
-        self.connection.is_dead().into_result(&self.connection)
+        self.connection
+            .is_dead()
+            .into_result_strict(&self.connection, "ODBC")
     }
 
     /// Network packet size in bytes. Requries driver support.
     pub fn packet_size(&self) -> Result<u32, Error> {
-        self.connection.packet_size().into_result(&self.connection)
+        self.connection
+            .packet_size()
+            .into_result_strict(&self.connection, "ODBC")
     }
 
     /// Get the name of the database management system used by the connection.
@@ -504,7 +522,7 @@ impl<'c> Connection<'c> {
         let mut buf = Vec::new();
         self.connection
             .fetch_database_management_system_name(&mut buf)
-            .into_result(&self.connection)?;
+            .into_result_strict(&self.connection, "ODBC")?;
         let name = slice_to_utf8(&buf).unwrap();
         Ok(name)
     }
@@ -513,28 +531,28 @@ impl<'c> Connection<'c> {
     pub fn max_catalog_name_len(&self) -> Result<u16, Error> {
         self.connection
             .max_catalog_name_len()
-            .into_result(&self.connection)
+            .into_result_strict(&self.connection, "ODBC")
     }
 
     /// Maximum length of schema names.
     pub fn max_schema_name_len(&self) -> Result<u16, Error> {
         self.connection
             .max_schema_name_len()
-            .into_result(&self.connection)
+            .into_result_strict(&self.connection, "ODBC")
     }
 
     /// Maximum length of table names.
     pub fn max_table_name_len(&self) -> Result<u16, Error> {
         self.connection
             .max_table_name_len()
-            .into_result(&self.connection)
+            .into_result_strict(&self.connection, "ODBC")
     }
 
     /// Maximum length of column names.
     pub fn max_column_name_len(&self) -> Result<u16, Error> {
         self.connection
             .max_column_name_len()
-            .into_result(&self.connection)
+            .into_result_strict(&self.connection, "ODBC")
     }
 
     /// Get the name of the current catalog being used by the connection.
@@ -542,7 +560,7 @@ impl<'c> Connection<'c> {
         let mut buf = Vec::new();
         self.connection
             .fetch_current_catalog(&mut buf)
-            .into_result(&self.connection)?;
+            .into_result_strict(&self.connection, "ODBC")?;
         let name = slice_to_utf8(&buf).expect("Return catalog must be correctly encoded");
         Ok(name)
     }
@@ -777,7 +795,7 @@ impl<'c> Connection<'c> {
     fn allocate_statement(&self) -> Result<StatementImpl<'_>, Error> {
         self.connection
             .allocate_statement()
-            .into_result(&self.connection)
+            .into_result_strict(&self.connection, "ODBC")
     }
 }
 
@@ -833,10 +851,14 @@ impl ConnectionOptions {
     /// yourself.
     pub fn apply(&self, handle: &handles::Connection) -> Result<(), Error> {
         if let Some(timeout) = self.login_timeout_sec {
-            handle.set_login_timeout_sec(timeout).into_result(handle)?;
+            handle
+                .set_login_timeout_sec(timeout)
+                .into_result_strict(handle, "ODBC")?;
         }
         if let Some(packet_size) = self.packet_size {
-            handle.set_packet_size(packet_size).into_result(handle)?;
+            handle
+                .set_packet_size(packet_size)
+                .into_result_strict(handle, "ODBC")?;
         }
         Ok(())
     }

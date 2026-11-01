@@ -97,59 +97,125 @@
     },
     "src/cursor/block_cursor.rs": {
       "sha256": "605180d00a7c0527c0d8a636f23bd7ab6d4864a50d5f741abb1318f22c0d1c4b",
-      "reason": "fetch_with_diagnostics espone buffer e diagnostici prima della prossima chiamata ODBC."
+      "reason": "fetch_with_diagnostics espone buffer e diagnostici prima della prossima chiamata ODBC. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/execute.rs": {
-      "sha256": "5184f74d2769455418b1c3c3cefe69180fa705ee632d7d6747e50e47e5c8ce3b",
-      "reason": "Controllo immediato per SQLExecute/SQLExecDirect, ogni SQLPutData, SQLParamData e SQLNumResultCols nel percorso strict; attribuzione alla funzione reale; binding senza avvisi ignorati."
+      "sha256": "2d9555ae881c3be8d684cf79645d36604f2b5e77f785d54815ab75576d41322c",
+      "reason": "Controllo immediato per SQLExecute/SQLExecDirect, ogni SQLPutData, SQLParamData e SQLNumResultCols nel percorso strict; attribuzione alla funzione reale; binding senza avvisi ignorati. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/preallocated.rs": {
-      "sha256": "0f1843cb93beca35200057d67236327d19900b79ea7aca6eb64ab3d570b591be",
-      "reason": "into_cursor_strict: API opt-in per SQLExecDirect con diagnostici preservati."
+      "sha256": "b378168b7075322aac35699304e667c54fa12ca845a7c1de70a762d05a18e777",
+      "reason": "into_cursor_strict: API opt-in per SQLExecDirect con diagnostici preservati. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/prepared.rs": {
-      "sha256": "5885151491ae83615eafdae29a880f6f153b1a081b692072c9712497caa86acf",
-      "reason": "execute_strict e describe_param_strict: controlli immediati di esecuzione e descrittori di ammissione. Contatori parametri/righe strict, senza conversioni con panic."
+      "sha256": "fa6b4e3260f8a883777973365d4e93af2ec9fa20db60c1ddb98195468aa99d9f",
+      "reason": "execute_strict e describe_param_strict: controlli immediati di esecuzione e descrittori di ammissione. Contatori parametri/righe strict, senza conversioni con panic. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/error.rs": {
-      "sha256": "ad8348157b335f70ad1e6d3938eebe99c4c5666f51b03e7fbc197597d12e03ed",
-      "reason": "Conversione strict valuta ogni record: avvisi informativi registrati senza payload, perdita o significato ignoto rifiutati; SUCCESS_WITH_INFO privo di diagnostici rifiutato."
+      "sha256": "1906c19683d26e92079fff855db5a2ea24d6a1ceeaa031dc9caae4fd32e20af5",
+      "reason": "Conversione strict valuta ogni record: avvisi informativi registrati senza payload, perdita o significato ignoto rifiutati; SUCCESS_WITH_INFO privo di diagnostici rifiutato. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/result_set_metadata.rs": {
-      "sha256": "5ffa6934107b7eb9075eaf831efdf66237895ee3282ad5b072cf5d3b767bb3c9",
-      "reason": "col_data_type_strict verifica ogni attributo e descrizione prima della richiesta successiva; conversioni numeriche fallibili. Contatore colonne strict."
+      "sha256": "6f14ab64c8abd57191c9c69da3ea7de9fbc1896bc8a56ab57e21a75c8d2d7c93",
+      "reason": "col_data_type_strict verifica ogni attributo e descrizione prima della richiesta successiva; conversioni numeriche fallibili. Contatore colonne strict. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/handles/statement.rs": {
-      "sha256": "59a828fe43ed3a2e7fe16cf0cd1d799d81023d38ee0e887d44c2f87713e833b8",
-      "reason": "Varianti strict di nome e descrizione fermano gli avvisi prima dei retry interni."
+      "sha256": "77c526d989905d7827a86ac4f570ad586898f6b82c42183c4e0cdb5296da1d2e",
+      "reason": "Varianti strict di nome e descrizione fermano gli avvisi prima dei retry interni. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/columnar_bulk_inserter.rs": {
       "sha256": "efaeee90076b5d157ea4a019e5c6efbcc2ffff759c8bb770e007628dfe421ce2",
-      "reason": "execute_strict per array controlla SQLSetStmtAttr ed esecuzione; tutti i bind dei parametri rifiutano immediatamente gli avvisi."
+      "reason": "execute_strict per array controlla SQLSetStmtAttr ed esecuzione; tutti i bind dei parametri rifiutano immediatamente gli avvisi. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/parameter_collection.rs": {
       "sha256": "a9752f7a86ea2348cdb4f41e4fd7892f8abafd597c4fb906a1e4a10be0f453f9",
-      "reason": "Ogni SQLBindParameter scalare o slice rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict."
+      "reason": "Ogni SQLBindParameter scalare o slice rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/parameter_collection/tuple.rs": {
       "sha256": "6c9111b68c344fd005a6b38bb9361a7b24dc08141b9df85ec87c9422c0c05efc",
-      "reason": "Ogni SQLBindParameter delle tuple input/output rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict."
+      "reason": "Ogni SQLBindParameter delle tuple input/output rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/parameter/blob.rs": {
       "sha256": "d07ed9abcd30e1103dc3d6e899283fd8f4aad28e7eac72ba2cd474f9086478f4",
-      "reason": "Ogni bind dei parametri streaming rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict."
+      "reason": "Ogni bind dei parametri streaming rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/buffers/columnar.rs": {
       "sha256": "8eca3eecd5453288e915e87138d1c65f9155bb1a06be4726cc0ff5380cf9fe66",
-      "reason": "Ogni SQLBindCol rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict."
+      "reason": "Ogni SQLBindCol rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/cursor.rs": {
-      "sha256": "3efaccdbca633d90a2d9bc3da163c53d9261f7bf6913fb019965bc481481117e",
-      "reason": "Setup rowset controllato prima di ulteriori attributi o bind; avvisi degli attributi rifiutati anche fuori dalle API strict."
+      "sha256": "160ac63e8c86495bd98d14348ec5029016612780b933665ff03f0dac1e3c4fe3",
+      "reason": "Setup rowset controllato prima di ulteriori attributi o bind; avvisi degli attributi rifiutati anche fuori dalle API strict. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     },
     "src/handles/diagnostics.rs": {
       "sha256": "b65cb8ed01d39410bab81f593103baac03ec7526ec80ee0452f7bbf321a3a3df",
-      "reason": "Classificazione chiusa IBM CLI/Db2: avvisi di perdita e sconosciuti rifiutati, informativi riconosciuti ammessi; unica policy condivisa col provider."
+      "reason": "Classificazione chiusa IBM CLI/Db2: avvisi di perdita e sconosciuti rifiutati, informativi riconosciuti ammessi; unica policy condivisa col provider. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/connection.rs": {
+      "sha256": "ae23b65c2e3265dd5519401fef0ffe6d421e1bdddc435595be198f0262e40771",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/environment.rs": {
+      "sha256": "676976287719de82150c2feee87ff1a685e93dd38f574e4622d0000dbdb6fba2",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/handles.rs": {
+      "sha256": "2f348d858f737af4404272e9c58b0b1a05bc0f573140a3760fbce4dc5cdcb9c5",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/buffers/bin_column.rs": {
+      "sha256": "6f05bfc032eb1fafef651e836a81e2bf5bbc152c30cb6fb6dd0494959bb2e12b",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/buffers/row_vec.rs": {
+      "sha256": "6c0e5459dab35bb7aa637dd893135fbe47625274f95c0cc3986fab94e85d6230",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/buffers/text_column.rs": {
+      "sha256": "9426681cc6595e8a5d9a0ec640ccebb44ae7595e3f1589eb76a71baa6f0189f6",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/catalog/columns.rs": {
+      "sha256": "30ba80484f3aebe16402a73512de85018192a773ba51150c14203f88b662f16a",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/catalog/foreign_keys.rs": {
+      "sha256": "3ef86e0e646a2ad6858acb1d85cfe36242238628fee1bc176939ee0475f91613",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/catalog/primary_keys.rs": {
+      "sha256": "593117952ef1b6d06646954309f7ca47aedfcbf595c7ff179dff0c21e9af2283",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/catalog/tables.rs": {
+      "sha256": "2e047e9d828c952f22504a43e67cdb71dfec56c9a4a80640a1dd7135d522777d",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/cursor/polling_cursor.rs": {
+      "sha256": "91bdaca177ede44bf5bd1f6eb998a4e07ded5bfca72660505c9056793a88739a",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/handles/connection.rs": {
+      "sha256": "9c5dc21cbb95bcc7a9c6ab581fa8dbbf0272ff4c0c5c040904375ce0ec536762",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/handles/descriptor.rs": {
+      "sha256": "567a9cfaa943d9d71462f5613b38132045890b6a5650888aa9d0dbcef7c11018",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/handles/environment.rs": {
+      "sha256": "90ccc612fe322e8584f46adc8f07b19a2899e7195d8e840fcd238e6784c892d0",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/handles/sql_result.rs": {
+      "sha256": "eb61fd5b624da4bdac606fcca4a957605a1da7a48491a763ff69d967b862e284",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
     }
+  },
+  "strict_boundary": {
+    "source": "vendor/odbc-api/src/handles/sql_result.rs",
+    "guard": "scripts/check_odbc_strict.py",
+    "inventory_command": "python scripts/check_odbc_strict.py --inventory target/ci-fail/odbc-calls.txt",
+    "regressions": "crates/plenora-db-db2/src/exact_read_tests.rs"
   }
 }

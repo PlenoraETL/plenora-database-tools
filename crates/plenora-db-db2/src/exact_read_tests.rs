@@ -3,6 +3,50 @@ use plenora_database_core::{ErrorCategory, ErrorPhase};
 
 struct Diagnostic(Option<State>);
 
+#[test]
+fn raw_returns_capture_prepare_and_fetch_before_diagnostics_are_cleared() {
+    use odbc_api::handles::{ExtSqlReturn, SqlResult};
+    use odbc_api::sys::SqlReturn;
+    for function in [
+        "SQLPrepare",
+        "SQLFetch",
+        "SQLSetStmtAttr",
+        "SQLDescribeCol",
+        "SQLColAttribute",
+    ] {
+        for state in [None, Some(State(*b"01S02")), Some(State(*b"01ZZZ"))] {
+            let captured =
+                SqlReturn::SUCCESS_WITH_INFO.into_sql_result_strict(&Diagnostic(state), function);
+            assert!(captured.is_err());
+            // Simulate SQLNumParams clearing the driver's diagnostic area.
+            let error = captured
+                .into_result_strict(&Diagnostic(None), "SQLNumParams")
+                .unwrap_err();
+            match error {
+                odbc_api::Error::Diagnostics {
+                    function: actual,
+                    record,
+                } => {
+                    assert_eq!(actual, function);
+                    assert_eq!(Some(record.state), state);
+                    assert!(record.message.is_empty());
+                }
+                odbc_api::Error::NoDiagnostics { function: actual } => assert_eq!(actual, function),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        let accepted = SqlReturn::SUCCESS_WITH_INFO
+            .into_sql_result_strict(&Diagnostic(Some(State(*b"01003"))), function);
+        assert_eq!(accepted, SqlResult::Success(()));
+        let mut completed = Vec::new();
+        accepted
+            .on_success(|| completed.extend(["counter", "bind", "resize"]))
+            .into_result_strict(&Diagnostic(None), function)
+            .unwrap();
+        assert_eq!(completed, ["counter", "bind", "resize"]);
+    }
+}
+
 impl Diagnostics for Diagnostic {
     fn diagnostic_record(&self, number: i16, text: &mut [SqlChar]) -> Option<DiagnosticResult> {
         if number != 1 {

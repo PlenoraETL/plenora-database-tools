@@ -133,7 +133,7 @@ impl Connection<'_> {
                 pwd.ptr(),
                 pwd.len_char().try_into().unwrap(),
             )
-            .into_sql_result("SQLConnect")
+            .into_sql_result_strict(self, "SQLConnect")
         }
     }
 
@@ -184,13 +184,13 @@ impl Connection<'_> {
                 completed_connection_string.mut_actual_len_ptr(),
                 driver_completion,
             )
-            .into_sql_result("SQLDriverConnect")
+            .into_sql_result_strict(self, "SQLDriverConnect")
         }
     }
 
     /// Disconnect from an ODBC data source.
     pub fn disconnect(&mut self) -> SqlResult<()> {
-        unsafe { SQLDisconnect(self.handle).into_sql_result("SQLDisconnect") }
+        unsafe { SQLDisconnect(self.handle).into_sql_result_strict(self, "SQLDisconnect") }
     }
 
     /// Allocate a new statement handle. The `Statement` must not outlive the `Connection`.
@@ -198,7 +198,7 @@ impl Connection<'_> {
         let mut out = Handle::null();
         unsafe {
             SQLAllocHandle(HandleType::Stmt, self.as_handle(), &mut out)
-                .into_sql_result("SQLAllocHandle")
+                .into_sql_result_strict(self, "SQLAllocHandle")
                 .on_success(|| StatementImpl::new(out.as_hstmt()))
         }
     }
@@ -243,7 +243,7 @@ impl Connection<'_> {
     pub fn commit(&self) -> SqlResult<()> {
         unsafe {
             SQLEndTran(HandleType::Dbc, self.as_handle(), CompletionType::Commit)
-                .into_sql_result("SQLEndTran")
+                .into_sql_result_strict(self, "SQLEndTran")
         }
     }
 
@@ -251,7 +251,7 @@ impl Connection<'_> {
     pub fn rollback(&self) -> SqlResult<()> {
         unsafe {
             SQLEndTran(HandleType::Dbc, self.as_handle(), CompletionType::Rollback)
-                .into_sql_result("SQLEndTran")
+                .into_sql_result_strict(self, "SQLEndTran")
         }
     }
 
@@ -284,7 +284,7 @@ impl Connection<'_> {
                 binary_length(buf).try_into().unwrap(),
                 &mut string_length_in_bytes as *mut i16,
             )
-            .into_sql_result("SQLGetInfo");
+            .into_sql_result_strict(self, "SQLGetInfo");
 
             if res.is_err() {
                 return res;
@@ -301,7 +301,7 @@ impl Connection<'_> {
                     binary_length(buf).try_into().unwrap(),
                     &mut string_length_in_bytes as *mut i16,
                 )
-                .into_sql_result("SQLGetInfo");
+                .into_sql_result_strict(self, "SQLGetInfo");
 
                 if res.is_err() {
                     return res;
@@ -328,7 +328,7 @@ impl Connection<'_> {
                 size_of::<*mut u16>() as i16,
                 null_mut(),
             )
-            .into_sql_result("SQLGetInfo")
+            .into_sql_result_strict(self, "SQLGetInfo")
             .on_success(|| value)
         }
     }
@@ -369,7 +369,7 @@ impl Connection<'_> {
                 binary_length(buffer).try_into().unwrap(),
                 &mut string_length_in_bytes as *mut i32,
             )
-            .into_sql_result("SQLGetConnectAttr");
+            .into_sql_result_strict(self, "SQLGetConnectAttr");
 
             if res.is_err() {
                 return res;
@@ -384,7 +384,7 @@ impl Connection<'_> {
                     binary_length(buffer).try_into().unwrap(),
                     &mut string_length_in_bytes as *mut i32,
                 )
-                .into_sql_result("SQLGetConnectAttr");
+                .into_sql_result_strict(self, "SQLGetConnectAttr");
             }
 
             if res.is_err() {
@@ -435,7 +435,7 @@ impl Connection<'_> {
                 attribute.value(),
                 attribute.len(),
             )
-            .into_sql_result("SQLSetConnectAttr")
+            .into_sql_result_strict(self, "SQLSetConnectAttr")
         }
     }
 
@@ -453,7 +453,7 @@ impl Connection<'_> {
                 null_mut(),
             )
         }
-        .into_sql_result("SQLGetConnectAttr")
+        .into_sql_result_strict(self, "SQLGetConnectAttr")
         .on_success(|| {
             let handle = self.handle;
             #[cfg(not(feature = "structured_logging"))]

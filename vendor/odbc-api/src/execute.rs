@@ -143,7 +143,7 @@ pub(crate) unsafe fn execute_checked<S: Statement>(
                 },
             )?
         } else {
-            result.into_result(&statement)?
+            result.into_result_strict(&statement, "ODBC")?
         };
 
         let mut stmt = statement.as_stmt_ref();
@@ -157,7 +157,7 @@ pub(crate) unsafe fn execute_checked<S: Statement>(
                     if strict {
                         result.into_result_strict(&stmt, "SQLPutData")?;
                     } else {
-                        result.into_result(&stmt)?;
+                        result.into_result_strict(&stmt, "ODBC")?;
                     }
                 }
             }
@@ -168,7 +168,7 @@ pub(crate) unsafe fn execute_checked<S: Statement>(
         let columns = if strict {
             result.into_result_strict(&statement, "SQLNumResultCols")?
         } else {
-            result.into_result(&statement)?
+            result.into_result_strict(&statement, "ODBC")?
         };
         if columns == 0 {
             Ok(None)
@@ -208,7 +208,7 @@ where
             .on_success(|| false)
             .on_no_data(|| false)
             .on_need_data(|| true)
-            .into_result(&statement)?;
+            .into_result_strict(&statement, "ODBC")?;
 
         let mut stmt = statement.as_stmt_ref();
         if need_data {
@@ -218,7 +218,7 @@ where
                 // Loop over all batches within each blob
                 while let Some(batch) = blob_ref.next_batch().map_err(Error::FailedReadingInput)? {
                     let result = wait_for(|| stmt.put_binary_batch(batch), &mut sleep).await;
-                    result.into_result(&stmt)?;
+                    result.into_result_strict(&stmt, "ODBC")?;
                 }
             }
         }
@@ -226,7 +226,7 @@ where
         // Check if a result set has been created.
         let num_result_cols = wait_for(|| statement.num_result_cols(), &mut sleep)
             .await
-            .into_result(&statement)?;
+            .into_result_strict(&statement, "ODBC")?;
         if num_result_cols == 0 {
             Ok(None)
         } else {
@@ -245,7 +245,7 @@ unsafe fn next_blob_param<'a>(
     let maybe_ptr = if strict {
         result.into_result_strict(stmt, "SQLParamData")?
     } else {
-        result.into_result(stmt)?
+        result.into_result_strict(stmt, "ODBC")?
     };
     if let Some(blob_ptr) = maybe_ptr {
         // The safe interfaces currently exclusively bind pointers to `Blob` trait objects

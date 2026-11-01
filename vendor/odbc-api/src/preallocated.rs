@@ -529,7 +529,7 @@ where
     pub fn row_count(&mut self) -> Result<Option<usize>, Error> {
         self.statement
             .row_count()
-            .into_result(&self.statement)
+            .into_result_strict(&self.statement, "ODBC")
             .map(|count| {
                 // ODBC returns -1 in case a row count is not available
                 if count == -1 {
@@ -553,7 +553,7 @@ where
     pub fn set_query_timeout_sec(&mut self, timeout_sec: usize) -> Result<(), Error> {
         self.statement
             .set_query_timeout_sec(timeout_sec)
-            .into_result(&self.statement)
+            .into_result_strict(&self.statement, "ODBC")
     }
 
     /// The number of seconds to wait for a SQL statement to execute before returning to the
@@ -566,7 +566,7 @@ where
     pub fn query_timeout_sec(&mut self) -> Result<usize, Error> {
         self.statement
             .query_timeout_sec()
-            .into_result(&self.statement)
+            .into_result_strict(&self.statement, "ODBC")
     }
 
     /// Call this method to enable asynchronous polling mode on the statement.
@@ -577,7 +577,7 @@ where
     pub fn into_polling(mut self) -> Result<PreallocatedPolling<S>, Error> {
         self.statement
             .set_async_enable(true)
-            .into_result(&self.statement)?;
+            .into_result_strict(&self.statement, "ODBC")?;
         Ok(PreallocatedPolling::new(self.statement))
     }
 }

@@ -497,7 +497,7 @@ where
             unsafe {
                 self.stmt
                     .bind_input_parameter(self.parameter_index, self.column)
-                    .into_result(&self.stmt)?
+                    .into_result_strict(&self.stmt, "ODBC")?
             }
         }
         Ok(())

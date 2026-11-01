@@ -234,7 +234,7 @@ pub trait Statement: AnyHandle {
                 target.mut_indicator_ptr(),
             )
         }
-        .into_sql_result("SQLBindCol")
+        .into_sql_result_strict(self, "SQLBindCol")
     }
 
     /// Returns the next row set in the result set.
@@ -249,7 +249,7 @@ pub trait Statement: AnyHandle {
     ///
     /// Fetch dereferences bound column pointers.
     unsafe fn fetch(&mut self) -> SqlResult<()> {
-        unsafe { SQLFetch(self.as_sys()) }.into_sql_result("SQLFetch")
+        unsafe { SQLFetch(self.as_sys()) }.into_sql_result_strict(self, "SQLFetch")
     }
 
     /// Retrieves data for a single column in the result set or for a single parameter.
@@ -264,12 +264,13 @@ pub trait Statement: AnyHandle {
                 target.mut_indicator_ptr(),
             )
         }
-        .into_sql_result("SQLGetData")
+        .into_sql_result_strict(self, "SQLGetData")
     }
 
     /// Release all column buffers bound by `bind_col`. Except bookmark column.
     fn unbind_cols(&mut self) -> SqlResult<()> {
-        unsafe { SQLFreeStmt(self.as_sys(), FreeStmtOption::Unbind) }.into_sql_result("SQLFreeStmt")
+        unsafe { SQLFreeStmt(self.as_sys(), FreeStmtOption::Unbind) }
+            .into_sql_result_strict(self, "SQLFreeStmt")
     }
 
     /// Bind an integer to hold the number of rows retrieved with fetch in the current row set.
@@ -288,7 +289,7 @@ pub trait Statement: AnyHandle {
                 IS_POINTER,
             )
         }
-        .into_sql_result("SQLSetStmtAttr")
+        .into_sql_result_strict(self, "SQLSetStmtAttr")
     }
 
     /// The number of seconds to wait for an SQL statement to execute before returning to the
@@ -305,7 +306,7 @@ pub trait Statement: AnyHandle {
         let value = timeout_sec as *mut usize as Pointer;
         // This is safe, because `.as_sys`  returns a valid statement handle.
         unsafe { sql_set_stmt_attr(self.as_sys(), StatementAttribute::QueryTimeout, value, 0) }
-            .into_sql_result("SQLSetStmtAttr")
+            .into_sql_result_strict(self, "SQLSetStmtAttr")
     }
 
     /// The number of seconds to wait for an SQL statement to execute before returning to the
@@ -324,7 +325,7 @@ pub trait Statement: AnyHandle {
                 null_mut(),
             )
         }
-        .into_sql_result("SQLGetStmtAttr")
+        .into_sql_result_strict(self, "SQLGetStmtAttr")
         .on_success(|| out)
     }
 
@@ -340,7 +341,7 @@ pub trait Statement: AnyHandle {
                 null_mut(),
                 IS_POINTER,
             )
-            .into_sql_result("SQLSetStmtAttr")
+            .into_sql_result_strict(self, "SQLSetStmtAttr")
         }
     }
 
@@ -397,10 +398,10 @@ pub trait Statement: AnyHandle {
                 &mut decimal_digits,
                 &mut nullable,
             )
-            .into_sql_result("SQLDescribeCol")
+            .into_sql_result_strict(self, "SQLDescribeCol")
         };
 
-        if res.is_err() || (strict && matches!(res, SqlResult::SuccessWithInfo(_))) {
+        if res.is_err() {
             return res;
         }
 
@@ -441,12 +442,12 @@ pub trait Statement: AnyHandle {
                 statement.len_char().try_into().unwrap(),
             )
         }
-        .into_sql_result("SQLExecDirect")
+        .into_sql_result_strict(self, "SQLExecDirect")
     }
 
     /// Close an open cursor.
     fn close_cursor(&mut self) -> SqlResult<()> {
-        unsafe { SQLCloseCursor(self.as_sys()) }.into_sql_result("SQLCloseCursor")
+        unsafe { SQLCloseCursor(self.as_sys()) }.into_sql_result_strict(self, "SQLCloseCursor")
     }
 
     /// Send an SQL statement to the data source for preparation. The application can include one or
@@ -460,7 +461,7 @@ pub trait Statement: AnyHandle {
                 statement.len_char().try_into().unwrap(),
             )
         }
-        .into_sql_result("SQLPrepare")
+        .into_sql_result_strict(self, "SQLPrepare")
     }
 
     /// Executes a statement prepared by `prepare`. After the application processes or discards the
@@ -480,7 +481,7 @@ pub trait Statement: AnyHandle {
     /// * [`SqlResult::NoData`] if a searched update or delete statement did not affect any rows at
     ///   the data source.
     unsafe fn execute(&mut self) -> SqlResult<()> {
-        unsafe { SQLExecute(self.as_sys()) }.into_sql_result("SQLExecute")
+        unsafe { SQLExecute(self.as_sys()) }.into_sql_result_strict(self, "SQLExecute")
     }
 
     /// Number of columns in result set.
@@ -489,7 +490,7 @@ pub trait Statement: AnyHandle {
     fn num_result_cols(&mut self) -> SqlResult<i16> {
         let mut out: i16 = 0;
         unsafe { SQLNumResultCols(self.as_sys(), &mut out) }
-            .into_sql_result("SQLNumResultCols")
+            .into_sql_result_strict(self, "SQLNumResultCols")
             .on_success(|| out)
     }
 
@@ -497,7 +498,7 @@ pub trait Statement: AnyHandle {
     fn num_params(&mut self) -> SqlResult<u16> {
         let mut out: i16 = 0;
         unsafe { SQLNumParams(self.as_sys(), &mut out) }
-            .into_sql_result("SQLNumParams")
+            .into_sql_result_strict(self, "SQLNumParams")
             .on_success(|| out.try_into().unwrap())
     }
 
@@ -517,7 +518,7 @@ pub trait Statement: AnyHandle {
                 0,
             )
         }
-        .into_sql_result("SQLSetStmtAttr")
+        .into_sql_result_strict(self, "SQLSetStmtAttr")
     }
 
     /// Gets the batch size for bulk cursors, if retrieving many rows at once.
@@ -533,7 +534,7 @@ pub trait Statement: AnyHandle {
                 null_mut(),
             )
         }
-        .into_sql_result("SQLGetStmtAttr")
+        .into_sql_result_strict(self, "SQLGetStmtAttr")
         .on_success(|| out)
     }
 
@@ -555,7 +556,7 @@ pub trait Statement: AnyHandle {
                 0,
             )
         }
-        .into_sql_result("SQLSetStmtAttr")
+        .into_sql_result_strict(self, "SQLSetStmtAttr")
     }
 
     /// Sets the binding type to columnar binding for batch cursors.
@@ -576,7 +577,7 @@ pub trait Statement: AnyHandle {
                 0,
             )
         }
-        .into_sql_result("SQLSetStmtAttr")
+        .into_sql_result_strict(self, "SQLSetStmtAttr")
     }
 
     fn set_metadata_id(&mut self, metadata_id: bool) -> SqlResult<()> {
@@ -587,7 +588,7 @@ pub trait Statement: AnyHandle {
                 metadata_id as usize as Pointer,
                 0,
             )
-            .into_sql_result("SQLSetStmtAttr")
+            .into_sql_result_strict(self, "SQLSetStmtAttr")
         }
     }
 
@@ -607,7 +608,7 @@ pub trait Statement: AnyHandle {
                 on as usize as Pointer,
                 0,
             )
-            .into_sql_result("SQLSetStmtAttr")
+            .into_sql_result_strict(self, "SQLSetStmtAttr")
         }
     }
 
@@ -648,7 +649,7 @@ pub trait Statement: AnyHandle {
                 parameter.indicator_ptr() as *mut isize,
             )
         }
-        .into_sql_result("SQLBindParameter")
+        .into_sql_result_strict(self, "SQLBindParameter")
     }
 
     /// Binds a buffer holding a single parameter to a parameter marker in an SQL statement. To bind
@@ -686,7 +687,7 @@ pub trait Statement: AnyHandle {
                 parameter.mut_indicator_ptr(),
             )
         }
-        .into_sql_result("SQLBindParameter")
+        .into_sql_result_strict(self, "SQLBindParameter")
     }
 
     /// Binds an input stream to a parameter marker in an SQL statement. Use this to stream large
@@ -723,7 +724,7 @@ pub trait Statement: AnyHandle {
                 parameter.indicator_ptr() as *mut isize,
             )
         }
-        .into_sql_result("SQLBindParameter")
+        .into_sql_result_strict(self, "SQLBindParameter")
     }
 
     /// `true` if a given column in a result set is unsigned or not a numeric type, `false`
@@ -825,7 +826,7 @@ pub trait Statement: AnyHandle {
         &mut self,
         column_number: u16,
         buffer: &mut Vec<SqlChar>,
-        strict: bool,
+        _strict: bool,
     ) -> SqlResult<()> {
         // String length in bytes, not characters. Terminating zero is excluded.
         let mut string_length_in_bytes: i16 = 0;
@@ -841,9 +842,9 @@ pub trait Statement: AnyHandle {
                 &mut string_length_in_bytes as *mut i16,
                 null_mut(),
             )
-            .into_sql_result("SQLColAttribute");
+            .into_sql_result_strict(self, "SQLColAttribute");
 
-            if res.is_err() || (strict && matches!(res, SqlResult::SuccessWithInfo(_))) {
+            if res.is_err() {
                 return res;
             }
 
@@ -864,7 +865,10 @@ pub trait Statement: AnyHandle {
                     &mut string_length_in_bytes as *mut i16,
                     null_mut(),
                 )
-                .into_sql_result("SQLColAttribute");
+                .into_sql_result_strict(self, "SQLColAttribute");
+            }
+            if res.is_err() {
+                return res;
             }
             // Resize buffer to exact string length without terminal zero
             resize_to_fit_without_tz(buffer, string_length_in_bytes.try_into().unwrap());
@@ -893,7 +897,7 @@ pub trait Statement: AnyHandle {
                 &mut out as *mut Len,
             )
         }
-        .into_sql_result("SQLColAttribute")
+        .into_sql_result_strict(self, "SQLColAttribute")
         .on_success(|| {
             #[cfg(not(feature = "structured_logging"))]
             trace!(
@@ -916,7 +920,8 @@ pub trait Statement: AnyHandle {
     /// given StatementHandle.
     fn reset_parameters(&mut self) -> SqlResult<()> {
         unsafe {
-            SQLFreeStmt(self.as_sys(), FreeStmtOption::ResetParams).into_sql_result("SQLFreeStmt")
+            SQLFreeStmt(self.as_sys(), FreeStmtOption::ResetParams)
+                .into_sql_result_strict(self, "SQLFreeStmt")
         }
     }
 
@@ -941,7 +946,7 @@ pub trait Statement: AnyHandle {
                 &mut nullable,
             )
         }
-        .into_sql_result("SQLDescribeParam")
+        .into_sql_result_strict(self, "SQLDescribeParam")
         .on_success(|| ColumnType {
             data_type: DataType::new(data_type, parameter_size, decimal_digits),
             nullability: Nullability::new(nullable),
@@ -957,10 +962,10 @@ pub trait Statement: AnyHandle {
         unsafe {
             let mut param_id: Pointer = null_mut();
             // Use cases for `PARAM_DATA_AVAILABLE` and `NO_DATA` not implemented yet.
-            match SQLParamData(self.as_sys(), &mut param_id as *mut Pointer) {
-                SqlReturn::NEED_DATA => SqlResult::Success(Some(param_id)),
-                other => other.into_sql_result("SQLParamData").on_success(|| None),
-            }
+            SQLParamData(self.as_sys(), &mut param_id as *mut Pointer)
+                .into_sql_result_strict(self, "SQLParamData")
+                .on_success(|| None)
+                .on_need_data(|| Some(param_id))
         }
     }
 
@@ -984,7 +989,7 @@ pub trait Statement: AnyHandle {
                 column_name.ptr(),
                 column_name.len_char().try_into().unwrap(),
             )
-            .into_sql_result("SQLColumns")
+            .into_sql_result_strict(self, "SQLColumns")
         }
     }
 
@@ -1013,7 +1018,7 @@ pub trait Statement: AnyHandle {
                 table_type.ptr(),
                 table_type.len_char().try_into().unwrap(),
             )
-            .into_sql_result("SQLTables")
+            .into_sql_result_strict(self, "SQLTables")
         }
     }
 
@@ -1072,7 +1077,7 @@ pub trait Statement: AnyHandle {
                 table_name.ptr(),
                 table_name.len_char().try_into().unwrap(),
             )
-            .into_sql_result("SQLPrimaryKeys")
+            .into_sql_result_strict(self, "SQLPrimaryKeys")
         }
     }
 
@@ -1105,7 +1110,7 @@ pub trait Statement: AnyHandle {
                 fk_table_name.ptr(),
                 fk_table_name.len_char().try_into().unwrap(),
             )
-            .into_sql_result("SQLForeignKeys")
+            .into_sql_result_strict(self, "SQLForeignKeys")
         }
     }
 
@@ -1126,7 +1131,7 @@ pub trait Statement: AnyHandle {
                 batch.as_ptr() as Pointer,
                 batch.len().try_into().unwrap(),
             )
-            .into_sql_result("SQLPutData")
+            .into_sql_result_strict(self, "SQLPutData")
         }
     }
 
@@ -1140,7 +1145,7 @@ pub trait Statement: AnyHandle {
         let mut ret = 0isize;
         unsafe {
             SQLRowCount(self.as_sys(), &mut ret as *mut isize)
-                .into_sql_result("SQLRowCount")
+                .into_sql_result_strict(self, "SQLRowCount")
                 .on_success(|| ret)
         }
     }
@@ -1164,9 +1169,9 @@ pub trait Statement: AnyHandle {
             //   Driver Manager has not notified the application. In polling mode, an asynchronous
             //   operation is not in progress.
             SQLCompleteAsync(self.handle_type(), self.as_handle(), &mut ret.0 as *mut _)
-                .into_sql_result("SQLCompleteAsync")
+                .into_sql_result_strict(self, "SQLCompleteAsync")
         }
-        .on_success(|| ret.into_sql_result(function_name))
+        .on_success(|| ret.into_sql_result_strict(self, function_name))
     }
 
     /// Determines whether more results are available on a statement containing SELECT, UPDATE,
@@ -1180,7 +1185,7 @@ pub trait Statement: AnyHandle {
     /// Since a different result set might have a different schema, care needs to be taken that
     /// bound buffers are used correctly.
     unsafe fn more_results(&mut self) -> SqlResult<()> {
-        unsafe { SQLMoreResults(self.as_sys()).into_sql_result("SQLMoreResults") }
+        unsafe { SQLMoreResults(self.as_sys()).into_sql_result_strict(self, "SQLMoreResults") }
     }
 
     /// Application Row Descriptor (ARD) associated with the statement handle. It describes the row
@@ -1199,7 +1204,7 @@ pub trait Statement: AnyHandle {
                 0,
                 null_mut(),
             )
-            .into_sql_result("SQLGetStmtAttr")
+            .into_sql_result_strict(self, "SQLGetStmtAttr")
             .on_success(|| Descriptor::new(hdesc))
         }
     }
@@ -1219,7 +1224,7 @@ pub trait Statement: AnyHandle {
                 0,
                 null_mut(),
             )
-            .into_sql_result("SQLGetStmtAttr")
+            .into_sql_result_strict(self, "SQLGetStmtAttr")
             .on_success(|| Descriptor::new(hdesc))
         }
     }

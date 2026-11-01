@@ -89,7 +89,7 @@ where
             schema_name.map(SqlText::new).as_ref(),
             &SqlText::new(table_name),
         )
-        .into_result(&statement)?;
+        .into_result_strict(&statement, "ODBC")?;
     // SAFETY: primary_keys puts stmt into cursor state.
     let cursor = unsafe { CursorImpl::new(statement) };
     Ok(cursor)

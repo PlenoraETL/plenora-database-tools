@@ -1,3 +1,4 @@
+use super::{Diagnostics, State};
 use odbc_sys::SqlReturn;
 
 /// Result of an ODBC function call. Variants hold the same meaning as the constants associated with
@@ -11,6 +12,11 @@ pub enum SqlResult<T> {
     SuccessWithInfo(T),
     /// Meaning depends on the function emitting `NoData`.
     NoData,
+    /// Diagnostic captured before another driver call can overwrite it.
+    Rejected {
+        function: &'static str,
+        diagnostic: Option<(State, i32)>,
+    },
     /// Emmitted by execute in case delayed parameters have been bound and their input values are
     /// now required.
     NeedData,
@@ -38,7 +44,7 @@ impl SqlResult<()> {
 impl<T> SqlResult<T> {
     /// `True` if variant is [`SqlResult::Error`].
     pub fn is_err(&self) -> bool {
-        matches!(self, SqlResult::Error { .. })
+        matches!(self, SqlResult::Error { .. } | SqlResult::Rejected { .. })
     }
 
     /// Applies `f` to any value wrapped in `Success` or `SuccessWithInfo`.
@@ -50,6 +56,13 @@ impl<T> SqlResult<T> {
             SqlResult::Success(v) => SqlResult::Success(f(v)),
             SqlResult::SuccessWithInfo(v) => SqlResult::SuccessWithInfo(f(v)),
             SqlResult::Error { function } => SqlResult::Error { function },
+            SqlResult::Rejected {
+                function,
+                diagnostic,
+            } => SqlResult::Rejected {
+                function,
+                diagnostic,
+            },
             SqlResult::StillExecuting => SqlResult::StillExecuting,
             SqlResult::NoData => SqlResult::NoData,
             SqlResult::NeedData => SqlResult::NeedData,
@@ -82,26 +95,104 @@ impl<T> SqlResult<T> {
 
     pub fn unwrap(self) -> T {
         match self {
-            SqlResult::Success(v) | SqlResult::SuccessWithInfo(v) => v,
+            SqlResult::Success(v) => v,
             _ => panic!("Invalid unwrapping of SqlResult"),
         }
     }
 }
 
+/// The only SQLRETURN conversion. Diagnostics are consumed before any state transition.
 pub trait ExtSqlReturn {
-    fn into_sql_result(self, function_name: &'static str) -> SqlResult<()>;
+    fn into_sql_result_strict(
+        self,
+        handle: &(impl Diagnostics + ?Sized),
+        function: &'static str,
+    ) -> SqlResult<()>;
 }
 
 impl ExtSqlReturn for SqlReturn {
-    fn into_sql_result(self, function: &'static str) -> SqlResult<()> {
+    fn into_sql_result_strict(
+        self,
+        handle: &(impl Diagnostics + ?Sized),
+        function: &'static str,
+    ) -> SqlResult<()> {
         match self {
             SqlReturn::SUCCESS => SqlResult::Success(()),
-            SqlReturn::SUCCESS_WITH_INFO => SqlResult::SuccessWithInfo(()),
-            SqlReturn::ERROR => SqlResult::Error { function },
+            SqlReturn::SUCCESS_WITH_INFO => {
+                SqlResult::SuccessWithInfo(()).check_strict(handle, function)
+            }
+            SqlReturn::ERROR => SqlResult::Error { function }.check_strict(handle, function),
             SqlReturn::NO_DATA => SqlResult::NoData,
             SqlReturn::NEED_DATA => SqlResult::NeedData,
             SqlReturn::STILL_EXECUTING => SqlResult::StillExecuting,
-            r => panic!("Unexpected return value '{r:?}' for ODBC function '{function}'"),
+            _ => SqlResult::Rejected {
+                function,
+                diagnostic: None,
+            },
         }
+    }
+}
+
+impl<T> SqlResult<T> {
+    /// Normalize warnings immediately; admitted warnings continue through the success path.
+    pub fn check_strict(
+        self,
+        handle: &(impl Diagnostics + ?Sized),
+        function: &'static str,
+    ) -> Self {
+        match self {
+            Self::SuccessWithInfo(value) => {
+                let mut found = false;
+                for number in 1..=i16::MAX {
+                    let Some(record) = handle.diagnostic_record(number, &mut []) else {
+                        return if found {
+                            Self::Success(value)
+                        } else {
+                            Self::Rejected {
+                                function,
+                                diagnostic: None,
+                            }
+                        };
+                    };
+                    found = true;
+                    if record.state.prevents_exact_result() {
+                        return Self::Rejected {
+                            function,
+                            diagnostic: Some((record.state, record.native_error)),
+                        };
+                    }
+                    log::warn!(
+                        "{}: SQLSTATE {}, native code {}",
+                        function,
+                        record.state.as_str(),
+                        record.native_error
+                    );
+                }
+                // The complete diagnostic chain could not be proved safe.
+                Self::Rejected {
+                    function,
+                    diagnostic: None,
+                }
+            }
+            Self::Error { function } => Self::Rejected {
+                function,
+                diagnostic: handle
+                    .diagnostic_record(1, &mut [])
+                    .map(|r| (r.state, r.native_error)),
+            },
+            other => other,
+        }
+    }
+}
+
+/// Calls without a diagnostic handle must fail closed on warnings.
+pub(crate) struct NoDiagnostics;
+impl Diagnostics for NoDiagnostics {
+    fn diagnostic_record(
+        &self,
+        _: i16,
+        _: &mut [super::SqlChar],
+    ) -> Option<super::DiagnosticResult> {
+        None
     }
 }

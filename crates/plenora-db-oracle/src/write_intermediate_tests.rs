@@ -177,6 +177,45 @@ fn closed_pairs_keep_the_admission_diagnosis_before_intermediate_checks() {
     plan.mode = WriteMode::Append;
     plan.keys.clear();
     plan.columns.truncate(1);
+    plan.columns[0].data_type = DataType::Timestamp(
+        plenora_database_core::arrow::schema::TimeUnit::Microsecond,
+        Some("UTC".into()),
+    );
+    let server = crate::write_admission::ServerFacts {
+        major: "23".to_owned(),
+        version: "23.0.0.0.0".to_owned(),
+        charset: "AL32UTF8".to_owned(),
+        national_charset: "AL16UTF16".to_owned(),
+        nls_comp: "BINARY".to_owned(),
+    };
+    let error = plan
+        .admit(
+            &[catalog("TIMESTAMP(0) WITH LOCAL TIME ZONE", 1).0],
+            &server,
+        )
+        .unwrap_err();
+    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert_eq!(error.phase, ErrorPhase::Prepare);
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::None
+    );
+    assert_eq!(
+        error.message,
+        plenora_database_core::write_admission::REFUSED_PAIR
+    );
+    assert!(plan.columns[0].target_type.is_none());
+    assert!(plan
+        .insert_statement(&[ParameterValue::String("private".to_owned())])
+        .is_err());
+}
+
+#[test]
+fn measured_json_remains_refused_without_a_qualified_intermediate_type() {
+    let mut plan = plan();
+    plan.mode = WriteMode::Append;
+    plan.keys.clear();
+    plan.columns.truncate(1);
     plan.columns[0].data_type = DataType::Utf8;
     let server = crate::write_admission::ServerFacts {
         major: "23".to_owned(),
@@ -194,7 +233,7 @@ fn closed_pairs_keep_the_admission_diagnosis_before_intermediate_checks() {
     );
     assert_eq!(
         error.message,
-        plenora_database_core::write_admission::REFUSED_PAIR
+        "tipo intermedio Oracle non identico o non qualificato"
     );
     assert!(plan.columns[0].target_type.is_none());
     assert!(plan

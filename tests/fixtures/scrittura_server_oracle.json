@@ -8882,32 +8882,26 @@
     {
      "arrow": "utf8",
      "nativo": "JSON",
-     "esito": "illeggibile",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
-      "oggetto",
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "json_numeri"
+      }
+     ],
+     "riscritti": [
       "uno_virgola_zero",
       "esponente",
       "fuori_double",
       "cinquanta_cifre",
-      "zero_negativo",
-      "frazione",
-      "diciassette_cifre",
-      "intero_breve",
-      "ordine",
-      "chiave_ripetuta",
-      "spazi",
-      "escape",
-      "non_bmp",
-      "annidato",
-      "lista",
-      "scalare_stringa",
-      "scalare_null",
-      "oggetto_vuoto",
-      "nullo"
+      "zero_negativo"
      ],
-     "per_eccesso": []
+     "rifiutati": [
+      "chiave_ripetuta"
+     ],
+     "per_eccesso": [
+      "frazione",
+      "diciassette_cifre"
+     ]
     },
     {
      "arrow": "binary",

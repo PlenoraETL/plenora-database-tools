@@ -2,7 +2,6 @@ mod block_cursor;
 mod concurrent_block_cursor;
 mod polling_cursor;
 
-use log::warn;
 use odbc_sys::HStmt;
 
 use crate::{
@@ -10,8 +9,7 @@ use crate::{
     buffers::Indicator,
     error::ExtendResult,
     handles::{
-        AsStatementRef, CDataMut, DiagnosticStream, SqlResult, State, Statement,
-        StatementConnection, StatementRef, log_diagnostic_record,
+        AsStatementRef, CDataMut, SqlResult, State, Statement, StatementConnection, StatementRef,
     },
     parameter::{Binary, CElement, Text, VarCell, VarKind, WideText},
 };
@@ -155,7 +153,7 @@ impl CursorRow<'_> {
     ) -> Result<(), Error> {
         self.statement
             .get_data(col_or_param_num, target)
-            .into_result(&self.statement)
+            .into_result_strict(&self.statement, "ODBC")
             .provide_context_for_diagnostic(|record, function| {
                 if record.state == State::INDICATOR_VARIABLE_REQUIRED_BUT_NOT_SUPPLIED {
                     Error::UnableToRepresentNull(record)
@@ -342,7 +340,7 @@ where
         if let Err(e) = self
             .statement
             .end_cursor_scope()
-            .into_result(&self.statement)
+            .into_result_strict(&self.statement, "ODBC")
         {
             // Avoid panicking, if we already have a panic. We don't want to mask the original
             // error.
@@ -511,55 +509,9 @@ unsafe fn bind_row_set_buffer_to_statement(
         let size = row_set_buffer.row_array_size();
         let sql_result = stmt.set_row_array_size(size);
 
-        if matches!(sql_result, SqlResult::SuccessWithInfo(_)) {
-            return sql_result.into_result_strict(&stmt, "SQLSetStmtAttr");
-        }
-
-        // Search for "option value changed". A QODBC driver reported "option value changed", yet
-        // set the value to `723477590136`. We want to panic if something like this happens.
-        //
-        // See: <https://github.com/pacman82/odbc-api/discussions/742#discussioncomment-13887516>
-        let mut diagnostic_stream = DiagnosticStream::new(&stmt);
-        // We just rememeber that we have seen "option value changed", before asking for the array
-        // size, in order to not mess with other diagnostic records.
-        let mut option_value_changed = false;
-        while let Some(record) = diagnostic_stream.next() {
-            log_diagnostic_record(record);
-            if record.state == State::OPTION_VALUE_CHANGED {
-                option_value_changed = true;
-            }
-        }
-        if option_value_changed {
-            // Now rejecting a too large buffer size is save, but not if the value is something
-            // even larger after. Zero is also suspicious.
-            let actual_size = stmt
-                .row_array_size()
-                .into_result_strict(&stmt, "SQLSetStmtAttr")?;
-            #[cfg(not(feature = "structured_logging"))]
-            warn!(
-                "Row array size set by the driver to: {actual_size}. Desired size had been: {size}"
-            );
-            #[cfg(feature = "structured_logging")]
-            warn!(
-                target: "odbc_api",
-                requested = size,
-                actual = actual_size;
-                "Row array size overridden by driver"
-            );
-            if actual_size > size || actual_size == 0 {
-                panic!(
-                    "Your ODBC buffer changed the array size for bulk fetchin in an unsound way. \
-                    To prevent undefined behavior the application must panic. You can try \
-                    different batch sizes for bulk fetching, or report a bug with your ODBC driver \
-                    provider. This behavior has been observed with QODBC drivers. If you are using \
-                    one try fetching row by row rather than the faster bulk fetch."
-                )
-            }
-        }
-
         sql_result
             // We already logged diagnostic records then we were looking for Option value changed
-            .into_result_without_logging(&stmt)
+            .into_result_strict(&stmt, "ODBC")
             // SAP anywhere has been seen to return with an "invalid attribute" error instead of
             // a success with "option value changed" info. Let us map invalid attributes during
             // setting row set array size to something more precise.
@@ -584,14 +536,9 @@ fn error_handling_for_fetch(
     buffer: &impl RowSetBuffer,
     error_for_truncation: bool,
 ) -> Result<bool, Error> {
-    // Only check for truncation if a) the user indicated that he wants to error instead of just
-    // ignoring it and if there is at least one diagnostic record. ODBC standard requires a
-    // diagnostic record to be there in case of truncation. Sadly we can not rely on this particular
-    // record to be there, as the driver could generate a large amount of diagnostic records,
-    // while we are limited in the amount we can check. The second check serves as an optimization
-    // for the happy path.
+    // Check buffer indicators only for a completed, strictly validated fetch.
     if error_for_truncation
-        && result == SqlResult::SuccessWithInfo(())
+        && result == SqlResult::Success(())
         && let Some(TruncationInfo {
             indicator,
             buffer_index,
@@ -606,7 +553,7 @@ fn error_handling_for_fetch(
     let has_row = result
         .on_success(|| true)
         .on_no_data(|| false)
-        .into_result(&stmt.as_stmt_ref())
+        .into_result_strict(&stmt.as_stmt_ref(), "ODBC")
         // Oracle's ODBC driver does not support 64Bit integers. Furthermore, it does not
         // tell it to the user when binding parameters, but rather now then we fetch
         // results. The error code returned is `HY004` rather than `HY003` which should
@@ -626,7 +573,8 @@ fn error_handling_for_fetch(
 fn unbind_buffer_from_cursor(cursor: &mut impl AsStatementRef) -> Result<(), Error> {
     // Now that we have cursor out of block cursor, we need to unbind the buffer.
     let mut stmt = cursor.as_stmt_ref();
-    stmt.unbind_cols().into_result(&stmt)?;
-    stmt.unset_num_rows_fetched().into_result(&stmt)?;
+    stmt.unbind_cols().into_result_strict(&stmt, "ODBC")?;
+    stmt.unset_num_rows_fetched()
+        .into_result_strict(&stmt, "ODBC")?;
     Ok(())
 }
