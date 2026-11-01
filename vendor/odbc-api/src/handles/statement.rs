@@ -358,6 +358,24 @@ pub trait Statement: AnyHandle {
         column_number: u16,
         column_description: &mut ColumnDescription,
     ) -> SqlResult<()> {
+        self.describe_col_checked(column_number, column_description, false)
+    }
+
+    /// Reject warnings before internal retries can clear diagnostics.
+    fn describe_col_strict(
+        &mut self,
+        column_number: u16,
+        column_description: &mut ColumnDescription,
+    ) -> SqlResult<()> {
+        self.describe_col_checked(column_number, column_description, true)
+    }
+
+    fn describe_col_checked(
+        &mut self,
+        column_number: u16,
+        column_description: &mut ColumnDescription,
+        strict: bool,
+    ) -> SqlResult<()> {
         let name = &mut column_description.name;
         // Use maximum available capacity.
         name.resize(name.capacity(), 0);
@@ -382,7 +400,7 @@ pub trait Statement: AnyHandle {
             .into_sql_result("SQLDescribeCol")
         };
 
-        if res.is_err() {
+        if res.is_err() || (strict && matches!(res, SqlResult::SuccessWithInfo(_))) {
             return res;
         }
 
@@ -391,7 +409,7 @@ pub trait Statement: AnyHandle {
         if name_length + 1 > clamp_small_int(name.len()) {
             // Buffer is to small to hold name, retry with larger buffer
             name.resize(name_length as usize + 1, 0);
-            self.describe_col(column_number, column_description)
+            self.describe_col_checked(column_number, column_description, strict)
         } else {
             name.resize(name_length as usize, 0);
             column_description.data_type = DataType::new(data_type, column_size, decimal_digits);
@@ -795,6 +813,20 @@ pub trait Statement: AnyHandle {
     /// The column alias, if it applies. If the column alias does not apply, the column name is
     /// returned. If there is no column name or a column alias, an empty string is returned.
     fn col_name(&mut self, column_number: u16, buffer: &mut Vec<SqlChar>) -> SqlResult<()> {
+        self.col_name_checked(column_number, buffer, false)
+    }
+
+    /// Reject warnings before internal retries can clear diagnostics.
+    fn col_name_strict(&mut self, column_number: u16, buffer: &mut Vec<SqlChar>) -> SqlResult<()> {
+        self.col_name_checked(column_number, buffer, true)
+    }
+
+    fn col_name_checked(
+        &mut self,
+        column_number: u16,
+        buffer: &mut Vec<SqlChar>,
+        strict: bool,
+    ) -> SqlResult<()> {
         // String length in bytes, not characters. Terminating zero is excluded.
         let mut string_length_in_bytes: i16 = 0;
         // Let's utilize all of `buf`s capacity.
@@ -811,7 +843,7 @@ pub trait Statement: AnyHandle {
             )
             .into_sql_result("SQLColAttribute");
 
-            if res.is_err() {
+            if res.is_err() || (strict && matches!(res, SqlResult::SuccessWithInfo(_))) {
                 return res;
             }
 

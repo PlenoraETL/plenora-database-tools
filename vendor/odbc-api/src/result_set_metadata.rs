@@ -44,6 +44,13 @@ pub trait ResultSetMetadata: AsStatementRef {
         stmt.num_result_cols().into_result(&stmt)
     }
 
+    /// Read the result-column count without accepting warnings.
+    fn num_result_cols_strict(&mut self) -> Result<i16, Error> {
+        let mut stmt = self.as_stmt_ref();
+        stmt.num_result_cols()
+            .into_result_strict(&stmt, "SQLNumResultCols")
+    }
+
     /// `true` if a given column in a result set is unsigned or not a numeric type, `false`
     /// otherwise.
     ///
@@ -200,6 +207,171 @@ pub trait ResultSetMetadata: AsStatementRef {
         };
         Ok(dt)
     }
+
+    /// Read every type attribute with immediate warning checks.
+    fn col_data_type_strict(&mut self, column_number: u16) -> Result<DataType, Error> {
+        // There is some repetition of knowledge here, about how SqlDataType maps to DataType.
+        // Maybe we can unify this with [`DataType::new`].
+
+        let mut stmt = self.as_stmt_ref();
+        let kind = stmt
+            .col_concise_type(column_number)
+            .into_result_strict(&stmt, "SQLColAttribute")?;
+        let dt = match kind {
+            SqlDataType::UNKNOWN_TYPE => DataType::Unknown,
+            SqlDataType::EXT_VAR_BINARY => DataType::Varbinary {
+                length: NonZeroUsize::new(
+                    (stmt
+                        .col_octet_length(column_number)
+                        .into_result_strict(&stmt, "SQLColAttribute")?)
+                    .max(0) as usize,
+                ),
+            },
+            SqlDataType::EXT_LONG_VAR_BINARY => DataType::LongVarbinary {
+                length: NonZeroUsize::new(
+                    (stmt
+                        .col_octet_length(column_number)
+                        .into_result_strict(&stmt, "SQLColAttribute")?)
+                    .max(0) as usize,
+                ),
+            },
+            SqlDataType::EXT_BINARY => DataType::Binary {
+                length: NonZeroUsize::new(
+                    (stmt
+                        .col_octet_length(column_number)
+                        .into_result_strict(&stmt, "SQLColAttribute")?)
+                    .max(0) as usize,
+                ),
+            },
+            SqlDataType::EXT_W_VARCHAR => DataType::WVarchar {
+                length: NonZeroUsize::new(
+                    (stmt
+                        .col_display_size(column_number)
+                        .into_result_strict(&stmt, "SQLColAttribute")?)
+                    .max(0) as usize,
+                ),
+            },
+            SqlDataType::EXT_W_CHAR => DataType::WChar {
+                length: NonZeroUsize::new(
+                    (stmt
+                        .col_display_size(column_number)
+                        .into_result_strict(&stmt, "SQLColAttribute")?)
+                    .max(0) as usize,
+                ),
+            },
+            SqlDataType::EXT_LONG_VARCHAR => DataType::LongVarchar {
+                length: NonZeroUsize::new(
+                    (stmt
+                        .col_display_size(column_number)
+                        .into_result_strict(&stmt, "SQLColAttribute")?)
+                    .max(0) as usize,
+                ),
+            },
+            SqlDataType::EXT_W_LONG_VARCHAR => DataType::WLongVarchar {
+                length: NonZeroUsize::new(
+                    (stmt
+                        .col_display_size(column_number)
+                        .into_result_strict(&stmt, "SQLColAttribute")?)
+                    .max(0) as usize,
+                ),
+            },
+            SqlDataType::CHAR => DataType::Char {
+                length: NonZeroUsize::new(
+                    (stmt
+                        .col_display_size(column_number)
+                        .into_result_strict(&stmt, "SQLColAttribute")?)
+                    .max(0) as usize,
+                ),
+            },
+            SqlDataType::VARCHAR => DataType::Varchar {
+                length: NonZeroUsize::new(
+                    (stmt
+                        .col_display_size(column_number)
+                        .into_result_strict(&stmt, "SQLColAttribute")?)
+                    .max(0) as usize,
+                ),
+            },
+            SqlDataType::NUMERIC => DataType::Numeric {
+                precision: stmt
+                    .col_precision(column_number)
+                    .into_result_strict(&stmt, "SQLColAttribute")?
+                    .try_into()
+                    .map_err(|_| Error::NoDiagnostics {
+                        function: "SQLColAttribute range",
+                    })?,
+                scale: stmt
+                    .col_scale(column_number)
+                    .into_result_strict(&stmt, "SQLColAttribute")?
+                    .try_into()
+                    .map_err(|_| Error::NoDiagnostics {
+                        function: "SQLColAttribute range",
+                    })?,
+            },
+            SqlDataType::DECIMAL => DataType::Decimal {
+                precision: stmt
+                    .col_precision(column_number)
+                    .into_result_strict(&stmt, "SQLColAttribute")?
+                    .try_into()
+                    .map_err(|_| Error::NoDiagnostics {
+                        function: "SQLColAttribute range",
+                    })?,
+                scale: stmt
+                    .col_scale(column_number)
+                    .into_result_strict(&stmt, "SQLColAttribute")?
+                    .try_into()
+                    .map_err(|_| Error::NoDiagnostics {
+                        function: "SQLColAttribute range",
+                    })?,
+            },
+            SqlDataType::INTEGER => DataType::Integer,
+            SqlDataType::SMALLINT => DataType::SmallInt,
+            SqlDataType::FLOAT => DataType::Float {
+                precision: stmt
+                    .col_precision(column_number)
+                    .into_result_strict(&stmt, "SQLColAttribute")?
+                    .try_into()
+                    .map_err(|_| Error::NoDiagnostics {
+                        function: "SQLColAttribute range",
+                    })?,
+            },
+            SqlDataType::REAL => DataType::Real,
+            SqlDataType::DOUBLE => DataType::Double,
+            SqlDataType::DATE => DataType::Date,
+            SqlDataType::TIME => DataType::Time {
+                precision: stmt
+                    .col_precision(column_number)
+                    .into_result_strict(&stmt, "SQLColAttribute")?
+                    .try_into()
+                    .map_err(|_| Error::NoDiagnostics {
+                        function: "SQLColAttribute range",
+                    })?,
+            },
+            SqlDataType::TIMESTAMP => DataType::Timestamp {
+                precision: stmt
+                    .col_precision(column_number)
+                    .into_result_strict(&stmt, "SQLColAttribute")?
+                    .try_into()
+                    .map_err(|_| Error::NoDiagnostics {
+                        function: "SQLColAttribute range",
+                    })?,
+            },
+            SqlDataType::EXT_BIG_INT => DataType::BigInt,
+            SqlDataType::EXT_TINY_INT => DataType::TinyInt,
+            SqlDataType::EXT_BIT => DataType::Bit,
+            other => {
+                let mut description = ColumnDescription::default();
+                description.name.reserve(1024);
+                stmt.describe_col_strict(column_number, &mut description)
+                    .into_result_strict(&stmt, "SQLDescribeCol")?;
+                DataType::Other {
+                    data_type: other,
+                    column_size: description.data_type.column_size(),
+                    decimal_digits: description.data_type.decimal_digits(),
+                }
+            }
+        };
+        Ok(dt)
+    }
 }
 
 /// Buffer sizes able to hold the display size of each column in utf-8 encoding. You may call this
@@ -215,7 +387,13 @@ pub trait ResultSetMetadata: AsStatementRef {
 pub fn utf8_display_sizes(
     metadata: &mut impl ResultSetMetadata,
 ) -> Result<impl Iterator<Item = Result<Option<NonZeroUsize>, Error>> + '_, Error> {
-    let num_cols: u16 = metadata.num_result_cols()?.try_into().unwrap();
+    let num_cols: u16 =
+        metadata
+            .num_result_cols()?
+            .try_into()
+            .map_err(|_| Error::NoDiagnostics {
+                function: "SQLColAttribute range",
+            })?;
     let it = (1..(num_cols + 1)).map(move |col_index| {
         // Ask driver for buffer length
         let max_str_len = if let Some(encoded_len) = metadata.col_data_type(col_index)?.utf8_len() {
@@ -239,7 +417,12 @@ pub struct ColumnNamesIt<'c, C: ?Sized> {
 
 impl<'c, C: ResultSetMetadata + ?Sized> ColumnNamesIt<'c, C> {
     fn new(cursor: &'c mut C) -> Result<Self, Error> {
-        let num_cols = cursor.num_result_cols()?.try_into().unwrap();
+        let num_cols = cursor
+            .num_result_cols()?
+            .try_into()
+            .map_err(|_| Error::NoDiagnostics {
+                function: "SQLColAttribute range",
+            })?;
         Ok(Self {
             cursor,
             // Some ODBC drivers do not report the required size to hold the column name. Starting

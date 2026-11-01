@@ -68,6 +68,65 @@ impl PostgresProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn live_duplicate_result_names_require_aliases() {
+        use plenora_database_core::transaction::{Statement, TransactionOptions};
+        let Some(dsn) = live_dsn_or_skip() else {
+            return;
+        };
+        let provider = PostgresProvider::insecure_local_with_batch_rows(2);
+        let secret = SecretString::new(dsn);
+        let cancellation = NeverCancelled;
+        let budget = PostgresProvider::test_budget().expect("budget");
+        let mut tx = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .expect("transazione");
+        let rows = tx
+            .query(&Statement::new("SELECT 1 AS x, 2 AS x"), &cancellation)
+            .await
+            .expect("posizioni");
+        assert_eq!(
+            rows[0].values(),
+            &[ParameterValue::I32(1), ParameterValue::I32(2)]
+        );
+        assert!(rows[0]
+            .try_get("x")
+            .expect_err("ambiguita")
+            .message
+            .contains("alias"));
+        tx.rollback(&cancellation).await.expect("rollback");
+        // Origini diverse producono field_id diversi: non bastava controllare gli id.
+        let mut query: QueryOperation = serde_json::from_value(serde_json::json!({
+            "source": {"object": {"schema": "plenora_fixture", "object": "events"}, "alias": "e"},
+            "projection": [
+                {"expression": {"kind": "column", "column": {"relation": "e", "field": "event_id"}}, "alias": "x"},
+                {"expression": {"kind": "column", "column": {"relation": "e", "field": "region_id"}}, "alias": "x"}
+            ],
+            "filter": null, "having": null, "row_limit": 1
+        })).expect("query");
+        let result = provider
+            .query_with_test_budget(&secret, &query, &ParameterBag::default(), &cancellation)
+            .await;
+        let error = result.err().expect("schema ambiguo");
+        assert!(error.message.contains("alias"));
+        query.projection[1].alias = Some("region".to_owned());
+        let mut stream = provider
+            .query_with_test_budget(&secret, &query, &ParameterBag::default(), &cancellation)
+            .await
+            .expect("alias distinti");
+        assert!(stream
+            .next_batch(&cancellation)
+            .await
+            .expect("batch")
+            .is_some());
+    }
     use crate::parameter_codec::typed_filter_parameter_types;
     use crate::types::ColumnKind;
     use arrow_array::{ArrayRef, Int64Array, RecordBatch};

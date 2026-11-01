@@ -81,10 +81,40 @@ fn mapping_conversion_is_explicit_and_preserves_column_value_pairs() {
         ],
     )])
     .expect("result set")
-    .into_mappings();
+    .into_mappings()
+    .unwrap();
     assert_eq!(mappings[0].get("id"), Some(&ParameterValue::I64(3)));
     assert_eq!(
         mappings[0].get("name"),
         Some(&ParameterValue::String("Ada".to_owned()))
+    );
+}
+
+#[test]
+fn mappings_refuse_duplicate_names_without_exposing_payload() {
+    let row = plenora_database_core::Row::try_new(
+        std::sync::Arc::from(["duplicate".to_owned(), "duplicate".to_owned()]),
+        vec![ParameterValue::I64(1), ParameterValue::I64(2)],
+    )
+    .unwrap();
+    let result = QueryResult::from_rows(vec![row]).unwrap();
+    let error = result.into_mappings().unwrap_err();
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::DataMapping
+    );
+    assert!(!error.message.contains("duplicate"));
+}
+
+#[test]
+fn empty_mappings_also_refuse_duplicate_column_metadata() {
+    let result = QueryResult::with_columns(
+        Arc::from(["secret".to_owned(), "secret".to_owned()]),
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        result.into_mappings().unwrap_err().category,
+        ErrorCategory::DataMapping
     );
 }

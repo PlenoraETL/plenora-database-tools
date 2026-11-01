@@ -22,6 +22,37 @@ use odbc_sys::SQLGetDiagRec as sql_get_diag_rec;
 pub struct State(pub [u8; SQLSTATE_SIZE]);
 
 impl State {
+    /// Whether this diagnostic prevents an exact result. Closed classification from
+    /// IBM Db2 SQLSTATE messages and IBM CLI SQLSTATE cross-reference:
+    /// https://www.ibm.com/docs/en/db2/11.5.x?topic=messages-sqlstate
+    /// https://public.dhe.ibm.com/ps/products/db2/info/vr7/html/db2l0/sqlstate.htm
+    ///
+    /// Known loss: truncation (01004, 01S07), incomplete results (01005,
+    /// 0100E, 01503), date adjustment (01506), lost digits (01507), NULL
+    /// substitution (01515, 01519, 01520), character substitution (01517),
+    /// arithmetic NULL elimination (01524), row errors (01S01), restricted
+    /// character repertoire (01539), substring NULL (01544), malformed mixed
+    /// data (01547), division NULL (01564), NaN/NULL substitution (01565),
+    /// invalid decryption (01658), name truncation (01665), MQ truncation (01H51).
+    /// IBM platform-specific codes are conservatively shared:
+    /// https://www.ibm.com/docs/en/i/7.5.0?topic=codes-listing-sqlstate-values
+    /// Privilege warnings 01006/01007 do not change cell values.
+    /// Unknown/generic/application warnings remain unsafe: their state alone
+    /// cannot prove exactness. Class 22 and every other error remain errors.
+    /// 01S02 can change MAX_LENGTH/MAX_ROWS, so it is unsafe too.
+    pub fn prevents_exact_result(&self) -> bool {
+        match self.as_str() {
+            "01004" | "01S07" | "01005" | "0100E" | "01503" | "01506" | "01507" | "01515"
+            | "01519" | "01520" | "01517" | "01524" | "01S01" | "01S02" | "01539" | "01544"
+            | "01547" | "01564" | "01565" | "01658" | "01665" | "01H51" => true,
+            // Informational SQL semantics, privileges, cursor/performance or DDL.
+            "01003" | "01006" | "01007" | "0100C" | "0100D" | "01504" | "01508" | "01509"
+            | "01516" | "01521" | "01522" | "01523" | "01526" | "01543" | "01545" | "01550"
+            | "01560" | "01589" => false,
+            _ => true,
+        }
+    }
+
     /// Can be returned from SQLDisconnect
     pub const INVALID_STATE_TRANSACTION: State = State(*b"25000");
     /// Given the specified Attribute value, an invalid value was specified in ValuePtr.

@@ -69,10 +69,12 @@ unsafe fn bind_parameters(
 
         // Reset parameters so we do not dereference stale once by mistake if we call
         // `exec_direct`.
-        statement.reset_parameters().into_result(statement)?;
+        statement
+            .reset_parameters()
+            .into_result_strict(statement, "SQLFreeStmt")?;
         let result = statement
             .set_paramset_size(parameter_set_size)
-            .into_result(statement);
+            .into_result_strict(statement, "SQLSetStmtAttr");
         // If setting parameter size is not supported, we can ignore the error in case we want to
         // set it to 1, because 1 is the default and it could not have been set to something else.
         //
@@ -111,7 +113,7 @@ where
     unsafe { execute_checked(statement, query, false) }
 }
 
-unsafe fn execute_checked<S: Statement>(
+pub(crate) unsafe fn execute_checked<S: Statement>(
     mut statement: S,
     query: Option<&SqlText<'_>>,
     strict: bool,
@@ -127,43 +129,48 @@ unsafe fn execute_checked<S: Statement>(
 
         // If delayed parameters (e.g. input streams) are bound we might need to put data in order
         // to execute.
-        let need_data = result
+        let result = result
             .on_success(|| false)
             .on_no_data(|| false)
-            .on_need_data(|| true)
-            .into_result(&statement)?;
+            .on_need_data(|| true);
+        let need_data = if strict {
+            result.into_result_strict(
+                &statement,
+                if query.is_some() {
+                    "SQLExecDirect"
+                } else {
+                    "SQLExecute"
+                },
+            )?
+        } else {
+            result.into_result(&statement)?
+        };
 
         let mut stmt = statement.as_stmt_ref();
         if need_data {
             // Check if any delayed parameters have been bound which stream data to the database at
             // statement execution time. Loops over each bound stream.
-            while let Some(blob_ref) = next_blob_param(&mut stmt)? {
+            while let Some(blob_ref) = next_blob_param(&mut stmt, strict)? {
                 // Loop over all batches within each blob
                 while let Some(batch) = blob_ref.next_batch().map_err(Error::FailedReadingInput)? {
-                    stmt.put_binary_batch(batch).into_result(&stmt)?;
+                    let result = stmt.put_binary_batch(batch);
+                    if strict {
+                        result.into_result_strict(&stmt, "SQLPutData")?;
+                    } else {
+                        result.into_result(&stmt)?;
+                    }
                 }
             }
         }
 
-        if strict {
-            use crate::handles::{Diagnostics, Record};
-            if let Some(diagnostic) = statement.diagnostic_record(1, &mut []) {
-                return Err(Error::Diagnostics {
-                    record: Record {
-                        state: diagnostic.state,
-                        native_error: diagnostic.native_error,
-                        message: Vec::new(),
-                    },
-                    function: if query.is_some() {
-                        "SQLExecDirect"
-                    } else {
-                        "SQLExecute"
-                    },
-                });
-            }
-        }
-        // Check if a result set has been created.
-        if statement.num_result_cols().into_result(&statement)? == 0 {
+        // Discover results only after each execution/streaming diagnostic was checked.
+        let result = statement.num_result_cols();
+        let columns = if strict {
+            result.into_result_strict(&statement, "SQLNumResultCols")?
+        } else {
+            result.into_result(&statement)?
+        };
+        if columns == 0 {
             Ok(None)
         } else {
             // Safe: `statement` is in cursor state.
@@ -207,7 +214,7 @@ where
         if need_data {
             // Check if any delayed parameters have been bound which stream data to the database at
             // statement execution time. Loops over each bound stream.
-            while let Some(blob_ref) = next_blob_param(&mut stmt)? {
+            while let Some(blob_ref) = next_blob_param(&mut stmt, false)? {
                 // Loop over all batches within each blob
                 while let Some(batch) = blob_ref.next_batch().map_err(Error::FailedReadingInput)? {
                     let result = wait_for(|| stmt.put_binary_batch(batch), &mut sleep).await;
@@ -232,8 +239,14 @@ where
 
 unsafe fn next_blob_param<'a>(
     stmt: &mut StatementRef<'a>,
+    strict: bool,
 ) -> Result<Option<&'a mut dyn Blob>, Error> {
-    let maybe_ptr = stmt.param_data().into_result(stmt)?;
+    let result = stmt.param_data();
+    let maybe_ptr = if strict {
+        result.into_result_strict(stmt, "SQLParamData")?
+    } else {
+        result.into_result(stmt)?
+    };
     if let Some(blob_ptr) = maybe_ptr {
         // The safe interfaces currently exclusively bind pointers to `Blob` trait objects
         let blob_ptr: *mut &mut dyn Blob = unsafe { transmute(blob_ptr) };

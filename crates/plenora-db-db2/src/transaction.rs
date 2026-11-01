@@ -239,7 +239,7 @@ impl Db2Transaction {
                         let ordinal = u16::try_from(index)
                             .map_err(|_| array_error("troppi parametri Db2"))?;
                         prepared
-                            .describe_param(ordinal)
+                            .describe_param_strict(ordinal)
                             .map(|description| description.data_type)
                             .map_err(|error| driver_error(&error, ErrorPhase::Prepare))
                     })
@@ -251,7 +251,7 @@ impl Db2Transaction {
                 inserter.set_num_rows(encoded.rows);
                 encoded.fill(&mut inserter)?;
                 if inserter
-                    .execute()
+                    .execute_strict()
                     .map_err(|error| driver_error(&error, ErrorPhase::Write))?
                     .is_some()
                 {
@@ -579,12 +579,12 @@ fn admit_rows(
     catalog: &[Option<plenora_database_core::operand_admission::OperandType>],
 ) -> Result<Vec<Vec<ParameterValue>>> {
     let count = prepared
-        .num_params()
+        .num_params_strict()
         .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
     let operands = (1..=count)
         .map(|index| {
             prepared
-                .describe_param(index)
+                .describe_param_strict(index)
                 .map(|described| described.data_type)
                 .map_err(|error| driver_error(&error, ErrorPhase::Prepare))
         })
@@ -619,7 +619,7 @@ pub fn bind_described(
     values: &[ParameterValue],
 ) -> Result<Vec<crate::parameter::Bound>> {
     let count = prepared
-        .num_params()
+        .num_params_strict()
         .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
     if usize::from(count) != values.len() {
         return Err(transaction_error(
@@ -631,7 +631,7 @@ pub fn bind_described(
     let described = (1..=count)
         .map(|index| {
             prepared
-                .describe_param(index)
+                .describe_param_strict(index)
                 .map(|parameter| parameter.data_type)
                 .map_err(|error| driver_error(&error, ErrorPhase::Prepare))
         })
@@ -662,8 +662,14 @@ fn execute_control(
     sql: &str,
     phase: ErrorPhase,
 ) -> Result<()> {
-    let cursor = connection
-        .execute(sql, (), Some(timeout))
+    let mut statement = connection
+        .preallocate()
+        .map_err(|error| driver_error(&error, phase))?;
+    statement
+        .set_query_timeout_sec(timeout)
+        .map_err(|error| driver_error(&error, phase))?;
+    let cursor = statement
+        .into_cursor_strict(sql, ())
         .map_err(|error| driver_error(&error, phase))?;
     if cursor.is_some() {
         return Err(transaction_error(
@@ -692,7 +698,7 @@ fn execute_statement(
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
     sent.mark_sent();
     let has_cursor = statement
-        .execute(parameters.as_slice())
+        .execute_strict(parameters.as_slice())
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?
         .is_some();
     if has_cursor {
@@ -703,7 +709,7 @@ fn execute_statement(
         ));
     }
     let row_count = statement
-        .row_count()
+        .row_count_strict()
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
     match row_count {
         Some(rows) => Ok(u64::try_from(rows).unwrap_or(u64::MAX)),
@@ -754,7 +760,7 @@ fn query_rows(
     )?;
     let column_count = usize::try_from(
         cursor
-            .num_result_cols()
+            .num_result_cols_strict()
             .map_err(|error| driver_error(&error, ErrorPhase::Read))?,
     )
     .map_err(|_| {
@@ -777,7 +783,7 @@ fn query_rows(
         names.push(crate::exact_read::column_name(&mut cursor, index)?);
         types.push(
             cursor
-                .col_data_type(index)
+                .col_data_type_strict(index)
                 .map_err(|error| driver_error(&error, ErrorPhase::Read))?,
         );
         crate::exact_read::check(
@@ -960,25 +966,34 @@ pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<Paramet
 }
 
 pub fn canonical_timestamp(value: &str) -> Result<String> {
-    // Il canone e il microsecondo: un TIMESTAMP(9) o (12) con cifre oltre si
-    // rifiuta, invece di troncarle nella formattazione.
-    if plenora_database_core::parameter_fidelity::has_sub_microsecond(value) {
-        return Err(transaction_error(
+    let invalid = || {
+        transaction_error(
             ErrorCategory::DataMapping,
             ErrorPhase::Read,
-            "timestamp query Db2 oltre il microsecondo",
-        ));
+            "timestamp query Db2 non rappresentabile",
+        )
+    };
+    // Chrono conserva solo nove cifre: separare prima la frazione Db2 (0..12).
+    let whole = value.get(..19).ok_or_else(invalid)?;
+    let suffix = value.get(19..).ok_or_else(invalid)?;
+    let fraction = if suffix.is_empty() {
+        ""
+    } else {
+        suffix
+            .strip_prefix('.')
+            .filter(|s| !s.is_empty())
+            .ok_or_else(invalid)?
+    };
+    if fraction.len() > 12 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid());
     }
-    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d-%H.%M.%S%.f"))
-        .map(|value| value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string())
-        .map_err(|_| {
-            transaction_error(
-                ErrorCategory::DataMapping,
-                ErrorPhase::Read,
-                "timestamp query Db2 non rappresentabile",
-            )
-        })
+    let timestamp = chrono::NaiveDateTime::parse_from_str(whole, "%Y-%m-%d %H:%M:%S")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(whole, "%Y-%m-%d-%H.%M.%S"))
+        .map_err(|_| invalid())?;
+    Ok(format!(
+        "{}.{fraction:0<6}",
+        timestamp.format("%Y-%m-%dT%H:%M:%S")
+    ))
 }
 
 const fn type_name(data_type: DataType) -> &'static str {

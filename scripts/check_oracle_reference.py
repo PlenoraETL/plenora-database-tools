@@ -50,6 +50,8 @@ RESULT = ROOT / "assurance-results" / "oracle-reference.json"
 TIMEOUT = 30 * 60
 REQUIRED_LIVE_TESTS = frozenset(
     {
+        "live_duplicate_result_names_preserve_positions",
+
         "live_caller_stream_fetch_failure_requires_recovery",
         "live_parameter_values_bind_exactly_or_are_refused",
         "live_generated_decimal_values_bind_exactly_or_are_refused",
@@ -108,7 +110,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_binary_float_in_json_reads_the_stored_value",
     }
 )
-PYTHON_LIVE_EXPECTED = 7
+PYTHON_LIVE_EXPECTED = 9
 SERVER_VERSION_SQL = (
     "SELECT VERSION FROM PRODUCT_COMPONENT_VERSION "
     "WHERE PRODUCT LIKE 'Oracle%Database%' FETCH FIRST 1 ROW ONLY"

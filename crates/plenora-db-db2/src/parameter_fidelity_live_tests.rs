@@ -582,8 +582,8 @@ async fn live_arrow_read_returns_floating_point_values_exactly() {
 }
 
 /// Un TIMESTAMP(12) con cifre oltre il microsecondo: i decoder le troncavano
-/// formattando a sei cifre. Ora rifiutano, sul percorso transazionale e su
-/// quello Arrow; il microsecondo esatto resta leggibile.
+/// formattando a sei cifre. La query conserva le cifre; Arrow rifiuta
+/// quelle non rappresentabili. Il microsecondo esatto resta leggibile.
 #[tokio::test]
 #[ignore = "richiede Db2 LUW live esplicito"]
 async fn live_sub_microsecond_timestamps_are_refused_on_read() {
@@ -635,8 +635,8 @@ async fn live_sub_microsecond_timestamps_are_refused_on_read() {
         ErrorCategory::DataMapping
     );
     assert_eq!(
-        queried.expect_err("query oltre il microsecondo").category,
-        ErrorCategory::DataMapping
+        queried.expect("query esatta")[0].values()[0],
+        ParameterValue::Timestamp("2024-01-01T10:20:30.123456700000".into())
     );
 }
 

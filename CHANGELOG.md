@@ -6,6 +6,22 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## 9.0.0 - in preparazione
+
+- Modifica incompatibile Rust: `Row::get(&self, name: &str)` restituisce
+  `Result<Option<&ParameterValue>>`; `QueryResult::into_mappings(self)`
+  restituisce `Result<Vec<BTreeMap<String, ParameterValue>>>`. Entrambi
+  rifiutano nomi duplicati con `DataMapping`, senza deprecazione; l'accesso
+  posizionale resta disponibile. Lo stesso controllo protegge checkpoint,
+  mapping SDK/CLI e schemi Arrow anche con field id distinti.
+- Porting della correttiva 8.0.4 (#142): temporali SQL Server e Db2 oltre il
+  microsecondo conservati esattamente nei risultati testuali o rifiutati
+  quando non rappresentabili; datetimeoffset conserva l'istante UTC.
+- Gli avvisi Db2 informativi documentati non fanno fallire letture e
+  scritture rigorose. Troncamenti, sostituzioni, risultati incompleti e
+  diagnostiche sconosciute restano rifiutati; tutti i record vengono valutati
+  senza includere payload nei messaggi pubblici.
+
 ## 8.0.2 — 2026-10-26
 
 Patch: due correzioni nel driver Oracle vendorizzato, nessun cambiamento di

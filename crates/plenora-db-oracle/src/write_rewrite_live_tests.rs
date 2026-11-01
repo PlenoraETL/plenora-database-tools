@@ -185,7 +185,7 @@ async fn count(provider: &OracleProvider, secret: &SecretString, sql: &str) -> i
         .rollback(&cancellation)
         .await
         .expect("rollback verifica");
-    match rows[0].get("N") {
+    match rows[0].get("N").expect("nomi univoci") {
         Some(ParameterValue::I64(value)) => *value,
         other => panic!("conteggio inatteso: {other:?}"),
     }

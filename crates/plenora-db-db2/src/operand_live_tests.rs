@@ -211,10 +211,16 @@ fn resa(
 /// che non proiettano `ID`), nell'ordine reso.
 fn identificativi(rows: &[plenora_database_core::Row]) -> Vec<String> {
     rows.iter()
-        .map(|row| match row.get("ID").or_else(|| row.get("V")) {
-            Some(ParameterValue::I32(value)) => value.to_string(),
-            Some(ParameterValue::I64(value)) => value.to_string(),
-            other => format!("{other:?}"),
+        .map(|row| {
+            match row
+                .get("ID")
+                .expect("nomi univoci")
+                .or_else(|| row.get("V").expect("nomi univoci"))
+            {
+                Some(ParameterValue::I32(value)) => value.to_string(),
+                Some(ParameterValue::I64(value)) => value.to_string(),
+                other => format!("{other:?}"),
+            }
         })
         .collect()
 }

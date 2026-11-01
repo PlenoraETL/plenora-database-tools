@@ -90,7 +90,8 @@ where
         stmt: &mut impl Statement,
     ) -> Result<(), Error> {
         self.assert_completness();
-        unsafe { stmt.bind_input_parameter(parameter_number, *self) }.into_result(stmt)
+        unsafe { stmt.bind_input_parameter(parameter_number, *self) }
+            .into_result_strict(stmt, "SQLBindParameter")
     }
 }
 
@@ -106,7 +107,7 @@ where
     ) -> Result<(), Error> {
         self.0.assert_completness();
         unsafe { stmt.bind_parameter(parameter_number, odbc_sys::ParamType::InputOutput, self.0) }
-            .into_result(stmt)
+            .into_result_strict(stmt, "SQLBindParameter")
     }
 }
 
@@ -121,6 +122,6 @@ where
         stmt: &mut impl Statement,
     ) -> Result<(), Error> {
         unsafe { stmt.bind_parameter(parameter_number, odbc_sys::ParamType::Output, self.0) }
-            .into_result(stmt)
+            .into_result_strict(stmt, "SQLBindParameter")
     }
 }

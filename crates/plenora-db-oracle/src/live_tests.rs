@@ -332,10 +332,13 @@ async fn qualify_spatial_surface(
             .await
             .unwrap_or_else(|error| panic!("esecuzione {function:?} Oracle: {error}"));
         assert_eq!(rows.len(), 1, "{function:?}");
-        assert!(rows[0].get("VALUE").is_some(), "{function:?}");
+        assert!(
+            rows[0].get("VALUE").expect("nomi univoci").is_some(),
+            "{function:?}"
+        );
         if function.returns_geometry() {
             assert!(
-                matches!(rows[0].get("VALUE"), Some(ParameterValue::Bytes(bytes)) if !bytes.is_empty()),
+                matches!(rows[0].get("VALUE").expect("nomi univoci"), Some(ParameterValue::Bytes(bytes)) if !bytes.is_empty()),
                 "{function:?}"
             );
         }
@@ -803,7 +806,10 @@ async fn live_array_dml_crosses_batches_and_rolls_back_atomically() {
         )
         .await
         .expect("conteggio array DML");
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(600)));
+    assert_eq!(
+        rows[0].get("N").expect("nomi univoci"),
+        Some(&ParameterValue::I64(600))
+    );
     verify
         .rollback(&cancellation)
         .await
@@ -986,7 +992,10 @@ async fn live_closed_capabilities_fail_closed_and_match_ddl_semantics() {
         )
         .await
         .expect("conteggio dopo DDL Oracle");
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    assert_eq!(
+        rows[0].get("N").expect("nomi univoci"),
+        Some(&ParameterValue::I64(1))
+    );
     verify
         .query(
             &Statement::new(format!("SELECT COUNT(*) AS N FROM {side_effect}")),
@@ -1036,7 +1045,10 @@ async fn live_large_wkb_temporary_blob_bind_is_lossless() {
         )
         .await
         .expect("lunghezza temporary BLOB Oracle");
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(4_809)));
+    assert_eq!(
+        rows[0].get("N").expect("nomi univoci"),
+        Some(&ParameterValue::I64(4_809))
+    );
     let validation = transaction
         .query(
             &Statement::new(
@@ -1054,7 +1066,7 @@ async fn live_large_wkb_temporary_blob_bind_is_lossless() {
         .await
         .expect("conversione temporary BLOB in SDO_GEOMETRY Oracle");
     assert_eq!(
-        validation[0].get("VALID"),
+        validation[0].get("VALID").expect("nomi univoci"),
         Some(&ParameterValue::String("TRUE".to_owned()))
     );
     transaction
@@ -1718,7 +1730,7 @@ async fn live_thin_driver_crud_merge_stream_and_rollback() {
         .await
         .expect("bind probe query");
     assert!(
-        matches!(bind_rows[0].get("VALUE"), Some(ParameterValue::String(value)) if value == "bound")
+        matches!(bind_rows[0].get("VALUE").expect("nomi univoci"), Some(ParameterValue::String(value)) if value == "bound")
     );
     bind_probe
         .rollback(&cancellation)
@@ -1890,7 +1902,7 @@ async fn live_thin_driver_crud_merge_stream_and_rollback() {
         .expect("query");
     assert_eq!(rows.len(), 1);
     assert!(
-        matches!(rows[0].get("VALUE"), Some(ParameterValue::String(value)) if value == "merged")
+        matches!(rows[0].get("VALUE").expect("nomi univoci"), Some(ParameterValue::String(value)) if value == "merged")
     );
 
     let mut stream = transaction
@@ -1940,7 +1952,7 @@ async fn live_thin_driver_crud_merge_stream_and_rollback() {
         .await
         .expect("verify query");
     assert!(
-        matches!(rows[0].get("VALUE"), Some(ParameterValue::String(value)) if value == "first")
+        matches!(rows[0].get("VALUE").expect("nomi univoci"), Some(ParameterValue::String(value)) if value == "first")
     );
     verify
         .rollback(&cancellation)
@@ -2134,7 +2146,10 @@ async fn live_driver_errors_are_redacted() {
         )
         .await
         .expect("sessione utilizzabile dopo l'errore server");
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    assert_eq!(
+        rows[0].get("N").expect("nomi univoci"),
+        Some(&ParameterValue::I64(1))
+    );
     // L'errore deve lasciare la scrittura pendente, altrimenti il rollback non e provato.
     let pending = transaction
         .query(
@@ -2225,28 +2240,28 @@ async fn live_type_fidelity_includes_utc_timestamptz_and_lobs() {
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
     assert!(
-        matches!(row.get("N"), Some(ParameterValue::Decimal(value)) if value == "12345678901234567890.123456789")
+        matches!(row.get("N").expect("nomi univoci"), Some(ParameterValue::Decimal(value)) if value == "12345678901234567890.123456789")
     );
     assert!(
-        matches!(row.get("D"), Some(ParameterValue::Timestamp(value)) if value == "2026-03-19T00:00:00")
+        matches!(row.get("D").expect("nomi univoci"), Some(ParameterValue::Timestamp(value)) if value == "2026-03-19T00:00:00")
     );
     assert!(
-        matches!(row.get("TS"), Some(ParameterValue::Timestamp(value)) if value == "2026-03-19T10:11:12.123456")
+        matches!(row.get("TS").expect("nomi univoci"), Some(ParameterValue::Timestamp(value)) if value == "2026-03-19T10:11:12.123456")
     );
     assert_eq!(
-        row.get("TZ"),
+        row.get("TZ").expect("nomi univoci"),
         Some(&ParameterValue::TimestampTz(
             "2026-03-19T10:11:12.123456+02:30".to_owned()
         ))
     );
     assert!(
-        matches!(row.get("NULL_TZ"), Some(ParameterValue::Null { type_name }) if type_name == "timestamptz")
+        matches!(row.get("NULL_TZ").expect("nomi univoci"), Some(ParameterValue::Null { type_name }) if type_name == "timestamptz")
     );
     assert!(
-        matches!(row.get("TEXT_LOB"), Some(ParameterValue::String(value)) if value.len() == 20_000)
+        matches!(row.get("TEXT_LOB").expect("nomi univoci"), Some(ParameterValue::String(value)) if value.len() == 20_000)
     );
     assert!(
-        matches!(row.get("BINARY_LOB"), Some(ParameterValue::Bytes(value)) if value == &[0, 1, 255])
+        matches!(row.get("BINARY_LOB").expect("nomi univoci"), Some(ParameterValue::Bytes(value)) if value == &[0, 1, 255])
     );
     transaction.rollback(&cancellation).await.expect("rollback");
 }
@@ -2469,7 +2484,10 @@ async fn live_a_native_ddl_failure_after_a_write_is_not_reported_as_no_effect() 
         )
         .await
         .expect("conteggio");
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    assert_eq!(
+        rows[0].get("N").expect("nomi univoci"),
+        Some(&ParameterValue::I64(1))
+    );
     let _ = verify.rollback(&cancellation).await;
     provider
         .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
@@ -2534,7 +2552,10 @@ async fn live_caller_stream_fetch_failure_requires_recovery() {
         .await
         .expect("la stessa connessione deve rispondere dopo il reset del fetch");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    assert_eq!(
+        rows[0].get("N").expect("nomi univoci"),
+        Some(&ParameterValue::I64(1))
+    );
 }
 
 #[tokio::test]
@@ -2616,7 +2637,7 @@ async fn margine_cursori(
         )
         .await
         .expect("misura del margine di cursori");
-    margine_valido(match rows[0].get("N") {
+    margine_valido(match rows[0].get("N").expect("nomi univoci") {
         Some(ParameterValue::I64(value)) => *value,
         Some(ParameterValue::Decimal(value)) => value.parse().expect("margine intero"),
         other => panic!("margine di cursori non numerico: {other:?}"),
@@ -2642,7 +2663,10 @@ async fn chiamate_miste(
         )
         .await
         .expect("query di testo ripetuto");
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(text + round)));
+    assert_eq!(
+        rows[0].get("N").expect("nomi univoci"),
+        Some(&ParameterValue::I64(text + round))
+    );
     transaction
         .execute(
             &Statement::new(format!("INSERT INTO {table} (ID, V) VALUES (:1, :2)")).with_params(
@@ -3234,7 +3258,7 @@ fn da_asciistr(value: &str) -> String {
 
 fn testi(rows: &[plenora_database_core::row::Row], column: &str) -> Vec<Option<String>> {
     rows.iter()
-        .map(|row| match row.get(column) {
+        .map(|row| match row.get(column).expect("nomi univoci") {
             Some(ParameterValue::String(value)) => Some(value.clone()),
             Some(ParameterValue::Null { .. }) => None,
             other => panic!("{column}: valore non testuale {other:?}"),
@@ -3333,7 +3357,7 @@ async fn live_testo_nazionale_si_rilegge_uguale() {
     assert_eq!(expected[0][2].as_deref(), Some("\u{1F600}x"));
     assert_eq!(expected[0][3].as_deref(), Some("a\0b"));
     assert_eq!(
-        reference[4].get("C_PRESENTE"),
+        reference[4].get("C_PRESENTE").expect("nomi univoci"),
         Some(&ParameterValue::I64(1))
     );
 
@@ -3458,12 +3482,12 @@ async fn live_binary_double_e_float_si_rileggono_al_bit() {
     .await;
     for (index, row) in direct.iter().enumerate() {
         assert_eq!(
-            row.get("D"),
+            row.get("D").expect("nomi univoci"),
             Some(&ParameterValue::F64(f64::from_bits(doubles[index]))),
             "query BINARY_DOUBLE"
         );
         assert_eq!(
-            row.get("F"),
+            row.get("F").expect("nomi univoci"),
             Some(&ParameterValue::F64(f64::from(f32::from_bits(
                 floats[index]
             )))),
@@ -3536,11 +3560,11 @@ async fn live_istanti_con_fuso_json_null_e_nanosecondi() {
     )
     .await;
     assert!(matches!(
-        direct[0].get("J"),
+        direct[0].get("J").expect("nomi univoci"),
         Some(ParameterValue::Null { .. })
     ));
     assert_eq!(
-        direct[1].get("J"),
+        direct[1].get("J").expect("nomi univoci"),
         Some(&ParameterValue::Json(serde_json::Value::Null))
     );
     drop_tabella(&provider, &secret, table).await;
@@ -3645,7 +3669,7 @@ fn guard_bind(piano: &serde_json::Value, name: &str) -> ParameterValue {
 fn guard_ids(rows: &[plenora_database_core::Row]) -> Vec<String> {
     let mut ids: Vec<String> = rows
         .iter()
-        .map(|row| match row.get("ID") {
+        .map(|row| match row.get("ID").expect("nomi univoci") {
             Some(ParameterValue::I64(value)) => value.to_string(),
             Some(ParameterValue::I32(value)) => value.to_string(),
             Some(ParameterValue::Decimal(value) | ParameterValue::String(value)) => value.clone(),
@@ -4031,7 +4055,10 @@ async fn live_operand_catalog_refuses_derived_binary_and_resolves_public_sdo_geo
         )
         .await
         .expect("WKB regola B Oracle");
-    let wkb = match wkb.first().and_then(|row| row.get("W")) {
+    let wkb = match wkb
+        .first()
+        .and_then(|row| row.get("W").expect("nomi univoci"))
+    {
         Some(ParameterValue::Bytes(bytes)) => bytes.clone(),
         other => panic!("WKB regola B Oracle: {other:?}"),
     };
@@ -4438,7 +4465,10 @@ async fn equal_polygons(
         )
         .await
         .expect("WKB Oracle");
-    let wkb = match wkb.first().and_then(|row| row.get("W")) {
+    let wkb = match wkb
+        .first()
+        .and_then(|row| row.get("W").expect("nomi univoci"))
+    {
         Some(ParameterValue::Bytes(bytes)) => bytes.clone(),
         other => panic!("WKB Oracle: {other:?}"),
     };
@@ -5206,3 +5236,35 @@ async fn live_rilettura_sedici_tabella_temporanea_privata() {
 #[cfg(test)]
 #[path = "parameter_fidelity_live_tests.rs"]
 mod parameter_fidelity;
+
+#[tokio::test]
+#[ignore = "richiede Oracle live esplicito"]
+async fn live_duplicate_result_names_preserve_positions() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let rows = tx
+        .query(
+            &Statement::new("SELECT 1 AS X, 2 AS X FROM DUAL"),
+            &cancellation,
+        )
+        .await
+        .expect("posizioni");
+    assert_eq!(rows[0].values().len(), 2);
+    assert_ne!(rows[0].get_index(0), rows[0].get_index(1));
+    assert!(rows[0]
+        .try_get("X")
+        .expect_err("ambiguita")
+        .message
+        .contains("alias"));
+    tx.rollback(&cancellation).await.expect("rollback");
+}

@@ -181,6 +181,46 @@ impl SqlResult<()> {
 // Define that here rather than in `sql_result` mod to keep the `handles` module entirely agnostic
 // about the top level `Error` type.
 impl<T> SqlResult<T> {
+    /// Reject unsafe diagnostics immediately, without requesting payload text.
+    pub fn into_result_strict(
+        self,
+        handle: &impl Diagnostics,
+        function: &'static str,
+    ) -> Result<T, Error> {
+        if let SqlResult::SuccessWithInfo(value) = self {
+            let mut found = false;
+            for number in 1..=i16::MAX {
+                let Some(record) = handle.diagnostic_record(number, &mut []) else {
+                    break;
+                };
+                found = true;
+                if record.state.prevents_exact_result() {
+                    return Err(Error::Diagnostics {
+                        record: crate::handles::Record {
+                            state: record.state,
+                            native_error: record.native_error,
+                            message: Vec::new(),
+                        },
+                        function,
+                    });
+                }
+                // Preserve operational diagnostics without requesting payload text.
+                log::warn!(
+                    "{}: SQLSTATE {}, native code {}",
+                    function,
+                    record.state.as_str(),
+                    record.native_error
+                );
+            }
+            return if found {
+                Ok(value)
+            } else {
+                Err(Error::NoDiagnostics { function })
+            };
+        }
+        self.into_result(handle)
+    }
+
     /// `true` for [`Self::SuccessWithInfo`] and [`Self::Error`]. If `true` one might expect
     /// diagnostic records to be present. If `false` it would indicate their absense.
     pub fn has_diganostics(&self) -> bool {

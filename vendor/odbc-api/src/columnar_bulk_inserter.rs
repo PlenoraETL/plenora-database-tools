@@ -86,6 +86,19 @@ where
         }
     }
 
+    /// Execute an array while rejecting warnings before another ODBC call.
+    pub fn execute_strict(&mut self) -> Result<Option<CursorImpl<StatementRef<'_>>>, Error> {
+        let mut stmt = self.statement.as_stmt_ref();
+        if self.parameter_set_size == 0 {
+            return Ok(None);
+        }
+        unsafe {
+            stmt.set_paramset_size(self.parameter_set_size)
+                .into_result_strict(&stmt, "SQLSetStmtAttr")?;
+            crate::execute::execute_checked(stmt, None, true)
+        }
+    }
+
     /// Sets the number of rows in the buffer to zero.
     pub fn clear(&mut self) {
         self.parameter_set_size = 0;
@@ -247,8 +260,8 @@ where
     for parameter_index in parameter_indices {
         let column_index = mapping.parameter_index_to_column_index(parameter_index);
         let column_buffer = &parameters[column_index];
-        if let Err(error) =
-            unsafe { stmt.bind_input_parameter(parameter_index, column_buffer) }.into_result(&stmt)
+        if let Err(error) = unsafe { stmt.bind_input_parameter(parameter_index, column_buffer) }
+            .into_result_strict(&stmt, "SQLBindParameter")
         {
             // This early return using `?` is risky. We actually did bind some parameters
             // already. We cannot guarantee that the bound pointers stay valid in case of an

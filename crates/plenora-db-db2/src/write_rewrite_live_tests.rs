@@ -307,7 +307,12 @@ async fn live_s_db2_char_e_spazi_oltre_la_lunghezza_non_si_riscrivono() {
         |column: &str| format!("INSERT INTO DB2INST1.{table} (ID, {column}) VALUES (?, ?)");
     for (column, value, expression, expected) in [
         ("V", ParameterValue::String("abc   ".to_owned()), "V", "abc"),
-        ("C", ParameterValue::String("a".to_owned()), "C", "a  "),
+        (
+            "C",
+            ParameterValue::String("a".to_owned()),
+            "VARCHAR(C)",
+            "a  ",
+        ),
         (
             "D",
             ParameterValue::F64(-0.0),

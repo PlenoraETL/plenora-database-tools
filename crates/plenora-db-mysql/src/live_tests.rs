@@ -4668,6 +4668,30 @@ async fn live_v12_transaction_query_returns_typed_rows() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].columns().len(), 2);
 
+    let duplicate = plenora_database_core::transaction::Statement::new("SELECT 1 AS x, 2 AS x");
+    let rows = tx
+        .query(&duplicate, &cancellation)
+        .await
+        .expect("posizioni");
+    assert_eq!(rows[0].values().len(), 2);
+    assert_ne!(rows[0].get_index(0), rows[0].get_index(1));
+    assert!(rows[0]
+        .try_get("x")
+        .expect_err("ambiguita")
+        .message
+        .contains("alias"));
+    let mut stream = tx
+        .query_stream(&duplicate, 2, &cancellation)
+        .await
+        .expect("stream");
+    let streamed = stream
+        .next_batch(&cancellation)
+        .await
+        .expect("lettura")
+        .expect("batch");
+    assert_eq!(streamed, rows);
+    drop(stream);
+
     tx.rollback(&cancellation).await.expect("rollback");
 
     let mut check = MysqlSession::open(&live_config(), &cancellation)

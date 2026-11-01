@@ -104,12 +104,49 @@ impl Row {
     }
 
     /// Ritorna il valore per nome colonna. Case-sensitive.
-    #[must_use]
-    pub fn get(&self, name: &str) -> Option<&ParameterValue> {
-        self.columns
+    ///
+    /// # Errors
+    /// `DataMapping` se il risultato contiene nomi duplicati.
+    pub fn get(&self, name: &str) -> crate::Result<Option<&ParameterValue>> {
+        self.try_get(name)
+    }
+
+    /// Verifica che il risultato possa essere esposto come mapping per nome.
+    ///
+    /// # Errors
+    /// `DataMapping` per nomi duplicati; i valori restano accessibili per posizione.
+    pub fn validate_names(&self) -> crate::Result<()> {
+        Self::validate_column_names(&self.columns)
+    }
+
+    /// Verifica i nomi anche per risultati senza righe.
+    ///
+    /// # Errors
+    /// `DataMapping` per nomi duplicati.
+    pub fn validate_column_names(columns: &[String]) -> crate::Result<()> {
+        let mut seen = std::collections::HashSet::new();
+        if columns.iter().any(|name| !seen.insert(name)) {
+            return Err(crate::DatabaseError::new(
+                crate::ErrorCategory::DataMapping,
+                crate::ErrorPhase::Read,
+                None,
+                "nomi di colonna duplicati: usare alias distinti o accesso per posizione",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Accesso per nome con diagnosi dell'ambiguita, senza payload.
+    ///
+    /// # Errors
+    /// `DataMapping` se il risultato contiene nomi duplicati.
+    pub fn try_get(&self, name: &str) -> crate::Result<Option<&ParameterValue>> {
+        self.validate_names()?;
+        Ok(self
+            .columns
             .iter()
             .position(|c| c == name)
-            .and_then(|i| self.values.get(i))
+            .and_then(|i| self.values.get(i)))
     }
 
     /// Ritorna il valore per posizione (0-based).
@@ -146,13 +183,15 @@ impl Index<&str> for Row {
         reason = "raggiungibile (nome assente / indice fuori intervallo): preserva il panic intenzionale e preesistente dell'API indicizzata, come `Index` di std; l'accesso fallibile e Row::get / Row::get_index"
     )]
     fn index(&self, name: &str) -> &ParameterValue {
-        self.get(name).unwrap_or_else(|| {
-            panic!(
-                "accesso a una colonna non presente in una Row di {} colonne \
+        self.get(name)
+            .unwrap_or_else(|error| panic!("{}", error.message))
+            .unwrap_or_else(|| {
+                panic!(
+                    "accesso a una colonna non presente in una Row di {} colonne \
                  (usare Row::get per un accesso fallibile)",
-                self.columns.len()
-            )
-        })
+                    self.columns.len()
+                )
+            })
     }
 }
 

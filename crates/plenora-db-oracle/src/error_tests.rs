@@ -160,3 +160,14 @@ fn only_a_closed_list_of_ora_codes_proves_a_rejection_after_sending() {
         assert_eq!(public.remote_effect, RemoteEffect::None, "ORA-{code}");
     }
 }
+
+#[test]
+fn locally_closed_connection_does_not_blame_the_peer() {
+    let error = driver_error(ErrorPhase::Rollback, &Error::ConnectionClosed);
+    assert_eq!(error.message, "connessione Oracle chiusa");
+    let peer = driver_error(
+        ErrorPhase::Rollback,
+        &Error::ConnectionClosedByServer("SECRET".into()),
+    );
+    assert_eq!(peer.message, "connessione Oracle chiusa dal peer");
+}

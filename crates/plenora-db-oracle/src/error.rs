@@ -133,7 +133,8 @@ fn classify_driver_error(error: &Error) -> (ErrorCategory, &'static str) {
             ErrorCategory::Io,
             "instradamento connessione Oracle non completato",
         ),
-        Error::ConnectionClosed | Error::ConnectionClosedByServer(_) => {
+        Error::ConnectionClosed => (ErrorCategory::Io, "connessione Oracle chiusa"),
+        Error::ConnectionClosedByServer(_) => {
             (ErrorCategory::Io, "connessione Oracle chiusa dal peer")
         }
         Error::ConnectionTimeout(_) => (ErrorCategory::Timeout, "connessione Oracle in timeout"),

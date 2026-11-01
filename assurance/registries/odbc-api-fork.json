@@ -100,16 +100,56 @@
       "reason": "fetch_with_diagnostics espone buffer e diagnostici prima della prossima chiamata ODBC."
     },
     "src/execute.rs": {
-      "sha256": "64064cc98c811c1952b70641f051f4fc30082d9a09750f405bb04f5ba4430aa3",
-      "reason": "Percorso strict controlla i diagnostici di SQLExecute/SQLExecDirect prima di SQLNumResultCols; messaggi redatti."
+      "sha256": "5184f74d2769455418b1c3c3cefe69180fa705ee632d7d6747e50e47e5c8ce3b",
+      "reason": "Controllo immediato per SQLExecute/SQLExecDirect, ogni SQLPutData, SQLParamData e SQLNumResultCols nel percorso strict; attribuzione alla funzione reale; binding senza avvisi ignorati."
     },
     "src/preallocated.rs": {
       "sha256": "0f1843cb93beca35200057d67236327d19900b79ea7aca6eb64ab3d570b591be",
       "reason": "into_cursor_strict: API opt-in per SQLExecDirect con diagnostici preservati."
     },
     "src/prepared.rs": {
-      "sha256": "6ebe4610a51ae83af3a380d6778630557d85c19ca2509363b807f06f36641a63",
-      "reason": "execute_strict: API opt-in per SQLExecute con diagnostici preservati."
+      "sha256": "5885151491ae83615eafdae29a880f6f153b1a081b692072c9712497caa86acf",
+      "reason": "execute_strict e describe_param_strict: controlli immediati di esecuzione e descrittori di ammissione. Contatori parametri/righe strict, senza conversioni con panic."
+    },
+    "src/error.rs": {
+      "sha256": "ad8348157b335f70ad1e6d3938eebe99c4c5666f51b03e7fbc197597d12e03ed",
+      "reason": "Conversione strict valuta ogni record: avvisi informativi registrati senza payload, perdita o significato ignoto rifiutati; SUCCESS_WITH_INFO privo di diagnostici rifiutato."
+    },
+    "src/result_set_metadata.rs": {
+      "sha256": "5ffa6934107b7eb9075eaf831efdf66237895ee3282ad5b072cf5d3b767bb3c9",
+      "reason": "col_data_type_strict verifica ogni attributo e descrizione prima della richiesta successiva; conversioni numeriche fallibili. Contatore colonne strict."
+    },
+    "src/handles/statement.rs": {
+      "sha256": "59a828fe43ed3a2e7fe16cf0cd1d799d81023d38ee0e887d44c2f87713e833b8",
+      "reason": "Varianti strict di nome e descrizione fermano gli avvisi prima dei retry interni."
+    },
+    "src/columnar_bulk_inserter.rs": {
+      "sha256": "efaeee90076b5d157ea4a019e5c6efbcc2ffff759c8bb770e007628dfe421ce2",
+      "reason": "execute_strict per array controlla SQLSetStmtAttr ed esecuzione; tutti i bind dei parametri rifiutano immediatamente gli avvisi."
+    },
+    "src/parameter_collection.rs": {
+      "sha256": "a9752f7a86ea2348cdb4f41e4fd7892f8abafd597c4fb906a1e4a10be0f453f9",
+      "reason": "Ogni SQLBindParameter scalare o slice rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict."
+    },
+    "src/parameter_collection/tuple.rs": {
+      "sha256": "6c9111b68c344fd005a6b38bb9361a7b24dc08141b9df85ec87c9422c0c05efc",
+      "reason": "Ogni SQLBindParameter delle tuple input/output rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict."
+    },
+    "src/parameter/blob.rs": {
+      "sha256": "d07ed9abcd30e1103dc3d6e899283fd8f4aad28e7eac72ba2cd474f9086478f4",
+      "reason": "Ogni bind dei parametri streaming rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict."
+    },
+    "src/buffers/columnar.rs": {
+      "sha256": "8eca3eecd5453288e915e87138d1c65f9155bb1a06be4726cc0ff5380cf9fe66",
+      "reason": "Ogni SQLBindCol rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict."
+    },
+    "src/cursor.rs": {
+      "sha256": "3efaccdbca633d90a2d9bc3da163c53d9261f7bf6913fb019965bc481481117e",
+      "reason": "Setup rowset controllato prima di ulteriori attributi o bind; avvisi degli attributi rifiutati anche fuori dalle API strict."
+    },
+    "src/handles/diagnostics.rs": {
+      "sha256": "b65cb8ed01d39410bab81f593103baac03ec7526ec80ee0452f7bbf321a3a3df",
+      "reason": "Classificazione chiusa IBM CLI/Db2: avvisi di perdita e sconosciuti rifiutati, informativi riconosciuti ammessi; unica policy condivisa col provider."
     }
   }
 }

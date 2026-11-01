@@ -331,3 +331,32 @@ def test_oracle_decimal_binds_and_reads_are_exact() -> None:
             assert raised.value.category == "data_mapping"
         finally:
             session.close()
+
+
+def test_oracle_sync_duplicate_result_names_require_aliases() -> None:
+    from ._harness import connect_oracle_reference
+    import plenora_database as database
+
+    session = connect_oracle_reference()
+    try:
+        with pytest.raises(database.PlenoraDataMappingError, match="alias"):
+            session.query_sql("SELECT 1 AS x, 2 AS x FROM DUAL")
+        rows = session.query_sql("SELECT CAST(1 AS NUMBER(10)) AS a, CAST(2 AS NUMBER(10)) AS b FROM DUAL")
+        assert list(rows.one().values()) == [1, 2]
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_oracle_async_duplicate_result_names_require_aliases() -> None:
+    from ._harness import aconnect_oracle_reference
+    import plenora_database as database
+
+    session = await aconnect_oracle_reference()
+    try:
+        with pytest.raises(database.PlenoraDataMappingError, match="alias"):
+            await session.query_sql("SELECT 1 AS x, 2 AS x FROM DUAL")
+        rows = await session.query_sql("SELECT CAST(1 AS NUMBER(10)) AS a, CAST(2 AS NUMBER(10)) AS b FROM DUAL")
+        assert list(rows.one().values()) == [1, 2]
+    finally:
+        session.close()

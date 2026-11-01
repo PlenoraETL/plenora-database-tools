@@ -1,6 +1,8 @@
 //! DML del driver senza CAST o guardie del writer, sempre con rollback.
 use super::*;
-use crate::write_probe_tests::{probe_failure, probe_kind, probe_operand, probe_value};
+use crate::write_probe_tests::{
+    probe_failure, probe_kind, probe_operand, probe_projection, probe_value,
+};
 use plenora_database_core::arrow::array::Array;
 use write_probe::{direct_error, direct_value, DirectObservation};
 
@@ -59,7 +61,13 @@ pub(super) async fn observe(
                 config,
                 ErrorPhase::Read,
                 &cancellation,
-                raw.query(&format!("SELECT V0 FROM {PROBE_TABLE} WHERE ID = 0"), &[]),
+                raw.query(
+                    &format!(
+                        "SELECT {} FROM {PROBE_TABLE} WHERE ID = 0",
+                        probe_projection(spec)
+                    ),
+                    &[],
+                ),
             )
             .await?;
             crate::decode::rows_from_result(

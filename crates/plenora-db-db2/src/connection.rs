@@ -199,7 +199,7 @@ pub fn query_text(
             let ordinal = u16::try_from(index)
                 .map_err(|_| malformed_probe("troppe colonne del catalogo Db2"))?;
             let kind = cursor
-                .col_data_type(ordinal)
+                .col_data_type_strict(ordinal)
                 .map_err(|error| driver_error(&error, ErrorPhase::Probe))?;
             crate::exact_read::check(
                 &odbc_api::handles::AsStatementRef::as_stmt_ref(&mut cursor),

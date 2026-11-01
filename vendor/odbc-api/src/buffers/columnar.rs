@@ -103,7 +103,9 @@ where
     unsafe fn bind_colmuns_to_cursor(&mut self, mut cursor: StatementRef<'_>) -> Result<(), Error> {
         unsafe {
             for (col_number, column) in &mut self.columns {
-                cursor.bind_col(*col_number, column).into_result(&cursor)?;
+                cursor
+                    .bind_col(*col_number, column)
+                    .into_result_strict(&cursor, "SQLBindCol")?;
             }
         }
         Ok(())

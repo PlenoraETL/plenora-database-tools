@@ -107,3 +107,10 @@ fn a_catalog_srid_outside_the_signed_32_bit_domain_is_not_published() {
     let field = Field::new("geom", DataType::Binary, true).with_metadata(boundary);
     contract_schema(vec![field]).expect("i32::MAX e nel dominio");
 }
+#[test]
+fn duplicate_names_with_distinct_origin_ids_require_aliases() {
+    let error = contract_schema(vec![field("SECRET", Some("1")), field("SECRET", Some("2"))])
+        .expect_err("nomi ambigui anche con id distinti");
+    assert!(error.message.contains("alias"));
+    assert!(!error.message.contains("SECRET"));
+}

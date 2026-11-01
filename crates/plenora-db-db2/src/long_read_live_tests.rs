@@ -33,7 +33,7 @@ async fn live_long_text_is_complete_or_refused_never_truncated() {
             Ok(rows) => {
                 assert_eq!(rows.len(), 1);
                 assert_eq!(
-                    rows[0].get("V"),
+                    rows[0].get("V").expect("nomi univoci"),
                     Some(&ParameterValue::String("a".repeat(length)))
                 );
             }

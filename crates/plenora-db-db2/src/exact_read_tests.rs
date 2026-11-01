@@ -5,7 +5,9 @@ struct Diagnostic(Option<State>);
 
 impl Diagnostics for Diagnostic {
     fn diagnostic_record(&self, number: i16, text: &mut [SqlChar]) -> Option<DiagnosticResult> {
-        assert_eq!(number, 1);
+        if number != 1 {
+            return None;
+        }
         assert!(
             text.is_empty(),
             "il payload diagnostico non viene richiesto"
@@ -150,6 +152,105 @@ fn reads_refuse_conversion_truncation_and_unknown_diagnostics_without_payloads()
                     State(state).as_str()
                 )
             );
+        }
+    }
+}
+
+#[test]
+fn strict_odbc_results_preserve_each_warning_and_its_function_without_payload() {
+    use odbc_api::handles::SqlResult;
+    for function in [
+        "SQLExecute",
+        "SQLExecDirect",
+        "SQLPutData",
+        "SQLParamData",
+        "SQLColAttribute",
+        "SQLDescribeParam",
+        "SQLBindParameter",
+        "SQLBindCol",
+    ] {
+        for state in [*b"01004", *b"01S07", *b"01517", *b"01000"] {
+            let diagnostics = Diagnostic(Some(State(state)));
+            let error = SqlResult::SuccessWithInfo(17)
+                .into_result_strict(&diagnostics, function)
+                .unwrap_err();
+            match &error {
+                odbc_api::Error::Diagnostics {
+                    record,
+                    function: actual,
+                } => {
+                    assert_eq!(*actual, function);
+                    assert_eq!(record.state, State(state));
+                    assert!(record.message.is_empty());
+                }
+                other => panic!("diagnostico inatteso: {other:?}"),
+            }
+            let public = crate::error::driver_error(&error, ErrorPhase::Write);
+            assert_eq!(public.category, ErrorCategory::DataMapping);
+            assert_eq!(
+                public.remote_effect,
+                plenora_database_core::RemoteEffect::Unknown
+            );
+            // A later successful call cannot turn the saved failure into success.
+            assert_eq!(
+                SqlResult::Success(23)
+                    .into_result_strict(&Diagnostic(None), function)
+                    .unwrap(),
+                23
+            );
+            assert!(matches!(error, odbc_api::Error::Diagnostics { .. }));
+        }
+        assert!(SqlResult::SuccessWithInfo(17)
+            .into_result_strict(&Diagnostic(None), function)
+            .is_err());
+    }
+}
+
+#[test]
+fn informational_warnings_remain_diagnostic_but_do_not_refuse_exact_results() {
+    use odbc_api::handles::SqlResult;
+    for state in [
+        *b"01003", *b"01006", *b"01007", *b"0100C", *b"0100D", *b"01504", *b"01508", *b"01509",
+        *b"01516", *b"01521", *b"01522", *b"01523", *b"01526", *b"01543", *b"01545", *b"01550",
+        *b"01560", *b"01589",
+    ] {
+        let info = State(state);
+        let records = Records(vec![info]);
+        crate::exact_read::check(&records, ErrorPhase::Write).unwrap();
+        assert_eq!(
+            SqlResult::SuccessWithInfo(17)
+                .into_result_strict(&records, "SQLExecute")
+                .unwrap(),
+            17
+        );
+        assert_eq!(records.diagnostic_record(1, &mut []).unwrap().state, info);
+        for states in [vec![info, State(*b"02000")], vec![State(*b"02000"), info]] {
+            let records = Records(states);
+            assert!(
+                crate::exact_read::checked_batch::<()>(None, &records, ErrorPhase::Read)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                crate::exact_read::checked_batch(Some(&17), &records, ErrorPhase::Read).is_err()
+            );
+        }
+        for unsafe_state in [
+            *b"01005", *b"0100E", *b"01503", *b"01S01", *b"01ZZZ", *b"01004", *b"01S07", *b"01506",
+            *b"01507", *b"01515", *b"01517", *b"01519", *b"01520", *b"01524", *b"01539", *b"01544",
+            *b"01547", *b"01564", *b"01565", *b"01658", *b"01665", *b"01H51", *b"22001", *b"01H99",
+            *b"01000", *b"01S02",
+        ] {
+            for states in [
+                vec![info, State(unsafe_state)],
+                vec![State(unsafe_state), info],
+            ] {
+                let records = Records(states);
+                assert!(crate::exact_read::check(&records, ErrorPhase::Read).is_err());
+                assert!(SqlResult::SuccessWithInfo(17)
+                    .into_result_strict(&records, "SQLExecute")
+                    .is_err());
+            }
         }
     }
 }

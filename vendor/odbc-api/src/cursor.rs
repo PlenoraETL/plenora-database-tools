@@ -507,9 +507,13 @@ unsafe fn bind_row_set_buffer_to_statement(
 ) -> Result<(), Error> {
     unsafe {
         stmt.set_row_bind_type(row_set_buffer.bind_type())
-            .into_result(&stmt)?;
+            .into_result_strict(&stmt, "SQLSetStmtAttr")?;
         let size = row_set_buffer.row_array_size();
         let sql_result = stmt.set_row_array_size(size);
+
+        if matches!(sql_result, SqlResult::SuccessWithInfo(_)) {
+            return sql_result.into_result_strict(&stmt, "SQLSetStmtAttr");
+        }
 
         // Search for "option value changed". A QODBC driver reported "option value changed", yet
         // set the value to `723477590136`. We want to panic if something like this happens.
@@ -528,7 +532,9 @@ unsafe fn bind_row_set_buffer_to_statement(
         if option_value_changed {
             // Now rejecting a too large buffer size is save, but not if the value is something
             // even larger after. Zero is also suspicious.
-            let actual_size = stmt.row_array_size().into_result(&stmt)?;
+            let actual_size = stmt
+                .row_array_size()
+                .into_result_strict(&stmt, "SQLSetStmtAttr")?;
             #[cfg(not(feature = "structured_logging"))]
             warn!(
                 "Row array size set by the driver to: {actual_size}. Desired size had been: {size}"
@@ -565,7 +571,7 @@ unsafe fn bind_row_set_buffer_to_statement(
                 }
             })?;
         stmt.set_num_rows_fetched(row_set_buffer.mut_num_fetch_rows())
-            .into_result(&stmt)?;
+            .into_result_strict(&stmt, "SQLSetStmtAttr")?;
         row_set_buffer.bind_colmuns_to_cursor(stmt)?;
         Ok(())
     }

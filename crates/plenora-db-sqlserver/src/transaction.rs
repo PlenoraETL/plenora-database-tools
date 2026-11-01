@@ -334,10 +334,7 @@ fn decode_cell(
                     } else {
                         crate::arrow::canonical_legacy_datetime(value)?
                     };
-                    microsecond_exact(chrono::Timelike::nanosecond(&value), index)?;
-                    Ok(ParameterValue::Timestamp(
-                        value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string(),
-                    ))
+                    Ok(ParameterValue::Timestamp(format_query_timestamp(value)))
                 },
             ),
         // Il `DateTime<Utc>` di `tiberius` sottrae l'offset a un istante che
@@ -349,7 +346,6 @@ fn decode_cell(
             .map_or_else(
                 || Ok(null_value(kind)),
                 |value| {
-                    microsecond_exact(chrono::Timelike::nanosecond(&value), index)?;
                     Ok(ParameterValue::TimestampTz(
                         value.with_timezone(&chrono::Utc).to_rfc3339(),
                     ))
@@ -367,7 +363,7 @@ fn decode_cell(
             .map_err(|_| decode_mapping_error(index, "time"))?
             .map_or_else(
                 || null_value(kind),
-                |value| ParameterValue::String(value.format("%H:%M:%S%.6f").to_string()),
+                |value| ParameterValue::String(format_query_time(value)),
             )),
         // Decimali e valuta: il testo e la sola forma che non perde cifre, ed
         // e cio che `ParameterValue::Decimal` porta.
@@ -440,17 +436,6 @@ fn decode_cell(
             ErrorPhase::Read,
             "tipo di colonna SQL Server fuori dal sottoinsieme mappato",
         )),
-    }
-}
-
-fn microsecond_exact(nanosecond: u32, index: usize) -> Result<()> {
-    if nanosecond.is_multiple_of(1_000) {
-        Ok(())
-    } else {
-        Err(decode_mapping_error(
-            index,
-            "temporale oltre il microsecondo",
-        ))
     }
 }
 
@@ -812,3 +797,22 @@ mod commit_tests;
 #[cfg(test)]
 #[path = "caller_sql_send_tests.rs"]
 mod caller_sql_send_tests;
+
+// Il tipo pubblico e testuale: conserva i nanosecondi senza cambiare la
+// forma a sei cifre dei valori gia rappresentabili al microsecondo.
+fn format_query_timestamp(value: chrono::NaiveDateTime) -> String {
+    format!(
+        "{}T{}",
+        value.date().format("%Y-%m-%d"),
+        format_query_time(value.time())
+    )
+}
+
+fn format_query_time(value: chrono::NaiveTime) -> String {
+    let format = if chrono::Timelike::nanosecond(&value).is_multiple_of(1_000) {
+        "%H:%M:%S%.6f"
+    } else {
+        "%H:%M:%S%.9f"
+    };
+    value.format(format).to_string()
+}

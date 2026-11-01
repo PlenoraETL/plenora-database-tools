@@ -52,7 +52,31 @@ class Db2ReferenceGateTests(unittest.TestCase):
         self.assertIn("execute_checked(statement, query, true)", strict)
         checked = execute.split("unsafe fn execute_checked", 1)[1].split("\n}", 1)[0]
         self.assertIn("statement.exec_direct(sql)", checked)
-        self.assertLess(checked.index("diagnostic_record(1, &mut [])"), checked.index("num_result_cols()"))
+        self.assertLess(checked.index('result.into_result_strict('), checked.index("num_result_cols()"))
+        self.assertIn('result.into_result_strict(&stmt, "SQLPutData")?', checked)
+        self.assertIn("next_blob_param(&mut stmt, strict)?", checked)
+        blob = execute.split("unsafe fn next_blob_param", 1)[1]
+        self.assertIn('result.into_result_strict(stmt, "SQLParamData")?', blob)
+        self.assertLess(blob.index('"SQLParamData"'), blob.index("if let Some(blob_ptr)"))
+        transaction = (root / "crates/plenora-db-db2/src/transaction.rs").read_text(encoding="utf-8")
+        self.assertNotIn(".execute(", transaction.split("fn execute_statement(", 1)[1].split("fn ", 1)[0])
+        self.assertIn("inserter\n                    .execute_strict()", transaction)
+        for source in [connection, transaction]:
+            self.assertNotIn(".col_data_type(", source)
+            self.assertIn(".col_data_type_strict(", source)
+        metadata = (vendor / "result_set_metadata.rs").read_text(encoding="utf-8")
+        metadata = metadata.split("fn col_data_type_strict", 1)[1].split("\n}", 1)[0]
+        self.assertNotIn(".into_result(", metadata)
+        self.assertNotIn("self.col_", metadata)
+        self.assertIn('into_result_strict(&stmt, "SQLColAttribute")', metadata)
+        statement = (vendor / "handles/statement.rs").read_text(encoding="utf-8")
+        for name in ["col_name", "describe_col"]:
+            body = statement.split(f"fn {name}_checked", 1)[1].split("\n    }", 1)[0]
+            self.assertIn("strict && matches!(res, SqlResult::SuccessWithInfo(_))", body)
+        for name in ["parameter_collection.rs", "parameter_collection/tuple.rs", "parameter/blob.rs"]:
+            binding = (vendor / name).read_text(encoding="utf-8")
+            self.assertNotIn(".into_result(stmt)", binding)
+            self.assertIn('into_result_strict(stmt, "SQLBindParameter")', binding)
 
     def test_exact_rerun_continues_after_real_subprocess_nonzero_and_timeout(self) -> None:
         success = "test c ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;"
@@ -117,7 +141,7 @@ class Db2ReferenceGateTests(unittest.TestCase):
 
 
     def test_python_live_inventory_includes_the_orm_gate(self) -> None:
-        self.assertEqual(gate.PYTHON_LIVE_EXPECTED, 10)
+        self.assertEqual(gate.PYTHON_LIVE_EXPECTED, 12)
         self.assertEqual(
             gate.PYTHON_LIVE_TARGETS,
             (
@@ -131,7 +155,7 @@ class Db2ReferenceGateTests(unittest.TestCase):
 
     def test_inventory_has_all_named_live_tests(self) -> None:
         inventory = gate.live_test_inventory()
-        self.assertEqual(len(inventory), 34)
+        self.assertEqual(len(inventory), 36)
         self.assertLessEqual(gate.REQUIRED_LIVE_TESTS, inventory)
 
     def test_complete_named_run_passes(self) -> None:

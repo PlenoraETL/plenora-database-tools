@@ -77,6 +77,34 @@ where
         stmt.describe_param(parameter_number).into_result(&stmt)
     }
 
+    /// Describe one parameter, rejecting warnings before another call.
+    pub fn describe_param_strict(&mut self, parameter_number: u16) -> Result<ColumnType, Error> {
+        let mut stmt = self.as_stmt_ref();
+        stmt.describe_param(parameter_number)
+            .into_result_strict(&stmt, "SQLDescribeParam")
+    }
+
+    /// Read the parameter count without accepting warnings.
+    pub fn num_params_strict(&mut self) -> Result<u16, Error> {
+        let mut stmt = self.as_stmt_ref();
+        stmt.num_params().into_result_strict(&stmt, "SQLNumParams")
+    }
+
+    /// Read the affected-row count without accepting warnings or invalid negatives.
+    pub fn row_count_strict(&mut self) -> Result<Option<usize>, Error> {
+        let mut stmt = self.as_stmt_ref();
+        let count = stmt.row_count().into_result_strict(&stmt, "SQLRowCount")?;
+        if count == -1 {
+            Ok(None)
+        } else {
+            usize::try_from(count)
+                .map(Some)
+                .map_err(|_| Error::NoDiagnostics {
+                    function: "SQLRowCount range",
+                })
+        }
+    }
+
     /// Number of placeholders which must be provided with [`Self::execute`] in order to execute
     /// this statement. This is equivalent to the number of placeholders used in the SQL string
     /// used to prepare the statement.

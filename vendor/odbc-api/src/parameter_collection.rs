@@ -48,7 +48,7 @@ where
 
     unsafe fn bind_input_parameters_to(&self, stmt: &mut impl Statement) -> Result<(), Error> {
         self.assert_completness();
-        unsafe { stmt.bind_input_parameter(1, self) }.into_result(stmt)
+        unsafe { stmt.bind_input_parameter(1, self) }.into_result_strict(stmt, "SQLBindParameter")
     }
 }
 
@@ -63,7 +63,8 @@ where
     unsafe fn bind_input_parameters_to(&self, stmt: &mut impl Statement) -> Result<(), Error> {
         for (index, parameter) in self.iter().enumerate() {
             parameter.assert_completness();
-            unsafe { stmt.bind_input_parameter(index as u16 + 1, parameter) }.into_result(stmt)?;
+            unsafe { stmt.bind_input_parameter(index as u16 + 1, parameter) }
+                .into_result_strict(stmt, "SQLBindParameter")?;
         }
         Ok(())
     }

@@ -12,6 +12,7 @@ pub fn probe_kind(spec: &ProbeSpec) -> &'static str {
         .next()
         .unwrap_or_default()
     {
+        "JSON" => "JSON",
         "NCLOB" => "NCLOB",
         "CLOB" => "CLOB",
         "BLOB" => "BLOB",
@@ -94,5 +95,27 @@ fn nclob_probe_uses_explicit_server_conversion_without_national_locator() {
     assert!(probe_value(&spec, &boundary, 1).is_ok());
     for native in ["CLOB", "BLOB", "VARCHAR2(10)"] {
         assert_eq!(probe_operand(&ProbeSpec::new(native, DataType::Utf8)), ":1");
+    }
+}
+
+/// Il server serializza JSON senza passare dal decoder OSON del driver.
+pub fn probe_projection(spec: &ProbeSpec) -> &'static str {
+    if spec.document {
+        "JSON_SERIALIZE(V0 RETURNING CLOB)"
+    } else {
+        "V0"
+    }
+}
+
+#[test]
+fn json_measurement_uses_server_text_without_changing_other_types() {
+    let json = ProbeSpec::new("JSON", DataType::Utf8).document();
+    assert_eq!(probe_kind(&json), "JSON");
+    assert_eq!(probe_projection(&json), "JSON_SERIALIZE(V0 RETURNING CLOB)");
+    for native in ["CLOB", "NCLOB", "VARCHAR2(10)"] {
+        assert_eq!(
+            probe_projection(&ProbeSpec::new(native, DataType::Utf8)),
+            "V0"
+        );
     }
 }

@@ -123,13 +123,18 @@ impl QueryResult {
         exactly_one_value(exactly_one_row(self.rows)?)
     }
 
-    #[must_use]
-    pub fn into_mappings(self) -> Vec<BTreeMap<String, ParameterValue>> {
+    /// # Errors
+    /// `DataMapping` se una riga contiene nomi duplicati.
+    pub fn into_mappings(self) -> Result<Vec<BTreeMap<String, ParameterValue>>> {
+        if let Some(columns) = &self.columns {
+            Row::validate_column_names(columns)?;
+        }
         self.rows
             .into_iter()
             .map(|row| {
+                row.validate_names()?;
                 let columns = row.shared_columns();
-                columns.iter().cloned().zip(row.into_values()).collect()
+                Ok(columns.iter().cloned().zip(row.into_values()).collect())
             })
             .collect()
     }

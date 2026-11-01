@@ -1,4 +1,4 @@
-//! Nessun batch viene consegnato dopo un avviso del driver. UTF-8 valido
+//! Nessun batch viene consegnato dopo un avviso non esatto. UTF-8 valido
 //! non prova che il driver non abbia sostituito caratteri prima del decoder.
 
 use odbc_api::handles::Diagnostics;
@@ -11,8 +11,8 @@ pub fn column_name(cursor: &mut impl Cursor, ordinal: u16) -> Result<String> {
     let mut statement = cursor.as_stmt_ref();
     let mut buffer = vec![0; 128];
     statement
-        .col_name(ordinal, &mut buffer)
-        .into_result(&statement)
+        .col_name_strict(ordinal, &mut buffer)
+        .into_result_strict(&statement, "SQLColAttribute")
         .map_err(|error| crate::error::driver_error(&error, ErrorPhase::Read))?;
     check(&statement, ErrorPhase::Read)?;
     slice_to_utf8(&buffer).map_err(|_| {
@@ -26,8 +26,24 @@ pub fn column_name(cursor: &mut impl Cursor, ordinal: u16) -> Result<String> {
 }
 
 pub fn check(diagnostics: &impl Diagnostics, phase: ErrorPhase) -> Result<()> {
+    check_records(diagnostics, phase, false)
+}
+
+fn check_records(
+    diagnostics: &impl Diagnostics,
+    phase: ErrorPhase,
+    end_of_cursor: bool,
+) -> Result<()> {
     // Non chiediamo il testo diagnostico: puo contenere valori applicativi.
-    if let Some(record) = diagnostics.diagnostic_record(1, &mut []) {
+    for number in 1..=i16::MAX {
+        let Some(record) = diagnostics.diagnostic_record(number, &mut []) else {
+            break;
+        };
+        if !record.state.prevents_exact_result()
+            || (end_of_cursor && record.state.as_str() == "02000")
+        {
+            continue;
+        }
         return Err(DatabaseError::new(
             ErrorCategory::DataMapping,
             phase,
@@ -52,21 +68,13 @@ pub fn fetch<C: Cursor, B: RowSetBuffer>(
     checked_batch(batch, &diagnostics, phase)
 }
 
-/// `SQL_NO_DATA` non consegna celle: il solo 02000 descrive la fine cursore,
-/// non una conversione. Non tollerarlo su un batch, ne insieme ad altri record.
+/// `02000` descrive la fine cursore solo senza batch. Gli avvisi informativi
+/// possono accompagnarlo; ogni diagnostico non esatto resta bloccante.
 pub fn checked_batch<'a, B>(
     batch: Option<&'a B>,
     diagnostics: &impl Diagnostics,
     phase: ErrorPhase,
 ) -> Result<Option<&'a B>> {
-    if batch.is_none()
-        && diagnostics
-            .diagnostic_record(1, &mut [])
-            .is_some_and(|record| record.state.as_str() == "02000")
-        && diagnostics.diagnostic_record(2, &mut []).is_none()
-    {
-        return Ok(None);
-    }
-    check(diagnostics, phase)?;
+    check_records(diagnostics, phase, batch.is_none())?;
     Ok(batch)
 }
