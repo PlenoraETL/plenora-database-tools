@@ -32,12 +32,24 @@ Correttiva minima 8.x autorizzata, senza porting di #134.
   suggerendo alias distinti, senza nomi o valori nell'errore. La stessa
   validazione precede anche i mapping JSON CLI `execute-sql` e
   `portable-execute`, che sovrascrivevano le colonne omonime. In Rust il nuovo
-  `Row::try_get` restituisce l'errore; `get` conserva la firma `Option` e rende
-  `None` per un risultato ambiguo. Posizioni e descrittori restano utilizzabili.
+  `Row::try_get` restituisce l'errore. Posizioni e descrittori restano utilizzabili.
   Gli schemi Arrow con nomi duplicati sono rifiutati anche con field_id distinti,
   impedendo a `column_by_name` di scegliere il primo (percorso PostgreSQL
   verificato nei tag `py-v0.12.0`–`py-v8.0.3`). Nessuna modifica agli
   schemi di contratto o ai risultati con nomi distinti.
+- **Deprecazione di `Row::get` (API Rust)**: dalla 8.0.4 usare `try_get`,
+  che segnala esplicitamente i nomi duplicati. Per compatibilita 8.x, `get`
+  conserva la firma `Option`: restituisce il valore di un nome univoco anche
+  quando altre colonne sono duplicate. Resta il limite noto del nome duplicato:
+  `None` e indistinguibile dall'assenza e puo attivare un default del consumer.
+  La deprecazione dichiara questo limite, non lo risolve. Nella **9.0.0**
+  `get` diventera rigoroso; il cambiamento incompatibile e rinviato alla major.
+- **Deprecazione di `QueryResult::into_mappings` (API Rust)**: dalla 8.0.4
+  usare `try_into_mappings`, che rifiuta con `DataMapping` i nomi duplicati
+  anche senza righe e suggerisce alias distinti, senza payload nell'errore.
+  Come per `Row::get`, il metodo precedente resta per compatibilita 8.x:
+  con nomi distinti il risultato e invariato; con omonimi conserva soltanto
+  l'ultimo valore. La deprecazione dichiara questa perdita, non la risolve.
 - Regressioni offline e live permanenti, incluse query, stream SQL Server,
   Arrow Db2 e PostgreSQL e SDK sincrono/asincrono, negli inventari dei gate.
 

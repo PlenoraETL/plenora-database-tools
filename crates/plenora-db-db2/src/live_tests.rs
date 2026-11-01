@@ -559,9 +559,12 @@ async fn exercise_commit_and_savepoint(
         .await
         .expect("query tipizzata Db2");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("ID"), Some(&ParameterValue::I32(10)));
     assert_eq!(
-        rows[0].get("VALUE"),
+        rows[0].try_get("ID").expect("nomi univoci"),
+        Some(&ParameterValue::I32(10))
+    );
+    assert_eq!(
+        rows[0].try_get("VALUE").expect("nomi univoci"),
         Some(&ParameterValue::String("committed".to_owned()))
     );
     assert_eq!(
@@ -619,7 +622,10 @@ async fn verify_transaction_outcome(
         .await
         .expect("verifica commit e rollback Db2");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("ID"), Some(&ParameterValue::I32(10)));
+    assert_eq!(
+        rows[0].try_get("ID").expect("nomi univoci"),
+        Some(&ParameterValue::I32(10))
+    );
     transaction
         .rollback(cancellation)
         .await
@@ -741,7 +747,7 @@ async fn concurrent_read(
         .expect("query reader Db2 concorrente");
     assert_eq!(rows.len(), 1);
     assert_eq!(
-        rows[0].get("VALUE"),
+        rows[0].try_get("VALUE").expect("nomi univoci"),
         Some(&ParameterValue::String(format!("worker-{id}")))
     );
     transaction
@@ -885,10 +891,13 @@ async fn live_portable_sql_executes_insert_merge_select_and_rollback() {
         .expect("esegue SELECT portable Db2");
     assert_eq!(rows.len(), 1);
     assert_eq!(
-        rows[0].get("VALUE"),
+        rows[0].try_get("VALUE").expect("nomi univoci"),
         Some(&ParameterValue::String("portable-merge".into()))
     );
-    assert_eq!(rows[0].get("VERSION"), Some(&ParameterValue::I32(2)));
+    assert_eq!(
+        rows[0].try_get("VERSION").expect("nomi univoci"),
+        Some(&ParameterValue::I32(2))
+    );
     transaction
         .rollback(&cancellation)
         .await
@@ -1217,9 +1226,12 @@ async fn exercise_replace_and_verify(
         .await
         .expect("righe finali write Db2");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("ID"), Some(&ParameterValue::I32(4)));
     assert_eq!(
-        rows[0].get("VALUE"),
+        rows[0].try_get("ID").expect("nomi univoci"),
+        Some(&ParameterValue::I32(4))
+    );
+    assert_eq!(
+        rows[0].try_get("VALUE").expect("nomi univoci"),
         Some(&ParameterValue::String("only".to_owned()))
     );
     verification
@@ -1316,12 +1328,15 @@ async fn live_parameter_array_binding_crosses_chunks_and_rolls_back_atomically()
         .expect("conteggio parameter array Db2");
     assert_eq!(rows.len(), 1);
     assert_eq!(
-        rows[0].get("N"),
+        rows[0].try_get("N").expect("nomi univoci"),
         Some(&ParameterValue::Decimal(ROWS.to_string()))
     );
-    assert_eq!(rows[0].get("MIN_ID"), Some(&ParameterValue::I32(20_000)));
     assert_eq!(
-        rows[0].get("MAX_ID"),
+        rows[0].try_get("MIN_ID").expect("nomi univoci"),
+        Some(&ParameterValue::I32(20_000))
+    );
+    assert_eq!(
+        rows[0].try_get("MAX_ID").expect("nomi univoci"),
         Some(&ParameterValue::I32(20_000 + ROWS - 1))
     );
     verification
@@ -1444,7 +1459,7 @@ async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
         .await
         .expect("conteggio dopo rollback row diagnostics Db2");
     assert_eq!(
-        rows[0].get("N"),
+        rows[0].try_get("N").expect("nomi univoci"),
         Some(&ParameterValue::Decimal("0".to_owned()))
     );
     verification
@@ -1743,11 +1758,11 @@ async fn live_binary_parameters_preserve_bytes_and_predicates() {
                 .expect("byte salvati");
             assert_eq!(rows.len(), 1);
             assert_eq!(
-                rows[0].get("HEXV"),
+                rows[0].try_get("HEXV").expect("nomi univoci"),
                 Some(&ParameterValue::String(expected_hex.to_owned()))
             );
             assert_eq!(
-                rows[0].get("LENV"),
+                rows[0].try_get("LENV").expect("nomi univoci"),
                 Some(&ParameterValue::I32(
                     i32::try_from(bytes.len()).expect("lunghezza")
                 ))
@@ -1796,7 +1811,10 @@ async fn assert_binary_text_predicate(
             // ma non deve cercare la stringa esadecimale 41423031.
             assert_eq!(rows.len(), usize::from(inserted));
             if inserted {
-                assert_eq!(rows[0].get("ID"), Some(&ParameterValue::I32(2)));
+                assert_eq!(
+                    rows[0].try_get("ID").expect("nomi univoci"),
+                    Some(&ParameterValue::I32(2))
+                );
             }
         }
         Err(error) => assert_eq!(
@@ -1841,7 +1859,10 @@ async fn assert_binary_varbit_predicates(
             )
             .await
             .expect("predicato tipizzato");
-        let ids: Vec<_> = rows.iter().map(|row| row.get("ID").cloned()).collect();
+        let ids: Vec<_> = rows
+            .iter()
+            .map(|row| row.try_get("ID").expect("nomi univoci").cloned())
+            .collect();
         assert_eq!(
             ids,
             expected

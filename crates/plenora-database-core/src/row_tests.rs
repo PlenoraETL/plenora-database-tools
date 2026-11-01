@@ -18,6 +18,10 @@ fn row_len_matches_values() {
 }
 
 #[test]
+#[allow(
+    deprecated,
+    reason = "verifica intenzionale della compatibilita di Row::get in 8.x"
+)]
 fn get_by_name_returns_the_value() {
     let row = sample_row();
     assert!(matches!(row.get("id"), Some(ParameterValue::I32(42))));
@@ -134,6 +138,10 @@ fn columns_and_values_are_accessible_for_manual_serialization() {
     assert!(text.contains("plenora"));
 }
 #[test]
+#[allow(
+    deprecated,
+    reason = "verifica intenzionale della compatibilita di Row::get in 8.x"
+)]
 fn duplicate_names_refuse_lookup_but_preserve_positions() {
     let row = crate::Row::try_new(
         std::sync::Arc::from(vec![
@@ -156,8 +164,10 @@ fn duplicate_names_refuse_lookup_but_preserve_positions() {
         row.get_index(1),
         Some(&crate::provider::ParameterValue::I32(2))
     );
+    assert_eq!(row.get("unique"), Some(&ParameterValue::I32(3)));
+    assert!(row.get("SECRET").is_none());
+    assert!(row.get("absent").is_none());
     for name in ["SECRET", "unique", "absent"] {
-        assert!(row.get(name).is_none());
         let error = row.try_get(name).expect_err("mapping ambiguo");
         assert_eq!(error.category, crate::ErrorCategory::DataMapping);
         assert!(error.message.contains("alias"));

@@ -39,7 +39,7 @@
 //!         .begin_transaction(&TransactionOptions::pfm_defaults(), &budget, &cancellation)
 //!         .await?;
 //!     let statement = NativeStatement::new("SELECT 1", 0)?.bind(Vec::new())?;
-//!     let rows = transaction.query_result_bound(&statement).await?.into_mappings();
+//!     let rows = transaction.query_result_bound(&statement).await?.try_into_mappings()?;
 //!     transaction.rollback().await?;
 //!     assert!(rows.len() <= 1);
 //!     Ok(())

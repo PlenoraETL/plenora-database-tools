@@ -104,10 +104,24 @@ impl Row {
     }
 
     /// Ritorna il valore per nome colonna. Case-sensitive.
-    /// Nomi duplicati negano l'accesso per nome; usare `try_get` per l'errore.
+    ///
+    /// Limite di compatibilita 8.x: un nome duplicato restituisce `None`,
+    /// indistinguibile da un nome assente. Un nome univoco resta accessibile
+    /// anche se altre colonne hanno nomi duplicati.
+    /// Usare [`Self::try_get`] per un errore esplicito sui nomi ambigui.
+    /// Nella 9.0.0 anche `get` diventera rigoroso.
+    #[deprecated(
+        since = "8.0.4",
+        note = "usare Row::try_get per un errore esplicito sui nomi ambigui; in 8.x get restituisce None per un nome duplicato"
+    )]
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&ParameterValue> {
-        self.try_get(name).ok().flatten()
+        let mut matches = self.columns.iter().enumerate().filter(|(_, c)| *c == name);
+        let (index, _) = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        self.values.get(index)
     }
 
     /// Verifica che il risultato possa essere esposto come mapping per nome.
@@ -165,25 +179,24 @@ impl Row {
 ///
 /// Il messaggio non elenca le colonne presenti, perche sono nomi dello schema
 /// remoto e un panic puo finire nei log. Chi deve ispezionarle usa
-/// [`Row::columns`]; chi vuole un accesso fallibile usa [`Row::get`].
+/// [`Row::columns`]; chi vuole un accesso fallibile usa [`Row::try_get`].
 impl Index<&str> for Row {
     type Output = ParameterValue;
 
     #[allow(
         clippy::panic,
-        reason = "raggiungibile (nome assente / indice fuori intervallo): preserva il panic intenzionale e preesistente dell'API indicizzata, come `Index` di std; l'accesso fallibile e Row::get / Row::get_index"
+        reason = "raggiungibile (nome assente / indice fuori intervallo): preserva il panic intenzionale e preesistente dell'API indicizzata, come `Index` di std; l'accesso fallibile e Row::try_get / Row::get_index"
     )]
     fn index(&self, name: &str) -> &ParameterValue {
-        if let Err(error) = self.validate_names() {
-            panic!("{}", error.message);
-        }
-        self.get(name).unwrap_or_else(|| {
-            panic!(
-                "accesso a una colonna non presente in una Row di {} colonne \
-                 (usare Row::get per un accesso fallibile)",
-                self.columns.len()
-            )
-        })
+        self.try_get(name)
+            .unwrap_or_else(|error| panic!("{}", error.message))
+            .unwrap_or_else(|| {
+                panic!(
+                    "accesso a una colonna non presente in una Row di {} colonne \
+                 (usare Row::try_get per un accesso fallibile)",
+                    self.columns.len()
+                )
+            })
     }
 }
 
@@ -194,7 +207,7 @@ impl Index<usize> for Row {
 
     #[allow(
         clippy::panic,
-        reason = "raggiungibile (nome assente / indice fuori intervallo): preserva il panic intenzionale e preesistente dell'API indicizzata, come `Index` di std; l'accesso fallibile e Row::get / Row::get_index"
+        reason = "raggiungibile (nome assente / indice fuori intervallo): preserva il panic intenzionale e preesistente dell'API indicizzata, come `Index` di std; l'accesso fallibile e Row::try_get / Row::get_index"
     )]
     fn index(&self, index: usize) -> &ParameterValue {
         self.values.get(index).unwrap_or_else(|| {
