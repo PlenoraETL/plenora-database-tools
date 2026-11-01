@@ -16,14 +16,46 @@ EXCEPTIONS = {
     ("vendor/odbc-api/src/handles.rs", "SQLFreeHandle"),
 }
 
+# Solo questi moduli implementano il confine FFI. Un nuovo file non eredita
+# l'autorizzazione, neppure se concatena una conversione strict alla chiamata.
+STRICT_FILES = {
+    "vendor/odbc-api/src/handles/connection.rs",
+    "vendor/odbc-api/src/handles/descriptor.rs",
+    "vendor/odbc-api/src/handles/environment.rs",
+    "vendor/odbc-api/src/handles/statement.rs",
+    *(name for name, _ in EXCEPTIONS),
+}
+# Export non funzione con prefisso SQL maiuscolo di odbc-sys 0.31.0
+# (src/lib.rs). SqlReturn, HStmt e gli altri tipi non hanno quel prefisso.
+# Simboli nuovi/sconosciuti restano vietati: non si deduce il tipo dall'uso.
+NON_FUNCTIONS = {"SQLSTATE_SIZE", "SQLSTATE_SIZEW"}
+FUNCTION = re.compile(r'\bSQL[A-Z][A-Za-z]*\b')
+
 
 # Le eccezioni non autorizzano nuovi rami o nuove chiamate nello stesso file.
 EXCEPTION_SOURCES = {'vendor/odbc-api/src/handles/diagnostics.rs': 'b65cb8ed01d39410bab81f593103baac03ec7526ec80ee0452f7bbf321a3a3df', 'vendor/odbc-api/src/handles.rs': '2f348d858f737af4404272e9c58b0b1a05bc0f573140a3760fbce4dc5cdcb9c5'}
 
 def code_only(source: str) -> str:
     """Maschera commenti e stringhe conservando offset e righe del sorgente."""
-    return re.sub(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"',
-                  lambda m: re.sub(r'[^\n]', ' ', m[0]), source, flags=re.S)
+    tokens = re.compile(r'//[^\n]*|/\*|\b(?:br|cr|r)(\#*)"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\\n])\'', flags=re.S)
+    masked = list(source)
+    offset = 0
+    while match := tokens.search(source, offset):
+        end = match.end()
+        if match[0] == '/*':
+            depth = 1
+            while depth and (marker := re.search(r'/\*|\*/', source[end:])):
+                depth += 1 if marker[0] == '/*' else -1
+                end += marker.end()
+            if depth:
+                end = len(source)
+        elif match[1] is not None:
+            terminator = '"' + match[1]
+            closing = source.find(terminator, end)
+            end = len(source) if closing < 0 else closing + len(terminator)
+        masked[match.start():end] = [c if c == '\n' else ' ' for c in source[match.start():end]]
+        offset = end
+    return ''.join(masked)
 
 
 def inspect(name: str, source: str) -> tuple[list[str], list[str]]:
@@ -41,8 +73,38 @@ def inspect(name: str, source: str) -> tuple[list[str], list[str]]:
             # Il lettore dei diagnostici e l'unica eccezione ricorsiva.
             if name != "vendor/odbc-api/src/handles/diagnostics.rs":
                 errors.append(f"{location(match.start())}: avviso fuori dal classificatore")
-    aliases = set(re.findall(r'\bSQL\w+\s+as\s+(\w+)', code))
-    calls = re.compile(r'\b(SQL[A-Z]\w*|sql_\w+' + ''.join('|'+re.escape(a) for a in aliases) + r')\s*\(')
+    imports = list(re.finditer(r'\b(?:use|extern\s+crate)\b[^;]*;', code))
+    # Anche gli alias del modulo possono introdurre tutte le funzioni senza
+    # nominarle. Propagazione conservativa per use annidati e re-export.
+    modules = {'odbc_sys', 'odbc', 'odbc_api', 'sys'}
+    while True:
+        expanded = modules | {
+            alias for item in imports
+            if set(re.findall(r'\w+', item[0])) & modules
+            for alias in re.findall(r'\bas\s+(\w+)', item[0])
+        }
+        if expanded == modules:
+            break
+        modules = expanded
+    for item in imports:
+        if '*' in item[0] and set(re.findall(r'\w+', item[0])) & modules:
+            errors.append(f"{location(item.start())}: glob ODBC vietato")
+        if FUNCTION.search(item[0]) and re.search(r'\bpub(?:\s*\([^)]*\))?\s*$', code[:item.start()]):
+            errors.append(f"{location(item.start())}: re-export di funzione ODBC vietato")
+    aliases = {alias for symbol, alias in re.findall(r'\b(SQL[A-Z]\w*)\s+as\s+(\w+)', code)
+               if symbol not in NON_FUNCTIONS}
+    references = re.compile(FUNCTION.pattern + ''.join(r'|\b'+re.escape(a)+r'\b' for a in sorted(aliases)))
+    for match in references.finditer(code):
+        if match[0] in NON_FUNCTIONS and match[0] not in aliases:
+            continue
+        if name not in STRICT_FILES:
+            errors.append(f"{location(match.start())}: riferimento ODBC fuori dal confine strict: {match[0]}")
+        elif not any(item.start() <= match.start() < item.end() for item in imports):
+            # Nel confine si ammettono solo import espliciti e chiamate dirette,
+            # verificate sotto; puntatori e argomenti di macro non sono prove.
+            if not re.match(r'\s*\(', code[match.end():]):
+                errors.append(f"{location(match.start())}: riferimento ODBC indiretto: {match[0]}")
+    calls = re.compile(r'\b(SQL[A-Z][A-Za-z]*' + ''.join('|'+re.escape(a) for a in sorted(aliases)) + r')\s*\(')
     for match in calls.finditer(code):
         if re.search(r"\bfn\s*$", code[:match.start()]):
             continue
@@ -65,7 +127,7 @@ def main() -> int:
     parser.add_argument('--inventory', type=Path)
     args = parser.parse_args()
     errors, inventory = [], []
-    for folder in ('vendor/odbc-api/src', 'crates/plenora-db-db2/src'):
+    for folder in ('vendor/odbc-api/src', 'crates'):
         for path in sorted((ROOT / folder).rglob('*.rs')):
             found, calls = inspect(path.relative_to(ROOT).as_posix(), path.read_text(encoding='utf-8'))
             errors.extend(found)

@@ -24,6 +24,7 @@ use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteMode, Writ
 use plenora_database_core::protocol::contract_schema;
 use plenora_database_core::provider::{BatchStream, Provider, ProviderFuture, SecretString};
 use plenora_database_core::resource::{ResourceBudget, ResourceLimits};
+use plenora_database_core::transaction::{Statement, TransactionOptions};
 use plenora_database_core::write_admission::{AdmissionKey, TargetDimensions};
 use plenora_database_core::{
     CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect,
@@ -418,8 +419,11 @@ async fn live_a_json_non_normalizza_i_numeri_in_silenzio() {
         &format!("CREATE TABLE {table} (ID NUMBER(19) PRIMARY KEY, V JSON)"),
     )
     .await;
-    // La coppia Utf8/JSON e chiusa: anche il documento semplice si
-    // rifiuta prima di leggere i valori, non solo i numeri non rappresentabili.
+    // OracleWritePlan::admit applica prima la regola A, poi qualifica il
+    // tipo intermedio. Il referto reale ora misura Utf8/JSON e le riscritture
+    // dei numeri: A passa, ma JSON resta senza un tipo intermedio qualificato.
+    // Questa seconda guardia rifiuta nel preflight, prima della regola S sui
+    // valori e di ogni DML, anche il documento che non riscriverebbe numeri.
     for document in [
         r#"{"a":1.0}"#,
         r#"{"a":12345678901234567890123456789012345678901234567890}"#,
@@ -434,9 +438,33 @@ async fn live_a_json_non_normalizza_i_numeri_in_silenzio() {
         assert_eq!(error.remote_effect, RemoteEffect::None);
         assert_eq!(
             error.message,
-            plenora_database_core::write_admission::REFUSED_PAIR
+            "tipo intermedio Oracle non identico o non qualificato"
         );
     }
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut transaction = hooks
+        .provider
+        .begin_transaction(
+            &hooks.secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione di verifica");
+    let rows = transaction
+        .query(
+            &Statement::new(format!("SELECT ID FROM {table}")),
+            &cancellation,
+        )
+        .await
+        .expect("verifica assenza di scritture");
+    transaction
+        .rollback(&cancellation)
+        .await
+        .expect("rollback verifica");
+    assert!(rows.is_empty(), "il preflight non deve inserire righe");
     drop_table(&hooks, table).await;
 }
 
