@@ -27,7 +27,7 @@ Correttiva minima 8.x autorizzata, senza porting di #134.
   e zero e con l'oracolo server `CONVERT`/`SWITCHOFFSET`; riverificare alla
   sorgente anche le letture precedenti senza perdita di cifre frazionarie.
 - **Colonne omonime**: il mapping SDK sovrascriveva un valore nei tag
-  `py-v0.12.0`–`py-v8.0.3`; `Row::get` sceglieva il primo nei tag
+  `py-v0.1.0`–`py-v8.0.3`; `Row::get` sceglieva il primo nei tag
   `py-v0.1.0`–`py-v8.0.3`. Ora il mapping sync/async rifiuta l'ambiguita
   suggerendo alias distinti, senza nomi o valori nell'errore. La stessa
   validazione precede anche i mapping JSON CLI `execute-sql` e
