@@ -199,7 +199,15 @@ fn assert_rewritten(error: &plenora_database_core::DatabaseError, key: bool) {
     } else {
         plenora_database_core::store_rewrite::REWRITTEN_VALUE
     };
-    assert!(error.message.contains(expected), "{error:?}");
+    let empty = if key {
+        crate::write_input::EMPTY_KEY
+    } else {
+        crate::write_input::EMPTY_VALUE
+    };
+    assert!(
+        error.message.contains(expected) || error.message == empty,
+        "{error:?}"
+    );
 }
 
 fn text_batch(fields: &[(&str, bool)], ids: Vec<i32>, columns: Vec<ArrayRef>) -> RecordBatch {
@@ -251,7 +259,7 @@ async fn live_s_testo_e_binario_vuoti_non_diventano_null_in_silenzio() {
     .await
     .expect_err("il testo vuoto diventerebbe NULL");
     assert_rewritten(&error, false);
-    assert_eq!(error.remote_effect, RemoteEffect::RolledBack, "{error:?}");
+    assert_eq!(error.remote_effect, RemoteEffect::None, "{error:?}");
     assert_eq!(
         count(
             &provider,
@@ -290,10 +298,7 @@ async fn live_s_testo_e_binario_vuoti_non_diventano_null_in_silenzio() {
     .await
     .expect_err("binario vuoto in RAW");
     assert_rewritten(&error, false);
-    // Un BLOB vuoto si scrive come LOB vuoto, non come NULL: dal 25/10
-    // (round 8) il driver lega i binari con la lunghezza a pezzi, e la regola
-    // A lo misura esatto (`tests/fixtures/scrittura_server_oracle.json`).
-    write(
+    let error = write(
         &provider,
         &secret,
         &append,
@@ -304,18 +309,9 @@ async fn live_s_testo_e_binario_vuoti_non_diventano_null_in_silenzio() {
         ),
     )
     .await
-    .expect("BLOB vuoto");
-    assert_eq!(
-        count(
-            &provider,
-            &secret,
-            &format!("SELECT COUNT(*) AS N FROM {table} WHERE B IS NOT NULL AND DBMS_LOB.GETLENGTH(B) = 0")
-        )
-        .await,
-        1,
-        "il BLOB vuoto resta vuoto, non NULL"
-    );
-    dml(&provider, &secret, &format!("DELETE FROM {table}")).await;
+    .expect_err("BLOB vuoto escluso dalla policy");
+    assert_rewritten(&error, false);
+    assert_eq!(error.remote_effect, RemoteEffect::None);
     // CHAR(3) completa con spazi un testo piu corto.
     let error = write(
         &provider,
@@ -392,12 +388,154 @@ async fn live_s_testo_e_binario_vuoti_non_diventano_null_in_silenzio() {
         count(
             &provider,
             &secret,
-            &format!("SELECT COUNT(*) AS N FROM {created}")
+            &format!("SELECT COUNT(*) AS N FROM USER_TABLES WHERE TABLE_NAME = '{created}'")
         )
         .await,
         0
     );
     drop_table(&provider, &secret, created).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_empty_parameters_are_refused_before_caller_dml() {
+    let (provider, secret) = fixture();
+    let table = "PLN_EMPTY_CALLER";
+    drop_table(&provider, &secret, table).await;
+    ddl(&provider, &secret, &format!("CREATE TABLE {table} (V VARCHAR2(10), NV NVARCHAR2(10), C CHAR(3), R RAW(8), CL CLOB, B BLOB)")).await;
+    for column in ["V", "NV", "C", "R", "CL", "B"] {
+        for update in [false, true] {
+            let cancellation = CancellationToken::new();
+            let mut transaction = provider
+                .begin_transaction(
+                    &secret,
+                    &TransactionOptions::default(),
+                    &budget(),
+                    &cancellation,
+                )
+                .await
+                .unwrap();
+            let sql = if update {
+                format!("UPDATE {table} SET {column} = :1")
+            } else {
+                format!("INSERT INTO {table} ({column}) VALUES (:1)")
+            };
+            let value = if ["R", "B"].contains(&column) {
+                ParameterValue::Bytes(vec![])
+            } else {
+                ParameterValue::String(String::new())
+            };
+            let error = transaction
+                .execute(&Statement::new(sql).with_params(vec![value]), &cancellation)
+                .await
+                .expect_err("vuoto");
+            assert_eq!(error.category, ErrorCategory::DataMapping);
+            assert_eq!(error.phase, ErrorPhase::Prepare);
+            assert_eq!(error.remote_effect, RemoteEffect::None);
+            transaction.commit(&cancellation).await.unwrap();
+        }
+    }
+    assert_eq!(
+        count(
+            &provider,
+            &secret,
+            &format!("SELECT COUNT(*) AS N FROM {table}")
+        )
+        .await,
+        0
+    );
+    drop_table(&provider, &secret, table).await;
+}
+
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_empty_late_batch_precedes_replace_update_merge_and_array() {
+    let (provider, secret) = fixture();
+    let table = "PLN_EMPTY_BATCHES";
+    drop_table(&provider, &secret, table).await;
+    ddl(&provider, &secret, &format!("CREATE TABLE {table} (ID NUMBER(10) PRIMARY KEY, V VARCHAR2(10), NV NVARCHAR2(10), C CHAR(3), R RAW(8), CL CLOB, B BLOB)")).await;
+    dml(
+        &provider,
+        &secret,
+        &format!("INSERT INTO {table} (ID, V) VALUES (99, 'keep')"),
+    )
+    .await;
+    for mode in [
+        WriteMode::Append,
+        WriteMode::Replace,
+        WriteMode::Update,
+        WriteMode::Upsert,
+    ] {
+        for column in ["V", "NV", "C", "R", "CL", "B"] {
+            let batches = [false, true].map(|empty| {
+                let array: ArrayRef = if ["R", "B"].contains(&column) {
+                    Arc::new(BinaryArray::from(vec![Some(if empty {
+                        &b""[..]
+                    } else {
+                        &b"abc"[..]
+                    })]))
+                } else {
+                    Arc::new(StringArray::from(vec![Some(if empty {
+                        ""
+                    } else {
+                        "abc"
+                    })]))
+                };
+                text_batch(
+                    &[(column, true)],
+                    vec![if empty { 2 } else { 1 }],
+                    vec![array],
+                )
+            });
+            let operation = operation(
+                table,
+                mode,
+                if matches!(mode, WriteMode::Update | WriteMode::Upsert) {
+                    &["ID"]
+                } else {
+                    &[]
+                },
+            );
+            let budget = budget();
+            let cancellation = CancellationToken::new();
+            let schema = batches[0].schema();
+            let prepared = provider
+                .prepare_write(&secret, &operation, schema.clone(), &budget, &cancellation)
+                .await
+                .unwrap();
+            let input = Batches {
+                schema,
+                queue: VecDeque::from(batches),
+                rows: 2,
+            };
+            let error = provider
+                .write(&secret, prepared, Box::new(input), &budget, &cancellation)
+                .await
+                .expect_err("vuoto tardivo");
+            assert_eq!(error.category, ErrorCategory::DataMapping);
+            assert_eq!(error.phase, ErrorPhase::Write);
+            assert_eq!(error.remote_effect, RemoteEffect::None);
+            assert_eq!(
+                count(
+                    &provider,
+                    &secret,
+                    &format!("SELECT COUNT(*) AS N FROM {table}")
+                )
+                .await,
+                1
+            );
+            assert_eq!(
+                count(
+                    &provider,
+                    &secret,
+                    &format!("SELECT COUNT(*) AS N FROM {table} WHERE ID = 99 AND V = 'keep'")
+                )
+                .await,
+                1
+            );
+        }
+    }
+    drop_table(&provider, &secret, table).await;
 }
 
 #[tokio::test]

@@ -153,7 +153,12 @@ fn empty_text_and_bytes_are_refused_on_the_parameter_path() {
             label: String::new(),
         },
     ] {
-        let error = crate::parameter::reject_empty(&value).expect_err("vuoto");
+        let error = bind_parameters(&[value]).expect_err("vuoto");
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+        assert_eq!(
+            error.remote_effect,
+            plenora_database_core::RemoteEffect::None
+        );
         assert_eq!(
             error.category,
             plenora_database_core::ErrorCategory::DataMapping

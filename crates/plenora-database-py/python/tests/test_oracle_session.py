@@ -360,3 +360,35 @@ async def test_oracle_async_duplicate_result_names_require_aliases() -> None:
         assert list(rows.one().values()) == [1, 2]
     finally:
         session.close()
+
+
+@pytest.mark.parametrize("column,binary", [("V", False), ("NV", False), ("C", False), ("CL", False), ("R", True), ("B", True)])
+def test_oracle_empty_values_are_refused_by_bulk_and_portable_dml(column, binary):
+    import pyarrow as pa
+
+    session = connect_oracle_reference()
+    name = "PLN_PY_EMPTY_WRITE"
+    try:
+        _drop_probe(session, name)
+        session.execute_ddl(
+            f'CREATE TABLE "{name}" ("V" VARCHAR2(10), "NV" NVARCHAR2(10), '
+            '"C" CHAR(3), "CL" CLOB, "R" RAW(8), "B" BLOB)'
+        )
+        value = b"" if binary else ""
+        batch = pa.RecordBatch.from_arrays(
+            [pa.array([value], type=pa.binary() if binary else pa.string())],
+            schema=pa.schema([pa.field(column, pa.binary() if binary else pa.string())]),
+        )
+        with pytest.raises(p.PlenoraError) as raised:
+            session.copy_from("PLENORA", name, batch, mapping_policy="strict")
+        assert raised.value.category == "data_mapping"
+        target = p.table(name, column)
+        with pytest.raises(p.PlenoraError):
+            session.execute(
+                p.insert(target).values(**{column: p.bind("value", p.BindType.BINARY if binary else p.BindType.STRING)}),
+                {"value": value},
+            )
+        assert session.execute_scalar(f'SELECT COUNT(*) FROM "{name}"') == 0
+    finally:
+        _drop_probe(session, name)
+        session.close()

@@ -51,6 +51,8 @@ TIMEOUT = 30 * 60
 REQUIRED_LIVE_TESTS = frozenset(
     {
         "live_duplicate_result_names_preserve_positions",
+        "live_empty_parameters_are_refused_before_caller_dml",
+        "live_empty_late_batch_precedes_replace_update_merge_and_array",
 
         "live_caller_stream_fetch_failure_requires_recovery",
         "live_parameter_values_bind_exactly_or_are_refused",

@@ -41,7 +41,7 @@ pub(super) async fn observe(
         )
         .await?
     } else {
-        crate::parameter::bind_parameters(&[value])?
+        crate::parameter::bind_probe_parameters(&[value])?
     };
     let written = crate::connection::with_timeout(
         config,

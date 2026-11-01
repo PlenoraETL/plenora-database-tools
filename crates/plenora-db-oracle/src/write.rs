@@ -691,6 +691,9 @@ pub async fn execute_write(
     let plan = prepared
         .take_driver_state::<OracleWritePlan>()
         .ok_or_else(|| write_error(ErrorCategory::InvalidPlan, "piano preparato Oracle assente"))?;
+    let input =
+        crate::write_input::reject_empty_input(input, &prepared.operation, budget, cancellation)
+            .await?;
     // La regola S: un valore che Oracle riscriverebbe al salvataggio (il
     // testo vuoto e il binario vuoto come `NULL`, `CHAR(n)` completato con
     // spazi, un float sotto il minimo di `FLOAT`) si rifiuta con `Strict`, e

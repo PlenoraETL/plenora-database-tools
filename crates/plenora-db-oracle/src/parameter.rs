@@ -24,6 +24,13 @@ struct LobIo<'a> {
 }
 
 pub fn bind_parameters(parameters: &[ParameterValue]) -> Result<Vec<Value>> {
+    parameters.iter().try_for_each(reject_empty)?;
+    parameters.iter().map(bind_parameter).collect()
+}
+
+/// La sonda misura il server senza applicare la policy dei vuoti del provider.
+#[cfg(test)]
+pub fn bind_probe_parameters(parameters: &[ParameterValue]) -> Result<Vec<Value>> {
     parameters.iter().map(bind_parameter).collect()
 }
 
@@ -36,6 +43,7 @@ pub async fn bind_parameters_with_lobs(
     phase: ErrorPhase,
     cancellation: &plenora_database_core::CancellationToken,
 ) -> Result<Vec<Value>> {
+    parameters.iter().try_for_each(reject_empty)?;
     let mut values = Vec::with_capacity(parameters.len());
     let mut blob_index = 0_usize;
     let mut clob_index = 0_usize;
@@ -46,9 +54,6 @@ pub async fn bind_parameters_with_lobs(
         cancellation,
     };
     for parameter in parameters {
-        if !promote_write_lobs {
-            reject_empty(parameter)?;
-        }
         let blob = match parameter {
             ParameterValue::Wkb { bytes, .. } => Some(bytes.as_slice()),
             ParameterValue::Bytes(bytes) if promote_write_lobs => Some(bytes.as_slice()),
@@ -87,6 +92,7 @@ pub async fn bind_target_lobs(
     timeout: Duration,
     cancellation: &plenora_database_core::CancellationToken,
 ) -> Result<Vec<Value>> {
+    parameters.iter().try_for_each(reject_empty)?;
     if parameters.len() != kinds.len() {
         return Err(mapping_error("descrittori LOB incoerenti"));
     }
@@ -281,10 +287,8 @@ impl LobIo<'_> {
 /// Oracle conserva una stringa vuota, e un `RAW` vuoto, come `NULL`: il valore
 /// scritto non sarebbe quello bindato, e `col = :n` non lo ritroverebbe mai.
 ///
-/// Vale per lo statement del chiamante e per il filtro della lettura
-/// (`promote_write_lobs` falso), e per il DML scalare del writer. Il parameter
-/// array usa [`bind_parameters`]; la guardia delle riscritture del writer
-/// controlla il vuoto prima di scegliere uno dei due percorsi.
+/// Il confine rifiuta anche LOB vuoti: la policy non dipende dalla scelta
+/// del locator o dal bind scalare. Vale anche per gli statement del chiamante.
 pub fn reject_empty(parameter: &ParameterValue) -> Result<()> {
     let empty = match parameter {
         ParameterValue::String(value)
@@ -294,9 +298,7 @@ pub fn reject_empty(parameter: &ParameterValue) -> Result<()> {
         _ => false,
     };
     if empty {
-        return Err(mapping_error(
-            "parametro vuoto Oracle: stringa e RAW vuoti si conservano come NULL",
-        ));
+        return Err(mapping_error("parametro vuoto Oracle non ammesso"));
     }
     Ok(())
 }
