@@ -154,7 +154,7 @@ def test_sqlserver_sync_exact_temporal_and_duplicate_names() -> None:
     session = connect_sqlserver_reference()
     try:
         rows = session.query_sql("SELECT CAST('2026-10-31T12:34:56.1234567' AS datetime2(7)) AS T")
-        assert rows[0]["T"] == "2026-10-31T12:34:56.123456700"
+        assert rows.one()["T"] == "2026-10-31T12:34:56.123456700"
         for offset, utc in [("+02:00", "2026-10-31T10:34:56"),
                             ("-05:30", "2026-10-31T18:04:56"),
                             ("+00:00", "2026-10-31T12:34:56"),
@@ -168,12 +168,12 @@ def test_sqlserver_sync_exact_temporal_and_duplicate_names() -> None:
             )
             rows = session.query_sql(sql)
             # Confronto testuale: datetime Python troncherebbe la settima cifra.
-            assert rows[0]["T"] == utc + ".123456700+00:00"
-            assert rows[0]["oracle_utc"] == utc + ".1234567"
+            assert rows.one()["T"] == utc + ".123456700+00:00"
+            assert rows.one()["oracle_utc"] == utc + ".1234567"
 
         with pytest.raises(p.PlenoraDataMappingError, match="alias"):
             session.query_sql("SELECT 1 AS X, 2 AS X")
-        assert session.query_sql("SELECT 1 AS A, 2 AS B") == [{"A": 1, "B": 2}]
+        assert session.query_sql("SELECT 1 AS A, 2 AS B").one().as_dict() == {"A": 1, "B": 2}
     finally:
         session.close()
 
@@ -183,7 +183,7 @@ async def test_sqlserver_async_exact_temporal_and_duplicate_names() -> None:
     session = await aconnect_sqlserver_reference()
     try:
         rows = await session.query_sql("SELECT CAST('2026-10-31T12:34:56.1234567' AS datetime2(7)) AS T")
-        assert rows[0]["T"] == "2026-10-31T12:34:56.123456700"
+        assert rows.one()["T"] == "2026-10-31T12:34:56.123456700"
         for offset, utc in [("+02:00", "2026-10-31T10:34:56"),
                             ("-05:30", "2026-10-31T18:04:56"),
                             ("+00:00", "2026-10-31T12:34:56"),
@@ -197,12 +197,12 @@ async def test_sqlserver_async_exact_temporal_and_duplicate_names() -> None:
             )
             rows = await session.query_sql(sql)
             # Confronto testuale: datetime Python troncherebbe la settima cifra.
-            assert rows[0]["T"] == utc + ".123456700+00:00"
-            assert rows[0]["oracle_utc"] == utc + ".1234567"
+            assert rows.one()["T"] == utc + ".123456700+00:00"
+            assert rows.one()["oracle_utc"] == utc + ".1234567"
 
         with pytest.raises(p.PlenoraDataMappingError, match="alias"):
             await session.query_sql("SELECT 1 AS X, 2 AS X")
-        assert await session.query_sql("SELECT 1 AS A, 2 AS B") == [{"A": 1, "B": 2}]
+        assert (await session.query_sql("SELECT 1 AS A, 2 AS B")).one().as_dict() == {"A": 1, "B": 2}
     finally:
         session.close()
 
@@ -216,7 +216,7 @@ def test_mariadb_sync_duplicate_result_names_require_aliases() -> None:
         with pytest.raises(database.PlenoraDataMappingError, match="alias"):
             session.query_sql("SELECT 1 AS x, 2 AS x")
         rows = session.query_sql("SELECT 1 AS a, 2 AS b")
-        assert list(rows[0].values()) == [1, 2]
+        assert list(rows.one().values()) == [1, 2]
     finally:
         session.close()
 
@@ -231,6 +231,6 @@ async def test_mariadb_async_duplicate_result_names_require_aliases() -> None:
         with pytest.raises(database.PlenoraDataMappingError, match="alias"):
             await session.query_sql("SELECT 1 AS x, 2 AS x")
         rows = await session.query_sql("SELECT 1 AS a, 2 AS b")
-        assert list(rows[0].values()) == [1, 2]
+        assert list(rows.one().values()) == [1, 2]
     finally:
         session.close()

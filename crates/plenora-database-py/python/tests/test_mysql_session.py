@@ -191,7 +191,7 @@ def test_mysql_sync_duplicate_result_names_require_aliases() -> None:
         with pytest.raises(database.PlenoraDataMappingError, match="alias"):
             session.query_sql("SELECT 1 AS x, 2 AS x")
         rows = session.query_sql("SELECT 1 AS a, 2 AS b")
-        assert list(rows[0].values()) == [1, 2]
+        assert list(rows.one().values()) == [1, 2]
     finally:
         session.close()
 
@@ -206,6 +206,6 @@ async def test_mysql_async_duplicate_result_names_require_aliases() -> None:
         with pytest.raises(database.PlenoraDataMappingError, match="alias"):
             await session.query_sql("SELECT 1 AS x, 2 AS x")
         rows = await session.query_sql("SELECT 1 AS a, 2 AS b")
-        assert list(rows[0].values()) == [1, 2]
+        assert list(rows.one().values()) == [1, 2]
     finally:
         session.close()
