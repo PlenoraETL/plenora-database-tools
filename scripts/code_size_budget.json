@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_physical_lines": 106975,
-  "max_code_lines": 88044,
-  "rationale": "Correttiva 8.0.4: precisione temporale esatta nelle query SQL Server e Db2, rifiuto Arrow Db2 e accesso per nome non ambiguo nel core e nel binding. Scelta A per Row::get: deprecazione documentata, lookup compatibile dei nomi univoci e migrazione del checkpoint a try_get. Stessa politica per QueryResult::into_mappings: deprecazione e conversione fallibile con controllo dei metadata anche senza righe (+34 righe fisiche, +21 di codice). Soglie pari alla misura di scripts/code_size.py, senza margine aggiuntivo e senza cambiare il perimetro."
+  "max_physical_lines": 107137,
+  "max_code_lines": 88186,
+  "rationale": "Correttiva 8.0.4: precisione temporale esatta nelle query SQL Server e Db2, rifiuto Arrow Db2 e accesso per nome non ambiguo nel core e nel binding. Scelta A per Row::get: deprecazione documentata, lookup compatibile dei nomi univoci e migrazione del checkpoint a try_get. Stessa politica per QueryResult::into_mappings: deprecazione e conversione fallibile con controllo dei metadata anche senza righe (+34 righe fisiche, +21 di codice). Soglie pari alla misura di scripts/code_size.py, senza margine aggiuntivo e senza cambiare il perimetro. Rifiuto preventivo dei vuoti Oracle: buffer con budget prima di DDL/DML e difesa dei bind, adattamento minimo di #134. Soglie aggiornate alla misura esatta."
 }

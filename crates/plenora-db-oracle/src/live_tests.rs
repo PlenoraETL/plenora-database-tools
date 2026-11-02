@@ -2538,3 +2538,212 @@ async fn live_duplicate_result_names_preserve_positions() {
         .contains("alias"));
     tx.rollback(&cancellation).await.expect("rollback");
 }
+
+/// Riproduce il carico strict che prima confermava vuoti salvati come NULL.
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_empty_values_fail_before_any_write_effect() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    let table = "PLN_EMPTY_REGRESSION";
+    for (native, binary) in [
+        ("VARCHAR2(10)", false),
+        ("NVARCHAR2(10)", false),
+        ("CHAR(10)", false),
+        ("CLOB", false),
+        ("RAW(10)", true),
+        ("BLOB", true),
+    ] {
+        let _ = provider
+            .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+            .await;
+        provider
+            .execute_ddl(
+                &secret,
+                &format!("CREATE TABLE {table} (ID NUMBER(10) PRIMARY KEY, V {native})"),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        let schema = contract_schema(vec![
+            Field::new("ID", DataType::Int32, false),
+            Field::new(
+                "V",
+                if binary {
+                    DataType::Binary
+                } else {
+                    DataType::Utf8
+                },
+                true,
+            ),
+        ])
+        .unwrap();
+        let mut seed = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        seed.execute(
+            &Statement::new(format!("INSERT INTO {table} (ID) VALUES (999)")),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+        seed.commit(&cancellation).await.unwrap();
+        let create_table = format!("{table}_NEW");
+        let _ = provider
+            .execute_ddl(
+                &secret,
+                &format!("DROP TABLE {create_table} PURGE"),
+                &cancellation,
+            )
+            .await;
+        for mode in [
+            WriteMode::Create,
+            WriteMode::Append,
+            WriteMode::Replace,
+            WriteMode::Upsert,
+            WriteMode::Update,
+        ] {
+            let operation = WriteOperation {
+                target: ObjectRef {
+                    catalog: None,
+                    schema: Some("PLENORA".into()),
+                    object: if mode == WriteMode::Create {
+                        create_table.clone()
+                    } else {
+                        table.into()
+                    },
+                },
+                mode,
+                mapping_policy: MappingPolicy::Strict,
+                transaction_profile: if mode == WriteMode::Create {
+                    TransactionProfile::BestEffortDdl
+                } else {
+                    TransactionProfile::SingleTransaction
+                },
+                keys: if matches!(mode, WriteMode::Upsert | WriteMode::Update) {
+                    vec!["ID".into()]
+                } else {
+                    vec![]
+                },
+                update_columns: if mode == WriteMode::Update {
+                    vec!["V".into()]
+                } else {
+                    vec![]
+                },
+                srid_policy: None,
+                create_spatial_index: false,
+                allow_partial: false,
+            };
+            // Il vuoto arriva dopo un batch intero valido, anche oltre la soglia array.
+            let batches = [false, true].map(|empty| {
+                let value: plenora_database_core::arrow::array::ArrayRef = if binary {
+                    Arc::new(BinaryArray::from(vec![
+                        Some(if empty {
+                            &b""[..]
+                        } else {
+                            &b"x"[..]
+                        });
+                        300
+                    ]))
+                } else {
+                    Arc::new(StringArray::from(vec![
+                        Some(if empty { "" } else { "x" });
+                        300
+                    ]))
+                };
+                RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(Int32Array::from((1..=300).collect::<Vec<_>>())),
+                        value,
+                    ],
+                )
+                .unwrap()
+            });
+            let prepared = provider
+                .prepare_write(&secret, &operation, schema.clone(), &budget, &cancellation)
+                .await
+                .unwrap();
+            let error = provider
+                .write(
+                    &secret,
+                    prepared,
+                    Box::new(VecBatchStream::new(batches.to_vec())),
+                    &budget,
+                    &cancellation,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.category,
+                plenora_database_core::ErrorCategory::DataMapping
+            );
+            assert_eq!(error.phase, plenora_database_core::ErrorPhase::Write);
+            assert_eq!(error.remote_effect, RemoteEffect::None);
+            assert_eq!(error.message, "valore vuoto Oracle non ammesso");
+        }
+        let mut transaction = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        for value in [
+            ParameterValue::String(String::new()),
+            ParameterValue::Bytes(vec![]),
+        ] {
+            for sql in [
+                format!("INSERT INTO {table} (ID,V) VALUES (1,:1)"),
+                format!("UPDATE {table} SET V=:1"),
+            ] {
+                let error = transaction
+                    .execute(
+                        &Statement::new(sql).with_params(vec![value.clone()]),
+                        &cancellation,
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    error.category,
+                    plenora_database_core::ErrorCategory::DataMapping
+                );
+                assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+                assert_eq!(error.remote_effect, RemoteEffect::None);
+            }
+        }
+        let rows = transaction
+            .query(
+                &Statement::new(format!("SELECT COUNT(*) AS N FROM {table}")),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows[0].try_get("N").unwrap(), Some(&ParameterValue::I64(1)));
+        let rows = transaction
+            .query(
+                &Statement::new(format!(
+                    "SELECT COUNT(*) AS N FROM USER_TABLES WHERE TABLE_NAME='{create_table}'"
+                )),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows[0].try_get("N").unwrap(), Some(&ParameterValue::I64(0)));
+        transaction.rollback(&cancellation).await.unwrap();
+    }
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .unwrap();
+}

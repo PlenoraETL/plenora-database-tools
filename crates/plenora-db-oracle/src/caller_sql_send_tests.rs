@@ -72,3 +72,41 @@ async fn validation_after_driver_execution_requires_recovery() {
         RemoteEffect::Unknown
     );
 }
+
+#[tokio::test]
+async fn empty_parameters_fail_before_connection_or_send() {
+    for value in [
+        ParameterValue::String(String::new()),
+        ParameterValue::Bytes(vec![]),
+    ] {
+        let mut transaction = scope();
+        transaction.native_query_policy = NativeQueryPolicy::Allow;
+        let statement =
+            Statement::new("INSERT INTO secret_table VALUES (:1)").with_params(vec![value.clone()]);
+        let cancellation = CancellationToken::new();
+        let error = transaction
+            .execute_inner(&statement, &cancellation)
+            .await
+            .unwrap_err();
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert_eq!(error.message, "parametro vuoto Oracle non ammesso");
+        let error = transaction
+            .execute_atomic_dml(&statement, &cancellation)
+            .await
+            .unwrap_err();
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        let error = transaction
+            .execute_parameter_array(
+                "INSERT INTO secret_table VALUES (:1)",
+                vec![vec![ParameterValue::I32(1)], vec![value]],
+                &cancellation,
+            )
+            .await
+            .unwrap_err();
+        drop(transaction);
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+    }
+}

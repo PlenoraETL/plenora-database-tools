@@ -344,3 +344,63 @@ async def test_oracle_async_duplicate_result_names_require_aliases() -> None:
         assert list(rows.one().values()) == [1, 2]
     finally:
         session.close()
+
+
+@pytest.mark.parametrize("column,binary", [("V", False), ("NV", False), ("C", False), ("CL", False), ("R", True), ("B", True)])
+def test_oracle_empty_values_are_refused_by_bulk_and_portable_dml(column, binary):
+    import pyarrow as pa
+
+    session = connect_oracle_reference()
+    name = "PLN_PY_EMPTY_WRITE"
+    try:
+        _drop_probe(session, name)
+        session.execute_ddl(
+            f'CREATE TABLE "{name}" ("V" VARCHAR2(10), "NV" NVARCHAR2(10), '
+            '"C" CHAR(10), "CL" CLOB, "R" RAW(10), "B" BLOB)'
+        )
+        value = b"" if binary else ""
+        batch = pa.RecordBatch.from_arrays(
+            [pa.array([value], type=pa.binary() if binary else pa.string())],
+            schema=pa.schema([pa.field(column, pa.binary() if binary else pa.string())]),
+        )
+        with pytest.raises(p.PlenoraError) as raised:
+            session.copy_from("PLENORA", name, batch, mapping_policy="strict")
+        assert raised.value.category == "data_mapping"
+        target = p.table(name, column)
+        with pytest.raises(p.PlenoraError) as raised:
+            session.execute(
+                p.insert(target).values(**{column: p.bind("value", p.BindType.BINARY if binary else p.BindType.STRING)}),
+                {"value": value},
+            )
+        assert raised.value.category == "data_mapping"
+        assert session.execute_scalar(f'SELECT COUNT(*) FROM "{name}"') == 0
+    finally:
+        _drop_probe(session, name)
+        session.close()
+
+
+@pytest.mark.parametrize("mode", ["upsert", "update", "delete_by_keys"])
+def test_oracle_empty_keys_are_refused_without_effect(mode):
+    import pyarrow as pa
+
+    session = connect_oracle_reference()
+    name = "PLN_PY_EMPTY_KEY"
+    try:
+        _drop_probe(session, name)
+        session.execute_ddl(f'CREATE TABLE "{name}" ("K" VARCHAR2(10) PRIMARY KEY, "V" NUMBER(10))')
+        session.execute(f'INSERT INTO "{name}" VALUES (:1, :2)', ["kept", 7])
+        fields = [pa.field("K", pa.string(), nullable=False)]
+        arrays = [pa.array([""], type=pa.string())]
+        if mode != "delete_by_keys":
+            fields.append(pa.field("V", pa.int32()))
+            arrays.append(pa.array([8], type=pa.int32()))
+        batch = pa.RecordBatch.from_arrays(arrays, schema=pa.schema(fields))
+        with pytest.raises(p.PlenoraError) as raised:
+            session.copy_from("PLENORA", name, batch, mode=mode, keys=["K"],
+                              update_columns=["V"] if mode != "delete_by_keys" else [],
+                              mapping_policy="strict")
+        assert raised.value.category == "data_mapping"
+        assert session.execute_scalar(f'SELECT SUM("V") FROM "{name}"') == 7
+    finally:
+        _drop_probe(session, name)
+        session.close()

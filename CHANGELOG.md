@@ -8,8 +8,23 @@ riassumono le note di quelle release.
 
 ## 8.0.4 — non pubblicata
 
-Correttiva minima 8.x autorizzata, senza porting di #134.
+Correttiva minima 8.x autorizzata; di #134 viene adattato soltanto il rifiuto dei vuoti Oracle.
 
+- **Difetto silenzioso Oracle nei vuoti**: verificato nei sorgenti di tutti i
+  tag `py-v3.1.0`..`py-v8.0.3`. Testo e binario vuoti potevano essere
+  confermati come scritti ma salvati come NULL (misurato sul wheel 8.0.3
+  con Oracle Free 23 e `copy_from`, policy strict). Ora il writer valida
+  tutti i batch prima di CREATE o DML, comprese chiavi, bulk e merge:
+  rifiuto DataMapping senza effetti e senza payload nell'errore. Anche
+  execute transazionale rifiuta i parametri vuoti prima dell'invio: SQL
+  arbitrario non dichiara un tipo target affidabile per distinguere i casi.
+  Il BLOB tramite locator puo conservare il vuoto, ma viene rifiutato per
+  la stessa policy uniforme di #134, indipendente dal percorso di bind.
+  La correzione non ripara i dati gia scritti: confrontare con la sorgente
+  originale le righe NULL che in origine erano vuote, quindi recuperarle
+  con una rappresentazione esplicita appropriata; dal solo NULL non si puo
+  distinguere un vuoto perso da un NULL intenzionale. Regressioni offline
+  e live permanenti nel gate Oracle coprono il rifiuto e l'assenza di effetti.
 - **Temporali troncati in lettura**: verificato nei sorgenti di tutti i tag
   `py-v0.12.0`–`py-v8.0.3` per le query SQL Server e Db2 e per Arrow Db2.
   Le query conservano le cifre nella stringa restituita; Arrow Db2 rifiuta
