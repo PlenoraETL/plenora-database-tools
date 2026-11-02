@@ -1,5 +1,141 @@
 use super::*;
 
+/// Il log ricostruisce la fonte precedente; la misura nuova non apre il prodotto.
+/// Le sole differenze ammesse sono le restrizioni documentate del writer;
+/// nessuna coppia prima chiusa puo essere aperta.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn server_measurements_do_not_change_qualified_admission() {
+    macro_rules! sources {
+        ($name:literal) => {
+            (
+                include_bytes!(concat!(
+                    "../../../tests/fixtures/ammissione_scrittura/",
+                    $name,
+                    ".json"
+                ))
+                .as_slice(),
+                include_bytes!(concat!(
+                    "../../../tests/fixtures/scrittura_server_",
+                    $name,
+                    ".json"
+                ))
+                .as_slice(),
+                include_bytes!(concat!(
+                    "../../../tests/fixtures/write_probe_evidence/",
+                    $name,
+                    ".json"
+                ))
+                .as_slice(),
+            )
+        };
+    }
+    for (provider, (qualified, measured, evidence)) in [
+        (ProviderKind::Db2, sources!("db2")),
+        (ProviderKind::Oracle, sources!("oracle")),
+        (ProviderKind::Postgres, sources!("postgres")),
+        (ProviderKind::Mysql, sources!("mysql")),
+        (ProviderKind::Mariadb, sources!("mariadb")),
+        (ProviderKind::Sqlserver, sources!("sqlserver")),
+    ] {
+        let after = AdmissionTable::parse(provider, qualified).expect("profilo qualificato");
+        let mut previous: AdmissionFixture =
+            serde_json::from_slice(measured).expect("misura server");
+        let evidence: serde_json::Value = serde_json::from_slice(evidence).expect("log importato");
+        for change in evidence["changes"].as_array().expect("differenze") {
+            let before: MeasuredKey = serde_json::from_value(change["before"].clone()).unwrap();
+            let measurement = previous
+                .misure
+                .iter_mut()
+                .find(|m| m.server_major == change["major"].as_str().unwrap())
+                .unwrap();
+            let entry = measurement
+                .chiavi
+                .iter_mut()
+                .find(|k| {
+                    k.arrow == before.arrow
+                        && k.nativo == before.nativo
+                        && k.dimensione == before.dimensione
+                })
+                .unwrap();
+            *entry = before;
+        }
+        let restrictions: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/ammissione_scrittura/writer_restrictions.json"
+        ))
+        .unwrap();
+        let changes = restrictions["changes"].as_array().unwrap();
+        let mut restored = after.fixture().clone();
+        for change in changes
+            .iter()
+            .filter(|c| c["provider"] == provider_name(provider))
+        {
+            let old: MeasuredKey = serde_json::from_value(change["before"].clone()).unwrap();
+            let new: MeasuredKey = serde_json::from_value(change["after"].clone()).unwrap();
+            let entry = restored
+                .misure
+                .iter_mut()
+                .find(|m| m.server_major == change["major"].as_str().unwrap())
+                .unwrap()
+                .chiavi
+                .iter_mut()
+                .find(|k| {
+                    k.arrow == old.arrow && k.nativo == old.nativo && k.dimensione == old.dimensione
+                })
+                .unwrap();
+            assert_eq!(*entry, new);
+            assert!(old.rifiutati.iter().all(|n| new.rifiutati.contains(n)));
+            *entry = old;
+        }
+        assert_eq!(restored, previous, "baseline ricostruito: {provider:?}");
+        let before =
+            AdmissionTable::parse(provider, &serde_json::to_vec(&previous).unwrap()).unwrap();
+        let mut accepted = [0; 2];
+        let mut refused = [0; 2];
+        let mut rewrites_changed = 0;
+        let mut widened = 0;
+        for measurement in &previous.misure {
+            let old = before.server(&measurement.server_major).unwrap();
+            let new = after.server(&measurement.server_major).unwrap();
+            for measured in &measurement.chiavi {
+                let key = AdmissionKey {
+                    arrow: measured.arrow.clone(),
+                    nativo: measured.nativo.clone(),
+                    dimensione: measured.dimensione,
+                };
+                let dimensions = TargetDimensions {
+                    chars: measured.dimensione,
+                    bytes: measured.dimensione,
+                };
+                let old = old.admit(&key, dimensions).map_err(|e| e.category);
+                let new = new.admit(&key, dimensions).map_err(|e| e.category);
+                widened += usize::from(old.is_err() && new.is_ok());
+                rewrites_changed += usize::from(matches!((&old, &new), (Ok(a), Ok(b)) if a != b));
+                for (index, decision) in [&old, &new].iter().enumerate() {
+                    if decision.is_ok() {
+                        accepted[index] += 1;
+                    } else {
+                        refused[index] += 1;
+                    }
+                }
+                if old != new {
+                    assert!(
+                        changes
+                            .iter()
+                            .any(|c| c["provider"] == provider_name(provider)
+                                && c["major"] == measurement.server_major
+                                && c["before"]["arrow"] == key.arrow
+                                && c["before"]["nativo"] == key.nativo),
+                        "variazione senza provenienza"
+                    );
+                }
+            }
+        }
+        eprintln!("{provider:?}: prima/dopo A {accepted:?} ammesse, {refused:?} rifiutate; S diverse {rewrites_changed}; allargamenti {widened}");
+        assert_eq!(widened, 0);
+    }
+}
+
 fn fixture(keys: &str) -> String {
     format!(
         r#"{{"schema_version": 1, "provider": "oracle", "misure": [{{"server_major": "23",
@@ -250,31 +386,32 @@ fn json_nativo_e_misurato_con_guardia_o_resta_chiuso() {
     for (provider, source, native, measured) in [
         (
             ProviderKind::Oracle,
-            include_bytes!("../../../tests/fixtures/scrittura_server_oracle.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/oracle.json").as_slice(),
             "JSON",
-            true,
+            false,
         ),
         (
             ProviderKind::Postgres,
-            include_bytes!("../../../tests/fixtures/scrittura_server_postgres.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/postgres.json").as_slice(),
             "scalare:jsonb;UTF8",
             true,
         ),
         (
             ProviderKind::Mysql,
-            include_bytes!("../../../tests/fixtures/scrittura_server_mysql.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/mysql.json").as_slice(),
             "json;utf8mb4",
             false,
         ),
         (
             ProviderKind::Sqlserver,
-            include_bytes!("../../../tests/fixtures/scrittura_server_sqlserver.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/sqlserver.json")
+                .as_slice(),
             "json",
             false,
         ),
         (
             ProviderKind::Db2,
-            include_bytes!("../../../tests/fixtures/scrittura_server_db2.json").as_slice(),
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/db2.json").as_slice(),
             "JSON",
             false,
         ),

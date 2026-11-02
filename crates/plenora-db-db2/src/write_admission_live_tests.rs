@@ -215,7 +215,13 @@ async fn live_sonde_scritture_server() {
     .expect("versione del server");
     let measured =
         write_probe::measure_server(&hooks, &specs(), &server.major, &server.version).await;
-    write_probe::report_and_check(&measured, crate::write_admission::FIXTURE);
+    let writer =
+        write_probe::measure_writer(&hooks, &specs(), &server.major, &server.version).await;
+    write_probe::check_qualified(hooks.provider().kind(), &writer);
+    write_probe::report_and_check(
+        &measured,
+        include_bytes!("../../../tests/fixtures/scrittura_server_db2.json"),
+    );
 }
 
 pub struct Batches {

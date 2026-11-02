@@ -181,9 +181,15 @@ fn compile_rejects_unqualified_operation_shapes_before_the_network() {
     operation.create_spatial_index = true;
     cases.push((operation, ErrorCategory::Unsupported));
 
-    let mut operation = append_operation();
-    operation.mapping_policy = MappingPolicy::Lossy;
-    cases.push((operation, ErrorCategory::Unsupported));
+    for policy in [
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        let mut operation = append_operation();
+        operation.mapping_policy = policy;
+        cases.push((operation, ErrorCategory::Unsupported));
+    }
 
     for (operation, expected) in cases {
         let error = MysqlWritePlan::compile_with_profile(
@@ -1977,4 +1983,84 @@ fn server_probe_binds_text_that_production_refuses_before_io() {
         .with_text_limits(&target)
         .bind_chunk(&batch, 0, 1)
         .is_ok());
+}
+
+/// MySQL e MariaDB chiudono ogni politica non stretta prima dei valori limitati.
+#[test]
+fn bounded_types_all_policies_both_products() {
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        for policy in [
+            MappingPolicy::Strict,
+            MappingPolicy::Compatible,
+            MappingPolicy::Lossy,
+            MappingPolicy::Native,
+        ] {
+            for data_type in [DataType::Utf8, DataType::Binary] {
+                let mut operation = append_operation();
+                operation.mapping_policy = policy;
+                let result = MysqlWritePlan::compile_with_profile(
+                    &schema(vec![Field::new("v", data_type, true)]),
+                    &operation,
+                    "warehouse",
+                    profile,
+                );
+                if policy == MappingPolicy::Strict {
+                    assert!(result.is_ok());
+                } else {
+                    assert_eq!(result.unwrap_err().category, ErrorCategory::Unsupported);
+                }
+            }
+        }
+    }
+}
+
+/// Stessi codec e limiti P del writer, per entrambi i prodotti e tutte le major.
+#[test]
+fn qualified_profile_pure_guards() {
+    for (fixture, profile) in [
+        (
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/mysql.json").as_slice(),
+            &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        ),
+        (
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/mariadb.json").as_slice(),
+            &crate::profile::MARIADB_PROFILE as &dyn crate::profile::ProductProfile,
+        ),
+    ] {
+        plenora_database_testkit::write_profile::check(fixture, |key, spec, values, row| {
+            let input = schema(vec![Field::new("label", spec.arrow.clone(), true)]);
+            let Ok(plan) = MysqlWritePlan::compile_with_profile(
+                &input,
+                &append_operation(),
+                "warehouse",
+                profile,
+            ) else {
+                return true;
+            };
+            if values.is_null(row) {
+                return false;
+            }
+            if let Some(text) = values.as_any().downcast_ref::<StringArray>() {
+                let declaration = key
+                    .nativo
+                    .split(';')
+                    .next()
+                    .unwrap()
+                    .replace("(n)", &format!("({})", key.dimensione.unwrap_or(0)));
+                let native = declaration.split('(').next().unwrap();
+                if check_text(
+                    text_limit(&text_column(native, &declaration)),
+                    text.value(row),
+                )
+                .is_err()
+                {
+                    return true;
+                }
+            }
+            bind_value(values, row, &plan.columns[0].kind).is_err()
+        });
+    }
 }

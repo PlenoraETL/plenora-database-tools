@@ -182,7 +182,7 @@ fn keyed_statements_do_not_cast_the_column_to_the_opclass() {
 fn fixture_matrix_preserves_target_on_all_statement_paths_and_copy() {
     use plenora_database_core::plan::{ObjectRef, TransactionProfile};
     let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(
-        "../../../../tests/fixtures/scrittura_server_postgres.json"
+        "../../../../tests/fixtures/ammissione_scrittura/postgres.json"
     ))
     .unwrap();
     let forms = fixture["misure"]

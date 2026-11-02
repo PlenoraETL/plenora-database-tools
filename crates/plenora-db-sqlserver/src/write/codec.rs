@@ -619,9 +619,6 @@ fn timestamp(microseconds: i64) -> Result<DateTime<Utc>> {
 ///
 /// `data_mapping` con `plan::LOSSY_VALUE`.
 pub(super) fn check_text(plan: &WritePlan, column: &WriteColumnPlan, value: &str) -> Result<()> {
-    if !plan.strict && !plan.key_input_indices.contains(&column.input_index) {
-        return Ok(());
-    }
     let Some(limit) = super::plan::text_limit(
         &column.native_type,
         &column.native_declaration,
@@ -629,6 +626,42 @@ pub(super) fn check_text(plan: &WritePlan, column: &WriteColumnPlan, value: &str
     ) else {
         return Ok(());
     };
+    // Il prefisso salvato deve restare un testo valido con ogni politica.
+    #[cfg(test)]
+    let raw_probe = plenora_database_testkit::write_probe::is_raw_probe(&plan.object);
+    #[cfg(not(test))]
+    let raw_probe = false;
+    if !raw_probe {
+        if let Some(max) = limit.max {
+            use plenora_database_core::store_rewrite::TextLengthUnit;
+            let split = match limit.length_unit() {
+                TextLengthUnit::Utf16 => value
+                    .encode_utf16()
+                    .nth(max.saturating_sub(1))
+                    .is_some_and(|unit| max > 0 && (0xD800..=0xDBFF).contains(&unit)),
+                TextLengthUnit::Utf8Bytes => max < value.len() && !value.is_char_boundary(max),
+                _ => false,
+            };
+            if split {
+                return Err(mapping_error(
+                    "troncamento della colonna SQL Server produrrebbe testo non valido",
+                ));
+            }
+        }
+    }
+    if !plan.strict && !plan.key_input_indices.contains(&column.input_index) {
+        return Ok(());
+    }
+    // Il baseline qualificato di TEXT/1252 applicava NonAscii anche ai
+    // caratteri rappresentabili (per eccesso). La riqualifica del writer
+    // conserva quel confine Strict/chiavi quando elimina la riscrittura.
+    if !raw_probe
+        && column.native_type == "text"
+        && limit.code_page == super::plan::CodePage::Windows1252
+        && !value.is_ascii()
+    {
+        return Err(mapping_error(super::plan::LOSSY_VALUE));
+    }
     if !limit.code_page.represents(value) {
         return Err(mapping_error(super::plan::LOSSY_VALUE));
     }
@@ -643,7 +676,7 @@ pub(super) fn check_text(plan: &WritePlan, column: &WriteColumnPlan, value: &str
 
 /// La regola P su un binario, in ogni profilo e con `Strict`: mai piu lungo
 /// della colonna. SQL Server tronca in silenzio gli `0x00` finali oltre la
-/// lunghezza (come gli spazi finali di un testo) e rifiuta gli altri byte:
+/// lunghezza (come gli spazi finali di un testo), anche per byte non nulli:
 /// fino al 25/10 `0x0100` verso `varbinary(1)` si salvava `0x01`,
 /// `committed` con `Strict` (sonda della regola A).
 ///

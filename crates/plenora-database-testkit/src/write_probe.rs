@@ -60,6 +60,16 @@ pub const fn is_probe_table(object: &str) -> bool {
     object.eq_ignore_ascii_case(PROBE_TABLE)
 }
 
+tokio::task_local! {
+    static WRITER_REPLAY: bool;
+}
+
+/// La misura grezza esclude le guardie; il replay conserva quelle di produzione.
+#[must_use]
+pub fn is_raw_probe(object: &str) -> bool {
+    is_probe_table(object) && !WRITER_REPLAY.try_with(|active| *active).unwrap_or(false)
+}
+
 /// Una chiave da misurare: il tipo nativo come si dichiara nel DDL, il tipo
 /// Arrow dell'ingresso, la lunghezza se il tipo ne ha una simbolica, e se la
 /// colonna e un documento JSON.
@@ -1715,11 +1725,13 @@ async fn measure_group(
         assert_eq!(key.arrow, arrow_key(&spec.arrow), "{}", spec.native_ddl);
         assert_eq!(key.dimensione, spec.dimension, "{}", spec.native_ddl);
     }
-    if group.iter().any(|(spec, battery)| {
-        hooks
-            .direct_probe(spec, battery.values.as_ref(), 0)
-            .is_some()
-    }) {
+    if !WRITER_REPLAY.try_with(|active| *active).unwrap_or(false)
+        && group.iter().any(|(spec, battery)| {
+            hooks
+                .direct_probe(spec, battery.values.as_ref(), 0)
+                .is_some()
+        })
+    {
         if group.len() > 1 {
             assert!(ddl(hooks, &hooks.drop_sql()).await, "pulizia oracolo");
             return None;
@@ -1947,6 +1959,76 @@ pub async fn measure_server(
         batteria: BATTERY_VERSION.to_owned(),
         chiavi,
     }
+}
+
+/// Produce un profilo candidato attraverso il writer, senza usare il profilo
+/// stesso come guardia A/S. P e codec sono quelli della produzione.
+///
+/// # Panics
+/// Se la misura non puo essere completata (come `measure_server`).
+pub async fn measure_writer(
+    hooks: &dyn ProbeHooks,
+    specs: &[ProbeSpec],
+    major: &str,
+    version: &str,
+) -> ServerMeasurement {
+    WRITER_REPLAY
+        .scope(true, measure_server(hooks, specs, major, version))
+        .await
+}
+
+/// Confronta tutte le chiavi e tutti i valori, inclusi i rifiuti, del writer.
+///
+/// # Panics
+/// Se il replay differisce dal profilo qualificato o manca una chiave.
+pub fn check_qualified(
+    provider: plenora_database_core::plan::ProviderKind,
+    measured: &ServerMeasurement,
+) {
+    use plenora_database_core::plan::ProviderKind;
+    if let Ok(path) = std::env::var("PLENORA_SONDE_SCRITTURE_WRITER_REFERTO") {
+        std::fs::write(
+            path,
+            serde_json::to_string_pretty(measured).expect("profilo candidato") + "\n",
+        )
+        .expect("referto writer");
+        if std::env::var("PLENORA_SONDE_SCRITTURE_MISURA").as_deref() == Ok("1") {
+            return;
+        }
+    }
+    let bytes: &[u8] = match provider {
+        ProviderKind::Postgres => {
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/postgres.json")
+        }
+        ProviderKind::Mysql => {
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/mysql.json")
+        }
+        ProviderKind::Mariadb => {
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/mariadb.json")
+        }
+        ProviderKind::Sqlserver => {
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/sqlserver.json")
+        }
+        ProviderKind::Oracle => {
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/oracle.json")
+        }
+        ProviderKind::Db2 => {
+            include_bytes!("../../../tests/fixtures/ammissione_scrittura/db2.json")
+        }
+        _ => panic!("provider senza profilo"),
+    };
+    let fixture: AdmissionFixture = serde_json::from_slice(bytes).expect("profilo qualificato");
+    let expected = fixture
+        .misure
+        .iter()
+        .find(|m| m.server_major == measured.server_major)
+        .expect("major qualificata");
+    let changes = differences(expected, measured);
+    assert!(
+        changes.is_empty(),
+        "replay writer diverso dal profilo qualificato:\n{}",
+        changes.join("\n")
+    );
 }
 
 /// Scrive il referto e verifica la misura contro il fixture.

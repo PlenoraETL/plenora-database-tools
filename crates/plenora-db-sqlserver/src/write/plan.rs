@@ -354,7 +354,7 @@ impl WritePlan {
         #[cfg(test)]
         if plenora_database_testkit::write_probe::is_probe_table(&self.object) {
             // La misura non applica nemmeno le guardie P del codec.
-            self.strict = false;
+            self.strict = !plenora_database_testkit::write_probe::is_raw_probe(&self.object);
             for column in &mut self.columns {
                 column.rewrites.clear();
             }
@@ -1488,16 +1488,16 @@ fn rule_p(
         if limit.max.is_some() {
             losses.push(loss(
                 LossCategory::Precision,
-                LossSeverity::Warning,
-                "gli spazi finali oltre la lunghezza della colonna si troncherebbero",
+                LossSeverity::DataLoss,
+                "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio",
             ));
         }
     }
     if binary_limit(&column.native_type, &column.native_declaration).is_some() {
         losses.push(loss(
             LossCategory::Precision,
-            LossSeverity::Warning,
-            "gli 0x00 finali oltre la lunghezza della colonna si troncherebbero",
+            LossSeverity::DataLoss,
+            "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi byte non nulli",
         ));
     }
     if offset_scale(&column.native_type, &column.native_declaration).is_some() {

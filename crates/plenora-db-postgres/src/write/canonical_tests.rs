@@ -476,3 +476,60 @@ fn chiavi_testuali_solo_con_uguaglianza_provata() {
         assert!(super::refuse_lossy(&[plan.clone()]).is_err());
     }
 }
+
+/// Le guardie P coprono le politiche ammesse e le foglie di entrambi i testi limitati.
+#[test]
+fn bounded_content_all_policies() {
+    use plenora_database_core::loss::MappingPolicy;
+    let values = arrow_array::StringArray::from(vec![
+        "xxxxxxxxxx",
+        "xxxxxxxxxxx",
+        "\u{1f600}".repeat(11).as_str(),
+    ]);
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        for padded in [None, Some(10)] {
+            let rule = SessionRule {
+                leaves: Vec::new(),
+                strict: policy == MappingPolicy::Strict,
+                key: false,
+            };
+            assert!(super::check_text(&rule, Some(10), padded, &values, 0).is_ok());
+            for row in [1, 2] {
+                assert_eq!(
+                    super::check_text(&rule, Some(10), padded, &values, row).is_err(),
+                    policy == MappingPolicy::Strict
+                );
+            }
+        }
+    }
+}
+
+/// La regola P e il riempimento del writer devono comparire nei rifiuti qualificati.
+#[test]
+fn qualified_profile_pure_guards() {
+    plenora_database_testkit::write_profile::check(
+        include_bytes!("../../../../tests/fixtures/ammissione_scrittura/postgres.json"),
+        |key, _, array, row| {
+            if array.is_null(row) {
+                return false;
+            }
+            let rule = SessionRule {
+                leaves: Vec::new(),
+                strict: true,
+                key: false,
+            };
+            let max = key.dimensione.map(|n| usize::try_from(n).unwrap());
+            let padded = key
+                .nativo
+                .starts_with("scalare:character(n)")
+                .then_some(max)
+                .flatten();
+            super::check_text(&rule, max, padded, array, row).is_err()
+        },
+    );
+}

@@ -1,0 +1,29 @@
+{
+  "baseline": "3af0fd3011047189f7340bc2998e6894ca15744c",
+  "providers": {
+    "db2": {
+      "sha256": "78fa92f894d1a0b744328b17d658ba969551c49ae3cb760498a0a68a64bc5932",
+      "keys": 565
+    },
+    "mariadb": {
+      "sha256": "256d00d7a1093dd1cb781c1beddaac5a4f141f5808d3179b442de9fd9c89cdb5",
+      "keys": 2421
+    },
+    "mysql": {
+      "sha256": "211e253e34659f0ec4cf2d46cc4653146f6eba976e346e1da0aff9751ea9fb48",
+      "keys": 2418
+    },
+    "oracle": {
+      "sha256": "1729c773b4bd85acf2f1852a260bc0932cf2d7e5b4aab6bf7f78df092d266ad6",
+      "keys": 1003
+    },
+    "postgres": {
+      "sha256": "852356eec3595fa547467dcb64d233f2fee1bee774a388845bf530be7baa0366",
+      "keys": 4170
+    },
+    "sqlserver": {
+      "sha256": "a33d7241dc31a48eb669900ba09bf8214e5e02ecee0275e3189fbff8f4a89dae",
+      "keys": 5100
+    }
+  }
+}

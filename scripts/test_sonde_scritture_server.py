@@ -3,7 +3,7 @@
 
 Il gate live `write-admission-probes` misura le chiavi d'ammissione delle
 scritture e confronta le misure con `tests/fixtures/scrittura_server_*.json`;
-la libreria ammette soltanto cio che quei fixture misurano
+la libreria conserva separatamente i profili qualificati di ammissione
 (`plenora_database_core::write_admission`). Qui si prova, offline, che ogni
 prodotto dell'harness abbia il suo fixture, che il workflow li misuri tutti,
 che ogni fixture abbia la forma che la libreria accetta (le stesse condizioni
@@ -12,6 +12,7 @@ misurata.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -23,6 +24,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import sonde_scritture_server as sonde  # noqa: E402
+from import_write_probe_log import identity, log_changes  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "write-admission-probes.yml"
@@ -71,6 +73,70 @@ def coerente(documento: dict, prodotto: str) -> list[str]:
 
 
 class Fixture(unittest.TestCase):
+    def test_ammissione_ristretta_dal_writer_e_misure_separate(self) -> None:
+        directory = ROOT / 'tests/fixtures/ammissione_scrittura'
+        baseline = json.loads((directory / 'baseline.json').read_text(encoding='utf-8'))
+        self.assertEqual(baseline['baseline'], '3af0fd3011047189f7340bc2998e6894ca15744c')
+        for provider, pin in baseline['providers'].items():
+            with self.subTest(provider=provider):
+                qualified = json.loads((directory / f'{provider}.json').read_text(encoding='utf-8'))
+                self.assertEqual(coerente(qualified, provider), [])
+                restrictions = json.loads((directory / 'writer_restrictions.json').read_text(encoding='utf-8'))
+                current = {(m['server_major'], identity(k)): k for m in qualified['misure'] for k in m['chiavi']}
+                seen = set()
+                for change in restrictions['changes']:
+                    if change['provider'] != provider:
+                        continue
+                    key = change['major'], identity(change['before'])
+                    self.assertNotIn(key, seen)
+                    seen.add(key)
+                    old, new = change['before'], change['after']
+                    self.assertEqual(identity(old), identity(new))
+                    self.assertEqual(current[key], new)
+                    self.assertLessEqual(set(old['rifiutati']), set(new['rifiutati']))
+                    self.assertFalse(set(new['rifiutati']) & set(new['riscritti']))
+                    names = set(change['battery'])
+                    self.assertLessEqual(set(new['rifiutati']) | set(new['riscritti']), names)
+                    # Decisioni calcolate per ogni valore e politica: nessun successo nuovo.
+                    for strict in (False, True):
+                        def admitted(k):
+                            if k['esito'] in ('rifiuta', 'illeggibile'):
+                                return set()
+                            refused = set(k['rifiutati'])
+                            if strict:
+                                refused |= set(k['riscritti']) | set(k['per_eccesso'])
+                            return names - refused
+                        self.assertLessEqual(admitted(new), admitted(old), (provider, key, strict))
+                    current[key].clear()
+                    current[key].update(old)
+                # Ricostruisce il baseline immutato: non si ripinna la storia.
+                canonical = json.dumps(qualified, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+                self.assertEqual(hashlib.sha256(canonical).hexdigest(), pin['sha256'])
+                measured = json.loads(sonde.fixture_path(provider).read_text(encoding='utf-8'))
+                evidence = json.loads((ROOT / f'tests/fixtures/write_probe_evidence/{provider}.json').read_text(encoding='utf-8'))
+                before = {(m['server_major'], identity(k)): k for m in qualified['misure'] for k in m['chiavi']}
+                after = {(m['server_major'], identity(k)): k for m in measured['misure'] for k in m['chiavi']}
+                self.assertEqual(len(before), pin['keys'])
+                self.assertEqual(before.keys(), after.keys())
+                for change in evidence['changes']:
+                    if provider != 'db2':
+                        self.assertIn(change['image'], set(sonde.PRODOTTI[provider].immagini()))
+                    key = change['major'], identity(change['before'])
+                    self.assertEqual(before[key], change['before'])
+                    self.assertEqual(after[key], change['after'])
+                for change in evidence['changes']:
+                    after[change['major'], identity(change['before'])] = change['before']
+                self.assertEqual(before, after)
+                # La separazione e obbligatoria anche nel consumatore di produzione.
+                crate = sonde.PRODOTTI[provider].crate
+                includes = [p for p in (ROOT / 'crates' / crate / 'src').rglob('*.rs')
+                            if f'ammissione_scrittura/{provider}.json' in p.read_text(encoding='utf-8')]
+                self.assertTrue(any(p.name in ('admission.rs', 'write_admission.rs') for p in includes))
+
+    def test_import_rifiuta_log_senza_riepilogo(self) -> None:
+        with self.assertRaises(ValueError):
+            log_changes('la misura del server (non l\'ammissione della libreria) non coincide con il fixture:', 'mysql')
+
     def test_db2_client_uses_the_qualified_utf8_codepage(self) -> None:
         from check_db2_reference import DB2_CODEPAGE
         self.assertEqual(

@@ -1208,15 +1208,16 @@
     {
      "arrow": "float32",
      "nativo": "BINARY_FLOAT",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
-      "zero_negativo",
-      "infinito",
-      "meno_infinito",
-      "nan"
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "zero_negativo"
+      }
      ],
+     "riscritti": [
+      "zero_negativo"
+     ],
+     "rifiutati": [],
      "per_eccesso": []
     },
     {
@@ -1225,24 +1226,24 @@
      "esito": "esatto",
      "riscritture": [],
      "riscritti": [],
-     "rifiutati": [
-      "zero_negativo",
-      "infinito",
-      "meno_infinito",
-      "nan"
-     ],
+     "rifiutati": [],
      "per_eccesso": []
     },
     {
      "arrow": "float64",
      "nativo": "FLOAT(126)",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "underflow",
+       "min_abs": "1e-130"
+      },
+      {
+       "classe": "zero_negativo"
+      }
+     ],
+     "riscritti": [
       "zero_negativo",
-      "massimo",
-      "minimo",
       "normale_minimo",
       "subnormale_minimo",
       "subnormale",
@@ -1250,9 +1251,12 @@
       "e_meno_200",
       "e_meno_150",
       "e_meno_131",
-      "e_126",
+      "meno_e_meno_200"
+     ],
+     "rifiutati": [
+      "massimo",
+      "minimo",
       "e_200",
-      "meno_e_meno_200",
       "infinito",
       "meno_infinito",
       "nan"

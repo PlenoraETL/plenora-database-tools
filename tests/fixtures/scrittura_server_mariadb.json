@@ -7595,12 +7595,19 @@
      "arrow": "utf8",
      "nativo": "varchar(n);utf8mb4",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "controllo",
@@ -7611,22 +7618,38 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "solo_nul",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "varchar(n);latin1",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "controllo",
@@ -7638,34 +7661,78 @@
       "sostituzione",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre",
       "pieno_non_bmp"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "solo_nul",
+      "precomposto",
+      "pieno",
+      "pieno_multibyte",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "varchar(n);utf8mb4",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "nul_interno",
+      "solo_nul",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "varchar(n);latin1",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "fuori_latin1",
       "non_bmp",
@@ -7673,12 +7740,28 @@
       "bom",
       "sostituzione",
       "separatore_riga",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre",
       "pieno_non_bmp"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "nul_interno",
+      "solo_nul",
+      "controllo",
+      "latino",
+      "precomposto",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
@@ -15488,12 +15571,19 @@
      "arrow": "utf8",
      "nativo": "varchar(n);utf8mb4",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "controllo",
@@ -15504,22 +15594,38 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "solo_nul",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "varchar(n);latin1",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "controllo",
@@ -15531,34 +15637,78 @@
       "sostituzione",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre",
       "pieno_non_bmp"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "solo_nul",
+      "precomposto",
+      "pieno",
+      "pieno_multibyte",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "varchar(n);utf8mb4",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "nul_interno",
+      "solo_nul",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "varchar(n);latin1",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "fuori_latin1",
       "non_bmp",
@@ -15566,12 +15716,28 @@
       "bom",
       "sostituzione",
       "separatore_riga",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre",
       "pieno_non_bmp"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "nul_interno",
+      "solo_nul",
+      "controllo",
+      "latino",
+      "precomposto",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
@@ -23381,12 +23547,19 @@
      "arrow": "utf8",
      "nativo": "varchar(n);utf8mb4",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "controllo",
@@ -23397,22 +23570,38 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "solo_nul",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "varchar(n);latin1",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "controllo",
@@ -23424,34 +23613,78 @@
       "sostituzione",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre",
       "pieno_non_bmp"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "solo_nul",
+      "precomposto",
+      "pieno",
+      "pieno_multibyte",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "varchar(n);utf8mb4",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "nul_interno",
+      "solo_nul",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "varchar(n);latin1",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "fuori_latin1",
       "non_bmp",
@@ -23459,12 +23692,28 @@
       "bom",
       "sostituzione",
       "separatore_riga",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre",
       "pieno_non_bmp"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "nul_interno",
+      "solo_nul",
+      "controllo",
+      "latino",
+      "precomposto",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",

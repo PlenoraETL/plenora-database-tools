@@ -1,10 +1,11 @@
 name: write-admission-probes
 
-# Le misure live della regola A delle scritture: per ogni prodotto e ogni
-# immagine qualificata, la sonda scrive con il percorso della libreria una
+# Le misure live del server: per ogni prodotto e ogni
+# immagine qualificata, la sonda scrive senza le guardie di ammissione una
 # batteria fissa di valori limite per ogni chiave d'ammissione e verifica che il
 # server dia ancora le misure del fixture `tests/fixtures/scrittura_server_*.json`.
-# `plenora_database_core::write_admission` ammette soltanto le coppie misurate.
+# Il replay writer riverifica le guardie sui profili qualificati separati;
+# confronta ogni chiave e valore della batteria e non amplia i profili.
 #
 # Questo file non contiene logica di qualifica: un'invocazione per prodotto.
 # Le immagini vengono, per digest, dalle loro fonti (references.json, compose e
@@ -31,6 +32,9 @@ on:
       - "vendor/oracle-rs/src/**"
       - "scripts/sonde_scritture_server.py"
       - "tests/fixtures/scrittura_server_*.json"
+      - "tests/fixtures/ammissione_scrittura/**"
+      - "tests/fixtures/write_probe_evidence/**"
+      - "scripts/import_write_probe_log.py"
       - "docker/**/references.json"
 
 permissions:

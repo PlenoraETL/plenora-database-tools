@@ -179,10 +179,17 @@ fn json_nativo_rifiuta_i_numeri_riscritti_dal_server() {
     use std::sync::Arc;
 
     let (key, dimensions) = admission_key(&DataType::Utf8, &column("JSON", None, None), &server());
-    let measured = admission_table()
-        .expect("fixture")
-        .server("23")
-        .expect("major");
+    let qualified = admission_table().unwrap().server("23").unwrap();
+    assert!(
+        plenora_database_core::admission_gate::write_column(&qualified, &key, dimensions).is_err()
+    );
+    // La misura storica del server resta distinta dal rifiuto del writer.
+    let historical = plenora_database_core::write_admission::AdmissionTable::parse(
+        ProviderKind::Oracle,
+        include_bytes!("../../../tests/fixtures/scrittura_server_oracle.json"),
+    )
+    .unwrap();
+    let measured = historical.server("23").unwrap();
     let rewrites = store_rewrites(
         plenora_database_core::admission_gate::write_column(&measured, &key, dimensions)
             .expect("JSON misurato"),
@@ -247,4 +254,32 @@ fn json_nativo_rifiuta_i_numeri_riscritti_dal_server() {
     guard
         .check(&batch)
         .expect("intero breve, stringa e NULL conservati");
+}
+
+/// Confronta ogni chiave con i rifiuti puri del percorso di produzione.
+#[test]
+fn qualified_profile_pure_guards() {
+    use plenora_database_core::arrow::schema::{DataType, Field};
+    plenora_database_testkit::write_profile::check(
+        crate::write_admission::FIXTURE,
+        |key, spec, values, row| {
+            let field = Field::new("V", spec.arrow.clone(), true);
+            let Ok(value) = plenora_database_engine::arrow_write::arrow_parameter_value(
+                values, &field, row, 'T',
+            ) else {
+                return true;
+            };
+            if key.nativo.starts_with("NCLOB")
+                || key.nativo == "JSON"
+                || key.nativo.contains("WITH LOCAL TIME ZONE")
+            {
+                let mut facts = crate::write_admission::create_facts("V", &DataType::Utf8).unwrap();
+                facts.data_type = key.nativo.split(';').next().unwrap().to_owned();
+                if crate::write_intermediate::TargetType::from_catalog(&facts).is_err() {
+                    return true;
+                }
+            }
+            crate::parameter::bind_parameters(&[value]).is_err()
+        },
+    );
 }

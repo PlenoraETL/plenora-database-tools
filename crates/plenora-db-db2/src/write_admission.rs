@@ -53,7 +53,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 /// Il fixture misurato della regola A per Db2.
-pub const FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/scrittura_server_db2.json");
+pub const FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/ammissione_scrittura/db2.json");
 
 /// La tabella delle misure, letta una volta.
 ///

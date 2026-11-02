@@ -233,7 +233,7 @@ fn measured_json_remains_refused_without_a_qualified_intermediate_type() {
     );
     assert_eq!(
         error.message,
-        "tipo intermedio Oracle non identico o non qualificato"
+        plenora_database_core::write_admission::REFUSED_PAIR
     );
     assert!(plan.columns[0].target_type.is_none());
     assert!(plan

@@ -130,13 +130,19 @@ fn key_based_modes_fail_before_the_network_without_keys() {
 #[test]
 fn unsupported_write_profiles_and_mapping_policies_fail_closed() {
     let mut write = operation(WriteMode::Append);
-    write.mapping_policy = MappingPolicy::Lossy;
-    assert_eq!(
-        Db2WritePlan::compile(&config(), &schema(), &write)
-            .expect_err("mapping lossy")
-            .category,
-        ErrorCategory::Unsupported
-    );
+    for policy in [
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        write.mapping_policy = policy;
+        assert_eq!(
+            Db2WritePlan::compile(&config(), &schema(), &write)
+                .unwrap_err()
+                .category,
+            ErrorCategory::Unsupported
+        );
+    }
 
     write.mapping_policy = MappingPolicy::Strict;
     write.transaction_profile = TransactionProfile::ChunkCommitted;
@@ -319,5 +325,29 @@ fn varchar2_compat_si_legge_o_la_regola_s_non_e_provata() {
     ] {
         let error = parse_varchar2_compat(&unproven).expect_err("non provata");
         assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
+}
+
+/// Le politiche non strette non raggiungono il bind di testo o binario.
+#[test]
+fn bounded_types_all_policies() {
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        for data_type in [DataType::Utf8, DataType::Binary] {
+            let binary = data_type == DataType::Binary;
+            let input = contract_schema(vec![Field::new("V", data_type, true)]).unwrap();
+            let mut write = operation(WriteMode::Append);
+            write.mapping_policy = policy;
+            let result = Db2WritePlan::compile(&config(), &input, &write);
+            if policy == MappingPolicy::Strict && !binary {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result.unwrap_err().category, ErrorCategory::Unsupported);
+            }
+        }
     }
 }

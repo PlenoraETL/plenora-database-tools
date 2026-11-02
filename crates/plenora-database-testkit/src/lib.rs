@@ -10,6 +10,7 @@ pub mod row_diagnostics;
 // anti-panic della spazzata vale per il codice di prodotto.
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 pub mod write_probe;
+pub mod write_profile;
 
 pub use conformance::{
     operation_id, validate_capabilities, validate_connection, validate_inspection,

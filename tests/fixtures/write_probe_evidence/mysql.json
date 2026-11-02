@@ -1,0 +1,862 @@
+{
+ "provider": "mysql",
+ "log": "m125044693635.log",
+ "sha256": "8597352ee2377140b64bbd69a351b3e40e11f3c6b3c87013541b75b355d8e0a3",
+ "changes": [
+  {
+   "major": "9.7",
+   "image": "docker.io/library/mysql@sha256:257388edf9c84dbc04c763625446d5f3fa6ed60d1b0873bc552c614ba0a7ab4e",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);latin1",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);latin1",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "solo_nul",
+     "precomposto",
+     "pieno",
+     "pieno_multibyte",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "9.7",
+   "image": "docker.io/library/mysql@sha256:257388edf9c84dbc04c763625446d5f3fa6ed60d1b0873bc552c614ba0a7ab4e",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);latin1",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);latin1",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "oltre",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "precomposto",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "9.7",
+   "image": "docker.io/library/mysql@sha256:257388edf9c84dbc04c763625446d5f3fa6ed60d1b0873bc552c614ba0a7ab4e",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);utf8mb4",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);utf8mb4",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "solo_nul",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "9.7",
+   "image": "docker.io/library/mysql@sha256:257388edf9c84dbc04c763625446d5f3fa6ed60d1b0873bc552c614ba0a7ab4e",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);utf8mb4",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);utf8mb4",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "8.4",
+   "image": "docker.io/library/mysql@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);latin1",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);latin1",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "solo_nul",
+     "precomposto",
+     "pieno",
+     "pieno_multibyte",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "8.4",
+   "image": "docker.io/library/mysql@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);latin1",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);latin1",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "oltre",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "precomposto",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "8.4",
+   "image": "docker.io/library/mysql@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);utf8mb4",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);utf8mb4",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "solo_nul",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "8.4",
+   "image": "docker.io/library/mysql@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);utf8mb4",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);utf8mb4",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "8.0",
+   "image": "docker.io/library/mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);latin1",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);latin1",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "solo_nul",
+     "precomposto",
+     "pieno",
+     "pieno_multibyte",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "8.0",
+   "image": "docker.io/library/mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);latin1",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);latin1",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "oltre",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "precomposto",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "8.0",
+   "image": "docker.io/library/mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);utf8mb4",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);utf8mb4",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "solo_nul",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "8.0",
+   "image": "docker.io/library/mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);utf8mb4",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "varchar(n);utf8mb4",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  }
+ ]
+}

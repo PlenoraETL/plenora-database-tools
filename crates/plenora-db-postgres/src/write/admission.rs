@@ -114,7 +114,7 @@ use tokio_postgres::GenericClient;
 
 /// Il fixture misurato della regola A per PostgreSQL.
 pub const FIXTURE: &[u8] =
-    include_bytes!("../../../../tests/fixtures/scrittura_server_postgres.json");
+    include_bytes!("../../../../tests/fixtures/ammissione_scrittura/postgres.json");
 
 /// La tabella delle misure, letta una volta.
 ///

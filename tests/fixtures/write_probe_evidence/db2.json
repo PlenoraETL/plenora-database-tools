@@ -1,0 +1,1329 @@
+{
+ "provider": "db2",
+ "log": "m125044693387.log",
+ "sha256": "0d8194daad53ecd67dccebaf96b508bfffbfc37f95e5c2b28f511774c8a2cf70",
+ "changes": [
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Bind binario del driver come in produzione, senza rifiuto anticipato: segno dello zero, underflow e non finiti sono osservati dal server. Il round-trip REAL su db2 non prova le comparazioni SQL: resta il rifiuto del codec.",
+   "before": {
+    "arrow": "float32",
+    "nativo": "REAL",
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "zero_negativo",
+     "subnormale_minimo",
+     "subnormale",
+     "infinito",
+     "meno_infinito",
+     "nan"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "float32",
+    "nativo": "REAL",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "zero_negativo"
+     }
+    ],
+    "riscritti": [
+     "zero_negativo"
+    ],
+    "rifiutati": [
+     "subnormale_minimo",
+     "subnormale",
+     "infinito",
+     "meno_infinito",
+     "nan"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Bind binario del driver come in produzione, senza rifiuto anticipato: segno dello zero, underflow e non finiti sono osservati dal server. Il round-trip DOUBLE su db2 non prova le comparazioni SQL: resta il rifiuto del codec.",
+   "before": {
+    "arrow": "float64",
+    "nativo": "DOUBLE",
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "zero_negativo",
+     "subnormale_minimo",
+     "subnormale",
+     "infinito",
+     "meno_infinito",
+     "nan"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "float64",
+    "nativo": "DOUBLE",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "zero_negativo"
+     }
+    ],
+    "riscritti": [
+     "zero_negativo"
+    ],
+    "rifiutati": [
+     "subnormale_minimo",
+     "subnormale",
+     "infinito",
+     "meno_infinito",
+     "nan"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Precisione del target: la rimozione della guardia applicativa lascia osservare arrotondamento/troncamento del percorso server.",
+   "before": {
+    "arrow": "timestamp[us]",
+    "nativo": "TIMESTAMP(0)",
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "mezzo",
+     "sette_decimi",
+     "cifre_1",
+     "cifre_2",
+     "cifre_3",
+     "cifre_4",
+     "cifre_5",
+     "cifre_6",
+     "quasi_secondo",
+     "un_micro",
+     "prima_epoca_micro",
+     "prima_epoca_mezzo",
+     "anno_0",
+     "anno_9999_fine"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "timestamp[us]",
+    "nativo": "TIMESTAMP(0)",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "frazione_secondi",
+      "cifre": 0
+     }
+    ],
+    "riscritti": [
+     "mezzo",
+     "sette_decimi",
+     "cifre_1",
+     "cifre_2",
+     "cifre_3",
+     "cifre_4",
+     "cifre_5",
+     "cifre_6",
+     "quasi_secondo",
+     "un_micro",
+     "prima_epoca_micro",
+     "prima_epoca_mezzo",
+     "anno_9999_fine"
+    ],
+    "rifiutati": [
+     "anno_0"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Precisione del target: la rimozione della guardia applicativa lascia osservare arrotondamento/troncamento del percorso server.",
+   "before": {
+    "arrow": "timestamp[us]",
+    "nativo": "TIMESTAMP(1)",
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "cifre_2",
+     "cifre_3",
+     "cifre_4",
+     "cifre_5",
+     "cifre_6",
+     "quasi_secondo",
+     "un_micro",
+     "prima_epoca_micro",
+     "anno_0",
+     "anno_9999_fine"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "timestamp[us]",
+    "nativo": "TIMESTAMP(1)",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "frazione_secondi",
+      "cifre": 1
+     }
+    ],
+    "riscritti": [
+     "cifre_2",
+     "cifre_3",
+     "cifre_4",
+     "cifre_5",
+     "cifre_6",
+     "quasi_secondo",
+     "un_micro",
+     "prima_epoca_micro",
+     "anno_9999_fine"
+    ],
+    "rifiutati": [
+     "anno_0"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Precisione del target: la rimozione della guardia applicativa lascia osservare arrotondamento/troncamento del percorso server.",
+   "before": {
+    "arrow": "timestamp[us]",
+    "nativo": "TIMESTAMP(2)",
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "cifre_3",
+     "cifre_4",
+     "cifre_5",
+     "cifre_6",
+     "quasi_secondo",
+     "un_micro",
+     "prima_epoca_micro",
+     "anno_0",
+     "anno_9999_fine"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "timestamp[us]",
+    "nativo": "TIMESTAMP(2)",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "frazione_secondi",
+      "cifre": 2
+     }
+    ],
+    "riscritti": [
+     "cifre_3",
+     "cifre_4",
+     "cifre_5",
+     "cifre_6",
+     "quasi_secondo",
+     "un_micro",
+     "prima_epoca_micro",
+     "anno_9999_fine"
+    ],
+    "rifiutati": [
+     "anno_0"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Precisione del target: la rimozione della guardia applicativa lascia osservare arrotondamento/troncamento del percorso server.",
+   "before": {
+    "arrow": "timestamp[us]",
+    "nativo": "TIMESTAMP(3)",
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "cifre_4",
+     "cifre_5",
+     "cifre_6",
+     "quasi_secondo",
+     "un_micro",
+     "prima_epoca_micro",
+     "anno_0",
+     "anno_9999_fine"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "timestamp[us]",
+    "nativo": "TIMESTAMP(3)",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "frazione_secondi",
+      "cifre": 3
+     }
+    ],
+    "riscritti": [
+     "cifre_4",
+     "cifre_5",
+     "cifre_6",
+     "quasi_secondo",
+     "un_micro",
+     "prima_epoca_micro",
+     "anno_9999_fine"
+    ],
+    "rifiutati": [
+     "anno_0"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Precisione del target: la rimozione della guardia applicativa lascia osservare arrotondamento/troncamento del percorso server.",
+   "before": {
+    "arrow": "timestamp[us]",
+    "nativo": "TIMESTAMP(4)",
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "cifre_5",
+     "cifre_6",
+     "quasi_secondo",
+     "un_micro",
+     "prima_epoca_micro",
+     "anno_0",
+     "anno_9999_fine"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "timestamp[us]",
+    "nativo": "TIMESTAMP(4)",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "frazione_secondi",
+      "cifre": 4
+     }
+    ],
+    "riscritti": [
+     "cifre_5",
+     "cifre_6",
+     "quasi_secondo",
+     "un_micro",
+     "prima_epoca_micro",
+     "anno_9999_fine"
+    ],
+    "rifiutati": [
+     "anno_0"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Precisione del target: la rimozione della guardia applicativa lascia osservare arrotondamento/troncamento del percorso server.",
+   "before": {
+    "arrow": "timestamp[us]",
+    "nativo": "TIMESTAMP(5)",
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "cifre_6",
+     "quasi_secondo",
+     "un_micro",
+     "prima_epoca_micro",
+     "anno_0",
+     "anno_9999_fine"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "timestamp[us]",
+    "nativo": "TIMESTAMP(5)",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "frazione_secondi",
+      "cifre": 5
+     }
+    ],
+    "riscritti": [
+     "cifre_6",
+     "quasi_secondo",
+     "un_micro",
+     "prima_epoca_micro",
+     "anno_9999_fine"
+    ],
+    "rifiutati": [
+     "anno_0"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "CHARACTER(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "riempie_testo"
+     }
+    ],
+    "riscritti": [
+     "vuoto"
+    ],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "CHARACTER(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "spazi_oltre"
+     },
+     {
+      "classe": "riempie_testo"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "CHARACTER(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "riempie_testo"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno"
+    ],
+    "rifiutati": [
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "CHARACTER(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "riempie_testo"
+     },
+     {
+      "classe": "spazi_oltre"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "oltre"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "CHARACTER(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 63,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "riempie_testo"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno"
+    ],
+    "rifiutati": [
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "CHARACTER(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 63,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "riempie_testo"
+     },
+     {
+      "classe": "spazi_oltre"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "oltre"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "CHARACTER(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "riempie_testo"
+     }
+    ],
+    "riscritti": [
+     "vuoto"
+    ],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "CHARACTER(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "spazi_oltre"
+     },
+     {
+      "classe": "riempie_testo"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "CHARACTER(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "riempie_testo"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno"
+    ],
+    "rifiutati": [
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": [
+     "latino"
+    ]
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "CHARACTER(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "spazi_oltre"
+     },
+     {
+      "classe": "riempie_testo"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": [
+     "latino"
+    ]
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "CHARACTER(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 255,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "riempie_testo"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno"
+    ],
+    "rifiutati": [
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "CHARACTER(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 255,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "riempie_testo"
+     },
+     {
+      "classe": "spazi_oltre"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "CLOB(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "CLOB(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "spazi_oltre"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "CLOB(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "CLOB(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "spazi_oltre"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "oltre"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "CLOB(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "CLOB(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "spazi_oltre"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "CLOB(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "CLOB(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "spazi_oltre"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "VARCHAR(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "VARCHAR(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "spazi_oltre"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "VARCHAR(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "VARCHAR(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "spazi_oltre"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "oltre"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "VARCHAR(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "VARCHAR(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "spazi_oltre"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "12.1",
+   "image": "plenora-db2-test:12.1.5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "VARCHAR(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "VARCHAR(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "spazi_oltre"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "oltre",
+     "pieno_multibyte",
+     "pieno_non_bmp"
+    ],
+    "per_eccesso": []
+   }
+  }
+ ]
+}

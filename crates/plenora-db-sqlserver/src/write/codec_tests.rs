@@ -426,3 +426,131 @@ fn server_probe_does_not_apply_production_precision_guards() {
     plan.strict = true;
     assert!(check_temporal(&plan, &plan.columns[0], 1).is_err());
 }
+
+/// Ogni politica conserva testo valido; Strict e le chiavi rifiutano ogni eccesso.
+#[test]
+fn bounded_content_all_policies() {
+    use plenora_database_core::loss::MappingPolicy;
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        let strict = policy == MappingPolicy::Strict;
+        for native in ["varchar", "nvarchar", "char", "nchar"] {
+            for size in [1, 10] {
+                let plan = text_plan(
+                    native,
+                    &format!("{native}({size})"),
+                    Some("Latin1_General_CI_AS"),
+                    strict,
+                );
+                let column = &plan.columns[0];
+                assert!(check_text(&plan, column, &"x".repeat(size)).is_ok());
+                assert_eq!(
+                    check_text(&plan, column, &"x".repeat(size + 1)).is_err(),
+                    strict,
+                    "{native} {policy:?}"
+                );
+                if native.starts_with('n') {
+                    assert!(check_text(
+                        &plan,
+                        column,
+                        &format!("{}\u{1f600}", "x".repeat(size - 1))
+                    )
+                    .is_err());
+                    assert_eq!(
+                        check_text(&plan, column, &"\u{1f600}".repeat(10)).is_err(),
+                        strict || size == 1
+                    );
+                }
+                let mut key = plan.clone();
+                key.key_input_indices.push(0);
+                assert!(check_text(&key, &key.columns[0], &"x".repeat(size + 1)).is_err());
+            }
+        }
+        for native in ["binary", "varbinary"] {
+            let plan = text_plan(native, &format!("{native}(10)"), None, strict);
+            assert!(check_binary(&plan, &plan.columns[0], &[0xab; 10]).is_ok());
+            for value in [&[0xab; 11][..], &[0; 11][..]] {
+                assert_eq!(
+                    check_binary(&plan, &plan.columns[0], value).is_err(),
+                    strict
+                );
+            }
+        }
+        let plan = text_plan(
+            "varchar",
+            "varchar(1)",
+            Some("Latin1_General_100_CI_AS_SC_UTF8"),
+            strict,
+        );
+        assert!(check_text(&plan, &plan.columns[0], "\u{e9}").is_err());
+    }
+}
+
+/// Guardie P e codec temporali del writer, indipendenti dal server.
+#[test]
+fn qualified_profile_pure_guards() {
+    use plenora_database_core::arrow::array::cast::AsArray;
+    use plenora_database_core::arrow::array::types::{
+        Time64MicrosecondType, TimestampMicrosecondType,
+    };
+    plenora_database_testkit::write_profile::check(
+        include_bytes!("../../../../tests/fixtures/ammissione_scrittura/sqlserver.json"),
+        |key, _, values, row| {
+            if values.is_null(row) {
+                return false;
+            }
+            let declaration = key
+                .nativo
+                .split(';')
+                .next()
+                .unwrap()
+                .replace("(n)", &format!("({})", key.dimensione.unwrap_or(0)));
+            let native = declaration.split('(').next().unwrap();
+            let collation = if key.nativo.contains("cp=65001") {
+                "Latin1_General_100_CI_AS_SC_UTF8"
+            } else {
+                "Latin1_General_CI_AS"
+            };
+            let plan = text_plan(native, &declaration, Some(collation), true);
+            let column = &plan.columns[0];
+            match key.arrow.as_str() {
+                "utf8" => check_text(&plan, column, values.as_string::<i32>().value(row)).is_err(),
+                "binary" => {
+                    check_binary(&plan, column, values.as_binary::<i32>().value(row)).is_err()
+                }
+                "timestamp[us]" => {
+                    let value = values.as_primitive::<TimestampMicrosecondType>().value(row);
+                    timestamp(value).is_err() || check_temporal(&plan, column, value).is_err()
+                }
+                "time64[us]" => {
+                    let value = values.as_primitive::<Time64MicrosecondType>().value(row);
+                    time64(value).is_err() || check_temporal(&plan, column, value).is_err()
+                }
+                _ => false,
+            }
+        },
+    );
+}
+
+/// La riqualifica di TEXT conserva il precedente confine `NonAscii` Strict/chiavi.
+#[test]
+fn text_requalification_preserves_conservative_admission() {
+    for strict in [false, true] {
+        for key in [false, true] {
+            let mut plan = text_plan("text", "text", Some("Latin1_General_CI_AS"), strict);
+            if key {
+                plan.key_input_indices.push(0);
+            }
+            for text in ["caffe", "caf\u{e8}", "\u{20ac}", "\u{4e2d}"] {
+                assert_eq!(
+                    check_text(&plan, &plan.columns[0], text).is_err(),
+                    (strict || key) && !text.is_ascii()
+                );
+            }
+        }
+    }
+}

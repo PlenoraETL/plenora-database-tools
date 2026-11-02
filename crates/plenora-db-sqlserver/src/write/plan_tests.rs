@@ -734,3 +734,61 @@ fn admission_and_rewrite_guard_share_utf16_units() {
         assert_eq!(guard.check(&batch).is_ok(), accepted);
     }
 }
+
+/// Il report dichiara il contenuto perso, anche quando il profilo A e esatto.
+#[test]
+fn bounded_content_loss_report_all_policies() {
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        let mut operation = operation(WriteMode::Append);
+        operation.mapping_policy = policy;
+        for native in [
+            "varchar",
+            "nvarchar",
+            "char",
+            "nchar",
+            "binary",
+            "varbinary",
+        ] {
+            let binary = native.contains("binary");
+            let field = Field::new(
+                "v",
+                if binary {
+                    DataType::Binary
+                } else {
+                    DataType::Utf8
+                },
+                true,
+            );
+            let column = WriteColumnPlan {
+                input_index: 0,
+                name: "v".to_owned(),
+                kind: if binary {
+                    SqlServerColumnKind::Binary
+                } else {
+                    SqlServerColumnKind::Utf8
+                },
+                native_type: native.to_owned(),
+                native_declaration: format!("{native}(10)"),
+                nullable: true,
+                collation: None,
+                spatial_srid: None,
+                rewrites: Vec::new(),
+            };
+            let mut losses = Vec::new();
+            rule_p(&operation, &column, &field, &mut losses).unwrap();
+            let content = losses
+                .iter()
+                .filter(|loss| loss.reason.contains("contenuto oltre"))
+                .collect::<Vec<_>>();
+            assert_eq!(content.len(), usize::from(policy != MappingPolicy::Strict));
+            assert!(content
+                .iter()
+                .all(|loss| loss.severity == LossSeverity::DataLoss));
+        }
+    }
+}

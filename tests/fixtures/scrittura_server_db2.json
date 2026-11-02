@@ -47,11 +47,16 @@
     {
      "arrow": "float32",
      "nativo": "REAL",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "zero_negativo"
+      }
+     ],
+     "riscritti": [
+      "zero_negativo"
+     ],
      "rifiutati": [
-      "zero_negativo",
       "subnormale_minimo",
       "subnormale",
       "infinito",
@@ -63,11 +68,16 @@
     {
      "arrow": "float64",
      "nativo": "DOUBLE",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "zero_negativo"
+      }
+     ],
+     "riscritti": [
+      "zero_negativo"
+     ],
      "rifiutati": [
-      "zero_negativo",
       "subnormale_minimo",
       "subnormale",
       "infinito",
@@ -4826,15 +4836,20 @@
      "esito": "riscrive",
      "riscritture": [
       {
+       "classe": "spazi_oltre"
+      },
+      {
        "classe": "riempie_testo"
       }
      ],
      "riscritti": [
-      "vuoto"
-     ],
-     "rifiutati": [
+      "vuoto",
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "controllo",
@@ -4847,8 +4862,6 @@
       "sostituzione",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre",
       "pieno_multibyte",
       "pieno_non_bmp"
@@ -4861,6 +4874,9 @@
      "dimensione": 10,
      "esito": "riscrive",
      "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      },
       {
        "classe": "riempie_testo"
       }
@@ -4883,11 +4899,11 @@
       "sostituzione",
       "separatore_riga",
       "barra_inversa",
-      "pieno_meno_uno"
+      "pieno_meno_uno",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
      ],
      "rifiutati": [
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre",
       "pieno_multibyte",
       "pieno_non_bmp"
@@ -4904,6 +4920,9 @@
      "riscritture": [
       {
        "classe": "riempie_testo"
+      },
+      {
+       "classe": "spazi_oltre"
       }
      ],
      "riscritti": [
@@ -4925,11 +4944,11 @@
       "sostituzione",
       "separatore_riga",
       "barra_inversa",
-      "pieno_meno_uno"
+      "pieno_meno_uno",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
      ],
      "rifiutati": [
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre",
       "pieno_multibyte",
       "pieno_non_bmp"
@@ -4940,12 +4959,19 @@
      "arrow": "utf8",
      "nativo": "VARCHAR(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "controllo",
@@ -4958,8 +4984,6 @@
       "sostituzione",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre",
       "pieno_multibyte",
       "pieno_non_bmp"
@@ -4970,12 +4994,17 @@
      "arrow": "utf8",
      "nativo": "VARCHAR(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "oltre",
       "pieno_multibyte",
       "pieno_non_bmp"
@@ -4996,12 +5025,19 @@
      "arrow": "utf8",
      "nativo": "CLOB(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "controllo",
@@ -5014,8 +5050,6 @@
       "sostituzione",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre",
       "pieno_multibyte",
       "pieno_non_bmp"
@@ -5026,12 +5060,17 @@
      "arrow": "utf8",
      "nativo": "CLOB(n OCTETS);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "oltre",
       "pieno_multibyte",
       "pieno_non_bmp"
@@ -5055,15 +5094,20 @@
      "esito": "riscrive",
      "riscritture": [
       {
+       "classe": "spazi_oltre"
+      },
+      {
        "classe": "riempie_testo"
       }
      ],
      "riscritti": [
-      "vuoto"
-     ],
-     "rifiutati": [
+      "vuoto",
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "controllo",
@@ -5074,8 +5118,6 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
      "per_eccesso": []
@@ -5088,6 +5130,9 @@
      "riscritture": [
       {
        "classe": "riempie_testo"
+      },
+      {
+       "classe": "spazi_oltre"
       }
      ],
      "riscritti": [
@@ -5109,11 +5154,11 @@
       "sostituzione",
       "separatore_riga",
       "barra_inversa",
-      "pieno_meno_uno"
+      "pieno_meno_uno",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
      ],
      "rifiutati": [
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
      "per_eccesso": []
@@ -5126,6 +5171,9 @@
      "riscritture": [
       {
        "classe": "riempie_testo"
+      },
+      {
+       "classe": "spazi_oltre"
       }
      ],
      "riscritti": [
@@ -5147,11 +5195,11 @@
       "sostituzione",
       "separatore_riga",
       "barra_inversa",
-      "pieno_meno_uno"
+      "pieno_meno_uno",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
      ],
      "rifiutati": [
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
      "per_eccesso": []
@@ -5160,12 +5208,19 @@
      "arrow": "utf8",
      "nativo": "VARCHAR(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "controllo",
@@ -5176,8 +5231,6 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
      "per_eccesso": []
@@ -5186,12 +5239,17 @@
      "arrow": "utf8",
      "nativo": "VARCHAR(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "oltre"
      ],
      "per_eccesso": []
@@ -5210,12 +5268,19 @@
      "arrow": "utf8",
      "nativo": "CLOB(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "controllo",
@@ -5226,8 +5291,6 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
      "per_eccesso": []
@@ -5236,12 +5299,17 @@
      "arrow": "utf8",
      "nativo": "CLOB(n CODEUNITS32);cp=1208;db=utf-8/1208;su=SYSTEM;v2c=OFF",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "spazi_oltre"
+      }
+     ],
+     "riscritti": [
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "oltre"
      ],
      "per_eccesso": []
@@ -5271,10 +5339,14 @@
     {
      "arrow": "timestamp[us]",
      "nativo": "TIMESTAMP(0)",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "frazione_secondi",
+       "cifre": 0
+      }
+     ],
+     "riscritti": [
       "mezzo",
       "sette_decimi",
       "cifre_1",
@@ -5287,18 +5359,24 @@
       "un_micro",
       "prima_epoca_micro",
       "prima_epoca_mezzo",
-      "anno_0",
       "anno_9999_fine"
+     ],
+     "rifiutati": [
+      "anno_0"
      ],
      "per_eccesso": []
     },
     {
      "arrow": "timestamp[us]",
      "nativo": "TIMESTAMP(1)",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "frazione_secondi",
+       "cifre": 1
+      }
+     ],
+     "riscritti": [
       "cifre_2",
       "cifre_3",
       "cifre_4",
@@ -5307,18 +5385,24 @@
       "quasi_secondo",
       "un_micro",
       "prima_epoca_micro",
-      "anno_0",
       "anno_9999_fine"
+     ],
+     "rifiutati": [
+      "anno_0"
      ],
      "per_eccesso": []
     },
     {
      "arrow": "timestamp[us]",
      "nativo": "TIMESTAMP(2)",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "frazione_secondi",
+       "cifre": 2
+      }
+     ],
+     "riscritti": [
       "cifre_3",
       "cifre_4",
       "cifre_5",
@@ -5326,59 +5410,79 @@
       "quasi_secondo",
       "un_micro",
       "prima_epoca_micro",
-      "anno_0",
       "anno_9999_fine"
+     ],
+     "rifiutati": [
+      "anno_0"
      ],
      "per_eccesso": []
     },
     {
      "arrow": "timestamp[us]",
      "nativo": "TIMESTAMP(3)",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "frazione_secondi",
+       "cifre": 3
+      }
+     ],
+     "riscritti": [
       "cifre_4",
       "cifre_5",
       "cifre_6",
       "quasi_secondo",
       "un_micro",
       "prima_epoca_micro",
-      "anno_0",
       "anno_9999_fine"
+     ],
+     "rifiutati": [
+      "anno_0"
      ],
      "per_eccesso": []
     },
     {
      "arrow": "timestamp[us]",
      "nativo": "TIMESTAMP(4)",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "frazione_secondi",
+       "cifre": 4
+      }
+     ],
+     "riscritti": [
       "cifre_5",
       "cifre_6",
       "quasi_secondo",
       "un_micro",
       "prima_epoca_micro",
-      "anno_0",
       "anno_9999_fine"
+     ],
+     "rifiutati": [
+      "anno_0"
      ],
      "per_eccesso": []
     },
     {
      "arrow": "timestamp[us]",
      "nativo": "TIMESTAMP(5)",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "frazione_secondi",
+       "cifre": 5
+      }
+     ],
+     "riscritti": [
       "cifre_6",
       "quasi_secondo",
       "un_micro",
       "prima_epoca_micro",
-      "anno_0",
       "anno_9999_fine"
+     ],
+     "rifiutati": [
+      "anno_0"
      ],
      "per_eccesso": []
     },

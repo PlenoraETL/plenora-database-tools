@@ -1,0 +1,137 @@
+{
+ "provider": "oracle",
+ "log": "m125044693822.log",
+ "sha256": "fa1528bb2b952dd487a99b450377ca23e2f89330d1faeea470aafd7d2b8c1e7b",
+ "changes": [
+  {
+   "major": "23",
+   "image": "ghcr.io/gvenzl/oracle-free@sha256:7b15d75e6c834980805a5224aa711e6ffc7cd0973d62f2d946448810f6bb2cd2",
+   "decision": "a",
+   "reason": "Bind binario del driver come in produzione, senza rifiuto anticipato: segno dello zero, underflow e non finiti sono osservati dal server. Il round-trip BINARY_FLOAT su oracle non prova le comparazioni SQL: resta il rifiuto del codec.",
+   "before": {
+    "arrow": "float32",
+    "nativo": "BINARY_FLOAT",
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "zero_negativo",
+     "infinito",
+     "meno_infinito",
+     "nan"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "float32",
+    "nativo": "BINARY_FLOAT",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "zero_negativo"
+     }
+    ],
+    "riscritti": [
+     "zero_negativo"
+    ],
+    "rifiutati": [],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "23",
+   "image": "ghcr.io/gvenzl/oracle-free@sha256:7b15d75e6c834980805a5224aa711e6ffc7cd0973d62f2d946448810f6bb2cd2",
+   "decision": "a",
+   "reason": "Bind binario del driver come in produzione, senza rifiuto anticipato: segno dello zero, underflow e non finiti sono osservati dal server. Il round-trip BINARY_DOUBLE su oracle non prova le comparazioni SQL: resta il rifiuto del codec.",
+   "before": {
+    "arrow": "float64",
+    "nativo": "BINARY_DOUBLE",
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "zero_negativo",
+     "infinito",
+     "meno_infinito",
+     "nan"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "float64",
+    "nativo": "BINARY_DOUBLE",
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [],
+    "per_eccesso": []
+   }
+  },
+  {
+   "major": "23",
+   "image": "ghcr.io/gvenzl/oracle-free@sha256:7b15d75e6c834980805a5224aa711e6ffc7cd0973d62f2d946448810f6bb2cd2",
+   "decision": "a",
+   "reason": "Bind binario del driver come in produzione, senza rifiuto anticipato: segno dello zero, underflow e non finiti sono osservati dal server. Il round-trip FLOAT(126) su oracle non prova le comparazioni SQL: resta il rifiuto del codec.",
+   "before": {
+    "arrow": "float64",
+    "nativo": "FLOAT(126)",
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "zero_negativo",
+     "massimo",
+     "minimo",
+     "normale_minimo",
+     "subnormale_minimo",
+     "subnormale",
+     "e_meno_300",
+     "e_meno_200",
+     "e_meno_150",
+     "e_meno_131",
+     "e_126",
+     "e_200",
+     "meno_e_meno_200",
+     "infinito",
+     "meno_infinito",
+     "nan"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "float64",
+    "nativo": "FLOAT(126)",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "underflow",
+      "min_abs": "1e-130"
+     },
+     {
+      "classe": "zero_negativo"
+     }
+    ],
+    "riscritti": [
+     "zero_negativo",
+     "normale_minimo",
+     "subnormale_minimo",
+     "subnormale",
+     "e_meno_300",
+     "e_meno_200",
+     "e_meno_150",
+     "e_meno_131",
+     "meno_e_meno_200"
+    ],
+    "rifiutati": [
+     "massimo",
+     "minimo",
+     "e_200",
+     "infinito",
+     "meno_infinito",
+     "nan"
+    ],
+    "per_eccesso": []
+   }
+  }
+ ]
+}

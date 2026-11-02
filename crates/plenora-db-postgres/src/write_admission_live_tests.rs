@@ -458,6 +458,7 @@ async fn live_sonde_scritture_server() {
     let _serial = SERIAL.lock().await;
     let server = server_facts(&dsn).await;
     let mut measured = Vec::new();
+    let mut writers = Vec::new();
     for (name, insert_mode, declared) in PATHS {
         let specs = if measured.is_empty() {
             specs()
@@ -475,6 +476,9 @@ async fn live_sonde_scritture_server() {
                 eprintln!("percorso {name} rispetto a {first_name}: {difference}");
             }
         }
+        writers.push(
+            write_probe::measure_writer(&hooks, &specs, &server.major, &server.version).await,
+        );
         measured.push((name, path));
     }
     let (_, first) = &measured[0];
@@ -496,7 +500,29 @@ async fn live_sonde_scritture_server() {
             merge_key(&same)
         })
         .collect();
-    write_probe::report_and_check(&merged, crate::write::admission::FIXTURE);
+    let mut writer = writers[0].clone();
+    writer.chiavi = writers[0]
+        .chiavi
+        .iter()
+        .map(|key| {
+            let same = writers
+                .iter()
+                .filter_map(|path| {
+                    path.chiavi.iter().find(|other| {
+                        other.arrow == key.arrow
+                            && other.nativo == key.nativo
+                            && other.dimensione == key.dimensione
+                    })
+                })
+                .collect::<Vec<_>>();
+            merge_key(&same)
+        })
+        .collect();
+    write_probe::check_qualified(ProviderKind::Postgres, &writer);
+    write_probe::report_and_check(
+        &merged,
+        include_bytes!("../../../tests/fixtures/scrittura_server_postgres.json"),
+    );
 }
 
 fn unproven<T>(result: &plenora_database_core::Result<T>) -> bool {

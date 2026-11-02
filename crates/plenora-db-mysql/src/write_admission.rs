@@ -1,7 +1,7 @@
 //! La regola A su `MySQL` e `MariaDB` (`plenora_database_core::write_admission`):
 //! la chiave d'ammissione di una colonna e la sua ricerca nel fixture misurato
-//! del prodotto (`tests/fixtures/scrittura_server_mysql.json`,
-//! `tests/fixtures/scrittura_server_mariadb.json`).
+//! del prodotto (`tests/fixtures/ammissione_scrittura/mysql.json`,
+//! `tests/fixtures/ammissione_scrittura/mariadb.json`).
 //!
 //! # La chiave
 //!
@@ -57,11 +57,11 @@ use std::sync::OnceLock;
 
 /// Il fixture misurato della regola A per `MySQL`.
 pub const MYSQL_FIXTURE: &[u8] =
-    include_bytes!("../../../tests/fixtures/scrittura_server_mysql.json");
+    include_bytes!("../../../tests/fixtures/ammissione_scrittura/mysql.json");
 
 /// Il fixture misurato della regola A per `MariaDB`.
 pub const MARIADB_FIXTURE: &[u8] =
-    include_bytes!("../../../tests/fixtures/scrittura_server_mariadb.json");
+    include_bytes!("../../../tests/fixtures/ammissione_scrittura/mariadb.json");
 
 /// Il fixture del prodotto.
 #[must_use]

@@ -24,13 +24,17 @@
 //! il genere del documento JSON. La costruisce il provider, dallo stesso
 //! catalogo che legge il preflight, nella forma che la sonda registra.
 //!
-//! Le misure stanno in un fixture per provider
-//! (`tests/fixtures/scrittura_server_<provider>.json`, [`AdmissionFixture`]),
-//! scritto da `scripts/sonde_scritture_server.py`: per ogni chiave la sonda
-//! scrive, con il **percorso di scrittura della libreria**, una batteria fissa
-//! di valori limite della famiglia Arrow, li rilegge con la lettura della
-//! libreria e li confronta valore per valore. Nel preflight ogni provider
-//! cerca la chiave della colonna nel fixture della major del server:
+//! Il preflight usa i profili qualificati in `tests/fixtures/ammissione_scrittura/`
+//! ([`AdmissionFixture`]): conservano il baseline storico, ristretto dai rifiuti
+//! dimostrati dalle guardie pure del writer. `writer_restrictions.json` conserva
+//! prima, dopo e provenienza; una restrizione offline non e una nuova misura live.
+//! Il replay writer verifica anche le dipendenze dal server. L'aggiornamento richiede
+//! una qualifica esplicita dell'ammissione; non segue l'import delle sonde.
+//! Le fixture `tests/fixtures/scrittura_server_<provider>.json` misurano invece
+//! il server senza quelle guardie. Sono l'oracolo live, non un'autorizzazione
+//! ad ammettere i valori che la libreria rifiuta. La regressione offline
+//! ricostruisce il prima dai log e confronta ogni decisione di ammissione.
+//! Nel preflight ogni provider cerca la chiave nel profilo della major:
 //!
 //! - **misurata esatta**: ammessa con ogni politica;
 //! - **misurata con riscritture**: le riscritture misurate diventano le
@@ -49,6 +53,22 @@
 //! Il messaggio non porta ne valori ne nomi: la chiave e un fatto del target,
 //! non un dato, ma la regola 4 di `AGENTS.md` vuole messaggi senza payload, e
 //! il tipo del target compare gia nel `LossReport` quando c'e una perdita.
+//!
+//! # Limite dichiarato: i profili congelati
+//!
+//! - **Regola**: le misure server non aggiornano automaticamente il profilo
+//!   qualificato del writer. Il replay nel gate live verifica le guardie di
+//!   produzione sui valori della batteria, senza usare il profilo come guardia.
+//! - **Ambito**: tutti i provider e tutte le major dei profili incorporati.
+//! - **Hazard**: una nuova major resta chiusa anche dopo la sola misura server;
+//!   una modifica delle guardie puo rendere obsoleto un profilo congelato.
+//! - **Rientro**: per una major nuova eseguire entrambe le sonde sulla stessa
+//!   immagine fissata: oracolo server e writer con P/codec attivi, bypassando
+//!   soltanto A/S derivate dal profilo da produrre. Registrare il secondo
+//!   risultato come profilo candidato, revisionare rifiuti e riscritture,
+//!   aggiungerlo ai profili qualificati e rieseguire il replay completo.
+//!   `PLENORA_SONDE_SCRITTURE_WRITER_REFERTO` salva il candidato; insieme a
+//!   `PLENORA_SONDE_SCRITTURE_MISURA=1` permette di misurare una major nuova.
 //!
 //! # Limite dichiarato: le dimensioni su rappresentanti
 //!

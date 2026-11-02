@@ -218,3 +218,43 @@ fn float64_into_a_decimal_float_target_binds_the_shortest_exact_decimal() {
         oracle_rs::types::encode_oracle_number(&float_as_decimal(1e-300, 38).unwrap()).is_err()
     );
 }
+
+/// Le politiche non strette non raggiungono il bind, anche per testo e binario.
+#[test]
+fn bounded_types_refuse_unqualified_policies() {
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        for data_type in [DataType::Utf8, DataType::Binary] {
+            let schema = contract_schema(vec![Field::new("V", data_type, true)]).unwrap();
+            let operation = WriteOperation {
+                target: ObjectRef {
+                    catalog: None,
+                    schema: Some("PLENORA".to_owned()),
+                    object: "T".to_owned(),
+                },
+                mode: WriteMode::Append,
+                mapping_policy: policy,
+                transaction_profile: TransactionProfile::SingleTransaction,
+                keys: Vec::new(),
+                update_columns: Vec::new(),
+                srid_policy: None,
+                create_spatial_index: false,
+                allow_partial: false,
+            };
+            let result = OracleWritePlan::compile(
+                &OracleConfig::new("oracle", "FREEPDB1", "plenora"),
+                &schema,
+                &operation,
+            );
+            if policy == MappingPolicy::Strict {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result.unwrap_err().category, ErrorCategory::Unsupported);
+            }
+        }
+    }
+}

@@ -216,7 +216,8 @@ pub async fn write(
                     (base.starts_with("character varying(") || base.starts_with("character("))
                         && base.ends_with(')')
                 })
-                || leaf(source.name(), LeafLoss::Bounded);
+                || leaf(source.name(), LeafLoss::Bounded)
+                || leaf(source.name(), LeafLoss::Padded);
             if bounded && !strict {
                 losses.push(bounded_loss(
                     field_id,
@@ -352,7 +353,7 @@ pub async fn write(
             if strict {
                 continue;
             }
-            if leaf(name, LeafLoss::Bounded) {
+            if leaf(name, LeafLoss::Bounded) || leaf(name, LeafLoss::Padded) {
                 losses.push(bounded_loss(field_id, source, declared.clone())?);
             }
             if leaf(name, LeafLoss::Padded) && !is_key(name) {
@@ -541,8 +542,8 @@ fn bounded_loss(
     Ok(MappingLoss {
         field_id: field_number(field_id)?,
         category: LossCategory::Precision,
-        severity: LossSeverity::Warning,
-        reason: "gli spazi finali oltre la lunghezza della colonna si troncherebbero".to_owned(),
+        severity: LossSeverity::DataLoss,
+        reason: "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio".to_owned(),
         source_type: Some(source.data_type().to_string()),
         target_type,
     })
@@ -634,3 +635,7 @@ const fn supports_additive_evolution(mode: WriteMode) -> bool {
             | WriteMode::Upsert
     )
 }
+
+#[cfg(test)]
+#[path = "preflight_length_tests.rs"]
+mod length_tests;

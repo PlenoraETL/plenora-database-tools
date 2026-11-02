@@ -39,7 +39,7 @@ use tiberius::Query;
 
 /// Il fixture misurato della regola A per SQL Server.
 pub const FIXTURE: &[u8] =
-    include_bytes!("../../../../tests/fixtures/scrittura_server_sqlserver.json");
+    include_bytes!("../../../../tests/fixtures/ammissione_scrittura/sqlserver.json");
 
 /// La tabella delle misure, letta una volta.
 ///

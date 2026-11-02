@@ -67,7 +67,8 @@ use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, Err
 use std::sync::OnceLock;
 
 /// Il fixture misurato della regola A per Oracle.
-pub const FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/scrittura_server_oracle.json");
+pub const FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/ammissione_scrittura/oracle.json");
 
 /// La tabella delle misure, letta una volta.
 ///

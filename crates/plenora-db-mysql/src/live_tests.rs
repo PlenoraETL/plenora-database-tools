@@ -9799,7 +9799,20 @@ async fn live_sonde_scritture_server() {
         &server.version,
     )
     .await;
-    write_probe::report_and_check(&measured, crate::write_admission::fixture(kind));
+    let server_fixture: &[u8] = if kind == ProviderKind::Mariadb {
+        include_bytes!("../../../tests/fixtures/scrittura_server_mariadb.json")
+    } else {
+        include_bytes!("../../../tests/fixtures/scrittura_server_mysql.json")
+    };
+    let writer = write_probe::measure_writer(
+        &hooks,
+        &regola_a_specs(kind),
+        &server.major,
+        &server.version,
+    )
+    .await;
+    write_probe::check_qualified(kind, &writer);
+    write_probe::report_and_check(&measured, server_fixture);
 }
 
 struct RegolaABatches {

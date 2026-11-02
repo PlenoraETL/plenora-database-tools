@@ -7140,12 +7140,19 @@
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "solo_nul",
@@ -7157,43 +7164,107 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "nul_interno",
       "solo_nul",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 4000,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "nul_interno",
       "solo_nul",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
@@ -7212,13 +7283,20 @@
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "solo_nul",
@@ -7230,28 +7308,36 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "spazio",
+      "a",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio",
       "a",
       "spazio_finale",
       "spazi_finali",
       "spazio_iniziale",
-      "nul_interno",
-      "solo_nul",
       "controllo",
       "latino",
       "fuori_latin1",
@@ -7264,27 +7350,38 @@
       "barra_inversa",
       "pieno_meno_uno",
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "nul_interno",
+      "solo_nul",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "pieno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 4000,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio",
       "a",
       "spazio_finale",
       "spazi_finali",
       "spazio_iniziale",
-      "nul_interno",
-      "solo_nul",
       "controllo",
       "latino",
       "fuori_latin1",
@@ -7297,10 +7394,20 @@
       "barra_inversa",
       "pieno_meno_uno",
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "nul_interno",
+      "solo_nul",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "pieno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
@@ -7317,22 +7424,33 @@
      "esito": "riscrive",
      "riscritture": [
       {
-       "classe": "json_numeri"
+       "classe": "ogni"
       }
      ],
      "riscritti": [
       "esponente",
       "fuori_double",
-      "zero_negativo"
-     ],
-     "rifiutati": [
+      "zero_negativo",
       "chiave_ripetuta"
      ],
+     "rifiutati": [],
      "per_eccesso": [
+      "oggetto",
       "uno_virgola_zero",
       "cinquanta_cifre",
       "frazione",
-      "diciassette_cifre"
+      "diciassette_cifre",
+      "intero_breve",
+      "ordine",
+      "spazi",
+      "escape",
+      "non_bmp",
+      "annidato",
+      "lista",
+      "scalare_stringa",
+      "scalare_null",
+      "oggetto_vuoto",
+      "nullo"
      ]
     },
     {
@@ -15300,12 +15418,19 @@
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "solo_nul",
@@ -15317,43 +15442,107 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "nul_interno",
       "solo_nul",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 4000,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "nul_interno",
       "solo_nul",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
@@ -15372,13 +15561,20 @@
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "solo_nul",
@@ -15390,28 +15586,36 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "spazio",
+      "a",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio",
       "a",
       "spazio_finale",
       "spazi_finali",
       "spazio_iniziale",
-      "nul_interno",
-      "solo_nul",
       "controllo",
       "latino",
       "fuori_latin1",
@@ -15424,27 +15628,38 @@
       "barra_inversa",
       "pieno_meno_uno",
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "nul_interno",
+      "solo_nul",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "pieno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 4000,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio",
       "a",
       "spazio_finale",
       "spazi_finali",
       "spazio_iniziale",
-      "nul_interno",
-      "solo_nul",
       "controllo",
       "latino",
       "fuori_latin1",
@@ -15457,10 +15672,20 @@
       "barra_inversa",
       "pieno_meno_uno",
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "nul_interno",
+      "solo_nul",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "pieno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
@@ -15477,22 +15702,33 @@
      "esito": "riscrive",
      "riscritture": [
       {
-       "classe": "json_numeri"
+       "classe": "ogni"
       }
      ],
      "riscritti": [
       "esponente",
       "fuori_double",
-      "zero_negativo"
-     ],
-     "rifiutati": [
+      "zero_negativo",
       "chiave_ripetuta"
      ],
+     "rifiutati": [],
      "per_eccesso": [
+      "oggetto",
       "uno_virgola_zero",
       "cinquanta_cifre",
       "frazione",
-      "diciassette_cifre"
+      "diciassette_cifre",
+      "intero_breve",
+      "ordine",
+      "spazi",
+      "escape",
+      "non_bmp",
+      "annidato",
+      "lista",
+      "scalare_stringa",
+      "scalare_null",
+      "oggetto_vuoto",
+      "nullo"
      ]
     },
     {
@@ -23460,12 +23696,19 @@
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "solo_nul",
@@ -23477,43 +23720,107 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "nul_interno",
       "solo_nul",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 4000,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "nul_interno",
       "solo_nul",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
@@ -23532,13 +23839,20 @@
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "solo_nul",
@@ -23550,28 +23864,36 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "spazio",
+      "a",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio",
       "a",
       "spazio_finale",
       "spazi_finali",
       "spazio_iniziale",
-      "nul_interno",
-      "solo_nul",
       "controllo",
       "latino",
       "fuori_latin1",
@@ -23584,27 +23906,38 @@
       "barra_inversa",
       "pieno_meno_uno",
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "nul_interno",
+      "solo_nul",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "pieno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 4000,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio",
       "a",
       "spazio_finale",
       "spazi_finali",
       "spazio_iniziale",
-      "nul_interno",
-      "solo_nul",
       "controllo",
       "latino",
       "fuori_latin1",
@@ -23617,10 +23950,20 @@
       "barra_inversa",
       "pieno_meno_uno",
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "nul_interno",
+      "solo_nul",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "pieno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
@@ -23637,22 +23980,33 @@
      "esito": "riscrive",
      "riscritture": [
       {
-       "classe": "json_numeri"
+       "classe": "ogni"
       }
      ],
      "riscritti": [
       "esponente",
       "fuori_double",
-      "zero_negativo"
-     ],
-     "rifiutati": [
+      "zero_negativo",
       "chiave_ripetuta"
      ],
+     "rifiutati": [],
      "per_eccesso": [
+      "oggetto",
       "uno_virgola_zero",
       "cinquanta_cifre",
       "frazione",
-      "diciassette_cifre"
+      "diciassette_cifre",
+      "intero_breve",
+      "ordine",
+      "spazi",
+      "escape",
+      "non_bmp",
+      "annidato",
+      "lista",
+      "scalare_stringa",
+      "scalare_null",
+      "oggetto_vuoto",
+      "nullo"
      ]
     },
     {
@@ -31620,12 +31974,19 @@
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "solo_nul",
@@ -31637,43 +31998,107 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "nul_interno",
       "solo_nul",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 4000,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "nul_interno",
       "solo_nul",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
@@ -31692,13 +32117,20 @@
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "solo_nul",
@@ -31710,28 +32142,36 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "spazio",
+      "a",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio",
       "a",
       "spazio_finale",
       "spazi_finali",
       "spazio_iniziale",
-      "nul_interno",
-      "solo_nul",
       "controllo",
       "latino",
       "fuori_latin1",
@@ -31744,27 +32184,38 @@
       "barra_inversa",
       "pieno_meno_uno",
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "nul_interno",
+      "solo_nul",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "pieno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 4000,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio",
       "a",
       "spazio_finale",
       "spazi_finali",
       "spazio_iniziale",
-      "nul_interno",
-      "solo_nul",
       "controllo",
       "latino",
       "fuori_latin1",
@@ -31777,10 +32228,20 @@
       "barra_inversa",
       "pieno_meno_uno",
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "nul_interno",
+      "solo_nul",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "pieno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
@@ -31797,22 +32258,33 @@
      "esito": "riscrive",
      "riscritture": [
       {
-       "classe": "json_numeri"
+       "classe": "ogni"
       }
      ],
      "riscritti": [
       "esponente",
       "fuori_double",
-      "zero_negativo"
-     ],
-     "rifiutati": [
+      "zero_negativo",
       "chiave_ripetuta"
      ],
+     "rifiutati": [],
      "per_eccesso": [
+      "oggetto",
       "uno_virgola_zero",
       "cinquanta_cifre",
       "frazione",
-      "diciassette_cifre"
+      "diciassette_cifre",
+      "intero_breve",
+      "ordine",
+      "spazi",
+      "escape",
+      "non_bmp",
+      "annidato",
+      "lista",
+      "scalare_stringa",
+      "scalare_null",
+      "oggetto_vuoto",
+      "nullo"
      ]
     },
     {
@@ -39780,12 +40252,19 @@
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "solo_nul",
@@ -39797,43 +40276,107 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "nul_interno",
       "solo_nul",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character varying(n);UTF8",
      "dimensione": 4000,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
      "rifiutati": [
       "nul_interno",
       "solo_nul",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "vuoto",
+      "spazio",
+      "a",
+      "spazio_finale",
+      "spazi_finali",
+      "spazio_iniziale",
+      "controllo",
+      "latino",
+      "fuori_latin1",
+      "non_bmp",
+      "combinante",
+      "precomposto",
+      "bom",
+      "sostituzione",
+      "separatore_riga",
+      "barra_inversa",
+      "pieno",
+      "pieno_meno_uno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
@@ -39852,13 +40395,20 @@
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 1,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio_finale",
       "spazi_finali",
+      "oltre_con_spazio",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
       "spazio_iniziale",
       "nul_interno",
       "solo_nul",
@@ -39870,28 +40420,36 @@
       "bom",
       "separatore_riga",
       "barra_inversa",
-      "oltre_con_spazio",
-      "oltre_con_spazi",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "spazio",
+      "a",
+      "precomposto",
+      "sostituzione",
+      "pieno",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 10,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio",
       "a",
       "spazio_finale",
       "spazi_finali",
       "spazio_iniziale",
-      "nul_interno",
-      "solo_nul",
       "controllo",
       "latino",
       "fuori_latin1",
@@ -39904,27 +40462,38 @@
       "barra_inversa",
       "pieno_meno_uno",
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "nul_interno",
+      "solo_nul",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "pieno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
      "nativo": "scalare:character(n);UTF8",
      "dimensione": 4000,
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
-     "rifiutati": [
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "ogni"
+      }
+     ],
+     "riscritti": [
       "vuoto",
       "spazio",
       "a",
       "spazio_finale",
       "spazi_finali",
       "spazio_iniziale",
-      "nul_interno",
-      "solo_nul",
       "controllo",
       "latino",
       "fuori_latin1",
@@ -39937,10 +40506,20 @@
       "barra_inversa",
       "pieno_meno_uno",
       "oltre_con_spazio",
-      "oltre_con_spazi",
+      "oltre_con_spazi"
+     ],
+     "rifiutati": [
+      "nul_interno",
+      "solo_nul",
       "oltre"
      ],
-     "per_eccesso": []
+     "per_eccesso": [
+      "pieno",
+      "pieno_spazio_finale",
+      "pieno_multibyte",
+      "pieno_non_bmp",
+      "nullo"
+     ]
     },
     {
      "arrow": "utf8",
@@ -39957,22 +40536,33 @@
      "esito": "riscrive",
      "riscritture": [
       {
-       "classe": "json_numeri"
+       "classe": "ogni"
       }
      ],
      "riscritti": [
       "esponente",
       "fuori_double",
-      "zero_negativo"
-     ],
-     "rifiutati": [
+      "zero_negativo",
       "chiave_ripetuta"
      ],
+     "rifiutati": [],
      "per_eccesso": [
+      "oggetto",
       "uno_virgola_zero",
       "cinquanta_cifre",
       "frazione",
-      "diciassette_cifre"
+      "diciassette_cifre",
+      "intero_breve",
+      "ordine",
+      "spazi",
+      "escape",
+      "non_bmp",
+      "annidato",
+      "lista",
+      "scalare_stringa",
+      "scalare_null",
+      "oggetto_vuoto",
+      "nullo"
      ]
     },
     {

@@ -411,3 +411,22 @@ fn non_builtin_integer_is_not_admitted_as_a_write_or_key_target() {
         .unwrap_err();
     assert_eq!(error.category, ErrorCategory::Unsupported);
 }
+
+/// Confronta ogni chiave con i rifiuti puri del percorso di produzione.
+#[test]
+fn qualified_profile_pure_guards() {
+    use plenora_database_core::arrow::schema::Field;
+    plenora_database_testkit::write_profile::check(
+        crate::write_admission::FIXTURE,
+        |key, spec, values, row| {
+            let field = Field::new("V", spec.arrow.clone(), true);
+            let Ok(value) = plenora_database_engine::arrow_write::arrow_parameter_value(
+                values, &field, row, ' ',
+            ) else {
+                return true;
+            };
+            let _ = key;
+            crate::parameter::validate(&[value]).is_err()
+        },
+    );
+}

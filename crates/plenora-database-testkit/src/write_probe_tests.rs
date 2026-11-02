@@ -381,3 +381,19 @@ fn direct_float_keeps_non_finite_values_for_server_measurement() {
         assert!(direct_float(&array, 1).is_none());
     }
 }
+
+/// Il replay resta locale al task e non disabilita le guardie di altre scritture.
+#[tokio::test]
+async fn writer_replay_restores_guards_and_does_not_leak() {
+    assert!(is_raw_probe(PROBE_TABLE));
+    WRITER_REPLAY
+        .scope(true, async {
+            assert!(is_probe_table(PROBE_TABLE));
+            assert!(!is_raw_probe(PROBE_TABLE));
+            assert!(!is_raw_probe("ordinary_table"));
+            tokio::task::yield_now().await;
+            assert!(!is_raw_probe(PROBE_TABLE));
+        })
+        .await;
+    assert!(is_raw_probe(PROBE_TABLE));
+}

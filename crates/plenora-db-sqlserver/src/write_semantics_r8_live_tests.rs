@@ -269,7 +269,13 @@ async fn live_sonde_scritture_server() {
     drop(session);
     let measured =
         write_probe::measure_server(&hooks, &specs(), &server.major, &server.version).await;
-    write_probe::report_and_check(&measured, crate::write::admission::FIXTURE);
+    let writer =
+        write_probe::measure_writer(&hooks, &specs(), &server.major, &server.version).await;
+    write_probe::check_qualified(hooks.provider().kind(), &writer);
+    write_probe::report_and_check(
+        &measured,
+        include_bytes!("../../../tests/fixtures/scrittura_server_sqlserver.json"),
+    );
 }
 
 fn keyed(object: &str, mode: WriteMode, keys: &[&str], update: &[&str]) -> WriteOperation {
@@ -921,3 +927,64 @@ async fn live_varchar_sql_collation_preserva_chiavi_distinte() {
 #[cfg(test)]
 #[path = "write_probe_direct_live_tests.rs"]
 mod direct;
+
+/// Riproduttore minimo: perdita di contenuto dichiarata e UTF-16 sempre leggibile.
+#[tokio::test]
+#[ignore = "richiede SQL Server live esplicito e muta fixture DML isolate"]
+async fn live_bounded_content_reports_loss_and_refuses_split_utf16() {
+    let _serial = SERIAL.lock().await;
+    let pool = SqlServerPool::new(live_config(), 2).expect("pool");
+    let mut admin = SqlServerSession::open(&live_config(), &CancellationToken::new())
+        .await
+        .expect("sessione");
+    admin_batch(&mut admin, "DROP TABLE IF EXISTS [plenora_test].[length_loss]; CREATE TABLE [plenora_test].[length_loss] (v nvarchar(10));").await;
+    let mut operation = keyed("length_loss", WriteMode::Append, &[], &[]);
+    operation.mapping_policy = MappingPolicy::Lossy;
+    let input = text_rows(&[("v", &["xxxxxxxxxxx"])]);
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    let prepared = prepare_write_with_mode(
+        &pool,
+        &operation,
+        input.schema(),
+        &budget,
+        &cancellation,
+        SqlServerInsertMode::Prepared,
+    )
+    .await
+    .unwrap();
+    assert!(prepared
+        .loss_report()
+        .losses
+        .iter()
+        .any(
+            |loss| loss.severity == plenora_database_core::loss::LossSeverity::DataLoss
+                && loss.reason.contains("contenuto oltre")
+        ));
+    let outcome = write_prepared(prepared, Box::new(input), &cancellation)
+        .await
+        .unwrap();
+    assert_eq!(outcome.status, WriteStatus::Committed);
+    assert_eq!(
+        admin_texts(&mut admin, "SELECT v FROM [plenora_test].[length_loss]").await,
+        ["xxxxxxxxxx"]
+    );
+    admin_batch(&mut admin, "DROP TABLE [plenora_test].[length_loss]; CREATE TABLE [plenora_test].[length_loss] (v nvarchar(1));").await;
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        operation.mapping_policy = policy;
+        run_r8(&pool, &operation, text_rows(&[("v", &["\u{1f600}"])]))
+            .await
+            .expect_err("UTF-16 spezzato");
+    }
+    assert!(
+        admin_texts(&mut admin, "SELECT v FROM [plenora_test].[length_loss]")
+            .await
+            .is_empty()
+    );
+    admin_batch(&mut admin, "DROP TABLE [plenora_test].[length_loss];").await;
+}
