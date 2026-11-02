@@ -115,7 +115,7 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_binary_float_in_json_reads_the_stored_value",
     }
 )
-PYTHON_LIVE_EXPECTED = 9
+PYTHON_LIVE_EXPECTED = 15
 SERVER_VERSION_SQL = (
     "SELECT VERSION FROM PRODUCT_COMPONENT_VERSION "
     "WHERE PRODUCT LIKE 'Oracle%Database%' FETCH FIRST 1 ROW ONLY"
