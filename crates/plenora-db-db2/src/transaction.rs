@@ -1299,3 +1299,7 @@ pub fn abandoned_error(error: DatabaseError, rollback_confirmed: bool) -> Databa
 #[cfg(test)]
 #[path = "caller_sql_send_tests.rs"]
 mod caller_sql_send_tests;
+
+#[cfg(test)]
+#[path = "write_probe_direct_tests.rs"]
+pub mod write_probe_direct_tests;

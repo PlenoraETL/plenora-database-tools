@@ -31,7 +31,32 @@ pub fn bind_parameters(parameters: &[ParameterValue]) -> Result<Vec<Value>> {
 /// La sonda misura il server senza applicare la policy dei vuoti del provider.
 #[cfg(test)]
 pub fn bind_probe_parameters(parameters: &[ParameterValue]) -> Result<Vec<Value>> {
-    parameters.iter().map(bind_parameter).collect()
+    parameters
+        .iter()
+        .map(|value| match value {
+            // La perdita del segno e il dominio finito sono oggetto della misura.
+            ParameterValue::F64(value) => Ok(Value::Float(*value)),
+            _ => bind_parameter(value),
+        })
+        .collect()
+}
+
+/// Il BLOB della sonda usa il locator anche per zero byte, senza policy applicativa.
+#[cfg(test)]
+pub async fn bind_probe_blob(
+    connection: &Connection,
+    bytes: &[u8],
+    cache: &mut LobCache,
+    timeout: Duration,
+    cancellation: &plenora_database_core::CancellationToken,
+) -> Result<Vec<Value>> {
+    let io = LobIo {
+        connection,
+        timeout,
+        phase: ErrorPhase::Write,
+        cancellation,
+    };
+    Ok(vec![io.bind_blob(bytes, &mut cache.blobs, 0).await?])
 }
 
 pub async fn bind_parameters_with_lobs(

@@ -775,6 +775,11 @@ impl MysqlWritePlan {
     #[must_use]
     pub(crate) fn with_text_limits(&self, target: &MysqlObjectDescription) -> Self {
         let mut plan = self.clone();
+        // Solo la misura del server: la regola P non deve anticiparne il verdetto.
+        #[cfg(test)]
+        if plenora_database_testkit::write_probe::is_probe_table(&self.target_object_raw) {
+            return plan;
+        }
         for column in &mut plan.columns {
             if column.kind == MysqlColumnKind::Utf8 {
                 column.text_limit = target

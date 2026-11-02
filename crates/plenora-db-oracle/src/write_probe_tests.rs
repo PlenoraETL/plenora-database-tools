@@ -51,6 +51,9 @@ pub fn probe_value(
     values: &dyn Array,
     row: usize,
 ) -> plenora_database_core::Result<plenora_database_core::provider::ParameterValue> {
+    if let Some(value) = plenora_database_testkit::write_probe::direct_float(values, row) {
+        return Ok(value);
+    }
     let field = Field::new("V0", values.data_type().clone(), true);
     if matches!(values.data_type(), DataType::Timestamp(_, Some(_))) && !values.is_null(row) {
         let array = values
@@ -70,11 +73,16 @@ pub fn probe_value(
 
 /// Il locator resta CLOB sul wire; la conversione nazionale e del server.
 /// Non qualifica il writer NCLOB: la sonda deve ancora rileggere il valore.
-pub fn probe_operand(spec: &ProbeSpec) -> &'static str {
-    if probe_kind(spec) == "NCLOB" {
-        "TO_NCLOB(:1)"
+pub fn probe_operand(spec: &ProbeSpec) -> String {
+    if matches!(spec.arrow, DataType::Timestamp(_, Some(_))) {
+        format!(
+            "TO_TIMESTAMP_TZ(:1, '{}')",
+            plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
+        )
+    } else if probe_kind(spec) == "NCLOB" {
+        "TO_NCLOB(:1)".to_owned()
     } else {
-        ":1"
+        ":1".to_owned()
     }
 }
 
@@ -118,4 +126,41 @@ fn json_measurement_uses_server_text_without_changing_other_types() {
             "V0"
         );
     }
+}
+
+#[test]
+fn scalar_probe_preserves_empty_text_and_negative_zero_for_the_server() {
+    use plenora_database_core::provider::ParameterValue;
+    let values = [
+        ParameterValue::String(String::new()),
+        ParameterValue::F64(-0.0),
+    ];
+    for value in &values {
+        assert!(crate::parameter::bind_parameters(std::slice::from_ref(value)).is_err());
+    }
+    let bound = crate::parameter::bind_probe_parameters(&values).unwrap();
+    assert!(matches!(&bound[0], oracle_rs::Value::String(text) if text.is_empty()));
+    assert!(
+        matches!(&bound[1], oracle_rs::Value::Float(value) if value.to_bits() == (-0.0_f64).to_bits())
+    );
+}
+
+/// I NUMBER delle sonde float si rileggono nello stesso dominio dell'ingresso.
+pub fn probe_read_value(
+    spec: &ProbeSpec,
+    value: &plenora_database_core::provider::ParameterValue,
+) -> plenora_database_core::arrow::array::ArrayRef {
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_testkit::write_probe::direct_value;
+    if matches!(spec.arrow, DataType::Float32 | DataType::Float64) {
+        let text = match value {
+            ParameterValue::Decimal(text) => Some(text.clone()),
+            ParameterValue::I64(value) => Some(value.to_string()),
+            _ => None,
+        };
+        if let Some(text) = text {
+            return direct_value(&ParameterValue::F64(text.parse().expect("float riletto")));
+        }
+    }
+    direct_value(value)
 }

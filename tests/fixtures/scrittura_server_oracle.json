@@ -8858,9 +8858,15 @@
     {
      "arrow": "utf8",
      "nativo": "CLOB;AL32UTF8",
-     "esito": "esatto",
-     "riscritture": [],
-     "riscritti": [],
+     "esito": "riscrive",
+     "riscritture": [
+      {
+       "classe": "vuoto_a_null"
+      }
+     ],
+     "riscritti": [
+      "vuoto"
+     ],
      "rifiutati": [],
      "per_eccesso": []
     },

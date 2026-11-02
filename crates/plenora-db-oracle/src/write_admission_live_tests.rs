@@ -112,12 +112,13 @@ impl ProbeHooks for Hooks {
         row: usize,
     ) -> Option<ProviderFuture<'a, write_probe::DirectObservation>> {
         let native = spec.native_ddl.as_str();
-        if native == "CLOB" || native == "BLOB" {
-            return None; // I locator qualificati sono parte del trasporto LOB.
-        }
         if matches!(
             spec.arrow,
-            DataType::Utf8 | DataType::Binary | DataType::LargeBinary
+            DataType::Utf8
+                | DataType::Binary
+                | DataType::LargeBinary
+                | DataType::Float32
+                | DataType::Float64
         ) || native.contains("WITH LOCAL TIME ZONE")
         {
             Some(Box::pin(direct::observe(self, spec, values, row)))
@@ -555,3 +556,30 @@ async fn live_a_timestamp_con_zona_locale_si_rifiuta_nel_preflight() {
 #[cfg(test)]
 #[path = "write_probe_direct_live_tests.rs"]
 mod direct;
+
+#[test]
+fn lob_server_measurement_never_uses_the_production_writer() {
+    use plenora_database_core::arrow::array::{BinaryArray, LargeBinaryArray};
+    let hooks = Hooks::new();
+    for (native, values) in [
+        (
+            "CLOB",
+            Arc::new(StringArray::from(vec![Some(""), None])) as ArrayRef,
+        ),
+        (
+            "BLOB",
+            Arc::new(BinaryArray::from(vec![Some(&b""[..]), None])) as ArrayRef,
+        ),
+        (
+            "BLOB",
+            Arc::new(LargeBinaryArray::from(vec![Some(&b""[..]), None])) as ArrayRef,
+        ),
+    ] {
+        let spec = ProbeSpec::new(native, values.data_type().clone());
+        for row in 0..2 {
+            assert!(hooks.direct_probe(&spec, values.as_ref(), row).is_some());
+            let value = crate::write_probe_tests::probe_value(&spec, values.as_ref(), row).unwrap();
+            assert_eq!(crate::parameter::reject_empty(&value).is_err(), row == 0);
+        }
+    }
+}

@@ -1,7 +1,7 @@
 //! La regola A su Db2, live (`plenora_database_core::write_admission`).
 //!
 //! - [`live_sonde_scritture_server`]: la sonda. Misura ogni chiave
-//!   d'ammissione di [`specs`] con il percorso di scrittura della libreria,
+//!   d'ammissione di [`specs`] con bind diretti del driver, senza ammissione,
 //!   scrive il referto (`PLENORA_SONDE_SCRITTURE_REFERTO`) e verifica che il
 //!   server dia ancora il fixture: e l'oracolo di regressione. La esegue
 //!   `scripts/sonde_scritture_server.py`, dentro il container Db2.
@@ -83,6 +83,36 @@ impl ProbeHooks for Hooks {
 
     fn truncate_sql(&self) -> String {
         format!("TRUNCATE TABLE {SCHEMA}.{PROBE_TABLE} IMMEDIATE")
+    }
+
+    fn direct_probe<'a>(
+        &'a self,
+        spec: &'a ProbeSpec,
+        values: &'a dyn plenora_database_core::arrow::array::Array,
+        row: usize,
+    ) -> Option<ProviderFuture<'a, write_probe::DirectObservation>> {
+        Some(Box::pin(async move {
+            let value = if let Some(value) = write_probe::direct_float(values, row) {
+                value
+            } else {
+                plenora_database_engine::arrow_write::arrow_parameter_value(
+                    values,
+                    &Field::new("V0", values.data_type().clone(), true),
+                    row,
+                    ' ',
+                )?
+            };
+            let config = self.provider.config().clone();
+            let secret = self.secret.clone();
+            let native = spec.native_ddl.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::transaction::write_probe_direct_tests::observe(
+                    &config, &secret, value, &native,
+                )
+            })
+            .await
+            .expect("misura diretta Db2")
+        }))
     }
 
     fn admission_keys<'a>(

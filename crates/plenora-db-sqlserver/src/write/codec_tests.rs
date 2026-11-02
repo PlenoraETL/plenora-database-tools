@@ -393,3 +393,36 @@ fn strict_legacy_text_rejects_all_six_rewritten_unicode_cases() {
         assert!(bulk_rows(&plan, &batch).is_err());
     }
 }
+
+#[test]
+fn server_probe_does_not_apply_production_precision_guards() {
+    use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteOperation};
+    let mut plan = text_plan("varchar", "varchar(3)", Some("Latin1_General_CI_AS"), true);
+    assert!(check_text(&plan, &plan.columns[0], "abc   ").is_err());
+    plan.object = plenora_database_testkit::write_probe::PROBE_TABLE.to_owned();
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some("dbo".to_owned()),
+            object: plan.object.clone(),
+        },
+        mode: WriteMode::Append,
+        mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: Vec::new(),
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    plan.admit(&operation, &[], "16").unwrap();
+    assert!(check_text(&plan, &plan.columns[0], "abc   ").is_ok());
+    plan.columns[0].native_type = "varbinary".to_owned();
+    plan.columns[0].native_declaration = "varbinary(1)".to_owned();
+    assert!(check_binary(&plan, &plan.columns[0], &[1, 0]).is_ok());
+    plan.columns[0].native_type = "datetime2".to_owned();
+    plan.columns[0].native_declaration = "datetime2(0)".to_owned();
+    assert!(check_temporal(&plan, &plan.columns[0], 1).is_ok());
+    plan.strict = true;
+    assert!(check_temporal(&plan, &plan.columns[0], 1).is_err());
+}

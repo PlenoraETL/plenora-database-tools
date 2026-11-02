@@ -1958,3 +1958,23 @@ fn staging_preserves_every_measured_catalog_type() {
         }
     }
 }
+
+#[test]
+fn server_probe_binds_text_that_production_refuses_before_io() {
+    let target = base_table(vec![text_column("varchar", "varchar(3)")]);
+    let mut plan = append_plan(vec![Field::new("label", DataType::Utf8, true)]);
+    let batch = RecordBatch::try_new(
+        schema(vec![Field::new("label", DataType::Utf8, true)]),
+        vec![Arc::new(StringArray::from(vec!["abc   "]))],
+    )
+    .unwrap();
+    assert!(plan
+        .with_text_limits(&target)
+        .bind_chunk(&batch, 0, 1)
+        .is_err());
+    plan.target_object_raw = plenora_database_testkit::write_probe::PROBE_TABLE.to_owned();
+    assert!(plan
+        .with_text_limits(&target)
+        .bind_chunk(&batch, 0, 1)
+        .is_ok());
+}

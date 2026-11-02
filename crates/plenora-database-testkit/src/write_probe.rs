@@ -172,7 +172,7 @@ pub trait ProbeHooks: Send + Sync {
 
 #[path = "write_probe_direct.rs"]
 mod direct;
-pub use direct::{direct_error, direct_value, DirectObservation};
+pub use direct::{direct_error, direct_float, direct_value, DirectObservation};
 
 /// Un valore della batteria e il suo esito.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -816,6 +816,20 @@ fn canon_in(spec: &ProbeSpec, array: &dyn Array, row: usize) -> Canon {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return plain;
     };
+    // Il decoder scalare conserva il testo: nessun arrotondamento alla
+    // precisione Arrow dell'ingresso prima del confronto della misura.
+    if matches!(spec.arrow, DataType::Timestamp(_, None)) {
+        let text = if text.contains('.') {
+            text.trim_end_matches('0').trim_end_matches('.')
+        } else {
+            text
+        };
+        if let Some(Canon::OffsetInstant(instant, 0, false)) =
+            parse_offset_instant(&format!("{text}Z"))
+        {
+            return Canon::InstantNs(instant);
+        }
+    }
     let typed = match spec.text_domain {
         TextDomain::Free => None,
         TextDomain::OffsetInstant => parse_offset_instant(text),

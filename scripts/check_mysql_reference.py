@@ -58,6 +58,7 @@ EXPECTED_VERSION_PREFIX = BASELINE.version_prefix
 # chiuso invece di qualificare una superficie che non e piu quella dichiarata.
 
 EXPECTED_UNIT_TESTS = {
+    "write::tests::server_probe_binds_text_that_production_refuses_before_io",
     "transaction::caller_sql_send_tests::denied_sql_before_send_has_no_effect",
     "transaction::caller_sql_send_tests::zero_batch_before_send_has_no_effect",
     "transaction::caller_sql_send_tests::validation_after_driver_execution_requires_recovery",

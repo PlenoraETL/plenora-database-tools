@@ -353,6 +353,8 @@ impl WritePlan {
     ) -> Result<()> {
         #[cfg(test)]
         if plenora_database_testkit::write_probe::is_probe_table(&self.object) {
+            // La misura non applica nemmeno le guardie P del codec.
+            self.strict = false;
             for column in &mut self.columns {
                 column.rewrites.clear();
             }

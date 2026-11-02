@@ -4,7 +4,7 @@ use crate::write_probe_tests::{
     probe_failure, probe_kind, probe_operand, probe_projection, probe_value,
 };
 use plenora_database_core::arrow::array::Array;
-use write_probe::{direct_error, direct_value, DirectObservation};
+use write_probe::{direct_error, DirectObservation};
 
 pub(super) async fn observe(
     hooks: &Hooks,
@@ -14,35 +14,13 @@ pub(super) async fn observe(
 ) -> plenora_database_core::Result<DirectObservation> {
     eprintln!("sonda Oracle tipo={} indice={row}: avvio", probe_kind(spec));
     let value = probe_value(spec, values, row)?;
-    let operand = if matches!(values.data_type(), DataType::Timestamp(_, Some(_))) {
-        format!(
-            "TO_TIMESTAMP_TZ(:1, '{}')",
-            plenora_database_core::provider::ORACLE_TIMESTAMP_TZ_FORMAT_MODEL
-        )
-    } else {
-        probe_operand(spec).to_owned()
-    };
+    let operand = probe_operand(spec);
     let cancellation = CancellationToken::new();
     let config = hooks.provider.config();
     let pool = hooks.provider.pool_for(&hooks.secret)?;
     let mut lease = pool.checkout(&cancellation).await?;
     let raw = lease.connection()?;
-    let mut cache = crate::parameter::LobCache::default();
-    let params = if matches!(&value, plenora_database_core::provider::ParameterValue::String(text) if text.len() > 4_000)
-    {
-        crate::parameter::bind_parameters_with_lobs(
-            raw,
-            &[value],
-            true,
-            &mut cache,
-            config.operation_timeout(),
-            ErrorPhase::Write,
-            &cancellation,
-        )
-        .await?
-    } else {
-        crate::parameter::bind_probe_parameters(&[value])?
-    };
+    let params = bind_probe(hooks, raw, spec, value, &cancellation).await?;
     let written = crate::connection::with_timeout(
         config,
         ErrorPhase::Write,
@@ -70,6 +48,15 @@ pub(super) async fn observe(
                 ),
             )
             .await?;
+            // La misura non rifiuta un float non finito che il driver ha riletto.
+            if let Some(oracle_rs::Value::Float(value)) =
+                result.rows.first().and_then(|row| row.get(0))
+            {
+                return Ok(vec![plenora_database_core::Row::try_new(
+                    vec!["V0".to_owned()].into(),
+                    vec![plenora_database_core::provider::ParameterValue::F64(*value)],
+                )?]);
+            }
             crate::decode::rows_from_result(
                 raw,
                 config.operation_timeout(),
@@ -101,7 +88,48 @@ pub(super) async fn observe(
         Err(error) => direct_error(&error, reading),
         Ok(rows) => {
             assert_eq!(rows.len(), 1, "riga dell'oracolo");
-            DirectObservation::Read(direct_value(&rows[0].values()[0]))
+            DirectObservation::Read(crate::write_probe_tests::probe_read_value(
+                spec,
+                &rows[0].values()[0],
+            ))
         }
     })
+}
+
+async fn bind_probe(
+    hooks: &Hooks,
+    raw: &oracle_rs::Connection,
+    spec: &ProbeSpec,
+    value: plenora_database_core::provider::ParameterValue,
+    cancellation: &CancellationToken,
+) -> plenora_database_core::Result<Vec<oracle_rs::Value>> {
+    let config = hooks.provider.config();
+    let mut cache = crate::parameter::LobCache::default();
+    let params = if let ("BLOB", plenora_database_core::provider::ParameterValue::Bytes(bytes)) =
+        (probe_kind(spec), &value)
+    {
+        crate::parameter::bind_probe_blob(
+            raw,
+            bytes,
+            &mut cache,
+            config.operation_timeout(),
+            cancellation,
+        )
+        .await?
+    } else if matches!(&value, plenora_database_core::provider::ParameterValue::String(text) if text.len() > 4_000)
+    {
+        crate::parameter::bind_parameters_with_lobs(
+            raw,
+            &[value],
+            true,
+            &mut cache,
+            config.operation_timeout(),
+            ErrorPhase::Write,
+            cancellation,
+        )
+        .await?
+    } else {
+        crate::parameter::bind_probe_parameters(&[value])?
+    };
+    Ok(params)
 }

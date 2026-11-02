@@ -318,3 +318,66 @@ fn errore_di_rete_dell_oracolo_non_diventa_rifiuto_del_server() {
     );
     let _ = direct_error(&error, true);
 }
+
+#[test]
+fn direct_scalar_readback_preserves_numeric_and_temporal_domains() {
+    use plenora_database_core::provider::ParameterValue;
+    let spec = ProbeSpec::new(
+        "TIMESTAMP(3)",
+        DataType::Timestamp(TimeUnit::Microsecond, None),
+    );
+    let input = TimestampMicrosecondArray::from(vec![1_000_001]);
+    for (text, exact) in [
+        ("1970-01-01T00:00:01.000001", true),
+        ("1970-01-01T00:00:01.000000", false),
+        ("1970-01-01T00:00:01.000001001", false),
+    ] {
+        let read = direct_value(&ParameterValue::Timestamp(text.to_owned()));
+        assert_eq!(same_value_in(&spec, &input, 0, read.as_ref(), 0), exact);
+    }
+    let left = direct_value(&ParameterValue::Decimal("1.23".to_owned()));
+    let right = direct_value(&ParameterValue::Decimal("1.234".to_owned()));
+    assert!(!same_value(left.as_ref(), 0, right.as_ref(), 0, false));
+    let float = direct_value(&ParameterValue::F64(-0.0));
+    assert!(same_value(
+        &Float64Array::from(vec![-0.0]),
+        0,
+        float.as_ref(),
+        0,
+        false
+    ));
+    let date = direct_value(&ParameterValue::Date("1970-01-02".to_owned()));
+    assert!(same_value(
+        &Date32Array::from(vec![1]),
+        0,
+        date.as_ref(),
+        0,
+        false
+    ));
+    for (input, value) in [
+        (
+            Arc::new(BooleanArray::from(vec![true])) as ArrayRef,
+            ParameterValue::Bool(true),
+        ),
+        (
+            Arc::new(Int64Array::from(vec![7])) as ArrayRef,
+            ParameterValue::I64(7),
+        ),
+    ] {
+        let read = direct_value(&value);
+        assert!(same_value(input.as_ref(), 0, read.as_ref(), 0, false));
+    }
+}
+
+#[test]
+fn direct_float_keeps_non_finite_values_for_server_measurement() {
+    use plenora_database_core::provider::ParameterValue;
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.0] {
+        let array = Float64Array::from(vec![Some(value), None]);
+        let Some(ParameterValue::F64(measured)) = direct_float(&array, 0) else {
+            panic!("float della sonda");
+        };
+        assert_eq!(measured.to_bits(), value.to_bits());
+        assert!(direct_float(&array, 1).is_none());
+    }
+}

@@ -505,6 +505,11 @@ pub(super) async fn rules_with_leaves<C: GenericClient + Sync>(
         )
         .await
         .map_err(|error| classify_error(phase, &error))?;
+    // Le foglie servono alla chiave misurata, le guardie alla sola ammissione.
+    #[cfg(test)]
+    if plenora_database_testkit::write_probe::is_probe_table(&operation.target.object) {
+        return Ok((BTreeMap::new(), collect_leaf_types(&rows)));
+    }
     Ok((
         collect_rules(&rows, operation.mapping_policy == MappingPolicy::Strict),
         collect_leaf_types(&rows),
