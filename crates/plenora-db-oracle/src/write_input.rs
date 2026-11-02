@@ -1,4 +1,4 @@
-//! Il rifiuto dei vuoti precede anche il DDL e i batch gia validi.
+//! Il rifiuto dei vuoti e dei valori oltre misura precede anche il DDL e i batch gia validi.
 //! I LOB vuoti sono esclusi per policy, indipendentemente dalla misura del
 //! locator: non si inventa una riscrittura nel fixture del server.
 use plenora_database_core::arrow::{schema::SchemaRef, RecordBatch};
@@ -46,6 +46,7 @@ pub async fn reject_empty_input(
     operation: &WriteOperation,
     budget: &ResourceBudget,
     cancellation: &CancellationToken,
+    targets: &[Option<crate::write_intermediate::TargetType>],
 ) -> Result<Box<dyn BatchStream>> {
     let schema = input.schema();
     let columns = schema
@@ -76,6 +77,27 @@ pub async fn reject_empty_input(
         }
         for (index, key) in &columns {
             let array = batch.column(*index);
+            if let Some(Some(target)) = targets.get(*index) {
+                use plenora_database_core::arrow::array::{BinaryArray, LargeBinaryArray};
+                if let Some(binary) = array.as_any().downcast_ref::<BinaryArray>() {
+                    for value in binary.iter().flatten() {
+                        target.check_bytes(value)?;
+                    }
+                }
+                if let Some(binary) = array.as_any().downcast_ref::<LargeBinaryArray>() {
+                    for value in binary.iter().flatten() {
+                        target.check_bytes(value)?;
+                    }
+                }
+                if let Some(text) = array
+                    .as_any()
+                    .downcast_ref::<plenora_database_core::arrow::array::StringArray>()
+                {
+                    for value in text.iter().flatten() {
+                        target.check_text(value)?;
+                    }
+                }
+            }
             if (0..batch.num_rows()).any(|row| {
                 !array.is_null(row) && StoreRewrite::EmptyToNull.rewrites(array.as_ref(), row)
             }) {

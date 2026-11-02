@@ -527,6 +527,9 @@ impl OracleWritePlan {
 
 impl WriteColumn {
     fn parameter(&self, value: ParameterValue) -> Result<ParameterValue> {
+        if let Some(target) = &self.target_type {
+            target.check_value(&value)?;
+        }
         match (&self.spatial, self.float_digits, value) {
             (Some(spatial), _, ParameterValue::Bytes(bytes)) => Ok(ParameterValue::Wkb {
                 bytes,
@@ -691,9 +694,19 @@ pub async fn execute_write(
     let plan = prepared
         .take_driver_state::<OracleWritePlan>()
         .ok_or_else(|| write_error(ErrorCategory::InvalidPlan, "piano preparato Oracle assente"))?;
-    let input =
-        crate::write_input::reject_empty_input(input, &prepared.operation, budget, cancellation)
-            .await?;
+    let targets = plan
+        .columns
+        .iter()
+        .map(|column| column.target_type.clone())
+        .collect::<Vec<_>>();
+    let input = crate::write_input::reject_empty_input(
+        input,
+        &prepared.operation,
+        budget,
+        cancellation,
+        &targets,
+    )
+    .await?;
     // La regola S: un valore che Oracle riscriverebbe al salvataggio (il
     // testo vuoto e il binario vuoto come `NULL`, `CHAR(n)` completato con
     // spazi, un float sotto il minimo di `FLOAT`) si rifiuta con `Strict`, e

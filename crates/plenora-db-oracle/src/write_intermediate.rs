@@ -10,6 +10,8 @@ use plenora_database_core::{DatabaseError, ErrorPhase, Result};
 pub struct TargetType {
     pub(super) declaration: String,
     pub(super) collation: Option<String>,
+    text_limits: Option<(u64, u64, bool)>,
+    raw_limit: Option<u64>,
 }
 
 pub fn unsupported() -> DatabaseError {
@@ -72,10 +74,72 @@ impl TargetType {
             }
             _ => return Err(unsupported()),
         };
+        let text_limits = collation.as_ref().map(|_| {
+            (
+                facts.char_length,
+                facts.data_length,
+                declaration.starts_with('N'),
+            )
+        });
         Ok(Self {
+            raw_limit: (facts.data_type.eq_ignore_ascii_case("RAW")).then_some(facts.data_length),
             declaration,
             collation,
+            text_limits,
         })
+    }
+
+    // CAST puo troncare dove l'assegnazione diretta darebbe ORA-12899.
+    // Il limite in byte vale anche per CHAR semantics; AL16UTF16 conta
+    // coppie surrogate, non scalari Unicode. Non dipende dalle regole A/S.
+    pub(super) fn check_value(
+        &self,
+        value: &plenora_database_core::provider::ParameterValue,
+    ) -> Result<()> {
+        use plenora_database_core::provider::ParameterValue;
+        match value {
+            ParameterValue::String(text) => self.check_text(text)?,
+            ParameterValue::Bytes(bytes) => self.check_bytes(bytes)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_bytes(&self, bytes: &[u8]) -> Result<()> {
+        if self
+            .raw_limit
+            .is_some_and(|limit| u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit)
+        {
+            return Err(DatabaseError::new(
+                plenora_database_core::ErrorCategory::DataMapping,
+                ErrorPhase::Write,
+                Some(ProviderKind::Oracle),
+                "binario oltre la lunghezza del target Oracle",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_text(&self, text: &str) -> Result<()> {
+        if let Some((chars, bytes, national)) = self.text_limits {
+            let (characters, encoded_bytes) = if national {
+                let units = text.encode_utf16().count();
+                (units, units.saturating_mul(2))
+            } else {
+                (text.chars().count(), text.len())
+            };
+            if u64::try_from(characters).unwrap_or(u64::MAX) > chars
+                || u64::try_from(encoded_bytes).unwrap_or(u64::MAX) > bytes
+            {
+                return Err(DatabaseError::new(
+                    plenora_database_core::ErrorCategory::DataMapping,
+                    ErrorPhase::Write,
+                    Some(ProviderKind::Oracle),
+                    "testo oltre la lunghezza del target Oracle",
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn lob_type(&self) -> Option<oracle_rs::OracleType> {

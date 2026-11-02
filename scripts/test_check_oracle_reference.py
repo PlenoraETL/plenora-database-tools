@@ -53,7 +53,9 @@ def check_captured_inventory() -> None:
     }
     assert generated <= gate.REQUIRED_LIVE_TESTS
     assert {name for name in names if name.startswith("live_generated_")} == generated
-    assert len(names) == 70  # Famiglie dei parametri e semantica delle scritture.
+    assert len(names) == 72  # Famiglie dei parametri e semantica delle scritture.
+    assert "live_writer_cast_refuses_oversized_text_before_scalar_and_array_dml" in names
+    assert "live_writer_cast_refuses_oversized_raw_before_scalar_and_array_dml" in names
     for name in generated:
         full = f"live_tests::parameter_fidelity::{name}"
         # Anche se manca sia nella lista compilata sia negli esiti, il gate

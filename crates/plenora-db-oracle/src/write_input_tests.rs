@@ -86,6 +86,7 @@ async fn vuoto_nel_secondo_batch_rifiutato_senza_effetti_in_ogni_mode() {
                     &operation(mode, key),
                     &budget,
                     &CancellationToken::new(),
+                    &[],
                 )
                 .await
                 .err()
@@ -111,6 +112,7 @@ async fn null_e_valori_pieni_restano_distinti_e_il_buffer_rispetta_il_budget() {
             &operation(WriteMode::Append, false),
             &budget,
             &cancellation,
+            &[],
         )
         .await
         .unwrap();
@@ -132,9 +134,133 @@ async fn null_e_valori_pieni_restano_distinti_e_il_buffer_rispetta_il_budget() {
             input(binary, false),
             &operation(WriteMode::Append, false),
             &budget,
-            &cancellation
+            &cancellation,
+            &[],
         )
         .await
         .is_err());
+    }
+}
+
+#[tokio::test]
+async fn oversized_second_batch_is_refused_before_any_write_effect() {
+    let schema = contract_schema(vec![Field::new("V", DataType::Utf8, true)]).unwrap();
+    let facts = crate::write_admission::ColumnFacts {
+        name: "V".into(),
+        data_type: "CHAR".into(),
+        data_length: 1,
+        char_length: 1,
+        char_used: Some("B".into()),
+        precision: None,
+        scale: None,
+        collation: Some("BINARY".into()),
+    };
+    let targets = [Some(
+        crate::write_intermediate::TargetType::from_catalog(&facts).unwrap(),
+    )];
+    for mode in [
+        WriteMode::Append,
+        WriteMode::Create,
+        WriteMode::Replace,
+        WriteMode::Update,
+        WriteMode::Upsert,
+        WriteMode::DeleteByKeys,
+    ] {
+        for key in [false, true] {
+            let batches = ["x", "\u{e9}"].map(|value| {
+                RecordBatch::try_new(
+                    schema.clone(),
+                    vec![Arc::new(StringArray::from(vec![Some(value)]))],
+                )
+                .unwrap()
+            });
+            let input = Box::new(Input(VecDeque::from(batches), schema.clone()));
+            let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+            let before = budget.remaining(ResourceKind::MemoryBytes);
+            let error = reject_empty_input(
+                input,
+                &operation(mode, key),
+                &budget,
+                &CancellationToken::new(),
+                &targets,
+            )
+            .await
+            .err()
+            .expect("length refusal");
+            assert_eq!(error.category, ErrorCategory::DataMapping);
+            assert_eq!(error.remote_effect, RemoteEffect::None);
+            assert_eq!(error.message, "testo oltre la lunghezza del target Oracle");
+            assert_eq!(budget.remaining(ResourceKind::MemoryBytes), before);
+        }
+    }
+}
+
+#[tokio::test]
+async fn raw_oversized_second_batch_is_refused_before_any_write_effect() {
+    use plenora_database_core::arrow::array::LargeBinaryArray;
+    for data_type in [DataType::Binary, DataType::LargeBinary] {
+        for length in [1, 10] {
+            let schema = contract_schema(vec![Field::new("V", data_type.clone(), true)]).unwrap();
+            let facts = crate::write_admission::ColumnFacts {
+                name: "V".into(),
+                data_type: "RAW".into(),
+                data_length: length,
+                char_length: 0,
+                char_used: None,
+                precision: None,
+                scale: None,
+                collation: None,
+            };
+            let targets = [Some(
+                crate::write_intermediate::TargetType::from_catalog(&facts).unwrap(),
+            )];
+            for mode in [
+                WriteMode::Append,
+                WriteMode::Create,
+                WriteMode::Replace,
+                WriteMode::Update,
+                WriteMode::Upsert,
+                WriteMode::DeleteByKeys,
+            ] {
+                for key in [false, true] {
+                    let batches = [length, length + 1].map(|size| {
+                        RecordBatch::try_new(
+                            schema.clone(),
+                            vec![{
+                                let value = vec![0xAB; usize::try_from(size).unwrap()];
+                                let values = vec![None, Some(value.as_slice())];
+                                match data_type {
+                                    DataType::Binary => {
+                                        Arc::new(BinaryArray::from(values)) as ArrayRef
+                                    }
+                                    _ => Arc::new(LargeBinaryArray::from(values)) as ArrayRef,
+                                }
+                            }],
+                        )
+                        .unwrap()
+                    });
+                    let input = Box::new(Input(VecDeque::from(batches), schema.clone()));
+                    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+                    let before = budget.remaining(ResourceKind::MemoryBytes);
+                    let error = reject_empty_input(
+                        input,
+                        &operation(mode, key),
+                        &budget,
+                        &CancellationToken::new(),
+                        &targets,
+                    )
+                    .await
+                    .err()
+                    .expect("length refusal");
+                    assert_eq!(error.category, ErrorCategory::DataMapping);
+                    assert_eq!(error.remote_effect, RemoteEffect::None);
+                    assert_eq!(
+                        error.message,
+                        "binario oltre la lunghezza del target Oracle"
+                    );
+                    assert_eq!(budget.remaining(ResourceKind::MemoryBytes), before);
+                }
+            }
+        }
     }
 }

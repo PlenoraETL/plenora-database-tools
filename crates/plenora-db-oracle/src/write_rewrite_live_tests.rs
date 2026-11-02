@@ -732,3 +732,185 @@ async fn live_s_float_di_oracle_non_arrotonda_in_silenzio() {
         .expect("FLOAT nel proprio intervallo");
     drop_table(&provider, &secret, table).await;
 }
+
+// Il runner Oracle scopre tutti i live_*: questa prova attraversa A/S e P.
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_writer_cast_refuses_oversized_text_before_scalar_and_array_dml() {
+    let (provider, secret) = fixture();
+    let table = "PLN_CAST_LENGTH";
+    for (native, value) in [
+        ("CHAR(1 BYTE)", "\u{e9}".to_owned()),
+        ("CHAR(1 BYTE)", "ab".to_owned()),
+        ("CHAR(1 CHAR)", "ab".to_owned()),
+        ("VARCHAR2(1 BYTE)", "\u{e9}".to_owned()),
+        ("VARCHAR2(1 CHAR)", "ab".to_owned()),
+        ("NCHAR(1)", "\u{1f600}".to_owned()),
+        ("CHAR(2000 BYTE)", "\u{e9}".repeat(2000)),
+        ("VARCHAR2(4000 CHAR)", "\u{e9}".repeat(4000)),
+        ("NCHAR(1000)", "\u{1f600}".repeat(1000)),
+    ] {
+        drop_table(&provider, &secret, table).await;
+        ddl(
+            &provider,
+            &secret,
+            &format!("CREATE TABLE {table} (ID NUMBER(10) PRIMARY KEY, V {native} UNIQUE)"),
+        )
+        .await;
+        for mode in [
+            WriteMode::Append,
+            WriteMode::Replace,
+            WriteMode::Update,
+            WriteMode::Upsert,
+            WriteMode::DeleteByKeys,
+        ] {
+            let keys: &[&str] = if matches!(
+                mode,
+                WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys
+            ) {
+                &["V"]
+            } else {
+                &[]
+            };
+            for rows in [1, 3] {
+                let batch = text_batch(
+                    &[("V", true)],
+                    (0..rows).collect(),
+                    vec![Arc::new(StringArray::from(
+                        (0..rows)
+                            .map(|i| {
+                                if rows == 1 {
+                                    value.clone()
+                                } else {
+                                    format!("{value}{i}")
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    ))],
+                );
+                let batch = if mode == WriteMode::DeleteByKeys {
+                    batch.project(&[1]).unwrap()
+                } else {
+                    batch
+                };
+                let mut operation = operation(table, mode, keys);
+                if mode == WriteMode::Update {
+                    operation.update_columns = vec!["ID".to_owned()];
+                }
+                let error = write(&provider, &secret, &operation, batch)
+                    .await
+                    .expect_err("oversized bind");
+                assert_eq!(
+                    error.category,
+                    ErrorCategory::DataMapping,
+                    "{native}: {error:?}"
+                );
+                assert_eq!(
+                    error.message, "testo oltre la lunghezza del target Oracle",
+                    "{native}: {error:?}"
+                );
+                assert_eq!(error.remote_effect, RemoteEffect::None);
+                assert_eq!(
+                    count(
+                        &provider,
+                        &secret,
+                        &format!("SELECT COUNT(*) AS N FROM {table}")
+                    )
+                    .await,
+                    0
+                );
+            }
+        }
+    }
+    drop_table(&provider, &secret, table).await;
+}
+
+// Il runner Oracle scopre tutti i live_*: questa prova attraversa A/S e P.
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+async fn live_writer_cast_refuses_oversized_raw_before_scalar_and_array_dml() {
+    use plenora_database_core::arrow::array::{ArrayRef, BinaryArray, LargeBinaryArray};
+    let (provider, secret) = fixture();
+    let table = "PLN_CAST_RAW";
+    for data_type in [DataType::Binary, DataType::LargeBinary] {
+        for (native, value) in [("RAW(1)", vec![0xAB; 2]), ("RAW(10)", vec![0xAB; 11])] {
+            drop_table(&provider, &secret, table).await;
+            ddl(
+                &provider,
+                &secret,
+                &format!("CREATE TABLE {table} (ID NUMBER(10) PRIMARY KEY, V {native} UNIQUE)"),
+            )
+            .await;
+            for mode in [
+                WriteMode::Append,
+                WriteMode::Replace,
+                WriteMode::Update,
+                WriteMode::Upsert,
+                WriteMode::DeleteByKeys,
+            ] {
+                let keys: &[&str] = if matches!(
+                    mode,
+                    WriteMode::Update | WriteMode::Upsert | WriteMode::DeleteByKeys
+                ) {
+                    &["V"]
+                } else {
+                    &[]
+                };
+                for rows in [1, 3] {
+                    let batch = text_batch(
+                        &[("V", true)],
+                        (0..rows).collect(),
+                        vec![{
+                            let values = (0..rows)
+                                .map(|i| {
+                                    let mut bytes = value.clone();
+                                    if rows > 1 {
+                                        bytes[0] = u8::try_from(i).unwrap();
+                                    }
+                                    bytes
+                                })
+                                .collect::<Vec<_>>();
+                            let slices = values.iter().map(Vec::as_slice).collect::<Vec<_>>();
+                            match data_type {
+                                DataType::Binary => Arc::new(BinaryArray::from(slices)) as ArrayRef,
+                                _ => Arc::new(LargeBinaryArray::from(slices)) as ArrayRef,
+                            }
+                        }],
+                    );
+                    let batch = if mode == WriteMode::DeleteByKeys {
+                        batch.project(&[1]).unwrap()
+                    } else {
+                        batch
+                    };
+                    let mut operation = operation(table, mode, keys);
+                    if mode == WriteMode::Update {
+                        operation.update_columns = vec!["ID".to_owned()];
+                    }
+                    let error = write(&provider, &secret, &operation, batch)
+                        .await
+                        .expect_err("oversized bind");
+                    assert_eq!(
+                        error.category,
+                        ErrorCategory::DataMapping,
+                        "{native}: {error:?}"
+                    );
+                    assert_eq!(
+                        error.message, "binario oltre la lunghezza del target Oracle",
+                        "{native}: {error:?}"
+                    );
+                    assert_eq!(error.remote_effect, RemoteEffect::None);
+                    assert_eq!(
+                        count(
+                            &provider,
+                            &secret,
+                            &format!("SELECT COUNT(*) AS N FROM {table}")
+                        )
+                        .await,
+                        0
+                    );
+                }
+            }
+        }
+    }
+    drop_table(&provider, &secret, table).await;
+}
