@@ -194,3 +194,72 @@ fn trailing_semicolon_is_ok() {
     let sql = "SELECT 1;";
     assert!(enforce_policy(NativeQueryPolicy::Deny, sql).is_ok());
 }
+
+#[test]
+fn mysql_lexer_uses_only_mysql_delimiters() {
+    for sql in [
+        "SELECT 1 AS $a$; INSERT INTO t(d) VALUES ('1.239'); SELECT 1 AS $a$",
+        "SELECT q'[' FROM (SELECT 1 q) x; INSERT INTO t(d) VALUES ('1.239'); SELECT ']' FROM DUAL",
+        "SELECT [x; SELECT 2]",
+        "SELECT `x\\`; SELECT 2",
+        "SELECT 1--x; SELECT 2",
+        "/*! SELECT 1 */",
+        "/*M! SELECT 1 */",
+        "SELECT 'unfinished",
+        "SELECT `unfinished",
+        "SELECT 1 /* unfinished",
+        "SELECT 1 /* outer /* inner */; SELECT 2 */",
+        "# only a comment",
+    ] {
+        assert!(super::enforce_single_mysql_statement(sql).is_err(), "{sql}");
+    }
+    for sql in [
+        "SELECT '$a$;x$a$', q'[x]', '[x;y]'",
+        "SELECT 'a\\';b', \"a\\\";b\", `a``;b`",
+        "SELECT 1 # ; SELECT 2\n;",
+        "SELECT 1 -- ; SELECT 2\r;",
+        "SELECT 1--\t; SELECT 2\n;",
+        "SELECT '/*!', '/*M!', '#', '-- '",
+        "/* prefix */ SELECT '\u{00e8};\u{65e5}\u{672c}'; /* suffix */",
+        "SELECT $a$",
+    ] {
+        assert!(super::enforce_single_mysql_statement(sql).is_ok(), "{sql}");
+    }
+}
+
+#[test]
+fn mysql_caller_cannot_change_diagnostic_variables() {
+    for variable in ["sql_notes", "sql_mode", "max_error_count", "sql_warnings"] {
+        for sql in [
+            format!("SET {variable}=0"),
+            format!("SET {variable}:=0"),
+            format!("SET STATEMENT {variable}=0 FOR SELECT 1"),
+            format!("SET SESSION {variable}=0"),
+            format!("\u{000b}SET\u{000b}SESSION {variable}=0"),
+            format!("SET LOCAL {variable}=0"),
+            format!("SET @@session.{variable}=0"),
+            format!("SET @@{variable}=0"),
+            format!("SET @@global.`{variable}`=0"),
+            format!("SET @innocent=1, {variable}=0"),
+            format!("SET @innocent='(', {variable}=0"),
+            format!("SET @innocent=CONCAT('a,b', 'c'), SESSION {variable}=0"),
+            format!("/*prefix*/ sEt /*x*/ `{variable}` /*x*/ = 0"),
+        ] {
+            let error = super::enforce_mysql_caller_sql(&sql).unwrap_err();
+            assert_eq!(error.remote_effect, crate::RemoteEffect::None);
+            assert!(!error.message.contains(variable));
+        }
+    }
+    for sql in [
+        "SET @sql_notes = 0",
+        "SET @`sql_mode` = 'ordinary user variable'",
+        "SET time_zone = '+00:00'",
+        "SELECT @@session.sql_notes",
+        "SELECT 'SET sql_notes=0'",
+        "SET @x='sql_notes=0, sql_mode=0'",
+        "SET @x='sql_notes'=0",
+        "SET @x=(SELECT sql_notes=0 FROM t)",
+    ] {
+        assert!(super::enforce_mysql_caller_sql(sql).is_ok(), "{sql}");
+    }
+}

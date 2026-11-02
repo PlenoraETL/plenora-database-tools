@@ -83,6 +83,23 @@ pub fn statement_head(sql: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Richiede un solo statement nel dialetto MySQL con il bootstrap standard.
+///
+/// # Errors
+/// Rifiuta statement multipli, commenti eseguibili e delimitatori incompleti.
+pub fn enforce_single_mysql_statement(sql: &str) -> crate::Result<()> {
+    if mysql::statements(sql)?.len() != 1 {
+        return Err(crate::DatabaseError::invalid_plan(
+            "richiesto un solo statement MySQL/MariaDB",
+        ));
+    }
+    Ok(())
+}
+
+#[path = "mysql_caller_policy.rs"]
+mod mysql;
+pub use mysql::enforce_mysql_caller_sql;
+
 fn lexical_error() -> crate::DatabaseError {
     crate::DatabaseError::invalid_plan("statement SQL con delimitatori non validi")
 }

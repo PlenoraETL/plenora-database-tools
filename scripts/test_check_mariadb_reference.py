@@ -271,6 +271,13 @@ class MariadbDivergenceMatrixTests(unittest.TestCase):
             "il documento riporta sonde che il catalogo non contiene piu",
         )
 
+    def test_warning_regression_runs_on_each_product_before_evidence(self) -> None:
+        source = (ROOT / "scripts/check_mariadb_driver.py").read_text(encoding="utf-8")
+        self.assertIn("PLENORA_MYSQL_PRODUCT={product}", source)
+        self.assertIn("live_sospetti_warnings_and_byte_domains", source)
+        self.assertIn("live_sospetti_mysql_lexer_and_protected_settings", source)
+        self.assertLess(source.index("output = run(regression)"), source.index("output = run(command)"))
+
     def test_the_document_says_how_to_reproduce_the_measure(self) -> None:
         """Una misura senza il comando che la rifa e un'affermazione."""
 

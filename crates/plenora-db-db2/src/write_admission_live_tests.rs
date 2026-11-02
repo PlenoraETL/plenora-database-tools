@@ -275,9 +275,21 @@ pub async fn write(
     ids: ArrayRef,
     values: ArrayRef,
 ) -> Result<WriteOutcome, DatabaseError> {
+    write_declared(provider, secret, table, mode, keys, ids, (values, true)).await
+}
+
+pub async fn write_declared(
+    provider: &Db2Provider,
+    secret: &SecretString,
+    table: &str,
+    mode: WriteMode,
+    keys: &[&str],
+    ids: ArrayRef,
+    (values, nullable): (ArrayRef, bool),
+) -> Result<WriteOutcome, DatabaseError> {
     let schema = contract_schema(vec![
         Field::new("ID", ids.data_type().clone(), false),
-        Field::new("V", values.data_type().clone(), true),
+        Field::new("V", values.data_type().clone(), nullable),
     ])
     .expect("schema");
     let rows = values.len();
@@ -404,3 +416,7 @@ async fn live_a_db2_timestamp_3_non_tronca_in_silenzio() {
     );
     drop_table(&provider, &secret, table).await;
 }
+
+#[cfg(test)]
+#[path = "sospetti_live_tests.rs"]
+mod sospetti;

@@ -8,6 +8,46 @@ riassumono le note di quelle release.
 
 ## 9.0.0 - in preparazione
 
+- Audit pre-release, rollback MySQL/MariaDB: la chiusura dopo un errore di
+  execute o query non vale come conferma del rollback; conserva la richiesta
+  di recovery come lo stream. I testimoni raw distinguono il rifiuto del
+  server dalla conservazione e dall'alterazione del valore.
+
+- Audit pre-release, TIMESTAMP Db2/Oracle: la regola A e le guardie di
+  precisione introdotte in #134 sono ora accompagnate da regressioni live
+  permanenti per TIMESTAMP(0)/(3)/(6), append/upsert e identita delle chiavi.
+  Il controllo precedente per solo nome e verificato nei tag Db2
+  `py-v0.12.0`?`py-v8.0.4` e Oracle `py-v3.1.0`?`py-v8.0.4`.
+- Audit pre-release, catalogo Db2: la distinzione CODEPAGE/FOR BIT DATA di
+  #134 ha una regressione permanente con HEX, lunghezza e byte non UTF-8.
+  Arrow binario resta rifiutato finche non qualificato. Il catalogo senza
+  CODEPAGE e verificato nei tag `py-v0.12.0`?`py-v8.0.4`.
+- MySQL/MariaDB: i warning dopo execute, query e lettura Arrow sono letti
+  sulla stessa sessione prima del riuso; diagnostici di alterazione,
+  sconosciuti o incompleti diventano errori senza payload. Sono informative
+  soltanto le note DDL 1007/1008/1050/1051 (oggetto gia presente/assente)
+  e 1305/1360 nel relativo DROP IF EXISTS, 1003 per EXPLAIN,
+  1060/1061/1091 nelle clausole condizionali di colonne/indici,
+  e i warning 1287/1681 (sintassi deprecata, senza alterazione del dato).
+  Il protocollo testuale usa il lexer MySQL e verifica anche i risultati
+  intermedi; il chiamante non puo modificare sql_notes, sql_mode,
+  max_error_count o sql_warnings, neppure con policy Allow.
+  Un ROLLBACK TO SAVEPOINT non confermato chiude la transazione.
+  Anche COMMIT/ROLLBACK leggono i diagnostici: 1196 non conferma il rollback.
+  Le frazioni DATETIME/TIME arrotondate senza warning (senza
+  TIME_TRUNCATE_FRACTIONAL) e FLOAT(M,D) sono coperte dalle guardie
+  di ammissione del writer, non dal controllo dei warning.
+  Lo stream transazionale rifiuta conservativamente ogni warning al termine
+  del risultato. Le scritture transazionali rifiutate con effetto ignoto
+  chiudono la connessione, impedendo un commit successivo. Assenza del
+  controllo verificata nei tag MySQL `py-v0.1.0`?`py-v8.0.4`; per MariaDB,
+  dalla presenza del provider in `py-v0.12.0` fino a `py-v8.0.4`.
+- Audit numerico Db2: regressione live scalare/array con confronto server
+  HEX dei double, decimali al limite e rifiuto di -0/subnormali. Il trasporto
+  testuale precedente e verificato nei tag `py-v0.12.0`?`py-v8.0.4`;
+  questo riscontro statico non attribuisce una perdita numerica a ogni tag.
+  Le nuove regressioni live sono prove da eseguire, non qualifiche gia verdi.
+
 - Modifica incompatibile Rust: `Row::get(&self, name: &str)` restituisce
   `Result<Option<&ParameterValue>>`; `QueryResult::into_mappings(self)`
   restituisce `Result<Vec<BTreeMap<String, ParameterValue>>>`. Entrambi

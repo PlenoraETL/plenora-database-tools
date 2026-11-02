@@ -462,7 +462,7 @@ fn assignments_survive_a_comma_inside_a_quoted_value() {
 }
 
 #[test]
-fn the_real_bootstrap_parses_into_six_assignments() {
+fn the_real_bootstrap_parses_into_pinned_assignments() {
     let parsed = sql_assignments(crate::SESSION_BOOTSTRAP_SQL);
     let names: Vec<&str> = parsed.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(
@@ -473,6 +473,7 @@ fn the_real_bootstrap_parses_into_six_assignments() {
             "sql_mode",
             "foreign_key_checks",
             "unique_checks",
+            "sql_notes",
             "sql_select_limit"
         ]
     );

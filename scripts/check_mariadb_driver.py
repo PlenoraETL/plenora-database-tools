@@ -745,6 +745,17 @@ def measure(
         *environment,
         RUST_IMAGE, "sh", "-c", test_command,
     ]
+    if test_command == TEST_COMMAND:
+        product = "mysql" if server.key == "mysql" else "mariadb"
+        regression = command[:-1] + [
+            f"CARGO_BUILD_JOBS=4 PLENORA_MYSQL_PRODUCT={product} cargo test --locked "
+            "-p plenora-db-mysql --lib live_sospetti_ "
+            "-- --ignored --show-output --test-threads=1"
+        ]
+        output = run(regression)
+        for name in ["live_sospetti_warnings_and_byte_domains", "live_sospetti_warning_frontier", "live_sospetti_mysql_lexer_and_protected_settings"]:
+            if f"test live_tests::{name} ... ok" not in output:
+                raise RuntimeError("regressione warning/domini non eseguita: " + name)
     output = run(command)
     # Il marcatore non e a inizio riga: `cargo test` stampa "test nome ... "
     # e poi lascia scrivere al test, quindi il JSON arriva in coda alla riga

@@ -7,6 +7,7 @@ fn scope() -> MysqlTransaction {
         session: MysqlSession::without_connection(&crate::profile::MYSQL_PROFILE),
         sent: SendMarker::default(),
         open: true,
+        recovery_required: false,
         native_query_policy: NativeQueryPolicy::Deny,
     }
 }
@@ -93,4 +94,168 @@ async fn mariadb_preserves_local_errors_and_promotes_post_send_validation() {
             .remote_effect,
         RemoteEffect::Unknown
     );
+}
+
+#[tokio::test]
+async fn stream_warning_closes_commit_and_does_not_confirm_rollback() {
+    let mut tx = scope();
+    tx.open = false;
+    tx.recovery_required = true;
+    assert!(Box::new(tx)
+        .commit(&CancellationToken::new())
+        .await
+        .is_err());
+    let mut tx = scope();
+    tx.open = false;
+    tx.recovery_required = true;
+    let error = Box::new(tx)
+        .rollback(&CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+}
+
+#[tokio::test]
+async fn protected_set_is_rejected_before_send_even_under_allow() {
+    let cancel = CancellationToken::new();
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        let mut tx = scope();
+        tx.session = MysqlSession::without_connection(profile);
+        tx.native_query_policy = NativeQueryPolicy::Allow;
+        let statement = Statement::new("SET @x=1, @@session.sql_notes=0");
+        let error = tx.execute(&statement, &cancel).await.unwrap_err();
+        assert_eq!(error.phase, ErrorPhase::Validate);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        let error = tx.query(&statement, &cancel).await.unwrap_err();
+        assert_eq!(error.phase, ErrorPhase::Validate);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert!(tx.query_stream(&statement, 1, &cancel).await.is_err());
+        assert!(tx.open);
+    }
+}
+
+#[tokio::test]
+async fn unconfirmed_savepoint_rollback_closes_scope_but_local_validation_does_not() {
+    let mut tx = scope();
+    let cancel = CancellationToken::new();
+    assert!(tx.rollback_to_savepoint("", &cancel).await.is_err());
+    assert!(tx.open);
+    let error = tx
+        .rollback_to_savepoint("valid", &cancel)
+        .await
+        .unwrap_err();
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    assert!(!tx.open);
+    assert!(tx.recovery_required);
+    let error = Box::new(tx).rollback(&cancel).await.unwrap_err();
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+}
+
+#[tokio::test]
+async fn discarded_failure_is_not_a_confirmed_rollback() {
+    for effect in [
+        RemoteEffect::Unknown,
+        RemoteEffect::None,
+        RemoteEffect::RolledBack,
+    ] {
+        let mut tx = scope();
+        tx.discard_after_failure(effect).await;
+        let result = Box::new(tx).rollback(&CancellationToken::new()).await;
+        if effect == RemoteEffect::RolledBack {
+            result.unwrap();
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.phase, ErrorPhase::Rollback);
+            assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+            assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+        }
+    }
+}
+
+#[tokio::test]
+async fn local_rejection_matrix_preserves_scope_and_unsent_marker() {
+    let cancel = CancellationToken::new();
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        for (policy, sql) in [
+            (NativeQueryPolicy::Deny, "DROP TABLE t"),
+            (NativeQueryPolicy::Allow, "SELECT 'unterminated"),
+            (NativeQueryPolicy::Allow, "SELECT 1; DO 0"),
+            (NativeQueryPolicy::Allow, "SET sql_notes=0"),
+        ] {
+            let mut tx = scope();
+            tx.session = MysqlSession::without_connection(profile);
+            tx.native_query_policy = policy;
+            let sent = tx.begin_caller_sql();
+            let statement = Statement::new(sql);
+            let execute = tx.execute(&statement, &cancel).await.unwrap_err();
+            let query = tx.query(&statement, &cancel).await.unwrap_err();
+            let Err(stream) = tx.query_stream(&statement, 1, &cancel).await else {
+                panic!("SQL locale accettato")
+            };
+            for error in [execute, query, stream] {
+                let error = sent.failure(error);
+                assert_eq!(error.phase, ErrorPhase::Validate);
+                assert_eq!(error.remote_effect, RemoteEffect::None);
+                assert_eq!(error.retry, RetryDisposition::Never);
+                assert_eq!(error.provider, Some(profile.kind()));
+            }
+            assert!(tx.open);
+        }
+    }
+}
+
+/// Riproduce anche la delega MariaDB -> MySQL, senza connessione al server.
+#[tokio::test]
+async fn nested_wrappers_preserve_local_rejections_for_both_products() {
+    let cancel = CancellationToken::new();
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        for depth in 1..=3 {
+            let mut tx = scope();
+            tx.session = MysqlSession::without_connection(profile);
+            tx.native_query_policy = NativeQueryPolicy::Allow;
+            let mut tx = Box::new(tx) as Box<dyn TransactionScope>;
+            for _ in 0..depth {
+                tx =
+                    plenora_database_core::caller_sql::open_transaction(Box::pin(
+                        async move { Ok(tx) },
+                    ))
+                    .await
+                    .unwrap();
+            }
+            for sql in [
+                "SELECT 1; DO 0",
+                "SELECT 1 AS $a$; DO 0; SELECT 1 AS $a$",
+                "SELECT q'[' FROM (SELECT 1 q) x; DO 0; SELECT ']' FROM DUAL",
+                "SELECT 'unterminated",
+                "SET SESSION sql_notes=0",
+                "SET @x=1, @@session.sql_mode=''",
+                "SET max_error_count=0",
+            ] {
+                let statement = Statement::new(sql);
+                let execute = tx.execute(&statement, &cancel).await.unwrap_err();
+                let query = tx.query(&statement, &cancel).await.unwrap_err();
+                let Err(stream) = tx.query_stream(&statement, 1, &cancel).await else {
+                    panic!("SQL locale accettato")
+                };
+                for error in [execute, query, stream] {
+                    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+                    assert_eq!(error.phase, ErrorPhase::Validate);
+                    assert_eq!(error.provider, Some(profile.kind()));
+                    assert_eq!(error.remote_effect, RemoteEffect::None, "depth={depth}");
+                    assert_eq!(error.retry, RetryDisposition::Never);
+                }
+            }
+        }
+    }
 }

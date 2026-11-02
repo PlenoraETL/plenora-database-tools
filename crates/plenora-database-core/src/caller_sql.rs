@@ -98,6 +98,17 @@ pub fn run_ddl<'a>(
     cancellation: &'a CancellationToken,
     call: ProviderFuture<'a, ()>,
 ) -> ProviderFuture<'a, ()> {
+    run_ddl_tracked(provider, cancellation, SendMarker::default(), call)
+}
+
+/// Variante per gli adapter che provano il confine di invio del DDL.
+#[must_use]
+pub fn run_ddl_tracked<'a>(
+    provider: crate::plan::ProviderKind,
+    cancellation: &'a CancellationToken,
+    sent: SendMarker,
+    call: ProviderFuture<'a, ()>,
+) -> ProviderFuture<'a, ()> {
     Box::pin(async move {
         if cancellation.is_cancelled() {
             return Err(DatabaseError::interrupted(
@@ -107,7 +118,7 @@ pub fn run_ddl<'a>(
                 "DDL interrotto prima dell'invio",
             ));
         }
-        call.await.map_err(caller_sql_failure)
+        call.await.map_err(|error| sent.failure(error))
     })
 }
 
@@ -125,6 +136,14 @@ impl CallerSqlTransaction {
 }
 
 impl TransactionScope for CallerSqlTransaction {
+    fn begin_caller_sql(&mut self) -> SendMarker {
+        // Il wrapper interno applica gia la regola col marcatore dell'adapter.
+        // Il default del trait presume l'invio: nella delega MariaDB -> MySQL
+        // trasformerebbe anche un rifiuto locale in Unknown. Conservare invece
+        // l'esito interno, senza resettare il marcatore aperto per ogni chiamata.
+        SendMarker::before_send()
+    }
+
     fn provider_kind(&self) -> crate::plan::ProviderKind {
         self.inner.provider_kind()
     }

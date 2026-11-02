@@ -1257,11 +1257,11 @@ pub(crate) async fn verify_write_session(
     let sql = if mariadb {
         "SELECT @@session.foreign_key_checks, @@session.unique_checks, @@session.sql_mode, \
          @@session.check_constraint_checks, @@session.time_zone, \
-         @@session.character_set_client, @@session.character_set_connection"
+         @@session.character_set_client, @@session.character_set_connection, @@session.sql_notes"
     } else {
         "SELECT @@session.foreign_key_checks, @@session.unique_checks, @@session.sql_mode, 1, \
          @@session.time_zone, @@session.character_set_client, \
-         @@session.character_set_connection"
+         @@session.character_set_connection, @@session.sql_notes"
     };
     let rows = session.query_rows(sql, ErrorPhase::Prepare, token).await?;
     let pinned = rows.first().is_some_and(|row| {
@@ -1283,6 +1283,7 @@ pub(crate) async fn verify_write_session(
         flag(0) == Some(1)
             && flag(1) == Some(1)
             && flag(3) == Some(1)
+            && flag(7) == Some(1)
             && strict
             && text(4).as_deref() == Some("+00:00")
             && text(5).as_deref() == Some("utf8mb4")
@@ -1503,6 +1504,25 @@ pub fn rolled_back_error(
     } else {
         error.after_unconfirmed_rollback()
     }
+}
+
+/// Un diagnostico del ROLLBACK contraddice anche un precedente deadlock:
+/// InnoDB puo essere annullato, mentre effetti MyISAM persistono (1196).
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn rollback_cleanup_result(
+    error: DatabaseError,
+    cleanup: &Result<()>,
+    execution_id: &str,
+) -> DatabaseError {
+    let error = if cleanup.as_ref().is_err_and(|failure| {
+        failure.category == ErrorCategory::DataMapping
+            && failure.remote_effect == RemoteEffect::Unknown
+    }) {
+        error.after_unconfirmed_rollback()
+    } else {
+        error
+    };
+    rolled_back_error(error, cleanup.is_ok(), execution_id)
 }
 
 /// Marca l'esito con cio che il rollback non ha potuto annullare.

@@ -293,3 +293,24 @@ fn every_st_type_and_a_view_blob_are_refused_as_scalar_operands() {
         .err()
         .is_none_or(|error| error.message != geometry));
 }
+
+#[test]
+fn bit_data_catalog_never_inherits_the_text_arrow_domain() {
+    let mut column = description().columns[1].clone();
+    for native in ["CHARACTER", "VARCHAR"] {
+        column.data_type = native.into();
+        assert_eq!(
+            crate::Db2ColumnSpec::from_catalog(&column, 1024)
+                .unwrap()
+                .kind,
+            crate::Db2ColumnKind::Utf8
+        );
+        column.data_type = format!("{native} FOR BIT DATA");
+        assert_eq!(
+            crate::Db2ColumnSpec::from_catalog(&column, 1024)
+                .unwrap_err()
+                .category,
+            ErrorCategory::Unsupported
+        );
+    }
+}

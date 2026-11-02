@@ -480,3 +480,79 @@ fn the_default_operand_catalog_knows_no_relation() {
         block_on(wrapped.operand_catalog(&relations, &[], &cancellation)).expect("catalogo");
     assert!(operands.judge(&catalog).is_err());
 }
+
+#[test]
+fn ddl_tracking_distinguishes_local_and_post_send_validation() {
+    block_on(async {
+        let cancel = CancellationToken::new();
+        for sent_to_driver in [false, true] {
+            let sent = SendMarker::before_send();
+            let driver_marker = sent.clone();
+            let error = run_ddl_tracked(
+                ProviderKind::Mysql,
+                &cancel,
+                sent,
+                Box::pin(async move {
+                    if sent_to_driver {
+                        driver_marker.sending(async {}).await;
+                    }
+                    Err(DatabaseError::invalid_plan("rifiuto"))
+                }),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.phase, ErrorPhase::Validate);
+            assert_eq!(
+                error.remote_effect,
+                if sent_to_driver {
+                    RemoteEffect::Unknown
+                } else {
+                    RemoteEffect::None
+                }
+            );
+            assert_eq!(
+                error.retry,
+                if sent_to_driver {
+                    RetryDisposition::RequiresRecovery
+                } else {
+                    RetryDisposition::Never
+                }
+            );
+        }
+    });
+}
+
+#[test]
+fn nested_wrappers_preserve_adapter_send_evidence() {
+    block_on(async {
+        let cancel = CancellationToken::new();
+        for depth in 1..=3 {
+            for scenario in [
+                Scenario::TrackedBeforeSend,
+                Scenario::TrackedAfterSend,
+                Scenario::Validation,
+            ] {
+                let mut tx: Box<dyn TransactionScope> =
+                    Box::new(FakeScope(scenario, SendMarker::default()));
+                for _ in 0..depth {
+                    tx = open_transaction(Box::pin(async move { Ok(tx) }))
+                        .await
+                        .unwrap();
+                }
+                // Ripetere la chiamata verifica anche il rinnovo del marcatore.
+                for _ in 0..2 {
+                    let error = tx
+                        .execute(&Statement::new("SELECT 1"), &cancel)
+                        .await
+                        .unwrap_err();
+                    if matches!(scenario, Scenario::TrackedBeforeSend) {
+                        assert_eq!(error.remote_effect, RemoteEffect::None);
+                        assert_eq!(error.retry, RetryDisposition::Never);
+                    } else {
+                        assert_unknown(&error, "wrapper annidati");
+                    }
+                }
+            }
+        }
+    });
+}

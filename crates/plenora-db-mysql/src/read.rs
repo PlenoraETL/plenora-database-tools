@@ -201,6 +201,7 @@ pub(crate) async fn query_operation_with_profile(
     }
     let plan_shape = crate::query::render_query_plan(operation, database, profile)?;
     let rendered = &plan_shape.rendered;
+    plenora_database_core::native_query_policy::enforce_mysql_caller_sql(&rendered.sql)?;
     let bind_names = rendered
         .binds
         .iter()

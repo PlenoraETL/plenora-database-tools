@@ -7448,7 +7448,7 @@ async fn live_v12_execute_ddl_in_flight_interruption_reports_an_unknown_remote_e
     replace_fixture_exec(&[format!("DROP TABLE IF EXISTS {table}")]).await;
 }
 
-/// Il caso opposto: un token gia cancellato chiude al checkout, prima che una
+/// Il caso opposto: un token gia cancellato chiude nel wrapper DDL, prima che una
 /// connessione esista. Li `RemoteEffect::None` e la verita — nessuno
 /// statement ha raggiunto il server — e il percorso non deve inventare
 /// incertezza.
@@ -7469,7 +7469,8 @@ async fn live_v12_execute_ddl_pre_cancellation_reports_no_remote_effect() {
         panic!("DDL eseguita con token gia cancellato");
     };
     assert_eq!(error.category, ErrorCategory::Cancelled);
-    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Connect);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Write);
+    assert_eq!(error.retry, plenora_database_core::RetryDisposition::Never);
     assert_eq!(
         error.remote_effect,
         plenora_database_core::RemoteEffect::None
@@ -12871,4 +12872,813 @@ async fn live_update_staging_conserva_testo_oltre_65535_byte() {
         assert_eq!(actual.as_slice(), std::slice::from_ref(&value));
     }
     semantica_cleanup(&mut connection).await;
+}
+
+/// Audit 9: diagnostici sulla stessa sessione e domini del wire Bytes.
+#[tokio::test]
+#[ignore = "richiede MySQL/MariaDB live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_sospetti_warnings_and_byte_domains() {
+    use plenora_database_core::arrow::array::{BinaryArray, Decimal128Array};
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use plenora_database_core::ErrorPhase;
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let mut raw = semantica_admin().await;
+    let table = "plenora_s900";
+    let cancellation = CancellationToken::new();
+    let provider = semantica_provider();
+    raw.query_drop(format!("DROP TABLE IF EXISTS {table}"))
+        .await
+        .unwrap();
+    raw.query_drop(format!(
+        "CREATE TABLE {table} (id BIGINT PRIMARY KEY, v DECIMAL(6,2)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    ))
+    .await
+    .unwrap();
+    raw.query_drop("START TRANSACTION").await.unwrap();
+    raw.exec_drop(format!("INSERT INTO {table} VALUES (1, ?)"), ("1.239",))
+        .await
+        .unwrap();
+    let warnings: Vec<(String, u16, String)> = raw.query("SHOW WARNINGS").await.unwrap();
+    assert!(warnings.iter().any(|(_, code, _)| *code == 1265));
+    raw.query_drop("ROLLBACK").await.unwrap();
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &write_budget(),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    let error = tx
+        .execute(
+            &Statement::new(format!("INSERT INTO {table} VALUES (1, ?)"))
+                .with_params(vec![ParameterValue::Decimal("1.239".into())]),
+            &cancellation,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.phase, ErrorPhase::Write);
+    assert_eq!(
+        error.message,
+        "diagnostico server non qualificato come informativo: risultato rifiutato"
+    );
+    assert!(!error.message.contains("1.239"));
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::Unknown
+    );
+    let rollback = tx.rollback(&cancellation).await.unwrap_err();
+    assert_eq!(
+        rollback.remote_effect,
+        plenora_database_core::RemoteEffect::Unknown
+    );
+    assert_eq!(
+        rollback.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
+    let count: Option<u64> = raw
+        .query_first(format!("SELECT COUNT(*) FROM {table}"))
+        .await
+        .unwrap();
+    assert_eq!(count, Some(0), "rifiuto senza commit");
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &write_budget(),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    let error = tx
+        .query(
+            &Statement::new("SELECT CAST(? AS UNSIGNED)").with_params(vec![
+                ParameterValue::String("private-invalid-number".into()),
+            ]),
+            &cancellation,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.phase, ErrorPhase::Read);
+    assert_eq!(
+        error.message,
+        "diagnostico server non qualificato come informativo: risultato rifiutato"
+    );
+    assert!(!error.message.contains("private-invalid-number"));
+    let rollback = tx.rollback(&cancellation).await.unwrap_err();
+    assert_eq!(
+        rollback.remote_effect,
+        plenora_database_core::RemoteEffect::Unknown
+    );
+    assert_eq!(
+        rollback.retry,
+        plenora_database_core::RetryDisposition::RequiresRecovery
+    );
+    // VALUES() puo emettere 1287: e informativo, l'upsert esatto resta disponibile.
+    let mut tx = provider
+        .begin_transaction(
+            &live_secret(),
+            &TransactionOptions::default(),
+            &write_budget(),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        tx.execute(
+            &Statement::new(format!(
+                "INSERT INTO {table} VALUES (1, ?) ON DUPLICATE KEY UPDATE v=VALUES(v)"
+            ))
+            .with_params(vec![ParameterValue::Decimal("1.23".into())]),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    }
+    let rows = tx
+        .query(
+            &Statement::new(format!("SELECT CAST(v AS CHAR) FROM {table}")),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows[0].values()[0], ParameterValue::String("1.23".into()));
+    tx.rollback(&cancellation).await.unwrap();
+    let cases: Vec<(&str, ArrayRef, Option<&str>)> = vec![
+        (
+            "DECIMAL(6,2)",
+            Arc::new(
+                Decimal128Array::from(vec![1239])
+                    .with_precision_and_scale(6, 3)
+                    .unwrap(),
+            ),
+            None,
+        ),
+        (
+            "FLOAT(10,2)",
+            Arc::new(Float32Array::from(vec![1.239])),
+            None,
+        ),
+        (
+            "DOUBLE(10,2)",
+            Arc::new(Float64Array::from(vec![1.239])),
+            None,
+        ),
+        (
+            "VARCHAR(8) CHARACTER SET ascii",
+            Arc::new(StringArray::from(vec!["\u{00e9}"])),
+            None,
+        ),
+        ("CHAR(8)", Arc::new(StringArray::from(vec!["AB01  "])), None),
+        (
+            "VARCHAR(8)",
+            Arc::new(StringArray::from(vec!["AB01  "])),
+            Some("414230312020"),
+        ),
+        (
+            "VARBINARY(8)",
+            Arc::new(StringArray::from(vec!["AB01"])),
+            Some("41423031"),
+        ),
+        (
+            "VARCHAR(8)",
+            Arc::new(BinaryArray::from(vec![b"AB01".as_slice()])),
+            Some("41423031"),
+        ),
+        (
+            "VARBINARY(8)",
+            Arc::new(BinaryArray::from(vec![b"AB01".as_slice()])),
+            Some("41423031"),
+        ),
+        (
+            "VARBINARY(8)",
+            Arc::new(BinaryArray::from(vec![&[0, 0xAB, 1, 0xFF][..]])),
+            Some("00AB01FF"),
+        ),
+        (
+            "VARCHAR(8) CHARACTER SET ascii",
+            Arc::new(BinaryArray::from(vec![&[0xFF][..]])),
+            None,
+        ),
+    ];
+    for (native, value, expected) in cases {
+        raw.query_drop(format!("DROP TABLE {table}")).await.unwrap();
+        raw.query_drop(format!(
+            "CREATE TABLE {table} (id BIGINT PRIMARY KEY, v {native}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        ))
+        .await
+        .unwrap();
+        // Il testimone diretto precede le guardie della libreria.
+        let raw_value = match value.data_type() {
+            DataType::Float32 => mysql_async::Value::Float(1.239),
+            DataType::Float64 => mysql_async::Value::Double(1.239),
+            DataType::Decimal128(_, _) => mysql_async::Value::Bytes(b"1.239".to_vec()),
+            DataType::Utf8 => mysql_async::Value::Bytes(
+                value
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .value(0)
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            DataType::Binary => mysql_async::Value::Bytes(
+                value
+                    .as_any()
+                    .downcast_ref::<BinaryArray>()
+                    .unwrap()
+                    .value(0)
+                    .to_vec(),
+            ),
+            other => panic!("dominio non enumerato: {other:?}"),
+        };
+        raw.query_drop("START TRANSACTION").await.unwrap();
+        let raw_result = raw
+            .exec_drop(format!("INSERT INTO {table} VALUES (1, ?)"), (raw_value,))
+            .await;
+        let warnings: Vec<(String, u16, String)> = raw.query("SHOW WARNINGS").await.unwrap();
+        let codes: Vec<_> = warnings
+            .iter()
+            .map(|(level, code, _)| (level.as_str(), *code))
+            .collect();
+        println!(
+            "audit900 {native}: raw_success={}, diagnostics={codes:?}",
+            raw_result.is_ok()
+        );
+        // Un errore Server e un rifiuto osservabile, non un'alterazione.
+        // Errori di trasporto/driver non costituiscono questa prova.
+        let raw_rejection = match &raw_result {
+            Ok(()) => None,
+            Err(mysql_async::Error::Server(error)) => Some(error.code),
+            Err(error) => panic!(
+                "testimone raw senza risposta del server: {:?}",
+                std::mem::discriminant(error)
+            ),
+        };
+        if raw_rejection.is_some() {
+            let count: Option<u64> = raw
+                .query_first(format!("SELECT COUNT(*) FROM {table}"))
+                .await
+                .unwrap();
+            assert_eq!(count, Some(0), "rifiuto server senza residui");
+        } else if let Some(hex) = expected {
+            let stored: Vec<(String, u64)> = raw
+                .query(format!("SELECT HEX(v), OCTET_LENGTH(v) FROM {table}"))
+                .await
+                .unwrap();
+            assert_eq!(
+                stored,
+                [(hex.into(), u64::try_from(hex.len() / 2).unwrap())]
+            );
+        } else if matches!(native, "DECIMAL(6,2)" | "FLOAT(10,2)" | "DOUBLE(10,2)") {
+            let stored: Option<String> = raw
+                .query_first(format!(
+                    "SELECT CAST(CAST(v AS DECIMAL(10,2)) AS CHAR) FROM {table}"
+                ))
+                .await
+                .unwrap();
+            assert_eq!(stored.as_deref(), Some("1.24"));
+        }
+        raw.query_drop("ROLLBACK").await.unwrap();
+        // I domini wire incrociati e CHAR si fermano al preflight di schema;
+        // ASCII non e misurato. I float usano coppie misurate e arrivano alla regola S.
+        let refusal = match (native, value.data_type()) {
+            ("FLOAT(10,2)" | "DOUBLE(10,2)", _) => Some((
+                ErrorCategory::DataMapping,
+                ErrorPhase::Write,
+                format!(
+                    "scrittura rifiutata: {}",
+                    plenora_database_core::store_rewrite::REWRITTEN_VALUE
+                ),
+            )),
+            ("VARCHAR(8) CHARACTER SET ascii", DataType::Utf8) => Some((
+                ErrorCategory::Unsupported,
+                ErrorPhase::Prepare,
+                plenora_database_core::write_admission::UNPROVEN_PAIR.to_owned(),
+            )),
+            ("VARCHAR(8)", DataType::Utf8) | ("VARBINARY(8)", DataType::Binary) => None,
+            _ => Some((
+                ErrorCategory::DataMapping,
+                ErrorPhase::Prepare,
+                format!(
+                    "schema Arrow incompatibile con la colonna target {}",
+                    if semantica_mariadb() {
+                        "MariaDB"
+                    } else {
+                        "MySQL"
+                    }
+                ),
+            )),
+        };
+        let schema = contract_schema(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("v", value.data_type().clone(), true),
+        ])
+        .unwrap();
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1])), value]).unwrap();
+        let mut operation = append_operation(table);
+        operation.target.schema = Some(environment("PLENORA_MYSQL_DATABASE", "dataflow_test"));
+        let result = semantica_write_batch(&operation, batch).await;
+        let stored: Vec<(String, u64)> = raw
+            .query(format!("SELECT HEX(v), OCTET_LENGTH(v) FROM {table}"))
+            .await
+            .unwrap();
+        match result {
+            Ok(outcome) => {
+                assert!(refusal.is_none(), "rifiuto atteso per {native}");
+                assert_eq!(outcome.status, WriteStatus::Committed);
+                let hex = expected.expect("alterazione accettata");
+                assert_eq!(
+                    stored,
+                    [(hex.into(), u64::try_from(hex.len() / 2).unwrap())]
+                );
+            }
+            Err(error) => {
+                let (category, phase, message) = refusal.unwrap_or_else(|| {
+                    // MySQL puo rifiutare i byte non UTF-8 nel parametro (3988).
+                    // Si ammette solo il rifiuto gia osservato nel testimone raw,
+                    // con rollback confermato; gli altri controlli positivi restano.
+                    assert_eq!(raw_rejection, Some(3988), "controllo positivo rifiutato");
+                    assert_eq!(
+                        error.remote_effect,
+                        plenora_database_core::RemoteEffect::RolledBack
+                    );
+                    (
+                        ErrorCategory::Execution,
+                        ErrorPhase::Write,
+                        "errore server MySQL redatto (codice 3988)".to_owned(),
+                    )
+                });
+                assert_eq!(error.category, category, "{native}: {error:?}");
+                assert_eq!(error.phase, phase, "{native}: {error:?}");
+                assert_eq!(error.message, message, "{native}: {error:?}");
+                assert!(stored.is_empty(), "rifiuto senza residui");
+            }
+        }
+    }
+    raw.query_drop(format!("DROP TABLE {table}")).await.unwrap();
+}
+
+/// Frontiera completa: statement singolo, Note abilitate, rollback non transazionale.
+#[tokio::test]
+#[ignore = "richiede MySQL/MariaDB live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_sospetti_warning_frontier() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use plenora_database_core::{ErrorPhase, RemoteEffect, RetryDisposition};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let provider = semantica_provider();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let budget = write_budget();
+    let mut raw = semantica_admin().await;
+    // MariaDB non espone le variabili GTID MySQL. Nessun fallback silenzioso:
+    // su MySQL la lettura deve riuscire prima di scegliere l'esito atteso D3.
+    let gtid_enforced = if semantica_mariadb() {
+        println!("audit900 D3: MariaDB, rollback MyISAM 1196 richiesto");
+        false
+    } else {
+        let (enforce, mode): (String, String) = raw
+            .query_first("SELECT @@GLOBAL.enforce_gtid_consistency, @@GLOBAL.gtid_mode")
+            .await
+            .unwrap()
+            .unwrap();
+        let enforced = enforce == "ON" || mode == "ON";
+        println!("audit900 D3 trigger: enforce_gtid_consistency={enforce}, gtid_mode={mode}, rifiuto_1785={enforced}");
+        enforced
+    };
+    let table = "pln_s900_frontier";
+    raw.query_drop(format!("DROP TABLE IF EXISTS {table}"))
+        .await
+        .unwrap();
+    raw.query_drop(format!(
+        "CREATE TABLE {table}(id INT, d DECIMAL(5,2)) ENGINE=MyISAM"
+    ))
+    .await
+    .unwrap();
+    let error = provider
+        .execute_ddl(
+            &secret,
+            &format!("INSERT INTO {table} VALUES(1, '1.239'); DO 0"),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+    // Il lexer rifiuta il batch prima dell'invio: run_ddl_tracked conserva
+    // None/Never dell'InvalidPlan locale. Ripetere lo stesso SQL non lo rende
+    // valido; lo snapshot verifica che nessuna riga sia stata scritta.
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    assert_eq!(error.phase, ErrorPhase::Validate);
+    assert_eq!(error.remote_effect, RemoteEffect::None);
+    assert_eq!(error.retry, RetryDisposition::Never);
+    let rows: Option<u64> = raw
+        .query_first(format!("SELECT COUNT(*) FROM {table}"))
+        .await
+        .unwrap();
+    assert_eq!(rows, Some(0));
+
+    let profile: &'static dyn crate::profile::ProductProfile = if semantica_mariadb() {
+        &crate::profile::MARIADB_PROFILE
+    } else {
+        &crate::profile::MYSQL_PROFILE
+    };
+    let pool = crate::pool::MysqlPool::new_with_profile(&live_config(), 1, profile).unwrap();
+    let mut session = pool.checkout(&cancel).await.unwrap();
+    session
+        .exec_control("SET SESSION sql_notes = 0", ErrorPhase::Prepare, &cancel)
+        .await
+        .unwrap();
+    assert!(crate::write::verify_write_session(&mut session, &cancel)
+        .await
+        .is_err());
+    // Riproduce il ripristino sulla sessione RAW prima che un'altra query
+    // cancelli i diagnostici. Nessun testo del server entra nel referto.
+    raw.query_drop("SET SESSION sql_notes = 0").await.unwrap();
+    raw.query_drop(crate::session::SESSION_BOOTSTRAP_SQL)
+        .await
+        .unwrap();
+    let warning_count = raw.get_warnings();
+    let diagnostics: Vec<(String, u16, String)> = raw.query("SHOW WARNINGS").await.unwrap();
+    let codes: Vec<_> = diagnostics
+        .iter()
+        .map(|(level, code, _)| (level.as_str(), *code))
+        .collect();
+    println!("audit900 bootstrap: diagnostics={codes:?}");
+    assert_eq!(usize::from(warning_count), codes.len());
+    assert!(
+        codes
+            .iter()
+            .all(|(level, code)| { *level == "Warning" && matches!(code, 1287 | 1681) }),
+        "diagnostico bootstrap non previsto: {codes:?}"
+    );
+    // Lo stesso bootstrap deve riuscire anche sul percorso controllato della
+    // libreria: 3135 non e ammesso, ne nel testimone RAW ne in exec_control.
+    session
+        .exec_control(
+            crate::session::SESSION_BOOTSTRAP_SQL,
+            ErrorPhase::Prepare,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    crate::write::verify_write_session(&mut session, &cancel)
+        .await
+        .unwrap();
+    let error = session
+        .exec_control(
+            &format!("INSERT INTO {table} VALUES(2, '1.239')"),
+            ErrorPhase::Write,
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    // Qui lo statement e invece eseguito: MyISAM conserva la riga e non
+    // esiste alcun rollback confermato che autorizzi None o RolledBack.
+    assert_eq!(error.phase, ErrorPhase::Write);
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    let rows: Option<u64> = raw
+        .query_first(format!("SELECT COUNT(*) FROM {table} WHERE id=2"))
+        .await
+        .unwrap();
+    assert_eq!(rows, Some(1));
+    drop(session);
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .unwrap();
+    // GTID vieta la combinazione con InnoDB, non questo statement solo
+    // MyISAM: anche con enforcement manteniamo la prova diretta del 1196.
+    tx.execute(
+        &Statement::new(format!("INSERT INTO {table} VALUES(3, 1.23)")),
+        &cancel,
+    )
+    .await
+    .unwrap();
+    let error = tx.rollback(&cancel).await.unwrap_err();
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.phase, ErrorPhase::Rollback);
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    let rows: Option<u64> = raw
+        .query_first(format!("SELECT COUNT(*) FROM {table} WHERE id=3"))
+        .await
+        .unwrap();
+    assert_eq!(rows, Some(1), "1196: la riga MyISAM persiste");
+
+    for sql in [
+        "DROP PROCEDURE IF EXISTS pln_s900_missing",
+        "DROP FUNCTION IF EXISTS pln_s900_missing",
+        "DROP TRIGGER IF EXISTS pln_s900_missing",
+    ] {
+        provider.execute_ddl(&secret, sql, &cancel).await.unwrap();
+    }
+    if semantica_mariadb() {
+        for sql in [
+            format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS d DECIMAL(5,2)"),
+            format!("ALTER TABLE {table} DROP COLUMN IF EXISTS missing"),
+            format!("CREATE INDEX IF NOT EXISTS pln_s900_idx ON {table}(id)"),
+            format!("CREATE INDEX IF NOT EXISTS pln_s900_idx ON {table}(id)"),
+        ] {
+            provider.execute_ddl(&secret, &sql, &cancel).await.unwrap();
+        }
+    }
+    raw.query_drop("DROP TABLE IF EXISTS pln_s900_transactional")
+        .await
+        .unwrap();
+    raw.query_drop("CREATE TABLE pln_s900_transactional(id INT) ENGINE=InnoDB")
+        .await
+        .unwrap();
+    raw.query_drop(format!("CREATE TRIGGER pln_s900_trigger AFTER INSERT ON pln_s900_transactional FOR EACH ROW INSERT INTO {table} VALUES(NEW.id, 1.23)")).await.unwrap();
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .unwrap();
+    let execution = tx
+        .execute(
+            &Statement::new("INSERT INTO pln_s900_transactional VALUES(5)"),
+            &cancel,
+        )
+        .await;
+    if gtid_enforced {
+        let error = execution.unwrap_err();
+        assert_eq!(error.category, ErrorCategory::Execution);
+        assert_eq!(error.phase, ErrorPhase::Write);
+        assert_eq!(error.message, "errore server MySQL redatto (codice 1785)");
+        assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+        // Il 1785 rifiuta lo statement, non abortisce la transazione.
+        // Unknown descrive l'effetto conservativo dello SQL del chiamante,
+        // non uno stato terminale dello scope (ERR-004/ERR-016).
+        assert!(matches!(
+            tx.commit(&cancel).await.unwrap(),
+            plenora_database_core::transaction::CommitOutcome::Committed
+        ));
+    } else {
+        execution.unwrap();
+        let error = tx.rollback(&cancel).await.unwrap_err();
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        assert_eq!(error.phase, ErrorPhase::Rollback);
+        assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    }
+    let rows: Option<u64> = raw
+        .query_first(format!("SELECT COUNT(*) FROM {table} WHERE id=5"))
+        .await
+        .unwrap();
+    assert_eq!(
+        rows,
+        Some(u64::from(!gtid_enforced)),
+        "1196 anche da trigger MyISAM; GTID ON richiede assenza di residui"
+    );
+    let rows: Option<u64> = raw
+        .query_first("SELECT COUNT(*) FROM pln_s900_transactional")
+        .await
+        .unwrap();
+    assert_eq!(
+        rows,
+        Some(0),
+        "nessun residuo InnoDB dopo rifiuto o rollback"
+    );
+    raw.query_drop("DROP TABLE pln_s900_transactional")
+        .await
+        .unwrap();
+    // Un risultato con warning non deve lasciare committabile la transazione.
+    for (stream, rollback) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut tx = provider
+            .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .unwrap();
+        let sql = if semantica_mariadb() {
+            format!("INSERT INTO {table} VALUES(4, '1.239') RETURNING d")
+        } else {
+            "SELECT CAST('not-a-number' AS UNSIGNED)".to_owned()
+        };
+        let statement = Statement::new(sql);
+        if stream {
+            let mut rows = tx.query_stream(&statement, 1, &cancel).await.unwrap();
+            loop {
+                match rows.next_batch(&cancel).await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => panic!("warning perso a EOF"),
+                    Err(error) => {
+                        assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+                        break;
+                    }
+                }
+            }
+            drop(rows);
+        } else {
+            let error = tx.query(&statement, &cancel).await.unwrap_err();
+            assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+        }
+        if rollback {
+            let error = tx.rollback(&cancel).await.unwrap_err();
+            assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+            assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+        } else {
+            assert!(tx.commit(&cancel).await.is_err());
+        }
+    }
+    // Una vista rotta estranea non deve contaminare il describe del target.
+    raw.query_drop("DROP VIEW IF EXISTS pln_s900_broken")
+        .await
+        .unwrap();
+    raw.query_drop("CREATE TABLE pln_s900_base(id INT)")
+        .await
+        .unwrap();
+    raw.query_drop("CREATE VIEW pln_s900_broken AS SELECT * FROM pln_s900_base")
+        .await
+        .unwrap();
+    raw.query_drop("DROP TABLE pln_s900_base").await.unwrap();
+    let mut session = pool.checkout(&cancel).await.unwrap();
+    let description = crate::catalog::describe_object_with_profile(
+        &mut session,
+        live_config().database(),
+        table,
+        profile,
+        &cancel,
+    )
+    .await
+    .unwrap();
+    assert_eq!(description.columns.len(), 2);
+    drop(session);
+    raw.query_drop("DROP VIEW pln_s900_broken").await.unwrap();
+    raw.query_drop(format!("DROP TABLE {table}")).await.unwrap();
+}
+
+/// La frontiera lessicale e il filo sono difese indipendenti.
+#[tokio::test]
+#[ignore = "richiede MySQL/MariaDB live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_sospetti_mysql_lexer_and_protected_settings() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use plenora_database_core::{RemoteEffect, RetryDisposition};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let provider = semantica_provider();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let budget = write_budget();
+    let table = "pln_s900_lexer";
+    let mut raw = semantica_admin().await;
+    raw.query_drop(format!("DROP TABLE IF EXISTS {table}"))
+        .await
+        .unwrap();
+    raw.query_drop(format!(
+        "CREATE TABLE {table}(d DECIMAL(5,2)) ENGINE=MyISAM"
+    ))
+    .await
+    .unwrap();
+    for sql in [
+        format!("SELECT 1 AS $a$; INSERT INTO {table}(d) VALUES ('1.239'); SELECT 1 AS $a$"),
+        format!("SELECT q'[' FROM (SELECT 1 q) x; INSERT INTO {table}(d) VALUES ('1.239'); SELECT ']' FROM DUAL"),
+    ] {
+        let error = provider.execute_ddl(&secret, &sql, &cancel).await.unwrap_err();
+        // Il DDL traccia il rifiuto locale prima dell'invio.
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Validate);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert_eq!(error.retry, RetryDisposition::Never);
+        let rows: Option<u64> = raw.query_first(format!("SELECT COUNT(*) FROM {table}")).await.unwrap();
+        assert_eq!(rows, Some(0));
+        // Il percorso transazionale espone il marcatore d'invio: deve
+        // rifiutare prima del server anche quando il server rifiuterebbe $a$.
+        let mut tx = provider.begin_transaction(
+            &secret, &TransactionOptions {
+                native_query_policy: plenora_database_core::native_query_policy::NativeQueryPolicy::Allow,
+                ..TransactionOptions::default()
+            }, &budget, &cancel,
+        ).await.unwrap();
+        let error = tx.query(&Statement::new(&sql), &cancel).await.unwrap_err();
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.message, "richiesto un solo statement MySQL/MariaDB");
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Validate);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        assert_eq!(error.retry, RetryDisposition::Never);
+        tx.rollback(&cancel).await.unwrap();
+        // Bypass lessicale di solo test: il controllo wire deve rifiutare
+        // gli stessi tre risultati anche se la prima difesa regredisse.
+        let mut connection = semantica_admin().await;
+        match crate::session::checked_text_results(&mut connection, &sql).await {
+            Ok(unexpected_results) => assert!(unexpected_results, "batch RAW accettato"),
+            Err(mysql_async::Error::Server(error)) => {
+                // MySQL recente rifiuta $a$ come alias; MariaDB lo accetta.
+                // Un errore sintattico iniziale e sicuro solo senza effetti:
+                // non deve nascondere un INSERT precedente o un warning perso.
+                assert_eq!(error.code, 1064);
+                let diagnostics: Vec<(String, u16, String)> =
+                    connection.query("SHOW WARNINGS").await.unwrap();
+                let codes: Vec<_> = diagnostics.iter()
+                    .map(|(level, code, _)| (level.as_str(), *code)).collect();
+                println!("audit900 lexer: server_rejection=1064, diagnostics={codes:?}");
+                assert_eq!(codes, [("Error", 1064)]);
+                let rows: Option<u64> = raw.query_first(format!("SELECT COUNT(*) FROM {table}")).await.unwrap();
+                assert_eq!(rows, Some(0), "rifiuto RAW dopo effetti remoti");
+            }
+            Err(error) => panic!("testimone RAW senza risposta server: {:?}", std::mem::discriminant(&error)),
+        }
+        connection.disconnect().await.unwrap();
+        raw.query_drop(format!("DELETE FROM {table}")).await.unwrap();
+    }
+    for sql in [
+        format!("INSERT INTO {table}(d) VALUES ('1.239'); DO 0"),
+        "DO 0; DO 1".to_owned(),
+        "SELECT 1; DO 0".to_owned(),
+    ] {
+        let mut connection = semantica_admin().await;
+        assert!(crate::session::checked_text_results(&mut connection, &sql)
+            .await
+            .unwrap());
+        connection.disconnect().await.unwrap();
+    }
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .unwrap();
+    for variable in ["sql_notes", "sql_mode", "max_error_count", "sql_warnings"] {
+        for sql in [
+            format!("SET SESSION {variable}=0"),
+            format!("SET @@session.{variable}=0"),
+            format!("SET {variable}=0"),
+            format!("SET @innocent=1, {variable}=0"),
+        ] {
+            let statement = Statement::new(&sql);
+            let error = tx.execute(&statement, &cancel).await.unwrap_err();
+            assert_eq!(error.remote_effect, RemoteEffect::None);
+            assert_eq!(error.retry, RetryDisposition::Never);
+            let error = tx.query(&statement, &cancel).await.unwrap_err();
+            assert_eq!(error.remote_effect, RemoteEffect::None);
+            assert_eq!(error.retry, RetryDisposition::Never);
+            assert!(tx.query_stream(&statement, 1, &cancel).await.is_err());
+            let error = provider
+                .execute_ddl(&secret, &sql, &cancel)
+                .await
+                .unwrap_err();
+            // Anche il DDL rifiuta prima del driver.
+            assert_eq!(error.category, ErrorCategory::InvalidPlan);
+            assert_eq!(error.remote_effect, RemoteEffect::None);
+            assert_eq!(error.retry, RetryDisposition::Never);
+        }
+    }
+    // La Note di conversione resta visibile nella stessa TransactionScope.
+    let error = tx
+        .execute(
+            &Statement::new(format!("INSERT INTO {table} VALUES ('1.239')")),
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert!(tx.commit(&cancel).await.is_err());
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .unwrap();
+    tx.savepoint("before_myisam", &cancel).await.unwrap();
+    tx.execute(
+        &Statement::new(format!("INSERT INTO {table} VALUES (1.23)")),
+        &cancel,
+    )
+    .await
+    .unwrap();
+    let error = tx
+        .rollback_to_savepoint("before_myisam", &cancel)
+        .await
+        .unwrap_err();
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    assert!(tx.execute(&Statement::new("DO 0"), &cancel).await.is_err());
+    assert!(tx.commit(&cancel).await.is_err());
+    if semantica_mariadb() {
+        let before: Option<u64> = raw
+            .query_first(format!("SELECT COUNT(*) FROM {table}"))
+            .await
+            .unwrap();
+        provider
+            .execute_ddl(
+                &secret,
+                &format!(
+                    "CREATE TABLE IF NOT EXISTS {table} SELECT CAST(2.34 AS DECIMAL(5,2)) AS d"
+                ),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        let after: Option<u64> = raw
+            .query_first(format!("SELECT COUNT(*) FROM {table}"))
+            .await
+            .unwrap();
+        assert_eq!(
+            after, before,
+            "Note 1050: CREATE condizionale non inserisce righe"
+        );
+    }
+    raw.query_drop(format!("DROP TABLE {table}")).await.unwrap();
 }

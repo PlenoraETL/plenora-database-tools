@@ -122,8 +122,16 @@ fn direct_adapter_entry_points_always_use_the_wrapper() {
                     .trim_start();
                 let expected = format!("plenora_database_core::caller_sql::{method}(");
                 let local = format!("crate::caller_sql::{method}(");
+                // La sola inizializzazione del marcatore puo precedere il
+                // wrapper tracciato; nessuna validazione o I/O lo scavalca.
+                let tracked = method == "run_ddl"
+                    && body.strip_prefix(
+                        "let sent = plenora_database_core::caller_sql::SendMarker::before_send();"
+                    ).is_some_and(|rest| rest.trim_start().starts_with(
+                        "plenora_database_core::caller_sql::run_ddl_tracked("
+                    ));
                 assert!(
-                    body.starts_with(&expected) || body.starts_with(&local),
+                    body.starts_with(&expected) || body.starts_with(&local) || tracked,
                     "{}: {method} deve entrare subito nel wrapper",
                     path.display()
                 );
