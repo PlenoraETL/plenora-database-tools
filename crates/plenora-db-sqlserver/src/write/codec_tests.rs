@@ -490,7 +490,7 @@ fn bounded_content_all_policies() {
     }
 }
 
-/// Guardie P e codec temporali del writer, indipendenti dal server.
+/// Tipo intermedio, guardie P e codec del writer, indipendenti dal server.
 #[test]
 fn qualified_profile_pure_guards() {
     use plenora_database_core::arrow::array::cast::AsArray;
@@ -500,9 +500,6 @@ fn qualified_profile_pure_guards() {
     plenora_database_testkit::write_profile::check(
         include_bytes!("../../../../tests/fixtures/ammissione_scrittura/sqlserver.json"),
         |key, _, values, row| {
-            if values.is_null(row) {
-                return false;
-            }
             let declaration = key
                 .nativo
                 .split(';')
@@ -517,6 +514,13 @@ fn qualified_profile_pure_guards() {
             };
             let plan = text_plan(native, &declaration, Some(collation), true);
             let column = &plan.columns[0];
+            // La compilazione rifiuta anche NULL se il tipo intermedio manca.
+            if crate::write::sql::intermediate_declaration(column).is_err() {
+                return true;
+            }
+            if values.is_null(row) {
+                return false;
+            }
             match key.arrow.as_str() {
                 "utf8" => check_text(&plan, column, values.as_string::<i32>().value(row)).is_err(),
                 "binary" => {

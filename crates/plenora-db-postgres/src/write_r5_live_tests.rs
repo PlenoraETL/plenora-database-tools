@@ -333,7 +333,8 @@ async fn live_k_le_chiavi_null_seguono_l_indice() {
 }
 
 /// I motivi delle perdite che il preflight dichiara.
-const BOUNDED: &str = "spazi finali";
+const BOUNDED: &str =
+    "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio";
 const JSONB: &str = "jsonb tiene l'ultimo valore";
 
 /// I tipi della prova della regola P con le politiche non strette.
@@ -395,10 +396,16 @@ async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_stret
                 append.mapping_policy = policy;
                 let declared = |report: &plenora_database_core::loss::LossReport| {
                     reasons.iter().all(|reason| {
-                        report
-                            .losses
-                            .iter()
-                            .any(|loss| loss.field_id == 1 && loss.reason.contains(reason))
+                        report.losses.iter().any(|loss| {
+                            loss.field_id == 1
+                                && loss.reason.contains(reason)
+                                && loss.severity
+                                    == if *reason == BOUNDED {
+                                        plenora_database_core::loss::LossSeverity::DataLoss
+                                    } else {
+                                        plenora_database_core::loss::LossSeverity::Warning
+                                    }
+                        })
                     })
                 };
                 let prepared = Provider::prepare_write(

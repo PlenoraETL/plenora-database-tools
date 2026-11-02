@@ -10,6 +10,8 @@ pub mod row_diagnostics;
 // anti-panic della spazzata vale per il codice di prodotto.
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 pub mod write_probe;
+// Stesso confine della sonda: il replay dei profili e' una prova, non prodotto.
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 pub mod write_profile;
 
 pub use conformance::{

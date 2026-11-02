@@ -2296,10 +2296,19 @@
       "after": {
         "arrow": "utf8",
         "nativo": "text;cp=1252;ansi_padding=off;null",
-        "esito": "esatto",
+        "esito": "rifiuta",
         "riscritture": [],
         "riscritti": [],
         "rifiutati": [
+          "vuoto",
+          "spazio",
+          "a",
+          "spazio_finale",
+          "spazi_finali",
+          "spazio_iniziale",
+          "nul_interno",
+          "solo_nul",
+          "controllo",
           "latino",
           "fuori_latin1",
           "non_bmp",
@@ -2308,7 +2317,10 @@
           "bom",
           "sostituzione",
           "separatore_riga",
-          "lungo_multibyte"
+          "barra_inversa",
+          "lungo",
+          "lungo_multibyte",
+          "nullo"
         ],
         "per_eccesso": []
       },
@@ -2334,7 +2346,8 @@
         "lungo",
         "lungo_multibyte",
         "nullo"
-      ]
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
     },
     {
       "provider": "sqlserver",
@@ -2368,10 +2381,19 @@
       "after": {
         "arrow": "utf8",
         "nativo": "text;cp=1252;ansi_padding=off;not null",
-        "esito": "esatto",
+        "esito": "rifiuta",
         "riscritture": [],
         "riscritti": [],
         "rifiutati": [
+          "vuoto",
+          "spazio",
+          "a",
+          "spazio_finale",
+          "spazi_finali",
+          "spazio_iniziale",
+          "nul_interno",
+          "solo_nul",
+          "controllo",
           "latino",
           "fuori_latin1",
           "non_bmp",
@@ -2380,6 +2402,8 @@
           "bom",
           "sostituzione",
           "separatore_riga",
+          "barra_inversa",
+          "lungo",
           "lungo_multibyte",
           "nullo"
         ],
@@ -2407,7 +2431,8 @@
         "lungo",
         "lungo_multibyte",
         "nullo"
-      ]
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
     },
     {
       "provider": "sqlserver",
@@ -2439,10 +2464,19 @@
       "after": {
         "arrow": "utf8",
         "nativo": "text;cp=1252;ansi_padding=off;null",
-        "esito": "esatto",
+        "esito": "rifiuta",
         "riscritture": [],
         "riscritti": [],
         "rifiutati": [
+          "vuoto",
+          "spazio",
+          "a",
+          "spazio_finale",
+          "spazi_finali",
+          "spazio_iniziale",
+          "nul_interno",
+          "solo_nul",
+          "controllo",
           "latino",
           "fuori_latin1",
           "non_bmp",
@@ -2451,7 +2485,10 @@
           "bom",
           "sostituzione",
           "separatore_riga",
-          "lungo_multibyte"
+          "barra_inversa",
+          "lungo",
+          "lungo_multibyte",
+          "nullo"
         ],
         "per_eccesso": []
       },
@@ -2477,7 +2514,8 @@
         "lungo",
         "lungo_multibyte",
         "nullo"
-      ]
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
     },
     {
       "provider": "sqlserver",
@@ -2511,10 +2549,19 @@
       "after": {
         "arrow": "utf8",
         "nativo": "text;cp=1252;ansi_padding=off;not null",
-        "esito": "esatto",
+        "esito": "rifiuta",
         "riscritture": [],
         "riscritti": [],
         "rifiutati": [
+          "vuoto",
+          "spazio",
+          "a",
+          "spazio_finale",
+          "spazi_finali",
+          "spazio_iniziale",
+          "nul_interno",
+          "solo_nul",
+          "controllo",
           "latino",
           "fuori_latin1",
           "non_bmp",
@@ -2523,6 +2570,8 @@
           "bom",
           "sostituzione",
           "separatore_riga",
+          "barra_inversa",
+          "lungo",
           "lungo_multibyte",
           "nullo"
         ],
@@ -2550,7 +2599,8 @@
         "lungo",
         "lungo_multibyte",
         "nullo"
-      ]
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
     },
     {
       "provider": "sqlserver",
@@ -2582,10 +2632,19 @@
       "after": {
         "arrow": "utf8",
         "nativo": "text;cp=1252;ansi_padding=off;null",
-        "esito": "esatto",
+        "esito": "rifiuta",
         "riscritture": [],
         "riscritti": [],
         "rifiutati": [
+          "vuoto",
+          "spazio",
+          "a",
+          "spazio_finale",
+          "spazi_finali",
+          "spazio_iniziale",
+          "nul_interno",
+          "solo_nul",
+          "controllo",
           "latino",
           "fuori_latin1",
           "non_bmp",
@@ -2594,7 +2653,10 @@
           "bom",
           "sostituzione",
           "separatore_riga",
-          "lungo_multibyte"
+          "barra_inversa",
+          "lungo",
+          "lungo_multibyte",
+          "nullo"
         ],
         "per_eccesso": []
       },
@@ -2620,7 +2682,8 @@
         "lungo",
         "lungo_multibyte",
         "nullo"
-      ]
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
     },
     {
       "provider": "sqlserver",
@@ -2654,10 +2717,19 @@
       "after": {
         "arrow": "utf8",
         "nativo": "text;cp=1252;ansi_padding=off;not null",
-        "esito": "esatto",
+        "esito": "rifiuta",
         "riscritture": [],
         "riscritti": [],
         "rifiutati": [
+          "vuoto",
+          "spazio",
+          "a",
+          "spazio_finale",
+          "spazi_finali",
+          "spazio_iniziale",
+          "nul_interno",
+          "solo_nul",
+          "controllo",
           "latino",
           "fuori_latin1",
           "non_bmp",
@@ -2666,6 +2738,8 @@
           "bom",
           "sostituzione",
           "separatore_riga",
+          "barra_inversa",
+          "lungo",
           "lungo_multibyte",
           "nullo"
         ],
@@ -2693,7 +2767,8 @@
         "lungo",
         "lungo_multibyte",
         "nullo"
-      ]
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
     },
     {
       "provider": "oracle",
@@ -5814,6 +5889,702 @@
         "dst_roma_ritorno_dopo",
         "nullo"
       ]
+    },
+    {
+      "provider": "sqlserver",
+      "major": "15",
+      "before": {
+        "arrow": "utf8",
+        "nativo": "ntext;ansi_padding=off;null",
+        "esito": "esatto",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [],
+        "per_eccesso": []
+      },
+      "after": {
+        "arrow": "utf8",
+        "nativo": "ntext;ansi_padding=off;null",
+        "esito": "rifiuta",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "vuoto",
+          "spazio",
+          "a",
+          "spazio_finale",
+          "spazi_finali",
+          "spazio_iniziale",
+          "nul_interno",
+          "solo_nul",
+          "controllo",
+          "latino",
+          "fuori_latin1",
+          "non_bmp",
+          "combinante",
+          "precomposto",
+          "bom",
+          "sostituzione",
+          "separatore_riga",
+          "barra_inversa",
+          "lungo",
+          "lungo_multibyte",
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "battery": [
+        "vuoto",
+        "spazio",
+        "a",
+        "spazio_finale",
+        "spazi_finali",
+        "spazio_iniziale",
+        "nul_interno",
+        "solo_nul",
+        "controllo",
+        "latino",
+        "fuori_latin1",
+        "non_bmp",
+        "combinante",
+        "precomposto",
+        "bom",
+        "sostituzione",
+        "separatore_riga",
+        "barra_inversa",
+        "lungo",
+        "lungo_multibyte",
+        "nullo"
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
+    },
+    {
+      "provider": "sqlserver",
+      "major": "15",
+      "before": {
+        "arrow": "binary",
+        "nativo": "image;ansi_padding=off;null",
+        "esito": "esatto",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [],
+        "per_eccesso": []
+      },
+      "after": {
+        "arrow": "binary",
+        "nativo": "image;ansi_padding=off;null",
+        "esito": "rifiuta",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "vuoto",
+          "zero",
+          "uno_zero",
+          "zero_uno",
+          "zeri_finali",
+          "ff",
+          "spazio",
+          "ogni_byte",
+          "lungo",
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "battery": [
+        "vuoto",
+        "zero",
+        "uno_zero",
+        "zero_uno",
+        "zeri_finali",
+        "ff",
+        "spazio",
+        "ogni_byte",
+        "lungo",
+        "nullo"
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
+    },
+    {
+      "provider": "sqlserver",
+      "major": "15",
+      "before": {
+        "arrow": "utf8",
+        "nativo": "ntext;ansi_padding=off;not null",
+        "esito": "esatto",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "after": {
+        "arrow": "utf8",
+        "nativo": "ntext;ansi_padding=off;not null",
+        "esito": "rifiuta",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "vuoto",
+          "spazio",
+          "a",
+          "spazio_finale",
+          "spazi_finali",
+          "spazio_iniziale",
+          "nul_interno",
+          "solo_nul",
+          "controllo",
+          "latino",
+          "fuori_latin1",
+          "non_bmp",
+          "combinante",
+          "precomposto",
+          "bom",
+          "sostituzione",
+          "separatore_riga",
+          "barra_inversa",
+          "lungo",
+          "lungo_multibyte",
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "battery": [
+        "vuoto",
+        "spazio",
+        "a",
+        "spazio_finale",
+        "spazi_finali",
+        "spazio_iniziale",
+        "nul_interno",
+        "solo_nul",
+        "controllo",
+        "latino",
+        "fuori_latin1",
+        "non_bmp",
+        "combinante",
+        "precomposto",
+        "bom",
+        "sostituzione",
+        "separatore_riga",
+        "barra_inversa",
+        "lungo",
+        "lungo_multibyte",
+        "nullo"
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
+    },
+    {
+      "provider": "sqlserver",
+      "major": "15",
+      "before": {
+        "arrow": "binary",
+        "nativo": "image;ansi_padding=off;not null",
+        "esito": "esatto",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "after": {
+        "arrow": "binary",
+        "nativo": "image;ansi_padding=off;not null",
+        "esito": "rifiuta",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "vuoto",
+          "zero",
+          "uno_zero",
+          "zero_uno",
+          "zeri_finali",
+          "ff",
+          "spazio",
+          "ogni_byte",
+          "lungo",
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "battery": [
+        "vuoto",
+        "zero",
+        "uno_zero",
+        "zero_uno",
+        "zeri_finali",
+        "ff",
+        "spazio",
+        "ogni_byte",
+        "lungo",
+        "nullo"
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
+    },
+    {
+      "provider": "sqlserver",
+      "major": "16",
+      "before": {
+        "arrow": "utf8",
+        "nativo": "ntext;ansi_padding=off;null",
+        "esito": "esatto",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [],
+        "per_eccesso": []
+      },
+      "after": {
+        "arrow": "utf8",
+        "nativo": "ntext;ansi_padding=off;null",
+        "esito": "rifiuta",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "vuoto",
+          "spazio",
+          "a",
+          "spazio_finale",
+          "spazi_finali",
+          "spazio_iniziale",
+          "nul_interno",
+          "solo_nul",
+          "controllo",
+          "latino",
+          "fuori_latin1",
+          "non_bmp",
+          "combinante",
+          "precomposto",
+          "bom",
+          "sostituzione",
+          "separatore_riga",
+          "barra_inversa",
+          "lungo",
+          "lungo_multibyte",
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "battery": [
+        "vuoto",
+        "spazio",
+        "a",
+        "spazio_finale",
+        "spazi_finali",
+        "spazio_iniziale",
+        "nul_interno",
+        "solo_nul",
+        "controllo",
+        "latino",
+        "fuori_latin1",
+        "non_bmp",
+        "combinante",
+        "precomposto",
+        "bom",
+        "sostituzione",
+        "separatore_riga",
+        "barra_inversa",
+        "lungo",
+        "lungo_multibyte",
+        "nullo"
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
+    },
+    {
+      "provider": "sqlserver",
+      "major": "16",
+      "before": {
+        "arrow": "binary",
+        "nativo": "image;ansi_padding=off;null",
+        "esito": "esatto",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [],
+        "per_eccesso": []
+      },
+      "after": {
+        "arrow": "binary",
+        "nativo": "image;ansi_padding=off;null",
+        "esito": "rifiuta",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "vuoto",
+          "zero",
+          "uno_zero",
+          "zero_uno",
+          "zeri_finali",
+          "ff",
+          "spazio",
+          "ogni_byte",
+          "lungo",
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "battery": [
+        "vuoto",
+        "zero",
+        "uno_zero",
+        "zero_uno",
+        "zeri_finali",
+        "ff",
+        "spazio",
+        "ogni_byte",
+        "lungo",
+        "nullo"
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
+    },
+    {
+      "provider": "sqlserver",
+      "major": "16",
+      "before": {
+        "arrow": "utf8",
+        "nativo": "ntext;ansi_padding=off;not null",
+        "esito": "esatto",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "after": {
+        "arrow": "utf8",
+        "nativo": "ntext;ansi_padding=off;not null",
+        "esito": "rifiuta",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "vuoto",
+          "spazio",
+          "a",
+          "spazio_finale",
+          "spazi_finali",
+          "spazio_iniziale",
+          "nul_interno",
+          "solo_nul",
+          "controllo",
+          "latino",
+          "fuori_latin1",
+          "non_bmp",
+          "combinante",
+          "precomposto",
+          "bom",
+          "sostituzione",
+          "separatore_riga",
+          "barra_inversa",
+          "lungo",
+          "lungo_multibyte",
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "battery": [
+        "vuoto",
+        "spazio",
+        "a",
+        "spazio_finale",
+        "spazi_finali",
+        "spazio_iniziale",
+        "nul_interno",
+        "solo_nul",
+        "controllo",
+        "latino",
+        "fuori_latin1",
+        "non_bmp",
+        "combinante",
+        "precomposto",
+        "bom",
+        "sostituzione",
+        "separatore_riga",
+        "barra_inversa",
+        "lungo",
+        "lungo_multibyte",
+        "nullo"
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
+    },
+    {
+      "provider": "sqlserver",
+      "major": "16",
+      "before": {
+        "arrow": "binary",
+        "nativo": "image;ansi_padding=off;not null",
+        "esito": "esatto",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "after": {
+        "arrow": "binary",
+        "nativo": "image;ansi_padding=off;not null",
+        "esito": "rifiuta",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "vuoto",
+          "zero",
+          "uno_zero",
+          "zero_uno",
+          "zeri_finali",
+          "ff",
+          "spazio",
+          "ogni_byte",
+          "lungo",
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "battery": [
+        "vuoto",
+        "zero",
+        "uno_zero",
+        "zero_uno",
+        "zeri_finali",
+        "ff",
+        "spazio",
+        "ogni_byte",
+        "lungo",
+        "nullo"
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
+    },
+    {
+      "provider": "sqlserver",
+      "major": "17",
+      "before": {
+        "arrow": "utf8",
+        "nativo": "ntext;ansi_padding=off;null",
+        "esito": "esatto",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [],
+        "per_eccesso": []
+      },
+      "after": {
+        "arrow": "utf8",
+        "nativo": "ntext;ansi_padding=off;null",
+        "esito": "rifiuta",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "vuoto",
+          "spazio",
+          "a",
+          "spazio_finale",
+          "spazi_finali",
+          "spazio_iniziale",
+          "nul_interno",
+          "solo_nul",
+          "controllo",
+          "latino",
+          "fuori_latin1",
+          "non_bmp",
+          "combinante",
+          "precomposto",
+          "bom",
+          "sostituzione",
+          "separatore_riga",
+          "barra_inversa",
+          "lungo",
+          "lungo_multibyte",
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "battery": [
+        "vuoto",
+        "spazio",
+        "a",
+        "spazio_finale",
+        "spazi_finali",
+        "spazio_iniziale",
+        "nul_interno",
+        "solo_nul",
+        "controllo",
+        "latino",
+        "fuori_latin1",
+        "non_bmp",
+        "combinante",
+        "precomposto",
+        "bom",
+        "sostituzione",
+        "separatore_riga",
+        "barra_inversa",
+        "lungo",
+        "lungo_multibyte",
+        "nullo"
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
+    },
+    {
+      "provider": "sqlserver",
+      "major": "17",
+      "before": {
+        "arrow": "binary",
+        "nativo": "image;ansi_padding=off;null",
+        "esito": "esatto",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [],
+        "per_eccesso": []
+      },
+      "after": {
+        "arrow": "binary",
+        "nativo": "image;ansi_padding=off;null",
+        "esito": "rifiuta",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "vuoto",
+          "zero",
+          "uno_zero",
+          "zero_uno",
+          "zeri_finali",
+          "ff",
+          "spazio",
+          "ogni_byte",
+          "lungo",
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "battery": [
+        "vuoto",
+        "zero",
+        "uno_zero",
+        "zero_uno",
+        "zeri_finali",
+        "ff",
+        "spazio",
+        "ogni_byte",
+        "lungo",
+        "nullo"
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
+    },
+    {
+      "provider": "sqlserver",
+      "major": "17",
+      "before": {
+        "arrow": "utf8",
+        "nativo": "ntext;ansi_padding=off;not null",
+        "esito": "esatto",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "after": {
+        "arrow": "utf8",
+        "nativo": "ntext;ansi_padding=off;not null",
+        "esito": "rifiuta",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "vuoto",
+          "spazio",
+          "a",
+          "spazio_finale",
+          "spazi_finali",
+          "spazio_iniziale",
+          "nul_interno",
+          "solo_nul",
+          "controllo",
+          "latino",
+          "fuori_latin1",
+          "non_bmp",
+          "combinante",
+          "precomposto",
+          "bom",
+          "sostituzione",
+          "separatore_riga",
+          "barra_inversa",
+          "lungo",
+          "lungo_multibyte",
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "battery": [
+        "vuoto",
+        "spazio",
+        "a",
+        "spazio_finale",
+        "spazi_finali",
+        "spazio_iniziale",
+        "nul_interno",
+        "solo_nul",
+        "controllo",
+        "latino",
+        "fuori_latin1",
+        "non_bmp",
+        "combinante",
+        "precomposto",
+        "bom",
+        "sostituzione",
+        "separatore_riga",
+        "barra_inversa",
+        "lungo",
+        "lungo_multibyte",
+        "nullo"
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
+    },
+    {
+      "provider": "sqlserver",
+      "major": "17",
+      "before": {
+        "arrow": "binary",
+        "nativo": "image;ansi_padding=off;not null",
+        "esito": "esatto",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "after": {
+        "arrow": "binary",
+        "nativo": "image;ansi_padding=off;not null",
+        "esito": "rifiuta",
+        "riscritture": [],
+        "riscritti": [],
+        "rifiutati": [
+          "vuoto",
+          "zero",
+          "uno_zero",
+          "zero_uno",
+          "zeri_finali",
+          "ff",
+          "spazio",
+          "ogni_byte",
+          "lungo",
+          "nullo"
+        ],
+        "per_eccesso": []
+      },
+      "battery": [
+        "vuoto",
+        "zero",
+        "uno_zero",
+        "zero_uno",
+        "zeri_finali",
+        "ff",
+        "spazio",
+        "ogni_byte",
+        "lungo",
+        "nullo"
+      ],
+      "source": "crates/plenora-db-sqlserver/src/write/sql.rs:intermediate_declaration; rifiuto puro dei tipi legacy, anche NULL; replay CI 4a27415 n125073073299.log e n125073073134.log. Nessuna nuova misura server."
     }
   ],
   "guards": {

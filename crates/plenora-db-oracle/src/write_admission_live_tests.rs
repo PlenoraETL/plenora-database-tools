@@ -426,11 +426,9 @@ async fn live_a_json_non_normalizza_i_numeri_in_silenzio() {
         &format!("CREATE TABLE {table} (ID NUMBER(19) PRIMARY KEY, V JSON)"),
     )
     .await;
-    // OracleWritePlan::admit applica prima la regola A, poi qualifica il
-    // tipo intermedio. Il referto reale ora misura Utf8/JSON e le riscritture
-    // dei numeri: A passa, ma JSON resta senza un tipo intermedio qualificato.
-    // Questa seconda guardia rifiuta nel preflight, prima della regola S sui
-    // valori e di ogni DML, anche il documento che non riscriverebbe numeri.
+    // Il profilo del writer rifiuta Utf8/JSON: la regola A chiude nel
+    // preflight, prima del tipo intermedio, della regola S e di ogni DML.
+    // Anche un documento senza numeri da normalizzare resta non qualificato.
     for document in [
         r#"{"a":1.0}"#,
         r#"{"a":12345678901234567890123456789012345678901234567890}"#,
@@ -445,7 +443,7 @@ async fn live_a_json_non_normalizza_i_numeri_in_silenzio() {
         assert_eq!(error.remote_effect, RemoteEffect::None);
         assert_eq!(
             error.message,
-            "tipo intermedio Oracle non identico o non qualificato"
+            plenora_database_core::write_admission::REFUSED_PAIR
         );
     }
     let cancellation = CancellationToken::new();

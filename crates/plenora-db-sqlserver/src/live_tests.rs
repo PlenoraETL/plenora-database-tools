@@ -1357,7 +1357,7 @@ async fn live_common_provider_contract_read_and_write() {
         )
         .await
         .expect("provider prepare write");
-    only_xml_losses(&prepared.loss_report, &input_schema);
+    reference_copy_losses(&prepared.loss_report, &input_schema);
     let outcome = provider
         .write(&secret, prepared, source, &write_budget, &cancellation)
         .await
@@ -6612,7 +6612,7 @@ async fn live_prepared_write_round_trips_all_reference_types() {
     )
     .await
     .expect("prepare write");
-    only_xml_losses(prepared.loss_report(), &input_schema);
+    reference_copy_losses(prepared.loss_report(), &input_schema);
     let outcome = write_prepared(prepared, source, &cancellation)
         .await
         .expect("write committed");
@@ -8857,8 +8857,8 @@ async fn live_replace_keeps_old_target_readable_while_staging_then_publishes_new
 /// La copia dei tipi di riferimento con la politica `Compatible`: dal 25/10
 /// (regola A, `crate::write::admission`) `xml` riscrive il testo che riceve
 /// (la sonda misura `ogni`) e con `Strict` si rifiuta ogni valore; con
-/// `Compatible` la perdita si dichiara per la sola colonna `document`, e il
-/// resto della copia e esatto come prima. Il rifiuto con `Strict` lo prova
+/// `Compatible` dichiara anche i rischi dei tipi a lunghezza limitata.
+/// Il rifiuto di XML con `Strict` lo prova
 /// `write_semantics::r8::live_a_xml_non_riscrive_il_testo_in_silenzio`.
 fn reference_copy_operation(object: &str, mode: WriteMode) -> WriteOperation {
     let mut operation = write_operation(object, mode);
@@ -8866,21 +8866,30 @@ fn reference_copy_operation(object: &str, mode: WriteMode) -> WriteOperation {
     operation
 }
 
-/// Le perdite di dati dichiarate riguardano soltanto la colonna `xml`; le
-/// altre colonne portano gli avvisi della regola P di `Compatible`.
-fn only_xml_losses(report: &plenora_database_core::loss::LossReport, schema: &SchemaRef) {
-    let document =
-        u32::try_from(schema.index_of("document").expect("colonna document")).expect("indice");
+/// XML normalizza il documento; testo e binario limitati dichiarano il
+/// troncamento possibile anche di caratteri non spazio e byte non nulli.
+fn reference_copy_losses(report: &plenora_database_core::loss::LossReport, schema: &SchemaRef) {
+    use plenora_database_core::loss::LossCategory;
+    let expected = [
+        ("label", LossCategory::Precision, "nvarchar(100)"),
+        ("payload", LossCategory::Precision, "varbinary(32)"),
+        ("document", LossCategory::NativeType, "xml"),
+    ];
     let data_losses = report
         .losses
         .iter()
         .filter(|loss| loss.severity == LossSeverity::DataLoss)
         .collect::<Vec<_>>();
-    assert!(!data_losses.is_empty(), "la perdita di xml si dichiara");
-    assert!(
-        data_losses.iter().all(|loss| loss.field_id == document),
-        "{report:?}"
-    );
+    assert_eq!(data_losses.len(), expected.len(), "{report:?}");
+    for (name, category, target) in expected {
+        let field_id = u32::try_from(schema.index_of(name).expect("colonna")).expect("indice");
+        assert!(
+            data_losses.iter().any(|loss| loss.field_id == field_id
+                && loss.category == category
+                && loss.target_type.as_deref() == Some(target)),
+            "{report:?}"
+        );
+    }
 }
 
 fn write_operation(object: &str, mode: WriteMode) -> WriteOperation {
