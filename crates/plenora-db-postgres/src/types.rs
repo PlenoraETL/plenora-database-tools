@@ -428,26 +428,26 @@ impl ColumnSpec {
         let identifier = Identifier::new(self.name.clone())?;
         let quoted = renderer.quote_identifier(&identifier)?;
         let expression = match self.kind {
-            ColumnKind::Decimal { .. } => format!("{quoted}::text"),
+            ColumnKind::Decimal { .. } => format!("{quoted}::pg_catalog.text"),
             ColumnKind::Range => format!(
                 "CASE WHEN {quoted} IS NULL THEN NULL \
-                 WHEN isempty({quoted}) THEN \
-                   jsonb_build_object('lower', NULL, 'upper', NULL, \
+                 WHEN pg_catalog.isempty({quoted}) THEN \
+                   pg_catalog.jsonb_build_object('lower', NULL, 'upper', NULL, \
                      'lower_inclusive', false, 'upper_inclusive', false, \
                      'lower_unbounded', false, 'upper_unbounded', false, \
-                     'empty', true)::text \
-                 ELSE jsonb_build_object(\
-                     'lower', lower({quoted})::text, \
-                     'upper', upper({quoted})::text, \
-                     'lower_inclusive', lower_inc({quoted}), \
-                     'upper_inclusive', upper_inc({quoted}), \
-                     'lower_unbounded', lower_inf({quoted}), \
-                     'upper_unbounded', upper_inf({quoted}), \
-                     'empty', false)::text END"
+                     'empty', true)::pg_catalog.text \
+                 ELSE pg_catalog.jsonb_build_object(\
+                     'lower', pg_catalog.lower({quoted})::pg_catalog.text, \
+                     'upper', pg_catalog.upper({quoted})::pg_catalog.text, \
+                     'lower_inclusive', pg_catalog.lower_inc({quoted}), \
+                     'upper_inclusive', pg_catalog.upper_inc({quoted}), \
+                     'lower_unbounded', pg_catalog.lower_inf({quoted}), \
+                     'upper_unbounded', pg_catalog.upper_inf({quoted}), \
+                     'empty', false)::pg_catalog.text END"
             ),
-            ColumnKind::Composite => format!("to_jsonb({quoted})::text"),
+            ColumnKind::Composite => format!("pg_catalog.to_jsonb({quoted})::pg_catalog.text"),
             ColumnKind::Utf8 if matches!(self.native_type.as_str(), "json" | "jsonb" | "uuid") => {
-                format!("{quoted}::text")
+                format!("{quoted}::pg_catalog.text")
             }
             ColumnKind::Utf8
                 if !matches!(
@@ -455,7 +455,7 @@ impl ColumnSpec {
                     "text" | "varchar" | "bpchar" | "name"
                 ) =>
             {
-                format!("{quoted}::text")
+                format!("{quoted}::pg_catalog.text")
             }
             ColumnKind::Geometry => format!("ST_AsEWKB({quoted})"),
             ColumnKind::Geography => {

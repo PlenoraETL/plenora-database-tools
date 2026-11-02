@@ -607,7 +607,7 @@ fn as_vector(result: &RuntimeResult, payload: &Value) -> Value {
 }
 
 /// Operazione, versione, output contract e correlazione del risultato sono
-/// quelli del vettore (RB Â§6, RT-012).
+/// quelli del vettore (RB §6, RT-012).
 fn assert_result_metadata(vector: &Value, result: &RuntimeResult) {
     let metadata = serde_json::to_value(&result.metadata).expect("json");
     for key in [
@@ -1064,7 +1064,7 @@ fn an_unreadable_message_still_gets_an_error_result() {
 }
 
 /// Una chiave `plenora.*` che il binding non riserva si ignora, come ogni
-/// membro facoltativo sconosciuto (RB Â§9): non e un alias e non cambia
+/// membro facoltativo sconosciuto (RB §9): non e un alias e non cambia
 /// l'esito. Ogni grafia RFC 3339 di UTC della deadline e accettata (RT-021).
 #[test]
 fn unknown_plenora_keys_are_ignored_and_utc_spellings_accepted() {

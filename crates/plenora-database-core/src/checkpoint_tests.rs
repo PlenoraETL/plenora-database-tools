@@ -103,6 +103,27 @@ fn checkpoint_round_trips_and_can_be_captured_from_a_row() {
         &row,
     )
     .expect("from row");
+    for duplicate in ["tenant_id", "other"] {
+        let ambiguous = Row::try_new(
+            Arc::from([
+                "tenant_id".to_owned(),
+                "event_id".to_owned(),
+                duplicate.to_owned(),
+                duplicate.to_owned(),
+            ]),
+            vec![ParameterValue::I64(9); 4],
+        )
+        .expect("riga con nomi duplicati");
+        let error = ReadCheckpoint::from_row(
+            ProviderKind::Db2,
+            &operation,
+            &ParameterBag::default(),
+            &ambiguous,
+        )
+        .expect_err("ambiguita distinta da colonna assente");
+        assert_eq!(error.category, crate::ErrorCategory::DataMapping);
+        assert!(!error.message.contains(duplicate));
+    }
     let json = checkpoint.to_json().expect("json");
     assert_eq!(
         ReadCheckpoint::from_json(&json).expect("round trip"),

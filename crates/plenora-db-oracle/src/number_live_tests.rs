@@ -82,21 +82,21 @@ async fn begin(provider: &OracleProvider, secret: &SecretString) -> Box<dyn Tran
 }
 
 fn text(row: &Row, name: &str) -> String {
-    match row.get(name) {
+    match row.get(name).expect("nomi univoci") {
         Some(ParameterValue::String(value)) => value.clone(),
         other => panic!("colonna {name} testuale attesa: {other:?}"),
     }
 }
 
 fn optional_text(row: &Row, name: &str) -> Option<String> {
-    match row.get(name) {
+    match row.get(name).expect("nomi univoci") {
         Some(ParameterValue::String(value)) => Some(value.clone()),
         _ => None,
     }
 }
 
 fn integer(row: &Row, name: &str) -> i64 {
-    match row.get(name) {
+    match row.get(name).expect("nomi univoci") {
         Some(ParameterValue::I64(value)) => *value,
         Some(ParameterValue::Decimal(value)) => value.parse().expect("intero"),
         other => panic!("colonna {name} intera attesa: {other:?}"),
@@ -151,13 +151,16 @@ async fn server_mismatches(
         if dump.as_deref().and_then(parse_dump) != reference_bytes(value) {
             mismatches.push(format!("{label}: DUMP {dump:?}"));
         }
-        let decoded = match row.get("D") {
+        let decoded = match row.get("D").expect("nomi univoci") {
             Some(ParameterValue::Decimal(decoded)) => parse_canon(decoded),
             Some(ParameterValue::I64(decoded)) => parse_canon(&decoded.to_string()),
             _ => None,
         };
         if decoded.as_ref() != Some(value) {
-            mismatches.push(format!("{label}: decoder {:?}", row.get("D")));
+            mismatches.push(format!(
+                "{label}: decoder {:?}",
+                row.get("D").expect("nomi univoci")
+            ));
         }
     }
     // Una sola istruzione per blocco: il driver non chiude sul server i
@@ -186,7 +189,7 @@ async fn server_mismatches(
         assert_eq!(found.len(), chunk.len());
         for (row, (id, value)) in found.iter().zip(chunk) {
             let count = integer(row, "N");
-            let first = match row.get("I") {
+            let first = match row.get("I").expect("nomi univoci") {
                 Some(ParameterValue::Null { .. }) => None,
                 _ => Some(integer(row, "I")),
             };
@@ -947,7 +950,7 @@ async fn json_number(
         )
         .await;
     let _ = transaction.rollback(&CancellationToken::new()).await;
-    Ok(rows?[0].get("DOC").cloned())
+    Ok(rows?[0].get("DOC")?.cloned())
 }
 
 #[tokio::test]
@@ -1213,7 +1216,8 @@ async fn live_number_float_columns_read_and_write_exactly_or_fail() {
     }
 
     // 4. Valori che il FLOAT di destinazione non conserva: rifiuto esplicito,
-    //    non zero ne arrotondamento.
+    //    non zero ne arrotondamento. FLOAT(10) non ha una misura nella
+    //    matrice Arrow: il cancello lo rifiuta gia nel preflight.
     for (column, value) in [("F", 1e-300_f64), ("F10", 0.123_45)] {
         reset_floats(&provider, &secret).await;
         let outcome = arrow_write(
@@ -1224,7 +1228,11 @@ async fn live_number_float_columns_read_and_write_exactly_or_fail() {
         )
         .await;
         match outcome {
-            Err(error) if error.contains("DataMapping") => {}
+            Err(error)
+                if column == "F10"
+                    && error.contains("Unsupported")
+                    && error.contains(plenora_database_core::write_admission::UNPROVEN_PAIR) => {}
+            Err(error) if column == "F" && error.contains("DataMapping") => {}
             other => misses.push(format!("{column} {value:e}: {other:?}")),
         }
     }

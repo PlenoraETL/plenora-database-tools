@@ -99,14 +99,16 @@ fn point_xy() -> Vec<u8> {
 
 #[test]
 fn append_plan_accepts_the_qualified_scalar_subset() {
-    let plan = Db2WritePlan::compile(&config(), &schema(), &operation(WriteMode::Append))
+    let mut plan = Db2WritePlan::compile(&config(), &schema(), &operation(WriteMode::Append))
         .expect("piano append Db2");
+    assert!(plan.array_insert_sql().is_err());
+    plan.test_catalog();
     assert_eq!(
-        plan.array_insert_sql(),
-        "INSERT INTO \"APP\".\"TARGET\" (\"ID\", \"VALUE\") VALUES (?, ?)"
+        plan.array_insert_sql().unwrap(),
+        "INSERT INTO \"APP\".\"TARGET\" (\"ID\", \"VALUE\") VALUES (CAST(? AS INTEGER), CAST(? AS CLOB(193 OCTETS)))"
     );
     assert_eq!(
-        plan.array_insert_sql().matches('?').count(),
+        plan.array_insert_sql().unwrap().matches('?').count(),
         2,
         "il numero di placeholder resta quello delle colonne, non delle righe"
     );
@@ -128,13 +130,19 @@ fn key_based_modes_fail_before_the_network_without_keys() {
 #[test]
 fn unsupported_write_profiles_and_mapping_policies_fail_closed() {
     let mut write = operation(WriteMode::Append);
-    write.mapping_policy = MappingPolicy::Lossy;
-    assert_eq!(
-        Db2WritePlan::compile(&config(), &schema(), &write)
-            .expect_err("mapping lossy")
-            .category,
-        ErrorCategory::Unsupported
-    );
+    for policy in [
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        write.mapping_policy = policy;
+        assert_eq!(
+            Db2WritePlan::compile(&config(), &schema(), &write)
+                .unwrap_err()
+                .category,
+            ErrorCategory::Unsupported
+        );
+    }
 
     write.mapping_policy = MappingPolicy::Strict;
     write.transaction_profile = TransactionProfile::ChunkCommitted;
@@ -162,14 +170,21 @@ fn spatial_append_uses_integrated_constructor_and_declared_srid() {
     let mut write = operation(WriteMode::Append);
     write.srid_policy = Some(SridPolicy::RequireMatch);
     let plan = Db2WritePlan::compile(&config(), &schema, &write).expect("piano spatial Db2");
+    let mut plan = plan;
+    plan.test_catalog();
     let statement = plan.insert_statement(&[vec![
         plenora_database_core::provider::ParameterValue::I32(1),
         plenora_database_core::provider::ParameterValue::Bytes(point_xy()),
     ]]);
 
     assert!(statement
+        .unwrap()
         .sql
-        .contains("ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)"));
+        .contains("ST_GEOMETRY(BLOB(HEXTORAW(CAST(? AS VARCHAR(32672)))), 4326)"));
+    assert!(plan
+        .array_insert_sql()
+        .unwrap()
+        .contains("ST_GEOMETRY(BLOB(HEXTORAW(CAST(? AS VARCHAR(32672)))), 4326)"));
 }
 
 #[test]
@@ -198,6 +213,21 @@ fn spatial_batch_is_checked_before_any_database_mutation() {
     .expect("batch valido");
     plan.validate_spatial_batch(&valid, &budget)
         .expect("WKB conforme");
+    // Lo stesso trasporto usato dal writer: il costruttore riceve testo
+    // esadecimale esplicito, anche quando i Bytes ordinari restano binari.
+    let values = crate::write::batch_values(&valid, &plan).unwrap();
+    assert_eq!(
+        values[0][0],
+        plenora_database_core::provider::ParameterValue::I32(1)
+    );
+    let plenora_database_core::provider::ParameterValue::String(hex) = &values[0][1] else {
+        panic!("il costruttore spatial richiede testo esadecimale");
+    };
+    let decoded = (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(decoded, point_xy());
 
     let wrong_dimensions = spatial_schema("xyz", "point");
     let wrong_plan =
@@ -270,4 +300,54 @@ fn spatial_plan_refuses_north_first_axes_and_derived_srids() {
         error.provider,
         Some(plenora_database_core::plan::ProviderKind::Db2)
     );
+}
+
+#[test]
+fn varchar2_compat_si_legge_o_la_regola_s_non_e_provata() {
+    use crate::write::parse_varchar2_compat;
+    use plenora_database_core::provider::ParameterValue;
+    use plenora_database_core::row::Row;
+    let row = |value: ParameterValue| {
+        Row::try_new(Arc::from(vec!["VALUE".to_owned()]), vec![value]).expect("riga")
+    };
+    let text = |value: &str| row(ParameterValue::String(value.to_owned()));
+    assert!(!parse_varchar2_compat(&[text("OFF")]).expect("OFF"));
+    assert!(parse_varchar2_compat(&[text("ON ")]).expect("ON"));
+    assert!(parse_varchar2_compat(&[text("OFF"), text("ON")]).expect("un membro ON"));
+    for unproven in [
+        Vec::new(),
+        vec![text("")],
+        vec![text("YES")],
+        vec![row(ParameterValue::Null {
+            type_name: "VARCHAR".to_owned(),
+        })],
+        vec![text("ON"), row(ParameterValue::I32(1))],
+    ] {
+        let error = parse_varchar2_compat(&unproven).expect_err("non provata");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+    }
+}
+
+/// Le politiche non strette non raggiungono il bind di testo o binario.
+#[test]
+fn bounded_types_all_policies() {
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        for data_type in [DataType::Utf8, DataType::Binary] {
+            let binary = data_type == DataType::Binary;
+            let input = contract_schema(vec![Field::new("V", data_type, true)]).unwrap();
+            let mut write = operation(WriteMode::Append);
+            write.mapping_policy = policy;
+            let result = Db2WritePlan::compile(&config(), &input, &write);
+            if policy == MappingPolicy::Strict && !binary {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result.unwrap_err().category, ErrorCategory::Unsupported);
+            }
+        }
+    }
 }

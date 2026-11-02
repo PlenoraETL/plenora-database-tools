@@ -29,6 +29,9 @@ def main() -> int:
         encoding="utf-8"
     )
     assert "scripts/check_age_reference.py" in workflow
+    source = (ROOT / "scripts/check_age_reference.py").read_text(encoding="utf-8")
+    assert '"--show-output"' in source
+    assert '"--nocapture"' not in source
     assert callable(command)
     print("PASS age gate wiring")
     return 0

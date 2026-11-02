@@ -41,6 +41,7 @@ fn null_key_is_rejected_before_any_row_is_bound() {
             nullable: true,
             collation: None,
             spatial_srid: None,
+            rewrites: Vec::new(),
         }],
         mode: WriteMode::DeleteByKeys,
         row_sql: String::new(),
@@ -57,6 +58,8 @@ fn null_key_is_rejected_before_any_row_is_bound() {
         object: "target".to_owned(),
         added_columns: Vec::new(),
         spatial_indexes: Vec::new(),
+        strict: true,
+        precision_losses: Vec::new(),
     };
     let error =
         inspect_batch(&batch, &plan, 1024, 1024, 16).expect_err("NULL key must fail closed");
@@ -89,6 +92,7 @@ fn fixed_width_rows_consume_output_and_memory_bytes() {
                 nullable: false,
                 collation: None,
                 spatial_srid: None,
+                rewrites: Vec::new(),
             },
             WriteColumnPlan {
                 input_index: 1,
@@ -99,6 +103,7 @@ fn fixed_width_rows_consume_output_and_memory_bytes() {
                 nullable: false,
                 collation: None,
                 spatial_srid: None,
+                rewrites: Vec::new(),
             },
         ],
         mode: WriteMode::Append,
@@ -116,6 +121,8 @@ fn fixed_width_rows_consume_output_and_memory_bytes() {
         object: "target".to_owned(),
         added_columns: Vec::new(),
         spatial_indexes: Vec::new(),
+        strict: true,
+        precision_losses: Vec::new(),
     };
 
     let inspection = inspect_row(&batch, 0, &plan, 1024, 1024, 16).expect("fixed-width inspection");
@@ -166,6 +173,7 @@ fn geometry_outside_the_declared_types_is_rejected_before_binding() {
             nullable: true,
             collation: None,
             spatial_srid: Some(4326),
+            rewrites: Vec::new(),
         }],
         mode: WriteMode::Append,
         row_sql: String::new(),
@@ -182,6 +190,8 @@ fn geometry_outside_the_declared_types_is_rejected_before_binding() {
         object: "target".to_owned(),
         added_columns: Vec::new(),
         spatial_indexes: Vec::new(),
+        strict: true,
+        precision_losses: Vec::new(),
     };
     for error in [
         inspect_batch(&batch, &plan, 1024, 1024, 16).expect_err("tipo fuori lista"),
@@ -191,5 +201,360 @@ fn geometry_outside_the_declared_types_is_rejected_before_binding() {
     ] {
         assert_eq!(error.category, ErrorCategory::DataMapping);
         assert_eq!(error.phase, ErrorPhase::Write);
+    }
+}
+
+fn text_plan(native: &str, declaration: &str, collation: Option<&str>, strict: bool) -> WritePlan {
+    let schema = Arc::new(Schema::new(vec![Field::new("label", DataType::Utf8, true)]));
+    WritePlan {
+        input_schema: schema,
+        columns: vec![WriteColumnPlan {
+            input_index: 0,
+            name: "label".to_owned(),
+            kind: crate::SqlServerColumnKind::Utf8,
+            native_type: native.to_owned(),
+            native_declaration: declaration.to_owned(),
+            nullable: true,
+            collation: collation.map(str::to_owned),
+            spatial_srid: None,
+            rewrites: Vec::new(),
+        }],
+        mode: WriteMode::Append,
+        row_sql: String::new(),
+        key_input_indices: Vec::new(),
+        bulk_table: String::new(),
+        bulk_columns_aligned: true,
+        lifecycle: TargetLifecycle::Existing {
+            lock_sql: String::new(),
+            truncate_sql: None,
+            add_columns_sql: Vec::new(),
+            schema_fingerprint: String::new(),
+        },
+        schema: "dbo".to_owned(),
+        object: "target".to_owned(),
+        added_columns: Vec::new(),
+        spatial_indexes: Vec::new(),
+        strict,
+        precision_losses: Vec::new(),
+    }
+}
+
+/// F6: un testo cirillico e cinese verso `varchar(20) COLLATE
+/// Latin1_General_CI_AS` si committava con i caratteri fuori dalla code page
+/// diventati punti interrogativi; `abc` con tre spazi verso `varchar(3)`
+/// perdeva gli spazi. Con `Strict` entrambi si rifiutano, nel preparato e
+/// nel bulk.
+#[test]
+fn la_regola_p_rifiuta_il_testo_che_la_colonna_cambierebbe() {
+    let latin = text_plan("varchar", "varchar(20)", Some("Latin1_General_CI_AS"), true);
+    let column = &latin.columns[0];
+    assert!(check_text(&latin, column, "\u{416}\u{20ac}\u{4e2d}").is_err());
+    assert!(check_text(&latin, column, "ascii ok").is_ok());
+    // Windows-1252 rappresenta `è` e `€`.
+    assert!(check_text(&latin, column, "caff\u{e8} \u{20ac}").is_ok());
+    let short = text_plan("varchar", "varchar(3)", Some("Latin1_General_CI_AS"), true);
+    assert!(check_text(&short, &short.columns[0], "abc   ").is_err());
+    assert!(check_text(&short, &short.columns[0], "ab ").is_ok());
+    let national = text_plan("nvarchar", "nvarchar(3)", None, true);
+    assert!(check_text(&national, &national.columns[0], "\u{416}\u{20ac}\u{4e2d}").is_ok());
+    assert!(check_text(&national, &national.columns[0], "\u{416}\u{20ac}\u{4e2d} ").is_err());
+    let lossy = text_plan("varchar", "varchar(3)", Some("Latin1_General_CI_AS"), false);
+    assert!(check_text(&lossy, &lossy.columns[0], "\u{416}bc   ").is_ok());
+    let batch = RecordBatch::try_new(
+        Arc::clone(&latin.input_schema),
+        vec![Arc::new(StringArray::from(vec![Some(
+            "\u{416}\u{20ac}\u{4e2d}",
+        )]))],
+    )
+    .expect("batch");
+    assert!(bulk_rows(&latin, &batch).is_err());
+    assert!(bind_row(&latin, &batch, 0).is_err());
+}
+
+/// S7: piu di nove cifre frazionarie si rifiutano in ogni politica; su
+/// 04029d4 chrono le troncava e `.12345670001` si committava `.1234567`.
+#[test]
+fn datetimeoffset_rifiuta_piu_di_nove_cifre_frazionarie() {
+    assert!(datetimeoffset("2026-01-02T10:00:00.123456789+00:00").is_ok());
+    let refused = datetimeoffset("2026-01-02T10:00:00.12345670001+00:00").expect_err("dieci cifre");
+    assert_eq!(refused.category, ErrorCategory::DataMapping);
+    assert!(datetimeoffset("2026-01-02T10:00:00.1234567890Z").is_err());
+}
+
+/// I valori esatti verso una colonna temporale ridotta passano con
+/// `Strict`; quelli che arrotonderebbero si rifiutano.
+#[test]
+fn la_regola_p_giudica_il_valore_temporale() {
+    let mut plan = text_plan("datetime2", "datetime2(0)", None, true);
+    plan.columns[0].kind = crate::SqlServerColumnKind::Timestamp;
+    assert!(check_temporal(&plan, &plan.columns[0], 1_767_348_001_000_000).is_ok());
+    assert!(check_temporal(&plan, &plan.columns[0], 1_767_348_001_500_000).is_err());
+    assert!(check_temporal(&plan, &plan.columns[0], -1_000_000).is_ok());
+    assert!(check_temporal(&plan, &plan.columns[0], -1).is_err());
+    plan.columns[0].native_type = "datetime".to_owned();
+    plan.columns[0].native_declaration = "datetime".to_owned();
+    assert!(check_temporal(&plan, &plan.columns[0], 10_000).is_ok());
+    assert!(check_temporal(&plan, &plan.columns[0], 3_000).is_err());
+    plan.columns[0].native_type = "smalldatetime".to_owned();
+    plan.columns[0].native_declaration = "smalldatetime".to_owned();
+    assert!(check_temporal(&plan, &plan.columns[0], 60_000_000).is_ok());
+    assert!(check_temporal(&plan, &plan.columns[0], 1_000_000).is_err());
+    let lossy = text_plan("datetime2", "datetime2(0)", None, false);
+    assert!(check_temporal(&lossy, &lossy.columns[0], 1).is_ok());
+}
+
+#[test]
+fn la_regola_p_rifiuta_le_frazioni_oltre_la_scala_di_datetimeoffset() {
+    let mut plan = text_plan("datetimeoffset", "datetimeoffset(0)", None, true);
+    plan.columns[0].kind = crate::SqlServerColumnKind::TimestampTz;
+    let exact = datetimeoffset("2026-01-02T10:00:00Z").expect("rfc3339");
+    let fraction = datetimeoffset("2026-01-02T10:00:00.999999Z").expect("rfc3339");
+    assert!(check_offset(&plan, &plan.columns[0], &exact).is_ok());
+    assert!(check_offset(&plan, &plan.columns[0], &fraction).is_err());
+    plan.columns[0].native_declaration = "datetimeoffset(7)".to_owned();
+    assert!(check_offset(&plan, &plan.columns[0], &fraction).is_ok());
+}
+
+#[test]
+fn le_date_fuori_dagli_anni_di_sql_server_si_rifiutano_prima_del_driver() {
+    // Il giorno prima di 0001-01-01 e l'ultimo di 9999.
+    assert!(date32(-719_163).is_err());
+    assert!(date32(-719_162).is_ok());
+    assert!(date32(2_932_896).is_ok());
+    assert!(date32(2_932_897).is_err());
+    assert!(timestamp(-62_135_596_800_000_001).is_err());
+    assert!(timestamp(-62_135_596_800_000_000).is_ok());
+    assert!(datetimeoffset("0001-01-01T00:00:00+01:00").is_err());
+    assert!(datetimeoffset("0001-01-01T00:00:00-01:00").is_ok());
+    assert!(datetimeoffset("9999-12-31T23:59:59-01:00").is_err());
+    assert!(datetimeoffset("2016-12-31T23:59:60Z").is_err());
+    assert!(datetimeoffset("2016-12-31T23:59:59.9999999Z").is_ok());
+}
+
+/// Anche Compatible e Lossy devono conservare la chiave prima del predicato.
+#[test]
+fn le_chiavi_applicano_sempre_i_controlli_di_esattezza() {
+    let mut plan = text_plan("datetimeoffset", "datetimeoffset(0)", None, false);
+    plan.key_input_indices = vec![0];
+    plan.columns[0].kind = crate::SqlServerColumnKind::TimestampTz;
+    let batch = RecordBatch::try_new(
+        Arc::clone(&plan.input_schema),
+        vec![Arc::new(StringArray::from(vec!["2026-01-01T10:00:00.4Z"]))],
+    )
+    .expect("batch");
+    assert!(bind_row(&plan, &batch, 0).is_err());
+    assert!(bulk_rows(&plan, &batch).is_err());
+    let exact = datetimeoffset("2026-01-01T10:00:00Z").expect("data");
+    let fraction = datetimeoffset("2026-01-01T10:00:00.4Z").expect("data");
+    assert!(check_offset(&plan, &plan.columns[0], &exact).is_ok());
+    assert!(check_offset(&plan, &plan.columns[0], &fraction).is_err());
+    for (native, declaration) in [
+        ("datetime2", "datetime2(0)"),
+        ("time", "time(0)"),
+        ("datetime", "datetime"),
+        ("smalldatetime", "smalldatetime"),
+    ] {
+        plan.columns[0].native_type = native.to_owned();
+        plan.columns[0].native_declaration = declaration.to_owned();
+        assert!(check_temporal(&plan, &plan.columns[0], 1).is_err());
+        assert!(check_temporal(&plan, &plan.columns[0], 0).is_ok());
+    }
+    plan.columns[0].native_type = "varbinary".to_owned();
+    plan.columns[0].native_declaration = "varbinary(1)".to_owned();
+    assert!(check_binary(&plan, &plan.columns[0], &[1, 0]).is_err());
+    assert!(check_binary(&plan, &plan.columns[0], &[1]).is_ok());
+    plan.columns[0].native_type = "varchar".to_owned();
+    plan.columns[0].native_declaration = "varchar(3)".to_owned();
+    plan.columns[0].collation = Some("Latin1_General_CI_AS".to_owned());
+    assert!(check_text(&plan, &plan.columns[0], "abc ").is_err());
+    assert!(check_text(&plan, &plan.columns[0], "\u{4e2d}").is_err());
+    assert!(check_text(&plan, &plan.columns[0], "abc").is_ok());
+}
+
+/// I sei casi riscritti dalla sonda diretta text CP1252 restano chiusi
+/// nel writer Strict, sia scalare sia bulk, senza dipendere dal fixture.
+#[test]
+fn strict_legacy_text_rejects_all_six_rewritten_unicode_cases() {
+    let plan = text_plan("text", "text", Some("SQL_Latin1_General_CP1_CI_AS"), true);
+    for text in [
+        "\u{3a9}\u{416}\u{142}\u{20ac}",
+        "\u{1f600}\u{1d11e}",
+        "e\u{301}",
+        "\u{feff}a",
+        "\u{fffd}",
+        "a\u{2028}b",
+    ] {
+        let batch = RecordBatch::try_new(
+            Arc::clone(&plan.input_schema),
+            vec![Arc::new(StringArray::from(vec![Some(text)]))],
+        )
+        .unwrap();
+        assert!(bind_row(&plan, &batch, 0).is_err());
+        assert!(bulk_rows(&plan, &batch).is_err());
+    }
+}
+
+#[test]
+fn server_probe_does_not_apply_production_precision_guards() {
+    use plenora_database_core::plan::{ObjectRef, TransactionProfile, WriteOperation};
+    let mut plan = text_plan("varchar", "varchar(3)", Some("Latin1_General_CI_AS"), true);
+    assert!(check_text(&plan, &plan.columns[0], "abc   ").is_err());
+    plan.object = plenora_database_testkit::write_probe::PROBE_TABLE.to_owned();
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some("dbo".to_owned()),
+            object: plan.object.clone(),
+        },
+        mode: WriteMode::Append,
+        mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: Vec::new(),
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    plan.admit(&operation, &[], "16").unwrap();
+    assert!(check_text(&plan, &plan.columns[0], "abc   ").is_ok());
+    plan.columns[0].native_type = "varbinary".to_owned();
+    plan.columns[0].native_declaration = "varbinary(1)".to_owned();
+    assert!(check_binary(&plan, &plan.columns[0], &[1, 0]).is_ok());
+    plan.columns[0].native_type = "datetime2".to_owned();
+    plan.columns[0].native_declaration = "datetime2(0)".to_owned();
+    assert!(check_temporal(&plan, &plan.columns[0], 1).is_ok());
+    plan.strict = true;
+    assert!(check_temporal(&plan, &plan.columns[0], 1).is_err());
+}
+
+/// Ogni politica conserva testo valido; Strict e le chiavi rifiutano ogni eccesso.
+#[test]
+fn bounded_content_all_policies() {
+    use plenora_database_core::loss::MappingPolicy;
+    for policy in [
+        MappingPolicy::Strict,
+        MappingPolicy::Compatible,
+        MappingPolicy::Lossy,
+        MappingPolicy::Native,
+    ] {
+        let strict = policy == MappingPolicy::Strict;
+        for native in ["varchar", "nvarchar", "char", "nchar"] {
+            for size in [1, 10] {
+                let plan = text_plan(
+                    native,
+                    &format!("{native}({size})"),
+                    Some("Latin1_General_CI_AS"),
+                    strict,
+                );
+                let column = &plan.columns[0];
+                assert!(check_text(&plan, column, &"x".repeat(size)).is_ok());
+                assert_eq!(
+                    check_text(&plan, column, &"x".repeat(size + 1)).is_err(),
+                    strict,
+                    "{native} {policy:?}"
+                );
+                if native.starts_with('n') {
+                    assert!(check_text(
+                        &plan,
+                        column,
+                        &format!("{}\u{1f600}", "x".repeat(size - 1))
+                    )
+                    .is_err());
+                    assert_eq!(
+                        check_text(&plan, column, &"\u{1f600}".repeat(10)).is_err(),
+                        strict || size == 1
+                    );
+                }
+                let mut key = plan.clone();
+                key.key_input_indices.push(0);
+                assert!(check_text(&key, &key.columns[0], &"x".repeat(size + 1)).is_err());
+            }
+        }
+        for native in ["binary", "varbinary"] {
+            let plan = text_plan(native, &format!("{native}(10)"), None, strict);
+            assert!(check_binary(&plan, &plan.columns[0], &[0xab; 10]).is_ok());
+            for value in [&[0xab; 11][..], &[0; 11][..]] {
+                assert_eq!(
+                    check_binary(&plan, &plan.columns[0], value).is_err(),
+                    strict
+                );
+            }
+        }
+        let plan = text_plan(
+            "varchar",
+            "varchar(1)",
+            Some("Latin1_General_100_CI_AS_SC_UTF8"),
+            strict,
+        );
+        assert!(check_text(&plan, &plan.columns[0], "\u{e9}").is_err());
+    }
+}
+
+/// Tipo intermedio, guardie P e codec del writer, indipendenti dal server.
+#[test]
+fn qualified_profile_pure_guards() {
+    use plenora_database_core::arrow::array::cast::AsArray;
+    use plenora_database_core::arrow::array::types::{
+        Time64MicrosecondType, TimestampMicrosecondType,
+    };
+    plenora_database_testkit::write_profile::check(
+        include_bytes!("../../../../tests/fixtures/ammissione_scrittura/sqlserver.json"),
+        |key, _, values, row| {
+            let declaration = key
+                .nativo
+                .split(';')
+                .next()
+                .unwrap()
+                .replace("(n)", &format!("({})", key.dimensione.unwrap_or(0)));
+            let native = declaration.split('(').next().unwrap();
+            let collation = if key.nativo.contains("cp=65001") {
+                "Latin1_General_100_CI_AS_SC_UTF8"
+            } else {
+                "Latin1_General_CI_AS"
+            };
+            let plan = text_plan(native, &declaration, Some(collation), true);
+            let column = &plan.columns[0];
+            // La compilazione rifiuta anche NULL se il tipo intermedio manca.
+            if crate::write::sql::intermediate_declaration(column).is_err() {
+                return true;
+            }
+            if values.is_null(row) {
+                return false;
+            }
+            match key.arrow.as_str() {
+                "utf8" => check_text(&plan, column, values.as_string::<i32>().value(row)).is_err(),
+                "binary" => {
+                    check_binary(&plan, column, values.as_binary::<i32>().value(row)).is_err()
+                }
+                "timestamp[us]" => {
+                    let value = values.as_primitive::<TimestampMicrosecondType>().value(row);
+                    timestamp(value).is_err() || check_temporal(&plan, column, value).is_err()
+                }
+                "time64[us]" => {
+                    let value = values.as_primitive::<Time64MicrosecondType>().value(row);
+                    time64(value).is_err() || check_temporal(&plan, column, value).is_err()
+                }
+                _ => false,
+            }
+        },
+    );
+}
+
+/// La riqualifica di TEXT conserva il precedente confine `NonAscii` Strict/chiavi.
+#[test]
+fn text_requalification_preserves_conservative_admission() {
+    for strict in [false, true] {
+        for key in [false, true] {
+            let mut plan = text_plan("text", "text", Some("Latin1_General_CI_AS"), strict);
+            if key {
+                plan.key_input_indices.push(0);
+            }
+            for text in ["caffe", "caf\u{e8}", "\u{20ac}", "\u{4e2d}"] {
+                assert_eq!(
+                    check_text(&plan, &plan.columns[0], text).is_err(),
+                    (strict || key) && !text.is_ascii()
+                );
+            }
+        }
     }
 }

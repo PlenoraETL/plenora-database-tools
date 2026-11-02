@@ -41,3 +41,23 @@ fn native_datetimeoffset_formatter_preserves_declared_scale_and_offset() {
     );
     assert!(format_timestamp_tz(value, 8).is_err());
 }
+
+#[test]
+fn native_datetimeoffset_never_discards_digits_for_a_smaller_declared_scale() {
+    for scale in 0..=7 {
+        let divisor = 10_u32.pow(u32::from(9 - scale));
+        let exact = DateTime::parse_from_rfc3339("1969-12-31T23:59:59+00:00")
+            .unwrap()
+            .with_nanosecond(if scale == 0 { 0 } else { divisor })
+            .unwrap();
+        let encoded = format_timestamp_tz(exact, scale).unwrap();
+        assert_eq!(DateTime::parse_from_rfc3339(&encoded).unwrap(), exact);
+        let inexact = exact.with_nanosecond(exact.nanosecond() + 1).unwrap();
+        let error = format_timestamp_tz(inexact, scale).unwrap_err();
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::DataMapping
+        );
+        assert!(!error.message.contains("1969"));
+    }
+}

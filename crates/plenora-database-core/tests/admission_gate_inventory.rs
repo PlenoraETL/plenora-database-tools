@@ -55,6 +55,7 @@ fn every_executable_compiled_statement_comes_from_the_admission_gate() {
                 "operand_admission::admit",
                 "operand_admission::{admit",
                 "operand_admission::admit_portable",
+                "measured.admit(",
             ] {
                 if text.contains(rule) {
                     offenders.push(format!("{}: {rule}", path.display()));

@@ -1,10 +1,15 @@
 use super::*;
 use plenora_database_core::row_visibility::{
-    HIDDEN_BY_OPAQUE_RELATION, HIDDEN_BY_ROW_SECURITY, HIDDEN_BY_TRIGGER, HIDDEN_UNREADABLE,
+    HIDDEN_BY_INSTEAD_TRIGGER, HIDDEN_BY_OPAQUE_RELATION, HIDDEN_BY_ROW_SECURITY,
+    HIDDEN_BY_TRIGGER, HIDDEN_UNREADABLE,
 };
 use std::sync::Arc;
 
 fn row(kind: Option<&str>, policy: &str, trigger: &str) -> Row {
+    row_with_instead(kind, policy, trigger, "N")
+}
+
+fn row_with_instead(kind: Option<&str>, policy: &str, trigger: &str, instead: &str) -> Row {
     let kind = kind.map_or_else(
         || ParameterValue::Null {
             type_name: "VARCHAR2".to_owned(),
@@ -12,11 +17,17 @@ fn row(kind: Option<&str>, policy: &str, trigger: &str) -> Row {
         |kind| ParameterValue::String(kind.to_owned()),
     );
     Row::try_new(
-        Arc::from(vec!["K".to_owned(), "P".to_owned(), "T".to_owned()]),
+        Arc::from(vec![
+            "K".to_owned(),
+            "P".to_owned(),
+            "T".to_owned(),
+            "I".to_owned(),
+        ]),
         vec![
             kind,
             ParameterValue::String(policy.to_owned()),
             ParameterValue::String(trigger.to_owned()),
+            ParameterValue::String(instead.to_owned()),
         ],
     )
     .expect("riga")
@@ -24,7 +35,7 @@ fn row(kind: Option<&str>, policy: &str, trigger: &str) -> Row {
 
 fn verdict(rows: &[Row], mode: WriteMode) -> Option<String> {
     filters_from_row(rows).and_then(|filters| {
-        refuse_filtered_rows(ProviderKind::Oracle, mode, ErrorPhase::Write, filters)
+        refuse_unfaithful_write(ProviderKind::Oracle, mode, ErrorPhase::Write, filters)
             .err()
             .map(|error| error.message)
     })
@@ -34,7 +45,7 @@ fn verdict(rows: &[Row], mode: WriteMode) -> Option<String> {
 /// il motivo atteso (`None` = ammessa).
 #[test]
 fn i_fatti_del_dizionario_oracle_decidono_la_regola_r() {
-    let table: [(&str, Vec<Row>, WriteMode, Option<&str>); 9] = [
+    let table: [(&str, Vec<Row>, WriteMode, Option<&str>); 13] = [
         (
             "tabella pulita",
             vec![row(Some("TABLE"), "N", "N")],
@@ -83,11 +94,37 @@ fn i_fatti_del_dizionario_oracle_decidono_la_regola_r() {
             WriteMode::Replace,
             Some(HIDDEN_UNREADABLE),
         ),
+        // Per un INSERT ne la policy ne un trigger BEFORE nascondono righe.
         (
             "append",
             vec![row(Some("TABLE"), "Y", "Y")],
             WriteMode::Append,
             None,
+        ),
+        // Fino al 25/10 (d30d1d2) le quattro righe seguenti erano ammesse.
+        (
+            "instead of, append",
+            vec![row_with_instead(Some("VIEW"), "N", "N", "Y")],
+            WriteMode::Append,
+            Some(HIDDEN_BY_INSTEAD_TRIGGER),
+        ),
+        (
+            "instead of, upsert",
+            vec![row_with_instead(Some("TABLE"), "N", "N", "Y")],
+            WriteMode::Upsert,
+            Some(HIDDEN_BY_INSTEAD_TRIGGER),
+        ),
+        (
+            "vista, append",
+            vec![row(Some("VIEW"), "N", "N")],
+            WriteMode::Append,
+            Some(HIDDEN_BY_OPAQUE_RELATION),
+        ),
+        (
+            "sinonimo, upsert",
+            vec![row(Some("SYNONYM"), "N", "N")],
+            WriteMode::Upsert,
+            Some(HIDDEN_BY_OPAQUE_RELATION),
         ),
     ];
     let mut difformi = Vec::new();
@@ -107,15 +144,71 @@ fn i_fatti_del_dizionario_oracle_decidono_la_regola_r() {
     assert!(difformi.is_empty(), "{}", difformi.join("\n"));
 }
 
+/// I bind `:n` di [`FACTS_SQL`], ciascuno letto per intero (`:1` non e il
+/// prefisso di `:10`).
+fn binds() -> Vec<usize> {
+    let bytes = FACTS_SQL.as_bytes();
+    let mut found = Vec::new();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b':' {
+            continue;
+        }
+        let digits = bytes[index + 1..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if digits > 0 {
+            let text = std::str::from_utf8(&bytes[index + 1..=index + digits]).expect("cifre");
+            found.push(text.parse().expect("indice"));
+        }
+    }
+    found
+}
+
 #[test]
 fn ogni_bind_compare_una_volta() {
-    let parameters = facts_parameters("OWNER", "T", DestructiveEvent::Delete);
-    for index in 1..=parameters.len() {
+    for mode in [WriteMode::Replace, WriteMode::Append, WriteMode::Upsert] {
+        let parameters = facts_parameters("OWNER", "T", mode);
+        let mut found = binds();
+        found.sort_unstable();
         assert_eq!(
-            FACTS_SQL.matches(&format!(":{index}")).count(),
-            1,
-            ":{index}"
+            found,
+            (1..=parameters.len()).collect::<Vec<_>>(),
+            "{mode:?}"
         );
     }
-    assert!(!FACTS_SQL.contains(&format!(":{}", parameters.len() + 1)));
+}
+
+/// Gli eventi passati per mode: il distruttivo due volte (policy e trigger),
+/// poi i due eventi della mode per gli `INSTEAD OF`, con il segnaposto dove
+/// la mode non ne ha.
+#[test]
+fn gli_eventi_dei_parametri_seguono_la_mode() {
+    let events = |mode| {
+        facts_parameters("O", "T", mode)
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| matches!(index, 4 | 7 | 10 | 11))
+            .map(|(_, value)| match value {
+                ParameterValue::String(value) => value,
+                other => panic!("{other:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        events(WriteMode::Replace),
+        ["DELETE", "DELETE", "DELETE", "INSERT"]
+    );
+    assert_eq!(
+        events(WriteMode::Append),
+        [NO_EVENT, NO_EVENT, "INSERT", NO_EVENT]
+    );
+    assert_eq!(
+        events(WriteMode::Upsert),
+        [NO_EVENT, NO_EVENT, "INSERT", "UPDATE"]
+    );
+    assert_eq!(
+        events(WriteMode::Update),
+        ["UPDATE", "UPDATE", "UPDATE", NO_EVENT]
+    );
 }

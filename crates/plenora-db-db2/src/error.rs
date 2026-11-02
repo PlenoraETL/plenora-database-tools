@@ -19,6 +19,7 @@ pub fn driver_error(error: &OdbcError, phase: ErrorPhase) -> DatabaseError {
                 ("57014" | "HYT00" | "HYT01", _) => ErrorCategory::Timeout,
                 (value, _) if value.starts_with("08") => ErrorCategory::Io,
                 (value, _) if value.starts_with("22") => ErrorCategory::DataMapping,
+                (value, _) if value.starts_with("01") => ErrorCategory::DataMapping,
                 (value, _) if value.starts_with("42") => ErrorCategory::Schema,
                 _ => ErrorCategory::Execution,
             };
@@ -59,6 +60,11 @@ pub fn driver_error(error: &OdbcError, phase: ErrorPhase) -> DatabaseError {
         OdbcError::Diagnostics { record, .. }
             if record.state.as_str() == "40003"
                 || (record.state.as_str().starts_with("08") && mutating_phase(phase)) =>
+        {
+            RemoteEffect::Unknown
+        }
+        OdbcError::Diagnostics { record, .. }
+            if record.state.as_str().starts_with("01") && mutating_phase(phase) =>
         {
             RemoteEffect::Unknown
         }

@@ -41,7 +41,8 @@ jobs:
   oracle-linux:
     name: Oracle AI Database 26ai Free full Linux x86_64
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Campagna live per test (~18 min) piu la sonda della regola A con replay (~35 min).
+    timeout-minutes: 120
     env:
       RUSTUP_TOOLCHAIN: 1.98.1
     steps:

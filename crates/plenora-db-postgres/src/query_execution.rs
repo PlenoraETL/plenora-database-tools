@@ -1,5 +1,5 @@
 use crate::control::select_with_cancellation;
-use crate::error::{classify_error, public_error};
+use crate::error::classify_error;
 use crate::parameter_codec::{
     bind_parameters, typed_filter_parameter_types, typed_query_parameter_types,
 };
@@ -15,7 +15,7 @@ use plenora_database_core::plan::ReadOperation;
 use plenora_database_core::provider::{BatchStream, ParameterBag, SecretString};
 use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::resource::{ResourceBudget, ResourceKind};
-use plenora_database_core::{CancellationToken, DatabaseError, ErrorCategory, ErrorPhase, Result};
+use plenora_database_core::{CancellationToken, DatabaseError, ErrorPhase, Result};
 use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::RowStream;
 
@@ -123,22 +123,21 @@ pub async fn read_stream(
     validate_stream_configuration(provider)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut client = connect_cancel_safe(provider, secret, cancellation).await?;
-    if let Some(catalog) = &operation.source.catalog {
-        let current_database: String = client
-            .client()?
-            .query_one("SELECT current_database()", &[])
-            .await
-            .map_err(|error| classify_error(ErrorPhase::Probe, &error))?
-            .get(0);
-        if catalog != &current_database {
-            return Err(public_error(
-                ErrorCategory::NotFound,
-                ErrorPhase::Prepare,
-                false,
-                "catalog PostgreSQL diverso dalla connessione corrente",
-            ));
-        }
-    }
+    // La regola T: il catalog e quello della connessione
+    // (`target_schema::check_catalog`), e la sorgente senza schema si
+    // risolve una volta, con il percorso della sessione; colonne, statement e cache nominano lo stesso
+    // oggetto.
+    let resolved = ReadOperation {
+        source: crate::target_schema::resolve(
+            client.client()?,
+            &operation.source,
+            crate::target_schema::Purpose::Existing,
+            ErrorPhase::Prepare,
+        )
+        .await?,
+        ..operation.clone()
+    };
+    let operation = &resolved;
     let (available, _schema_token) = provider.cached_columns(&client, &operation.source).await?;
     // La regola degli operandi geometrici sul tipo che contiene una
     // geometria (array, dominio, composito, range), non soltanto sul tipo
@@ -304,21 +303,36 @@ pub async fn query_stream(
     // GEO-009: lo SRID di una geometria calcolata che eredita quello della
     // colonna d'ingresso, dal catalogo; la lettura lo verifica valore per
     // valore. Senza, il campo resta `missing`.
-    for inherited in crate::query_plan::inherited_geometries(operation) {
+    let inherited_geometries = crate::query_plan::inherited_geometries(operation);
+    // La regola Q: i nomi di PostGIS con lo schema dell'estensione.
+    let postgis = if inherited_geometries.is_empty() {
+        String::new()
+    } else {
+        crate::postgis_schema::qualifier(client.client()?, ErrorPhase::Prepare).await?
+    };
+    for inherited in inherited_geometries {
         // La relazione si risolve come la risolve la query: con lo schema
         // dichiarato, o lungo `search_path` senza (`to_regclass`). Lo SRID e
         // quello del typmod della colonna (0 senza typmod), `geometry` o
-        // `geography`.
+        // `geography` dell'estensione PostGIS.
         let row = client
             .client()?
             .query_opt(
-                "SELECT postgis_typmod_srid(a.atttypmod) \
-                 FROM pg_catalog.pg_attribute a \
-                 WHERE a.attrelid = to_regclass(CASE WHEN $1::text IS NULL \
-                         THEN quote_ident($2::text) \
-                         ELSE quote_ident($1::text) || '.' || quote_ident($2::text) END) \
-                   AND a.attname = $3::text AND a.attnum > 0 AND NOT a.attisdropped \
-                   AND a.atttypid IN ('geometry'::regtype, 'geography'::regtype)",
+                &crate::postgis_schema::qualify(
+                    "SELECT postgis_typmod_srid(a.atttypmod) \
+                     FROM pg_catalog.pg_attribute a \
+                     JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+                     JOIN pg_catalog.pg_extension e \
+                       ON e.extname = 'postgis' AND e.extnamespace = t.typnamespace \
+                     WHERE a.attrelid = pg_catalog.to_regclass(\
+                             CASE WHEN $1::pg_catalog.text IS NULL \
+                             THEN pg_catalog.quote_ident($2::pg_catalog.text) \
+                             ELSE pg_catalog.quote_ident($1::pg_catalog.text) || '.' \
+                                  || pg_catalog.quote_ident($2::pg_catalog.text) END) \
+                       AND a.attname = $3::pg_catalog.text AND a.attnum > 0 \
+                       AND NOT a.attisdropped AND t.typname IN ('geometry', 'geography')",
+                    &postgis,
+                ),
                 &[&inherited.schema, &inherited.object, &inherited.column],
             )
             .await
@@ -336,7 +350,7 @@ pub async fn query_stream(
             let row = client
                 .client()?
                 .query_one(
-                    "SELECT col_description($1::oid, $2::int4)",
+                    "SELECT pg_catalog.col_description($1::pg_catalog.oid, $2::pg_catalog.int4)",
                     &[&relation, &i32::from(number)],
                 )
                 .await

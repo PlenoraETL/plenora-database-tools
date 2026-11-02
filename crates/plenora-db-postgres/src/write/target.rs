@@ -22,7 +22,8 @@
 //!    ([`RowSecurity::NotPerformed`]);
 //! 5. colonne dell'ingresso che non ricevono valori: `GENERATED ALWAYS ...
 //!    STORED` (INSERT, UPDATE e `COPY`), `IDENTITY ALWAYS` (INSERT e UPDATE;
-//!    `COPY` lo scavalca e scrive il valore dell'ingresso);
+//!    `COPY` lo scavalcherebbe scrivendo il valore dell'ingresso, e la
+//!    regola W1 lo rifiuta prima, al punto 10);
 //! 6. aggiornabilita del target: vista non aggiornabile per il comando
 //!    (`pg_relation_is_updatable`, trigger `INSTEAD OF` compresi), `COPY` su
 //!    una relazione che non e una tabella, `TRUNCATE` su una vista;
@@ -31,11 +32,15 @@
 //! 8. l'indice unico immediato che arbitra `ON CONFLICT`;
 //! 9. colonne che lo statement nomina, presenti nel target;
 //! 10. la regola R (`plenora_database_core::row_visibility`, fatti in
-//!     `super::visibility`): Replace, Update e `DeleteByKeys` si rifiutano
-//!     prima dell'ingresso se una policy RLS, una regola, un trigger di riga
-//!     `BEFORE`/`INSTEAD OF`, una tabella esterna (o, per Replace, una vista)
-//!     possono nascondere righe allo statement distruttivo — la stessa
-//!     funzione e la stessa lettura della scrittura, nello stesso punto.
+//!     `super::visibility`): ogni mode su un target esistente si rifiuta
+//!     prima dell'ingresso se una regola per uno dei suoi eventi, un trigger
+//!     `INSTEAD OF` per uno dei suoi eventi o una tabella esterna possono
+//!     mandare le righe altrove, e per Replace, Update e `DeleteByKeys` se una
+//!     policy RLS, un trigger di riga `BEFORE`/`INSTEAD OF` (o, per Replace,
+//!     una vista) possono nascondere righe allo statement distruttivo; e la
+//!     regola W1, se il percorso e `COPY` e scavalca una garanzia del target
+//!     (l'elenco chiuso di `super::visibility`) — la stessa funzione e la stessa
+//!     lettura della scrittura, nello stesso punto.
 //!
 //! Sotto una vista la row-level security delle tabelle di base decide un
 //! INSERT con il ruolo del proprietario della vista (o dell'invocante, con
@@ -45,7 +50,7 @@
 //!
 //! Resta della scrittura, e il dry run lo dichiara (`checks.server:
 //! not_performed`), cio che il catalogo non decide: i trigger fuori dalla
-//! regola R (quelli delle mode che inseriscono, gli `AFTER`), vincoli `CHECK`
+//! regola R (i `BEFORE` delle mode che inseriscono, gli `AFTER`), vincoli `CHECK`
 //! ed esclusioni, unicita e foreign key sui valori, vincoli differiti,
 //! conversioni della colonna, timeout e lock concorrenti, le colonne `NOT
 //! NULL` di una tabella sotto una vista.
@@ -64,7 +69,6 @@ use crate::error::{classify_error, public_error};
 use crate::{PostgresInsertMode, PostgresSchemaEvolution};
 use arrow_schema::SchemaRef;
 use plenora_database_core::plan::{WriteMode, WriteOperation};
-use plenora_database_core::row_visibility::{destructive_event, DestructiveEvent};
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 use std::collections::BTreeMap;
 use tokio_postgres::Client;
@@ -258,29 +262,30 @@ async fn table(client: &Client, schema: &str, object: &str) -> Result<Option<Tab
     let read = |error: tokio_postgres::Error| classify_error(ErrorPhase::Prepare, &error);
     let Some(row) = client
         .query_opt(
-            "SELECT c.oid, pg_has_role(c.relowner, 'USAGE'), \
-                    has_table_privilege(c.oid, 'DELETE'), \
-                    has_table_privilege(c.oid, 'TRUNCATE'), \
-                    has_table_privilege(c.oid, 'UPDATE') \
-                    OR has_table_privilege(c.oid, 'DELETE') \
-                    OR has_table_privilege(c.oid, 'TRUNCATE') \
-                    OR CASE WHEN current_setting('server_version_num')::int >= 170000 \
-                       THEN has_table_privilege(c.oid, 'MAINTAIN') ELSE false END, \
-                    has_schema_privilege(n.oid, 'USAGE'), \
-                    c.relkind::text, \
-                    row_security_active(c.oid), \
+            "SELECT c.oid, pg_catalog.pg_has_role(c.relowner, 'USAGE'), \
+                    pg_catalog.has_table_privilege(c.oid, 'DELETE'), \
+                    pg_catalog.has_table_privilege(c.oid, 'TRUNCATE'), \
+                    pg_catalog.has_table_privilege(c.oid, 'UPDATE') \
+                    OR pg_catalog.has_table_privilege(c.oid, 'DELETE') \
+                    OR pg_catalog.has_table_privilege(c.oid, 'TRUNCATE') \
+                    OR CASE WHEN pg_catalog.current_setting('server_version_num')::int >= 170000 \
+                       THEN pg_catalog.has_table_privilege(c.oid, 'MAINTAIN') ELSE false END, \
+                    pg_catalog.has_schema_privilege(n.oid, 'USAGE'), \
+                    c.relkind::pg_catalog.text, \
+                    pg_catalog.row_security_active(c.oid), \
                     EXISTS (SELECT 1 FROM pg_catalog.pg_policy p \
                             WHERE p.polrelid = c.oid AND p.polpermissive \
                               AND p.polcmd IN ('a', '*') \
-                              AND (0::oid = ANY (p.polroles) \
-                                   OR EXISTS (SELECT 1 FROM unnest(p.polroles) r \
-                                              WHERE r <> 0 AND pg_has_role(r, 'USAGE')))), \
+                              AND (0::pg_catalog.oid = ANY (p.polroles) \
+                                   OR EXISTS (SELECT 1 FROM pg_catalog.unnest(p.polroles) r \
+                                              WHERE r <> 0::pg_catalog.oid AND pg_catalog.pg_has_role(r, 'USAGE')))), \
                     EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t \
                             WHERE t.tgrelid = c.oid AND NOT t.tgisinternal \
                               AND t.tgenabled <> 'D' \
-                              AND (t.tgtype & 64) <> 0 AND (t.tgtype & 4) <> 0 \
-                              AND (t.tgtype & 1) <> 0), \
-                    pg_relation_is_updatable(c.oid, true) \
+                              AND (t.tgtype::pg_catalog.int4 & 64) <> 0 \
+                              AND (t.tgtype::pg_catalog.int4 & 4) <> 0 \
+                              AND (t.tgtype::pg_catalog.int4 & 1) <> 0), \
+                    pg_catalog.pg_relation_is_updatable(c.oid, true) \
              FROM pg_catalog.pg_class c \
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
              WHERE n.nspname = $1 AND c.relname = $2",
@@ -294,10 +299,10 @@ async fn table(client: &Client, schema: &str, object: &str) -> Result<Option<Tab
     let oid: u32 = row.get(0);
     let columns = client
         .query(
-            "SELECT a.attname::text, \
-                    has_column_privilege(a.attrelid, a.attnum, 'INSERT'), \
-                    has_column_privilege(a.attrelid, a.attnum, 'UPDATE'), \
-                    has_column_privilege(a.attrelid, a.attnum, 'SELECT'), \
+            "SELECT a.attname::pg_catalog.text, \
+                    pg_catalog.has_column_privilege(a.attrelid, a.attnum, 'INSERT'), \
+                    pg_catalog.has_column_privilege(a.attrelid, a.attnum, 'UPDATE'), \
+                    pg_catalog.has_column_privilege(a.attrelid, a.attnum, 'SELECT'), \
                     a.attgenerated = 's', \
                     a.attidentity = 'a', \
                     a.attnotnull AND NOT a.atthasdef AND a.attidentity = '' \
@@ -364,19 +369,23 @@ enum Arbiter {
     Missing,
 }
 
+/// L'arbitro come lo sceglie il server, per la forma dell'indice; la regola
+/// K2 (l'indice confronta come la colonna) la decide prima
+/// `super::visibility::refusal`, sui fatti che legge anche la scrittura.
 async fn arbiter(client: &Client, oid: u32, keys: &[String]) -> Result<Arbiter> {
     let row = client
         .query_one(
-            "SELECT bool_or(i.indimmediate), count(*) > 0 \
+            "SELECT pg_catalog.bool_or(i.indimmediate), pg_catalog.count(*) > 0 \
              FROM pg_catalog.pg_index i \
-             WHERE i.indrelid = $1 AND i.indisunique AND i.indisvalid \
+             WHERE i.indrelid = $1 AND i.indisunique AND i.indisvalid AND i.indisready \
+               AND i.indislive \
                AND i.indpred IS NULL AND i.indexprs IS NULL \
-               AND (SELECT array_agg(DISTINCT a.attname::text ORDER BY a.attname::text) \
-                    FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, position) \
+               AND (SELECT pg_catalog.array_agg(DISTINCT a.attname::pg_catalog.text ORDER BY a.attname::pg_catalog.text) \
+                    FROM pg_catalog.unnest(i.indkey::pg_catalog.int2[]) WITH ORDINALITY AS k(attnum, position) \
                     JOIN pg_catalog.pg_attribute a \
                       ON a.attrelid = i.indrelid AND a.attnum = k.attnum \
                     WHERE k.position <= i.indnkeyatts) \
-                   = (SELECT array_agg(DISTINCT key ORDER BY key) FROM unnest($2::text[]) key)",
+                   OPERATOR(pg_catalog.=) (SELECT pg_catalog.array_agg(DISTINCT key ORDER BY key) FROM pg_catalog.unnest($2::pg_catalog.text[]) key)",
             &[&oid, &keys],
         )
         .await
@@ -450,7 +459,7 @@ pub async fn inspect(
     path: WritePath,
     evolution: PostgresSchemaEvolution,
 ) -> Result<TargetVerdict> {
-    let schema_name = operation.target.schema.as_deref().unwrap_or("public");
+    let schema_name = crate::target_schema::schema_of(&operation.target)?;
     let mut verdict = TargetVerdict {
         owner: true,
         may_lock: true,
@@ -461,7 +470,7 @@ pub async fn inspect(
         // La tabella nuova e di chi la crea: il resto non chiede privilegi.
         let row = client
             .query_opt(
-                "SELECT has_schema_privilege(n.oid, 'CREATE') \
+                "SELECT pg_catalog.has_schema_privilege(n.oid, 'CREATE') \
                  FROM pg_catalog.pg_namespace n WHERE n.nspname = $1",
                 &[&schema_name],
             )
@@ -505,12 +514,12 @@ pub async fn inspect(
         WriteMode::Replace | WriteMode::TruncateInsert
     );
     // La regola R legge la stessa chiusura del target che legge la
-    // scrittura; per le mode che inseriscono serve a sapere se sotto una
+    // scrittura, per gli eventi della mode; serve anche a sapere se sotto una
     // vista una policy decide l'INSERT.
     let facts = super::visibility::facts(
         client,
-        &operation.target,
-        destructive_event(operation.mode).unwrap_or(DestructiveEvent::Delete),
+        operation,
+        &super::visibility::copied_columns(schema, path),
         ErrorPhase::Prepare,
     )
     .await?;
@@ -558,8 +567,9 @@ pub async fn inspect(
         verdict.at_statement = Some(missing_column());
         return Ok(verdict);
     }
-    // Le colonne che non ricevono valori: `COPY` rifiuta le generate (non
-    // `IDENTITY ALWAYS`, che scavalca); INSERT e UPDATE entrambe.
+    // Le colonne che non ricevono valori: `COPY` rifiuta le generate;
+    // `IDENTITY ALWAYS` lo scavalcherebbe, e la regola W1 l'ha gia rifiutato
+    // (`before_input`); INSERT e UPDATE entrambe.
     let receives_no_value = columns.iter().any(|(name, need)| {
         table.columns.get(name).is_some_and(|column| match need {
             Need::Insert if path == WritePath::Copy => column.generated,

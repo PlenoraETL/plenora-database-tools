@@ -10,9 +10,9 @@ fn text(value: &str) -> String {
 fn index_rows_are_grouped_in_catalog_order() {
     let rows = vec![
         vec![
-            Some(text("PK_ITEMS")),
+            Some(text(" PK_ITEMS ")),
             Some(text("P")),
-            Some(text("1")),
+            Some(text(" 1 ")),
             Some(text("ID")),
             Some(text("A")),
         ],
@@ -34,6 +34,7 @@ fn index_rows_are_grouped_in_catalog_order() {
 
     let indexes = build_indexes(&rows).expect("indici Db2");
     assert_eq!(indexes.len(), 2);
+    assert_eq!(indexes[0].name, " PK_ITEMS ");
     assert!(indexes[0].primary && indexes[0].unique);
     assert_eq!(indexes[0].columns, ["ID"]);
     assert!(indexes[1].unique && !indexes[1].primary);
@@ -105,4 +106,44 @@ fn schema_token_is_stable_and_observes_column_and_index_changes() {
 
     assert_eq!(first, same);
     assert_ne!(first, changed);
+}
+
+#[test]
+fn describe_preserves_catalog_identifier_bytes() {
+    for name in [" C", "C ", " C ", "C"] {
+        let row =
+            [name, "1", " type ", "4", "0", "Y", "default", "", "N"].map(|v| Some(v.to_owned()));
+        let column = crate::catalog::column_description(&row).unwrap();
+        assert_eq!(column.name, name);
+        assert_eq!(column.data_type, " type ");
+        let row = [" schema ", name, "TABLE"].map(|v| Some(v.to_owned()));
+        let object = crate::catalog::object_summary(&row).unwrap();
+        assert_eq!(object.schema, " schema ");
+        assert_eq!(object.name, name);
+        let row = [name, "U", "1", name, "A"].map(|v| Some(v.to_owned()));
+        let indexes = build_indexes(&[row.to_vec()]).unwrap();
+        assert_eq!(indexes[0].name, name);
+        assert_eq!(indexes[0].columns, [name]);
+    }
+}
+
+#[test]
+fn catalog_padding_is_removed_only_for_fixed_character_descriptors() {
+    use crate::connection::catalog_text;
+    use odbc_api::DataType;
+    for kind in [
+        DataType::Char { length: None },
+        DataType::WChar { length: None },
+    ] {
+        assert_eq!(catalog_text(" SYSIBM  ", kind), " SYSIBM");
+        assert_eq!(catalog_text("X\t ", kind), "X\t");
+    }
+    for kind in [
+        DataType::Varchar { length: None },
+        DataType::WVarchar { length: None },
+    ] {
+        for name in [" S ", " T ", " C ", "SYSIBM  ", "IDENTITY ", "\t "] {
+            assert_eq!(catalog_text(name, kind), name);
+        }
+    }
 }

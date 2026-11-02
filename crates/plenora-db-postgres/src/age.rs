@@ -19,24 +19,24 @@ pub async fn probe_age_capabilities(client: &Client) -> Result<AgeCapabilities> 
         .query_one(
             r"
             SELECT
-                current_setting('server_version_num')::int / 10000,
-                (SELECT extversion FROM pg_extension WHERE extname = 'age'),
+                pg_catalog.current_setting('server_version_num')::int / 10000,
+                (SELECT extversion FROM pg_catalog.pg_extension WHERE extname = 'age'),
                 EXISTS (
                     SELECT 1
-                    FROM pg_proc p
-                    JOIN pg_namespace n ON n.oid = p.pronamespace
+                    FROM pg_catalog.pg_proc p
+                    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
                     WHERE n.nspname = 'ag_catalog' AND p.proname = 'cypher'
                 )
                 AND EXISTS (
                     SELECT 1
-                    FROM pg_proc p
-                    JOIN pg_namespace n ON n.oid = p.pronamespace
+                    FROM pg_catalog.pg_proc p
+                    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
                     WHERE n.nspname = 'ag_catalog' AND p.proname = 'agtype_out'
                 )
                 AND EXISTS (
                     SELECT 1
-                    FROM pg_type t
-                    JOIN pg_namespace n ON n.oid = t.typnamespace
+                    FROM pg_catalog.pg_type t
+                    JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
                     WHERE n.nspname = 'ag_catalog' AND t.typname = 'agtype'
                 )
             ",
@@ -75,7 +75,7 @@ pub fn build_cypher_sql(statement: &GraphStatement) -> Result<String> {
         .iter()
         .map(|column| {
             let quoted = quote_identifier(column);
-            format!("ag_catalog.agtype_out(q.{quoted})::text AS {quoted}")
+            format!("ag_catalog.agtype_out(q.{quoted})::pg_catalog.text AS {quoted}")
         })
         .collect::<Vec<_>>()
         .join(", ");

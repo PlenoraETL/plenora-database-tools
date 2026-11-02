@@ -196,7 +196,10 @@ fn mysql_spatial_value_uses_the_shared_typed_binary_form() {
 fn sqlserver_and_db2_spatial_values_keep_the_frame_outside_the_bind() {
     for (dialect, fragment) in [
         (Dialect::SqlServer, "geometry::STGeomFromWKB(@p1, 4326)"),
-        (Dialect::Db2, "ST_GEOMETRY(BLOB(HEXTORAW(?)), 4326)"),
+        (
+            Dialect::Db2,
+            "ST_GEOMETRY(BLOB(HEXTORAW(CAST(? AS VARCHAR(32672)))), 4326)",
+        ),
     ] {
         let rendered = Renderer::new(
             dialect,

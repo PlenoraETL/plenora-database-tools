@@ -8,6 +8,9 @@
 
 mod arrow;
 mod catalog;
+#[cfg(test)]
+#[path = "catalog_qualification_tests.rs"]
+mod catalog_qualification_tests;
 mod config;
 mod connection;
 pub(crate) mod error;

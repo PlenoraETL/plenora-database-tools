@@ -32,6 +32,59 @@ pyarrow = pytest.importorskip("pyarrow")
 TABLE_PREFIX = "_pyp_outcome_unknown"
 
 
+class CommitScanner:
+    """Riconosce il frame Simple Query COMMIT, anche fra letture TCP."""
+
+    COMMIT = b"Q\0\0\0\x0bCOMMIT\0"
+
+    def __init__(self, marker: bytes) -> None:
+        self.marker = marker
+        self.marked = False
+        self.pending = b""
+        self.startup = True
+
+    def feed(self, data: bytes) -> bool:
+        self.pending += data
+        cut = False
+        while True:
+            offset = int(not self.startup)
+            if len(self.pending) < offset + 4:
+                break
+            length = int.from_bytes(self.pending[offset:offset + 4], "big")
+            assert 4 <= length <= 16 * 1024 * 1024, "frame PostgreSQL invalido"
+            end = offset + length
+            if len(self.pending) < end:
+                break
+            if self.startup:
+                self.startup = length == 8  # SSLRequest/GSSENCRequest
+            else:
+                body = self.pending[5:end]
+                cut |= self.marked and self.pending[0:1] == b"Q" and body == b"COMMIT\0"
+                self.marked |= self.marker in body
+            self.pending = self.pending[end:]
+        return cut
+
+
+def test_commit_scanner_distinguishes_ddl_and_fragmented_commit() -> None:
+    def frame(kind: bytes, body: bytes) -> bytes:
+        return kind + (len(body) + 4).to_bytes(4, "big") + body
+
+    startup = b"\0\0\0\x09\0\x03\0\0\0"
+    traffic = (startup + frame(b"Q", b"SELECT 'marker'\0")
+               + frame(b"Q", b"CREATE TEMP TABLE t (id int) ON COMMIT DROP\0")
+               + frame(b"B", CommitScanner.COMMIT))
+    for split in range(len(traffic) + 1):
+        scanner = CommitScanner(b"marker")
+        assert not scanner.feed(traffic[:split])
+        assert not scanner.feed(traffic[split:])
+        for byte in CommitScanner.COMMIT[:-1]:
+            assert not scanner.feed(bytes([byte]))
+        assert scanner.feed(CommitScanner.COMMIT[-1:])
+    unmarked = CommitScanner(b"marker")
+    assert not unmarked.feed(startup)
+    assert not unmarked.feed(CommitScanner.COMMIT)
+
+
 class CommitCutter:
     """Proxy che interrompe il primo `COMMIT` di una connessione marcata."""
 
@@ -78,11 +131,10 @@ class CommitCutter:
                 pass
 
         threading.Thread(target=back, daemon=True).start()
-        marked = False
+        scanner = CommitScanner(self._marker)
         try:
             while data := client.recv(65536):
-                marked = marked or self._marker in data
-                if marked and b"COMMIT" in data:
+                if scanner.feed(data):
                     # Prima si chiude il client, poi si inoltra: la conferma
                     # del server non ha piu una strada per tornare indietro.
                     client.shutdown(socket.SHUT_RDWR)

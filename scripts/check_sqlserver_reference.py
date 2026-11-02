@@ -46,6 +46,9 @@ SKIPPED_LIVE_TESTS = (
 # un altro. Il nome va verificato.
 REQUIRED_LIVE_TESTS = frozenset(
     {
+        "live_exact_temporal_query_stream_and_duplicate_names",
+        "live_submicrosecond_temporal_values_fail_closed",
+
         "live_caller_stream_cancellation_requires_recovery",
         "live_parameter_values_bind_exactly_or_are_refused",
         "live_generated_values_bind_exactly_or_are_refused",
@@ -61,7 +64,10 @@ REQUIRED_LIVE_TESTS = frozenset(
 def live_test_inventory() -> set[str]:
     """Legge i nomi dei test live dai sorgenti per verificarne identita ed esito."""
 
-    return live_inventory.source_inventory([LIVE_TEST_SOURCE, FIDELITY_LIVE_SOURCE])
+    return live_inventory.source_inventory(
+        list(LIVE_TEST_SOURCE.parent.rglob("*.rs")),
+        keep=lambda name: name.startswith("live_") or name in SKIPPED_LIVE_TESTS,
+    )
 
 
 def skipped_with_reasons() -> dict[str, str]:

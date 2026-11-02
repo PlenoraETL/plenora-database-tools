@@ -138,6 +138,9 @@ pub struct Config {
     /// National charset ID
     pub ncharset_id: u16,
     /// Statement cache size (0 = disabled)
+    ///
+    /// Fork Plenora: senza effetto, la connessione non riusa cursori (vedi
+    /// [`crate::statement_cache`]).
     pub stmtcachesize: usize,
 }
 

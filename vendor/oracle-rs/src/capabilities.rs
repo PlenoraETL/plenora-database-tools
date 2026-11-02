@@ -219,9 +219,10 @@ impl Capabilities {
 
     /// Check if the national character set is supported
     pub fn check_ncharset_id(&self) -> crate::error::Result<()> {
-        if self.ncharset_id != charset::UTF16 && self.ncharset_id != charset::AL16UTF8 {
+        // Soltanto AL16UTF16: il testo nazionale si decodifica come UTF-16.
+        if self.ncharset_id != charset::UTF16 {
             return Err(crate::error::Error::FeatureNotSupported(format!(
-                "national character set {} is not supported (only UTF16 and AL16UTF8)",
+                "national character set {} is not supported (only AL16UTF16)",
                 self.ncharset_id
             )));
         }
@@ -360,7 +361,7 @@ mod tests {
         assert!(caps.check_ncharset_id().is_ok());
 
         caps.ncharset_id = charset::AL16UTF8;
-        assert!(caps.check_ncharset_id().is_ok());
+        assert!(caps.check_ncharset_id().is_err());
     }
 
     #[test]

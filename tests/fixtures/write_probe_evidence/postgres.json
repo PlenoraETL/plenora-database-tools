@@ -1,0 +1,3091 @@
+{
+ "provider": "postgres",
+ "log": "m125044693601.log",
+ "sha256": "f98bc596a45dd5e0c46ef71d211adec8c632b99ef0e39e7ed73d831f3d7064c7",
+ "changes": [
+  {
+   "major": "14",
+   "image": "postgis/postgis@sha256:e5b5020fcac75f7f5468f4cf3cd54159110ad937b695391729a0730d2b56fba4",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "14",
+   "image": "postgis/postgis@sha256:e5b5020fcac75f7f5468f4cf3cd54159110ad937b695391729a0730d2b56fba4",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "14",
+   "image": "postgis/postgis@sha256:e5b5020fcac75f7f5468f4cf3cd54159110ad937b695391729a0730d2b56fba4",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 4000,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 4000,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "14",
+   "image": "postgis/postgis@sha256:e5b5020fcac75f7f5468f4cf3cd54159110ad937b695391729a0730d2b56fba4",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "spazio",
+     "a",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "14",
+   "image": "postgis/postgis@sha256:e5b5020fcac75f7f5468f4cf3cd54159110ad937b695391729a0730d2b56fba4",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "pieno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "14",
+   "image": "postgis/postgis@sha256:e5b5020fcac75f7f5468f4cf3cd54159110ad937b695391729a0730d2b56fba4",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 4000,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 4000,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "pieno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "14",
+   "image": "postgis/postgis@sha256:e5b5020fcac75f7f5468f4cf3cd54159110ad937b695391729a0730d2b56fba4",
+   "decision": "a",
+   "reason": "Senza canonicalizzazione applicativa si osservano anche i membri duplicati; la classe misurata ogni e conservata dal log.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:jsonb;UTF8",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "json_numeri"
+     }
+    ],
+    "riscritti": [
+     "esponente",
+     "fuori_double",
+     "zero_negativo"
+    ],
+    "rifiutati": [
+     "chiave_ripetuta"
+    ],
+    "per_eccesso": [
+     "uno_virgola_zero",
+     "cinquanta_cifre",
+     "frazione",
+     "diciassette_cifre"
+    ]
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:jsonb;UTF8",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "esponente",
+     "fuori_double",
+     "zero_negativo",
+     "chiave_ripetuta"
+    ],
+    "rifiutati": [],
+    "per_eccesso": [
+     "oggetto",
+     "uno_virgola_zero",
+     "cinquanta_cifre",
+     "frazione",
+     "diciassette_cifre",
+     "intero_breve",
+     "ordine",
+     "spazi",
+     "escape",
+     "non_bmp",
+     "annidato",
+     "lista",
+     "scalare_stringa",
+     "scalare_null",
+     "oggetto_vuoto",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "15",
+   "image": "postgis/postgis@sha256:679bd74e581fc4ebeadabe987077fceb3d1179c007971e9270255d9d93e0726b",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "15",
+   "image": "postgis/postgis@sha256:679bd74e581fc4ebeadabe987077fceb3d1179c007971e9270255d9d93e0726b",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "15",
+   "image": "postgis/postgis@sha256:679bd74e581fc4ebeadabe987077fceb3d1179c007971e9270255d9d93e0726b",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 4000,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 4000,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "15",
+   "image": "postgis/postgis@sha256:679bd74e581fc4ebeadabe987077fceb3d1179c007971e9270255d9d93e0726b",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "spazio",
+     "a",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "15",
+   "image": "postgis/postgis@sha256:679bd74e581fc4ebeadabe987077fceb3d1179c007971e9270255d9d93e0726b",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "pieno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "15",
+   "image": "postgis/postgis@sha256:679bd74e581fc4ebeadabe987077fceb3d1179c007971e9270255d9d93e0726b",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 4000,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 4000,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "pieno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "15",
+   "image": "postgis/postgis@sha256:679bd74e581fc4ebeadabe987077fceb3d1179c007971e9270255d9d93e0726b",
+   "decision": "a",
+   "reason": "Senza canonicalizzazione applicativa si osservano anche i membri duplicati; la classe misurata ogni e conservata dal log.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:jsonb;UTF8",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "json_numeri"
+     }
+    ],
+    "riscritti": [
+     "esponente",
+     "fuori_double",
+     "zero_negativo"
+    ],
+    "rifiutati": [
+     "chiave_ripetuta"
+    ],
+    "per_eccesso": [
+     "uno_virgola_zero",
+     "cinquanta_cifre",
+     "frazione",
+     "diciassette_cifre"
+    ]
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:jsonb;UTF8",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "esponente",
+     "fuori_double",
+     "zero_negativo",
+     "chiave_ripetuta"
+    ],
+    "rifiutati": [],
+    "per_eccesso": [
+     "oggetto",
+     "uno_virgola_zero",
+     "cinquanta_cifre",
+     "frazione",
+     "diciassette_cifre",
+     "intero_breve",
+     "ordine",
+     "spazi",
+     "escape",
+     "non_bmp",
+     "annidato",
+     "lista",
+     "scalare_stringa",
+     "scalare_null",
+     "oggetto_vuoto",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:8828b03e9a95269f808abe62aa83215b22a2d3710f54a55e8040327b7b5f9932",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:8828b03e9a95269f808abe62aa83215b22a2d3710f54a55e8040327b7b5f9932",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:8828b03e9a95269f808abe62aa83215b22a2d3710f54a55e8040327b7b5f9932",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 4000,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 4000,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:8828b03e9a95269f808abe62aa83215b22a2d3710f54a55e8040327b7b5f9932",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "spazio",
+     "a",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:8828b03e9a95269f808abe62aa83215b22a2d3710f54a55e8040327b7b5f9932",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "pieno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:8828b03e9a95269f808abe62aa83215b22a2d3710f54a55e8040327b7b5f9932",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 4000,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 4000,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "pieno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:8828b03e9a95269f808abe62aa83215b22a2d3710f54a55e8040327b7b5f9932",
+   "decision": "a",
+   "reason": "Senza canonicalizzazione applicativa si osservano anche i membri duplicati; la classe misurata ogni e conservata dal log.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:jsonb;UTF8",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "json_numeri"
+     }
+    ],
+    "riscritti": [
+     "esponente",
+     "fuori_double",
+     "zero_negativo"
+    ],
+    "rifiutati": [
+     "chiave_ripetuta"
+    ],
+    "per_eccesso": [
+     "uno_virgola_zero",
+     "cinquanta_cifre",
+     "frazione",
+     "diciassette_cifre"
+    ]
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:jsonb;UTF8",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "esponente",
+     "fuori_double",
+     "zero_negativo",
+     "chiave_ripetuta"
+    ],
+    "rifiutati": [],
+    "per_eccesso": [
+     "oggetto",
+     "uno_virgola_zero",
+     "cinquanta_cifre",
+     "frazione",
+     "diciassette_cifre",
+     "intero_breve",
+     "ordine",
+     "spazi",
+     "escape",
+     "non_bmp",
+     "annidato",
+     "lista",
+     "scalare_stringa",
+     "scalare_null",
+     "oggetto_vuoto",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "17",
+   "image": "postgis/postgis@sha256:624f5195b91d424dbebf018890148cc0e5a3e80db5467da8b53cc2ed2ce49216",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "17",
+   "image": "postgis/postgis@sha256:624f5195b91d424dbebf018890148cc0e5a3e80db5467da8b53cc2ed2ce49216",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "17",
+   "image": "postgis/postgis@sha256:624f5195b91d424dbebf018890148cc0e5a3e80db5467da8b53cc2ed2ce49216",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 4000,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 4000,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "17",
+   "image": "postgis/postgis@sha256:624f5195b91d424dbebf018890148cc0e5a3e80db5467da8b53cc2ed2ce49216",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "spazio",
+     "a",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "17",
+   "image": "postgis/postgis@sha256:624f5195b91d424dbebf018890148cc0e5a3e80db5467da8b53cc2ed2ce49216",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "pieno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "17",
+   "image": "postgis/postgis@sha256:624f5195b91d424dbebf018890148cc0e5a3e80db5467da8b53cc2ed2ce49216",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 4000,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 4000,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "pieno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "17",
+   "image": "postgis/postgis@sha256:624f5195b91d424dbebf018890148cc0e5a3e80db5467da8b53cc2ed2ce49216",
+   "decision": "a",
+   "reason": "Senza canonicalizzazione applicativa si osservano anche i membri duplicati; la classe misurata ogni e conservata dal log.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:jsonb;UTF8",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "json_numeri"
+     }
+    ],
+    "riscritti": [
+     "esponente",
+     "fuori_double",
+     "zero_negativo"
+    ],
+    "rifiutati": [
+     "chiave_ripetuta"
+    ],
+    "per_eccesso": [
+     "uno_virgola_zero",
+     "cinquanta_cifre",
+     "frazione",
+     "diciassette_cifre"
+    ]
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:jsonb;UTF8",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "esponente",
+     "fuori_double",
+     "zero_negativo",
+     "chiave_ripetuta"
+    ],
+    "rifiutati": [],
+    "per_eccesso": [
+     "oggetto",
+     "uno_virgola_zero",
+     "cinquanta_cifre",
+     "frazione",
+     "diciassette_cifre",
+     "intero_breve",
+     "ordine",
+     "spazi",
+     "escape",
+     "non_bmp",
+     "annidato",
+     "lista",
+     "scalare_stringa",
+     "scalare_null",
+     "oggetto_vuoto",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "18",
+   "image": "postgis/postgis@sha256:8d67cc8fe5f45808d54fe95cc210b05ce6b3ea3682e9a97c36362f3e1b8ff939",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "18",
+   "image": "postgis/postgis@sha256:8d67cc8fe5f45808d54fe95cc210b05ce6b3ea3682e9a97c36362f3e1b8ff939",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "18",
+   "image": "postgis/postgis@sha256:8d67cc8fe5f45808d54fe95cc210b05ce6b3ea3682e9a97c36362f3e1b8ff939",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 4000,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 4000,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "18",
+   "image": "postgis/postgis@sha256:8d67cc8fe5f45808d54fe95cc210b05ce6b3ea3682e9a97c36362f3e1b8ff939",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "spazio",
+     "a",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "18",
+   "image": "postgis/postgis@sha256:8d67cc8fe5f45808d54fe95cc210b05ce6b3ea3682e9a97c36362f3e1b8ff939",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "pieno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "18",
+   "image": "postgis/postgis@sha256:8d67cc8fe5f45808d54fe95cc210b05ce6b3ea3682e9a97c36362f3e1b8ff939",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 4000,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 4000,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "pieno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "18",
+   "image": "postgis/postgis@sha256:8d67cc8fe5f45808d54fe95cc210b05ce6b3ea3682e9a97c36362f3e1b8ff939",
+   "decision": "a",
+   "reason": "Senza canonicalizzazione applicativa si osservano anche i membri duplicati; la classe misurata ogni e conservata dal log.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:jsonb;UTF8",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "json_numeri"
+     }
+    ],
+    "riscritti": [
+     "esponente",
+     "fuori_double",
+     "zero_negativo"
+    ],
+    "rifiutati": [
+     "chiave_ripetuta"
+    ],
+    "per_eccesso": [
+     "uno_virgola_zero",
+     "cinquanta_cifre",
+     "frazione",
+     "diciassette_cifre"
+    ]
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:jsonb;UTF8",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "esponente",
+     "fuori_double",
+     "zero_negativo",
+     "chiave_ripetuta"
+    ],
+    "rifiutati": [],
+    "per_eccesso": [
+     "oggetto",
+     "uno_virgola_zero",
+     "cinquanta_cifre",
+     "frazione",
+     "diciassette_cifre",
+     "intero_breve",
+     "ordine",
+     "spazi",
+     "escape",
+     "non_bmp",
+     "annidato",
+     "lista",
+     "scalare_stringa",
+     "scalare_null",
+     "oggetto_vuoto",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 4000,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character varying(n);UTF8",
+    "dimensione": 4000,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno",
+     "pieno_meno_uno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 1,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 1,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio_finale",
+     "spazi_finali",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "bom",
+     "separatore_riga",
+     "barra_inversa",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "spazio",
+     "a",
+     "precomposto",
+     "sostituzione",
+     "pieno",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 10,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 10,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "pieno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5",
+   "decision": "a",
+   "reason": "Spazi oltre la lunghezza e padding osservati senza guardie P/S. Si conserva la classe del log, inclusa ogni quando il classificatore non dispone della dimensione necessaria; nessuna nuova ammissione.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 4000,
+    "esito": "esatto",
+    "riscritture": [],
+    "riscritti": [],
+    "rifiutati": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "nul_interno",
+     "solo_nul",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi",
+     "oltre"
+    ],
+    "per_eccesso": []
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:character(n);UTF8",
+    "dimensione": 4000,
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "vuoto",
+     "spazio",
+     "a",
+     "spazio_finale",
+     "spazi_finali",
+     "spazio_iniziale",
+     "controllo",
+     "latino",
+     "fuori_latin1",
+     "non_bmp",
+     "combinante",
+     "precomposto",
+     "bom",
+     "sostituzione",
+     "separatore_riga",
+     "barra_inversa",
+     "pieno_meno_uno",
+     "oltre_con_spazio",
+     "oltre_con_spazi"
+    ],
+    "rifiutati": [
+     "nul_interno",
+     "solo_nul",
+     "oltre"
+    ],
+    "per_eccesso": [
+     "pieno",
+     "pieno_spazio_finale",
+     "pieno_multibyte",
+     "pieno_non_bmp",
+     "nullo"
+    ]
+   }
+  },
+  {
+   "major": "16",
+   "image": "postgis/postgis@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5",
+   "decision": "a",
+   "reason": "Senza canonicalizzazione applicativa si osservano anche i membri duplicati; la classe misurata ogni e conservata dal log.",
+   "before": {
+    "arrow": "utf8",
+    "nativo": "scalare:jsonb;UTF8",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "json_numeri"
+     }
+    ],
+    "riscritti": [
+     "esponente",
+     "fuori_double",
+     "zero_negativo"
+    ],
+    "rifiutati": [
+     "chiave_ripetuta"
+    ],
+    "per_eccesso": [
+     "uno_virgola_zero",
+     "cinquanta_cifre",
+     "frazione",
+     "diciassette_cifre"
+    ]
+   },
+   "after": {
+    "arrow": "utf8",
+    "nativo": "scalare:jsonb;UTF8",
+    "esito": "riscrive",
+    "riscritture": [
+     {
+      "classe": "ogni"
+     }
+    ],
+    "riscritti": [
+     "esponente",
+     "fuori_double",
+     "zero_negativo",
+     "chiave_ripetuta"
+    ],
+    "rifiutati": [],
+    "per_eccesso": [
+     "oggetto",
+     "uno_virgola_zero",
+     "cinquanta_cifre",
+     "frazione",
+     "diciassette_cifre",
+     "intero_breve",
+     "ordine",
+     "spazi",
+     "escape",
+     "non_bmp",
+     "annidato",
+     "lista",
+     "scalare_stringa",
+     "scalare_null",
+     "oggetto_vuoto",
+     "nullo"
+    ]
+   }
+  }
+ ]
+}

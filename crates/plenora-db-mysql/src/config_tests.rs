@@ -64,6 +64,7 @@ fn pooled_driver_opts_reapply_bootstrap_after_connection_reset() {
         .expect("driver opts pooled");
     assert!(opts.pool_opts().reset_connection());
     assert_eq!(opts.setup(), &[crate::SESSION_BOOTSTRAP_SQL]);
+    assert!(opts.client_found_rows(), "Update conta le righe trovate");
 }
 
 #[tokio::test]

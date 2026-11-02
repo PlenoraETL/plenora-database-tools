@@ -9,9 +9,9 @@ use tokio_postgres::{Client, Transaction};
 
 const PREFIX: &str = "plenora.field_id.v1:";
 
-const COLUMN_COMMENT: &str = "SELECT col_description(a.attrelid, a.attnum) \
+const COLUMN_COMMENT: &str = "SELECT pg_catalog.col_description(a.attrelid, a.attnum) \
      FROM pg_catalog.pg_attribute a \
-     WHERE a.attrelid = $1::text::regclass AND a.attname = $2 \
+     WHERE a.attrelid = $1::pg_catalog.text::pg_catalog.regclass AND a.attname = $2 \
      AND a.attnum > 0 AND NOT a.attisdropped";
 
 /// La prima riga e riservata; il resto del commento resta byte per byte.
@@ -101,7 +101,10 @@ pub async fn register(
             // COMMENT non accetta bind: il server quota il valore con le proprie
             // regole, incluse le impostazioni sulle stringhe e i backslash.
             let literal: String = transaction
-                .query_one("SELECT quote_literal($1::text)", &[&updated])
+                .query_one(
+                    "SELECT pg_catalog.quote_literal($1::pg_catalog.text)",
+                    &[&updated],
+                )
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Write, &error))?
                 .get(0);
@@ -187,9 +190,9 @@ const fn renderer() -> Renderer {
 fn quoted_target(renderer: &Renderer, operation: &WriteOperation) -> Result<String> {
     renderer.quote_object(&ObjectName {
         catalog: None,
-        schema: Some(Identifier::new(
-            operation.target.schema.as_deref().unwrap_or("public"),
-        )?),
+        schema: Some(Identifier::new(crate::target_schema::schema_of(
+            &operation.target,
+        )?)?),
         object: Identifier::new(operation.target.object.clone())?,
     })
 }

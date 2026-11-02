@@ -282,7 +282,7 @@ pub async fn probe_spatial(
     Ok(available)
 }
 
-async fn query(
+pub async fn query(
     config: &OracleConfig,
     connection: &oracle_rs::Connection,
     sql: &str,
@@ -436,16 +436,16 @@ fn build_indexes(rows: &[Row]) -> Result<Vec<OracleIndex>> {
     Ok(indexes)
 }
 
-fn required_string(row: &Row, index: usize, message: &'static str) -> Result<String> {
+pub fn required_string(row: &Row, index: usize, message: &'static str) -> Result<String> {
     match row.get_index(index) {
-        Some(ParameterValue::String(value)) => Ok(value.trim().to_owned()),
+        Some(ParameterValue::String(value)) => Ok(value.clone()),
         _ => Err(mapping_error(message)),
     }
 }
 
-fn optional_string(row: &Row, index: usize) -> Result<Option<String>> {
+pub fn optional_string(row: &Row, index: usize) -> Result<Option<String>> {
     match row.get_index(index) {
-        Some(ParameterValue::String(value)) => Ok(Some(value.trim().to_owned())),
+        Some(ParameterValue::String(value)) => Ok(Some(value.clone())),
         Some(ParameterValue::Null { .. }) => Ok(None),
         _ => Err(mapping_error(
             "campo testuale catalogo Oracle non rappresentabile",
@@ -457,7 +457,7 @@ fn required_u64(row: &Row, index: usize, message: &'static str) -> Result<u64> {
     optional_u64(row, index, message)?.ok_or_else(|| mapping_error(message))
 }
 
-fn optional_u64(row: &Row, index: usize, message: &'static str) -> Result<Option<u64>> {
+pub fn optional_u64(row: &Row, index: usize, message: &'static str) -> Result<Option<u64>> {
     match row.get_index(index) {
         Some(ParameterValue::I64(value)) => u64::try_from(*value)
             .map(Some)
@@ -475,7 +475,7 @@ fn optional_u64(row: &Row, index: usize, message: &'static str) -> Result<Option
     }
 }
 
-fn optional_i64(row: &Row, index: usize, message: &'static str) -> Result<Option<i64>> {
+pub fn optional_i64(row: &Row, index: usize, message: &'static str) -> Result<Option<i64>> {
     match row.get_index(index) {
         Some(ParameterValue::I64(value)) => Ok(Some(*value)),
         Some(ParameterValue::Decimal(value)) => {

@@ -162,6 +162,7 @@ impl ColumnBuffer {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn append(&mut self, row: &Row, index: usize) -> Result<u64> {
         match self {
             Self::Bool(builder) => append_option(builder, row.try_get(index)),
@@ -170,6 +171,22 @@ impl ColumnBuffer {
             Self::I64(builder) => append_option(builder, row.try_get(index)),
             Self::F32(builder) => append_option(builder, row.try_get(index)),
             Self::F64(builder) => append_option(builder, row.try_get(index)),
+            // `json`, `jsonb` e `uuid` nel risultato di una query (la lettura
+            // di una tabella li proietta in testo): il testo che il server ne
+            // darebbe con `::text`. Fino al 25/10 la query li rifiutava
+            // (`data_mapping`): il codec di `String` accetta soltanto i tipi
+            // di testo.
+            Self::Utf8(builder)
+                if row.columns().get(index).is_some_and(|column| {
+                    matches!(*column.type_(), Type::JSON | Type::JSONB | Type::UUID)
+                }) =>
+            {
+                append_option(
+                    builder,
+                    row.try_get::<_, Option<ServerText>>(index)
+                        .map(|value| value.map(|text| text.0)),
+                )
+            }
             Self::Utf8(builder) => append_option(builder, row.try_get(index)),
             Self::Binary(builder) => append_option(builder, row.try_get(index)),
             Self::Date(builder) => {
@@ -518,6 +535,50 @@ impl_append_option!(Float32Builder, f32);
 impl_append_option!(Float64Builder, f64);
 impl_append_option!(StringBuilder, String);
 impl_append_option!(BinaryBuilder, Vec<u8>);
+
+/// Il testo di un valore `json`, `jsonb` o `uuid` in formato binario, come lo
+/// scrive il server in testo: `json` e il testo stesso, `jsonb` il testo dopo
+/// il byte di versione 1 (`jsonb_send`), `uuid` i sedici byte in esadecimale
+/// minuscolo con i trattini. Una versione di `jsonb` diversa da 1 si rifiuta.
+struct ServerText(String);
+
+impl<'a> FromSql<'a> for ServerText {
+    fn from_sql(
+        ty: &Type,
+        raw: &'a [u8],
+    ) -> std::result::Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        match *ty {
+            Type::JSON => Ok(Self(std::str::from_utf8(raw)?.to_owned())),
+            Type::JSONB => match raw.split_first() {
+                Some((1, text)) => Ok(Self(std::str::from_utf8(text)?.to_owned())),
+                _ => Err("versione jsonb non supportata".into()),
+            },
+            Type::UUID => {
+                let bytes: [u8; 16] = raw.try_into().map_err(|_| "uuid di lunghezza errata")?;
+                let hex = bytes
+                    .iter()
+                    .fold(String::with_capacity(32), |mut hex, byte| {
+                        use std::fmt::Write as _;
+                        let _ = write!(hex, "{byte:02x}");
+                        hex
+                    });
+                Ok(Self(format!(
+                    "{}-{}-{}-{}-{}",
+                    &hex[0..8],
+                    &hex[8..12],
+                    &hex[12..16],
+                    &hex[16..20],
+                    &hex[20..32]
+                )))
+            }
+            _ => Err("tipo non testuale".into()),
+        }
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        matches!(*ty, Type::JSON | Type::JSONB | Type::UUID)
+    }
+}
 
 fn append_option<B, T>(
     builder: &mut B,

@@ -533,6 +533,8 @@ impl Values {
                 values.push(binary_float_from_dump(dump)?);
             }
             (Self::F32(values), ParameterValue::F64(value)) => {
+                // Il driver legge BINARY_FLOAT come f64 esatto: il ritorno a
+                // f32 deve essere esatto, o il valore non e un BINARY_FLOAT.
                 let narrowed = narrow_f32(*value);
                 if !narrowed.is_finite() || f64::from(narrowed).to_bits() != value.to_bits() {
                     return Err(mapping("BINARY_FLOAT Oracle non rappresentabile"));

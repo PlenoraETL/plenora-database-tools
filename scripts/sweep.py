@@ -19,6 +19,7 @@ import copy
 import itertools
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -57,6 +58,7 @@ EXCLUDED = {
     "sqlserver-assurance.yml/sqlserver": ("docker compose", "fixture SQL Server in Docker"),
     "sqlserver-matrix.yml/matrix": ("scripts/check_sqlserver_matrix.py", "matrice SQL Server live"),
     "supply-chain.yml/cargo-deny": ("scripts/check_cargo_deny.py", "cargo deny eseguito in Docker con database RustSec"),
+    "write-admission-probes.yml/probes": ("scripts/sonde_scritture_server.py", "sonde contro database live"),
 }
 
 
@@ -162,6 +164,18 @@ def prepare_contracts(inputs: dict, env: dict) -> None:
     print(f"    pin verificato, sola lettura: {repository}", flush=True)
 
 
+def local_outputs(value: str, env: dict) -> str:
+    """Sposta soltanto gli output di artefatti richiesti sotto target."""
+    destination = env.get("SWEEP_ARTIFACT_ROOT")
+    if not destination:
+        return value
+    root = Path(destination).resolve()
+    if not root.is_relative_to((ROOT / "target").resolve()):
+        raise ValueError("artefatti sweep fuori da target")
+    return re.sub(r"(?<![\w/.-])(dist|benchmark-results)(?=[/\s]|$)",
+                  lambda match: (root / match[0]).as_posix(), value)
+
+
 def action(step: dict, env: dict) -> subprocess.CompletedProcess | None:
     """Adatta solo action note; un nuovo prerequisito non passa inosservato."""
     name = step["uses"].split("@", 1)[0]
@@ -188,7 +202,7 @@ def action(step: dict, env: dict) -> subprocess.CompletedProcess | None:
             raise ValueError("maturin fissato non disponibile")
         if "manylinux" in inputs:
             raise ValueError("manylinux richiede Docker")
-        return run([sys.executable, "-m", "maturin", inputs["command"], *shlex.split(inputs["args"])], env)
+        return run([sys.executable, "-m", "maturin", inputs["command"], *shlex.split(local_outputs(inputs["args"], env))], env)
     elif name in {"Swatinem/rust-cache", "actions/upload-artifact"}:
         print(f"    infrastruttura CI {name}: cache/log restano locali", flush=True)
     else:
@@ -208,6 +222,7 @@ def execute(step: dict, env: dict, defaults: dict) -> subprocess.CompletedProces
     # La CI parte da un ambiente pulito. In locale pip altrimenti considera
     # soddisfatto un wheel della stessa versione ma costruito da altri sorgenti.
     script = script.replace("-m pip install dist/*.whl", "-m pip install --force-reinstall --no-deps dist/*.whl")
+    script = local_outputs(script, env)
     shell = step.get("shell", defaults.get("shell", "bash"))
     cwd = ROOT / step.get("working-directory", defaults.get("working-directory", "."))
     # I comandi semplici possono evitare del tutto la shell. Tutti gli altri
@@ -257,7 +272,7 @@ def main() -> int:
     output = ROOT / "target/sweep"
     output.mkdir(parents=True, exist_ok=True)
     (output / "tmp").mkdir(exist_ok=True)
-    env = dict(os.environ, CARGO_BUILD_JOBS="4", CARGO_NET_OFFLINE="true",
+    env = dict(os.environ, CARGO_BUILD_JOBS=os.environ.get("CARGO_BUILD_JOBS", "4"), CARGO_NET_OFFLINE="true",
                PIP_NO_INDEX="1", PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1",
                RUNNER_TEMP=(output / "tmp").as_posix(), GITHUB_WORKSPACE=ROOT.as_posix())
     # Il verificatore del wheel rifiuta qualunque import sotto il checkout.
@@ -331,7 +346,7 @@ def main() -> int:
                     step_env = dict(env)
                     for extra in (source["env"], job.get("env", {}), step.get("env", {})):
                         step_env.update({k: str(v) for k, v in expand(extra, cell).items()})
-                    step_env["CARGO_BUILD_JOBS"] = "4"
+                    step_env["CARGO_BUILD_JOBS"] = env["CARGO_BUILD_JOBS"]
                     defaults = {**source["defaults"].get("run", {}), **job.get("defaults", {}).get("run", {})}
                     script = step.get("run", "")
                     if os.name == "nt" and "lscpu" in script:

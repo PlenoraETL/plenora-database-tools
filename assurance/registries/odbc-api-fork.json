@@ -1,0 +1,221 @@
+{
+  "upstream": "odbc-api 29.0.0",
+  "normalization": "CRLF to LF for UTF-8 text without NUL; binary files byte-exact",
+  "upstream_files": {
+    ".cargo-ok": "afbf9d0f3560b0fd7795e81c42a0a79ee6b6fc67e064f77826aee642cad28d91",
+    ".cargo_vcs_info.json": "3c3441a68eb57dfc39780d8a763e919a06f19153715b2b64f809b3937b26f88f",
+    "Cargo.lock": "043c925f6e299d28946e7eec2feba54a8d0cbf35c13d9eb6c61a88c25365d7c1",
+    "Cargo.toml": "983282da8b1bcf4a0f70721c71aef6c1e0b8dc7b2bc67e71f70a4f6cafba1c1b",
+    "Cargo.toml.orig": "a03e95b2e2e46431f5901aefec48fdf019978bcbdbb646e8293f643f1c56d1d0",
+    "License": "450977edb4e1a33bb1b3912f718eeb11f139407c04f5cad2fc1cbf9860040d94",
+    "Readme.md": "4152e6418757d628f5dbf6ad4f8914b590ef156e9fe5420bde186c4c23aa5a4b",
+    "benches/benches.rs": "21ef074a62d45565c21a47664394c51b5a6e4f2f9ed9e8056edc648515fa6718",
+    "src/buffers.rs": "86de89c2578fa3054e8cd4886e5312ccf54acc22ddcd0d33e360290b4ff08ef0",
+    "src/catalog.rs": "2b9529324f0f1d1c8a15a738da4612b9d618ddd3a865eaed32d1a430b1c5db77",
+    "src/columnar_bulk_inserter.rs": "cd621cbf3d50263e86a3690e8a5338bd663f42d4043a7003467d16138cb65167",
+    "src/connection.rs": "305971944f1a98effa7152a9c7edadfc29e8ea835ae53df8cf162387c231f105",
+    "src/conversion.rs": "21d71dbf6dfa2ebd311ca25afe9d8a7ec1881066a3a32ee0aa2eee1a8caf6bd5",
+    "src/cursor.rs": "17cb46d560c236b31c4decac785e3be2f10c17f3a61a3d4a4006ebc8413235f7",
+    "src/driver_complete_option.rs": "4764573f42ce2159fb3c17ee29aeeb9db67fe3886fd3104b21c61fbec00c46cd",
+    "src/environment.rs": "9347cbd6cbc803791163de812b075f164eadd6b562f1502f29e33db219043ac1",
+    "src/error.rs": "72201b1bbeeb78719f9e3d8cc79dd6eea34a3d21b76b5c6c5eb8db53005520c2",
+    "src/execute.rs": "23af61cee2675c1def842b2a97a39eb9e305acf50a8c1ee783a2799de7c1ac0b",
+    "src/fixed_sized.rs": "9136f7db1bd217917d6d36de68f4e67eb90d12112085d89469a52fefe359ac79",
+    "src/guide.rs": "e96a772d49504ca9cf080ea6e6fc875be66dd8a3e02e82e7355ba807befdd524",
+    "src/handles.rs": "4c81ffcbfe225b9e879c8f715e099a45d23cab95abb09900cd27444f0491b5f3",
+    "src/into_parameter.rs": "61f7eafd48fad497c3445189a378238191ab3f3c1e1e9133b30480c8918ac9f2",
+    "src/lib.rs": "ad0745a8a44c6b53a11d70c642a5be9a435e7a3f433491b7b1a0724c606edde6",
+    "src/narrow.rs": "ae95897742d47b26a32970122e998e2403492cc1f4939aec7ffa83318b0dad97",
+    "src/nullable.rs": "5cb3ae3e087d9fba17242da500e9c4baef5617741648c618c092b0e95d4dacb3",
+    "src/parameter.rs": "53ae952878bc84f2d0429ebe2293b8efdcd31a9a7269ebae2f1f87f6b0222d2d",
+    "src/parameter_collection.rs": "3c3a889efde9d3bad4b216609f8e8eed1a9278e3b046a38603bb266893a7d55f",
+    "src/preallocated.rs": "467c93164224a273ac84767373bb2a4959cefda79f03805cc074df817fa3cd8d",
+    "src/preallocated_polling.rs": "86592347f0ae3f0f34cd654bd6bff0e2478dc5e30e853e1427247a6fc937ae69",
+    "src/prepared.rs": "1e63f5ff3c919b409a2c58be0365f4d0a26051ef391ae111fd8a96982b8d8e83",
+    "src/result_set_metadata.rs": "75f8c3556b39a51097d6c273582dd1afd460b3eca927c5a94f326e5c82478963",
+    "src/shared_connection.rs": "0f82fc447bdad7c6ae5d3dbd91a44c4ca72f8dc8a3882adf75db62bab8ad5e2b",
+    "src/sleep.rs": "20a652bb990641697ab5002f60182fdcef44e582278d235d7227f1029f1397bf",
+    "src/buffers/bin_column.rs": "944a33299c6894d744a9012b15963d74d2e4a3866928a348442fd5343afc783a",
+    "src/buffers/columnar.rs": "c3ac21ad22d7e64593210b169013a5ab73d6d76fdeb12799ff322fa77d7bb363",
+    "src/buffers/column_with_indicator.rs": "04097420b2459b6e0b944ee5769d33df98239777f49f67bd1597e872c3dba0a1",
+    "src/buffers/description.rs": "3c83121a4078e3c6c340b040c86fd339c3d69de4b72637fde6e3ea05a25696ee",
+    "src/buffers/dyn_column_buffer.rs": "83ddd81aa8e6490b97663c35b0ea52a14186f2ff4bcdcf7c16852b5f7784978c",
+    "src/buffers/indicator.rs": "0a709db31ca17577a555d0d72d485f7ea2ff190d5209b8999aa3c429093e63b3",
+    "src/buffers/item.rs": "b537c859fec0c5548f6e73f21a191f80726eae9d5226f10a85bcd938d3b77be5",
+    "src/buffers/row_vec.rs": "cafa28c566764f7ff3f2f440b335ac3695876ba118f5aeb95d1bdb3425f19d2f",
+    "src/buffers/text_column.rs": "bdd4522da2cce72bbd5df72a518762891647e3f8b30c1e200af768c400904cb9",
+    "src/catalog/columns.rs": "6d13eb1c53dec0be338a7abdfb040ed77c6694339d9102a74e4bfa0ece0e7b54",
+    "src/catalog/foreign_keys.rs": "359df19b6d544ad8018ee7836e42ad0f6fdc866cf35f88652778f8a072e81ed6",
+    "src/catalog/primary_keys.rs": "3365b277b50dd6fb226cff1785ba4a18f381b2d1fbfbbc4ab777c4e8aa2f6587",
+    "src/catalog/tables.rs": "667c655c36c3a7031aa59627dcb0c9aa86209053a8ab6d34f66bb55c47307b88",
+    "src/cursor/block_cursor.rs": "2373438c99fc8feb8c69fcd2e571b99511ed60eb64f2a49d257e3e371f15dd8f",
+    "src/cursor/concurrent_block_cursor.rs": "88a73e3b408dd47a20b2c6774992afe6a49de2394421f0090cf6169f0b4ef26b",
+    "src/cursor/polling_cursor.rs": "ae9447544876d4fb3241962c2f1a4fe73a92f4fcca6f5bb56b01c01d83f86140",
+    "src/handles/any_handle.rs": "61c3fabd1138a26cb6a8a667187b6c2780cf9c037bfc78029e189c2cb035b7f6",
+    "src/handles/bind.rs": "4e09e7debff0091b82c0491931a637a779f35e518ea46bcabc43881047459e3f",
+    "src/handles/buffer.rs": "b081e467d092fe25301b47005eec83c5a755c5150664687fda0016cce02a780f",
+    "src/handles/column_description.rs": "4a9f1854137e1143a6df51c97505e6597e89e3a1d341eef67a1b253781cee175",
+    "src/handles/connection.rs": "19d7b8dd45ea1ecf549d199ec6fd61102c7a3b14fd1178e397559f1530f38a68",
+    "src/handles/data_type.rs": "1e49cff164b53bc9e9027715c911fd3a164044583a81ecfe2260e9db5e6f1a23",
+    "src/handles/descriptor.rs": "8e4db63ab2f867f67faad7baba10817fb3739e4fccf93b5110492868c1148058",
+    "src/handles/diagnostics.rs": "a516d407f93484893dd111c74c048bd2c3975be034d313088711dec024a65e26",
+    "src/handles/environment.rs": "8761219edac62008bf996eb4a20383dad3150e71f4b042beffcb2e1abb2f860c",
+    "src/handles/logging.rs": "6d48ddb2c2527f2e8e2a93d95f46ddbfa78690ef7c2a1d3b7cc3651e16b1e018",
+    "src/handles/sql_char.rs": "125a9c7dad97c7dea433c23759d5f7051a6d96b5071d3fceb3c834f2f6434c23",
+    "src/handles/sql_result.rs": "93b223e320e7f11980ed38d3ad7fabe19263ce911ef4816242b1d1b376c98455",
+    "src/handles/statement.rs": "17d1f0632dc56732b67ab5158c2f50b4c4ae99edfeb5c4e0c7243ad84b83c5d7",
+    "src/handles/statement_connection.rs": "01cd71677d85369d453657d2676e84d7037611314e2940fa629bd4e09d546d82",
+    "src/parameter/blob.rs": "99bc5ee165a4752ba1ae1a05984e1f60bef0fd5013aca999fab1a55821eb9111",
+    "src/parameter/c_string.rs": "2a7eb1cdf64605724d9378a9ff4d4449a9b5cf23842a2e021bf82f99a3191e36",
+    "src/parameter/varcell.rs": "ff9f1388a9188826548b24c10e7715a06d29f8f78d5d4376328aedf32ee82af4",
+    "src/parameter_collection/tuple.rs": "0377b9bbe8e1b2d1351abf8c4d2ecb836caef91369d679f8d8999329dae4bc7d",
+    "tests/connection_pooling.rs": "9c07a654bf2671eb24bca12e2e4c27326f015df05829858b98fead676edc2e28",
+    "tests/logging.rs": "0991d6ad452ee9233892a1a4d449549a7d6ec400f63c68e1113a4044408bfbb7",
+    "tests/structured_logging.rs": "00a2271af3e6ad048859c837bcb59ab53deb88d1c0b4ae1289593f22ecce8486",
+    "tests/integration/bulk_insert.rs": "e842b4eb027b2dec56fd5170341a657ef3515f0e369954e7405a3e31ae098c83",
+    "tests/integration/catalog.rs": "f9c32107c00f6be5a61727ad16f91b665671a528e006db3b4627361456a80ba8",
+    "tests/integration/column_wise_bulk_fetch.rs": "40151a4bdba6aad2a6c66a1931a1ffb183a6deea9474b29d479995eecc052cf4",
+    "tests/integration/common.rs": "ca7905e35eb1b47069b28ed0f0831d802ba50403ce328a31b61fedd9f681ed2d",
+    "tests/integration/connection_strings.rs": "2c6af20a80cb9bfaf4e39b9d1d338eaa86a8e406f857956bc66b1a2a926e6454",
+    "tests/integration/derive.rs": "3cfa68f09fae5dbe7ac7762059efd523a9fe291d98f9e9e50d11596f9601ab1e",
+    "tests/integration/main.rs": "074f91902b69a099986755383cf088a37b984baad83793fd21f99102a138ec93",
+    "tests/integration/mdbtools.rs": "289404d8183696f1f3425cdc5c7e2a7eb4a06d988b166ed799ac21b060da96b2",
+    "tests/integration/nwind.mdb": "4682dfc91be526e6508948cc53adf5c63d70fdf7f2cc1f1403ee76b66ac914b2"
+  },
+  "changes": {
+    ".cargo-ok": {
+      "sha256": null,
+      "reason": "Marcatore della cache Cargo, non sorgente distribuito."
+    },
+    ".cargo_vcs_info.json": {
+      "sha256": null,
+      "reason": "Metadati del pacchetto di registro; versione e baseline conservate in questo registro."
+    },
+    "Cargo.lock": {
+      "sha256": null,
+      "reason": "Lock upstream escluso: il workspace fissa il grafo qualificato."
+    },
+    "src/cursor/block_cursor.rs": {
+      "sha256": "605180d00a7c0527c0d8a636f23bd7ab6d4864a50d5f741abb1318f22c0d1c4b",
+      "reason": "fetch_with_diagnostics espone buffer e diagnostici prima della prossima chiamata ODBC. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/execute.rs": {
+      "sha256": "2d9555ae881c3be8d684cf79645d36604f2b5e77f785d54815ab75576d41322c",
+      "reason": "Controllo immediato per SQLExecute/SQLExecDirect, ogni SQLPutData, SQLParamData e SQLNumResultCols nel percorso strict; attribuzione alla funzione reale; binding senza avvisi ignorati. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/preallocated.rs": {
+      "sha256": "b378168b7075322aac35699304e667c54fa12ca845a7c1de70a762d05a18e777",
+      "reason": "into_cursor_strict: API opt-in per SQLExecDirect con diagnostici preservati. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/prepared.rs": {
+      "sha256": "fa6b4e3260f8a883777973365d4e93af2ec9fa20db60c1ddb98195468aa99d9f",
+      "reason": "execute_strict e describe_param_strict: controlli immediati di esecuzione e descrittori di ammissione. Contatori parametri/righe strict, senza conversioni con panic. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/error.rs": {
+      "sha256": "1906c19683d26e92079fff855db5a2ea24d6a1ceeaa031dc9caae4fd32e20af5",
+      "reason": "Conversione strict valuta ogni record: avvisi informativi registrati senza payload, perdita o significato ignoto rifiutati; SUCCESS_WITH_INFO privo di diagnostici rifiutato. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/result_set_metadata.rs": {
+      "sha256": "6f14ab64c8abd57191c9c69da3ea7de9fbc1896bc8a56ab57e21a75c8d2d7c93",
+      "reason": "col_data_type_strict verifica ogni attributo e descrizione prima della richiesta successiva; conversioni numeriche fallibili. Contatore colonne strict. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/handles/statement.rs": {
+      "sha256": "77c526d989905d7827a86ac4f570ad586898f6b82c42183c4e0cdb5296da1d2e",
+      "reason": "Varianti strict di nome e descrizione fermano gli avvisi prima dei retry interni. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/columnar_bulk_inserter.rs": {
+      "sha256": "efaeee90076b5d157ea4a019e5c6efbcc2ffff759c8bb770e007628dfe421ce2",
+      "reason": "execute_strict per array controlla SQLSetStmtAttr ed esecuzione; tutti i bind dei parametri rifiutano immediatamente gli avvisi. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/parameter_collection.rs": {
+      "sha256": "a9752f7a86ea2348cdb4f41e4fd7892f8abafd597c4fb906a1e4a10be0f453f9",
+      "reason": "Ogni SQLBindParameter scalare o slice rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/parameter_collection/tuple.rs": {
+      "sha256": "6c9111b68c344fd005a6b38bb9361a7b24dc08141b9df85ec87c9422c0c05efc",
+      "reason": "Ogni SQLBindParameter delle tuple input/output rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/parameter/blob.rs": {
+      "sha256": "d07ed9abcd30e1103dc3d6e899283fd8f4aad28e7eac72ba2cd474f9086478f4",
+      "reason": "Ogni bind dei parametri streaming rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/buffers/columnar.rs": {
+      "sha256": "8eca3eecd5453288e915e87138d1c65f9155bb1a06be4726cc0ff5380cf9fe66",
+      "reason": "Ogni SQLBindCol rifiuta subito SUCCESS_WITH_INFO, anche fuori dalle API strict. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/cursor.rs": {
+      "sha256": "160ac63e8c86495bd98d14348ec5029016612780b933665ff03f0dac1e3c4fe3",
+      "reason": "Setup rowset controllato prima di ulteriori attributi o bind; avvisi degli attributi rifiutati anche fuori dalle API strict. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/handles/diagnostics.rs": {
+      "sha256": "b65cb8ed01d39410bab81f593103baac03ec7526ec80ee0452f7bbf321a3a3df",
+      "reason": "Classificazione chiusa IBM CLI/Db2: avvisi di perdita e sconosciuti rifiutati, informativi riconosciuti ammessi; unica policy condivisa col provider. Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/connection.rs": {
+      "sha256": "ae23b65c2e3265dd5519401fef0ffe6d421e1bdddc435595be198f0262e40771",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/environment.rs": {
+      "sha256": "676976287719de82150c2feee87ff1a685e93dd38f574e4622d0000dbdb6fba2",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/handles.rs": {
+      "sha256": "2f348d858f737af4404272e9c58b0b1a05bc0f573140a3760fbce4dc5cdcb9c5",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/buffers/bin_column.rs": {
+      "sha256": "6f05bfc032eb1fafef651e836a81e2bf5bbc152c30cb6fb6dd0494959bb2e12b",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/buffers/row_vec.rs": {
+      "sha256": "6c0e5459dab35bb7aa637dd893135fbe47625274f95c0cc3986fab94e85d6230",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/buffers/text_column.rs": {
+      "sha256": "9426681cc6595e8a5d9a0ec640ccebb44ae7595e3f1589eb76a71baa6f0189f6",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/catalog/columns.rs": {
+      "sha256": "30ba80484f3aebe16402a73512de85018192a773ba51150c14203f88b662f16a",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/catalog/foreign_keys.rs": {
+      "sha256": "3ef86e0e646a2ad6858acb1d85cfe36242238628fee1bc176939ee0475f91613",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/catalog/primary_keys.rs": {
+      "sha256": "593117952ef1b6d06646954309f7ca47aedfcbf595c7ff179dff0c21e9af2283",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/catalog/tables.rs": {
+      "sha256": "2e047e9d828c952f22504a43e67cdb71dfec56c9a4a80640a1dd7135d522777d",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/cursor/polling_cursor.rs": {
+      "sha256": "91bdaca177ede44bf5bd1f6eb998a4e07ded5bfca72660505c9056793a88739a",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/handles/connection.rs": {
+      "sha256": "9c5dc21cbb95bcc7a9c6ab581fa8dbbf0272ff4c0c5c040904375ce0ec536762",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/handles/descriptor.rs": {
+      "sha256": "567a9cfaa943d9d71462f5613b38132045890b6a5650888aa9d0dbcef7c11018",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/handles/environment.rs": {
+      "sha256": "90ccc612fe322e8584f46adc8f07b19a2899e7195d8e840fcd238e6784c892d0",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    },
+    "src/handles/sql_result.rs": {
+      "sha256": "eb61fd5b624da4bdac606fcca4a957605a1da7a48491a763ff69d967b862e284",
+      "reason": " Confine SQLRETURN strict obbligatorio: diagnostici acquisiti subito, esiti ammessi normalizzati prima di continuare lo stato; nessuna conversione permissiva."
+    }
+  },
+  "strict_boundary": {
+    "source": "vendor/odbc-api/src/handles/sql_result.rs",
+    "guard": "scripts/check_odbc_strict.py",
+    "inventory_command": "python scripts/check_odbc_strict.py --inventory target/ci-fail/odbc-calls.txt",
+    "regressions": "crates/plenora-db-db2/src/exact_read_tests.rs"
+  }
+}

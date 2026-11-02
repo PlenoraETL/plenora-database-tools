@@ -48,9 +48,12 @@ pub mod spatial_operand;
 pub mod spatial_policy;
 pub mod spatial_predicate;
 pub mod spatial_probe;
+pub mod store_rewrite;
 pub mod strict_json;
 pub mod transaction;
 pub mod typed_parameter;
+pub mod write_admission;
+pub mod write_keys;
 
 pub use cancellation::{CancellationReason, CancellationToken};
 pub use checkpoint::{ReadCheckpoint, READ_CHECKPOINT_SCHEMA_VERSION};

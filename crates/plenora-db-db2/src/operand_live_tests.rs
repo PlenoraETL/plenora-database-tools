@@ -211,10 +211,16 @@ fn resa(
 /// che non proiettano `ID`), nell'ordine reso.
 fn identificativi(rows: &[plenora_database_core::Row]) -> Vec<String> {
     rows.iter()
-        .map(|row| match row.get("ID").or_else(|| row.get("V")) {
-            Some(ParameterValue::I32(value)) => value.to_string(),
-            Some(ParameterValue::I64(value)) => value.to_string(),
-            other => format!("{other:?}"),
+        .map(|row| {
+            match row
+                .get("ID")
+                .expect("nomi univoci")
+                .or_else(|| row.get("V").expect("nomi univoci"))
+            {
+                Some(ParameterValue::I32(value)) => value.to_string(),
+                Some(ParameterValue::I64(value)) => value.to_string(),
+                other => format!("{other:?}"),
+            }
         })
         .collect()
 }
@@ -592,6 +598,30 @@ async fn live_operand_catalog_judges_geometry_and_admits_scalars() {
     .await
     .expect("portable scalare Db2");
     assert_eq!(identificativi(&rows), vec!["2".to_owned()]);
+    let scalare_con_distinto = select("SONDE_OPERANDI_TIPI", vec!["ID"])
+        .schema("PLENORA")
+        .where_(eq("ID", ParameterValue::I32(1)))
+        .into_statement();
+    let rows = plenora_database_core::facade::execute_portable_returning(
+        transaction.as_mut(),
+        &scalare_con_distinto,
+        &cancellation,
+    )
+    .await
+    .expect("portable ID accanto al tipo distinto");
+    assert_eq!(identificativi(&rows), vec!["1".to_owned()]);
+    let distinto = select("SONDE_OPERANDI_TIPI", vec!["X"])
+        .schema("PLENORA")
+        .into_statement();
+    let error = plenora_database_core::facade::execute_portable_returning(
+        transaction.as_mut(),
+        &distinto,
+        &cancellation,
+    )
+    .await
+    .expect_err("portable tipo distinto non qualificato");
+    assert_eq!(error.category, ErrorCategory::Unsupported);
+    assert_eq!(error.phase, ErrorPhase::Prepare);
     let geometrico = select(TABELLA, vec!["ID"])
         .schema("PLENORA")
         .where_(eq("G", ParameterValue::Bytes(vec![1])))
@@ -677,6 +707,32 @@ async fn live_operand_catalog_judges_geometry_and_admits_scalars() {
             rows += batch.num_rows();
         }
         assert_eq!(rows, 1, "{object}");
+    }
+
+    // Il distinto utente non qualifica un codec Arrow, neanche se la
+    // sua fonte e INTEGER. La colonna estranea non bloccava ID sopra.
+    for usage in ["projection", "filter", "order"] {
+        let mut operation = lettura("SONDE_OPERANDI_TIPI", "ID");
+        match usage {
+            "projection" => operation.projection = vec!["X".to_owned()],
+            "filter" => {
+                operation.filter = Some(FilterExpression::IsNull {
+                    field: "X".to_owned(),
+                });
+            }
+            _ => operation.order_by[0].field = "X".to_owned(),
+        }
+        let error = provider
+            .read(&secret, &operation, &id_uno, &budget(), &cancellation)
+            .await
+            .err()
+            .expect("tipo distinto non qualificato");
+        assert_eq!(
+            error.category,
+            ErrorCategory::Unsupported,
+            "{usage}: {error}"
+        );
+        assert_eq!(error.phase, ErrorPhase::Prepare);
     }
 
     pulisci(&provider, &secret, &cancellation).await;
@@ -1096,14 +1152,26 @@ async fn live_server_computed_binary_columns_are_judged_geometric() {
         rifiuto_del_giudizio(&error, GEOMETRY_SCALAR_OPERAND),
         "lettura W: {error}"
     );
-    // La lettura di Db2 non lega ancora un parametro `Bytes` (rifiuto
-    // esplicito del provider): il controllo ammesso e la colonna generata
-    // numerica.
+    // La colonna generata numerica deve restare scalare anche nella lettura
+    // Arrow, che risolve il catalogo dal risultato di describe.
     let numero = ParameterBag::new(BTreeMap::from([("p".to_owned(), ParameterValue::I32(30))]));
-    provider
+    let mut stream = provider
         .read(&secret, &lettura("N"), &numero, &budget(), &cancellation)
         .await
         .unwrap_or_else(|error| panic!("lettura N: {error}"));
+    let batch = stream
+        .next_batch(&cancellation)
+        .await
+        .unwrap()
+        .expect("riga N");
+    assert_eq!(batch.num_rows(), 1);
+    let ids = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<plenora_database_core::arrow::array::Int32Array>()
+        .unwrap();
+    assert_eq!(ids.value(0), 3);
+    assert!(stream.next_batch(&cancellation).await.unwrap().is_none());
     for sql in PULIZIA_GENERATE {
         let _ = provider.run_ddl(&secret, sql, &cancellation).await;
     }
@@ -1168,7 +1236,7 @@ async fn live_typed_parameters_refuse_values_of_another_type() {
         )
         .await
         .expect_err("il bind incompatibile resta rifiutato");
-    assert_eq!(refused.category, ErrorCategory::DataMapping);
+    assert_eq!(refused.category, ErrorCategory::DataMapping, "{refused:?}");
     assert_eq!(refused.phase, ErrorPhase::Prepare);
     // Il CAST esplicito mantiene il tipo del bind: la conversione sotto prova
     // appartiene al SQL del chiamante, non al binding esatto.
@@ -1259,7 +1327,7 @@ async fn live_typed_parameters_refuse_values_of_another_type() {
 ///   oltre la scala e il `CAST` di una colonna `DECIMAL(30, 12)` si rifiutano
 ///   (`CAST_NOT_EXACT`); entro la scala e da `DECIMAL(20, 4)` restano.
 ///   `CAST(C AS VARCHAR(32672))` di un `CLOB` di 40000 caratteri tronca senza
-///   errore (misurato): il `CAST` a `string` di un `CLOB` si
+///   `SQL_ERROR`, con SQL0445W/01004: ora anche l'avviso si rifiuta. Il `CAST` a `string` di un `CLOB` si
 ///   rifiuta. `TIMESTAMP WITH TIME ZONE` non esiste (la query fallisce, misurato): un
 ///   `timestamp_tz` tipizzato si rifiuta (`TYPED_PARAMETER_MISMATCH`).
 /// - **Regola A.** Il server ignora gli spazi finali di un identificatore:
@@ -1321,7 +1389,7 @@ async fn live_rilettura_quindici_cast_e_nomi() {
         )
         .await
         .expect_err("il bind incompatibile resta rifiutato");
-    assert_eq!(refused.category, ErrorCategory::DataMapping);
+    assert_eq!(refused.category, ErrorCategory::DataMapping, "{refused:?}");
     assert_eq!(refused.phase, ErrorPhase::Prepare);
     // Sonda del solo server: il letterale statico non passa da SQLDescribeParam
     // e dal binding esatto. Il rifiuto del parametro resta verificato sopra.
@@ -1347,8 +1415,12 @@ async fn live_rilettura_quindici_cast_e_nomi() {
             &cancellation,
         )
         .await
-        .expect("CLOB troncato senza errore");
-    assert_eq!(identificativi(&truncated), vec!["32672".to_owned()]);
+        .expect_err("il CAST CLOB che tronca deve essere rifiutato");
+    // SQL0445W nasce dal CAST sul server, non dal buffer del client:
+    // LENGTH restituisce un intero piccolo ma non rende esatta la conversione.
+    assert_eq!(truncated.category, ErrorCategory::DataMapping);
+    assert_eq!(truncated.phase, ErrorPhase::Read);
+    assert!(truncated.message.contains("01004"), "{truncated:?}");
     transaction
         .query(
             &Statement::new(
@@ -1499,7 +1571,7 @@ async fn live_rilettura_sedici_cte_con_spazi_finali() {
         &Statement::new("WITH \"R16E \" AS (SELECT ID, ID AS N FROM PLENORA.R16E) SELECT X.ID FROM \"R16E\" X WHERE X.N = ?").with_params(vec![ParameterValue::String("01".to_owned())]),
         &cancellation,
     ).await.expect_err("il bind incompatibile resta rifiutato");
-    assert_eq!(refused.category, ErrorCategory::DataMapping);
+    assert_eq!(refused.category, ErrorCategory::DataMapping, "{refused:?}");
     assert_eq!(refused.phase, ErrorPhase::Prepare);
     // Il CAST esplicito mantiene il tipo del bind: la conversione sotto prova
     // appartiene al SQL del chiamante, non al binding esatto.
@@ -1550,3 +1622,143 @@ async fn live_rilettura_sedici_cte_con_spazi_finali() {
             .expect("pulizia");
     }
 }
+
+/// La lettura reale del catalogo distingue il padding CHAR dai nomi VARCHAR;
+/// una tabella mista non richiede una collation per FOR BIT DATA.
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+async fn live_catalog_padding_and_mixed_binary_text_are_exact() {
+    use crate::connection::{query_text, with_connection};
+    use crate::operand_catalog::{Db2Catalog, OdbcCatalog};
+    use odbc_api::ResultSetMetadata;
+    let provider = provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let table = "CATALOG_PADDING";
+    provider
+        .run_ddl(
+            &secret,
+            "DROP TABLE IF EXISTS PLENORA.CATALOG_PADDING",
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    provider
+        .run_ddl(
+            &secret,
+            "CREATE TABLE PLENORA.CATALOG_PADDING (ID INTEGER, B VARCHAR(16) FOR BIT DATA, \
+         S VARCHAR(16), \" C \" VARCHAR(16), G ST_GEOMETRY) IN PLENORA_TS8K",
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    let result = with_connection(provider.config(), &secret, |connection, timeout| {
+        let mut cursor = connection
+            .execute(
+                "SELECT TABSCHEMA, TABNAME, COLNAME, TYPESCHEMA, TYPENAME FROM SYSCAT.COLUMNS \
+             WHERE TABSCHEMA = 'PLENORA' AND TABNAME = 'CATALOG_PADDING'",
+                (),
+                Some(timeout),
+            )
+            .expect("descrittori del catalogo")
+            .expect("result set del catalogo");
+        let descriptors = (1..=5)
+            .map(|index| cursor.col_data_type(index).unwrap())
+            .collect::<Vec<_>>();
+        eprintln!("descrittori TABSCHEMA/TABNAME/COLNAME/TYPESCHEMA/TYPENAME: {descriptors:?}");
+        drop(cursor);
+        // Solo lunghezze operative, nessun valore del catalogo nei diagnostici.
+        let lengths = query_text(connection,
+            "SELECT LENGTH(TABSCHEMA), LENGTH(RTRIM(TABSCHEMA)), \
+             LENGTH(TABNAME), LENGTH(RTRIM(TABNAME)), LENGTH(COLNAME), LENGTH(RTRIM(COLNAME)), \
+             LENGTH(TYPESCHEMA), LENGTH(RTRIM(TYPESCHEMA)), LENGTH(TYPENAME), LENGTH(RTRIM(TYPENAME)) \
+             FROM SYSCAT.COLUMNS WHERE TABSCHEMA = 'PLENORA' AND TABNAME = 'CATALOG_PADDING' ORDER BY COLNO",
+            &[], timeout, 10, 32)?;
+        eprintln!("lunghezze originali/senza spazi ASCII finali, per ordinale: {lengths:?}");
+        let rows = query_text(
+            connection,
+            "SELECT CAST(' X ' AS CHAR(8)), CAST(' X ' AS VARCHAR(8)) FROM SYSIBM.SYSDUMMY1",
+            &[],
+            timeout,
+            2,
+            128,
+        )?;
+        assert_eq!(rows, [vec![Some(" X".into()), Some(" X ".into())]]);
+        assert_raw_relation(connection, timeout, table)?;
+        let mut catalog = OdbcCatalog::new(connection, timeout);
+        let relation = catalog
+            .relation("PLENORA", table)?
+            .expect("relazione esatta");
+        assert_eq!(relation.kind, "T", "tipo della relazione");
+        let columns = catalog.columns("PLENORA", table)?;
+        assert_eq!(
+            columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["ID", "B", "S", " C ", "G"],
+            "nomi esatti delle colonne VARCHAR"
+        );
+        let facts = crate::write_admission::column_facts(connection, timeout, "PLENORA", table)?;
+        assert_eq!(facts.len(), 5);
+        assert_eq!(facts[1].codepage, 0);
+        assert_eq!(facts[3].name, " C ");
+        let description = crate::catalog::describe_object(connection, timeout, "PLENORA", table)?;
+        assert_eq!(description.schema, "PLENORA");
+        assert_eq!(description.name, table);
+        let types = catalog
+            .column_types(Some("PLENORA"), table)?
+            .expect("tipi risolti");
+        assert_eq!(types["ID"].name, "INTEGER");
+        let judged = crate::operand_catalog::read_columns(&mut catalog, "PLENORA", table)?
+            .expect("colonne risolte");
+        assert!(!judged[1].is_geometric());
+        assert!(judged[4].is_geometric());
+        Ok(())
+    });
+    provider
+        .run_ddl(&secret, "DROP TABLE PLENORA.CATALOG_PADDING", &cancellation)
+        .await
+        .unwrap();
+    result.expect("lettura del catalogo e collation della tabella mista");
+}
+
+fn assert_raw_relation(
+    connection: &odbc_api::Connection<'_>,
+    timeout: usize,
+    table: &str,
+) -> plenora_database_core::Result<()> {
+    use crate::connection::query_text;
+    let raw_relation = query_text(
+        connection,
+        "SELECT TABSCHEMA, TABNAME, TYPE, HEX(TYPE) FROM SYSCAT.TABLES \
+             WHERE TABSCHEMA = ? AND TABNAME = ?",
+        &["PLENORA", table],
+        timeout,
+        4,
+        512,
+    )?;
+    assert_eq!(raw_relation.len(), 1);
+    assert_eq!(
+        raw_relation[0][2].as_deref(),
+        Some("T"),
+        "TYPE grezzo, prima della sentinella"
+    );
+    assert_eq!(
+        raw_relation[0][3].as_deref(),
+        Some("54"),
+        "byte del TYPE sul server"
+    );
+    for (ordinal, expected) in [(0, "PLENORA"), (1, table)] {
+        let value = raw_relation[0][ordinal]
+            .as_deref()
+            .expect("identita catalogo");
+        assert!(
+            value.trim_end_matches(' ') == expected,
+            "identita diversa anche senza padding: ordinale {ordinal}, lunghezza {}",
+            value.len()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "long_read_live_tests.rs"]
+mod long_read_live_tests;

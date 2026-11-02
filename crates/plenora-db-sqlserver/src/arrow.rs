@@ -378,9 +378,14 @@ fn format_timestamp_tz(value: DateTime<FixedOffset>, scale: u8) -> Result<String
             "scala datetimeoffset SQL Server oltre il profilo supportato",
         ));
     }
+    let divisor = 10_u32.pow(u32::from(9 - scale));
+    if !value.nanosecond().is_multiple_of(divisor) {
+        return Err(mapping_error(
+            "datetimeoffset SQL Server non esatto alla scala dichiarata",
+        ));
+    }
     let mut encoded = value.format("%Y-%m-%dT%H:%M:%S").to_string();
     if scale > 0 {
-        let divisor = 10_u32.pow(u32::from(9 - scale));
         let fraction = value.nanosecond() / divisor;
         encoded.push('.');
         write!(encoded, "{fraction:0width$}", width = usize::from(scale))

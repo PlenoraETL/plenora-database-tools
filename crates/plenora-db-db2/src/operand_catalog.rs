@@ -66,7 +66,7 @@
 //!   `TIMESTAMP` temporale; il resto (`XML`, i tipi strutturati senza
 //!   supertipo spatial) «altra».
 
-use crate::connection::query_text;
+use crate::connection::{query_text, system_schema};
 use plenora_database_core::plan::ProviderKind;
 use plenora_database_core::spatial_operand::{
     CatalogColumn, ColumnOrigin, OperandCatalog, OperandFamily, RelationColumns,
@@ -95,27 +95,32 @@ const SESSION_SCHEMA: &str = "SESSION";
 
 /// Il tipo di una relazione che il catalogo uguaglia al nome soltanto
 /// completandolo con spazi: non si conosce.
-const UNRESOLVED_KIND: &str = "?";
+const UNRESOLVED_KIND: &str = "unresolved_catalog_identity";
 
-const CURRENT_SCHEMA_SQL: &str = "SELECT CURRENT SCHEMA FROM SYSIBM.SYSDUMMY1";
+const CURRENT_SCHEMA_SQL: &str = "SELECT RTRIM(CURRENT SCHEMA) FROM SYSIBM.SYSDUMMY1";
 
 /// Una relazione del catalogo per nome, con il nome com'e nel catalogo: il
-/// confronto di Db2 completa con spazi la stringa piu corta, e il nome
-/// esatto si confronta qui.
-const RELATION_SQL: &str = "SELECT TABSCHEMA, TABNAME, TYPE, BASE_TABSCHEMA, BASE_TABNAME \
+/// confronto di Db2 completa con spazi la stringa piu corta. Canonicalizziamo
+/// sul server solo i nomi qualificati (spazi finali ignorati dagli identificatori
+/// Db2), mai COLNAME o valori utente. Il nome del piano resta byte-esatto:
+/// un piano con spazi finali non viene normalizzato per ammetterlo.
+const RELATION_SQL: &str =
+    "SELECT RTRIM(TABSCHEMA), RTRIM(TABNAME), TYPE, RTRIM(BASE_TABSCHEMA), RTRIM(BASE_TABNAME) \
     FROM SYSCAT.TABLES WHERE TABSCHEMA = ? AND TABNAME = ?";
 
 /// Le colonne, con `FOR BIT DATA` (`CODEPAGE` 0), la colonna generata
 /// (`GENERATED` `A` o `D`; vuoto, uno spazio, se non lo e), la lunghezza
 /// (la precisione di un decimale) e la scala (le cifre frazionarie di un
 /// timestamp) per la regola C (`plenora_database_core::cast_table`).
-const COLUMNS_SQL: &str = "SELECT TABSCHEMA, TABNAME, COLNAME, TYPESCHEMA, TYPENAME, \
+const COLUMNS_SQL: &str =
+    "SELECT RTRIM(TABSCHEMA), RTRIM(TABNAME), COLNAME, RTRIM(TYPESCHEMA), RTRIM(TYPENAME), \
     CASE WHEN CODEPAGE = 0 THEN 'Y' ELSE 'N' END, \
     CASE WHEN GENERATED IN ('A', 'D') THEN 'Y' ELSE 'N' END, \
     VARCHAR(LENGTH), VARCHAR(SCALE) \
     FROM SYSCAT.COLUMNS WHERE TABSCHEMA = ? AND TABNAME = ? ORDER BY COLNO";
 
-const DATATYPE_SQL: &str = "SELECT TYPESCHEMA, TYPENAME, METATYPE, SOURCESCHEMA, SOURCENAME, \
+const DATATYPE_SQL: &str =
+    "SELECT RTRIM(TYPESCHEMA), RTRIM(TYPENAME), METATYPE, RTRIM(SOURCESCHEMA), RTRIM(SOURCENAME), \
     SOURCEMODULENAME, CASE WHEN CODEPAGE = 0 THEN 'Y' ELSE 'N' END FROM SYSCAT.DATATYPES \
     WHERE TYPESCHEMA = ? AND TYPENAME = ? AND TYPEMODULENAME IS NULL";
 
@@ -143,7 +148,8 @@ const NUMERIC_TYPES: [&str; 8] = [
 /// I tipi temporali di `SYSIBM`.
 const TEMPORAL_TYPES: [&str; 3] = ["DATE", "TIME", "TIMESTAMP"];
 
-const SUPERTYPE_SQL: &str = "SELECT SUB_SCHEMA, SUB_NAME, SUPER_SCHEMA, SUPER_NAME \
+const SUPERTYPE_SQL: &str =
+    "SELECT RTRIM(SUB_SCHEMA), RTRIM(SUB_NAME), RTRIM(SUPER_SCHEMA), RTRIM(SUPER_NAME) \
     FROM SYSCAT.HIERARCHIES WHERE METATYPE = 'R' AND SUB_SCHEMA = ? AND SUB_NAME = ?";
 
 /// Un nome qualificato del catalogo: schema, nome.
@@ -300,7 +306,7 @@ fn relation_columns(
             });
         };
         first = false;
-        if found.kind.trim_end() == "A" {
+        if found.kind.trim_end_matches(' ') == "A" {
             let Some(base) = found.base else {
                 return Ok(RelationColumns::Unknown);
             };
@@ -317,7 +323,7 @@ fn relation_columns(
     // Tabella, vista, MQT, tabella temporanea creata, tabella o vista
     // tipizzata, gerarchia, tabella staccata: le colonne in SYSCAT.COLUMNS.
     // Un nickname (`N`) e un'altra fonte, e il resto non si conosce.
-    let kind = row.kind.trim_end();
+    let kind = row.kind.trim_end_matches(' ');
     if !matches!(kind, "T" | "V" | "S" | "G" | "U" | "W" | "H" | "L") {
         return Ok(RelationColumns::Unknown);
     }
@@ -334,7 +340,7 @@ fn relation_columns(
         // Il tipo per la regola C: un tipo di `SYSIBM` per nome, con la
         // lunghezza (la precisione di un decimale) e la scala; un tipo
         // dell'utente non si classifica (nessun `CAST` si prova). L'identita e il nome qualificato (regola B).
-        let system = column.type_name.0.trim_end() == "SYSIBM";
+        let system = system_schema(&column.type_name.0) == "SYSIBM";
         let decimal = matches!(
             column.type_name.1.as_str(),
             "DECIMAL" | "NUMERIC" | "DECFLOAT"
@@ -354,7 +360,11 @@ fn relation_columns(
             scale: column.scale,
             ..plenora_database_core::cast_table::CatalogType::default()
         };
-        let identity = format!("{}.{}", column.type_name.0.trim_end(), column.type_name.1);
+        let identity = format!(
+            "{}.{}",
+            system_schema(&column.type_name.0),
+            column.type_name.1
+        );
         columns.push(
             CatalogColumn::new(
                 column.name,
@@ -407,7 +417,7 @@ impl TypeJudge {
         let mut bit_data = bit_data;
         let mut verdict = OperandFamily::Geometry;
         for _ in 0..=MAX_TYPE_DEPTH {
-            let (schema, name) = (current.0.trim_end(), current.1.as_str());
+            let (schema, name) = (system_schema(&current.0), current.1.as_str());
             if SPATIAL_SCHEMAS.contains(&schema) && name.starts_with("ST_") {
                 verdict = OperandFamily::Geometry;
                 break;
@@ -419,7 +429,7 @@ impl TypeJudge {
             let Some(row) = catalog.data_type(schema, name)? else {
                 break;
             };
-            let next = match row.metatype.trim_end() {
+            let next = match row.metatype.trim_end_matches(' ') {
                 // Distinto: la sua fonte, con il suo `FOR BIT DATA`.
                 "T" if !row.source_module => {
                     bit_data = row.bit_data;
@@ -479,9 +489,9 @@ impl<'c, 'e> OdbcCatalog<'c, 'e> {
     }
 }
 
-pub const COLUMN_TYPES_SQL: &str = "SELECT COLNAME, TYPENAME, \
+pub const COLUMN_TYPES_SQL: &str = "SELECT COLNAME, RTRIM(TYPENAME), \
     VARCHAR(COALESCE(STRINGUNITSLENGTH, LENGTH)), VARCHAR(SCALE), \
-    VARCHAR(CODEPAGE), COALESCE(TYPESTRINGUNITS, '') FROM SYSCAT.COLUMNS \
+    VARCHAR(CODEPAGE), COALESCE(TYPESTRINGUNITS, ''), RTRIM(TYPESCHEMA), RTRIM(TABSCHEMA), RTRIM(TABNAME) FROM SYSCAT.COLUMNS \
     WHERE TABSCHEMA = ? AND TABNAME = ? ORDER BY COLNO";
 
 impl OdbcCatalog<'_, '_> {
@@ -502,39 +512,62 @@ impl OdbcCatalog<'_, '_> {
             Some(schema) => schema.to_owned(),
             None => self.current_schema()?,
         };
-        let rows = self.rows(COLUMN_TYPES_SQL, &[&schema, name], 6)?;
+        let rows = self.rows(COLUMN_TYPES_SQL, &[&schema, name], 9)?;
         if rows.is_empty() {
             return Ok(None);
         }
-        let number = |row: &[Option<String>], index: usize| -> Result<u64> {
-            cell(row, index)
-                .map(str::trim)
-                .and_then(|value| value.parse::<u64>().ok())
-                .ok_or_else(|| malformed("numero del catalogo Db2 non leggibile"))
-        };
-        rows.iter()
-            .map(|row| {
-                let column = cell(row, 0)
-                    .ok_or_else(|| malformed("colonna Db2 senza nome"))?
-                    .to_owned();
-                let type_name = cell(row, 1)
-                    .ok_or_else(|| malformed("colonna Db2 senza tipo"))?
-                    .trim_end()
-                    .to_owned();
-                Ok((
-                    column,
-                    catalog_type(
-                        &type_name,
-                        number(row, 2)?,
-                        i64::try_from(number(row, 3)?).unwrap_or(i64::MAX),
-                        number(row, 4)?,
-                        cell(row, 5).unwrap_or_default().trim(),
-                    ),
-                ))
-            })
-            .collect::<Result<_>>()
-            .map(Some)
+        column_types_rows(&rows, &schema, name).map(Some)
     }
+}
+
+pub fn column_types_rows(
+    rows: &[Vec<Option<String>>],
+    schema: &str,
+    name: &str,
+) -> Result<plenora_database_core::operand_admission::RelationTypes> {
+    let number = |row: &[Option<String>], index: usize| -> Result<u64> {
+        cell(row, index)
+            .map(str::trim)
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| malformed("numero del catalogo Db2 non leggibile"))
+    };
+    let mut names = std::collections::BTreeSet::new();
+    rows.iter()
+        .map(|row| {
+            let column = cell(row, 0)
+                .ok_or_else(|| malformed("colonna Db2 senza nome"))?
+                .to_owned();
+            if cell(row, 7) != Some(schema)
+                || cell(row, 8) != Some(name)
+                || !names.insert(column.trim_end_matches(' ').to_owned())
+            {
+                return Err(crate::write_admission::identity_error());
+            }
+            let type_name = cell(row, 1)
+                .ok_or_else(|| malformed("colonna Db2 senza tipo"))?
+                .to_owned();
+            let type_schema =
+                cell(row, 6).ok_or_else(|| malformed("colonna Db2 senza schema del tipo"))?;
+            if system_schema(type_schema) != "SYSIBM" {
+                // La presenza non e un uso: conserva la colonna, senza
+                // attribuirle il tipo built-in omonimo o quello della fonte.
+                return Ok((
+                    column,
+                    plenora_database_core::operand_admission::CatalogType::default(),
+                ));
+            }
+            Ok((
+                column,
+                catalog_type(
+                    &type_name,
+                    number(row, 2)?,
+                    i64::try_from(number(row, 3)?).unwrap_or(i64::MAX),
+                    number(row, 4)?,
+                    cell(row, 5).unwrap_or_default(),
+                ),
+            ))
+        })
+        .collect::<Result<_>>()
 }
 
 /// Il tipo del catalogo Db2: `LENGTH` e la precisione dei decimali e la
@@ -556,7 +589,7 @@ pub fn catalog_type(
     string_units: &str,
 ) -> plenora_database_core::operand_admission::CatalogType {
     use plenora_database_core::operand_admission::{Charset, LengthUnit};
-    let upper = type_name.to_ascii_uppercase();
+    let upper = type_name.to_owned();
     let bit_data = codepage == 0
         && matches!(
             upper.as_str(),
@@ -604,7 +637,7 @@ fn exact<'r>(
     name: &str,
 ) -> std::vec::IntoIter<&'r Vec<Option<String>>> {
     rows.iter()
-        .filter(|row| cell(row, 0).map(str::trim_end) == Some(schema) && cell(row, 1) == Some(name))
+        .filter(|row| cell(row, 0) == Some(schema) && cell(row, 1) == Some(name))
         .collect::<Vec<_>>()
         .into_iter()
 }
@@ -614,16 +647,13 @@ fn cell(row: &[Option<String>], index: usize) -> Option<&str> {
 }
 
 fn qualified(row: &[Option<String>], schema: usize, name: usize) -> Option<QualifiedName> {
-    Some((
-        cell(row, schema)?.trim_end().to_owned(),
-        cell(row, name)?.to_owned(),
-    ))
+    Some((cell(row, schema)?.to_owned(), cell(row, name)?.to_owned()))
 }
 
 /// Un flag `Y`/`N` reso dal catalogo; un altro valore e un catalogo che non
 /// si riconosce.
 fn flag(row: &[Option<String>], index: usize, message: &'static str) -> Result<bool> {
-    match cell(row, index).map(str::trim_end) {
+    match cell(row, index).map(|value| value.trim_end_matches(' ')) {
         Some("Y") => Ok(true),
         Some("N") => Ok(false),
         _ => Err(malformed(message)),
@@ -656,7 +686,7 @@ impl Db2Catalog for OdbcCatalog<'_, '_> {
         let rows = self.rows(CURRENT_SCHEMA_SQL, &[], 1)?;
         match rows.as_slice() {
             [row] => cell(row, 0)
-                .map(|schema| schema.trim_end().to_owned())
+                .map(str::to_owned)
                 .ok_or_else(|| malformed("CURRENT SCHEMA Db2 assente")),
             _ => Err(malformed("CURRENT SCHEMA Db2 non univoco")),
         }

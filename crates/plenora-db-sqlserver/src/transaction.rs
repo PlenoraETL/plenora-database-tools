@@ -40,28 +40,36 @@ impl Drop for SqlServerTransaction {
 
 impl SqlServerTransaction {
     /// Apre la transazione, con il livello di isolamento che le opzioni
-    /// chiedono.
+    /// chiedono; senza, `READ COMMITTED`, il livello predefinito di SQL
+    /// Server, fissato anch'esso.
     ///
-    /// L'isolamento si imposta **prima** del `BEGIN`: su SQL Server
-    /// `SET TRANSACTION ISOLATION LEVEL` dentro una transazione gia aperta
-    /// vale dalla successiva, quindi farlo dopo darebbe un livello diverso da
-    /// quello dichiarato senza che nessuno se ne accorga.
+    /// L'isolamento si imposta **prima** del `BEGIN`, con un batch semplice,
+    /// e si rilegge da `sys.dm_exec_sessions`
+    /// ([`crate::SqlServerSession::pin_isolation`]). Fino al 25/10 il `SET`
+    /// viaggiava come RPC (`sp_executesql`), finiva con la chiamata, e la
+    /// transazione chiesta `Serializable` girava `READ COMMITTED` senza
+    /// errore. Un livello diverso da `READ COMMITTED` resta sulla sessione
+    /// anche dopo la transazione: la sessione non torna nel pool.
     ///
     /// # Errors
     ///
-    /// Se la sessione non e utilizzabile, o il server rifiuta il livello.
+    /// Se la sessione non e utilizzabile, il server rifiuta il livello o il
+    /// livello in vigore non e quello chiesto (`unsupported`).
     pub async fn begin(
         mut session: PooledSqlServerSession,
         options: &TransactionOptions,
         cancellation: &CancellationToken,
     ) -> Result<Self> {
+        use plenora_database_core::transaction::IsolationLevel;
         validate_options(options)?;
-        if let Some(level) = isolation_statement(options) {
-            let inner = session.session_mut()?;
-            inner
-                .execute_query(Query::new(level), ErrorPhase::Prepare, cancellation)
-                .await?;
+        let level = options.isolation.unwrap_or(IsolationLevel::ReadCommitted);
+        if level != IsolationLevel::ReadCommitted {
+            session.disallow_reuse();
         }
+        session
+            .session_mut()?
+            .pin_isolation(level, cancellation)
+            .await?;
         session.session_mut()?.begin(cancellation).await?;
         // Il profilo di sola lettura non ha un equivalente dichiarativo su SQL
         // Server: non esiste `SET TRANSACTION READ ONLY`. Rifiutarlo qui e piu
@@ -151,18 +159,6 @@ pub fn validate_options(options: &TransactionOptions) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-/// Lo statement che impone il livello di isolamento, se le opzioni ne
-/// chiedono uno.
-fn isolation_statement(options: &TransactionOptions) -> Option<&'static str> {
-    use plenora_database_core::transaction::IsolationLevel;
-    options.isolation.map(|level| match level {
-        IsolationLevel::ReadUncommitted => "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED",
-        IsolationLevel::ReadCommitted => "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
-        IsolationLevel::RepeatableRead => "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
-        IsolationLevel::Serializable => "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
-    })
 }
 
 /// Prepara la query TDS di uno `Statement`, parametri compresi.
@@ -338,10 +334,7 @@ fn decode_cell(
                     } else {
                         crate::arrow::canonical_legacy_datetime(value)?
                     };
-                    microsecond_exact(chrono::Timelike::nanosecond(&value), index)?;
-                    Ok(ParameterValue::Timestamp(
-                        value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string(),
-                    ))
+                    Ok(ParameterValue::Timestamp(format_query_timestamp(value)))
                 },
             ),
         // Il `DateTime<Utc>` di `tiberius` sottrae l'offset a un istante che
@@ -353,7 +346,6 @@ fn decode_cell(
             .map_or_else(
                 || Ok(null_value(kind)),
                 |value| {
-                    microsecond_exact(chrono::Timelike::nanosecond(&value), index)?;
                     Ok(ParameterValue::TimestampTz(
                         value.with_timezone(&chrono::Utc).to_rfc3339(),
                     ))
@@ -371,7 +363,7 @@ fn decode_cell(
             .map_err(|_| decode_mapping_error(index, "time"))?
             .map_or_else(
                 || null_value(kind),
-                |value| ParameterValue::String(value.format("%H:%M:%S%.6f").to_string()),
+                |value| ParameterValue::String(format_query_time(value)),
             )),
         // Decimali e valuta: il testo e la sola forma che non perde cifre, ed
         // e cio che `ParameterValue::Decimal` porta.
@@ -444,17 +436,6 @@ fn decode_cell(
             ErrorPhase::Read,
             "tipo di colonna SQL Server fuori dal sottoinsieme mappato",
         )),
-    }
-}
-
-fn microsecond_exact(nanosecond: u32, index: usize) -> Result<()> {
-    if nanosecond.is_multiple_of(1_000) {
-        Ok(())
-    } else {
-        Err(decode_mapping_error(
-            index,
-            "temporale oltre il microsecondo",
-        ))
     }
 }
 
@@ -816,3 +797,22 @@ mod commit_tests;
 #[cfg(test)]
 #[path = "caller_sql_send_tests.rs"]
 mod caller_sql_send_tests;
+
+// Il tipo pubblico e testuale: conserva i nanosecondi senza cambiare la
+// forma a sei cifre dei valori gia rappresentabili al microsecondo.
+fn format_query_timestamp(value: chrono::NaiveDateTime) -> String {
+    format!(
+        "{}T{}",
+        value.date().format("%Y-%m-%d"),
+        format_query_time(value.time())
+    )
+}
+
+fn format_query_time(value: chrono::NaiveTime) -> String {
+    let format = if chrono::Timelike::nanosecond(&value).is_multiple_of(1_000) {
+        "%H:%M:%S%.6f"
+    } else {
+        "%H:%M:%S%.9f"
+    };
+    value.format(format).to_string()
+}

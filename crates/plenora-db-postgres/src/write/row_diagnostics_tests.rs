@@ -90,8 +90,10 @@ fn absolute_batch_offsets_are_checked() {
 }
 
 #[test]
-fn affected_rows_must_be_exactly_one() {
-    for affected in [0, 2, u64::MAX] {
+fn affected_rows_must_be_at_most_one() {
+    // 0 e una riga soppressa da un `BEFORE INSERT` (`skipped`), non un errore:
+    // il rifiuto resta per piu di una riga.
+    for affected in [2, u64::MAX] {
         let error = invalid_affected_rows(affected);
         assert_eq!(error.category, ErrorCategory::Protocol);
         assert_eq!(error.phase, ErrorPhase::Write);

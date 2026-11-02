@@ -7,6 +7,7 @@ mod catalog;
 mod config;
 mod connection;
 mod error;
+mod exact_read;
 mod operand_catalog;
 mod parameter;
 mod parameter_catalog;
@@ -17,6 +18,7 @@ mod row_visibility;
 mod transaction;
 mod types;
 mod write;
+mod write_admission;
 
 pub use catalog::{Db2Column, Db2Index, Db2ObjectDescription, Db2ObjectSummary};
 pub use config::{Db2Config, Db2TlsMode};
@@ -68,6 +70,22 @@ mod live_tests;
 mod spatial_live_tests;
 
 #[cfg(test)]
+#[path = "write_rewrite_live_tests.rs"]
+mod write_rewrite_live_tests;
+
+#[cfg(test)]
+#[path = "write_rewrite_ora_tests.rs"]
+mod write_rewrite_ora_tests;
+
+#[cfg(test)]
+#[path = "write_admission_live_tests.rs"]
+mod write_admission_live_tests;
+
+#[cfg(test)]
+#[path = "write_keys_collation_tests.rs"]
+mod write_keys_collation_tests;
+
+#[cfg(test)]
 #[path = "operand_live_tests.rs"]
 mod operand_live_tests;
 
@@ -78,3 +96,7 @@ mod parameter_fidelity_live_tests;
 #[cfg(test)]
 #[path = "parameter_catalog_tests.rs"]
 mod parameter_catalog_tests;
+
+#[cfg(test)]
+#[path = "exact_read_tests.rs"]
+mod exact_read_tests;

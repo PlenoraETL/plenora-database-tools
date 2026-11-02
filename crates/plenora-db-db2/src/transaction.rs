@@ -151,6 +151,19 @@ impl Db2Transaction {
         }
     }
 
+    pub(crate) async fn verify_write_plan(
+        &mut self,
+        plan: crate::write::Db2WritePlan,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.run(
+            ErrorPhase::Prepare,
+            cancellation,
+            move |connection, timeout| plan.verify_catalog(connection, timeout),
+        )
+        .await
+    }
+
     async fn control(
         &mut self,
         sql: String,
@@ -221,13 +234,24 @@ impl Db2Transaction {
                     crate::parameter_catalog::text_operands(connection, timeout, &sql, columns)?;
                 let encoded =
                     ArrayColumns::encode(&admit_rows(&mut prepared, &rows, &catalog)?, columns)?;
+                let targets = (1..=columns)
+                    .map(|index| {
+                        let ordinal = u16::try_from(index)
+                            .map_err(|_| array_error("troppi parametri Db2"))?;
+                        prepared
+                            .describe_param_strict(ordinal)
+                            .map(|description| description.data_type)
+                            .map_err(|error| driver_error(&error, ErrorPhase::Prepare))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let descriptions = encoded.descriptions(&targets)?;
                 let mut inserter = prepared
-                    .into_column_inserter(encoded.rows, encoded.descriptions())
+                    .into_column_inserter(encoded.rows, descriptions)
                     .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
                 inserter.set_num_rows(encoded.rows);
                 encoded.fill(&mut inserter)?;
                 if inserter
-                    .execute()
+                    .execute_strict()
                     .map_err(|error| driver_error(&error, ErrorPhase::Write))?
                     .is_some()
                 {
@@ -365,8 +389,8 @@ pub fn isolation_statement(options: &TransactionOptions) -> Option<&'static str>
 }
 
 /// Le colonne di un parameter-array, ciascuna con il tipo C del proprio
-/// binding: `f64` per i double, che in testo perderebbero il valore, testo
-/// per il resto. Le righe arrivano dalla write Arrow, il cui piano ha gia
+/// binding: `f64` per i double, binario per i byte, testo per il resto.
+/// Le righe arrivano dalla write Arrow, il cui piano ha gia
 /// confrontato i tipi con la tabella: qui si sceglie soltanto la forma esatta.
 pub struct ArrayColumns {
     rows: usize,
@@ -375,6 +399,7 @@ pub struct ArrayColumns {
 
 enum ArrayColumn {
     Double(Vec<Option<f64>>),
+    Binary(Vec<Option<Vec<u8>>>),
     Text(Vec<Option<String>>),
 }
 
@@ -382,7 +407,7 @@ impl ArrayColumns {
     /// # Errors
     ///
     /// I rifiuti di `crate::parameter::validate`, e `DataMapping` per una
-    /// colonna che mescola double e altri tipi o per byte non esadecimali.
+    /// colonna che mescola double, byte e altri tipi.
     pub fn encode(rows: &[Vec<ParameterValue>], columns: usize) -> Result<Self> {
         for row in rows {
             crate::parameter::validate(row)?;
@@ -401,6 +426,18 @@ impl ArrayColumns {
                         })
                         .collect::<Result<Vec<_>>>()
                         .map(ArrayColumn::Double)
+                } else if rows
+                    .iter()
+                    .any(|row| matches!(row[column], ParameterValue::Bytes(_)))
+                {
+                    rows.iter()
+                        .map(|row| match &row[column] {
+                            ParameterValue::Bytes(value) => Ok(Some(value.clone())),
+                            ParameterValue::Null { .. } => Ok(None),
+                            _ => Err(array_error("colonna parameter-array Db2 con tipi misti")),
+                        })
+                        .collect::<Result<Vec<_>>>()
+                        .map(ArrayColumn::Binary)
                 } else {
                     rows.iter()
                         .map(|row| array_text(&row[column]))
@@ -415,24 +452,54 @@ impl ArrayColumns {
         })
     }
 
-    fn descriptions(&self) -> Vec<BindParamDesc> {
-        self.columns
+    pub(crate) fn descriptions(&self, targets: &[DataType]) -> Result<Vec<BindParamDesc>> {
+        if targets.len() != self.columns.len() {
+            return Err(array_error("descrittori parameter-array Db2 incompleti"));
+        }
+        // Il buffer testuale non puo essere rivestito da un target binario:
+        // IBM CLI lo leggerebbe come esadecimale, anche senza ammissione.
+        if self.columns.iter().zip(targets).any(|(column, target)| {
+            let binary_target = matches!(
+                crate::parameter::operand_of(target),
+                plenora_database_core::operand_admission::OperandType::Binary { .. }
+            );
+            matches!(column, ArrayColumn::Binary(_)) != binary_target
+        }) {
+            return Err(array_error(
+                "buffer e target binario discordi nel parameter-array Db2",
+            ));
+        }
+        Ok(self
+            .columns
             .iter()
-            .map(|column| match column {
-                ArrayColumn::Double(_) => BindParamDesc {
-                    buffer_desc: BufferDesc::F64 { nullable: true },
-                    data_type: DataType::Double,
-                },
-                ArrayColumn::Text(values) => BindParamDesc::text(
-                    values
-                        .iter()
-                        .filter_map(|value| value.as_ref().map(String::len))
-                        .max()
-                        .unwrap_or(1)
-                        .max(1),
-                ),
+            .zip(targets)
+            .map(|(column, target)| {
+                let buffer_desc = match column {
+                    ArrayColumn::Double(_) => BufferDesc::F64 { nullable: true },
+                    ArrayColumn::Binary(values) => BufferDesc::Binary {
+                        max_bytes: values
+                            .iter()
+                            .flatten()
+                            .map(Vec::len)
+                            .max()
+                            .unwrap_or(1)
+                            .max(1),
+                    },
+                    ArrayColumn::Text(values) => BufferDesc::Text {
+                        max_str_len: values
+                            .iter()
+                            .filter_map(|value| value.as_ref().map(String::len))
+                            .max()
+                            .unwrap_or(1)
+                            .max(1),
+                    },
+                };
+                BindParamDesc {
+                    buffer_desc,
+                    data_type: *target,
+                }
             })
-            .collect()
+            .collect())
     }
 
     fn fill<S>(
@@ -447,6 +514,15 @@ impl ArrayColumns {
     {
         for (index, column) in self.columns.iter().enumerate() {
             match column {
+                ArrayColumn::Binary(values) => {
+                    let mut slice = inserter
+                        .column_mut(index)
+                        .as_binary()
+                        .ok_or_else(|| array_error("buffer binario Db2 non disponibile"))?;
+                    for (row, value) in values.iter().enumerate() {
+                        slice.set_cell(row, value.as_deref());
+                    }
+                }
                 ArrayColumn::Double(values) => {
                     let mut slice = inserter
                         .column_mut(index)
@@ -475,10 +551,8 @@ fn array_error(message: &'static str) -> DatabaseError {
     transaction_error(ErrorCategory::DataMapping, ErrorPhase::Write, message)
 }
 
-/// Il testo di un valore del parameter-array, gia validato. I byte non hanno
-/// una forma testuale esatta: le colonne spatial arrivano gia come testo
-/// esadecimale per `HEXTORAW(?)`, e una colonna binaria scalare non e
-/// ammessa dal piano.
+/// Il testo di un valore del parameter-array, gia validato. I byte hanno
+/// un buffer C binario separato: non diventano mai testo esadecimale qui.
 fn array_text(value: &ParameterValue) -> Result<Option<String>> {
     match value {
         ParameterValue::Null { .. } => Ok(None),
@@ -505,12 +579,12 @@ fn admit_rows(
     catalog: &[Option<plenora_database_core::operand_admission::OperandType>],
 ) -> Result<Vec<Vec<ParameterValue>>> {
     let count = prepared
-        .num_params()
+        .num_params_strict()
         .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
     let operands = (1..=count)
         .map(|index| {
             prepared
-                .describe_param(index)
+                .describe_param_strict(index)
                 .map(|described| described.data_type)
                 .map_err(|error| driver_error(&error, ErrorPhase::Prepare))
         })
@@ -545,7 +619,7 @@ pub fn bind_described(
     values: &[ParameterValue],
 ) -> Result<Vec<crate::parameter::Bound>> {
     let count = prepared
-        .num_params()
+        .num_params_strict()
         .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
     if usize::from(count) != values.len() {
         return Err(transaction_error(
@@ -557,7 +631,7 @@ pub fn bind_described(
     let described = (1..=count)
         .map(|index| {
             prepared
-                .describe_param(index)
+                .describe_param_strict(index)
                 .map(|parameter| parameter.data_type)
                 .map_err(|error| driver_error(&error, ErrorPhase::Prepare))
         })
@@ -588,8 +662,14 @@ fn execute_control(
     sql: &str,
     phase: ErrorPhase,
 ) -> Result<()> {
-    let cursor = connection
-        .execute(sql, (), Some(timeout))
+    let mut statement = connection
+        .preallocate()
+        .map_err(|error| driver_error(&error, phase))?;
+    statement
+        .set_query_timeout_sec(timeout)
+        .map_err(|error| driver_error(&error, phase))?;
+    let cursor = statement
+        .into_cursor_strict(sql, ())
         .map_err(|error| driver_error(&error, phase))?;
     if cursor.is_some() {
         return Err(transaction_error(
@@ -618,7 +698,7 @@ fn execute_statement(
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
     sent.mark_sent();
     let has_cursor = statement
-        .execute(parameters.as_slice())
+        .execute_strict(parameters.as_slice())
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?
         .is_some();
     if has_cursor {
@@ -629,7 +709,7 @@ fn execute_statement(
         ));
     }
     let row_count = statement
-        .row_count()
+        .row_count_strict()
         .map_err(|error| driver_error(&error, ErrorPhase::Write))?;
     match row_count {
         Some(rows) => Ok(u64::try_from(rows).unwrap_or(u64::MAX)),
@@ -665,7 +745,7 @@ fn query_rows(
         .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
     sent.mark_sent();
     let mut cursor = statement
-        .execute(parameters.as_slice())
+        .execute_strict(parameters.as_slice())
         .map_err(|error| driver_error(&error, ErrorPhase::Read))?
         .ok_or_else(|| {
             transaction_error(
@@ -674,9 +754,13 @@ fn query_rows(
                 "query transazionale Db2 senza result set",
             )
         })?;
+    crate::exact_read::check(
+        &odbc_api::handles::AsStatementRef::as_stmt_ref(&mut cursor),
+        ErrorPhase::Read,
+    )?;
     let column_count = usize::try_from(
         cursor
-            .num_result_cols()
+            .num_result_cols_strict()
             .map_err(|error| driver_error(&error, ErrorPhase::Read))?,
     )
     .map_err(|_| {
@@ -696,16 +780,16 @@ fn query_rows(
                 "indice colonna Db2 non rappresentabile",
             )
         })?;
-        names.push(
-            cursor
-                .col_name(index)
-                .map_err(|error| driver_error(&error, ErrorPhase::Read))?,
-        );
+        names.push(crate::exact_read::column_name(&mut cursor, index)?);
         types.push(
             cursor
-                .col_data_type(index)
+                .col_data_type_strict(index)
                 .map_err(|error| driver_error(&error, ErrorPhase::Read))?,
         );
+        crate::exact_read::check(
+            &odbc_api::handles::AsStatementRef::as_stmt_ref(&mut cursor),
+            ErrorPhase::Read,
+        )?;
     }
     let columns: Arc<[String]> = names.into();
     // I floating point si leggono nel loro tipo C: il testo del driver ha
@@ -726,10 +810,7 @@ fn query_rows(
         .bind_buffer(buffer)
         .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
     let mut rows = Vec::new();
-    while let Some(batch) = blocks
-        .fetch()
-        .map_err(|error| driver_error(&error, ErrorPhase::Read))?
-    {
+    while let Some(batch) = crate::exact_read::fetch(&mut blocks, ErrorPhase::Read)? {
         for row_index in 0..batch.num_rows() {
             let values = types
                 .iter()
@@ -769,17 +850,7 @@ fn decode_cell(
             "buffer query Db2 di tipo inatteso",
         )
     };
-    let float = |value: f64| {
-        if value.is_finite() {
-            Ok(ParameterValue::F64(value))
-        } else {
-            Err(transaction_error(
-                ErrorCategory::DataMapping,
-                ErrorPhase::Read,
-                "float query Db2 non finito",
-            ))
-        }
-    };
+    let float = |value| decode_float(Some(value), data_type);
     match floating(data_type) {
         Some(Floating::Double) => {
             let slice = column.as_nullable_slice::<f64>().ok_or_else(unavailable)?;
@@ -805,6 +876,28 @@ fn decode_cell(
             }
             decode_value(slice.get(row), data_type)
         }
+    }
+}
+
+/// Un float letto come `SQL_C_DOUBLE`: esatto, e soltanto finito.
+///
+/// # Errors
+///
+/// `data_mapping` se il valore non e finito.
+pub fn decode_float(value: Option<f64>, data_type: DataType) -> Result<ParameterValue> {
+    let Some(value) = value else {
+        return Ok(ParameterValue::Null {
+            type_name: type_name(data_type).to_owned(),
+        });
+    };
+    if value.is_finite() {
+        Ok(ParameterValue::F64(value))
+    } else {
+        Err(transaction_error(
+            ErrorCategory::DataMapping,
+            ErrorPhase::Read,
+            "float query Db2 non finito",
+        ))
     }
 }
 
@@ -873,25 +966,34 @@ pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<Paramet
 }
 
 pub fn canonical_timestamp(value: &str) -> Result<String> {
-    // Il canone e il microsecondo: un TIMESTAMP(9) o (12) con cifre oltre si
-    // rifiuta, invece di troncarle nella formattazione.
-    if plenora_database_core::parameter_fidelity::has_sub_microsecond(value) {
-        return Err(transaction_error(
+    let invalid = || {
+        transaction_error(
             ErrorCategory::DataMapping,
             ErrorPhase::Read,
-            "timestamp query Db2 oltre il microsecondo",
-        ));
+            "timestamp query Db2 non rappresentabile",
+        )
+    };
+    // Chrono conserva solo nove cifre: separare prima la frazione Db2 (0..12).
+    let whole = value.get(..19).ok_or_else(invalid)?;
+    let suffix = value.get(19..).ok_or_else(invalid)?;
+    let fraction = if suffix.is_empty() {
+        ""
+    } else {
+        suffix
+            .strip_prefix('.')
+            .filter(|s| !s.is_empty())
+            .ok_or_else(invalid)?
+    };
+    if fraction.len() > 12 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid());
     }
-    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d-%H.%M.%S%.f"))
-        .map(|value| value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string())
-        .map_err(|_| {
-            transaction_error(
-                ErrorCategory::DataMapping,
-                ErrorPhase::Read,
-                "timestamp query Db2 non rappresentabile",
-            )
-        })
+    let timestamp = chrono::NaiveDateTime::parse_from_str(whole, "%Y-%m-%d %H:%M:%S")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(whole, "%Y-%m-%d-%H.%M.%S"))
+        .map_err(|_| invalid())?;
+    Ok(format!(
+        "{}.{fraction:0<6}",
+        timestamp.format("%Y-%m-%dT%H:%M:%S")
+    ))
 }
 
 const fn type_name(data_type: DataType) -> &'static str {
@@ -1197,3 +1299,7 @@ pub fn abandoned_error(error: DatabaseError, rollback_confirmed: bool) -> Databa
 #[cfg(test)]
 #[path = "caller_sql_send_tests.rs"]
 mod caller_sql_send_tests;
+
+#[cfg(test)]
+#[path = "write_probe_direct_tests.rs"]
+pub mod write_probe_direct_tests;

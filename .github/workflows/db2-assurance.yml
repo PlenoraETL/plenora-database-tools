@@ -18,6 +18,7 @@ on:
       - "crates/plenora-database-cli/**"
       - "crates/plenora-database-py/**"
       - "crates/plenora-db-db2/**"
+      - "vendor/odbc-api/**"
       - "docker-compose.db2.yml"
       - "docker/db2-client/**"
       - "scripts/check_db2_reference.py"
@@ -45,7 +46,7 @@ jobs:
   db2-linux:
     name: Db2 12.1 Linux x86_64
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

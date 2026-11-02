@@ -16,13 +16,16 @@ mod field_identity;
 mod metrics;
 mod parameter_codec;
 mod pool;
+mod postgis_schema;
 mod preflight;
 mod query_execution;
 mod query_plan;
 mod read_stream;
 mod schema_cache;
+mod search_path;
 mod spatial;
 mod spatial_probe;
+mod target_schema;
 mod transaction;
 mod types;
 mod write;
@@ -65,6 +68,10 @@ pub struct PostgresWriteDryRun {
     /// caso il dry run non decide l'esito, e lo dice. Offline e
     /// `NotPerformed`: il catalogo non e stato letto.
     pub row_security: write::target::RowSecurity,
+    /// Il target come la scrittura lo nominerebbe (regola T): con la DSN,
+    /// lo schema risolto una volta con il percorso della sessione; offline,
+    /// il target del piano.
+    pub target: plenora_database_core::plan::ObjectRef,
 }
 
 impl PostgresProvider {
@@ -85,7 +92,9 @@ impl PostgresProvider {
     ///
     /// Decide la regola R come la scrittura (`write::visibility`): Replace,
     /// Update e `DeleteByKeys` che non vedrebbero tutte le righe si
-    /// rifiutano qui, con lo stesso errore.
+    /// rifiutano qui, con lo stesso errore; e cosi le regole W1 (`COPY` che
+    /// scavalcherebbe `IDENTITY ALWAYS`) e W2 (`session_replication_role`
+    /// che il ruolo non puo riportare a `origin`).
     ///
     /// Non decide cio che decide il server scrivendo (l'elenco chiuso e in
     /// `write::target`): gli altri trigger, vincoli `CHECK` ed esclusioni, unicita e
@@ -101,18 +110,21 @@ impl PostgresProvider {
         &self,
         secret: Option<&SecretString>,
         operation: &WriteOperation,
-        mut input: Box<dyn BatchStream>,
+        input: Box<dyn BatchStream>,
         budget: &ResourceBudget,
         cancellation: &CancellationToken,
     ) -> Result<PostgresWriteDryRun> {
         let schema = input.schema();
         let mut gate = write::StatementGate::default();
         let mut row_security = write::target::RowSecurity::NotPerformed;
-        let (state, loss_report, prepared) = if let Some(secret) = secret {
+        let (state, loss_report, prepared, resolved, null_keys) = if let Some(secret) = secret {
             let mut prepared = self
                 .prepare_write(secret, operation, Arc::clone(&schema), budget, cancellation)
                 .await?;
-            let state = prepared
+            // Il target risolto una volta dalla preparazione (regola T): il
+            // dry run legge e pubblica quello che la scrittura scriverebbe.
+            let operation = &prepared.operation.clone();
+            let mut state = prepared
                 .take_driver_state::<write::PreparedPostgresWrite>()
                 .ok_or_else(|| {
                     DatabaseError::invalid_plan("stato prepared write PostgreSQL assente")
@@ -121,38 +133,74 @@ impl PostgresProvider {
             // ordine: DDL e svuotamento, poi la registrazione degli id dei
             // campi, poi lo statement e la prima riga (`gate`).
             let client = self.connect_session(secret).await?;
+            let session = client.client()?;
             let row_scoped = operation.mode == plenora_database_core::plan::WriteMode::Append
                 && operation.transaction_profile
                     == plenora_database_core::plan::TransactionProfile::SingleTransaction
                 && input.declared_input_rows().is_some();
-            let verdict = write::target::inspect(
-                client.client()?,
-                operation,
-                &schema,
-                write::target::WritePath::of(operation, row_scoped, self.insert_mode),
-                self.schema_evolution,
-            )
-            .await?;
-            if let Some(error) = verdict.before_input {
-                return Err(error);
+            // Cio che la scrittura legge, nel suo ordine e come lo legge: in
+            // una transazione che si annulla, con il percorso chiuso della
+            // regola Q2 (`search_path`) e la regola W2 prima di ogni altra
+            // lettura del target; `set_config` non resta nella sessione.
+            session
+                .batch_execute("BEGIN")
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
+            let read = async {
+                search_path::SessionPath::close(session, ErrorPhase::Write).await?;
+                write::visibility::pin_session(session).await?;
+                let verdict = write::target::inspect(
+                    session,
+                    operation,
+                    &schema,
+                    write::target::WritePath::of(operation, row_scoped, self.insert_mode),
+                    self.schema_evolution,
+                )
+                .await?;
+                if let Some(error) = verdict.before_input {
+                    return Err(error);
+                }
+                field_identity::check(session, operation, &schema, verdict.may_lock, verdict.owner)
+                    .await?;
+                // La regola V come la scrittura: le colonne del target che
+                // il server legge secondo la sessione.
+                write::assign_dry_run_session_rules(Some(session), &mut state, operation, &schema)
+                    .await?;
+                // La regola K2 come la scrittura: l'uguaglianza delle chiavi.
+                write::assign_dry_run_key_equality(Some(session), &mut state, operation, &schema)
+                    .await?;
+                let null_keys = write::key_facts(session, operation).await?;
+                Ok((verdict, null_keys))
             }
-            field_identity::check(
-                client.client()?,
-                operation,
-                &schema,
-                verdict.may_lock,
-                verdict.owner,
-            )
-            .await?;
+            .await;
+            session
+                .batch_execute("ROLLBACK")
+                .await
+                .map_err(|error| classify_error(ErrorPhase::Write, &error))?;
+            let (verdict, null_keys) = read?;
             drop(client);
             gate.at_statement = verdict.at_statement;
             gate.at_first_row = verdict.at_first_row;
             row_security = verdict.row_security;
-            let report = prepared.loss_report.clone();
-            (state, Some(report), Some(prepared))
+            let report = Some(prepared.loss_report.clone());
+            (state, report, Some(prepared), operation.clone(), null_keys)
         } else {
-            (write::prepare_state(&schema, operation)?, None, None)
+            let mut state = write::prepare_state(&schema, operation)?;
+            write::assign_dry_run_session_rules(None, &mut state, operation, &schema).await?;
+            write::assign_dry_run_key_equality(None, &mut state, operation, &schema).await?;
+            let offline = plenora_database_core::write_keys::NullKeys::Distinct;
+            (state, None, None, operation.clone(), offline)
         };
+        let operation = &resolved;
+        // La regola K come la scrittura, con i `NULL` dell'indice che prova le
+        // chiavi (senza la DSN `NULLS DISTINCT`: limite di `write_keys`).
+        let mut input = plenora_database_core::write_keys::guard_input_keys(
+            operation.mode,
+            &operation.keys,
+            input,
+            budget,
+            null_keys,
+        )?;
         let control = BudgetCancellation::new(cancellation, budget)?;
         let verified = write::verify_input(
             &state,
@@ -176,6 +224,7 @@ impl PostgresProvider {
             rows: verified.rows,
             loss_report,
             row_security,
+            target: operation.target.clone(),
         })
     }
 }
@@ -385,7 +434,7 @@ impl PostgresProvider {
         client
             .client()?
             .execute(
-                "SELECT set_config('search_path', $1, false)",
+                "SELECT pg_catalog.set_config('search_path', $1, false)",
                 &[&"ag_catalog,\"$user\",public"],
             )
             .await
@@ -407,7 +456,7 @@ impl PostgresProvider {
         let mut client = self.qualified_age_session(secret, cancellation).await?;
         let Some(result) = control::select_with_cancellation(
             client.client()?.query(
-                "SELECT name::text FROM ag_catalog.ag_graph ORDER BY name",
+                "SELECT name::pg_catalog.text FROM ag_catalog.ag_graph ORDER BY name",
                 &[],
             ),
             cancellation,
@@ -444,9 +493,10 @@ impl PostgresProvider {
         validate_graph_name(graph)?;
         let mut client = self.qualified_age_session(secret, cancellation).await?;
         let Some(result) = control::select_with_cancellation(
-            client
-                .client()?
-                .query("SELECT ag_catalog.create_graph($1::name)", &[&graph]),
+            client.client()?.query(
+                "SELECT ag_catalog.create_graph($1::pg_catalog.name)",
+                &[&graph],
+            ),
             cancellation,
         )
         .await
@@ -487,7 +537,7 @@ impl PostgresProvider {
         let mut client = self.qualified_age_session(secret, cancellation).await?;
         let Some(result) = control::select_with_cancellation(
             client.client()?.query(
-                "SELECT ag_catalog.drop_graph($1::name, $2)",
+                "SELECT ag_catalog.drop_graph($1::pg_catalog.name, $2)",
                 &[&graph, &cascade],
             ),
             cancellation,
@@ -717,7 +767,23 @@ impl PostgresProvider {
         open_connection(secret).await
     }
 
+    /// Una sessione per lo SQL della libreria: introspezione, letture,
+    /// preflight e dry run delle scritture, transazioni applicative.
+    ///
+    /// Dopo il `DISCARD ALL` del riuso passa dalla guardia della regola Q
+    /// (`write::visibility::guard_search_path`): con uno schema che oscura
+    /// `pg_catalog` nel `search_path` del ruolo lo SQL della libreria non e
+    /// piu quello scritto, e l'operazione si rifiuta prima di ogni lettura.
     async fn connect_session(&self, secret: &SecretString) -> Result<PooledClient> {
+        let client = self.connect_caller_session(secret).await?;
+        write::visibility::guard_search_path(client.client()?, ErrorPhase::Connect).await?;
+        Ok(client)
+    }
+
+    /// Una sessione per lo SQL del chiamante (`run_ddl`), senza la guardia:
+    /// il `search_path` del ruolo e quello che lo SQL del chiamante si
+    /// aspetta.
+    async fn connect_caller_session(&self, secret: &SecretString) -> Result<PooledClient> {
         let mut client = self
             .pool
             .checkout(
@@ -759,12 +825,38 @@ impl PostgresProvider {
         .await
     }
 
-    fn schema_cache_key(client: &PooledClient, source: &ObjectRef) -> SchemaCacheKey {
-        SchemaCacheKey::new(
+    fn schema_cache_key(client: &PooledClient, source: &ObjectRef) -> Result<SchemaCacheKey> {
+        Ok(SchemaCacheKey::new(
             client.key(),
-            source.schema.as_deref().unwrap_or("public").to_owned(),
+            target_schema::schema_of(source)?.to_owned(),
             source.object.clone(),
+        ))
+    }
+
+    /// Il target della scrittura con lo schema risolto (regola T,
+    /// `target_schema`), su una sessione della libreria.
+    async fn resolve_write_target(
+        &self,
+        secret: &SecretString,
+        operation: &WriteOperation,
+    ) -> Result<WriteOperation> {
+        let purpose = if operation.mode == plenora_database_core::plan::WriteMode::Create {
+            target_schema::Purpose::Create
+        } else {
+            target_schema::Purpose::Existing
+        };
+        let client = self.connect_session(secret).await?;
+        let target = target_schema::resolve(
+            client.client()?,
+            &operation.target,
+            purpose,
+            ErrorPhase::Prepare,
         )
+        .await?;
+        drop(client);
+        let mut operation = operation.clone();
+        operation.target = target;
+        Ok(operation)
     }
 
     async fn cached_columns(
@@ -772,7 +864,7 @@ impl PostgresProvider {
         client: &PooledClient,
         source: &ObjectRef,
     ) -> Result<(Arc<Vec<ColumnSpec>>, PostgresSchemaToken)> {
-        let key = Self::schema_cache_key(client, source);
+        let key = Self::schema_cache_key(client, source)?;
         if let Some((candidate_token, candidate_columns)) = self.schema_cache.candidate(&key) {
             self.metrics.schema_token_check();
             let current = match schema_token(client.client()?, source).await {
@@ -814,11 +906,12 @@ impl PostgresProvider {
             self.statement_timeout_ms,
             self.lock_timeout_ms,
         );
-        let key = SchemaCacheKey::new(
-            connection,
-            source.schema.as_deref().unwrap_or("public").to_owned(),
-            source.object.clone(),
-        );
+        // Il target della scrittura e gia risolto (regola T); uno senza
+        // schema non ha una voce nella cache.
+        let Some(schema) = source.schema.as_deref() else {
+            return;
+        };
+        let key = SchemaCacheKey::new(connection, schema.to_owned(), source.object.clone());
         if self.schema_cache.invalidate(&key) {
             self.metrics.schema_cache_invalidation();
         }
@@ -830,15 +923,41 @@ impl PostgresProvider {
                 operation: "database.list_catalogs".to_owned(),
                 document: json!({"catalogs": list_catalogs(client.client()?).await?}),
             }),
-            Operation::DatabaseListSchemas { .. } => Ok(Inspection {
-                operation: "database.list_schemas".to_owned(),
-                document: json!({"schemas": list_schemas(client.client()?).await?}),
-            }),
+            Operation::DatabaseListSchemas { source } => {
+                // Il catalog del piano e quello della connessione (regola T).
+                if let Some(source) = source {
+                    target_schema::check_catalog(client.client()?, source, ErrorPhase::Probe)
+                        .await?;
+                }
+                Ok(Inspection {
+                    operation: "database.list_schemas".to_owned(),
+                    document: json!({"schemas": list_schemas(client.client()?).await?}),
+                })
+            }
             Operation::DatabaseListObjects { source } => {
-                let schema = source
-                    .as_ref()
-                    .and_then(|value| value.schema.as_deref())
-                    .unwrap_or("public");
+                if let Some(source) = source {
+                    target_schema::check_catalog(client.client()?, source, ErrorPhase::Probe)
+                        .await?;
+                }
+                // Senza schema, lo schema corrente della sessione (regola T):
+                // quello in cui un oggetto senza schema si crea.
+                let schema = match source.as_ref().and_then(|value| value.schema.clone()) {
+                    Some(schema) => schema,
+                    None => target_schema::resolve(
+                        client.client()?,
+                        &ObjectRef {
+                            catalog: None,
+                            schema: None,
+                            object: String::new(),
+                        },
+                        target_schema::Purpose::Create,
+                        ErrorPhase::Probe,
+                    )
+                    .await?
+                    .schema
+                    .unwrap_or_default(),
+                };
+                let schema = schema.as_str();
                 let objects = list_objects(client.client()?, schema).await?;
                 Ok(Inspection {
                     operation: "database.list_objects".to_owned(),
@@ -846,6 +965,15 @@ impl PostgresProvider {
                 })
             }
             Operation::DatabaseDescribeObject { source } => {
+                // L'oggetto risolto una volta (regola T): colonne, metadati
+                // e chiave della cache dello stesso oggetto.
+                let source = &target_schema::resolve(
+                    client.client()?,
+                    source,
+                    target_schema::Purpose::Existing,
+                    ErrorPhase::Probe,
+                )
+                .await?;
                 let (columns, schema_token) = self.cached_columns(client, source).await?;
                 let metadata = describe_object_metadata(client.client()?, source).await?;
                 Ok(Inspection {
@@ -886,7 +1014,8 @@ impl Provider for PostgresProvider {
             let row = client
                 .client()?
                 .query_one(
-                    "SELECT current_setting('server_version'), current_database(), current_user",
+                    "SELECT pg_catalog.current_setting('server_version'), \
+                     pg_catalog.current_database(), current_user",
                     &[],
                 )
                 .await
@@ -985,12 +1114,21 @@ impl Provider for PostgresProvider {
         Box::pin(async move {
             let control = BudgetCancellation::new(cancellation, budget)?;
             check_cancelled(control.token(), ErrorPhase::Prepare)?;
+            // La regola T: il target senza schema si risolve una volta, con
+            // il percorso della sessione; da qui ogni statement e ogni
+            // lettura del catalogo nominano lo schema risolto, e
+            // `PreparedWrite::operation` lo pubblica.
+            let operation = &self.resolve_write_target(secret, operation).await?;
             // La stessa compilazione di `compile_write_plan`, che il dry run
             // della CLI esegue senza server.
-            let driver_state = write::prepare_state(&input_schema, operation)?;
+            let mut driver_state = write::prepare_state(&input_schema, operation)?;
             let (operation_lease, columns_lease) =
                 ContractLeases::acquire(budget, input_schema.fields().len())?.into_parts();
-            let loss_report = preflight::write(self, secret, operation, &input_schema).await?;
+            let (loss_report, admitted) =
+                preflight::write(self, secret, operation, &input_schema).await?;
+            // La regola A: le riscritture misurate del target, che la
+            // scrittura e il dry run verificano valore per valore.
+            driver_state.apply_admission(&input_schema, operation, &admitted);
             Ok(PreparedWrite::new(
                 operation.clone(),
                 input_schema,
@@ -1015,6 +1153,16 @@ impl Provider for PostgresProvider {
             validate_prepared_budget(&prepared.budget, budget)?;
             let control = BudgetCancellation::new(cancellation, budget)?;
             let target = prepared.operation.target.clone();
+            // La regola K: una chiave ripetuta nell'ingresso di una mode per
+            // chiavi rifiuta la scrittura prima del COMMIT. Lo stream della
+            // condizione 2 lo costruisce la transazione, che legge come
+            // l'indice che prova le chiavi tratta i `NULL`
+            // (`write::visibility::null_keys`); qui le verifiche delle chiavi.
+            plenora_database_core::write_keys::validate_input_keys(
+                prepared.operation.mode,
+                &prepared.operation.keys,
+                &input.schema(),
+            )?;
             let result = write::execute(
                 secret,
                 prepared,
@@ -1074,7 +1222,7 @@ impl Provider for PostgresProvider {
         plenora_database_core::caller_sql::run_ddl(self.kind(), cancellation, {
             Box::pin(async move {
                 error::check_cancelled(cancellation, ErrorPhase::Prepare)?;
-                let mut client = self.connect_session(secret).await?;
+                let mut client = self.connect_caller_session(secret).await?;
                 let result = client
                     .client_mut()?
                     .batch_execute(sql)
@@ -1166,6 +1314,38 @@ mod test_suite;
 #[cfg(test)]
 #[path = "write_visibility_live_tests.rs"]
 mod write_visibility_live_tests;
+
+#[cfg(test)]
+#[path = "write_semantics_live_tests.rs"]
+mod write_semantics_live_tests;
+
+#[cfg(test)]
+#[path = "write_r2_live_tests.rs"]
+mod write_r2_live_tests;
+
+#[cfg(test)]
+#[path = "sql_qualification_tests.rs"]
+mod sql_qualification_tests;
+
+#[cfg(test)]
+#[path = "write_r3_live_tests.rs"]
+mod write_r3_live_tests;
+
+#[cfg(test)]
+#[path = "write_r4_live_tests.rs"]
+mod write_r4_live_tests;
+
+#[cfg(test)]
+#[path = "write_r5_live_tests.rs"]
+mod write_r5_live_tests;
+
+#[cfg(test)]
+#[path = "write_r7_live_tests.rs"]
+mod write_r7_live_tests;
+
+#[cfg(test)]
+#[path = "write_admission_live_tests.rs"]
+mod write_admission_live_tests;
 
 #[cfg(test)]
 #[path = "parameter_fidelity_live_tests.rs"]

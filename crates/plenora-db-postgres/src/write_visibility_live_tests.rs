@@ -19,14 +19,38 @@ use plenora_database_core::row_visibility::{
 };
 use plenora_database_core::{CancellationToken, ErrorCategory, ErrorPhase};
 
-const SCHEMA: &str = "pln_regola_r";
-const ROLE: &str = "pln_regola_r_ruolo";
+pub const SCHEMA: &str = "pln_regola_r";
+pub const ROLE: &str = "pln_regola_r_ruolo";
 const PASSWORD: &str = "pln_regola_r_segreto";
 
 /// Le prove condividono schema e ruolo: una alla volta.
-static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn live_dsn() -> Option<String> {
+/// Il rifiuto della regola A (`crate::write::admission`): la coppia fra il
+/// tipo Arrow e la foglia del target non e misurata, o la misura non ha
+/// scritto alcun valore. Dal 25/10 le prove che scrivevano coppie non
+/// misurate (range, array, composti, testo verso tipi temporali o numerici,
+/// precisione temporale ridotta) lo asseriscono al posto dell'esito di prima.
+pub fn rule_a(error: Option<&DatabaseError>) -> bool {
+    use plenora_database_core::write_admission::{REFUSED_PAIR, UNPROVEN_PAIR};
+    error.is_some_and(|error| {
+        error.category == ErrorCategory::Unsupported
+            && error.phase == ErrorPhase::Prepare
+            && (error.message.contains(UNPROVEN_PAIR) || error.message.contains(REFUSED_PAIR))
+    })
+}
+
+/// Il rifiuto della regola K sotto una collation non deterministica.
+pub fn nondeterministic_key(error: Option<&DatabaseError>) -> bool {
+    error.is_some_and(|error| {
+        error.category == ErrorCategory::Unsupported
+            && error
+                .message
+                .contains(crate::write::visibility::NONDETERMINISTIC_KEY)
+    })
+}
+
+pub fn live_dsn() -> Option<String> {
     let declared = std::env::var("PLENORA_TEST_POSTGRES_DSN").ok();
     if declared.is_none() {
         assert!(
@@ -38,7 +62,7 @@ fn live_dsn() -> Option<String> {
 }
 
 /// La stessa DSN con il ruolo dello scenario: forma URL o `chiave=valore`.
-fn dsn_as_role(dsn: &str) -> String {
+pub fn dsn_as_role(dsn: &str) -> String {
     if let Some((scheme, rest)) = dsn.split_once("://") {
         let host = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
         return format!("{scheme}://{ROLE}:{PASSWORD}@{host}");
@@ -51,9 +75,12 @@ fn dsn_as_role(dsn: &str) -> String {
     format!("{kept} user={ROLE} password={PASSWORD}")
 }
 
-struct Rows {
+pub struct Rows {
     schema: SchemaRef,
     batch: Option<RecordBatch>,
+    /// Il totale dichiarato: con `Some`, Append in una transazione prende
+    /// il percorso row-scoped.
+    declared: Option<u64>,
 }
 
 impl BatchStream for Rows {
@@ -67,9 +94,41 @@ impl BatchStream for Rows {
     ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(std::future::ready(Ok(self.batch.take())))
     }
+
+    fn declared_input_rows(&self) -> Option<u64> {
+        self.declared
+    }
+}
+
+/// L'ingresso `(id, owner)` con il totale dichiarato.
+pub fn declared_rows(values: &[(i64, &str)]) -> Box<dyn BatchStream> {
+    Box::new(rows_with(
+        values,
+        Some(u64::try_from(values.len()).expect("righe")),
+    ))
+}
+
+/// L'ingresso con la sola colonna `owner`: le colonne del target che non
+/// riceve prendono il default.
+pub fn owner_rows(owners: &[&str]) -> Box<dyn BatchStream> {
+    let schema = Arc::new(Schema::new(vec![Field::new("owner", DataType::Utf8, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(owners.to_vec())) as ArrayRef],
+    )
+    .expect("batch");
+    Box::new(Rows {
+        schema,
+        batch: Some(batch),
+        declared: None,
+    })
 }
 
 fn rows(values: &[(i64, &str)]) -> Box<dyn BatchStream> {
+    Box::new(rows_with(values, None))
+}
+
+fn rows_with(values: &[(i64, &str)], declared: Option<u64>) -> Rows {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("owner", DataType::Utf8, true),
@@ -86,14 +145,18 @@ fn rows(values: &[(i64, &str)]) -> Box<dyn BatchStream> {
         ],
     )
     .expect("batch");
-    Box::new(Rows {
+    Rows {
         schema,
         batch: Some(batch),
-    })
+        declared,
+    }
 }
 
-fn operation(object: &str, mode: WriteMode) -> WriteOperation {
-    let keyed = matches!(mode, WriteMode::Update | WriteMode::DeleteByKeys);
+pub fn operation(object: &str, mode: WriteMode) -> WriteOperation {
+    let keyed = matches!(
+        mode,
+        WriteMode::Update | WriteMode::DeleteByKeys | WriteMode::Upsert
+    );
     WriteOperation {
         target: ObjectRef {
             catalog: None,
@@ -123,15 +186,24 @@ fn budget() -> ResourceBudget {
     ResourceBudget::new(ResourceLimits::default()).expect("budget")
 }
 
-async fn write(
+pub async fn write(
     provider: &PostgresProvider,
     secret: &SecretString,
     operation: &WriteOperation,
     input: &[(i64, &str)],
 ) -> Result<WriteOutcome> {
+    write_stream(provider, secret, operation, rows(input)).await
+}
+
+/// La scrittura di un ingresso qualunque.
+pub async fn write_stream(
+    provider: &PostgresProvider,
+    secret: &SecretString,
+    operation: &WriteOperation,
+    stream: Box<dyn BatchStream>,
+) -> Result<WriteOutcome> {
     let cancellation = CancellationToken::new();
     let budget = budget();
-    let stream = rows(input);
     let prepared = Provider::prepare_write(
         provider,
         secret,
@@ -144,24 +216,34 @@ async fn write(
     Provider::write(provider, secret, prepared, stream, &budget, &cancellation).await
 }
 
-async fn dry_run(
+pub async fn dry_run(
     provider: &PostgresProvider,
     secret: &SecretString,
     operation: &WriteOperation,
     input: &[(i64, &str)],
 ) -> Result<PostgresWriteDryRun> {
+    dry_run_stream(provider, secret, operation, rows(input)).await
+}
+
+/// Il dry run di un ingresso qualunque.
+pub async fn dry_run_stream(
+    provider: &PostgresProvider,
+    secret: &SecretString,
+    operation: &WriteOperation,
+    stream: Box<dyn BatchStream>,
+) -> Result<PostgresWriteDryRun> {
     provider
         .dry_run_write(
             Some(secret),
             operation,
-            rows(input),
+            stream,
             &budget(),
             &CancellationToken::new(),
         )
         .await
 }
 
-async fn ids(client: &tokio_postgres::Client, object: &str) -> Vec<i64> {
+pub async fn ids(client: &tokio_postgres::Client, object: &str) -> Vec<i64> {
     client
         .query(
             &format!("SELECT id FROM {SCHEMA}.{object} ORDER BY id"),
@@ -253,7 +335,7 @@ const SCENARIOS: &[Scenario] = &[
         setup: "CREATE VIEW {s}.v AS SELECT id, owner FROM {s}.t WHERE owner = 'a';" },
 ];
 
-async fn reset(admin: &tokio_postgres::Client) {
+pub async fn reset(admin: &tokio_postgres::Client) {
     admin
         .batch_execute(&format!(
             "DROP SCHEMA IF EXISTS {SCHEMA} CASCADE; \
@@ -264,7 +346,7 @@ async fn reset(admin: &tokio_postgres::Client) {
         .expect("pulizia");
 }
 
-async fn prepare(admin: &tokio_postgres::Client, setup: &str) {
+pub async fn prepare(admin: &tokio_postgres::Client, setup: &str) {
     reset(admin).await;
     let sql = format!(
         "CREATE ROLE {ROLE} LOGIN PASSWORD '{PASSWORD}'; CREATE SCHEMA {SCHEMA}; {TABLE} {setup}"

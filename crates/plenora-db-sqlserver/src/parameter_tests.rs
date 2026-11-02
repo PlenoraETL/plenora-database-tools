@@ -114,3 +114,28 @@ fn non_finite_floats_and_sub_microsecond_values_are_refused_before_io() {
         assert!(parameter_type(&value).is_err(), "{value:?}");
     }
 }
+
+#[test]
+fn legacy_lob_nulls_have_explicit_wire_declarations() {
+    for (native, declaration) in [
+        ("image", "varbinary(max)"),
+        ("text", "nvarchar(max)"),
+        ("ntext", "nvarchar(max)"),
+    ] {
+        let value = ParameterValue::Null {
+            type_name: native.into(),
+        };
+        let mut query = Query::new("SELECT @P1");
+        bind_parameter(&mut query, &value).unwrap();
+        assert_eq!(parameter_type(&value).unwrap(), declaration);
+    }
+    for native in ["Utf8", "Binary", "unknown", "SECRET"] {
+        let mut query = Query::new("SELECT @P1");
+        let value = ParameterValue::Null {
+            type_name: native.into(),
+        };
+        let error = bind_parameter(&mut query, &value).unwrap_err();
+        assert!(!error.message.contains("SECRET"));
+        assert!(parameter_type(&value).is_err());
+    }
+}

@@ -18,6 +18,49 @@ use plenora_database_testkit::parameter_fidelity::{
 const SCHEMA: &str = "PLENORA_PARAM";
 const TABLE: &str = "FIDELITY";
 
+/// Real aggregate warning and compiled SIGNAL: diagnostics precede the next call.
+#[test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+fn live_odbc_warnings_are_classified_before_next_call() {
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let (connection, timeout) =
+        crate::connection::open_connection(provider.config(), &secret).expect("connessione Db2");
+    // BEGIN ATOMIC is inlined SQL: SIGNAL cannot emit class 01/02 there.
+    // https://www.ibm.com/docs/en/db2/11.5.x?topic=statements-signal
+    // Use the real NULL-elimination warning, already in the closed whitelist.
+    let aggregate = "SELECT SUM(V) FROM (VALUES (1), (CAST(NULL AS INTEGER))) AS T(V)";
+    let rows = crate::connection::query_text(&connection, aggregate, &[], timeout, 1, 16)
+        .expect("avviso informativo ammesso anche nel percorso pubblico");
+    assert_eq!(rows, [vec![Some("1".to_owned())]]);
+
+    // Without ATOMIC this is compiled SQL, where application warnings are valid.
+    let mut prepared = connection
+        .prepare("BEGIN SIGNAL SQLSTATE '01ZZZ' SET MESSAGE_TEXT = 'private-warning-marker'; END")
+        .expect("prepare SIGNAL compilato");
+    let error = prepared
+        .execute(())
+        .map(drop)
+        .expect_err("avviso sconosciuto rifiutato");
+    assert!(!error.to_string().contains("private-warning-marker"));
+    assert!(
+        matches!(error, odbc_api::Error::Diagnostics { ref record, .. }
+        if record.state.as_str() == "01ZZZ" && record.native_error == 438),
+        "diagnostico SIGNAL: {error}"
+    );
+    drop(prepared);
+    let rows = crate::connection::query_text(
+        &connection,
+        "VALUES CAST('complete' AS VARCHAR(8))",
+        &[],
+        timeout,
+        1,
+        16,
+    )
+    .expect("bind e fetch completi dopo SIGNAL");
+    assert_eq!(rows, [vec![Some("complete".to_owned())]]);
+}
+
 fn environment(name: &str, fallback: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| fallback.to_owned())
 }
@@ -164,6 +207,12 @@ fn cases() -> Vec<Case> {
             "S",
             nonbmp.clone(),
             exact(&nonbmp, utf8_hex("\u{e8}\u{1F600}")),
+        ),
+        Case::new(
+            "testo con punto interrogativo e sostitutivo letterali",
+            "S",
+            text(" ?\u{fffd} "),
+            exact(&text(" ?\u{fffd} "), utf8_hex(" ?\u{fffd} ")),
         ),
         Case::new("testo vuoto", "S", text(""), exact(&text(""), "")),
         Case::new(
@@ -576,8 +625,8 @@ async fn live_arrow_read_returns_floating_point_values_exactly() {
 }
 
 /// Un TIMESTAMP(12) con cifre oltre il microsecondo: i decoder le troncavano
-/// formattando a sei cifre. Ora rifiutano, sul percorso transazionale e su
-/// quello Arrow; il microsecondo esatto resta leggibile.
+/// formattando a sei cifre. La query conserva le cifre; Arrow rifiuta
+/// quelle non rappresentabili. Il microsecondo esatto resta leggibile.
 #[tokio::test]
 #[ignore = "richiede Db2 LUW live esplicito"]
 async fn live_sub_microsecond_timestamps_are_refused_on_read() {
@@ -629,8 +678,8 @@ async fn live_sub_microsecond_timestamps_are_refused_on_read() {
         ErrorCategory::DataMapping
     );
     assert_eq!(
-        queried.expect_err("query oltre il microsecondo").category,
-        ErrorCategory::DataMapping
+        queried.expect("query esatta")[0].values()[0],
+        ParameterValue::Timestamp("2024-01-01T10:20:30.123456700000".into())
     );
 }
 
@@ -880,16 +929,20 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
         .into_iter()
         .map(|(column, _)| column)
         .collect::<Vec<_>>();
-    let outcomes = sweep(
-        &target,
-        &columns,
-        &[
+    let mut outcomes = Vec::new();
+    for column in &columns {
+        for path in [
             FidelityPath::Native,
             FidelityPath::Portable,
             FidelityPath::Read,
-        ],
-    )
-    .await;
+        ] {
+            // Solo contesto operativo: il timeout deve localizzare la prova
+            // anche quando non si arriva al referto finale.
+            eprintln!("censimento parametri: {} {path:?}: inizio", column.name);
+            outcomes.extend(sweep(&target, std::slice::from_ref(column), &[path]).await);
+            eprintln!("censimento parametri: {} {path:?}: fine", column.name);
+        }
+    }
     provider
         .execute_ddl(
             &secret,
@@ -993,4 +1046,104 @@ async fn live_text_catalog_units_preserve_boundaries_without_false_refusals() {
         &[format!("DROP TABLE {SCHEMA}.TEXT_UNITS")],
     )
     .await;
+}
+
+/// Byte non UTF-8 prodotti dal server: nessun percorso puo sostituirli con
+/// un punto interrogativo e consegnare una riga riuscita.
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+async fn live_invalid_server_text_is_refused_by_catalog_transaction_and_arrow() {
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    // Un '?' o U+FFFD autentico non prova una conversione lossy. Il valore
+    // nasce sul server dai byte attesi, indipendentemente dai bind del client.
+    let expected = " ?\u{fffd}\u{e8}\u{1f600} ";
+    let expression = format!("CAST(X'{}' AS VARCHAR(40))", utf8_hex(expected));
+    let valid_sql = format!("VALUES {expression}");
+    let valid_catalog =
+        crate::connection::with_connection(provider.config(), &secret, |connection, timeout| {
+            crate::connection::query_text(connection, &valid_sql, &[], timeout, 1, 64)
+        })
+        .expect("testo valido del catalogo");
+    assert_eq!(valid_catalog, [vec![Some(expected.to_owned())]]);
+    let catalog =
+        crate::connection::with_connection(provider.config(), &secret, |connection, timeout| {
+            crate::connection::query_text(
+                connection,
+                "VALUES CAST(X'FF' AS VARCHAR(1))",
+                &[],
+                timeout,
+                1,
+                32,
+            )
+        });
+    let error = catalog.expect_err("il catalogo deve rifiutare byte non UTF-8");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Probe);
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    let mut transaction = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    let valid_rows = transaction
+        .query(&Statement::new(valid_sql), &cancellation)
+        .await
+        .expect("testo valido della query");
+    assert_eq!(valid_rows.len(), 1);
+    assert_eq!(valid_rows[0].values(), &[text(expected)]);
+    let result = transaction
+        .query(
+            &Statement::new("VALUES CAST(X'FF' AS VARCHAR(1))"),
+            &cancellation,
+        )
+        .await;
+    transaction.rollback(&cancellation).await.unwrap();
+    let error = result.expect_err("la query deve rifiutare byte non UTF-8");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
+    ddl(&provider, &secret, &[
+        format!("CREATE OR REPLACE VIEW {SCHEMA}.INVALID_TEXT AS SELECT 1 AS ID, {expression} AS S FROM SYSIBM.SYSDUMMY1"),
+    ]).await;
+    let valid_arrow = read_all(&provider, &secret, "INVALID_TEXT").await;
+    ddl(
+        &provider,
+        &secret,
+        &[format!("DROP VIEW {SCHEMA}.INVALID_TEXT")],
+    )
+    .await;
+    let valid_arrow = valid_arrow.expect("testo valido Arrow");
+    assert_eq!(
+        valid_arrow.iter().map(RecordBatch::num_rows).sum::<usize>(),
+        1
+    );
+    let value = valid_arrow
+        .iter()
+        .find(|batch| batch.num_rows() > 0)
+        .unwrap()
+        .column_by_name("S")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<plenora_database_core::arrow::array::StringArray>()
+        .unwrap();
+    assert_eq!(value.value(0), expected);
+    // La vista produce i byte sul server: non dipende da un bind in scrittura.
+    ddl(&provider, &secret, &[
+        format!("CREATE OR REPLACE VIEW {SCHEMA}.INVALID_TEXT AS SELECT 1 AS ID, CAST(X'FF' AS VARCHAR(1)) AS S FROM SYSIBM.SYSDUMMY1"),
+    ]).await;
+    let result = read_all(&provider, &secret, "INVALID_TEXT").await;
+    ddl(
+        &provider,
+        &secret,
+        &[format!("DROP VIEW {SCHEMA}.INVALID_TEXT")],
+    )
+    .await;
+    let error = result.expect_err("Arrow deve rifiutare byte non UTF-8");
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
 }

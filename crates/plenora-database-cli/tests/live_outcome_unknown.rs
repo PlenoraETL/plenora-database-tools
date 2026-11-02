@@ -111,7 +111,8 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 struct CommitScanner {
     marker: Vec<u8>,
     touched: bool,
-    tail: Vec<u8>,
+    pending: Vec<u8>,
+    startup: bool,
 }
 
 impl CommitScanner {
@@ -119,20 +120,39 @@ impl CommitScanner {
         Self {
             marker: marker.to_vec(),
             touched: false,
-            tail: Vec::new(),
+            pending: Vec::new(),
+            startup: true,
         }
     }
 
     /// `true` quando questa lettura completa il `COMMIT` dopo il marcatore.
     fn feed(&mut self, chunk: &[u8]) -> bool {
-        // Il marcatore o il `COMMIT` possono arrivare spezzati su due
-        // letture: si cerca nella coda della lettura precedente piu questa.
-        let mut window = std::mem::take(&mut self.tail);
-        window.extend_from_slice(chunk);
-        self.touched |= contains(&window, &self.marker);
-        let cut = self.touched && contains(&window, b"COMMIT");
-        let keep = self.marker.len().max(b"COMMIT".len()).saturating_sub(1);
-        self.tail = window[window.len().saturating_sub(keep)..].to_vec();
+        self.pending.extend_from_slice(chunk);
+        let mut cut = false;
+        loop {
+            let offset = usize::from(!self.startup);
+            let Some(length) = self.pending.get(offset..offset + 4) else {
+                break;
+            };
+            let length = u32::from_be_bytes(length.try_into().expect("lunghezza frame")) as usize;
+            assert!(
+                (4..=16 * 1024 * 1024).contains(&length),
+                "frame PostgreSQL invalido"
+            );
+            let end = offset + length;
+            if self.pending.len() < end {
+                break;
+            }
+            if self.startup {
+                // SSLRequest/GSSENCRequest precedono lo StartupMessage.
+                self.startup = length == 8;
+            } else {
+                let body = &self.pending[5..end];
+                cut |= self.touched && self.pending[0] == b'Q' && body == b"COMMIT\0";
+                self.touched |= contains(body, &self.marker);
+            }
+            self.pending.drain(..end);
+        }
         cut
     }
 }
@@ -141,12 +161,34 @@ impl CommitScanner {
 /// spezzati su piu chunk vengono comunque riconosciuti.
 #[test]
 fn the_scanner_finds_a_marker_and_a_commit_split_across_reads() {
-    let mut scanner = CommitScanner::new(b"plenora-marker");
-    assert!(!scanner.feed(b"INSERT ... plenora-ma"));
-    assert!(!scanner.feed(b"rker ... CO"));
-    assert!(scanner.feed(b"MMIT"));
+    fn frame(kind: u8, body: &[u8]) -> Vec<u8> {
+        let mut frame = vec![kind];
+        frame.extend_from_slice(&u32::try_from(body.len() + 4).expect("frame").to_be_bytes());
+        frame.extend_from_slice(body);
+        frame
+    }
+    let startup = b"\0\0\0\x09\0\x03\0\0\0";
+    let commit = frame(b'Q', b"COMMIT\0");
+    let mut traffic = startup.to_vec();
+    traffic.extend(frame(b'Q', b"SELECT 'plenora-marker'\0"));
+    traffic.extend(frame(
+        b'Q',
+        b"CREATE TEMP TABLE t (id int) ON COMMIT DROP\0",
+    ));
+    // Neppure un frame COMMIT completo dentro un parametro e un comando.
+    traffic.extend(frame(b'B', &commit));
+    for split in 0..=traffic.len() {
+        let mut scanner = CommitScanner::new(b"plenora-marker");
+        assert!(!scanner.feed(&traffic[..split]));
+        assert!(!scanner.feed(&traffic[split..]));
+        for byte in &commit[..commit.len() - 1] {
+            assert!(!scanner.feed(&[*byte]));
+        }
+        assert!(scanner.feed(&commit[commit.len() - 1..]));
+    }
     let mut unmarked = CommitScanner::new(b"plenora-marker");
-    assert!(!unmarked.feed(b"COMMIT"));
+    assert!(!unmarked.feed(startup));
+    assert!(!unmarked.feed(&commit));
 }
 
 fn relay(mut client: TcpStream, mut server: TcpStream, marker: &[u8], cuts: &AtomicUsize) {

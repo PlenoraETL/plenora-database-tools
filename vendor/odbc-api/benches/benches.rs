@@ -1,0 +1,34 @@
+use std::{hint::black_box, iter};
+
+use criterion::{Criterion, criterion_group, criterion_main};
+use odbc_api::buffers::{BufferDesc, ColumnarDynBuffer};
+
+fn falliable_buffer_allocation(capacity: usize, max_str_len: usize) {
+    let description = BufferDesc::Text { max_str_len };
+    ColumnarDynBuffer::try_from_descs(capacity, iter::once(description)).unwrap();
+}
+
+fn infalliable_buffer_allocation(capacity: usize, max_str_len: usize) {
+    let description = BufferDesc::Text { max_str_len };
+    ColumnarDynBuffer::from_descs(capacity, [description]);
+}
+
+fn criterion_benchmark(c: &mut Criterion) {
+    c.bench_function("fallibale buffer allocation", |b| {
+        b.iter(|| {
+            let capacity = 1000;
+            let max_str_len = 65536;
+            falliable_buffer_allocation(black_box(capacity), black_box(max_str_len))
+        })
+    });
+    c.bench_function("infallibale buffer allocation", |b| {
+        b.iter(|| {
+            let capacity = 1000;
+            let max_str_len = 65536;
+            infalliable_buffer_allocation(black_box(capacity), black_box(max_str_len))
+        })
+    });
+}
+
+criterion_group!(benches, criterion_benchmark);
+criterion_main!(benches);

@@ -346,3 +346,32 @@ async fn dry_run_follows_the_row_scoped_path() {
     .expect_err("valore troncato sul percorso row-scoped");
     assert_eq!(error.database_error().category, ErrorCategory::DataMapping);
 }
+
+/// N6 della rilettura del 25/10: il commento d'uso diceva `--mode=append`,
+/// che il parser rifiuta; la forma e `--mode append`. Il rifiuto arriva
+/// prima di ogni connessione.
+#[tokio::test]
+async fn postgres_write_ipc_vuole_il_valore_dopo_mode() {
+    let args = |mode: &[&str]| {
+        ["PLENORA_DSN_ASSENTE", "public", "t", "assente.arrow"]
+            .iter()
+            .chain(mode)
+            .map(|item| (*item).to_owned())
+            .collect::<Vec<_>>()
+            .into_iter()
+    };
+    let refused = postgres_write_ipc(&mut args(&["--mode=append"]))
+        .await
+        .expect_err("forma con =");
+    assert_eq!(
+        refused.database_error().message,
+        "opzione postgres-write-ipc sconosciuta"
+    );
+    let accepted = postgres_write_ipc(&mut args(&["--mode", "append"]))
+        .await
+        .expect_err("ingresso assente");
+    assert_ne!(
+        accepted.database_error().message,
+        "opzione postgres-write-ipc sconosciuta"
+    );
+}

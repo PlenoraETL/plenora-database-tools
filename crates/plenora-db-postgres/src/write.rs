@@ -43,8 +43,12 @@ use tokio_postgres::types::ToSql;
 use tokio_postgres::types::{IsNull, Type};
 use tokio_postgres::Transaction;
 
+pub mod admission;
 pub mod binary_codec;
+mod canonical;
+pub use canonical::{reduced_temporal, LeafLoss};
 mod dry_run;
+mod intermediate;
 mod plan;
 mod prepared_codec;
 mod recovery;
@@ -54,6 +58,8 @@ mod sql;
 pub mod target;
 mod value_codec;
 pub mod visibility;
+
+use crate::search_path::SessionPath;
 
 use binary_codec::binary_copy_value;
 #[cfg(test)]
@@ -109,6 +115,18 @@ pub fn prepare_state(
     })
 }
 
+impl PreparedPostgresWrite {
+    /// Le riscritture misurate dal preflight (regola A, [`admission`]).
+    pub fn apply_admission(
+        &mut self,
+        schema: &SchemaRef,
+        operation: &WriteOperation,
+        columns: &[plenora_database_core::store_rewrite::ColumnRewrites],
+    ) {
+        admission::apply(&mut self.column_plans, schema, operation, columns);
+    }
+}
+
 fn compile_schema_plan(
     schema: &SchemaRef,
     operation: &WriteOperation,
@@ -119,6 +137,7 @@ fn compile_schema_plan(
         ));
     }
     validate_schema_contract(schema)?;
+    plenora_database_core::write_keys::refuse_key_in_update_columns(operation)?;
     for field in schema.fields() {
         Identifier::new(field.name().clone())?;
     }
@@ -167,7 +186,7 @@ pub async fn execute(
         .ok_or_else(|| {
             DatabaseError::invalid_plan("stato prepared write PostgreSQL assente o incompatibile")
         })?;
-    let column_plans = prepared_state.column_plans;
+    let mut column_plans = prepared_state.column_plans;
     // Row-scoped diagnostics è supportata solo per Append + SingleTransaction
     // (l'unico scenario dove ha senso quarantinare righe: il target esiste
     // già e si stanno aggiungendo N righe di cui alcune possono fallire).
@@ -259,7 +278,68 @@ pub async fn execute(
         execution_id: &execution_id,
     };
     let operation = &prepared.operation;
+    // La regola Q2: da qui lo SQL della libreria gira con il percorso chiuso
+    // (`crate::search_path`), gli statement sul target con quello della
+    // sessione.
+    let paths = match select_with_cancellation(
+        SessionPath::close(&transaction, ErrorPhase::Write),
+        cancellation,
+    )
+    .await
+    {
+        Some(Ok(paths)) => paths,
+        Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+        None => return Err(recovery.rollback_cancellation(transaction).await),
+    };
+    // La regola W2: la sessione applica trigger e foreign key del target
+    // (`session_replication_role = origin`), o la scrittura non parte.
+    match select_with_cancellation(visibility::pin_session(&transaction), cancellation).await {
+        Some(Ok(())) => {}
+        Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+        None => return Err(recovery.rollback_cancellation(transaction).await),
+    }
+    // La regola Q per i nomi di PostGIS dello SQL della scrittura: lo schema
+    // dell'estensione, da `pg_extension`, prima di ogni statement.
+    if column_plans.iter().any(WriteColumnPlan::is_spatial) {
+        let qualifier = match select_with_cancellation(
+            crate::postgis_schema::qualifier(&transaction, ErrorPhase::Write),
+            cancellation,
+        )
+        .await
+        {
+            Some(Ok(qualifier)) => qualifier,
+            Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+            None => return Err(recovery.rollback_cancellation(transaction).await),
+        };
+        for plan in &mut column_plans {
+            plan.qualify_postgis(&qualifier);
+        }
+    }
     if let Some(diagnostic_input) = diagnostic_input {
+        // La regola V sulle colonne del target, prima di ogni valore.
+        match select_with_cancellation(
+            assign_session_rules(&transaction, operation, &schema, &mut column_plans),
+            cancellation,
+        )
+        .await
+        {
+            Some(Ok(())) => {}
+            Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+            None => return Err(recovery.rollback_cancellation(transaction).await),
+        }
+        // La regola R prima di ogni effetto, come nel percorso ordinario; di
+        // nuovo dopo la preparazione dell'INSERT (`row_diagnostics`). Il
+        // percorso row-scoped e un INSERT preparato: niente `COPY`.
+        match select_with_cancellation(
+            visibility::enforce(&transaction, operation, &[]),
+            cancellation,
+        )
+        .await
+        {
+            Some(Ok(())) => {}
+            Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+            None => return Err(recovery.rollback_cancellation(transaction).await),
+        }
         match select_with_cancellation(
             crate::field_identity::register(&transaction, operation, &schema),
             cancellation,
@@ -282,6 +362,7 @@ pub async fn execute(
             &cancel_token,
             &execution_id,
             diagnostic_input,
+            &paths,
         )
         .await;
         if result
@@ -293,6 +374,12 @@ pub async fn execute(
         drop(client);
         return result;
     }
+    // Le colonne che `COPY` scrive, se il percorso e `COPY`: la regola W1 le
+    // legge prima di ogni effetto (`prepare_target`) e dopo ogni `COPY`.
+    let copied = visibility::copied_columns(
+        &schema,
+        target::WritePath::of(operation, false, runtime.insert_mode),
+    );
     if let Some(result) = select_with_cancellation(
         evolve_target_schema(
             &transaction,
@@ -300,6 +387,7 @@ pub async fn execute(
             &schema,
             &column_plans,
             runtime.schema_evolution,
+            &paths,
         ),
         cancellation,
     )
@@ -313,7 +401,15 @@ pub async fn execute(
     }
     if let Some(result) = select_with_cancellation(
         async {
-            prepare_target(&transaction, operation, &schema, &column_plans).await?;
+            prepare_target(
+                &transaction,
+                operation,
+                &schema,
+                &column_plans,
+                &copied,
+                &paths,
+            )
+            .await?;
             crate::field_identity::register(&transaction, operation, &schema).await
         },
         cancellation,
@@ -326,6 +422,39 @@ pub async fn execute(
     } else {
         return Err(recovery.rollback_cancellation(transaction).await);
     }
+    // La regola V sulle colonne del target (per Create, quelle appena
+    // create), prima del primo valore; la regola K2, l'uguaglianza con cui
+    // Update e `DeleteByKeys` confrontano le chiavi; e la condizione 2 della
+    // regola K, con i `NULL` come li tratta l'indice che prova le chiavi.
+    let null_keys = match select_with_cancellation(
+        async {
+            assign_session_rules(&transaction, operation, &schema, &mut column_plans).await?;
+            if matches!(operation.mode, WriteMode::Update | WriteMode::DeleteByKeys) {
+                let equalities = visibility::key_equality(&transaction, operation).await?;
+                for (field, plan) in schema.fields().iter().zip(column_plans.iter_mut()) {
+                    plan.key_equality = equalities.get(field.name()).cloned();
+                }
+            }
+            key_facts(&transaction, operation).await
+        },
+        cancellation,
+    )
+    .await
+    {
+        Some(Ok(null_keys)) => null_keys,
+        Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+        None => return Err(recovery.rollback_cancellation(transaction).await),
+    };
+    let mut input = match plenora_database_core::write_keys::guard_input_keys(
+        operation.mode,
+        &operation.keys,
+        input,
+        budget,
+        null_keys,
+    ) {
+        Ok(input) => input,
+        Err(error) => return Err(recovery.rollback_error(transaction, error).await),
+    };
     let mut received = 0_u64;
     let mut confirmed = 0_u64;
     loop {
@@ -373,6 +502,7 @@ pub async fn execute(
                 &batch,
                 &column_plans,
                 runtime.insert_mode,
+                &paths,
             ),
             cancellation,
         )
@@ -408,7 +538,10 @@ pub async fn execute(
     // target aveva, e la scrittura non li tocca.
     if operation.create_spatial_index && operation.mode == WriteMode::Create {
         if let Some(result) = select_with_cancellation(
-            create_spatial_indexes(&transaction, &operation.target, &schema, &column_plans),
+            paths.on_target(
+                &transaction,
+                create_spatial_indexes(&transaction, &operation.target, &schema, &column_plans),
+            ),
             cancellation,
         )
         .await
@@ -439,6 +572,14 @@ pub async fn execute(
             "fault injection prima del commit PostgreSQL",
         );
         return Err(recovery.rollback_error(transaction, error).await);
+    }
+    // La regola Q2 al COMMIT: i trigger e i controlli differiti del target
+    // scattano qui, con il percorso della sessione come ogni altro codice del
+    // target (`SessionPath::restore`).
+    match select_with_cancellation(paths.restore(&transaction), cancellation).await {
+        Some(Ok(())) => {}
+        Some(Err(error)) => return Err(recovery.rollback_error(transaction, error).await),
+        None => return Err(recovery.rollback_cancellation(transaction).await),
     }
     let commit_result = select_with_cancellation(transaction.commit(), cancellation).await;
     if commit_result.is_none() {
@@ -493,6 +634,216 @@ pub async fn execute(
     // di distinguerlo da una scrittura mai avvenuta.
     runtime.metrics.write_committed(confirmed);
     Ok(outcome)
+}
+
+/// La regola V (`canonical`) per ogni colonna dell'ingresso, dal catalogo
+/// del target letto da `client`.
+async fn assign_session_rules<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+    plans: &mut [WriteColumnPlan],
+) -> Result<()> {
+    intermediate::assign(client, &operation.target, schema, plans).await?;
+    let (rules, leaves) =
+        canonical::rules_with_leaves(client, operation, schema, ErrorPhase::Write).await?;
+    canonical::assign(plans, schema, &rules);
+    canonical::mark_keys(plans, schema, operation);
+    // La regola A con le foglie appena lette, prima del primo valore: la
+    // stessa ammissione del preflight, sul target come lo vede la
+    // transazione.
+    admission::assign(client, operation, schema, plans, &leaves, ErrorPhase::Write).await?;
+    canonical::refuse_lossy(plans)
+}
+
+/// La regola K dal catalogo, prima di ogni statement sulle chiavi, nella
+/// transazione della scrittura e nel dry run con la DSN: una chiave con una
+/// collation non deterministica si rifiuta
+/// (`visibility::refuse_nondeterministic_keys`), poi come l'indice che prova
+/// le chiavi tratta i `NULL` (`visibility::null_keys`).
+///
+/// # Errors
+///
+/// `unsupported` per una chiave con una collation non deterministica;
+/// l'errore classificato della lettura.
+pub async fn key_facts<C: tokio_postgres::GenericClient + Sync>(
+    client: &C,
+    operation: &WriteOperation,
+) -> Result<plenora_database_core::write_keys::NullKeys> {
+    visibility::refuse_nondeterministic_keys(client, operation, ErrorPhase::Write).await?;
+    visibility::null_keys(client, operation).await
+}
+
+/// La regola V per il dry run: dal catalogo se c'e una sessione e il target
+/// esiste, altrimenti quella che il piano dichiara (`canonical::declared`).
+///
+/// # Errors
+///
+/// L'errore classificato della lettura del catalogo.
+pub async fn assign_dry_run_session_rules(
+    client: Option<&tokio_postgres::Client>,
+    state: &mut PreparedPostgresWrite,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+) -> Result<()> {
+    canonical::assign_declared(&mut state.column_plans, operation);
+    if let (Some(client), false) = (client, operation.mode == WriteMode::Create) {
+        intermediate::assign(client, &operation.target, schema, &mut state.column_plans).await?;
+        let (rules, leaves) =
+            canonical::rules_with_leaves(client, operation, schema, ErrorPhase::Write).await?;
+        canonical::assign(&mut state.column_plans, schema, &rules);
+        // La regola A come la scrittura (il preflight l'ha gia decisa in
+        // `prepare_write`; qui si rilegge come nella transazione).
+        admission::assign(
+            client,
+            operation,
+            schema,
+            &mut state.column_plans,
+            &leaves,
+            ErrorPhase::Write,
+        )
+        .await?;
+    }
+    canonical::mark_keys(&mut state.column_plans, schema, operation);
+    canonical::refuse_lossy(&state.column_plans)
+}
+
+/// Le perdite che le foglie del tipo di ogni colonna dell'ingresso danno ai
+/// suoi valori (`canonical::leaf_losses`), per nome, per il `LossReport` del
+/// preflight: lo stesso cammino del catalogo (domini, array, range,
+/// multirange, composti) con cui `Strict` rifiuta i valori.
+///
+/// Fino al 25/10 (quinta rilettura) il preflight guardava soltanto la
+/// dichiarazione della colonna (o il tipo base del suo dominio): con
+/// `Compatible`, `Lossy` e `Native` un dominio su `numeric(5,2)` scriveva
+/// `'1.005'` come `1.01`, `numeric(5,2)[]` `{1.005}` come `{1.01}`, un
+/// dominio su `real` `'16777217'` come `1.6777216e+07`, e un composto
+/// `(numeric(5,2), varchar(3), real)` arrotondava e troncava, tutti con il
+/// `LossReport` vuoto.
+///
+/// Per un target esistente le foglie si leggono come le legge la scrittura
+/// (`canonical::rules`, con il percorso chiuso della regola Q2, in una
+/// transazione che si annulla); per Create quelle che il piano dichiara
+/// (`canonical::declared`) e, per i tipi dell'utente, quelle del tipo nel
+/// catalogo (`canonical::type_rules`).
+///
+/// # Errors
+///
+/// L'errore classificato della lettura del catalogo, in `Prepare`.
+pub async fn leaf_losses(
+    client: &tokio_postgres::Client,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+) -> Result<std::collections::BTreeMap<String, std::collections::BTreeSet<LeafLoss>>> {
+    let phase = ErrorPhase::Prepare;
+    let mut plans = compile_schema_plan(schema, operation)?;
+    canonical::assign_declared(&mut plans, operation);
+    let read = |error: tokio_postgres::Error| classify_error(phase, &error);
+    if operation.mode == WriteMode::Create {
+        let mut declarations = Vec::new();
+        for field in schema.fields() {
+            let contract = crate::field_contract::FieldContract::parse(field)?;
+            if matches!(contract.type_kind, Some("e" | "d" | "c")) {
+                if let Some(declaration) = sql::native_declaration_sql(&contract) {
+                    declarations.push((field.name().clone(), declaration));
+                }
+            }
+        }
+        let rules = canonical::type_rules(
+            client,
+            &declarations,
+            operation.mapping_policy == plenora_database_core::loss::MappingPolicy::Strict,
+            phase,
+        )
+        .await?;
+        for (plan, field) in plans.iter_mut().zip(schema.fields()) {
+            if let Some(rule) = rules.get(field.name()) {
+                if !plan.is_spatial() {
+                    plan.session_rule = Some(rule.clone());
+                }
+            }
+        }
+    } else {
+        client.batch_execute("BEGIN").await.map_err(read)?;
+        let rules = async {
+            SessionPath::close(client, phase).await?;
+            canonical::rules(client, operation, schema, phase).await
+        }
+        .await;
+        client.batch_execute("ROLLBACK").await.map_err(read)?;
+        canonical::assign(&mut plans, schema, &rules?);
+    }
+    Ok(plans
+        .iter()
+        .zip(schema.fields())
+        .filter_map(|(plan, field)| {
+            let rule = plan.session_rule.as_ref()?;
+            Some((
+                field.name().clone(),
+                canonical::leaf_losses(rule, field.data_type()),
+            ))
+        })
+        .collect())
+}
+
+/// La regola K2 per il dry run: l'uguaglianza delle chiavi di Update e
+/// `DeleteByKeys` dal catalogo, come la scrittura; senza sessione (il dry run
+/// offline, che non esegue lo statement) l'uguaglianza nominale di
+/// `pg_catalog`, perche lo statement si possa comporre.
+///
+/// # Errors
+///
+/// L'errore classificato della lettura del catalogo.
+pub async fn assign_dry_run_key_equality(
+    client: Option<&tokio_postgres::Client>,
+    state: &mut PreparedPostgresWrite,
+    operation: &WriteOperation,
+    schema: &SchemaRef,
+) -> Result<()> {
+    if !matches!(operation.mode, WriteMode::Update | WriteMode::DeleteByKeys) {
+        return Ok(());
+    }
+    let equalities = match client {
+        Some(client) => visibility::key_equality(client, operation).await?,
+        None => operation
+            .keys
+            .iter()
+            .map(|key| {
+                (
+                    key.clone(),
+                    visibility::KeyEquality {
+                        operator: "pg_catalog.=".to_owned(),
+                        cast: "pg_catalog.text".to_owned(),
+                    },
+                )
+            })
+            .collect(),
+    };
+    for (field, plan) in schema.fields().iter().zip(state.column_plans.iter_mut()) {
+        plan.key_equality = equalities.get(field.name()).cloned();
+    }
+    Ok(())
+}
+
+/// Il motivo pubblico del rifiuto della regola P (`canonical`).
+#[cfg(test)]
+#[must_use]
+pub const fn lossy_reason() -> &'static str {
+    canonical::LOSSY_VALUE
+}
+
+/// Il motivo pubblico del rifiuto della regola J (chiavi ripetute).
+#[cfg(test)]
+#[must_use]
+pub const fn duplicate_keys_reason() -> &'static str {
+    canonical::DUPLICATE_KEYS
+}
+
+/// Il motivo pubblico del rifiuto dell'arbitro unico dell'upsert.
+#[cfg(test)]
+#[must_use]
+pub const fn upsert_arbiter_reason() -> &'static str {
+    plenora_database_core::write_keys::UPSERT_WITH_OTHER_UNIQUE_INDEX
 }
 
 /// Il documento di un write andato a buon fine, per mode.
@@ -562,6 +913,7 @@ async fn evolve_target_schema(
     schema: &SchemaRef,
     plans: &[WriteColumnPlan],
     policy: PostgresSchemaEvolution,
+    paths: &SessionPath,
 ) -> Result<()> {
     if policy != PostgresSchemaEvolution::AddNullableColumns
         || !matches!(
@@ -578,16 +930,14 @@ async fn evolve_target_schema(
     let renderer = renderer();
     for (field, plan) in schema.fields().iter().zip(plans) {
         let column = renderer.quote_identifier(&Identifier::new(field.name().clone())?)?;
-        execute_sql(
-            transaction,
-            &format!(
-                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {column} {}",
-                quote_object(&operation.target)?,
-                plan.postgres_type
-            ),
-            &[],
-        )
-        .await?;
+        let sql = format!(
+            "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {column} {}",
+            quote_object(&operation.target)?,
+            plan.postgres_type
+        );
+        paths
+            .on_target(transaction, execute_sql(transaction, &sql, &[]))
+            .await?;
     }
     Ok(())
 }
@@ -673,54 +1023,64 @@ fn enforce_input_limits(
 /// rollback-safe quanto il `DELETE` di Replace ma piu economico, e non passa
 /// da policy RLS, regole o trigger di riga.
 ///
-/// Replace, Update e `DeleteByKeys` passano dalla regola R
+/// Ogni mode su un target esistente passa dalla regola R
 /// (`plenora_database_core::row_visibility`, fatti in [`visibility`]): se una
-/// policy, una regola, un trigger di riga, una vista o una tabella esterna
-/// possono nascondere righe allo statement distruttivo, la scrittura si
-/// rifiuta prima di ogni effetto.
+/// policy, una regola, un trigger `INSTEAD OF` o di riga, una vista o una
+/// tabella esterna possono nascondere righe allo statement distruttivo o
+/// mandare altrove quelle inserite, la scrittura si rifiuta prima di ogni
+/// effetto.
 async fn prepare_target(
     transaction: &Transaction<'_>,
     operation: &WriteOperation,
     schema: &SchemaRef,
     plans: &[WriteColumnPlan],
+    copied: &[String],
+    paths: &SessionPath,
 ) -> Result<()> {
     match operation.mode {
         WriteMode::Create => {
-            create_table(
-                transaction,
-                &operation.target,
-                schema,
-                plans,
-                &operation.keys,
-            )
-            .await
+            paths
+                .on_target(
+                    transaction,
+                    create_table(
+                        transaction,
+                        &operation.target,
+                        schema,
+                        plans,
+                        &operation.keys,
+                    ),
+                )
+                .await
         }
         // La regola R prima del `DELETE`, e di nuovo con il suo lock preso
         // (`visibility::enforce`): un `DELETE` che non vede tutte le righe
         // lascerebbe righe vecchie accanto alle nuove, con un COMMIT riuscito.
         WriteMode::Replace => {
-            visibility::enforce(transaction, operation).await?;
-            execute_sql(
-                transaction,
-                &format!("DELETE FROM {}", quote_object(&operation.target)?),
-                &[],
-            )
-            .await?;
-            visibility::enforce(transaction, operation).await
+            visibility::enforce(transaction, operation, copied).await?;
+            let sql = format!("DELETE FROM {}", quote_object(&operation.target)?);
+            paths
+                .on_target(transaction, execute_sql(transaction, &sql, &[]))
+                .await?;
+            visibility::enforce(transaction, operation, copied).await
         }
-        WriteMode::TruncateInsert => execute_sql(
-            transaction,
-            &format!("TRUNCATE TABLE {}", quote_object(&operation.target)?),
-            &[],
-        )
-        .await
-        .map(|_| ()),
+        // Il `TRUNCATE` non passa da regole o trigger di riga, l'INSERT che
+        // segue si: la regola prima dello svuotamento (un rifiuto dopo
+        // lascerebbe soltanto il rollback), e di nuovo con il lock
+        // `ACCESS EXCLUSIVE` del `TRUNCATE` preso.
+        WriteMode::TruncateInsert => {
+            visibility::enforce(transaction, operation, copied).await?;
+            let sql = format!("TRUNCATE TABLE {}", quote_object(&operation.target)?);
+            paths
+                .on_target(transaction, execute_sql(transaction, &sql, &[]))
+                .await?;
+            visibility::enforce(transaction, operation, copied).await
+        }
         // Prima dell'ingresso, con lo stesso esito del dry run; di nuovo a
-        // ogni statement preparato (`write_batch`), con il lock preso.
-        WriteMode::Update | WriteMode::DeleteByKeys => {
-            visibility::enforce(transaction, operation).await
+        // ogni statement preparato o `COPY` eseguito (`write_batch`), con il
+        // lock preso.
+        WriteMode::Update | WriteMode::DeleteByKeys | WriteMode::Append | WriteMode::Upsert => {
+            visibility::enforce(transaction, operation, copied).await
         }
-        WriteMode::Append | WriteMode::Upsert => Ok(()),
     }
 }
 
@@ -800,19 +1160,36 @@ async fn write_batch(
     batch: &RecordBatch,
     plans: &[WriteColumnPlan],
     insert_mode: PostgresInsertMode,
+    paths: &SessionPath,
 ) -> std::result::Result<u64, BatchFailure> {
     if matches!(
         operation.mode,
         WriteMode::Create | WriteMode::Append | WriteMode::Replace | WriteMode::TruncateInsert
     ) {
-        match insert_mode {
-            PostgresInsertMode::CopyText => {
-                return copy_batch(transaction, target, batch, plans).await;
-            }
-            PostgresInsertMode::CopyBinary => {
-                return copy_binary_batch(transaction, target, batch, plans).await;
-            }
-            PostgresInsertMode::Prepared => {}
+        // `COPY` prende il lock del target aprendosi: la regola R si rilegge
+        // dopo, prima del COMMIT, e un rifiuto riporta indietro anche le
+        // righe copiate.
+        let copied = match insert_mode {
+            PostgresInsertMode::CopyText => Some(
+                paths
+                    .on_target(transaction, copy_batch(transaction, target, batch, plans))
+                    .await,
+            ),
+            PostgresInsertMode::CopyBinary => Some(
+                paths
+                    .on_target(
+                        transaction,
+                        copy_binary_batch(transaction, target, batch, plans),
+                    )
+                    .await,
+            ),
+            PostgresInsertMode::Prepared => None,
+        };
+        if let Some(copied) = copied {
+            let copied = copied?;
+            let columns = visibility::copied_columns(batch.schema_ref(), target::WritePath::Copy);
+            visibility::enforce(transaction, operation, &columns).await?;
+            return Ok(copied);
         }
     }
     let (sql, indexes) = statement(operation, target, batch.schema_ref(), plans)?;
@@ -823,25 +1200,32 @@ async fn write_batch(
         .prepare(&sql)
         .await
         .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
+    intermediate::verify_parameters(plans, &indexes, statement.params())?;
     // La preparazione ha preso il lock del target: la regola R si rilegge
     // qui, dove un DDL concorrente non puo piu cambiarla fino al COMMIT.
-    visibility::enforce(transaction, operation).await?;
-    let mut affected = 0;
-    for row in 0..batch.num_rows() {
-        let values = indexes
-            .iter()
-            .map(|index| arrow_value(batch.column(*index).as_ref(), &plans[*index], row))
-            .collect::<Result<Vec<_>>>()?;
-        let refs = values
-            .iter()
-            .map(|value| value.as_ref() as &(dyn ToSql + Sync))
-            .collect::<Vec<_>>();
-        affected += transaction
-            .execute(&statement, &refs)
-            .await
-            .map_err(|e| batch_failure(ErrorPhase::Write, &e))?;
-    }
-    Ok(affected)
+    visibility::enforce(transaction, operation, &[]).await?;
+    // Gli statement sul target con il percorso della sessione; i valori si
+    // codificano (e si giudicano) in Rust, senza SQL.
+    paths
+        .on_target(transaction, async {
+            let mut affected = 0;
+            for row in 0..batch.num_rows() {
+                let values = indexes
+                    .iter()
+                    .map(|index| arrow_value(batch.column(*index).as_ref(), &plans[*index], row))
+                    .collect::<Result<Vec<_>>>()?;
+                let refs = values
+                    .iter()
+                    .map(|value| value.as_ref() as &(dyn ToSql + Sync))
+                    .collect::<Vec<_>>();
+                affected += transaction
+                    .execute(&statement, &refs)
+                    .await
+                    .map_err(|e| batch_failure(ErrorPhase::Write, &e))?;
+            }
+            Ok(affected)
+        })
+        .await
 }
 
 async fn copy_binary_batch(
@@ -861,18 +1245,20 @@ async fn copy_binary_batch(
         })
         .collect::<Result<Vec<_>>>()?;
     let type_probe = transaction
-        .prepare(&format!(
-            "SELECT {} FROM {} LIMIT 0",
-            columns.join(", "),
-            quote_object(target)?
-        ))
+        .prepare(&intermediate::copy_type_probe(
+            plans,
+            &quote_object(target)?,
+        )?)
         .await
         .map_err(|e| batch_failure(ErrorPhase::Prepare, &e))?;
-    let types = type_probe
-        .columns()
-        .iter()
-        .map(|column| column.type_().clone())
-        .collect::<Vec<_>>();
+    let types = type_probe.params().to_vec();
+    let indexes = (0..plans.len()).collect::<Vec<_>>();
+    intermediate::verify_parameters(plans, &indexes, &types)?;
+    // Dopo il lock della SELECT, rileggere gli OID reali delle colonne:
+    // il tipo nominato nella sonda non prova da solo quello del target.
+    let mut current = plans.to_vec();
+    intermediate::assign(transaction, target, batch.schema_ref(), &mut current).await?;
+    intermediate::verify_parameters(&current, &indexes, &types)?;
     let sink = transaction
         .copy_in(&format!(
             "COPY {} ({}) FROM STDIN BINARY",

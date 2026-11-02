@@ -449,9 +449,17 @@ pub async fn validate_spatial_inputs(
                 "alias sorgente SQL Server duplicato nella query spatial",
             ));
         }
-        let schema = source.object.schema.as_deref().unwrap_or("dbo");
+        // La regola T: lo schema che la sessione risolve per il testo della
+        // query, non `dbo`.
+        let schema = crate::catalog::resolve_schema(
+            session,
+            source.object.schema.as_deref(),
+            &source.object.object,
+            cancellation,
+        )
+        .await?;
         let description =
-            crate::catalog::describe_object(session, schema, &source.object.object, cancellation)
+            crate::catalog::describe_object(session, &schema, &source.object.object, cancellation)
                 .await?;
         sources.push(SpatialPhysicalSource {
             relation,
@@ -656,9 +664,15 @@ async fn validate_nested_spatial_inputs(
         if !seen.insert(identity) {
             continue;
         }
-        let schema = object.schema.as_deref().unwrap_or("dbo");
+        let schema = crate::catalog::resolve_schema(
+            session,
+            object.schema.as_deref(),
+            &object.object,
+            cancellation,
+        )
+        .await?;
         let description =
-            crate::catalog::describe_object(session, schema, &object.object, cancellation).await?;
+            crate::catalog::describe_object(session, &schema, &object.object, cancellation).await?;
         source_tokens.push(SpatialSourceToken {
             object,
             token: description.token,
@@ -1597,9 +1611,10 @@ async fn observe_spatial_srid(
     cancellation: &CancellationToken,
 ) -> Result<Option<i32>> {
     let renderer = sql_server_renderer();
-    let schema = source.source.object.schema.as_deref().unwrap_or("dbo");
-    let quoted_schema =
-        renderer.quote_identifier(&plenora_database_sql::Identifier::new(schema)?)?;
+    // Lo schema della descrizione, risolto una volta (regola T).
+    let quoted_schema = renderer.quote_identifier(&plenora_database_sql::Identifier::new(
+        source.description.schema.clone(),
+    )?)?;
     let quoted_object = renderer.quote_identifier(&plenora_database_sql::Identifier::new(
         source.source.object.object.clone(),
     )?)?;

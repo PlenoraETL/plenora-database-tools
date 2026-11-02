@@ -26,6 +26,12 @@ LIVE_SOURCE = ROOT / "crates" / "plenora-db-db2" / "src" / "live_tests.rs"
 SPATIAL_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-db2" / "src" / "spatial_live_tests.rs"
 )
+REWRITE_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-db2" / "src" / "write_rewrite_live_tests.rs"
+)
+ADMISSION_LIVE_SOURCE = (
+    ROOT / "crates" / "plenora-db-db2" / "src" / "write_admission_live_tests.rs"
+)
 OPERAND_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-db-db2" / "src" / "operand_live_tests.rs"
 )
@@ -37,6 +43,9 @@ LIVE_SOURCES = (
     SPATIAL_LIVE_SOURCE,
     OPERAND_LIVE_SOURCE,
     FIDELITY_LIVE_SOURCE,
+    REWRITE_LIVE_SOURCE,
+    ADMISSION_LIVE_SOURCE,
+    ROOT / "crates" / "plenora-db-db2" / "src" / "long_read_live_tests.rs",
 )
 PYTHON_LIVE_SOURCE = (
     ROOT / "crates" / "plenora-database-py" / "python" / "tests" / "test_db2_session.py"
@@ -44,6 +53,8 @@ PYTHON_LIVE_SOURCE = (
 WHEEL_NAMER = ROOT / "scripts" / "name_db2_wheel.py"
 RESULT = ROOT / "assurance-results" / "db2-reference.json"
 TIMEOUT = 20 * 60
+# La suite include i censimenti completi di parametri e scritture.
+LIVE_TIMEOUT = 120 * 60
 # Il client CLI scambia il testo nella codepage della locale: con quella POSIX
 # del container il testo UTF-8 arrivava doppiamente codificato, e l'adapter
 # ora rifiuta la connessione (`connection::verify_utf8_codepage`).
@@ -66,8 +77,14 @@ PYTHON_ENV = {
 }
 REQUIRED_LIVE_TESTS = frozenset(
     {
+        "live_timestamp_precision_and_duplicate_names_are_lossless",
+        "live_arrow_timestamp_precision_refuses_only_inexact_values",
+
         "live_caller_query_worker_panic_requires_recovery",
         "live_reference_probe_catalog_and_capabilities",
+        "live_catalog_padding_and_mixed_binary_text_are_exact",
+        "live_long_text_is_complete_or_refused_never_truncated",
+        "live_invalid_server_text_is_refused_by_catalog_transaction_and_arrow",
         "live_errors_classify_security_and_missing_objects_without_payloads",
         "live_portable_sql_executes_insert_merge_select_and_rollback",
         "live_transaction_commit_rollback_savepoint_and_typed_query",
@@ -91,11 +108,14 @@ REQUIRED_LIVE_TESTS = frozenset(
         "live_typed_parameters_refuse_values_of_another_type",
         "live_rilettura_quindici_cast_e_nomi",
         "live_rilettura_sedici_cte_con_spazi_finali",
+        # La regola A: la sonda contro il fixture e il difetto TIMESTAMP(p<6).
+        "live_sonde_scritture_server",
+        "live_a_db2_timestamp_3_non_tronca_in_silenzio",
     }
 )
 
 
-def run(command: list[str], *, capture: bool = True) -> str:
+def run(command: list[str], *, capture: bool = True, timeout: int = TIMEOUT) -> str:
     """Esegue un passo con timeout e rende visibile tutto il suo output."""
 
     try:
@@ -105,7 +125,7 @@ def run(command: list[str], *, capture: bool = True) -> str:
             check=False,
             text=True,
             capture_output=capture,
-            timeout=TIMEOUT,
+            timeout=timeout,
             env=os.environ.copy(),
         )
     except subprocess.TimeoutExpired as error:
@@ -115,7 +135,7 @@ def run(command: list[str], *, capture: bool = True) -> str:
             if partial:
                 print(partial.decode("utf-8", errors="replace") if isinstance(partial, bytes)
                       else partial, end="", flush=True)
-        raise RuntimeError(f"timeout durante {command[0]}") from error
+        raise RuntimeError(f"timeout dopo {timeout}s durante {command[0]}") from error
     output = f"{completed.stdout}{completed.stderr}" if capture else ""
     if output:
         print(output, end="")
@@ -128,17 +148,43 @@ def compose(arguments: list[str]) -> list[str]:
     return ["docker", "compose", "-f", str(COMPOSE_FILE), *arguments]
 
 
-def compose_exec(arguments: list[str], environment: dict[str, str]) -> str:
+def compose_exec(
+    arguments: list[str], environment: dict[str, str], *, timeout: int = TIMEOUT
+) -> str:
     env_args = [
         item for pair in environment.items() for item in ("-e", f"{pair[0]}={pair[1]}")
     ]
-    return run(compose(["exec", "-T", *env_args, "db2", *arguments]))
+    return run(compose(["exec", "-T", *env_args, "db2", *arguments]), timeout=timeout)
 
 
 def live_test_inventory() -> set[str]:
     return live_inventory.source_inventory(
         list(LIVE_SOURCES), keep=lambda name: name.startswith("live_")
     )
+
+
+def rerun_exact_tests(names: tuple[str, ...]) -> int:
+    """Raccoglie ogni esito, anche dopo exit nonzero, timeout o prova assente."""
+    results = []
+    for name in names:
+        print(name, flush=True)
+        try:
+            output = compose_exec(
+                ["cargo", "test", "--locked", "-p", "plenora-db-db2", "--lib", name,
+                 "--", "--exact", "--ignored", "--test-threads=1", "--show-output"],
+                {**DB2_ENV, "CARGO_BUILD_JOBS": os.environ.get("CARGO_BUILD_JOBS", "4")}, timeout=LIVE_TIMEOUT,
+            )
+            passed = (
+                f"test {name} ... ok" in output.splitlines()
+                and bool(re.search(r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", output, re.MULTILINE))
+            )
+            status = "passed" if passed else "incomplete"
+        except (RuntimeError, OSError):
+            status = "failed"
+        results.append({"test": name, "status": status})
+        print(f"{status}: {name}", flush=True)
+    print(json.dumps({"exact_tests": results}, ensure_ascii=False, indent=2), flush=True)
+    return int(any(result["status"] != "passed" for result in results) or not results)
 
 
 def validate_live_run(listing: str, output: str) -> list[str]:
@@ -287,7 +333,7 @@ PYTHON_LIVE_TARGETS = (
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_migration_dag_is_idempotent_and_reversible",
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_advanced_orm_qualification",
 )
-PYTHON_LIVE_EXPECTED = 9
+PYTHON_LIVE_EXPECTED = 12
 
 
 def run_python_live() -> None:
@@ -356,8 +402,10 @@ def main() -> int:
                 "--",
                 "--ignored",
                 "--test-threads=1",
+                "--show-output",
             ],
             DB2_ENV,
+            timeout=LIVE_TIMEOUT,
         )
         executed = validate_live_run(listing, live)
         steps.append("live_inventory_matches_sources_and_run")

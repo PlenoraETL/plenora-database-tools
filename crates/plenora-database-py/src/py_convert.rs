@@ -365,6 +365,7 @@ pub fn scalar_to_python(py: Python<'_>, rows: Vec<Row>) -> PyResult<Bound<'_, Py
 pub fn rows_to_pylist(py: Python<'_>, rows: Vec<Row>) -> PyResult<Bound<'_, PyList>> {
     let out = PyList::empty(py);
     for row in rows {
+        row.validate_names().map_err(to_py_err)?;
         let dict = PyDict::new(py);
         for (column, value) in row.columns().iter().zip(row.values()) {
             dict.set_item(column.as_str(), param_to_python(py, value)?)?;

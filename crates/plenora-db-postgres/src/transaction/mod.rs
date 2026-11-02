@@ -68,6 +68,42 @@ use stream::PostgresRowStream;
 use tokio_postgres::types::ToSql;
 use tokio_postgres::Statement as PreparedStatement;
 
+/// Il livello d'isolamento della transazione corrente contro `level`.
+///
+/// # Errors
+///
+/// `unsupported` se il server riporta un altro livello; l'errore
+/// classificato della lettura.
+async fn verify_isolation(
+    client: &tokio_postgres::Client,
+    level: plenora_database_core::transaction::IsolationLevel,
+) -> Result<()> {
+    use plenora_database_core::transaction::IsolationLevel;
+    let expected = match level {
+        IsolationLevel::ReadUncommitted => "read uncommitted",
+        IsolationLevel::ReadCommitted => "read committed",
+        IsolationLevel::RepeatableRead => "repeatable read",
+        IsolationLevel::Serializable => "serializable",
+    };
+    let effective: String = client
+        .query_one(
+            "SELECT pg_catalog.current_setting('transaction_isolation')",
+            &[],
+        )
+        .await
+        .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?
+        .get(0);
+    if effective == expected {
+        Ok(())
+    } else {
+        Err(DatabaseError::unsupported(
+            plenora_database_core::plan::ProviderKind::Postgres,
+            ErrorPhase::Prepare,
+            "livello di isolamento PostgreSQL chiesto non verificato nella transazione",
+        ))
+    }
+}
+
 /// Transazione `PostgreSQL` costruita sopra un `PooledClient`.
 pub struct PostgresTransaction {
     sent: SendMarker,
@@ -97,13 +133,33 @@ impl PostgresTransaction {
             client.invalidate();
             return Err(error);
         }
+        // Il livello chiesto si rilegge nella transazione: il `BEGIN` e un
+        // batch semplice, quindi vale, ma la promessa al chiamante si verifica
+        // invece di darla per costruzione (su SQL Server, fino al 25/10, il
+        // livello chiesto via RPC non arrivava alla transazione).
+        //
+        // Limite dichiarato: la lettura e il primo statement della
+        // transazione, quindi con `REPEATABLE READ` o `SERIALIZABLE` fissa lo
+        // snapshot prima della prima query del chiamante, e un `SET
+        // TRANSACTION SNAPSHOT` del chiamante non e piu possibile (non
+        // esposto dal contratto). Rientro: un'opzione che chieda di importare
+        // uno snapshot, verificata insieme al livello.
+        if let Some(level) = options.isolation {
+            if let Err(error) = verify_isolation(client.client()?, level).await {
+                let rolled_back = client.client()?.batch_execute("ROLLBACK").await.is_ok();
+                if !rolled_back {
+                    client.invalidate();
+                }
+                return Err(error);
+            }
+        }
         if !options.context.is_empty() {
             let inner = client.client()?;
             for (name, entry) in options.context.iter() {
                 let value = entry.value.as_provider_string();
                 if let Err(error) = inner
                     .execute(
-                        "SELECT set_config($1, $2, true)",
+                        "SELECT pg_catalog.set_config($1, $2, true)",
                         &[&name.as_str(), &value.as_str()],
                     )
                     .await
@@ -440,13 +496,13 @@ impl TransactionScope for PostgresTransaction {
             // Salviamo e ripristiniamo il valore transaction-local per non
             // alterare le query SQL successive del chiamante.
             let previous_search_path: String = client
-                .query_one("SELECT current_setting('search_path')", &[])
+                .query_one("SELECT pg_catalog.current_setting('search_path')", &[])
                 .await
                 .map_err(|error| classify_error(ErrorPhase::Prepare, &error))?
                 .get(0);
             client
                 .execute(
-                    "SELECT set_config('search_path', $1, true)",
+                    "SELECT pg_catalog.set_config('search_path', $1, true)",
                     &[&"ag_catalog,\"$user\",public"],
                 )
                 .await
@@ -474,7 +530,7 @@ impl TransactionScope for PostgresTransaction {
             };
             client
                 .execute(
-                    "SELECT set_config('search_path', $1, true)",
+                    "SELECT pg_catalog.set_config('search_path', $1, true)",
                     &[&previous_search_path],
                 )
                 .await

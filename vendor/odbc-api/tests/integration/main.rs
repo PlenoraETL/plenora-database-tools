@@ -1,0 +1,4265 @@
+#[macro_use]
+mod common;
+mod bulk_insert;
+mod catalog;
+mod column_wise_bulk_fetch;
+mod connection_strings;
+mod derive;
+mod mdbtools;
+
+use odbc_api::{
+    BindParamDesc, Bit, ColumnDescription, Connection, ConnectionOptions, ConnectionTransitions,
+    Cursor, DataType, Error, InOut, InputParameterMapping, IntoParameter, Narrow, Nullability,
+    Nullable, Out, Preallocated, ResultSetMetadata, RowSetBuffer, TruncationInfo, Utf16Str,
+    Utf16String,
+    buffers::{
+        BufferDesc, ColumnarBuffer, ColumnarDynBuffer, Indicator, RowVec, TextColumn, TextRowSet,
+    },
+    decimal_text_to_i128, environment,
+    handles::{
+        AsStatementRef, CData, CDataMut, ColumnType, OutputStringBuffer, SqlResult, Statement,
+    },
+    parameter::{
+        Blob, BlobRead, BlobSlice, InputParameter, VarBinaryArray, VarCharArray, VarCharSlice,
+        VarCharSliceMut, VarWCharArray, WithDataType,
+    },
+    sys::{
+        CDataType, FetchOrientation, HandleType, Numeric, Pointer, SQLFreeHandle, SQLPrepareW,
+        SqlDataType, SqlReturn, Timestamp,
+    },
+};
+
+use async_stream::stream;
+use stdext::function_name;
+use tempfile::NamedTempFile;
+use test_case::test_case;
+
+use tokio_stream::{Stream, StreamExt as _};
+
+use std::{
+    ffi::CString,
+    io::{self, Write},
+    iter,
+    num::NonZeroUsize,
+    ptr::null_mut,
+    str,
+    sync::{Arc, Mutex},
+    thread,
+    time::{Duration, Instant},
+};
+
+use self::common::{
+    DUCKDB, Given, MARIADB, MSSQL, POSTGRES, Profile, SQLITE_3, SingleColumnRowSetBuffer,
+    cursor_to_string,
+};
+
+#[test]
+fn bogus_connection_string() {
+    // When
+    let result = environment()
+        .unwrap()
+        .connect_with_connection_string("foobar", ConnectionOptions::default());
+
+    // Then
+
+    // We expect an error, since "foobar" is obviously not a connection string we can use to connect
+    // to any datasource (for starters it does not specify a driver).
+    assert!(result.is_err());
+
+    // We also want to be sure our error messages do not contain any Nul.
+    let error = result.err().unwrap();
+    if let Error::Diagnostics { record, function } = error {
+        assert_eq!("SQLDriverConnect", function);
+        // Make sure we remove any Nuls from the message, trailing or otherwise.
+        assert!(!record.message.contains(&0));
+    } else {
+        panic!("Expected Error::Diagnostics")
+    };
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn connect_to_db(profile: &Profile) {
+    let conn = profile.connection().unwrap();
+    assert!(!conn.is_dead().unwrap())
+}
+
+#[test_case(MSSQL, 4096; "Microsoft SQL Server")]
+#[test_case(MARIADB, 8192; "Maria DB")]
+#[test_case(SQLITE_3, 16384; "SQLite 3")]
+#[test_case(POSTGRES, 4096; "PostgreSQL")]
+fn default_packet_size(profile: &Profile, expected_packet_size: u32) {
+    let conn = profile.connection().unwrap();
+    let actual_packet_size = conn.packet_size().unwrap();
+
+    assert_eq!(expected_packet_size, actual_packet_size)
+}
+
+#[test_case(MSSQL, 8000; "Microsoft SQL Server")]
+#[test_case(MARIADB, 8192; "Maria DB")]
+#[test_case(SQLITE_3, 16384; "SQLite 3")]
+#[test_case(POSTGRES, 4096; "PostgreSQL")]
+fn set_packet_size(profile: &Profile, expected_packet_size: u32) {
+    let desired_packet_size = 8192;
+
+    let conn = environment()
+        .unwrap()
+        .connect_with_connection_string(
+            profile.connection_string,
+            ConnectionOptions {
+                packet_size: Some(desired_packet_size),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let actual_packet_size = conn.packet_size().unwrap();
+    assert_eq!(expected_packet_size, actual_packet_size)
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+fn describe_columns(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&[
+            "VARCHAR(255) NOT NULL",
+            "INTEGER",
+            "BINARY(12)",
+            "VARBINARY(100)",
+            "NCHAR(10)",
+            "NUMERIC(3,2)",
+            "DATETIME2",
+            "TIME",
+            "text",
+            "Image",
+            "DOUBLE PRECISION",
+            "DATE",
+        ])
+        .build(profile)
+        .unwrap();
+
+    let sql = table.sql_all_ordered_by_id();
+    let mut cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+
+    assert_eq!(cursor.num_result_cols().unwrap(), 12);
+    let mut actual = ColumnDescription::default();
+
+    let kind = DataType::Varchar {
+        length: NonZeroUsize::new(255),
+    };
+    let expected = ColumnDescription::new("a", kind, Nullability::NoNulls);
+    cursor.describe_col(1, &mut actual).unwrap();
+    assert_eq!(expected, actual);
+    assert_eq!(kind, cursor.col_data_type(1).unwrap());
+
+    let kind = DataType::Integer;
+    let expected = ColumnDescription::new("b", kind, Nullability::Nullable);
+    cursor.describe_col(2, &mut actual).unwrap();
+    assert_eq!(expected, actual);
+    assert_eq!(kind, cursor.col_data_type(2).unwrap());
+
+    let kind = DataType::Binary {
+        length: NonZeroUsize::new(12),
+    };
+    let expected = ColumnDescription::new("c", kind, Nullability::Nullable);
+    cursor.describe_col(3, &mut actual).unwrap();
+    assert_eq!(expected, actual);
+    assert_eq!(kind, cursor.col_data_type(3).unwrap());
+
+    let kind = DataType::Varbinary {
+        length: NonZeroUsize::new(100),
+    };
+    let expected = ColumnDescription::new("d", kind, Nullability::Nullable);
+    cursor.describe_col(4, &mut actual).unwrap();
+    assert_eq!(expected, actual);
+    assert_eq!(kind, cursor.col_data_type(4).unwrap());
+
+    let kind = DataType::WChar {
+        length: NonZeroUsize::new(10),
+    };
+    let expected = ColumnDescription::new("e", kind, Nullability::Nullable);
+    cursor.describe_col(5, &mut actual).unwrap();
+    assert_eq!(expected, actual);
+    assert_eq!(kind, cursor.col_data_type(5).unwrap());
+
+    let kind = DataType::Numeric {
+        precision: 3,
+        scale: 2,
+    };
+    let expected = ColumnDescription::new("f", kind, Nullability::Nullable);
+    cursor.describe_col(6, &mut actual).unwrap();
+    assert_eq!(expected, actual);
+    assert_eq!(kind, cursor.col_data_type(6).unwrap());
+
+    let kind = DataType::Timestamp { precision: 7 };
+    let expected = ColumnDescription::new("g", kind, Nullability::Nullable);
+    cursor.describe_col(7, &mut actual).unwrap();
+    assert_eq!(expected, actual);
+    assert_eq!(kind, cursor.col_data_type(7).unwrap());
+
+    let kind = DataType::Other {
+        data_type: SqlDataType(-154),
+        column_size: NonZeroUsize::new(16),
+        decimal_digits: 7,
+    };
+    let expected = ColumnDescription::new("h", kind, Nullability::Nullable);
+    cursor.describe_col(8, &mut actual).unwrap();
+    assert_eq!(expected, actual);
+    assert_eq!(kind, cursor.col_data_type(8).unwrap());
+
+    let kind = DataType::LongVarchar {
+        length: NonZeroUsize::new(2147483647),
+    };
+    let expected = ColumnDescription::new("i", kind, Nullability::Nullable);
+    cursor.describe_col(9, &mut actual).unwrap();
+    assert_eq!(expected, actual);
+    assert_eq!(kind, cursor.col_data_type(9).unwrap());
+
+    let kind = DataType::LongVarbinary {
+        length: NonZeroUsize::new(2147483647),
+    };
+    let expected = ColumnDescription::new("j", kind, Nullability::Nullable);
+    cursor.describe_col(10, &mut actual).unwrap();
+    assert_eq!(expected, actual);
+    assert_eq!(kind, cursor.col_data_type(10).unwrap());
+
+    let kind = DataType::Float { precision: 53 };
+    let expected = ColumnDescription::new("k", kind, Nullability::Nullable);
+    cursor.describe_col(11, &mut actual).unwrap();
+    assert_eq!(expected, actual);
+    assert_eq!(kind, cursor.col_data_type(11).unwrap());
+
+    let kind = DataType::Date;
+    let expected = ColumnDescription::new("l", kind, Nullability::Nullable);
+    cursor.describe_col(12, &mut actual).unwrap();
+    assert_eq!(expected, actual);
+    assert_eq!(kind, cursor.col_data_type(12).unwrap());
+}
+
+#[test_case(MSSQL, "DATETIME2", DataType::Timestamp { precision: 7 }; "Microsoft SQL Server")]
+#[test_case(MARIADB, "TIMESTAMP", DataType::Timestamp { precision: 0 }; "Maria DB")]
+#[test_case(SQLITE_3, "DATETIME2", DataType::Timestamp { precision: 3 }; "SQLite 3")]
+#[test_case(POSTGRES, "TIMESTAMP", DataType::Timestamp { precision: 6 }; "PostgreSQL")]
+fn conscise_data_type_reported_for_timestamp(
+    profile: &Profile,
+    relational_type: &str,
+    expected: DataType,
+) {
+    // Given
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&[relational_type])
+        .build(profile)
+        .unwrap();
+
+    // When
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name}"), (), None)
+        .unwrap()
+        .unwrap();
+    let data_type = cursor.col_data_type(1).unwrap();
+
+    // Then
+    assert_eq!(expected, data_type);
+}
+
+#[test_case(MSSQL, "DATE", DataType::Date; "Microsoft SQL Server")]
+#[test_case(MARIADB, "DATE", DataType::Date; "Maria DB")]
+#[test_case(SQLITE_3, "DATE", DataType::Date; "SQLite 3")]
+#[test_case(POSTGRES, "DATE", DataType::Date; "PostgreSQL")]
+fn conscise_data_type_reported_for_date(
+    profile: &Profile,
+    relational_type: &str,
+    expected: DataType,
+) {
+    // Given
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&[relational_type])
+        .build(profile)
+        .unwrap();
+
+    // When
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name}"), (), None)
+        .unwrap()
+        .unwrap();
+    let data_type = cursor.col_data_type(1).unwrap();
+
+    // Then
+    assert_eq!(expected, data_type);
+}
+
+#[test_case(MSSQL, "TIME", DataType::Other {data_type: SqlDataType(-154),
+    column_size: NonZeroUsize::new(16), decimal_digits: 7 }; "Microsoft SQL Server")]
+#[test_case(MARIADB, "TIME", DataType::Time { precision: 0 }; "Maria DB")]
+#[test_case(SQLITE_3, "TIME", DataType::Time { precision: 0 }; "SQLite 3")]
+#[test_case(POSTGRES, "TIME", DataType::Time { precision: 6 }; "PostgreSQL")]
+fn conscise_data_type_reported_for_time(
+    profile: &Profile,
+    relational_type: &str,
+    expected: DataType,
+) {
+    // Given
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&[relational_type])
+        .build(profile)
+        .unwrap();
+
+    // When
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name}"), (), None)
+        .unwrap()
+        .unwrap();
+    let data_type = cursor.col_data_type(1).unwrap();
+
+    // Then
+    assert_eq!(expected, data_type);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn col_nullability(profile: &Profile) {
+    // Given
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["INT NOT NULL", "INT"])
+        .build(profile)
+        .unwrap();
+
+    // When
+    let mut cursor = conn
+        .execute(&format!("SELECT a, b FROM {table_name}"), (), None)
+        .unwrap()
+        .unwrap();
+    let nullability_a = cursor.col_nullability(1).unwrap();
+    let nullability_b = cursor.col_nullability(2).unwrap();
+
+    // Then
+    assert_eq!(Nullability::NoNulls, nullability_a);
+    assert_eq!(Nullability::Nullable, nullability_b);
+}
+
+/// Into cursor should enable users to open a connection within a function and return a cursor.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn into_cursor(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(255)", "INT"])
+        .values_by_column(&[
+            &[
+                Some("Interstellar"),
+                Some("2001: A Space Odyssey"),
+                Some("Jurassic Park"),
+            ],
+            &[None, Some("1968"), Some("1993")],
+        ])
+        .build(profile)
+        .unwrap();
+
+    let make_cursor = || {
+        let query = table.sql_all_ordered_by_id();
+        conn.into_cursor(&query, (), None).unwrap().unwrap()
+    };
+    let cursor = make_cursor();
+
+    // Cursor to string helper utilizes the text buffer
+    let actual = cursor_to_string(cursor);
+    let expected = "Interstellar,NULL\n2001: A Space Odyssey,1968\nJurassic Park,1993";
+    assert_eq!(expected, actual);
+}
+
+/// We want to be able to create multiple statements with the utilizing the same connection, yet we
+/// in some cases it might be hard to keep track of the ownership of the connection separately. So
+/// essentially we want our statements to be owning an `Arc` to connection.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn shared_ownership_of_connections_by_statement(profile: &Profile) {
+    // Given
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INT"])
+        .values_by_column(&[&[Some("42")]])
+        .build(profile)
+        .unwrap();
+
+    // When
+    let conn = Arc::new(conn);
+    let cursor = conn
+        .clone()
+        .into_cursor(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+    // We can drop the connection, even though, the cursor still exists.
+    drop(conn);
+
+    // Then
+    let expected = "42";
+    assert_eq!(expected, cursor_to_string(cursor));
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn share_connections_with_statement_in_other_thread(profile: &Profile) {
+    // Given
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INT"])
+        .values_by_column(&[&[Some("42")]])
+        .build(profile)
+        .unwrap();
+
+    // When
+    let conn = Arc::new(Mutex::new(conn));
+    let mut cursor = conn
+        .clone()
+        .into_cursor(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+    let other_thread = thread::spawn(move || {
+        let mut i = 0i32;
+        cursor
+            .next_row()
+            .unwrap()
+            .unwrap()
+            .get_data(1, &mut i)
+            .unwrap();
+        i
+    });
+    drop(conn);
+    let answer = other_thread.join().unwrap();
+
+    // Then
+    assert_eq!(42, answer);
+}
+
+/// Strong exception safety for `into_cursor`. Our first query will fail, because it will query a
+/// non-existing table, but our second one using the same connection will succeed. This is one
+/// scenario in which it is useful not to "swallow" the connection in case of an error.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn into_cursor_reuse_connection_on_failure(profile: &Profile) {
+    // Given
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(255)", "INT"])
+        .values_by_column(&[
+            &[
+                Some("Interstellar"),
+                Some("2001: A Space Odyssey"),
+                Some("Jurassic Park"),
+            ],
+            &[None, Some("1968"), Some("1993")],
+        ])
+        .build(profile)
+        .unwrap();
+
+    // When our first call to `.into_cursor` fails
+    let result = conn.into_cursor("Non-existing-table", (), None);
+
+    // Then we can extract a valid connection from the error type
+    let error = result.map(|_| ()).unwrap_err();
+    let conn = error.previous;
+    // Extra verification to prove connection is indeed valid
+    let query = table.sql_all_ordered_by_id();
+    let cursor = conn.into_cursor(&query, (), None).unwrap().unwrap();
+    let actual = cursor_to_string(cursor);
+    let expected = "Interstellar,NULL\n2001: A Space Odyssey,1968\nJurassic Park,1993";
+    assert_eq!(expected, actual);
+}
+
+/// Implementing `std::error::Error` allows using the question mark operator in functions using
+/// anyhow's error type, among other things.
+#[test]
+fn connection_and_error_implements_std_error() {
+    // Given any connection, we do not care which database
+    let conn = SQLITE_3.connection().unwrap();
+
+    // When we catch the error returned by `into_cursor`
+    let result = conn.into_cursor("Non-existing-table", (), None).map(|_| ());
+    let connection_and_error = result.unwrap_err();
+    let plain_error = connection_and_error.error;
+    let result = connection_and_error
+        .previous
+        .into_cursor("Non-existing-table", (), None)
+        .map(|_| ());
+    let std_error: Box<dyn std::error::Error> = Box::new(result.unwrap_err().error);
+
+    // Then we can extract a valid connection from the error type
+    assert_eq!(std_error.to_string(), plain_error.to_string());
+    assert!(std_error.source().is_none());
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn column_name(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(255)", "INT"])
+        .build(profile)
+        .unwrap();
+
+    let sql = format!("SELECT a, b FROM {table_name};");
+    let mut cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+
+    let name = cursor.col_name(1).unwrap();
+    assert_eq!("a", name);
+
+    let name = cursor.col_name(2).unwrap();
+    assert_eq!("b", name);
+
+    // Test the same using column descriptions
+    let mut desc = ColumnDescription::default();
+
+    cursor.describe_col(1, &mut desc).unwrap();
+    assert_eq!("a", desc.name_to_string().unwrap());
+
+    cursor.describe_col(2, &mut desc).unwrap();
+    assert_eq!("b", desc.name_to_string().unwrap());
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bind_wide_column_to_char(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["CHAR(5)"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = table.sql_insert();
+    conn.execute(&insert_sql, &"Hello".into_parameter(), None)
+        .unwrap();
+    let sql = table.sql_all_ordered_by_id();
+
+    let cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+    let mut buf = ColumnarBuffer::new(vec![(1, TextColumn::<u16>::new(1, 5))]);
+    let mut row_set_cursor = cursor.bind_buffer(&mut buf).unwrap();
+    row_set_cursor.fetch().unwrap();
+    drop(row_set_cursor);
+
+    assert_eq!(
+        "Hello",
+        buf.column(0)
+            .get(0)
+            .map(Utf16Str::from_slice)
+            .unwrap()
+            .unwrap()
+            .to_string()
+    );
+}
+
+/// Bind a BIT column to a Bit buffer.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bind_bit(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["BIT"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = format!("INSERT INTO {table_name} (a) VALUES (?),(?);");
+    conn.execute(
+        &insert_sql,
+        (&Bit::from_bool(false), &Bit::from_bool(true)),
+        None,
+    )
+    .unwrap();
+
+    let sql = format!("SELECT a FROM {table_name};");
+    let cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+    let mut buf = ColumnarBuffer::new(vec![(1, vec![Bit(0); 3])]);
+    let mut row_set_cursor = cursor.bind_buffer(&mut buf).unwrap();
+    let batch = row_set_cursor.fetch().unwrap().unwrap();
+
+    assert!(!batch.column(0)[0].as_bool());
+    assert!(batch.column(0)[1].as_bool());
+}
+
+/// Binds a buffer which is too short to a fixed sized character type. This provokes an indicator of
+/// `NO_TOTAL` on MSSQL.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn truncate_fixed_sized(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["CHAR(5)"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = table.sql_insert();
+    conn.execute(&insert_sql, &"Hello".into_parameter(), None)
+        .unwrap();
+
+    let cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+    let mut buf = ColumnarBuffer::new(vec![(1, TextColumn::new(1, 3))]);
+    let mut row_set_cursor = cursor.bind_buffer(&mut buf).unwrap();
+    let batch = row_set_cursor.fetch().unwrap().unwrap();
+
+    assert_eq!(Some(&b"Hel"[..]), batch.column(0).get(0));
+}
+
+/// Bind a VARCHAR column to a char buffer.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bind_varchar(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(100)"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = format!("INSERT INTO {table_name} (a) VALUES ('Hello, World!');");
+    conn.execute(&insert_sql, (), None).unwrap();
+
+    let sql = format!("SELECT a FROM {table_name};");
+    let cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+    let mut buf = TextRowSet::from_max_str_lens(1, [100]).unwrap();
+    // let mut buf = SingleColumnRowSetBuffer::with_text_column(1, 100);
+    let mut row_set_cursor = cursor.bind_buffer(&mut buf).unwrap();
+    row_set_cursor.fetch().unwrap();
+    drop(row_set_cursor);
+
+    assert_eq!(Some(&b"Hello, World!"[..]), buf.column(0).get(0));
+}
+
+/// Bind a VARCHAR column to a wchar buffer
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bind_varchar_to_wchar(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(100)"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = table.sql_insert();
+    conn.execute(&insert_sql, &"Hello, World!".into_parameter(), None)
+        .unwrap();
+    let sql = table.sql_all_ordered_by_id();
+
+    let cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+    let mut buf = ColumnarBuffer::new(vec![(1, TextColumn::<u16>::new(1, 100))]);
+    let mut row_set_cursor = cursor.bind_buffer(&mut buf).unwrap();
+    let batch = row_set_cursor.fetch().unwrap().unwrap();
+
+    assert_eq!(
+        "Hello, World!",
+        Utf16Str::from_slice(batch.column(0).get(0).unwrap())
+            .unwrap()
+            .to_string()
+    );
+}
+
+/// utf16 to utf8 conversion with one character those utf-16 representation is smaller than its utf8
+/// representation
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+// #[test_case(SQLITE_3; "SQLite 3")] //Doesn't work on Linux
+#[cfg(not(target_os = "windows"))] // Windows does not use UTF-8 locale by default
+fn nvarchar_to_text(profile: &Profile) {
+    let table_name = table_name!();
+    let conn = profile
+        .setup_empty_table(&table_name, &["NVARCHAR(1)"])
+        .unwrap();
+    // Trade mark sign (`™`) is longer in utf-8 (3 Bytes) than in utf-16 (2 Bytes).
+    let insert_sql = format!("INSERT INTO {} (a) VALUES (?);", table_name);
+    conn.execute(&insert_sql, &"™".into_parameter(), None)
+        .unwrap();
+
+    let sql = format!("SELECT a FROM {};", table_name);
+    let cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+    let text = cursor_to_string(cursor);
+
+    assert_eq!("™", text);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bind_numeric_to_float(profile: &Profile) {
+    // Setup table
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["NUMERIC(3,2)"])
+        .build(profile)
+        .unwrap();
+
+    let insert_sql = format!("INSERT INTO {table_name} (a) VALUES (?);");
+    conn.execute(&insert_sql, &1.23, None).unwrap();
+
+    let sql = format!("SELECT a FROM {table_name}");
+    let cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+    let buf: SingleColumnRowSetBuffer<Vec<f64>> = SingleColumnRowSetBuffer::new(1);
+    let mut row_set_cursor = cursor.bind_buffer(buf).unwrap();
+
+    let actual = row_set_cursor.fetch().unwrap().unwrap().get();
+    assert_eq!(1, actual.len());
+    assert!((1.23f64 - actual[0]).abs() < f64::EPSILON);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+// #[test_case(SQLITE_3; "SQLite 3")] SQLLITE does not do this kind of precision
+#[test_case(POSTGRES; "PostgreSQL")]
+fn fetch_double_precision_as_f64(profile: &Profile) {
+    // Setup table
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["DOUBLE PRECISION"])
+        .build(profile)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &123456789.12345678f64, None)
+        .unwrap();
+
+    let query = table.sql_all_ordered_by_id();
+    let cursor = conn.execute(&query, (), None).unwrap().unwrap();
+    let buf: SingleColumnRowSetBuffer<Vec<f64>> = SingleColumnRowSetBuffer::new(1);
+    let mut row_set_cursor = cursor.bind_buffer(buf).unwrap();
+
+    let actual = row_set_cursor.fetch().unwrap().unwrap().get();
+    assert_eq!(1, actual.len());
+    assert!((123456789.12345678f64 - actual[0]).abs() < f64::EPSILON);
+}
+
+/// What relational types do different dbs report for "Double precision"
+#[test_case(MSSQL, DataType::Float { precision: 53 }; "Microsoft SQL Server")]
+#[test_case(MARIADB, DataType::Double; "Maria DB")]
+#[test_case(SQLITE_3, DataType::Double; "SQLite 3")]
+// Yeah, `0` this seems like a bug in PG
+#[test_case(POSTGRES, DataType::Float { precision: 0 }; "PostgreSQL")]
+fn data_type_reported_for_double_precision(profile: &Profile, expected_data_type: DataType) {
+    // Given a cursor with metadata about double precision
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["DOUBLE PRECISION"])
+        .build(profile)
+        .unwrap();
+    let mut cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+
+    let actual_data_type = cursor.col_data_type(1).unwrap();
+
+    assert_eq!(expected_data_type, actual_data_type);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bind_numeric_to_i64(profile: &Profile) {
+    // Setup table
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["NUMERIC(10,0)"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = format!("INSERT INTO {table_name} (a) VALUES (?);");
+    conn.execute(&insert_sql, &1234567890i64, None).unwrap();
+
+    let sql = format!("SELECT a FROM {table_name}");
+    let cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+    let buf: SingleColumnRowSetBuffer<Vec<i64>> = SingleColumnRowSetBuffer::new(1);
+    let mut row_set_cursor = cursor.bind_buffer(buf).unwrap();
+
+    let actual = row_set_cursor.fetch().unwrap().unwrap().get();
+    assert_eq!(1, actual.len());
+    assert_eq!(1234567890, actual[0]);
+}
+
+#[test_case(MSSQL, "VARCHAR(max)"; "Microsoft SQL Server")]
+#[test_case(MARIADB, "TEXT"; "Maria DB")]
+#[test_case(SQLITE_3, "TEXT"; "SQLite 3")]
+#[test_case(POSTGRES, "TEXT"; "PostgreSQL")]
+fn upper_limit_for_varchar_max(profile: &Profile, large_text_type: &'static str) {
+    // Given
+    let table_name = table_name!();
+    let types = [large_text_type];
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&types)
+        .build(profile)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &"Hello, World!".into_parameter(), None)
+        .unwrap();
+
+    // When
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name}"), (), None)
+        .unwrap()
+        .unwrap();
+    let text_buffer = TextRowSet::for_cursor(10, &mut cursor, Some(50)).unwrap();
+    let mut cursor = cursor.bind_buffer(text_buffer).unwrap();
+    let batch = cursor.fetch().unwrap().unwrap();
+
+    // Then
+    assert_eq!(
+        "Hello, World!",
+        str::from_utf8(batch.column(0).get(0).unwrap()).unwrap()
+    );
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn insert_str_as_sql_integer(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = table.sql_insert();
+
+    let parameter = WithDataType::new("42".into_parameter(), DataType::Integer);
+    conn.execute(&insert_sql, &parameter, None).unwrap();
+
+    // Bind buffer and insert values.
+    let actual = table.content_as_string(&conn);
+    let expected = "42";
+    assert_eq!(expected, actual);
+}
+
+/// Frankly more about testing edge cases in the API than a real use case.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+fn var_char_slice_mut_as_input_output_parameter(profile: &Profile) {
+    let conn = profile.connection().unwrap();
+    conn.execute(
+        r#"
+        IF EXISTS (SELECT name FROM sysobjects WHERE name = 'TestInOutText')
+        DROP PROCEDURE TestInOutText
+        "#,
+        (),
+        None,
+    )
+    .unwrap();
+
+    conn.execute(
+        r#"CREATE PROCEDURE TestInOutText
+        @OutParm VARCHAR(15) OUTPUT
+        AS
+        SELECT @OutParm = 'Hello, World!'
+        RETURN 99
+        "#,
+        (),
+        None,
+    )
+    .unwrap();
+
+    let mut buffer = [b'a'; 15];
+    let indicator = Indicator::Length(buffer.len());
+    let mut param = VarCharSliceMut::from_buffer(&mut buffer, indicator);
+    // This is akward! Maybe we can do something so we do not need to wrap it in (InOut, ) in order
+    // to bind it as an input output parameter.
+    conn.execute("{call TestInOutText(?)}", (InOut(&mut param),), None)
+        .unwrap();
+
+    let actual = str::from_utf8(&buffer).unwrap();
+    let expected = "Hello, World!\0a";
+    assert_eq!(expected, actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bind_integer_parameter(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["INTEGER", "INTEGER"])
+        .build(profile)
+        .unwrap();
+    let insert = format!("INSERT INTO {table_name} (a,b) VALUES (1,1), (2,2);");
+    conn.execute(&insert, (), None).unwrap();
+
+    let sql = format!("SELECT a FROM {table_name} where b=?;");
+    let cursor = conn.execute(&sql, &1, None).unwrap().unwrap();
+    let actual = cursor_to_string(cursor);
+    assert_eq!("1", actual);
+
+    let cursor = conn.execute(&sql, &2, None).unwrap().unwrap();
+    let actual = cursor_to_string(cursor);
+    assert_eq!("2", actual);
+}
+
+/// Learning test. Insert a string ending with \0. Not a terminating zero, but the payload ending
+/// itself having zero as the last element.
+#[test_case(MSSQL, "Hell\0"; "Microsoft SQL Server")]
+#[test_case(MARIADB, "Hell\0"; "Maria DB")]
+#[test_case(SQLITE_3, "Hell"; "SQLite 3")]
+#[test_case(POSTGRES, "Hell"; "PostgreSQL")]
+fn insert_string_ending_with_nul(profile: &Profile, expected: &str) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(10)"])
+        .build(profile)
+        .unwrap();
+    let sql = table.sql_insert();
+    let param = "Hell\0";
+    conn.execute(&sql, &param.into_parameter(), None).unwrap();
+
+    let actual = table.content_as_string(&conn);
+    assert_eq!(actual, expected);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn prepared_statement(profile: &Profile) {
+    // Setup
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(13)", "INTEGER"])
+        .build(profile)
+        .unwrap();
+    let insert = format!("INSERT INTO {table_name} (a,b) VALUES ('First', 1), ('Second', 2);");
+    conn.execute(&insert, (), None).unwrap();
+
+    // Prepare the statement once
+    let sql = format!("SELECT a FROM {table_name} where b=?;");
+    let mut prepared = conn.prepare(&sql).unwrap();
+
+    // Execute it two times with different parameters
+    {
+        let cursor = prepared.execute(&1).unwrap().unwrap();
+        let title = cursor_to_string(cursor);
+        assert_eq!("First", title);
+    }
+
+    {
+        let cursor = prepared.execute(&2).unwrap().unwrap();
+        let title = cursor_to_string(cursor);
+        assert_eq!("Second", title);
+    }
+}
+
+/// Reuse a preallocated handle, two times in a row.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn preallocated(profile: &Profile) {
+    // Allocate the statement once
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(10)"])
+        .build(profile)
+        .unwrap();
+    let mut prealloc = conn.preallocate().unwrap();
+
+    // Execute it two statements in a row. One INSERT, one SELECT.
+    {
+        let res = prealloc
+            .execute(&table.sql_insert(), &"Hello".into_parameter())
+            .unwrap();
+        assert!(res.is_none());
+    }
+
+    {
+        let cursor = prealloc
+            .execute(&table.sql_all_ordered_by_id(), ())
+            .unwrap()
+            .unwrap();
+        let actual = cursor_to_string(cursor);
+        let expected = "Hello";
+        assert_eq!(expected, actual);
+    }
+}
+
+/// Reuse a preallocated handle, two times in a row.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn into_preallocated(profile: &Profile) {
+    // Allocate the statement once
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(10)"])
+        .build(profile)
+        .unwrap();
+    let mut prealloc = conn.into_preallocated().unwrap();
+
+    // Execute it two statements in a row. One INSERT, one SELECT.
+    {
+        let res = prealloc
+            .execute(&table.sql_insert(), &"Hello".into_parameter())
+            .unwrap();
+        assert!(res.is_none());
+    }
+
+    {
+        let cursor = prealloc
+            .execute(&table.sql_all_ordered_by_id(), ())
+            .unwrap()
+            .unwrap();
+        let actual = cursor_to_string(cursor);
+        let expected = "Hello";
+        assert_eq!(expected, actual);
+    }
+}
+
+/// Reuse a preallocated handle, two times in a row.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn into_preallocated_arc(profile: &Profile) {
+    // Allocate the statement once
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(10)"])
+        .build(profile)
+        .unwrap();
+    let mut prealloc = Arc::new(conn).into_preallocated().unwrap();
+
+    // Execute it two statements in a row. One INSERT, one SELECT.
+    {
+        let res = prealloc
+            .execute(&table.sql_insert(), &"Hello".into_parameter())
+            .unwrap();
+        assert!(res.is_none());
+    }
+
+    {
+        let cursor = prealloc
+            .execute(&table.sql_all_ordered_by_id(), ())
+            .unwrap()
+            .unwrap();
+        let actual = cursor_to_string(cursor);
+        let expected = "Hello";
+        assert_eq!(expected, actual);
+    }
+}
+
+/// Reuse a preallocated handle, two times in a row.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn into_preallocated_shared(profile: &Profile) {
+    // Allocate the statement once
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(10)"])
+        .build(profile)
+        .unwrap();
+    let mut prealloc = Arc::new(Mutex::new(conn)).into_preallocated().unwrap();
+
+    // Execute it two statements in a row. One INSERT, one SELECT.
+    {
+        let res = prealloc
+            .execute(&table.sql_insert(), &"Hello".into_parameter())
+            .unwrap();
+        assert!(res.is_none());
+    }
+
+    {
+        let cursor = prealloc
+            .execute(&table.sql_all_ordered_by_id(), ())
+            .unwrap()
+            .unwrap();
+        let actual = cursor_to_string(cursor);
+        let expected = "Hello";
+        assert_eq!(expected, actual);
+    }
+}
+
+/// Reuse a preallocated handle. Verify that columns bound to the statement during a previous
+/// execution are not dereferenced during a second one.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn preallocation_soundness(profile: &Profile) {
+    // Prepare the statement once
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(10)"])
+        .build(profile)
+        .unwrap();
+    let mut prealloc = conn.preallocate().unwrap();
+
+    {
+        let res = prealloc
+            .execute(&table.sql_insert(), &"Hello".into_parameter())
+            .unwrap();
+        assert!(res.is_none());
+    }
+
+    {
+        let cursor = prealloc
+            .execute(&table.sql_all_ordered_by_id(), ())
+            .unwrap()
+            .unwrap();
+        let actual = cursor_to_string(cursor);
+        let expected = "Hello";
+        assert_eq!(expected, actual);
+    }
+
+    {
+        let mut cursor = prealloc
+            .execute(&table.sql_all_ordered_by_id(), ())
+            .unwrap()
+            .unwrap();
+
+        // Fetch without binding buffers. If columns would still be bound we might see an invalid
+        // memory access.
+        let _row = cursor.next_row().unwrap().unwrap();
+        assert!(cursor.next_row().unwrap().is_none());
+    }
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn integer_parameter_as_string(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["INTEGER", "INTEGER"])
+        .build(profile)
+        .unwrap();
+    let insert = format!("INSERT INTO {table_name} (a,b) VALUES (1,1), (2,2);");
+    conn.execute(&insert, (), None).unwrap();
+
+    let sql = format!("SELECT a FROM {table_name} where b=?;");
+    let cursor = conn
+        .execute(&sql, &"2".into_parameter(), None)
+        .unwrap()
+        .unwrap();
+    let actual = cursor_to_string(cursor);
+
+    assert_eq!("2", actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bind_optional_integer_parameter(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["INTEGER", "INTEGER"])
+        .build(profile)
+        .unwrap();
+    let insert = format!("INSERT INTO {table_name} (a,b) VALUES (1,1), (2,2);");
+    conn.execute(&insert, (), None).unwrap();
+
+    let sql = format!("SELECT a FROM {table_name} where b=?;");
+
+    let cursor = conn
+        .execute(&sql, &Some(2).into_parameter(), None)
+        .unwrap()
+        .unwrap();
+    let actual = cursor_to_string(cursor);
+    assert_eq!("2", actual);
+
+    let cursor = conn
+        .execute(&sql, &None::<i32>.into_parameter(), None)
+        .unwrap()
+        .unwrap();
+    let actual = cursor_to_string(cursor);
+    assert_eq!("", actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+// #[test_case(SQLITE_3; "SQLite 3")] SQLite will work only if increasing length to VARCHAR(2).
+#[cfg(not(target_os = "windows"))] // Windows does not use UTF-8 locale by default
+fn non_ascii_char(profile: &Profile) {
+    let table_name = table_name!();
+
+    let conn = profile
+        .setup_empty_table(&table_name, &["VARCHAR(1)"])
+        .unwrap();
+
+    conn.execute(
+        &format!("INSERT INTO {} (a) VALUES (?), (?);", table_name),
+        (&"A".into_parameter(), &"Ü".into_parameter()),
+        None,
+    )
+    .unwrap();
+
+    let sql = format!("SELECT a FROM {} ORDER BY id;", table_name);
+    let cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+    let output = cursor_to_string(cursor);
+    assert_eq!("A\nÜ", output);
+}
+
+// This test will not work in CI on windows, due to non UTF local
+// #[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+// #[test_case(POSTGRES; "PostgreSQL")] NVARCHAR does not exist
+fn wchar(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["NVARCHAR(1)"])
+        .build(profile)
+        .unwrap();
+
+    conn.execute(
+        &format!("INSERT INTO {table_name} (a) VALUES (?), (?);"),
+        (&"A".into_parameter(), &"Ü".into_parameter()),
+        None,
+    )
+    .unwrap();
+
+    let sql = format!("SELECT a FROM {table_name} ORDER BY id;");
+    let cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+
+    let desc = BufferDesc::WText { max_str_len: 1 };
+    let row_set_buffer = ColumnarDynBuffer::try_from_descs(2, iter::once(desc)).unwrap();
+    let mut row_set_cursor = cursor.bind_buffer(row_set_buffer).unwrap();
+    let batch = row_set_cursor.fetch().unwrap().unwrap();
+    let col = batch.column(0);
+    let wtext_col = col.as_wide_text().unwrap();
+    assert_eq!(2, wtext_col.len());
+    assert_eq!(
+        "A",
+        &Utf16Str::from_slice(wtext_col.get(0).unwrap())
+            .unwrap()
+            .to_string()
+    );
+    assert_eq!(
+        "Ü",
+        &Utf16Str::from_slice(wtext_col.get(1).unwrap())
+            .unwrap()
+            .to_string()
+    );
+    assert!(row_set_cursor.fetch().unwrap().is_none());
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[cfg(not(target_os = "windows"))] // Windows does not use UTF-8 locale by default
+fn wchar_as_char(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["NVARCHAR(1)"])
+        .build(profile)
+        .unwrap();
+
+    // With the wide character ODBC function calls passing the arguments as literals worked but with
+    // the narrow version "INSERT INTO WCharAsChar (a) VALUES ('A'), ('Ü');" fails. It erroneously
+    // assumes the data wouldn't fit into the column, probably because the binary length is 2. As
+    // such confusing character and binary length.
+    conn.execute(
+        &format!("INSERT INTO {table_name} (a) VALUES (?), (?);"),
+        (&"A".into_parameter(), &"Ü".into_parameter()),
+        None,
+    )
+    .unwrap();
+
+    assert_eq!("A\nÜ", table.content_as_string(&conn));
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bind_str_parameter_to_char(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["CHAR(5)"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = table.sql_insert();
+
+    conn.execute(&insert_sql, &"Hello".into_parameter(), None)
+        .unwrap();
+
+    let actual = table.content_as_string(&conn);
+    assert_eq!("Hello", actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bind_narrow_parameter_to_varchar(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(10)"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = table.sql_insert();
+
+    // String Slice
+    conn.execute(&insert_sql, &Narrow("Hello").into_parameter(), None)
+        .unwrap();
+    // Option slice
+    conn.execute(&insert_sql, &Narrow(Some("Hello")).into_parameter(), None)
+        .unwrap();
+    conn.execute(&insert_sql, &Narrow(None::<&str>).into_parameter(), None)
+        .unwrap();
+    conn.execute(&insert_sql, &Some(Narrow("Hello")).into_parameter(), None)
+        .unwrap();
+    conn.execute(&insert_sql, &None::<Narrow<&str>>.into_parameter(), None)
+        .unwrap();
+    // String
+    conn.execute(
+        &insert_sql,
+        &Narrow("Hello".to_string()).into_parameter(),
+        None,
+    )
+    .unwrap();
+    // Option String
+    conn.execute(
+        &insert_sql,
+        &Narrow(Some("Hello".to_string())).into_parameter(),
+        None,
+    )
+    .unwrap();
+    conn.execute(&insert_sql, &Narrow(None::<String>).into_parameter(), None)
+        .unwrap();
+    conn.execute(
+        &insert_sql,
+        &Some(Narrow("Hello".to_string())).into_parameter(),
+        None,
+    )
+    .unwrap();
+    conn.execute(&insert_sql, &None::<Narrow<String>>.into_parameter(), None)
+        .unwrap();
+
+    let actual = table.content_as_string(&conn);
+    assert_eq!(
+        "Hello\nHello\nNULL\nHello\nNULL\nHello\nHello\nNULL\nHello\nNULL",
+        actual
+    );
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bind_utf16_str_parameter_to_char(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["CHAR(5)"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = table.sql_insert();
+
+    let hello = Utf16String::from_str("Hello");
+    let hello = hello.as_utfstr();
+    conn.execute(&insert_sql, &hello.into_parameter(), None)
+        .unwrap();
+    conn.execute(&insert_sql, &Some(hello).into_parameter(), None)
+        .unwrap();
+    conn.execute(&insert_sql, &None::<&Utf16Str>.into_parameter(), None)
+        .unwrap();
+
+    let actual = table.content_as_string(&conn);
+    assert_eq!("Hello\nHello\nNULL", &actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bind_utf16_string_parameter_to_char(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["CHAR(5)"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = table.sql_insert();
+
+    // Usecase: Create an owned parameter from a UTF-16 string
+    let hello = Utf16String::from_str("Hello");
+    conn.execute(&insert_sql, &hello.clone().into_parameter(), None)
+        .unwrap();
+    conn.execute(&insert_sql, &Some(hello).into_parameter(), None)
+        .unwrap();
+    conn.execute(&insert_sql, &None::<Utf16String>.into_parameter(), None)
+        .unwrap();
+
+    let actual = table.content_as_string(&conn);
+    assert_eq!("Hello\nHello\nNULL", &actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn two_parameters_in_tuple(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .build(profile)
+        .unwrap();
+    let insert = format!("INSERT INTO {table_name} (a) VALUES (1), (2), (3), (4);");
+    conn.execute(&insert, (), None).unwrap();
+
+    let sql = format!("SELECT a FROM {table_name} where ? < a AND a < ? ORDER BY id;");
+
+    let cursor = conn.execute(&sql, (&1, &4), None).unwrap().unwrap();
+    let actual = cursor_to_string(cursor);
+    assert_eq!("2\n3", actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn heterogenous_parameters_in_array(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["INTEGER", "VARCHAR(13)"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = format!(
+        "INSERT INTO {table_name} (a, b) VALUES (1, 'Hello'), (2, 'Hello'), (3, 'Hello'), (3, 'Hallo')"
+    );
+    conn.execute(&insert_sql, (), None).unwrap();
+
+    // Execute test
+    let query = format!("SELECT a,b FROM {table_name} where  a > ? AND b = ?;");
+    let params: [Box<dyn InputParameter>; 2] = [Box::new(2), Box::new("Hello".into_parameter())];
+    let cursor = conn.execute(&query, &params[..], None).unwrap().unwrap();
+    let actual = cursor_to_string(cursor);
+
+    assert_eq!("3,Hello", actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn column_names_iterator(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER", "VARCHAR(13)"])
+        .build(profile)
+        .unwrap();
+    let sql = table.sql_all_ordered_by_id();
+    let mut cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+
+    let names: Vec<_> = cursor
+        .column_names()
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    assert_eq!(&["a", "b"], names.as_slice());
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn column_names_from_prepared_query(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER", "VARCHAR(13)"])
+        .build(profile)
+        .unwrap();
+    let sql = table.sql_all_ordered_by_id();
+    let mut prepared = conn.prepare(&sql).unwrap();
+    let names: Vec<_> = prepared
+        .column_names()
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    assert_eq!(&["a", "b"], names.as_slice());
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn metadata_from_prepared_insert_query(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER", "VARCHAR(13)"])
+        .build(profile)
+        .unwrap();
+    let sql = table.sql_insert();
+    let mut prepared = conn.prepare(&sql).unwrap();
+    assert_eq!(0, prepared.num_result_cols().unwrap());
+}
+
+#[test_case(MSSQL, &[
+    ColumnType {data_type: DataType::Integer, nullability: Nullability::Nullable},
+    ColumnType {
+        data_type: DataType::Varchar { length: NonZeroUsize::new(13) },
+        nullability: Nullability::Nullable
+    }
+]; "Microsoft SQL Server")]
+#[test_case(MARIADB, &[
+    ColumnType {
+        data_type: DataType::Varchar { length: NonZeroUsize::new(25165824) },
+        nullability: Nullability::Unknown
+    },
+    ColumnType {
+        data_type: DataType::Varchar { length: NonZeroUsize::new(25165824) },
+        nullability: Nullability::Unknown
+    }
+]; "Maria DB")]
+// PostgrelSQL and SQLite 3 expose different behaviours with various platforms and drivers
+fn describe_parameters_of_prepared_statement(profile: &Profile, expected: &[ColumnType; 2]) {
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["INTEGER", "VARCHAR(13)"])
+        .build(profile)
+        .unwrap();
+    let sql = format!("SELECT a, b FROM {table_name} WHERE a=? AND b=?;");
+    let mut prepared = conn.prepare(&sql).unwrap();
+
+    let parameter_descriptions = prepared
+        .parameter_descriptions()
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(expected.as_slice(), parameter_descriptions);
+    assert_eq!(2, prepared.num_params().unwrap());
+}
+
+// Wide and non-wide versions of drivers may report different data types
+const fn varchar_data_type(length: usize) -> DataType {
+    if cfg!(feature = "wide") {
+        DataType::WVarchar {
+            length: NonZeroUsize::new(length),
+        }
+    } else {
+        DataType::Varchar {
+            length: NonZeroUsize::new(length),
+        }
+    }
+}
+
+// Wide and non-wide versions of drivers may report different data types
+const fn long_varchar_data_type(length: usize) -> DataType {
+    if cfg!(feature = "wide") {
+        DataType::WLongVarchar {
+            length: NonZeroUsize::new(length),
+        }
+    } else {
+        DataType::LongVarchar {
+            length: NonZeroUsize::new(length),
+        }
+    }
+}
+
+// Windows and non-Windows versions of drivers may report different data types
+const fn native_long_varchar_data_type(length: usize) -> DataType {
+    if cfg!(target_os = "windows") {
+        DataType::WLongVarchar {
+            length: NonZeroUsize::new(length),
+        }
+    } else {
+        DataType::LongVarchar {
+            length: NonZeroUsize::new(length),
+        }
+    }
+}
+
+// Wide and non-wide versions of drivers may report different data types
+const fn native_char_data_type(length: usize) -> DataType {
+    if cfg!(target_os = "windows") {
+        DataType::WChar {
+            length: NonZeroUsize::new(length),
+        }
+    } else {
+        DataType::Char {
+            length: NonZeroUsize::new(length),
+        }
+    }
+}
+
+// At a length of 1000, the type reported by the driver for `VARCHAR` relational type is sometimes
+// a `LONG VARCHAR` variant.
+#[test_case(MSSQL, DataType::Varchar { length: NonZeroUsize::new(1000) }; "Microsoft SQL Server")]
+#[test_case(MARIADB, DataType::Varchar { length: NonZeroUsize::new(1000) }; "Maria DB")]
+#[test_case(SQLITE_3, native_char_data_type(1000); "SQLite 3")]
+#[test_case(POSTGRES, long_varchar_data_type(1000); "PostgreSQL")]
+fn data_types_for_varchar_1000_from_concise_type(profile: &Profile, expected_data_type: DataType) {
+    // Given
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(1000)"])
+        .build(profile)
+        .unwrap();
+
+    // When
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name}"), (), None)
+        .unwrap()
+        .unwrap();
+    let data_type_from_conscise_type = cursor.col_data_type(1).unwrap();
+
+    // Then
+    assert_eq!(expected_data_type, data_type_from_conscise_type);
+}
+
+// Remarkabely the data types reported may differ if the source is a column description
+#[test_case(MSSQL, DataType::Varchar { length: NonZeroUsize::new(1000) }; "Microsoft SQL Server")]
+#[test_case(MARIADB, varchar_data_type(1000); "Maria DB")]
+#[test_case(SQLITE_3, native_long_varchar_data_type(1000); "SQLite 3")]
+#[test_case(POSTGRES, long_varchar_data_type(1000); "PostgreSQL")]
+fn data_types_for_varchar_1000_from_description(profile: &Profile, expected_data_type: DataType) {
+    // Given
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(1000)"])
+        .build(profile)
+        .unwrap();
+
+    // When
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name}"), (), None)
+        .unwrap()
+        .unwrap();
+    let mut column_description = ColumnDescription::default();
+    cursor.describe_col(1, &mut column_description).unwrap();
+    let data_type_from_desc = column_description.data_type;
+
+    // Then
+    assert_eq!(expected_data_type, data_type_from_desc);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn send_connection(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .build(profile)
+        .unwrap();
+
+    // Insert in one thread, query in another, using the same connection.
+    let insert_sql = format!("INSERT INTO {table_name} (a) VALUES (1),(2),(3)");
+    conn.execute(&insert_sql, (), None).unwrap();
+
+    let actual = thread::scope(|s| {
+        let handle = s.spawn(|| move || table.content_as_string(&conn));
+        handle.join().unwrap()()
+    });
+    assert_eq!("1\n2\n3", actual)
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn parameter_option_strings(profile: &Profile) {
+    let conn = profile
+        .setup_empty_table("ParameterOptionStr", &["VARCHAR(50)"])
+        .unwrap();
+    let sql = "INSERT INTO ParameterOptionStr (a) VALUES (?);";
+    let mut prepared = conn.prepare(sql).unwrap();
+    prepared.execute(&None::<&str>.into_parameter()).unwrap();
+    prepared.execute(&Some("Bernd").into_parameter()).unwrap();
+    prepared.execute(&None::<String>.into_parameter()).unwrap();
+    prepared
+        .execute(&Some("Hello".to_string()).into_parameter())
+        .unwrap();
+
+    let cursor = conn
+        .execute("SELECT a FROM ParameterOptionStr ORDER BY id", (), None)
+        .unwrap()
+        .unwrap();
+    let actual = cursor_to_string(cursor);
+    let expected = "NULL\nBernd\nNULL\nHello";
+    assert_eq!(expected, actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+// #[test_case(MARIADB; "Maria DB")] Different string representation of binary data
+// #[test_case(SQLITE_3; "SQLite 3")] Different string representation of binary data
+// #[test_case(POSTGRES; "PostgreSQL")] Varbinary does not exist
+fn parameter_option_bytes(profile: &Profile) {
+    let table_name = table_name!();
+
+    let conn = profile
+        .setup_empty_table(&table_name, &["VARBINARY(50)"])
+        .unwrap();
+    let sql = format!("INSERT INTO {table_name} (a) VALUES (?);");
+    let mut prepared = conn.prepare(&sql).unwrap();
+    prepared.execute(&None::<&[u8]>.into_parameter()).unwrap();
+    prepared
+        .execute(&Some(&[1, 2, 3][..]).into_parameter())
+        .unwrap();
+    prepared.execute(&None::<Vec<u8>>.into_parameter()).unwrap();
+    prepared
+        .execute(&Some(vec![1, 2, 3]).into_parameter())
+        .unwrap();
+
+    let cursor = conn
+        .execute(&format!("SELECT a FROM {table_name} ORDER BY id"), (), None)
+        .unwrap()
+        .unwrap();
+    let actual = cursor_to_string(cursor);
+    let expected = "NULL\n010203\nNULL\n010203";
+    assert_eq!(expected, actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn parameter_varchar_512(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(50)"])
+        .build(profile)
+        .unwrap();
+    let sql = table.sql_insert();
+    let mut prepared = conn.prepare(&sql).unwrap();
+
+    prepared.execute(&VarCharArray::<512>::NULL).unwrap();
+    prepared
+        .execute(&VarCharArray::<512>::new(b"Bernd"))
+        .unwrap();
+
+    // Then
+    let actual = table.content_as_string(&conn);
+    let expected = "NULL\nBernd";
+    assert_eq!(expected, actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+// #[test_case(MARIADB; "Maria DB")] Different string representation of binary data
+// #[test_case(SQLITE_3; "SQLite 3")] Different string representation of binary data
+// #[test_case(POSTGRES; "PostgreSQL")] Varbinary does not exist
+fn parameter_varbinary_512(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARBINARY(50)"])
+        .build(profile)
+        .unwrap();
+    let sql = table.sql_insert();
+    let mut prepared = conn.prepare(&sql).unwrap();
+
+    prepared.execute(&VarBinaryArray::<512>::NULL).unwrap();
+    prepared
+        .execute(&VarBinaryArray::<512>::new(&[1, 2, 3]))
+        .unwrap();
+
+    let actual = table.content_as_string(&conn);
+    let expected = "NULL\n010203";
+    assert_eq!(expected, actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn parameter_cstr(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(50)"])
+        .build(profile)
+        .unwrap();
+    let sql = table.sql_insert();
+    let mut prepared = conn.prepare(&sql).unwrap();
+
+    let param = CString::new("Hello, World!").unwrap();
+
+    prepared.execute(&param).unwrap();
+    prepared.execute(param.as_c_str()).unwrap();
+
+    let actual = table.content_as_string(&conn);
+    let expected = "Hello, World!\nHello, World!";
+    assert_eq!(expected, actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+fn output_parameter(profile: &Profile) {
+    let conn = profile.connection().unwrap();
+    conn.execute(
+        r#"
+        IF EXISTS (SELECT name FROM sysobjects WHERE name = 'TestOutputParam')
+        DROP PROCEDURE TestOutputParam
+        "#,
+        (),
+        None,
+    )
+    .unwrap();
+
+    conn.execute(
+        r#"CREATE PROCEDURE TestOutputParam
+        @OutParm int OUTPUT
+        AS
+        SELECT @OutParm = @OutParm + 5
+        RETURN 99
+        "#,
+        (),
+        None,
+    )
+    .unwrap();
+
+    let mut ret = Nullable::<i32>::null();
+    let mut param = Nullable::<i32>::new(7);
+
+    conn.execute(
+        "{? = call TestOutputParam(?)}",
+        (Out(&mut ret), InOut(&mut param)),
+        None,
+    )
+    .unwrap();
+
+    // See magic numbers hardcoded in setup.sql
+    assert_eq!(Some(99), ret.into_opt());
+    assert_eq!(Some(7 + 5), param.into_opt());
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+fn manual_commit_mode(profile: &Profile) {
+    let conn = profile
+        .setup_empty_table("ManualCommitMode", &["INTEGER"])
+        .unwrap();
+
+    // Manual commit mode needs to be explicitly enabled, since autocommit mode is default.
+    conn.set_autocommit(false).unwrap();
+
+    // Insert a value into the table.
+    conn.execute("INSERT INTO ManualCommitMode (a) VALUES (5);", (), None)
+        .unwrap();
+
+    // But rollback the transaction immediately.
+    conn.rollback().unwrap();
+
+    // Check that the table is still empty.
+    let cursor = conn
+        .execute("SELECT a FROM ManualCommitMode", (), None)
+        .unwrap()
+        .unwrap();
+    let actual = cursor_to_string(cursor);
+    assert_eq!(actual, "");
+
+    // Insert a value into the table.
+    conn.execute("INSERT INTO ManualCommitMode (a) VALUES (42);", (), None)
+        .unwrap();
+
+    // This time we commit the transaction, though.
+    conn.commit().unwrap();
+
+    // Check that the table contains the value.
+    let cursor = conn
+        .execute("SELECT a FROM ManualCommitMode", (), None)
+        .unwrap()
+        .unwrap();
+    let actual = cursor_to_string(cursor);
+    assert_eq!(actual, "42");
+
+    // Close transaction opened by SELECT Statement
+    conn.commit().unwrap();
+}
+
+/// This test checks the behaviour if a connections goes out of scope with a transaction still
+/// open.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn unfinished_transaction(profile: &Profile) {
+    let conn = profile
+        .setup_empty_table("UnfinishedTransaction", &["INTEGER"])
+        .unwrap();
+
+    // Manual commit mode needs to be explicitly enabled, since autocommit mode is default.
+    conn.set_autocommit(false).unwrap();
+
+    // Insert a value into the table.
+    conn.execute(
+        "INSERT INTO UnfinishedTransaction (a) VALUES (5);",
+        (),
+        None,
+    )
+    .unwrap();
+}
+
+/// Test behavior of strings with interior nul
+#[test_case(MSSQL, "a\0b"; "Microsoft SQL Server")]
+#[test_case(MARIADB, "a\0b"; "Maria DB")]
+#[test_case(SQLITE_3, "a"; "SQLite 3")]
+#[test_case(POSTGRES, "a"; "PostgreSQL")]
+fn interior_nul(profile: &Profile, expected: &str) {
+    let conn = profile
+        .setup_empty_table("InteriorNul", &["VARCHAR(10)"])
+        .unwrap();
+
+    conn.execute(
+        "INSERT INTO InteriorNul (a) VALUES (?);",
+        &"a\0b".into_parameter(),
+        None,
+    )
+    .unwrap();
+    let cursor = conn
+        .execute("SELECT A FROM InteriorNul;", (), None)
+        .unwrap()
+        .unwrap();
+    let actual = cursor_to_string(cursor);
+    assert_eq!(expected, actual);
+}
+
+/// Use get_data to retrieve an integer
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn get_data_int(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .build(profile)
+        .unwrap();
+    conn.execute(
+        &format!("INSERT INTO {table_name} (a) VALUES (42),(NULL)"),
+        (),
+        None,
+    )
+    .unwrap();
+    let sql = table.sql_all_ordered_by_id();
+
+    let mut cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+
+    let mut actual = Nullable::<i32>::null();
+    // First value is 42
+    let mut row = cursor.next_row().unwrap().unwrap();
+    row.get_data(1, &mut actual).unwrap();
+    assert_eq!(Some(42), actual.into_opt());
+
+    // Second row contains a NULL
+    row = cursor.next_row().unwrap().unwrap();
+    row.get_data(1, &mut actual).unwrap();
+    assert_eq!(None, actual.into_opt());
+
+    // Cursor has reached its end
+    assert!(cursor.next_row().unwrap().is_none())
+}
+
+#[test_case(MSSQL, "DATETIME2"; "Microsoft SQL Server")]
+// #[test_case(MARIADB; "Maria DB")]
+// #[test_case(SQLITE_3; "SQLite 3")]
+// #[test_case(POSTGRES; "PostgreSQL")]
+fn get_data_timestamp(profile: &Profile, timestamp_type: &str) {
+    let table_name = table_name!();
+    let types = [timestamp_type];
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&types)
+        .build(profile)
+        .unwrap();
+    conn.execute(
+        &table.sql_insert(),
+        &"2022-11-09 06:17:00".into_parameter(),
+        None,
+    )
+    .unwrap();
+    let sql = table.sql_all_ordered_by_id();
+
+    let mut cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+
+    let mut actual = Timestamp::default();
+    let mut row = cursor.next_row().unwrap().unwrap();
+    row.get_data(1, &mut actual).unwrap();
+
+    assert_eq!(
+        Timestamp {
+            year: 2022,
+            month: 11,
+            day: 9,
+            hour: 6,
+            minute: 17,
+            second: 0,
+            fraction: 0
+        },
+        actual
+    );
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+// SQLITE has a bug. It does not return an error but simply fills the integer with `0`. At least on
+// windows this is the case.
+// #[test_case(SQLITE_3; "SQLite 3")]
+// #[test_case(POSTGRES; "PostgreSQL")] Return generic error HY000 instead
+fn get_data_int_null(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .build(profile)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &None::<i32>.into_parameter(), None)
+        .unwrap();
+    let sql = table.sql_all_ordered_by_id();
+
+    let mut cursor = conn.execute(&sql, (), None).unwrap().unwrap();
+    let mut actual = 0i32;
+    // Second row contains a NULL
+    let mut row = cursor.next_row().unwrap().unwrap();
+    // Failure due to the value being NULL, but i32 not being NULLABLE
+    let result = row.get_data(1, &mut actual);
+
+    assert!(result.is_err());
+    let error = result.unwrap_err();
+    assert!(matches!(error, Error::UnableToRepresentNull(_)));
+    // Cursor has reached its end
+    assert!(cursor.next_row().unwrap().is_none())
+}
+
+/// Use get_data to retrieve a string
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn get_data_string(profile: &Profile) {
+    let table_name = table_name!();
+
+    let conn = profile
+        .setup_empty_table(&table_name, &["Varchar(50)"])
+        .unwrap();
+
+    conn.execute(
+        &format!("INSERT INTO {table_name} (a) VALUES ('Hello, World!'), (NULL)"),
+        (),
+        None,
+    )
+    .unwrap();
+
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name} ORDER BY id"), (), None)
+        .unwrap()
+        .unwrap();
+
+    let mut row = cursor.next_row().unwrap().unwrap();
+    let mut actual = VarCharArray::<32>::NULL;
+
+    row.get_data(1, &mut actual).unwrap();
+    assert_eq!(Some("Hello, World!"), actual.as_str().unwrap());
+
+    // second row
+    row = cursor.next_row().unwrap().unwrap();
+    row.get_data(1, &mut actual).unwrap();
+    assert!(actual.as_bytes().is_none());
+
+    // Cursor has reached its end
+    assert!(cursor.next_row().unwrap().is_none())
+}
+
+/// Use get_text to retrieve a string. Use a buffer which is one terminating zero short to get the
+/// entire value.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn get_text(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["Varchar(50)"])
+        .build(profile)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &"Hello, World!".into_parameter(), None)
+        .unwrap();
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name} ORDER BY id"), (), None)
+        .unwrap()
+        .unwrap();
+
+    let mut row = cursor.next_row().unwrap().unwrap();
+    // We want to hit an edge case there there has been a sign error then calculating buffer size
+    // with terminating zero.
+    let mut actual = Vec::with_capacity("Hello, World!".len() - 1);
+    let is_not_null = row.get_text(1, &mut actual).unwrap();
+
+    assert!(is_not_null);
+    assert_eq!(&b"Hello, World!"[..], &actual);
+}
+
+/// Use get_text to retrieve a string. Use a buffer which is one terminating zero short to get the
+/// entire value.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn get_wide_text(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["Varchar(50)"])
+        .build(profile)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &"Hello, World!".into_parameter(), None)
+        .unwrap();
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name} ORDER BY id"), (), None)
+        .unwrap()
+        .unwrap();
+
+    let mut row = cursor.next_row().unwrap().unwrap();
+    // We want to hit an edge case there there has been a sign error then calculating buffer size
+    // with terminating zero.
+    let mut actual = Vec::with_capacity("Hello, World!".len() - 1);
+    let is_not_null = row.get_wide_text(1, &mut actual).unwrap();
+
+    let actual = Utf16String::from_vec(actual).unwrap().to_string();
+    assert!(is_not_null);
+    assert_eq!("Hello, World!", &actual);
+}
+
+/// Use get_data to retrieve a binary data
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+// #[test_case(POSTGRES; "PostgreSQL")] Varbinary does not exist
+fn get_data_binary(profile: &Profile) {
+    let table_name = table_name!();
+
+    let conn = profile
+        .setup_empty_table(&table_name, &["Varbinary(50)"])
+        .unwrap();
+
+    conn.execute(
+        &format!("INSERT INTO {table_name} (a) VALUES (?), (NULL)"),
+        &[1u8, 2, 3].into_parameter(),
+        None,
+    )
+    .unwrap();
+
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name} ORDER BY id"), (), None)
+        .unwrap()
+        .unwrap();
+
+    let mut row = cursor.next_row().unwrap().unwrap();
+    let mut actual = VarBinaryArray::<32>::NULL;
+
+    row.get_data(1, &mut actual).unwrap();
+    assert_eq!(Some(&[1u8, 2, 3][..]), actual.as_bytes());
+
+    // second row
+    row = cursor.next_row().unwrap().unwrap();
+    row.get_data(1, &mut actual).unwrap();
+    assert!(actual.as_bytes().is_none());
+
+    // Cursor has reached its end
+    assert!(cursor.next_row().unwrap().is_none())
+}
+
+/// Test insertion and retrieving of large string values using get_data. Try to provoke
+/// `SQL_NO_TOTAL` as a return value in the indicator buffer.
+#[test_case(MSSQL, "Varchar(max)"; "Microsoft SQL Server")]
+#[test_case(MARIADB, "Text"; "Maria DB")]
+#[test_case(SQLITE_3, "Text"; "SQLite 3")]
+#[test_case(POSTGRES, "Text"; "PostgreSQL")]
+fn large_strings(profile: &Profile, column_type: &str) {
+    let table_name = table_name!();
+    let column_types = [column_type];
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&column_types)
+        .build(profile)
+        .unwrap();
+    let input = String::from_utf8(vec![b'a'; 2000]).unwrap();
+    conn.execute(&table.sql_insert(), &input.as_str().into_parameter(), None)
+        .unwrap();
+
+    let mut cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+    let mut row = cursor.next_row().unwrap().unwrap();
+    let mut buf = VarCharArray::<32>::NULL;
+    let mut actual = String::new();
+    loop {
+        row.get_data(1, &mut buf).unwrap();
+        actual += buf.as_str().unwrap().unwrap();
+        if buf.is_complete() {
+            break;
+        }
+    }
+
+    assert_eq!(input, actual);
+}
+
+/// Test insertion and retrieving of large binary values using get_text. Try to provoke
+/// `SQL_NO_TOTAL` as a return value in the indicator buffer.
+#[test_case(POSTGRES, "BYTEA"; "PostgreSQL")]
+fn large_binary_get_text(profile: &Profile, column_type: &str) {
+    let table_name = table_name!();
+    let column_types = [column_type];
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&column_types)
+        .build(profile)
+        .unwrap();
+    let input = String::from_utf8(vec![b'a'; 2000]).unwrap();
+    conn.execute(&table.sql_insert(), &input.as_str().into_parameter(), None)
+        .unwrap();
+
+    let mut cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+    let mut row = cursor.next_row().unwrap().unwrap();
+    let mut actual = Vec::new();
+    row.get_text(1, &mut actual).unwrap();
+
+    let expected = "61".repeat(2000);
+    assert_eq!(expected, String::from_utf8(actual).unwrap());
+}
+
+/// Test insertion and retrieving of large string values using get_text. Try to provoke
+/// `SQL_NO_TOTAL` as a return value in the indicator buffer.
+#[test_case(MSSQL, "Varchar(max)"; "Microsoft SQL Server")]
+#[test_case(MARIADB, "Text"; "Maria DB")]
+#[test_case(SQLITE_3, "Text"; "SQLite 3")]
+#[test_case(POSTGRES, "Text"; "PostgreSQL")]
+fn large_strings_get_text(profile: &Profile, column_type: &str) {
+    let table_name = table_name!();
+    let column_types = [column_type];
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&column_types)
+        .build(profile)
+        .unwrap();
+    let input = String::from_utf8(vec![b'a'; 2000]).unwrap();
+    conn.execute(&table.sql_insert(), &input.as_str().into_parameter(), None)
+        .unwrap();
+
+    let mut cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+    let mut row = cursor.next_row().unwrap().unwrap();
+    let mut actual = Vec::new();
+    row.get_text(1, &mut actual).unwrap();
+
+    assert_eq!(input, String::from_utf8(actual).unwrap());
+}
+
+/// Retrieving of fixed size string values using get_text. Try to provoke `SQL_NO_TOTAL` as a return
+/// value in the indicator buffer.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn fixed_strings_get_text(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["Char(10)"])
+        .build(profile)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &"1234567890".into_parameter(), None)
+        .unwrap();
+
+    let mut cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+    let mut row = cursor.next_row().unwrap().unwrap();
+    let mut actual = vec![0; 1]; // Initial buffer too small.
+    row.get_text(1, &mut actual).unwrap();
+
+    assert_eq!("1234567890", String::from_utf8(actual).unwrap());
+}
+
+/// Retrieving of short string values using get_data. This also helps to assert that we correctly
+/// shorten the vectors length if the capacity of the originally passed in vector had been larger
+/// than the retrieved string.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn short_strings_get_text(profile: &Profile) {
+    let conn = profile
+        .setup_empty_table("ShortStringsGetText", &["Varchar(15)"])
+        .unwrap();
+
+    conn.execute(
+        "INSERT INTO ShortStringsGetText (a) VALUES ('Hello, World!')",
+        (),
+        None,
+    )
+    .unwrap();
+
+    let mut cursor = conn
+        .execute("SELECT a FROM ShortStringsGetText ORDER BY id", (), None)
+        .unwrap()
+        .unwrap();
+
+    let mut row = cursor.next_row().unwrap().unwrap();
+
+    // Make initial buffer larger than the string we want to fetch.
+    let mut actual = Vec::with_capacity(100);
+
+    row.get_text(1, &mut actual).unwrap();
+
+    assert_eq!("Hello, World!", std::str::from_utf8(&actual).unwrap());
+}
+
+/// Retrieving of short binary values using get_data. This also helps to assert that we correctly
+/// shorten the vectors length if the capacity of the originally passed in vector had been larger
+/// than the retrieved payload.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+// #[test_case(POSTGRES; "PostgreSQL")] Does not support Varbinary syntax
+fn short_get_binary(profile: &Profile) {
+    let table_name = table_name!();
+    let conn = profile
+        .setup_empty_table(&table_name, &["Varbinary(15)"])
+        .unwrap();
+
+    conn.execute(
+        &format!("INSERT INTO {table_name} (a) VALUES (?)"),
+        &[1u8, 2, 3].into_parameter(),
+        None,
+    )
+    .unwrap();
+
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name} ORDER BY id"), (), None)
+        .unwrap()
+        .unwrap();
+
+    let mut row = cursor.next_row().unwrap().unwrap();
+
+    // Make initial buffer larger than the string we want to fetch.
+    let mut actual = Vec::with_capacity(100);
+
+    row.get_binary(1, &mut actual).unwrap();
+
+    assert_eq!(&[1u8, 2, 3][..], &actual);
+}
+
+/// Test insertion and retrieving of values larger than the initially provided buffer using
+/// get_binary.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+// #[test_case(MARIADB; "Maria DB")] Does not support Varbinary(max) syntax
+// #[test_case(SQLITE_3; "SQLite 3")] Does not support Varbinary(max) syntax
+// #[test_case(POSTGRES; "PostgreSQL")] Does not support Varbinary(max) syntax
+fn large_get_binary(profile: &Profile) {
+    let table_name = table_name!();
+    let conn = profile
+        .setup_empty_table(&table_name, &["Varbinary(max)"])
+        .unwrap();
+
+    let input = vec![42; 2000];
+
+    conn.execute(
+        &format!("INSERT INTO {table_name} (a) VALUES (?)"),
+        &input.as_slice().into_parameter(),
+        None,
+    )
+    .unwrap();
+
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name} ORDER BY id"), (), None)
+        .unwrap()
+        .unwrap();
+
+    let mut row = cursor.next_row().unwrap().unwrap();
+    let mut actual = Vec::new();
+
+    row.get_binary(1, &mut actual).unwrap();
+
+    assert_eq!(input, actual);
+}
+
+/// Demonstrates applying an upper limit to a text buffer and detecting truncation.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn capped_text_buffer(profile: &Profile) {
+    let table_name = table_name!();
+
+    // Prepare table content
+    let conn = profile
+        .setup_empty_table(&table_name, &["VARCHAR(13)"])
+        .unwrap();
+    conn.execute(
+        &format!("INSERT INTO {table_name} (a) VALUES ('Hello, World!');"),
+        (),
+        None,
+    )
+    .unwrap();
+
+    let mut cursor = conn
+        .execute(&format!("SELECT a FROM {table_name} ORDER BY id"), (), None)
+        .unwrap()
+        .unwrap();
+
+    let row_set_buffer = TextRowSet::for_cursor(1, &mut cursor, Some(5)).unwrap();
+    let mut row_set_cursor = cursor.bind_buffer(row_set_buffer).unwrap();
+    let batch = row_set_cursor.fetch().unwrap().unwrap();
+    let field = batch.at_as_str(0, 0).unwrap().unwrap();
+    // Only 'Hello' from 'Hello, World!' remains due to upper limit.
+    assert_eq!("Hello", field);
+    // Indicator reports actual length of the field on the database.
+    assert_eq!(Indicator::Length(13), batch.indicator_at(0, 0));
+    // Assert that maximum length is reported correctly.
+    assert_eq!(5, batch.max_len(0));
+}
+
+/// Use a truncated varchar output as input.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn use_truncated_output_as_input(profile: &Profile) {
+    let table_name = table_name!();
+
+    // Prepare table content
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(13)"])
+        .build(profile)
+        .unwrap();
+    conn.execute(
+        &format!("INSERT INTO {table_name} (a) VALUES ('Hello, World!');"),
+        (),
+        None,
+    )
+    .unwrap();
+
+    // Query 'Hello, World!' From the DB in a buffer with size 5. This should give us a Hello minus
+    // the letter 'o' since we also need space for a terminating zero. => 'Hell'.
+    let mut buf = VarCharArray::<5>::NULL;
+    let query = format!("SELECT a FROM {table_name}");
+    let mut cursor = conn.execute(&query, (), None).unwrap().unwrap();
+    let mut row = cursor.next_row().unwrap().unwrap();
+    row.get_data(1, &mut buf).unwrap();
+    assert_eq!("Hell", buf.as_str().unwrap().unwrap());
+    assert!(!buf.is_complete());
+    drop(cursor);
+
+    let insert = table.sql_insert();
+    buf.hide_truncation();
+    conn.execute(&insert, &buf, None).unwrap();
+
+    let actual = table.content_as_string(&conn);
+    assert_eq!("Hello, World!\nHell", actual);
+}
+
+/// Assert that we prevent binding `VarCharSlice` buffers with truncated values as input parameters
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+#[should_panic(expected = "Truncated values must not be used be bound as input parameters.")]
+fn insert_truncated_value(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(50)"])
+        .build(profile)
+        .unwrap();
+
+    let memory = "Hello\0INVALID MEMORY\0";
+    // Contains hello plus terminating zero.
+    let valid = &memory.as_bytes()[..6];
+    // Truncated value.
+    let parameter = VarCharSlice::from_buffer(valid, Indicator::Length(memory.len()));
+    let result = conn.execute(&table.sql_insert(), &parameter, None);
+
+    match result {
+        Err(e) => {
+            // Failing is fine, especially with an error indicating truncation.
+            eprintln!("{e}")
+        }
+        Ok(None) => {
+            // If this was successful we should make sure we did not insert 'INVALID MEMORY' into
+            // the database. The better database drivers do not do this, and this could be seen as
+            // wrong, but we are only interested in unsafe behaviour.
+            assert_eq!("Hello", table.content_as_string(&conn))
+        }
+        _ => panic!("Unexpected cursor"),
+    }
+}
+
+/// Assert that we prevent binding `VarCharArray` buffers with truncated values as input parameters
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+#[should_panic(expected = "Truncated values must not be used be bound as input parameters.")]
+fn insert_truncated_var_char_array(profile: &Profile) {
+    let table_name = table_name!();
+
+    // Prepare table content
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(50)"])
+        .build(profile)
+        .unwrap();
+
+    let memory = "Hello, World!";
+    // Truncated value. Buffer can only hold 'Hello'
+    let parameter = VarCharArray::<5>::new(memory.as_bytes());
+    let _ = conn.execute(&table.sql_insert(), &parameter, None);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn arbitrary_input_parameters(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(20)", "INT"])
+        .build(profile)
+        .unwrap();
+
+    let insert_statement = format!("INSERT INTO {table_name} (a, b) VALUES (?, ?);");
+    let param_a: Box<dyn InputParameter> = Box::new("Hello, World!".to_string().into_parameter());
+    let param_b: Box<dyn InputParameter> = Box::new(42.into_parameter());
+    let parameters = vec![param_a, param_b];
+
+    conn.execute(&insert_statement, parameters.as_slice(), None)
+        .unwrap();
+
+    let actual = table.content_as_string(&conn);
+    assert_eq!("Hello, World!,42", actual)
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn arbitrary_input_parameters_with_borrowed_data(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(20)", "INT"])
+        .build(profile)
+        .unwrap();
+
+    // Borrowed text parameter
+    let text = "Hello, World!".to_owned();
+    let local_text_ref = text.as_str();
+    let number = 42i32;
+
+    let insert_statement = format!("INSERT INTO {table_name} (a, b) VALUES (?, ?);");
+    let parameters: Vec<Box<dyn InputParameter + '_>> = vec![
+        Box::new(VarCharSlice::new(local_text_ref.as_bytes())),
+        Box::new(number),
+    ];
+    conn.execute(&insert_statement, parameters.as_slice(), None)
+        .unwrap();
+
+    let actual = table.content_as_string(&conn);
+    assert_eq!("Hello, World!,42", actual);
+}
+
+/// Ensures access to driver and data source info is synchronized correctly when multiple threads
+/// attempt to query it at the same time. First, we query the list of the known drivers and data
+/// sources on the main thread. Then we spawn multiple threads that attempt to query these lists in
+/// parallel. Finally we compare the lists to ensure they match the list we found on the main
+/// thread.
+#[test]
+fn synchronized_access_to_driver_and_data_source_info() {
+    let expected_drivers = environment().unwrap().drivers().unwrap();
+    let expected_data_sources = environment().unwrap().data_sources().unwrap();
+
+    const NUM_THREADS: usize = 5;
+    let threads = iter::repeat(())
+        .take(NUM_THREADS)
+        .map(|_| {
+            let expected_drivers = expected_drivers.clone();
+            let expected_data_sources = expected_data_sources.clone();
+
+            thread::spawn(move || {
+                let drivers = environment().unwrap().drivers().unwrap();
+                assert_eq!(expected_drivers, drivers);
+                let data_sources_for_thread = environment().unwrap().data_sources().unwrap();
+                assert_eq!(expected_data_sources, data_sources_for_thread);
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in threads {
+        handle.join().unwrap();
+    }
+}
+
+// #[test_case(MSSQL; "Microsoft SQL Server")] Linux driver allocates 42 GiB
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn insert_large_texts(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["Text"])
+        .build(profile)
+        .unwrap();
+
+    let insert = format!("INSERT INTO {table_name} (a) VALUES (?)");
+
+    // Large data with 8000 characters.
+    let data = String::from_utf8(vec![b'a'; 8000]).unwrap();
+
+    conn.execute(&insert, &data.as_str().into_parameter(), None)
+        .unwrap();
+
+    let actual = table.content_as_string(&conn);
+    assert_eq!(data.len(), actual.len());
+    assert!(data == actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn send_long_data_binary_vec(profile: &Profile) {
+    let table_name = table_name!();
+    let conn = profile
+        .setup_empty_table(&table_name, &[profile.blob_type])
+        .unwrap();
+
+    // Large vector with successive numbers. It's too large to send to the database in one go.
+    let input: Vec<_> = (0..12000).map(|i| (i % 256) as u8).collect();
+
+    let mut blob = BlobSlice::from_byte_slice(&input);
+
+    let insert = format!("INSERT INTO {table_name} (a) VALUES (?)");
+    conn.execute(&insert, &mut blob.as_blob_param(), None)
+        .unwrap();
+
+    // Query value just streamed into the DB and compare it with the input.
+    let select = format!("SELECT a FROM {table_name}");
+    let mut result = conn.execute(&select, (), None).unwrap().unwrap();
+    let mut row = result.next_row().unwrap().unwrap();
+    let mut output = Vec::new();
+    row.get_binary(1, &mut output).unwrap();
+
+    assert_eq!(input, output);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn send_blob_as_part_of_tuplebinary_vec(profile: &Profile) {
+    // Given
+    let table_name = table_name!();
+    let conn = profile
+        .setup_empty_table(&table_name, &["INTEGER", profile.blob_type])
+        .unwrap();
+    // Large vector with successive numbers. It's too large to send to the database in one go.
+    let input: Vec<_> = (0..12000).map(|i| (i % 256) as u8).collect();
+
+    // When
+    let mut blob = BlobSlice::from_byte_slice(&input);
+    let insert = format!("INSERT INTO {table_name} (a,b) VALUES (?,?)");
+    conn.execute(&insert, (&42i32, &mut blob.as_blob_param()), None)
+        .unwrap();
+
+    // Then
+    // Query value just streamed into the DB and compare it with the input.
+    let select = format!("SELECT a,b FROM {table_name}");
+    let mut result = conn.execute(&select, (), None).unwrap().unwrap();
+    let mut row = result.next_row().unwrap().unwrap();
+    let mut output_a: i32 = 0;
+    let mut output_b = Vec::new();
+    row.get_data(1, &mut output_a).unwrap();
+    row.get_binary(2, &mut output_b).unwrap();
+
+    assert_eq!(42, output_a);
+    assert_eq!(input, output_b);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn send_long_data_string(profile: &Profile) {
+    let table_name = table_name!();
+    let conn = profile.setup_empty_table(&table_name, &["Text"]).unwrap();
+
+    // Large vector with successive numbers. It's too large to send to the database in one go.
+    let input: String = (0..1200).map(|_| "abcdefghijklmnopqrstuvwxyz").collect();
+
+    let mut blob = BlobSlice::from_text(&input);
+
+    let insert = format!("INSERT INTO {table_name} (a) VALUES (?)");
+    conn.execute(&insert, &mut blob.as_blob_param(), None)
+        .unwrap();
+
+    // Query value just streamed into the DB and compare it with the input.
+    let select = format!("SELECT a FROM {table_name}");
+    let mut result = conn.execute(&select, (), None).unwrap().unwrap();
+    let mut row = result.next_row().unwrap().unwrap();
+    let mut output = Vec::new();
+    row.get_text(1, &mut output).unwrap();
+    let output = String::from_utf8(output).unwrap();
+
+    assert_eq!(input, output);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+// #[test_case(SQLITE_3; "SQLite 3")] SQLite does not write anything to the database if there is no
+// size hint given
+#[test_case(POSTGRES; "PostgreSQL")]
+fn send_long_data_binary_read(profile: &Profile) {
+    let table_name = table_name!();
+    let conn = profile
+        .setup_empty_table(&table_name, &[profile.blob_type])
+        .unwrap();
+
+    // Large vector with successive numbers. It's too large to send to the database in one go.
+    let input: Vec<_> = (0..12000).map(|i| (i % 256) as u8).collect();
+    let read = io::Cursor::new(&input);
+
+    let mut blob = BlobRead::with_upper_bound(read, 14000);
+
+    let insert = format!("INSERT INTO {table_name} (a) VALUES (?)");
+    conn.execute(&insert, &mut blob.as_blob_param(), None)
+        .unwrap();
+
+    // Query value just streamed into the DB and compare it with the input.
+    let select = format!("SELECT a FROM {table_name}");
+    let mut result = conn.execute(&select, (), None).unwrap().unwrap();
+    let mut row = result.next_row().unwrap().unwrap();
+    let mut output = Vec::new();
+    row.get_binary(1, &mut output).unwrap();
+
+    assert_eq!(input, output);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn send_long_data_binary_file(profile: &Profile) {
+    let table_name = table_name!();
+    let conn = profile
+        .setup_empty_table(&table_name, &[profile.blob_type])
+        .unwrap();
+
+    // Large vector with successive numbers. It's too large to send to the database in one go.
+    let input: Vec<_> = (0..12000).map(|i| (i % 256) as u8).collect();
+
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(&input).unwrap();
+
+    let path = file.into_temp_path();
+
+    let mut blob = BlobRead::from_path(&path).unwrap();
+
+    let insert = format!("INSERT INTO {table_name} (a) VALUES (?)");
+    conn.execute(&insert, &mut blob.as_blob_param(), None)
+        .unwrap();
+
+    // Query value just streamed into the DB and compare it with the input.
+    let select = format!("SELECT a FROM {table_name}");
+    let mut result = conn.execute(&select, (), None).unwrap().unwrap();
+    let mut row = result.next_row().unwrap().unwrap();
+    let mut output = Vec::new();
+    row.get_binary(1, &mut output).unwrap();
+
+    assert_eq!(input, output);
+}
+
+/// Demonstrate how to strip abstractions and access raw functionality as exposed by `odbc-sys`.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn escape_hatch(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .build(profile)
+        .unwrap();
+
+    let preallocated = conn.preallocate().unwrap();
+    let mut statement = preallocated.into_handle();
+
+    statement.reset_parameters().unwrap();
+
+    unsafe {
+        let select_utf8 = table.sql_all_ordered_by_id();
+        // TableName does not exist, but we won't execute the query anyway
+        let select = Utf16String::from_str(&select_utf8);
+        let ret = SQLPrepareW(
+            statement.as_sys(),
+            select.as_ptr(),
+            select.len().try_into().unwrap(),
+        );
+        assert_eq!(ret, SqlReturn::SUCCESS);
+    }
+
+    // If we use `.into_sys` we need to drop the handle manually
+    let hstmt = statement.into_sys();
+    unsafe {
+        let ret = SQLFreeHandle(HandleType::Stmt, hstmt.as_handle());
+        assert_eq!(ret, SqlReturn::SUCCESS);
+    }
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn varchar_null(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(10)"])
+        .build(profile)
+        .unwrap();
+
+    let insert = format!("INSERT INTO {table_name} (a) VALUES (?)");
+
+    conn.execute(&insert, &VarCharSlice::NULL, None).unwrap();
+
+    assert_eq!("NULL", table.content_as_string(&conn))
+}
+
+/// Connect to database with connection string, and check the output connection string with
+/// attributes complemented by the driver.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn get_full_connection_string(profile: &Profile) {
+    let mut completed_connection_string = OutputStringBuffer::with_buffer_size(1024);
+    environment()
+        .unwrap()
+        .driver_connect(
+            profile.connection_string,
+            &mut completed_connection_string,
+            odbc_api::DriverCompleteOption::NoPrompt,
+        )
+        .unwrap();
+
+    assert!(!completed_connection_string.is_truncated());
+
+    let completed_connection_string = completed_connection_string.to_utf8();
+
+    eprintln!("Completed Connection String: {completed_connection_string}");
+
+    // Additional attributes should make the string larger.
+    assert!(profile.connection_string.len() <= completed_connection_string.len());
+}
+
+/// We must be able to detect truncation in case we provide a buffer too small to hold the output
+/// connection string
+#[test_case(MSSQL; "Microsoft SQL Server")]
+// #[test_case(MARIADB; "Maria DB")] STATUS_STACK_BUFFER_OVERRUN
+// #[test_case(SQLITE_3; "SQLite 3")] Does not write truncated connection string at all
+#[test_case(POSTGRES; "PostgreSQL")]
+fn get_full_connection_string_truncated(profile: &Profile) {
+    let mut completed_connection_string = OutputStringBuffer::with_buffer_size(2);
+    environment()
+        .unwrap()
+        .driver_connect(
+            profile.connection_string,
+            &mut completed_connection_string,
+            odbc_api::DriverCompleteOption::NoPrompt,
+        )
+        .unwrap();
+
+    eprintln!(
+        "Output connection string: {}",
+        completed_connection_string.to_utf8()
+    );
+
+    assert!(completed_connection_string.is_truncated());
+}
+
+/// We must be able to detect truncation in case we provide a buffer too small to hold the output
+/// connection string
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn driver_connect_with_empty_out_connection_sring(profile: &Profile) {
+    let mut completed_connection_string = OutputStringBuffer::empty();
+    environment()
+        .unwrap()
+        .driver_connect(
+            profile.connection_string,
+            &mut completed_connection_string,
+            odbc_api::DriverCompleteOption::NoPrompt,
+        )
+        .unwrap();
+
+    assert!(completed_connection_string.is_truncated());
+    assert!(completed_connection_string.to_utf8().is_empty());
+}
+
+#[test_case(MSSQL, "Microsoft SQL Server"; "Microsoft SQL Server")]
+#[test_case(MARIADB, "MariaDB"; "Maria DB")]
+#[test_case(SQLITE_3, "SQLite"; "SQLite 3")]
+#[test_case(POSTGRES, "PostgreSQL"; "PostgreSQL")]
+#[test_case(DUCKDB, "DuckDB"; "DuckDB")]
+fn database_management_system_name(profile: &Profile, expected_name: &'static str) {
+    let conn = profile.connection().unwrap();
+    let actual_name = conn.database_management_system_name().unwrap();
+    assert_eq!(expected_name, actual_name);
+}
+
+/// Demonstrating how to fill a vector of rows using this crate.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn fill_vec_of_rows_of_idiomatic_types(profile: &Profile) {
+    let table_name = table_name!();
+    let conn = profile
+        .setup_empty_table(&table_name, &["VARCHAR(50)", "INTEGER"])
+        .unwrap();
+    let insert_sql = format!("INSERT INTO {table_name} (a,b) VALUES ('A', 1), ('B',2)");
+    conn.execute(&insert_sql, (), None).unwrap();
+
+    // Now that the table is created and filled with some values lets query it and put its contents
+    // into a `Vec`
+
+    let query_sql = format!("SELECT a,b FROM {table_name}");
+    let cursor = conn.execute(&query_sql, (), None).unwrap().unwrap();
+    type Row = (VarCharArray<50>, i32);
+
+    let buffer = RowVec::<Row>::new(1);
+    let mut cursor = cursor.bind_buffer(buffer).unwrap();
+    let mut actual = Vec::new();
+
+    while let Some(batch) = cursor.fetch().unwrap() {
+        for (a, b) in batch.iter() {
+            let a = a.as_str().unwrap().map(ToOwned::to_owned);
+            let b = *b;
+            actual.push((a, b));
+        }
+    }
+
+    assert_eq!(
+        actual,
+        [(Some("A".to_string()), 1), (Some("B".to_string()), 2)]
+    )
+}
+
+/// Provoke return of NO_DATA from SQLExecute and SQLDirectExecute by deleting a non existing row.
+/// The bindings must not panic, even though the result is not SQL_SUCCESS
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn no_data(profile: &Profile) {
+    let table_name = table_name!();
+    let conn = profile
+        .setup_empty_table(&table_name, &["INTEGER"])
+        .unwrap();
+    let sql = format!("DELETE FROM {table_name} WHERE id=5");
+    // Assert no panic on direct execution
+    conn.execute(&sql, (), None).unwrap();
+    // Assert no panic on prepared execution
+    conn.prepare(&sql).unwrap().execute(()).unwrap();
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+#[should_panic(expected = "SQLFreeHandle failed with error code: -1")]
+fn should_panic_if_connection_cannot_be_freed(profile: &Profile) {
+    let conn = profile.connection().unwrap();
+
+    // Since the types with their invariants in this crate helpfully prevent us from freeing a
+    // connected handles, we have to abandon the saftey rails in order to provoke the error.
+    let conn = conn.into_handle();
+
+    // We drop the connection, but it is still connected. => This is a programming error, we want
+    // the drop handler to panic.
+    drop(conn);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+#[should_panic(expected = "original error")]
+fn panic_in_drop_handlers_should_not_mask_original_error(profile: &Profile) {
+    let conn = profile.connection().unwrap();
+
+    // Since the types with their invariants in this crate helpfully prevent us from freeing a
+    // connected handles, we have to abandon the saftey rails in order to provoke the error.
+    let _conn = conn.into_handle();
+
+    // If this error is propagated upwards, the above connections drop handler will be called and
+    // fail. This tests wants to ensure the original error is not masked by that.
+    panic!("original error")
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bulk_inserter_owning_arc_connection(profile: &Profile) {
+    // Given a table
+    let table_name = table_name!();
+    let conn = profile
+        .setup_empty_table(&table_name, &["INTEGER"])
+        .unwrap();
+
+    // When insert two batches with size one and two.
+    let mut prepared = Arc::new(conn)
+        .into_prepared(&format!("INSERT INTO {table_name} (a) VALUES (?)"))
+        .unwrap();
+    let desc = BindParamDesc::i32(false);
+    // Insert a batch
+    let mut prebound = prepared.column_inserter(1, [desc]).unwrap();
+    prebound.set_num_rows(1);
+    let col = prebound.column_mut(0).as_slice::<i32>().unwrap();
+    col[0] = 1;
+    prebound.execute().unwrap();
+
+    // Then
+    let conn = profile.connection().unwrap();
+    let cursor = conn
+        .execute(&format!("SELECT a FROM {table_name} ORDER BY id"), (), None)
+        .unwrap()
+        .unwrap();
+    let actual = cursor_to_string(cursor);
+    assert_eq!("1", actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn bulk_inserter_owning_shared_connection(profile: &Profile) {
+    // Given a table
+    let table_name = table_name!();
+    let conn = profile
+        .setup_empty_table(&table_name, &["INTEGER"])
+        .unwrap();
+
+    // When insert two batches with size one and two.
+    let mut prepared = Arc::new(Mutex::new(conn))
+        .into_prepared(&format!("INSERT INTO {table_name} (a) VALUES (?)"))
+        .unwrap();
+    let desc = BindParamDesc::i32(false);
+    // Insert a batch
+    let mut prebound = prepared.column_inserter(1, [desc]).unwrap();
+    prebound.set_num_rows(1);
+    let col = prebound.column_mut(0).as_slice::<i32>().unwrap();
+    col[0] = 1;
+    prebound.execute().unwrap();
+
+    // Then
+    let conn = profile.connection().unwrap();
+    let cursor = conn
+        .execute(&format!("SELECT a FROM {table_name} ORDER BY id"), (), None)
+        .unwrap()
+        .unwrap();
+    let actual = cursor_to_string(cursor);
+    assert_eq!("1", actual);
+}
+
+/// A combination of the column_inserter which borrows the prepared statement and the ability to
+/// have arbitrary input mappings. `column_inserter` has been introduced to allow for dynamic
+/// rebinding in case the input buffers were to small. Arbitrary input mappings have been introduced
+/// to be memory efficient if using the same values for multiple placeholders.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn column_inserter_one_buffer_for_two_placeholders(profile: &Profile) {
+    // Given a prepared insert statement with two placeholders
+    let table_name = table_name!();
+    let conn = profile
+        .setup_empty_table(&table_name, &["INTEGER", "INTEGER"])
+        .unwrap();
+    let mut prepared = conn
+        .into_prepared(&format!("INSERT INTO {table_name} (a,b) VALUES (?, ?)"))
+        .unwrap();
+
+    // When we fill both columns from one input buffer
+    let desc = BindParamDesc::i32(false);
+    struct MyMapping;
+    impl InputParameterMapping for MyMapping {
+        fn parameter_index_to_column_index(&self, _parameter_index: u16) -> usize {
+            // We always map to the one buffer we have.
+            0
+        }
+        fn num_parameters(&self) -> usize {
+            2 // We have only one input buffer, but we have two placeholders in our statement.
+        }
+    }
+    // Insert a batch
+    let mut prebound = prepared
+        .column_inserter_with_mapping(1, [desc], MyMapping)
+        .unwrap();
+    prebound.set_num_rows(1);
+    let col = prebound.column_mut(0).as_slice::<i32>().unwrap();
+    col[0] = 1;
+    prebound.execute().unwrap();
+
+    // Then both columns are filled
+    let conn = profile.connection().unwrap();
+    let cursor = conn
+        .execute(
+            &format!("SELECT a, b FROM {table_name} ORDER BY id"),
+            (),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    let actual = cursor_to_string(cursor);
+    assert_eq!("1,1", actual);
+}
+
+/// Fire an insert statement adding two rows and verify that the count of changed rows is 2.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn row_count_one_shot_query(profile: &Profile) {
+    // Given
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .build(profile)
+        .unwrap();
+    let insert = format!("INSERT INTO {table_name} (a) VALUES (1), (2)");
+
+    // When
+    let mut preallocated = conn.preallocate().unwrap();
+    preallocated.execute(&insert, ()).unwrap();
+    let row_count = preallocated.row_count().unwrap();
+
+    // Then
+    assert_eq!(Some(2), row_count);
+}
+
+/// Fire an insert statement adding two rows and verify that the count of changed rows is 2.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn row_count_prepared_insert(profile: &Profile) {
+    // Given
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .build(profile)
+        .unwrap();
+    let insert = format!("INSERT INTO {table_name} (a) VALUES (?), (?)");
+
+    // When
+    let mut prepared = conn.prepare(&insert).unwrap();
+    prepared.execute((&1, &2)).unwrap();
+    let row_count = prepared.row_count().unwrap();
+
+    // Then
+    assert_eq!(Some(2), row_count);
+}
+
+#[test_case(MSSQL, None; "Microsoft SQL Server")]
+#[test_case(MARIADB, Some(0); "Maria DB")]
+#[test_case(SQLITE_3, Some(0); "SQLite 3")]
+#[test_case(POSTGRES, Some(0); "PostgreSQL")]
+fn row_count_create_table_preallocated(profile: &Profile, expectation: Option<usize>) {
+    // Given a name for a table which does not exist
+    let table_name = table_name!();
+    let conn = profile.connection().unwrap();
+    conn.execute(&format!("DROP TABLE IF EXISTS {table_name};"), (), None)
+        .unwrap();
+
+    // When
+    let mut preallocated = conn.preallocate().unwrap();
+    preallocated
+        .execute(&format!("CREATE TABLE {table_name} (a INTEGER);"), ())
+        .unwrap();
+    let row_count = preallocated.row_count().unwrap();
+
+    // Then
+    assert_eq!(expectation, row_count);
+}
+
+#[test_case(MSSQL, Some(0); "Microsoft SQL Server")]
+#[test_case(MARIADB, Some(0); "Maria DB")]
+#[test_case(SQLITE_3, Some(0); "SQLite 3")]
+#[test_case(POSTGRES, Some(0); "PostgreSQL")]
+fn row_count_create_table_prepared(profile: &Profile, expectation: Option<usize>) {
+    // Given a name for a table which does not exist
+    let table_name = table_name!();
+    let conn = profile.connection().unwrap();
+    conn.execute(&format!("DROP TABLE IF EXISTS {table_name};"), (), None)
+        .unwrap();
+
+    // When
+    let mut prepared = conn
+        .prepare(&format!("CREATE TABLE {table_name} (a INTEGER);"))
+        .unwrap();
+    prepared.execute(()).unwrap();
+    let row_count = prepared.row_count().unwrap();
+
+    // Then
+    assert_eq!(expectation, row_count);
+}
+
+// The two failing drivers confuse buffer and character lengths with each other. It could not be
+// worked around by allocating larger buffers.
+// #[test_case(MSSQL; "Microsoft SQL Server")]
+// #[test_case(MARIADB; "Maria DB")]
+
+// SQLite just does not recognize the last letter
+// #[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn describe_column_name_with_umlaut(profile: &Profile) {
+    let table_name = table_name!();
+    // Given a table with an umlaut in a column name
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .column_names(&["hällo𐐏"])
+        .build(profile)
+        .unwrap();
+
+    // When executing a query with a result set containing that column and describing that column
+    let mut result_set = conn
+        .execute(&format!("SELECT hällo𐐏 FROM {table_name}"), (), None)
+        .unwrap()
+        .unwrap();
+    let mut desc = ColumnDescription::default();
+    result_set.describe_col(1, &mut desc).unwrap();
+    let column_name = desc.name_to_string().unwrap();
+
+    // Then
+    assert_eq!("hällo𐐏", column_name);
+}
+
+// Maria DB and MSSQL have trouble creating a table with the special characters, without causing a
+// synatx error.
+// #[test_case(MSSQL; "Microsoft SQL Server")]
+// #[test_case(MARIADB; "Maria DB")]
+// SQLite 3 does not work with wide character encoding in linux
+// #[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn umlaut_in_column_name(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_names(&["hällo𐐏"])
+        .column_types(&["INT"])
+        .build(profile)
+        .unwrap();
+
+    let mut cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+
+    let name = cursor.col_name(1).unwrap();
+    assert_eq!("hällo𐐏", name);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+// #[test_case(MARIADB; "Maria DB")] Only allows one SQL Statement
+// #[test_case(SQLITE_3; "SQLite 3")] Only allows one SQL Statement
+#[test_case(POSTGRES; "PostgreSQL")]
+fn execute_two_select_statements(profile: &Profile) {
+    let conn = profile.connection().unwrap();
+
+    let cursor = conn
+        .execute("SELECT 1 AS A; SELECT 2 AS B;", (), None)
+        .unwrap()
+        .unwrap();
+
+    let maybe_cursor = cursor.more_results().unwrap();
+    assert!(maybe_cursor.is_some());
+    let cursor = maybe_cursor.unwrap();
+    let maybe_cursor = cursor.more_results().unwrap();
+    assert!(maybe_cursor.is_none());
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+// #[test_case(MARIADB; "Maria DB")] Only allows one SQL Statement
+// #[test_case(SQLITE_3; "SQLite 3")] Only allows one SQL Statement
+#[test_case(POSTGRES; "PostgreSQL")]
+fn execute_select_insert_select(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, _table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .build(profile)
+        .unwrap();
+
+    let first_cursor = conn
+        .execute(
+            &format!("SELECT 1 AS A; INSERT INTO {table_name} (a) VALUES (2); SELECT 3 AS B;"),
+            (),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+
+    // The statement is not actually in a cursor state here, because the second statement is an
+    // Insert statement. Everything works fine though, if we do not try to fetch any values. If we
+    // fetch it would trigger a sequence error.
+    let second_cursor = first_cursor.more_results().unwrap();
+    assert!(second_cursor.is_some());
+    let second_cursor = second_cursor.unwrap();
+
+    let third_cursor = second_cursor.more_results().unwrap();
+    assert!(third_cursor.is_some());
+    let third_cursor = third_cursor.unwrap();
+
+    let fourth_cursor = third_cursor.more_results().unwrap();
+    assert!(fourth_cursor.is_none());
+}
+
+// #[test_case(MSSQL; "Microsoft SQL Server")] Without changing server configuration VARCHAR(50)
+// does not seem to store things in UTF-8, but rather use an ASCII encoding which can not represent
+// the chinese characters.
+// Window hosted MARIA DB seems to also have trouble storying utf-8 in a varchar(50). Runs fine
+// though with windows client and linux server
+// #[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn chinese_text_argument(profile: &Profile) {
+    // Given a table
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(50)"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = table.sql_insert();
+
+    // When
+    conn.execute(&insert_sql, &"您好".into_parameter(), None)
+        .unwrap();
+
+    // Then
+    let cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+    #[cfg(any(feature = "wide", all(not(feature = "narrow"), target_os = "windows")))]
+    let actual = {
+        let buffer = ColumnarBuffer::<_>::new(vec![(1, TextColumn::<u16>::new(1, 50))]);
+        let mut cursor = cursor.bind_buffer(buffer).unwrap();
+        let batch = cursor.fetch().unwrap().unwrap();
+        let utf16 = batch.column(0).get(0).unwrap();
+        let utf16 = Utf16Str::from_slice(utf16).unwrap();
+        utf16.to_string()
+    };
+
+    // Fetching non narrow should always work, but does not for PostgreSQL with narrow compilation
+    // flag.
+    #[cfg(not(any(feature = "wide", all(not(feature = "narrow"), target_os = "windows"))))]
+    let actual = {
+        let buffer = ColumnarBuffer::<_>::new(vec![(1, TextColumn::<u8>::new(1, 50))]);
+        let mut cursor = cursor.bind_buffer(buffer).unwrap();
+        let batch = cursor.fetch().unwrap().unwrap();
+        batch.at_as_str(0, 0).unwrap().unwrap().to_string()
+    };
+    assert_eq!("您好", actual);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+// #[test_case(POSTGRES; "PostgreSQL")] Postgres does not recognize NVARCHAR as a type
+fn chinese_text_argument_nvarchar(profile: &Profile) {
+    // Given a table
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["NVARCHAR(50)"])
+        .build(profile)
+        .unwrap();
+    let insert_sql = table.sql_insert();
+
+    // When
+    let arg = Utf16String::from_str("您好"); // Narrow build will fail for MSSQL without this line.
+    conn.execute(&insert_sql, &arg.into_parameter(), None)
+        .unwrap();
+
+    // Then
+    let cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+    let buffer = ColumnarBuffer::<_>::new(vec![(1, TextColumn::<u16>::new(1, 50))]);
+    let mut cursor = cursor.bind_buffer(buffer).unwrap();
+    let batch = cursor.fetch().unwrap().unwrap();
+    let utf16 = batch.column(0).get(0).unwrap();
+    let utf16 = Utf16Str::from_slice(utf16).unwrap();
+    let actual = utf16.to_string();
+    assert_eq!("您好", actual);
+}
+
+/// Inspired by <https://github.com/pacman82/odbc-api/issues/428>
+/// Microsoft driver seems to report wrong sizes for the remaining strings if a text column can not
+/// be fetched on first try.
+// #[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+// #[test_case(POSTGRES; "PostgreSQL")] Fails on linux: Invalid string conversion occurred
+fn cursor_get_text_from_text(profile: &Profile) {
+    // Given a text column with a string larger than 255 characters. It also must contain non ASCII
+    // characters.
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["TEXT"])
+        .build(profile)
+        .unwrap();
+    // For this test we want to run into a scenario, there we can not fetch everything in the first
+    // roundtrip, so we choose a text larger than 256 characters.
+    let text = "€".repeat(300);
+    let insert_sql = table.sql_insert();
+    conn.execute(&insert_sql, &text.into_parameter(), None)
+        .unwrap();
+
+    // When
+    let mut cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+    let mut row = cursor.next_row().unwrap().unwrap();
+    let mut buffer = Vec::new();
+    row.get_text(1, &mut buffer).unwrap();
+
+    // Then
+    let actual = String::from_utf8(buffer).unwrap();
+    assert_eq!("€".repeat(300), actual);
+}
+
+// This triggers a bug in the ODBC driver at least version 17 and 18
+//
+// In addition this bug does not seem to occur then talking to an MSSQL server hosted in a windows
+// Enivornment. In our current CI test suite, if the client runs on windows so does the server, so
+// we do not execute this test on windows.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[should_panic(
+    expected = "SQLGetData has been unable to fetch all data, even though the capacity of the \
+    target buffer has been adapted to hold the entire payload based on the indicator of the last \
+    part. You may consider filing a bug with the ODBC driver you are using."
+)]
+#[cfg(not(target_os = "windows"))]
+fn cursor_get_text_from_text_mssql(profile: &Profile) {
+    // Given a text column with a string larger than 255 characters. It also must contain non ASCII
+    // characters.
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["TEXT"])
+        .build(profile)
+        .unwrap();
+    // For this test we want to run into a scenario, there we can not fetch everything in the first
+    // roundtrip, so we choose a text larger than 256 characters.
+    let text = "€".repeat(300);
+    let insert_sql = table.sql_insert();
+    conn.execute(&insert_sql, &text.into_parameter(), None)
+        .unwrap();
+
+    // When
+    let mut cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+    let mut row = cursor.next_row().unwrap().unwrap();
+    let mut buffer = Vec::new();
+    row.get_text(1, &mut buffer).unwrap();
+
+    // Microsoft driver is buggy in this situation, as it does not use the indicator to report the
+    // true size of the string or the `NO_TOTAL`. We can at least test that a panic occurs and not
+    // some endless loop or buffer overflow.
+}
+
+/// Learning test what display size drivers report for JSON columns
+// #[test_case(MSSQL, "@json VARCHAR(max)", None; "Microsoft SQL Server")] // Unknown data type JSON
+// #[test_case(MARIADB, Some(1073741823); "Maria DB")] // Different size reported if MariaDB runs on
+// windows
+#[test_case(SQLITE_3, Some(255); "SQLite 3")]
+#[test_case(POSTGRES, Some(255); "PostgreSQL")]
+fn json_column_display_size(profile: &Profile, expected_display_size: Option<usize>) {
+    // Given a table with a column type which will return `NO_TOTAL`
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["JSON"])
+        .build(profile)
+        .unwrap();
+    let query = table.sql_all_ordered_by_id();
+
+    // When obtaining result set metadata
+    let mut result_set = conn.execute(&query, (), None).unwrap().unwrap();
+    // First column is id with index `0`. Second index (`1`) referes to the JSON column
+    let size = result_set
+        .col_display_size(1)
+        .unwrap()
+        .map(NonZeroUsize::get);
+
+    // Then it is equal to the recorded display size
+    assert_eq!(expected_display_size, size);
+}
+
+/// Fetch decimal values in their text interpretation and transform them to their integer
+/// representation.
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn fetch_decimals_to_int(profile: &Profile) {
+    // Given
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["DECIMAL(5,3)"])
+        .build(profile)
+        .unwrap();
+    conn.execute(
+        &format!("INSERT INTO {table_name} (a) VALUES (12.345), (-12.345), (12), (12.3)"),
+        (),
+        None,
+    )
+    .unwrap();
+
+    // When
+    let mut cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+    let row_set_buffer = TextRowSet::for_cursor(4, &mut cursor, None).unwrap();
+    let mut block_cursor = cursor.bind_buffer(row_set_buffer).unwrap();
+    let batch = block_cursor.fetch().unwrap().unwrap();
+    let n = |i| batch.at_as_str(0, i).unwrap().unwrap().as_bytes();
+    let n1 = decimal_text_to_i128(n(0), 3);
+    let n2 = decimal_text_to_i128(n(1), 3);
+    let n3 = decimal_text_to_i128(n(2), 3);
+    let n4 = decimal_text_to_i128(n(3), 3);
+
+    // Then
+    assert_eq!(12345, n1);
+    assert_eq!(-12345, n2);
+    assert_eq!(12000, n3);
+    assert_eq!(12300, n4);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+fn query_timeout_execute_validate_functionality(profile: &Profile) {
+    // Given
+    let conn = profile.connection().unwrap();
+
+    // When
+    let timeout_sec = Some(1);
+    let start = Instant::now();
+    let result = conn.execute("WAITFOR DELAY '0:0:03'", (), timeout_sec);
+    let end = Instant::now();
+
+    // Then
+    let actual_duration = end - start;
+    assert!(actual_duration < Duration::from_secs(2));
+    assert!(result.is_err());
+    let error = result.unwrap_err();
+    eprintln!("{:?}", error);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+fn query_timeout_into_cursor_validate_functionality(profile: &Profile) {
+    // Given
+    let conn = profile.connection().unwrap();
+
+    // When
+    let timeout_sec = Some(1);
+    let start = Instant::now();
+    let result = conn.into_cursor("WAITFOR DELAY '0:0:03'", (), timeout_sec);
+    let end = Instant::now();
+
+    // Then
+    let actual_duration = end - start;
+    assert!(actual_duration < Duration::from_secs(2));
+    assert!(result.is_err());
+    let error = result.unwrap_err();
+    eprintln!("{:?}", error);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn query_timeout_set_and_get_prepared_statement(profile: &Profile) {
+    // Given
+    let conn = profile.connection().unwrap();
+
+    // When
+    let mut stmt = conn.prepare("SELECT * FROM my_made_up_table").unwrap();
+    stmt.set_query_timeout_sec(42).unwrap();
+    let timeout = stmt.query_timeout_sec().unwrap();
+
+    // Then
+    assert_eq!(42, timeout);
+}
+
+#[test_case(MSSQL, true, false; "Microsoft SQL Server")]
+#[test_case(MARIADB, false, true; "Maria DB")]
+#[test_case(SQLITE_3, false, false; "SQLite 3")]
+#[test_case(POSTGRES, true, false; "PostgreSQL")]
+fn query_timeout_set_and_get_learning_test(
+    profile: &Profile,
+    supports_timeout: bool,
+    returns_diagnostic: bool,
+) {
+    // Given
+    let conn = profile.connection().unwrap();
+
+    // When
+    let mut stmt = conn.preallocate().unwrap();
+    let mut stmt = stmt.as_stmt_ref();
+    let result = stmt.set_query_timeout_sec(42);
+    let timeout = stmt.query_timeout_sec().unwrap();
+
+    // Then
+    let expected_timeout = if supports_timeout { 42 } else { 0 };
+    assert_eq!(expected_timeout, timeout);
+
+    let expected_result = if returns_diagnostic {
+        SqlResult::SuccessWithInfo(())
+    } else {
+        SqlResult::Success(())
+    };
+    assert_eq!(expected_result, result);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn query_timeout_default_learning_test(profile: &Profile) {
+    // Given
+    let conn = profile.connection().unwrap();
+
+    // When
+    let mut stmt = conn.preallocate().unwrap();
+    let timeout = stmt.query_timeout_sec().unwrap();
+
+    // Then
+    assert_eq!(0, timeout);
+}
+
+/// This tests checks if there is more than one attribute returned. We had a bug (see issue:
+/// <https://github.com/pacman82/odbc-api/issues/511>) in which we used a buffer intended for zero
+/// terminated strings to get the attributes. Yet the attributes use the `0` as a delimiter.
+#[test]
+fn list_all_driver_attributes() {
+    // Given an ODBC environment with drivers installed
+    let environment = &environment().unwrap();
+
+    // When fetching driver infors
+    let driver_infos = environment.drivers().unwrap();
+
+    // At least one driver is expecetd to have more than one attribute.
+    let maximum = driver_infos
+        .iter()
+        .map(|info| info.attributes.len())
+        .max()
+        .expect("At least one ODBC driver must be installed");
+    assert!(maximum > 1);
+}
+
+#[test_case(MSSQL, true; "Microsoft SQL Server")]
+#[test_case(MARIADB, false; "Maria DB")]
+#[test_case(SQLITE_3, false; "SQLite 3")]
+#[test_case(POSTGRES, false; "PostgreSQL")]
+#[tokio::test]
+async fn polling_preallocated_statement_execution(
+    profile: &Profile,
+    expected_to_support_polling: bool,
+) {
+    // Given a table
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(50)"])
+        .build(profile)
+        .unwrap();
+    let query = format!("INSERT INTO {table_name} (a) VALUES ('Hello, World!')");
+    // We use this counter to check if the sleep function is actually invoked and the driver does
+    // actually support asynchronous polling.
+    let mut sleep_counter_spy = 0;
+    let sleep = || {
+        sleep_counter_spy += 1;
+        tokio::time::sleep(Duration::from_millis(50))
+    };
+
+    // When
+    let mut statement = conn.preallocate().unwrap().into_polling().unwrap();
+    statement.execute(&query, (), sleep).await.unwrap();
+
+    // Then
+    let actual = table.content_as_string(&conn);
+    assert_eq!("Hello, World!", actual);
+    let used_polling = sleep_counter_spy != 0;
+    assert_eq!(expected_to_support_polling, used_polling);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn row_wise_bulk_query_using_tuple(profile: &Profile) {
+    // Given a cursor
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER", "VARCHAR(50)"])
+        .values_by_column(&[
+            &[Some("42"), Some("5")],
+            &[Some("Hello, World!"), Some("Hallo, Welt!")],
+        ])
+        .build(profile)
+        .unwrap();
+    let cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+
+    // When
+    let row_set_buffer = RowVec::<(i32, VarCharArray<50>)>::new(10);
+    let mut block_cursor = cursor.bind_buffer(row_set_buffer).unwrap();
+    let batch = block_cursor.fetch().unwrap().unwrap();
+
+    // Then
+    assert_eq!(2, batch.num_rows());
+    assert_eq!(42, batch[0].0);
+    assert_eq!("Hello, World!", batch[0].1.as_str().unwrap().unwrap());
+    assert_eq!(5, batch[1].0);
+    assert_eq!("Hallo, Welt!", batch[1].1.as_str().unwrap().unwrap());
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn row_wise_bulk_query_nullable(profile: &Profile) {
+    // Given a cursor
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .values_by_column(&[&[Some("42"), None]])
+        .build(profile)
+        .unwrap();
+    let cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+
+    // When
+    let row_set_buffer = RowVec::<(Nullable<i32>,)>::new(10);
+    let mut block_cursor = cursor.bind_buffer(row_set_buffer).unwrap();
+    let batch = block_cursor.fetch().unwrap().unwrap();
+
+    // Then
+    assert_eq!(Some(&42), batch[0].0.as_opt());
+    assert_eq!(None, batch[1].0.as_opt());
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn row_wise_bulk_query_binary(profile: &Profile) {
+    // Given a cursor
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(20)"])
+        .values_by_column(&[&[Some("Hello, World!"), None]])
+        .build(profile)
+        .unwrap();
+    let cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+
+    // When
+    let row_set_buffer = RowVec::<(VarBinaryArray<20>,)>::new(2);
+    let mut block_cursor = cursor.bind_buffer(row_set_buffer).unwrap();
+    let batch = block_cursor.fetch().unwrap().unwrap();
+
+    // Then
+    assert_eq!(b"Hello, World!", batch[0].0.as_bytes().unwrap());
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn row_wise_bulk_query_wide_text(profile: &Profile) {
+    // Given a cursor
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(20)"])
+        .values_by_column(&[&[Some("Hello, World!"), None]])
+        .build(profile)
+        .unwrap();
+    let cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+
+    // When
+    let row_set_buffer = RowVec::<(VarWCharArray<20>,)>::new(2);
+    let mut block_cursor = cursor.bind_buffer(row_set_buffer).unwrap();
+    let batch = block_cursor.fetch().unwrap().unwrap();
+
+    // Then
+    assert_eq!("Hello, World!", batch[0].0.as_utf16().unwrap().to_string());
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn truncation_in_row_wise_bulk_buffer(profile: &Profile) {
+    // Given a cursor
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(50)"])
+        .values_by_column(&[&[Some("Hello, World!")]])
+        .build(profile)
+        .unwrap();
+    let cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+
+    // When
+    let mut row_set_buffer = RowVec::<(VarCharArray<10>,)>::new(10);
+
+    let mut block_cursor = cursor.bind_buffer(&mut row_set_buffer).unwrap();
+    let batch = block_cursor.fetch().unwrap().unwrap();
+
+    // Then
+    assert_eq!("Hello, Wo", batch[0].0.as_str().unwrap().unwrap());
+    drop(block_cursor);
+    assert_eq!(
+        TruncationInfo {
+            indicator: Some(13),
+            buffer_index: 0
+        },
+        (&(&mut row_set_buffer)).find_truncation().unwrap()
+    )
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn fetch_fixed_type_row_wise(profile: &Profile) {
+    // Given a cursor
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .values_by_column(&[&[Some("42")]])
+        .build(profile)
+        .unwrap();
+    let cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+
+    // When
+    type RowSample = (i32,);
+
+    let row_set_buffer = RowVec::<RowSample>::new(10);
+    let mut block_cursor = cursor.bind_buffer(row_set_buffer).unwrap();
+    let batch = block_cursor.fetch().unwrap().unwrap();
+
+    // Then
+    assert_eq!(42, batch[0].0);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn row_wise_bulk_query_using_iterator(profile: &Profile) {
+    // Given a cursor
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .values_by_column(&[&[Some("42"), Some("5")]])
+        .build(profile)
+        .unwrap();
+    let cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+
+    // When
+
+    // Choose batch size 1 so we need multiple batches.
+    let row_set_buffer = RowVec::<(i32,)>::new(1);
+    let all_rows = cursor
+        .bind_buffer(row_set_buffer)
+        .unwrap()
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    // Then
+    assert_eq!(2, all_rows.len());
+    assert_eq!(42, all_rows[0].0);
+    assert_eq!(5, all_rows[1].0);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn get_row_array_size_from_statement(profile: &Profile) {
+    // Given a statement
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INTEGER"])
+        .build(profile)
+        .unwrap();
+    let mut statement = conn.prepare(&table.sql_all_ordered_by_id()).unwrap();
+
+    // When setting the row array size to 10 and fetching it
+    let mut stmt = statement.as_stmt_ref();
+    let row_array_size = unsafe {
+        stmt.set_row_array_size(10).unwrap();
+        stmt.row_array_size().unwrap()
+    };
+
+    // Then the fetched row array size is 10
+    assert_eq!(10, row_array_size);
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+#[tokio::test]
+async fn async_stream_of_rows_from_other_thread(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["INT"])
+        .values_by_column(&[&[Some("42")]])
+        .build(profile)
+        .unwrap();
+
+    // When
+    fn stream_of_send_rows(
+        connection: Connection<'static>,
+        query: String,
+    ) -> impl Stream<Item = (i32,)> + Send + 'static {
+        let stmt = connection.into_preallocated().unwrap();
+        let mut stmt = stmt.into_polling().unwrap();
+        stream! {
+            let sleep = || tokio::time::sleep(Duration::from_millis(10));
+            let _ = stmt.execute(&query, (), sleep).await;
+            yield (42, )
+        }
+    }
+
+    // Then
+    let stream = stream_of_send_rows(conn, table.sql_all_ordered_by_id());
+    let rows = stream.collect::<Vec<_>>().await;
+    assert_eq!([(42i32,)].as_slice(), rows)
+}
+
+// Learning tests ----------------------------------------------------------------------------------
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+// #[test_case(SQLITE_3; "SQLite 3")] SQLite just returns a zeroed out numeric struct
+#[test_case(POSTGRES; "PostgreSQL")]
+fn fetch_decimal_as_numeric_struct_using_get_data(profile: &Profile) {
+    // Given a cursor over a result set with a decimal in its first column
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["DECIMAL(5,3)"])
+        .build(profile)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &(25.212).into_parameter(), None)
+        .unwrap();
+    let cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+
+    // When
+    // Binding numeric withouth this wrapper would bind it without the App Row Descriptor
+    struct BindNumericAsAppRowDesc(Numeric);
+    let mut target = BindNumericAsAppRowDesc(Numeric {
+        precision: 0,
+        scale: 0,
+        sign: 0,
+        val: Default::default(),
+    });
+    unsafe impl CData for BindNumericAsAppRowDesc {
+        fn cdata_type(&self) -> CDataType {
+            CDataType::Ard
+        }
+        fn indicator_ptr(&self) -> *const isize {
+            std::ptr::null()
+        }
+        fn value_ptr(&self) -> *const std::ffi::c_void {
+            &self.0 as *const Numeric as *const std::ffi::c_void
+        }
+        fn buffer_length(&self) -> isize {
+            0
+        }
+    }
+    unsafe impl CDataMut for BindNumericAsAppRowDesc {
+        fn mut_indicator_ptr(&mut self) -> *mut isize {
+            null_mut()
+        }
+        fn mut_value_ptr(&mut self) -> Pointer {
+            &mut self.0 as *mut Numeric as *mut std::ffi::c_void
+        }
+    }
+    unsafe {
+        let mut stmt = cursor.into_stmt();
+
+        let mut ard = stmt.application_row_descriptor().unwrap();
+
+        ard.set_type(1, CDataType::Numeric).unwrap();
+        ard.set_precision(1, 5).unwrap();
+        ard.set_scale(1, 3).unwrap();
+
+        stmt.fetch();
+
+        stmt.get_data(1, &mut target);
+
+        stmt.close_cursor();
+    }
+
+    // Then
+    assert_eq!(5, target.0.precision);
+    assert_eq!(3, target.0.scale);
+    // 1 is positive, 0 is negative
+    assert_eq!(1, target.0.sign);
+    assert_eq!(25212, u128::from_le_bytes(target.0.val));
+}
+
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+// #[test_case(SQLITE_3; "SQLite 3")] Always filled with zero
+#[test_case(POSTGRES; "PostgreSQL")]
+fn fetch_decimal_as_numeric_struct_using_bind_col(profile: &Profile) {
+    // Given a cursor over a result set with a decimal in its first column
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["DECIMAL(5,3)"])
+        .build(profile)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &(25.212).into_parameter(), None)
+        .unwrap();
+    let cursor = conn
+        .execute(&table.sql_all_ordered_by_id(), (), None)
+        .unwrap()
+        .unwrap();
+
+    // When
+    // Binding numeric withouth this wrapper would bind it without the App Row Descriptor
+    let mut target = Numeric {
+        precision: 0,
+        scale: 0,
+        sign: 0,
+        val: Default::default(),
+    };
+    unsafe {
+        let mut stmt = cursor.into_stmt();
+
+        // stmt.bind_col(1, &mut target);
+        let mut ard = stmt.application_row_descriptor().unwrap();
+
+        // Setting Field descriptors always seems to yield structs field with zeroes
+        ard.set_type(1, CDataType::Numeric).unwrap();
+        ard.set_precision(1, 5).unwrap();
+        ard.set_scale(1, 3).unwrap();
+        // Setting the dataptr directly on the ARD is required to make it work for MSSQL which does
+        // seem to set the wrong pointer if just using bind col. Postgres and MariaDB would work as
+        // intended with bind_col.
+        // stmt.bind_col(1, &mut target);
+        ard.set_data_ptr(1, &mut target as *mut Numeric as Pointer)
+            .unwrap();
+
+        stmt.fetch();
+
+        stmt.close_cursor();
+    }
+
+    // Then
+    assert_eq!(5, target.precision);
+    assert_eq!(3, target.scale);
+    // 1 is positive, 0 is negative
+    assert_eq!(1, target.sign);
+    let val = u128::from_le_bytes(target.val);
+    assert_eq!(25212, val);
+}
+
+// #[test_case(MSSQL; "Microsoft SQL Server")] Numeric value out of range. Current working
+// hypothesis is that we need to set the scale in the APD, as it does work with scale set to `0`.
+#[test_case(MARIADB; "Maria DB")]
+// #[test_case(SQLITE_3; "SQLite 3")] Unsupported parameter type
+#[test_case(POSTGRES; "PostgreSQL")]
+fn insert_numeric_struct(profile: &Profile) {
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["DECIMAL(5,3)"])
+        .build(profile)
+        .unwrap();
+    let mut stmt = conn.preallocate().unwrap();
+
+    // When
+    let input = Numeric {
+        precision: 5,
+        scale: 3,
+        sign: 1,
+        val: 12345u128.to_le_bytes(),
+    };
+    stmt.execute(&table.sql_insert(), &input).unwrap();
+
+    // Then
+    let content = table.content_as_string(&conn);
+    assert_eq!("12.345", content);
+}
+
+/// Learning test to see how scrolling cursors behave
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn scroll_cursor(profile: &Profile) {
+    // Given a table
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(50)"])
+        .build(profile)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &"one".into_parameter(), None)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &"two".into_parameter(), None)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &"three".into_parameter(), None)
+        .unwrap();
+    let query = table.sql_all_ordered_by_id();
+
+    // When
+    let stmt = conn.preallocate().unwrap();
+    let stmt = stmt.into_handle();
+    let stmt_ptr = stmt.as_sys();
+    let first;
+    let second;
+    let third;
+    unsafe {
+        // 3(UL) ~ SQL_CURSOR_STATIC
+        let _ = odbc_sys::SQLSetStmtAttr(
+            stmt_ptr,
+            odbc_sys::StatementAttribute::CursorType,
+            3 as Pointer,
+            0,
+        );
+        // Bind row set buffer
+        let mut stmt = Preallocated::new(stmt);
+        let mut cursor = stmt.execute(&query, ()).unwrap().unwrap();
+        let mut buffer = TextRowSet::for_cursor(1, &mut cursor, Some(10)).unwrap();
+        let mut block_cursor = cursor.bind_buffer(&mut buffer).unwrap();
+        // Move cursor two forward
+        first = block_cursor
+            .fetch()
+            .unwrap()
+            .unwrap()
+            .at_as_str(0, 0)
+            .unwrap()
+            .unwrap()
+            .to_owned();
+        second = block_cursor
+            .fetch()
+            .unwrap()
+            .unwrap()
+            .at_as_str(0, 0)
+            .unwrap()
+            .unwrap()
+            .to_owned();
+        let _ = odbc_sys::SQLFetchScroll(stmt_ptr, FetchOrientation::Absolute, 1);
+        third = block_cursor
+            .fetch()
+            .unwrap()
+            .unwrap()
+            .at_as_str(0, 0)
+            .unwrap()
+            .unwrap()
+            .to_owned();
+    }
+
+    // Then
+    assert_eq!("one", first);
+    assert_eq!("two", second);
+    assert_eq!("two", third);
+}
+
+/// Learning test to see how downstream applications could recover from truncations during bulk
+/// fetches
+#[test_case(MSSQL; "Microsoft SQL Server")]
+#[test_case(MARIADB; "Maria DB")]
+#[test_case(SQLITE_3; "SQLite 3")]
+#[test_case(POSTGRES; "PostgreSQL")]
+fn recover_from_truncation(profile: &Profile) {
+    // Given a table
+    let table_name = table_name!();
+    let (conn, table) = Given::new(&table_name)
+        .column_types(&["VARCHAR(10)"])
+        .build(profile)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &"1".into_parameter(), None)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &"123456789".into_parameter(), None)
+        .unwrap();
+    conn.execute(&table.sql_insert(), &"1".into_parameter(), None)
+        .unwrap();
+    let query = table.sql_all_ordered_by_id();
+
+    // When
+    let stmt = conn.preallocate().unwrap();
+    let stmt = stmt.into_handle();
+    let stmt_ptr = stmt.as_sys();
+    let untruncated;
+    unsafe {
+        // 3(UL) ~ SQL_CURSOR_STATIC
+        let _ = odbc_sys::SQLSetStmtAttr(
+            stmt_ptr,
+            odbc_sys::StatementAttribute::CursorType,
+            3 as Pointer,
+            0,
+        );
+        // Bind row set buffer
+        let mut stmt = Preallocated::new(stmt);
+        let cursor = stmt.execute(&query, ()).unwrap().unwrap();
+        let buffer = TextRowSet::from_max_str_lens(1, [1]).unwrap();
+        let mut block_cursor = cursor.bind_buffer(buffer).unwrap();
+        // Fetch first row set (one row). This would be truncated
+        let _ = block_cursor.fetch().unwrap().unwrap();
+        // Fetch second rowset with truncation
+        let _ = block_cursor.fetch().unwrap().unwrap();
+        // In order to recover we set the position back and bind a large enough buffer.
+
+        // Set position back
+        let _ = odbc_sys::SQLFetchScroll(stmt_ptr, FetchOrientation::Prior, 0);
+
+        // Bind large enough buffer
+        let (cursor, _) = block_cursor.unbind().unwrap();
+        let buffer = TextRowSet::from_max_str_lens(1, [10]).unwrap();
+        let mut block_cursor = cursor.bind_buffer(buffer).unwrap();
+
+        let batch = block_cursor.fetch().unwrap().unwrap();
+        untruncated = batch.at_as_str(0, 0).unwrap().unwrap().to_owned();
+    }
+
+    // Then
+    assert_eq!("123456789", untruncated);
+}

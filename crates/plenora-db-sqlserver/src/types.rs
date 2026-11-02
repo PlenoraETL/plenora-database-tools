@@ -652,6 +652,13 @@ impl SqlServerColumnSpec {
         let identifier = sql_server_identifier(&self.name)?;
         let quoted = renderer.quote_identifier(&identifier)?;
         let expression = match (&self.kind, self.native_type.as_str()) {
+            // `money` e `smallmoney` con lo stile 2, le quattro cifre del
+            // tipo: fino al 25/10 lo stile 0 le arrotondava a due
+            // (`0.0001` si rileggeva `0.0000`, `1.2345` `1.2300`), misurato
+            // dalla sonda della regola A.
+            (SqlServerColumnKind::Decimal { .. }, "money" | "smallmoney") => {
+                format!("CONVERT(varchar(50), {quoted}, 2)")
+            }
             (SqlServerColumnKind::Decimal { .. }, _) => {
                 format!("CONVERT(varchar(50), {quoted})")
             }
@@ -666,8 +673,12 @@ impl SqlServerColumnSpec {
             (SqlServerColumnKind::Timestamp, _) => {
                 format!("CONVERT(nvarchar(33), {quoted}, 126)")
             }
+            // Lo stile 126 conserva l'offset del valore (`+02:00`); fino al
+            // 25/10 lo stile 127 lo convertiva in UTC (`10:00:00+02:00` si
+            // rileggeva `08:00:00Z`): l'istante restava, l'offset scritto si
+            // perdeva in silenzio. Misurato dalla sonda della regola A.
             (SqlServerColumnKind::TimestampTz, _) => {
-                format!("CONVERT(nvarchar(40), {quoted}, 127)")
+                format!("CONVERT(nvarchar(40), {quoted}, 126)")
             }
             (SqlServerColumnKind::Geometry | SqlServerColumnKind::Geography, _) => {
                 format!("{quoted}.AsBinaryZM()")

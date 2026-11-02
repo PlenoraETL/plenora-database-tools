@@ -1,4 +1,6 @@
+pub mod admission;
 mod codec;
+mod keys;
 mod lifecycle;
 mod plan;
 mod resources;
@@ -64,7 +66,12 @@ impl MutationCounts {
 ///
 /// `Prepared` resta il default compatibile e copre l'intero profilo tipi.
 /// `TdsBulk` è opt-in e viene accettato soltanto quando il piano soddisfa il
-/// sottoinsieme verificato dal codec bulk.
+/// sottoinsieme verificato dal codec bulk e il target non ha vincoli `CHECK`,
+/// foreign key, regole o default legati, trigger `INSERT` o default (la
+/// regola W1, elenco in `lifecycle`): `INSERT BULK` di `tiberius-ng`
+/// non passa `CHECK_CONSTRAINTS`, `FIRE_TRIGGERS` ne `KEEP_NULLS`, e la
+/// regola R (`lifecycle::validate_row_visibility`) rifiuta il profilo invece
+/// di scavalcarli. Non si ripiega in silenzio su `Prepared`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SqlServerInsertMode {
     #[default]
@@ -278,6 +285,7 @@ async fn prepare_write_inner(
         Arc::clone(&input_schema),
         control.token(),
         schema_evolution,
+        insert_mode,
     )
     .await?;
     if insert_mode == SqlServerInsertMode::TdsBulk {
@@ -304,8 +312,9 @@ async fn compile_write_plan(
     input_schema: SchemaRef,
     cancellation: &CancellationToken,
     schema_evolution: SqlServerSchemaEvolution,
+    insert_mode: SqlServerInsertMode,
 ) -> Result<WritePlan> {
-    match operation.mode {
+    let mut plan = match operation.mode {
         plenora_database_core::plan::WriteMode::Create => {
             if lifecycle::object_exists(
                 pooled.session_mut()?,
@@ -368,6 +377,7 @@ async fn compile_write_plan(
                 schema,
                 &operation.target.object,
                 operation.mode,
+                insert_mode == SqlServerInsertMode::TdsBulk,
                 ErrorPhase::Prepare,
                 cancellation,
             )
@@ -383,7 +393,63 @@ async fn compile_write_plan(
                 schema_evolution,
             )
         }
+    }?;
+    admit_plan(pooled, operation, schema, &mut plan, cancellation).await?;
+    Ok(plan)
+}
+
+/// La regola A (`admission`): la major del server e i fatti delle colonne del
+/// target (o di quelle che la scrittura crea), sulla sessione del catalogo.
+async fn admit_plan(
+    pooled: &mut PooledSqlServerSession,
+    operation: &WriteOperation,
+    schema: &str,
+    plan: &mut WritePlan,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let server = admission::server_facts(pooled.session_mut()?, cancellation).await?;
+    let mut facts = if matches!(plan.lifecycle, TargetLifecycle::Existing { .. }) {
+        crate::catalog::load_write_facts(
+            pooled.session_mut()?,
+            schema,
+            &operation.target.object,
+            cancellation,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+    let created = plan
+        .columns
+        .iter()
+        .filter(|column| {
+            !matches!(plan.lifecycle, TargetLifecycle::Existing { .. })
+                || plan
+                    .added_columns
+                    .iter()
+                    .any(|added| added.input_index == column.input_index)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for column in created {
+        let code_page = match &column.collation {
+            Some(collation) => {
+                admission::collation_code_page(pooled.session_mut()?, collation, cancellation)
+                    .await?
+            }
+            None => server.database_code_page,
+        };
+        facts.retain(|fact| fact.name != column.name);
+        facts.push(admission::created_facts(
+            &column.name,
+            &column.native_type,
+            &column.native_declaration,
+            column.collation.as_deref(),
+            code_page,
+            column.nullable,
+        ));
     }
+    plan.admit(operation, &facts, &server.major)
 }
 
 /// Esegue il piano preparato in una singola transazione SQL Server.
@@ -415,7 +481,7 @@ pub async fn write_prepared_with_fault(
 #[allow(clippy::too_many_lines, clippy::significant_drop_tightening)]
 async fn write_prepared_inner(
     prepared: PreparedSqlServerWrite,
-    mut input: Box<dyn BatchStream>,
+    input: Box<dyn BatchStream>,
     cancellation: &CancellationToken,
     fault: Option<WriteFaultPoint>,
 ) -> Result<WriteOutcome> {
@@ -427,6 +493,27 @@ async fn write_prepared_inner(
             "schema input diverso da prepare_write SQL Server",
         ));
     }
+    // La regola K, condizione 2: una chiave ripetuta nell'ingresso di una
+    // mode per chiavi rifiuta la scrittura prima del COMMIT. Fino al 25/10
+    // Update `[(1,x),(1,y)]` dava `confirmed 2`, vince l'ultima.
+    let input = plenora_database_core::write_keys::guard_input_keys(
+        prepared.operation.mode,
+        &prepared.operation.keys,
+        input,
+        &prepared.budget,
+        // L'indice che prova le chiavi non e filtrato (`validate_unique_key`)
+        // e ammette un solo `NULL` per combinazione: due `NULL` sono la stessa
+        // voce.
+        plenora_database_core::write_keys::NullKeys::Equal,
+    )?;
+    // La regola S: un valore che SQL Server riscriverebbe al salvataggio
+    // (`char(n)` e `binary(n)` completati, gli spazi e gli `0x00` finali tolti
+    // da una colonna `ANSI_PADDING OFF`) si rifiuta con `Strict`, e in una
+    // chiave con ogni politica, prima del COMMIT.
+    let mut input = plenora_database_core::store_rewrite::guard_input(
+        input,
+        prepared.plan.rewrite_guard(&prepared.operation)?,
+    );
     let diagnostic_input = input
         .declared_input_rows()
         .map(|input_total| {
@@ -448,11 +535,40 @@ async fn write_prepared_inner(
     );
     let mut pooled = prepared.pool.checkout(control.token()).await?;
     pooled.disallow_reuse();
+    // La scrittura gira `READ COMMITTED`, fissato e verificato: il livello
+    // non dipende da cio che la sessione ha fatto prima.
+    pooled
+        .session_mut()?
+        .pin_isolation(
+            plenora_database_core::transaction::IsolationLevel::ReadCommitted,
+            control.token(),
+        )
+        .await?;
     pooled.session_mut()?.begin(control.token()).await?;
-    if let Err(error) =
-        prepare_transaction_target(&mut pooled, &prepared.plan, control.token()).await
+    if let Err(error) = prepare_transaction_target(
+        &mut pooled,
+        &prepared.plan,
+        prepared.insert_mode,
+        control.token(),
+    )
+    .await
     {
         return Err(rollback_after_error(&mut pooled, error).await);
+    }
+    // La regola K sotto la collation del target (`keys`): le chiavi
+    // dell'ingresso passano da un indice unico dello stesso tipo e della
+    // stessa collation, batch per batch, prima degli statement sul target.
+    let server_keys = keys::applies(prepared.plan.mode);
+    if server_keys {
+        if let Err(error) = execute_key_sql(
+            &mut pooled,
+            keys::create_sql(&prepared.plan),
+            control.token(),
+        )
+        .await
+        {
+            return Err(rollback_after_error(&mut pooled, error).await);
+        }
     }
 
     let (received, mutations) = if let Some(diagnostic_input) = diagnostic_input {
@@ -503,6 +619,13 @@ async fn write_prepared_inner(
                 let error = DatabaseError::resource_limit("conteggio righe write overflow");
                 return Err(rollback_after_error(&mut pooled, error).await);
             };
+            if server_keys {
+                if let Err(error) =
+                    keys::register(&mut pooled, &prepared.plan, &batch, control.token()).await
+                {
+                    return Err(rollback_after_error(&mut pooled, error).await);
+                }
+            }
             let batch_result = match prepared.insert_mode {
                 SqlServerInsertMode::Prepared => {
                     execute_prepared_batch(
@@ -540,6 +663,13 @@ async fn write_prepared_inner(
         }
         (received, mutations)
     };
+    if server_keys {
+        if let Err(error) =
+            execute_key_sql(&mut pooled, Ok(keys::DROP_SQL.to_owned()), control.token()).await
+        {
+            return Err(rollback_after_error(&mut pooled, error).await);
+        }
+    }
     if let Err(error) =
         finalize_transaction_target(&mut pooled, &prepared.plan, control.token()).await
     {
@@ -623,6 +753,20 @@ async fn write_prepared_inner(
             }
         }
     }
+}
+
+/// Uno statement della regola K sotto la collation (`keys`) sulla
+/// transazione della scrittura.
+async fn execute_key_sql(
+    pooled: &mut PooledSqlServerSession,
+    sql: Result<String>,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let sql = sql?;
+    pooled
+        .session_mut()?
+        .execute_simple_batch(sql, cancellation)
+        .await
 }
 
 async fn execute_prepared_batch(
@@ -750,6 +894,7 @@ fn unknown_commit_outcome(
 async fn prepare_transaction_target(
     pooled: &mut PooledSqlServerSession,
     plan: &WritePlan,
+    insert_mode: SqlServerInsertMode,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     match &plan.lifecycle {
@@ -768,6 +913,7 @@ async fn prepare_transaction_target(
                 &plan.schema,
                 &plan.object,
                 plan.mode,
+                insert_mode == SqlServerInsertMode::TdsBulk,
                 ErrorPhase::Write,
                 cancellation,
             )
@@ -1097,10 +1243,13 @@ fn row_mutation(
         ));
     }
     let Some(row) = results[0].first() else {
+        // Update e `DeleteByKeys` senza azione: la chiave non c'e. Upsert ne
+        // lascia sempre una (anche 0, con le sole chiavi): senza, l'INSERT e
+        // stato scartato senza errore (`IGNORE_DUP_KEY`), e si rifiuta come
+        // in Append.
         if matches!(
             mode,
             plenora_database_core::plan::WriteMode::Update
-                | plenora_database_core::plan::WriteMode::Upsert
                 | plenora_database_core::plan::WriteMode::DeleteByKeys
         ) {
             return Ok(MutationCounts::default());
@@ -1149,6 +1298,9 @@ fn row_mutation(
             updated: 1,
             deleted: 0,
         }),
+        // Upsert con le sole chiavi su una chiave gia presente: niente da
+        // scrivere, la riga e `skipped`.
+        (plenora_database_core::plan::WriteMode::Upsert, Some(0)) => Ok(MutationCounts::default()),
         (plenora_database_core::plan::WriteMode::DeleteByKeys, Some(3)) => Ok(MutationCounts {
             confirmed: 1,
             inserted: 0,

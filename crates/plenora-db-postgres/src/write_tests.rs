@@ -269,8 +269,11 @@ fn binary_copy_jsonb_accepts_canonical_native_type_metadata() {
     assert_eq!(encoded.first(), Some(&1));
 }
 
+/// La regola F: il segnaposto e il parametro nudo, tipizzato dal server con
+/// la colonna, qualunque tipo il campo dichiari; il testo viaggia in formato
+/// testo. Su 04029d4 era `$1::pg_catalog.text::pg_catalog.jsonb`.
 #[test]
-fn prepared_placeholders_accept_canonical_native_metadata() {
+fn i_segnaposto_non_convertono_nel_tipo_dichiarato() {
     let jsonb = Field::new("payload", DataType::Utf8, true).with_metadata(
         std::collections::HashMap::from([(
             protocol::POSTGRES_NATIVE_TYPE.to_owned(),
@@ -278,7 +281,13 @@ fn prepared_placeholders_accept_canonical_native_metadata() {
         )]),
     );
     let jsonb_plan = WriteColumnPlan::compile(&jsonb).expect("JSONB plan");
-    assert_eq!(placeholder_expression(&jsonb_plan, 1), "$1::text::jsonb");
+    assert_eq!(placeholder_expression(&jsonb_plan, 1), "$1");
+    let text = StringArray::from(vec![Some("{\"a\":1}")]);
+    let value = arrow_value(&text, &jsonb_plan, 0).expect("valore");
+    assert!(matches!(
+        value.encode_format(&Type::JSONB),
+        tokio_postgres::types::Format::Text
+    ));
 
     let domain =
         Field::new("code", DataType::Utf8, true).with_metadata(std::collections::HashMap::from([
@@ -289,10 +298,7 @@ fn prepared_placeholders_accept_canonical_native_metadata() {
             (protocol::POSTGRES_TYPE_KIND.to_owned(), "d".to_owned()),
         ]));
     let domain_plan = WriteColumnPlan::compile(&domain).expect("domain plan");
-    assert_eq!(
-        placeholder_expression(&domain_plan, 2),
-        "$2::text::\"public\".\"safe_code\""
-    );
+    assert_eq!(placeholder_expression(&domain_plan, 2), "$2");
 }
 
 #[test]
@@ -328,7 +334,7 @@ fn interval_text_is_portable_across_postgres_versions() {
             days: 2,
             microseconds: 11_045_000_000,
         }),
-        "0 mons 2 days 03:04:05.000000"
+        "+0 mons +2 days +03:04:05.000000"
     );
     assert_eq!(
         interval_text(&PostgresIntervalBinary {
@@ -336,7 +342,17 @@ fn interval_text_is_portable_across_postgres_versions() {
             days: 0,
             microseconds: -3_723_000_004,
         }),
-        "-1 mons 0 days -01:02:03.000004"
+        "-1 mons +0 days -01:02:03.000004"
+    );
+    // S2 della rilettura del 25/10: senza segni espliciti `sql_standard`
+    // leggeva -1 mese -2 giorni -3 ore.
+    assert_eq!(
+        interval_text(&PostgresIntervalBinary {
+            months: -1,
+            days: 2,
+            microseconds: 10_800_000_000,
+        }),
+        "-1 mons +2 days +03:00:00.000000"
     );
 }
 
@@ -807,5 +823,80 @@ fn spatial_support_limits_are_decided_from_the_schema() {
             .expect("geography 4326")
             .postgres_type,
         "geography(point,4326)"
+    );
+}
+
+/// La regola Q2 negli statement sul target, che girano con il `search_path`
+/// della sessione: le chiavi si confrontano con l'operatore dell'indice che
+/// ne prova l'unicita (regola K2), entrambi i lati portati al tipo
+/// qualificato, e i tipi di `pg_catalog` che non sono parole chiave si
+/// qualificano. Su 1b02559 lo statement era `"id" = $2`.
+#[test]
+fn gli_statement_sul_target_non_dipendono_dal_search_path() {
+    let schema = Arc::new(arrow_schema::Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("at", DataType::Utf8, true).with_metadata(std::collections::HashMap::from([(
+            protocol::POSTGRES_NATIVE_TYPE.to_owned(),
+            "date".to_owned(),
+        )])),
+    ]));
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some("public".to_owned()),
+            object: "t".to_owned(),
+        },
+        mode: WriteMode::Update,
+        mapping_policy: plenora_database_core::loss::MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: vec!["id".to_owned()],
+        update_columns: vec!["at".to_owned()],
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    let mut plans = compile_schema_plan(&schema, &operation).expect("piano");
+    // Senza l'uguaglianza letta dal catalogo la chiave si rifiuta.
+    assert!(statement(&operation, &operation.target, &schema, &plans).is_err());
+    plans[0].key_equality = Some(visibility::KeyEquality {
+        operator: "pg_catalog.=".to_owned(),
+        cast: "pg_catalog.int8".to_owned(),
+    });
+    let (sql, indexes) =
+        statement(&operation, &operation.target, &schema, &plans).expect("statement");
+    assert_eq!(
+        sql,
+        "UPDATE \"public\".\"t\" SET \"at\" = $1 \
+         WHERE \"id\" OPERATOR(pg_catalog.=) $2"
+    );
+    assert_eq!(indexes, vec![1, 0]);
+    assert_eq!(plans[1].postgres_type, "pg_catalog.date");
+    assert_eq!(
+        sql::qualify_builtin("tstzrange[]"),
+        "pg_catalog.tstzrange[]"
+    );
+    assert_eq!(sql::qualify_builtin("integer"), "integer");
+}
+
+/// `CopyText` scrive le date con l'anno di PostgreSQL: l'anno astronomico 0
+/// di chrono e `0001 BC`, -1 e `0002 BC`; fino al 25/10 usciva la forma di
+/// chrono (`0000-01-01`, `-0001-01-01`).
+#[test]
+fn copy_text_scrive_gli_anni_avanti_cristo_come_postgresql() {
+    let date = |year, month, day| chrono::NaiveDate::from_ymd_opt(year, month, day).expect("data");
+    assert_eq!(value_codec::date_text(date(2026, 1, 2), None), "2026-01-02");
+    assert_eq!(value_codec::date_text(date(1, 1, 1), None), "0001-01-01");
+    assert_eq!(value_codec::date_text(date(0, 1, 1), None), "0001-01-01 BC");
+    assert_eq!(
+        value_codec::date_text(date(-1, 12, 31), None),
+        "0002-12-31 BC"
+    );
+    assert_eq!(
+        value_codec::date_text(date(10_000, 1, 1), None),
+        "10000-01-01"
+    );
+    assert_eq!(
+        value_codec::date_text(date(0, 1, 1), Some("10:00:00.5+00:00")),
+        "0001-01-01 10:00:00.5+00:00 BC"
     );
 }

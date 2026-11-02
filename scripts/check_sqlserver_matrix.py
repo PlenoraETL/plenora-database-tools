@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts import live_inventory  # noqa: E402
+from scripts import live_inventory, check_sqlserver_reference  # noqa: E402
 PASSWORD = "DataFlow_Test_2026!"
 NETWORK = "plenora-sqlserver-matrix"
 RUST_IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb001d4b9acbf"
@@ -30,7 +30,14 @@ RUST_IMAGE = "rust@sha256:462a9af3c54fb4718850d3c602fc0e54452c20b1c12a4e4080fdb0
 # comunque; restano nominati perche il gate reference li dichiara
 # `declared_not_executed` con la stessa ragione, e due elenchi che dicono la
 # stessa cosa in due posti divergono il giorno in cui uno solo cambia.
+#
+# `live_sonde_scritture_server` (la sonda della regola A) misura ogni chiave
+# d'ammissione: da sola dura piu dell'intera suite e la porterebbe oltre il
+# timeout della matrice. Ogni major della matrice la esegue il workflow
+# `write-admission-probes` (`scripts/sonde_scritture_server.py`), contro le
+# stesse immagini.
 SKIPPED_TESTS = (
+    "live_sonde_scritture_server",
     "live_private_ca_tls_validates_chain_and_hostname",
     "polybase_external_catalog_is_structural_and_not_implicit",
     "azure_sql_probe_uses_verified_tls_and_native_spatial_types",
@@ -50,7 +57,7 @@ def expected_live_tests() -> set[str]:
 
     declared = {
         live_inventory.leaf(name)
-        for name in live_inventory.source_inventory([LIVE_TEST_SOURCE])
+        for name in check_sqlserver_reference.live_test_inventory()
     }
     if not declared:
         raise RuntimeError("inventario dei test live SQL Server vuoto")

@@ -43,7 +43,7 @@ pub(crate) async fn bulk_write(args: &mut impl Iterator<Item = String>) -> CliRe
 }
 
 // ============================================================================
-//  postgres-write-ipc DSN_ENV SCHEMA OBJECT INPUT.arrow --mode=create|append|... [--dry-run [--offline]]
+//  postgres-write-ipc DSN_ENV SCHEMA OBJECT INPUT.arrow [--mode create|append|...] [--dry-run [--offline]]
 // ============================================================================
 
 pub(crate) async fn postgres_write_ipc(args: &mut impl Iterator<Item = String>) -> CliResult<()> {
@@ -52,8 +52,9 @@ pub(crate) async fn postgres_write_ipc(args: &mut impl Iterator<Item = String>) 
     let object = args.next().ok_or("manca l'oggetto")?;
     let input_path = args.next().ok_or("manca il percorso INPUT.arrow")?;
 
-    // Flag opzionali: --mode=..., --keys=..., --update-columns=..., --dry-run,
-    // --offline
+    // Flag opzionali, ciascuno con il valore come argomento successivo (non
+    // `--mode=...`, che si rifiuta come opzione sconosciuta): --mode, --keys,
+    // --update-columns; e --dry-run, --offline.
     let mut mode = WriteMode::Append;
     let mut keys: Vec<String> = Vec::new();
     let mut update_columns: Vec<String> = Vec::new();
@@ -211,6 +212,11 @@ async fn execute_bulk_write(
         print_json(&json!({
             "status": status,
             "operation": operation,
+            // Il target come la scrittura lo nominerebbe: con il catalogo,
+            // lo schema risolto una volta con il percorso della sessione
+            // (regola T, `plenora_db_postgres::target_schema`); offline, il
+            // target del piano.
+            "target": decided.target,
             "input_schema": { "fields": fields },
             "input": { "batches": decided.batches, "rows": decided.rows },
             // Che cosa il dry run ha deciso. `catalog` comprende l'elenco

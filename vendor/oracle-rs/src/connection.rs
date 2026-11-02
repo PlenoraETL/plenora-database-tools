@@ -26,7 +26,7 @@
 //! }
 //! ```
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -50,7 +50,6 @@ use crate::messages::{
 use crate::packet::{encode_packet, Packet};
 use crate::row::{Row, Value};
 use crate::statement::{BindParam, ColumnInfo, Statement, StatementType};
-use crate::statement_cache::StatementCache;
 use crate::transport::{connect_tls, TlsConfig, TlsOracleStream};
 use crate::types::{LobData, LobLocator, LobValue};
 
@@ -299,38 +298,45 @@ struct ConnectionInner {
     response_bytes: usize,
     /// Sequence number for TTC messages (increments per message)
     sequence_number: u8,
-    /// Statement cache for prepared statement reuse
-    statement_cache: Option<StatementCache>,
-    /// Plenora fork: the last row decoded for each open cursor. Oracle marks
-    /// a column equal to the previous row as a duplicate in the bit vector
-    /// also on the first row of a fetch page, where the previous row is the
-    /// last one of the page before (python-oracledb keeps it as
-    /// `_last_raw_value`). The upstream driver started every page without it
-    /// and returned those columns as NULL.
-    last_row_values: std::collections::HashMap<u16, Vec<Value>>,
+    /// Cursori server che il client non referenzia piu: partono col piggyback
+    /// `CLOSE_CURSORS` davanti alla prossima chiamata TTC, come in
+    /// python-oracledb thin. Ogni id compare una volta sola.
+    cursors_to_close: Vec<u16>,
+    /// Ultima riga letta di ogni risultato ancora aperto: la prima riga della
+    /// pagina successiva puo ripeterne le colonne (bit vector), e senza di
+    /// essa quelle colonne diventavano NULL.
+    last_rows: std::collections::HashMap<u16, Vec<Value>>,
 }
 
-impl ConnectionInner {
-    /// Remember the last row of a page as the base for the next fetch of the
-    /// same cursor. A new execution starts from its own first row.
-    /// An exhausted cursor drops its entry: its id can be reused by the
-    /// server for another statement.
-    fn remember_last_row(&mut self, result: &QueryResult, new_execution: bool) {
-        if !result.has_more_rows {
-            self.last_row_values.remove(&result.cursor_id);
-            return;
-        }
-        match result.rows.last() {
-            Some(row) => {
-                self.last_row_values
-                    .insert(result.cursor_id, row.values().to_vec());
-            }
-            None if new_execution => {
-                self.last_row_values.remove(&result.cursor_id);
-            }
-            None => {}
-        }
+/// Cursori chiusi da un solo piggyback: il resto aspetta la chiamata dopo.
+const MAX_CURSORS_PER_PIGGYBACK: usize = 500;
+
+/// Versione TTC dal cui valore ogni messaggio porta il token number (23ai).
+const TTC_FIELD_VERSION_TOKEN: u8 = 18;
+
+/// Codifica il piggyback `CLOSE_CURSORS` (python-oracledb thin,
+/// `_write_close_cursors_piggyback`): codice, sequenza, token dal 23ai,
+/// puntatore, numero di cursori e poi ogni id, tutti UB4.
+fn write_close_cursors_piggyback(
+    buf: &mut WriteBuffer,
+    sequence_number: u8,
+    ttc_field_version: u8,
+    cursor_ids: &[u16],
+) -> Result<()> {
+    let count = u32::try_from(cursor_ids.len())
+        .map_err(|_| Error::Protocol("Too many cursors to close".into()))?;
+    buf.write_u8(MessageType::Piggyback as u8)?;
+    buf.write_u8(FunctionCode::CloseCursors as u8)?;
+    buf.write_u8(sequence_number)?;
+    if ttc_field_version >= TTC_FIELD_VERSION_TOKEN {
+        buf.write_ub8(0)?; // token number
     }
+    buf.write_u8(1)?; // pointer
+    buf.write_ub4(count)?;
+    for cursor_id in cursor_ids {
+        buf.write_ub4(u32::from(*cursor_id))?;
+    }
+    Ok(())
 }
 
 // The checkpoint advances only after a complete TTC message. An underflow
@@ -474,7 +480,7 @@ impl<'a> PageFraming<'a> {
 }
 
 impl ConnectionInner {
-    fn new_with_cache(cache_size: usize) -> Self {
+    fn new() -> Self {
         Self {
             stream: None,
             capabilities: Capabilities::default(),
@@ -486,13 +492,90 @@ impl ConnectionInner {
             response_in_progress: false,
             response_bytes: 0,
             sequence_number: 0,
-            statement_cache: if cache_size > 0 {
-                Some(StatementCache::new(cache_size))
-            } else {
-                None
-            },
-            last_row_values: std::collections::HashMap::new(),
+            cursors_to_close: Vec::new(),
+            last_rows: std::collections::HashMap::new(),
         }
+    }
+
+    /// Il client non referenzia piu `cursor_id`: il server lo chiudera
+    /// davanti alla prossima chiamata. Un id gia in coda non si ripete,
+    /// perche dopo la chiusura il server puo riassegnarlo.
+    fn release_cursor(&mut self, cursor_id: u16) {
+        self.last_rows.remove(&cursor_id);
+        if cursor_id != 0 && !self.cursors_to_close.contains(&cursor_id) {
+            self.cursors_to_close.push(cursor_id);
+        }
+    }
+
+    /// Un fetch che esaurisce il risultato, o che fallisce, chiude il cursore:
+    /// il chiamante non lo legge piu.
+    fn release_finished_fetch(&mut self, cursor_id: u16, result: &Result<QueryResult>) {
+        match result {
+            Ok(page) if page.has_more_rows => self.remember_last_row(cursor_id, page),
+            _ => self.release_cursor(cursor_id),
+        }
+    }
+
+    /// Conserva l'ultima riga di una pagina con altre righe dopo.
+    fn remember_last_row(&mut self, cursor_id: u16, page: &QueryResult) {
+        if let Some(row) = page.rows.last() {
+            self.last_rows.insert(cursor_id, row.values().to_vec());
+        }
+    }
+
+    /// Antepone a una chiamata TTC (`message` comincia dal tipo messaggio)
+    /// il piggyback dei cursori in coda. Il piggyback prende la sequenza
+    /// della chiamata e la chiamata la successiva, nell'ordine di scrittura di
+    /// python-oracledb. `None` se non c'e niente da chiudere o se il messaggio
+    /// non e una chiamata. Con il messaggio torna quanti cursori porta: li
+    /// toglie dalla coda [`Self::closed_cursors_sent`] quando la richiesta e
+    /// pronta da inviare, cosi nessuno si perde.
+    fn close_cursors_prefix(&mut self, message: &[u8]) -> Result<Option<(Vec<u8>, usize)>> {
+        if self.cursors_to_close.is_empty()
+            || message.len() < 3
+            || message[0] != MessageType::Function as u8
+        {
+            return Ok(None);
+        }
+        let count = self.cursors_to_close.len().min(MAX_CURSORS_PER_PIGGYBACK);
+        let mut buf = WriteBuffer::new();
+        write_close_cursors_piggyback(
+            &mut buf,
+            message[2],
+            self.capabilities.ttc_field_version,
+            &self.cursors_to_close[..count],
+        )?;
+        let mut prefixed = Vec::with_capacity(buf.len() + message.len());
+        prefixed.extend_from_slice(buf.as_slice());
+        prefixed.extend_from_slice(&message[..2]);
+        prefixed.push(self.next_sequence_number());
+        prefixed.extend_from_slice(&message[3..]);
+        Ok(Some((prefixed, count)))
+    }
+
+    fn closed_cursors_sent(&mut self, count: usize) {
+        self.cursors_to_close.drain(..count);
+    }
+
+    /// Lo stesso piggyback dentro un pacchetto DATA gia costruito; se supera
+    /// l'SDU, `send` lo divide.
+    fn attach_close_cursors(&mut self, packet: &[u8]) -> Result<Option<bytes::Bytes>> {
+        let data_start = PACKET_HEADER_SIZE + 2;
+        if self.cursors_to_close.is_empty()
+            || packet.len() <= data_start
+            || packet[4] != PacketType::Data as u8
+        {
+            return Ok(None);
+        }
+        let Some((message, count)) = self.close_cursors_prefix(&packet[data_start..])? else {
+            return Ok(None);
+        };
+        let mut payload = Vec::with_capacity(2 + message.len());
+        payload.extend_from_slice(&packet[PACKET_HEADER_SIZE..data_start]);
+        payload.extend_from_slice(&message);
+        let packet = encode_packet(PacketType::Data, &payload, self.large_sdu)?;
+        self.closed_cursors_sent(count);
+        Ok(Some(packet))
     }
 
     /// Get the next sequence number (auto-increments, wraps at 255 to 1)
@@ -508,6 +591,8 @@ impl ConnectionInner {
         if self.response_in_progress {
             return Err(Error::ConnectionClosed);
         }
+        let attached = self.attach_close_cursors(data)?;
+        let data = attached.as_deref().unwrap_or(data);
         // Plenora fork: a DATA packet longer than the negotiated SDU (an
         // execute with binds above about 8 KB) was written as one frame and
         // the server dropped the connection. It is sent as SDU-sized frames,
@@ -583,6 +668,14 @@ impl ConnectionInner {
         if self.response_in_progress {
             return Err(Error::ConnectionClosed);
         }
+        let attached = match self.close_cursors_prefix(payload)? {
+            Some((message, count)) => {
+                self.closed_cursors_sent(count);
+                Some(message)
+            }
+            None => None,
+        };
+        let payload = attached.as_deref().unwrap_or(payload);
         let mut stream = self.stream.take().ok_or(Error::ConnectionClosed)?;
         self.response_bytes = 0;
 
@@ -928,6 +1021,10 @@ pub struct Connection {
     config: Config,
     closed: AtomicBool,
     id: u32,
+    /// Cursore dello statement riportato dall'ultimo completamento TTC
+    /// (anche di errore): i parser lo scrivono e le chiamate lo leggono
+    /// dentro la stessa sezione sotto il lock di `inner`.
+    reported_cursor: AtomicU16,
 }
 
 // Connection ID counter
@@ -996,7 +1093,7 @@ impl Connection {
             OracleStream::Plain(tcp_stream)
         };
 
-        let mut inner = ConnectionInner::new_with_cache(config.stmtcachesize);
+        let mut inner = ConnectionInner::new();
         inner.response_limit = config.response_limit;
         inner.stream = Some(stream);
         inner.state = ConnectionState::Connected;
@@ -1006,6 +1103,7 @@ impl Connection {
             config,
             closed: AtomicBool::new(false),
             id,
+            reported_cursor: AtomicU16::new(0),
         };
 
         // Perform connection handshake
@@ -1040,6 +1138,16 @@ impl Connection {
             }
         }
         result
+    }
+
+    fn report_cursor(&self, cursor_id: u16) {
+        if cursor_id != 0 {
+            self.reported_cursor.store(cursor_id, Ordering::Relaxed);
+        }
+    }
+
+    fn take_reported_cursor(&self) -> u16 {
+        self.reported_cursor.swap(0, Ordering::Relaxed)
     }
 
     /// Get server information
@@ -1404,72 +1512,13 @@ impl Connection {
     /// ```
     pub async fn execute(&self, sql: &str, params: &[Value]) -> Result<QueryResult> {
         self.ensure_ready().await?;
-
-        // Check statement cache for existing prepared statement
-        let (statement, from_cache) = {
-            let mut inner = self.inner.lock().await;
-            if let Some(ref mut cache) = inner.statement_cache {
-                if let Some(cached_stmt) = cache.get(sql) {
-                    tracing::trace!(
-                        sql = sql,
-                        cursor_id = cached_stmt.cursor_id(),
-                        "Using cached statement (execute)"
-                    );
-                    (cached_stmt, true)
-                } else {
-                    (Statement::new(sql), false)
-                }
-            } else {
-                (Statement::new(sql), false)
-            }
-        };
-
-        let result = match statement.statement_type() {
+        // Ogni esecuzione analizza il testo su un cursore nuovo: vedi
+        // `execute_query_with_params` per la statement cache.
+        let statement = Statement::new(sql);
+        match statement.statement_type() {
             StatementType::Query => self.execute_query_with_params(&statement, params).await,
             _ => self.execute_dml_with_params(&statement, params).await,
-        };
-
-        // Return statement to cache or cache it for the first time
-        match &result {
-            Ok(query_result) => {
-                let mut inner = self.inner.lock().await;
-                if let Some(ref mut cache) = inner.statement_cache {
-                    let should_close_cursor = if statement.statement_type() == StatementType::Query
-                    {
-                        !query_result.has_more_rows
-                    } else {
-                        true // DML/DDL/PL-SQL: always close
-                    };
-
-                    if from_cache {
-                        cache.return_statement(sql);
-                        if should_close_cursor {
-                            cache.mark_cursor_closed(sql);
-                        }
-                    } else if query_result.cursor_id > 0 && !statement.is_ddl() {
-                        let mut stmt_to_cache = statement.clone();
-                        stmt_to_cache.set_cursor_id(query_result.cursor_id);
-                        stmt_to_cache.set_executed(true);
-                        stmt_to_cache.set_columns(query_result.columns.clone());
-                        cache.put(sql.to_string(), stmt_to_cache);
-                        if should_close_cursor {
-                            cache.mark_cursor_closed(sql);
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                if from_cache {
-                    let mut inner = self.inner.lock().await;
-                    if let Some(ref mut cache) = inner.statement_cache {
-                        cache.return_statement(sql);
-                        cache.mark_cursor_closed(sql);
-                    }
-                }
-            }
         }
-
-        result
     }
 
     /// Execute a query and return rows
@@ -1486,132 +1535,18 @@ impl Connection {
     /// ```
     pub async fn query(&self, sql: &str, params: &[Value]) -> Result<QueryResult> {
         self.ensure_ready().await?;
-
-        // Check statement cache for existing prepared statement
-        let (statement, from_cache) = {
-            let mut inner = self.inner.lock().await;
-            if let Some(ref mut cache) = inner.statement_cache {
-                if let Some(cached_stmt) = cache.get(sql) {
-                    tracing::trace!(
-                        sql = sql,
-                        cursor_id = cached_stmt.cursor_id(),
-                        "Using cached statement"
-                    );
-                    (cached_stmt, true)
-                } else {
-                    (Statement::new(sql), false)
-                }
-            } else {
-                (Statement::new(sql), false)
-            }
-        };
-
-        // If using cached statement, save the columns (Oracle won't resend on reexecute)
-        let cached_columns = if from_cache {
-            Some(statement.columns().to_vec())
-        } else {
-            None
-        };
-
-        let mut result = self.execute_query_with_params(&statement, params).await;
-
-        // For cached statements, restore columns if Oracle didn't send them
-        if let (Ok(ref mut query_result), Some(columns)) = (&mut result, cached_columns) {
-            if query_result.columns.is_empty() && !columns.is_empty() {
-                query_result.columns = columns;
-            }
-        }
-
-        // Return statement to cache or cache it for the first time
-        match &result {
-            Ok(query_result) => {
-                let mut inner = self.inner.lock().await;
-                if let Some(ref mut cache) = inner.statement_cache {
-                    if from_cache {
-                        cache.return_statement(sql);
-                        if !query_result.has_more_rows {
-                            cache.mark_cursor_closed(sql);
-                        }
-                    } else if query_result.cursor_id > 0 && !statement.is_ddl() {
-                        let mut stmt_to_cache = statement.clone();
-                        stmt_to_cache.set_cursor_id(query_result.cursor_id);
-                        stmt_to_cache.set_executed(true);
-                        stmt_to_cache.set_columns(query_result.columns.clone());
-                        cache.put(sql.to_string(), stmt_to_cache);
-                        if !query_result.has_more_rows {
-                            cache.mark_cursor_closed(sql);
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                if from_cache {
-                    let mut inner = self.inner.lock().await;
-                    if let Some(ref mut cache) = inner.statement_cache {
-                        cache.return_statement(sql);
-                        cache.mark_cursor_closed(sql);
-                    }
-                }
-            }
-        }
-
+        let result = self
+            .execute_query_with_params(&Statement::new(sql), params)
+            .await;
         self.handle_result(result)
     }
 
     /// Execute DML (INSERT, UPDATE, DELETE) and return rows affected
     pub async fn execute_dml_sql(&self, sql: &str, params: &[Value]) -> Result<u64> {
         self.ensure_ready().await?;
-
-        // Check statement cache for existing prepared statement
-        let (statement, from_cache) = {
-            let mut inner = self.inner.lock().await;
-            if let Some(ref mut cache) = inner.statement_cache {
-                if let Some(cached_stmt) = cache.get(sql) {
-                    tracing::trace!(
-                        sql = sql,
-                        cursor_id = cached_stmt.cursor_id(),
-                        "Using cached DML statement"
-                    );
-                    (cached_stmt, true)
-                } else {
-                    (Statement::new(sql), false)
-                }
-            } else {
-                (Statement::new(sql), false)
-            }
-        };
-
-        let result = self.execute_dml_with_params(&statement, params).await;
-
-        // Return statement to cache or cache it for the first time
-        // DML cursors are always closed after execution (no fetch phase)
-        match &result {
-            Ok(query_result) => {
-                let mut inner = self.inner.lock().await;
-                if let Some(ref mut cache) = inner.statement_cache {
-                    if from_cache {
-                        cache.return_statement(sql);
-                        cache.mark_cursor_closed(sql);
-                    } else if query_result.cursor_id > 0 && !statement.is_ddl() {
-                        let mut stmt_to_cache = statement.clone();
-                        stmt_to_cache.set_cursor_id(query_result.cursor_id);
-                        stmt_to_cache.set_executed(true);
-                        cache.put(sql.to_string(), stmt_to_cache);
-                        cache.mark_cursor_closed(sql);
-                    }
-                }
-            }
-            Err(_) => {
-                if from_cache {
-                    let mut inner = self.inner.lock().await;
-                    if let Some(ref mut cache) = inner.statement_cache {
-                        cache.return_statement(sql);
-                        cache.mark_cursor_closed(sql);
-                    }
-                }
-            }
-        }
-
+        let result = self
+            .execute_dml_with_params(&Statement::new(sql), params)
+            .await;
         self.handle_result(result).map(|r| r.rows_affected)
     }
 
@@ -1724,38 +1659,47 @@ impl Connection {
         execute_msg.set_bind_metadata(bind_metadata);
 
         let mut inner = self.inner.lock().await;
-        let large_sdu = inner.large_sdu;
-        let seq_num = inner.next_sequence_number();
-        execute_msg.set_sequence_number(seq_num);
-        let request = execute_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
-        inner.send(&request).await?;
+        self.take_reported_cursor();
+        let result = Box::pin(async {
+            let large_sdu = inner.large_sdu;
+            let seq_num = inner.next_sequence_number();
+            execute_msg.set_sequence_number(seq_num);
+            let request = execute_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
+            inner.send(&request).await?;
 
-        // Receive response
-        let mut framing = PageFraming::new(&[]);
-        framing.params = params;
-        let response = inner.receive_response_checked(framing).await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty PL/SQL response".to_string()));
-        }
+            // Receive response
+            let mut framing = PageFraming::new(&[]);
+            framing.params = params;
+            let response = inner.receive_response_checked(framing).await?;
+            if response.len() <= PACKET_HEADER_SIZE {
+                return Err(Error::Protocol("Empty PL/SQL response".to_string()));
+            }
 
-        // Check for MARKER packet (indicates error - requires reset protocol)
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            // Handle marker reset protocol and get the error packet
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            // Parse error response to extract the actual Oracle error
-            let parsed = self.parse_error_response(payload, &inner.capabilities);
-            let _: QueryResult = inner.checked_parse_result(parsed)?;
-            return Err(Error::Protocol("PL/SQL execution failed".to_string()));
-        }
+            // Check for MARKER packet (indicates error - requires reset protocol)
+            let packet_type = response[4];
+            if packet_type == PacketType::Marker as u8 {
+                // Handle marker reset protocol and get the error packet
+                let error_response = inner.handle_marker_reset().await?;
+                let payload = &error_response[PACKET_HEADER_SIZE..];
+                // Parse error response to extract the actual Oracle error
+                let parsed = self.parse_error_response(payload, &inner.capabilities);
+                let _: QueryResult = inner.checked_parse_result(parsed)?;
+                return Err(Error::Protocol("PL/SQL execution failed".to_string()));
+            }
 
-        // Parse the PL/SQL response
-        let payload = &response[PACKET_HEADER_SIZE..];
-        let caps = inner.capabilities.clone();
+            // Parse the PL/SQL response
+            let payload = &response[PACKET_HEADER_SIZE..];
+            let caps = inner.capabilities.clone();
 
-        let result = self.parse_plsql_response(payload, &caps, params);
-        inner.checked_parse_result(result)
+            let result = self.parse_plsql_response(payload, &caps, params);
+            inner.checked_parse_result(result)
+        })
+        .await;
+        // Il cursore del blocco si chiude sempre; i REF CURSOR e i risultati
+        // impliciti restano al chiamante, che li legge fino in fondo.
+        let reported = self.take_reported_cursor();
+        inner.release_cursor(reported);
+        result
     }
 
     /// Execute a batch of DML statements with multiple rows of bind values
@@ -1802,38 +1746,45 @@ impl Connection {
         execute_msg.set_batch_bind_values(batch.rows.clone());
 
         let mut inner = self.inner.lock().await;
-        let large_sdu = inner.large_sdu;
-        let seq_num = inner.next_sequence_number();
-        execute_msg.set_sequence_number(seq_num);
-        let request = execute_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
-        inner.send(&request).await?;
+        self.take_reported_cursor();
+        let result = Box::pin(async {
+            let large_sdu = inner.large_sdu;
+            let seq_num = inner.next_sequence_number();
+            execute_msg.set_sequence_number(seq_num);
+            let request = execute_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
+            inner.send(&request).await?;
 
-        // Receive response
-        let mut framing = PageFraming::new(&[]);
-        framing.row_counts = batch.options.array_dml_row_counts;
-        let mut response = inner.receive_response_checked(framing).await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty batch response".to_string()));
-        }
+            // Receive response
+            let mut framing = PageFraming::new(&[]);
+            framing.row_counts = batch.options.array_dml_row_counts;
+            let mut response = inner.receive_response_checked(framing).await?;
+            if response.len() <= PACKET_HEADER_SIZE {
+                return Err(Error::Protocol("Empty batch response".to_string()));
+            }
 
-        // Check packet type - handle MARKER packets
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            // Handle BREAK/RESET protocol same as regular DML
-            response = inner.handle_marker_reset().await?;
-        }
+            // Check packet type - handle MARKER packets
+            let packet_type = response[4];
+            if packet_type == PacketType::Marker as u8 {
+                // Handle BREAK/RESET protocol same as regular DML
+                response = inner.handle_marker_reset().await?;
+            }
 
-        // Parse the batch response
-        let payload = &response[PACKET_HEADER_SIZE..];
-        let caps = inner.capabilities.clone();
+            // Parse the batch response
+            let payload = &response[PACKET_HEADER_SIZE..];
+            let caps = inner.capabilities.clone();
 
-        let result = self.parse_batch_response(
-            payload,
-            batch.rows.len(),
-            batch.options.array_dml_row_counts,
-            &caps,
-        );
-        inner.checked_parse_result(result)
+            let result = self.parse_batch_response(
+                payload,
+                batch.rows.len(),
+                batch.options.array_dml_row_counts,
+                &caps,
+            );
+            inner.checked_parse_result(result)
+        })
+        .await;
+        let reported = self.take_reported_cursor();
+        inner.release_cursor(reported);
+        result
     }
 
     /// Parse batch execution response
@@ -1868,8 +1819,9 @@ impl Connection {
 
                 // Error (4) - may contain error or success info
                 x if x == MessageType::Error as u8 => {
-                    let (error_code, error_msg, _cid, row_count) =
+                    let (error_code, error_msg, cid, row_count) =
                         Self::parse_error_info_with_rowcount(&mut buf, caps)?;
+                    self.report_cursor(cid);
                     rows_affected = row_count;
                     if error_code != 0 && error_code != 1403 {
                         return Err(Error::OracleError {
@@ -1965,35 +1917,38 @@ impl Connection {
         let mut fetch_msg = FetchMessage::new(cursor_id, fetch_size);
 
         let mut inner = self.inner.lock().await;
-        fetch_msg.set_sequence_number(inner.next_sequence_number());
-        let request = fetch_msg.build_request_with_sdu(&inner.capabilities, inner.large_sdu)?;
-        inner.send(&request).await?;
+        let result = Box::pin(async {
+            fetch_msg.set_sequence_number(inner.next_sequence_number());
+            let request = fetch_msg.build_request_with_sdu(&inner.capabilities, inner.large_sdu)?;
+            inner.send(&request).await?;
 
-        // Receive and parse response
-        let response = inner.receive_page_with_columns(columns).await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty fetch response".to_string()));
-        }
+            // Receive and parse response
+            let response = inner.receive_page_with_columns(columns).await?;
+            if response.len() <= PACKET_HEADER_SIZE {
+                return Err(Error::Protocol("Empty fetch response".to_string()));
+            }
 
-        // Fetch errors use the same MARKER/reset exchange as query execution.
-        // Parsing a MARKER as row data would silently end the stream.
-        if response[4] == PacketType::Marker as u8 {
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let parsed = self.parse_error_response(payload, &inner.capabilities);
-            return inner.checked_parse_result(parsed);
-        }
+            // Fetch errors use the same MARKER/reset exchange as query execution.
+            // Parsing a MARKER as row data would silently end the stream.
+            if response[4] == PacketType::Marker as u8 {
+                let error_response = inner.handle_marker_reset().await?;
+                let payload = &error_response[PACKET_HEADER_SIZE..];
+                let parsed = self.parse_error_response(payload, &inner.capabilities);
+                return inner.checked_parse_result(parsed);
+            }
 
-        // Parse row data from response
-        let payload = &response[PACKET_HEADER_SIZE..];
-        let caps = inner.capabilities.clone();
-        let previous = inner.last_row_values.get(&cursor_id).cloned();
-        let parsed = self.parse_fetch_response(payload, columns, &caps, previous);
-        let mut result = inner.checked_parse_result(parsed)?;
-        result.cursor_id = cursor_id;
-        inner.remember_last_row(&result, false);
-        drop(inner);
-        Ok(result)
+            // Parse row data from response
+            let payload = &response[PACKET_HEADER_SIZE..];
+            let caps = inner.capabilities.clone();
+            let previous = inner.last_rows.get(&cursor_id).cloned();
+            let parsed = self.parse_fetch_response_after(payload, columns, &caps, previous);
+            let mut result = inner.checked_parse_result(parsed)?;
+            result.cursor_id = cursor_id;
+            Ok(result)
+        })
+        .await;
+        inner.release_finished_fetch(cursor_id, &result);
+        result
     }
 
     /// Fetch rows from a REF CURSOR
@@ -2071,38 +2026,42 @@ impl Connection {
         let mut execute_msg = ExecuteMessage::new(&stmt, options);
 
         let mut inner = self.inner.lock().await;
-        let large_sdu = inner.large_sdu;
-        let seq_num = inner.next_sequence_number();
-        execute_msg.set_sequence_number(seq_num);
+        let result = Box::pin(async {
+            let large_sdu = inner.large_sdu;
+            let seq_num = inner.next_sequence_number();
+            execute_msg.set_sequence_number(seq_num);
 
-        let request = execute_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
-        inner.send(&request).await?;
+            let request = execute_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
+            inner.send(&request).await?;
 
-        // Receive and parse response
-        let response = inner.receive_page_with_columns(cursor.columns()).await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty cursor response".to_string()));
-        }
+            // Receive and parse response
+            let response = inner.receive_page_with_columns(cursor.columns()).await?;
+            if response.len() <= PACKET_HEADER_SIZE {
+                return Err(Error::Protocol("Empty cursor response".to_string()));
+            }
 
-        // Check for MARKER packet (indicates error)
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let parsed = self.parse_error_response(payload, &inner.capabilities);
-            return inner.checked_parse_result(parsed);
-        }
+            // Check for MARKER packet (indicates error)
+            let packet_type = response[4];
+            if packet_type == PacketType::Marker as u8 {
+                let error_response = inner.handle_marker_reset().await?;
+                let payload = &error_response[PACKET_HEADER_SIZE..];
+                let parsed = self.parse_error_response(payload, &inner.capabilities);
+                return inner.checked_parse_result(parsed);
+            }
 
-        // Parse query response - use cursor's columns since they're already defined
-        let payload = &response[PACKET_HEADER_SIZE..];
-        let caps = inner.capabilities.clone();
-        let previous = inner.last_row_values.get(&cursor.cursor_id()).cloned();
-        let parsed = self.parse_fetch_response(payload, cursor.columns(), &caps, previous);
-        let mut result = inner.checked_parse_result(parsed)?;
-        result.cursor_id = cursor.cursor_id();
-        inner.remember_last_row(&result, false);
-        drop(inner);
-        Ok(result)
+            // Parse query response - use cursor's columns since they're already defined
+            let payload = &response[PACKET_HEADER_SIZE..];
+            let caps = inner.capabilities.clone();
+            let previous = inner.last_rows.get(&cursor.cursor_id()).cloned();
+            let parsed =
+                self.parse_fetch_response_after(payload, cursor.columns(), &caps, previous);
+            let mut result = inner.checked_parse_result(parsed)?;
+            result.cursor_id = cursor.cursor_id();
+            Ok(result)
+        })
+        .await;
+        inner.release_finished_fetch(cursor.cursor_id(), &result);
+        result
     }
 
     /// Fetch rows from an implicit result set
@@ -2152,7 +2111,20 @@ impl Connection {
     /// - RowHeader (6): Contains metadata about the following row data
     /// - RowData (7): Contains the actual row values
     /// - Error (4): Contains error info with cursor_id and row counts
+    #[cfg(test)]
     fn parse_fetch_response(
+        &self,
+        payload: &[u8],
+        columns: &[ColumnInfo],
+        caps: &Capabilities,
+        previous: Option<Vec<Value>>,
+    ) -> Result<QueryResult> {
+        self.parse_fetch_response_after(payload, columns, caps, previous)
+    }
+
+    /// Risposta FETCH, con l'ultima riga della pagina
+    /// precedente per le colonne ripetute della prima riga.
+    fn parse_fetch_response_after(
         &self,
         payload: &[u8],
         columns: &[ColumnInfo],
@@ -2284,42 +2256,52 @@ impl Connection {
         let mut execute_msg = ExecuteMessage::new(&statement, options);
 
         let mut inner = self.inner.lock().await;
-        let large_sdu = inner.large_sdu;
-        let seq_num = inner.next_sequence_number();
-        execute_msg.set_sequence_number(seq_num);
-        let request = execute_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
-        inner.send(&request).await?;
+        self.take_reported_cursor();
+        let result = Box::pin(async {
+            let large_sdu = inner.large_sdu;
+            let seq_num = inner.next_sequence_number();
+            execute_msg.set_sequence_number(seq_num);
+            let request = execute_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
+            inner.send(&request).await?;
 
-        // Receive and parse response
-        let response = inner.receive_page().await?;
+            // Receive and parse response
+            let response = inner.receive_page().await?;
 
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol(
-                "Empty scrollable cursor response".to_string(),
-            ));
+            if response.len() <= PACKET_HEADER_SIZE {
+                return Err(Error::Protocol(
+                    "Empty scrollable cursor response".to_string(),
+                ));
+            }
+
+            // Check for MARKER packet (indicates error - requires reset protocol)
+            let packet_type = response[4];
+            if packet_type == PacketType::Marker as u8 {
+                // Handle marker reset protocol and get the error packet
+                let error_response = inner.handle_marker_reset().await?;
+                let payload = &error_response[PACKET_HEADER_SIZE..];
+                // Parse error response to extract the actual Oracle error
+                let parsed = self.parse_error_response(payload, &inner.capabilities);
+                let _: QueryResult = inner.checked_parse_result(parsed)?;
+                // If we get here without error, something unexpected happened
+                return Err(Error::Protocol(
+                    "Unexpected successful response after MARKER".to_string(),
+                ));
+            }
+
+            // Parse describe info to get columns
+            let payload = &response[PACKET_HEADER_SIZE..];
+            let parsed = self.parse_query_response(payload, &inner.capabilities);
+            let result = inner.checked_parse_result(parsed)?;
+
+            Ok(ScrollableCursor::new(result.cursor_id, result.columns))
+        })
+        .await;
+        // Aperto, il cursore e del chiamante fino a `close_cursor`.
+        let reported = self.take_reported_cursor();
+        if result.is_err() {
+            inner.release_cursor(reported);
         }
-
-        // Check for MARKER packet (indicates error - requires reset protocol)
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            // Handle marker reset protocol and get the error packet
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            // Parse error response to extract the actual Oracle error
-            let parsed = self.parse_error_response(payload, &inner.capabilities);
-            let _: QueryResult = inner.checked_parse_result(parsed)?;
-            // If we get here without error, something unexpected happened
-            return Err(Error::Protocol(
-                "Unexpected successful response after MARKER".to_string(),
-            ));
-        }
-
-        // Parse describe info to get columns
-        let payload = &response[PACKET_HEADER_SIZE..];
-        let parsed = self.parse_query_response(payload, &inner.capabilities);
-        let result = inner.checked_parse_result(parsed)?;
-
-        Ok(ScrollableCursor::new(result.cursor_id, result.columns))
+        result
     }
 
     /// Scroll to a position in a scrollable cursor and fetch rows
@@ -2448,9 +2430,8 @@ impl Connection {
             return Ok(());
         }
 
-        // Send close cursor message
-        // For now, just mark it as closed - the cursor will be cleaned up
-        // when the connection is closed or reused
+        // Il server lo chiude col piggyback della prossima chiamata.
+        self.inner.lock().await.release_cursor(cursor.cursor_id);
         cursor.mark_closed();
         Ok(())
     }
@@ -2549,6 +2530,23 @@ impl Connection {
     }
 
     /// Internal: Execute a query statement with optional bind parameters
+    ///
+    /// Il cursore della query resta aperto finche il risultato ha altre
+    /// righe (`has_more_rows`): il chiamante lo legge con [`Self::fetch_more`]
+    /// fino in fondo, e allora si chiude. Esaurito alla prima pagina, o
+    /// fallito, si chiude subito.
+    ///
+    /// Deviazione dal driver ufficiale (python-oracledb tiene il cursore nella
+    /// statement cache e lo riesegue): regola, riuso dei cursori server fra
+    /// esecuzioni; ambito, ogni esecuzione di query, DML, PL/SQL e batch di
+    /// questa connessione analizza il testo su un cursore nuovo e la
+    /// [`crate::StatementCache`] non e piu consultata; hazard, solo un parse
+    /// leggero in piu per esecuzione, mentre la riesecuzione di un cursore in
+    /// cache non verificava i metadati dei bind (`binds_changed` non era mai
+    /// impostato) e poteva rieseguire un cursore ancora in lettura; rientro,
+    /// il riuso torna con il confronto dei metadati dei bind, l'esclusione dei
+    /// cursori con un risultato aperto e un oracolo live contro questo
+    /// percorso.
     async fn execute_query_with_params(
         &self,
         statement: &Statement,
@@ -2567,89 +2565,104 @@ impl Connection {
         }
 
         let mut inner = self.inner.lock().await;
-        let large_sdu = inner.large_sdu;
-        let seq_num = inner.next_sequence_number();
-        execute_msg.set_sequence_number(seq_num);
-        let request = execute_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
-        inner.send(&request).await?;
-
-        // Receive and parse response
-        let response = inner.receive_page_with_columns(statement.columns()).await?;
-        if response.len() <= PACKET_HEADER_SIZE {
-            return Err(Error::Protocol("Empty query response".to_string()));
-        }
-
-        // Check for MARKER packet (indicates error - requires reset protocol)
-        let packet_type = response[4];
-        if packet_type == PacketType::Marker as u8 {
-            // Handle marker reset protocol and get the error packet
-            let error_response = inner.handle_marker_reset().await?;
-            let payload = &error_response[PACKET_HEADER_SIZE..];
-            let parsed = self.parse_error_response(payload, &inner.capabilities);
-            return inner.checked_parse_result(parsed);
-        }
-
-        // Parse the response to extract columns and rows
-        let payload = &response[PACKET_HEADER_SIZE..];
-        let parsed = self.parse_query_response_with_columns(
-            payload,
-            &inner.capabilities,
-            statement.columns(),
-        );
-        let mut result = inner.checked_parse_result(parsed)?;
-
-        // Check if any columns are LOB types that require defines
-        let has_lob_columns = result.columns.iter().any(|col| col.is_lob());
-
-        if has_lob_columns && !statement.requires_define() {
-            // We need to re-execute with column defines
-            // Create a modified statement with the define flag set
-            let mut stmt_with_define = statement.clone();
-            stmt_with_define.set_columns(result.columns.clone());
-            stmt_with_define.set_cursor_id(result.cursor_id);
-            stmt_with_define.set_requires_define(true);
-            stmt_with_define.set_no_prefetch(true);
-            stmt_with_define.set_executed(true);
-
-            // Re-execute with defines
-            let define_options = ExecuteOptions::for_query(prefetch_rows);
-            let mut define_msg = ExecuteMessage::new(&stmt_with_define, define_options);
+        self.take_reported_cursor();
+        let result = Box::pin(async {
+            let large_sdu = inner.large_sdu;
             let seq_num = inner.next_sequence_number();
-            define_msg.set_sequence_number(seq_num);
+            execute_msg.set_sequence_number(seq_num);
+            let request = execute_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
+            inner.send(&request).await?;
 
-            let define_request =
-                define_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
-            inner.send(&define_request).await?;
-
-            // Receive the re-execute response
-            let define_response = inner
-                .receive_page_with_columns(stmt_with_define.columns())
-                .await?;
-            if define_response.len() <= PACKET_HEADER_SIZE {
-                return Err(Error::Protocol("Empty define response".to_string()));
+            // Receive and parse response
+            let response = inner.receive_page_with_columns(statement.columns()).await?;
+            if response.len() <= PACKET_HEADER_SIZE {
+                return Err(Error::Protocol("Empty query response".to_string()));
             }
 
-            // Check for MARKER packet
-            let packet_type = define_response[4];
+            // Check for MARKER packet (indicates error - requires reset protocol)
+            let packet_type = response[4];
             if packet_type == PacketType::Marker as u8 {
+                // Handle marker reset protocol and get the error packet
                 let error_response = inner.handle_marker_reset().await?;
                 let payload = &error_response[PACKET_HEADER_SIZE..];
                 let parsed = self.parse_error_response(payload, &inner.capabilities);
                 return inner.checked_parse_result(parsed);
             }
 
-            // Parse the response with LOB data, using the columns we already know
-            let payload = &define_response[PACKET_HEADER_SIZE..];
+            // Parse the response to extract columns and rows
+            let payload = &response[PACKET_HEADER_SIZE..];
             let parsed = self.parse_query_response_with_columns(
                 payload,
                 &inner.capabilities,
-                stmt_with_define.columns(),
+                statement.columns(),
             );
-            result = inner.checked_parse_result(parsed)?;
-        }
+            let mut result = inner.checked_parse_result(parsed)?;
 
-        inner.remember_last_row(&result, true);
-        Ok(result)
+            // Check if any columns are LOB types that require defines
+            let has_lob_columns = result.columns.iter().any(|col| col.is_lob());
+
+            if has_lob_columns && !statement.requires_define() {
+                // Il cursore e gia aperto: se la riesecuzione fallisce si chiude.
+                self.report_cursor(result.cursor_id);
+                // We need to re-execute with column defines
+                // Create a modified statement with the define flag set
+                let mut stmt_with_define = statement.clone();
+                stmt_with_define.set_columns(result.columns.clone());
+                stmt_with_define.set_cursor_id(result.cursor_id);
+                stmt_with_define.set_requires_define(true);
+                stmt_with_define.set_no_prefetch(true);
+                stmt_with_define.set_executed(true);
+
+                // Re-execute with defines
+                let define_options = ExecuteOptions::for_query(prefetch_rows);
+                let mut define_msg = ExecuteMessage::new(&stmt_with_define, define_options);
+                let seq_num = inner.next_sequence_number();
+                define_msg.set_sequence_number(seq_num);
+
+                let define_request =
+                    define_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
+                inner.send(&define_request).await?;
+
+                // Receive the re-execute response
+                let define_response = inner
+                    .receive_page_with_columns(stmt_with_define.columns())
+                    .await?;
+                if define_response.len() <= PACKET_HEADER_SIZE {
+                    return Err(Error::Protocol("Empty define response".to_string()));
+                }
+
+                // Check for MARKER packet
+                let packet_type = define_response[4];
+                if packet_type == PacketType::Marker as u8 {
+                    let error_response = inner.handle_marker_reset().await?;
+                    let payload = &error_response[PACKET_HEADER_SIZE..];
+                    let parsed = self.parse_error_response(payload, &inner.capabilities);
+                    return inner.checked_parse_result(parsed);
+                }
+
+                // Parse the response with LOB data, using the columns we already know
+                let payload = &define_response[PACKET_HEADER_SIZE..];
+                let parsed = self.parse_query_response_with_columns(
+                    payload,
+                    &inner.capabilities,
+                    stmt_with_define.columns(),
+                );
+                result = inner.checked_parse_result(parsed)?;
+            }
+
+            Ok(result)
+        })
+        .await;
+        let reported = self.take_reported_cursor();
+        match &result {
+            Ok(query) if query.has_more_rows => inner.remember_last_row(query.cursor_id, query),
+            Ok(query) => {
+                inner.release_cursor(query.cursor_id);
+                inner.release_cursor(reported);
+            }
+            Err(_) => inner.release_cursor(reported),
+        }
+        result
     }
 
     /// Internal: Execute a DML statement with optional bind parameters
@@ -2667,19 +2680,31 @@ impl Connection {
         }
 
         let mut inner = self.inner.lock().await;
-        let large_sdu = inner.large_sdu;
-        let seq_num = inner.next_sequence_number();
-        execute_msg.set_sequence_number(seq_num);
-        let request = execute_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
+        self.take_reported_cursor();
+        let result = Box::pin(async {
+            let large_sdu = inner.large_sdu;
+            let seq_num = inner.next_sequence_number();
+            execute_msg.set_sequence_number(seq_num);
+            let request = execute_msg.build_request_with_sdu(&inner.capabilities, large_sdu)?;
 
-        inner.send(&request).await?;
+            inner.send(&request).await?;
 
-        let mut response = inner.receive_page().await?;
-        if response[4] == PacketType::Marker as u8 {
-            response = inner.handle_marker_reset().await?;
+            let mut response = inner.receive_page().await?;
+            if response[4] == PacketType::Marker as u8 {
+                response = inner.handle_marker_reset().await?;
+            }
+            let result =
+                self.parse_dml_response(&response[PACKET_HEADER_SIZE..], &inner.capabilities);
+            inner.checked_parse_result(result)
+        })
+        .await;
+        // DML, DDL e PL/SQL non hanno una fase di fetch: il cursore si chiude.
+        let reported = self.take_reported_cursor();
+        if let Ok(dml) = &result {
+            inner.release_cursor(dml.cursor_id);
         }
-        let result = self.parse_dml_response(&response[PACKET_HEADER_SIZE..], &inner.capabilities);
-        inner.checked_parse_result(result)
+        inner.release_cursor(reported);
+        result
     }
 
     /// Parse query response to extract columns and rows
@@ -2763,6 +2788,7 @@ impl Connection {
                 x if x == MessageType::Error as u8 => {
                     let (error_code, error_msg, cid, rc) =
                         Self::parse_error_info_with_rowcount(&mut buf, caps)?;
+                    self.report_cursor(cid);
                     cursor_id = cid;
                     row_count = rc;
                     has_more_rows = Some(error_code != 1403);
@@ -2914,8 +2940,9 @@ impl Connection {
 
                 // Error (4) - completion or error
                 x if x == MessageType::Error as u8 => {
-                    let (error_code, error_msg, _cid, rc) =
+                    let (error_code, error_msg, cid, rc) =
                         Self::parse_error_info_with_rowcount(&mut buf, caps)?;
+                    self.report_cursor(cid);
                     row_count = rc;
                     if error_code != 0 {
                         return Err(Error::OracleError {
@@ -3603,8 +3630,9 @@ impl Connection {
                     Self::parse_server_piggyback(&mut buf)?;
                 }
                 x if x == MessageType::Error as u8 => {
-                    let (code, message, _, _) =
+                    let (code, message, cid, _) =
                         Self::parse_error_info_with_rowcount(&mut buf, caps)?;
+                    self.report_cursor(cid);
                     return Err(Error::OracleError {
                         code,
                         message: message.unwrap_or_else(|| format!("ORA-{:05}", code)),
@@ -3645,6 +3673,7 @@ impl Connection {
                 x if x == MessageType::Error as u8 => {
                     let (error_code, error_msg, cid, row_count) =
                         Self::parse_error_info_with_rowcount(&mut buf, caps)?;
+                    self.report_cursor(cid);
                     cursor_id = cid;
                     rows_affected = row_count;
                     if error_code != 0 && error_code != 1403 {
@@ -3908,6 +3937,9 @@ impl Connection {
             let oracle_type = crate::constants::OracleType::try_from(ora_type_num)?;
 
             let mut col = ColumnInfo::new(&name, oracle_type);
+            // NCHAR, NVARCHAR2 e NCLOB arrivano nel charset nazionale
+            // (AL16UTF16): senza il form il testo si decodificava come UTF-8.
+            col.csfrm = csfrm;
             col.data_size = if max_size > 0 { max_size } else { buffer_size };
             // Identity casts: kept as upstream wrote them (the values are
             // already signed i16 above).
@@ -4069,15 +4101,9 @@ impl Connection {
 
     /// Clear the statement cache
     ///
-    /// This should be called when recycling a connection in a pool to ensure
-    /// that any stale cursor state is cleared. This is useful after errors
-    /// or when the connection state may be inconsistent.
-    pub async fn clear_statement_cache(&self) {
-        let mut inner = self.inner.lock().await;
-        if let Some(ref mut cache) = inner.statement_cache {
-            cache.clear();
-        }
-    }
+    /// Non fa niente: la connessione non tiene cursori in cache (vedi la
+    /// deviazione su `execute_query_with_params`). Resta per l'API pubblica.
+    pub async fn clear_statement_cache(&self) {}
 
     /// Read data from a LOB (CLOB or BLOB)
     ///
@@ -4392,11 +4418,12 @@ impl Connection {
 
         // Encode data for CLOB if necessary
         let encoded_data: Vec<u8>;
-        let write_data = if locator.is_clob() && locator.uses_var_length_charset() {
-            // Convert UTF-8 to UTF-16 BE for CLOB with var length charset
-            let text = std::str::from_utf8(data).map_err(|_| {
-                Error::DataConversionError("testo CLOB da scrivere non UTF-8".to_string())
-            })?;
+        let write_data = if locator.is_clob()
+            && (locator.is_nchar() || locator.uses_var_length_charset())
+        {
+            // Convert UTF-8 to UTF-16 BE for NCLOB or var length charset
+            let text = std::str::from_utf8(data)
+                .map_err(|_| Error::DataConversionError("CLOB data is not valid UTF-8".into()))?;
             encoded_data = text.encode_utf16().flat_map(|c| c.to_be_bytes()).collect();
             &encoded_data[..]
         } else {
@@ -4978,7 +5005,7 @@ impl Connection {
         }
 
         inner.state = ConnectionState::Closed;
-        inner.last_row_values.clear();
+        inner.last_rows.clear();
 
         // Close the TCP stream
         if let Some(stream) = inner.stream.take() {
@@ -5116,13 +5143,16 @@ mod tests {
 
     include!("connection_exchange_tests.rs");
     include!("connection_side_message_tests.rs");
+    include!("connection_cursor_tests.rs");
+    include!("connection_read_tests.rs");
 
     fn parser_connection() -> Connection {
         Connection {
-            inner: Arc::new(Mutex::new(ConnectionInner::new_with_cache(0))),
+            inner: Arc::new(Mutex::new(ConnectionInner::new())),
             config: Config::default(),
             closed: AtomicBool::new(true),
             id: 0,
+            reported_cursor: AtomicU16::new(0),
         }
     }
 
@@ -5167,7 +5197,7 @@ mod tests {
             TcpStream::connect(listener.local_addr().unwrap()),
             listener.accept()
         );
-        let mut inner = ConnectionInner::new_with_cache(0);
+        let mut inner = ConnectionInner::new();
         inner.stream = Some(OracleStream::Plain(client.unwrap()));
         inner.state = ConnectionState::Ready;
         inner.large_sdu = large_sdu;
@@ -5178,6 +5208,7 @@ mod tests {
                 config: Config::default(),
                 closed: AtomicBool::new(false),
                 id: 0,
+                reported_cursor: AtomicU16::new(0),
             },
             server.unwrap().0,
         )
@@ -5708,7 +5739,7 @@ mod tests {
     fn simple_function_packet_bytes() {
         for large_sdu in [false, true] {
             for version in [17, 18] {
-                let mut inner = ConnectionInner::new_with_cache(0);
+                let mut inner = ConnectionInner::new();
                 inner.large_sdu = large_sdu;
                 inner.capabilities.ttc_field_version = version;
                 for function in [
@@ -5727,7 +5758,7 @@ mod tests {
 
     #[test]
     fn test_marker_packet_length_encoding() {
-        let mut inner = ConnectionInner::new_with_cache(0);
+        let mut inner = ConnectionInner::new();
         for (large_sdu, length) in [(false, [0, 11, 0, 0]), (true, [0, 0, 0, 11])] {
             inner.large_sdu = large_sdu;
             for marker_type in [1, 2, 3] {

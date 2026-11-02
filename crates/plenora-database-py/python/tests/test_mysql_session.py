@@ -180,3 +180,32 @@ def test_ddl_autocommit_visible_immediately(session) -> None:
         assert exists == 1
     finally:
         session.execute_ddl("DROP TABLE _v04_ddl_visibility")
+
+
+def test_mysql_sync_duplicate_result_names_require_aliases() -> None:
+    from ._harness import connect_mysql_reference
+    import plenora_database as database
+
+    session = connect_mysql_reference()
+    try:
+        with pytest.raises(database.PlenoraDataMappingError, match="alias"):
+            session.query_sql("SELECT 1 AS x, 2 AS x")
+        rows = session.query_sql("SELECT 1 AS a, 2 AS b")
+        assert list(rows.one().values()) == [1, 2]
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_mysql_async_duplicate_result_names_require_aliases() -> None:
+    from ._harness import aconnect_mysql_reference
+    import plenora_database as database
+
+    session = await aconnect_mysql_reference()
+    try:
+        with pytest.raises(database.PlenoraDataMappingError, match="alias"):
+            await session.query_sql("SELECT 1 AS x, 2 AS x")
+        rows = await session.query_sql("SELECT 1 AS a, 2 AS b")
+        assert list(rows.one().values()) == [1, 2]
+    finally:
+        session.close()

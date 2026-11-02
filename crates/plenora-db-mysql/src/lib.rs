@@ -24,6 +24,7 @@ mod session;
 mod transaction;
 mod types;
 mod write;
+mod write_admission;
 
 #[cfg(test)]
 mod live_tests;

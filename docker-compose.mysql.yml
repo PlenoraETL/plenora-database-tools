@@ -36,6 +36,10 @@ services:
       - --require-secure-transport=ON
       - --local-infile=OFF
       - --sql-mode=STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+      # Con il log binario acceso un account senza SUPER non crea trigger: le
+      # prove della regola R sui trigger `BEFORE` li creano con l'account
+      # della fixture.
+      - --log-bin-trust-function-creators=ON
       - --ssl-ca=/etc/mysql/tls/ca.pem
       - --ssl-cert=/etc/mysql/tls/server.pem
       - --ssl-key=/etc/mysql/tls/server.key

@@ -414,6 +414,7 @@ pub(crate) const INDEX_PART_ALIASES: &[&str] = &[
     "seq_in_index",
     "column_name",
     "expression",
+    "sub_part",
 ];
 
 /// Vedi [`SCHEMA_ALIASES`]. La verifica di uno SRID derivato da `EPSG:<n>`
@@ -558,7 +559,7 @@ impl ProductProfile for MysqlProfile {
     fn object_indexes_query(&self) -> &'static str {
         "SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique, \
         SEQ_IN_INDEX AS seq_in_index, COLUMN_NAME AS column_name, \
-        EXPRESSION AS expression \
+        EXPRESSION AS expression, SUB_PART AS sub_part \
         FROM information_schema.statistics \
         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
         ORDER BY INDEX_NAME, SEQ_IN_INDEX"
@@ -914,7 +915,7 @@ impl ProductProfile for MariadbProfile {
         // `SEQ_IN_INDEX` rendono le stesse righe per la stessa tabella.
         "SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique, \
         SEQ_IN_INDEX AS seq_in_index, COLUMN_NAME AS column_name, \
-        NULL AS expression \
+        NULL AS expression, SUB_PART AS sub_part \
         FROM information_schema.statistics \
         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? \
         ORDER BY INDEX_NAME, SEQ_IN_INDEX"
@@ -1305,6 +1306,31 @@ const OBJECT_QUERY: &str = "SELECT TABLE_SCHEMA AS table_schema, TABLE_NAME AS t
     TABLE_TYPE AS table_type, ENGINE AS engine \
     FROM information_schema.tables \
     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
+
+/// La regola R (`catalog::row_filters`), condivisa fra MySQL e MariaDB: i
+/// trigger `BEFORE` dell'evento e il privilegio che li rende visibili.
+/// `GRANTEE` e nella forma `'utente'@'host'` di `CURRENT_USER()`; il nome dello
+/// schema di una concessione puo essere un modello (`LIKE`), come lo legge il
+/// server.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) const ROW_FILTERS_QUERY: &str = "\
+SELECT
+    (SELECT COUNT(*) FROM information_schema.TRIGGERS
+      WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ?
+        AND ACTION_TIMING = 'BEFORE' AND EVENT_MANIPULATION = ?) AS before_triggers,
+    (SELECT COUNT(*) FROM (
+        SELECT CONCAT(CHAR(39), LEFT(CURRENT_USER(), CHAR_LENGTH(CURRENT_USER())
+                     - CHAR_LENGTH(SUBSTRING_INDEX(CURRENT_USER(), '@', -1)) - 1),
+                     CHAR(39), '@', CHAR(39), SUBSTRING_INDEX(CURRENT_USER(), '@', -1), CHAR(39)) AS grantee
+     ) AS me
+      WHERE EXISTS (SELECT 1 FROM information_schema.USER_PRIVILEGES p
+                     WHERE p.GRANTEE = me.grantee AND p.PRIVILEGE_TYPE = 'TRIGGER')
+         OR EXISTS (SELECT 1 FROM information_schema.SCHEMA_PRIVILEGES p
+                     WHERE p.GRANTEE = me.grantee AND p.PRIVILEGE_TYPE = 'TRIGGER'
+                       AND ? LIKE p.TABLE_SCHEMA)
+         OR EXISTS (SELECT 1 FROM information_schema.TABLE_PRIVILEGES p
+                     WHERE p.GRANTEE = me.grantee AND p.PRIVILEGE_TYPE = 'TRIGGER'
+                       AND p.TABLE_SCHEMA = ? AND p.TABLE_NAME = ?)) AS trigger_privilege";
 
 /// Il rifiuto di una versione che il profilo non dichiara qualificata.
 ///
