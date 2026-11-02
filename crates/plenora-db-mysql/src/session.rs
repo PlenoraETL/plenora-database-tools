@@ -1,5 +1,16 @@
 //! Limiti dei diagnostici: SHOW WARNINGS osserva solo lo statement esterno.
 //! CALL non garantisce visibilita delle conversioni interne alla procedura.
+//! Limite intenzionale: `lc_time_names`, `default_week_format`, `block_encryption_mode`,
+//! `old_mode`, `timestamp` e `insert_id` non sono fissate per lo SQL nativo del chiamante.
+//! Funzioni e trigger usano lo `sql_mode` registrato alla CREATE. Una variabile
+//! cambiata e ripristinata nella stessa istruzione (trigger BEFORE/AFTER) non e
+//! osservabile dalla rilettura del profilo. `collation_connection` usa
+//! `utf8mb4_general_ci`: PAD SPACE anche nei confronti fra letterali del chiamante.
+//! Con `lower_case_table_names=1` il database configurato deve essere gia minuscolo:
+//! il confronto esatto rifiuta esplicitamente database diversi, senza assumere
+//! che il case folding Unicode del client coincida con quello del server.
+//! `max_sort_length` copre 8 MiB: oltre tale prefisso TEXT/BLOB non hanno una
+//! garanzia di ordinamento completo; valori equivalenti richiedono un tie-breaker.
 //! Uno stream abbandonato prima di EOF non certifica i batch gia consegnati:
 //! il drop chiude il canale Arrow, senza poter restituire un errore al consumer.
 
@@ -38,8 +49,18 @@ use plenora_database_core::{
 /// della sequenza scrive `NULL` o omette la colonna. `sql_mode` viene
 /// confrontato come insieme, indipendentemente dall'ordine del server.
 /// I tre modi zero-date/divisione insieme a strict evitano il warning 3135.
+/// `max_error_count` si legge senza SET: richiede privilegi amministrativi in
+/// MySQL. I diagnostici incompleti vengono comunque rifiutati da `check_warnings`.
+/// `div_precision_increment = 4` rende esplicito il default dei server:
+/// cambia la scala di `(a / b)` generato da plenora-database-sql.
+/// `max_sort_length = 8388608` e il massimo comune MySQL/MariaDB: copre
+/// interamente CHAR/VARCHAR e TEXT/BLOB fino a 8 MiB, non LONGTEXT arbitrari.
+/// Le tre nuove variabili comuni e `check_constraint_checks` di MariaDB sono
+/// SET SESSION non amministrativi, verificati dal gate con account minimo.
 /// La scrittura rilegge i valori (`crate::write::verify_write_session`).
-pub const SESSION_BOOTSTRAP_SQL: &str = "SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', foreign_key_checks = 1, unique_checks = 1, sql_notes = 1, sql_select_limit = 18446744073709551615, character_set_client = 'utf8mb4', character_set_connection = 'utf8mb4', character_set_results = 'utf8mb4', collation_connection = 'utf8mb4_general_ci', max_error_count = 65535";
+pub const SESSION_BOOTSTRAP_SQL: &str = "SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', foreign_key_checks = 1, unique_checks = 1, sql_notes = 1, sql_select_limit = 18446744073709551615, character_set_client = 'utf8mb4', character_set_connection = 'utf8mb4', character_set_results = 'utf8mb4', collation_connection = 'utf8mb4_general_ci', div_precision_increment = 4, max_sort_length = 8388608, sql_auto_is_null = 0";
+
+pub const MARIADB_BOOTSTRAP_SQL: &str = "SET SESSION check_constraint_checks = 1";
 
 #[cfg(test)]
 static TEST_ROW_PULLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -143,6 +164,8 @@ pub struct MysqlSession {
     connection: Option<Conn>,
     expected_database: String,
     expected_profile: Option<crate::session_profile::SessionProfile>,
+    #[cfg(test)]
+    pub(crate) raw_write_probe: bool,
     state: MysqlSessionState,
     operation_timeout: std::time::Duration,
     pool_permit: Option<tokio::sync::OwnedSemaphorePermit>,
@@ -191,6 +214,8 @@ impl MysqlSession {
             profile: &crate::profile::MYSQL_PROFILE,
             expected_database: config.database().to_owned(),
             expected_profile: None,
+            #[cfg(test)]
+            raw_write_probe: false,
             connection: Some(connection),
             state: MysqlSessionState::Ready,
             operation_timeout: config.operation_timeout(),
@@ -211,6 +236,8 @@ impl MysqlSession {
             profile,
             expected_database,
             expected_profile: None,
+            #[cfg(test)]
+            raw_write_probe: false,
             connection: Some(connection),
             state: MysqlSessionState::Ready,
             operation_timeout,
@@ -230,14 +257,14 @@ impl MysqlSession {
         }
         let result = self
             .query_rows(
-                &crate::session_profile::select_sql(),
+                &crate::session_profile::select_sql(
+                    self.kind() == plenora_database_core::plan::ProviderKind::Mariadb,
+                ),
                 ErrorPhase::Connect,
                 cancellation,
             )
             .await
             .and_then(|rows| {
-                #[cfg(test)]
-                crate::session_profile::SessionProfile::log_bootstrap(&rows);
                 crate::session_profile::SessionProfile::capture(&rows, &self.expected_database)
                     .map_err(|name| self.profile_error(ErrorPhase::Connect, name))
             });
@@ -268,8 +295,18 @@ impl MysqlSession {
         phase: ErrorPhase,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        #[cfg(test)]
+        if self.raw_write_probe {
+            return Ok(());
+        }
         let rows = self
-            .query_rows(&crate::session_profile::select_sql(), phase, cancellation)
+            .query_rows(
+                &crate::session_profile::select_sql(
+                    self.kind() == plenora_database_core::plan::ProviderKind::Mariadb,
+                ),
+                phase,
+                cancellation,
+            )
             .await;
         let result = rows.and_then(|rows| {
             let divergence = self
@@ -339,6 +376,10 @@ impl MysqlSession {
         cancellation: &CancellationToken,
         sql: &str,
     ) -> Result<()> {
+        #[cfg(test)]
+        if self.raw_write_probe {
+            return Ok(());
+        }
         let profile = self.profile;
         let connection = self
             .connection

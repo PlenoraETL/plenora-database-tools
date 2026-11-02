@@ -182,6 +182,61 @@ class Fixture(unittest.TestCase):
                 self.assertTrue(incorporato, f"{voce.crate} non incorpora il fixture")
 
 
+class PrivilegiMinimi(unittest.TestCase):
+    def test_grant_temporanee_e_mount_su_tutta_la_flotta(self):
+        import re
+        import yaml
+        for product in ("mysql", "mariadb"):
+            with self.subTest(product=product):
+                directory = ROOT / "docker" / product / "init"
+                sql = (directory / "002-minimal-privileges.sql").read_text()
+                statements = re.sub(r"--[^\n]*", "", sql)
+                self.assertRegex(statements, r"USE dataflow_test;\s*CREATE USER IF NOT EXISTS")
+                grant = re.search(r"GRANT (.*?)\s+ON dataflow_test\.\* TO 'plenora_minimal'@'%';",
+                                  statements, re.S)
+                self.assertIsNotNone(grant)
+                self.assertEqual({p.strip() for p in grant[1].split(',')},
+                                 {"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP",
+                                  "ALTER", "INDEX", "CREATE TEMPORARY TABLES"})
+                compose = yaml.safe_load((ROOT / f"docker-compose.{product}.yml").read_text())
+                servers = [s for s in compose["services"].values()
+                           if f"{product.upper()}_DATABASE" in s.get("environment", {})]
+                self.assertEqual(len(servers), 3 if product == "mariadb" else 1)
+                for server in servers:
+                    self.assertEqual(server["environment"][f"{product.upper()}_DATABASE"],
+                                     "dataflow_test")
+                    self.assertIn(f"./docker/{product}/init:/docker-entrypoint-initdb.d:ro",
+                                  server["volumes"])
+
+    def test_fixture_e_gate_esercitano_account_senza_privilegi_globali(self):
+        from dataclasses import replace
+        import subprocess
+        import shlex
+        sql = (ROOT / "docker/mysql/init/002-minimal-privileges.sql").read_text()
+        self.assertEqual(sql, (ROOT / "docker/mariadb/init/002-minimal-privileges.sql").read_text())
+        self.assertIn("SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX", sql)
+        self.assertNotIn("ON *.*", sql)
+        for product in ("mysql", "mariadb"):
+            definition = sonde.PRODOTTI[product]
+            self.assertIn(sql, shlex.split(definition.argomenti[-1]))
+            minimal = "live_tests::live_sospetti_minimal_privileges"
+            with mock.patch.object(sonde.subprocess, "run") as run:
+                run.side_effect = [subprocess.CompletedProcess([], 0, "1 passed; 0 failed", ""),
+                                   subprocess.CompletedProcess([], 0, "misura", "")]
+                code, _, _ = sonde.sonda(mock.Mock(), "fixture", replace(definition, ca_nel_container=None),
+                                         3306, "image", False)
+                self.assertEqual(code, 0)
+                self.assertIn(minimal, run.call_args_list[0].args[0])
+                self.assertIn("live_tests::" + sonde.TEST, run.call_args_list[1].args[0])
+            for output in ("0 passed; 0 failed", "1 failed"):
+                with mock.patch.object(sonde.subprocess, "run", return_value=
+                                       subprocess.CompletedProcess([], 0, output, "")) as run:
+                    code, _, _ = sonde.sonda(mock.Mock(), "fixture", replace(definition, ca_nel_container=None),
+                                             3306, "image", False)
+                    self.assertNotEqual(code, 0)
+                    self.assertEqual(run.call_count, 1)
+
+
 class Coerenza(unittest.TestCase):
     def documento(self, chiave: dict) -> dict:
         return {"schema_version": 1, "provider": "oracle", "misure": [{

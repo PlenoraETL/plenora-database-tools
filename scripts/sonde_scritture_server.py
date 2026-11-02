@@ -136,6 +136,7 @@ def riferimenti_mysql_mariadb(prodotto: str) -> list[str]:
 # (`ca_nel_container`): niente volumi e niente segreti preesistenti, anche in
 # CI.
 def tls_usa_e_getta(server: str) -> tuple[str, ...]:
+    minimal = (ROOT / "docker/mysql/init/002-minimal-privileges.sql").read_text(encoding="utf-8")
     return (
         "bash", "-c",
         "set -e; d=/tmp/plenora-tls; mkdir -p $d; cd $d; "
@@ -148,6 +149,8 @@ def tls_usa_e_getta(server: str) -> tuple[str, ...]:
         "openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial "
         "-days 2 -extfile ext -out server.pem 2>/dev/null; "
         "chown -R mysql:mysql $d; "
+        "mkdir -p /docker-entrypoint-initdb.d; "
+        f"printf %s {shlex.quote(minimal)} > /docker-entrypoint-initdb.d/002-minimal.sql; "
         f"exec docker-entrypoint.sh {server} --ssl-ca=$d/ca.pem --ssl-cert=$d/server.pem "
         "--ssl-key=$d/server.key --local-infile=OFF",
     )
@@ -389,6 +392,14 @@ def sonda(docker: Docker, nome: str, prodotto: Prodotto, porta: int, immagine: s
             ambiente["PLENORA_SONDE_SCRITTURE_MISURA"] = "1"
         cargo = ["cargo", "test", "--locked", "-p", prodotto.crate, "--lib",
                  f"{prodotto.modulo}::{TEST}", "--", "--ignored", "--exact", "--nocapture"]
+        if prodotto.crate == "plenora-db-mysql":
+            minimal = cargo.copy()
+            minimal[minimal.index(f"{prodotto.modulo}::{TEST}")] = (
+                "live_tests::live_sospetti_minimal_privileges")
+            checked = subprocess.run(minimal, cwd=ROOT, env={**os.environ, **ambiente},
+                                     capture_output=True, text=True, timeout=7200, check=False)
+            if checked.returncode or "1 passed; 0 failed" not in checked.stdout:
+                return checked.returncode or 1, None, checked.stdout + checked.stderr
         if prodotto.nel_container:
             interno = "/tmp/plenora-referto-scritture.json"
             ambiente["PLENORA_SONDE_SCRITTURE_REFERTO"] = interno

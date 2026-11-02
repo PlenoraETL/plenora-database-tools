@@ -479,7 +479,9 @@ fn the_real_bootstrap_parses_into_pinned_assignments() {
             "character_set_connection",
             "character_set_results",
             "collation_connection",
-            "max_error_count"
+            "div_precision_increment",
+            "max_sort_length",
+            "sql_auto_is_null"
         ]
     );
 }

@@ -14080,3 +14080,269 @@ async fn live_sospetti_routine_session_drift_prevents_commit() {
         .await
         .unwrap();
 }
+
+/// Il bootstrap e il reset devono funzionare con soli privilegi applicativi.
+#[tokio::test]
+#[ignore = "richiede account plenora_minimal della fixture MySQL/MariaDB"]
+async fn live_sospetti_minimal_privileges() {
+    use plenora_database_core::ErrorPhase;
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let base = live_config();
+    let config = MysqlConfig::new(
+        base.host(),
+        base.database(),
+        "plenora_minimal",
+        SecretString::new("Minimal_Test_2026!"),
+    )
+    .with_port(base.port())
+    .with_private_ca_certificate(std::env::var("PLENORA_MYSQL_CA").expect("CA della fixture"));
+    let profile: &'static dyn crate::profile::ProductProfile = if semantica_mariadb() {
+        &crate::profile::MARIADB_PROFILE
+    } else {
+        &crate::profile::MYSQL_PROFILE
+    };
+    let previous = minimal_privileges_limit(&config, profile).await;
+    let mut pool = crate::MysqlPool::new_with_profile(&config, 1, profile).unwrap();
+    pool.retain_single_idle_connection(&config);
+    let cancel = CancellationToken::new();
+    let mut connection_id = None;
+    for iteration in 0..2 {
+        let mut session = pool
+            .checkout(&cancel)
+            .await
+            .expect("checkout senza privilegi amministrativi");
+        let rows = session
+            .query_rows(
+                "SELECT CONNECTION_ID(), @@session.max_error_count",
+                ErrorPhase::Read,
+                &cancel,
+            )
+            .await
+            .unwrap();
+        let id = rows[0].get::<u64, _>(0).unwrap();
+        if iteration == 0 {
+            connection_id = Some(id);
+        }
+        assert_eq!(Some(id), connection_id, "reset della stessa connessione");
+        assert_eq!(
+            rows[0].get::<u64, _>(1),
+            previous,
+            "limite ereditato, non imposto"
+        );
+        crate::write::verify_write_session(&mut session, &cancel)
+            .await
+            .unwrap();
+        for sql in [
+            "DROP TABLE IF EXISTS pln_minimal",
+            "CREATE TABLE pln_minimal(id INT PRIMARY KEY, v VARCHAR(3)) ENGINE=InnoDB",
+            "INSERT INTO pln_minimal VALUES(1, 'abc')",
+            "UPDATE pln_minimal SET v='def' WHERE id=1",
+        ] {
+            session
+                .exec_control(sql, ErrorPhase::Write, &cancel)
+                .await
+                .unwrap();
+        }
+        let rows = session
+            .query_rows("SELECT v FROM pln_minimal", ErrorPhase::Read, &cancel)
+            .await
+            .unwrap();
+        assert_eq!(rows[0].get::<String, _>(0).as_deref(), Some("def"));
+        let error = session
+            .exec_control(
+                "UPDATE pln_minimal SET v='def ' WHERE id=1",
+                ErrorPhase::Write,
+                &cancel,
+            )
+            .await
+            .expect_err("warning di troncamento");
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        session
+            .exec_control("DROP TABLE pln_minimal", ErrorPhase::Write, &cancel)
+            .await
+            .unwrap();
+        // Il reset deve ripristinare anche lo schema senza privilegi aggiuntivi.
+        session
+            .connection_mut()
+            .unwrap()
+            .query_drop("USE information_schema")
+            .await
+            .unwrap();
+        drop(session);
+    }
+    drop(pool);
+    minimal_privileges_writer(config).await;
+}
+
+async fn minimal_privileges_limit(
+    config: &MysqlConfig,
+    profile: &'static dyn crate::profile::ProductProfile,
+) -> Option<u64> {
+    // Isola la regressione: connessione senza bootstrap, stesso account minimo.
+    let options =
+        mysql_async::OptsBuilder::from_opts(config.driver_opts(profile.product()).unwrap())
+            .setup(Vec::<String>::new());
+    let mut raw = mysql_async::Conn::new(options).await.unwrap();
+    let grants: Vec<String> = raw.query("SHOW GRANTS").await.unwrap();
+    assert!(grants.iter().all(|grant| !grant.contains("ALL PRIVILEGES")
+        && !grant.contains("ADMIN")
+        && !grant.contains("SUPER")
+        && !grant.contains("GRANT OPTION")));
+    let previous: Option<u64> = raw
+        .query_first("SELECT @@session.max_error_count")
+        .await
+        .unwrap();
+    let setting = raw.query_drop("SET SESSION max_error_count = 65535").await;
+    if !semantica_mariadb() {
+        assert_eq!(crate::error::server_code(&setting.unwrap_err()), Some(1227));
+    }
+    raw.disconnect().await.unwrap();
+    previous
+}
+
+async fn minimal_privileges_writer(config: MysqlConfig) {
+    let secret = SecretString::new("Minimal_Test_2026!");
+    let cancel = CancellationToken::new();
+    let budget = write_budget();
+    let database = config.database().to_owned();
+    let provider: Box<dyn Provider> = if semantica_mariadb() {
+        Box::new(MariadbProvider::new(config, 2).unwrap())
+    } else {
+        Box::new(MysqlProvider::new(config, 2).unwrap())
+    };
+    provider
+        .execute_ddl(&secret, "DROP TABLE IF EXISTS pln_minimal_writer", &cancel)
+        .await
+        .unwrap();
+    provider.execute_ddl(&secret,
+        "CREATE TABLE pln_minimal_writer(id BIGINT NOT NULL PRIMARY KEY, label VARCHAR(64) NOT NULL) ENGINE=InnoDB",
+        &cancel).await.unwrap();
+    let (schema, batch) = scalar_batch(&[7], &["app"]);
+    let mut operation = semantica_operation(WriteMode::Append);
+    operation.target.schema = Some(database);
+    operation.target.object = "pln_minimal_writer".to_owned();
+    let prepared = provider
+        .prepare_write(&secret, &operation, Arc::clone(&schema), &budget, &cancel)
+        .await
+        .unwrap();
+    let result = provider
+        .write(
+            &secret,
+            prepared,
+            Box::new(VecBatchStream {
+                schema,
+                batches: VecDeque::from(vec![batch]),
+            }),
+            &budget,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.rows.confirmed, 1);
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &plenora_database_core::transaction::TransactionOptions::default(),
+            &budget,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let rows = tx
+        .query(
+            &plenora_database_core::transaction::Statement::new(
+                "SELECT id FROM pln_minimal_writer",
+            ),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    tx.commit(&cancel).await.unwrap();
+    provider
+        .execute_ddl(&secret, "DROP TABLE pln_minimal_writer", &cancel)
+        .await
+        .unwrap();
+}
+
+/// Valori fissi, semantica della divisione e CHECK con soli privilegi applicativi.
+#[tokio::test]
+#[ignore = "richiede account plenora_minimal della fixture MySQL/MariaDB"]
+async fn live_sospetti_fixed_session_frontier() {
+    use plenora_database_core::ErrorPhase;
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let base = live_config();
+    let config = MysqlConfig::new(
+        base.host(),
+        base.database(),
+        "plenora_minimal",
+        SecretString::new("Minimal_Test_2026!"),
+    )
+    .with_port(base.port())
+    .with_private_ca_certificate(std::env::var("PLENORA_MYSQL_CA").unwrap());
+    let profile: &'static dyn crate::profile::ProductProfile = if semantica_mariadb() {
+        &crate::profile::MARIADB_PROFILE
+    } else {
+        &crate::profile::MYSQL_PROFILE
+    };
+    let pool = crate::MysqlPool::new_with_profile(&config, 1, profile).unwrap();
+    let cancel = CancellationToken::new();
+    for (variable, drift) in [
+        ("div_precision_increment", "0"),
+        ("max_sort_length", "4"),
+        ("sql_auto_is_null", "1"),
+        ("check_constraint_checks", "0"),
+    ] {
+        if variable == "check_constraint_checks" && !semantica_mariadb() {
+            continue;
+        }
+        let mut session = pool.checkout(&cancel).await.unwrap();
+        session
+            .verify_session_profile(ErrorPhase::Read, &cancel)
+            .await
+            .unwrap();
+        let raw = session.connection_mut().unwrap();
+        let grants: Vec<String> = raw.query("SHOW GRANTS").await.unwrap();
+        assert!(grants.iter().all(|g| !g.contains("SUPER")
+            && !g.contains("ADMIN")
+            && !g.contains("ALL PRIVILEGES")
+            && !g.contains("GRANT OPTION")));
+        let division: Option<String> = raw
+            .query_first("SELECT CAST((1 / 3) AS CHAR)")
+            .await
+            .unwrap();
+        assert_eq!(division.as_deref(), Some("0.3333"));
+        if variable == "check_constraint_checks" {
+            raw.query_drop(
+                "CREATE TEMPORARY TABLE pln_frontier_check(v INT CHECK(v > 0)) ENGINE=InnoDB",
+            )
+            .await
+            .unwrap();
+            assert!(raw
+                .query_drop("INSERT INTO pln_frontier_check VALUES(-1)")
+                .await
+                .is_err());
+        }
+        raw.query_drop(format!("SET SESSION {variable}={drift}"))
+            .await
+            .unwrap();
+        if variable == "div_precision_increment" {
+            let division: Option<String> = raw
+                .query_first("SELECT CAST((1 / 3) AS CHAR)")
+                .await
+                .unwrap();
+            assert_eq!(division.as_deref(), Some("0"));
+        }
+        if variable == "check_constraint_checks" {
+            raw.query_drop("INSERT INTO pln_frontier_check VALUES(-1)")
+                .await
+                .unwrap();
+        }
+        let error = session
+            .verify_session_profile(ErrorPhase::Read, &cancel)
+            .await
+            .unwrap_err();
+        assert!(error.message.contains(variable));
+        assert_eq!(session.state(), crate::MysqlSessionState::Quarantined);
+    }
+}

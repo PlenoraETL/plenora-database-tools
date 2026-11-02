@@ -69,68 +69,60 @@ fn profile_normalizes_modes_and_booleans_without_hiding_drift() {
             "{name}"
         );
     }
-    for name in [
-        "autocommit",
-        "sql_notes",
-        "foreign_key_checks",
-        "unique_checks",
-    ] {
-        let index = VARIABLES.iter().position(|(key, _)| *key == name).unwrap() + 1;
+    for (name, _) in VARIABLES {
+        if *name == "max_error_count" {
+            continue;
+        }
+        let index = VARIABLES.iter().position(|(key, _)| key == name).unwrap() + 1;
         let mut values = expected.clone();
-        values[index] = Value::from("0");
-        let baseline = SessionProfile::capture(&[row(values.clone())], "warehouse").unwrap();
-        values[index] = Value::from("OFF");
-        assert_eq!(baseline.divergence(&[row(values)], "warehouse"), None);
+        values[index] = Value::from("invalid-secret");
         assert_eq!(
-            baseline.divergence(&[row(expected.clone())], "warehouse"),
-            Some(name)
+            SessionProfile::capture(&[row(values)], "warehouse").err(),
+            Some(*name)
         );
     }
-    for (name, alternative) in [
-        ("sql_mode", "STRICT_ALL_TABLES"),
-        ("sql_mode", "SIMULTANEOUS_ASSIGNMENT"),
-        ("autocommit", "OFF"),
-        ("time_zone", "SYSTEM"),
-        ("collation_connection", "utf8mb4_uca1400_ai_ci"),
-        ("max_error_count", "64"),
-        ("sql_select_limit", "DEFAULT"),
+    for (name, input, canonical) in [
+        ("div_precision_increment", "04", "4"),
+        ("max_sort_length", "08388608", "8388608"),
+        ("sql_auto_is_null", "OFF", "0"),
+        ("check_constraint_checks", "ON", "1"),
     ] {
+        assert_eq!(normalized(name, input), canonical);
         let index = VARIABLES.iter().position(|(key, _)| *key == name).unwrap() + 1;
         let mut values = expected.clone();
-        values[index] = if name == "sql_mode" {
-            Value::from(format!("{},{}", VARIABLES[index - 1].1, alternative))
-        } else {
-            Value::from(alternative)
-        };
-        let baseline = SessionProfile::capture(&[row(values.clone())], "warehouse").unwrap();
+        values[index] = Value::from(input);
+        assert_eq!(profile.divergence(&[row(values)], "warehouse"), None);
+        let mut values = expected.clone();
+        values[index] = Value::from(if canonical == "0" { "1" } else { "0" });
         assert_eq!(
-            baseline.divergence(&[row(values.clone())], "warehouse"),
-            None
-        );
-        assert_eq!(profile.divergence(&[row(values)], "warehouse"), Some(name));
-        assert_eq!(
-            baseline.divergence(&[row(expected.clone())], "warehouse"),
+            SessionProfile::capture(&[row(values.clone())], "warehouse").err(),
             Some(name)
         );
+        assert_eq!(profile.divergence(&[row(values)], "warehouse"), Some(name));
     }
     let mut values = expected.clone();
     let index = VARIABLES
         .iter()
-        .position(|(name, _)| *name == "character_set_results")
+        .position(|(name, _)| *name == "max_error_count")
         .unwrap()
         + 1;
-    values[index] = Value::NULL;
+    values[index] = Value::from("64");
     let baseline = SessionProfile::capture(&[row(values.clone())], "warehouse").unwrap();
     assert_eq!(baseline.divergence(&[row(values)], "warehouse"), None);
     assert_eq!(
         baseline.divergence(&[row(expected)], "warehouse"),
-        Some("character_set_results")
+        Some("max_error_count")
     );
 }
 
 #[test]
 fn profile_covers_every_bootstrap_assignment_in_one_select() {
     let mut expected = crate::evidence::sql_assignments(crate::SESSION_BOOTSTRAP_SQL);
+    // Variabile osservata, non impostata: il limite non richiede privilegi admin.
+    expected.push(("max_error_count".to_owned(), "65535".to_owned()));
+    expected.extend(crate::evidence::sql_assignments(
+        crate::session::MARIADB_BOOTSTRAP_SQL,
+    ));
     expected.sort();
     let mut actual: Vec<_> = VARIABLES
         .iter()
@@ -138,8 +130,22 @@ fn profile_covers_every_bootstrap_assignment_in_one_select() {
         .collect();
     actual.sort();
     assert_eq!(actual, expected);
-    let sql = select_sql();
+    let sql = select_sql(true);
     assert!(sql.starts_with("SELECT DATABASE(), "));
     assert_eq!(sql.matches("@@session.").count(), VARIABLES.len());
     assert!(!sql.contains(';'));
+}
+
+#[test]
+fn mysql_does_not_read_mariadb_only_variable() {
+    assert!(!select_sql(false).contains("@@session.check_constraint_checks"));
+    assert!(select_sql(true).contains("@@session.check_constraint_checks"));
+}
+
+#[test]
+fn database_case_mismatch_is_explicit_and_never_exposes_the_name() {
+    assert_eq!(
+        SessionProfile::capture(&[row(expected_values())], "Warehouse").err(),
+        Some("database")
+    );
 }

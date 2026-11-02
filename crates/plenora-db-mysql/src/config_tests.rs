@@ -98,3 +98,16 @@ fn bootstrap_quotes_configured_database_identifiers() {
     let opts = configured.driver_opts("MySQL").unwrap();
     assert_eq!(opts.setup()[1], "USE `a``b`");
 }
+
+#[test]
+fn mariadb_bootstrap_runs_after_each_reset_only_for_mariadb() {
+    for product in ["MySQL", "MariaDB"] {
+        let opts = config("secret").pooled_driver_opts(1, product).unwrap();
+        assert_eq!(
+            opts.setup()
+                .iter()
+                .any(|sql| sql == crate::session::MARIADB_BOOTSTRAP_SQL),
+            product == "MariaDB"
+        );
+    }
+}

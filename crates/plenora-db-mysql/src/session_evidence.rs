@@ -71,7 +71,9 @@ const BOOTSTRAP_CONTRACT: &[(&str, &str)] = &[
     ("character_set_connection", "utf8mb4"),
     ("character_set_results", "utf8mb4"),
     ("collation_connection", "utf8mb4_general_ci"),
-    ("max_error_count", "65535"),
+    ("div_precision_increment", "4"),
+    ("max_sort_length", "8388608"),
+    ("sql_auto_is_null", "0"),
 
 ];
 

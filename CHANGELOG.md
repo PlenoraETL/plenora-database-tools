@@ -8,6 +8,23 @@ riassumono le note di quelle release.
 
 ## 9.0.0 - in preparazione
 
+- Frontiera di sessione MySQL/MariaDB chiusa con un insieme fisso: bootstrap
+  e rilettura confrontano anche le costanti attese, non soltanto la baseline.
+  div_precision_increment=4 esplicita il default e la scala della divisione;
+  max_sort_length=8388608 copre ordinamenti fino a 8 MiB, senza promettere
+  confronti completi per TEXT/BLOB piu lunghi; sql_auto_is_null=0 e,
+  solo su MariaDB, check_constraint_checks=1 valgono anche per lo SQL nativo.
+- Limiti intenzionali: lc_time_names, default_week_format,
+  block_encryption_mode, old_mode, timestamp e insert_id restano contesto
+  non fissato dello SQL nativo del chiamante. Funzioni e trigger eseguono
+  con lo sql_mode registrato alla CREATE. Una variabile modificata e
+  ripristinata nella stessa istruzione (trigger BEFORE/AFTER) sfugge alla
+  rilettura del profilo. collation_connection=utf8mb4_general_ci applica
+  PAD SPACE anche ai confronti fra letterali del chiamante.
+  Con lower_case_table_names=1 il database configurato deve essere minuscolo:
+  il confronto esatto fallisce con errore esplicito sul campo database se
+  contiene maiuscole; non si assume equivalenza fra case folding client/server.
+
 - Modifica incompatibile MySQL/MariaDB della 9.0.0: lo SQL del chiamante
   rifiuta USE e SET GLOBAL/PASSWORD/ROLE/DEFAULT ROLE anche fuori transazione.
   Le operazioni amministrative possono cambiare identita, privilegi o default

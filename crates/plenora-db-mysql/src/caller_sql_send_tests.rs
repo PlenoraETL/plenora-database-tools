@@ -186,6 +186,7 @@ async fn local_rejection_matrix_preserves_scope_and_unsent_marker() {
     ] {
         for (policy, sql) in [
             (NativeQueryPolicy::Deny, "DROP TABLE t"),
+            (NativeQueryPolicy::Deny, "CREATE TABLE t(n INT)"),
             (NativeQueryPolicy::Allow, "SELECT 'unterminated"),
             (NativeQueryPolicy::Allow, "SELECT 1; DO 0"),
             (NativeQueryPolicy::Allow, "SET sql_notes=0"),
@@ -215,8 +216,23 @@ async fn local_rejection_matrix_preserves_scope_and_unsent_marker() {
                 )
                 .await
                 .unwrap_err();
-            for error in [execute, query, stream, conditional] {
+            let allowed_update = Statement::new("UPDATE t SET n=1");
+            let probe = tx
+                .execute_conditional_update(
+                    ConditionalUpdate {
+                        update: &allowed_update,
+                        key_probe: Some(&statement),
+                        expected_affected_rows: 1,
+                    },
+                    &cancel,
+                )
+                .await
+                .unwrap_err();
+            for error in [execute, query, stream, conditional, probe] {
                 let error = sent.failure(error);
+                if policy == NativeQueryPolicy::Deny {
+                    assert!(error.message.to_ascii_lowercase().contains("deny"));
+                }
                 assert_eq!(error.phase, ErrorPhase::Validate);
                 assert_eq!(error.remote_effect, RemoteEffect::None);
                 assert_eq!(error.retry, RetryDisposition::Never);

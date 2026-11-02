@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn bootstrap_is_explicit_and_deterministic() {
+    assert!(!SESSION_BOOTSTRAP_SQL.contains("max_error_count"));
     assert!(SESSION_BOOTSTRAP_SQL.contains("autocommit = 1"));
     assert!(SESSION_BOOTSTRAP_SQL.contains("time_zone = '+00:00'"));
     assert!(SESSION_BOOTSTRAP_SQL.contains("STRICT_TRANS_TABLES"));
@@ -39,6 +40,7 @@ fn an_abandoned_transaction_marks_its_session_quarantined() {
         profile: &crate::profile::MYSQL_PROFILE,
         connection: None,
         expected_profile: None,
+        raw_write_probe: false,
         expected_database: "warehouse".to_owned(),
         state: MysqlSessionState::Ready,
         operation_timeout: std::time::Duration::from_secs(1),

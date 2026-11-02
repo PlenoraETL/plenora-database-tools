@@ -320,6 +320,13 @@ impl MysqlConfig {
                 .with_danger_accept_invalid_certs(true)
                 .with_danger_skip_domain_validation(true);
         }
+        let mut setup = vec![
+            crate::SESSION_BOOTSTRAP_SQL.to_owned(),
+            format!("USE `{}`", self.database.replace('`', "``")),
+        ];
+        if product == "MariaDB" {
+            setup.push(crate::session::MARIADB_BOOTSTRAP_SQL.to_owned());
+        }
         let builder = OptsBuilder::default()
             .ip_or_hostname(self.host.clone())
             .tcp_port(self.port)
@@ -346,10 +353,7 @@ impl MysqlConfig {
             // la riga e non la cambia conta 1 (non 0), che la cambi 2.
             .client_found_rows(true)
             .ssl_opts(Some(ssl))
-            .setup(vec![
-                crate::SESSION_BOOTSTRAP_SQL.to_owned(),
-                format!("USE `{}`", self.database.replace('`', "``")),
-            ]);
+            .setup(setup);
         Ok(builder)
     }
 }

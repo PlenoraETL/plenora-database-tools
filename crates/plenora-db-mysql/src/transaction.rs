@@ -116,6 +116,15 @@ async fn verify_isolation(
 }
 
 impl MysqlTransaction {
+    fn validate_caller_sql(&self, sql: &str) -> Result<()> {
+        use plenora_database_core::native_query_policy::{
+            enforce_mysql_transaction_sql, enforce_policy,
+        };
+        // Deny conserva la diagnostica della policy anche quando l'allowlist rifiuta.
+        enforce_policy(self.native_query_policy, sql)?;
+        enforce_mysql_transaction_sql(sql)
+    }
+
     // Chiudere il socket non equivale a una conferma del server: un successivo
     // rollback deve conservare l'incertezza, anche per execute e query raccolta.
     async fn discard_after_failure(&mut self, effect: RemoteEffect) {
@@ -728,13 +737,7 @@ impl TransactionScope for MysqlTransaction {
                 }
                 // La policy condivisa blocca DDL, comandi di sessione e
                 // multi-statement prima del round-trip al server.
-                plenora_database_core::native_query_policy::enforce_mysql_transaction_sql(
-                    &statement.sql,
-                )?;
-                plenora_database_core::native_query_policy::enforce_policy(
-                    self.native_query_policy,
-                    &statement.sql,
-                )?;
+                self.validate_caller_sql(&statement.sql)?;
                 let params =
                     bind_positional_params(&statement.params, self.session.profile().kind())?;
                 let result = self
@@ -784,13 +787,7 @@ impl TransactionScope for MysqlTransaction {
                 let kind = self.session.kind();
                 let profile = self.session.profile();
                 // Applica la stessa policy usata dal percorso `execute`.
-                plenora_database_core::native_query_policy::enforce_mysql_transaction_sql(
-                    &statement.sql,
-                )?;
-                plenora_database_core::native_query_policy::enforce_policy(
-                    self.native_query_policy,
-                    &statement.sql,
-                )?;
+                self.validate_caller_sql(&statement.sql)?;
                 let params =
                     bind_positional_params(&statement.params, self.session.profile().kind())?;
                 // Prendo il timeout ORA per evitare borrow conflict con connection_mut sotto.
@@ -886,13 +883,7 @@ impl TransactionScope for MysqlTransaction {
                         "batch_size dello stream deve essere > 0",
                     ));
                 }
-                plenora_database_core::native_query_policy::enforce_mysql_transaction_sql(
-                    &statement.sql,
-                )?;
-                plenora_database_core::native_query_policy::enforce_policy(
-                    self.native_query_policy,
-                    &statement.sql,
-                )?;
+                self.validate_caller_sql(&statement.sql)?;
                 let params =
                     bind_positional_params(&statement.params, self.session.profile().kind())?;
                 let profile = self.session.profile();
@@ -1173,21 +1164,9 @@ impl TransactionScope for MysqlTransaction {
                     return Err(closed_error(ErrorPhase::Write, self.session.kind()));
                 }
                 // La policy copre UPDATE e l'eventuale probe associato.
-                plenora_database_core::native_query_policy::enforce_mysql_transaction_sql(
-                    &request.update.sql,
-                )?;
-                plenora_database_core::native_query_policy::enforce_policy(
-                    self.native_query_policy,
-                    &request.update.sql,
-                )?;
+                self.validate_caller_sql(&request.update.sql)?;
                 if let Some(probe) = request.key_probe {
-                    plenora_database_core::native_query_policy::enforce_mysql_transaction_sql(
-                        &probe.sql,
-                    )?;
-                    plenora_database_core::native_query_policy::enforce_policy(
-                        self.native_query_policy,
-                        &probe.sql,
-                    )?;
+                    self.validate_caller_sql(&probe.sql)?;
                 }
                 // Pattern:
                 //   1. SAVEPOINT __plenora_cu

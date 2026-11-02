@@ -677,6 +677,12 @@ async fn execute_mysql_write(
     let token = effective_cancellation.token();
     let pool = provider.pool_for(secret)?;
     let mut session = pool.checkout(token).await?;
+    // Solo la misura raw del server; il replay conserva tutte le difese.
+    #[cfg(test)]
+    {
+        session.raw_write_probe =
+            plenora_database_testkit::write_probe::is_raw_probe(&operation.target.object);
+    }
     let target_schema = operation
         .target
         .schema

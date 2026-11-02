@@ -58,12 +58,16 @@ EXPECTED_VERSION_PREFIX = BASELINE.version_prefix
 # chiuso invece di qualificare una superficie che non e piu quella dichiarata.
 
 EXPECTED_UNIT_TESTS = {
+    "session::caller_sql_session_tests::raw_probe_bypass_is_local_to_the_measurement_session",
     "transaction::caller_sql_send_tests::failed_profile_read_closes_scope_and_commit_requires_recovery",
     "transaction::caller_sql_send_tests::stream_eof_waits_for_profile_validation",
     "config::tests::bootstrap_quotes_configured_database_identifiers",
     "session_profile::tests::profile_rejects_each_drift_null_missing_and_extra_value",
     "session_profile::tests::profile_normalizes_modes_and_booleans_without_hiding_drift",
     "session_profile::tests::profile_covers_every_bootstrap_assignment_in_one_select",
+    "session_profile::tests::mysql_does_not_read_mariadb_only_variable",
+    "session_profile::tests::database_case_mismatch_is_explicit_and_never_exposes_the_name",
+    "config::tests::mariadb_bootstrap_runs_after_each_reset_only_for_mariadb",
     "write::tests::qualified_profile_pure_guards",
     "write::tests::bounded_types_all_policies_both_products",
     "write::tests::server_probe_binds_text_that_production_refuses_before_io",
@@ -396,6 +400,8 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
 EXPECTED_LIVE_REFERENCE_TESTS = {
     "live_tests::live_sospetti_warnings_and_byte_domains",
     "live_tests::live_sospetti_warning_frontier",
+    "live_tests::live_sospetti_minimal_privileges",
+    "live_tests::live_sospetti_fixed_session_frontier",
     "live_tests::live_sospetti_mysql_lexer_and_protected_settings",
     "live_tests::live_sospetti_conditional_update_closes_scope",
     "live_tests::live_sospetti_unfinished_stream_prevents_commit",
