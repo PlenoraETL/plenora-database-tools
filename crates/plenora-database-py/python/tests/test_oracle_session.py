@@ -388,7 +388,7 @@ def test_oracle_empty_keys_are_refused_without_effect(mode):
     try:
         _drop_probe(session, name)
         session.execute_ddl(f'CREATE TABLE "{name}" ("K" VARCHAR2(10) PRIMARY KEY, "V" NUMBER(10))')
-        session.execute(f'INSERT INTO "{name}" VALUES (:1, :2)', ["kept", 7])
+        session.execute_sql(f'INSERT INTO "{name}" VALUES (:1, :2)', ["kept", 7])
         fields = [pa.field("K", pa.string(), nullable=False)]
         arrays = [pa.array([""], type=pa.string())]
         if mode != "delete_by_keys":

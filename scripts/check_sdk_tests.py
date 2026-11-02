@@ -216,7 +216,7 @@ SCOPE_CONTRACTS = {
         },
     ),
     "stabilization": ScopeContract(passed=30, deselected=0, skips={}),
-    "benchmark": ScopeContract(passed=2, deselected=630, skips={}),
+    "benchmark": ScopeContract(passed=2, deselected=639, skips={}),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende
