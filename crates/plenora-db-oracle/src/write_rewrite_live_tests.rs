@@ -210,6 +210,19 @@ fn assert_rewritten(error: &plenora_database_core::DatabaseError, key: bool) {
     );
 }
 
+/// Il batch della prova RAW: `text_batch` deduce il tipo dal nome, qui serve
+/// sia `Binary` sia `LargeBinary` sulla stessa colonna `V`.
+fn raw_batch(data_type: &DataType, ids: Vec<i32>, columns: Vec<ArrayRef>) -> RecordBatch {
+    let schema = contract_schema(vec![
+        Field::new("ID", DataType::Int32, false),
+        Field::new("V", data_type.clone(), true),
+    ])
+    .expect("schema");
+    let mut arrays: Vec<ArrayRef> = vec![Arc::new(Int32Array::from(ids))];
+    arrays.extend(columns);
+    RecordBatch::try_new(schema, arrays).expect("batch")
+}
+
 fn text_batch(fields: &[(&str, bool)], ids: Vec<i32>, columns: Vec<ArrayRef>) -> RecordBatch {
     let mut schema = vec![Field::new("ID", DataType::Int32, false)];
     schema.extend(fields.iter().map(|(name, _)| {
@@ -857,8 +870,8 @@ async fn live_writer_cast_refuses_oversized_raw_before_scalar_and_array_dml() {
                     &[]
                 };
                 for rows in [1, 3] {
-                    let batch = text_batch(
-                        &[("V", true)],
+                    let batch = raw_batch(
+                        &data_type,
                         (0..rows).collect(),
                         vec![{
                             let values = (0..rows)
