@@ -84,9 +84,12 @@ def check_captured_inventory() -> None:
 def check_campaign() -> None:
     names = sorted(f"live_tests::{name}" for name in gate.live_source_inventory())
     listing = "\n".join(f"{name}: test" for name in names)
-    def execute(command, *, environment):
+    def execute(command, *, environment, timeout):
         assert command[-5:] == ["--", "--exact", "--ignored", "--test-threads=1", "--show-output"]
         assert environment == {"fixture": "test"}
+        # La sola sonda della regola A ha un budget suo; gli altri restano a 30 minuti.
+        expected = 60 * 60 if command[5].endswith("::live_sonde_scritture_server") else gate.TIMEOUT
+        assert timeout == expected, (command[5], timeout)
         return f"test {command[5]} ... ok\n\nsuccesses:\ncensimento parametri: fine\n"
     with patch.object(gate, "run", side_effect=execute) as run, redirect_stdout(io.StringIO()):
         output = gate.run_live_campaign(listing, {"fixture": "test"})

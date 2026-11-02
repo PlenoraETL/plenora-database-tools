@@ -48,6 +48,9 @@ DRIVER_LIVE_SOURCE = (
 PYTHON_TESTS = ROOT / "crates" / "plenora-database-py" / "python" / "tests"
 RESULT = ROOT / "assurance-results" / "oracle-reference.json"
 TIMEOUT = 30 * 60
+# La sonda della regola A misura il server e poi ripete la batteria attraverso
+# il writer (replay dei profili): misurata 1800+ s nel gate, ha un budget suo.
+LIVE_TIMEOUTS = {"live_sonde_scritture_server": 60 * 60}
 REQUIRED_LIVE_TESTS = frozenset(
     {
         "live_duplicate_result_names_preserve_positions",
@@ -119,7 +122,12 @@ SERVER_VERSION_SQL = (
 )
 
 
-def run(command: list[str], *, environment: dict[str, str] | None = None) -> str:
+def run(
+    command: list[str],
+    *,
+    environment: dict[str, str] | None = None,
+    timeout: int = TIMEOUT,
+) -> str:
     """Esegue un passo limitato nel tempo e ne rende visibile l'output."""
 
     merged_environment = os.environ.copy()
@@ -132,7 +140,7 @@ def run(command: list[str], *, environment: dict[str, str] | None = None) -> str
             check=False,
             text=True,
             capture_output=True,
-            timeout=TIMEOUT,
+            timeout=timeout,
             env=merged_environment,
         )
     except subprocess.TimeoutExpired as error:
@@ -575,12 +583,14 @@ def run_live_campaign(listing: str, environment: dict[str, str]) -> str:
     outputs: list[str] = []
     for name in names:
         started = time.monotonic()
-        print(f"oracle live: inizio {name}; budget={TIMEOUT}s", flush=True)
+        budget = LIVE_TIMEOUTS.get(name.rsplit("::", 1)[-1], TIMEOUT)
+        print(f"oracle live: inizio {name}; budget={budget}s", flush=True)
         try:
             output = run(
                 ["cargo", "test", "--locked", "-p", "plenora-db-oracle",
                  name, "--", "--exact", "--ignored", "--test-threads=1", "--show-output"],
                 environment=environment,
+                timeout=budget,
             )
             if live_inventory.executed_tests(output) != {name}:
                 raise RuntimeError(f"esecuzione live Oracle incompleta: {name}")
