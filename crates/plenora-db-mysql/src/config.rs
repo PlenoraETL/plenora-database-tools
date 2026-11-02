@@ -346,7 +346,10 @@ impl MysqlConfig {
             // la riga e non la cambia conta 1 (non 0), che la cambi 2.
             .client_found_rows(true)
             .ssl_opts(Some(ssl))
-            .setup(vec![crate::SESSION_BOOTSTRAP_SQL]);
+            .setup(vec![
+                crate::SESSION_BOOTSTRAP_SQL.to_owned(),
+                format!("USE `{}`", self.database.replace('`', "``")),
+            ]);
         Ok(builder)
     }
 }

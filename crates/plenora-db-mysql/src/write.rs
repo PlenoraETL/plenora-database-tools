@@ -1239,6 +1239,9 @@ pub(crate) async fn verify_write_session(
     session: &mut crate::MysqlSession,
     token: &plenora_database_core::CancellationToken,
 ) -> Result<()> {
+    session
+        .verify_session_profile(ErrorPhase::Prepare, token)
+        .await?;
     let mariadb = session.kind() == plenora_database_core::plan::ProviderKind::Mariadb;
     if mariadb {
         session

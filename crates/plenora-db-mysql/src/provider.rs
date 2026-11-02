@@ -1247,6 +1247,16 @@ async fn execute_mysql_write_after_ddl(
         }
     }
 
+    if let Err(error) = session
+        .verify_session_profile(ErrorPhase::Commit, token)
+        .await
+    {
+        return crate::write::commit_failure(
+            error.after_unproven_send(),
+            execution_id,
+            progress.received,
+        );
+    }
     let result = match session
         .exec_transaction(
             crate::session::MysqlTransactionCommand::Commit,
@@ -1371,13 +1381,20 @@ async fn diagnostic_mysql_write(
             Some(crate::profile::PROVISIONAL_KIND),
             Some(execution_id.to_owned()),
         )?),
-        Ok(None) => match session
-            .exec_transaction(
-                crate::session::MysqlTransactionCommand::Commit,
-                ErrorPhase::Commit,
-                cancellation,
-            )
-            .await
+        Ok(None) => match async {
+            session
+                .verify_session_profile(ErrorPhase::Commit, cancellation)
+                .await
+                .map_err(DatabaseError::after_unproven_send)?;
+            session
+                .exec_transaction(
+                    crate::session::MysqlTransactionCommand::Commit,
+                    ErrorPhase::Commit,
+                    cancellation,
+                )
+                .await
+        }
+        .await
         {
             Ok(()) => {
                 crate::write::committed_outcome(execution_id.to_owned(), declared_rows, applied)

@@ -136,6 +136,22 @@ impl MysqlTransaction {
         result
     }
 
+    async fn verify_profile(
+        &mut self,
+        phase: ErrorPhase,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        if let Err(error) = self
+            .session
+            .verify_session_profile(phase, cancellation)
+            .await
+        {
+            self.discard_after_failure(RemoteEffect::Unknown).await;
+            return Err(error.after_unproven_send());
+        }
+        Ok(())
+    }
+
     /// Apre la transazione emettendo `START TRANSACTION` con opzioni.
     ///
     /// # Errors
@@ -342,15 +358,13 @@ async fn raw_exec(
 /// `reads.server_cursor` resta comunque `false` su questo prodotto: questo e
 /// uno stream, non un cursore che qualcuno possa nominare e riprendere.
 struct MysqlRowStream<'a> {
-    result: mysql_async::QueryResult<'a, 'static, mysql_async::BinaryProtocol>,
-    columns: Arc<[String]>,
-    batch_size: usize,
+    pump: ProviderFuture<'a, ()>,
+    batches: tokio::sync::mpsc::Receiver<(Vec<Row>, tokio::sync::oneshot::Sender<()>)>,
     exhausted: bool,
+    pump_done: bool,
     transaction_open: &'a mut bool,
     transaction_failed: &'a mut bool,
-    kind: ProviderKind,
     profile: &'static dyn crate::profile::ProductProfile,
-    timeout: std::time::Duration,
 }
 
 fn abandon_stream(exhausted: bool, open: &mut bool, failed: &mut bool) {
@@ -379,66 +393,119 @@ impl RowStream for MysqlRowStream<'_> {
             if self.exhausted {
                 return Ok(None);
             }
-            let mut batch = Vec::with_capacity(self.batch_size);
-            while batch.len() < self.batch_size {
-                let next = tokio::select! {
+            loop {
+                tokio::select! {
                     biased;
                     _ = cancellation.cancelled() => {
                         abandon_stream(false, self.transaction_open, self.transaction_failed);
                         self.exhausted = true;
-                        return Err(interruption_error(
-                            self.profile,
-                            cancellation,
-                            ErrorPhase::Read,
-                            RemoteEffect::None,
-                        ));
+                        return Err(interruption_error(self.profile, cancellation, ErrorPhase::Read, RemoteEffect::Unknown));
                     }
-                    result = tokio::time::timeout(self.timeout, self.result.next()) => result,
-                };
-                match next {
-                    Ok(Ok(Some(row))) => match decode_row(row, &self.columns, self.kind) {
-                        Ok(row) => batch.push(row),
-                        Err(error) => {
+                    result = &mut self.pump, if !self.pump_done => {
+                        self.pump_done = true;
+                        if let Err(error) = result {
                             abandon_stream(false, self.transaction_open, self.transaction_failed);
                             self.exhausted = true;
-                            return Err(error);
+                            return Err(error.after_unproven_send());
                         }
-                    },
-                    Ok(Ok(None)) => {
-                        // Il result set e finito: la connessione e pulita, e
-                        // la transazione puo ancora committare.
-                        self.exhausted = true;
-                        if self.result.warnings() != 0 {
-                            *self.transaction_open = false;
-                            *self.transaction_failed = true;
-                            return Err(crate::session::warning_error(self.kind, ErrorPhase::Read));
-                        }
-                        break;
                     }
-                    Ok(Err(error)) => {
-                        abandon_stream(false, self.transaction_open, self.transaction_failed);
-                        self.exhausted = true;
-                        return Err(driver_error(
-                            self.profile,
-                            &error,
-                            ErrorPhase::Read,
-                            RemoteEffect::None,
-                        ));
-                    }
-                    Err(_) => {
-                        abandon_stream(false, self.transaction_open, self.transaction_failed);
-                        self.exhausted = true;
-                        return Err(query_timeout_error(self.profile));
+                    batch = self.batches.recv() => {
+                        return Ok(if let Some((rows, resume)) = batch {
+                            let _ = resume.send(());
+                            Some(rows)
+                        } else {
+                            self.exhausted = true;
+                            None
+                        });
                     }
                 }
             }
-            if batch.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(batch))
-            }
         })
     }
+}
+
+/// Il futuro conserva il prestito della sessione, ma libera il result set prima
+/// della rilettura finale. Il canale limitato mantiene la backpressure.
+#[allow(clippy::too_many_arguments)]
+async fn pump_transaction_rows(
+    session: &mut MysqlSession,
+    sql: String,
+    params: mysql_async::Params,
+    sent: &SendMarker,
+    batch_size: usize,
+    batches: tokio::sync::mpsc::Sender<(Vec<Row>, tokio::sync::oneshot::Sender<()>)>,
+    opened: tokio::sync::oneshot::Sender<()>,
+    resume: tokio::sync::oneshot::Receiver<()>,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let profile = session.profile();
+    let kind = session.kind();
+    let timeout = session.operation_timeout();
+    let connection = session
+        .connection_mut()
+        .ok_or_else(|| closed_error(ErrorPhase::Read, kind))?;
+    let mut result = tokio::time::timeout(timeout, sent.sending(connection.exec_iter(sql, params)))
+        .await
+        .map_err(|_| query_timeout_error(profile))?
+        .map_err(|error| driver_error(profile, &error, ErrorPhase::Read, RemoteEffect::None))?;
+    let _ = opened.send(());
+    resume
+        .await
+        .map_err(|_| closed_error(ErrorPhase::Read, kind))?;
+    let columns: Arc<[String]> = Arc::from(result.columns().map_or_else(Vec::new, |columns| {
+        columns
+            .iter()
+            .map(|column| column.name_str().to_string())
+            .collect()
+    }));
+    let mut batch = Vec::with_capacity(batch_size);
+    loop {
+        let row = tokio::time::timeout(timeout, result.next())
+            .await
+            .map_err(|_| query_timeout_error(profile))?
+            .map_err(|error| driver_error(profile, &error, ErrorPhase::Read, RemoteEffect::None))?;
+        let Some(row) = row else {
+            break;
+        };
+        batch.push(decode_row(row, &columns, kind)?);
+        if batch.len() == batch_size {
+            send_stream_batch(
+                &batches,
+                std::mem::replace(&mut batch, Vec::with_capacity(batch_size)),
+                kind,
+            )
+            .await?;
+        }
+    }
+    if result.warnings() != 0 {
+        return Err(crate::session::warning_error(kind, ErrorPhase::Read));
+    }
+    result
+        .drop_result()
+        .await
+        .map_err(|error| driver_error(profile, &error, ErrorPhase::Read, RemoteEffect::None))?;
+    session
+        .verify_session_profile(ErrorPhase::Read, cancellation)
+        .await?;
+    if !batch.is_empty() {
+        send_stream_batch(&batches, batch, kind).await?;
+    }
+    Ok(())
+}
+
+async fn send_stream_batch(
+    sender: &tokio::sync::mpsc::Sender<(Vec<Row>, tokio::sync::oneshot::Sender<()>)>,
+    batch: Vec<Row>,
+    kind: ProviderKind,
+) -> Result<()> {
+    let (resume, resumed) = tokio::sync::oneshot::channel();
+    sender
+        .send((batch, resume))
+        .await
+        .map_err(|_| closed_error(ErrorPhase::Read, kind))?;
+    resumed
+        .await
+        .map_err(|_| closed_error(ErrorPhase::Read, kind))
 }
 
 fn decode_row(mut row: MyRow, columns: &Arc<[String]>, kind: ProviderKind) -> Result<Row> {
@@ -685,7 +752,11 @@ impl TransactionScope for MysqlTransaction {
                 // inviato, senza trasformarlo in un abort della transazione.
                 // Rollback server, trasporto incerto e warning di alterazione
                 // chiudono invece lo scope: nessun commit dopo un warning.
-                self.finish_caller_write(result).await
+                let result = self.finish_caller_write(result).await;
+                if self.open {
+                    self.verify_profile(ErrorPhase::Write, cancellation).await?;
+                }
+                result
             }
             .await;
             crate::profile::attributed_kind(kind, outcome)
@@ -756,6 +827,9 @@ impl TransactionScope for MysqlTransaction {
                         if error.remote_effect == RemoteEffect::RolledBack {
                             self.discard_after_failure(error.remote_effect).await;
                         }
+                        if self.open {
+                            self.verify_profile(ErrorPhase::Read, cancellation).await?;
+                        }
                         return Err(error);
                     }
                     Err(_) => {
@@ -771,6 +845,7 @@ impl TransactionScope for MysqlTransaction {
                     self.discard_after_failure(RemoteEffect::Unknown).await;
                     return Err(error);
                 }
+                self.verify_profile(ErrorPhase::Read, cancellation).await?;
                 // Extract column names dal primo row (o vuoto se nessun result).
                 let columns: Arc<[String]> = if rows.is_empty() {
                     Arc::from(Vec::<String>::new())
@@ -821,78 +896,30 @@ impl TransactionScope for MysqlTransaction {
                 let params =
                     bind_positional_params(&statement.params, self.session.profile().kind())?;
                 let profile = self.session.profile();
-                let timeout = self.session.operation_timeout();
-                let Self {
-                    session,
-                    sent,
-                    open: transaction_open,
-                    recovery_required: transaction_failed,
-                    ..
-                } = self;
-                let connection = session
-                    .connection_mut()
-                    .ok_or_else(|| closed_error(ErrorPhase::Read, kind))?;
-                // Lo statement viaggia **posseduto**, non in prestito: il result
-                // set che ne esce vive quanto lo stream, e mysql_async lega la
-                // sua vita a quella del testo. E' la stessa forma che il
-                // percorso Arrow usa gia in `pump_exec_rows`.
-                let sql = statement.sql.clone();
-                let open = sent.sending(connection.exec_iter(sql, params));
-                // La cancellazione vale anche **all'apertura**: un token gia
-                // scaduto non deve far partire una query che nessuno leggera.
-                let opened = tokio::select! {
+                let Self { session, sent, open: transaction_open, recovery_required: transaction_failed, .. } = self;
+                let (sender, batches) = tokio::sync::mpsc::channel(1);
+                let (opened, ready) = tokio::sync::oneshot::channel();
+                let (resume, resumed) = tokio::sync::oneshot::channel();
+                let mut pump: ProviderFuture<'a, ()> = Box::pin(pump_transaction_rows(
+                    session, statement.sql.clone(), params, sent, batch_size as usize,
+                    sender, opened, resumed, cancellation,
+                ));
+                tokio::select! {
+                    biased;
                     _ = cancellation.cancelled() => {
                         abandon_stream(false, transaction_open, transaction_failed);
-                        return Err(interruption_error(
-                            profile,
-                            cancellation,
-                            ErrorPhase::Read,
-                            RemoteEffect::None,
-                        ));
+                        return Err(interruption_error(profile, cancellation, ErrorPhase::Read, RemoteEffect::None));
                     }
-                    result = tokio::time::timeout(timeout, open) => result,
-                };
-                let result = match opened {
-                    Ok(Ok(result)) => result,
-                    Ok(Err(error)) => {
-                        let error =
-                            driver_error(profile, &error, ErrorPhase::Read, RemoteEffect::None);
-                        // Un rollback server non lascia uno scope in autocommit.
-                        if matches!(
-                            error.remote_effect,
-                            RemoteEffect::RolledBack | RemoteEffect::Unknown
-                        ) {
-                            abandon_stream(false, transaction_open, transaction_failed);
-                        }
-                        return Err(error);
-                    }
-                    Err(_) => {
+                    result = &mut pump => {
                         abandon_stream(false, transaction_open, transaction_failed);
-                        return Err(query_timeout_error(profile));
+                        return Err(result.err().unwrap_or_else(|| closed_error(ErrorPhase::Read, kind)));
                     }
-                };
-                // I nomi di colonna si leggono **una volta**, dai metadata del
-                // result set e non dalla prima riga: uno stream che non rende
-                // nemmeno una riga ha comunque uno schema, e prenderlo dalla
-                // riga lo renderebbe vuoto proprio nel caso in cui il
-                // chiamante non ha modo di ricavarlo altrimenti.
-                let columns: Arc<[String]> =
-                    Arc::from(result.columns().map_or_else(Vec::new, |columns| {
-                        columns
-                            .iter()
-                            .map(|column| column.name_str().to_string())
-                            .collect()
-                    }));
+                    _ = ready => {}
+                }
+                let _ = resume.send(());
                 Ok(Box::new(MysqlRowStream {
-                    result,
-                    columns,
-                    batch_size: batch_size as usize,
-                    exhausted: false,
-                    transaction_open,
-                    transaction_failed,
-                    kind,
-                    profile,
-                    timeout,
+                    pump, batches, exhausted: false, pump_done: false,
+                    transaction_open, transaction_failed, profile,
                 }) as Box<dyn RowStream + Send + 'a>)
             }
             .await;
@@ -1011,8 +1038,15 @@ impl TransactionScope for MysqlTransaction {
             let kind = self.session.kind();
             let outcome = async move {
                 if !self.open {
-                    return Err(closed_error(ErrorPhase::Commit, self.session.kind()));
+                    let error = closed_error(ErrorPhase::Commit, self.session.kind());
+                    return Err(if self.recovery_required {
+                        error.after_unproven_send()
+                    } else {
+                        error
+                    });
                 }
+                self.verify_profile(ErrorPhase::Commit, cancellation)
+                    .await?;
                 let outcome = self
                     .session
                     .exec_transaction(
@@ -1173,7 +1207,11 @@ impl TransactionScope for MysqlTransaction {
                         &self.sent,
                     )
                     .await;
-                let affected = self.finish_caller_write(result).await?;
+                let result = self.finish_caller_write(result).await;
+                if self.open {
+                    self.verify_profile(ErrorPhase::Write, cancellation).await?;
+                }
+                let affected = result?;
                 if affected == request.expected_affected_rows {
                     self.release_savepoint(sp, cancellation).await?;
                     Ok(())

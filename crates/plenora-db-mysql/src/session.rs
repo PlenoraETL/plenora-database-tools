@@ -35,12 +35,11 @@ use plenora_database_core::{
 /// `(0,'zero')` su `(1,a),(2,b),(3,a)` committavano la riga `4:zero`. Con la
 /// modalita lo 0 si scrive come 0, come ogni altro valore; vale anche per lo
 /// SQL del chiamante sulla stessa connessione, che per ottenere il valore
-/// della sequenza scrive `NULL` o omette la colonna. L'ordine e quello in cui
-/// il server rilegge `@@sql_mode`, cosi che la misura del bootstrap lo
-/// confronti testo per testo.
+/// della sequenza scrive `NULL` o omette la colonna. `sql_mode` viene
+/// confrontato come insieme, indipendentemente dall'ordine del server.
 /// I tre modi zero-date/divisione insieme a strict evitano il warning 3135.
 /// La scrittura rilegge i valori (`crate::write::verify_write_session`).
-pub const SESSION_BOOTSTRAP_SQL: &str = "SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', foreign_key_checks = 1, unique_checks = 1, sql_notes = 1, sql_select_limit = 18446744073709551615";
+pub const SESSION_BOOTSTRAP_SQL: &str = "SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', foreign_key_checks = 1, unique_checks = 1, sql_notes = 1, sql_select_limit = 18446744073709551615, character_set_client = 'utf8mb4', character_set_connection = 'utf8mb4', character_set_results = 'utf8mb4', collation_connection = 'utf8mb4_general_ci', max_error_count = 65535";
 
 #[cfg(test)]
 static TEST_ROW_PULLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -142,6 +141,8 @@ pub struct MysqlSession {
     /// Il prodotto servito dalla connessione, ereditato dal pool.
     profile: &'static dyn crate::profile::ProductProfile,
     connection: Option<Conn>,
+    expected_database: String,
+    expected_profile: Option<crate::session_profile::SessionProfile>,
     state: MysqlSessionState,
     operation_timeout: std::time::Duration,
     pool_permit: Option<tokio::sync::OwnedSemaphorePermit>,
@@ -186,13 +187,17 @@ impl MysqlSession {
                 }
             }
         };
-        Ok(Self {
+        let mut session = Self {
             profile: &crate::profile::MYSQL_PROFILE,
+            expected_database: config.database().to_owned(),
+            expected_profile: None,
             connection: Some(connection),
             state: MysqlSessionState::Ready,
             operation_timeout: config.operation_timeout(),
             pool_permit: None,
-        })
+        };
+        session.capture_session_profile(cancellation).await?;
+        Ok(session)
     }
 
     pub(crate) const fn from_connection(
@@ -200,14 +205,85 @@ impl MysqlSession {
         operation_timeout: std::time::Duration,
         pool_permit: tokio::sync::OwnedSemaphorePermit,
         profile: &'static dyn crate::profile::ProductProfile,
+        expected_database: String,
     ) -> Self {
         Self {
             profile,
+            expected_database,
+            expected_profile: None,
             connection: Some(connection),
             state: MysqlSessionState::Ready,
             operation_timeout,
             pool_permit: Some(pool_permit),
         }
+    }
+
+    /// Chiamato esclusivamente dopo il setup del driver, mai dopo SQL applicativo.
+    pub(crate) async fn capture_session_profile(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        if self.expected_profile.is_some() {
+            return self
+                .verify_session_profile(ErrorPhase::Connect, cancellation)
+                .await;
+        }
+        let result = self
+            .query_rows(
+                &crate::session_profile::select_sql(),
+                ErrorPhase::Connect,
+                cancellation,
+            )
+            .await
+            .and_then(|rows| {
+                #[cfg(test)]
+                crate::session_profile::SessionProfile::log_bootstrap(&rows);
+                crate::session_profile::SessionProfile::capture(&rows, &self.expected_database)
+                    .map_err(|name| self.profile_error(ErrorPhase::Connect, name))
+            });
+        match result {
+            Ok(profile) => {
+                self.expected_profile = Some(profile);
+                Ok(())
+            }
+            Err(error) => {
+                self.quarantine().await;
+                Err(error)
+            }
+        }
+    }
+
+    fn profile_error(&self, phase: ErrorPhase, name: &'static str) -> DatabaseError {
+        DatabaseError::new(
+            ErrorCategory::Execution,
+            phase,
+            Some(self.kind()),
+            format!("profilo di sessione diverso da quello configurato: {name}"),
+        )
+    }
+
+    /// Rilegge il profilo dopo i diagnostici dello statement, senza riparare drift.
+    pub(crate) async fn verify_session_profile(
+        &mut self,
+        phase: ErrorPhase,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        let rows = self
+            .query_rows(&crate::session_profile::select_sql(), phase, cancellation)
+            .await;
+        let result = rows.and_then(|rows| {
+            let divergence = self
+                .expected_profile
+                .as_ref()
+                .map_or(Some("profile_missing"), |profile| {
+                    profile.divergence(&rows, &self.expected_database)
+                });
+            divergence.map_or(Ok(()), |name| Err(self.profile_error(phase, name)))
+        });
+        if result.is_err() {
+            self.quarantine().await;
+        }
+        result
     }
 
     /// Il prodotto servito dalla connessione.

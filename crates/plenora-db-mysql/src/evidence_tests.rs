@@ -474,7 +474,12 @@ fn the_real_bootstrap_parses_into_pinned_assignments() {
             "foreign_key_checks",
             "unique_checks",
             "sql_notes",
-            "sql_select_limit"
+            "sql_select_limit",
+            "character_set_client",
+            "character_set_connection",
+            "character_set_results",
+            "collation_connection",
+            "max_error_count"
         ]
     );
 }

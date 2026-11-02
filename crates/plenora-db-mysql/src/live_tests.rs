@@ -13238,6 +13238,8 @@ async fn live_sospetti_warning_frontier() {
     assert!(crate::write::verify_write_session(&mut session, &cancel)
         .await
         .is_err());
+    drop(session);
+    let mut session = pool.checkout(&cancel).await.unwrap();
     // Riproduce il ripristino sulla sessione RAW prima che un'altra query
     // cancelli i diagnostici. Nessun testo del server entra nel referto.
     raw.query_drop("SET SESSION sql_notes = 0").await.unwrap();
@@ -13862,4 +13864,219 @@ async fn live_sospetti_implicit_commit_preflight() {
         assert_eq!(rows, Some(0));
     }
     raw.query_drop("DROP TABLE pln_s900_atomic").await.unwrap();
+}
+
+/// D-E: il reset raw conserva `DATABASE()`; il bootstrap del pool lo ripristina.
+#[tokio::test]
+#[ignore = "richiede MySQL/MariaDB live esplicito"]
+async fn live_sospetti_database_reset_and_checkout() {
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let config = live_config();
+    let cancel = CancellationToken::new();
+    let opts = mysql_async::OptsBuilder::from_opts(config.driver_opts("MySQL").unwrap())
+        .setup(Vec::<String>::new());
+    let mut raw = mysql_async::Conn::new(opts).await.unwrap();
+    let id = raw.id();
+    raw.query_drop("USE information_schema").await.unwrap();
+    assert!(
+        raw.reset().await.unwrap(),
+        "COM_RESET_CONNECTION deve essere supportato"
+    );
+    assert_eq!(raw.id(), id, "reset sulla stessa connessione fisica");
+    let database: Option<String> = raw.query_first("SELECT DATABASE()").await.unwrap();
+    // Stessa aspettativa, misurata separatamente dai gate MySQL e MariaDB:
+    // COM_RESET_CONNECTION non ripristina il database selezionato nell'handshake.
+    assert_eq!(database.as_deref(), Some("information_schema"));
+    println!(
+        "D-E product={} COM_RESET_CONNECTION conserva il database corrente",
+        if semantica_mariadb() {
+            "MariaDB"
+        } else {
+            "MySQL"
+        }
+    );
+    raw.disconnect().await.unwrap();
+
+    let profile: &'static dyn crate::profile::ProductProfile = if semantica_mariadb() {
+        &crate::profile::MARIADB_PROFILE
+    } else {
+        &crate::profile::MYSQL_PROFILE
+    };
+    let mut pool = crate::MysqlPool::new_with_profile(&config, 1, profile).unwrap();
+    pool.retain_single_idle_connection(&config);
+    let mut session = pool.checkout(&cancel).await.unwrap();
+    let connection = session.connection_mut().unwrap();
+    let id = connection.id();
+    connection
+        .query_drop("USE information_schema")
+        .await
+        .unwrap();
+    drop(session);
+    let mut next = pool.checkout(&cancel).await.unwrap();
+    let connection = next.connection_mut().unwrap();
+    assert_eq!(
+        connection.id(),
+        id,
+        "checkout deve esercitare il riuso dopo reset"
+    );
+    let database: Option<String> = connection.query_first("SELECT DATABASE()").await.unwrap();
+    assert_eq!(database.as_deref(), Some(config.database()));
+    // Una relazione non qualificata e risolta nel database configurato.
+    connection
+        .query_drop("CREATE TEMPORARY TABLE pln_s900_database(id INT)")
+        .await
+        .unwrap();
+    connection
+        .query_drop("INSERT INTO pln_s900_database VALUES(7)")
+        .await
+        .unwrap();
+    let value: Option<i32> = connection
+        .query_first("SELECT id FROM pln_s900_database")
+        .await
+        .unwrap();
+    assert_eq!(value, Some(7));
+    drop(next);
+    let provider = semantica_provider();
+    let error = provider
+        .execute_ddl(&live_secret(), "USE information_schema", &cancel)
+        .await
+        .unwrap_err();
+    assert_eq!(error.remote_effect, RemoteEffect::None);
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+}
+
+/// Misura il ripristino del server dopo funzione e trigger, poi verifica il commit.
+#[tokio::test]
+#[ignore = "richiede MySQL/MariaDB live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_sospetti_routine_session_drift_prevents_commit() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    use plenora_database_core::RetryDisposition;
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let cancel = CancellationToken::new();
+    let provider = semantica_provider();
+    let secret = live_secret();
+    let budget = write_budget();
+    let mut raw = semantica_admin().await;
+    raw.query_drop("DROP FUNCTION IF EXISTS pln_s900_notes")
+        .await
+        .unwrap();
+    raw.query_drop("DROP TABLE IF EXISTS pln_s900_notes_target")
+        .await
+        .unwrap();
+    raw.query_drop("CREATE TABLE pln_s900_notes_target(id INT) ENGINE=InnoDB")
+        .await
+        .unwrap();
+    // La fixture rappresenta routine definite prima dell'introduzione del
+    // divieto dei batch: la loro presenza non dipende dalla policy corrente.
+    raw.query_drop("CREATE FUNCTION pln_s900_notes() RETURNS INT DETERMINISTIC BEGIN SET SESSION sql_notes=0; RETURN 1; END").await.unwrap();
+    raw.query_drop("START TRANSACTION").await.unwrap();
+    raw.query_drop("DO pln_s900_notes()").await.unwrap();
+    let notes: Option<u64> = raw.query_first("SELECT @@session.sql_notes").await.unwrap();
+    assert!(matches!(notes, Some(0 | 1)));
+    let function_drifts = notes == Some(0);
+    raw.query_drop("ROLLBACK").await.unwrap();
+    raw.query_drop(crate::SESSION_BOOTSTRAP_SQL).await.unwrap();
+    provider.execute_ddl(&secret, "CREATE TRIGGER pln_s900_notes_trigger BEFORE INSERT ON pln_s900_notes_target FOR EACH ROW SET SESSION sql_notes=0", &cancel).await.unwrap();
+    raw.query_drop("START TRANSACTION").await.unwrap();
+    raw.query_drop("INSERT INTO pln_s900_notes_target VALUES(1)")
+        .await
+        .unwrap();
+    let notes: Option<u64> = raw.query_first("SELECT @@session.sql_notes").await.unwrap();
+    assert!(matches!(notes, Some(0 | 1)));
+    let trigger_drifts = notes == Some(0);
+    raw.query_drop("ROLLBACK").await.unwrap();
+    raw.query_drop(crate::SESSION_BOOTSTRAP_SQL).await.unwrap();
+    println!("routine session product={} function_drift={function_drifts} trigger_drift={trigger_drifts}",
+        if semantica_mariadb() { "MariaDB" } else { "MySQL" });
+    for surface in ["query", "execute", "stream", "trigger"] {
+        let mut tx = provider
+            .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+            .await
+            .unwrap();
+        let result = match surface {
+            "query" => tx
+                .query(&Statement::new("SELECT pln_s900_notes()"), &cancel)
+                .await
+                .map(|_| ()),
+            "execute" => tx
+                .execute(&Statement::new("DO pln_s900_notes()"), &cancel)
+                .await
+                .map(|_| ()),
+            "trigger" => tx
+                .execute(
+                    &Statement::new("INSERT INTO pln_s900_notes_target VALUES(1)"),
+                    &cancel,
+                )
+                .await
+                .map(|_| ()),
+            _ => {
+                let statement = Statement::new("SELECT pln_s900_notes()");
+                let mut stream = tx.query_stream(&statement, 1, &cancel).await.unwrap();
+                loop {
+                    match stream.next_batch(&cancel).await {
+                        Err(error) => break Err(error),
+                        Ok(Some(_)) => {}
+                        Ok(None) => break Ok(()),
+                    }
+                }
+            }
+        };
+        let drifts = if surface == "trigger" {
+            trigger_drifts
+        } else {
+            function_drifts
+        };
+        if drifts {
+            let error = result.unwrap_err();
+            println!("routine drift surface={surface}: {}", error.message);
+            assert_eq!(error.remote_effect, RemoteEffect::Unknown, "{surface}");
+            assert_eq!(error.retry, RetryDisposition::RequiresRecovery, "{surface}");
+            let error = tx.commit(&cancel).await.unwrap_err();
+            assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+            assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+        } else {
+            result.unwrap();
+            tx.commit(&cancel).await.unwrap();
+        }
+    }
+    // Ultima frontiera indipendente: drift introdotto dopo checkout e prima
+    // dell'apertura, senza passare da uno statement del chiamante nello scope.
+    let profile: &'static dyn crate::profile::ProductProfile = if semantica_mariadb() {
+        &crate::profile::MARIADB_PROFILE
+    } else {
+        &crate::profile::MYSQL_PROFILE
+    };
+    let pool = crate::MysqlPool::new_with_profile(&live_config(), 1, profile).unwrap();
+    let mut session = pool.checkout(&cancel).await.unwrap();
+    session
+        .connection_mut()
+        .unwrap()
+        .query_drop("SET SESSION sql_notes=0")
+        .await
+        .unwrap();
+    let tx = crate::transaction::MysqlTransaction::begin(
+        session,
+        &TransactionOptions::default(),
+        &cancel,
+    )
+    .await
+    .unwrap();
+    let error = plenora_database_core::transaction::TransactionScope::commit(Box::new(tx), &cancel)
+        .await
+        .unwrap_err();
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Commit);
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    let count: Option<u64> = raw
+        .query_first("SELECT COUNT(*) FROM pln_s900_notes_target FOR UPDATE")
+        .await
+        .unwrap();
+    assert_eq!(count, Some(u64::from(!trigger_drifts)));
+    raw.query_drop("DROP TABLE pln_s900_notes_target")
+        .await
+        .unwrap();
+    raw.query_drop("DROP FUNCTION pln_s900_notes")
+        .await
+        .unwrap();
 }

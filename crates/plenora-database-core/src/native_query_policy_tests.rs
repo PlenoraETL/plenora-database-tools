@@ -326,3 +326,43 @@ fn mysql_charset_cannot_change_backslash_lexing() {
     assert!(super::enforce_mysql_caller_sql("SELECT '\u{7e17}\\\\'; DO 0").is_err());
     assert!(super::enforce_mysql_caller_sql("SELECT '\u{7e17}\\\\'").is_ok());
 }
+
+#[test]
+fn mysql_read_verbs_and_parenthesized_queries_are_admitted() {
+    for sql in [
+        "SHOW TABLES",
+        "EXPLAIN SELECT 1",
+        "EXPLAIN FORMAT=JSON SELECT 1",
+        "DESCRIBE t",
+        "DESC t",
+        "(SELECT 1) UNION (SELECT 2)",
+        "((SELECT 1))",
+        "(/*comment*/ SELECT 1)",
+    ] {
+        assert!(super::enforce_mysql_transaction_sql(sql).is_ok(), "{sql}");
+    }
+    for sql in [
+        "EXPLAIN ANALYZE SELECT 1",
+        "DESC ANALYZE SELECT 1",
+        "USE secret",
+        "(USE secret)",
+    ] {
+        assert!(super::enforce_mysql_transaction_sql(sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
+fn mysql_use_and_administrative_set_are_refused_outside_transactions() {
+    for sql in [
+        "USE secret",
+        "/*c*/ USE `secret`",
+        "SET GLOBAL sql_notes=0",
+        "SET PASSWORD='secret'",
+        "SET ROLE role1",
+        "SET DEFAULT ROLE role1",
+    ] {
+        let error = super::enforce_mysql_caller_sql(sql).unwrap_err();
+        assert!(!error.message.contains("secret"));
+        assert_eq!(error.remote_effect, crate::RemoteEffect::None);
+    }
+}

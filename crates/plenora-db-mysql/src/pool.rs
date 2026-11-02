@@ -14,6 +14,7 @@ pub struct MysqlPool {
     /// connessione appartiene al prodotto, non al crate.
     profile: &'static dyn crate::profile::ProductProfile,
     pool: Pool,
+    expected_database: String,
     checkout_timeout: std::time::Duration,
     connect_timeout: std::time::Duration,
     operation_timeout: std::time::Duration,
@@ -71,6 +72,7 @@ impl MysqlPool {
         }
         Ok(Self {
             profile,
+            expected_database: config.database().to_owned(),
             // Anche il costruttore del pool e un bordo: qui la
             // configurazione viene rivalidata, e l'errore che ne esce e il
             // primo che il consumatore vede al checkout.
@@ -83,6 +85,19 @@ impl MysqlPool {
             operation_timeout: config.operation_timeout(),
             permits: Arc::new(Semaphore::new(max_connections)),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retain_single_idle_connection(&mut self, config: &MysqlConfig) {
+        let options = mysql_async::OptsBuilder::from_opts(
+            config.driver_opts(self.profile.product()).unwrap(),
+        )
+        .pool_opts(
+            mysql_async::PoolOpts::default()
+                .with_constraints(mysql_async::PoolConstraints::new(1, 1).unwrap())
+                .with_reset_connection(true),
+        );
+        self.pool = Pool::new(options);
     }
 
     /// Acquisisce una sessione entro il budget temporale configurato.
@@ -127,12 +142,15 @@ impl MysqlPool {
                 }
             }
         };
-        Ok(MysqlSession::from_connection(
+        let mut session = MysqlSession::from_connection(
             connection,
             self.operation_timeout,
             permit,
             self.profile,
-        ))
+            self.expected_database.clone(),
+        );
+        session.capture_session_profile(cancellation).await?;
+        Ok(session)
     }
 }
 

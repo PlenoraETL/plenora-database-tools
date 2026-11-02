@@ -8,6 +8,16 @@ riassumono le note di quelle release.
 
 ## 9.0.0 - in preparazione
 
+- Modifica incompatibile MySQL/MariaDB della 9.0.0: lo SQL del chiamante
+  rifiuta USE e SET GLOBAL/PASSWORD/ROLE/DEFAULT ROLE anche fuori transazione.
+  Le operazioni amministrative possono cambiare identita, privilegi o default
+  condivisi: non appartengono alla sessione riutilizzabile del provider.
+  Il profilo completo di sessione viene riletto al checkout, dopo ogni SQL
+  transazionale (anche a fine stream) e prima del commit. Una divergenza
+  scarta la connessione e impedisce il commit con richiesta di recovery.
+  SHOW, EXPLAIN senza ANALYZE, DESCRIBE/DESC e SELECT/UNION fra parentesi
+  restano ammessi in transazione.
+
 - Audit pre-release MySQL/MariaDB: update condizionali rifiutati per warning o
   rollback server chiudono lo scope; stream senza EOF, cancellati o falliti
   impediscono il commit. Lo SQL del chiamante ammette solo SET di variabili

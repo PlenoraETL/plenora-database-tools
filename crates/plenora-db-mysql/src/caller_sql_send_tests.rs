@@ -310,3 +310,69 @@ async fn unverified_stream_completion_prevents_commit() {
         }
     }
 }
+
+#[tokio::test]
+async fn failed_profile_read_closes_scope_and_commit_requires_recovery() {
+    let cancel = CancellationToken::new();
+    let mut tx = scope();
+    let error = tx
+        .verify_profile(ErrorPhase::Read, &cancel)
+        .await
+        .unwrap_err();
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    assert!(!tx.open);
+    assert!(tx.recovery_required);
+    assert_eq!(tx.session.state(), crate::MysqlSessionState::Quarantined);
+    let error = Box::new(tx).commit(&cancel).await.unwrap_err();
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    // Il controllo prima di COMMIT e obbligatorio anche senza altre operazioni.
+    let error = Box::new(scope()).commit(&cancel).await.unwrap_err();
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+}
+
+#[tokio::test]
+async fn stream_eof_waits_for_profile_validation() {
+    for valid in [false, true] {
+        let mut open = true;
+        let mut failed = false;
+        let (sender, batches) = tokio::sync::mpsc::channel(1);
+        let pump = Box::pin(async move {
+            send_stream_batch(&sender, Vec::new(), ProviderKind::Mysql).await?;
+            if valid {
+                Ok(())
+            } else {
+                Err(DatabaseError::new(
+                    ErrorCategory::Execution,
+                    ErrorPhase::Read,
+                    Some(ProviderKind::Mysql),
+                    "profilo di sessione diverso da quello configurato",
+                ))
+            }
+        });
+        let mut stream = MysqlRowStream {
+            pump,
+            batches,
+            exhausted: false,
+            pump_done: false,
+            transaction_open: &mut open,
+            transaction_failed: &mut failed,
+            profile: &crate::profile::MYSQL_PROFILE,
+        };
+        let cancel = CancellationToken::new();
+        assert!(stream.next_batch(&cancel).await.unwrap().is_some());
+        let eof = stream.next_batch(&cancel).await;
+        if valid {
+            assert!(eof.unwrap().is_none());
+        } else {
+            let error = eof.unwrap_err();
+            assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+            assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+        }
+        drop(stream);
+        assert_eq!(open, valid);
+        assert_eq!(failed, !valid);
+    }
+}

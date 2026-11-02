@@ -63,7 +63,10 @@ fn pooled_driver_opts_reapply_bootstrap_after_connection_reset() {
         .pooled_driver_opts(2, "MySQL")
         .expect("driver opts pooled");
     assert!(opts.pool_opts().reset_connection());
-    assert_eq!(opts.setup(), &[crate::SESSION_BOOTSTRAP_SQL]);
+    assert_eq!(
+        opts.setup(),
+        &[crate::SESSION_BOOTSTRAP_SQL, "USE `warehouse`"]
+    );
     assert!(opts.client_found_rows(), "Update conta le righe trovate");
 }
 
@@ -87,4 +90,11 @@ fn non_secret_validation_does_not_require_a_password() {
         .validate_without_password()
         .expect_err("NUL host");
     assert_eq!(error.category, ErrorCategory::InvalidConfiguration);
+}
+
+#[test]
+fn bootstrap_quotes_configured_database_identifiers() {
+    let configured = MysqlConfig::new("localhost", "a`b", "loader", SecretString::new("secret"));
+    let opts = configured.driver_opts("MySQL").unwrap();
+    assert_eq!(opts.setup()[1], "USE `a``b`");
 }

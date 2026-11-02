@@ -38,6 +38,8 @@ fn an_abandoned_transaction_marks_its_session_quarantined() {
     let mut session = MysqlSession {
         profile: &crate::profile::MYSQL_PROFILE,
         connection: None,
+        expected_profile: None,
+        expected_database: "warehouse".to_owned(),
         state: MysqlSessionState::Ready,
         operation_timeout: std::time::Duration::from_secs(1),
         pool_permit: None,

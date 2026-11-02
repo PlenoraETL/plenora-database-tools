@@ -14,6 +14,11 @@ pub fn enforce_mysql_caller_sql(sql: &str) -> crate::Result<()> {
         ));
     }
     let tokens = &statements[0];
+    if tokens.first().is_some_and(|token| token == "USE") {
+        return Err(crate::DatabaseError::invalid_plan(
+            "USE non ammesso nello SQL del chiamante",
+        ));
+    }
     if tokens.first().is_some_and(|token| token == "SET") {
         user_assignments(&tokens[1..])?;
     }
@@ -31,8 +36,23 @@ pub fn enforce_mysql_caller_sql(sql: &str) -> crate::Result<()> {
 pub fn enforce_mysql_transaction_sql(sql: &str) -> crate::Result<()> {
     enforce_mysql_caller_sql(sql)?;
     let statements = statements(sql)?;
+    let tokens = &statements[0];
+    let first = tokens
+        .iter()
+        .position(|token| token != "(")
+        .unwrap_or(tokens.len());
+    let verb = tokens.get(first).map_or("", String::as_str);
+    if matches!(verb, "EXPLAIN" | "DESCRIBE" | "DESC")
+        && tokens
+            .get(first + 1)
+            .is_some_and(|token| token == "ANALYZE")
+    {
+        return Err(crate::DatabaseError::invalid_plan(
+            "EXPLAIN ANALYZE non ammesso nel transaction scope",
+        ));
+    }
     if !matches!(
-        statements[0][0].as_str(),
+        verb,
         "SELECT"
             | "INSERT"
             | "UPDATE"
@@ -43,6 +63,10 @@ pub fn enforce_mysql_transaction_sql(sql: &str) -> crate::Result<()> {
             | "TABLE"
             | "DO"
             | "SET"
+            | "SHOW"
+            | "EXPLAIN"
+            | "DESCRIBE"
+            | "DESC"
     ) {
         return Err(crate::DatabaseError::invalid_plan(
             "statement MySQL/MariaDB non ammesso nel transaction scope",

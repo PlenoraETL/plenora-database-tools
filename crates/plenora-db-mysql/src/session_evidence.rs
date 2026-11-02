@@ -67,6 +67,12 @@ const BOOTSTRAP_CONTRACT: &[(&str, &str)] = &[
     ("unique_checks", "1"),
     ("sql_notes", "1"),
     ("sql_select_limit", "18446744073709551615"),
+    ("character_set_client", "utf8mb4"),
+    ("character_set_connection", "utf8mb4"),
+    ("character_set_results", "utf8mb4"),
+    ("collation_connection", "utf8mb4_general_ci"),
+    ("max_error_count", "65535"),
+
 ];
 
 /// La query che rilegge esattamente le variabili del contratto.
@@ -182,7 +188,10 @@ fn bootstrap_satisfied(observed: &[String]) -> bool {
         && BOOTSTRAP_CONTRACT
             .iter()
             .zip(observed)
-            .all(|((_, expected), value)| value == expected)
+            .all(|((name, expected), value)| {
+                crate::session_profile::normalized(name, value)
+                    == crate::session_profile::normalized(name, expected)
+            })
 }
 
 /// Il bootstrap eseguito a mano: dice del server.

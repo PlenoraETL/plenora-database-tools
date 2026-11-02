@@ -58,6 +58,12 @@ EXPECTED_VERSION_PREFIX = BASELINE.version_prefix
 # chiuso invece di qualificare una superficie che non e piu quella dichiarata.
 
 EXPECTED_UNIT_TESTS = {
+    "transaction::caller_sql_send_tests::failed_profile_read_closes_scope_and_commit_requires_recovery",
+    "transaction::caller_sql_send_tests::stream_eof_waits_for_profile_validation",
+    "config::tests::bootstrap_quotes_configured_database_identifiers",
+    "session_profile::tests::profile_rejects_each_drift_null_missing_and_extra_value",
+    "session_profile::tests::profile_normalizes_modes_and_booleans_without_hiding_drift",
+    "session_profile::tests::profile_covers_every_bootstrap_assignment_in_one_select",
     "write::tests::qualified_profile_pure_guards",
     "write::tests::bounded_types_all_policies_both_products",
     "write::tests::server_probe_binds_text_that_production_refuses_before_io",
@@ -394,6 +400,8 @@ EXPECTED_LIVE_REFERENCE_TESTS = {
     "live_tests::live_sospetti_conditional_update_closes_scope",
     "live_tests::live_sospetti_unfinished_stream_prevents_commit",
     "live_tests::live_sospetti_implicit_commit_preflight",
+    "live_tests::live_sospetti_database_reset_and_checkout",
+    "live_tests::live_sospetti_routine_session_drift_prevents_commit",
     "live_tests::live_parameter_values_bind_exactly_or_are_refused",
     "live_tests::live_generated_values_bind_exactly_or_are_refused",
     "live_tests::live_caller_query_decode_failure_requires_recovery",
