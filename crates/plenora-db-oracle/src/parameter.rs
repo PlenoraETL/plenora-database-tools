@@ -23,6 +23,7 @@ struct LobIo<'a> {
 }
 
 pub fn bind_parameters(parameters: &[ParameterValue]) -> Result<Vec<Value>> {
+    parameters.iter().try_for_each(reject_empty)?;
     parameters.iter().map(bind_parameter).collect()
 }
 
@@ -35,6 +36,7 @@ pub async fn bind_parameters_with_lobs(
     phase: ErrorPhase,
     cancellation: &plenora_database_core::CancellationToken,
 ) -> Result<Vec<Value>> {
+    parameters.iter().try_for_each(reject_empty)?;
     let mut values = Vec::with_capacity(parameters.len());
     let mut blob_index = 0_usize;
     let mut clob_index = 0_usize;
@@ -176,6 +178,23 @@ impl LobIo<'_> {
 fn lob_error(mut error: DatabaseError, message: &'static str) -> DatabaseError {
     message.clone_into(&mut error.message);
     error
+}
+
+/// Rifiuto uniforme anche per BLOB: il risultato non dipende dal locator.
+/// Gli statement del chiamante non dichiarano il target: nessun invio di
+/// parametri che Oracle potrebbe riscrivere silenziosamente come NULL.
+pub fn reject_empty(parameter: &ParameterValue) -> Result<()> {
+    let empty = match parameter {
+        ParameterValue::String(value)
+        | ParameterValue::Uuid(value)
+        | ParameterValue::Enum { label: value, .. } => value.is_empty(),
+        ParameterValue::Bytes(value) | ParameterValue::Wkb { bytes: value, .. } => value.is_empty(),
+        _ => false,
+    };
+    if empty {
+        return Err(mapping_error("parametro vuoto Oracle non ammesso"));
+    }
+    Ok(())
 }
 
 fn bind_parameter(value: &ParameterValue) -> Result<Value> {

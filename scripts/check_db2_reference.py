@@ -48,6 +48,8 @@ PYTHON_ENV = {
 }
 REQUIRED_LIVE_TESTS = frozenset(
     {
+        "live_timestamp_precision_and_duplicate_names_are_lossless",
+        "live_arrow_timestamp_precision_refuses_only_inexact_values",
         "live_caller_query_worker_panic_requires_recovery",
         "live_binary_parameters_preserve_bytes_and_predicates",
         "live_reference_probe_catalog_and_capabilities",
@@ -252,7 +254,7 @@ PYTHON_LIVE_TARGETS = (
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_migration_dag_is_idempotent_and_reversible",
     "db2_sdk_gate_tests/test_orm.py::test_live_db2_advanced_orm_qualification",
 )
-PYTHON_LIVE_EXPECTED = 9
+PYTHON_LIVE_EXPECTED = 11
 
 
 def run_python_live() -> None:

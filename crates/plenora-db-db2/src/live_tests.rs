@@ -559,9 +559,12 @@ async fn exercise_commit_and_savepoint(
         .await
         .expect("query tipizzata Db2");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("ID"), Some(&ParameterValue::I32(10)));
     assert_eq!(
-        rows[0].get("VALUE"),
+        rows[0].try_get("ID").expect("nomi univoci"),
+        Some(&ParameterValue::I32(10))
+    );
+    assert_eq!(
+        rows[0].try_get("VALUE").expect("nomi univoci"),
         Some(&ParameterValue::String("committed".to_owned()))
     );
     assert_eq!(
@@ -619,7 +622,10 @@ async fn verify_transaction_outcome(
         .await
         .expect("verifica commit e rollback Db2");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("ID"), Some(&ParameterValue::I32(10)));
+    assert_eq!(
+        rows[0].try_get("ID").expect("nomi univoci"),
+        Some(&ParameterValue::I32(10))
+    );
     transaction
         .rollback(cancellation)
         .await
@@ -741,7 +747,7 @@ async fn concurrent_read(
         .expect("query reader Db2 concorrente");
     assert_eq!(rows.len(), 1);
     assert_eq!(
-        rows[0].get("VALUE"),
+        rows[0].try_get("VALUE").expect("nomi univoci"),
         Some(&ParameterValue::String(format!("worker-{id}")))
     );
     transaction
@@ -885,10 +891,13 @@ async fn live_portable_sql_executes_insert_merge_select_and_rollback() {
         .expect("esegue SELECT portable Db2");
     assert_eq!(rows.len(), 1);
     assert_eq!(
-        rows[0].get("VALUE"),
+        rows[0].try_get("VALUE").expect("nomi univoci"),
         Some(&ParameterValue::String("portable-merge".into()))
     );
-    assert_eq!(rows[0].get("VERSION"), Some(&ParameterValue::I32(2)));
+    assert_eq!(
+        rows[0].try_get("VERSION").expect("nomi univoci"),
+        Some(&ParameterValue::I32(2))
+    );
     transaction
         .rollback(&cancellation)
         .await
@@ -1217,9 +1226,12 @@ async fn exercise_replace_and_verify(
         .await
         .expect("righe finali write Db2");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("ID"), Some(&ParameterValue::I32(4)));
     assert_eq!(
-        rows[0].get("VALUE"),
+        rows[0].try_get("ID").expect("nomi univoci"),
+        Some(&ParameterValue::I32(4))
+    );
+    assert_eq!(
+        rows[0].try_get("VALUE").expect("nomi univoci"),
         Some(&ParameterValue::String("only".to_owned()))
     );
     verification
@@ -1316,12 +1328,15 @@ async fn live_parameter_array_binding_crosses_chunks_and_rolls_back_atomically()
         .expect("conteggio parameter array Db2");
     assert_eq!(rows.len(), 1);
     assert_eq!(
-        rows[0].get("N"),
+        rows[0].try_get("N").expect("nomi univoci"),
         Some(&ParameterValue::Decimal(ROWS.to_string()))
     );
-    assert_eq!(rows[0].get("MIN_ID"), Some(&ParameterValue::I32(20_000)));
     assert_eq!(
-        rows[0].get("MAX_ID"),
+        rows[0].try_get("MIN_ID").expect("nomi univoci"),
+        Some(&ParameterValue::I32(20_000))
+    );
+    assert_eq!(
+        rows[0].try_get("MAX_ID").expect("nomi univoci"),
         Some(&ParameterValue::I32(20_000 + ROWS - 1))
     );
     verification
@@ -1444,7 +1459,7 @@ async fn live_provider_row_diagnostics_matches_confirmed_rollback_oracle() {
         .await
         .expect("conteggio dopo rollback row diagnostics Db2");
     assert_eq!(
-        rows[0].get("N"),
+        rows[0].try_get("N").expect("nomi univoci"),
         Some(&ParameterValue::Decimal("0".to_owned()))
     );
     verification
@@ -1743,11 +1758,11 @@ async fn live_binary_parameters_preserve_bytes_and_predicates() {
                 .expect("byte salvati");
             assert_eq!(rows.len(), 1);
             assert_eq!(
-                rows[0].get("HEXV"),
+                rows[0].try_get("HEXV").expect("nomi univoci"),
                 Some(&ParameterValue::String(expected_hex.to_owned()))
             );
             assert_eq!(
-                rows[0].get("LENV"),
+                rows[0].try_get("LENV").expect("nomi univoci"),
                 Some(&ParameterValue::I32(
                     i32::try_from(bytes.len()).expect("lunghezza")
                 ))
@@ -1796,7 +1811,10 @@ async fn assert_binary_text_predicate(
             // ma non deve cercare la stringa esadecimale 41423031.
             assert_eq!(rows.len(), usize::from(inserted));
             if inserted {
-                assert_eq!(rows[0].get("ID"), Some(&ParameterValue::I32(2)));
+                assert_eq!(
+                    rows[0].try_get("ID").expect("nomi univoci"),
+                    Some(&ParameterValue::I32(2))
+                );
             }
         }
         Err(error) => assert_eq!(
@@ -1841,7 +1859,10 @@ async fn assert_binary_varbit_predicates(
             )
             .await
             .expect("predicato tipizzato");
-        let ids: Vec<_> = rows.iter().map(|row| row.get("ID").cloned()).collect();
+        let ids: Vec<_> = rows
+            .iter()
+            .map(|row| row.try_get("ID").expect("nomi univoci").cloned())
+            .collect();
         assert_eq!(
             ids,
             expected
@@ -1880,4 +1901,123 @@ async fn assert_binary_varbit_predicates(
         .await
         .expect("array senza effetti");
     assert!(rows.is_empty());
+}
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live con fixture"]
+async fn live_timestamp_precision_and_duplicate_names_are_lossless() {
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    for precision in 7..=12 {
+        for fraction in [
+            format!("123456{}1", "0".repeat(precision - 7)),
+            "9".repeat(precision),
+            format!("000001{}", "0".repeat(precision - 6)),
+        ] {
+            let rows = tx.query(&Statement::new(format!(
+                "SELECT CAST('2026-10-31-12.34.56.{fraction}' AS TIMESTAMP({precision})) AS T FROM SYSIBM.SYSDUMMY1"
+            )), &cancellation).await.expect("timestamp esatto");
+            assert_eq!(
+                rows[0].get_index(0),
+                Some(&ParameterValue::Timestamp(format!(
+                    "2026-10-31T12:34:56.{fraction}"
+                )))
+            );
+        }
+    }
+    let rows = tx
+        .query(
+            &Statement::new("SELECT 1 AS X, 2 AS X FROM SYSIBM.SYSDUMMY1"),
+            &cancellation,
+        )
+        .await
+        .expect("riga posizionale");
+    assert_eq!(
+        rows[0].values(),
+        &[ParameterValue::I32(1), ParameterValue::I32(2)]
+    );
+    assert!(rows[0]
+        .try_get("X")
+        .expect_err("ambiguita")
+        .message
+        .contains("alias"));
+    tx.rollback(&cancellation).await.expect("rollback");
+}
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live con fixture"]
+async fn live_arrow_timestamp_precision_refuses_only_inexact_values() {
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    for precision in 7..=12 {
+        let object = format!("TS804_{precision}");
+        drop_table_if_present(&provider, &secret, &budget, &cancellation, &object).await;
+        let mut tx = crate::transaction::Db2Transaction::begin(
+            provider.config(),
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("DDL");
+        tx.execute_control_statement(
+            format!("CREATE TABLE PLENORA_TEST.{object} (ID INTEGER, T TIMESTAMP({precision}))"),
+            &cancellation,
+        )
+        .await
+        .expect("tabella");
+        for (id, fraction) in [
+            (1, format!("123456{}1", "0".repeat(precision - 7))),
+            (2, format!("123456{}", "0".repeat(precision - 6))),
+        ] {
+            tx.execute(&Statement::new(format!("INSERT INTO PLENORA_TEST.{object} VALUES ({id}, '2026-10-31-12.34.56.{fraction}')")), &cancellation).await.expect("valore oracolo");
+        }
+        Box::new(tx).commit(&cancellation).await.expect("commit");
+        for id in [1, 2] {
+            let mut operation = scalar_read_operation();
+            operation.source.object.clone_from(&object);
+            operation.projection = vec!["T".to_owned()];
+            operation.order_by.clear();
+            operation.filter = Some(FilterExpression::Eq {
+                field: "ID".to_owned(),
+                parameter: "id".to_owned(),
+            });
+            let parameters =
+                ParameterBag::new(BTreeMap::from([("id".to_owned(), ParameterValue::I32(id))]));
+            let mut stream = provider
+                .read(&secret, &operation, &parameters, &budget, &cancellation)
+                .await
+                .expect("stream Arrow");
+            let result = stream.next_batch(&cancellation).await;
+            if id == 1 {
+                let error = result.expect_err("precisione non rappresentabile");
+                assert_eq!(error.category, ErrorCategory::DataMapping);
+                assert!(!error.message.contains("123456"));
+            } else {
+                let batch = result.expect("esatto").expect("batch");
+                let values = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .expect("timestamp");
+                assert_eq!(
+                    values.value(0),
+                    crate::read::parse_timestamp("2026-10-31-12.34.56.123456").expect("oracolo")
+                );
+            }
+        }
+        drop_table_if_present(&provider, &secret, &budget, &cancellation, &object).await;
+    }
 }

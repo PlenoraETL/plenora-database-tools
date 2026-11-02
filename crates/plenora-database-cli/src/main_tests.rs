@@ -1222,3 +1222,37 @@ fn filter_file_rejects_repeated_keys() {
     }
     fs::remove_file(path).unwrap();
 }
+
+#[cfg(feature = "postgres")]
+#[test]
+fn query_json_mapping_rejects_duplicates_without_payload() {
+    use plenora_database_core::{provider::ParameterValue, row::Row};
+    let row = Row::try_new(
+        vec!["private_column".to_owned(), "private_column".to_owned()].into(),
+        vec![ParameterValue::I32(12345), ParameterValue::I32(67890)],
+    )
+    .expect("riga");
+    let error = crate::query_cmd::row_to_json(&row).expect_err("nomi ambigui");
+    let CliError::Fatal(error) = error else {
+        panic!("errore strutturato")
+    };
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.phase, ErrorPhase::Read);
+    let message = error.message;
+    assert!(message.contains("alias"));
+    for payload in ["private_column", "12345", "67890"] {
+        assert!(!message.contains(payload));
+    }
+    let row = Row::try_new(
+        vec!["x".to_owned(), "X".to_owned()].into(),
+        vec![ParameterValue::I32(1), ParameterValue::I32(2)],
+    )
+    .expect("riga");
+    assert_eq!(
+        crate::query_cmd::row_to_json(&row).expect("mapping"),
+        json!({
+            "x": serde_json::to_value(&row.values()[0]).expect("valore"),
+            "X": serde_json::to_value(&row.values()[1]).expect("valore"),
+        })
+    );
+}

@@ -71,3 +71,34 @@ fn negative_zero_is_refused_because_oracle_cannot_store_it() {
         Value::Float(value) if value.to_bits() == 0
     ));
 }
+
+#[test]
+fn empty_text_and_binary_are_rejected_without_payload() {
+    for value in [
+        ParameterValue::String(String::new()),
+        ParameterValue::Bytes(vec![]),
+        ParameterValue::Uuid(String::new()),
+        ParameterValue::Enum {
+            type_name: "SECRET".into(),
+            label: String::new(),
+        },
+        ParameterValue::Wkb {
+            bytes: vec![],
+            srid: Some(4326),
+            dimensions: plenora_database_core::geometry::Dimensions::Xy,
+            semantics: plenora_database_core::geometry::SpatialSemantics::Geometry,
+        },
+    ] {
+        let error = bind_parameters(&[ParameterValue::String("SECRET".into()), value]).unwrap_err();
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::DataMapping
+        );
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+        assert_eq!(
+            error.remote_effect,
+            plenora_database_core::RemoteEffect::None
+        );
+        assert_eq!(error.message, "parametro vuoto Oracle non ammesso");
+    }
+}

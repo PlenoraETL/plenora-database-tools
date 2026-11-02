@@ -21,7 +21,7 @@ def qualified(names: set[str]) -> set[str]:
 
 class Db2ReferenceGateTests(unittest.TestCase):
     def test_python_live_inventory_includes_the_orm_gate(self) -> None:
-        self.assertEqual(gate.PYTHON_LIVE_EXPECTED, 9)
+        self.assertEqual(gate.PYTHON_LIVE_EXPECTED, 11)
         self.assertEqual(
             gate.PYTHON_LIVE_TARGETS,
             (
@@ -33,9 +33,9 @@ class Db2ReferenceGateTests(unittest.TestCase):
             ),
         )
 
-    def test_inventory_has_all_seventeen_named_live_tests(self) -> None:
+    def test_inventory_has_all_nineteen_named_live_tests(self) -> None:
         inventory = gate.live_test_inventory()
-        self.assertEqual(len(inventory), 17)
+        self.assertEqual(len(inventory), 19)
         self.assertLessEqual(gate.REQUIRED_LIVE_TESTS, inventory)
 
     def test_complete_named_run_passes(self) -> None:

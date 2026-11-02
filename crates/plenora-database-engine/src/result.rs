@@ -123,8 +123,42 @@ impl QueryResult {
         exactly_one_value(exactly_one_row(self.rows)?)
     }
 
+    /// Converte le righe in mappe per nome colonna.
+    ///
+    /// Limite di compatibilita 8.x: con nomi duplicati resta soltanto il valore
+    /// dell'ultima colonna omonima, senza errore. Usare [`Self::try_into_mappings`]
+    /// per rifiutare l'ambiguita e alias distinti per conservare tutti i valori.
+    #[deprecated(
+        since = "8.0.4",
+        note = "usare QueryResult::try_into_mappings; into_mappings sovrascrive le colonne omonime in 8.x"
+    )]
     #[must_use]
     pub fn into_mappings(self) -> Vec<BTreeMap<String, ParameterValue>> {
+        self.collect_mappings()
+    }
+
+    /// Converte le righe in mappe con nomi di colonna univoci (case-sensitive).
+    ///
+    /// # Errors
+    ///
+    /// `DataMapping` per nomi duplicati, anche in un risultato senza righe.
+    /// Usare alias distinti o consumare le righe per posizione con [`Self::all`].
+    pub fn try_into_mappings(self) -> Result<Vec<BTreeMap<String, ParameterValue>>> {
+        if let Some(columns) = &self.columns {
+            let mut seen = std::collections::HashSet::new();
+            if columns.iter().any(|name| !seen.insert(name)) {
+                return Err(DatabaseError::new(
+                    ErrorCategory::DataMapping,
+                    ErrorPhase::Read,
+                    None,
+                    "nomi di colonna duplicati: usare alias distinti o accesso per posizione",
+                ));
+            }
+        }
+        Ok(self.collect_mappings())
+    }
+
+    fn collect_mappings(self) -> Vec<BTreeMap<String, ParameterValue>> {
         self.rows
             .into_iter()
             .map(|row| {

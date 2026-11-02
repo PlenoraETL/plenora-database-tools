@@ -498,6 +498,9 @@ pub async fn execute_write(
     let plan = prepared
         .take_driver_state::<OracleWritePlan>()
         .ok_or_else(|| write_error(ErrorCategory::InvalidPlan, "piano preparato Oracle assente"))?;
+    let input =
+        crate::write_input::reject_empty_input(input, &prepared.operation, budget, cancellation)
+            .await?;
     if plan.create_sql.is_none() {
         return Box::pin(load_target(
             config,

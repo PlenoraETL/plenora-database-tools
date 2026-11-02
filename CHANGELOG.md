@@ -6,6 +6,68 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## 8.0.4 — non pubblicata
+
+Correttiva minima 8.x autorizzata; di #134 viene adattato soltanto il rifiuto dei vuoti Oracle.
+
+- **Difetto silenzioso Oracle nei vuoti**: verificato nei sorgenti di tutti i
+  tag `py-v3.1.0`..`py-v8.0.3`. Testo e binario vuoti potevano essere
+  confermati come scritti ma salvati come NULL (misurato sul wheel 8.0.3
+  con Oracle Free 23 e `copy_from`, policy strict). Ora il writer valida
+  tutti i batch prima di CREATE o DML, comprese chiavi, bulk e merge:
+  rifiuto DataMapping senza effetti e senza payload nell'errore. Anche
+  execute transazionale rifiuta i parametri vuoti prima dell'invio: SQL
+  arbitrario non dichiara un tipo target affidabile per distinguere i casi.
+  Il BLOB tramite locator puo conservare il vuoto, ma viene rifiutato per
+  la stessa policy uniforme di #134, indipendente dal percorso di bind.
+  La correzione non ripara i dati gia scritti: confrontare con la sorgente
+  originale le righe NULL che in origine erano vuote, quindi recuperarle
+  con una rappresentazione esplicita appropriata; dal solo NULL non si puo
+  distinguere un vuoto perso da un NULL intenzionale. Regressioni offline
+  e live permanenti nel gate Oracle coprono il rifiuto e l'assenza di effetti.
+- **Temporali troncati in lettura**: verificato nei sorgenti di tutti i tag
+  `py-v0.12.0`–`py-v8.0.3` per le query SQL Server e Db2 e per Arrow Db2.
+  Le query conservano le cifre nella stringa restituita; Arrow Db2 rifiuta
+  esplicitamente i valori non rappresentabili al microsecondo, anche quando
+  la prima cifra significativa e oltre la nona. Precisione dichiarata alta
+  con cifre residue tutte zero resta accettata. Il decoder Oracle gia rifiuta
+  i nanosecondi non rappresentabili. Le letture precedenti vanno riverificate alla sorgente.
+- **Fuso datetimeoffset SQL Server applicato due volte**: verificato nei sorgenti
+  di tutti i tag `py-v0.12.0`–`py-v8.0.3`, con `tiberius 0.12.3` fino alla
+  5.0.1 e `tiberius-ng 0.13.1` dalla 6.0.0. Il decoder UTC sottraeva l'offset
+  dal tempo wire gia UTC: `12:34:56.1234567+02:00` diventava
+  `08:34:56.123456700Z` invece di `10:34:56.123456700Z`.
+  Query, stream e SDK ora decodificano con `FixedOffset` e convertono in UTC.
+  Le regressioni confrontano l'istante completo con offset positivi, negativi
+  e zero e con l'oracolo server `CONVERT`/`SWITCHOFFSET`; riverificare alla
+  sorgente anche le letture precedenti senza perdita di cifre frazionarie.
+- **Colonne omonime**: il mapping SDK sovrascriveva un valore nei tag
+  `py-v0.1.0`–`py-v8.0.3`; `Row::get` sceglieva il primo nei tag
+  `py-v0.1.0`–`py-v8.0.3`. Ora il mapping sync/async rifiuta l'ambiguita
+  suggerendo alias distinti, senza nomi o valori nell'errore. La stessa
+  validazione precede anche i mapping JSON CLI `execute-sql` e
+  `portable-execute`, che sovrascrivevano le colonne omonime. In Rust il nuovo
+  `Row::try_get` restituisce l'errore. Posizioni e descrittori restano utilizzabili.
+  Gli schemi Arrow con nomi duplicati sono rifiutati anche con field_id distinti,
+  impedendo a `column_by_name` di scegliere il primo (percorso PostgreSQL
+  verificato nei tag `py-v0.12.0`–`py-v8.0.3`). Nessuna modifica agli
+  schemi di contratto o ai risultati con nomi distinti.
+- **Deprecazione di `Row::get` (API Rust)**: dalla 8.0.4 usare `try_get`,
+  che segnala esplicitamente i nomi duplicati. Per compatibilita 8.x, `get`
+  conserva la firma `Option`: restituisce il valore di un nome univoco anche
+  quando altre colonne sono duplicate. Resta il limite noto del nome duplicato:
+  `None` e indistinguibile dall'assenza e puo attivare un default del consumer.
+  La deprecazione dichiara questo limite, non lo risolve. Nella **9.0.0**
+  `get` diventera rigoroso; il cambiamento incompatibile e rinviato alla major.
+- **Deprecazione di `QueryResult::into_mappings` (API Rust)**: dalla 8.0.4
+  usare `try_into_mappings`, che rifiuta con `DataMapping` i nomi duplicati
+  anche senza righe e suggerisce alias distinti, senza payload nell'errore.
+  Come per `Row::get`, il metodo precedente resta per compatibilita 8.x:
+  con nomi distinti il risultato e invariato; con omonimi conserva soltanto
+  l'ultimo valore. La deprecazione dichiara questa perdita, non la risolve.
+- Regressioni offline e live permanenti, incluse query, stream SQL Server,
+  Arrow Db2 e PostgreSQL e SDK sincrono/asincrono, negli inventari dei gate.
+
 ## 8.0.3 — non pubblicata
 
 Correttiva 8.x, senza porting della revisione 9.0.0 e senza cambiamenti del

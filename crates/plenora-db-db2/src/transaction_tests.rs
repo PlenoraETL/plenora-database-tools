@@ -189,3 +189,29 @@ fn an_abandoned_commit_reports_what_the_rollback_proved() {
     assert_eq!(unconfirmed.retry, RetryDisposition::RequiresRecovery);
     assert_eq!(unconfirmed.phase, ErrorPhase::Rollback);
 }
+#[test]
+fn timestamp_text_preserves_all_twelve_digits() {
+    for fraction in [
+        "1234567",
+        "123456789",
+        "123456789012",
+        "999999999999",
+        "000000000001",
+        "000001000000",
+    ] {
+        for separator in ["2026-10-31-12.34.56", "2026-10-31 12:34:56"] {
+            assert_eq!(
+                canonical_timestamp(&format!("{separator}.{fraction}")).expect("timestamp esatto"),
+                format!("2026-10-31T12:34:56.{fraction}")
+            );
+        }
+    }
+    for invalid in [
+        "SECRET",
+        "2026-10-31 12:34:56.1234567890123",
+        "2026-10-31 12:34:56.",
+    ] {
+        let error = canonical_timestamp(invalid).expect_err("timestamp invalido");
+        assert!(!error.message.contains(invalid));
+    }
+}

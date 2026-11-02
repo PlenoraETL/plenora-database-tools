@@ -81,10 +81,86 @@ fn mapping_conversion_is_explicit_and_preserves_column_value_pairs() {
         ],
     )])
     .expect("result set")
-    .into_mappings();
+    .try_into_mappings()
+    .expect("nomi univoci");
     assert_eq!(mappings[0].get("id"), Some(&ParameterValue::I64(3)));
     assert_eq!(
         mappings[0].get("name"),
         Some(&ParameterValue::String("Ada".to_owned()))
+    );
+}
+
+#[test]
+fn mappings_reject_duplicate_metadata_even_without_rows_without_payload() {
+    let columns: Arc<[String]> = vec!["private_column".to_owned(); 2].into();
+    for rows in [
+        Vec::new(),
+        vec![row(
+            &["private_column", "private_column"],
+            vec![ParameterValue::String("private_value".to_owned()); 2],
+        )],
+    ] {
+        let error = QueryResult::with_columns(Arc::clone(&columns), rows)
+            .expect("metadata coerenti")
+            .try_into_mappings()
+            .expect_err("nomi duplicati");
+        assert_eq!(error.category, ErrorCategory::DataMapping);
+        assert_eq!(error.phase, ErrorPhase::Read);
+        assert_eq!(
+            error.message,
+            "nomi di colonna duplicati: usare alias distinti o accesso per posizione"
+        );
+        assert!(error.diagnostics.is_none());
+    }
+}
+
+#[test]
+#[allow(
+    deprecated,
+    reason = "verifica la compatibilita del metodo legacy in 8.x"
+)]
+fn mappings_preserve_legacy_results_for_unique_names_and_empty_shapes() {
+    for rows in [
+        Vec::new(),
+        vec![row(&[], Vec::new())],
+        vec![
+            row(
+                &["id", "ID"],
+                vec![ParameterValue::I64(1), ParameterValue::I64(2)],
+            ),
+            row(
+                &["id", "ID"],
+                vec![ParameterValue::I64(3), ParameterValue::I64(4)],
+            ),
+        ],
+    ] {
+        let legacy = QueryResult::from_rows(rows.clone())
+            .expect("result set")
+            .into_mappings();
+        let checked = QueryResult::from_rows(rows)
+            .expect("result set")
+            .try_into_mappings()
+            .expect("nomi univoci");
+        assert_eq!(checked, legacy);
+    }
+    let empty = QueryResult::with_columns(vec!["id".to_owned()].into(), Vec::new())
+        .expect("vuoto tipizzato")
+        .try_into_mappings()
+        .expect("nome univoco");
+    assert!(empty.is_empty());
+}
+
+#[test]
+#[allow(deprecated, reason = "documenta la perdita del metodo legacy in 8.x")]
+fn legacy_mappings_keep_the_last_duplicate_value() {
+    let mappings = QueryResult::from_rows(vec![row(
+        &["id", "id"],
+        vec![ParameterValue::I64(1), ParameterValue::I64(2)],
+    )])
+    .expect("result set")
+    .into_mappings();
+    assert_eq!(
+        mappings,
+        vec![BTreeMap::from([("id".to_owned(), ParameterValue::I64(2))])]
     );
 }

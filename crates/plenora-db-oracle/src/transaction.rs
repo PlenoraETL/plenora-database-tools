@@ -84,6 +84,10 @@ impl OracleTransaction {
         cancellation: &CancellationToken,
     ) -> Result<u64> {
         enforce_policy(self.native_query_policy, &statement.sql)?;
+        statement
+            .params
+            .iter()
+            .try_for_each(crate::parameter::reject_empty)?;
         let params = bind_parameters_with_lobs(
             self.connection.connection()?,
             &statement.params,
@@ -115,6 +119,10 @@ impl OracleTransaction {
         cancellation: &CancellationToken,
     ) -> Result<u64> {
         enforce_policy(self.native_query_policy, &statement.sql)?;
+        statement
+            .params
+            .iter()
+            .try_for_each(crate::parameter::reject_empty)?;
         let values = bind_parameters_with_lobs(
             self.connection.connection()?,
             &statement.params,
@@ -184,6 +192,10 @@ impl OracleTransaction {
             return Ok(0);
         }
         enforce_policy(self.native_query_policy, sql)?;
+        let values = rows
+            .iter()
+            .map(|row| crate::parameter::bind_parameters(row))
+            .collect::<Result<Vec<_>>>()?;
         timed(
             self.operation_timeout,
             ErrorPhase::Write,
@@ -195,10 +207,6 @@ impl OracleTransaction {
         )
         .await
         .map_err(statement_execution_error)?;
-        let values = rows
-            .iter()
-            .map(|row| crate::parameter::bind_parameters(row))
-            .collect::<Result<Vec<_>>>()?;
         let protected_sql = format!(
             "DECLARE
                plenora_status VARCHAR2(64) := SYS_CONTEXT('USERENV', 'CLIENT_INFO');
@@ -276,6 +284,10 @@ impl OracleTransaction {
         cancellation: &CancellationToken,
     ) -> Result<QueryResult> {
         enforce_policy(self.native_query_policy, &statement.sql)?;
+        statement
+            .params
+            .iter()
+            .try_for_each(crate::parameter::reject_empty)?;
         let params = bind_parameters_with_lobs(
             self.connection.connection()?,
             &statement.params,

@@ -84,3 +84,22 @@ fn binary_read_parameters_fail_before_io_without_payload() {
     assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
     assert!(!error.message.contains("SECRET"));
 }
+#[test]
+fn timestamp_arrow_requires_exact_microseconds_before_chrono_parsing() {
+    for precision in 7..=12 {
+        for fraction in [
+            format!("123456{}1", "0".repeat(precision - 7)),
+            "9".repeat(precision),
+        ] {
+            let value = format!("2026-10-31-12.34.56.{fraction}");
+            let error = parse_timestamp(&value).expect_err("perdita di precisione");
+            assert_eq!(error.category, ErrorCategory::DataMapping);
+            assert!(!error.message.contains(&fraction));
+        }
+        let exact = format!("1969-12-31-23.59.59.999999{}", "0".repeat(precision - 6));
+        assert_eq!(
+            parse_timestamp(&exact).expect("esatto prima dell'epoch"),
+            -1
+        );
+    }
+}

@@ -43,6 +43,8 @@ SKIPPED_LIVE_TESTS = (
 # un altro. Il nome va verificato.
 REQUIRED_LIVE_TESTS = frozenset(
     {
+        "live_exact_temporal_query_stream_and_duplicate_names",
+        "live_submicrosecond_temporal_values_fail_closed",
         "live_caller_stream_cancellation_requires_recovery",
         "live_native_query_policy_guards_every_transaction_entrypoint",
         "live_a_native_batch_error_after_a_write_is_not_reported_as_no_effect",

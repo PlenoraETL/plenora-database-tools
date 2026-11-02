@@ -296,10 +296,13 @@ async fn qualify_spatial_surface(
             .await
             .unwrap_or_else(|error| panic!("esecuzione {function:?} Oracle: {error}"));
         assert_eq!(rows.len(), 1, "{function:?}");
-        assert!(rows[0].get("VALUE").is_some(), "{function:?}");
+        assert!(
+            rows[0].try_get("VALUE").expect("nomi univoci").is_some(),
+            "{function:?}"
+        );
         if function.returns_geometry() {
             assert!(
-                matches!(rows[0].get("VALUE"), Some(ParameterValue::Bytes(bytes)) if !bytes.is_empty()),
+                matches!(rows[0].try_get("VALUE").expect("nomi univoci"), Some(ParameterValue::Bytes(bytes)) if !bytes.is_empty()),
                 "{function:?}"
             );
         }
@@ -767,7 +770,10 @@ async fn live_array_dml_crosses_batches_and_rolls_back_atomically() {
         )
         .await
         .expect("conteggio array DML");
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(600)));
+    assert_eq!(
+        rows[0].try_get("N").expect("nomi univoci"),
+        Some(&ParameterValue::I64(600))
+    );
     verify
         .rollback(&cancellation)
         .await
@@ -950,7 +956,10 @@ async fn live_closed_capabilities_fail_closed_and_match_ddl_semantics() {
         )
         .await
         .expect("conteggio dopo DDL Oracle");
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    assert_eq!(
+        rows[0].try_get("N").expect("nomi univoci"),
+        Some(&ParameterValue::I64(1))
+    );
     verify
         .query(
             &Statement::new(format!("SELECT COUNT(*) AS N FROM {side_effect}")),
@@ -1000,7 +1009,10 @@ async fn live_large_wkb_temporary_blob_bind_is_lossless() {
         )
         .await
         .expect("lunghezza temporary BLOB Oracle");
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(4_809)));
+    assert_eq!(
+        rows[0].try_get("N").expect("nomi univoci"),
+        Some(&ParameterValue::I64(4_809))
+    );
     let validation = transaction
         .query(
             &Statement::new(
@@ -1018,7 +1030,7 @@ async fn live_large_wkb_temporary_blob_bind_is_lossless() {
         .await
         .expect("conversione temporary BLOB in SDO_GEOMETRY Oracle");
     assert_eq!(
-        validation[0].get("VALID"),
+        validation[0].try_get("VALID").expect("nomi univoci"),
         Some(&ParameterValue::String("TRUE".to_owned()))
     );
     transaction
@@ -1677,7 +1689,7 @@ async fn live_thin_driver_crud_merge_stream_and_rollback() {
         .await
         .expect("bind probe query");
     assert!(
-        matches!(bind_rows[0].get("VALUE"), Some(ParameterValue::String(value)) if value == "bound")
+        matches!(bind_rows[0].try_get("VALUE").expect("nomi univoci"), Some(ParameterValue::String(value)) if value == "bound")
     );
     bind_probe
         .rollback(&cancellation)
@@ -1831,7 +1843,7 @@ async fn live_thin_driver_crud_merge_stream_and_rollback() {
         .expect("query");
     assert_eq!(rows.len(), 1);
     assert!(
-        matches!(rows[0].get("VALUE"), Some(ParameterValue::String(value)) if value == "merged")
+        matches!(rows[0].try_get("VALUE").expect("nomi univoci"), Some(ParameterValue::String(value)) if value == "merged")
     );
 
     let mut stream = transaction
@@ -1881,7 +1893,7 @@ async fn live_thin_driver_crud_merge_stream_and_rollback() {
         .await
         .expect("verify query");
     assert!(
-        matches!(rows[0].get("VALUE"), Some(ParameterValue::String(value)) if value == "first")
+        matches!(rows[0].try_get("VALUE").expect("nomi univoci"), Some(ParameterValue::String(value)) if value == "first")
     );
     verify
         .rollback(&cancellation)
@@ -2060,7 +2072,7 @@ async fn live_driver_errors_are_redacted() {
         )
         .await
         .expect("sessione utilizzabile dopo l'errore server");
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    assert_eq!(rows[0].get_index(0), Some(&ParameterValue::I64(1)));
     // L'errore deve lasciare la scrittura pendente, altrimenti il rollback non e provato.
     let pending = transaction
         .query(
@@ -2089,7 +2101,7 @@ async fn live_driver_errors_are_redacted() {
         .query(&session_query, &cancellation)
         .await
         .expect("sessione dopo rollback");
-    assert_eq!(session[0].get("SID"), next_session[0].get("SID"));
+    assert_eq!(session[0].get_index(0), next_session[0].get_index(0));
     let rows = verification
         .query(
             &Statement::new(format!("SELECT ID FROM {table}")),
@@ -2148,28 +2160,28 @@ async fn live_type_fidelity_includes_utc_timestamptz_and_lobs() {
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
     assert!(
-        matches!(row.get("N"), Some(ParameterValue::Decimal(value)) if value == "12345678901234567890.123456789")
+        matches!(row.try_get("N").expect("nomi univoci"), Some(ParameterValue::Decimal(value)) if value == "12345678901234567890.123456789")
     );
     assert!(
-        matches!(row.get("D"), Some(ParameterValue::Timestamp(value)) if value == "2026-03-19T00:00:00")
+        matches!(row.try_get("D").expect("nomi univoci"), Some(ParameterValue::Timestamp(value)) if value == "2026-03-19T00:00:00")
     );
     assert!(
-        matches!(row.get("TS"), Some(ParameterValue::Timestamp(value)) if value == "2026-03-19T10:11:12.123456")
+        matches!(row.try_get("TS").expect("nomi univoci"), Some(ParameterValue::Timestamp(value)) if value == "2026-03-19T10:11:12.123456")
     );
     assert_eq!(
-        row.get("TZ"),
+        row.try_get("TZ").expect("nomi univoci"),
         Some(&ParameterValue::TimestampTz(
             "2026-03-19T10:11:12.123456+02:30".to_owned()
         ))
     );
     assert!(
-        matches!(row.get("NULL_TZ"), Some(ParameterValue::Null { type_name }) if type_name == "timestamptz")
+        matches!(row.try_get("NULL_TZ").expect("nomi univoci"), Some(ParameterValue::Null { type_name }) if type_name == "timestamptz")
     );
     assert!(
-        matches!(row.get("TEXT_LOB"), Some(ParameterValue::String(value)) if value.len() == 20_000)
+        matches!(row.try_get("TEXT_LOB").expect("nomi univoci"), Some(ParameterValue::String(value)) if value.len() == 20_000)
     );
     assert!(
-        matches!(row.get("BINARY_LOB"), Some(ParameterValue::Bytes(value)) if value == &[0, 1, 255])
+        matches!(row.try_get("BINARY_LOB").expect("nomi univoci"), Some(ParameterValue::Bytes(value)) if value == &[0, 1, 255])
     );
     transaction.rollback(&cancellation).await.expect("rollback");
 }
@@ -2392,7 +2404,10 @@ async fn live_a_native_ddl_failure_after_a_write_is_not_reported_as_no_effect() 
         )
         .await
         .expect("conteggio");
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    assert_eq!(
+        rows[0].try_get("N").expect("nomi univoci"),
+        Some(&ParameterValue::I64(1))
+    );
     let _ = verify.rollback(&cancellation).await;
     provider
         .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
@@ -2457,7 +2472,10 @@ async fn live_caller_stream_fetch_failure_requires_recovery() {
         .await
         .expect("la stessa connessione deve rispondere dopo il reset del fetch");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("N"), Some(&ParameterValue::I64(1)));
+    assert_eq!(
+        rows[0].try_get("N").expect("nomi univoci"),
+        Some(&ParameterValue::I64(1))
+    );
 }
 
 #[tokio::test]
@@ -2488,4 +2506,244 @@ async fn live_cached_query_reexecutes_with_an_unexhausted_first_page() {
         );
     }
     connection.close().await.expect("chiusura cache probe");
+}
+#[tokio::test]
+#[ignore = "richiede Oracle live esplicito"]
+async fn live_duplicate_result_names_preserve_positions() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &budget,
+            &cancellation,
+        )
+        .await
+        .expect("transazione");
+    let rows = tx
+        .query(
+            &Statement::new("SELECT 1 AS X, 2 AS X FROM DUAL"),
+            &cancellation,
+        )
+        .await
+        .expect("posizioni");
+    assert_eq!(rows[0].values().len(), 2);
+    assert_ne!(rows[0].get_index(0), rows[0].get_index(1));
+    assert!(rows[0]
+        .try_get("X")
+        .expect_err("ambiguita")
+        .message
+        .contains("alias"));
+    tx.rollback(&cancellation).await.expect("rollback");
+}
+
+/// Riproduce il carico strict che prima confermava vuoti salvati come NULL.
+#[tokio::test]
+#[ignore = "richiede Oracle Free live esplicito"]
+#[allow(clippy::too_many_lines)]
+async fn live_empty_values_fail_before_any_write_effect() {
+    let (provider, secret) = fixture();
+    let cancellation = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    let table = "PLN_EMPTY_REGRESSION";
+    for (native, binary) in [
+        ("VARCHAR2(10)", false),
+        ("NVARCHAR2(10)", false),
+        ("CHAR(10)", false),
+        ("CLOB", false),
+        ("RAW(10)", true),
+        ("BLOB", true),
+    ] {
+        let _ = provider
+            .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+            .await;
+        provider
+            .execute_ddl(
+                &secret,
+                &format!("CREATE TABLE {table} (ID NUMBER(10) PRIMARY KEY, V {native})"),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        let schema = contract_schema(vec![
+            Field::new("ID", DataType::Int32, false),
+            Field::new(
+                "V",
+                if binary {
+                    DataType::Binary
+                } else {
+                    DataType::Utf8
+                },
+                true,
+            ),
+        ])
+        .unwrap();
+        let mut seed = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        seed.execute(
+            &Statement::new(format!("INSERT INTO {table} (ID) VALUES (999)")),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+        seed.commit(&cancellation).await.unwrap();
+        let create_table = format!("{table}_NEW");
+        let _ = provider
+            .execute_ddl(
+                &secret,
+                &format!("DROP TABLE {create_table} PURGE"),
+                &cancellation,
+            )
+            .await;
+        for mode in [
+            WriteMode::Create,
+            WriteMode::Append,
+            WriteMode::Replace,
+            WriteMode::Upsert,
+            WriteMode::Update,
+        ] {
+            let operation = WriteOperation {
+                target: ObjectRef {
+                    catalog: None,
+                    schema: Some("PLENORA".into()),
+                    object: if mode == WriteMode::Create {
+                        create_table.clone()
+                    } else {
+                        table.into()
+                    },
+                },
+                mode,
+                mapping_policy: MappingPolicy::Strict,
+                transaction_profile: if mode == WriteMode::Create {
+                    TransactionProfile::BestEffortDdl
+                } else {
+                    TransactionProfile::SingleTransaction
+                },
+                keys: if matches!(mode, WriteMode::Upsert | WriteMode::Update) {
+                    vec!["ID".into()]
+                } else {
+                    vec![]
+                },
+                update_columns: if mode == WriteMode::Update {
+                    vec!["V".into()]
+                } else {
+                    vec![]
+                },
+                srid_policy: None,
+                create_spatial_index: false,
+                allow_partial: false,
+            };
+            // Il vuoto arriva dopo un batch intero valido, anche oltre la soglia array.
+            let batches = [false, true].map(|empty| {
+                let value: plenora_database_core::arrow::array::ArrayRef = if binary {
+                    Arc::new(BinaryArray::from(vec![
+                        Some(if empty {
+                            &b""[..]
+                        } else {
+                            &b"x"[..]
+                        });
+                        300
+                    ]))
+                } else {
+                    Arc::new(StringArray::from(vec![
+                        Some(if empty { "" } else { "x" });
+                        300
+                    ]))
+                };
+                RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(Int32Array::from((1..=300).collect::<Vec<_>>())),
+                        value,
+                    ],
+                )
+                .unwrap()
+            });
+            let prepared = provider
+                .prepare_write(&secret, &operation, schema.clone(), &budget, &cancellation)
+                .await
+                .unwrap();
+            let error = provider
+                .write(
+                    &secret,
+                    prepared,
+                    Box::new(VecBatchStream::new(batches.to_vec())),
+                    &budget,
+                    &cancellation,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.category,
+                plenora_database_core::ErrorCategory::DataMapping
+            );
+            assert_eq!(error.phase, plenora_database_core::ErrorPhase::Write);
+            assert_eq!(error.remote_effect, RemoteEffect::None);
+            assert_eq!(error.message, "valore vuoto Oracle non ammesso");
+        }
+        let mut transaction = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &budget,
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        for value in [
+            ParameterValue::String(String::new()),
+            ParameterValue::Bytes(vec![]),
+        ] {
+            for sql in [
+                format!("INSERT INTO {table} (ID,V) VALUES (1,:1)"),
+                format!("UPDATE {table} SET V=:1"),
+            ] {
+                let error = transaction
+                    .execute(
+                        &Statement::new(sql).with_params(vec![value.clone()]),
+                        &cancellation,
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    error.category,
+                    plenora_database_core::ErrorCategory::DataMapping
+                );
+                assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+                assert_eq!(error.remote_effect, RemoteEffect::None);
+            }
+        }
+        let rows = transaction
+            .query(
+                &Statement::new(format!("SELECT COUNT(*) AS N FROM {table}")),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows[0].try_get("N").unwrap(), Some(&ParameterValue::I64(1)));
+        let rows = transaction
+            .query(
+                &Statement::new(format!(
+                    "SELECT COUNT(*) AS N FROM USER_TABLES WHERE TABLE_NAME='{create_table}'"
+                )),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows[0].try_get("N").unwrap(), Some(&ParameterValue::I64(0)));
+        transaction.rollback(&cancellation).await.unwrap();
+    }
+    provider
+        .execute_ddl(&secret, &format!("DROP TABLE {table} PURGE"), &cancellation)
+        .await
+        .unwrap();
 }

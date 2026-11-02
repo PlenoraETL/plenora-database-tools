@@ -69,7 +69,7 @@ impl ReadCheckpoint {
     ///
     /// # Errors
     ///
-    /// Rifiuta righe prive di una colonna ordinata o checkpoint non validi.
+    /// Rifiuta nomi duplicati, righe prive di una colonna ordinata o checkpoint non validi.
     pub fn from_row(
         provider: ProviderKind,
         operation: &ReadOperation,
@@ -80,7 +80,7 @@ impl ReadCheckpoint {
             .order_by
             .iter()
             .map(|ordering| {
-                row.get(&ordering.field).cloned().ok_or_else(|| {
+                row.try_get(&ordering.field)?.cloned().ok_or_else(|| {
                     DatabaseError::invalid_plan(
                         "la riga del checkpoint non contiene tutte le colonne ordinate",
                     )

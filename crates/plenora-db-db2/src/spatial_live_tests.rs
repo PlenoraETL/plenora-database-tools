@@ -475,9 +475,12 @@ async fn live_spatial_portable_predicates_execute_with_bound_wkb_and_srid() {
         .await
         .expect("legge geometria inserita");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get("SRID"), Some(&ParameterValue::I32(4326)));
     assert_eq!(
-        rows[0].get("WKB"),
+        rows[0].try_get("SRID").expect("nomi univoci"),
+        Some(&ParameterValue::I32(4326))
+    );
+    assert_eq!(
+        rows[0].try_get("WKB").expect("nomi univoci"),
         Some(&ParameterValue::Bytes(point_xy(1.0, 2.0)))
     );
     transaction

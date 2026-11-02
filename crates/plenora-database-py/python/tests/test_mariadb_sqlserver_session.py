@@ -148,3 +148,89 @@ async def test_sqlserver_async_capabilities_inspect_and_ddl() -> None:
             await session.execute_ddl(f"DROP TABLE IF EXISTS {qualified}")
         finally:
             session.close()
+
+
+def test_sqlserver_sync_exact_temporal_and_duplicate_names() -> None:
+    session = connect_sqlserver_reference()
+    try:
+        rows = session.query_sql("SELECT CAST('2026-10-31T12:34:56.1234567' AS datetime2(7)) AS T")
+        assert rows.one()["T"] == "2026-10-31T12:34:56.123456700"
+        for offset, utc in [("+02:00", "2026-10-31T10:34:56"),
+                            ("-05:30", "2026-10-31T18:04:56"),
+                            ("+00:00", "2026-10-31T12:34:56"),
+                            ("+14:00", "2026-10-30T22:34:56"),
+                            ("-12:00", "2026-11-01T00:34:56")]:
+            sql = (
+                "SELECT v AS T, CONVERT(varchar(33), "
+                "CAST(SWITCHOFFSET(v, '+00:00') AS datetime2(7)), 126) AS oracle_utc "
+                f"FROM (VALUES (CAST('2026-10-31T12:34:56.1234567{offset}' "
+                "AS datetimeoffset(7)))) AS source(v)"
+            )
+            rows = session.query_sql(sql)
+            # Confronto testuale: datetime Python troncherebbe la settima cifra.
+            assert rows.one()["T"] == utc + ".123456700+00:00"
+            assert rows.one()["oracle_utc"] == utc + ".1234567"
+
+        with pytest.raises(p.PlenoraDataMappingError, match="alias"):
+            session.query_sql("SELECT 1 AS X, 2 AS X")
+        assert session.query_sql("SELECT 1 AS A, 2 AS B").one().as_dict() == {"A": 1, "B": 2}
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_sqlserver_async_exact_temporal_and_duplicate_names() -> None:
+    session = await aconnect_sqlserver_reference()
+    try:
+        rows = await session.query_sql("SELECT CAST('2026-10-31T12:34:56.1234567' AS datetime2(7)) AS T")
+        assert rows.one()["T"] == "2026-10-31T12:34:56.123456700"
+        for offset, utc in [("+02:00", "2026-10-31T10:34:56"),
+                            ("-05:30", "2026-10-31T18:04:56"),
+                            ("+00:00", "2026-10-31T12:34:56"),
+                            ("+14:00", "2026-10-30T22:34:56"),
+                            ("-12:00", "2026-11-01T00:34:56")]:
+            sql = (
+                "SELECT v AS T, CONVERT(varchar(33), "
+                "CAST(SWITCHOFFSET(v, '+00:00') AS datetime2(7)), 126) AS oracle_utc "
+                f"FROM (VALUES (CAST('2026-10-31T12:34:56.1234567{offset}' "
+                "AS datetimeoffset(7)))) AS source(v)"
+            )
+            rows = await session.query_sql(sql)
+            # Confronto testuale: datetime Python troncherebbe la settima cifra.
+            assert rows.one()["T"] == utc + ".123456700+00:00"
+            assert rows.one()["oracle_utc"] == utc + ".1234567"
+
+        with pytest.raises(p.PlenoraDataMappingError, match="alias"):
+            await session.query_sql("SELECT 1 AS X, 2 AS X")
+        assert (await session.query_sql("SELECT 1 AS A, 2 AS B")).one().as_dict() == {"A": 1, "B": 2}
+    finally:
+        session.close()
+
+
+def test_mariadb_sync_duplicate_result_names_require_aliases() -> None:
+    from ._harness import connect_mariadb_reference
+    import plenora_database as database
+
+    session = connect_mariadb_reference()
+    try:
+        with pytest.raises(database.PlenoraDataMappingError, match="alias"):
+            session.query_sql("SELECT 1 AS x, 2 AS x")
+        rows = session.query_sql("SELECT 1 AS a, 2 AS b")
+        assert list(rows.one().values()) == [1, 2]
+    finally:
+        session.close()
+
+
+@pytest.mark.asyncio
+async def test_mariadb_async_duplicate_result_names_require_aliases() -> None:
+    from ._harness import aconnect_mariadb_reference
+    import plenora_database as database
+
+    session = await aconnect_mariadb_reference()
+    try:
+        with pytest.raises(database.PlenoraDataMappingError, match="alias"):
+            await session.query_sql("SELECT 1 AS x, 2 AS x")
+        rows = await session.query_sql("SELECT 1 AS a, 2 AS b")
+        assert list(rows.one().values()) == [1, 2]
+    finally:
+        session.close()

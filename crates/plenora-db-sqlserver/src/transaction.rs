@@ -328,16 +328,16 @@ fn decode_cell(
             .map_err(|_| decode_mapping_error(index, "datetime"))?
             .map_or_else(
                 || null_value(kind),
-                |value| {
-                    ParameterValue::Timestamp(value.format("%Y-%m-%dT%H:%M:%S%.6f").to_string())
-                },
+                |value| ParameterValue::Timestamp(format_query_timestamp(value)),
             )),
+        // Il wire contiene gia UTC: il decoder Utc di tiberius sottrae
+        // nuovamente il fuso. FixedOffset conserva invece lo stesso istante.
         Ct::DatetimeOffsetn => Ok(row
-            .try_get::<chrono::DateTime<chrono::Utc>, _>(index)
+            .try_get::<chrono::DateTime<chrono::FixedOffset>, _>(index)
             .map_err(|_| decode_mapping_error(index, "datetimeoffset"))?
             .map_or_else(
                 || null_value(kind),
-                |value| ParameterValue::TimestampTz(value.to_rfc3339()),
+                |value| ParameterValue::TimestampTz(value.with_timezone(&chrono::Utc).to_rfc3339()),
             )),
         Ct::Daten => Ok(row
             .try_get::<chrono::NaiveDate, _>(index)
@@ -351,7 +351,7 @@ fn decode_cell(
             .map_err(|_| decode_mapping_error(index, "time"))?
             .map_or_else(
                 || null_value(kind),
-                |value| ParameterValue::String(value.format("%H:%M:%S%.6f").to_string()),
+                |value| ParameterValue::String(format_query_time(value)),
             )),
         // Decimali e valuta: il testo e la sola forma che non perde cifre, ed
         // e cio che `ParameterValue::Decimal` porta.
@@ -756,3 +756,22 @@ mod commit_tests;
 #[cfg(test)]
 #[path = "caller_sql_send_tests.rs"]
 mod caller_sql_send_tests;
+
+// Il tipo pubblico e testuale: conserva i nanosecondi senza cambiare la
+// forma a sei cifre dei valori gia rappresentabili al microsecondo.
+fn format_query_timestamp(value: chrono::NaiveDateTime) -> String {
+    format!(
+        "{}T{}",
+        value.date().format("%Y-%m-%d"),
+        format_query_time(value.time())
+    )
+}
+
+fn format_query_time(value: chrono::NaiveTime) -> String {
+    let format = if chrono::Timelike::nanosecond(&value).is_multiple_of(1_000) {
+        "%H:%M:%S%.6f"
+    } else {
+        "%H:%M:%S%.9f"
+    };
+    value.format(format).to_string()
+}

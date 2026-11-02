@@ -21,6 +21,7 @@ mod read;
 mod transaction;
 mod types;
 mod write;
+mod write_input;
 
 pub use catalog::{OracleColumn, OracleIndex, OracleObjectDescription, OracleObjectSummary};
 pub use config::{OracleConfig, OracleTlsMode};

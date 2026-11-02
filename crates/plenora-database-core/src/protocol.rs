@@ -35,9 +35,15 @@ pub const CONTRACT_VERSION_KEY: &str = "plenora.contract.version";
 /// ripara rinumerando.
 pub fn contract_schema(fields: Vec<Field>) -> crate::Result<SchemaRef> {
     let mut seen = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::new();
     let fields = fields
         .into_iter()
         .map(|field| {
+            if !names.insert(field.name().clone()) {
+                return Err(field_id_error(
+                    "nomi di colonna duplicati: usare alias distinti",
+                ));
+            }
             let declared = field.metadata().get(FIELD_ID).cloned();
             let id = match &declared {
                 Some(value) => canonical_field_id(value).ok_or_else(|| {
