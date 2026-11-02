@@ -8,6 +8,18 @@ riassumono le note di quelle release.
 
 ## 9.0.0 - in preparazione
 
+- Audit pre-release MySQL/MariaDB: update condizionali rifiutati per warning o
+  rollback server chiudono lo scope; stream senza EOF, cancellati o falliti
+  impediscono il commit. Lo SQL del chiamante ammette solo SET di variabili
+  utente ASCII; in transazione ammette letture/DML e tali SET, escludendo i
+  comandi con commit implicito e quelli indiretti.
+- Limiti dello SQL nativo MySQL/MariaDB: il bootstrap conserva l'assenza di
+  ONLY_FULL_GROUP_BY per compatibilita con le query aggregate esistenti.
+  Il determinismo del GROUP BY e verificato nell'AST portabile, non nello SQL
+  nativo. L'arrotondamento dei secondi frazionari senza diagnostico del server
+  resta coperto solo dall'ammissione Arrow, non dai controlli sui warning.
+
+
 - Audit pre-release, rollback MySQL/MariaDB: la chiusura dopo un errore di
   execute o query non vale come conferma del rollback; conserva la richiesta
   di recovery come lo stream. I testimoni raw distinguono il rifiuto del

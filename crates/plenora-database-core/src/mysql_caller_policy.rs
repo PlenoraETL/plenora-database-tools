@@ -1,13 +1,11 @@
 //! Lessico del bootstrap MySQL/MariaDB: backslash attivo, niente `ANSI_QUOTES`.
 use super::{comment_end, lexical_error, quoted_end};
 
-/// Protegge il profilo diagnostico anche con policy `Allow` e fuori transazione.
-///
-/// I SET del chiamante non possono cambiare `sql_notes`, `sql_mode`,
-/// `max_error_count` o `sql_warnings`. I comandi interni non passano da qui.
+/// Protegge il bootstrap anche con policy Allow e fuori transazione.
+/// I comandi interni non passano da qui.
 ///
 /// # Errors
-/// Rifiuta statement multipli, commenti eseguibili e SET delle variabili protette.
+/// Rifiuta batch, commenti eseguibili e SET diversi da assegnazioni @utente ASCII.
 pub fn enforce_mysql_caller_sql(sql: &str) -> crate::Result<()> {
     let statements = statements(sql)?;
     if statements.len() != 1 {
@@ -17,41 +15,91 @@ pub fn enforce_mysql_caller_sql(sql: &str) -> crate::Result<()> {
     }
     let tokens = &statements[0];
     if tokens.first().is_some_and(|token| token == "SET") {
-        let mut depth = 0_usize;
-        let mut assignment = true;
-        for (index, token) in tokens.iter().enumerate().skip(1) {
-            match token.as_str() {
-                "(" => depth += 1,
-                ")" => depth = depth.saturating_sub(1),
-                "," if depth == 0 => assignment = true,
-                "=" if depth == 0 && assignment => {
-                    assignment = false;
-                    let name_index = if tokens[index - 1] == ":" {
-                        index.saturating_sub(2)
-                    } else {
-                        index - 1
-                    };
-                    let user_variable = name_index > 0
-                        && tokens[name_index - 1] == "@"
-                        && (name_index < 2 || tokens[name_index - 2] != "@");
-                    if !user_variable && protected_variable(&tokens[name_index]) {
-                        return Err(crate::DatabaseError::invalid_plan(
-                            "variabile del profilo diagnostico MySQL/MariaDB gestita dalla libreria",
-                        ));
-                    }
-                }
-                _ => {}
-            }
-        }
+        user_assignments(&tokens[1..])?;
     }
     Ok(())
 }
 
-fn protected_variable(name: &str) -> bool {
-    matches!(
-        name,
-        "SQL_NOTES" | "SQL_MODE" | "MAX_ERROR_COUNT" | "SQL_WARNINGS"
-    )
+/// Solo DML/letture e variabili utente nel transaction scope.
+///
+/// L'allowlist esclude anche CALL/PREPARE/EXECUTE e DDL temporaneo non rollbackabile.
+/// Riferimenti: <https://dev.mysql.com/doc/refman/8.4/en/implicit-commit.html>
+/// e <https://mariadb.com/docs/server/reference/sql-statements/transactions/sql-statements-that-cause-an-implicit-commit>.
+///
+/// # Errors
+/// Rifiuta prima dell'invio ogni verbo non qualificato per lo scope.
+pub fn enforce_mysql_transaction_sql(sql: &str) -> crate::Result<()> {
+    enforce_mysql_caller_sql(sql)?;
+    let statements = statements(sql)?;
+    if !matches!(
+        statements[0][0].as_str(),
+        "SELECT"
+            | "INSERT"
+            | "UPDATE"
+            | "DELETE"
+            | "REPLACE"
+            | "WITH"
+            | "VALUES"
+            | "TABLE"
+            | "DO"
+            | "SET"
+    ) {
+        return Err(crate::DatabaseError::invalid_plan(
+            "statement MySQL/MariaDB non ammesso nel transaction scope",
+        ));
+    }
+    Ok(())
+}
+
+fn user_assignments(tokens: &[String]) -> crate::Result<()> {
+    let reject = || {
+        crate::DatabaseError::invalid_plan(
+            "SET MySQL/MariaDB richiede esclusivamente variabili utente ASCII",
+        )
+    };
+    let mut start = 0;
+    loop {
+        if tokens.get(start).map(String::as_str) != Some("@")
+            || !tokens
+                .get(start + 1)
+                .is_some_and(|name| ascii_user_name(name))
+        {
+            return Err(reject());
+        }
+        let mut position = start + 2;
+        if tokens.get(position).map(String::as_str) == Some(":") {
+            position += 1;
+        }
+        if tokens.get(position).map(String::as_str) != Some("=") {
+            return Err(reject());
+        }
+        position += 1;
+        let value_start = position;
+        let mut depth = 0_usize;
+        while position < tokens.len() {
+            match tokens[position].as_str() {
+                "(" => depth += 1,
+                ")" => depth = depth.checked_sub(1).ok_or_else(reject)?,
+                "," if depth == 0 => break,
+                _ => {}
+            }
+            position += 1;
+        }
+        if position == value_start || depth != 0 {
+            return Err(reject());
+        }
+        if position == tokens.len() {
+            return Ok(());
+        }
+        start = position + 1;
+    }
+}
+
+fn ascii_user_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'$' | b'.'))
 }
 
 pub(super) fn statements(sql: &str) -> crate::Result<Vec<Vec<String>>> {
@@ -90,7 +138,7 @@ pub(super) fn statements(sql: &str) -> crate::Result<Vec<Vec<String>>> {
             // reinterpretati come delimitatori o commenti.
             let name = sql[position + 1..end - 1].to_ascii_uppercase();
             // Una parentesi o virgola nel literal non separa assegnazioni.
-            tokens.push(if protected_variable(&name) {
+            tokens.push(if ascii_user_name(&name) {
                 name
             } else {
                 "<quoted>".to_owned()

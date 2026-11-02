@@ -1,3 +1,7 @@
+//! Limiti dello SQL nativo: GROUP BY non deterministici restano possibili senza
+//! ONLY_FULL_GROUP_BY (l'AST portabile li valida). L'arrotondamento dei secondi
+//! frazionari senza warning e coperto solo dall'ammissione Arrow.
+//!
 //! Transaction scope `MySQL` — implementa `TransactionScope` del core.
 //!
 //! Copre begin con opzioni (isolation, access mode, statement_timeout),
@@ -118,6 +122,18 @@ impl MysqlTransaction {
         self.open = false;
         self.recovery_required = effect != RemoteEffect::RolledBack;
         self.session.discard().await;
+    }
+
+    async fn finish_caller_write(&mut self, result: Result<u64>) -> Result<u64> {
+        if let Err(ref error) = result {
+            if matches!(
+                error.remote_effect,
+                RemoteEffect::RolledBack | RemoteEffect::Unknown
+            ) {
+                self.discard_after_failure(error.remote_effect).await;
+            }
+        }
+        result
     }
 
     /// Apre la transazione emettendo `START TRANSACTION` con opzioni.
@@ -317,12 +333,8 @@ async fn raw_exec(
 /// transazione mentre lo stream vive: il compilatore lo impone da se, e non
 /// serve altro.
 ///
-/// Una transazione che abbandona uno stream
-/// dopo un batch su cinquanta scrive, committa, e la riga si rilegge da
-/// un'altra connessione: `mysql_async` drena il result set pendente prima
-/// dello statement successivo, e la connessione non e mai stata fuori
-/// sincrono. Le sonde `live_query_stream_*_is_reusable` e la gemella cancellata
-/// verificano che la transazione resti usabile, rileggendo l'effetto da fuori.
+/// Uno stream abbandonato prima di EOF non ha verificato i warning finali.
+/// Drop, cancellazione ed errori chiudono lo scope e richiedono recovery.
 ///
 /// I batch ricevuti prima di EOF non sono certificati rispetto ai warning.
 /// Il drop anticipato non puo restituire il diagnostico al chiamante.
@@ -341,6 +353,23 @@ struct MysqlRowStream<'a> {
     timeout: std::time::Duration,
 }
 
+fn abandon_stream(exhausted: bool, open: &mut bool, failed: &mut bool) {
+    if !exhausted {
+        *open = false;
+        *failed = true;
+    }
+}
+
+impl Drop for MysqlRowStream<'_> {
+    fn drop(&mut self) {
+        abandon_stream(
+            self.exhausted,
+            self.transaction_open,
+            self.transaction_failed,
+        );
+    }
+}
+
 impl RowStream for MysqlRowStream<'_> {
     fn next_batch<'b>(
         &'b mut self,
@@ -353,15 +382,9 @@ impl RowStream for MysqlRowStream<'_> {
             let mut batch = Vec::with_capacity(self.batch_size);
             while batch.len() < self.batch_size {
                 let next = tokio::select! {
+                    biased;
                     _ = cancellation.cancelled() => {
-                        // Lo stream si chiude qui, e non riprende: `exhausted`
-                        // impedisce che un secondo `next_batch` sullo stesso
-                        // token torni a leggere righe di una lettura che il
-                        // chiamante ha gia dichiarato di non volere.
-                        //
-                        // La **transazione**, invece, resta usabile:
-                        // `RemoteEffect::None` è sostenuto dalla prova che la
-                        // transazione resta usabile dopo la cancellazione.
+                        abandon_stream(false, self.transaction_open, self.transaction_failed);
                         self.exhausted = true;
                         return Err(interruption_error(
                             self.profile,
@@ -373,7 +396,14 @@ impl RowStream for MysqlRowStream<'_> {
                     result = tokio::time::timeout(self.timeout, self.result.next()) => result,
                 };
                 match next {
-                    Ok(Ok(Some(row))) => batch.push(decode_row(row, &self.columns, self.kind)?),
+                    Ok(Ok(Some(row))) => match decode_row(row, &self.columns, self.kind) {
+                        Ok(row) => batch.push(row),
+                        Err(error) => {
+                            abandon_stream(false, self.transaction_open, self.transaction_failed);
+                            self.exhausted = true;
+                            return Err(error);
+                        }
+                    },
                     Ok(Ok(None)) => {
                         // Il result set e finito: la connessione e pulita, e
                         // la transazione puo ancora committare.
@@ -386,6 +416,7 @@ impl RowStream for MysqlRowStream<'_> {
                         break;
                     }
                     Ok(Err(error)) => {
+                        abandon_stream(false, self.transaction_open, self.transaction_failed);
                         self.exhausted = true;
                         return Err(driver_error(
                             self.profile,
@@ -395,6 +426,7 @@ impl RowStream for MysqlRowStream<'_> {
                         ));
                     }
                     Err(_) => {
+                        abandon_stream(false, self.transaction_open, self.transaction_failed);
                         self.exhausted = true;
                         return Err(query_timeout_error(self.profile));
                     }
@@ -629,7 +661,7 @@ impl TransactionScope for MysqlTransaction {
                 }
                 // La policy condivisa blocca DDL, comandi di sessione e
                 // multi-statement prima del round-trip al server.
-                plenora_database_core::native_query_policy::enforce_mysql_caller_sql(
+                plenora_database_core::native_query_policy::enforce_mysql_transaction_sql(
                     &statement.sql,
                 )?;
                 plenora_database_core::native_query_policy::enforce_policy(
@@ -653,15 +685,7 @@ impl TransactionScope for MysqlTransaction {
                 // inviato, senza trasformarlo in un abort della transazione.
                 // Rollback server, trasporto incerto e warning di alterazione
                 // chiudono invece lo scope: nessun commit dopo un warning.
-                if let Err(ref error) = result {
-                    if matches!(
-                        error.remote_effect,
-                        RemoteEffect::RolledBack | RemoteEffect::Unknown
-                    ) {
-                        self.discard_after_failure(error.remote_effect).await;
-                    }
-                }
-                result
+                self.finish_caller_write(result).await
             }
             .await;
             crate::profile::attributed_kind(kind, outcome)
@@ -689,7 +713,7 @@ impl TransactionScope for MysqlTransaction {
                 let kind = self.session.kind();
                 let profile = self.session.profile();
                 // Applica la stessa policy usata dal percorso `execute`.
-                plenora_database_core::native_query_policy::enforce_mysql_caller_sql(
+                plenora_database_core::native_query_policy::enforce_mysql_transaction_sql(
                     &statement.sql,
                 )?;
                 plenora_database_core::native_query_policy::enforce_policy(
@@ -727,12 +751,12 @@ impl TransactionScope for MysqlTransaction {
                 let rows = match outcome {
                     Ok(Ok(rows)) => rows,
                     Ok(Err(error)) => {
-                        return Err(driver_error(
-                            profile,
-                            &error,
-                            ErrorPhase::Read,
-                            RemoteEffect::None,
-                        ));
+                        let error =
+                            driver_error(profile, &error, ErrorPhase::Read, RemoteEffect::None);
+                        if error.remote_effect == RemoteEffect::RolledBack {
+                            self.discard_after_failure(error.remote_effect).await;
+                        }
+                        return Err(error);
                     }
                     Err(_) => {
                         self.discard_after_failure(RemoteEffect::Unknown).await;
@@ -787,7 +811,7 @@ impl TransactionScope for MysqlTransaction {
                         "batch_size dello stream deve essere > 0",
                     ));
                 }
-                plenora_database_core::native_query_policy::enforce_mysql_caller_sql(
+                plenora_database_core::native_query_policy::enforce_mysql_transaction_sql(
                     &statement.sql,
                 )?;
                 plenora_database_core::native_query_policy::enforce_policy(
@@ -818,6 +842,7 @@ impl TransactionScope for MysqlTransaction {
                 // scaduto non deve far partire una query che nessuno leggera.
                 let opened = tokio::select! {
                     _ = cancellation.cancelled() => {
+                        abandon_stream(false, transaction_open, transaction_failed);
                         return Err(interruption_error(
                             profile,
                             cancellation,
@@ -830,14 +855,19 @@ impl TransactionScope for MysqlTransaction {
                 let result = match opened {
                     Ok(Ok(result)) => result,
                     Ok(Err(error)) => {
-                        return Err(driver_error(
-                            profile,
-                            &error,
-                            ErrorPhase::Read,
-                            RemoteEffect::None,
-                        ));
+                        let error =
+                            driver_error(profile, &error, ErrorPhase::Read, RemoteEffect::None);
+                        // Un rollback server non lascia uno scope in autocommit.
+                        if matches!(
+                            error.remote_effect,
+                            RemoteEffect::RolledBack | RemoteEffect::Unknown
+                        ) {
+                            abandon_stream(false, transaction_open, transaction_failed);
+                        }
+                        return Err(error);
                     }
                     Err(_) => {
+                        abandon_stream(false, transaction_open, transaction_failed);
                         return Err(query_timeout_error(profile));
                     }
                 };
@@ -1109,7 +1139,7 @@ impl TransactionScope for MysqlTransaction {
                     return Err(closed_error(ErrorPhase::Write, self.session.kind()));
                 }
                 // La policy copre UPDATE e l'eventuale probe associato.
-                plenora_database_core::native_query_policy::enforce_mysql_caller_sql(
+                plenora_database_core::native_query_policy::enforce_mysql_transaction_sql(
                     &request.update.sql,
                 )?;
                 plenora_database_core::native_query_policy::enforce_policy(
@@ -1117,7 +1147,7 @@ impl TransactionScope for MysqlTransaction {
                     &request.update.sql,
                 )?;
                 if let Some(probe) = request.key_probe {
-                    plenora_database_core::native_query_policy::enforce_mysql_caller_sql(
+                    plenora_database_core::native_query_policy::enforce_mysql_transaction_sql(
                         &probe.sql,
                     )?;
                     plenora_database_core::native_query_policy::enforce_policy(
@@ -1133,7 +1163,7 @@ impl TransactionScope for MysqlTransaction {
                 self.savepoint(sp, cancellation).await?;
                 let params =
                     bind_positional_params(&request.update.params, self.session.profile().kind())?;
-                let affected = self
+                let result = self
                     .session
                     .exec_write_tracked(
                         &request.update.sql,
@@ -1142,7 +1172,8 @@ impl TransactionScope for MysqlTransaction {
                         cancellation,
                         &self.sent,
                     )
-                    .await?;
+                    .await;
+                let affected = self.finish_caller_write(result).await?;
                 if affected == request.expected_affected_rows {
                     self.release_savepoint(sp, cancellation).await?;
                     Ok(())

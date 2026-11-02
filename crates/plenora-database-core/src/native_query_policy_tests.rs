@@ -253,7 +253,6 @@ fn mysql_caller_cannot_change_diagnostic_variables() {
     for sql in [
         "SET @sql_notes = 0",
         "SET @`sql_mode` = 'ordinary user variable'",
-        "SET time_zone = '+00:00'",
         "SELECT @@session.sql_notes",
         "SELECT 'SET sql_notes=0'",
         "SET @x='sql_notes=0, sql_mode=0'",
@@ -262,4 +261,68 @@ fn mysql_caller_cannot_change_diagnostic_variables() {
     ] {
         assert!(super::enforce_mysql_caller_sql(sql).is_ok(), "{sql}");
     }
+}
+
+#[test]
+fn mysql_structural_session_and_transaction_boundary() {
+    for sql in [
+        "SET NAMES gbk",
+        "SET NAMES sjis",
+        "SET CHARACTER SET big5",
+        "SET NAMES latin1",
+        "SET character_set_client='gbk'",
+        "SET collation_connection='latin1_bin'",
+        "SET \u{017f}ql_mode=''",
+        "SET @\u{017f}=1",
+        "SET @x=1, time_zone='+00:00'",
+        "SET GLOBAL x=1",
+        "SET SESSION x=1",
+        "SET LOCAL x=1",
+        "SET PERSIST x=1",
+        "SET @@autocommit=1",
+        "SET @x=1, @@x=2",
+        "SET sql_select_limit=1",
+        "SET foreign_key_checks=0",
+        "SET unique_checks=0",
+        "SET time_zone='+00:00'",
+        "SET autocommit=1",
+        "SET @x=1,",
+        "SET @x=",
+        "SET @x=(1",
+        "SET @x=1)",
+    ] {
+        assert!(super::enforce_mysql_caller_sql(sql).is_err(), "{sql}");
+    }
+    for verb in [
+        "CREATE", "TRUNCATE", "ALTER", "DROP", "RENAME", "LOCK", "UNLOCK", "START", "BEGIN",
+        "LOAD", "ANALYZE", "OPTIMIZE", "REPAIR", "GRANT", "REVOKE", "CALL", "EXECUTE", "PREPARE",
+        "FLUSH", "RESET",
+    ] {
+        let error = super::enforce_mysql_transaction_sql(&format!("{verb} t")).unwrap_err();
+        assert_eq!(error.remote_effect, crate::RemoteEffect::None);
+    }
+    for sql in [
+        "SET @x=1, @y=CONCAT('a,b', 'c')",
+        "SET @`x`:=1",
+        r"SELECT 'gbk\\'",
+    ] {
+        assert!(super::enforce_mysql_transaction_sql(sql).is_ok(), "{sql}");
+    }
+}
+
+#[test]
+fn mysql_charset_cannot_change_backslash_lexing() {
+    // U+7E17 contiene un trail byte backslash in GBK; la connessione deve
+    // conservare UTF-8, il solo lessico con cui analizziamo lo SQL.
+    for sql in [
+        "SET NAMES gbk",
+        "SET character_set_client='gbk'",
+        "SET @x='\u{7e17}', character_set_connection='gbk'",
+        "SET NAMES sjis",
+        "SET NAMES big5",
+    ] {
+        assert!(super::enforce_mysql_caller_sql(sql).is_err());
+    }
+    assert!(super::enforce_mysql_caller_sql("SELECT '\u{7e17}\\\\'; DO 0").is_err());
+    assert!(super::enforce_mysql_caller_sql("SELECT '\u{7e17}\\\\'").is_ok());
 }

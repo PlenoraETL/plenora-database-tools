@@ -189,6 +189,10 @@ async fn local_rejection_matrix_preserves_scope_and_unsent_marker() {
             (NativeQueryPolicy::Allow, "SELECT 'unterminated"),
             (NativeQueryPolicy::Allow, "SELECT 1; DO 0"),
             (NativeQueryPolicy::Allow, "SET sql_notes=0"),
+            (NativeQueryPolicy::Allow, "SET NAMES gbk"),
+            (NativeQueryPolicy::Allow, "SET autocommit=1"),
+            (NativeQueryPolicy::Allow, "CREATE TABLE t(n INT)"),
+            (NativeQueryPolicy::Allow, "LOCK TABLES t WRITE"),
         ] {
             let mut tx = scope();
             tx.session = MysqlSession::without_connection(profile);
@@ -200,7 +204,18 @@ async fn local_rejection_matrix_preserves_scope_and_unsent_marker() {
             let Err(stream) = tx.query_stream(&statement, 1, &cancel).await else {
                 panic!("SQL locale accettato")
             };
-            for error in [execute, query, stream] {
+            let conditional = tx
+                .execute_conditional_update(
+                    ConditionalUpdate {
+                        update: &statement,
+                        key_probe: None,
+                        expected_affected_rows: 1,
+                    },
+                    &cancel,
+                )
+                .await
+                .unwrap_err();
+            for error in [execute, query, stream, conditional] {
                 let error = sent.failure(error);
                 assert_eq!(error.phase, ErrorPhase::Validate);
                 assert_eq!(error.remote_effect, RemoteEffect::None);
@@ -256,6 +271,42 @@ async fn nested_wrappers_preserve_local_rejections_for_both_products() {
                     assert_eq!(error.retry, RetryDisposition::Never);
                 }
             }
+        }
+    }
+}
+
+#[tokio::test]
+async fn caller_write_warning_and_server_rollback_close_scope() {
+    for effect in [RemoteEffect::Unknown, RemoteEffect::RolledBack] {
+        let mut tx = scope();
+        let mut error = crate::session::warning_error(tx.session.kind(), ErrorPhase::Write);
+        error.remote_effect = effect;
+        tx.finish_caller_write(Err(error)).await.unwrap_err();
+        assert!(!tx.open);
+        assert_eq!(tx.recovery_required, effect == RemoteEffect::Unknown);
+        let error = Box::new(tx)
+            .commit(&CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.phase, ErrorPhase::Commit);
+    }
+}
+
+#[tokio::test]
+async fn unverified_stream_completion_prevents_commit() {
+    for exhausted in [true, false] {
+        let mut tx = scope();
+        abandon_stream(exhausted, &mut tx.open, &mut tx.recovery_required);
+        assert_eq!(tx.open, exhausted);
+        assert_eq!(tx.recovery_required, !exhausted);
+        if !exhausted {
+            let error = Box::new(tx)
+                .commit(&CancellationToken::new())
+                .await
+                .unwrap_err();
+            assert_eq!(error.category, ErrorCategory::InvalidPlan);
+            assert_eq!(error.phase, ErrorPhase::Commit);
         }
     }
 }

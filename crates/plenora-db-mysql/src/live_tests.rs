@@ -7802,46 +7802,15 @@ async fn live_query_stream_cancelled_mid_stream_returns_cancelled() {
         assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
     }
 
-    // Il rifiuto non e la fine del test, e la meta. `RemoteEffect::None` dice
-    // che la cancellazione di una lettura non ha lasciato niente dietro di se,
-    // ed e un'affermazione sulla **transazione**, non sullo stream: se fosse
-    // falsa, questa scrittura fallirebbe o non arriverebbe.
-    tx.execute(
-        &plenora_database_core::transaction::Statement {
-            sql: format!("INSERT INTO {table} (n) VALUES (10001)"),
-            params: Vec::new(),
-        },
-        &cancellation,
-    )
-    .await
-    .expect("dopo una lettura cancellata la transazione scrive ancora");
-    assert!(tx
-        .commit(&cancellation)
-        .await
-        .expect("commit")
-        .is_committed());
-
-    // La rilettura arriva da **un'altra connessione**: che il commit dica
-    // `Committed` e cio che il provider crede, e la riga sul server e cio che
-    // e successo. Le due si confondono proprio nel caso in cui si vuole
-    // distinguerle.
-    assert_eq!(stream_row_count(table, 10001).await, 1);
+    let error = tx.commit(&cancellation).await.unwrap_err();
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Commit);
 }
 
-/// Uno stream lasciato a meta **non** rompe la transazione.
-///
-/// `mysql_async` drena il result set pendente prima dello statement
-/// successivo. Il pericolo esisteva sul filo e non esisteva nel driver, e la
-/// differenza fra le due cose e esattamente quello che una misura serve a
-/// stabilire — anche quando cio che si sta deducendo e un guasto e non una
-/// capability.
-///
-/// Il caso non e esotico: un `break` dentro un ciclo e il modo piu comune di
-/// consumare uno stream a meta. Con la bandiera, ogni `break` costava la
-/// transazione.
+/// Uno stream senza EOF non ha certificato i warning: il commit e vietato.
 #[tokio::test]
 #[ignore = "live: richiede il riferimento MySQL"]
-async fn live_query_stream_abandoned_mid_way_leaves_the_transaction_usable() {
+async fn live_query_stream_abandoned_mid_way_prevents_commit() {
     let table = "_stream_abandoned";
     seed_stream_table(table, 500).await;
     let provider = MysqlProvider::new(live_config(), 2).expect("provider");
@@ -7874,39 +7843,9 @@ async fn live_query_stream_abandoned_mid_way_leaves_the_transaction_usable() {
             .is_some());
     }
 
-    // La scrittura viene **dopo** l'abbandono e sulla stessa connessione: se i
-    // pacchetti non letti fossero rimasti in coda, sarebbe questa a leggerli
-    // al posto della propria risposta.
-    tx.execute(
-        &plenora_database_core::transaction::Statement {
-            sql: format!("INSERT INTO {table} (n) VALUES (10002)"),
-            params: Vec::new(),
-        },
-        &cancellation,
-    )
-    .await
-    .expect("dopo uno stream abbandonato la transazione scrive ancora");
-    assert!(tx
-        .commit(&cancellation)
-        .await
-        .expect("commit")
-        .is_committed());
-    assert_eq!(stream_row_count(table, 10002).await, 1);
-}
-
-/// Quante righe con quel valore, da una connessione che non e quella del test.
-async fn stream_row_count(table: &str, value: i64) -> i64 {
-    let cancellation = CancellationToken::new();
-    let mut check = MysqlSession::open(&live_config(), &cancellation)
-        .await
-        .expect("connessione di verifica");
-    check
-        .connection_mut()
-        .expect("connessione di verifica")
-        .query_first::<i64, _>(format!("SELECT COUNT(*) FROM {table} WHERE n = {value}"))
-        .await
-        .expect("conteggio")
-        .expect("una riga di conteggio")
+    let error = tx.commit(&cancellation).await.unwrap_err();
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Commit);
 }
 
 // Concorrenza e recupero del pool.
@@ -8082,12 +8021,14 @@ async fn live_concurrent_cancellation_does_not_disturb_the_other_readers() {
                     }
                 }
             }
-            // La transazione resta usabile anche dopo una lettura cancellata:
-            // il test la verifica anche sotto contesa.
-            transaction
-                .commit(&cancellation)
-                .await
-                .expect("commit dopo la cancellazione concorrente");
+            let outcome = transaction.commit(&cancellation).await;
+            if interrupts {
+                let error = outcome.expect_err("stream interrotto senza EOF");
+                assert_eq!(error.category, ErrorCategory::InvalidPlan);
+                assert_eq!(error.phase, plenora_database_core::ErrorPhase::Commit);
+            } else {
+                assert!(outcome.expect("stream verificato a EOF").is_committed());
+            }
             (interrupts, seen)
         }));
     }
@@ -13681,4 +13622,244 @@ async fn live_sospetti_mysql_lexer_and_protected_settings() {
         );
     }
     raw.query_drop(format!("DROP TABLE {table}")).await.unwrap();
+}
+
+/// Un warning dopo UPDATE non puo essere reso persistente dal commit.
+#[tokio::test]
+#[ignore = "richiede MySQL/MariaDB live esplicito"]
+async fn live_sospetti_conditional_update_closes_scope() {
+    use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionOptions};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let provider = semantica_provider();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let mut raw = semantica_admin().await;
+    raw.query_drop("DROP TABLE IF EXISTS pln_s900_cu")
+        .await
+        .unwrap();
+    raw.query_drop("CREATE TABLE pln_s900_cu(id INT PRIMARY KEY, d DECIMAL(5,2)) ENGINE=InnoDB")
+        .await
+        .unwrap();
+    raw.query_drop("INSERT INTO pln_s900_cu VALUES(1, 1.00)")
+        .await
+        .unwrap();
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &write_budget(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let update = Statement::new("UPDATE pln_s900_cu SET d='1.239' WHERE id=1");
+    let error = tx
+        .execute_conditional_update(
+            ConditionalUpdate {
+                update: &update,
+                key_probe: None,
+                expected_affected_rows: 1,
+            },
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Write);
+    assert!(tx
+        .execute(
+            &Statement::new("UPDATE pln_s900_cu SET d=9 WHERE id=1"),
+            &cancel
+        )
+        .await
+        .is_err());
+    let error = tx.commit(&cancel).await.unwrap_err();
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Commit);
+    // Il locking read attende anche l'eventuale rollback da disconnessione.
+    let value: Option<String> = raw
+        .query_first("SELECT CAST(d AS CHAR) FROM pln_s900_cu WHERE id=1 FOR UPDATE")
+        .await
+        .unwrap();
+    assert_eq!(value.as_deref(), Some("1.00"));
+    conditional_update_deadlock(&mut raw).await;
+    raw.query_drop("DROP TABLE pln_s900_cu").await.unwrap();
+}
+
+/// Il peer pesante rende riproducibile la vittima del deadlock.
+async fn conditional_update_deadlock(raw: &mut mysql_async::Conn) {
+    use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionOptions};
+    let provider = semantica_provider();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    // Deadlock reale: la transazione piccola e la vittima InnoDB.
+    // Il peer modifica molte righe prima di chiudere il ciclo dei lock.
+    let values = (2..=50)
+        .map(|id| format!("({id}, 1.00)"))
+        .collect::<Vec<_>>()
+        .join(",");
+    raw.query_drop(format!("INSERT INTO pln_s900_cu VALUES {values}"))
+        .await
+        .unwrap();
+    raw.query_drop("START TRANSACTION").await.unwrap();
+    raw.query_drop("UPDATE pln_s900_cu SET d=2 WHERE id>=2")
+        .await
+        .unwrap();
+    let mut tx = provider
+        .begin_transaction(
+            &secret,
+            &TransactionOptions::default(),
+            &write_budget(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    tx.execute(
+        &Statement::new("UPDATE pln_s900_cu SET d=3 WHERE id=1"),
+        &cancel,
+    )
+    .await
+    .unwrap();
+    let update = Statement::new("UPDATE pln_s900_cu SET d=4 WHERE id=2");
+    let (peer, victim) = tokio::join!(
+        raw.query_drop("UPDATE pln_s900_cu SET d=5 WHERE id=1"),
+        tx.execute_conditional_update(
+            ConditionalUpdate {
+                update: &update,
+                key_probe: None,
+                expected_affected_rows: 1,
+            },
+            &cancel
+        ),
+    );
+    peer.unwrap();
+    let error = victim.unwrap_err();
+    assert_eq!(
+        error.remote_effect,
+        plenora_database_core::RemoteEffect::RolledBack
+    );
+    raw.query_drop("ROLLBACK").await.unwrap();
+    assert!(tx
+        .execute(
+            &Statement::new("UPDATE pln_s900_cu SET d=9 WHERE id=1"),
+            &cancel
+        )
+        .await
+        .is_err());
+    assert!(tx.commit(&cancel).await.is_err());
+    let value: Option<String> = raw
+        .query_first("SELECT CAST(d AS CHAR) FROM pln_s900_cu WHERE id=1")
+        .await
+        .unwrap();
+    assert_eq!(value.as_deref(), Some("1.00"));
+}
+
+/// Il warning finale di RETURNING non puo sparire nel drain del commit.
+#[tokio::test]
+#[ignore = "richiede MySQL/MariaDB live esplicito"]
+async fn live_sospetti_unfinished_stream_prevents_commit() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let provider = semantica_provider();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let mut raw = semantica_admin().await;
+    raw.query_drop("DROP TABLE IF EXISTS pln_s900_stream")
+        .await
+        .unwrap();
+    raw.query_drop("CREATE TABLE pln_s900_stream(d DECIMAL(5,2)) ENGINE=InnoDB")
+        .await
+        .unwrap();
+    for cancelled in [false, true] {
+        let mut tx = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &write_budget(),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        let statement = Statement::new(if semantica_mariadb() {
+            "INSERT INTO pln_s900_stream VALUES('1.239'), ('2.239') RETURNING d"
+        } else {
+            "SELECT CAST('not-a-number' AS UNSIGNED) UNION ALL SELECT 2"
+        });
+        let mut stream = tx.query_stream(&statement, 1, &cancel).await.unwrap();
+        assert_eq!(stream.next_batch(&cancel).await.unwrap().unwrap().len(), 1);
+        if cancelled {
+            let interrupted = CancellationToken::new();
+            interrupted.cancel();
+            let error = stream.next_batch(&interrupted).await.unwrap_err();
+            assert_eq!(error.category, ErrorCategory::Cancelled);
+            assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
+        }
+        drop(stream);
+        let error = tx.commit(&cancel).await.unwrap_err();
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Commit);
+        let rows: Vec<String> = raw
+            .query("SELECT CAST(d AS CHAR) FROM pln_s900_stream FOR UPDATE")
+            .await
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+    raw.query_drop("DROP TABLE pln_s900_stream").await.unwrap();
+}
+
+/// I comandi con commit implicito sono rifiutati prima dell'invio.
+#[tokio::test]
+#[ignore = "richiede MySQL/MariaDB live esplicito"]
+async fn live_sospetti_implicit_commit_preflight() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let _serial = SEMANTICA_SERIAL.lock().await;
+    let provider = semantica_provider();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let mut raw = semantica_admin().await;
+    raw.query_drop("DROP TABLE IF EXISTS pln_s900_atomic")
+        .await
+        .unwrap();
+    raw.query_drop("CREATE TABLE pln_s900_atomic(id INT PRIMARY KEY) ENGINE=InnoDB")
+        .await
+        .unwrap();
+    for sql in [
+        "SET autocommit=1",
+        "CREATE TABLE pln_s900_forbidden(id INT)",
+        "TRUNCATE TABLE pln_s900_atomic",
+        "LOCK TABLES pln_s900_atomic WRITE",
+        "SET NAMES gbk",
+        "SET CHARACTER SET latin1",
+        "SET sql_select_limit=1",
+    ] {
+        let mut tx = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &write_budget(),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        tx.execute(
+            &Statement::new("INSERT INTO pln_s900_atomic VALUES(1)"),
+            &cancel,
+        )
+        .await
+        .unwrap();
+        let error = tx.execute(&Statement::new(sql), &cancel).await.unwrap_err();
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Validate);
+        assert_eq!(
+            error.remote_effect,
+            plenora_database_core::RemoteEffect::None
+        );
+        tx.rollback(&cancel).await.unwrap();
+        let rows: Option<u64> = raw
+            .query_first("SELECT COUNT(*) FROM pln_s900_atomic")
+            .await
+            .unwrap();
+        assert_eq!(rows, Some(0));
+    }
+    raw.query_drop("DROP TABLE pln_s900_atomic").await.unwrap();
 }

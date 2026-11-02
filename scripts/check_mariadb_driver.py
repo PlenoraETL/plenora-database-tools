@@ -753,7 +753,7 @@ def measure(
             "-- --ignored --show-output --test-threads=1"
         ]
         output = run(regression)
-        for name in ["live_sospetti_warnings_and_byte_domains", "live_sospetti_warning_frontier", "live_sospetti_mysql_lexer_and_protected_settings"]:
+        for name in ["live_sospetti_warnings_and_byte_domains", "live_sospetti_warning_frontier", "live_sospetti_mysql_lexer_and_protected_settings", "live_sospetti_conditional_update_closes_scope", "live_sospetti_unfinished_stream_prevents_commit", "live_sospetti_implicit_commit_preflight"]:
             if f"test live_tests::{name} ... ok" not in output:
                 raise RuntimeError("regressione warning/domini non eseguita: " + name)
     output = run(command)

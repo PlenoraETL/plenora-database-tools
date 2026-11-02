@@ -98,7 +98,7 @@ pub fn enforce_single_mysql_statement(sql: &str) -> crate::Result<()> {
 
 #[path = "mysql_caller_policy.rs"]
 mod mysql;
-pub use mysql::enforce_mysql_caller_sql;
+pub use mysql::{enforce_mysql_caller_sql, enforce_mysql_transaction_sql};
 
 fn lexical_error() -> crate::DatabaseError {
     crate::DatabaseError::invalid_plan("statement SQL con delimitatori non validi")
