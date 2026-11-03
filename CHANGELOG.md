@@ -8,6 +8,29 @@ riassumono le note di quelle release.
 
 ## 9.0.0 - in preparazione
 
+- Audit JSON, raccolta VM su MySQL 9.7.2 e MariaDB 10.11/11.8/12.3:
+  per ciascuna wheel 7.0.0 e 8.0.0?8.0.4, 1474 combinazioni per fixture,
+  608 differenze rispetto all'oracolo JSON su MySQL (384 A, 224 B) e 266
+  su ciascun MariaDB (154 A, 112 B). La 9.0.0 pre-correzione (978cad27)
+  ne aveva 168 (24 A, 144 B) e 170 (74 A, 96 B). A indica confronti della
+  libreria, B SQL del chiamante: questi totali non sono tutti difetti di
+  trasporto. C segnala attese ambigue su stringhe Python e NULL SQL:
+  40 casi MySQL e 86 per MariaDB, inclusi nei totali A/B.
+  Superfici A misurate colpite almeno dalla 7.0.0: where_eq select/update/delete
+  e expression update/delete su entrambi; expression select su MySQL e
+  conditional_update su MariaDB. Non si retrodata una superficie non misurata.
+  La correzione rifiuta i confronti JSON non qualificati, anche con NULL SQL,
+  riconosce LONGTEXT/JSON MariaDB, protegge chiavi Arrow e controlli condizionali.
+  Rifiuti conservativi e migrazione sono descritti nel README SDK.
+  Per SQL del chiamante il testo resta testo e None resta NULL; dict/list JSON
+  nudi sono rifiutati, non serializzati implicitamente. Esempio: payload
+  `{"a":1,"b":2}` contro il parametro str `'{"b":2,"a":1}'` con `payload = ?`
+  puo non corrispondere: MySQL JSON/stringa e MariaDB LONGTEXT hanno semantiche
+  server diverse dall'uguaglianza JSON. Il CAST MySQL deve essere scelto dal
+  chiamante; JSON_EQUALS/JSON_CONTAINS non garantiscono identita esatta.
+  La nuova sonda controlla l'eco dei parametri B indipendentemente dal risultato
+  SQL. Conferma live della correzione ancora da eseguire, non inclusa nei numeri.
+
 - Correzioni: difetto silenzioso JSON-testo su MySQL/MariaDB, versioni
   colpite: <da misura>. La verifica del checkout deve riportare zero
   discrepanze silenziose sulla stessa sonda prima della qualifica.

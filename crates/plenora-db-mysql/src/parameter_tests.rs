@@ -132,3 +132,35 @@ fn integral_decimals_bind_as_integers_and_the_rest_as_text() {
         Some(Value::Bytes(b"99999999999999999999".to_vec()))
     );
 }
+
+#[test]
+fn caller_json_text_and_sql_null_are_transported_without_normalization() {
+    for provider in [MYSQL, MARIADB] {
+        for text in [
+            "null",
+            "hello",
+            "\"hello\"",
+            "1",
+            "{ \"a\" : 1 }",
+            "{\"b\":2,\"a\":1}",
+        ] {
+            assert_eq!(
+                parameter_value(&ParameterValue::String(text.into()), provider).unwrap(),
+                Value::Bytes(text.as_bytes().to_vec())
+            );
+        }
+        assert_eq!(
+            parameter_value(
+                &ParameterValue::Null {
+                    type_name: "text".into()
+                },
+                provider
+            )
+            .unwrap(),
+            Value::NULL
+        );
+        assert!(
+            parameter_value(&ParameterValue::Json(serde_json::json!({"a":1})), provider).is_err()
+        );
+    }
+}

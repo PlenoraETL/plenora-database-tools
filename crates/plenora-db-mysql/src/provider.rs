@@ -819,6 +819,7 @@ async fn admit_in_preflight(
             token,
         )
         .await?;
+        crate::write_admission::reject_json_keys(&operation.keys, &target, &json)?;
         crate::write_admission::target_facts(&target, &json)
     };
     drop(session);
@@ -976,6 +977,7 @@ async fn execute_mysql_write_after_ddl(
         token,
     )
     .await?;
+    crate::write_admission::reject_json_keys(&operation.keys, &target, &json)?;
     let rewrites = crate::write_admission::admit(
         provider.profile.kind(),
         &operation.target.object,

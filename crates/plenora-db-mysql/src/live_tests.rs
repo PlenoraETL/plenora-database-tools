@@ -13652,7 +13652,9 @@ async fn live_sospetti_conditional_update_closes_scope() {
         )
         .await
         .unwrap();
-    let update = Statement::new("UPDATE pln_s900_cu SET d='1.239' WHERE id=1");
+    let update = Statement::new("UPDATE pln_s900_cu SET d=? WHERE id=1").with_params(vec![
+        plenora_database_core::provider::ParameterValue::String("1.239".into()),
+    ]);
     let error = tx
         .execute_conditional_update(
             ConditionalUpdate {
@@ -14354,6 +14356,77 @@ fn provider900() -> Box<dyn Provider> {
     }
 }
 
+async fn audit900_json_predicates() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let provider = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    // Stessa regressione nel gate live gia eseguito per entrambi i prodotti.
+    {
+        use plenora_database_core::portable::{select, Expression, PortableStatement, Predicate};
+        use plenora_database_core::provider::ParameterValue;
+        use plenora_database_core::transaction::ConditionalUpdate;
+        let mut tx = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &write_budget(),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        for value in [
+            ParameterValue::String("null".into()),
+            ParameterValue::String("1".into()),
+            ParameterValue::Null {
+                type_name: "text".into(),
+            },
+        ] {
+            let plan = PortableStatement::Select(select("audit900_json", vec!["id"]).where_(
+                Predicate::Eq {
+                    column: "payload".into(),
+                    value: Expression::Literal(value.clone()),
+                },
+            ));
+            let error = plenora_database_core::facade::execute_portable_returning(
+                tx.as_mut(),
+                &plan,
+                &cancel,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.category, ErrorCategory::InvalidPlan);
+            let rows = tx
+                .query(
+                    &Statement::new("SELECT ?").with_params(vec![value.clone()]),
+                    &cancel,
+                )
+                .await
+                .unwrap();
+            if matches!(value, ParameterValue::Null { .. }) {
+                assert!(matches!(rows[0].values()[0], ParameterValue::Null { .. }));
+            } else {
+                assert_eq!(rows[0].values()[0], value);
+            }
+        }
+        let update = Statement::new("UPDATE audit900_json SET id=2 WHERE payload=?")
+            .with_params(vec![ParameterValue::String("1".into())]);
+        let error = tx
+            .execute_conditional_update(
+                ConditionalUpdate {
+                    update: &update,
+                    key_probe: None,
+                    expected_affected_rows: 1,
+                },
+                &cancel,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        tx.rollback(&cancel).await.unwrap();
+    }
+}
+
 #[tokio::test]
 #[ignore = "richiede fixture MySQL/MariaDB"]
 async fn live_audit900_l2_typed_json() {
@@ -14363,14 +14436,15 @@ async fn live_audit900_l2_typed_json() {
     let cancel = CancellationToken::new();
     for sql in [
         "DROP TABLE IF EXISTS audit900_json",
-        "CREATE TABLE audit900_json (id INTEGER PRIMARY KEY)",
-        "INSERT INTO audit900_json VALUES (1)",
+        "CREATE TABLE audit900_json (id INTEGER PRIMARY KEY, payload JSON)",
+        "INSERT INTO audit900_json (id) VALUES (1)",
     ] {
         provider
             .execute_ddl(&secret, sql, &cancel)
             .await
             .expect("fixture L2");
     }
+    audit900_json_predicates().await;
     let query = serde_json::from_value(serde_json::json!({
         "source":{"object":{"catalog":null,"schema":environment("PLENORA_MYSQL_DATABASE","dataflow_test"),"object":"audit900_json"},"alias":null},
         "projection":[{"expression":{"kind":"typed_parameter","name":"p","parameter_type":"json"},"alias":"v"}]

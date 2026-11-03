@@ -1379,11 +1379,18 @@ impl<'a> Walk<'a, '_> {
                 Candidate::Geometry => Typed::of(OperandFamily::Geometry, false),
                 Candidate::Typed(column) => {
                     let other = self.typing.identity(column.identity.as_deref());
-                    Typed::of(
+                    let mut typed = Typed::of(
                         column.family,
                         matches!(column.origin, ColumnOrigin::Derived),
                     )
-                    .with_other(other)
+                    .with_other(other);
+                    // Nessuna identita JSON qualificata su questi provider:
+                    // anche NULL SQL e un operando non tipizzato JSON.
+                    typed.conflict |= matches!(
+                        self.provider,
+                        crate::plan::ProviderKind::Mysql | crate::plan::ProviderKind::Mariadb
+                    ) && column.identity.as_deref() == Some("json");
+                    typed
                 }
                 Candidate::Scalar | Candidate::Unresolved | Candidate::Ambiguous => continue,
                 Candidate::Follow(item) => match item {

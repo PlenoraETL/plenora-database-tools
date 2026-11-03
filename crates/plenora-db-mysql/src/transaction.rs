@@ -1168,6 +1168,22 @@ impl TransactionScope for MysqlTransaction {
                 if let Some(probe) = request.key_probe {
                     self.validate_caller_sql(&probe.sql)?;
                 }
+                crate::conditional_json::verify(
+                    &mut self.session,
+                    &request.update.sql,
+                    true,
+                    cancellation,
+                )
+                .await?;
+                if let Some(probe) = request.key_probe {
+                    crate::conditional_json::verify(
+                        &mut self.session,
+                        &probe.sql,
+                        false,
+                        cancellation,
+                    )
+                    .await?;
+                }
                 // Pattern:
                 //   1. SAVEPOINT __plenora_cu
                 //   2. UPDATE ... → verifica affected_rows == expected

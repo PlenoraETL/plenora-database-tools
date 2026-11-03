@@ -2094,3 +2094,29 @@ fn rollback_warning_overrides_even_a_prior_deadlock() {
         assert_eq!(result.execution_id.as_deref(), Some("rollback-warning"));
     }
 }
+
+#[test]
+fn json_write_keys_refuse_native_and_mariadb_aliases() {
+    let target = base_table(vec![server_column("payload", "json", "json", false)]);
+    assert!(crate::write_admission::reject_json_keys(
+        &["payload".into()],
+        &target,
+        &std::collections::BTreeSet::default()
+    )
+    .is_err());
+    let text = base_table(vec![server_column(
+        "payload", "longtext", "longtext", false,
+    )]);
+    assert!(crate::write_admission::reject_json_keys(
+        &["payload".into()],
+        &text,
+        &["payload".into()].into()
+    )
+    .is_err());
+    assert!(crate::write_admission::reject_json_keys(
+        &["payload".into()],
+        &text,
+        &std::collections::BTreeSet::default()
+    )
+    .is_ok());
+}

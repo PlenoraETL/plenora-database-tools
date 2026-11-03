@@ -984,3 +984,42 @@ python scripts/check_sdk_tests.py --stabilization-only
 ## License
 
 Software proprietario. Vedi il file `LICENSE` alla radice del workspace.
+
+
+### Confronti JSON e SQL del chiamante (9.0.0)
+
+I confronti composti dalla libreria su colonne JSON MySQL/MariaDB sono
+rifiutati con `InvalidPlan`, anche quando il valore e testo o `None`.
+`None` rappresenta NULL SQL, non il documento JSON `null`; una stringa Python
+non dichiara se rappresenta testo o una stringa JSON. La regola copre builder
+`where_eq`, expression, portable/relational e chiavi delle scritture Arrow.
+`IS NULL` resta il test esplicito del NULL SQL. Un `CAST` MySQL puo dare un
+confronto JSON al server, ma non viene assunto come prova generale di identita;
+`JSON_CONTAINS` e `JSON_EQUALS` non sono una promessa di identita esatta.
+
+MariaDB non ha un tipo JSON distinto da LONGTEXT. La guardia legge anche
+`SHOW CREATE TABLE`, che segue le tabelle temporanee: in presenza di
+`JSON_VALID` considera conservativamente JSON le colonne LONGTEXT della
+relazione. Anche LONGTEXT derivato (vista o colonna calcolata) non prova una
+semantica solo testuale e si rifiuta nei confronti. Per `conditional_update`
+si ammettono soltanto UPDATE e probe SELECT semplici, senza funzioni,
+subquery, join, commenti o letterali quotati, su relazioni prive di colonne
+JSON; le forme non verificabili sono `InvalidPlan` prima del savepoint.
+Usare parametri per i valori e piani relazionali per i confronti tipizzati.
+
+`query_sql`, `execute_sql` ed `execute_scalar` eseguono invece SQL scritto dal
+chiamante. I parametri `str` conservano il testo (compresi spazi e ordine delle
+chiavi), `None` resta NULL SQL. Dict/list e JSON tipizzato nudo sono rifiutati
+esplicitamente su MySQL/MariaDB, senza convertirli in bytes o testo.
+Il buffer `Bytes` interno del driver codifica il parametro testuale del
+protocollo: non implica che un dict Python sia ammesso come parametro binario.
+
+Esempio: con `payload = {"a":1,"b":2}`, il SQL
+`SELECT id FROM t WHERE payload = ?` e il parametro Python
+`'{"b":2,"a":1}'` non promettono uguaglianza JSON. MySQL confronta JSON con
+una stringa; MariaDB confronta LONGTEXT e puo distinguere ordine e spazi.
+Scrivere `payload = CAST(? AS JSON)` su MySQL esprime invece una scelta
+esplicita della semantica server. Su MariaDB, scegliere e verificare il
+predicato server adatto al requisito; non sostituire automaticamente con
+`JSON_EQUALS`. `SELECT ?` permette di controllare separatamente tipo e valore
+ricevuti. La sonda distingue trasporto, rifiuto e risultato del confronto.

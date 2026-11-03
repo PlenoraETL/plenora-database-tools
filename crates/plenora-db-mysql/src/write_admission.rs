@@ -409,3 +409,26 @@ fn unproven_facts(kind: ProviderKind) -> DatabaseError {
 #[cfg(test)]
 #[path = "write_admission_tests.rs"]
 mod tests;
+
+/// Le chiavi Arrow compongono confronti, non assegnazioni di documenti.
+///
+/// # Errors
+/// Rifiuta l'identita JSON non qualificata prima della scrittura.
+pub fn reject_json_keys(
+    keys: &[String],
+    target: &MysqlObjectDescription,
+    json: &BTreeSet<String>,
+) -> Result<()> {
+    if keys.iter().any(|key| {
+        json.contains(key)
+            || target
+                .columns
+                .iter()
+                .any(|column| column.name == *key && column.data_type.eq_ignore_ascii_case("json"))
+    }) {
+        return Err(DatabaseError::invalid_plan(
+            "chiave JSON senza confronto di identita qualificato",
+        ));
+    }
+    Ok(())
+}

@@ -2398,6 +2398,13 @@ pub fn ensure_scalar_filter_fields(
             return Err(refusal(provider));
         }
         let mut sides = family(field)?.into_iter().collect::<Vec<_>>();
+        if matches!(provider, ProviderKind::Mysql | ProviderKind::Mariadb)
+            && sides
+                .iter()
+                .any(|(_, identity)| identity.as_deref() == Some("json"))
+        {
+            return Err(types::mismatch(provider));
+        }
         sides.extend(values.iter().filter_map(|name| {
             parameters
                 .get(provider, name)

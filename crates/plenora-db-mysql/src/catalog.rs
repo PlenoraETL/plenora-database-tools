@@ -1169,6 +1169,29 @@ async fn show_columns(
             .await?;
         !views.is_empty()
     };
+    // SHOW CREATE segue anche una TEMPORARY omonima: INFORMATION_SCHEMA no.
+    // Se il DDL contiene JSON_VALID, il testo puo essere un documento JSON.
+    // Per viste/colonne derivate LONGTEXT il catalogo non prova il contrario.
+    let json_document = if profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb {
+        let ddl = session
+            .query_rows(
+                &format!(
+                    "SHOW CREATE TABLE {}.{}",
+                    quote_identifier(IdentifierDialect::Mysql, schema)?,
+                    quote_identifier(IdentifierDialect::Mysql, object)?
+                ),
+                ErrorPhase::Prepare,
+                cancellation,
+            )
+            .await?;
+        let row = ddl
+            .first()
+            .ok_or_else(|| catalog_row_missing(ErrorPhase::Prepare))?;
+        let definition: String = required(row, 1, "Create Table")?;
+        definition.to_ascii_lowercase().contains("json_valid")
+    } else {
+        false
+    };
     let mut columns = Vec::with_capacity(rows.len());
     for row in &rows {
         let column: String = required(row, 0, "Field")?;
@@ -1178,6 +1201,14 @@ async fn show_columns(
         let computed = is_computed_column(&extra, "")
             || (profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb
                 && mariadb_default_may_compute(default.as_deref()));
+        let declared = if profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb
+            && base_type(&declared) == "longtext"
+            && (json_document || derived || computed)
+        {
+            "json".to_owned()
+        } else {
+            declared
+        };
         columns.push(
             CatalogColumn::new(
                 column,
