@@ -117,7 +117,9 @@ fn cases() -> Vec<Case> {
             "S",
             text("a\0b"),
             exact(&text("a\0b"), "610062"),
-        ),
+        )
+        .on(FidelityPath::Portable, mapping.clone())
+        .on(FidelityPath::Read, mapping.clone()),
         // Il difetto 5 del secondo giro: NVARCHAR2 e NCHAR in AL16UTF16 si
         // leggevano come UTF-8 ("\0a\0b"), in query e in Arrow.
         Case::new(

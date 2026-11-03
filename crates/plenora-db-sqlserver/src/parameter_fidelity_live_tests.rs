@@ -96,6 +96,14 @@ fn cases() -> Vec<Case> {
             "s",
             text("a\0b"),
             exact(&text("a\0b"), utf16_hex("a\0b")),
+        )
+        .on(
+            FidelityPath::Portable,
+            Expect::Refused(ErrorCategory::DataMapping),
+        )
+        .on(
+            FidelityPath::Read,
+            Expect::Refused(ErrorCategory::DataMapping),
         ),
         Case::new(
             "decimal esatto",

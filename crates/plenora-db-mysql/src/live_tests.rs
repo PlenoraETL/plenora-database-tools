@@ -11303,10 +11303,7 @@ fn fidelity_cases() -> Vec<FidelityCase> {
             "decimal oltre la scala della colonna",
             "D",
             V::Decimal("12345.67890001".to_owned()),
-            FidelityExpect::Assigned {
-                read: fidelity_text("12345.6789"),
-                raw: "12345.6789".to_owned(),
-            },
+            FidelityExpect::WarningRefused,
         )
         .on(FidelityPath::Portable, mapping.clone())
         .on(FidelityPath::Read, mapping.clone()),
@@ -11463,7 +11460,9 @@ fn fidelity_cases() -> Vec<FidelityCase> {
             } else {
                 fidelity_exact(&fidelity_text("{\"a\": 1}"), "{\"a\": 1}")
             },
-        ),
+        )
+        .comparison_refused(FidelityPath::Portable, ErrorCategory::InvalidPlan)
+        .comparison_refused(FidelityPath::Read, ErrorCategory::InvalidPlan),
         FidelityCase::new(
             "NULL integer",
             "N",

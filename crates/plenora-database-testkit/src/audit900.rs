@@ -2,11 +2,11 @@
 
 use crate::parameter_fidelity::{begin, describe, insert_statement, NativeSql, Target};
 use plenora_database_core::facade::execute_portable;
+use plenora_database_core::plan::{FilterExpression, ReadOperation};
 use plenora_database_core::portable::{
     eq, Expression, PortableStatement, TableRef, UpdateStatement,
 };
 use plenora_database_core::provider::{ParameterBag, ParameterValue as V};
-use plenora_database_core::relational::QueryOperation;
 use plenora_database_core::resource::ResourceBudget;
 use plenora_database_core::transaction::Statement;
 use plenora_database_core::{CancellationToken, ErrorPhase};
@@ -68,8 +68,10 @@ pub async fn malformed_temporals(
             }),
         ] {
             match execute_portable(tx.as_mut(), &operation, &cancel).await {
-                Err(error) if matches!(error.phase, ErrorPhase::Prepare | ErrorPhase::Validate) => {
-                }
+                Err(error)
+                    if matches!(error.phase, ErrorPhase::Prepare | ErrorPhase::Validate)
+                        && error.category == plenora_database_core::ErrorCategory::DataMapping
+                        && error.remote_effect == plenora_database_core::RemoteEffect::None => {}
                 Err(error) => return Err(describe(&error)),
                 Ok(_) => return Err("temporale malformato scritto".into()),
             }
@@ -90,17 +92,25 @@ pub async fn malformed_temporals(
             }
         }
         tx.commit(&cancel).await.map_err(|e| describe(&e))?;
-        let query: QueryOperation = serde_json::from_value(serde_json::json!({
-            "source":{"object":target.table,"alias":null}, "projection":[{"expression":{"kind":"column","column":{"relation":null,"field":column}},"alias":"v"}],
-            "filter":{"kind":"compare","left":{"kind":"column","column":{"relation":null,"field":column}},"operator":"eq","right":{"kind":"parameter","name":"p"}}
-        })).map_err(|e| e.to_string())?;
+        let query = ReadOperation {
+            source: target.table.clone(),
+            projection: vec![column.into()],
+            filter: Some(FilterExpression::Eq {
+                field: column.into(),
+                parameter: "p".into(),
+            }),
+            order_by: vec![],
+            row_limit: None,
+            row_offset: None,
+            declared_crs: vec![],
+        };
         let budget = ResourceBudget::new(target.limits.clone()).map_err(|e| describe(&e))?;
         let mut positive = query.clone();
         positive.filter = None;
         let empty = ParameterBag::default();
         let mut stream = target
             .provider
-            .query(target.secret, &positive, &empty, &budget, &cancel)
+            .read(target.secret, &positive, &empty, &budget, &cancel)
             .await
             .map_err(|e| describe(&e))?;
         let mut rows = 0;
@@ -114,10 +124,13 @@ pub async fn malformed_temporals(
         let bag = ParameterBag::new([("p".into(), invalid)].into());
         match target
             .provider
-            .query(target.secret, &query, &bag, &budget, &cancel)
+            .read(target.secret, &query, &bag, &budget, &cancel)
             .await
         {
-            Err(error) if matches!(error.phase, ErrorPhase::Prepare | ErrorPhase::Validate) => {}
+            Err(error)
+                if matches!(error.phase, ErrorPhase::Prepare | ErrorPhase::Validate)
+                    && error.category == plenora_database_core::ErrorCategory::DataMapping
+                    && error.remote_effect == plenora_database_core::RemoteEffect::None => {}
             Err(error) => return Err(describe(&error)),
             Ok(_) => return Err("filtro temporale malformato ammesso".into()),
         }

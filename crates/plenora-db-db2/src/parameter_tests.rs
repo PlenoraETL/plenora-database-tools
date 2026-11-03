@@ -494,3 +494,16 @@ fn audit900_bind_matrix() {
         },
     );
 }
+
+#[test]
+fn audit900_described_text_refuses_nul_before_binding() {
+    assert_eq!(
+        refused(
+            &ParameterValue::String("a\0b".into()),
+            &DataType::Varchar {
+                length: std::num::NonZeroUsize::new(64)
+            }
+        ),
+        ErrorCategory::DataMapping
+    );
+}

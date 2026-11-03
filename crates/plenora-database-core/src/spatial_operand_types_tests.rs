@@ -900,3 +900,23 @@ fn un_cast_a_testo_si_rifiuta_su_mysql_e_mariadb() {
             .unwrap_or_else(|error| panic!("{prodotto:?}: {error:?}"));
     }
 }
+
+#[test]
+fn audit900_untyped_json_comparisons_are_explicitly_refused() {
+    for provider in [ProviderKind::Mysql, ProviderKind::Mariadb] {
+        let query = piano(
+            "f",
+            &json!({"filter": uguale(&colonna("f", "name"), &parametro("p"))}),
+        );
+        let parameters = ParameterFamilies::from_bag(&ParameterBag::new(
+            [("p".into(), ParameterValue::Json(json!({"a": 1})))].into(),
+        ));
+        let error = scalar_operands(provider, &query)
+            .unwrap()
+            .judge_bound(&catalogo(provider), &parameters)
+            .unwrap_err();
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        assert_eq!(error.message, OPERAND_FAMILY_MISMATCH);
+    }
+}

@@ -86,6 +86,8 @@ pub enum Expect {
     /// Rifiutato con questa categoria prima dell'invio; sul percorso di
     /// lettura basta il rifiuto prima dello stream (`Prepare` o `Validate`).
     Refused(ErrorCategory),
+    /// Warning dopo invio: effetto dichiarato Unknown, scope non committabile.
+    WarningRefused,
 }
 
 impl Expect {
@@ -128,6 +130,7 @@ pub struct Case {
     pub expect: Expect,
     pub paths: Vec<FidelityPath>,
     pub overrides: Vec<(FidelityPath, Expect)>,
+    pub comparison_refusals: Vec<(FidelityPath, ErrorCategory)>,
 }
 
 impl Case {
@@ -149,6 +152,7 @@ impl Case {
                 FidelityPath::Read,
             ],
             overrides: Vec::new(),
+            comparison_refusals: Vec::new(),
         }
     }
 
@@ -165,6 +169,20 @@ impl Case {
     pub fn on(mut self, path: FidelityPath, expect: Expect) -> Self {
         self.overrides.push((path, expect));
         self
+    }
+
+    /// La scrittura resta esatta; il confronto deve rifiutare esplicitamente.
+    #[must_use]
+    pub fn comparison_refused(mut self, path: FidelityPath, category: ErrorCategory) -> Self {
+        self.comparison_refusals.push((path, category));
+        self
+    }
+
+    fn comparison_refusal(&self, path: FidelityPath) -> Option<ErrorCategory> {
+        self.comparison_refusals
+            .iter()
+            .find(|(p, _)| *p == path)
+            .map(|(_, c)| *c)
     }
 
     fn expect_on(&self, path: FidelityPath) -> &Expect {
@@ -739,21 +757,32 @@ fn comparisons(case: &Case, distinct: &[ParameterValue]) -> Vec<Comparison> {
 /// quelli coperti dal limite dichiarato diventano note.
 fn judge(
     comparison: &Comparison,
-    matched: Option<u64>,
+    matched: &Result<u64, String>,
+    refusal: Option<ErrorCategory>,
     declared_cross_type: bool,
     notes: &mut Vec<String>,
     what: &str,
 ) -> Probe {
-    let ok = matched.map_or(comparison.expected == 0, |matched| {
-        usize::try_from(matched).ok() == Some(comparison.expected)
-    });
-    if ok {
+    if let Err(reason) = matched {
+        notes.push(format!("{what}: rifiuto esplicito {reason}"));
+        if comparison.expected == 0
+            || refusal.is_some_and(|category| {
+                reason.starts_with(&format!("{category:?}/Prepare:"))
+                    || reason.starts_with(&format!("{category:?}/Validate:"))
+            })
+        {
+            return Ok(());
+        }
+    } else if refusal.is_some() && comparison.expected != 0 {
+        return Err(format!(
+            "{what}: atteso rifiuto esplicito, ottenuto {matched:?}"
+        ));
+    } else if matched.as_ref().ok().and_then(|n| usize::try_from(*n).ok())
+        == Some(comparison.expected)
+    {
         return Ok(());
     }
-    let message = format!(
-        "{what} con {:?}: {matched:?} righe, attese {}",
-        comparison.value, comparison.expected
-    );
+    let message = format!("{what}: {matched:?}, attese {} righe", comparison.expected);
     match comparison.kind {
         Neighbour::Collation => {
             notes.push(format!("collation: {message}"));
@@ -769,6 +798,44 @@ fn judge(
 
 async fn native(target: &Target<'_>, case: &Case, id: i32, notes: &mut Vec<String>) -> Probe {
     let mut scope = begin(target).await?;
+    if matches!(case.expect_on(FidelityPath::Native), Expect::WarningRefused) {
+        let cancel = CancellationToken::new();
+        let result = scope
+            .execute(
+                &Statement::new((target.native)(NativeSql::Insert, case.column))
+                    .with_params(vec![ParameterValue::I32(id), case.value.clone()]),
+                &cancel,
+            )
+            .await;
+        let error = result
+            .err()
+            .ok_or_else(|| "warning di conversione non rifiutato".to_owned())?;
+        if error.category != ErrorCategory::DataMapping
+            || error.phase != ErrorPhase::Write
+            || error.remote_effect != plenora_database_core::RemoteEffect::Unknown
+            || error.retry != plenora_database_core::RetryDisposition::RequiresRecovery
+        {
+            return Err(describe(&error));
+        }
+        if scope.commit(&cancel).await.is_ok() {
+            return Err("commit dopo warning ammesso".into());
+        }
+        let mut witness = begin(target).await?;
+        let rows = witness
+            .query(
+                &Statement::new((target.native)(NativeSql::Select, case.column))
+                    .with_params(vec![ParameterValue::I32(id)]),
+                &cancel,
+            )
+            .await
+            .map_err(|e| describe(&e))?;
+        witness.rollback(&cancel).await.map_err(|e| describe(&e))?;
+        return if rows.is_empty() {
+            Ok(())
+        } else {
+            Err("warning ha lasciato una riga".into())
+        };
+    }
     let probe = native_steps(target, scope.as_mut(), case, id, notes).await;
     let rollback = scope.rollback(&CancellationToken::new()).await;
     probe?;
@@ -792,6 +859,7 @@ async fn native_steps(
         .await;
     let (read, raw, distinct, compare) = match case.expect_on(FidelityPath::Native) {
         Expect::Refused(category) => return refused(&inserted, *category),
+        Expect::WarningRefused => return Err("warning richiede il percorso nativo dedicato".into()),
         Expect::Assigned { read, raw } => (read, raw, &[][..], false),
         Expect::Exact {
             read,
@@ -823,8 +891,8 @@ async fn native_steps(
             )
             .await
         {
-            Ok(rows) => Some(count_of(&rows)?),
-            Err(error) if error.phase == ErrorPhase::Prepare => None,
+            Ok(rows) => Ok(count_of(&rows)?),
+            Err(error) if error.phase == ErrorPhase::Prepare => Err(describe(&error)),
             Err(error) => {
                 // Un errore dopo l'invio interrompe la transazione su alcuni
                 // server: si registra e si chiude il percorso.
@@ -837,7 +905,8 @@ async fn native_steps(
         };
         judge(
             &comparison,
-            matched,
+            &matched,
+            case.comparison_refusal(FidelityPath::Native),
             target.native_cross_type_declared,
             notes,
             "col = ?",
@@ -873,7 +942,7 @@ async fn portable_steps(
     let (raw, distinct) = match case.expect_on(FidelityPath::Portable) {
         Expect::Refused(category) => return refused(&inserted, *category),
         Expect::Exact { raw, distinct, .. } => (raw, distinct),
-        Expect::Assigned { .. } => {
+        Expect::Assigned { .. } | Expect::WarningRefused => {
             return Err("Assigned vale soltanto sul percorso nativo".into());
         }
     };
@@ -892,8 +961,8 @@ async fn portable_steps(
         });
         let matched =
             match execute_portable_returning(scope, &select, &CancellationToken::new()).await {
-                Ok(rows) => Some(u64::try_from(rows.len()).unwrap_or(u64::MAX)),
-                Err(error) if error.phase == ErrorPhase::Prepare => None,
+                Ok(rows) => Ok(u64::try_from(rows.len()).unwrap_or(u64::MAX)),
+                Err(error) if error.phase == ErrorPhase::Prepare => Err(describe(&error)),
                 Err(error) => {
                     return Err(format!(
                         "confronto portable con {:?}: {}",
@@ -902,7 +971,14 @@ async fn portable_steps(
                     ))
                 }
             };
-        judge(&comparison, matched, false, notes, "eq portable")?;
+        judge(
+            &comparison,
+            &matched,
+            case.comparison_refusal(FidelityPath::Portable),
+            false,
+            notes,
+            "eq portable",
+        )?;
     }
     Ok(())
 }
@@ -911,7 +987,7 @@ async fn read(target: &Target<'_>, case: &Case, id: i32, notes: &mut Vec<String>
     let (read_value, distinct) = match case.expect_on(FidelityPath::Read) {
         Expect::Exact { read, distinct, .. } => (read, distinct),
         Expect::Refused(category) => return read_refused(target, case, *category).await,
-        Expect::Assigned { .. } => {
+        Expect::Assigned { .. } | Expect::WarningRefused => {
             return Err("Assigned vale soltanto sul percorso nativo".into());
         }
     };
@@ -967,16 +1043,23 @@ async fn read_steps(
     }
     for comparison in comparisons(case, distinct) {
         let matched = match read_rows(target, case.column, id, Some(&comparison.value)).await {
-            Ok(batches) => Some(
-                batches
-                    .iter()
-                    .map(|batch| u64::try_from(batch.num_rows()).unwrap_or(u64::MAX))
-                    .sum(),
-            ),
-            Err(reason) if reason.contains("/Prepare:") || reason.contains("/Validate:") => None,
+            Ok(batches) => Ok(batches
+                .iter()
+                .map(|batch| u64::try_from(batch.num_rows()).unwrap_or(u64::MAX))
+                .sum()),
+            Err(reason) if reason.contains("/Prepare:") || reason.contains("/Validate:") => {
+                Err(reason)
+            }
             Err(reason) => return Err(reason),
         };
-        judge(&comparison, matched, false, notes, "filtro di lettura")?;
+        judge(
+            &comparison,
+            &matched,
+            case.comparison_refusal(FidelityPath::Read),
+            false,
+            notes,
+            "filtro di lettura",
+        )?;
     }
     Ok(())
 }

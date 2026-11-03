@@ -219,7 +219,7 @@ fn cases() -> Vec<Case> {
             "testo con NUL",
             "S",
             text("a\0b"),
-            exact(&text("a\0b"), "610062"),
+            Expect::Refused(ErrorCategory::DataMapping),
         ),
         Case::new(
             "decimal esatto",

@@ -285,3 +285,35 @@ fn a_read_filter_probe_is_compared_with_the_column_typmod() {
         assert_eq!(error.category, ErrorCategory::Crs);
     }
 }
+
+#[test]
+fn audit900_l3_uses_a_supported_predicate_through_both_gates() {
+    let query = crate::audit900_live_tests::typed_wkb_query();
+    let rendered = crate::query_plan::render_query(&query).expect("query supportata");
+    assert!(rendered.sql.contains("WHERE"));
+    for value in [
+        ParameterValue::Wkb {
+            bytes: wkb_point(),
+            srid: Some(4326),
+            dimensions: plenora_database_core::geometry::Dimensions::Xy,
+            semantics: plenora_database_core::geometry::SpatialSemantics::Geometry,
+        },
+        ParameterValue::Bytes(wkb_point()),
+    ] {
+        let parameters = bag(&[("p", value)]);
+        let probes = plan_query_probes(&query, &parameters, 32).expect("sonda nel predicato");
+        let admitted = plenora_database_core::admission_gate::query_parameters(
+            plenora_database_core::plan::ProviderKind::Postgres,
+            &query,
+            &probes.parameters,
+        )
+        .expect("ammissione typed");
+        let names = rendered
+            .binds
+            .iter()
+            .map(|b| b.name.clone())
+            .collect::<Vec<_>>();
+        crate::parameter_codec::bind_parameters(&admitted, &names).expect("binder bytea");
+        assert!(!names.is_empty());
+    }
+}

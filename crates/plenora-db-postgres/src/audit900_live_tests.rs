@@ -14,6 +14,15 @@ fn fixture() -> (PostgresProvider, SecretString) {
     )
 }
 
+pub fn typed_wkb_query() -> plenora_database_core::relational::QueryOperation {
+    let geometry = serde_json::json!({"kind":"spatial_value","expression":{"kind":"typed_parameter","name":"p","parameter_type":"binary"},"srid":4326,"semantics":"geometry"});
+    serde_json::from_value(serde_json::json!({
+        "source":{"object":{"catalog":null,"schema":"public","object":"audit900_spatial"},"alias":null},
+        "projection":[{"expression":{"kind":"spatial","function":"as_geo_json","arguments":[{"kind":"column","column":{"relation":null,"field":"g"}}]},"alias":"v"},{"expression":{"kind":"spatial","function":"srid","arguments":[{"kind":"column","column":{"relation":null,"field":"g"}}]},"alias":"srid"}],
+        "filter":{"kind":"spatial","function":"equals","arguments":[{"kind":"column","column":{"relation":null,"field":"g"}},geometry]}
+    })).expect("query L3")
+}
+
 #[tokio::test]
 #[ignore = "richiede PostgreSQL con PostGIS"]
 async fn live_audit900_l3_typed_wkb() {
@@ -22,8 +31,8 @@ async fn live_audit900_l3_typed_wkb() {
     let cancel = CancellationToken::new();
     for sql in [
         "DROP TABLE IF EXISTS public.audit900_spatial",
-        "CREATE TABLE public.audit900_spatial(id integer PRIMARY KEY)",
-        "INSERT INTO public.audit900_spatial VALUES (1)",
+        "CREATE TABLE public.audit900_spatial(id integer PRIMARY KEY, g geometry(Point,4326))",
+        "INSERT INTO public.audit900_spatial VALUES (1,ST_SetSRID(ST_MakePoint(1,2),4326))",
     ] {
         provider
             .execute_ddl(&secret, sql, &cancel)
@@ -32,11 +41,7 @@ async fn live_audit900_l3_typed_wkb() {
     }
     // Il risultato scalare ST_AsGeoJSON evita di scambiare la qualifica di un
     // decoder geometrico con la prova del bind WKB qui sotto.
-    let geometry = serde_json::json!({"kind":"spatial_value","expression":{"kind":"typed_parameter","name":"p","parameter_type":"binary"},"srid":4326,"semantics":"geometry"});
-    let query = serde_json::from_value(serde_json::json!({
-        "source":{"object":{"catalog":null,"schema":"public","object":"audit900_spatial"},"alias":null},
-        "projection":[{"expression":{"kind":"spatial","function":"as_geo_json","arguments":[geometry]},"alias":"v"},{"expression":{"kind":"spatial","function":"srid","arguments":[geometry]},"alias":"srid"}]
-    })).expect("query L3");
+    let query = typed_wkb_query();
     let mut bytes = vec![1, 1, 0, 0, 0];
     bytes.extend(1_f64.to_le_bytes());
     bytes.extend(2_f64.to_le_bytes());
@@ -269,11 +274,16 @@ async fn live_audit900_l5_comment_search_path() {
         format!("{dsn} options='-c search_path=audit900_path,public'")
     };
     let scoped = SecretString::new(scoped);
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)
-        .with_metadata(std::collections::HashMap::from([(
-            plenora_database_core::protocol::FIELD_ID.into(),
-            "1".into(),
-        )]))]));
+    let schema = plenora_database_core::protocol::contract_schema(vec![Field::new(
+        "id",
+        DataType::Int32,
+        false,
+    )
+    .with_metadata(std::collections::HashMap::from([(
+        plenora_database_core::protocol::FIELD_ID.into(),
+        "1".into(),
+    )]))])
+    .expect("schema contrattuale L5");
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![Arc::new(Int32Array::from(vec![1]))],

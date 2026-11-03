@@ -49,3 +49,42 @@ fn neighbours_cover_each_family() {
     let text = neighbours(&V::String("ab".to_owned()));
     assert!(text.contains(&(V::String("ab ".to_owned()), Neighbour::Collation)));
 }
+
+#[test]
+fn comparison_refusal_is_distinct_from_zero_rows() {
+    use super::{judge, Comparison};
+    use plenora_database_core::ErrorCategory;
+    let comparison = Comparison {
+        value: V::Json(serde_json::json!({"a":1})),
+        expected: 1,
+        kind: Neighbour::SameType,
+    };
+    let mut notes = Vec::new();
+    let refusal = Err("InvalidPlan/Prepare: OPERAND_FAMILY_MISMATCH".into());
+    assert!(judge(&comparison, &refusal, None, false, &mut notes, "eq").is_err());
+    assert!(judge(
+        &comparison,
+        &refusal,
+        Some(ErrorCategory::InvalidPlan),
+        false,
+        &mut notes,
+        "eq"
+    )
+    .is_ok());
+    for count in [0, 1, 2] {
+        assert!(judge(
+            &comparison,
+            &Ok(count),
+            Some(ErrorCategory::InvalidPlan),
+            false,
+            &mut notes,
+            "eq"
+        )
+        .is_err());
+    }
+    assert!(judge(&comparison, &Ok(0), None, false, &mut notes, "eq").is_err());
+    assert!(judge(&comparison, &Ok(1), None, false, &mut notes, "eq").is_ok());
+    assert!(notes
+        .iter()
+        .all(|n| n.contains("rifiuto esplicito") && !n.contains("None righe")));
+}
