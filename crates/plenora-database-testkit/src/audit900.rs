@@ -1,0 +1,136 @@
+//! Regressioni dell'audit 9.0.0 condivise dai fixture dei sei provider.
+
+use crate::parameter_fidelity::{begin, describe, insert_statement, NativeSql, Target};
+use plenora_database_core::facade::execute_portable;
+use plenora_database_core::portable::{
+    eq, Expression, PortableStatement, TableRef, UpdateStatement,
+};
+use plenora_database_core::provider::{ParameterBag, ParameterValue as V};
+use plenora_database_core::relational::QueryOperation;
+use plenora_database_core::resource::ResourceBudget;
+use plenora_database_core::transaction::Statement;
+use plenora_database_core::{CancellationToken, ErrorPhase};
+
+/// L1: INSERT e UPDATE passano dal catalogo reale; dopo ogni rifiuto si
+/// controlla che il valore positivo sia ancora presente nella transazione.
+///
+/// # Errors
+/// Restituisce fase e categoria se il fixture fallisce o un valore malformato passa.
+#[allow(clippy::too_many_lines, reason = "sequenza della prova end-to-end L1")]
+pub async fn malformed_temporals(
+    target: &Target<'_>,
+    text_column: &str,
+    date_column: Option<&str>,
+) -> Result<(), String> {
+    let cancel = CancellationToken::new();
+    let mut cases = vec![
+        (
+            text_column,
+            V::Timestamp("not-a-timestamp".into()),
+            V::String("control".into()),
+        ),
+        (
+            text_column,
+            V::TimestampTz("not-a-timestamp".into()),
+            V::String("control".into()),
+        ),
+    ];
+    if let Some(column) = date_column {
+        cases.push((
+            column,
+            V::Timestamp("2024-01-01T00:00:00.000000PAYLOAD".into()),
+            V::Timestamp("2024-01-01T00:00:00".into()),
+        ));
+    }
+    for (column, invalid, valid) in cases {
+        let mut tx = begin(target).await?;
+        let table = TableRef {
+            schema: target.table.schema.clone(),
+            name: target.table.object.clone(),
+        };
+        execute_portable(
+            tx.as_mut(),
+            &insert_statement(target, column, 900, &valid),
+            &cancel,
+        )
+        .await
+        .map_err(|e| describe(&e))?;
+        let select = Statement::new((target.native)(NativeSql::Select, column))
+            .with_params(vec![V::I32(900)]);
+        let before = tx.query(&select, &cancel).await.map_err(|e| describe(&e))?;
+        for operation in [
+            insert_statement(target, column, 901, &invalid),
+            PortableStatement::Update(UpdateStatement {
+                table: table.clone(),
+                assignments: vec![(column.into(), Expression::literal(invalid.clone()))],
+                filter: Some(eq(target.id_column, V::I32(900))),
+                returning: vec![],
+            }),
+        ] {
+            match execute_portable(tx.as_mut(), &operation, &cancel).await {
+                Err(error) if matches!(error.phase, ErrorPhase::Prepare | ErrorPhase::Validate) => {
+                }
+                Err(error) => return Err(describe(&error)),
+                Ok(_) => return Err("temporale malformato scritto".into()),
+            }
+            let after = tx.query(&select, &cancel).await.map_err(|e| describe(&e))?;
+            if after != before {
+                return Err("UPDATE rifiutato ha cambiato la riga".into());
+            }
+            let absent = tx
+                .query(
+                    &Statement::new((target.native)(NativeSql::Select, column))
+                        .with_params(vec![V::I32(901)]),
+                    &cancel,
+                )
+                .await
+                .map_err(|e| describe(&e))?;
+            if !absent.is_empty() {
+                return Err("INSERT rifiutato ha lasciato una riga".into());
+            }
+        }
+        tx.commit(&cancel).await.map_err(|e| describe(&e))?;
+        let query: QueryOperation = serde_json::from_value(serde_json::json!({
+            "source":{"object":target.table,"alias":null}, "projection":[{"expression":{"kind":"column","column":{"relation":null,"field":column}},"alias":"v"}],
+            "filter":{"kind":"compare","left":{"kind":"column","column":{"relation":null,"field":column}},"operator":"eq","right":{"kind":"parameter","name":"p"}}
+        })).map_err(|e| e.to_string())?;
+        let budget = ResourceBudget::new(target.limits.clone()).map_err(|e| describe(&e))?;
+        let mut positive = query.clone();
+        positive.filter = None;
+        let empty = ParameterBag::default();
+        let mut stream = target
+            .provider
+            .query(target.secret, &positive, &empty, &budget, &cancel)
+            .await
+            .map_err(|e| describe(&e))?;
+        let mut rows = 0;
+        while let Some(batch) = stream.next_batch(&cancel).await.map_err(|e| describe(&e))? {
+            rows += batch.num_rows();
+        }
+        if rows != 1 {
+            return Err("lettura di controllo senza la riga valida".into());
+        }
+        drop(stream);
+        let bag = ParameterBag::new([("p".into(), invalid)].into());
+        match target
+            .provider
+            .query(target.secret, &query, &bag, &budget, &cancel)
+            .await
+        {
+            Err(error) if matches!(error.phase, ErrorPhase::Prepare | ErrorPhase::Validate) => {}
+            Err(error) => return Err(describe(&error)),
+            Ok(_) => return Err("filtro temporale malformato ammesso".into()),
+        }
+        let mut cleanup = begin(target).await?;
+        cleanup
+            .execute(
+                &Statement::new((target.native)(NativeSql::Delete, column))
+                    .with_params(vec![V::I32(900)]),
+                &cancel,
+            )
+            .await
+            .map_err(|e| describe(&e))?;
+        cleanup.commit(&cancel).await.map_err(|e| describe(&e))?;
+    }
+    Ok(())
+}

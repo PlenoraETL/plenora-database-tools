@@ -11523,6 +11523,9 @@ async fn live_parameter_values_bind_exactly_or_are_refused() {
         native: &fidelity_native,
         native_cross_type_declared: true,
     };
+    plenora_database_testkit::audit900::malformed_temporals(&target, "S", Some("DT"))
+        .await
+        .expect("A900-001 L1: rifiuto prima della conversione");
     let outcomes = fidelity_run(&target, &fidelity_cases()).await;
     provider
         .execute_ddl(
@@ -14345,4 +14348,176 @@ async fn live_sospetti_fixed_session_frontier() {
         assert!(error.message.contains(variable));
         assert_eq!(session.state(), crate::MysqlSessionState::Quarantined);
     }
+}
+
+// L2 e L4 della raccolta audit 900.
+fn provider900() -> Box<dyn Provider> {
+    if fidelity_mariadb() {
+        Box::new(MariadbProvider::new(live_config(), 2).expect("MariaDB"))
+    } else {
+        Box::new(MysqlProvider::new(live_config(), 2).expect("MySQL"))
+    }
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL/MariaDB"]
+async fn live_audit900_l2_typed_json() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let provider = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    for sql in [
+        "DROP TABLE IF EXISTS audit900_json",
+        "CREATE TABLE audit900_json (id INTEGER PRIMARY KEY)",
+        "INSERT INTO audit900_json VALUES (1)",
+    ] {
+        provider
+            .execute_ddl(&secret, sql, &cancel)
+            .await
+            .expect("fixture L2");
+    }
+    let query = serde_json::from_value(serde_json::json!({
+        "source":{"object":{"catalog":null,"schema":environment("PLENORA_MYSQL_DATABASE","dataflow_test"),"object":"audit900_json"},"alias":null},
+        "projection":[{"expression":{"kind":"typed_parameter","name":"p","parameter_type":"json"},"alias":"v"}]
+    })).expect("query L2");
+    let parameters = ParameterBag::new(
+        [(
+            "p".into(),
+            plenora_database_core::provider::ParameterValue::Json(serde_json::json!({"a":1})),
+        )]
+        .into(),
+    );
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut stream = provider
+        .query(&secret, &query, &parameters, &budget, &cancel)
+        .await
+        .expect("JSON tipizzato con CAST");
+    let batch = stream
+        .next_batch(&cancel)
+        .await
+        .expect("batch")
+        .expect("riga");
+    assert_eq!(batch.num_rows(), 1);
+    let text = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("JSON testuale")
+        .value(0);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(text).expect("JSON"),
+        serde_json::json!({"a":1})
+    );
+    assert!(stream.next_batch(&cancel).await.expect("EOF").is_none());
+    drop(stream);
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("controllo raw L2");
+    let raw = if fidelity_mariadb() {
+        "SELECT JSON_EXTRACT(?, '$.a')"
+    } else {
+        "SELECT JSON_EXTRACT(CAST(? AS JSON), '$.a')"
+    };
+    let rows = tx
+        .query(
+            &Statement::new(raw).with_params(vec![
+                plenora_database_core::provider::ParameterValue::String("{\"a\":1}".into()),
+            ]),
+            &cancel,
+        )
+        .await
+        .expect("String + CAST JSON raw");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].values()[0],
+        plenora_database_core::provider::ParameterValue::String("1".into())
+    );
+    tx.rollback(&cancel).await.expect("rollback controllo L2");
+    provider
+        .execute_ddl(&secret, "DROP TABLE audit900_json", &cancel)
+        .await
+        .expect("pulizia L2");
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL/MariaDB"]
+async fn live_audit900_l4_found_rows() {
+    use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionOptions};
+    let provider = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    for sql in [
+        "DROP TABLE IF EXISTS audit900_count",
+        "CREATE TABLE audit900_count (id INTEGER PRIMARY KEY, v INTEGER NOT NULL)",
+        "INSERT INTO audit900_count VALUES (1,7)",
+    ] {
+        provider
+            .execute_ddl(&secret, sql, &cancel)
+            .await
+            .expect("fixture L4");
+    }
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let options = TransactionOptions::default();
+    let same = Statement::new("UPDATE audit900_count SET v=7 WHERE id=1");
+    for expected in [0, 1] {
+        let mut tx = provider
+            .begin_transaction(&secret, &options, &budget, &cancel)
+            .await
+            .expect("begin");
+        assert_eq!(
+            tx.execute(&same, &cancel).await.expect("UPDATE invariato"),
+            1
+        );
+        assert_eq!(
+            tx.execute(
+                &Statement::new(
+                    "INSERT INTO audit900_count VALUES (1,7) ON DUPLICATE KEY UPDATE v=7"
+                ),
+                &cancel
+            )
+            .await
+            .expect("upsert invariato"),
+            1
+        );
+        let result = tx
+            .execute_conditional_update(
+                ConditionalUpdate {
+                    update: &same,
+                    key_probe: None,
+                    expected_affected_rows: expected,
+                },
+                &cancel,
+            )
+            .await;
+        if expected == 1 {
+            result.expect("una riga trovata");
+            tx.commit(&cancel).await.expect("commit");
+        } else {
+            assert_eq!(
+                result.expect_err("zero righe attese").category,
+                ErrorCategory::ConcurrentModification
+            );
+            tx.rollback(&cancel).await.expect("rollback");
+        }
+    }
+    let mut tx = provider
+        .begin_transaction(&secret, &options, &budget, &cancel)
+        .await
+        .expect("begin verifica");
+    assert_eq!(
+        tx.query(
+            &Statement::new("SELECT id FROM audit900_count WHERE id=1 AND v=7"),
+            &cancel
+        )
+        .await
+        .expect("stato finale")
+        .len(),
+        1
+    );
+    tx.rollback(&cancel).await.expect("rollback verifica");
+    provider
+        .execute_ddl(&secret, "DROP TABLE audit900_count", &cancel)
+        .await
+        .expect("pulizia L4");
 }

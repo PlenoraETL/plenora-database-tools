@@ -139,3 +139,11 @@ fn legacy_lob_nulls_have_explicit_wire_declarations() {
         assert!(parameter_type(&value).is_err());
     }
 }
+
+#[test]
+fn audit900_bind_matrix() {
+    plenora_database_testkit::bind_matrix900::check(
+        plenora_database_core::plan::ProviderKind::Sqlserver,
+        |_, value| super::bind_parameter(&mut tiberius::Query::new("SELECT @P1"), value).is_ok(),
+    );
+}

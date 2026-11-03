@@ -8,6 +8,86 @@ riassumono le note di quelle release.
 
 ## 9.0.0 - in preparazione
 
+- A900-001, ammissione Rust/CLI/SDK: data, timestamp, timestamp con fuso,
+  UUID e decimale vengono validati integralmente prima della conversione.
+  Suffissi o forme malformate non diventano piu date/testo validi per taglio.
+  Correggere il valore d'origine; per memorizzare testo usare `String` esplicito.
+- A900-002/003, query tipizzate: il contesto del renderer e condiviso fra
+  regola T e ammissione. MySQL trasporta JSON come testo soltanto sotto il
+  CAST JSON dichiarato; WKB Binary nelle posizioni spatial conserva il proprio
+  percorso. Non occorre aggirare il tipo dichiarato; JSON nudo resta chiuso.
+- A900-014, PostgreSQL: l'ammissione di `name` limita il testo a 63 byte,
+  inclusi i caratteri multibyte. Oltre il limite usare una colonna `text` o
+  normalizzare esplicitamente prima dell'ingresso; nessun taglio automatico.
+  Il comportamento del vecchio binder nativo resta da misurare live.
+
+- A900-004, API Rust: `compile_portable` restituisce `CompiledPortable`, con
+  parametri privati. Migrare l'esecuzione a `facade::execute_portable` o al
+  cancello `admission_gate::portable`; per ispezione usare `sql` e `param_count`.
+  `QueryResult::try_into_mappings` diventa `into_mappings`, sempre fallibile.
+  Aggiornare i match per `Expression::TypedParameter`, i costruttori di
+  `OracleColumn` (`data_type_owner`), `MysqlIndex` (`prefix`) e il terzo campo
+  di `SqlServerColumnBuffer::Timestamp`. `bind_parameters` MySQL richiede
+  `ProviderKind`; gli adapter `TransactionScope` devono implementare
+  `column_types` e `operand_catalog`: i default ora rifiutano i piani non provati.
+- A900-005, CLI: `--dry-run` richiede una connessione; senza DSN usare
+  `--dry-run --offline`. Gli script devono gestire `status=dry_run_offline`
+  e i campi aggiuntivi, senza interpretarlo come preflight contro il server.
+- A900-006, bulk: la regola A rifiuta major e coppie Arrow/target non misurate
+  con ogni policy; lunghezze simboliche solo nell'intervallo misurato, anche
+  una misura negativa della chiave chiude le altre dimensioni. Migrare a una
+  coppia qualificata o raccogliere nuove prove. PostgreSQL Create richiede
+  privilegio TEMPORARY; Oracle/Db2 rifiutano intermedi non tabulati, inclusi
+  NCLOB/LONG/JSON Oracle e tipi distinti Db2: scegliere un intermedio provato.
+- A900-007, scritture: Strict puo rifiutare padding, vuoti, zero negativo,
+  underflow, frazioni, charset e numeri JSON alterati. Le mode per chiavi
+  richiedono unicita provata e ingresso senza duplicati; spazi testuali e zeri
+  binari finali sono confrontati conservativamente anche dove il DB li distingue.
+  Migrare normalizzando/deduplicando esplicitamente e scegliendo chiavi provate;
+  togliere le chiavi da `update_columns`. Indici/collation non qualificati,
+  chiavi testuali Oracle non binarie, viste/opachi, RLS/VPD/RCAC nelle operazioni
+  distruttive, trigger BEFORE/INSTEAD anche innocui e bulk che saltano
+  vincoli/default possono essere rifiutati indipendentemente dalla policy.
+  Usare target e percorsi qualificati; Allow non apre coppie non provate.
+- A900-008, spatial/Arrow: adozione Geometry Semantics con controlli di
+  WKB/EWKB, SRID, dimensioni, tipi, anelli e CRS. `lat_lon` e
+  `northing_easting` sono rifiutati, EWKB in scrittura solo su PostgreSQL;
+  normalizzare esplicitamente encoding e assi prima dell'ingresso. SRID
+  derivabile solo da catalogo qualificato; query/ORM Oracle/Db2 e alcuni
+  percorsi MariaDB/SQL Server richiedono prove catalogo. PostgreSQL senza
+  typmod/SRID puo rifiutare geometrie con SRID: dichiarare il frame nel catalogo.
+  Gestire `Schema`/`Crs` dove prima si osservava `DataMapping`.
+- A900-009, bind e connessione: UUID canonico 8-4-4-4-12, decimali posizionali
+  nei binder che ne ricavano precisione/scala, temporali entro il microsecondo.
+  Normalizzare esplicitamente prima del bind; TimestampTz MariaDB, zero negativo
+  MariaDB/Db2, vuoti Oracle e promozioni LOB non provate restano rifiutati.
+  Db2 richiede codepage UTF-8 verificata al connect: migrare il database a UTF-8.
+  F/T/C rifiutano confronti fra famiglie, CAST ed espressioni non provabili,
+  inclusi CAST testuali MySQL/MariaDB: usare tipi coerenti e piani qualificati.
+- A900-010, MySQL/MariaDB Rust e SDK sync/async: CLIENT_FOUND_ROWS cambia
+  anche execute SQL nativo e conditional update. UPDATE invariato e upsert
+  invariato contano 1 riga trovata anziche 0 modifiche. Migrare le aspettative
+  `expected_affected` e non usare il conteggio come prova di cambio del valore.
+- A900-011, lettura SQL Server: `datetime` legacy usa il millisecondo canonico
+  (.003/.007), invertibile verso il tick 1/300 s ma diverso dal valore razionale.
+  Migrare confronti/esportazioni che assumevano equivalenza con `datetime2`;
+  questa eccezione non riguarda `datetime2` o `datetimeoffset`.
+- A900-012, PostgreSQL: preflight/write/describe risolvono lo schema omesso
+  tramite search_path, non implicitamente public; catalog diverso e schema
+  temporaneo sono rifiutati. Specificare lo schema per mantenere il target.
+  COMMENT ON COLUMN degli id usa ancora il percorso chiuso: gli event trigger
+  devono qualificare i propri oggetti. La scelta resta da verificare live;
+  non riguarda il ripristino gia presente per DML, DDL target e COMMIT.
+- A900-013, CI: i rami `manutenzione/**` non attivano piu automaticamente
+  rust-ci, coverage e gli altri workflow di assurance/fuzz/supply-chain che
+  prima li includevano. Migrare il processo di manutenzione verificando i
+  gate esplicitamente: un gate non avviato non costituisce una verifica.
+- A900-015, errori PostgreSQL: mixed SRID diventa `Crs`, 428C9
+  `InvalidPlan` anziche `Conflict`; nuovi mapping per 42P10, 55000 e 42809.
+  Aggiornare dispatch e test su categorie/exit code. La chiusura provata prima
+  del COMMIT puo dare `remote_effect=None`, `retry=Never` anziche recovery:
+  decidere retry/recovery dai campi dell'errore, non dalla sola disconnessione.
+
 - Frontiera di sessione MySQL/MariaDB chiusa con un insieme fisso: bootstrap
   e rilettura confrontano anche le costanti attese, non soltanto la baseline.
   div_precision_increment=4 esplicita il default e la scala della divisione;

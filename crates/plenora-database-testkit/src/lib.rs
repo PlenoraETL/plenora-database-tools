@@ -1,5 +1,8 @@
 //! Supporto di conformità indipendente dai database reali.
 
+pub mod audit900;
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+pub mod bind_matrix900;
 mod conformance;
 pub mod parameter_fidelity;
 pub mod parameter_sweep;

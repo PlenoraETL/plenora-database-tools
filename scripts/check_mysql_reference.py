@@ -398,6 +398,8 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_v12_write_upsert_without_keys_rejected",
 }
 EXPECTED_LIVE_REFERENCE_TESTS = {
+    "live_tests::live_audit900_l2_typed_json",
+    "live_tests::live_audit900_l4_found_rows",
     "live_tests::live_sospetti_warnings_and_byte_domains",
     "live_tests::live_sospetti_warning_frontier",
     "live_tests::live_sospetti_minimal_privileges",

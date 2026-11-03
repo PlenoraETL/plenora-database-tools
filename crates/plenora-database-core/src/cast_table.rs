@@ -403,7 +403,13 @@ fn postgres(name: &str, catalog: &CatalogType) -> OperandType {
         // `numeric` senza typmod: precisione arbitraria, ogni decimale e
         // esatto (il limite di 131072 cifre del server e un errore).
         "numeric" | "decimal" => decimal(catalog.precision, catalog.scale, u32::MAX),
-        "text" | "name" => text_of(None, false, catalog),
+        "text" => text_of(None, false, catalog),
+        "name" => OperandType::Text {
+            length: Some(63),
+            padded: false,
+            unit: LengthUnit::Bytes,
+            charset: Charset::Unicode,
+        },
         "varchar" | "character varying" => text_of(catalog.length, false, catalog),
         "bpchar" | "character" => text_of(catalog.length, true, catalog),
         "bytea" => OperandType::Binary {

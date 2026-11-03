@@ -1350,3 +1350,7 @@ mod write_admission_live_tests;
 #[cfg(test)]
 #[path = "parameter_fidelity_live_tests.rs"]
 mod parameter_fidelity_live_tests;
+
+#[cfg(test)]
+#[path = "audit900_live_tests.rs"]
+mod audit900_live_tests;

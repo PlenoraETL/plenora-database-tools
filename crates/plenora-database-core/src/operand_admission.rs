@@ -295,7 +295,7 @@ fn temporal_parts(value: &str) -> (&str, &str, String) {
 /// La forma di un valore testuale tipato, verificata prima di qualunque
 /// riscrittura: un `Uuid` o una data che diventano testo non perdono il
 /// controllo che il binder del loro tipo avrebbe fatto.
-fn validate_form(provider: ProviderKind, value: &ParameterValue) -> Result<()> {
+pub(crate) fn validate_form(provider: ProviderKind, value: &ParameterValue) -> Result<()> {
     let malformed = |message| Err(refusal(provider, message));
     match value {
         ParameterValue::Uuid(text) => crate::parameter_fidelity::canonical_uuid(provider, text),
@@ -307,10 +307,102 @@ fn validate_form(provider: ProviderKind, value: &ParameterValue) -> Result<()> {
             }
         }
         ParameterValue::Timestamp(text) | ParameterValue::TimestampTz(text) => {
+            if !valid_timestamp(text, matches!(value, ParameterValue::TimestampTz(_))) {
+                return malformed("parametro timestamp non valido");
+            }
             crate::parameter_fidelity::reject_sub_microsecond(provider, text)
         }
-        _ => Ok(()),
+        ParameterValue::Decimal(text) => {
+            crate::parameter_fidelity::DecimalLiteral::parse(provider, text).map(|_| ())
+        }
+        ParameterValue::String(text) | ParameterValue::Enum { label: text, .. } => {
+            crate::parameter_fidelity::reject_nul(provider, text)
+        }
+        ParameterValue::Null { type_name } if type_name.is_empty() || type_name.contains('\0') => {
+            malformed("tipo NULL vuoto o contenente NUL")
+        }
+        ParameterValue::Wkb {
+            bytes,
+            srid,
+            dimensions,
+            ..
+        } => {
+            let dimensions = match dimensions {
+                crate::geometry::Dimensions::Xy => "xy",
+                crate::geometry::Dimensions::Xyz => "xyz",
+                crate::geometry::Dimensions::Xym => "xym",
+                crate::geometry::Dimensions::Xyzm => "xyzm",
+                crate::geometry::Dimensions::Unknown => "unknown",
+            };
+            crate::geometry_value::verify_value(
+                crate::geometry_value::ValueContract {
+                    ewkb: None,
+                    srid: *srid,
+                    types: None,
+                    dimensions: Some(dimensions),
+                },
+                bytes,
+                u64::MAX,
+                32,
+                ErrorPhase::Prepare,
+            )
+            .map(|_| ())
+        }
+        ParameterValue::Null { .. }
+        | ParameterValue::Bool(_)
+        | ParameterValue::I32(_)
+        | ParameterValue::I64(_)
+        | ParameterValue::F64(_)
+        | ParameterValue::Bytes(_)
+        | ParameterValue::Json(_) => Ok(()),
     }
+}
+
+// Il controllo consuma tutto il testo prima che temporal_parts possa estrarlo.
+// Bytes e Json sono gia strutturati; Wkb valida forma e frame prima del trasporto.
+fn valid_timestamp(text: &str, zoned: bool) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.len() < 19
+        || !bytes.is_ascii()
+        || !chrono_free_date(&text[..10])
+        || !matches!(bytes[10], b'T' | b't' | b' ')
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return false;
+    }
+    let number = |start: usize, max: u8| {
+        bytes[start..start + 2].iter().all(u8::is_ascii_digit)
+            && (bytes[start] - b'0') * 10 + bytes[start + 1] - b'0' <= max
+    };
+    if !number(11, 23) || !number(14, 59) || !number(17, 59) {
+        return false;
+    }
+    let mut end = 19;
+    if bytes.get(end) == Some(&b'.') {
+        end += 1;
+        let start = end;
+        while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+        if start == end {
+            return false;
+        }
+    }
+    let suffix = &text[end..];
+    if !zoned {
+        return suffix.is_empty();
+    }
+    if matches!(suffix, "Z" | "z") {
+        return true;
+    }
+    let offset = suffix.as_bytes();
+    offset.len() == 6
+        && matches!(offset[0], b'+' | b'-')
+        && offset[3] == b':'
+        && [1, 2, 4, 5].iter().all(|&i| offset[i].is_ascii_digit())
+        && (offset[1] - b'0') * 10 + offset[2] - b'0' <= 23
+        && (offset[4] - b'0') * 10 + offset[5] - b'0' <= 59
 }
 
 /// `AAAA-MM-GG` di un giorno che esiste, senza dipendere da `chrono` (il
@@ -943,20 +1035,27 @@ pub fn admit_typed_parameters(
     parameters: &ParameterBag,
 ) -> Result<ParameterBag> {
     use crate::relational::{QueryExpression, QueryWalkControl, QueryWalkNode};
-    let mut uses: Vec<(String, crate::relational::QueryParameterType)> = Vec::new();
+    use crate::typed_parameter::{parameter_slot, Slot};
+    crate::spatial_operand::ParameterFamilies::from_bag(parameters).judge_typed(
+        provider,
+        &crate::spatial_operand::OperandPlan::Query(operation),
+    )?;
+    let mut spatial = std::collections::BTreeSet::new();
+    let mut uses = Vec::new();
     crate::relational::walk_query(operation, |node| {
         if let QueryWalkNode::Expression(expression) = node {
+            let slot = parameter_slot(expression, &mut spatial, Slot::Cast);
             match expression {
                 QueryExpression::TypedParameter {
                     name,
                     parameter_type,
-                } => uses.push((name.clone(), *parameter_type)),
+                } => uses.push((name.clone(), *parameter_type, slot)),
                 QueryExpression::Cast {
                     expression,
                     target_type,
                 } => {
                     if let QueryExpression::Parameter { name } = expression.as_ref() {
-                        uses.push((name.clone(), *target_type));
+                        uses.push((name.clone(), *target_type, slot));
                     }
                 }
                 _ => {}
@@ -969,15 +1068,39 @@ pub fn admit_typed_parameters(
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
     let mut decided: BTreeMap<String, ParameterValue> = BTreeMap::new();
-    for (name, parameter_type) in uses {
+    for (name, parameter_type, slot) in uses {
         let Some(value) = parameters.get(&name) else {
             continue;
         };
-        let coerced = admit(
-            provider,
-            value,
-            &crate::cast_table::rendered_target(provider, parameter_type),
-        )?;
+        validate_form(provider, value)?;
+        let coerced = if slot == Slot::Spatial {
+            // Il contesto spatial resta nell'AST e nelle famiglie originali.
+            // Il binder scalare riceve soltanto byte gia validati, come per
+            // il parametro Binary ordinario sotto lo stesso costruttore.
+            match value {
+                ParameterValue::Wkb { bytes, .. } => ParameterValue::Bytes(bytes.clone()),
+                _ => value.clone(),
+            }
+        } else {
+            let admitted = admit(
+                provider,
+                value,
+                &crate::cast_table::rendered_target(provider, parameter_type),
+            )?;
+            // Il renderer ha gia dichiarato CAST AS JSON: il protocollo MySQL
+            // trasporta il documento come testo, senza ammettere JSON nudo.
+            if provider == ProviderKind::Mysql
+                && parameter_type == crate::relational::QueryParameterType::Json
+            {
+                if let ParameterValue::Json(document) = admitted {
+                    ParameterValue::String(document.to_string())
+                } else {
+                    admitted
+                }
+            } else {
+                admitted
+            }
+        };
         if decided
             .get(&name)
             .is_some_and(|previous| previous != &coerced)

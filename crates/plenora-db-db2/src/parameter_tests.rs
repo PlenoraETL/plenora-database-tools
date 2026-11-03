@@ -468,3 +468,29 @@ fn text_on_binary_uses_utf8_bytes_and_enforces_length_and_padding() {
         );
     }
 }
+
+#[test]
+fn audit900_bind_matrix() {
+    plenora_database_testkit::bind_matrix900::check(
+        plenora_database_core::plan::ProviderKind::Db2,
+        |kind, value| {
+            let ty = match kind {
+                "boolean" | "integer" => DataType::Integer,
+                "big_integer" => DataType::BigInt,
+                "float" => DataType::Double,
+                "decimal" => DataType::Decimal {
+                    precision: 31,
+                    scale: 15,
+                },
+                "uuid" => DataType::Char {
+                    length: NonZeroUsize::new(36),
+                },
+                "binary" => varbinary(),
+                "date" => DataType::Date,
+                "timestamp" => DataType::Timestamp { precision: 6 },
+                _ => varchar(),
+            };
+            bind(value, &ty).is_ok()
+        },
+    );
+}

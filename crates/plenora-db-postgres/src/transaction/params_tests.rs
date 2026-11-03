@@ -330,3 +330,25 @@ fn float4_targets_accept_only_exact_doubles() {
     );
     assert!(validate_parameter_targets(&[ParameterValue::F64(0.1)], &[Type::FLOAT8]).is_ok());
 }
+
+#[test]
+fn audit900_bind_matrix() {
+    plenora_database_testkit::bind_matrix900::check(ProviderKind::Postgres, |kind, value| {
+        let ty = match kind {
+            "boolean" => Type::BOOL,
+            "integer" => Type::INT4,
+            "big_integer" => Type::INT8,
+            "float" => Type::FLOAT8,
+            "decimal" => Type::NUMERIC,
+            "string" => Type::TEXT,
+            "binary" => Type::BYTEA,
+            "date" => Type::DATE,
+            "timestamp" => Type::TIMESTAMP,
+            "timestamp_tz" => Type::TIMESTAMPTZ,
+            "uuid" => Type::UUID,
+            "json" => Type::JSONB,
+            _ => panic!("tipo matrice"),
+        };
+        encode_param(value).is_ok_and(|v| v.to_sql_checked(&ty, &mut BytesMut::new()).is_ok())
+    });
+}
