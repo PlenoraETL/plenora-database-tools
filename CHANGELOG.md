@@ -48,8 +48,15 @@ riassumono le note di quelle release.
 
 - A900-001, ammissione Rust/CLI/SDK: data, timestamp, timestamp con fuso,
   UUID e decimale vengono validati integralmente prima della conversione.
-  Rifiuta NUL in `String`/`Enum`, `Null` con tipo vuoto, WKB strutturalmente
-  invalido e `TimestampTz` senza suffisso `Z` oppure `±HH:MM`.
+  NUL in `String`/`Enum` si rifiuta solo dove il trasporto testuale non lo
+  conserva: PostgreSQL (rifiuto del server). MySQL, MariaDB, SQL Server,
+  Oracle e Db2 lo lasciano passare; lunghezza e padding restano regole separate.
+  Il precedente `None` nel testkit SQL Server nascondeva un errore, non zero
+  righe: non era prova di alterazione. I filtri `nul` del runner VM confermano
+  separatamente bind, portable INSERT/UPDATE, read e writer; non ancora
+  eseguiti in questa revisione. Ripristinato il profilo Db2 precedente al
+  rifiuto generico A900. Rifiuta inoltre `Null` con tipo vuoto, WKB
+  strutturalmente invalido e `TimestampTz` senza suffisso `Z` oppure `±HH:MM`.
   Suffissi o forme malformate non diventano piu date/testo validi per taglio.
   Correggere il valore d'origine; per memorizzare testo usare `String` esplicito.
   Raggiungibilita confermata dalla facade pubblica portable e dal DML

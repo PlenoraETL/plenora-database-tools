@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 ///
 /// # Errors
 ///
-/// Propaga `parameter_value` errors (float non finiti, stringhe con NUL, ecc.).
+/// Propaga `parameter_value` errors (float non finiti e forme tipate non valide).
 pub fn bind_positional_params(params: &[ParameterValue], kind: ProviderKind) -> Result<Params> {
     let values = params
         .iter()
@@ -70,7 +70,7 @@ pub fn bind_parameters(
 ///
 /// # Errors
 ///
-/// Errore `DataMapping` per float non finiti, stringhe con NUL,
+/// Errore `DataMapping` per float non finiti,
 /// tipi non supportati (Geometry, Interval).
 ///
 /// Il testo dei tipi temporali e decimali viaggia come stringa e il server lo
@@ -135,12 +135,7 @@ pub fn parameter_value(value: &ParameterValue, kind: ProviderKind) -> Result<Val
             Ok(Value::Bytes(value.as_bytes().to_vec()))
         }
         ParameterValue::String(value) => {
-            if value.contains('\0') {
-                return Err(parameter_error(
-                    ErrorCategory::DataMapping,
-                    "parametro testuale contiene NUL",
-                ));
-            }
+            plenora_database_core::parameter_fidelity::reject_nul(kind, value)?;
             Ok(Value::Bytes(value.as_bytes().to_vec()))
         }
         ParameterValue::Bytes(value) => Ok(Value::Bytes(value.clone())),
@@ -173,12 +168,7 @@ pub fn parameter_value(value: &ParameterValue, kind: ProviderKind) -> Result<Val
             "parametro WKB richiede SRID e preflight spatial qualificato",
         )),
         ParameterValue::Enum { label, .. } => {
-            if label.contains('\0') {
-                return Err(parameter_error(
-                    ErrorCategory::DataMapping,
-                    "label ENUM contiene NUL",
-                ));
-            }
+            plenora_database_core::parameter_fidelity::reject_nul(kind, label)?;
             Ok(Value::Bytes(label.as_bytes().to_vec()))
         }
     }

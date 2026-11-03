@@ -33,7 +33,7 @@ fn sub_microsecond_digits_are_refused_on_the_text() {
 
 #[test]
 fn nul_and_uuid_forms_are_checked() {
-    assert!(reject_nul(P, "a\0b").is_err());
+    assert!(reject_nul(ProviderKind::Postgres, "a\0b").is_err());
     assert!(reject_nul(P, "ab").is_ok());
     assert!(canonical_uuid(P, "6f1c2a2e-7d3b-4c55-9a1e-0b2c3d4e5f60").is_ok());
     for refused in [
@@ -82,4 +82,39 @@ fn decimal_literals_parse_fit_and_split() {
     }
     let wide = DecimalLiteral::parse(P, &"9".repeat(40)).expect("parse");
     assert!(wide.mantissa_and_scale(P).is_err());
+}
+
+#[test]
+fn nul_transport_is_provider_specific_and_keeps_payload_private() {
+    use crate::operand_admission::validate_form;
+    use crate::provider::ParameterValue;
+    for provider in [
+        ProviderKind::Postgres,
+        ProviderKind::Mysql,
+        ProviderKind::Mariadb,
+        ProviderKind::Sqlserver,
+        ProviderKind::Oracle,
+        ProviderKind::Db2,
+    ] {
+        for text in ["a\0b", "\0", "secret\0suffix"] {
+            for value in [
+                ParameterValue::String(text.into()),
+                ParameterValue::Enum {
+                    type_name: "mood".into(),
+                    label: text.into(),
+                },
+            ] {
+                let result = validate_form(provider, &value);
+                if provider == ProviderKind::Postgres {
+                    let error = result.expect_err("PostgreSQL non conserva NUL");
+                    assert_eq!(error.phase, crate::ErrorPhase::Prepare);
+                    assert_eq!(error.category, ErrorCategory::DataMapping);
+                    assert!(!error.message.contains(text));
+                } else {
+                    assert!(reject_nul(provider, text).is_ok());
+                    result.expect("testo o label conservati");
+                }
+            }
+        }
+    }
 }

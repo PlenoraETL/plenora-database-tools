@@ -684,3 +684,14 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
         "valori generati non esatti su PostgreSQL: {failures:#?}"
     );
 }
+
+#[tokio::test]
+#[ignore = "richiede fixture live esplicito"]
+async fn live_audit900_nul() {
+    let dsn = live_dsn_or_skip().expect("fixture PostgreSQL richiesta");
+    let provider = PostgresProvider::insecure_local();
+    let secret = SecretString::new(dsn);
+    plenora_database_testkit::nul_fidelity::check(&provider, &secret, SCHEMA, None)
+        .await
+        .expect("matrice NUL PostgreSQL");
+}

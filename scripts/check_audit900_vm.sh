@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Dalla radice del checkout: bash scripts/check_audit900_vm.sh [all|postgres|mysql|mariadb|sqlserver|oracle|db2]
+# Dalla radice del checkout: bash scripts/check_audit900_vm.sh [all|postgres|mysql|mariadb|sqlserver|oracle|db2] [all|nul]
 # Le fixture restano disponibili; MariaDB riallinea i server ai certificati TLS.
 set -euo pipefail
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4}
 if [[ ${1:-all} == all ]]; then
     failed=0
     for provider in postgres mysql mariadb sqlserver oracle db2; do
-        bash "$0" "$provider" || failed=1
+        bash "$0" "$provider" "${2:-all}" || failed=1
     done
     exit "$failed"
 fi
-python3 - "${1:-all}" <<'PY'
+python3 - "${1:-all}" "${2:-all}" <<'PY'
 import os
 import re
 import subprocess
@@ -26,9 +26,12 @@ from scripts.compose_network import compose_network_arguments, compose_volume, c
 root = Path.cwd()
 assert (root / 'Cargo.toml').is_file(), 'Eseguire dalla radice del checkout'
 selected = sys.argv[1]
+selection = sys.argv[2]
+if selection not in {"all", "nul"}:
+    raise SystemExit("Filtro sconosciuto")
 if selected not in {'postgres', 'mysql', 'mariadb', 'sqlserver', 'oracle', 'db2'}:
     raise SystemExit('Provider sconosciuto')
-logs = root / 'target/audit-900/live'
+logs = root / 'target/audit-900' / ('live-nul' if selection == 'nul' else 'live')
 logs.mkdir(parents=True, exist_ok=True)
 results = []
 # Non lasciare che un log di una run precedente sembri una misura corrente.
@@ -73,7 +76,9 @@ def run_tests(command, crate, name):
         run_case(command + cargo_args(crate, test_filter), name + '-' + test_filter, expected)
 
 def test_cases():
-    cases = [('live_parameter_values_bind_exactly_or_are_refused', 1)]
+    if selection == 'nul':
+        return [('live_audit900_nul', 1)]
+    cases = [('live_parameter_values_bind_exactly_or_are_refused', 1), ('live_audit900_nul', 1)]
     if selected == 'postgres':
         cases.extend((name, 1) for name in [
             'live_audit900_l3_typed_wkb', 'live_audit900_l5_comment_search_path',

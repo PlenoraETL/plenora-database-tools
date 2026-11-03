@@ -117,9 +117,7 @@ fn cases() -> Vec<Case> {
             "S",
             text("a\0b"),
             exact(&text("a\0b"), "610062"),
-        )
-        .on(FidelityPath::Portable, mapping.clone())
-        .on(FidelityPath::Read, mapping.clone()),
+        ),
         // Il difetto 5 del secondo giro: NVARCHAR2 e NCHAR in AL16UTF16 si
         // leggevano come UTF-8 ("\0a\0b"), in query e in Arrow.
         Case::new(
@@ -942,4 +940,24 @@ async fn live_binary_double_negative_zero_is_measured() {
     .map(|(id, double, float)| ((*id).to_owned(), (*double).to_owned(), (*float).to_owned()))
     .collect::<Vec<_>>();
     assert_eq!(measured, expected, "la misura di -0.0 su Oracle e cambiata");
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture live esplicito"]
+async fn live_audit900_nul() {
+    let schema = std::env::var("PLENORA_ORACLE_USER")
+        .unwrap_or_else(|_| "plenora".into())
+        .to_ascii_uppercase();
+    let mut failures = Vec::new();
+    for index in 0..6 {
+        // Una sessione per tipo: limite dei cursori del fork Oracle.
+        let (provider, secret) = fixture();
+        if let Err(error) =
+            plenora_database_testkit::nul_fidelity::check(&provider, &secret, &schema, Some(index))
+                .await
+        {
+            failures.push(error);
+        }
+    }
+    assert!(failures.is_empty(), "matrice NUL Oracle: {failures:#?}");
 }

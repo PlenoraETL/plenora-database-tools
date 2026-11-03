@@ -247,7 +247,7 @@ fn finta(p: P) -> Finta {
     }
 }
 
-fn malformed() -> Vec<V> {
+fn malformed(provider: P) -> Vec<V> {
     let mut out = Vec::new();
     for t in [
         "",
@@ -311,8 +311,26 @@ fn malformed() -> Vec<V> {
     out.push(V::Timestamp("2024-01-01T00:00:00Z".into()));
     out.push(V::Timestamp("2024-01-01T00:00:00+01:00".into()));
     for t in [
-        "", "+", "-", ".", "1.2x", "1..0", "NaN", "inf", "1e0", "1E5", "1\0", " 1", "1 ", "1,0",
-        "0x10", "\u{661}", "--1", "+-1", "1_000", "١.٥",
+        "",
+        "+",
+        "-",
+        ".",
+        "1.2x",
+        "1..0",
+        "NaN",
+        "inf",
+        "1e0",
+        "1E5",
+        "1\0",
+        " 1",
+        "1 ",
+        "1,0",
+        "0x10",
+        "\u{661}",
+        "--1",
+        "+-1",
+        "1_000",
+        "Ù¡.Ù¥",
     ] {
         out.push(V::Decimal(t.into()));
     }
@@ -329,11 +347,6 @@ fn malformed() -> Vec<V> {
         out.push(V::Uuid(t.into()));
     }
     out.extend([
-        V::String("bad\0text".into()),
-        V::Enum {
-            type_name: "mood".into(),
-            label: "bad\0label".into(),
-        },
         V::Null {
             type_name: String::new(),
         },
@@ -341,6 +354,13 @@ fn malformed() -> Vec<V> {
             type_name: "bad\0type".into(),
         },
     ]);
+    if provider == P::Postgres {
+        out.push(V::String("bad\0text".into()));
+        out.push(V::Enum {
+            type_name: "mood".into(),
+            label: "bad\0label".into(),
+        });
+    }
     out
 }
 
@@ -422,7 +442,7 @@ fn a900_001_matrice_facade_malformati() {
     let mut celle = 0usize;
     for p in PROVIDERS {
         for (col, _) in columns(p).into_iter().skip(1) {
-            for value in malformed() {
+            for value in malformed(p) {
                 for (shape, st) in [
                     ("insert", insert(col, value.clone())),
                     ("update", update(col, value.clone())),
@@ -455,7 +475,15 @@ fn a900_001_matrice_facade_malformati() {
             }
         }
     }
-    assert_eq!(celle, 28_272);
+    assert_eq!(
+        celle,
+        28_272
+            - 8 * PROVIDERS
+                .into_iter()
+                .filter(|p| *p != P::Postgres)
+                .map(|p| columns(p).len() - 1)
+                .sum::<usize>()
+    );
     assert!(
         accettati.is_empty(),
         "malformati ammessi:\n{}",
@@ -490,6 +518,28 @@ fn a900_001_valide_ammesse() {
         ),
     ];
     for p in PROVIDERS {
+        for value in [
+            V::String("a\0b".into()),
+            V::Enum {
+                type_name: "mood".into(),
+                label: "a\0b".into(),
+            },
+        ] {
+            for statement in [
+                insert("c_varchar", value.clone()),
+                update("c_varchar", value.clone()),
+            ] {
+                let mut f = finta(p);
+                let result = block_on(execute_portable(&mut f, &statement, &c));
+                if p == P::Postgres {
+                    assert!(result.is_err());
+                    assert!(f.eseguiti.is_empty());
+                } else {
+                    result.expect("NUL conservato dal trasporto testuale");
+                    assert!(f.eseguiti[0].params.contains(&V::String("a\0b".into())));
+                }
+            }
+        }
         let cols: Vec<_> = columns(p).into_iter().map(|(n, _)| n).collect();
         for (col, value) in &cases {
             if !cols.contains(col) {

@@ -11286,7 +11286,12 @@ fn fidelity_cases() -> Vec<FidelityCase> {
             fidelity_text(""),
             fidelity_exact(&fidelity_text(""), ""),
         ),
-        FidelityCase::new("testo con NUL", "S", fidelity_text("a\0b"), mapping.clone()),
+        FidelityCase::new(
+            "testo con NUL",
+            "S",
+            fidelity_text("a\0b"),
+            fidelity_exact(&fidelity_text("a\0b"), "610062"),
+        ),
         FidelityCase::new(
             "decimal esatto",
             "D",
@@ -14801,4 +14806,22 @@ async fn live_audit900_ld_view_without_show_view() {
         .execute_ddl(&secret, "DROP VIEW audit900_view", &cancel)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture live esplicito"]
+async fn live_audit900_nul() {
+    let provider: Box<dyn Provider> = if fidelity_mariadb() {
+        Box::new(MariadbProvider::new(live_config(), 2).expect("provider MariaDB"))
+    } else {
+        Box::new(MysqlProvider::new(live_config(), 2).expect("provider MySQL"))
+    };
+    plenora_database_testkit::nul_fidelity::check(
+        provider.as_ref(),
+        &live_secret(),
+        &environment("PLENORA_MYSQL_DATABASE", "dataflow_test"),
+        None,
+    )
+    .await
+    .expect("matrice NUL MySQL/MariaDB");
 }

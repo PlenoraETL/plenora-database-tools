@@ -61,6 +61,7 @@ REQUIRED_LIVE_TESTS = frozenset(
 
         "live_caller_stream_fetch_failure_requires_recovery",
         "live_parameter_values_bind_exactly_or_are_refused",
+        "live_audit900_nul",
         "live_generated_decimal_values_bind_exactly_or_are_refused",
         "live_generated_float_values_bind_exactly_or_are_refused",
         "live_generated_text_values_bind_exactly_or_are_refused",

@@ -416,6 +416,7 @@ EXPECTED_LIVE_REFERENCE_TESTS = {
     "live_tests::live_sospetti_database_reset_and_checkout",
     "live_tests::live_sospetti_routine_session_drift_prevents_commit",
     "live_tests::live_parameter_values_bind_exactly_or_are_refused",
+    "live_tests::live_audit900_nul",
     "live_tests::live_generated_values_bind_exactly_or_are_refused",
     "live_tests::live_caller_query_decode_failure_requires_recovery",
     "live_tests::live_a_row_over_the_batch_budget_carries_over_to_the_next_batch",

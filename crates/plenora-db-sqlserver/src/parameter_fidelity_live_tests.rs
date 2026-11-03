@@ -96,14 +96,6 @@ fn cases() -> Vec<Case> {
             "s",
             text("a\0b"),
             exact(&text("a\0b"), utf16_hex("a\0b")),
-        )
-        .on(
-            FidelityPath::Portable,
-            Expect::Refused(ErrorCategory::DataMapping),
-        )
-        .on(
-            FidelityPath::Read,
-            Expect::Refused(ErrorCategory::DataMapping),
         ),
         Case::new(
             "decimal esatto",
@@ -621,4 +613,12 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
         failures.is_empty(),
         "valori generati non esatti su SQL Server: {failures:#?}"
     );
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture live esplicito"]
+async fn live_audit900_nul() {
+    plenora_database_testkit::nul_fidelity::check(&live_provider(), &live_secret(), SCHEMA, None)
+        .await
+        .expect("matrice NUL SQL Server");
 }

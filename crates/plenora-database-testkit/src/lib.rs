@@ -4,6 +4,7 @@ pub mod audit900;
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 pub mod bind_matrix900;
 mod conformance;
+pub mod nul_fidelity;
 pub mod parameter_fidelity;
 pub mod parameter_sweep;
 pub mod row_diagnostics;

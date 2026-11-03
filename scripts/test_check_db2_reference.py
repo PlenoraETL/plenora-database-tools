@@ -16,6 +16,7 @@ WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "db2-
 
 FIDELITY_TESTS = {
     "live_parameter_values_bind_exactly_or_are_refused",
+    "live_audit900_nul",
     "live_invalid_server_text_is_refused_by_catalog_transaction_and_arrow",
     "live_arrow_read_returns_floating_point_values_exactly",
     "live_sub_microsecond_timestamps_are_refused_on_read",
@@ -157,7 +158,7 @@ class Db2ReferenceGateTests(unittest.TestCase):
 
     def test_inventory_has_all_named_live_tests(self) -> None:
         inventory = gate.live_test_inventory()
-        self.assertEqual(len(inventory), 40)
+        self.assertEqual(len(inventory), 41)
         self.assertIn("live_odbc_warnings_are_classified_before_next_call", inventory)
         self.assertLessEqual(gate.REQUIRED_LIVE_TESTS, inventory)
 

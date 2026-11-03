@@ -6,6 +6,22 @@ const MARIADB: ProviderKind = ProviderKind::Mariadb;
 
 #[test]
 fn binding_is_positional_and_rejects_extra_parameters() {
+    for kind in [MYSQL, MARIADB] {
+        for text in ["a\0b", "\0"] {
+            for value in [
+                ParameterValue::String(text.into()),
+                ParameterValue::Enum {
+                    type_name: "mood".into(),
+                    label: text.into(),
+                },
+            ] {
+                assert_eq!(
+                    bind_positional_params(&[value], kind).expect("NUL bindato"),
+                    Params::Positional(vec![Value::Bytes(text.as_bytes().to_vec())])
+                );
+            }
+        }
+    }
     let parameters = ParameterBag::new(BTreeMap::from([
         ("first".to_owned(), ParameterValue::I32(7)),
         ("second".to_owned(), ParameterValue::String("x".to_owned())),

@@ -219,7 +219,7 @@ fn cases() -> Vec<Case> {
             "testo con NUL",
             "S",
             text("a\0b"),
-            Expect::Refused(ErrorCategory::DataMapping),
+            exact(&text("a\0b"), "610062"),
         ),
         Case::new(
             "decimal esatto",
@@ -1149,4 +1149,14 @@ async fn live_invalid_server_text_is_refused_by_catalog_transaction_and_arrow() 
     let error = result.expect_err("Arrow deve rifiutare byte non UTF-8");
     assert_eq!(error.category, ErrorCategory::DataMapping);
     assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
+}
+
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+async fn live_audit900_nul() {
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    plenora_database_testkit::nul_fidelity::check(&provider, &secret, SCHEMA, None)
+        .await
+        .expect("matrice NUL Db2");
 }

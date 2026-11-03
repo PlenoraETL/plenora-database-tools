@@ -533,3 +533,23 @@ fn qualified_profile_pure_guards() {
         },
     );
 }
+
+#[test]
+fn nul_text_is_refused_before_any_writer_codec_sends_the_value() {
+    use super::super::plan::WriteColumnPlan;
+    use arrow_array::StringArray;
+    let plan =
+        WriteColumnPlan::compile(&Field::new("v", DataType::Utf8, true)).expect("piano testo");
+    let values = StringArray::from(vec![Some("abc"), Some("a\0b"), Some("\0"), None]);
+    assert!(super::check(&plan, &values, 0).is_ok());
+    assert!(super::check(&plan, &values, 3).is_ok());
+    for row in [1, 2] {
+        let error = super::check(&plan, &values, row).expect_err("NUL prima del codec");
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::DataMapping
+        );
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+        assert!(!error.message.contains("a\0b"));
+    }
+}

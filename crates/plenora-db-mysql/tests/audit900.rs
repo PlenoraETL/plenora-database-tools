@@ -177,11 +177,6 @@ fn malformed_source_cross_every_target() {
         });
     }
     invalid.extend([
-        V::String("bad\0text".into()),
-        V::Enum {
-            type_name: "mood".into(),
-            label: "bad\0label".into(),
-        },
         V::Null {
             type_name: String::new(),
         },

@@ -841,6 +841,14 @@ pub(super) fn declared(plan: &WriteColumnPlan, strict: bool) -> Option<SessionRu
 /// `data_mapping` con [`NOT_CANONICAL`] (regola V2) o con [`LOSSY_VALUE`]
 /// (regola P).
 pub(super) fn check(plan: &WriteColumnPlan, array: &dyn Array, row: usize) -> Result<()> {
+    if !array.is_null(row) {
+        if let Some(text) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
+            plenora_database_core::parameter_fidelity::reject_nul(
+                plenora_database_core::plan::ProviderKind::Postgres,
+                text.value(row),
+            )?;
+        }
+    }
     // La regola S con le riscritture misurate della regola A
     // (`super::admission`): con `Strict` un valore riscritto si rifiuta, in
     // una chiave con ogni politica; con le altre politiche la perdita e nel
