@@ -1,3 +1,19 @@
+//! Limiti dei diagnostici: SHOW WARNINGS osserva solo lo statement esterno.
+//! CALL non garantisce visibilita delle conversioni interne alla procedura.
+//! Limite intenzionale: `lc_time_names`, `default_week_format`, `block_encryption_mode`,
+//! `old_mode`, `timestamp` e `insert_id` non sono fissate per lo SQL nativo del chiamante.
+//! Funzioni e trigger usano lo `sql_mode` registrato alla CREATE. Una variabile
+//! cambiata e ripristinata nella stessa istruzione (trigger BEFORE/AFTER) non e
+//! osservabile dalla rilettura del profilo. `collation_connection` usa
+//! `utf8mb4_general_ci`: PAD SPACE anche nei confronti fra letterali del chiamante.
+//! Con `lower_case_table_names=1` il database configurato deve essere gia minuscolo:
+//! il confronto esatto rifiuta esplicitamente database diversi, senza assumere
+//! che il case folding Unicode del client coincida con quello del server.
+//! `max_sort_length` copre 8 MiB: oltre tale prefisso TEXT/BLOB non hanno una
+//! garanzia di ordinamento completo; valori equivalenti richiedono un tie-breaker.
+//! Uno stream abbandonato prima di EOF non certifica i batch gia consegnati:
+//! il drop chiude il canale Arrow, senza poter restituire un errore al consumer.
+
 use crate::config::MysqlConfig;
 use crate::error::{driver_error, interruption_error, server_code, timeout_error};
 use crate::profile::ProductProfile;
@@ -30,12 +46,21 @@ use plenora_database_core::{
 /// `(0,'zero')` su `(1,a),(2,b),(3,a)` committavano la riga `4:zero`. Con la
 /// modalita lo 0 si scrive come 0, come ogni altro valore; vale anche per lo
 /// SQL del chiamante sulla stessa connessione, che per ottenere il valore
-/// della sequenza scrive `NULL` o omette la colonna. L'ordine e quello in cui
-/// il server rilegge `@@sql_mode`, cosi che la misura del bootstrap lo
-/// confronti testo per testo.
-/// La scrittura rilegge i valori sulla propria sessione
-/// (`crate::write::verify_write_session`).
-pub const SESSION_BOOTSTRAP_SQL: &str = "SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', foreign_key_checks = 1, unique_checks = 1, sql_select_limit = 18446744073709551615";
+/// della sequenza scrive `NULL` o omette la colonna. `sql_mode` viene
+/// confrontato come insieme, indipendentemente dall'ordine del server.
+/// I tre modi zero-date/divisione insieme a strict evitano il warning 3135.
+/// `max_error_count` si legge senza SET: richiede privilegi amministrativi in
+/// MySQL. I diagnostici incompleti vengono comunque rifiutati da `check_warnings`.
+/// `div_precision_increment = 4` rende esplicito il default dei server:
+/// cambia la scala di `(a / b)` generato da plenora-database-sql.
+/// `max_sort_length = 8388608` e il massimo comune MySQL/MariaDB: copre
+/// interamente CHAR/VARCHAR e TEXT/BLOB fino a 8 MiB, non LONGTEXT arbitrari.
+/// Le tre nuove variabili comuni e `check_constraint_checks` di MariaDB sono
+/// SET SESSION non amministrativi, verificati dal gate con account minimo.
+/// La scrittura rilegge i valori (`crate::write::verify_write_session`).
+pub const SESSION_BOOTSTRAP_SQL: &str = "SET SESSION autocommit = 1, time_zone = '+00:00', sql_mode = 'NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION', foreign_key_checks = 1, unique_checks = 1, sql_notes = 1, sql_select_limit = 18446744073709551615, character_set_client = 'utf8mb4', character_set_connection = 'utf8mb4', character_set_results = 'utf8mb4', collation_connection = 'utf8mb4_general_ci', div_precision_increment = 4, max_sort_length = 8388608, sql_auto_is_null = 0";
+
+pub const MARIADB_BOOTSTRAP_SQL: &str = "SET SESSION check_constraint_checks = 1";
 
 #[cfg(test)]
 static TEST_ROW_PULLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -137,6 +162,10 @@ pub struct MysqlSession {
     /// Il prodotto servito dalla connessione, ereditato dal pool.
     profile: &'static dyn crate::profile::ProductProfile,
     connection: Option<Conn>,
+    expected_database: String,
+    expected_profile: Option<crate::session_profile::SessionProfile>,
+    #[cfg(test)]
+    pub(crate) raw_write_probe: bool,
     state: MysqlSessionState,
     operation_timeout: std::time::Duration,
     pool_permit: Option<tokio::sync::OwnedSemaphorePermit>,
@@ -181,13 +210,19 @@ impl MysqlSession {
                 }
             }
         };
-        Ok(Self {
+        let mut session = Self {
             profile: &crate::profile::MYSQL_PROFILE,
+            expected_database: config.database().to_owned(),
+            expected_profile: None,
+            #[cfg(test)]
+            raw_write_probe: false,
             connection: Some(connection),
             state: MysqlSessionState::Ready,
             operation_timeout: config.operation_timeout(),
             pool_permit: None,
-        })
+        };
+        session.capture_session_profile(cancellation).await?;
+        Ok(session)
     }
 
     pub(crate) const fn from_connection(
@@ -195,14 +230,97 @@ impl MysqlSession {
         operation_timeout: std::time::Duration,
         pool_permit: tokio::sync::OwnedSemaphorePermit,
         profile: &'static dyn crate::profile::ProductProfile,
+        expected_database: String,
     ) -> Self {
         Self {
             profile,
+            expected_database,
+            expected_profile: None,
+            #[cfg(test)]
+            raw_write_probe: false,
             connection: Some(connection),
             state: MysqlSessionState::Ready,
             operation_timeout,
             pool_permit: Some(pool_permit),
         }
+    }
+
+    /// Chiamato esclusivamente dopo il setup del driver, mai dopo SQL applicativo.
+    pub(crate) async fn capture_session_profile(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        if self.expected_profile.is_some() {
+            return self
+                .verify_session_profile(ErrorPhase::Connect, cancellation)
+                .await;
+        }
+        let result = self
+            .query_rows(
+                &crate::session_profile::select_sql(
+                    self.kind() == plenora_database_core::plan::ProviderKind::Mariadb,
+                ),
+                ErrorPhase::Connect,
+                cancellation,
+            )
+            .await
+            .and_then(|rows| {
+                crate::session_profile::SessionProfile::capture(&rows, &self.expected_database)
+                    .map_err(|name| self.profile_error(ErrorPhase::Connect, name))
+            });
+        match result {
+            Ok(profile) => {
+                self.expected_profile = Some(profile);
+                Ok(())
+            }
+            Err(error) => {
+                self.quarantine().await;
+                Err(error)
+            }
+        }
+    }
+
+    fn profile_error(&self, phase: ErrorPhase, name: &'static str) -> DatabaseError {
+        DatabaseError::new(
+            ErrorCategory::Execution,
+            phase,
+            Some(self.kind()),
+            format!("profilo di sessione diverso da quello configurato: {name}"),
+        )
+    }
+
+    /// Rilegge il profilo dopo i diagnostici dello statement, senza riparare drift.
+    pub(crate) async fn verify_session_profile(
+        &mut self,
+        phase: ErrorPhase,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        #[cfg(test)]
+        if self.raw_write_probe {
+            return Ok(());
+        }
+        let rows = self
+            .query_rows(
+                &crate::session_profile::select_sql(
+                    self.kind() == plenora_database_core::plan::ProviderKind::Mariadb,
+                ),
+                phase,
+                cancellation,
+            )
+            .await;
+        let result = rows.and_then(|rows| {
+            let divergence = self
+                .expected_profile
+                .as_ref()
+                .map_or(Some("profile_missing"), |profile| {
+                    profile.divergence(&rows, &self.expected_database)
+                });
+            divergence.map_or(Ok(()), |name| Err(self.profile_error(phase, name)))
+        });
+        if result.is_err() {
+            self.quarantine().await;
+        }
+        result
     }
 
     /// Il prodotto servito dalla connessione.
@@ -242,6 +360,73 @@ impl MysqlSession {
         self.operation_timeout
     }
 
+    /// Legge i diagnostici prima di qualunque altro statement sulla sessione.
+    /// Il testo del server puo contenere valori: si classificano solo i codici.
+    pub(crate) async fn check_warnings(
+        &mut self,
+        phase: ErrorPhase,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.check_warnings_for_sql(phase, cancellation, "").await
+    }
+
+    pub(crate) async fn check_warnings_for_sql(
+        &mut self,
+        phase: ErrorPhase,
+        cancellation: &CancellationToken,
+        sql: &str,
+    ) -> Result<()> {
+        #[cfg(test)]
+        if self.raw_write_probe {
+            return Ok(());
+        }
+        let profile = self.profile;
+        let connection = self
+            .connection
+            .as_mut()
+            .ok_or_else(|| state_error(phase, profile))?;
+        let count = connection.get_warnings();
+        if count == 0 {
+            return Ok(());
+        }
+        let query = connection.query::<Row, _>("SHOW WARNINGS");
+        let outcome = tokio::select! {
+            _ = cancellation.cancelled() => {
+                self.quarantine().await;
+                return Err(interruption_error(profile, cancellation, phase, RemoteEffect::Unknown));
+            }
+            result = tokio::time::timeout(self.operation_timeout, query) => result,
+        };
+        match outcome {
+            Ok(Ok(rows)) => {
+                // max_error_count puo limitare SHOW WARNINGS: diagnostici mancanti
+                // non sono una prova di innocuita.
+                let complete = warning_count_complete(count, rows.len());
+                if complete
+                    && rows.iter().all(|row| {
+                        let level = row
+                            .get_opt::<String, _>(0)
+                            .and_then(std::result::Result::ok);
+                        let code = row.get_opt::<u16, _>(1).and_then(std::result::Result::ok);
+                        informative_warning_for_sql(level.as_deref(), code, sql)
+                    })
+                {
+                    Ok(())
+                } else {
+                    Err(warning_error(profile.kind(), phase))
+                }
+            }
+            Ok(Err(error)) => {
+                self.quarantine().await;
+                Err(driver_error(profile, &error, phase, RemoteEffect::Unknown))
+            }
+            Err(_) => {
+                self.quarantine().await;
+                Err(timeout_error(profile, phase, RemoteEffect::Unknown))
+            }
+        }
+    }
+
     pub(crate) async fn query_rows(
         &mut self,
         sql: &str,
@@ -263,7 +448,11 @@ impl MysqlSession {
             result = tokio::time::timeout(self.operation_timeout, query) => result,
         };
         match outcome {
-            Ok(Ok(rows)) => Ok(rows),
+            Ok(Ok(rows)) => {
+                self.check_warnings_for_sql(phase, cancellation, sql)
+                    .await?;
+                Ok(rows)
+            }
             Ok(Err(error)) => {
                 if error.is_fatal() {
                     self.quarantine().await;
@@ -313,7 +502,11 @@ impl MysqlSession {
             result = tokio::time::timeout(self.operation_timeout, query) => result,
         };
         match outcome {
-            Ok(Ok(rows)) => Ok(rows),
+            Ok(Ok(rows)) => {
+                self.check_warnings_for_sql(phase, cancellation, sql)
+                    .await?;
+                Ok(rows)
+            }
             Ok(Err(error)) => {
                 if error.is_fatal() {
                     self.quarantine().await;
@@ -378,11 +571,16 @@ impl MysqlSession {
             result = tokio::time::timeout(self.operation_timeout, execution) => result,
         };
         match outcome {
-            Ok(Ok(())) => self
-                .connection
-                .as_ref()
-                .map(Conn::affected_rows)
-                .ok_or_else(|| state_error(phase, profile)),
+            Ok(Ok(())) => {
+                let affected = self
+                    .connection
+                    .as_ref()
+                    .map(Conn::affected_rows)
+                    .ok_or_else(|| state_error(phase, profile))?;
+                self.check_warnings_for_sql(phase, cancellation, sql)
+                    .await?;
+                Ok(affected)
+            }
             Ok(Err(error)) => {
                 if error.is_fatal() {
                     self.quarantine().await;
@@ -435,6 +633,7 @@ impl MysqlSession {
         match outcome {
             Ok(Ok(())) => {
                 let affected = connection.affected_rows();
+                self.check_warnings(phase, cancellation).await?;
                 match validate_row_write_affected_rows(affected, profile) {
                     Ok(()) => Ok(None),
                     Err(error) => {
@@ -466,7 +665,7 @@ impl MysqlSession {
         }
     }
 
-    /// Esegue SQL senza parametri via **text protocol** (`query_drop`).
+    /// Esegue SQL senza parametri via **text protocol**, controllando i confini dei risultati.
     ///
     /// Uso: comandi di controllo di sessione (`SET`, `SAVEPOINT`,
     /// `ROLLBACK TO`, `START TRANSACTION`, DDL raw) che `MySQL` rifiuta
@@ -477,13 +676,30 @@ impl MysqlSession {
         phase: ErrorPhase,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        self.exec_control_tracked(
+            sql,
+            phase,
+            cancellation,
+            &plenora_database_core::caller_sql::SendMarker::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn exec_control_tracked(
+        &mut self,
+        sql: &str,
+        phase: ErrorPhase,
+        cancellation: &CancellationToken,
+        sent: &plenora_database_core::caller_sql::SendMarker,
+    ) -> Result<()> {
+        plenora_database_core::native_query_policy::enforce_single_mysql_statement(sql)?;
         let profile = self.profile;
         self.require_ready(phase)?;
         let connection = self
             .connection
             .as_mut()
             .ok_or_else(|| state_error(phase, profile))?;
-        let execution = connection.query_drop(sql);
+        let execution = sent.sending(checked_text_results(connection, sql));
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.quarantine().await;
@@ -492,7 +708,11 @@ impl MysqlSession {
             result = tokio::time::timeout(self.operation_timeout, execution) => result,
         };
         match outcome {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(false)) => self.check_warnings_for_sql(phase, cancellation, sql).await,
+            Ok(Ok(true)) => {
+                self.quarantine().await;
+                Err(warning_error(self.kind(), phase))
+            }
             Ok(Err(error)) => {
                 if error.is_fatal() {
                     self.quarantine().await;
@@ -523,7 +743,7 @@ impl MysqlSession {
             .connection
             .as_mut()
             .ok_or_else(|| state_error(phase, profile))?;
-        let execution = connection.query_drop(command.sql());
+        let execution = checked_text_results(connection, command.sql());
         let outcome = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.quarantine().await;
@@ -532,7 +752,21 @@ impl MysqlSession {
             result = tokio::time::timeout(self.operation_timeout, execution) => result,
         };
         match outcome {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(unexpected_results)) => {
+                let result = if unexpected_results {
+                    Err(warning_error(self.kind(), phase))
+                } else {
+                    self.check_warnings(phase, cancellation).await
+                };
+                if result.is_err() {
+                    self.quarantine().await;
+                }
+                result.map_err(|error| match command {
+                    MysqlTransactionCommand::Commit => after_commit_sent(error, false),
+                    MysqlTransactionCommand::Rollback => error.after_unconfirmed_rollback(),
+                    MysqlTransactionCommand::Start => error,
+                })
+            }
             Ok(Err(error)) => {
                 if error.is_fatal() {
                     self.quarantine().await;
@@ -774,7 +1008,7 @@ impl MysqlSession {
             }
         };
         match outcome {
-            PumpOutcome::Drained => Ok(()),
+            PumpOutcome::Drained => self.check_warnings(ErrorPhase::Read, cancellation).await,
             PumpOutcome::Cancelled => {
                 self.quarantine().await;
                 Err(interruption_error(
@@ -870,3 +1104,139 @@ pub fn commit_failure(
 #[cfg(test)]
 #[path = "caller_sql_session_tests.rs"]
 mod caller_sql_session_tests;
+
+/// Nessun messaggio del server attraversa il confine pubblico.
+/// L'effetto resta ignoto finche il chiamante non conferma il rollback.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn warning_error(
+    kind: plenora_database_core::plan::ProviderKind,
+    phase: ErrorPhase,
+) -> DatabaseError {
+    let mut error = DatabaseError::new(
+        ErrorCategory::DataMapping,
+        phase,
+        Some(kind),
+        "diagnostico server non qualificato come informativo: risultato rifiutato",
+    );
+    error.remote_effect = RemoteEffect::Unknown;
+    error.retry = RetryDisposition::RequiresRecovery;
+    error
+}
+
+// Note DDL IF [NOT] EXISTS: nessuna conversione di valori, solo oggetto
+// gia presente (1007/1050) o assente (1008/1051). 1287/1681 segnalano
+// soltanto sintassi deprecata (anche VALUES nell'upsert), senza alterazione.
+// Fonti: MySQL server-error-reference, ER_WARN_DEPRECATED_SYNTAX e
+// ER_WARN_DEPRECATED_SYNTAX_NO_REPLACEMENT; stessi codici nel catalogo MariaDB.
+// Ogni altro codice resta chiuso, inclusi conversioni e troncamenti.
+fn informative_warning(level: Option<&str>, code: Option<u16>) -> bool {
+    matches!((level, code), (Some("Warning"), Some(1287 | 1681)))
+}
+
+// Il contatore OK e saturante: 65535 non prova la completezza dei diagnostici.
+fn warning_count_complete(count: u16, rows: usize) -> bool {
+    count != u16::MAX && rows == usize::from(count)
+}
+
+// Le note di oggetto assente sono innocue solo nella DDL condizionale.
+// 1305: routine assente; 1360: trigger assente; 1003: piano EXPLAIN riscritto.
+// 1060/1061: colonna/indice gia presente; 1091: colonna/indice assente.
+// Si ammettono solo le relative clausole IF [NOT] EXISTS, che saltano la
+// sotto-operazione (MariaDB ALTER TABLE reference); altri warning restano
+// bloccanti anche in ALTER misti. Utenti/eventi restano non qualificati.
+// 1329 resta rifiutato: SELECT INTO puo lasciare il valore precedente.
+// Fonti: https://mariadb.com/docs/server/reference/sql-statements/data-definition/alter/alter-table
+// https://dev.mysql.com/doc/mysql-errors/8.0/en/server-error-reference.html
+// 1356 non e informativo: metadati di una vista non risolvibile non sono validi.
+fn informative_warning_for_sql(level: Option<&str>, code: Option<u16>, sql: &str) -> bool {
+    if informative_warning(level, code) {
+        return true;
+    }
+    if level != Some("Note") {
+        return false;
+    }
+    let words: Vec<_> = sql
+        .split_whitespace()
+        .take(9)
+        .map(str::to_ascii_uppercase)
+        .collect();
+    let prefix = |expected: &[&str]| {
+        words.len() >= expected.len()
+            && words
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual == expected)
+    };
+    let alter = |clause: &[&str]| {
+        prefix(&["ALTER", "TABLE"])
+            && words.len() >= 3 + clause.len()
+            && words[3..]
+                .iter()
+                .zip(clause)
+                .all(|(actual, expected)| actual == expected)
+    };
+    match code {
+        Some(1060) => {
+            alter(&["ADD", "COLUMN", "IF", "NOT", "EXISTS"])
+                || alter(&["ADD", "IF", "NOT", "EXISTS"])
+        }
+        Some(1061) => {
+            alter(&["ADD", "INDEX", "IF", "NOT", "EXISTS"])
+                || alter(&["ADD", "KEY", "IF", "NOT", "EXISTS"])
+                || prefix(&["CREATE", "INDEX", "IF", "NOT", "EXISTS"])
+        }
+        Some(1091) => {
+            alter(&["DROP", "COLUMN", "IF", "EXISTS"])
+                || alter(&["DROP", "INDEX", "IF", "EXISTS"])
+                || alter(&["DROP", "KEY", "IF", "EXISTS"])
+                || prefix(&["DROP", "INDEX", "IF", "EXISTS"])
+        }
+        Some(1007) => {
+            prefix(&["CREATE", "DATABASE", "IF", "NOT", "EXISTS"])
+                || prefix(&["CREATE", "SCHEMA", "IF", "NOT", "EXISTS"])
+        }
+        Some(1008) => {
+            prefix(&["DROP", "DATABASE", "IF", "EXISTS"])
+                || prefix(&["DROP", "SCHEMA", "IF", "EXISTS"])
+        }
+        Some(1050) => prefix(&["CREATE", "TABLE", "IF", "NOT", "EXISTS"]),
+        Some(1051) => prefix(&["DROP", "TABLE", "IF", "EXISTS"]),
+        Some(1305) => {
+            prefix(&["DROP", "PROCEDURE", "IF", "EXISTS"])
+                || prefix(&["DROP", "FUNCTION", "IF", "EXISTS"])
+        }
+        Some(1360) => prefix(&["DROP", "TRIGGER", "IF", "EXISTS"]),
+        Some(1003) => prefix(&["EXPLAIN"]),
+        _ => false,
+    }
+}
+
+/// Ogni comando ammesso dal lexer contiene uno statement. Il driver avanza
+/// al set successivo quando legge EOF: controlliamo l'OK prima di avanzare,
+/// e contiamo anche i set senza colonne (`is_empty` non basta per quelli).
+#[allow(clippy::redundant_pub_crate)]
+pub(super) async fn checked_text_results(
+    connection: &mut Conn,
+    sql: &str,
+) -> mysql_async::Result<bool> {
+    let mut result = connection.query_iter(sql).await?;
+    let mut count = 0;
+    loop {
+        if result.columns_ref().is_empty() && !result.is_empty() && result.warnings() != 0 {
+            return Ok(true);
+        }
+        let Some(mut rows) = result.stream::<Row>().await? else {
+            break;
+        };
+        count += 1;
+        if count > 1 {
+            // Qualsiasi risultato aggiuntivo viola il numero del lexer;
+            // anche un OK intermedio con warning non puo essere perso.
+            return Ok(true);
+        }
+        while let Some(row) = rows.next().await {
+            row?;
+        }
+    }
+    Ok(false)
+}

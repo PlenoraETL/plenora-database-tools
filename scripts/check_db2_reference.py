@@ -45,6 +45,7 @@ LIVE_SOURCES = (
     FIDELITY_LIVE_SOURCE,
     REWRITE_LIVE_SOURCE,
     ADMISSION_LIVE_SOURCE,
+    ROOT / "crates/plenora-db-db2/src/sospetti_live_tests.rs",
     ROOT / "crates" / "plenora-db-db2" / "src" / "long_read_live_tests.rs",
 )
 PYTHON_LIVE_SOURCE = (
@@ -77,6 +78,10 @@ PYTHON_ENV = {
 }
 REQUIRED_LIVE_TESTS = frozenset(
     {
+        "live_sospetti_timestamp_precision_identity",
+        "live_sospetti_numeric_scalar_array_bits",
+        "live_sospetti_bit_data_catalog_and_bytes",
+
         "live_timestamp_precision_and_duplicate_names_are_lossless",
         "live_arrow_timestamp_precision_refuses_only_inexact_values",
 

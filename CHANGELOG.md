@@ -8,6 +8,85 @@ riassumono le note di quelle release.
 
 ## 9.0.0 - in preparazione
 
+- Frontiera di sessione MySQL/MariaDB chiusa con un insieme fisso: bootstrap
+  e rilettura confrontano anche le costanti attese, non soltanto la baseline.
+  div_precision_increment=4 esplicita il default e la scala della divisione;
+  max_sort_length=8388608 copre ordinamenti fino a 8 MiB, senza promettere
+  confronti completi per TEXT/BLOB piu lunghi; sql_auto_is_null=0 e,
+  solo su MariaDB, check_constraint_checks=1 valgono anche per lo SQL nativo.
+- Limiti intenzionali: lc_time_names, default_week_format,
+  block_encryption_mode, old_mode, timestamp e insert_id restano contesto
+  non fissato dello SQL nativo del chiamante. Funzioni e trigger eseguono
+  con lo sql_mode registrato alla CREATE. Una variabile modificata e
+  ripristinata nella stessa istruzione (trigger BEFORE/AFTER) sfugge alla
+  rilettura del profilo. collation_connection=utf8mb4_general_ci applica
+  PAD SPACE anche ai confronti fra letterali del chiamante.
+  Con lower_case_table_names=1 il database configurato deve essere minuscolo:
+  il confronto esatto fallisce con errore esplicito sul campo database se
+  contiene maiuscole; non si assume equivalenza fra case folding client/server.
+
+- Modifica incompatibile MySQL/MariaDB della 9.0.0: lo SQL del chiamante
+  rifiuta USE e SET GLOBAL/PASSWORD/ROLE/DEFAULT ROLE anche fuori transazione.
+  Le operazioni amministrative possono cambiare identita, privilegi o default
+  condivisi: non appartengono alla sessione riutilizzabile del provider.
+  Il profilo completo di sessione viene riletto al checkout, dopo ogni SQL
+  transazionale (anche a fine stream) e prima del commit. Una divergenza
+  scarta la connessione e impedisce il commit con richiesta di recovery.
+  SHOW, EXPLAIN senza ANALYZE, DESCRIBE/DESC e SELECT/UNION fra parentesi
+  restano ammessi in transazione.
+
+- Audit pre-release MySQL/MariaDB: update condizionali rifiutati per warning o
+  rollback server chiudono lo scope; stream senza EOF, cancellati o falliti
+  impediscono il commit. Lo SQL del chiamante ammette solo SET di variabili
+  utente ASCII; in transazione ammette letture/DML e tali SET, escludendo i
+  comandi con commit implicito e quelli indiretti.
+- Limiti dello SQL nativo MySQL/MariaDB: il bootstrap conserva l'assenza di
+  ONLY_FULL_GROUP_BY per compatibilita con le query aggregate esistenti.
+  Il determinismo del GROUP BY e verificato nell'AST portabile, non nello SQL
+  nativo. L'arrotondamento dei secondi frazionari senza diagnostico del server
+  resta coperto solo dall'ammissione Arrow, non dai controlli sui warning.
+
+
+- Audit pre-release, rollback MySQL/MariaDB: la chiusura dopo un errore di
+  execute o query non vale come conferma del rollback; conserva la richiesta
+  di recovery come lo stream. I testimoni raw distinguono il rifiuto del
+  server dalla conservazione e dall'alterazione del valore.
+
+- Audit pre-release, TIMESTAMP Db2/Oracle: la regola A e le guardie di
+  precisione introdotte in #134 sono ora accompagnate da regressioni live
+  permanenti per TIMESTAMP(0)/(3)/(6), append/upsert e identita delle chiavi.
+  Il controllo precedente per solo nome e verificato nei tag Db2
+  `py-v0.12.0`?`py-v8.0.4` e Oracle `py-v3.1.0`?`py-v8.0.4`.
+- Audit pre-release, catalogo Db2: la distinzione CODEPAGE/FOR BIT DATA di
+  #134 ha una regressione permanente con HEX, lunghezza e byte non UTF-8.
+  Arrow binario resta rifiutato finche non qualificato. Il catalogo senza
+  CODEPAGE e verificato nei tag `py-v0.12.0`?`py-v8.0.4`.
+- MySQL/MariaDB: i warning dopo execute, query e lettura Arrow sono letti
+  sulla stessa sessione prima del riuso; diagnostici di alterazione,
+  sconosciuti o incompleti diventano errori senza payload. Sono informative
+  soltanto le note DDL 1007/1008/1050/1051 (oggetto gia presente/assente)
+  e 1305/1360 nel relativo DROP IF EXISTS, 1003 per EXPLAIN,
+  1060/1061/1091 nelle clausole condizionali di colonne/indici,
+  e i warning 1287/1681 (sintassi deprecata, senza alterazione del dato).
+  Il protocollo testuale usa il lexer MySQL e verifica anche i risultati
+  intermedi; il chiamante non puo modificare sql_notes, sql_mode,
+  max_error_count o sql_warnings, neppure con policy Allow.
+  Un ROLLBACK TO SAVEPOINT non confermato chiude la transazione.
+  Anche COMMIT/ROLLBACK leggono i diagnostici: 1196 non conferma il rollback.
+  Le frazioni DATETIME/TIME arrotondate senza warning (senza
+  TIME_TRUNCATE_FRACTIONAL) e FLOAT(M,D) sono coperte dalle guardie
+  di ammissione del writer, non dal controllo dei warning.
+  Lo stream transazionale rifiuta conservativamente ogni warning al termine
+  del risultato. Le scritture transazionali rifiutate con effetto ignoto
+  chiudono la connessione, impedendo un commit successivo. Assenza del
+  controllo verificata nei tag MySQL `py-v0.1.0`?`py-v8.0.4`; per MariaDB,
+  dalla presenza del provider in `py-v0.12.0` fino a `py-v8.0.4`.
+- Audit numerico Db2: regressione live scalare/array con confronto server
+  HEX dei double, decimali al limite e rifiuto di -0/subnormali. Il trasporto
+  testuale precedente e verificato nei tag `py-v0.12.0`?`py-v8.0.4`;
+  questo riscontro statico non attribuisce una perdita numerica a ogni tag.
+  Le nuove regressioni live sono prove da eseguire, non qualifiche gia verdi.
+
 - Modifica incompatibile Rust: `Row::get(&self, name: &str)` restituisce
   `Result<Option<&ParameterValue>>`; `QueryResult::into_mappings(self)`
   restituisce `Result<Vec<BTreeMap<String, ParameterValue>>>`. Entrambi

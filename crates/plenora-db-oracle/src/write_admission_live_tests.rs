@@ -312,13 +312,37 @@ async fn append(
     table: &str,
     value: ArrayRef,
 ) -> Result<plenora_database_core::outcome::WriteOutcome, DatabaseError> {
+    let rows = value.len();
+    let ids = (0..i64::try_from(rows).expect("righe")).collect();
+    audit_write(hooks, table, WriteMode::Append, &[], ids, value).await
+}
+
+async fn audit_write(
+    hooks: &Hooks,
+    table: &str,
+    mode: WriteMode,
+    keys: &[&str],
+    ids: Vec<i64>,
+    value: ArrayRef,
+) -> Result<plenora_database_core::outcome::WriteOutcome, DatabaseError> {
+    audit_write_declared(hooks, table, mode, keys, ids, (value, true)).await
+}
+
+async fn audit_write_declared(
+    hooks: &Hooks,
+    table: &str,
+    mode: WriteMode,
+    keys: &[&str],
+    ids: Vec<i64>,
+    (value, nullable): (ArrayRef, bool),
+) -> Result<plenora_database_core::outcome::WriteOutcome, DatabaseError> {
     let schema = contract_schema(vec![
         Field::new("ID", DataType::Int64, false),
-        Field::new("V", value.data_type().clone(), true),
+        Field::new("V", value.data_type().clone(), nullable),
     ])
     .expect("schema");
     let rows = value.len();
-    let ids = Int64Array::from((0..i64::try_from(rows).expect("righe")).collect::<Vec<_>>());
+    let ids = Int64Array::from(ids);
     let batch = RecordBatch::try_new(schema, vec![Arc::new(ids), value]).expect("batch");
     let operation = WriteOperation {
         target: ObjectRef {
@@ -326,10 +350,10 @@ async fn append(
             schema: Some(hooks.schema_name()),
             object: table.to_owned(),
         },
-        mode: WriteMode::Append,
+        mode,
         mapping_policy: MappingPolicy::Strict,
         transaction_profile: TransactionProfile::SingleTransaction,
-        keys: Vec::new(),
+        keys: keys.iter().map(|key| (*key).to_owned()).collect(),
         update_columns: Vec::new(),
         srid_policy: None,
         create_spatial_index: false,
@@ -587,3 +611,7 @@ fn lob_server_measurement_never_uses_the_production_writer() {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "sospetti_live_tests.rs"]
+mod sospetti;

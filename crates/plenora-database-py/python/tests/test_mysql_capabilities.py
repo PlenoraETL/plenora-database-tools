@@ -167,11 +167,20 @@ def test_native_query_policy_deny_refuses_a_forbidden_statement(session) -> None
         with pytest.raises(p.PlenoraError):
             tx.execute_sql(f"SELECT 1; SELECT 2 FROM {TABLE}")
 
-    # Con la policy di default lo stesso DDL passa: e la policy a fare la
-    # differenza, non lo statement.
+        # `DO` non e' CRUD: fuori dall'allowlist di `deny`.
+        with pytest.raises(p.PlenoraError) as raised:
+            tx.execute_sql("DO 0")
+        assert "deny" in str(raised.value).lower(), str(raised.value)
+
+    # Con la policy di default lo stesso `DO` passa: e la policy a fare la
+    # differenza, non lo statement. Il DDL non serve da controprova: dalla
+    # 9.0.0 la frontiera MySQL/MariaDB lo rifiuta in ogni transazione
+    # (commit implicito), con qualunque policy.
     with session.begin() as tx:
-        tx.execute_sql(f"CREATE TABLE {TABLE}_ammessa (id BIGINT)")
-    session.execute_ddl(f"DROP TABLE IF EXISTS {TABLE}_ammessa")
+        tx.execute_sql("DO 0")
+        with pytest.raises(p.PlenoraError) as raised:
+            tx.execute_sql(f"CREATE TABLE {TABLE}_ammessa (id BIGINT)")
+        assert "deny" not in str(raised.value).lower(), str(raised.value)
 
 
 def test_repeatable_read_does_not_see_a_concurrent_commit(session) -> None:

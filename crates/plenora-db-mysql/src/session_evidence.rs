@@ -61,11 +61,20 @@ const BOOTSTRAP_CONTRACT: &[(&str, &str)] = &[
     ("time_zone", "+00:00"),
     (
         "sql_mode",
-        "NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+        "NO_AUTO_VALUE_ON_ZERO,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
     ),
     ("foreign_key_checks", "1"),
     ("unique_checks", "1"),
+    ("sql_notes", "1"),
     ("sql_select_limit", "18446744073709551615"),
+    ("character_set_client", "utf8mb4"),
+    ("character_set_connection", "utf8mb4"),
+    ("character_set_results", "utf8mb4"),
+    ("collation_connection", "utf8mb4_general_ci"),
+    ("div_precision_increment", "4"),
+    ("max_sort_length", "8388608"),
+    ("sql_auto_is_null", "0"),
+
 ];
 
 /// La query che rilegge esattamente le variabili del contratto.
@@ -181,7 +190,10 @@ fn bootstrap_satisfied(observed: &[String]) -> bool {
         && BOOTSTRAP_CONTRACT
             .iter()
             .zip(observed)
-            .all(|((_, expected), value)| value == expected)
+            .all(|((name, expected), value)| {
+                crate::session_profile::normalized(name, value)
+                    == crate::session_profile::normalized(name, expected)
+            })
 }
 
 /// Il bootstrap eseguito a mano: dice del server.

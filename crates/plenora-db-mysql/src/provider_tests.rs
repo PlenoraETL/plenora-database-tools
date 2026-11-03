@@ -719,3 +719,41 @@ fn published_spatial_capabilities_match_generic_geometry_contract() {
     // e un fallimento a meta non saprebbe dire cosa e rimasto.
     assert!(capabilities.spatial_index);
 }
+
+/// Nessun server necessario: ogni caso deve fallire prima del checkout.
+#[tokio::test]
+async fn ddl_local_rejections_have_no_remote_effect_for_both_products() {
+    use plenora_database_core::{RemoteEffect, RetryDisposition};
+    let secret = SecretString::new("unused");
+    let cancel = CancellationToken::new();
+    let config = MysqlConfig::new("unused.invalid", "db", "user", secret.clone());
+    let providers: Vec<Box<dyn Provider>> = vec![
+        Box::new(MysqlProvider::new(config.clone(), 1).unwrap()),
+        Box::new(MariadbProvider::new(config, 1).unwrap()),
+    ];
+    for provider in providers {
+        for sql in [
+            "SELECT 1; DO 0",
+            "SELECT 1 AS $a$; DO 0; SELECT 1 AS $a$",
+            "SELECT q'[' FROM (SELECT 1 q) x; DO 0; SELECT ']' FROM DUAL",
+            "SELECT 'unterminated",
+            "SET SESSION sql_notes=0",
+            "SET @x=1, @@session.sql_mode=''",
+            "SET max_error_count=0",
+        ] {
+            for direct in [false, true] {
+                let error = if direct {
+                    provider.run_ddl(&secret, sql, &cancel).await
+                } else {
+                    provider.execute_ddl(&secret, sql, &cancel).await
+                }
+                .unwrap_err();
+                assert_eq!(error.category, ErrorCategory::InvalidPlan);
+                assert_eq!(error.phase, ErrorPhase::Validate);
+                assert_eq!(error.provider, Some(provider.kind()));
+                assert_eq!(error.remote_effect, RemoteEffect::None);
+                assert_eq!(error.retry, RetryDisposition::Never);
+            }
+        }
+    }
+}

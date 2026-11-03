@@ -157,7 +157,7 @@ class Db2ReferenceGateTests(unittest.TestCase):
 
     def test_inventory_has_all_named_live_tests(self) -> None:
         inventory = gate.live_test_inventory()
-        self.assertEqual(len(inventory), 37)
+        self.assertEqual(len(inventory), 40)
         self.assertIn("live_odbc_warnings_are_classified_before_next_call", inventory)
         self.assertLessEqual(gate.REQUIRED_LIVE_TESTS, inventory)
 

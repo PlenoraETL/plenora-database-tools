@@ -53,6 +53,8 @@ TIMEOUT = 30 * 60
 LIVE_TIMEOUTS = {"live_sonde_scritture_server": 60 * 60}
 REQUIRED_LIVE_TESTS = frozenset(
     {
+        "live_sospetti_timestamp_precision_identity",
+
         "live_duplicate_result_names_preserve_positions",
         "live_empty_parameters_are_refused_before_caller_dml",
         "live_empty_late_batch_precedes_replace_update_merge_and_array",
@@ -202,7 +204,7 @@ def reference_contract() -> dict[str, str]:
 
 def live_source_inventory() -> set[str]:
     return live_inventory.source_inventory(
-        [LIVE_SOURCE, FIDELITY_LIVE_SOURCE, NUMBER_LIVE_SOURCE, DRIVER_LIVE_SOURCE, REWRITE_LIVE_SOURCE, ADMISSION_LIVE_SOURCE],
+        [LIVE_SOURCE, FIDELITY_LIVE_SOURCE, NUMBER_LIVE_SOURCE, DRIVER_LIVE_SOURCE, REWRITE_LIVE_SOURCE, ADMISSION_LIVE_SOURCE, ROOT / "crates/plenora-db-oracle/src/sospetti_live_tests.rs"],
         keep=lambda name: name.startswith("live_"),
     )
 

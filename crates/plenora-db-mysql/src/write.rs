@@ -1225,82 +1225,23 @@ pub(crate) fn validate_unique_keys(
 /// La regola W2 sulla sessione della scrittura: rilegge le impostazioni che
 /// il bootstrap fissa (`crate::SESSION_BOOTSTRAP_SQL`, `NO_AUTO_VALUE_ON_ZERO`
 /// compreso), il fuso `+00:00` e il charset `utf8mb4` di client e connessione
-/// (regola V) e, su `MariaDB`, fissa `check_constraint_checks = 1`.
+/// (regola V) e, su `MariaDB`, verifica `check_constraint_checks = 1`.
 ///
 /// `MariaDB` ha un interruttore in piu: `check_constraint_checks = 0` spegne
-/// i vincoli `CHECK`. Non sta nel bootstrap perche `MySQL` non lo conosce, e
-/// il bootstrap gira prima che il profilo del server sia verificato.
+/// i vincoli `CHECK`. Il bootstrap specifico MariaDB lo fissa al checkout;
+/// qui il profilo rifiuta il drift senza ripararlo.
 ///
 /// # Errors
 ///
-/// `unsupported` con il motivo della regola se un valore non e quello che
-/// applica le garanzie; l'errore della lettura altrimenti.
+/// Divergenza del profilo con quarantena, oppure errore della lettura.
 pub(crate) async fn verify_write_session(
     session: &mut crate::MysqlSession,
     token: &plenora_database_core::CancellationToken,
 ) -> Result<()> {
-    let mariadb = session.kind() == plenora_database_core::plan::ProviderKind::Mariadb;
-    if mariadb {
-        session
-            .exec_control(
-                "SET SESSION check_constraint_checks = 1",
-                ErrorPhase::Prepare,
-                token,
-            )
-            .await?;
-    }
-    // Il fuso e il charset della connessione decidono come il server legge
-    // i valori: un `DATETIME` del protocollo binario finisce in una colonna
-    // `TIMESTAMP` convertito dal fuso della sessione, il testo dal charset
-    // del client. Il bootstrap fissa il fuso, l'handshake del driver il
-    // charset; qui si rilegge che lo siano ancora (regola V).
-    let sql = if mariadb {
-        "SELECT @@session.foreign_key_checks, @@session.unique_checks, @@session.sql_mode, \
-         @@session.check_constraint_checks, @@session.time_zone, \
-         @@session.character_set_client, @@session.character_set_connection"
-    } else {
-        "SELECT @@session.foreign_key_checks, @@session.unique_checks, @@session.sql_mode, 1, \
-         @@session.time_zone, @@session.character_set_client, \
-         @@session.character_set_connection"
-    };
-    let rows = session.query_rows(sql, ErrorPhase::Prepare, token).await?;
-    let pinned = rows.first().is_some_and(|row| {
-        let flag = |index: usize| {
-            row.get_opt::<i64, _>(index)
-                .and_then(std::result::Result::ok)
-        };
-        let strict = row
-            .get_opt::<String, _>(2)
-            .and_then(std::result::Result::ok)
-            .is_some_and(|mode| {
-                let parts = mode.split(',').collect::<Vec<_>>();
-                parts.contains(&"STRICT_TRANS_TABLES") && parts.contains(&"NO_AUTO_VALUE_ON_ZERO")
-            });
-        let text = |index: usize| {
-            row.get_opt::<String, _>(index)
-                .and_then(std::result::Result::ok)
-        };
-        flag(0) == Some(1)
-            && flag(1) == Some(1)
-            && flag(3) == Some(1)
-            && strict
-            && text(4).as_deref() == Some("+00:00")
-            && text(5).as_deref() == Some("utf8mb4")
-            && text(6).as_deref() == Some("utf8mb4")
-    });
-    if pinned {
-        Ok(())
-    } else {
-        Err(DatabaseError::new(
-            ErrorCategory::Unsupported,
-            ErrorPhase::Prepare,
-            Some(session.kind()),
-            format!(
-                "scrittura rifiutata: {}",
-                plenora_database_core::row_visibility::SESSION_WITHOUT_GUARANTEES
-            ),
-        ))
-    }
+    // Un solo profilo verifica sia la baseline sia tutte le costanti del bootstrap.
+    session
+        .verify_session_profile(ErrorPhase::Prepare, token)
+        .await
 }
 
 pub fn validate_batch_schema(batch: &RecordBatch, declared: &SchemaRef) -> Result<()> {
@@ -1503,6 +1444,25 @@ pub fn rolled_back_error(
     } else {
         error.after_unconfirmed_rollback()
     }
+}
+
+/// Un diagnostico del ROLLBACK contraddice anche un precedente deadlock:
+/// InnoDB puo essere annullato, mentre effetti MyISAM persistono (1196).
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn rollback_cleanup_result(
+    error: DatabaseError,
+    cleanup: &Result<()>,
+    execution_id: &str,
+) -> DatabaseError {
+    let error = if cleanup.as_ref().is_err_and(|failure| {
+        failure.category == ErrorCategory::DataMapping
+            && failure.remote_effect == RemoteEffect::Unknown
+    }) {
+        error.after_unconfirmed_rollback()
+    } else {
+        error
+    };
+    rolled_back_error(error, cleanup.is_ok(), execution_id)
 }
 
 /// Marca l'esito con cio che il rollback non ha potuto annullare.

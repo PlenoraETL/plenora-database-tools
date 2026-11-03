@@ -2064,3 +2064,33 @@ fn qualified_profile_pure_guards() {
         });
     }
 }
+
+#[test]
+fn create_warning_reports_persistent_ddl_and_recovery() {
+    let error = crate::session::warning_error(
+        plenora_database_core::plan::ProviderKind::Mysql,
+        ErrorPhase::Write,
+    );
+    let error = stamp_ddl_residue(Err(error), DdlResidue::CreatedTable).unwrap_err();
+    assert_eq!(error.remote_effect, RemoteEffect::Unknown);
+    assert_eq!(error.retry, RetryDisposition::RequiresRecovery);
+    assert!(error.message.contains("la tabella creata"));
+}
+
+#[test]
+fn rollback_warning_overrides_even_a_prior_deadlock() {
+    for prior in [
+        RemoteEffect::None,
+        RemoteEffect::Unknown,
+        RemoteEffect::RolledBack,
+    ] {
+        let mut failure = crate::session::warning_error(ProviderKind::Mysql, ErrorPhase::Write);
+        failure.remote_effect = prior;
+        let cleanup = crate::session::warning_error(ProviderKind::Mysql, ErrorPhase::Rollback)
+            .after_unconfirmed_rollback();
+        let result = rollback_cleanup_result(failure, &Err(cleanup), "rollback-warning");
+        assert_eq!(result.remote_effect, RemoteEffect::Unknown);
+        assert_eq!(result.retry, RetryDisposition::RequiresRecovery);
+        assert_eq!(result.execution_id.as_deref(), Some("rollback-warning"));
+    }
+}
