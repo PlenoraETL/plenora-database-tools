@@ -469,3 +469,57 @@ fn a_catalog_srid_needs_no_verification() {
         plan.sql
     );
 }
+
+#[test]
+fn mariadb_json_read_refuses_text_and_null_before_binding() {
+    let description = MysqlObjectDescription {
+        schema: "s".into(),
+        name: "t".into(),
+        kind: "BASE TABLE".into(),
+        engine: Some("InnoDB".into()),
+        columns: vec![column("payload", "longtext", "longtext")],
+        indexes: vec![],
+        token: crate::MysqlSchemaToken("token".into()),
+    };
+    let operation = ReadOperation {
+        source: ObjectRef {
+            catalog: None,
+            schema: Some("s".into()),
+            object: "t".into(),
+        },
+        projection: vec!["payload".into()],
+        order_by: vec![],
+        row_limit: None,
+        row_offset: None,
+        filter: Some(plenora_database_core::plan::FilterExpression::Eq {
+            field: "payload".into(),
+            parameter: "p".into(),
+        }),
+        declared_crs: vec![],
+    };
+    for value in [
+        ParameterValue::String("{}".into()),
+        ParameterValue::Null {
+            type_name: "text".into(),
+        },
+    ] {
+        let bag = ParameterBag::new([("p".into(), value)].into());
+        let error = ensure_read_families(
+            &description,
+            &operation,
+            &bag,
+            &crate::profile::MARIADB_PROFILE,
+            &std::collections::BTreeSet::from(["payload".into()]),
+        )
+        .unwrap_err();
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        ensure_read_families(
+            &description,
+            &operation,
+            &bag,
+            &crate::profile::MARIADB_PROFILE,
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap();
+    }
+}

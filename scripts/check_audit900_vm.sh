@@ -2,7 +2,7 @@
 # Dalla radice del checkout: bash scripts/check_audit900_vm.sh [all|postgres|mysql|mariadb|sqlserver|oracle|db2]
 # Le fixture restano disponibili; MariaDB riallinea i server ai certificati TLS.
 set -euo pipefail
-export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-6}
+export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4}
 if [[ ${1:-all} == all ]]; then
     failed=0
     for provider in postgres mysql mariadb sqlserver oracle db2; do
@@ -81,6 +81,14 @@ def test_cases():
     if selected in {'mysql', 'mariadb'}:
         cases.extend((name, 1) for name in [
             'live_audit900_l2_typed_json', 'live_audit900_l4_found_rows'])
+    if selected in {'postgres', 'mysql', 'sqlserver'}:
+        cases.append(('live_audit900_lb_srid_before_io', 1))
+    if selected == 'sqlserver':
+        cases.append(('live_audit900_typed_wkb_positive', 1))
+    if selected == 'mariadb':
+        cases.extend((name, 1) for name in [
+            'live_audit900_la_json_read', 'live_audit900_lc_json_arrow_key',
+            'live_audit900_ld_view_without_show_view'])
     return cases
 
 try:

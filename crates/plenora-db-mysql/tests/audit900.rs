@@ -86,7 +86,12 @@ fn spatial_typed_wkb_passes_both_gates() {
             std::slice::from_ref(&v),
         )
         .unwrap();
-        assert_eq!(a.statement().params, vec![V::Bytes(bytes.clone())]);
+        let expected = if p == P::Sqlserver {
+            v.clone()
+        } else {
+            V::Bytes(bytes.clone())
+        };
+        assert_eq!(a.statement().params, vec![expected]);
     }
 }
 #[test]

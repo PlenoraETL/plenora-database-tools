@@ -194,3 +194,36 @@ fn le_chiavi_non_possono_perdere_precisione_o_cambiare_tipo() {
         }
     }
 }
+
+#[test]
+fn json_valid_compound_checks_and_quoted_identifiers() {
+    for clause in [
+        "json_valid(`payload`)",
+        "CHECK (JSON_VALID ( `payload` ) AND json_type(payload)='OBJECT')",
+        "CHECK (json_valid(payload) OR payload IS NULL)",
+        "CHECK (NOT json_valid(payload))",
+    ] {
+        assert_eq!(
+            json_columns_in_definition(clause),
+            BTreeSet::from(["payload".into()])
+        );
+    }
+    assert_eq!(
+        json_columns_in_definition("json_valid(`pay``load`)"),
+        BTreeSet::from(["pay`load".into()])
+    );
+    assert!(json_columns_in_definition("COMMENT 'json_valid(`payload`)' DEFAULT 'json_valid(other)' CHECK (not_json_valid(payload))").is_empty());
+}
+
+#[test]
+fn json_valid_arguments_do_not_hide_column_attributes() {
+    for clause in [
+        "CHECK(JSON_VALID((payload)))",
+        "CHECK(JSON_VALID(payload COLLATE utf8mb4_bin))",
+        "CHECK(JSON_VALID(concat(payload, ''))) AND id > 0",
+    ] {
+        let columns = json_columns_in_definition(clause);
+        assert!(columns.contains("payload"));
+        assert!(!columns.contains("id"));
+    }
+}

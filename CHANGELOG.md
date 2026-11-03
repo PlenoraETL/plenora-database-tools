@@ -9,7 +9,7 @@ riassumono le note di quelle release.
 ## 9.0.0 - in preparazione
 
 - Audit JSON, raccolta VM su MySQL 9.7.2 e MariaDB 10.11/11.8/12.3:
-  per ciascuna wheel 7.0.0 e 8.0.0?8.0.4, 1474 combinazioni per fixture,
+  per ciascuna wheel 7.0.0 e 8.0.0–8.0.4, 1474 combinazioni per fixture,
   608 differenze rispetto all'oracolo JSON su MySQL (384 A, 224 B) e 266
   su ciascun MariaDB (154 A, 112 B). La 9.0.0 pre-correzione (978cad27)
   ne aveva 168 (24 A, 144 B) e 170 (74 A, 96 B). A indica confronti della
@@ -29,11 +29,17 @@ riassumono le note di quelle release.
   server diverse dall'uguaglianza JSON. Il CAST MySQL deve essere scelto dal
   chiamante; JSON_EQUALS/JSON_CONTAINS non garantiscono identita esatta.
   La nuova sonda controlla l'eco dei parametri B indipendentemente dal risultato
-  SQL. Conferma live della correzione ancora da eseguire, non inclusa nei numeri.
+  SQL. I nuovi casi live di conferma sono distinti dalla misura 9.0.0 riportata sotto.
 
-- Correzioni: difetto silenzioso JSON-testo su MySQL/MariaDB, versioni
-  colpite: <da misura>. La verifica del checkout deve riportare zero
-  discrepanze silenziose sulla stessa sonda prima della qualifica.
+- Correzioni JSON-testo, misurate almeno dalla 7.0.0: nella 8.0.4 MySQL
+  registra 384 risultati diversi senza errore, 660 accettazioni non qualificate
+  e 112 trasporti alterati; MariaDB rispettivamente 154, 594 e 112.
+  Gli stessi numeri sono misurati su 7.0.0 e 8.0.0–8.0.3.
+  La misura 9.0.0 registra 0/0/0 e 240 trasporti esatti. Questi numeri non
+  qualificano i nuovi casi di conferma L-A/L-B/L-C/L-D, ancora da eseguire.
+- `conditional_update` MySQL/MariaDB ammette soltanto SQL semplice su relazioni
+  senza colonne JSON: rifiuta anche SQL opaco, funzioni, subquery e join prima
+  del savepoint. Usare un piano relazionale tipizzato per le forme escluse.
 - MariaDB: JSON tipizzato rifiutato esplicitamente in preparazione nel renderer
   e nel binder, invece di generare `CAST(? AS JSON)` non valido o degradare
   al confronto testuale. Per una semantica JSON esplicita usare SQL del
@@ -42,6 +48,8 @@ riassumono le note di quelle release.
 
 - A900-001, ammissione Rust/CLI/SDK: data, timestamp, timestamp con fuso,
   UUID e decimale vengono validati integralmente prima della conversione.
+  Rifiuta NUL in `String`/`Enum`, `Null` con tipo vuoto, WKB strutturalmente
+  invalido e `TimestampTz` senza suffisso `Z` oppure `±HH:MM`.
   Suffissi o forme malformate non diventano piu date/testo validi per taglio.
   Correggere il valore d'origine; per memorizzare testo usare `String` esplicito.
   Raggiungibilita confermata dalla facade pubblica portable e dal DML
@@ -58,7 +66,11 @@ riassumono le note di quelle release.
 - A900-002/003, query tipizzate: il contesto del renderer e condiviso fra
   regola T e ammissione. MySQL trasporta JSON come testo soltanto sotto il
   CAST JSON dichiarato; WKB Binary nelle posizioni spatial conserva il proprio
-  percorso. Non occorre aggirare il tipo dichiarato; JSON nudo resta chiuso.
+  percorso. Il controllo comune rifiuta con `Crs` uno SRID del valore diverso
+  da quello di `SpatialValue` prima di estrarre i byte; dimensioni e semantica
+  vengono verificate prima della conversione. Un nome condiviso fra parametri
+  nudi e tipizzati o tipi dichiarati diversi viene rifiutato.
+  Non occorre aggirare il tipo dichiarato; JSON nudo resta chiuso.
 - A900-014, PostgreSQL: l'ammissione di `name` limita il testo a 63 byte,
   inclusi i caratteri multibyte. Oltre il limite usare una colonna `text` o
   normalizzare esplicitamente prima dell'ingresso; nessun taglio automatico.
@@ -179,11 +191,11 @@ riassumono le note di quelle release.
   precisione introdotte in #134 sono ora accompagnate da regressioni live
   permanenti per TIMESTAMP(0)/(3)/(6), append/upsert e identita delle chiavi.
   Il controllo precedente per solo nome e verificato nei tag Db2
-  `py-v0.12.0`?`py-v8.0.4` e Oracle `py-v3.1.0`?`py-v8.0.4`.
+  `py-v0.12.0`–`py-v8.0.4` e Oracle `py-v3.1.0`–`py-v8.0.4`.
 - Audit pre-release, catalogo Db2: la distinzione CODEPAGE/FOR BIT DATA di
   #134 ha una regressione permanente con HEX, lunghezza e byte non UTF-8.
   Arrow binario resta rifiutato finche non qualificato. Il catalogo senza
-  CODEPAGE e verificato nei tag `py-v0.12.0`?`py-v8.0.4`.
+  CODEPAGE e verificato nei tag `py-v0.12.0`–`py-v8.0.4`.
 - MySQL/MariaDB: i warning dopo execute, query e lettura Arrow sono letti
   sulla stessa sessione prima del riuso; diagnostici di alterazione,
   sconosciuti o incompleti diventano errori senza payload. Sono informative
@@ -202,11 +214,11 @@ riassumono le note di quelle release.
   Lo stream transazionale rifiuta conservativamente ogni warning al termine
   del risultato. Le scritture transazionali rifiutate con effetto ignoto
   chiudono la connessione, impedendo un commit successivo. Assenza del
-  controllo verificata nei tag MySQL `py-v0.1.0`?`py-v8.0.4`; per MariaDB,
+  controllo verificata nei tag MySQL `py-v0.1.0`–`py-v8.0.4`; per MariaDB,
   dalla presenza del provider in `py-v0.12.0` fino a `py-v8.0.4`.
 - Audit numerico Db2: regressione live scalare/array con confronto server
   HEX dei double, decimali al limite e rifiuto di -0/subnormali. Il trasporto
-  testuale precedente e verificato nei tag `py-v0.12.0`?`py-v8.0.4`;
+  testuale precedente e verificato nei tag `py-v0.12.0`–`py-v8.0.4`;
   questo riscontro statico non attribuisce una perdita numerica a ogni tag.
   Le nuove regressioni live sono prove da eseguire, non qualifiche gia verdi.
 

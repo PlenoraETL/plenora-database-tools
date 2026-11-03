@@ -28,13 +28,19 @@ class Audit900VmTests(unittest.TestCase):
 
     def test_provider_counts_and_filters(self):
         for provider, counts in {
-            'postgres': [1, 1, 1, 1], 'mysql': [1, 1, 1], 'mariadb': [1, 1, 1],
-            'sqlserver': [1], 'oracle': [1], 'db2': [1],
+            'postgres': [1, 1, 1, 1, 1], 'mysql': [1, 1, 1, 1], 'mariadb': [1, 1, 1, 1, 1, 1],
+            'sqlserver': [1, 1, 1], 'oracle': [1], 'db2': [1],
         }.items():
             self.namespace['selected'] = provider
             cases = self.namespace['test_cases']()
             self.assertEqual([count for _, count in cases], counts)
             self.assertEqual(cases[0][0], 'live_parameter_values_bind_exactly_or_are_refused')
+            crate = 'mysql' if provider == 'mariadb' else provider
+            sources = '\n'.join(path.read_text(encoding='utf-8')
+                                for path in (ROOT / f'crates/plenora-db-{crate}/src').glob('*.rs'))
+            for name, _ in cases:
+                self.assertEqual(len(re.findall(r'async fn ' + re.escape(name) + r'\(', sources)), 1)
+
             if len(cases) > 1:
                 self.assertTrue(all(name.startswith('live_audit900_') for name, _ in cases[1:]))
 
@@ -67,9 +73,9 @@ class Audit900VmTests(unittest.TestCase):
                 raise SystemExit(101)
         self.namespace['run'] = fake_run
         self.namespace['run_tests']([], 'plenora-db-postgres', 'postgres')
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 5)
         self.assertEqual([status for _, status in self.namespace['results']],
-                         ['FAIL', 'PASS', 'PASS', 'PASS'])
+                         ['FAIL', 'PASS', 'PASS', 'PASS', 'PASS'])
         self.assertTrue(any('l3_' in name for name in calls))
         self.assertTrue(any('l5_' in name for name in calls))
 
@@ -89,8 +95,9 @@ class Audit900VmTests(unittest.TestCase):
 
     def test_fixture_scope_and_helpers(self):
         self.assertNotIn('prune', BODY)
-        self.assertEqual(BODY.count("'down', '--volumes'"), 1)
-        self.assertIn("'docker-compose.mariadb.yml', 'down', '--volumes'", BODY)
+        self.assertNotIn("'down'", BODY)
+        self.assertIn("'up', '-d', '--force-recreate'", BODY)
+        self.assertIn('CARGO_BUILD_JOBS:-4', SCRIPT)
         self.assertIn("'--wait'", BODY)
         self.assertIn('target/audit-900/live', BODY)
         for helper in ['postgres.cargo', 'sqlserver.cargo', 'db2.DB2_ENV',

@@ -82,7 +82,14 @@ pub(crate) async fn read_operation_with_profile(
     )
     .await?;
     let plan = MysqlReadPlan::compile_with_profile(&description, operation, profile)?;
-    crate::types::ensure_read_families(&description, operation, parameters, profile)?;
+    let json = crate::write_admission::json_valid_columns(
+        &mut session,
+        schema,
+        &operation.source.object,
+        &internal,
+    )
+    .await?;
+    crate::types::ensure_read_families(&description, operation, parameters, profile, &json)?;
     let column_count = u64::try_from(plan.columns.len()).map_err(|_| {
         DatabaseError::resource_limit(format!("numero colonne {product} non rappresentabile"))
     })?;

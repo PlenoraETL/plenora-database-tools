@@ -14602,3 +14602,187 @@ async fn live_audit900_l4_found_rows() {
         .await
         .expect("pulizia L4");
 }
+
+#[tokio::test]
+#[ignore = "richiede fixture del provider"]
+async fn live_audit900_lb_srid_before_io() {
+    use plenora_database_core::transaction::TransactionOptions;
+    let provider = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("begin L-B");
+    plenora_database_testkit::audit900::mismatched_spatial_frame(tx.as_mut())
+        .await
+        .expect("rifiuto L-B");
+    tx.rollback(&cancel).await.expect("rollback L-B");
+}
+
+#[tokio::test]
+#[ignore = "richiede MariaDB 10.11/11.8/12.3"]
+async fn live_audit900_la_json_read() {
+    use plenora_database_core::provider::ParameterValue as V;
+    assert!(fidelity_mariadb());
+    let provider = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    for declaration in [
+        "JSON",
+        "LONGTEXT CHECK(json_valid(payload) AND json_type(payload)='OBJECT')",
+    ] {
+        provider
+            .execute_ddl(&secret, "DROP TABLE IF EXISTS audit900_read_json", &cancel)
+            .await
+            .unwrap();
+        provider
+            .execute_ddl(
+                &secret,
+                &format!("CREATE TABLE audit900_read_json(id INT, payload {declaration})"),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        for value in [
+            V::String("{}".into()),
+            V::Null {
+                type_name: "text".into(),
+            },
+        ] {
+            let operation = geometry_operand_reading("audit900_read_json", "payload", true);
+            let parameters = ParameterBag::new([("p".into(), value)].into());
+            let result = provider
+                .read(&secret, &operation, &parameters, &budget, &cancel)
+                .await;
+            let Err(error) = result else {
+                panic!("confronto JSON eseguito");
+            };
+            assert_eq!(error.category, ErrorCategory::InvalidPlan);
+            assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+        }
+    }
+    provider
+        .execute_ddl(&secret, "DROP TABLE audit900_read_json", &cancel)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "richiede MariaDB 10.11/11.8/12.3"]
+async fn live_audit900_lc_json_arrow_key() {
+    assert!(fidelity_mariadb());
+    let provider = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    for sql in ["DROP TABLE IF EXISTS audit900_json_key",
+        "CREATE TABLE audit900_json_key(payload LONGTEXT CHECK(json_valid(payload) AND json_type(payload)='OBJECT'), v INT)"] {
+        provider.execute_ddl(&secret, sql, &cancel).await.unwrap();
+    }
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some(environment("PLENORA_MYSQL_DATABASE", "dataflow_test")),
+            object: "audit900_json_key".into(),
+        },
+        mode: WriteMode::Upsert,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: vec!["payload".into()],
+        update_columns: vec!["v".into()],
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    let schema = contract_schema(vec![
+        Field::new("payload", DataType::Utf8, true),
+        Field::new("v", DataType::Int32, true),
+    ])
+    .unwrap();
+    let result = provider
+        .prepare_write(&secret, &operation, schema, &budget, &cancel)
+        .await;
+    let Err(error) = result else {
+        panic!("chiave JSON ammessa");
+    };
+    assert_eq!(error.category, ErrorCategory::InvalidPlan);
+    assert!(error.message.contains("JSON"));
+    provider
+        .execute_ddl(&secret, "DROP TABLE audit900_json_key", &cancel)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "richiede MariaDB e account plenora_minimal senza SHOW VIEW"]
+async fn live_audit900_ld_view_without_show_view() {
+    use plenora_database_core::transaction::TransactionOptions;
+    assert!(fidelity_mariadb());
+    let admin = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    admin
+        .execute_ddl(
+            &secret,
+            "CREATE OR REPLACE VIEW audit900_view AS SELECT 1 AS id",
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let base = live_config();
+    let password = SecretString::new("Minimal_Test_2026!");
+    let config = MysqlConfig::new(
+        base.host(),
+        base.database(),
+        "plenora_minimal",
+        password.clone(),
+    )
+    .with_port(base.port())
+    .with_private_ca_certificate(std::env::var("PLENORA_MYSQL_CA").unwrap());
+    let provider = MariadbProvider::new(config, 2).unwrap();
+    let mut tx = provider
+        .begin_transaction(&password, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .unwrap();
+    let denied = tx
+        .query(
+            &plenora_database_core::transaction::Statement::new("SHOW CREATE TABLE audit900_view"),
+            &cancel,
+        )
+        .await;
+    assert!(denied.is_err(), "il fixture deve negare SHOW VIEW");
+    tx.rollback(&cancel).await.unwrap();
+    let query = serde_json::from_value(serde_json::json!({
+        "source":{"object":{"catalog":null,"schema":base.database(),"object":"audit900_view"},"alias":null},
+        "projection":[{"expression":{"kind":"column","column":{"relation":null,"field":"id"}},"alias":null}]
+    })).unwrap();
+    let mut stream = provider
+        .query(
+            &password,
+            &query,
+            &ParameterBag::default(),
+            &budget,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        stream
+            .next_batch(&cancel)
+            .await
+            .unwrap()
+            .unwrap()
+            .num_rows(),
+        1
+    );
+    assert!(stream.next_batch(&cancel).await.unwrap().is_none());
+    drop(stream);
+    admin
+        .execute_ddl(&secret, "DROP VIEW audit900_view", &cancel)
+        .await
+        .unwrap();
+}

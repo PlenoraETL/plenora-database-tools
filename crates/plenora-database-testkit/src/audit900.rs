@@ -158,3 +158,51 @@ pub async fn malformed_temporals(
     }
     Ok(())
 }
+
+/// L-B: il piano con SRID incoerente si rifiuta prima di leggere il catalogo
+/// o eseguire SQL (la relazione e lo statement sono deliberatamente assenti).
+///
+/// # Errors
+/// Fallisce se il provider raggiunge I/O invece del rifiuto `Crs`.
+pub async fn mismatched_spatial_frame(
+    tx: &mut dyn plenora_database_core::transaction::TransactionScope,
+) -> Result<(), String> {
+    use plenora_database_core::geometry::{Dimensions, SpatialSemantics};
+    let operation = serde_json::from_value(serde_json::json!({
+        "source":{"object":{"catalog":null,"schema":null,"object":"audit900_absent"},"alias":null},
+        "projection":[{"expression":{"kind":"column","column":{"relation":null,"field":"id"}},"alias":null}],
+        "filter":{"kind":"spatial","function":"intersects","arguments":[
+            {"kind":"column","column":{"relation":null,"field":"g"}},
+            {"kind":"spatial_value","expression":{"kind":"typed_parameter","name":"p","parameter_type":"binary"},"srid":4326,"semantics":"geometry"}
+        ]}
+    })).map_err(|_| "piano L-B invalido".to_owned())?;
+    let mut bytes = vec![1, 1, 0, 0, 0];
+    bytes.extend(1_f64.to_le_bytes());
+    bytes.extend(2_f64.to_le_bytes());
+    let statement = Statement::new("AUDIT900 MUST NOT EXECUTE").with_params(vec![V::Wkb {
+        bytes,
+        srid: Some(3857),
+        dimensions: Dimensions::Xy,
+        semantics: SpatialSemantics::Geometry,
+    }]);
+    let outcome = plenora_database_core::facade::query_judged(
+        tx,
+        &statement,
+        Some(&plenora_database_core::spatial_operand::OperandPlan::Query(
+            &operation,
+        )),
+        &["p".into()],
+        &CancellationToken::new(),
+    )
+    .await;
+    match outcome {
+        Err(error)
+            if error.category == plenora_database_core::ErrorCategory::Crs
+                && error.phase == ErrorPhase::Prepare =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(describe(&error)),
+        Ok(_) => Err("SRID incoerente eseguito".to_owned()),
+    }
+}

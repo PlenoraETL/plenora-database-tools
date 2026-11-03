@@ -318,3 +318,20 @@ async fn live_audit900_l5_comment_search_path() {
         );
     }
 }
+
+#[tokio::test]
+#[ignore = "richiede fixture del provider"]
+async fn live_audit900_lb_srid_before_io() {
+    use plenora_database_core::transaction::TransactionOptions;
+    let (provider, secret) = fixture();
+    let cancel = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("begin L-B");
+    plenora_database_testkit::audit900::mismatched_spatial_frame(tx.as_mut())
+        .await
+        .expect("rifiuto L-B");
+    tx.rollback(&cancel).await.expect("rollback L-B");
+}

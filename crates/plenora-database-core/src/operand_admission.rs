@@ -1034,35 +1034,12 @@ pub fn admit_typed_parameters(
     operation: &crate::relational::QueryOperation,
     parameters: &ParameterBag,
 ) -> Result<ParameterBag> {
-    use crate::relational::{QueryExpression, QueryWalkControl, QueryWalkNode};
-    use crate::typed_parameter::{parameter_slot, Slot};
+    use crate::typed_parameter::Slot;
     crate::spatial_operand::ParameterFamilies::from_bag(parameters).judge_typed(
         provider,
         &crate::spatial_operand::OperandPlan::Query(operation),
     )?;
-    let mut spatial = std::collections::BTreeSet::new();
-    let mut uses = Vec::new();
-    crate::relational::walk_query(operation, |node| {
-        if let QueryWalkNode::Expression(expression) = node {
-            let slot = parameter_slot(expression, &mut spatial, Slot::Cast);
-            match expression {
-                QueryExpression::TypedParameter {
-                    name,
-                    parameter_type,
-                } => uses.push((name.clone(), *parameter_type, slot)),
-                QueryExpression::Cast {
-                    expression,
-                    target_type,
-                } => {
-                    if let QueryExpression::Parameter { name } = expression.as_ref() {
-                        uses.push((name.clone(), *target_type, slot));
-                    }
-                }
-                _ => {}
-            }
-        }
-        QueryWalkControl::Continue
-    });
+    let uses = query_parameter_uses(provider, operation, parameters)?;
     let mut admitted: BTreeMap<String, ParameterValue> = parameters
         .iter()
         .map(|(name, value)| (name.clone(), value.clone()))
@@ -1079,7 +1056,9 @@ pub fn admit_typed_parameters(
             // Il binder scalare riceve soltanto byte gia validati, come per
             // il parametro Binary ordinario sotto lo stesso costruttore.
             match value {
-                ParameterValue::Wkb { bytes, .. } => ParameterValue::Bytes(bytes.clone()),
+                ParameterValue::Wkb { bytes, .. } if provider != ProviderKind::Sqlserver => {
+                    ParameterValue::Bytes(bytes.clone())
+                }
                 _ => value.clone(),
             }
         } else {
@@ -1115,6 +1094,89 @@ pub fn admit_typed_parameters(
         admitted.insert(name, coerced);
     }
     Ok(ParameterBag::new(admitted))
+}
+
+// Giudica gli attributi prima che il trasporto perda il contesto del valore.
+fn query_parameter_uses(
+    provider: ProviderKind,
+    operation: &crate::relational::QueryOperation,
+    parameters: &ParameterBag,
+) -> Result<
+    Vec<(
+        String,
+        crate::relational::QueryParameterType,
+        crate::typed_parameter::Slot,
+    )>,
+> {
+    use crate::relational::{QueryExpression, QueryWalkControl, QueryWalkNode};
+    use crate::typed_parameter::{parameter_slot, Slot};
+    let mut spatial = std::collections::BTreeSet::new();
+    let mut uses = Vec::new();
+    let mut bare = std::collections::BTreeSet::new();
+    let mut cast_children = std::collections::BTreeSet::new();
+    let mut frames = Ok(());
+    crate::relational::walk_query(operation, |node| {
+        if let QueryWalkNode::Expression(expression) = node {
+            let slot = parameter_slot(expression, &mut spatial, Slot::Cast);
+            match expression {
+                QueryExpression::SpatialValue {
+                    expression,
+                    srid,
+                    semantics,
+                } => {
+                    if let QueryExpression::Parameter { name }
+                    | QueryExpression::TypedParameter { name, .. } = expression.as_ref()
+                    {
+                        if let Some(value) = parameters.get(name) {
+                            frames = frames.clone().and_then(|()| {
+                                validate_form(provider, value)?;
+                                crate::spatial_probe::check_spatial_value(provider, value, *srid, 32)?;
+                                if matches!(value, ParameterValue::Wkb { semantics: actual, .. } if actual != semantics) {
+                                    return Err(refusal(provider, "semantica del valore spatial diversa dal piano"));
+                                }
+                                Ok(())
+                            });
+                        }
+                    }
+                }
+                QueryExpression::Parameter { name } => {
+                    if !cast_children.contains(&(std::ptr::from_ref(expression) as usize)) {
+                        bare.insert(name.clone());
+                    }
+                }
+                QueryExpression::TypedParameter {
+                    name,
+                    parameter_type,
+                } => uses.push((name.clone(), *parameter_type, slot)),
+                QueryExpression::Cast {
+                    expression,
+                    target_type,
+                } => {
+                    if let QueryExpression::Parameter { name } = expression.as_ref() {
+                        cast_children.insert(std::ptr::from_ref(expression.as_ref()) as usize);
+                        uses.push((name.clone(), *target_type, slot));
+                    }
+                }
+                _ => {}
+            }
+        }
+        QueryWalkControl::Continue
+    });
+    frames?;
+    let mut declarations = BTreeMap::new();
+    for (name, parameter_type, _) in &uses {
+        if bare.contains(name)
+            || declarations
+                .insert(name, parameter_type)
+                .is_some_and(|previous| previous != parameter_type)
+        {
+            return Err(refusal(
+                provider,
+                "parametro condiviso fra tipi o contesti diversi",
+            ));
+        }
+    }
+    Ok(uses)
 }
 
 #[cfg(test)]

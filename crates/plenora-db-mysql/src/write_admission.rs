@@ -159,35 +159,96 @@ pub async fn json_valid_columns(
     table: &str,
     cancellation: &CancellationToken,
 ) -> Result<BTreeSet<String>> {
+    use plenora_database_core::identifier::{quote_identifier, IdentifierDialect};
     let kind = session.kind();
     if kind != ProviderKind::Mariadb {
         return Ok(BTreeSet::new());
     }
-    let rows = session
-        .exec_rows(
-            "SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS \
-             WHERE CONSTRAINT_SCHEMA = ? AND TABLE_NAME = ?",
-            Params::Positional(vec![Value::from(schema), Value::from(table)]),
-            ErrorPhase::Prepare,
-            cancellation,
-        )
-        .await
-        .map_err(|error| keep_interruption(error, unproven_facts(kind)))?;
-    let mut columns = BTreeSet::new();
-    for row in rows {
-        let clause = row
-            .get_opt::<String, _>(0)
-            .and_then(std::result::Result::ok)
-            .ok_or_else(|| unproven_facts(kind))?;
-        if let Some(column) = clause
-            .strip_prefix("json_valid(`")
-            .and_then(|rest| rest.strip_suffix("`)"))
-            .filter(|column| !column.contains('`'))
-        {
-            columns.insert(column.to_owned());
-        }
+    // Le viste non richiedono SHOW VIEW: nessun DDL viene richiesto.
+    let views = session.exec_rows(
+        "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW')",
+        Params::Positional(vec![Value::from(schema), Value::from(table)]),
+        ErrorPhase::Prepare, cancellation,
+    ).await?;
+    if !views.is_empty() {
+        return Ok(BTreeSet::new());
     }
-    Ok(columns)
+    // SHOW CREATE risolve anche una TEMPORARY che nasconde il nome di base.
+    let sql = format!(
+        "SHOW CREATE TABLE {}.{}",
+        quote_identifier(IdentifierDialect::Mysql, schema)?,
+        quote_identifier(IdentifierDialect::Mysql, table)?
+    );
+    let rows = session
+        .query_rows(&sql, ErrorPhase::Prepare, cancellation)
+        .await?;
+    let definition = rows
+        .first()
+        .and_then(|row| row.get_opt::<String, _>(1))
+        .and_then(std::result::Result::ok)
+        .ok_or_else(|| unproven_facts(kind))?;
+    Ok(json_columns_in_definition(&definition))
+}
+
+// Riconosce ogni chiamata JSON_VALID, anche in CHECK composti. OR/NOT sono
+// conservativamente documenti: non autorizzano confronti testuali. I letterali
+// (inclusi COMMENT e default) non diventano identificatori.
+fn json_columns_in_definition(definition: &str) -> BTreeSet<String> {
+    let mut tokens = Vec::new();
+    let mut chars = definition.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_whitespace() {
+            continue;
+        }
+        let mut token = String::new();
+        if matches!(c, '\'' | '"' | '`') {
+            while let Some(next) = chars.next() {
+                if next == c {
+                    if chars.peek() == Some(&c) {
+                        chars.next();
+                        token.push(c);
+                    } else {
+                        break;
+                    }
+                } else if next == '\\' && c != '`' {
+                    chars.next();
+                } else {
+                    token.push(next);
+                }
+            }
+            if c != '`' {
+                token.clear();
+            }
+        } else if c.is_alphanumeric() || c == '_' {
+            token.push(c);
+            while chars
+                .peek()
+                .is_some_and(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            {
+                if let Some(c) = chars.next() {
+                    token.push(c);
+                }
+            }
+        } else {
+            token.push(c);
+        }
+        tokens.push(token);
+    }
+    let mut columns = BTreeSet::new();
+    let mut depth = 0_u64;
+    let mut previous = "";
+    for token in &tokens {
+        match token.as_str() {
+            "(" if depth > 0 || previous.eq_ignore_ascii_case("json_valid") => depth += 1,
+            ")" if depth > 0 => depth -= 1,
+            name if depth > 0 && !name.is_empty() => {
+                columns.insert(name.to_owned());
+            }
+            _ => {}
+        }
+        previous = token;
+    }
+    columns
 }
 
 /// I fatti delle colonne di un target descritto.

@@ -339,3 +339,55 @@ fn numeric_spatial_arguments_fail_before_database_io() {
         );
     }
 }
+
+#[test]
+fn typed_wkb_retains_its_frame_after_admission() {
+    use plenora_database_core::geometry::Dimensions;
+    use plenora_database_core::plan::ProviderKind;
+    let mut query = base_query();
+    let mut bytes = vec![1, 1, 0, 0, 0];
+    bytes.extend(1_f64.to_le_bytes());
+    bytes.extend(2_f64.to_le_bytes());
+    let value = ParameterValue::Wkb {
+        bytes,
+        srid: Some(4326),
+        dimensions: Dimensions::Xy,
+        semantics: SpatialSemantics::Geometry,
+    };
+    let original = ParameterBag::new([("p".into(), value.clone())].into());
+    let typed = QueryExpression::TypedParameter {
+        name: "p".into(),
+        parameter_type: plenora_database_core::query::QueryParameterType::Binary,
+    };
+    for argument in [
+        typed.clone(),
+        QueryExpression::SpatialValue {
+            expression: Box::new(typed),
+            srid: 4326,
+            semantics: SpatialSemantics::Geometry,
+        },
+    ] {
+        query.filter = Some(QueryExpression::Spatial {
+            function: SpatialFunction::Intersects,
+            arguments: vec![column("e", "g"), argument],
+        });
+        let admitted = plenora_database_core::admission_gate::query_parameters(
+            ProviderKind::Sqlserver,
+            &query,
+            &original,
+        )
+        .unwrap();
+        assert_eq!(admitted.get("p"), Some(&value));
+        let mut uses = Vec::new();
+        collect_operation_spatial_uses(&query, &mut uses).unwrap();
+        assert_eq!(uses[0].argument, SpatialArgument::Geometry("p".into()));
+        let budget = ResourceBudget::new(plenora_database_core::ResourceLimits::default()).unwrap();
+        render_query(
+            &query,
+            &admitted,
+            &budget,
+            &BTreeMap::from([((Some("e".into()), "g".into()), SpatialSemantics::Geometry)]),
+        )
+        .unwrap();
+    }
+}

@@ -11747,3 +11747,89 @@ async fn live_exact_temporal_query_stream_and_duplicate_names() {
         .contains("alias"));
     tx.rollback(&cancellation).await.expect("rollback");
 }
+
+#[tokio::test]
+#[ignore = "richiede fixture del provider"]
+async fn live_audit900_lb_srid_before_io() {
+    use plenora_database_core::transaction::TransactionOptions;
+    let provider = SqlServerProvider::new(
+        live_config(CertificatePolicy::TrustServerCertificate),
+        32,
+        2,
+    )
+    .expect("provider");
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("begin L-B");
+    plenora_database_testkit::audit900::mismatched_spatial_frame(tx.as_mut())
+        .await
+        .expect("rifiuto L-B");
+    tx.rollback(&cancel).await.expect("rollback L-B");
+}
+
+#[tokio::test]
+#[ignore = "richiede SQL Server spatial"]
+async fn live_audit900_typed_wkb_positive() {
+    let provider = SqlServerProvider::new(
+        live_config(CertificatePolicy::TrustServerCertificate),
+        32,
+        2,
+    )
+    .unwrap();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    for sql in [
+        "DROP TABLE IF EXISTS dbo.audit900_wkb",
+        "CREATE TABLE dbo.audit900_wkb(id INT, g geometry)",
+        "INSERT INTO dbo.audit900_wkb VALUES (1,geometry::Point(1,2,4326))",
+    ] {
+        provider.execute_ddl(&secret, sql, &cancel).await.unwrap();
+    }
+    let query = serde_json::from_value(serde_json::json!({
+        "source":{"object":{"catalog":null,"schema":"dbo","object":"audit900_wkb"},"alias":null},
+        "projection":[{"expression":{"kind":"column","column":{"relation":null,"field":"id"}},"alias":null}],
+        "filter":{"kind":"spatial","function":"intersects","arguments":[
+            {"kind":"column","column":{"relation":null,"field":"g"}},
+            {"kind":"typed_parameter","name":"p","parameter_type":"binary"}
+        ]}
+    })).unwrap();
+    let mut bytes = vec![1, 1, 0, 0, 0];
+    bytes.extend(1_f64.to_le_bytes());
+    bytes.extend(2_f64.to_le_bytes());
+    let parameters = ParameterBag::new(
+        [(
+            "p".into(),
+            ParameterValue::Wkb {
+                bytes,
+                srid: Some(4326),
+                dimensions: Dimensions::Xy,
+                semantics: SpatialSemantics::Geometry,
+            },
+        )]
+        .into(),
+    );
+    let mut stream = provider
+        .query(&secret, &query, &parameters, &budget, &cancel)
+        .await
+        .unwrap();
+    assert_eq!(
+        stream
+            .next_batch(&cancel)
+            .await
+            .unwrap()
+            .unwrap()
+            .num_rows(),
+        1
+    );
+    assert!(stream.next_batch(&cancel).await.unwrap().is_none());
+    drop(stream);
+    provider
+        .execute_ddl(&secret, "DROP TABLE dbo.audit900_wkb", &cancel)
+        .await
+        .unwrap();
+}
