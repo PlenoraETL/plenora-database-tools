@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Dalla radice del checkout: bash scripts/check_audit900_vm.sh [all|postgres|mysql|mariadb|sqlserver|oracle|db2]
-# Le fixture restano disponibili; solo MariaDB ricrea i propri volumi TLS.
+# Le fixture restano disponibili; MariaDB riallinea i server ai certificati TLS.
 set -euo pipefail
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-6}
 if [[ ${1:-all} == all ]]; then
@@ -128,10 +128,11 @@ try:
         if selected == 'mysql':
             up('docker-compose.mysql.yml', 'mysql')
         if selected == 'mariadb':
-            # Certificati coerenti: il certgen riscrive il volume a ogni up mentre i server
-            # restano accesi con quelli vecchi (BadSignature). Si ricrea solo questa fixture.
-            run(['docker', 'compose', '-f', 'docker-compose.mariadb.yml', 'down', '--volumes'], 'mariadb-down')
-            up('docker-compose.mariadb.yml', 'mariadb')
+            # CA private isolate per riferimento; ricarica anche i certificati
+            # eventualmente rigenerati, conservando tutti i volumi dati.
+            run(['docker', 'compose', '-f', 'docker-compose.mariadb.yml',
+                 'up', '-d', '--force-recreate', '--wait', '--wait-timeout', '1200'],
+                'mariadb-health')
         for server in fleet.servers():
             product = 'mysql' if server.key == 'mysql' else 'mariadb'
             if selected != product:
