@@ -53,7 +53,8 @@ def check_captured_inventory() -> None:
     }
     assert generated <= gate.REQUIRED_LIVE_TESTS
     assert {name for name in names if name.startswith("live_generated_")} == generated
-    assert len(names) == 73  # Famiglie dei parametri e semantica delle scritture.
+    assert len(names) == 74  # Include la matrice NUL per tipo e superficie.
+    assert "live_audit900_nul" in names
     assert "live_writer_cast_refuses_oversized_text_before_scalar_and_array_dml" in names
     assert "live_writer_cast_refuses_oversized_raw_before_scalar_and_array_dml" in names
     for name in generated:

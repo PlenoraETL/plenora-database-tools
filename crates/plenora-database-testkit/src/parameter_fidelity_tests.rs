@@ -88,3 +88,25 @@ fn comparison_refusal_is_distinct_from_zero_rows() {
         .iter()
         .all(|n| n.contains("rifiuto esplicito") && !n.contains("None righe")));
 }
+
+#[test]
+fn refusal_requires_expected_category_prepare_and_no_remote_effect() {
+    use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect};
+    let error = DatabaseError::new(
+        ErrorCategory::DataMapping,
+        ErrorPhase::Prepare,
+        None,
+        "rifiuto",
+    );
+    assert!(super::refused(&Err(error.clone()), ErrorCategory::DataMapping).is_ok());
+    assert!(super::refused(&Ok(1), ErrorCategory::DataMapping).is_err());
+    assert!(super::refused(&Err(error.clone()), ErrorCategory::Unsupported).is_err());
+    for effect in [RemoteEffect::RolledBack, RemoteEffect::Unknown] {
+        let mut late = error.clone();
+        late.remote_effect = effect;
+        assert!(super::refused(&Err(late), ErrorCategory::DataMapping).is_err());
+    }
+    let mut late = error;
+    late.phase = ErrorPhase::Write;
+    assert!(super::refused(&Err(late), ErrorCategory::DataMapping).is_err());
+}

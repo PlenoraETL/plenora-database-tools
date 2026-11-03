@@ -255,3 +255,32 @@ fn timestamp_text_preserves_all_twelve_digits() {
         assert!(!error.message.contains(invalid));
     }
 }
+
+#[test]
+fn unqualified_result_types_are_refused_before_execute_even_for_null() {
+    for data_type in [
+        DataType::Unknown,
+        DataType::Time { precision: 0 },
+        DataType::Other {
+            data_type: odbc_api::sys::SqlDataType(-99),
+            column_size: None,
+            decimal_digits: 0,
+        },
+        DataType::Other {
+            data_type: odbc_api::sys::SqlDataType(-350),
+            column_size: None,
+            decimal_digits: 0,
+        },
+    ] {
+        let error = crate::transaction::validate_result_type(data_type).unwrap_err();
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        for value in [None, Some(&b"a\0b"[..])] {
+            assert_eq!(
+                decode_value(value, data_type).unwrap_err().phase,
+                ErrorPhase::Prepare
+            );
+        }
+    }
+}

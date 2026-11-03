@@ -659,7 +659,13 @@ pub(crate) fn describe(error: &DatabaseError) -> String {
 
 fn refused(result: &std::result::Result<u64, DatabaseError>, category: ErrorCategory) -> Probe {
     match result {
-        Err(error) if error.category == category && error.phase == ErrorPhase::Prepare => Ok(()),
+        Err(error)
+            if error.category == category
+                && error.phase == ErrorPhase::Prepare
+                && error.remote_effect == plenora_database_core::RemoteEffect::None =>
+        {
+            Ok(())
+        }
         Err(error) => Err(format!(
             "rifiuto atteso {category:?}/Prepare, ottenuto {}",
             describe(error)
@@ -1068,7 +1074,12 @@ async fn read_refused(target: &Target<'_>, case: &Case, category: ErrorCategory)
     // La lettura rifiuta prima di aprire lo stream; la categoria puo essere
     // quella del proprio validatore, la fase no.
     match read_rows(target, case.column, 0, Some(&case.value)).await {
-        Err(reason) if reason.contains("/Prepare:") || reason.contains("/Validate:") => Ok(()),
+        Err(reason)
+            if reason.starts_with(&format!("{category:?}/Prepare:"))
+                || reason.starts_with(&format!("{category:?}/Validate:")) =>
+        {
+            Ok(())
+        }
         Err(reason) => Err(format!(
             "rifiuto atteso {category:?} in lettura, ottenuto {reason}"
         )),
@@ -1126,7 +1137,17 @@ async fn read_rows(
             &cancellation,
         )
         .await
-        .map_err(|error| describe(&error))?;
+        .map_err(|error| {
+            if error.remote_effect == plenora_database_core::RemoteEffect::None {
+                describe(&error)
+            } else {
+                format!(
+                    "effetto remoto {:?}: {}",
+                    error.remote_effect,
+                    describe(&error)
+                )
+            }
+        })?;
     let mut batches = Vec::new();
     while let Some(batch) = stream
         .next_batch(&cancellation)

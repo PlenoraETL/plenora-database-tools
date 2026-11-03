@@ -743,6 +743,24 @@ fn query_rows(
     statement
         .set_query_timeout_sec(timeout)
         .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
+    // SQLDescribeCol sullo statement preparato: un decoder non qualificato
+    // deve rifiutare prima di SQLExecute, anche con result set vuoto o NULL.
+    let count = statement
+        .num_result_cols_strict()
+        .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
+    for ordinal in 1..=count {
+        let ordinal = u16::try_from(ordinal).map_err(|_| {
+            transaction_error(
+                ErrorCategory::DataMapping,
+                ErrorPhase::Prepare,
+                "indice colonna Db2 non rappresentabile",
+            )
+        })?;
+        let data_type = statement
+            .col_data_type_strict(ordinal)
+            .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
+        validate_result_type(data_type)?;
+    }
     sent.mark_sent();
     let mut cursor = statement
         .execute_strict(parameters.as_slice())
@@ -901,7 +919,29 @@ pub fn decode_float(value: Option<f64>, data_type: DataType) -> Result<Parameter
     }
 }
 
+pub fn validate_result_type(data_type: DataType) -> Result<()> {
+    match data_type {
+        DataType::Unknown | DataType::Time { .. } | DataType::Other { .. }
+            if !matches!(
+                data_type,
+                DataType::Other {
+                    data_type: DB2_SQL_BLOB,
+                    ..
+                }
+            ) =>
+        {
+            Err(DatabaseError::unsupported(
+                ProviderKind::Db2,
+                ErrorPhase::Prepare,
+                "tipo result set Db2 non ancora qualificato",
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
 pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<ParameterValue> {
+    validate_result_type(data_type)?;
     let Some(value) = value else {
         return Ok(ParameterValue::Null {
             type_name: type_name(data_type).to_owned(),

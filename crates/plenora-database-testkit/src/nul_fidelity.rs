@@ -175,9 +175,17 @@ pub async fn check(
             P::Oracle => (":1", ":2"),
             _ => ("?", "?"),
         };
+        // Il decoder transazionale CLOB Db2 resta chiuso. Il test della
+        // scrittura usa un testimone VARCHAR esplicito e la resa HEX del server.
+        let db2_lob = kind == P::Db2 && declaration.starts_with("CLOB(");
+        let selected = if db2_lob {
+            format!("CAST({col} AS VARCHAR(64))")
+        } else {
+            col.clone()
+        };
         let native = |operation, _: &str| match operation {
             NativeSql::Insert => format!("INSERT INTO {table} ({id}, {col}) VALUES ({p1}, {p2})"),
-            NativeSql::Select => format!("SELECT {col} FROM {table} WHERE {id} = {p1}"),
+            NativeSql::Select => format!("SELECT {selected} FROM {table} WHERE {id} = {p1}"),
             NativeSql::Count => {
                 format!("SELECT COUNT(*) FROM {table} WHERE {id} = {p1} AND {col} = {p2}")
             }
@@ -221,7 +229,12 @@ pub async fn check(
                 } else {
                     Expect::exact(value.clone(), hex(kind, declaration, text))
                 };
-                let case = Case::new("nul/control", "V", value, expected);
+                let label = if matches!(expected, Expect::Refused(_)) {
+                    "rifiutato esplicitamente prima dell I/O"
+                } else {
+                    "conservato esattamente"
+                };
+                let case = Case::new(label, "V", value, expected);
                 if lob {
                     case.only(&[crate::parameter_fidelity::FidelityPath::Native])
                 } else {
@@ -233,7 +246,17 @@ pub async fn check(
         println!("NUL {kind:?} {declaration}:\n{summary}");
         failures.extend(errors.into_iter().map(|e| format!("{declaration}: {e}")));
         for (case_index, text) in values.into_iter().enumerate() {
-            if let Err(error) = update(&target, text, lob).await {
+            let row_id = 900 + i32::try_from(case_index).map_err(|_| "indice caso NUL")? * 3;
+            if db2_lob {
+                if let Err(error) =
+                    closed_native_read(&target, &format!("SELECT {col} FROM {table}")).await
+                {
+                    failures.push(format!(
+                        "{declaration} caso {case_index} decoder nativo: {error}"
+                    ));
+                }
+            }
+            if let Err(error) = update(&target, text, lob, row_id, declaration).await {
                 failures.push(format!(
                     "{declaration} caso {case_index} portable INSERT/UPDATE: {error}"
                 ));
@@ -248,7 +271,15 @@ pub async fn check(
             // Le chiusure del tipo valgono anche per il controllo senza NUL.
             let closed = (fixed && matches!(kind, P::Mysql | P::Mariadb))
                 || (kind == P::Oracle && declaration == "NCLOB");
-            if let Err(error) = bulk(&target, text, closed).await {
+            if let Err(error) = bulk(
+                &target,
+                text,
+                closed,
+                row_id + 1,
+                &hex(kind, declaration, text),
+            )
+            .await
+            {
                 failures.push(format!("{declaration} caso {case_index} Arrow: {error}"));
             }
         }
@@ -264,12 +295,19 @@ pub async fn check(
     }
 }
 
-async fn update(target: &Target<'_>, text: &str, closed: bool) -> Result<(), String> {
+#[allow(clippy::too_many_lines)] // INSERT, UPDATE e testimoni nella stessa transazione.
+async fn update(
+    target: &Target<'_>,
+    text: &str,
+    closed: bool,
+    row_id: i32,
+    declaration: &str,
+) -> Result<(), String> {
     let cancel = CancellationToken::new();
     let mut tx = begin(target).await?;
     tx.execute(
         &Statement::new((target.native)(NativeSql::Insert, "V"))
-            .with_params(vec![V::I32(900), V::String("abc".into())]),
+            .with_params(vec![V::I32(row_id), V::String("abc".into())]),
         &cancel,
     )
     .await
@@ -280,7 +318,7 @@ async fn update(target: &Target<'_>, text: &str, closed: bool) -> Result<(), Str
             name: target.table.object.clone(),
         },
         assignments: vec![("V".into(), Expression::literal(V::String(text.into())))],
-        filter: Some(eq("ID", V::I32(900))),
+        filter: Some(eq("ID", V::I32(row_id))),
         returning: vec![],
     });
     let result = execute_portable(tx.as_mut(), &statement, &cancel).await;
@@ -298,7 +336,8 @@ async fn update(target: &Target<'_>, text: &str, closed: bool) -> Result<(), Str
     }
     let rows = tx
         .query(
-            &Statement::new((target.native)(NativeSql::Select, "V")).with_params(vec![V::I32(900)]),
+            &Statement::new((target.native)(NativeSql::Select, "V"))
+                .with_params(vec![V::I32(row_id)]),
             &cancel,
         )
         .await
@@ -307,9 +346,16 @@ async fn update(target: &Target<'_>, text: &str, closed: bool) -> Result<(), Str
     if rows.len() != 1 || rows[0].values() != vec![V::String(expected.into())] {
         return Err("valore UPDATE non conservato".into());
     }
+    verify_raw(
+        target,
+        tx.as_mut(),
+        row_id,
+        &hex(target.provider.kind(), declaration, expected),
+    )
+    .await?;
     let inserted = execute_portable(
         tx.as_mut(),
-        &insert_statement(target, "V", 902, &V::String(text.into())),
+        &insert_statement(target, "V", row_id + 2, &V::String(text.into())),
         &cancel,
     )
     .await;
@@ -321,12 +367,23 @@ async fn update(target: &Target<'_>, text: &str, closed: bool) -> Result<(), Str
                     && e.remote_effect == plenora_database_core::RemoteEffect::None => {}
             _ => return Err("INSERT NUL senza rifiuto pre-invio".into()),
         }
+        let rows = tx
+            .query(
+                &Statement::new((target.native)(NativeSql::Raw, "V"))
+                    .with_params(vec![V::I32(row_id + 2)]),
+                &cancel,
+            )
+            .await
+            .map_err(|e| describe(&e))?;
+        if !rows.is_empty() {
+            return Err("INSERT rifiutato ha lasciato una riga".into());
+        }
     } else {
         inserted.map_err(|e| describe(&e))?;
         let rows = tx
             .query(
                 &Statement::new((target.native)(NativeSql::Select, "V"))
-                    .with_params(vec![V::I32(902)]),
+                    .with_params(vec![V::I32(row_id + 2)]),
                 &cancel,
             )
             .await
@@ -335,12 +392,34 @@ async fn update(target: &Target<'_>, text: &str, closed: bool) -> Result<(), Str
             return Err("INSERT portable non conserva il testo".into());
         }
     }
+    if !refused {
+        verify_raw(
+            target,
+            tx.as_mut(),
+            row_id + 2,
+            &hex(target.provider.kind(), declaration, text),
+        )
+        .await?;
+    }
     tx.rollback(&cancel).await.map_err(|e| describe(&e))?;
-    println!("NUL portable INSERT/UPDATE: closed_type={closed}, righe verificate");
+    println!(
+        "NUL portable INSERT/UPDATE: {}, righe verificate",
+        if refused {
+            "rifiutato esplicitamente prima dell I/O"
+        } else {
+            "conservato esattamente"
+        }
+    );
     Ok(())
 }
 
-async fn bulk(target: &Target<'_>, text: &str, closed: bool) -> Result<(), String> {
+async fn bulk(
+    target: &Target<'_>,
+    text: &str,
+    closed: bool,
+    row_id: i32,
+    expected_raw: &str,
+) -> Result<(), String> {
     let cancel = CancellationToken::new();
     let budget = ResourceBudget::new(target.limits.clone()).map_err(|e| describe(&e))?;
     let schema = Arc::new(Schema::new(vec![
@@ -350,7 +429,7 @@ async fn bulk(target: &Target<'_>, text: &str, closed: bool) -> Result<(), Strin
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(Int32Array::from(vec![901])),
+            Arc::new(Int32Array::from(vec![row_id])),
             Arc::new(StringArray::from(vec![text])),
         ],
     )
@@ -373,10 +452,19 @@ async fn bulk(target: &Target<'_>, text: &str, closed: bool) -> Result<(), Strin
     if closed {
         return match prepared {
             Err(e)
-                if e.category == ErrorCategory::Unsupported
-                    && matches!(e.phase, ErrorPhase::Prepare | ErrorPhase::Validate) =>
+                if e.category
+                    == if matches!(target.provider.kind(), P::Mysql | P::Mariadb) {
+                        ErrorCategory::DataMapping
+                    } else {
+                        ErrorCategory::Unsupported
+                    }
+                    && matches!(e.phase, ErrorPhase::Prepare | ErrorPhase::Validate)
+                    && e.remote_effect == plenora_database_core::RemoteEffect::None =>
             {
-                println!("NUL Arrow: tipo non qualificato, stesso rifiuto con controllo e NUL");
+                verify_absent(target, row_id).await?;
+                println!(
+                    "NUL Arrow: rifiutato prima dell I/O per tipo non qualificato, nessuna riga"
+                );
                 Ok(())
             }
             Err(e) => Err(describe(&e)),
@@ -397,8 +485,22 @@ async fn bulk(target: &Target<'_>, text: &str, closed: bool) -> Result<(), Strin
     let refused = target.provider.kind() == P::Postgres && text.contains('\0');
     if refused {
         match result {
-            Err(e) if e.category == ErrorCategory::DataMapping => {}
-            _ => return Err("writer non rifiuta NUL".into()),
+            Err(e)
+                if e.category == ErrorCategory::DataMapping
+                    && e.phase == ErrorPhase::Prepare
+                    && matches!(
+                        e.remote_effect,
+                        plenora_database_core::RemoteEffect::None
+                            | plenora_database_core::RemoteEffect::RolledBack
+                    ) =>
+            {
+                println!(
+                    "NUL Arrow: rifiuto in codifica prima del bind, effetto {:?}",
+                    e.remote_effect
+                );
+            }
+            Err(e) => return Err(describe(&e)),
+            Ok(_) => return Err("writer non rifiuta NUL".into()),
         }
     } else {
         let outcome = result.map_err(|e| describe(&e))?;
@@ -406,10 +508,22 @@ async fn bulk(target: &Target<'_>, text: &str, closed: bool) -> Result<(), Strin
             return Err("writer non committed".into());
         }
     }
+    verify_bulk(target, text, row_id, expected_raw, refused).await
+}
+
+async fn verify_bulk(
+    target: &Target<'_>,
+    text: &str,
+    row_id: i32,
+    expected_raw: &str,
+    refused: bool,
+) -> Result<(), String> {
+    let cancel = CancellationToken::new();
     let mut tx = begin(target).await?;
     let rows = tx
         .query(
-            &Statement::new((target.native)(NativeSql::Select, "V")).with_params(vec![V::I32(901)]),
+            &Statement::new((target.native)(NativeSql::Select, "V"))
+                .with_params(vec![V::I32(row_id)]),
             &cancel,
         )
         .await
@@ -421,14 +535,24 @@ async fn bulk(target: &Target<'_>, text: &str, closed: bool) -> Result<(), Strin
     } else if rows.len() != 1 || rows[0].values() != vec![V::String(text.into())] {
         return Err("writer non conserva il testo".into());
     }
+    if !refused {
+        verify_raw(target, tx.as_mut(), row_id, expected_raw).await?;
+    }
     tx.execute(
-        &Statement::new((target.native)(NativeSql::Delete, "V")).with_params(vec![V::I32(901)]),
+        &Statement::new((target.native)(NativeSql::Delete, "V")).with_params(vec![V::I32(row_id)]),
         &cancel,
     )
     .await
     .map_err(|e| describe(&e))?;
     tx.commit(&cancel).await.map_err(|e| describe(&e))?;
-    println!("NUL Arrow: esito esatto, riga verificata");
+    println!(
+        "NUL Arrow: {}, riga verificata",
+        if refused {
+            "rifiutato esplicitamente prima del bind"
+        } else {
+            "conservato esattamente"
+        }
+    );
     Ok(())
 }
 
@@ -464,4 +588,59 @@ async fn closed_read(target: &Target<'_>, text: &str) -> Result<(), String> {
         Err(error) => Err(describe(&error)),
         Ok(_) => Err("operando read non qualificato aperto".into()),
     }
+}
+
+async fn closed_native_read(target: &Target<'_>, sql: &str) -> Result<(), String> {
+    let cancel = CancellationToken::new();
+    let mut tx = begin(target).await?;
+    let result = tx.query(&Statement::new(sql), &cancel).await;
+    tx.rollback(&cancel).await.map_err(|e| describe(&e))?;
+    match result {
+        Err(e)
+            if e.category == ErrorCategory::Unsupported
+                && e.phase == ErrorPhase::Prepare
+                && e.remote_effect == plenora_database_core::RemoteEffect::None =>
+        {
+            println!(
+                "NUL decoder nativo: rifiutato prima dell I/O; scrittura verificata via CAST e HEX"
+            );
+            Ok(())
+        }
+        Err(e) => Err(describe(&e)),
+        Ok(_) => Err("decoder nativo non qualificato aperto".into()),
+    }
+}
+
+async fn verify_raw(
+    target: &Target<'_>,
+    tx: &mut dyn plenora_database_core::transaction::TransactionScope,
+    row_id: i32,
+    expected: &str,
+) -> Result<(), String> {
+    let raw = crate::parameter_fidelity::query_first(
+        tx,
+        Statement::new((target.native)(NativeSql::Raw, "V")).with_params(vec![V::I32(row_id)]),
+    )
+    .await?;
+    if raw != V::String(expected.into()) {
+        return Err("alterato: byte server diversi dopo scrittura".into());
+    }
+    Ok(())
+}
+
+async fn verify_absent(target: &Target<'_>, row_id: i32) -> Result<(), String> {
+    let cancel = CancellationToken::new();
+    let mut witness = begin(target).await?;
+    let rows = witness
+        .query(
+            &Statement::new((target.native)(NativeSql::Raw, "V")).with_params(vec![V::I32(row_id)]),
+            &cancel,
+        )
+        .await
+        .map_err(|e| describe(&e))?;
+    witness.rollback(&cancel).await.map_err(|e| describe(&e))?;
+    if !rows.is_empty() {
+        return Err("writer rifiutato ha lasciato una riga".into());
+    }
+    Ok(())
 }
