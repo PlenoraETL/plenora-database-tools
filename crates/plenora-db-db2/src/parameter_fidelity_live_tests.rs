@@ -142,6 +142,11 @@ fn mapping() -> Expect {
     Expect::Refused(ErrorCategory::DataMapping)
 }
 
+/// La guardia delle famiglie rifiuta il confronto prima del binding.
+fn plan() -> Expect {
+    Expect::Refused(ErrorCategory::InvalidPlan)
+}
+
 const NATIVE_PORTABLE: &[FidelityPath] = &[FidelityPath::Native, FidelityPath::Portable];
 
 #[allow(clippy::too_many_lines)]
@@ -192,7 +197,8 @@ fn cases() -> Vec<Case> {
             exact(&ParameterValue::Bytes(Vec::new()), ""),
         )
         .on(FidelityPath::Read, refused()),
-        Case::new("bytes in una colonna testuale", "S", bytes, mapping()),
+        Case::new("bytes in una colonna testuale", "S", bytes, mapping())
+            .on(FidelityPath::Read, plan()),
         // Il testo resta testo: in una colonna binaria vanno i suoi byte UTF-8.
         Case::new(
             "testo in una colonna binaria",
@@ -201,7 +207,8 @@ fn cases() -> Vec<Case> {
             exact(&ParameterValue::Bytes(b"AB01".to_vec()), "41423031"),
         )
         .on(FidelityPath::Portable, mapping())
-        .on(FidelityPath::Read, mapping()),
+        // Il tipo binario non e qualificato per il result set: rifiuto prima di SQLExecute.
+        .on(FidelityPath::Read, refused()),
         Case::new(
             "testo non-BMP",
             "S",
@@ -379,7 +386,8 @@ fn cases() -> Vec<Case> {
             ParameterValue::Uuid("6f1c2a2e7-d3b-4c55-9a1e-0b2c3d4e5f60".to_owned()),
             mapping(),
         ),
-        Case::new("testo in una colonna numerica", "N", text("12"), mapping()),
+        Case::new("testo in una colonna numerica", "N", text("12"), mapping())
+            .on(FidelityPath::Read, plan()),
         Case::new(
             "enum",
             "S",
