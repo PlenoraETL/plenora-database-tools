@@ -6482,7 +6482,7 @@ async fn live_v12_write_upsert_without_keys_rejected() {
 //  NativeQueryPolicy
 // ============================================================================
 //
-// I test qui sotto verificano che l'enforcement di `NativeQueryPolicy` (già
+// I test qui sotto verificano che l'enforcement di `NativeQueryPolicy` (giÃ
 // coperto client-side da unit test in `plenora-database-core`) sia
 // effettivamente cablato dentro `MysqlTransaction::{execute, query,
 // execute_conditional_update}`. Non serve un data-plane elaborato: basta
@@ -11447,16 +11447,12 @@ fn fidelity_cases() -> Vec<FidelityCase> {
             "json",
             "J",
             V::Json(serde_json::json!({"a": 1})),
-            if mariadb {
-                fidelity_exact(&fidelity_text("{\"a\":1}"), "{\"a\":1}")
-            } else {
-                unsupported
-            },
+            unsupported.clone(),
         )
         .on(
             FidelityPath::Portable,
             if mariadb {
-                fidelity_exact(&fidelity_text("{\"a\":1}"), "{\"a\":1}")
+                unsupported
             } else {
                 fidelity_exact(&fidelity_text("{\"a\": 1}"), "{\"a\": 1}")
             },
@@ -14387,10 +14383,22 @@ async fn live_audit900_l2_typed_json() {
         .into(),
     );
     let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
-    let mut stream = provider
+    let result = provider
         .query(&secret, &query, &parameters, &budget, &cancel)
-        .await
-        .expect("JSON tipizzato con CAST");
+        .await;
+    if fidelity_mariadb() {
+        let Err(error) = result else {
+            panic!("JSON MariaDB deve essere rifiutato");
+        };
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+        provider
+            .execute_ddl(&secret, "DROP TABLE audit900_json", &cancel)
+            .await
+            .expect("pulizia L2");
+        return;
+    }
+    let mut stream = result.expect("JSON tipizzato con CAST");
     let batch = stream
         .next_batch(&cancel)
         .await

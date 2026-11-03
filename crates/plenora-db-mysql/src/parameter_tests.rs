@@ -96,7 +96,6 @@ fn values_the_server_would_change_are_refused_before_sending() {
         ErrorCategory::Unsupported
     );
     for (value, kind) in [
-        (ParameterValue::Json(serde_json::json!({"a": 1})), MARIADB),
         (ParameterValue::F64(-0.0), MYSQL),
         (
             ParameterValue::Timestamp("2024-01-01 10:20:30.123456".to_owned()),

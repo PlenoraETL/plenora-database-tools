@@ -48,7 +48,7 @@
 //! | `timestamp` | `TIMESTAMP` (6) | `DATETIME(6)` | `DATETIME(6)` | `DATETIME2` (7) | `TIMESTAMP` (6) | `TIMESTAMP` (6) |
 //! | `timestamp_tz` | `TIMESTAMPTZ` | `DATETIME(6)`, l'offset convertito nel fuso della sessione | `DATETIME(6)`, **l'offset scartato** | `DATETIMEOFFSET` | `TO_TIMESTAMP_TZ` | rifiutato (il tipo non esiste) |
 //! | `uuid` | `UUID` | `CHAR(36)`, rifiutato (collation) | `CHAR(36)`, rifiutato (collation) | `UNIQUEIDENTIFIER` | `VARCHAR2(36)` | `CHAR(36)` |
-//! | `json` | `JSONB` | `JSON` | `JSON` | `NVARCHAR(MAX)` | `CLOB` | `CLOB` (1M byte) |
+//! | `json` | `JSONB` | `JSON` | rifiutato | `NVARCHAR(MAX)` | `CLOB` | `CLOB` (1M byte) |
 //!
 //! Misurato: `CAST(? AS DECIMAL(38, 10))` con `0.12345678901` rende
 //! `0.1234567890` senza errore su `PostgreSQL`, `MySQL`, `MariaDB`, SQL

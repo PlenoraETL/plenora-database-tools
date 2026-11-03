@@ -148,20 +148,17 @@ pub fn parameter_value(value: &ParameterValue, kind: ProviderKind) -> Result<Val
         // `col_json = ?` lo confronta come scalare stringa senza ritrovare il
         // documento. Il portable lo lega come `CAST(? AS JSON)`; nello SQL del
         // chiamante il cast va scritto, con il testo legato come `String`.
-        // Su `MariaDB` JSON e testo, e il testo e il valore.
-        ParameterValue::Json(_) if kind != ProviderKind::Mariadb => {
+        ParameterValue::Json(_) => {
+            plenora_database_core::typed_parameter::ensure_json_supported(
+                kind,
+                plenora_database_core::relational::QueryParameterType::Json,
+            )?;
             Err(DatabaseError::unsupported(
                 kind,
                 ErrorPhase::Prepare,
                 "parametro JSON MySQL nudo: legare il testo come String dentro CAST(? AS JSON)",
             ))
         }
-        ParameterValue::Json(value) => serde_json::to_vec(value).map(Value::Bytes).map_err(|_| {
-            parameter_error(
-                ErrorCategory::DataMapping,
-                "serializzazione parametro JSON fallita",
-            )
-        }),
         ParameterValue::Null { type_name } => {
             if type_name.is_empty() || type_name.contains('\0') {
                 return Err(parameter_error(

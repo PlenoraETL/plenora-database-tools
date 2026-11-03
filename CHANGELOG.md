@@ -8,6 +8,15 @@ riassumono le note di quelle release.
 
 ## 9.0.0 - in preparazione
 
+- Correzioni: difetto silenzioso JSON-testo su MySQL/MariaDB, versioni
+  colpite: <da misura>. La verifica del checkout deve riportare zero
+  discrepanze silenziose sulla stessa sonda prima della qualifica.
+- MariaDB: JSON tipizzato rifiutato esplicitamente in preparazione nel renderer
+  e nel binder, invece di generare `CAST(? AS JSON)` non valido o degradare
+  al confronto testuale. Per una semantica JSON esplicita usare SQL del
+  chiamante con `JSON_EQUALS` e parametri `String`; il confronto testuale
+  ordinario non garantisce equivalenza rispetto a spazi e ordine delle chiavi.
+
 - A900-001, ammissione Rust/CLI/SDK: data, timestamp, timestamp con fuso,
   UUID e decimale vengono validati integralmente prima della conversione.
   Suffissi o forme malformate non diventano piu date/testo validi per taglio.

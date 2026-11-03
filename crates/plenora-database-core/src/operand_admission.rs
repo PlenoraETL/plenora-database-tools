@@ -1069,6 +1069,7 @@ pub fn admit_typed_parameters(
         .collect();
     let mut decided: BTreeMap<String, ParameterValue> = BTreeMap::new();
     for (name, parameter_type, slot) in uses {
+        crate::typed_parameter::ensure_json_supported(provider, parameter_type)?;
         let Some(value) = parameters.get(&name) else {
             continue;
         };

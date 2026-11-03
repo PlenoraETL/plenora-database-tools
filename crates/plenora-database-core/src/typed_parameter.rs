@@ -420,6 +420,21 @@ fn mismatch(provider: ProviderKind) -> DatabaseError {
     )
 }
 
+/// Rifiuta JSON tipizzato dove manca una semantica qualificata.
+///
+/// # Errors
+/// `Unsupported` in preparazione su `MariaDB`, anche per un NULL tipizzato.
+pub fn ensure_json_supported(provider: ProviderKind, kind: QueryParameterType) -> Result<()> {
+    if provider == ProviderKind::Mariadb && kind == QueryParameterType::Json {
+        return Err(DatabaseError::unsupported(
+            provider,
+            crate::ErrorPhase::Prepare,
+            "JSON tipizzato MariaDB non supportato: usare SQL con confronto JSON esplicito e parametri String",
+        ));
+    }
+    Ok(())
+}
+
 /// La regola T su un parametro tipizzato.
 fn judge(
     provider: ProviderKind,
@@ -427,6 +442,7 @@ fn judge(
     slot: Slot,
     bound: &BoundValue,
 ) -> Result<()> {
+    ensure_json_supported(provider, parameter_type)?;
     if bound.malformed {
         return Err(mismatch(provider));
     }

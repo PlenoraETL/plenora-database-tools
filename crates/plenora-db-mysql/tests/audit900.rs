@@ -211,3 +211,39 @@ fn malformed_source_cross_every_target() {
     // Json, Bytes, integer and bool carry structured Rust values; Time and
     // Interval are not ParameterValue variants and cannot enter this gate.
 }
+
+#[test]
+fn mariadb_json_is_refused_before_io() {
+    for document in [json!({"b":2,"a":1}), json!([1, 2]), json!(1), json!(null)] {
+        let value = V::Json(document);
+        let bag = ParameterBag::new([("p".into(), value.clone())].into());
+        let error = plenora_db_mysql::bind_parameters(&["p".into()], &bag, P::Mariadb).unwrap_err();
+        assert_eq!(
+            error.category,
+            plenora_database_core::ErrorCategory::Unsupported
+        );
+        for expr in [
+            json!({"kind":"typed_parameter","name":"p","parameter_type":"json"}),
+            json!({"kind":"cast","expression":{"kind":"parameter","name":"p"},"target_type":"json"}),
+        ] {
+            let q = query(&expr);
+            assert!(admission_gate::query(
+                P::Mariadb,
+                &q,
+                "unused".into(),
+                &["p".into()],
+                std::slice::from_ref(&value)
+            )
+            .is_err());
+            assert!(plenora_database_sql::Renderer::new(
+                plenora_database_sql::Dialect::Mysql,
+                plenora_database_sql::DialectCapabilities {
+                    spatial_intersects: false
+                }
+            )
+            .with_provider(P::Mariadb)
+            .render_query(&q)
+            .is_err());
+        }
+    }
+}
