@@ -14692,7 +14692,9 @@ async fn live_audit900_lc_json_arrow_key() {
         mapping_policy: MappingPolicy::Strict,
         transaction_profile: TransactionProfile::SingleTransaction,
         keys: vec!["payload".into()],
-        update_columns: vec!["v".into()],
+        // Upsert aggiorna tutte le non-key; colonne esplicite fermano il
+        // piano prima del catalogo e della guardia JSON.
+        update_columns: Vec::new(),
         srid_policy: None,
         create_spatial_index: false,
         allow_partial: false,
@@ -14708,8 +14710,22 @@ async fn live_audit900_lc_json_arrow_key() {
     let Err(error) = result else {
         panic!("chiave JSON ammessa");
     };
-    assert_eq!(error.category, ErrorCategory::InvalidPlan);
-    assert!(error.message.contains("JSON"));
+    eprintln!(
+        "L-C: categoria={:?}, messaggio={}",
+        error.category, error.message
+    );
+    assert_eq!(
+        error.category,
+        ErrorCategory::InvalidPlan,
+        "{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("JSON"),
+        "{:?}: {}",
+        error.category,
+        error.message
+    );
     provider
         .execute_ddl(&secret, "DROP TABLE audit900_json_key", &cancel)
         .await

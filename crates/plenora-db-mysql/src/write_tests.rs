@@ -2097,22 +2097,43 @@ fn rollback_warning_overrides_even_a_prior_deadlock() {
 
 #[test]
 fn json_write_keys_refuse_native_and_mariadb_aliases() {
-    let target = base_table(vec![server_column("payload", "json", "json", false)]);
-    assert!(crate::write_admission::reject_json_keys(
-        &["payload".into()],
-        &target,
-        &std::collections::BTreeSet::default()
-    )
-    .is_err());
+    let input = schema(vec![
+        Field::new("payload", DataType::Utf8, true),
+        Field::new("v", DataType::Int32, true),
+    ]);
+    for profile in [
+        &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+        &crate::profile::MARIADB_PROFILE,
+    ] {
+        let mut operation = append_operation();
+        operation.mode = WriteMode::Upsert;
+        operation.keys = vec!["payload".into()];
+        // Riproduce il falso negativo L-C: il piano invalido non arriva al catalogo.
+        operation.update_columns = vec!["v".into()];
+        let error = MysqlWritePlan::compile_with_profile(&input, &operation, "warehouse", profile)
+            .expect_err("Upsert con update_columns esplicite");
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert!(error.message.contains("update_columns"));
+        operation.update_columns.clear();
+        MysqlWritePlan::compile_with_profile(&input, &operation, "warehouse", profile)
+            .expect("il piano L-C deve raggiungere il catalogo");
+    }
+    for (native, json) in [
+        ("json", std::collections::BTreeSet::new()),
+        (
+            "longtext",
+            std::collections::BTreeSet::from(["payload".into()]),
+        ),
+    ] {
+        let target = base_table(vec![server_column("payload", native, native, false)]);
+        let error = crate::write_admission::reject_json_keys(&["payload".into()], &target, &json)
+            .expect_err("chiave JSON ammessa");
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert!(error.message.contains("JSON"));
+    }
     let text = base_table(vec![server_column(
         "payload", "longtext", "longtext", false,
     )]);
-    assert!(crate::write_admission::reject_json_keys(
-        &["payload".into()],
-        &text,
-        &["payload".into()].into()
-    )
-    .is_err());
     assert!(crate::write_admission::reject_json_keys(
         &["payload".into()],
         &text,
