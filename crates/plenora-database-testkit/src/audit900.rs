@@ -91,6 +91,7 @@ pub async fn malformed_temporals(
                 return Err("INSERT rifiutato ha lasciato una riga".into());
             }
         }
+        println!("L1 INSERT/UPDATE: DataMapping prima dell'invio; righe intatte");
         tx.commit(&cancel).await.map_err(|e| describe(&e))?;
         let query = ReadOperation {
             source: target.table.clone(),
@@ -121,6 +122,13 @@ pub async fn malformed_temporals(
             return Err("lettura di controllo senza la riga valida".into());
         }
         drop(stream);
+        // Il confronto temporale/testo e chiuso dalla regola di famiglia,
+        // mentre INSERT/UPDATE sopra raggiungono il cancello di ammissione.
+        let expected_category = if column == text_column {
+            plenora_database_core::ErrorCategory::InvalidPlan
+        } else {
+            plenora_database_core::ErrorCategory::DataMapping
+        };
         let bag = ParameterBag::new([("p".into(), invalid)].into());
         match target
             .provider
@@ -129,7 +137,10 @@ pub async fn malformed_temporals(
         {
             Err(error)
                 if matches!(error.phase, ErrorPhase::Prepare | ErrorPhase::Validate)
-                    && error.category == plenora_database_core::ErrorCategory::DataMapping
+                    && error.category == expected_category
+                    && (column != text_column
+                        || error.message
+                            == plenora_database_core::spatial_operand::OPERAND_FAMILY_MISMATCH)
                     && error.remote_effect == plenora_database_core::RemoteEffect::None => {}
             Err(error) => return Err(describe(&error)),
             Ok(_) => return Err("filtro temporale malformato ammesso".into()),

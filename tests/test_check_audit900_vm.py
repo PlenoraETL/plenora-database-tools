@@ -28,7 +28,7 @@ class Audit900VmTests(unittest.TestCase):
 
     def test_provider_counts_and_filters(self):
         for provider, counts in {
-            'postgres': [1, 3], 'mysql': [1, 2], 'mariadb': [1, 2],
+            'postgres': [1, 1, 1, 1], 'mysql': [1, 1, 1], 'mariadb': [1, 1, 1],
             'sqlserver': [1], 'oracle': [1], 'db2': [1],
         }.items():
             self.namespace['selected'] = provider
@@ -36,7 +36,7 @@ class Audit900VmTests(unittest.TestCase):
             self.assertEqual([count for _, count in cases], counts)
             self.assertEqual(cases[0][0], 'live_parameter_values_bind_exactly_or_are_refused')
             if len(cases) > 1:
-                self.assertEqual(cases[1][0], 'live_audit900_')
+                self.assertTrue(all(name.startswith('live_audit900_') for name, _ in cases[1:]))
 
     def test_exact_inventory_rejects_empty_wrong_or_duplicate_summary(self):
         good = 'test result: ok. 1 passed; 0 failed; 0 ignored; 7 filtered out\n'
@@ -56,6 +56,36 @@ class Audit900VmTests(unittest.TestCase):
                         with self.assertRaises(SystemExit):
                             self.namespace['run'](['secret-credential'], 'fixture', 1)
                 self.assertNotIn('secret-credential', stdout.getvalue())
+
+    def test_failure_does_not_stop_later_cases(self):
+        self.namespace['selected'] = 'postgres'
+        self.namespace['results'] = []
+        calls = []
+        def fake_run(command, name, expected):
+            calls.append(name)
+            if len(calls) == 1:
+                raise SystemExit(101)
+        self.namespace['run'] = fake_run
+        self.namespace['run_tests']([], 'plenora-db-postgres', 'postgres')
+        self.assertEqual(len(calls), 4)
+        self.assertEqual([status for _, status in self.namespace['results']],
+                         ['FAIL', 'PASS', 'PASS', 'PASS'])
+        self.assertTrue(any('l3_' in name for name in calls))
+        self.assertTrue(any('l5_' in name for name in calls))
+
+    def test_log_cleanup_is_scoped_to_selected_provider(self):
+        tree = ast.parse(BODY)
+        cleanup = next(node for node in tree.body if isinstance(node, ast.For))
+        with tempfile.TemporaryDirectory() as directory:
+            logs = Path(directory)
+            stale = logs / 'postgres-live_audit900_.log'
+            other = logs / 'oracle-live_parameter_values_bind_exactly_or_are_refused.log'
+            stale.write_text('old failure', encoding='utf-8')
+            other.write_text('other provider', encoding='utf-8')
+            exec(compile(ast.Module(body=[cleanup], type_ignores=[]), '<cleanup>', 'exec'),
+                 dict(logs=logs, selected='postgres'))
+            self.assertFalse(stale.exists())
+            self.assertTrue(other.exists())
 
     def test_fixture_scope_and_helpers(self):
         self.assertNotIn('prune', BODY)

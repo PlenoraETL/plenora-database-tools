@@ -12,6 +12,17 @@ riassumono le note di quelle release.
   UUID e decimale vengono validati integralmente prima della conversione.
   Suffissi o forme malformate non diventano piu date/testo validi per taglio.
   Correggere il valore d'origine; per memorizzare testo usare `String` esplicito.
+  Raggiungibilita confermata dalla facade pubblica portable e dal DML
+  relazionale (INSERT/UPDATE): la guardia di famiglia dei confronti non
+  impedisce le assegnazioni Timestamp -> Date/testo. L1 distingue il rifiuto
+  di ammissione in scrittura dal rifiuto di famiglia nel filtro testo.
+- Runner audit VM: ogni filtro ha esito e log propri; un fallimento non
+  salta i successivi (inclusi PostgreSQL L3/L5), e i log precedenti del
+  provider vengono rimossi prima della preparazione.
+- Oracle: gli errori read/catalogo conservano la causa gia sanitizzata
+  oltre al contesto operativo. Il solo Io/Probe del secondo giro non
+  identifica la causa del guasto; non e prova di oggetto assente o permessi
+  insufficienti e richiede una nuova misura live con il diagnostico completo.
 - A900-002/003, query tipizzate: il contesto del renderer e condiviso fra
   regola T e ammissione. MySQL trasporta JSON come testo soltanto sotto il
   CAST JSON dichiarato; WKB Binary nelle posizioni spatial conserva il proprio

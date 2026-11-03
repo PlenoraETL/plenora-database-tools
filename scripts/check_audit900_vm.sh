@@ -2,7 +2,7 @@
 # Dalla radice del checkout: bash scripts/check_audit900_vm.sh [all|postgres|mysql|mariadb|sqlserver|oracle|db2]
 # Le fixture restano disponibili; solo MariaDB ricrea i propri volumi TLS.
 set -euo pipefail
-export CARGO_BUILD_JOBS=4
+export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-6}
 if [[ ${1:-all} == all ]]; then
     failed=0
     for provider in postgres mysql mariadb sqlserver oracle db2; do
@@ -30,6 +30,11 @@ if selected not in {'postgres', 'mysql', 'mariadb', 'sqlserver', 'oracle', 'db2'
     raise SystemExit('Provider sconosciuto')
 logs = root / 'target/audit-900/live'
 logs.mkdir(parents=True, exist_ok=True)
+results = []
+# Non lasciare che un log di una run precedente sembri una misura corrente.
+for old in logs.glob(selected + '-*.log'):
+    old.unlink()
+
 
 def run(command, name, expected=None):
     # Nessun comando stampato: gli argomenti Docker possono contenere credenziali.
@@ -52,14 +57,30 @@ def up(compose, name, build=False):
 def cargo_args(crate, test_filter):
     return ['cargo', 'test', '--locked', '-p', crate, '--lib', test_filter, '--', '--include-ignored', '--show-output', '--test-threads=1']
 
+def run_case(command, name, expected):
+    try:
+        run(command, name, expected)
+    except SystemExit:
+        results.append((name, 'FAIL'))
+    except Exception:
+        results.append((name, 'ERROR'))
+    else:
+        results.append((name, 'PASS'))
+
+
 def run_tests(command, crate, name):
     for test_filter, expected in test_cases():
-        run(command + cargo_args(crate, test_filter), name + '-' + test_filter, expected)
+        run_case(command + cargo_args(crate, test_filter), name + '-' + test_filter, expected)
 
 def test_cases():
     cases = [('live_parameter_values_bind_exactly_or_are_refused', 1)]
-    if selected in {'postgres', 'mysql', 'mariadb'}:
-        cases.append(('live_audit900_', 3 if selected == 'postgres' else 2))
+    if selected == 'postgres':
+        cases.extend((name, 1) for name in [
+            'live_audit900_l3_typed_wkb', 'live_audit900_l5_comment_search_path',
+            'live_audit900_l6_name_bytes'])
+    if selected in {'mysql', 'mariadb'}:
+        cases.extend((name, 1) for name in [
+            'live_audit900_l2_typed_json', 'live_audit900_l4_found_rows'])
     return cases
 
 try:
@@ -67,8 +88,8 @@ try:
         up('docker-compose.postgres.yml', 'postgres')
         for test_filter, expected in test_cases():
             command = postgres.cargo(cargo_args('plenora-db-postgres', test_filter)[1:], postgres.DEFAULT_DSN)
-            command[3:3] = ['-e', 'CARGO_BUILD_JOBS=4']
-            run(command, 'postgres-' + test_filter, expected)
+            command[3:3] = ['-e', 'CARGO_BUILD_JOBS=' + os.environ['CARGO_BUILD_JOBS']]
+            run_case(command, 'postgres-' + test_filter, expected)
 
     if selected == 'sqlserver':
         up('docker-compose.sqlserver.yml', 'sqlserver')
@@ -81,13 +102,13 @@ try:
         os.environ.pop('PLENORA_SQLSERVER_GATE_HOST_CARGO', None)
         for test_filter, expected in test_cases():
             command, _ = sqlserver.cargo(cargo_args('plenora-db-sqlserver', test_filter)[1:])
-            command[3:3] = ['-e', 'CARGO_BUILD_JOBS=4']
-            run(command, 'sqlserver-' + test_filter, expected)
+            command[3:3] = ['-e', 'CARGO_BUILD_JOBS=' + os.environ['CARGO_BUILD_JOBS']]
+            run_case(command, 'sqlserver-' + test_filter, expected)
 
     if selected == 'db2':
         up('docker-compose.db2.yml', 'db2', True)
         command = ['docker', 'compose', '-f', 'docker-compose.db2.yml', 'exec', '-T']
-        for key, value in {**db2.DB2_ENV, 'CARGO_BUILD_JOBS': '4'}.items():
+        for key, value in {**db2.DB2_ENV, 'CARGO_BUILD_JOBS': os.environ['CARGO_BUILD_JOBS']}.items():
             command += ['-e', key + '=' + value]
         run_tests(command + ['db2'], 'plenora-db-db2', 'db2')
 
@@ -98,7 +119,7 @@ try:
         environment, _ = oracle.test_environments(reference, identity['container_id'])
         command = ['docker', 'run', '--rm', '--network', 'host', '-v', str(root) + ':/workspace',
                    '-v', 'audit900-oracle-target:/workspace/target', '-w', '/workspace',
-                   '-e', 'CARGO_BUILD_JOBS=4']
+                   '-e', 'CARGO_BUILD_JOBS=' + os.environ['CARGO_BUILD_JOBS']]
         for key, value in environment.items():
             command += ['-e', key + '=' + value]
         run_tests(command + [fleet.RUST_IMAGE], 'plenora-db-oracle', 'oracle')
@@ -123,7 +144,7 @@ try:
                 'PLENORA_MYSQL_DATABASE': database,
                 'PLENORA_MYSQL_USER': container_variable(server.container, prefix + '_USER'),
                 'PLENORA_MYSQL_PASSWORD': container_variable(server.container, server.password_variable),
-                'CARGO_BUILD_JOBS': '4',
+                'CARGO_BUILD_JOBS': os.environ['CARGO_BUILD_JOBS'],
             }
             command = ['docker', 'run', '--rm', *compose_network_arguments(server.container),
                        '-v', str(root) + ':/workspace',
@@ -134,5 +155,12 @@ try:
             run_tests(command + [fleet.RUST_IMAGE], 'plenora-db-mysql', server.key)
 except Exception:
     raise SystemExit('Preparazione o esecuzione fixture fallita (dettagli sensibili omessi)') from None
+
+finally:
+    summary = '\n'.join(name + ': ' + outcome for name, outcome in results)
+    (logs / (selected + '-summary.log')).write_text(summary + '\n', encoding='utf-8')
+    print(summary, flush=True)
+if not results or any(outcome != 'PASS' for _, outcome in results):
+    raise SystemExit(1)
 
 PY
