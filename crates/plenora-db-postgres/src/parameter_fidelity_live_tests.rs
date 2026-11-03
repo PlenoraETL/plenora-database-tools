@@ -168,7 +168,12 @@ fn cases() -> Vec<Case> {
             V::F64(5e-324),
             exact(&V::F64(5e-324), double_hex(5e-324)),
         ),
-        Case::new("double 0.1 in real", "r", V::F64(0.1), mapping.clone()),
+        // Il target float4 si conosce dopo prepare: lo SQL del chiamante e
+        // gia inviato, quindi il rifiuto conserva Unknown/RequiresRecovery.
+        Case::new("double 0.1 in real", "r", V::F64(0.1), mapping.clone()).on(
+            FidelityPath::Native,
+            Expect::RefusedAfterPrepare(ErrorCategory::DataMapping),
+        ),
         Case::new(
             "double 0.5 in real",
             "r",

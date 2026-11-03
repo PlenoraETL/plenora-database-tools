@@ -2,6 +2,46 @@ use super::{canon, neighbours, Neighbour};
 use plenora_database_core::provider::ParameterValue as V;
 
 #[test]
+fn refusal_before_send_and_after_prepare_require_distinct_envelopes() {
+    use super::{refused, refused_after_prepare};
+    use plenora_database_core::{
+        DatabaseError, ErrorCategory, ErrorPhase, RemoteEffect, RetryDisposition,
+    };
+
+    let category = ErrorCategory::DataMapping;
+    let local = DatabaseError::new(category, ErrorPhase::Prepare, None, "bind incompatibile");
+    assert!(refused(&Err(local.clone()), category).is_ok());
+    assert!(refused_after_prepare(&Err(local.clone()), category).is_err());
+    let sent = local.after_unproven_send();
+    assert!(refused(&Err(sent.clone()), category).is_err());
+    assert!(refused_after_prepare(&Err(sent.clone()), category).is_ok());
+    for invalid in [
+        DatabaseError {
+            category: ErrorCategory::Unsupported,
+            ..sent.clone()
+        },
+        DatabaseError {
+            phase: ErrorPhase::Write,
+            ..sent.clone()
+        },
+        DatabaseError {
+            remote_effect: RemoteEffect::RolledBack,
+            ..sent.clone()
+        },
+        DatabaseError {
+            retry: RetryDisposition::Never,
+            ..sent
+        },
+    ] {
+        assert!(refused_after_prepare(&Err(invalid), category).is_err());
+    }
+    for rows in [0, 1] {
+        assert!(refused(&Ok(rows), category).is_err());
+        assert!(refused_after_prepare(&Ok(rows), category).is_err());
+    }
+}
+
+#[test]
 fn canonical_forms_compare_values_not_spellings() {
     assert_eq!(
         canon(&V::Decimal("012.500".to_owned())),

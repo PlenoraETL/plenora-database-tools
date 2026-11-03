@@ -5,7 +5,8 @@
 //! `operand_admission`): ogni variante di `ParameterValue`, su ogni provider
 //! e percorso, o ha un binding esatto — il server riceve proprio quel valore,
 //! lo conserva e lo ritrova con `col = ?`, e nessun valore vicino lo ritrova —
-//! oppure e rifiutata in modo esplicito prima dell'invio.
+//! oppure e rifiutata in modo esplicito prima del bind. Se il target nativo
+//! si conosce solo dopo prepare, il caso dichiara l'effetto remoto ignoto.
 //!
 //! L'oracolo non si fida dei decoder del repository:
 //!
@@ -86,6 +87,9 @@ pub enum Expect {
     /// Rifiutato con questa categoria prima dell'invio; sul percorso di
     /// lettura basta il rifiuto prima dello stream (`Prepare` o `Validate`).
     Refused(ErrorCategory),
+    /// Rifiuto nativo dopo l'invio dello SQL per prepararlo, prima del bind:
+    /// effetto Unknown, recovery obbligatoria e nessuna riga scritta.
+    RefusedAfterPrepare(ErrorCategory),
     /// Warning dopo invio: effetto dichiarato Unknown, scope non committabile.
     WarningRefused,
 }
@@ -667,12 +671,35 @@ fn refused(result: &std::result::Result<u64, DatabaseError>, category: ErrorCate
             Ok(())
         }
         Err(error) => Err(format!(
-            "rifiuto atteso {category:?}/Prepare, ottenuto {}",
-            describe(error)
+            "rifiuto atteso {category:?}/Prepare/None, ottenuto {} (effetto {:?}, retry {:?})",
+            describe(error),
+            error.remote_effect,
+            error.retry
         )),
         Ok(_) => Err(format!(
             "rifiuto atteso {category:?}, il valore e stato scritto"
         )),
+    }
+}
+
+fn refused_after_prepare(
+    result: &std::result::Result<u64, DatabaseError>,
+    category: ErrorCategory,
+) -> Probe {
+    match result {
+        Err(error)
+            if error.category == category
+                && error.phase == ErrorPhase::Prepare
+                && error.remote_effect == plenora_database_core::RemoteEffect::Unknown
+                && error.retry == plenora_database_core::RetryDisposition::RequiresRecovery =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "rifiuto atteso {category:?}/Prepare/Unknown/RequiresRecovery, ottenuto {} (effetto {:?}, retry {:?})",
+            describe(error), error.remote_effect, error.retry
+        )),
+        Ok(_) => Err(format!("rifiuto atteso {category:?} dopo prepare, il valore e stato scritto")),
     }
 }
 
@@ -865,6 +892,22 @@ async fn native_steps(
         .await;
     let (read, raw, distinct, compare) = match case.expect_on(FidelityPath::Native) {
         Expect::Refused(category) => return refused(&inserted, *category),
+        Expect::RefusedAfterPrepare(category) => {
+            refused_after_prepare(&inserted, *category)?;
+            let rows = scope
+                .query(
+                    &Statement::new(sql(NativeSql::Select))
+                        .with_params(vec![ParameterValue::I32(id)]),
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|error| describe(&error))?;
+            return if rows.is_empty() {
+                Ok(())
+            } else {
+                Err("rifiuto dopo prepare ha lasciato una riga".into())
+            };
+        }
         Expect::WarningRefused => return Err("warning richiede il percorso nativo dedicato".into()),
         Expect::Assigned { read, raw } => (read, raw, &[][..], false),
         Expect::Exact {
@@ -948,8 +991,8 @@ async fn portable_steps(
     let (raw, distinct) = match case.expect_on(FidelityPath::Portable) {
         Expect::Refused(category) => return refused(&inserted, *category),
         Expect::Exact { raw, distinct, .. } => (raw, distinct),
-        Expect::Assigned { .. } | Expect::WarningRefused => {
-            return Err("Assigned vale soltanto sul percorso nativo".into());
+        Expect::Assigned { .. } | Expect::WarningRefused | Expect::RefusedAfterPrepare(_) => {
+            return Err("attesa riservata al percorso nativo".into());
         }
     };
     inserted.map_err(|error| format!("scrittura portable: {}", describe(&error)))?;
@@ -993,8 +1036,8 @@ async fn read(target: &Target<'_>, case: &Case, id: i32, notes: &mut Vec<String>
     let (read_value, distinct) = match case.expect_on(FidelityPath::Read) {
         Expect::Exact { read, distinct, .. } => (read, distinct),
         Expect::Refused(category) => return read_refused(target, case, *category).await,
-        Expect::Assigned { .. } | Expect::WarningRefused => {
-            return Err("Assigned vale soltanto sul percorso nativo".into());
+        Expect::Assigned { .. } | Expect::WarningRefused | Expect::RefusedAfterPrepare(_) => {
+            return Err("attesa riservata al percorso nativo".into());
         }
     };
     let mut scope = begin(target).await?;

@@ -28,11 +28,12 @@ class Audit900VmTests(unittest.TestCase):
 
     def test_provider_counts_and_filters(self):
         for provider, counts in {
-            'postgres': [1, 1, 1, 1, 1], 'mysql': [1, 1, 1, 1], 'mariadb': [1, 1, 1, 1, 1, 1],
-            'sqlserver': [1, 1, 1], 'oracle': [1], 'db2': [1],
+            'postgres': [1] * 6, 'mysql': [1] * 5, 'mariadb': [1] * 7,
+            'sqlserver': [1] * 4, 'oracle': [1] * 2, 'db2': [1] * 2,
         }.items():
-            self.namespace['selected'] = provider
-            cases = self.namespace['test_cases']()
+            cases = self.namespace['test_cases'](provider, 'all')
+            self.assertEqual(self.namespace['test_cases'](provider, 'nul'),
+                             [('live_audit900_nul', 1)])
             self.assertEqual([count for _, count in cases], counts)
             self.assertEqual(cases[0][0], 'live_parameter_values_bind_exactly_or_are_refused')
             crate = 'mysql' if provider == 'mariadb' else provider
@@ -64,7 +65,6 @@ class Audit900VmTests(unittest.TestCase):
                 self.assertNotIn('secret-credential', stdout.getvalue())
 
     def test_failure_does_not_stop_later_cases(self):
-        self.namespace['selected'] = 'postgres'
         self.namespace['results'] = []
         calls = []
         def fake_run(command, name, expected):
@@ -72,10 +72,10 @@ class Audit900VmTests(unittest.TestCase):
             if len(calls) == 1:
                 raise SystemExit(101)
         self.namespace['run'] = fake_run
-        self.namespace['run_tests']([], 'plenora-db-postgres', 'postgres')
-        self.assertEqual(len(calls), 5)
+        self.namespace['run_tests']([], 'plenora-db-postgres', 'postgres', 'postgres', 'all')
+        self.assertEqual(len(calls), 6)
         self.assertEqual([status for _, status in self.namespace['results']],
-                         ['FAIL', 'PASS', 'PASS', 'PASS', 'PASS'])
+                         ['FAIL', 'PASS', 'PASS', 'PASS', 'PASS', 'PASS'])
         self.assertTrue(any('l3_' in name for name in calls))
         self.assertTrue(any('l5_' in name for name in calls))
 
@@ -93,18 +93,26 @@ class Audit900VmTests(unittest.TestCase):
             self.assertFalse(stale.exists())
             self.assertTrue(other.exists())
 
+    def test_log_paths_follow_selection(self):
+        tree = ast.parse(BODY)
+        assignment = next(node for node in tree.body if isinstance(node, ast.Assign)
+                          and any(isinstance(t, ast.Name) and t.id == 'logs' for t in node.targets))
+        for selection, folder in [('all', 'live'), ('nul', 'live-nul')]:
+            namespace = dict(root=ROOT, selection=selection)
+            exec(compile(ast.Module(body=[assignment], type_ignores=[]), '<logs>', 'exec'), namespace)
+            self.assertEqual(namespace['logs'], ROOT / 'target/audit-900' / folder)
+
     def test_fixture_scope_and_helpers(self):
         self.assertNotIn('prune', BODY)
         self.assertNotIn("'down'", BODY)
         self.assertIn("'up', '-d', '--force-recreate'", BODY)
         self.assertIn('CARGO_BUILD_JOBS:-4', SCRIPT)
         self.assertIn("'--wait'", BODY)
-        self.assertIn('target/audit-900/live', BODY)
         for helper in ['postgres.cargo', 'sqlserver.cargo', 'db2.DB2_ENV',
                        'oracle.test_environments', 'fleet.servers',
                        'compose_network_arguments', 'compose_volume', 'container_variable']:
             self.assertIn(helper, BODY)
-        self.assertIn('bash "$0" "$provider" || failed=1', SCRIPT)
+        self.assertIn('bash "$0" "$provider" "${2:-all}" || failed=1', SCRIPT)
         self.assertIn('--include-ignored', BODY)
         self.assertNotIn('AUDIT900_ENV_DIR', SCRIPT)
 

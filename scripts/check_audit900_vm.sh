@@ -71,11 +71,11 @@ def run_case(command, name, expected):
         results.append((name, 'PASS'))
 
 
-def run_tests(command, crate, name):
-    for test_filter, expected in test_cases():
+def run_tests(command, crate, name, selected, selection):
+    for test_filter, expected in test_cases(selected, selection):
         run_case(command + cargo_args(crate, test_filter), name + '-' + test_filter, expected)
 
-def test_cases():
+def test_cases(selected, selection):
     if selection == 'nul':
         return [('live_audit900_nul', 1)]
     cases = [('live_parameter_values_bind_exactly_or_are_refused', 1), ('live_audit900_nul', 1)]
@@ -99,7 +99,7 @@ def test_cases():
 try:
     if selected == 'postgres':
         up('docker-compose.postgres.yml', 'postgres')
-        for test_filter, expected in test_cases():
+        for test_filter, expected in test_cases(selected, selection):
             command = postgres.cargo(cargo_args('plenora-db-postgres', test_filter)[1:], postgres.DEFAULT_DSN)
             command[3:3] = ['-e', 'CARGO_BUILD_JOBS=' + os.environ['CARGO_BUILD_JOBS']]
             run_case(command, 'postgres-' + test_filter, expected)
@@ -113,7 +113,7 @@ try:
         sqlserver.wait_for_application_database()
         # Il runner VM usa sempre Cargo nel container, anche con un ambiente host preesistente.
         os.environ.pop('PLENORA_SQLSERVER_GATE_HOST_CARGO', None)
-        for test_filter, expected in test_cases():
+        for test_filter, expected in test_cases(selected, selection):
             command, _ = sqlserver.cargo(cargo_args('plenora-db-sqlserver', test_filter)[1:])
             command[3:3] = ['-e', 'CARGO_BUILD_JOBS=' + os.environ['CARGO_BUILD_JOBS']]
             run_case(command, 'sqlserver-' + test_filter, expected)
@@ -123,7 +123,7 @@ try:
         command = ['docker', 'compose', '-f', 'docker-compose.db2.yml', 'exec', '-T']
         for key, value in {**db2.DB2_ENV, 'CARGO_BUILD_JOBS': os.environ['CARGO_BUILD_JOBS']}.items():
             command += ['-e', key + '=' + value]
-        run_tests(command + ['db2'], 'plenora-db-db2', 'db2')
+        run_tests(command + ['db2'], 'plenora-db-db2', 'db2', selected, selection)
 
     if selected == 'oracle':
         up('docker-compose.oracle.yml', 'oracle')
@@ -135,7 +135,7 @@ try:
                    '-e', 'CARGO_BUILD_JOBS=' + os.environ['CARGO_BUILD_JOBS']]
         for key, value in environment.items():
             command += ['-e', key + '=' + value]
-        run_tests(command + [fleet.RUST_IMAGE], 'plenora-db-oracle', 'oracle')
+        run_tests(command + [fleet.RUST_IMAGE], 'plenora-db-oracle', 'oracle', selected, selection)
 
     if selected in {'mysql', 'mariadb'}:
         if selected == 'mysql':
@@ -166,7 +166,7 @@ try:
                        '-v', 'audit900-mysql-target:/workspace/target', '-w', '/workspace']
             for key, value in environment.items():
                 command += ['-e', key + '=' + value]
-            run_tests(command + [fleet.RUST_IMAGE], 'plenora-db-mysql', server.key)
+            run_tests(command + [fleet.RUST_IMAGE], 'plenora-db-mysql', server.key, selected, selection)
 except Exception:
     raise SystemExit('Preparazione o esecuzione fixture fallita (dettagli sensibili omessi)') from None
 
