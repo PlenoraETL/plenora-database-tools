@@ -175,8 +175,8 @@ pub async fn check(
             P::Oracle => (":1", ":2"),
             _ => ("?", "?"),
         };
-        // Il decoder transazionale CLOB Db2 resta chiuso. Il test della
-        // scrittura usa un testimone VARCHAR esplicito e la resa HEX del server.
+        // La lettura nativa CLOB Db2 viene confrontata separatamente con il
+        // valore scritto; CAST e HEX restano testimoni indipendenti.
         let db2_lob = kind == P::Db2 && declaration.starts_with("CLOB(");
         let selected = if db2_lob {
             format!("CAST({col} AS VARCHAR(64))")
@@ -248,8 +248,13 @@ pub async fn check(
         for (case_index, text) in values.into_iter().enumerate() {
             let row_id = 900 + i32::try_from(case_index).map_err(|_| "indice caso NUL")? * 3;
             if db2_lob {
-                if let Err(error) =
-                    closed_native_read(&target, &format!("SELECT {col} FROM {table}")).await
+                if let Err(error) = exact_native_read(
+                    &target,
+                    &format!("SELECT {col} FROM {table} WHERE {id} = {p1}"),
+                    row_id,
+                    text,
+                )
+                .await
                 {
                     failures.push(format!(
                         "{declaration} caso {case_index} decoder nativo: {error}"
@@ -590,26 +595,49 @@ async fn closed_read(target: &Target<'_>, text: &str) -> Result<(), String> {
     }
 }
 
-async fn closed_native_read(target: &Target<'_>, sql: &str) -> Result<(), String> {
+async fn exact_native_read(
+    target: &Target<'_>,
+    sql: &str,
+    row_id: i32,
+    text: &str,
+) -> Result<(), String> {
     let cancel = CancellationToken::new();
     let mut tx = begin(target).await?;
-    let result = tx.query(&Statement::new(sql), &cancel).await;
-    tx.rollback(&cancel).await.map_err(|e| describe(&e))?;
-    match result {
-        Err(e)
-            if e.category == ErrorCategory::Unsupported
-                && e.phase == ErrorPhase::Prepare
-                && e.remote_effect == plenora_database_core::RemoteEffect::None =>
-        {
-            println!(
-                "NUL decoder nativo: rifiutato prima dell I/O; scrittura verificata via CAST e HEX"
-            );
-            Ok(())
-        }
-        Err(e) => Err(describe(&e)),
-        Ok(_) => Err("decoder nativo non qualificato aperto".into()),
+    let result = async {
+        tx.execute(
+            &Statement::new((target.native)(NativeSql::Insert, "V"))
+                .with_params(vec![V::I32(row_id), V::String(text.into())]),
+            &cancel,
+        )
+        .await
+        .map_err(|e| describe(&e))?;
+        let rows = tx
+            .query(
+                &Statement::new(sql).with_params(vec![V::I32(row_id)]),
+                &cancel,
+            )
+            .await
+            .map_err(|e| describe(&e))?;
+        exact_native_value(&rows, text)
     }
+    .await;
+    let rollback = tx.rollback(&cancel).await;
+    result?;
+    rollback.map_err(|e| describe(&e))?;
+    println!("NUL decoder nativo: conservato esattamente, stessa riga verificata");
+    Ok(())
 }
+
+fn exact_native_value(rows: &[plenora_database_core::Row], text: &str) -> Result<(), String> {
+    if rows.len() != 1 || rows[0].values() != vec![V::String(text.into())] {
+        return Err("alterato: decoder nativo non conserva il valore scritto".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "nul_fidelity_tests.rs"]
+mod tests;
 
 async fn verify_raw(
     target: &Target<'_>,
