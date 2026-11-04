@@ -8,6 +8,12 @@ riassumono le note di quelle release.
 
 ## 9.0.0 - in preparazione
 
+- Db2: il controllo dei tipi result set prima di SQLExecute condivide la
+  tabella del decoder e ammette CLOB/DBCLOB/BLOB nel percorso long-read,
+  conservando il rifiuto dei tipi non qualificati anche senza righe o con NULL.
+  Gli errori del server nelle query mantengono la fase Read, inclusi sicurezza
+  e oggetti mancanti; i rifiuti locali dei tipi restano Unsupported/Prepare.
+
 - Audit JSON, raccolta VM su MySQL 9.7.2 e MariaDB 10.11/11.8/12.3:
   per ciascuna wheel 7.0.0 e 8.0.0–8.0.4, 1474 combinazioni per fixture,
   608 differenze rispetto all'oracolo JSON su MySQL (384 A, 224 B) e 266

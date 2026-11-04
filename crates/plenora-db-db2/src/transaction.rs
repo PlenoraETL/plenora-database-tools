@@ -738,7 +738,7 @@ fn query_rows(
 ) -> Result<Vec<Row>> {
     let mut statement = connection
         .prepare(sql)
-        .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
+        .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
     let parameters = bind_described(connection, timeout, sql, &mut statement, values)?;
     statement
         .set_query_timeout_sec(timeout)
@@ -747,7 +747,7 @@ fn query_rows(
     // deve rifiutare prima di SQLExecute, anche con result set vuoto o NULL.
     let count = statement
         .num_result_cols_strict()
-        .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
+        .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
     for ordinal in 1..=count {
         let ordinal = u16::try_from(ordinal).map_err(|_| {
             transaction_error(
@@ -758,7 +758,7 @@ fn query_rows(
         })?;
         let data_type = statement
             .col_data_type_strict(ordinal)
-            .map_err(|error| driver_error(&error, ErrorPhase::Prepare))?;
+            .map_err(|error| driver_error(&error, ErrorPhase::Read))?;
         validate_result_type(data_type)?;
     }
     sent.mark_sent();
@@ -919,29 +919,38 @@ pub fn decode_float(value: Option<f64>, data_type: DataType) -> Result<Parameter
     }
 }
 
-pub fn validate_result_type(data_type: DataType) -> Result<()> {
+/// La stessa tabella ammette il descrittore prima di `SQLExecute` e sceglie
+/// il decoder. I LOB IBM usano il percorso lungo testuale/binario; il limite
+/// del buffer resta verificato in lettura, senza consegnare celle troncate.
+pub fn validate_result_type(data_type: DataType) -> Result<DataType> {
     match data_type {
-        DataType::Unknown | DataType::Time { .. } | DataType::Other { .. }
-            if !matches!(
-                data_type,
-                DataType::Other {
-                    data_type: DB2_SQL_BLOB,
-                    ..
-                }
-            ) =>
-        {
+        DataType::Other {
+            data_type: SqlDataType(-99 | -350),
+            column_size,
+            ..
+        } => Ok(DataType::LongVarchar {
+            length: column_size,
+        }),
+        DataType::Other {
+            data_type: DB2_SQL_BLOB,
+            column_size,
+            ..
+        } => Ok(DataType::LongVarbinary {
+            length: column_size,
+        }),
+        DataType::Unknown | DataType::Time { .. } | DataType::Other { .. } => {
             Err(DatabaseError::unsupported(
                 ProviderKind::Db2,
                 ErrorPhase::Prepare,
                 "tipo result set Db2 non ancora qualificato",
             ))
         }
-        _ => Ok(()),
+        _ => Ok(data_type),
     }
 }
 
 pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<ParameterValue> {
-    validate_result_type(data_type)?;
+    let data_type = validate_result_type(data_type)?;
     let Some(value) = value else {
         return Ok(ParameterValue::Null {
             type_name: type_name(data_type).to_owned(),
@@ -984,13 +993,9 @@ pub fn decode_value(value: Option<&[u8]>, data_type: DataType) -> Result<Paramet
         }
         DataType::Date => Ok(ParameterValue::Date(text.to_owned())),
         DataType::Timestamp { .. } => Ok(ParameterValue::Timestamp(canonical_timestamp(text)?)),
-        DataType::Binary { .. }
-        | DataType::Varbinary { .. }
-        | DataType::LongVarbinary { .. }
-        | DataType::Other {
-            data_type: DB2_SQL_BLOB,
-            ..
-        } => decode_hex_binary(value).map(ParameterValue::Bytes),
+        DataType::Binary { .. } | DataType::Varbinary { .. } | DataType::LongVarbinary { .. } => {
+            decode_hex_binary(value).map(ParameterValue::Bytes)
+        }
         DataType::Char { .. }
         | DataType::WChar { .. }
         | DataType::Varchar { .. }
@@ -1054,13 +1059,9 @@ const fn type_name(data_type: DataType) -> &'static str {
         | DataType::WVarchar { .. }
         | DataType::LongVarchar { .. }
         | DataType::WLongVarchar { .. } => "varchar",
-        DataType::Binary { .. }
-        | DataType::Varbinary { .. }
-        | DataType::LongVarbinary { .. }
-        | DataType::Other {
-            data_type: DB2_SQL_BLOB,
-            ..
-        } => "binary",
+        DataType::Binary { .. } | DataType::Varbinary { .. } | DataType::LongVarbinary { .. } => {
+            "binary"
+        }
         DataType::Unknown | DataType::Other { .. } => "unknown",
     }
 }
