@@ -6,7 +6,7 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
-## 9.0.0 - in preparazione
+## 9.0.0 — 2026-11-04
 
 - Db2: il controllo dei tipi result set prima di SQLExecute condivide la
   tabella del decoder e ammette CLOB/DBCLOB/BLOB nel percorso long-read,
