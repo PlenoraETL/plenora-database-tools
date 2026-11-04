@@ -35,6 +35,15 @@ SERVER_EXT = ROOT / "docker" / "mariadb" / "tls" / "server.ext"
 
 
 class MariadbEvidenceFixtureTests(unittest.TestCase):
+    def test_certgens_do_not_overwrite_each_others_private_ca(self) -> None:
+        """Una chiave condivisa invalida il controllo di riuso degli altri certgen."""
+        compose = COMPOSE_FILE.read_text(encoding="utf-8")
+        private_mounts = re.findall(r"- (\w+):/ca\s", compose)
+        self.assertEqual(len(private_mounts), len(REFERENCES))
+        self.assertEqual(len(set(private_mounts)), len(REFERENCES))
+        for volume in private_mounts:
+            self.assertIn(f"  {volume}:\n", compose)
+
     def test_the_reference_document_is_the_only_place_with_the_digest(self) -> None:
         """Versione e digest stanno in un posto solo.
 

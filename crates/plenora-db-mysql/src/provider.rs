@@ -506,6 +506,14 @@ impl Provider for MysqlProvider {
                         token,
                     )
                     .await?;
+                    let json = crate::write_admission::json_valid_columns(
+                        &mut session,
+                        target_schema,
+                        &operation.target.object,
+                        token,
+                    )
+                    .await?;
+                    crate::write_admission::reject_json_keys(&operation.keys, &target, &json)?;
                     let report = plan.preflight(&target, self.profile)?;
                     drop(session);
                     report
@@ -811,7 +819,6 @@ async fn admit_in_preflight(
             token,
         )
         .await?;
-        plan.key_collation_guard(operation, &target, provider.config.database(), "preflight")?;
         let json = crate::write_admission::json_valid_columns(
             &mut session,
             target_schema,
@@ -819,6 +826,8 @@ async fn admit_in_preflight(
             token,
         )
         .await?;
+        crate::write_admission::reject_json_keys(&operation.keys, &target, &json)?;
+        plan.key_collation_guard(operation, &target, provider.config.database(), "preflight")?;
         crate::write_admission::target_facts(&target, &json)
     };
     drop(session);
@@ -976,6 +985,7 @@ async fn execute_mysql_write_after_ddl(
         token,
     )
     .await?;
+    crate::write_admission::reject_json_keys(&operation.keys, &target, &json)?;
     let rewrites = crate::write_admission::admit(
         provider.profile.kind(),
         &operation.target.object,

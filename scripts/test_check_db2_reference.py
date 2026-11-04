@@ -16,6 +16,7 @@ WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "db2-
 
 FIDELITY_TESTS = {
     "live_parameter_values_bind_exactly_or_are_refused",
+    "live_audit900_nul",
     "live_invalid_server_text_is_refused_by_catalog_transaction_and_arrow",
     "live_arrow_read_returns_floating_point_values_exactly",
     "live_sub_microsecond_timestamps_are_refused_on_read",
@@ -35,6 +36,16 @@ def qualified(names: set[str]) -> set[str]:
 
 
 class Db2ReferenceGateTests(unittest.TestCase):
+    def test_result_preflight_precedes_execute_and_keeps_driver_errors_in_read(self) -> None:
+        source = (gate.ROOT / "crates/plenora-db-db2/src/transaction.rs").read_text(encoding="utf-8")
+        query = source.split("fn query_rows(", 1)[1].split("#[derive(Clone, Copy)]", 1)[0]
+        self.assertLess(query.index("validate_result_type(data_type)?"), query.index("sent.mark_sent()"))
+        self.assertLess(query.index("sent.mark_sent()"), query.index(".execute_strict("))
+        self.assertNotIn("driver_error(&error, ErrorPhase::Prepare)", query)
+        self.assertIn("driver_error(&error, ErrorPhase::Read)", query)
+        decoder = source.split("pub fn decode_value(", 1)[1].split("pub fn canonical_timestamp", 1)[0]
+        self.assertLess(decoder.index("validate_result_type(data_type)?"), decoder.index("let Some(value)"))
+
     def test_catalog_probe_binds_before_compilation_and_checks_execute_diagnostics(self) -> None:
         root = gate.ROOT
         connection = (root / "crates/plenora-db-db2/src/connection.rs").read_text(encoding="utf-8")
@@ -157,7 +168,7 @@ class Db2ReferenceGateTests(unittest.TestCase):
 
     def test_inventory_has_all_named_live_tests(self) -> None:
         inventory = gate.live_test_inventory()
-        self.assertEqual(len(inventory), 40)
+        self.assertEqual(len(inventory), 41)
         self.assertIn("live_odbc_warnings_are_classified_before_next_call", inventory)
         self.assertLessEqual(gate.REQUIRED_LIVE_TESTS, inventory)
 

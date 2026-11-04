@@ -310,6 +310,18 @@ fn qualify_table(table: &TableRef, dialect: DialectKind) -> Result<String> {
 }
 
 fn compile_expression(expr: &Expression, ctx: &mut CompileContext) -> Result<String> {
+    if ctx.dialect == DialectKind::Mariadb
+        && matches!(
+            expr,
+            Expression::Literal(ParameterValue::Json(_))
+                | Expression::TypedParameter(crate::relational::QueryParameterType::Json)
+        )
+    {
+        crate::typed_parameter::ensure_json_supported(
+            ProviderKind::Mariadb,
+            crate::relational::QueryParameterType::Json,
+        )?;
+    }
     match expr {
         Expression::Literal(v) => Ok(ctx.bind(v.clone())),
         // La sentinella non e un valore del chiamante: serve al segnaposto,

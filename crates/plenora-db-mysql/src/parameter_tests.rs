@@ -6,6 +6,22 @@ const MARIADB: ProviderKind = ProviderKind::Mariadb;
 
 #[test]
 fn binding_is_positional_and_rejects_extra_parameters() {
+    for kind in [MYSQL, MARIADB] {
+        for text in ["a\0b", "\0"] {
+            for value in [
+                ParameterValue::String(text.into()),
+                ParameterValue::Enum {
+                    type_name: "mood".into(),
+                    label: text.into(),
+                },
+            ] {
+                assert_eq!(
+                    bind_positional_params(&[value], kind).expect("NUL bindato"),
+                    Params::Positional(vec![Value::Bytes(text.as_bytes().to_vec())])
+                );
+            }
+        }
+    }
     let parameters = ParameterBag::new(BTreeMap::from([
         ("first".to_owned(), ParameterValue::I32(7)),
         ("second".to_owned(), ParameterValue::String("x".to_owned())),
@@ -96,7 +112,6 @@ fn values_the_server_would_change_are_refused_before_sending() {
         ErrorCategory::Unsupported
     );
     for (value, kind) in [
-        (ParameterValue::Json(serde_json::json!({"a": 1})), MARIADB),
         (ParameterValue::F64(-0.0), MYSQL),
         (
             ParameterValue::Timestamp("2024-01-01 10:20:30.123456".to_owned()),
@@ -132,4 +147,36 @@ fn integral_decimals_bind_as_integers_and_the_rest_as_text() {
         bound("99999999999999999999").ok(),
         Some(Value::Bytes(b"99999999999999999999".to_vec()))
     );
+}
+
+#[test]
+fn caller_json_text_and_sql_null_are_transported_without_normalization() {
+    for provider in [MYSQL, MARIADB] {
+        for text in [
+            "null",
+            "hello",
+            "\"hello\"",
+            "1",
+            "{ \"a\" : 1 }",
+            "{\"b\":2,\"a\":1}",
+        ] {
+            assert_eq!(
+                parameter_value(&ParameterValue::String(text.into()), provider).unwrap(),
+                Value::Bytes(text.as_bytes().to_vec())
+            );
+        }
+        assert_eq!(
+            parameter_value(
+                &ParameterValue::Null {
+                    type_name: "text".into()
+                },
+                provider
+            )
+            .unwrap(),
+            Value::NULL
+        );
+        assert!(
+            parameter_value(&ParameterValue::Json(serde_json::json!({"a":1})), provider).is_err()
+        );
+    }
 }

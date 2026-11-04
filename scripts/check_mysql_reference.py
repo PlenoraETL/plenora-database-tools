@@ -80,7 +80,6 @@ EXPECTED_UNIT_TESTS = {
     "transaction::caller_sql_send_tests::zero_batch_before_send_has_no_effect",
     "transaction::caller_sql_send_tests::validation_after_driver_execution_requires_recovery",
     "transaction::caller_sql_send_tests::mariadb_preserves_local_errors_and_promotes_post_send_validation",
-
     "transaction::tests::caller_sql_uint_overflow_preserves_decoder_context_and_requires_recovery",
     "arrow::tests::decimal_parser_is_exact_and_checked",
     "catalog::tests::le_relazioni_derivate_sono_le_stesse_nei_due_percorsi",
@@ -345,6 +344,12 @@ EXPECTED_UNIT_TESTS = {
     "write::tests::upsert_preflight_rejects_a_functional_unique_index",
     "write::tests::upsert_preflight_rejects_keys_without_a_backing_unique_index",
     "write::tests::upsert_renders_on_duplicate_update_for_non_key_columns",
+    "conditional_json::tests::conditional_relations_are_conservative_and_preserve_names",
+    "parameter::tests::caller_json_text_and_sql_null_are_transported_without_normalization",
+    "types::tests::mariadb_json_read_refuses_text_and_null_before_binding",
+    "write::tests::json_write_keys_refuse_native_and_mariadb_aliases",
+    "write_admission::tests::json_valid_arguments_do_not_hide_column_attributes",
+    "write_admission::tests::json_valid_compound_checks_and_quoted_identifiers",
 }
 EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_binary_columns_of_views_are_judged_geometric",
@@ -398,6 +403,8 @@ EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_v12_write_upsert_without_keys_rejected",
 }
 EXPECTED_LIVE_REFERENCE_TESTS = {
+    "live_tests::live_audit900_l2_typed_json",
+    "live_tests::live_audit900_l4_found_rows",
     "live_tests::live_sospetti_warnings_and_byte_domains",
     "live_tests::live_sospetti_warning_frontier",
     "live_tests::live_sospetti_minimal_privileges",
@@ -409,6 +416,7 @@ EXPECTED_LIVE_REFERENCE_TESTS = {
     "live_tests::live_sospetti_database_reset_and_checkout",
     "live_tests::live_sospetti_routine_session_drift_prevents_commit",
     "live_tests::live_parameter_values_bind_exactly_or_are_refused",
+    "live_tests::live_audit900_nul",
     "live_tests::live_generated_values_bind_exactly_or_are_refused",
     "live_tests::live_caller_query_decode_failure_requires_recovery",
     "live_tests::live_a_row_over_the_batch_budget_carries_over_to_the_next_batch",
@@ -481,6 +489,10 @@ EXPECTED_LIVE_REFERENCE_TESTS = {
     "live_tests::live_k_chiavi_uguali_per_la_collation_si_rifiutano",
     "live_tests::live_k_una_chiave_text_sotto_collation_non_binaria_si_rifiuta",
     "live_tests::live_a_i_tipi_di_create_sono_quelli_del_catalogo",
+    "live_tests::live_audit900_la_json_read",
+    "live_tests::live_audit900_lb_srid_before_io",
+    "live_tests::live_audit900_lc_json_arrow_key",
+    "live_tests::live_audit900_ld_view_without_show_view",
 }
 
 

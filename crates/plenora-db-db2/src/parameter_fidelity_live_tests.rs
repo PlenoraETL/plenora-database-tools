@@ -142,6 +142,11 @@ fn mapping() -> Expect {
     Expect::Refused(ErrorCategory::DataMapping)
 }
 
+/// La guardia delle famiglie rifiuta il confronto prima del binding.
+fn plan() -> Expect {
+    Expect::Refused(ErrorCategory::InvalidPlan)
+}
+
 const NATIVE_PORTABLE: &[FidelityPath] = &[FidelityPath::Native, FidelityPath::Portable];
 
 #[allow(clippy::too_many_lines)]
@@ -192,7 +197,8 @@ fn cases() -> Vec<Case> {
             exact(&ParameterValue::Bytes(Vec::new()), ""),
         )
         .on(FidelityPath::Read, refused()),
-        Case::new("bytes in una colonna testuale", "S", bytes, mapping()),
+        Case::new("bytes in una colonna testuale", "S", bytes, mapping())
+            .on(FidelityPath::Read, plan()),
         // Il testo resta testo: in una colonna binaria vanno i suoi byte UTF-8.
         Case::new(
             "testo in una colonna binaria",
@@ -201,7 +207,8 @@ fn cases() -> Vec<Case> {
             exact(&ParameterValue::Bytes(b"AB01".to_vec()), "41423031"),
         )
         .on(FidelityPath::Portable, mapping())
-        .on(FidelityPath::Read, mapping()),
+        // Il tipo binario non e qualificato per il result set: rifiuto prima di SQLExecute.
+        .on(FidelityPath::Read, refused()),
         Case::new(
             "testo non-BMP",
             "S",
@@ -379,7 +386,8 @@ fn cases() -> Vec<Case> {
             ParameterValue::Uuid("6f1c2a2e7-d3b-4c55-9a1e-0b2c3d4e5f60".to_owned()),
             mapping(),
         ),
-        Case::new("testo in una colonna numerica", "N", text("12"), mapping()),
+        Case::new("testo in una colonna numerica", "N", text("12"), mapping())
+            .on(FidelityPath::Read, plan()),
         Case::new(
             "enum",
             "S",
@@ -474,6 +482,9 @@ async fn live_parameter_values_bind_exactly_or_are_refused() {
         native: &native,
         native_cross_type_declared: false,
     };
+    plenora_database_testkit::audit900::malformed_temporals(&target, "S", Some("DT"))
+        .await
+        .expect("A900-001 L1: rifiuto prima della conversione e righe intatte");
     let outcomes = run(&target, &cases()).await;
     provider
         .execute_ddl(
@@ -1146,4 +1157,14 @@ async fn live_invalid_server_text_is_refused_by_catalog_transaction_and_arrow() 
     let error = result.expect_err("Arrow deve rifiutare byte non UTF-8");
     assert_eq!(error.category, ErrorCategory::DataMapping);
     assert_eq!(error.phase, plenora_database_core::ErrorPhase::Read);
+}
+
+#[tokio::test]
+#[ignore = "richiede Db2 LUW live esplicito"]
+async fn live_audit900_nul() {
+    let provider = live_provider();
+    let secret = SecretString::new(environment("PLENORA_DB2_PASSWORD", "plenora_test"));
+    plenora_database_testkit::nul_fidelity::check(&provider, &secret, SCHEMA, None)
+        .await
+        .expect("matrice NUL Db2");
 }

@@ -927,11 +927,14 @@ pub(crate) async fn transaction_column_types(
     if rows.is_empty() {
         return Ok(None);
     }
+    let identities =
+        transaction_operand_catalog(session, std::slice::from_ref(relation), &[], cancellation)
+            .await?;
     rows.iter()
         .map(|row| {
             let name = optional::<String, _>(row, 0, "COLUMN_NAME")?
                 .ok_or_else(|| mapping_error("campo catalogo COLUMN_NAME nullo".to_owned()))?;
-            let catalog = CatalogType {
+            let mut catalog = CatalogType {
                 name: optional::<String, _>(row, 1, "DATA_TYPE")?.unwrap_or_default(),
                 declaration: optional::<String, _>(row, 2, "COLUMN_TYPE")?,
                 length: optional::<u64, _>(row, 3, "CHARACTER_MAXIMUM_LENGTH")?,
@@ -949,6 +952,16 @@ pub(crate) async fn transaction_column_types(
                     Some(_) => Charset::Ascii,
                 },
             };
+            if let Some(plenora_database_core::spatial_operand::RelationColumns::Known(columns)) =
+                identities.relation(relation.0.as_ref(), &relation.1)
+            {
+                if columns.iter().any(|column| {
+                    column.name == name && column.column_type.identity.as_deref() == Some("json")
+                }) {
+                    "json".clone_into(&mut catalog.name);
+                    catalog.declaration = Some("json".to_owned());
+                }
+            }
             Ok((name, catalog))
         })
         .collect::<Result<_>>()
@@ -1169,6 +1182,8 @@ async fn show_columns(
             .await?;
         !views.is_empty()
     };
+    let json =
+        crate::write_admission::json_valid_columns(session, schema, object, cancellation).await?;
     let mut columns = Vec::with_capacity(rows.len());
     for row in &rows {
         let column: String = required(row, 0, "Field")?;
@@ -1178,6 +1193,14 @@ async fn show_columns(
         let computed = is_computed_column(&extra, "")
             || (profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb
                 && mariadb_default_may_compute(default.as_deref()));
+        let declared = if profile.kind() == plenora_database_core::plan::ProviderKind::Mariadb
+            && base_type(&declared) == "longtext"
+            && (json.contains(&column) || derived || computed)
+        {
+            "json".to_owned()
+        } else {
+            declared
+        };
         columns.push(
             CatalogColumn::new(
                 column,

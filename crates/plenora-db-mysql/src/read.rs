@@ -82,7 +82,14 @@ pub(crate) async fn read_operation_with_profile(
     )
     .await?;
     let plan = MysqlReadPlan::compile_with_profile(&description, operation, profile)?;
-    crate::types::ensure_read_families(&description, operation, parameters, profile)?;
+    let json = crate::write_admission::json_valid_columns(
+        &mut session,
+        schema,
+        &operation.source.object,
+        &internal,
+    )
+    .await?;
+    crate::types::ensure_read_families(&description, operation, parameters, profile, &json)?;
     let column_count = u64::try_from(plan.columns.len()).map_err(|_| {
         DatabaseError::resource_limit(format!("numero colonne {product} non rappresentabile"))
     })?;
@@ -212,9 +219,14 @@ pub(crate) async fn query_operation_with_profile(
             "query {product} oltre il limite di placeholder del prepared statement"
         )));
     }
-    // Il layout dei bind si valida prima della rete, sui valori originali.
-    // Il binding eseguibile si costruisce dopo il giudizio e l'ammissione.
-    bind_parameters(&bind_names, parameters, profile.kind())?;
+    // Prima della rete, regola T e ammissione conservano il contesto del
+    // renderer; il binder valida il layout sui valori gia ammessi.
+    let initial = plenora_database_core::admission_gate::query_parameters(
+        profile.kind(),
+        operation,
+        parameters,
+    )?;
+    bind_parameters(&bind_names, &initial, profile.kind())?;
     ensure_active_read_budget(budget, profile)?;
     let operation_lease = budget.try_lease(ResourceKind::ConcurrentOperations, 1)?;
     let mut budget_cancellation = BudgetCancellation::new(cancellation, budget)?;

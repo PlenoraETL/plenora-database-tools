@@ -8,6 +8,154 @@ riassumono le note di quelle release.
 
 ## 9.0.0 - in preparazione
 
+- Db2: il controllo dei tipi result set prima di SQLExecute condivide la
+  tabella del decoder e ammette CLOB/DBCLOB/BLOB nel percorso long-read,
+  conservando il rifiuto dei tipi non qualificati anche senza righe o con NULL.
+  Gli errori del server nelle query mantengono la fase Read, inclusi sicurezza
+  e oggetti mancanti; i rifiuti locali dei tipi restano Unsupported/Prepare.
+
+- Audit JSON, raccolta VM su MySQL 9.7.2 e MariaDB 10.11/11.8/12.3:
+  per ciascuna wheel 7.0.0 e 8.0.0–8.0.4, 1474 combinazioni per fixture,
+  608 differenze rispetto all'oracolo JSON su MySQL (384 A, 224 B) e 266
+  su ciascun MariaDB (154 A, 112 B). La 9.0.0 pre-correzione (978cad27)
+  ne aveva 168 (24 A, 144 B) e 170 (74 A, 96 B). A indica confronti della
+  libreria, B SQL del chiamante: questi totali non sono tutti difetti di
+  trasporto. C segnala attese ambigue su stringhe Python e NULL SQL:
+  40 casi MySQL e 86 per MariaDB, inclusi nei totali A/B.
+  Superfici A misurate colpite almeno dalla 7.0.0: where_eq select/update/delete
+  e expression update/delete su entrambi; expression select su MySQL e
+  conditional_update su MariaDB. Non si retrodata una superficie non misurata.
+  La correzione rifiuta i confronti JSON non qualificati, anche con NULL SQL,
+  riconosce LONGTEXT/JSON MariaDB, protegge chiavi Arrow e controlli condizionali.
+  Rifiuti conservativi e migrazione sono descritti nel README SDK.
+  Per SQL del chiamante il testo resta testo e None resta NULL; dict/list JSON
+  nudi sono rifiutati, non serializzati implicitamente. Esempio: payload
+  `{"a":1,"b":2}` contro il parametro str `'{"b":2,"a":1}'` con `payload = ?`
+  puo non corrispondere: MySQL JSON/stringa e MariaDB LONGTEXT hanno semantiche
+  server diverse dall'uguaglianza JSON. Il CAST MySQL deve essere scelto dal
+  chiamante; JSON_EQUALS/JSON_CONTAINS non garantiscono identita esatta.
+  La nuova sonda controlla l'eco dei parametri B indipendentemente dal risultato
+  SQL. I nuovi casi live di conferma sono distinti dalla misura 9.0.0 riportata sotto.
+
+- Correzioni JSON-testo, misurate almeno dalla 7.0.0: nella 8.0.4 MySQL
+  registra 384 risultati diversi senza errore, 660 accettazioni non qualificate
+  e 112 trasporti alterati; MariaDB rispettivamente 154, 594 e 112.
+  Gli stessi numeri sono misurati su 7.0.0 e 8.0.0–8.0.3.
+  La misura 9.0.0 registra 0/0/0 e 240 trasporti esatti. Questi numeri non
+  qualificano i nuovi casi di conferma L-A/L-B/L-C/L-D, ancora da eseguire.
+- `conditional_update` MySQL/MariaDB ammette soltanto SQL semplice su relazioni
+  senza colonne JSON: rifiuta anche SQL opaco, funzioni, subquery e join prima
+  del savepoint. Usare un piano relazionale tipizzato per le forme escluse.
+- MariaDB: JSON tipizzato rifiutato esplicitamente in preparazione nel renderer
+  e nel binder, invece di generare `CAST(? AS JSON)` non valido o degradare
+  al confronto testuale. Per una semantica JSON esplicita usare SQL del
+  chiamante con `JSON_EQUALS` e parametri `String`; il confronto testuale
+  ordinario non garantisce equivalenza rispetto a spazi e ordine delle chiavi.
+
+- A900-001, ammissione Rust/CLI/SDK: data, timestamp, timestamp con fuso,
+  UUID e decimale vengono validati integralmente prima della conversione.
+  NUL in `String`/`Enum` si rifiuta solo dove il trasporto testuale non lo
+  conserva: PostgreSQL (rifiuto del server). MySQL, MariaDB, SQL Server,
+  Oracle e Db2 lo lasciano passare; lunghezza e padding restano regole separate.
+  Il precedente `None` nel testkit SQL Server nascondeva un errore, non zero
+  righe: non era prova di alterazione. I filtri `nul` del runner VM confermano
+  separatamente bind, portable INSERT/UPDATE, read e writer; non ancora
+  eseguiti in questa revisione. Ripristinato il profilo Db2 precedente al
+  rifiuto generico A900. Rifiuta inoltre `Null` con tipo vuoto, WKB
+  strutturalmente invalido e `TimestampTz` senza suffisso `Z` oppure `±HH:MM`.
+  Suffissi o forme malformate non diventano piu date/testo validi per taglio.
+  Correggere il valore d'origine; per memorizzare testo usare `String` esplicito.
+  Raggiungibilita confermata dalla facade pubblica portable e dal DML
+  relazionale (INSERT/UPDATE): la guardia di famiglia dei confronti non
+  impedisce le assegnazioni Timestamp -> Date/testo. L1 distingue il rifiuto
+  di ammissione in scrittura dal rifiuto di famiglia nel filtro testo.
+- Runner audit VM: ogni filtro ha esito e log propri; un fallimento non
+  salta i successivi (inclusi PostgreSQL L3/L5), e i log precedenti del
+  provider vengono rimossi prima della preparazione.
+- Oracle: gli errori read/catalogo conservano la causa gia sanitizzata
+  oltre al contesto operativo. Il solo Io/Probe del secondo giro non
+  identifica la causa del guasto; non e prova di oggetto assente o permessi
+  insufficienti e richiede una nuova misura live con il diagnostico completo.
+- A900-002/003, query tipizzate: il contesto del renderer e condiviso fra
+  regola T e ammissione. MySQL trasporta JSON come testo soltanto sotto il
+  CAST JSON dichiarato; WKB Binary nelle posizioni spatial conserva il proprio
+  percorso. Il controllo comune rifiuta con `Crs` uno SRID del valore diverso
+  da quello di `SpatialValue` prima di estrarre i byte; dimensioni e semantica
+  vengono verificate prima della conversione. Un nome condiviso fra parametri
+  nudi e tipizzati o tipi dichiarati diversi viene rifiutato.
+  Non occorre aggirare il tipo dichiarato; JSON nudo resta chiuso.
+- A900-014, PostgreSQL: l'ammissione di `name` limita il testo a 63 byte,
+  inclusi i caratteri multibyte. Oltre il limite usare una colonna `text` o
+  normalizzare esplicitamente prima dell'ingresso; nessun taglio automatico.
+  Il comportamento del vecchio binder nativo resta da misurare live.
+
+- A900-004, API Rust: `compile_portable` restituisce `CompiledPortable`, con
+  parametri privati. Migrare l'esecuzione a `facade::execute_portable` o al
+  cancello `admission_gate::portable`; per ispezione usare `sql` e `param_count`.
+  `QueryResult::try_into_mappings` diventa `into_mappings`, sempre fallibile.
+  Aggiornare i match per `Expression::TypedParameter`, i costruttori di
+  `OracleColumn` (`data_type_owner`), `MysqlIndex` (`prefix`) e il terzo campo
+  di `SqlServerColumnBuffer::Timestamp`. `bind_parameters` MySQL richiede
+  `ProviderKind`; gli adapter `TransactionScope` devono implementare
+  `column_types` e `operand_catalog`: i default ora rifiutano i piani non provati.
+- A900-005, CLI: `--dry-run` richiede una connessione; senza DSN usare
+  `--dry-run --offline`. Gli script devono gestire `status=dry_run_offline`
+  e i campi aggiuntivi, senza interpretarlo come preflight contro il server.
+- A900-006, bulk: la regola A rifiuta major e coppie Arrow/target non misurate
+  con ogni policy; lunghezze simboliche solo nell'intervallo misurato, anche
+  una misura negativa della chiave chiude le altre dimensioni. Migrare a una
+  coppia qualificata o raccogliere nuove prove. PostgreSQL Create richiede
+  privilegio TEMPORARY; Oracle/Db2 rifiutano intermedi non tabulati, inclusi
+  NCLOB/LONG/JSON Oracle e tipi distinti Db2: scegliere un intermedio provato.
+- A900-007, scritture: Strict puo rifiutare padding, vuoti, zero negativo,
+  underflow, frazioni, charset e numeri JSON alterati. Le mode per chiavi
+  richiedono unicita provata e ingresso senza duplicati; spazi testuali e zeri
+  binari finali sono confrontati conservativamente anche dove il DB li distingue.
+  Migrare normalizzando/deduplicando esplicitamente e scegliendo chiavi provate;
+  togliere le chiavi da `update_columns`. Indici/collation non qualificati,
+  chiavi testuali Oracle non binarie, viste/opachi, RLS/VPD/RCAC nelle operazioni
+  distruttive, trigger BEFORE/INSTEAD anche innocui e bulk che saltano
+  vincoli/default possono essere rifiutati indipendentemente dalla policy.
+  Usare target e percorsi qualificati; Allow non apre coppie non provate.
+- A900-008, spatial/Arrow: adozione Geometry Semantics con controlli di
+  WKB/EWKB, SRID, dimensioni, tipi, anelli e CRS. `lat_lon` e
+  `northing_easting` sono rifiutati, EWKB in scrittura solo su PostgreSQL;
+  normalizzare esplicitamente encoding e assi prima dell'ingresso. SRID
+  derivabile solo da catalogo qualificato; query/ORM Oracle/Db2 e alcuni
+  percorsi MariaDB/SQL Server richiedono prove catalogo. PostgreSQL senza
+  typmod/SRID puo rifiutare geometrie con SRID: dichiarare il frame nel catalogo.
+  Gestire `Schema`/`Crs` dove prima si osservava `DataMapping`.
+- A900-009, bind e connessione: UUID canonico 8-4-4-4-12, decimali posizionali
+  nei binder che ne ricavano precisione/scala, temporali entro il microsecondo.
+  Normalizzare esplicitamente prima del bind; TimestampTz MariaDB, zero negativo
+  MariaDB/Db2, vuoti Oracle e promozioni LOB non provate restano rifiutati.
+  Db2 richiede codepage UTF-8 verificata al connect: migrare il database a UTF-8.
+  F/T/C rifiutano confronti fra famiglie, CAST ed espressioni non provabili,
+  inclusi CAST testuali MySQL/MariaDB: usare tipi coerenti e piani qualificati.
+- A900-010, MySQL/MariaDB Rust e SDK sync/async: CLIENT_FOUND_ROWS cambia
+  anche execute SQL nativo e conditional update. UPDATE invariato e upsert
+  invariato contano 1 riga trovata anziche 0 modifiche. Migrare le aspettative
+  `expected_affected` e non usare il conteggio come prova di cambio del valore.
+- A900-011, lettura SQL Server: `datetime` legacy usa il millisecondo canonico
+  (.003/.007), invertibile verso il tick 1/300 s ma diverso dal valore razionale.
+  Migrare confronti/esportazioni che assumevano equivalenza con `datetime2`;
+  questa eccezione non riguarda `datetime2` o `datetimeoffset`.
+- A900-012, PostgreSQL: preflight/write/describe risolvono lo schema omesso
+  tramite search_path, non implicitamente public; catalog diverso e schema
+  temporaneo sono rifiutati. Specificare lo schema per mantenere il target.
+  COMMENT ON COLUMN degli id usa ancora il percorso chiuso: gli event trigger
+  devono qualificare i propri oggetti. La scelta resta da verificare live;
+  non riguarda il ripristino gia presente per DML, DDL target e COMMIT.
+- A900-013, CI: i rami `manutenzione/**` non attivano piu automaticamente
+  rust-ci, coverage e gli altri workflow di assurance/fuzz/supply-chain che
+  prima li includevano. Migrare il processo di manutenzione verificando i
+  gate esplicitamente: un gate non avviato non costituisce una verifica.
+- A900-015, errori PostgreSQL: mixed SRID diventa `Crs`, 428C9
+  `InvalidPlan` anziche `Conflict`; nuovi mapping per 42P10, 55000 e 42809.
+  Aggiornare dispatch e test su categorie/exit code. La chiusura provata prima
+  del COMMIT puo dare `remote_effect=None`, `retry=Never` anziche recovery:
+  decidere retry/recovery dai campi dell'errore, non dalla sola disconnessione.
+
 - Frontiera di sessione MySQL/MariaDB chiusa con un insieme fisso: bootstrap
   e rilettura confrontano anche le costanti attese, non soltanto la baseline.
   div_precision_increment=4 esplicita il default e la scala della divisione;
@@ -56,11 +204,11 @@ riassumono le note di quelle release.
   precisione introdotte in #134 sono ora accompagnate da regressioni live
   permanenti per TIMESTAMP(0)/(3)/(6), append/upsert e identita delle chiavi.
   Il controllo precedente per solo nome e verificato nei tag Db2
-  `py-v0.12.0`?`py-v8.0.4` e Oracle `py-v3.1.0`?`py-v8.0.4`.
+  `py-v0.12.0`–`py-v8.0.4` e Oracle `py-v3.1.0`–`py-v8.0.4`.
 - Audit pre-release, catalogo Db2: la distinzione CODEPAGE/FOR BIT DATA di
   #134 ha una regressione permanente con HEX, lunghezza e byte non UTF-8.
   Arrow binario resta rifiutato finche non qualificato. Il catalogo senza
-  CODEPAGE e verificato nei tag `py-v0.12.0`?`py-v8.0.4`.
+  CODEPAGE e verificato nei tag `py-v0.12.0`–`py-v8.0.4`.
 - MySQL/MariaDB: i warning dopo execute, query e lettura Arrow sono letti
   sulla stessa sessione prima del riuso; diagnostici di alterazione,
   sconosciuti o incompleti diventano errori senza payload. Sono informative
@@ -79,11 +227,11 @@ riassumono le note di quelle release.
   Lo stream transazionale rifiuta conservativamente ogni warning al termine
   del risultato. Le scritture transazionali rifiutate con effetto ignoto
   chiudono la connessione, impedendo un commit successivo. Assenza del
-  controllo verificata nei tag MySQL `py-v0.1.0`?`py-v8.0.4`; per MariaDB,
+  controllo verificata nei tag MySQL `py-v0.1.0`–`py-v8.0.4`; per MariaDB,
   dalla presenza del provider in `py-v0.12.0` fino a `py-v8.0.4`.
 - Audit numerico Db2: regressione live scalare/array con confronto server
   HEX dei double, decimali al limite e rifiuto di -0/subnormali. Il trasporto
-  testuale precedente e verificato nei tag `py-v0.12.0`?`py-v8.0.4`;
+  testuale precedente e verificato nei tag `py-v0.12.0`–`py-v8.0.4`;
   questo riscontro statico non attribuisce una perdita numerica a ogni tag.
   Le nuove regressioni live sono prove da eseguire, non qualifiche gia verdi.
 

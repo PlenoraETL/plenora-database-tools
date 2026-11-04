@@ -41,7 +41,12 @@ fn valori(value: &ParameterValue) -> BoundValues {
 
 fn wkb() -> ParameterValue {
     ParameterValue::Wkb {
-        bytes: vec![1, 1, 0, 0, 0],
+        bytes: [
+            vec![1, 1, 0, 0, 0],
+            1_f64.to_le_bytes().to_vec(),
+            2_f64.to_le_bytes().to_vec(),
+        ]
+        .concat(),
         srid: Some(4326),
         dimensions: Dimensions::Xy,
         semantics: SpatialSemantics::Geometry,

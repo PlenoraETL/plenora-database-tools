@@ -11,6 +11,7 @@
 
 mod arrow;
 mod catalog;
+mod conditional_json;
 mod config;
 mod error;
 mod parameter;

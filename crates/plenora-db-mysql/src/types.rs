@@ -796,6 +796,7 @@ pub fn ensure_read_families(
     operation: &ReadOperation,
     parameters: &plenora_database_core::provider::ParameterBag,
     profile: &dyn crate::profile::ProductProfile,
+    json: &std::collections::BTreeSet<String>,
 ) -> Result<()> {
     use plenora_database_core::spatial_operand::{exact_column, ParameterFamilies};
     plenora_database_core::spatial_operand::ensure_scalar_filter_fields(
@@ -808,7 +809,11 @@ pub fn ensure_read_families(
                 exact_column(&description.columns, |column| &column.name, field).map(|column| {
                     (
                         read_column_type(description, column, profile).family,
-                        Some(column.native_declaration.to_ascii_lowercase()),
+                        Some(if json.contains(&column.name) {
+                            "json".to_owned()
+                        } else {
+                            column.native_declaration.to_ascii_lowercase()
+                        }),
                     )
                 }),
             )

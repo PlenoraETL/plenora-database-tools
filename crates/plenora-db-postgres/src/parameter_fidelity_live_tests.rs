@@ -168,7 +168,12 @@ fn cases() -> Vec<Case> {
             V::F64(5e-324),
             exact(&V::F64(5e-324), double_hex(5e-324)),
         ),
-        Case::new("double 0.1 in real", "r", V::F64(0.1), mapping.clone()),
+        // Il target float4 si conosce dopo prepare: lo SQL del chiamante e
+        // gia inviato, quindi il rifiuto conserva Unknown/RequiresRecovery.
+        Case::new("double 0.1 in real", "r", V::F64(0.1), mapping.clone()).on(
+            FidelityPath::Native,
+            Expect::RefusedAfterPrepare(ErrorCategory::DataMapping),
+        ),
         Case::new(
             "double 0.5 in real",
             "r",
@@ -300,6 +305,7 @@ fn cases() -> Vec<Case> {
 }
 
 #[tokio::test]
+#[ignore = "richiede PostgreSQL live"]
 async fn live_parameter_values_bind_exactly_or_are_refused() {
     let Some(dsn) = live_dsn_or_skip() else {
         return;
@@ -334,6 +340,9 @@ async fn live_parameter_values_bind_exactly_or_are_refused() {
         native: &native,
         native_cross_type_declared: false,
     };
+    plenora_database_testkit::audit900::malformed_temporals(&target, "s", Some("dt"))
+        .await
+        .expect("A900-001 L1: rifiuto prima della conversione e righe intatte");
     let outcomes = run(&target, &cases()).await;
     provider
         .execute_ddl(
@@ -679,4 +688,15 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
         failures.is_empty(),
         "valori generati non esatti su PostgreSQL: {failures:#?}"
     );
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture live esplicito"]
+async fn live_audit900_nul() {
+    let dsn = live_dsn_or_skip().expect("fixture PostgreSQL richiesta");
+    let provider = PostgresProvider::insecure_local();
+    let secret = SecretString::new(dsn);
+    plenora_database_testkit::nul_fidelity::check(&provider, &secret, SCHEMA, None)
+        .await
+        .expect("matrice NUL PostgreSQL");
 }

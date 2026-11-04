@@ -255,3 +255,129 @@ fn timestamp_text_preserves_all_twelve_digits() {
         assert!(!error.message.contains(invalid));
     }
 }
+
+#[test]
+fn unqualified_result_types_are_refused_before_execute_even_for_null() {
+    for data_type in [
+        DataType::Unknown,
+        DataType::Time { precision: 0 },
+        DataType::Other {
+            data_type: odbc_api::sys::SqlDataType(-360),
+            column_size: None,
+            decimal_digits: 0,
+        },
+        DataType::Other {
+            data_type: odbc_api::sys::SqlDataType(-370),
+            column_size: None,
+            decimal_digits: 0,
+        },
+    ] {
+        let error = crate::transaction::validate_result_type(data_type).unwrap_err();
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        assert_eq!(error.remote_effect, RemoteEffect::None);
+        for value in [None, Some(&b"a\0b"[..])] {
+            assert_eq!(
+                decode_value(value, data_type).unwrap_err().phase,
+                ErrorPhase::Prepare
+            );
+        }
+    }
+}
+
+/// Matrice descrittore/decoder: anche NULL deve seguire la stessa ammissione.
+#[test]
+fn result_type_matrix_shares_preflight_and_long_read_decoders() {
+    use crate::transaction::validate_result_type;
+    let text = ParameterValue::String(" a\0??? ".into());
+    let binary = ParameterValue::Bytes(vec![0, 1, 255]);
+    let mut cases = vec![
+        (DataType::Bit, "1", ParameterValue::Bool(true)),
+        (DataType::TinyInt, "1", ParameterValue::I32(1)),
+        (DataType::SmallInt, "1", ParameterValue::I32(1)),
+        (DataType::Integer, "1", ParameterValue::I32(1)),
+        (DataType::BigInt, "1", ParameterValue::I64(1)),
+        (DataType::Real, "1.5", ParameterValue::F64(1.5)),
+        (
+            DataType::Float { precision: 53 },
+            "1.5",
+            ParameterValue::F64(1.5),
+        ),
+        (DataType::Double, "1.5", ParameterValue::F64(1.5)),
+        (
+            DataType::Numeric {
+                precision: 5,
+                scale: 2,
+            },
+            "1.50",
+            ParameterValue::Decimal("1.50".into()),
+        ),
+        (
+            DataType::Decimal {
+                precision: 5,
+                scale: 2,
+            },
+            "1.50",
+            ParameterValue::Decimal("1.50".into()),
+        ),
+        (
+            DataType::Date,
+            "2026-11-04",
+            ParameterValue::Date("2026-11-04".into()),
+        ),
+        (
+            DataType::Timestamp { precision: 6 },
+            "2026-11-04 12:00:00.123456",
+            ParameterValue::Timestamp("2026-11-04T12:00:00.123456".into()),
+        ),
+    ];
+    for kind in [
+        DataType::Char { length: None },
+        DataType::WChar { length: None },
+        DataType::Varchar { length: None },
+        DataType::WVarchar { length: None },
+        DataType::LongVarchar { length: None },
+        DataType::WLongVarchar { length: None },
+    ] {
+        cases.push((kind, " a\0??? ", text.clone()));
+    }
+    for kind in [
+        DataType::Binary { length: None },
+        DataType::Varbinary { length: None },
+        DataType::LongVarbinary { length: None },
+    ] {
+        cases.push((kind, "0001FF", binary.clone()));
+    }
+    for (code, value, expected) in [
+        (-99, " a\0??? ", text.clone()),
+        (-350, " a\0??? ", text),
+        (-98, "0001FF", binary),
+    ] {
+        for column_size in [None, std::num::NonZeroUsize::new(100_000)] {
+            cases.push((
+                DataType::Other {
+                    data_type: odbc_api::sys::SqlDataType(code),
+                    column_size,
+                    decimal_digits: 0,
+                },
+                value,
+                expected.clone(),
+            ));
+        }
+    }
+    for (kind, value, expected) in cases {
+        assert!(validate_result_type(kind).is_ok(), "{kind:?}");
+        assert_eq!(
+            decode_value(Some(value.as_bytes()), kind).unwrap(),
+            expected,
+            "{kind:?}"
+        );
+        assert!(
+            matches!(
+                decode_value(None, kind).unwrap(),
+                ParameterValue::Null { .. }
+            ),
+            "{kind:?}"
+        );
+    }
+}

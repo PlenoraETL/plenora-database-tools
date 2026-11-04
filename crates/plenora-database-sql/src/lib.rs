@@ -1237,6 +1237,12 @@ impl Renderer {
                     QueryExpression::TypedParameter { parameter_type, .. } => Some(parameter_type),
                     _ => self.parameter_types.get(name),
                 };
+                if let Some(kind) = kind {
+                    plenora_database_core::typed_parameter::ensure_json_supported(
+                        self.provider_kind(),
+                        *kind,
+                    )?;
+                }
                 Ok(match kind {
                     Some(kind) => self.cast_dialect().render(&value, *kind),
                     None => value,
@@ -1368,6 +1374,10 @@ impl Renderer {
         target_type: QueryParameterType,
         binds: &mut RenderState,
     ) -> Result<String> {
+        plenora_database_core::typed_parameter::ensure_json_supported(
+            self.provider_kind(),
+            target_type,
+        )?;
         let value = self.render_query_expression(expression, binds)?;
         if self.dialect == Dialect::Oracle {
             return Ok(self.cast_dialect().render(&value, target_type));

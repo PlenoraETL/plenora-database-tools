@@ -171,3 +171,33 @@ fn locally_closed_connection_does_not_blame_the_peer() {
     );
     assert_eq!(peer.message, "connessione Oracle chiusa dal peer");
 }
+
+/// I contesti aggiungono la fase operativa senza cancellare la causa sanitizzata.
+#[test]
+fn read_catalog_context_preserves_safe_cause_and_error_axes() {
+    for source in [
+        Error::OracleError {
+            code: 942,
+            message: "PAYLOAD".into(),
+        },
+        Error::OracleError {
+            code: 1031,
+            message: "PAYLOAD".into(),
+        },
+        Error::ConnectionClosed,
+    ] {
+        let original = driver_error(ErrorPhase::Probe, &source);
+        let contextual = crate::read::read_context(
+            crate::catalog::catalog_context(original.clone(), "catalogo colonne"),
+            "ispezione read",
+        );
+        assert!(contextual.message.contains(&original.message));
+        assert!(contextual.message.contains("catalogo colonne"));
+        assert!(contextual.message.contains("ispezione read"));
+        assert!(!contextual.message.contains("PAYLOAD"));
+        assert_eq!(contextual.category, original.category);
+        assert_eq!(contextual.phase, original.phase);
+        assert_eq!(contextual.remote_effect, original.remote_effect);
+        assert_eq!(contextual.retry, original.retry);
+    }
+}

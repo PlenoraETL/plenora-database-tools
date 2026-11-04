@@ -1957,7 +1957,21 @@ fn collect_spatial_use(
             ));
         }
         match &arguments[1] {
-            QueryExpression::Parameter { name } => SpatialArgument::Geometry(name.clone()),
+            QueryExpression::Parameter { name } | QueryExpression::TypedParameter { name, .. } => {
+                SpatialArgument::Geometry(name.clone())
+            }
+            QueryExpression::SpatialValue { expression, .. } => match expression.as_ref() {
+                QueryExpression::Parameter { name }
+                | QueryExpression::TypedParameter { name, .. } => {
+                    SpatialArgument::Geometry(name.clone())
+                }
+                _ => {
+                    return Err(query_error(
+                        ErrorCategory::InvalidPlan,
+                        "costruttore spatial senza parametro",
+                    ))
+                }
+            },
             QueryExpression::Column { column } => {
                 SpatialArgument::GeometryColumn(SpatialColumnRef {
                     relation: column.relation.clone(),

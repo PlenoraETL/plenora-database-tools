@@ -118,13 +118,27 @@ pub fn reject_sub_microsecond(provider: ProviderKind, value: &str) -> Result<()>
     Ok(())
 }
 
-/// Rifiuta un testo che contiene il carattere NUL.
+/// Rifiuta NUL soltanto nel trasporto testuale PostgreSQL, che non lo conserva.
+///
+/// Bind nativo, SQL del chiamante, portable/read e writer condividono questa
+/// regola. MySQL, MariaDB, SQL Server, Oracle e Db2 conservano il byte: padding,
+/// lunghezza e tipi non testuali restano controlli separati dell'operando.
+/// Le sonde `scrittura_server_*.json` e `live_audit900_nul` distinguono le
+/// superfici; un errore del vecchio testkit (`None`) non prova un troncamento.
 ///
 /// # Errors
 ///
 /// `DataMapping` in fase `Prepare`.
 pub fn reject_nul(provider: ProviderKind, value: &str) -> Result<()> {
-    if value.contains('\0') {
+    if !matches!(
+        provider,
+        ProviderKind::Mysql
+            | ProviderKind::Mariadb
+            | ProviderKind::Sqlserver
+            | ProviderKind::Oracle
+            | ProviderKind::Db2
+    ) && value.contains('\0')
+    {
         return Err(mapping(provider, "parametro testuale con carattere NUL"));
     }
     Ok(())

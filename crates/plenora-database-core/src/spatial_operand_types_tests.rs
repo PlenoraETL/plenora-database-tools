@@ -900,3 +900,70 @@ fn un_cast_a_testo_si_rifiuta_su_mysql_e_mariadb() {
             .unwrap_or_else(|error| panic!("{prodotto:?}: {error:?}"));
     }
 }
+
+#[test]
+fn audit900_untyped_json_comparisons_are_explicitly_refused() {
+    for provider in [ProviderKind::Mysql, ProviderKind::Mariadb] {
+        let query = piano(
+            "f",
+            &json!({"filter": uguale(&colonna("f", "name"), &parametro("p"))}),
+        );
+        let parameters = ParameterFamilies::from_bag(&ParameterBag::new(
+            [("p".into(), ParameterValue::Json(json!({"a": 1})))].into(),
+        ));
+        let error = scalar_operands(provider, &query)
+            .unwrap()
+            .judge_bound(&catalogo(provider), &parameters)
+            .unwrap_err();
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        assert_eq!(error.phase, ErrorPhase::Prepare);
+        assert_eq!(error.message, OPERAND_FAMILY_MISMATCH);
+    }
+}
+
+#[test]
+fn json_columns_refuse_untyped_operands_including_sql_null() {
+    for provider in [ProviderKind::Mysql, ProviderKind::Mariadb] {
+        let mut catalog = OperandCatalog::new(provider);
+        catalog.insert(
+            Some("s".into()),
+            "f".into(),
+            RelationColumns::Known(vec![CatalogColumn::new(
+                "payload",
+                ColumnOrigin::Stored,
+                OperandFamily::Other,
+            )
+            .with_type(
+                crate::cast_table::CatalogType {
+                    name: "json".into(),
+                    ..Default::default()
+                },
+                "json",
+            )]),
+        );
+        for value in [
+            ParameterValue::String("null".into()),
+            ParameterValue::String("1".into()),
+            ParameterValue::I64(1),
+            ParameterValue::Null {
+                type_name: "text".into(),
+            },
+            ParameterValue::Json(json!({"a":1})),
+        ] {
+            let parameters =
+                ParameterFamilies::from_bag(&ParameterBag::new([("p".into(), value)].into()));
+            for right in [
+                parametro("p"),
+                json!({"kind":"typed_parameter", "name":"p", "parameter_type":"json"}),
+            ] {
+                let operation = piano(
+                    "f",
+                    &json!({"filter":uguale(&colonna("f", "payload"), &right)}),
+                );
+                let outcome = scalar_operands(provider, &operation)
+                    .and_then(|op| op.judge_bound(&catalog, &parameters));
+                assert_eq!(outcome.unwrap_err().category, ErrorCategory::InvalidPlan);
+            }
+        }
+    }
+}

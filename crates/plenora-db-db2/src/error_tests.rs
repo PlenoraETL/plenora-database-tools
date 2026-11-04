@@ -132,3 +132,20 @@ fn read_conversion_warnings_are_mapping_errors_without_vendor_payload() {
         }
     }
 }
+
+#[test]
+fn query_server_errors_keep_read_phase_and_sanitized_categories() {
+    for (state, code, category) in [
+        (*b"42501", -551, ErrorCategory::Authorization),
+        (*b"42704", -204, ErrorCategory::NotFound),
+    ] {
+        let error = driver_error(
+            &diagnostic(state, code, "private-object secret-value"),
+            ErrorPhase::Read,
+        );
+        assert_eq!(error.category, category);
+        assert_eq!(error.phase, ErrorPhase::Read);
+        assert!(!error.message.contains("private-object"));
+        assert!(!error.message.contains("secret-value"));
+    }
+}

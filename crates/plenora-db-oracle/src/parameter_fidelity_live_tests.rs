@@ -360,6 +360,11 @@ async fn live_parameter_values_bind_exactly_or_are_refused() {
             native: &native,
             native_cross_type_declared: true,
         };
+        if outcomes.is_empty() {
+            plenora_database_testkit::audit900::malformed_temporals(&target, "S", None)
+                .await
+                .expect("A900-001 L1: rifiuto prima della conversione e righe intatte");
+        }
         outcomes.extend(run(&target, chunk).await);
     }
     provider
@@ -935,4 +940,24 @@ async fn live_binary_double_negative_zero_is_measured() {
     .map(|(id, double, float)| ((*id).to_owned(), (*double).to_owned(), (*float).to_owned()))
     .collect::<Vec<_>>();
     assert_eq!(measured, expected, "la misura di -0.0 su Oracle e cambiata");
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture live esplicito"]
+async fn live_audit900_nul() {
+    let schema = std::env::var("PLENORA_ORACLE_USER")
+        .unwrap_or_else(|_| "plenora".into())
+        .to_ascii_uppercase();
+    let mut failures = Vec::new();
+    for index in 0..6 {
+        // Una sessione per tipo: limite dei cursori del fork Oracle.
+        let (provider, secret) = fixture();
+        if let Err(error) =
+            plenora_database_testkit::nul_fidelity::check(&provider, &secret, &schema, Some(index))
+                .await
+        {
+            failures.push(error);
+        }
+    }
+    assert!(failures.is_empty(), "matrice NUL Oracle: {failures:#?}");
 }

@@ -25,7 +25,7 @@ services:
     container_name: dataflow-mariadb-certgen
     user: "0:0"
     volumes:
-      - mariadb_ca_private:/ca
+      - mariadb_12_ca_private:/ca
       - mariadb_12_tls:/tls
       - ./docker/mysql/tls:/fixture:ro
       - ./docker/mariadb/tls:/fixture-host:ro
@@ -83,7 +83,7 @@ services:
     container_name: dataflow-mariadb-11-certgen
     user: "0:0"
     volumes:
-      - mariadb_ca_private:/ca
+      - mariadb_11_ca_private:/ca
       - mariadb_11_tls:/tls
       - ./docker/mysql/tls:/fixture:ro
       - ./docker/mariadb/tls:/fixture-host:ro
@@ -131,7 +131,7 @@ services:
     container_name: dataflow-mariadb-10-certgen
     user: "0:0"
     volumes:
-      - mariadb_ca_private:/ca
+      - mariadb_10_ca_private:/ca
       - mariadb_10_tls:/tls
       - ./docker/mysql/tls:/fixture:ro
       - ./docker/mariadb/tls:/fixture-host:ro
@@ -175,7 +175,9 @@ volumes:
   mariadb_data:
   mariadb_11_data:
   mariadb_10_data:
-  mariadb_ca_private:
+  mariadb_12_ca_private:
+  mariadb_11_ca_private:
+  mariadb_10_ca_private:
   mariadb_12_tls:
   mariadb_11_tls:
   mariadb_10_tls:

@@ -205,3 +205,11 @@ fn native_temporal_bind_bytes_stay_native() {
             .unwrap()
     );
 }
+
+#[test]
+fn audit900_bind_matrix() {
+    plenora_database_testkit::bind_matrix900::check(
+        plenora_database_core::plan::ProviderKind::Oracle,
+        |_, value| crate::parameter::bind_parameters(std::slice::from_ref(value)).is_ok(),
+    );
+}

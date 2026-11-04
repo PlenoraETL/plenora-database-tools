@@ -6482,7 +6482,7 @@ async fn live_v12_write_upsert_without_keys_rejected() {
 //  NativeQueryPolicy
 // ============================================================================
 //
-// I test qui sotto verificano che l'enforcement di `NativeQueryPolicy` (già
+// I test qui sotto verificano che l'enforcement di `NativeQueryPolicy` (giÃ
 // coperto client-side da unit test in `plenora-database-core`) sia
 // effettivamente cablato dentro `MysqlTransaction::{execute, query,
 // execute_conditional_update}`. Non serve un data-plane elaborato: basta
@@ -11286,7 +11286,12 @@ fn fidelity_cases() -> Vec<FidelityCase> {
             fidelity_text(""),
             fidelity_exact(&fidelity_text(""), ""),
         ),
-        FidelityCase::new("testo con NUL", "S", fidelity_text("a\0b"), mapping.clone()),
+        FidelityCase::new(
+            "testo con NUL",
+            "S",
+            fidelity_text("a\0b"),
+            fidelity_exact(&fidelity_text("a\0b"), "610062"),
+        ),
         FidelityCase::new(
             "decimal esatto",
             "D",
@@ -11303,10 +11308,7 @@ fn fidelity_cases() -> Vec<FidelityCase> {
             "decimal oltre la scala della colonna",
             "D",
             V::Decimal("12345.67890001".to_owned()),
-            FidelityExpect::Assigned {
-                read: fidelity_text("12345.6789"),
-                raw: "12345.6789".to_owned(),
-            },
+            FidelityExpect::WarningRefused,
         )
         .on(FidelityPath::Portable, mapping.clone())
         .on(FidelityPath::Read, mapping.clone()),
@@ -11450,20 +11452,18 @@ fn fidelity_cases() -> Vec<FidelityCase> {
             "json",
             "J",
             V::Json(serde_json::json!({"a": 1})),
-            if mariadb {
-                fidelity_exact(&fidelity_text("{\"a\":1}"), "{\"a\":1}")
-            } else {
-                unsupported
-            },
+            unsupported.clone(),
         )
         .on(
             FidelityPath::Portable,
             if mariadb {
-                fidelity_exact(&fidelity_text("{\"a\":1}"), "{\"a\":1}")
+                unsupported
             } else {
                 fidelity_exact(&fidelity_text("{\"a\": 1}"), "{\"a\": 1}")
             },
-        ),
+        )
+        .comparison_refused(FidelityPath::Portable, ErrorCategory::InvalidPlan)
+        .comparison_refused(FidelityPath::Read, ErrorCategory::InvalidPlan),
         FidelityCase::new(
             "NULL integer",
             "N",
@@ -11523,6 +11523,9 @@ async fn live_parameter_values_bind_exactly_or_are_refused() {
         native: &fidelity_native,
         native_cross_type_declared: true,
     };
+    plenora_database_testkit::audit900::malformed_temporals(&target, "S", Some("DT"))
+        .await
+        .expect("A900-001 L1: rifiuto prima della conversione");
     let outcomes = fidelity_run(&target, &fidelity_cases()).await;
     provider
         .execute_ddl(
@@ -13654,7 +13657,9 @@ async fn live_sospetti_conditional_update_closes_scope() {
         )
         .await
         .unwrap();
-    let update = Statement::new("UPDATE pln_s900_cu SET d='1.239' WHERE id=1");
+    let update = Statement::new("UPDATE pln_s900_cu SET d=? WHERE id=1").with_params(vec![
+        plenora_database_core::provider::ParameterValue::String("1.239".into()),
+    ]);
     let error = tx
         .execute_conditional_update(
             ConditionalUpdate {
@@ -14345,4 +14350,478 @@ async fn live_sospetti_fixed_session_frontier() {
         assert!(error.message.contains(variable));
         assert_eq!(session.state(), crate::MysqlSessionState::Quarantined);
     }
+}
+
+// L2 e L4 della raccolta audit 900.
+fn provider900() -> Box<dyn Provider> {
+    if fidelity_mariadb() {
+        Box::new(MariadbProvider::new(live_config(), 2).expect("MariaDB"))
+    } else {
+        Box::new(MysqlProvider::new(live_config(), 2).expect("MySQL"))
+    }
+}
+
+async fn audit900_json_predicates() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let provider = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    // Stessa regressione nel gate live gia eseguito per entrambi i prodotti.
+    {
+        use plenora_database_core::portable::{select, Expression, PortableStatement, Predicate};
+        use plenora_database_core::provider::ParameterValue;
+        use plenora_database_core::transaction::ConditionalUpdate;
+        let mut tx = provider
+            .begin_transaction(
+                &secret,
+                &TransactionOptions::default(),
+                &write_budget(),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        for value in [
+            ParameterValue::String("null".into()),
+            ParameterValue::String("1".into()),
+            ParameterValue::Null {
+                type_name: "text".into(),
+            },
+        ] {
+            let plan = PortableStatement::Select(select("audit900_json", vec!["id"]).where_(
+                Predicate::Eq {
+                    column: "payload".into(),
+                    value: Expression::Literal(value.clone()),
+                },
+            ));
+            let error = plenora_database_core::facade::execute_portable_returning(
+                tx.as_mut(),
+                &plan,
+                &cancel,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.category, ErrorCategory::InvalidPlan);
+            let rows = tx
+                .query(
+                    &Statement::new("SELECT ?").with_params(vec![value.clone()]),
+                    &cancel,
+                )
+                .await
+                .unwrap();
+            if matches!(value, ParameterValue::Null { .. }) {
+                assert!(matches!(rows[0].values()[0], ParameterValue::Null { .. }));
+            } else {
+                assert_eq!(rows[0].values()[0], value);
+            }
+        }
+        let update = Statement::new("UPDATE audit900_json SET id=2 WHERE payload=?")
+            .with_params(vec![ParameterValue::String("1".into())]);
+        let error = tx
+            .execute_conditional_update(
+                ConditionalUpdate {
+                    update: &update,
+                    key_probe: None,
+                    expected_affected_rows: 1,
+                },
+                &cancel,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.category, ErrorCategory::InvalidPlan);
+        tx.rollback(&cancel).await.unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL/MariaDB"]
+async fn live_audit900_l2_typed_json() {
+    use plenora_database_core::transaction::{Statement, TransactionOptions};
+    let provider = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    for sql in [
+        "DROP TABLE IF EXISTS audit900_json",
+        "CREATE TABLE audit900_json (id INTEGER PRIMARY KEY, payload JSON)",
+        "INSERT INTO audit900_json (id) VALUES (1)",
+    ] {
+        provider
+            .execute_ddl(&secret, sql, &cancel)
+            .await
+            .expect("fixture L2");
+    }
+    audit900_json_predicates().await;
+    let query = serde_json::from_value(serde_json::json!({
+        "source":{"object":{"catalog":null,"schema":environment("PLENORA_MYSQL_DATABASE","dataflow_test"),"object":"audit900_json"},"alias":null},
+        "projection":[{"expression":{"kind":"typed_parameter","name":"p","parameter_type":"json"},"alias":"v"}]
+    })).expect("query L2");
+    let parameters = ParameterBag::new(
+        [(
+            "p".into(),
+            plenora_database_core::provider::ParameterValue::Json(serde_json::json!({"a":1})),
+        )]
+        .into(),
+    );
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let result = provider
+        .query(&secret, &query, &parameters, &budget, &cancel)
+        .await;
+    if fidelity_mariadb() {
+        let Err(error) = result else {
+            panic!("JSON MariaDB deve essere rifiutato");
+        };
+        assert_eq!(error.category, ErrorCategory::Unsupported);
+        assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+        provider
+            .execute_ddl(&secret, "DROP TABLE audit900_json", &cancel)
+            .await
+            .expect("pulizia L2");
+        return;
+    }
+    let mut stream = result.expect("JSON tipizzato con CAST");
+    let batch = stream
+        .next_batch(&cancel)
+        .await
+        .expect("batch")
+        .expect("riga");
+    assert_eq!(batch.num_rows(), 1);
+    let text = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("JSON testuale")
+        .value(0);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(text).expect("JSON"),
+        serde_json::json!({"a":1})
+    );
+    assert!(stream.next_batch(&cancel).await.expect("EOF").is_none());
+    drop(stream);
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("controllo raw L2");
+    let raw = if fidelity_mariadb() {
+        "SELECT JSON_EXTRACT(?, '$.a')"
+    } else {
+        "SELECT JSON_EXTRACT(CAST(? AS JSON), '$.a')"
+    };
+    let rows = tx
+        .query(
+            &Statement::new(raw).with_params(vec![
+                plenora_database_core::provider::ParameterValue::String("{\"a\":1}".into()),
+            ]),
+            &cancel,
+        )
+        .await
+        .expect("String + CAST JSON raw");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].values()[0],
+        plenora_database_core::provider::ParameterValue::String("1".into())
+    );
+    tx.rollback(&cancel).await.expect("rollback controllo L2");
+    provider
+        .execute_ddl(&secret, "DROP TABLE audit900_json", &cancel)
+        .await
+        .expect("pulizia L2");
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture MySQL/MariaDB"]
+async fn live_audit900_l4_found_rows() {
+    use plenora_database_core::transaction::{ConditionalUpdate, Statement, TransactionOptions};
+    let provider = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    for sql in [
+        "DROP TABLE IF EXISTS audit900_count",
+        "CREATE TABLE audit900_count (id INTEGER PRIMARY KEY, v INTEGER NOT NULL)",
+        "INSERT INTO audit900_count VALUES (1,7)",
+    ] {
+        provider
+            .execute_ddl(&secret, sql, &cancel)
+            .await
+            .expect("fixture L4");
+    }
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let options = TransactionOptions::default();
+    let same = Statement::new("UPDATE audit900_count SET v=7 WHERE id=1");
+    for expected in [0, 1] {
+        let mut tx = provider
+            .begin_transaction(&secret, &options, &budget, &cancel)
+            .await
+            .expect("begin");
+        assert_eq!(
+            tx.execute(&same, &cancel).await.expect("UPDATE invariato"),
+            1
+        );
+        assert_eq!(
+            tx.execute(
+                &Statement::new(
+                    "INSERT INTO audit900_count VALUES (1,7) ON DUPLICATE KEY UPDATE v=7"
+                ),
+                &cancel
+            )
+            .await
+            .expect("upsert invariato"),
+            1
+        );
+        let result = tx
+            .execute_conditional_update(
+                ConditionalUpdate {
+                    update: &same,
+                    key_probe: None,
+                    expected_affected_rows: expected,
+                },
+                &cancel,
+            )
+            .await;
+        if expected == 1 {
+            result.expect("una riga trovata");
+            tx.commit(&cancel).await.expect("commit");
+        } else {
+            assert_eq!(
+                result.expect_err("zero righe attese").category,
+                ErrorCategory::ConcurrentModification
+            );
+            tx.rollback(&cancel).await.expect("rollback");
+        }
+    }
+    let mut tx = provider
+        .begin_transaction(&secret, &options, &budget, &cancel)
+        .await
+        .expect("begin verifica");
+    assert_eq!(
+        tx.query(
+            &Statement::new("SELECT id FROM audit900_count WHERE id=1 AND v=7"),
+            &cancel
+        )
+        .await
+        .expect("stato finale")
+        .len(),
+        1
+    );
+    tx.rollback(&cancel).await.expect("rollback verifica");
+    provider
+        .execute_ddl(&secret, "DROP TABLE audit900_count", &cancel)
+        .await
+        .expect("pulizia L4");
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture del provider"]
+async fn live_audit900_lb_srid_before_io() {
+    use plenora_database_core::transaction::TransactionOptions;
+    let provider = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).expect("budget");
+    let mut tx = provider
+        .begin_transaction(&secret, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .expect("begin L-B");
+    plenora_database_testkit::audit900::mismatched_spatial_frame(tx.as_mut())
+        .await
+        .expect("rifiuto L-B");
+    tx.rollback(&cancel).await.expect("rollback L-B");
+}
+
+#[tokio::test]
+#[ignore = "richiede MariaDB 10.11/11.8/12.3"]
+async fn live_audit900_la_json_read() {
+    use plenora_database_core::provider::ParameterValue as V;
+    assert!(fidelity_mariadb());
+    let provider = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    for declaration in [
+        "JSON",
+        "LONGTEXT CHECK(json_valid(payload) AND json_type(payload)='OBJECT')",
+    ] {
+        provider
+            .execute_ddl(&secret, "DROP TABLE IF EXISTS audit900_read_json", &cancel)
+            .await
+            .unwrap();
+        provider
+            .execute_ddl(
+                &secret,
+                &format!("CREATE TABLE audit900_read_json(id INT, payload {declaration})"),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        for value in [
+            V::String("{}".into()),
+            V::Null {
+                type_name: "text".into(),
+            },
+        ] {
+            let operation = geometry_operand_reading("audit900_read_json", "payload", true);
+            let parameters = ParameterBag::new([("p".into(), value)].into());
+            let result = provider
+                .read(&secret, &operation, &parameters, &budget, &cancel)
+                .await;
+            let Err(error) = result else {
+                panic!("confronto JSON eseguito");
+            };
+            assert_eq!(error.category, ErrorCategory::InvalidPlan);
+            assert_eq!(error.phase, plenora_database_core::ErrorPhase::Prepare);
+        }
+    }
+    provider
+        .execute_ddl(&secret, "DROP TABLE audit900_read_json", &cancel)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "richiede MariaDB 10.11/11.8/12.3"]
+async fn live_audit900_lc_json_arrow_key() {
+    assert!(fidelity_mariadb());
+    let provider = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    for sql in ["DROP TABLE IF EXISTS audit900_json_key",
+        "CREATE TABLE audit900_json_key(payload LONGTEXT CHECK(json_valid(payload) AND json_type(payload)='OBJECT'), v INT)"] {
+        provider.execute_ddl(&secret, sql, &cancel).await.unwrap();
+    }
+    let operation = WriteOperation {
+        target: ObjectRef {
+            catalog: None,
+            schema: Some(environment("PLENORA_MYSQL_DATABASE", "dataflow_test")),
+            object: "audit900_json_key".into(),
+        },
+        mode: WriteMode::Upsert,
+        mapping_policy: MappingPolicy::Strict,
+        transaction_profile: TransactionProfile::SingleTransaction,
+        keys: vec!["payload".into()],
+        // Upsert aggiorna tutte le non-key; colonne esplicite fermano il
+        // piano prima del catalogo e della guardia JSON.
+        update_columns: Vec::new(),
+        srid_policy: None,
+        create_spatial_index: false,
+        allow_partial: false,
+    };
+    let schema = contract_schema(vec![
+        Field::new("payload", DataType::Utf8, true),
+        Field::new("v", DataType::Int32, true),
+    ])
+    .unwrap();
+    let result = provider
+        .prepare_write(&secret, &operation, schema, &budget, &cancel)
+        .await;
+    let Err(error) = result else {
+        panic!("chiave JSON ammessa");
+    };
+    eprintln!(
+        "L-C: categoria={:?}, messaggio={}",
+        error.category, error.message
+    );
+    assert_eq!(
+        error.category,
+        ErrorCategory::InvalidPlan,
+        "{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("JSON"),
+        "{:?}: {}",
+        error.category,
+        error.message
+    );
+    provider
+        .execute_ddl(&secret, "DROP TABLE audit900_json_key", &cancel)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "richiede MariaDB e account plenora_minimal senza SHOW VIEW"]
+async fn live_audit900_ld_view_without_show_view() {
+    use plenora_database_core::transaction::TransactionOptions;
+    assert!(fidelity_mariadb());
+    let admin = provider900();
+    let secret = live_secret();
+    let cancel = CancellationToken::new();
+    let budget = ResourceBudget::new(ResourceLimits::default()).unwrap();
+    admin
+        .execute_ddl(
+            &secret,
+            "CREATE OR REPLACE VIEW audit900_view AS SELECT 1 AS id",
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let base = live_config();
+    let password = SecretString::new("Minimal_Test_2026!");
+    let config = MysqlConfig::new(
+        base.host(),
+        base.database(),
+        "plenora_minimal",
+        password.clone(),
+    )
+    .with_port(base.port())
+    .with_private_ca_certificate(std::env::var("PLENORA_MYSQL_CA").unwrap());
+    let provider = MariadbProvider::new(config, 2).unwrap();
+    let mut tx = provider
+        .begin_transaction(&password, &TransactionOptions::default(), &budget, &cancel)
+        .await
+        .unwrap();
+    let denied = tx
+        .query(
+            &plenora_database_core::transaction::Statement::new("SHOW CREATE TABLE audit900_view"),
+            &cancel,
+        )
+        .await;
+    assert!(denied.is_err(), "il fixture deve negare SHOW VIEW");
+    tx.rollback(&cancel).await.unwrap();
+    let query = serde_json::from_value(serde_json::json!({
+        "source":{"object":{"catalog":null,"schema":base.database(),"object":"audit900_view"},"alias":null},
+        "projection":[{"expression":{"kind":"column","column":{"relation":null,"field":"id"}},"alias":null}]
+    })).unwrap();
+    let mut stream = provider
+        .query(
+            &password,
+            &query,
+            &ParameterBag::default(),
+            &budget,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        stream
+            .next_batch(&cancel)
+            .await
+            .unwrap()
+            .unwrap()
+            .num_rows(),
+        1
+    );
+    assert!(stream.next_batch(&cancel).await.unwrap().is_none());
+    drop(stream);
+    admin
+        .execute_ddl(&secret, "DROP VIEW audit900_view", &cancel)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture live esplicito"]
+async fn live_audit900_nul() {
+    let provider: Box<dyn Provider> = if fidelity_mariadb() {
+        Box::new(MariadbProvider::new(live_config(), 2).expect("provider MariaDB"))
+    } else {
+        Box::new(MysqlProvider::new(live_config(), 2).expect("provider MySQL"))
+    };
+    plenora_database_testkit::nul_fidelity::check(
+        provider.as_ref(),
+        &live_secret(),
+        &environment("PLENORA_MYSQL_DATABASE", "dataflow_test"),
+        None,
+    )
+    .await
+    .expect("matrice NUL MySQL/MariaDB");
 }

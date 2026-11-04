@@ -298,6 +298,9 @@ async fn live_parameter_values_bind_exactly_or_are_refused() {
         native: &native,
         native_cross_type_declared: true,
     };
+    plenora_database_testkit::audit900::malformed_temporals(&target, "s", Some("dt"))
+        .await
+        .expect("A900-001 L1: rifiuto prima della conversione e righe intatte");
     let outcomes = run(&target, &cases()).await;
     provider
         .execute_ddl(
@@ -610,4 +613,12 @@ async fn live_generated_values_bind_exactly_or_are_refused() {
         failures.is_empty(),
         "valori generati non esatti su SQL Server: {failures:#?}"
     );
+}
+
+#[tokio::test]
+#[ignore = "richiede fixture live esplicito"]
+async fn live_audit900_nul() {
+    plenora_database_testkit::nul_fidelity::check(&live_provider(), &live_secret(), SCHEMA, None)
+        .await
+        .expect("matrice NUL SQL Server");
 }

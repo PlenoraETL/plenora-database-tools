@@ -122,6 +122,8 @@ impl TransactionScope for Finta {
         types.insert("id".to_owned(), tipo("int4", None, None, None));
         types.insert("d".to_owned(), tipo("numeric", Some(12), Some(4), None));
         types.insert("ts".to_owned(), tipo("timestamp", None, None, Some(0)));
+        types.insert("dt".to_owned(), tipo("date", None, None, None));
+        types.insert("s".to_owned(), tipo("text", None, None, None));
         types.insert("f".to_owned(), tipo("float8", None, None, None));
         Box::pin(async move { Ok(Some(types)) })
     }
@@ -188,6 +190,23 @@ fn mutation(column: &str) -> MutationOperation {
 /// forma riscritta nel tipo della colonna.
 fn casi() -> Vec<(&'static str, V, Option<V>)> {
     vec![
+        ("s", V::Timestamp("not-a-timestamp".into()), None),
+        ("s", V::TimestampTz("not-a-timestamp".into()), None),
+        (
+            "dt",
+            V::Timestamp("2024-01-01T00:00:00.000000PAYLOAD".into()),
+            None,
+        ),
+        (
+            "s",
+            V::Timestamp("2024-01-01T00:00:00".into()),
+            Some(V::String("2024-01-01T00:00:00".into())),
+        ),
+        (
+            "dt",
+            V::Timestamp("2024-01-01T00:00:00".into()),
+            Some(V::Date("2024-01-01".into())),
+        ),
         ("d", V::Decimal("1.23456".to_owned()), None),
         ("d", V::F64(0.1), None),
         ("ts", V::Timestamp("2024-01-01T10:20:30.6".to_owned()), None),
@@ -223,6 +242,11 @@ fn the_portable_facade_admits_every_literal_on_the_column_type() {
             None => {
                 let error = outcome.expect_err("valore arrotondato dal server");
                 assert_eq!(error.category, ErrorCategory::DataMapping, "{value:?}");
+                assert_eq!(error.phase, ErrorPhase::Prepare);
+                assert_eq!(
+                    error.remote_effect,
+                    plenora_database_core::RemoteEffect::None
+                );
                 assert!(finta.eseguiti.is_empty(), "{value:?} eseguito");
             }
             Some(admitted) => {
@@ -251,6 +275,11 @@ fn the_sdk_mutation_admits_every_value_on_the_column_type() {
             None => {
                 let error = outcome.expect_err("valore arrotondato dal server");
                 assert_eq!(error.category, ErrorCategory::DataMapping, "{value:?}");
+                assert_eq!(error.phase, ErrorPhase::Prepare);
+                assert_eq!(
+                    error.remote_effect,
+                    plenora_database_core::RemoteEffect::None
+                );
             }
             Some(admitted) => {
                 let statement = outcome.expect("valore esatto");
@@ -303,6 +332,11 @@ fn the_judged_entry_points_admit_every_plan() {
             None => {
                 let error = outcome.expect_err("valore arrotondato dal server");
                 assert_eq!(error.category, ErrorCategory::DataMapping, "{value:?}");
+                assert_eq!(error.phase, ErrorPhase::Prepare);
+                assert_eq!(
+                    error.remote_effect,
+                    plenora_database_core::RemoteEffect::None
+                );
                 assert!(finta.eseguiti.is_empty(), "{value:?} eseguito");
             }
             Some(admitted) => {

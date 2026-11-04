@@ -527,7 +527,7 @@ fn mapping_error(message: &'static str) -> DatabaseError {
     )
 }
 
-fn catalog_context(mut error: DatabaseError, message: &'static str) -> DatabaseError {
-    message.clone_into(&mut error.message);
+pub fn catalog_context(mut error: DatabaseError, message: &'static str) -> DatabaseError {
+    error.message = format!("{message}: {}", error.message);
     error
 }

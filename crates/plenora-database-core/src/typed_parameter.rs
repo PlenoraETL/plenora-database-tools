@@ -301,6 +301,7 @@ const fn admitted(parameter_type: QueryParameterType) -> u16 {
 pub struct BoundValue {
     kinds: u16,
     facts: Vec<ValueFact>,
+    malformed: bool,
 }
 
 impl BoundValue {
@@ -324,6 +325,8 @@ impl BoundValue {
             ParameterValue::Null { .. } => 0,
         };
         self.kinds |= bit;
+        self.malformed |=
+            crate::operand_admission::validate_form(ProviderKind::Postgres, value).is_err();
         let fact = ValueFact::of(value);
         if !self.facts.contains(&fact) {
             self.facts.push(fact);
@@ -346,6 +349,7 @@ impl BoundValue {
 
     fn merge(&mut self, other: &Self) {
         self.kinds |= other.kinds;
+        self.malformed |= other.malformed;
         for fact in &other.facts {
             if !self.facts.contains(fact) {
                 self.facts.push(fact.clone());
@@ -356,7 +360,7 @@ impl BoundValue {
 
 /// La posizione di un parametro tipizzato: come lo rende il renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Slot {
+pub(crate) enum Slot {
     /// Reso con il `CAST` ([`CastDialect::render`]): ogni posizione di una
     /// query, il predicato di una mutazione.
     Cast,
@@ -365,6 +369,46 @@ enum Slot {
     Spatial,
     /// Un valore scritto: il solo segnaposto.
     Written,
+}
+
+/// Contesto del renderer condiviso fra regola T e ammissione.
+pub(crate) fn parameter_slot(
+    expression: &QueryExpression,
+    spatial: &mut BTreeSet<usize>,
+    default: Slot,
+) -> Slot {
+    let address = |expression: &QueryExpression| std::ptr::from_ref(expression) as usize;
+    match expression {
+        QueryExpression::Spatial {
+            function,
+            arguments,
+        }
+        | QueryExpression::SpatialWindow {
+            function,
+            arguments,
+            ..
+        } => {
+            spatial.extend(
+                arguments
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| function.takes_geometry_at(*index))
+                    .map(|(_, argument)| address(argument)),
+            );
+        }
+        QueryExpression::SpatialOperator { left, right, .. } => {
+            spatial.extend([address(left), address(right)]);
+        }
+        QueryExpression::SpatialValue { expression, .. } => {
+            spatial.insert(address(expression));
+        }
+        _ => {}
+    }
+    if spatial.contains(&address(expression)) {
+        Slot::Spatial
+    } else {
+        default
+    }
 }
 
 fn mismatch(provider: ProviderKind) -> DatabaseError {
@@ -376,6 +420,21 @@ fn mismatch(provider: ProviderKind) -> DatabaseError {
     )
 }
 
+/// Rifiuta JSON tipizzato dove manca una semantica qualificata.
+///
+/// # Errors
+/// `Unsupported` in preparazione su `MariaDB`, anche per un NULL tipizzato.
+pub fn ensure_json_supported(provider: ProviderKind, kind: QueryParameterType) -> Result<()> {
+    if provider == ProviderKind::Mariadb && kind == QueryParameterType::Json {
+        return Err(DatabaseError::unsupported(
+            provider,
+            crate::ErrorPhase::Prepare,
+            "JSON tipizzato MariaDB non supportato: usare SQL con confronto JSON esplicito e parametri String",
+        ));
+    }
+    Ok(())
+}
+
 /// La regola T su un parametro tipizzato.
 fn judge(
     provider: ProviderKind,
@@ -383,6 +442,10 @@ fn judge(
     slot: Slot,
     bound: &BoundValue,
 ) -> Result<()> {
+    ensure_json_supported(provider, parameter_type)?;
+    if bound.malformed {
+        return Err(mismatch(provider));
+    }
     let mut allowed = admitted(parameter_type);
     if slot == Slot::Spatial && parameter_type == QueryParameterType::Binary {
         allowed |= kind::WKB;
@@ -413,6 +476,7 @@ fn judge(
 static NO_VALUES: BoundValue = BoundValue {
     kinds: 0,
     facts: Vec::new(),
+    malformed: false,
 };
 
 /// I valori legati ai parametri di un piano, per nome.
@@ -513,38 +577,21 @@ impl BoundValues {
         let QueryWalkNode::Expression(expression) = node else {
             return QueryWalkControl::Continue;
         };
-        let address = |expression: &QueryExpression| std::ptr::from_ref(expression) as usize;
-        match expression {
-            QueryExpression::Spatial { arguments, .. }
-            | QueryExpression::SpatialWindow { arguments, .. } => {
-                spatial.extend(arguments.iter().map(address));
+        let slot = parameter_slot(expression, spatial, slot);
+        if let QueryExpression::TypedParameter {
+            name,
+            parameter_type,
+        } = expression
+        {
+            if let Err(error) = judge(
+                provider,
+                *parameter_type,
+                slot,
+                self.get(name).unwrap_or(&NO_VALUES),
+            ) {
+                *outcome = Err(error);
+                return QueryWalkControl::Break;
             }
-            QueryExpression::SpatialOperator { left, right, .. } => {
-                spatial.extend([address(left), address(right)]);
-            }
-            QueryExpression::SpatialValue { expression, .. } => {
-                spatial.insert(address(expression));
-            }
-            QueryExpression::TypedParameter {
-                name,
-                parameter_type,
-            } => {
-                let slot = if spatial.contains(&address(expression)) {
-                    Slot::Spatial
-                } else {
-                    slot
-                };
-                if let Err(error) = judge(
-                    provider,
-                    *parameter_type,
-                    slot,
-                    self.get(name).unwrap_or(&NO_VALUES),
-                ) {
-                    *outcome = Err(error);
-                    return QueryWalkControl::Break;
-                }
-            }
-            _ => {}
         }
         QueryWalkControl::Continue
     }
