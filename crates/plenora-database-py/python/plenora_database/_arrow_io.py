@@ -125,6 +125,10 @@ def _narrowed_batch(
     # sostituisce in silenzio con quello del primo batch.
     if not batch.schema.equals(source_schema, check_metadata=True):
         raise ValueError("copy_from: i RecordBatch devono avere lo stesso schema")
+    # Un reader IPC/C puo consegnare buffer non validati integralmente.
+    # Verificarli prima dei cast e del writer: in particolare i run devono
+    # coprire tutte le righe, anche quando annidati in liste o struct.
+    batch.validate(full=True)
     if not replacements:
         return batch
     return pa.RecordBatch.from_arrays(

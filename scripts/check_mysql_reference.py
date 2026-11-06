@@ -350,6 +350,7 @@ EXPECTED_UNIT_TESTS = {
     "write::tests::json_write_keys_refuse_native_and_mariadb_aliases",
     "write_admission::tests::json_valid_arguments_do_not_hide_column_attributes",
     "write_admission::tests::json_valid_compound_checks_and_quoted_identifiers",
+    "write::tests::run_end_schema_is_rejected_before_buffers",
 }
 EXPECTED_LIVE_DEFAULT_TESTS = {
     "live_tests::live_binary_columns_of_views_are_judged_geometric",

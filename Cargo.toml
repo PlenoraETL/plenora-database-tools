@@ -29,7 +29,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "9.0.0"
+version = "9.0.1"
 edition = "2021"
 rust-version = "1.98.1"
 publish = false
@@ -43,12 +43,12 @@ license-file = "LICENSE"
 # (letture e scritture bulk) e la conversione di riga nell'adapter PostgreSQL.
 # I tre crate Arrow stanno sulla stessa versione: tipi di versioni diverse non
 # sono intercambiabili.
-arrow-array = "=60.0.0"
+arrow-array = "=60.1.0"
 # File e stream Arrow IPC della CLI (`read`/`write`) e del binding Python.
-arrow-ipc = "=60.0.0"
+arrow-ipc = "=60.1.0"
 # Schema e metadati di campo del contratto Arrow (`field_contract`); `serde`
 # serializza gli schemi nei documenti di stato e capability.
-arrow-schema = { version = "=60.0.0", features = ["serde"] }
+arrow-schema = { version = "=60.1.0", features = ["serde"] }
 # Buffer dei valori del protocollo PostgreSQL (codec dei parametri, COPY,
 # conversione Arrow): sono i tipi che `tokio-postgres` chiede ai trait `ToSql`.
 bytes = "=1.12.1"
