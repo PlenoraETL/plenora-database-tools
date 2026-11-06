@@ -189,3 +189,16 @@ fn a_dictionary_nested_inside_another_dictionary_is_rejected() {
     let error = check_stream_framing(&bytes).expect_err("dizionario annidato accettato");
     assert!(error.message.contains("annidat"), "{}", error.message);
 }
+
+#[test]
+fn struct_short_validity_bitmap_returns_invalid_plan_at_validate() {
+    let bytes = include_bytes!("../../../tests/fixtures/arrow/struct-short-bitmap.stream");
+    check_stream_framing(bytes).expect("framing valido");
+    let error = decode_ipc_stream(bytes).expect_err("bitmap padre corta");
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::InvalidPlan
+    );
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Validate);
+    assert_eq!(error.message, "record batch Arrow IPC non valido: il 1o");
+}

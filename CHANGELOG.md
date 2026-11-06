@@ -10,6 +10,11 @@ riassumono le note di quelle release.
 
 ### Sicurezza
 
+- Qualifica IPC: fixture file/stream con bitmap corta del padre Struct,
+  prove CLI e binding senza panico e traduzione SDK con categoria/fase.
+  La fixture Int32 resta distinta per il percorso ArrayDataBuilder;
+  controprova con grafo Arrow 60.0.0 documentata in `docs/arrow-60-1.md`.
+
 - Aggiornamento Arrow a `=60.1.0` per
   [RUSTSEC-2026-0442](https://rustsec.org/advisories/RUSTSEC-2026-0442.html):
   la copertura logica degli array RunEndEncoded viene validata anche rispetto

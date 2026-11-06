@@ -48,3 +48,23 @@ def test_map_keys_sorted_survives_python_ipc(sorted_keys):
     result = pa.ipc.open_stream(_to_ipc_bytes([batch, batch])).read_all()
     assert result.schema.field(0).type.keys_sorted is sorted_keys
     assert result.to_pylist() == [{"m": [('a', 7), ('b', 9)]}, {"m": None}] * 2
+
+
+@pytest.mark.parametrize("mode", ["file", "stream"])
+def test_struct_short_bitmap_rejected_by_sdk_at_prepare(mode):
+    from pathlib import Path
+
+    raw = (Path(__file__).parent / "fixtures" / f"struct-short-bitmap.{mode}").read_bytes()
+    reader = (pa.ipc.open_file if mode == "file" else pa.ipc.open_stream)(raw)
+    # Apertura/schema validi; lettura e validazione del batch dentro lo SDK.
+    def batches():
+        if mode == "file":
+            yield reader.get_batch(0)
+        else:
+            yield reader.read_next_batch()
+
+    with pytest.raises(PlenoraDataMappingError) as error:
+        _to_ipc_bytes(batches())
+    assert error.value.category == "data_mapping"
+    assert error.value.phase == "prepare"
+    assert "PAYLOAD_MUST_NOT_LEAK" not in str(error.value)

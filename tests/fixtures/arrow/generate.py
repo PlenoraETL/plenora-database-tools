@@ -58,11 +58,25 @@ def main():
         (ROOT / f"dictionary-missing-data.{mode}").write_bytes(corrupt_dictionary(raw, start))
     generate_run_ends()
     generate_short_bitmap()
+    generate_short_bitmap(struct_parent=True)
 
 
-def generate_short_bitmap():
-    """Nove righe richiedono due byte di validita, non uno."""
-    batch = pa.record_batch([pa.array([None] + list(range(8)), pa.int32())], names=["v"])
+def generate_short_bitmap(struct_parent=False):
+    """Corrompe solo il descriptor della validita: nove bit in un byte.
+
+    Int32 copre ArrayDataBuilder; Struct copre
+    create_struct_array, che in 60.0.0 chiamava BooleanBuffer::new e panicava.
+    Il figlio resta valido e contiene un marker per le prove di redazione.
+    """
+    values = pa.array([None] + list(range(8)), pa.int32())
+    name = "short-bitmap"
+    if struct_parent:
+        values = pa.StructArray.from_arrays(
+            [pa.array([MARKER] * 9)], names=["child"],
+            mask=pa.array([True] + [False] * 8),
+        )
+        name = "struct-short-bitmap"
+    batch = pa.record_batch([values], names=["v"])
     for mode, start in (("file", 8), ("stream", 0)):
         sink = pa.BufferOutputStream()
         writer = pa.ipc.new_file if mode == "file" else pa.ipc.new_stream
@@ -78,7 +92,12 @@ def generate_short_bitmap():
         vector = buffers + struct.unpack_from("<I", data, buffers)[0]
         assert struct.unpack_from("<q", data, vector + 4 + 8)[0] == 2
         struct.pack_into("<q", data, vector + 4 + 8, 1)
-        (ROOT / f"short-bitmap.{mode}").write_bytes(data)
+        (ROOT / f"{name}.{mode}").write_bytes(data)
+        if struct_parent:
+            # La CI SDK copia solo python/tests fuori dal source tree.
+            sdk = ROOT.parents[2] / "crates/plenora-database-py/python/tests/fixtures"
+            sdk.mkdir(exist_ok=True)
+            (sdk / f"{name}.{mode}").write_bytes(data)
 
 
 def generate_run_ends():

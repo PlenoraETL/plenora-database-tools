@@ -36,6 +36,27 @@ fn short_validity_bitmap_returns_error_without_panic() {
     }
 }
 
+/// La bitmap e del padre Struct, non del figlio primitivo.
+#[test]
+fn struct_short_validity_bitmap_fails_during_batch_decode() {
+    for mode in ["file", "stream"] {
+        let path = format!(
+            "{}/../../tests/fixtures/arrow/struct-short-bitmap.{mode}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut input = open_batches(&path, 16 * 1024 * 1024).expect("framing valido");
+        let error = input
+            .batches
+            .next()
+            .expect("batch")
+            .expect_err("bitmap padre corta");
+        assert!(matches!(
+            error,
+            arrow_schema::ArrowError::InvalidArgumentError(_)
+        ));
+    }
+}
+
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);

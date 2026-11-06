@@ -13,7 +13,10 @@ fn public_inspect_rejects_run_ends_and_short_bitmaps_without_payload() {
     for file in std::fs::read_dir(root).unwrap() {
         let path = file.unwrap().path();
         let name = path.file_name().unwrap().to_str().unwrap();
-        if !name.starts_with("run-end-") && !name.starts_with("short-bitmap.") {
+        if !name.starts_with("run-end-")
+            && !name.starts_with("short-bitmap.")
+            && !name.starts_with("struct-short-bitmap.")
+        {
             continue;
         }
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_plenora-database"))
@@ -24,6 +27,9 @@ fn public_inspect_rejects_run_ends_and_short_bitmaps_without_payload() {
         assert!(!output.status.success());
         let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(envelope["status"], "error");
+        assert_eq!(envelope["error"]["category"], "invalid_plan");
+        assert_eq!(envelope["error"]["phase"], "validate");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("PAYLOAD_MUST_NOT_LEAK"));
         assert_eq!(
             envelope["error"]["message"],
             "RecordBatch Arrow IPC non decodificabile"
