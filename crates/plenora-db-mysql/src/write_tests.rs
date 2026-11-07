@@ -2141,3 +2141,35 @@ fn json_write_keys_refuse_native_and_mariadb_aliases() {
     )
     .is_ok());
 }
+
+/// Nessun buffer viene letto: il compilatore chiude i tipi REE dallo schema.
+#[test]
+fn run_end_schema_is_rejected_before_buffers() {
+    use plenora_database_core::arrow::schema::{DataType, Field};
+    use std::sync::Arc;
+    for index in [DataType::Int16, DataType::Int32, DataType::Int64] {
+        let ree = DataType::RunEndEncoded(
+            Arc::new(Field::new("run_ends", index, false)),
+            Arc::new(Field::new("values", DataType::Int32, true)),
+        );
+        for kind in [
+            ree.clone(),
+            DataType::List(Arc::new(Field::new("item", ree.clone(), true))),
+            DataType::Struct(vec![Field::new("child", ree, true)].into()),
+        ] {
+            for profile in [
+                &crate::profile::MYSQL_PROFILE as &dyn crate::profile::ProductProfile,
+                &crate::profile::MARIADB_PROFILE,
+            ] {
+                let kind = kind.clone();
+                assert!(MysqlWritePlan::compile_with_profile(
+                    &schema(vec![Field::new("encoded", kind, true)]),
+                    &append_operation(),
+                    "warehouse",
+                    profile
+                )
+                .is_err());
+            }
+        }
+    }
+}

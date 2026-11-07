@@ -1,6 +1,34 @@
 use super::{check_stream_framing, decode_ipc_stream};
 
 #[test]
+fn short_validity_bitmap_returns_redacted_error_without_panic() {
+    let bytes = include_bytes!("../../../tests/fixtures/arrow/short-bitmap.stream");
+    check_stream_framing(bytes).expect("framing valido");
+    assert_eq!(
+        decode_ipc_stream(bytes).expect_err("bitmap corta").message,
+        "record batch Arrow IPC non valido: il 1o"
+    );
+}
+
+/// Anche il secondo batch e i figli REE arrivano alla validazione Arrow;
+/// nessun batch viene consegnato al provider quando la decodifica fallisce.
+#[test]
+fn run_end_coverage_failure_is_redacted_before_provider_write() {
+    for width in [16, 32, 64] {
+        for nesting in ["plain", "list", "struct"] {
+            let path = format!(
+                "{}/../../tests/fixtures/arrow/run-end-{width}-{nesting}.stream",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let bytes = std::fs::read(path).expect("fixture");
+            check_stream_framing(&bytes).expect("framing valido");
+            let error = decode_ipc_stream(&bytes).expect_err("copertura insufficiente");
+            assert_eq!(error.message, "record batch Arrow IPC non valido: il 2o");
+        }
+    }
+}
+
+#[test]
 fn pyarrow_dictionary_stream_preserves_nulls_and_metadata() {
     let bytes = include_bytes!("../../../tests/fixtures/arrow/dictionary.stream");
     let (schema, batches, rows) = decode_ipc_stream(bytes).expect("PyArrow stream");
@@ -160,4 +188,17 @@ fn a_dictionary_nested_inside_another_dictionary_is_rejected() {
     let bytes = writer.into_inner().expect("stream");
     let error = check_stream_framing(&bytes).expect_err("dizionario annidato accettato");
     assert!(error.message.contains("annidat"), "{}", error.message);
+}
+
+#[test]
+fn struct_short_validity_bitmap_returns_invalid_plan_at_validate() {
+    let bytes = include_bytes!("../../../tests/fixtures/arrow/struct-short-bitmap.stream");
+    check_stream_framing(bytes).expect("framing valido");
+    let error = decode_ipc_stream(bytes).expect_err("bitmap padre corta");
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::InvalidPlan
+    );
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Validate);
+    assert_eq!(error.message, "record batch Arrow IPC non valido: il 1o");
 }

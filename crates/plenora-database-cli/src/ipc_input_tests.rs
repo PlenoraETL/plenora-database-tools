@@ -3,7 +3,59 @@ use arrow_ipc::writer::{FileWriter, StreamWriter};
 use plenora_database_core::arrow::array::Int64Array;
 use plenora_database_core::arrow::schema::{DataType, Field, Schema};
 
+/// La prima passata non valida i run: il decoder deve rifiutarli prima
+/// di consegnare il batch, anche dopo un batch valido e dentro contenitori.
+#[test]
+fn run_end_coverage_is_checked_by_arrow_before_delivery() {
+    for width in [16, 32, 64] {
+        for nesting in ["plain", "list", "struct"] {
+            for mode in ["file", "stream"] {
+                let path = format!(
+                    "{}/../../tests/fixtures/arrow/run-end-{width}-{nesting}.{mode}",
+                    env!("CARGO_MANIFEST_DIR")
+                );
+                let mut input = open_batches(&path, 16 * 1024 * 1024).expect("framing valido");
+                assert!(input.batches.next().expect("primo batch").is_ok());
+                assert!(input.batches.next().expect("secondo batch").is_err());
+            }
+        }
+    }
+}
+
 struct Scratch(std::path::PathBuf);
+
+#[test]
+fn short_validity_bitmap_returns_error_without_panic() {
+    for mode in ["file", "stream"] {
+        let path = format!(
+            "{}/../../tests/fixtures/arrow/short-bitmap.{mode}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut input = open_batches(&path, 16 * 1024 * 1024).expect("framing valido");
+        assert!(input.batches.next().expect("batch").is_err());
+    }
+}
+
+/// La bitmap e del padre Struct, non del figlio primitivo.
+#[test]
+fn struct_short_validity_bitmap_fails_during_batch_decode() {
+    for mode in ["file", "stream"] {
+        let path = format!(
+            "{}/../../tests/fixtures/arrow/struct-short-bitmap.{mode}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut input = open_batches(&path, 16 * 1024 * 1024).expect("framing valido");
+        let error = input
+            .batches
+            .next()
+            .expect("batch")
+            .expect_err("bitmap padre corta");
+        assert!(matches!(
+            error,
+            arrow_schema::ArrowError::InvalidArgumentError(_)
+        ));
+    }
+}
 
 impl Drop for Scratch {
     fn drop(&mut self) {

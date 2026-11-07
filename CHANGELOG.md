@@ -6,6 +6,43 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## 9.0.1 — non pubblicata
+
+### Sicurezza
+
+- Qualifica IPC: fixture file/stream con bitmap corta del padre Struct,
+  prove CLI e binding senza panico e traduzione SDK con categoria/fase.
+  La fixture Int32 resta distinta per il percorso ArrayDataBuilder;
+  controprova con grafo Arrow 60.0.0 documentata in `docs/arrow-60-1.md`.
+
+- Aggiornamento Arrow a `=60.1.0` per
+  [RUSTSEC-2026-0442](https://rustsec.org/advisories/RUSTSEC-2026-0442.html):
+  la copertura logica degli array RunEndEncoded viene validata anche rispetto
+  a lunghezza e offset. Workspace e fuzz usano la famiglia corretta.
+- IPC CLI (file/stream) e binding Python: la validazione Arrow e raggiungibile;
+  gli array malformati vengono rifiutati senza consegnare il batch. SDK Python:
+  validazione completa prima di cast e serializzazione, anche sui batch
+  successivi e sui figli annidati. Gli errori pubblici restano senza payload.
+- Le letture database costruiscono array dai valori dei driver, senza importare
+  layout REE esterni. Le scritture Rust verificano i tipi del provider; i
+  costruttori Arrow pubblici raggiungono la validazione corretta upstream.
+  Prove, limiti e percorsi per provider nel
+  [rapporto della patch](docs/arrow-60-1.md).
+- Rimossa l'eccezione a RUSTSEC-2026-0381: RustSec dichiara ora lo shim
+  `webpki-roots 0.26.11` non interessato; entrambi i grafi passano senza
+  advisory ignorati con il database aggiornato del 6 novembre 2026.
+
+### Cambiamenti osservabili
+
+- IPC: bitmap di validita vuota per colonne senza null; i byte possono cambiare
+  pur conservando schema e valori. Bitmap troppo corte producono un errore
+  esplicito. Corrette le liste affettate contenenti union dense e sparse.
+- `Map.keys_sorted` resta conservato nel passaggio IPC dello SDK; il bridge
+  `arrow-pyarrow` non appartiene al grafo database. Non e una nuova capability
+  di scrittura dei provider. Nessun aggiornamento calamine: non e nel grafo.
+- Versione correttiva preparata per il tag `py-v9.0.1`, successiva a `py-v9.0.0`;
+  nessuna pubblicazione effettuata. Le prove live restano da eseguire sulla VM.
+
 ## 9.0.0 - in preparazione
 
 - Db2: il controllo dei tipi result set prima di SQLExecute condivide la

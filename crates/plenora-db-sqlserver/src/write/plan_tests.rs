@@ -792,3 +792,30 @@ fn bounded_content_loss_report_all_policies() {
         }
     }
 }
+
+/// Nessun buffer viene letto: il compilatore chiude i tipi REE dallo schema.
+#[test]
+fn run_end_schema_is_rejected_before_buffers() {
+    use plenora_database_core::arrow::schema::{DataType, Field};
+    use std::sync::Arc;
+    for index in [DataType::Int16, DataType::Int32, DataType::Int64] {
+        let ree = DataType::RunEndEncoded(
+            Arc::new(Field::new("run_ends", index, false)),
+            Arc::new(Field::new("values", DataType::Int32, true)),
+        );
+        for kind in [
+            ree.clone(),
+            DataType::List(Arc::new(Field::new("item", ree.clone(), true))),
+            DataType::Struct(vec![Field::new("child", ree, true)].into()),
+        ] {
+            assert!(WritePlan::compile_create(
+                &operation(WriteMode::Create),
+                plenora_database_core::protocol::contract_schema(vec![Field::new(
+                    "encoded", kind, true
+                )])
+                .expect("schema")
+            )
+            .is_err());
+        }
+    }
+}

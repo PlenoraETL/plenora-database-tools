@@ -118,7 +118,7 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "1.9.2"
     },
-    "arrow-array-60.0.0": {
+    "arrow-array-60.1.0": {
       "files": [
         {
           "file": "LICENSE-MIT",
@@ -128,7 +128,7 @@
         {
           "file": "LICENSE.txt",
           "origin": "cargo-package",
-          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          "sha256": "03548525ec3706de58e48ef6e3c455582557a0ad3b54a2da9a3819add35dfb72"
         },
         {
           "file": "NOTICE.txt",
@@ -139,14 +139,14 @@
       "license": "Apache-2.0 AND MIT",
       "name": "arrow-array",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "60.0.0"
+      "version": "60.1.0"
     },
-    "arrow-buffer-60.0.0": {
+    "arrow-buffer-60.1.0": {
       "files": [
         {
           "file": "LICENSE.txt",
           "origin": "cargo-package",
-          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          "sha256": "03548525ec3706de58e48ef6e3c455582557a0ad3b54a2da9a3819add35dfb72"
         },
         {
           "file": "NOTICE.txt",
@@ -157,14 +157,14 @@
       "license": "Apache-2.0",
       "name": "arrow-buffer",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "60.0.0"
+      "version": "60.1.0"
     },
-    "arrow-cmp-60.0.0": {
+    "arrow-cmp-60.1.0": {
       "files": [
         {
           "file": "LICENSE.txt",
           "origin": "cargo-package",
-          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          "sha256": "03548525ec3706de58e48ef6e3c455582557a0ad3b54a2da9a3819add35dfb72"
         },
         {
           "file": "NOTICE.txt",
@@ -175,14 +175,14 @@
       "license": "Apache-2.0",
       "name": "arrow-cmp",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "60.0.0"
+      "version": "60.1.0"
     },
-    "arrow-data-60.0.0": {
+    "arrow-data-60.1.0": {
       "files": [
         {
           "file": "LICENSE.txt",
           "origin": "cargo-package",
-          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          "sha256": "03548525ec3706de58e48ef6e3c455582557a0ad3b54a2da9a3819add35dfb72"
         },
         {
           "file": "NOTICE.txt",
@@ -193,14 +193,14 @@
       "license": "Apache-2.0",
       "name": "arrow-data",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "60.0.0"
+      "version": "60.1.0"
     },
-    "arrow-ipc-60.0.0": {
+    "arrow-ipc-60.1.0": {
       "files": [
         {
           "file": "LICENSE.txt",
           "origin": "cargo-package",
-          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          "sha256": "03548525ec3706de58e48ef6e3c455582557a0ad3b54a2da9a3819add35dfb72"
         },
         {
           "file": "NOTICE.txt",
@@ -211,14 +211,14 @@
       "license": "Apache-2.0",
       "name": "arrow-ipc",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "60.0.0"
+      "version": "60.1.0"
     },
-    "arrow-schema-60.0.0": {
+    "arrow-schema-60.1.0": {
       "files": [
         {
           "file": "LICENSE.txt",
           "origin": "cargo-package",
-          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          "sha256": "03548525ec3706de58e48ef6e3c455582557a0ad3b54a2da9a3819add35dfb72"
         },
         {
           "file": "NOTICE.txt",
@@ -229,14 +229,14 @@
       "license": "Apache-2.0",
       "name": "arrow-schema",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "60.0.0"
+      "version": "60.1.0"
     },
-    "arrow-select-60.0.0": {
+    "arrow-select-60.1.0": {
       "files": [
         {
           "file": "LICENSE.txt",
           "origin": "cargo-package",
-          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          "sha256": "03548525ec3706de58e48ef6e3c455582557a0ad3b54a2da9a3819add35dfb72"
         },
         {
           "file": "NOTICE.txt",
@@ -247,7 +247,7 @@
       "license": "Apache-2.0",
       "name": "arrow-select",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "60.0.0"
+      "version": "60.1.0"
     },
     "asynchronous-codec-0.7.0": {
       "files": [
@@ -3540,12 +3540,12 @@
     }
   },
   "inputs": {
-    "Cargo.lock": "aa050b5ba2281b37aa0f75cf0cd79cb79038e897672c309b85531d18aa084b3c",
-    "Cargo.toml": "7baca43cf6a20de66026ee21d45fe716c67e5efc7728aaca39ca2583fad46365",
+    "Cargo.lock": "7624e572cc7efb0fe37891bcc792ae5764658e91f5960480a48ac4e7d140a7fb",
+    "Cargo.toml": "1c256aeb6f87a788f17961cbcde3e5e77fb975130bbe3e9455fc7fb1b664781c",
     "crates/plenora-database-cli/Cargo.toml": "198763d296693b0e0c5734d85a4e5c7da97e370289548b48a199ffc1d87e30dd",
     "crates/plenora-database-core/Cargo.toml": "334a9af9b7af01236e55cb48a92114c4e60f2a0972f54f586ba495f3c0b02998",
     "crates/plenora-database-engine/Cargo.toml": "3842feb711364c1af54db42be113848c1e8a53ec51f3d50d173fca6eeac73e42",
-    "crates/plenora-database-py/Cargo.toml": "f2b3ef24d8c407124939a76533d4f772286f657154787b66cc33d23317385a3e",
+    "crates/plenora-database-py/Cargo.toml": "bc69d4b3c241f707571d00da8c5694be72ecb24c7d05c6ae90e4b552c6807773",
     "crates/plenora-database-sql/Cargo.toml": "9cd9e7b711f0b6c24bec96bca116fa53e67e60e9c239304e26c99f52a7bfce14",
     "crates/plenora-database-testkit/Cargo.toml": "2eb64058398c4c9e51a1f0f83000c1a783690d803451188933f9cff7c7576718",
     "crates/plenora-db-db2/Cargo.toml": "193244503224d7bcc30cf2b1560afe82c238caeb23f768d1665d114e14b6a0ab",
@@ -3569,13 +3569,13 @@
         "aho-corasick-1.1.5",
         "allocator-api2-0.2.21",
         "arc-swap-1.9.2",
-        "arrow-array-60.0.0",
-        "arrow-buffer-60.0.0",
-        "arrow-cmp-60.0.0",
-        "arrow-data-60.0.0",
-        "arrow-ipc-60.0.0",
-        "arrow-schema-60.0.0",
-        "arrow-select-60.0.0",
+        "arrow-array-60.1.0",
+        "arrow-buffer-60.1.0",
+        "arrow-cmp-60.1.0",
+        "arrow-data-60.1.0",
+        "arrow-ipc-60.1.0",
+        "arrow-schema-60.1.0",
+        "arrow-select-60.1.0",
         "asynchronous-codec-0.7.0",
         "atoi-3.1.0",
         "aws-lc-rs-1.18.1",
@@ -3774,13 +3774,13 @@
         "aho-corasick-1.1.5",
         "allocator-api2-0.2.21",
         "arc-swap-1.9.2",
-        "arrow-array-60.0.0",
-        "arrow-buffer-60.0.0",
-        "arrow-cmp-60.0.0",
-        "arrow-data-60.0.0",
-        "arrow-ipc-60.0.0",
-        "arrow-schema-60.0.0",
-        "arrow-select-60.0.0",
+        "arrow-array-60.1.0",
+        "arrow-buffer-60.1.0",
+        "arrow-cmp-60.1.0",
+        "arrow-data-60.1.0",
+        "arrow-ipc-60.1.0",
+        "arrow-schema-60.1.0",
+        "arrow-select-60.1.0",
         "asynchronous-codec-0.7.0",
         "atoi-3.1.0",
         "aws-lc-rs-1.18.1",
@@ -3972,13 +3972,13 @@
       "cargo_profile": "release",
       "crates": [
         "ahash-0.8.12",
-        "arrow-array-60.0.0",
-        "arrow-buffer-60.0.0",
-        "arrow-cmp-60.0.0",
-        "arrow-data-60.0.0",
-        "arrow-ipc-60.0.0",
-        "arrow-schema-60.0.0",
-        "arrow-select-60.0.0",
+        "arrow-array-60.1.0",
+        "arrow-buffer-60.1.0",
+        "arrow-cmp-60.1.0",
+        "arrow-data-60.1.0",
+        "arrow-ipc-60.1.0",
+        "arrow-schema-60.1.0",
+        "arrow-select-60.1.0",
         "base64-0.22.1",
         "base64-0.23.1",
         "bitflags-2.13.2",
@@ -4086,13 +4086,13 @@
         "aho-corasick-1.1.5",
         "allocator-api2-0.2.21",
         "arc-swap-1.9.2",
-        "arrow-array-60.0.0",
-        "arrow-buffer-60.0.0",
-        "arrow-cmp-60.0.0",
-        "arrow-data-60.0.0",
-        "arrow-ipc-60.0.0",
-        "arrow-schema-60.0.0",
-        "arrow-select-60.0.0",
+        "arrow-array-60.1.0",
+        "arrow-buffer-60.1.0",
+        "arrow-cmp-60.1.0",
+        "arrow-data-60.1.0",
+        "arrow-ipc-60.1.0",
+        "arrow-schema-60.1.0",
+        "arrow-select-60.1.0",
         "asynchronous-codec-0.7.0",
         "aws-lc-rs-1.18.1",
         "aws-lc-sys-0.45.0",
@@ -4266,13 +4266,13 @@
         "aho-corasick-1.1.5",
         "allocator-api2-0.2.21",
         "arc-swap-1.9.2",
-        "arrow-array-60.0.0",
-        "arrow-buffer-60.0.0",
-        "arrow-cmp-60.0.0",
-        "arrow-data-60.0.0",
-        "arrow-ipc-60.0.0",
-        "arrow-schema-60.0.0",
-        "arrow-select-60.0.0",
+        "arrow-array-60.1.0",
+        "arrow-buffer-60.1.0",
+        "arrow-cmp-60.1.0",
+        "arrow-data-60.1.0",
+        "arrow-ipc-60.1.0",
+        "arrow-schema-60.1.0",
+        "arrow-select-60.1.0",
         "asynchronous-codec-0.7.0",
         "aws-lc-rs-1.18.1",
         "aws-lc-sys-0.45.0",
@@ -4438,13 +4438,13 @@
       "cargo_profile": "release",
       "crates": [
         "ahash-0.8.12",
-        "arrow-array-60.0.0",
-        "arrow-buffer-60.0.0",
-        "arrow-cmp-60.0.0",
-        "arrow-data-60.0.0",
-        "arrow-ipc-60.0.0",
-        "arrow-schema-60.0.0",
-        "arrow-select-60.0.0",
+        "arrow-array-60.1.0",
+        "arrow-buffer-60.1.0",
+        "arrow-cmp-60.1.0",
+        "arrow-data-60.1.0",
+        "arrow-ipc-60.1.0",
+        "arrow-schema-60.1.0",
+        "arrow-select-60.1.0",
         "base64-0.22.1",
         "base64-0.23.1",
         "bitflags-2.13.2",
@@ -4552,13 +4552,13 @@
         "aho-corasick-1.1.5",
         "allocator-api2-0.2.21",
         "arc-swap-1.9.2",
-        "arrow-array-60.0.0",
-        "arrow-buffer-60.0.0",
-        "arrow-cmp-60.0.0",
-        "arrow-data-60.0.0",
-        "arrow-ipc-60.0.0",
-        "arrow-schema-60.0.0",
-        "arrow-select-60.0.0",
+        "arrow-array-60.1.0",
+        "arrow-buffer-60.1.0",
+        "arrow-cmp-60.1.0",
+        "arrow-data-60.1.0",
+        "arrow-ipc-60.1.0",
+        "arrow-schema-60.1.0",
+        "arrow-select-60.1.0",
         "asynchronous-codec-0.7.0",
         "atoi-3.1.0",
         "aws-lc-rs-1.18.1",
@@ -4757,13 +4757,13 @@
         "aho-corasick-1.1.5",
         "allocator-api2-0.2.21",
         "arc-swap-1.9.2",
-        "arrow-array-60.0.0",
-        "arrow-buffer-60.0.0",
-        "arrow-cmp-60.0.0",
-        "arrow-data-60.0.0",
-        "arrow-ipc-60.0.0",
-        "arrow-schema-60.0.0",
-        "arrow-select-60.0.0",
+        "arrow-array-60.1.0",
+        "arrow-buffer-60.1.0",
+        "arrow-cmp-60.1.0",
+        "arrow-data-60.1.0",
+        "arrow-ipc-60.1.0",
+        "arrow-schema-60.1.0",
+        "arrow-select-60.1.0",
         "asynchronous-codec-0.7.0",
         "aws-lc-rs-1.18.1",
         "aws-lc-sys-0.45.0",
@@ -4958,13 +4958,13 @@
         "aho-corasick-1.1.5",
         "allocator-api2-0.2.21",
         "arc-swap-1.9.2",
-        "arrow-array-60.0.0",
-        "arrow-buffer-60.0.0",
-        "arrow-cmp-60.0.0",
-        "arrow-data-60.0.0",
-        "arrow-ipc-60.0.0",
-        "arrow-schema-60.0.0",
-        "arrow-select-60.0.0",
+        "arrow-array-60.1.0",
+        "arrow-buffer-60.1.0",
+        "arrow-cmp-60.1.0",
+        "arrow-data-60.1.0",
+        "arrow-ipc-60.1.0",
+        "arrow-schema-60.1.0",
+        "arrow-select-60.1.0",
         "asynchronous-codec-0.7.0",
         "aws-lc-rs-1.18.1",
         "aws-lc-sys-0.45.0",
