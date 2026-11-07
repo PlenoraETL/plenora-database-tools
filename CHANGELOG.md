@@ -6,14 +6,9 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
-## 9.0.1 — non pubblicata
+## 9.0.1 — 2026-11-07
 
 ### Sicurezza
-
-- Qualifica IPC: fixture file/stream con bitmap corta del padre Struct,
-  prove CLI e binding senza panico e traduzione SDK con categoria/fase.
-  La fixture Int32 resta distinta per il percorso ArrayDataBuilder;
-  controprova con grafo Arrow 60.0.0 documentata in `docs/arrow-60-1.md`.
 
 - Aggiornamento Arrow a `=60.1.0` per
   [RUSTSEC-2026-0442](https://rustsec.org/advisories/RUSTSEC-2026-0442.html):
@@ -28,6 +23,10 @@ riassumono le note di quelle release.
   costruttori Arrow pubblici raggiungono la validazione corretta upstream.
   Prove, limiti e percorsi per provider nel
   [rapporto della patch](docs/arrow-60-1.md).
+- Qualifica IPC: fixture file/stream con bitmap corta del padre Struct,
+  prove CLI e binding senza panico e traduzione SDK con categoria/fase.
+  La fixture Int32 resta distinta per il percorso ArrayDataBuilder;
+  controprova con grafo Arrow 60.0.0 documentata in `docs/arrow-60-1.md`.
 - Rimossa l'eccezione a RUSTSEC-2026-0381: RustSec dichiara ora lo shim
   `webpki-roots 0.26.11` non interessato; entrambi i grafi passano senza
   advisory ignorati con il database aggiornato del 6 novembre 2026.
@@ -40,10 +39,10 @@ riassumono le note di quelle release.
 - `Map.keys_sorted` resta conservato nel passaggio IPC dello SDK; il bridge
   `arrow-pyarrow` non appartiene al grafo database. Non e una nuova capability
   di scrittura dei provider. Nessun aggiornamento calamine: non e nel grafo.
-- Versione correttiva preparata per il tag `py-v9.0.1`, successiva a `py-v9.0.0`;
-  nessuna pubblicazione effettuata. Le prove live restano da eseguire sulla VM.
+- Correttiva della 9.0.0, tag `py-v9.0.1`. Prove live nella CI della PR #148
+  su PostgreSQL/PostGIS, MySQL, MariaDB, SQL Server, Oracle e Db2: verdi.
 
-## 9.0.0 - in preparazione
+## 9.0.0 — 2026-11-04
 
 - Db2: il controllo dei tipi result set prima di SQLExecute condivide la
   tabella del decoder e ammette CLOB/DBCLOB/BLOB nel percorso long-read,
