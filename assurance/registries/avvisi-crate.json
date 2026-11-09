@@ -2668,7 +2668,7 @@
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "1.0.229"
     },
-    "serde_json-1.0.151": {
+    "serde_json-1.0.154": {
       "files": [
         {
           "file": "LICENSE-APACHE",
@@ -2684,7 +2684,7 @@
       "license": "MIT OR Apache-2.0",
       "name": "serde_json",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "1.0.151"
+      "version": "1.0.154"
     },
     "sha1-0.10.7": {
       "files": [
@@ -3540,8 +3540,8 @@
     }
   },
   "inputs": {
-    "Cargo.lock": "7624e572cc7efb0fe37891bcc792ae5764658e91f5960480a48ac4e7d140a7fb",
-    "Cargo.toml": "1c256aeb6f87a788f17961cbcde3e5e77fb975130bbe3e9455fc7fb1b664781c",
+    "Cargo.lock": "2054bccfc4a25146581610a87330ad0f40ed1b3b1e80f9508e3219955c5cbaf7",
+    "Cargo.toml": "2fde88a36ddb4aa984c11b34c3456842a4fe9b170e11588d547ede5f90dbe7bf",
     "crates/plenora-database-cli/Cargo.toml": "198763d296693b0e0c5734d85a4e5c7da97e370289548b48a199ffc1d87e30dd",
     "crates/plenora-database-core/Cargo.toml": "334a9af9b7af01236e55cb48a92114c4e60f2a0972f54f586ba495f3c0b02998",
     "crates/plenora-database-engine/Cargo.toml": "3842feb711364c1af54db42be113848c1e8a53ec51f3d50d173fca6eeac73e42",
@@ -3709,7 +3709,7 @@
         "scrypt-0.11.0",
         "serde-1.0.229",
         "serde_core-1.0.229",
-        "serde_json-1.0.151",
+        "serde_json-1.0.154",
         "sha1-0.10.7",
         "sha2-0.10.9",
         "sha2-0.11.0",
@@ -3912,7 +3912,7 @@
         "scrypt-0.11.0",
         "serde-1.0.229",
         "serde_core-1.0.229",
-        "serde_json-1.0.151",
+        "serde_json-1.0.154",
         "sha1-0.10.7",
         "sha2-0.10.9",
         "sha2-0.11.0",
@@ -4042,7 +4042,7 @@
         "scopeguard-1.2.0",
         "serde-1.0.229",
         "serde_core-1.0.229",
-        "serde_json-1.0.151",
+        "serde_json-1.0.154",
         "sha2-0.11.0",
         "siphasher-1.0.3",
         "slab-0.4.12",
@@ -4203,7 +4203,7 @@
         "scopeguard-1.2.0",
         "serde-1.0.229",
         "serde_core-1.0.229",
-        "serde_json-1.0.151",
+        "serde_json-1.0.154",
         "sha1-0.10.7",
         "sha2-0.10.9",
         "sha2-0.11.0",
@@ -4381,7 +4381,7 @@
         "scopeguard-1.2.0",
         "serde-1.0.229",
         "serde_core-1.0.229",
-        "serde_json-1.0.151",
+        "serde_json-1.0.154",
         "sha1-0.10.7",
         "sha2-0.10.9",
         "sha2-0.11.0",
@@ -4506,7 +4506,7 @@
         "scopeguard-1.2.0",
         "serde-1.0.229",
         "serde_core-1.0.229",
-        "serde_json-1.0.151",
+        "serde_json-1.0.154",
         "sha2-0.11.0",
         "siphasher-1.0.3",
         "slab-0.4.12",
@@ -4694,7 +4694,7 @@
         "scrypt-0.11.0",
         "serde-1.0.229",
         "serde_core-1.0.229",
-        "serde_json-1.0.151",
+        "serde_json-1.0.154",
         "sha1-0.10.7",
         "sha2-0.10.9",
         "sha2-0.11.0",
@@ -4896,7 +4896,7 @@
         "scrypt-0.11.0",
         "serde-1.0.229",
         "serde_core-1.0.229",
-        "serde_json-1.0.151",
+        "serde_json-1.0.154",
         "sha1-0.10.7",
         "sha2-0.10.9",
         "sha2-0.11.0",
@@ -5096,7 +5096,7 @@
         "scrypt-0.11.0",
         "serde-1.0.229",
         "serde_core-1.0.229",
-        "serde_json-1.0.151",
+        "serde_json-1.0.154",
         "sha1-0.10.7",
         "sha2-0.10.9",
         "sha2-0.11.0",

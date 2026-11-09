@@ -294,7 +294,8 @@ fn geometry_wkb_bytes(ewkb: &[u8], root_has_srid: bool) -> PyResult<Vec<u8>> {
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Il wheel collega adapter che abilitano backend rustls diversi. La
     // selezione process-wide evita il panic di auto-selezione prima dell'I/O
-    // e mantiene il backend ring gia fissato dal workspace.
+    // e sceglie ring se il processo non ha gia installato un provider.
+    // SQL Server usa invece il proprio builder esplicito AWS-LC.
     let _ = rustls::crypto::ring::default_provider().install_default();
     // Inizializza il runtime condiviso con pyo3-async-runtimes per bridge
     // asyncio ↔ tokio. Chiamato una sola volta all'import del modulo.

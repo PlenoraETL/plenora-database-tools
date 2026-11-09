@@ -53,7 +53,7 @@ release; Windows resta build-only e non e distribuito come runtime Db2.
 Richiede Rust 1.98.1+ e [maturin](https://maturin.rs).
 
 ```bash
-pip install maturin
+pip install -r requirements-sdk-build.txt
 cd crates/plenora-database-py
 maturin develop --release
 python -c "import plenora_database as p; print(p.version())"

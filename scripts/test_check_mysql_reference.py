@@ -1466,7 +1466,7 @@ SDK_ARTIFACT = {
     "native_path": (
         "/usr/local/lib/python3.13/site-packages/plenora_database/_native.abi3.so"
     ),
-    "maturin": "1.15.0",
+    "maturin": "1.16.0",
     "rustc": "1.98.1",
 }
 SDK_VERSIONS = {
@@ -1667,7 +1667,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         self.assertEqual(sdk.pinned_versions(requirements)["maturin"], pinned)
 
         # E il vincolo del pacchetto a comandare, in entrambe le direzioni.
-        for outside in ("maturin==1.6.0", "maturin==2.0.0"):
+        for outside in ("maturin==1.6.0", "maturin==1.15.0", "maturin==1.16.1", "maturin==2.0.0"):
             with self.assertRaises(RuntimeError):
                 sdk.validate_maturin_pin(pyproject, outside)
 
@@ -1737,7 +1737,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
                 "rustc",
             },
         )
-        self.assertEqual(recorded["versions"]["maturin"], "1.15.0")
+        self.assertEqual(recorded["versions"]["maturin"], "1.16.0")
         self.assertEqual(recorded["versions"]["rustc"], "1.98.1")
 
         # Il bench confronta due artefatti, quindi il verdetto ne identifica

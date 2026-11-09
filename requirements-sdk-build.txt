@@ -6,9 +6,9 @@
 # l'artefatto e poi non sa dire con cosa e stato prodotto documenta meta' dei
 # fatti.
 #
-# Il pin deve stare dentro `requires = ["maturin>=1.7,<2.0"]` di
+# Il pin deve coincidere con il requisito esatto di
 # `crates/plenora-database-py/pyproject.toml`: il runner lo verifica prima di
-# avviare il container, perche una build con una maturin fuori dal vincolo
+# avviare il container, perche una build con una maturin diversa dal vincolo
 # dichiarato non e la build che il pacchetto descrive.
 -c requirements-transitive.txt
-maturin==1.15.0
+maturin==1.16.0

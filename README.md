@@ -143,7 +143,7 @@ dal METADATA dei wheel, separatamente dai pacchetti usati dai test.
 Da sorgenti, per lo sviluppo:
 
 ```bash
-pip install maturin
+pip install -r requirements-sdk-build.txt
 cd crates/plenora-database-py
 maturin develop --release
 python -c "import plenora_database as p; print(p.version())"

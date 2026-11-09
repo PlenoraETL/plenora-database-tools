@@ -363,8 +363,8 @@ def maturin_bounds(pyproject: str) -> tuple[str, str]:
 def validate_maturin_pin(pyproject: str, requirements: str) -> str:
     """La maturin che il runner installa, verificata contro il pyproject.
 
-    Il pacchetto dichiara con quale intervallo di maturin puo essere
-    costruito. Installarne una fuori da quell'intervallo produce un wheel che
+    Il pacchetto dichiara con quale versione o intervallo di maturin puo essere
+    costruito. Installarne una fuori da quel vincolo produce un wheel che
     il pacchetto stesso non descrive: il verdetto direbbe "costruito", e chi
     lo rilegge non avrebbe modo di accorgersene.
 
@@ -378,6 +378,11 @@ def validate_maturin_pin(pyproject: str, requirements: str) -> str:
         raise RuntimeError(
             f"{BUILD_REQUIREMENTS.name} non fissa una versione di maturin"
         )
+    exact = re.search(r'["\']maturin==([0-9.]+)["\']', pyproject)
+    if exact:
+        if pinned != exact.group(1):
+            raise RuntimeError("maturin diversa dal pin esatto del pyproject")
+        return pinned
     minimum, upper = maturin_bounds(pyproject)
     if version_tuple(pinned) < version_tuple(minimum):
         raise RuntimeError(
