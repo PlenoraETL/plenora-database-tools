@@ -1268,7 +1268,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "plenora-database-core"
-version = "9.0.1"
+version = "9.0.2"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1280,7 +1280,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-engine"
-version = "9.0.1"
+version = "9.0.2"
 dependencies = [
  "arrow-ipc",
  "chrono",
@@ -1293,7 +1293,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-database-sql"
-version = "9.0.1"
+version = "9.0.2"
 dependencies = [
  "plenora-database-core",
  "serde",
@@ -1317,7 +1317,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-mysql"
-version = "9.0.1"
+version = "9.0.2"
 dependencies = [
  "chrono",
  "futures-util",
@@ -1333,7 +1333,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-postgres"
-version = "9.0.1"
+version = "9.0.2"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "plenora-db-sqlserver"
-version = "9.0.1"
+version = "9.0.2"
 dependencies = [
  "chrono",
  "futures-util",
@@ -1663,9 +1663,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.151"
+version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
  "itoa",
  "memchr",

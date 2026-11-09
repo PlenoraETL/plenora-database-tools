@@ -10,9 +10,9 @@ pub async fn connect(
     secret: &SecretString,
     cancellation: &CancellationToken,
 ) -> Result<Connection> {
-    // Il driver abilita aws-lc-rs mentre gli altri adapter fissano ring. Se i
-    // due backend convivono rustls non sceglie da solo e va in panic: la
-    // selezione e esplicita e idempotente prima di costruire il client.
+    // Il driver abilita aws-lc-rs e il workspace anche ring: rustls non puo
+    // auto-selezionare fra i due. Installa ring solo se il processo non ha
+    // gia scelto un provider; un provider esistente resta quello effettivo.
     let _ = rustls::crypto::ring::default_provider().install_default();
     if cancellation.is_cancelled() {
         return Err(interruption_error(cancellation, ErrorPhase::Connect));

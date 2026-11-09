@@ -346,7 +346,7 @@ pub async fn reset(admin: &tokio_postgres::Client) {
         .expect("pulizia");
 }
 
-pub async fn prepare(admin: &tokio_postgres::Client, setup: &str) {
+pub async fn prepare(admin: &tokio_postgres::Client, setup: &str) -> i32 {
     reset(admin).await;
     let sql = format!(
         "CREATE ROLE {ROLE} LOGIN PASSWORD '{PASSWORD}'; CREATE SCHEMA {SCHEMA}; {TABLE} {setup}"
@@ -358,7 +358,7 @@ pub async fn prepare(admin: &tokio_postgres::Client, setup: &str) {
         .await
         .expect("versione server")
         .get(0);
-    let sql = view_setup_for_version(&sql, version);
+    let sql = setup_for_version(&sql, version);
     admin.batch_execute(&sql).await.expect("preparazione");
     if setup.contains("WITH (security_invoker = true)") {
         admin
@@ -372,13 +372,24 @@ pub async fn prepare(admin: &tokio_postgres::Client, setup: &str) {
             .expect("ripristino ruolo");
         assert_eq!(visible, vec![1, 3], "la vista deve nascondere la riga 2");
     }
+    version
 }
 
 /// PG14 non ha `security_invoker`: il proprietario della vista e il ruolo
 /// soggetto a RLS, non il proprietario della tabella. Stessa policy effettiva;
-/// da PG15 si continua a provare la forma invoker.
-fn view_setup_for_version(sql: &str, version: i32) -> String {
-    if version < 150_000 && sql.contains("WITH (security_invoker = true)") {
+/// da PG15 si continua a provare la forma invoker. Su PG14 gli indici unici
+/// hanno sempre NULL distinti; SET di `session_replication_role` richiede un
+/// superutente. Il ruolo privilegiato e effimero e viene eliminato da reset.
+/// Tutte le preparazioni delle prove R/K/W2 passano da questo adattatore.
+pub fn setup_for_version(sql: &str, version: i32) -> String {
+    if version >= 150_000 {
+        return sql.to_owned();
+    }
+    let sql = sql.replace("UNIQUE NULLS NOT DISTINCT", "UNIQUE").replace(
+        &format!("GRANT SET ON PARAMETER session_replication_role TO {ROLE};"),
+        &format!("ALTER ROLE {ROLE} SUPERUSER;"),
+    );
+    if sql.contains("WITH (security_invoker = true)") {
         format!(
             "{} GRANT CREATE ON SCHEMA {SCHEMA} TO {ROLE}; \
              ALTER VIEW {SCHEMA}.v OWNER TO {ROLE}; \
@@ -386,20 +397,8 @@ fn view_setup_for_version(sql: &str, version: i32) -> String {
             sql.replace("WITH (security_invoker = true)", "")
         )
     } else {
-        sql.to_owned()
+        sql
     }
-}
-
-#[test]
-fn rls_view_setup_preserves_the_policy_role_on_supported_majors() {
-    let sql = "CREATE VIEW pln_regola_r.v WITH (security_invoker = true) AS SELECT * FROM pln_regola_r.t;";
-    let old = view_setup_for_version(sql, 140_000);
-    assert!(!old.contains("security_invoker"));
-    assert!(old.contains("ALTER VIEW pln_regola_r.v OWNER TO pln_regola_r_ruolo"));
-    for version in [150_000, 180_000] {
-        assert_eq!(view_setup_for_version(sql, version), sql);
-    }
-    assert_eq!(view_setup_for_version(TABLE, 140_000), TABLE);
 }
 
 #[tokio::test]

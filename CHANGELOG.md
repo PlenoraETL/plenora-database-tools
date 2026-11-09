@@ -6,6 +6,21 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## 9.0.2 — non rilasciata
+
+- Allineamento delle dipendenze: serde_json 1.0.154 nei grafi workspace e
+  fuzz, conservando `float_roundtrip`; maturin 1.16.0 nei requisiti di build,
+  coverage e workflow.
+- Le build Python isolate richiedono ora la stessa versione esatta di
+  maturin usata dai runner. Il validatore di packaging accetta il pin esatto
+  e rifiuta versioni diverse, incluse patch adiacenti; prova nel self-test
+  `test_the_build_is_locked_and_pins_a_maturin_the_package_declares` di
+  `scripts/test_check_mysql_reference.py`.
+
+- Prove live PostgreSQL 14 adattate: fixture delle versioni successive
+  condizionate alla versione con `setup_for_version`; gate della matrice
+  major di nuovo verde. Nessun cambio del prodotto.
+
 ## 9.0.1 — 2026-11-07
 
 ### Sicurezza

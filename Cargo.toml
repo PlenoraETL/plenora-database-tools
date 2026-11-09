@@ -29,7 +29,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "9.0.1"
+version = "9.0.2"
 edition = "2021"
 rust-version = "1.98.1"
 publish = false
@@ -62,7 +62,7 @@ serde = { version = "=1.0.229", features = ["derive"] }
 # letterali CLI, parametri `json`, payload) poteva arrivare al database
 # diverso da quello scritto, in silenzio. Con la feature il parsing coincide
 # con `str::parse::<f64>`.
-serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
 # Solo nell'adapter SQL Server: `native_query_policy` analizza lo statement
 # nativo per applicarvi la policy prima dell'invio. Senza feature di default.
 sqlparser = { version = "=0.63.0", default-features = false, features = ["std"] }
@@ -128,7 +128,8 @@ odbc-api = { path = "vendor/odbc-api", version = "=29.0.0", default-features = f
 # lui (`scripts/check_consumer_fork.py`).
 oracle-rs = { package = "plenora-oracle-rs", path = "vendor/oracle-rs" }
 # TLS dei driver PostgreSQL e Oracle e delle CA private della CLI e del
-# binding; provider crittografico `ring`, senza aws-lc.
+# binding; selezione diretta di `ring`. I default transitivi di tokio-rustls
+# nei driver Oracle e SQL Server attivano anche aws-lc nel grafo completo.
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 # Ponte fra `tokio-postgres` e rustls per le connessioni PostgreSQL TLS.
 tokio-postgres-rustls = { version = "=0.14.0", features = ["ring", "webpki-roots"] }

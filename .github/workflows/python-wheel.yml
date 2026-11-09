@@ -40,7 +40,7 @@ jobs:
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           # L'action e maturin sono dipendenze distinte e vanno fissate entrambe.
-          maturin-version: '1.15.0'
+          maturin-version: '1.16.0'
           command: build
           args: >-
             --release
@@ -98,7 +98,7 @@ jobs:
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           # L'action e maturin sono dipendenze distinte e vanno fissate entrambe.
-          maturin-version: '1.15.0'
+          maturin-version: '1.16.0'
           command: build
           args: >-
             --release

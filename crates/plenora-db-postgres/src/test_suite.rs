@@ -67,6 +67,36 @@ impl PostgresProvider {
 
 #[cfg(test)]
 mod tests {
+    // Fuori dai moduli live: il gate offline usa --skip live_.
+    use crate::write_visibility_live_tests::{setup_for_version, ROLE};
+
+    #[test]
+    fn rls_view_setup_preserves_the_policy_role_on_supported_majors() {
+        let sql = "CREATE VIEW pln_regola_r.v WITH (security_invoker = true) AS SELECT * FROM pln_regola_r.t;";
+        let old = setup_for_version(sql, 140_000);
+        assert!(!old.contains("security_invoker"));
+        assert!(old.contains("ALTER VIEW pln_regola_r.v OWNER TO pln_regola_r_ruolo"));
+        for version in [150_000, 180_000] {
+            assert_eq!(setup_for_version(sql, version), sql);
+        }
+        assert_eq!(setup_for_version("SELECT 1", 140_000), "SELECT 1");
+    }
+
+    #[test]
+    fn setup_adapts_null_keys_and_parameter_privileges_on_all_supported_majors() {
+        let sql = format!(
+            "CREATE TABLE t (k text UNIQUE NULLS NOT DISTINCT); \
+             GRANT SET ON PARAMETER session_replication_role TO {ROLE};"
+        );
+        let old = setup_for_version(&sql, 140_000);
+        assert!(old.contains("k text UNIQUE)"));
+        assert!(old.contains(&format!("ALTER ROLE {ROLE} SUPERUSER;")));
+        assert!(!old.contains("GRANT SET"));
+        for major in 15..=18 {
+            assert_eq!(setup_for_version(&sql, major * 10_000), sql);
+        }
+    }
+
     use super::*;
 
     #[tokio::test]
@@ -3407,9 +3437,13 @@ mod tests {
             create_spatial_index: false,
             allow_partial: false,
         };
-        // La regola A: una colonna di una coppia non misurata rifiuta Create
-        // nel preflight, con ogni politica (fino al 25/10 il roundtrip
-        // comprendeva il dominio, gli array, i range e il composto).
+        // Il fixture usa numeric(8,0) su PG14, coppia misurata, e numeric(6,-2)
+        // dalla 15, non misurata. Le altre colonne restano non misurate.
+        let version: i32 = client
+            .query_one("SELECT current_setting('server_version_num')::int", &[])
+            .await
+            .expect("versione server")
+            .get(0);
         for unmeasured in [
             "domain_value",
             "rounded_amount",
@@ -3440,23 +3474,58 @@ mod tests {
                 )
                 .await
                 .expect("advanced source");
-            let error = provider
-                .prepare_write_with_test_budget(
-                    &secret,
-                    &advanced_operation,
-                    stream.schema(),
-                    &cancellation,
-                )
-                .await
-                .err()
-                .expect("coppia non misurata");
-            assert_eq!(error.category, ErrorCategory::Unsupported, "{unmeasured}");
-            assert!(
-                error
-                    .message
-                    .contains(plenora_database_core::write_admission::UNPROVEN_PAIR),
-                "{unmeasured}: {error:?}"
-            );
+            let schema = stream.schema();
+            let measured = unmeasured == "rounded_amount" && version < 150_000;
+            if unmeasured == "rounded_amount" {
+                let field = schema.field_with_name(unmeasured).expect("campo numeric");
+                let (arrow, native) = if measured {
+                    (DataType::Decimal128(8, 0), "numeric(8,0)")
+                } else {
+                    (DataType::Decimal128(6, -2), "numeric(6,-2)")
+                };
+                assert_eq!(field.data_type(), &arrow);
+                assert_eq!(
+                    field
+                        .metadata()
+                        .get(plenora_database_core::protocol::POSTGRES_NATIVE_DECLARATION)
+                        .map(String::as_str),
+                    Some(native),
+                );
+            }
+            for policy in [
+                MappingPolicy::Strict,
+                MappingPolicy::Compatible,
+                MappingPolicy::Lossy,
+                MappingPolicy::Native,
+            ] {
+                let mut operation = advanced_operation.clone();
+                operation.mapping_policy = policy;
+                let result = provider
+                    .prepare_write_with_test_budget(
+                        &secret,
+                        &operation,
+                        Arc::clone(&schema),
+                        &cancellation,
+                    )
+                    .await;
+                if measured {
+                    assert!(
+                        result.is_ok(),
+                        "{unmeasured} PG{version} {policy:?}: coppia misurata"
+                    );
+                } else {
+                    let error = result.err().unwrap_or_else(|| {
+                        panic!("{unmeasured} PG{version} {policy:?}: coppia non misurata ammessa")
+                    });
+                    assert_eq!(error.category, ErrorCategory::Unsupported, "{unmeasured}");
+                    assert!(
+                        error
+                            .message
+                            .contains(plenora_database_core::write_admission::UNPROVEN_PAIR),
+                        "{unmeasured}: {error:?}"
+                    );
+                }
+            }
         }
         let advanced_prepared = provider
             .prepare_write_with_test_budget(

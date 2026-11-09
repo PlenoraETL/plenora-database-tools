@@ -387,6 +387,8 @@ async fn last_value(client: &tokio_postgres::Client) -> Option<i64> {
 /// rifiuta prima di ogni effetto e il dry run concorda. Con il permesso
 /// (`GRANT SET ON PARAMETER`) la sessione si fissa e il target applica le
 /// proprie garanzie: l'orfano e la riga che il trigger rifiuta falliscono.
+/// Su PG14 prepare concede SUPERUSER al solo ruolo effimero: e il privilegio
+/// necessario a SET prima della 15, senza saltare la verifica di origin.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn live_w2_session_replication_role_fissato_a_origin() {
