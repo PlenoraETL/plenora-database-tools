@@ -264,7 +264,8 @@ async fn live_t_un_catalog_diverso_si_rifiuta_in_ogni_operazione() {
 /// `confirmed 2` con una sola riga `'due'`: la regola K non confrontava le
 /// chiavi `NULL`. Ora due chiavi che l'indice tratta come una sola si
 /// rifiutano, nella scrittura e nel dry run; con un indice `NULLS DISTINCT`
-/// le due chiavi `NULL` restano due righe nuove.
+/// le due chiavi `NULL` restano due righe nuove. Su PG14 entrambi gli indici
+/// sono DISTINCT: si verifica lo stesso comportamento anche nel dry run.
 #[tokio::test]
 async fn live_k_le_chiavi_null_seguono_l_indice() {
     let Some(dsn) = live_dsn() else {
@@ -287,7 +288,7 @@ async fn live_k_le_chiavi_null_seguono_l_indice() {
     };
     let mut difformi = Vec::new();
     for profile in PROFILES {
-        prepare(
+        let version = prepare(
             &admin,
             "CREATE TABLE {s}.nnd (k text, v text, UNIQUE NULLS NOT DISTINCT (k)); \
              INSERT INTO {s}.nnd VALUES (NULL, 'vecchio'); \
@@ -296,22 +297,28 @@ async fn live_k_le_chiavi_null_seguono_l_indice() {
         )
         .await;
         let provider = PostgresProvider::insecure_local().with_insert_mode(profile);
+        let equal = version >= 150_000;
         let written = write_stream(&provider, &secret, &upsert("nnd"), rows()).await;
-        if !written.as_ref().is_err_and(duplicate) {
+        if (equal && !written.as_ref().is_err_and(duplicate)) || (!equal && written.is_err()) {
             difformi.push(format!(
-                "{profile:?} NULLS NOT DISTINCT: {}",
+                "{profile:?} NULLS equal={equal}: {}",
                 outcome_of(&written)
             ));
         }
-        let stored = texts(&admin, "SELECT v FROM pln_regola_r.nnd").await;
-        if stored != ["vecchio"] {
-            difformi.push(format!("{profile:?} NULLS NOT DISTINCT righe: {stored:?}"));
+        let stored = texts(&admin, "SELECT v FROM pln_regola_r.nnd ORDER BY v").await;
+        let expected = if equal {
+            vec!["vecchio"]
+        } else {
+            vec!["due", "uno", "vecchio"]
+        };
+        if stored != expected {
+            difformi.push(format!("{profile:?} NULLS equal={equal} righe: {stored:?}"));
         }
         if profile != PostgresInsertMode::CopyBinary {
             let dry = dry_run_stream(&provider, &secret, &upsert("nnd"), rows()).await;
-            if !dry.as_ref().is_err_and(duplicate) {
+            if (equal && !dry.as_ref().is_err_and(duplicate)) || (!equal && dry.is_err()) {
                 difformi.push(format!(
-                    "{profile:?} dry run NULLS NOT DISTINCT: {:?}",
+                    "{profile:?} dry run NULLS equal={equal}: {:?}",
                     dry.map(|dry| dry.rows)
                 ));
             }

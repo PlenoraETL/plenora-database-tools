@@ -120,3 +120,39 @@ fn le_chiavi_decimali_non_possono_cambiare_scala() {
         plenora_database_core::admission_gate::write_column(&measured, &key, dimensions).is_err()
     );
 }
+
+/// Il fixture `advanced_types` cambia dichiarazione alla 15: l'ammissione
+/// positiva su PG14 non e una coppia non misurata sfuggita al preflight.
+#[test]
+fn rounded_amount_fixture_has_a_measured_pair_only_before_pg15() {
+    for major in 14..=18 {
+        let server = ServerFacts {
+            major: major.to_string(),
+            ..server()
+        };
+        let measured = admission_table()
+            .expect("fixture")
+            .server(&server.major)
+            .expect("major misurata");
+        for (arrow, native, admitted) in [
+            (DataType::Decimal128(8, 0), "numeric(8,0)", true),
+            (DataType::Decimal128(6, -2), "numeric(6,-2)", false),
+        ] {
+            let (key, dimensions) = admission_key(
+                &arrow,
+                &[leaf(native, "b", -1, SessionShape::Scalar)],
+                &server,
+            );
+            let result =
+                plenora_database_core::admission_gate::write_column(&measured, &key, dimensions);
+            assert_eq!(result.is_ok(), admitted, "PG{major}: {key:?}");
+            if !admitted {
+                let error = result.expect_err("scala negativa non misurata");
+                assert_eq!(error.category, ErrorCategory::Unsupported);
+                assert!(error
+                    .message
+                    .contains(plenora_database_core::write_admission::UNPROVEN_PAIR));
+            }
+        }
+    }
+}
