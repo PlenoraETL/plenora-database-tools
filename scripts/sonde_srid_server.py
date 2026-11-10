@@ -448,6 +448,11 @@ def main() -> int:
     argomenti.add_argument("--attesa", type=int, default=240, help="secondi per l'avvio")
     argomenti.add_argument("--password", help="la password di amministrazione di --container")
     opzioni = argomenti.parse_args()
+    if opzioni.referto:
+        opzioni.referto.write_text(json.dumps({
+            "schema_version": 1, "server": opzioni.server,
+            "status": "not_measured", "misure": [],
+        }, indent=1) + "\n", encoding="utf-8")
     if opzioni.password:
         global PASSWORD  # noqa: PLW0603 - una sola esecuzione per processo
         PASSWORD = opzioni.password
@@ -462,6 +467,15 @@ def main() -> int:
     for nome, immagine in bersagli:
         docker = Docker(opzioni.docker, nome)
         if immagine:
+            # Separa il pull da run: nessuna credenziale del container entra
+            # nella diagnostica del download, che va conservata per intero.
+            presente = docker.run(["image", "inspect", immagine])
+            if presente.returncode != 0:
+                scaricato = docker.run(["pull", immagine])
+                if scaricato.returncode != 0:
+                    print("download dell'immagine fallito", file=sys.stderr)
+                    print(scaricato.stderr, file=sys.stderr)
+                    return 2
             ambiente = [arg for chiave, valore in AMBIENTE[opzioni.server].items()
                         for arg in ("-e", f"{chiave}={valore}")]
             avviato = docker.run(["run", "--rm", "-d", "--name", nome, *ambiente, immagine])

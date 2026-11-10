@@ -34,7 +34,7 @@ def generate():
         if len(roots) != 1:
             raise ValueError(f"expected one cached source: {package['name']} {package['version']}")
         root = roots[0]
-        for path in sorted((root / 'src').rglob('*.rs')):
+        for path in sorted((root / 'src').rglob('*.rs'), key=lambda path: path.relative_to(root).as_posix()):
             masked = rust_mask(path.read_text(encoding='utf-8'))
             for match in re.finditer(r'\bpub\s+(?:(?:unsafe|async|const|extern)\s+)*(struct|enum|union|trait|type|fn|mod|const|static)\s+(\w+)', masked):
                 kind, name = match.groups()

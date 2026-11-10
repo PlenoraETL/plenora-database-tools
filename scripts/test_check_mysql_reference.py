@@ -2312,9 +2312,9 @@ class PythonSdkRunnerTests(unittest.TestCase):
         stabilization = sdk.SCOPE_CONTRACTS["stabilization"]
         benchmark = sdk.SCOPE_CONTRACTS["benchmark"]
 
-        self.assertEqual((live.passed, live.skipped, live.deselected), (656, 27, 0))
+        self.assertEqual((live.passed, live.skipped, live.deselected), (999, 27, 0))
         self.assertEqual(
-            (offline.passed, offline.skipped, offline.deselected), (363, 320, 0)
+            (offline.passed, offline.skipped, offline.deselected), (706, 320, 0)
         )
         self.assertEqual(
             (
@@ -2326,7 +2326,7 @@ class PythonSdkRunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             (benchmark.passed, benchmark.skipped, benchmark.deselected),
-            (2, 0, 681),
+            (2, 0, 1024),
         )
         # I due scope che girano l'intera suite ne vedono lo stesso totale:
         # il wheel standard salta Db2 e Oracle anche live, e nessuno

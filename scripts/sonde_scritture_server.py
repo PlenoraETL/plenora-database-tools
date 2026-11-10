@@ -458,6 +458,13 @@ def main() -> int:
                            help="riscrive il fixture con le misure invece di verificarlo")
     argomenti.add_argument("--referto", type=Path)
     opzioni = argomenti.parse_args()
+    # Un errore infrastrutturale non produce una misura, ma deve lasciare
+    # un referto esplicitamente non misurato anche nel job di upload.
+    if opzioni.referto:
+        opzioni.referto.write_text(json.dumps({
+            "schema_version": 1, "server": opzioni.server,
+            "status": "not_measured", "misure": [],
+        }, indent=1) + "\n", encoding="utf-8")
     prodotto = PRODOTTI[opzioni.server]
     docker = Docker(opzioni.docker)
 
@@ -472,6 +479,15 @@ def main() -> int:
     misure, difformi = [], []
     for nome, immagine, porta in bersagli:
         if immagine:
+            # Separa il pull da run: nessuna credenziale del container entra
+            # nella diagnostica del download, che va conservata per intero.
+            presente = docker.run(["image", "inspect", immagine])
+            if presente.returncode != 0:
+                scaricato = docker.run(["pull", immagine])
+                if scaricato.returncode != 0:
+                    print("download dell'immagine fallito", file=sys.stderr)
+                    print(scaricato.stderr, file=sys.stderr)
+                    return 2
             ambiente = [arg for chiave, valore in prodotto.ambiente.items()
                         for arg in ("-e", f"{chiave}={valore}")]
             avviato = docker.run(["run", "--rm", "-d", "--name", nome,

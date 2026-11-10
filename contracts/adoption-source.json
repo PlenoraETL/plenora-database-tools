@@ -36,7 +36,7 @@
     {
       "rule": "ARROW-C-BUFFER-CAPACITY",
       "surface": "python_sdk",
-      "observed_behavior": "Owner decision 2026-11-10: accept C-only Arrow producers with a limit. Scope: __arrow_c_stream__/__arrow_c_array__ when the passed object is not itself a recognizable PyArrow Table, RecordBatch, RecordBatchReader, ChunkedArray or Array. A non-PyArrow wrapper returning a PyArrow batch capsule is indistinguishable from a third-party producer and is covered by this accepted limit; capsule origin does not change the rule. Full validation checks the imported representation, including offsets, dictionary indices, child lengths and declared bitmap lengths. Hazard: C Data/Stream carries pointers, not allocation capacities; truncated buffers can become apparently valid after import. Allocation size and lifetime remain the producer's Arrow contract responsibility. Recognizable PyArrow Table/RecordBatch/RecordBatchReader/ChunkedArray/Array objects are validated in their original representation before any C transfer. Reentry: a protocol carrying verifiable buffer capacities or access to original fully validatable arrays.",
+      "observed_behavior": "C-only Arrow producers (including wrappers of PyArrow capsules) expose pointers, not buffer capacities. Imported structure is fully validated, but truncated allocations may appear valid; size and lifetime remain producer obligations. Recognizable PyArrow objects are validated before C transfer. Accepted limit: 2026-11-10. Reentry: verifiable capacities or original validatable arrays; details at tracking.",
       "tracking": "crates/plenora-database-py/README.md#limitazioni",
       "detectable_before_invocation": false
     },

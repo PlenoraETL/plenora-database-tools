@@ -3,11 +3,41 @@ import copy
 import json
 import unittest
 import types
+import ast
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from check_arrow_ingress import REGISTRY, audit, inventory, python_functions, runtime_python_functions, rust_functions, sources, form_errors, runtime_registry_errors
+from check_arrow_ingress import python_review_dump
 
 
 class ArrowInventoryTests(unittest.TestCase):
+    def test_review_dump_preserves_legacy_empty_fields_and_type_parameters(self):
+        node = ast.parse('def f(): pass').body[0]
+        expected = "FunctionDef(name='f', args=arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]), body=[Pass()], decorator_list=[])"
+        self.assertEqual(python_review_dump(node), expected)
+        node._fields = (*[f for f in node._fields if f != 'type_params'], 'type_params')
+        node.type_params = []
+        self.assertEqual(python_review_dump(node), expected)
+        node.type_params = [ast.Name(id='T', ctx=ast.Load())]
+        self.assertNotEqual(python_review_dump(node), expected)
+        node.body = [ast.Return(value=ast.Constant(value=1))]
+        self.assertNotEqual(python_review_dump(node), expected)
+
+    def test_catalog_path_order_is_platform_independent(self):
+        import arrow_public_items
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / 'registry/src/cache/arrow-test-1/src'
+            root.mkdir(parents=True)
+            for name in ('array.rs', 'ArrayData.rs'):
+                (root / name).write_text('pub struct Value;', encoding='utf-8')
+            with patch.dict('os.environ', CARGO_HOME=directory), \
+                    patch.object(arrow_public_items, 'packages', return_value=[
+                        {'name': 'arrow-test', 'version': '1', 'checksum': 'test'}]):
+                items = arrow_public_items.generate()['items']
+        self.assertEqual([item[1] for item in items], ['src/ArrayData.rs', 'src/array.rs'])
+
     @classmethod
     def setUpClass(cls):
         cls.sources = sources()

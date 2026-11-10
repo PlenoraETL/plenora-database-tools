@@ -139,6 +139,20 @@ def rust_functions(path, source):
                     "body": source[end:close], "review_sha256": digest(source[start:close])}
 
 
+def python_review_dump(node):
+    """Keep the reviewed 3.10/3.11 AST representation across Python minors.
+
+    Empty PEP 695 parameters add no semantics; nonempty parameters remain
+    fingerprinted. Python 3.13+ must still emit all other empty lists.
+    """
+    node = copy.deepcopy(node)
+    for child in ast.walk(node):
+        if 'type_params' in child._fields and not child.type_params:
+            child._fields = tuple(field for field in child._fields if field != 'type_params')
+    options = {'show_empty': True} if 'show_empty' in inspect.signature(ast.dump).parameters else {}
+    return ast.dump(node, include_attributes=False, **options)
+
+
 def python_functions(path, source):
     tree = ast.parse(source)
 
@@ -155,7 +169,7 @@ def python_functions(path, source):
                     signature = inspect.Signature(parameters)
                     key = f"{path}::{'.'.join((*owners, node.name, '__init__'))}"
                     yield key, {'signature': f'dataclass {signature}', 'body': ast.unparse(node),
-                                'review_sha256': digest(ast.dump(node, include_attributes=False))}
+                                'review_sha256': digest(python_review_dump(node))}
                 yield from walk(node.body, (*owners, node.name))
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if node.name.startswith('_') and not (node.name.startswith('__') and node.name.endswith('__')):
@@ -175,7 +189,7 @@ def python_functions(path, source):
                 key = f"{path}::{'.'.join((*owners, node.name))}"
                 # Overloads are declarations; the concrete implementation wins.
                 yield key, {"signature": str(signature), "body": ast.unparse(node),
-                            "review_sha256": digest(ast.dump(node, include_attributes=False))}
+                            "review_sha256": digest(python_review_dump(node))}
             else:
                 for field in ('body', 'orelse', 'finalbody'):
                     yield from walk(getattr(node, field, []), owners)

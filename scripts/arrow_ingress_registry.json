@@ -9744,6 +9744,10 @@
     "crates/plenora-database-py/python/plenora_database/telemetry.py": {
       "review_sha256": "15ba7f422bd8f9af9d8aa9247f322fe88e0cddd01e176702f9e4214c9cdc69d1",
       "reason": "Dichiarazioni di classi e re-export dei callable runtime generati o ereditati."
+    },
+    "crates/plenora-database-py/python/plenora_database/spatial.py": {
+      "review_sha256": "9a76031dceac90aefa418101b1850f25153c5d3b9550e71333ea8c08c1606cc1",
+      "reason": "Pins the standard-library Union re-export together with the reviewed spatial constructors."
     }
   },
   "evidence_sources": {
@@ -45277,6 +45281,1707 @@
       "reason": "Opera su vertici, archi, proprieta e statement Cypher Python; nessun buffer Arrow.",
       "sources": [
         "crates/plenora-database-py/python/plenora_database/graph.py::vertex_model"
+      ]
+    },
+    "plenora_database.expression::BindType.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py"
+      ]
+    },
+    "plenora_database.expression::Enum.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py"
+      ]
+    },
+    "plenora_database.graph::TypeVar.__mro_entries__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar constructor/MRO protocol re-exported by the SDK module; type metadata only, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py"
+      ]
+    },
+    "plenora_database.graph::TypeVar.__new__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar constructor/MRO protocol re-exported by the SDK module; type metadata only, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py"
+      ]
+    },
+    "plenora_database.graph_schema::Enum.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py"
+      ]
+    },
+    "plenora_database.graph_schema::GraphSchemaRisk.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py"
+      ]
+    },
+    "plenora_database.json_input::TypeVar.__mro_entries__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar constructor/MRO protocol re-exported by the SDK module; type metadata only, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py"
+      ]
+    },
+    "plenora_database.json_input::TypeVar.__new__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar constructor/MRO protocol re-exported by the SDK module; type metadata only, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py"
+      ]
+    },
+    "plenora_database.metadata::TypeVar.__mro_entries__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar constructor/MRO protocol re-exported by the SDK module; type metadata only, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py"
+      ]
+    },
+    "plenora_database.metadata::TypeVar.__new__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar constructor/MRO protocol re-exported by the SDK module; type metadata only, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py"
+      ]
+    },
+    "plenora_database.orm::BindType.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Enum.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::ObjectState.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::TypeVar.__mro_entries__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar constructor/MRO protocol re-exported by the SDK module; type metadata only, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::TypeVar.__new__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar constructor/MRO protocol re-exported by the SDK module; type metadata only, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.query::TypeVar.__mro_entries__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar constructor/MRO protocol re-exported by the SDK module; type metadata only, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/query.py"
+      ]
+    },
+    "plenora_database.query::TypeVar.__new__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar constructor/MRO protocol re-exported by the SDK module; type metadata only, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/query.py"
+      ]
+    },
+    "plenora_database.schema::Enum.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/schema.py"
+      ]
+    },
+    "plenora_database.schema::SchemaRisk.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/schema.py"
+      ]
+    },
+    "plenora_database::BindType.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/__init__.py"
+      ]
+    },
+    "plenora_database::GraphSchemaRisk.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/__init__.py"
+      ]
+    },
+    "plenora_database::ObjectState.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/__init__.py"
+      ]
+    },
+    "plenora_database::SchemaRisk.__signature__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Enum signature descriptor inherited by the exported enum; describes construction, never imports Arrow.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/__init__.py"
+      ]
+    },
+    "plenora_database._engine::MetaData.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::MetaData.__init__"
+      ]
+    },
+    "plenora_database.config::EngineConfig.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/config.py::EngineConfig.__init__"
+      ]
+    },
+    "plenora_database.config::PoolConfig.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/config.py::PoolConfig.__init__"
+      ]
+    },
+    "plenora_database.diagnostics::ExplainPlan.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/diagnostics.py::ExplainPlan.__init__"
+      ]
+    },
+    "plenora_database.diagnostics::ProbeReport.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/diagnostics.py::ProbeReport.__init__"
+      ]
+    },
+    "plenora_database.diagnostics::ProbeResult.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/diagnostics.py::ProbeResult.__init__"
+      ]
+    },
+    "plenora_database.expression::ArithmeticExpression.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::ArithmeticExpression.__init__"
+      ]
+    },
+    "plenora_database.expression::BindParameter.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::BindParameter.__init__"
+      ]
+    },
+    "plenora_database.expression::CaseExpression.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::CaseExpression.__init__"
+      ]
+    },
+    "plenora_database.expression::CastExpression.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::CastExpression.__init__"
+      ]
+    },
+    "plenora_database.expression::Column.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Column.__init__"
+      ]
+    },
+    "plenora_database.expression::CommonTable.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::CommonTable.__init__"
+      ]
+    },
+    "plenora_database.expression::DeleteStatement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::DeleteStatement.__init__"
+      ]
+    },
+    "plenora_database.expression::DerivedTable.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::DerivedTable.__init__"
+      ]
+    },
+    "plenora_database.expression::FunctionExpression.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::FunctionExpression.__init__"
+      ]
+    },
+    "plenora_database.expression::InsertStatement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::InsertStatement.__init__"
+      ]
+    },
+    "plenora_database.expression::Label.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Label.__init__"
+      ]
+    },
+    "plenora_database.expression::Ordering.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Ordering.__init__"
+      ]
+    },
+    "plenora_database.expression::Predicate.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Predicate.__init__"
+      ]
+    },
+    "plenora_database.expression::ScalarSubquery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::ScalarSubquery.__init__"
+      ]
+    },
+    "plenora_database.expression::SelectStatement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::SelectStatement.__init__"
+      ]
+    },
+    "plenora_database.expression::Table.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Table.__init__"
+      ]
+    },
+    "plenora_database.expression::UnboundColumn.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::UnboundColumn.__init__"
+      ]
+    },
+    "plenora_database.expression::UpdateStatement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::UpdateStatement.__init__"
+      ]
+    },
+    "plenora_database.expression::UpsertStatement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::UpsertStatement.__init__"
+      ]
+    },
+    "plenora_database.expression::Wildcard.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Wildcard.__init__"
+      ]
+    },
+    "plenora_database.expression::WindowExpression.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::WindowExpression.__init__"
+      ]
+    },
+    "plenora_database.graph::CypherQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::CypherQuery.__init__"
+      ]
+    },
+    "plenora_database.graph::Decimal.from_number": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Decimal.from_number re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py"
+      ]
+    },
+    "plenora_database.graph::Edge.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::Edge.__init__"
+      ]
+    },
+    "plenora_database.graph::GraphCondition.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::GraphCondition.__init__"
+      ]
+    },
+    "plenora_database.graph::GraphNode.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::GraphNode.__init__"
+      ]
+    },
+    "plenora_database.graph::GraphProperty.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::GraphProperty.__init__"
+      ]
+    },
+    "plenora_database.graph::Path.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::Path.__init__"
+      ]
+    },
+    "plenora_database.graph::TypeVar.__typing_prepare_subst__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar.__typing_prepare_subst__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py"
+      ]
+    },
+    "plenora_database.graph::TypeVar.has_default": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar.has_default re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py"
+      ]
+    },
+    "plenora_database.graph::Vertex.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::Vertex.__init__"
+      ]
+    },
+    "plenora_database.graph_schema::GraphEdgeType.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py::GraphEdgeType.__init__"
+      ]
+    },
+    "plenora_database.graph_schema::GraphIndex.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py::GraphIndex.__init__"
+      ]
+    },
+    "plenora_database.graph_schema::GraphSchema.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py::GraphSchema.__init__"
+      ]
+    },
+    "plenora_database.graph_schema::GraphSchemaDiff.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py::GraphSchemaDiff.__init__"
+      ]
+    },
+    "plenora_database.graph_schema::GraphSchemaMigration.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py::GraphSchemaMigration.__init__"
+      ]
+    },
+    "plenora_database.graph_schema::GraphSchemaOperation.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py::GraphSchemaOperation.__init__"
+      ]
+    },
+    "plenora_database.json_input::Decimal.from_number": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Decimal.from_number re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py"
+      ]
+    },
+    "plenora_database.json_input::Geometry.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Geometry.__init__"
+      ]
+    },
+    "plenora_database.json_input::JsonField.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py::JsonField.__init__"
+      ]
+    },
+    "plenora_database.json_input::JsonGeometry.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py::JsonGeometry.__init__"
+      ]
+    },
+    "plenora_database.json_input::JsonSchema.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py::JsonSchema.__init__"
+      ]
+    },
+    "plenora_database.json_input::TypeVar.__typing_prepare_subst__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar.__typing_prepare_subst__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py"
+      ]
+    },
+    "plenora_database.json_input::TypeVar.has_default": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar.has_default re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py"
+      ]
+    },
+    "plenora_database.json_input::date.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library date.__replace__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py"
+      ]
+    },
+    "plenora_database.json_input::date.strptime": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library date.strptime re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py"
+      ]
+    },
+    "plenora_database.json_input::datetime.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library datetime.__replace__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py"
+      ]
+    },
+    "plenora_database.json_input::time.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library time.__replace__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py"
+      ]
+    },
+    "plenora_database.json_input::time.strptime": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library time.strptime re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py"
+      ]
+    },
+    "plenora_database.metadata::ColumnMetadata.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::ColumnMetadata.__init__"
+      ]
+    },
+    "plenora_database.metadata::Constraint.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::Constraint.__init__"
+      ]
+    },
+    "plenora_database.metadata::ForeignKey.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::ForeignKey.__init__"
+      ]
+    },
+    "plenora_database.metadata::Index.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::Index.__init__"
+      ]
+    },
+    "plenora_database.metadata::IndexElement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::IndexElement.__init__"
+      ]
+    },
+    "plenora_database.metadata::MetaData.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::MetaData.__init__"
+      ]
+    },
+    "plenora_database.metadata::NativeAttributes.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::NativeAttributes.__init__"
+      ]
+    },
+    "plenora_database.metadata::Observation.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::Observation.__init__"
+      ]
+    },
+    "plenora_database.metadata::SchemaToken.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::SchemaToken.__init__"
+      ]
+    },
+    "plenora_database.metadata::SpatialColumnMetadata.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::SpatialColumnMetadata.__init__"
+      ]
+    },
+    "plenora_database.metadata::Table.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Table.__init__"
+      ]
+    },
+    "plenora_database.metadata::TableMetadata.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::TableMetadata.__init__"
+      ]
+    },
+    "plenora_database.metadata::TypeVar.__typing_prepare_subst__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar.__typing_prepare_subst__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py"
+      ]
+    },
+    "plenora_database.metadata::TypeVar.has_default": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar.has_default re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py"
+      ]
+    },
+    "plenora_database.orm::AsyncOrmEntityTupleQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::AsyncOrmEntityTupleQuery.__init__"
+      ]
+    },
+    "plenora_database.orm::AsyncOrmQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::AsyncOrmQuery.__init__"
+      ]
+    },
+    "plenora_database.orm::AsyncOrmRowsQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::AsyncOrmRowsQuery.__init__"
+      ]
+    },
+    "plenora_database.orm::BigInteger.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::BigInteger.__init__"
+      ]
+    },
+    "plenora_database.orm::CheckConstraint.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::CheckConstraint.__init__"
+      ]
+    },
+    "plenora_database.orm::Column.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Column.__init__"
+      ]
+    },
+    "plenora_database.orm::DateTime.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::DateTime.__init__"
+      ]
+    },
+    "plenora_database.orm::Decimal.from_number": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Decimal.from_number re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::ForeignKeyConstraint.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::ForeignKeyConstraint.__init__"
+      ]
+    },
+    "plenora_database.orm::Geometry.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Geometry.__init__"
+      ]
+    },
+    "plenora_database.orm::InstanceInspection.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::InstanceInspection.__init__"
+      ]
+    },
+    "plenora_database.orm::Json.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Json.__init__"
+      ]
+    },
+    "plenora_database.orm::LoaderOption.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::LoaderOption.__init__"
+      ]
+    },
+    "plenora_database.orm::Mapper.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Mapper.__init__"
+      ]
+    },
+    "plenora_database.orm::Migration.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Migration.__init__"
+      ]
+    },
+    "plenora_database.orm::Numeric.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Numeric.__init__"
+      ]
+    },
+    "plenora_database.orm::Ordering.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Ordering.__init__"
+      ]
+    },
+    "plenora_database.orm::OrmEntityTupleQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::OrmEntityTupleQuery.__init__"
+      ]
+    },
+    "plenora_database.orm::OrmIndex.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::OrmIndex.__init__"
+      ]
+    },
+    "plenora_database.orm::OrmQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::OrmQuery.__init__"
+      ]
+    },
+    "plenora_database.orm::OrmRowsQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::OrmRowsQuery.__init__"
+      ]
+    },
+    "plenora_database.orm::Predicate.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Predicate.__init__"
+      ]
+    },
+    "plenora_database.orm::SelectStatement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::SelectStatement.__init__"
+      ]
+    },
+    "plenora_database.orm::ServerDefault.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::ServerDefault.__init__"
+      ]
+    },
+    "plenora_database.orm::String.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::String.__init__"
+      ]
+    },
+    "plenora_database.orm::Table.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Table.__init__"
+      ]
+    },
+    "plenora_database.orm::TypeVar.__typing_prepare_subst__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar.__typing_prepare_subst__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::TypeVar.has_default": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar.has_default re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__class_getitem__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__class_getitem__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__eq__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__eq__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__ge__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__ge__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__getattribute__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__getattribute__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__getitem__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__getitem__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__gt__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__gt__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__hash__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__hash__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__le__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__le__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__lt__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__lt__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__mro_entries__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__mro_entries__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__ne__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__ne__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__or__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__or__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__repr__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__repr__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::Union.__ror__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__ror__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::UnionType.__class_getitem__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library UnionType.__class_getitem__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::UnionType.__mro_entries__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library UnionType.__mro_entries__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::UniqueConstraint.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::UniqueConstraint.__init__"
+      ]
+    },
+    "plenora_database.orm::Uuid.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Uuid.__init__"
+      ]
+    },
+    "plenora_database.orm::date.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library date.__replace__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::date.strptime": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library date.strptime re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::datetime.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library datetime.__replace__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::time.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library time.__replace__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.orm::time.strptime": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library time.strptime re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py"
+      ]
+    },
+    "plenora_database.query::TypeVar.__typing_prepare_subst__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar.__typing_prepare_subst__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/query.py"
+      ]
+    },
+    "plenora_database.query::TypeVar.has_default": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library TypeVar.has_default re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/query.py"
+      ]
+    },
+    "plenora_database.result::Column.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Column.__init__"
+      ]
+    },
+    "plenora_database.schema::CheckConstraint.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::CheckConstraint.__init__"
+      ]
+    },
+    "plenora_database.schema::ForeignKeyConstraint.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::ForeignKeyConstraint.__init__"
+      ]
+    },
+    "plenora_database.schema::MetaData.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::MetaData.__init__"
+      ]
+    },
+    "plenora_database.schema::Migration.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Migration.__init__"
+      ]
+    },
+    "plenora_database.schema::OrmIndex.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::OrmIndex.__init__"
+      ]
+    },
+    "plenora_database.schema::SchemaDiff.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/schema.py::SchemaDiff.__init__"
+      ]
+    },
+    "plenora_database.schema::SchemaOperation.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/schema.py::SchemaOperation.__init__"
+      ]
+    },
+    "plenora_database.schema::ServerDefault.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::ServerDefault.__init__"
+      ]
+    },
+    "plenora_database.schema::UniqueConstraint.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::UniqueConstraint.__init__"
+      ]
+    },
+    "plenora_database.spatial::Union.__class_getitem__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__class_getitem__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__eq__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__eq__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__ge__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__ge__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__getattribute__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__getattribute__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__getitem__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__getitem__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__gt__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__gt__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__hash__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__hash__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__le__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__le__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__lt__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__lt__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__mro_entries__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__mro_entries__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__ne__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__ne__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__or__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__or__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__repr__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__repr__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database.spatial::Union.__ror__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Standard-library Union.__ror__ re-export: scalar conversion or type metadata protocol, not an Arrow import.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/spatial.py"
+      ]
+    },
+    "plenora_database::ArithmeticExpression.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::ArithmeticExpression.__init__"
+      ]
+    },
+    "plenora_database::AsyncOrmEntityTupleQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::AsyncOrmEntityTupleQuery.__init__"
+      ]
+    },
+    "plenora_database::AsyncOrmQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::AsyncOrmQuery.__init__"
+      ]
+    },
+    "plenora_database::AsyncOrmRowsQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::AsyncOrmRowsQuery.__init__"
+      ]
+    },
+    "plenora_database::BigInteger.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::BigInteger.__init__"
+      ]
+    },
+    "plenora_database::BindParameter.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::BindParameter.__init__"
+      ]
+    },
+    "plenora_database::CaseExpression.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::CaseExpression.__init__"
+      ]
+    },
+    "plenora_database::CastExpression.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::CastExpression.__init__"
+      ]
+    },
+    "plenora_database::CheckConstraint.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::CheckConstraint.__init__"
+      ]
+    },
+    "plenora_database::Column.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Column.__init__"
+      ]
+    },
+    "plenora_database::ColumnMetadata.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::ColumnMetadata.__init__"
+      ]
+    },
+    "plenora_database::CommonTable.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::CommonTable.__init__"
+      ]
+    },
+    "plenora_database::Constraint.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::Constraint.__init__"
+      ]
+    },
+    "plenora_database::CypherQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::CypherQuery.__init__"
+      ]
+    },
+    "plenora_database::DateTime.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::DateTime.__init__"
+      ]
+    },
+    "plenora_database::DeleteStatement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::DeleteStatement.__init__"
+      ]
+    },
+    "plenora_database::DerivedTable.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::DerivedTable.__init__"
+      ]
+    },
+    "plenora_database::Edge.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::Edge.__init__"
+      ]
+    },
+    "plenora_database::EngineConfig.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/config.py::EngineConfig.__init__"
+      ]
+    },
+    "plenora_database::ExplainPlan.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/diagnostics.py::ExplainPlan.__init__"
+      ]
+    },
+    "plenora_database::ForeignKey.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::ForeignKey.__init__"
+      ]
+    },
+    "plenora_database::ForeignKeyConstraint.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::ForeignKeyConstraint.__init__"
+      ]
+    },
+    "plenora_database::FunctionExpression.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::FunctionExpression.__init__"
+      ]
+    },
+    "plenora_database::Geometry.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Geometry.__init__"
+      ]
+    },
+    "plenora_database::GraphCondition.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::GraphCondition.__init__"
+      ]
+    },
+    "plenora_database::GraphEdgeType.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py::GraphEdgeType.__init__"
+      ]
+    },
+    "plenora_database::GraphIndex.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py::GraphIndex.__init__"
+      ]
+    },
+    "plenora_database::GraphNode.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::GraphNode.__init__"
+      ]
+    },
+    "plenora_database::GraphProperty.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::GraphProperty.__init__"
+      ]
+    },
+    "plenora_database::GraphSchema.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py::GraphSchema.__init__"
+      ]
+    },
+    "plenora_database::GraphSchemaDiff.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py::GraphSchemaDiff.__init__"
+      ]
+    },
+    "plenora_database::GraphSchemaMigration.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py::GraphSchemaMigration.__init__"
+      ]
+    },
+    "plenora_database::GraphSchemaOperation.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph_schema.py::GraphSchemaOperation.__init__"
+      ]
+    },
+    "plenora_database::Index.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::Index.__init__"
+      ]
+    },
+    "plenora_database::IndexElement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::IndexElement.__init__"
+      ]
+    },
+    "plenora_database::InsertStatement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::InsertStatement.__init__"
+      ]
+    },
+    "plenora_database::InstanceInspection.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::InstanceInspection.__init__"
+      ]
+    },
+    "plenora_database::Json.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Json.__init__"
+      ]
+    },
+    "plenora_database::JsonField.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py::JsonField.__init__"
+      ]
+    },
+    "plenora_database::JsonGeometry.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py::JsonGeometry.__init__"
+      ]
+    },
+    "plenora_database::JsonSchema.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/json_input.py::JsonSchema.__init__"
+      ]
+    },
+    "plenora_database::LoaderOption.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::LoaderOption.__init__"
+      ]
+    },
+    "plenora_database::Mapper.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Mapper.__init__"
+      ]
+    },
+    "plenora_database::MetaData.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::MetaData.__init__"
+      ]
+    },
+    "plenora_database::Migration.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Migration.__init__"
+      ]
+    },
+    "plenora_database::NativeAttributes.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::NativeAttributes.__init__"
+      ]
+    },
+    "plenora_database::Numeric.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Numeric.__init__"
+      ]
+    },
+    "plenora_database::Observation.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::Observation.__init__"
+      ]
+    },
+    "plenora_database::Ordering.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Ordering.__init__"
+      ]
+    },
+    "plenora_database::OrmEntityTupleQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::OrmEntityTupleQuery.__init__"
+      ]
+    },
+    "plenora_database::OrmIndex.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::OrmIndex.__init__"
+      ]
+    },
+    "plenora_database::OrmQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::OrmQuery.__init__"
+      ]
+    },
+    "plenora_database::OrmRowsQuery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::OrmRowsQuery.__init__"
+      ]
+    },
+    "plenora_database::Path.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::Path.__init__"
+      ]
+    },
+    "plenora_database::PoolConfig.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/config.py::PoolConfig.__init__"
+      ]
+    },
+    "plenora_database::Predicate.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Predicate.__init__"
+      ]
+    },
+    "plenora_database::ProbeReport.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/diagnostics.py::ProbeReport.__init__"
+      ]
+    },
+    "plenora_database::ProbeResult.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/diagnostics.py::ProbeResult.__init__"
+      ]
+    },
+    "plenora_database::ScalarSubquery.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::ScalarSubquery.__init__"
+      ]
+    },
+    "plenora_database::SchemaDiff.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/schema.py::SchemaDiff.__init__"
+      ]
+    },
+    "plenora_database::SchemaOperation.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/schema.py::SchemaOperation.__init__"
+      ]
+    },
+    "plenora_database::SchemaToken.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::SchemaToken.__init__"
+      ]
+    },
+    "plenora_database::SelectStatement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::SelectStatement.__init__"
+      ]
+    },
+    "plenora_database::ServerDefault.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::ServerDefault.__init__"
+      ]
+    },
+    "plenora_database::SpatialColumnMetadata.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::SpatialColumnMetadata.__init__"
+      ]
+    },
+    "plenora_database::String.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::String.__init__"
+      ]
+    },
+    "plenora_database::Table.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::Table.__init__"
+      ]
+    },
+    "plenora_database::TableMetadata.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/metadata.py::TableMetadata.__init__"
+      ]
+    },
+    "plenora_database::UniqueConstraint.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::UniqueConstraint.__init__"
+      ]
+    },
+    "plenora_database::UpdateStatement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::UpdateStatement.__init__"
+      ]
+    },
+    "plenora_database::UpsertStatement.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::UpsertStatement.__init__"
+      ]
+    },
+    "plenora_database::Uuid.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/orm.py::Uuid.__init__"
+      ]
+    },
+    "plenora_database::Vertex.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/graph.py::Vertex.__init__"
+      ]
+    },
+    "plenora_database::WindowExpression.__replace__": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Python 3.13+ dataclass replacement delegates to the reviewed constructor with replaced fields; same admission as construction.",
+      "sources": [
+        "crates/plenora-database-py/python/plenora_database/expression.py::WindowExpression.__init__"
       ]
     }
   }

@@ -10346,36 +10346,6 @@
     ],
     [
       "arrow-ipc",
-      "src/gen/mod.rs",
-      "mod",
-      "File"
-    ],
-    [
-      "arrow-ipc",
-      "src/gen/mod.rs",
-      "mod",
-      "Message"
-    ],
-    [
-      "arrow-ipc",
-      "src/gen/mod.rs",
-      "mod",
-      "Schema"
-    ],
-    [
-      "arrow-ipc",
-      "src/gen/mod.rs",
-      "mod",
-      "SparseTensor"
-    ],
-    [
-      "arrow-ipc",
-      "src/gen/mod.rs",
-      "mod",
-      "Tensor"
-    ],
-    [
-      "arrow-ipc",
       "src/gen/Schema.rs",
       "const",
       "ENUM_MIN_METADATA_VERSION"
@@ -14840,6 +14810,36 @@
     ],
     [
       "arrow-ipc",
+      "src/gen/mod.rs",
+      "mod",
+      "File"
+    ],
+    [
+      "arrow-ipc",
+      "src/gen/mod.rs",
+      "mod",
+      "Message"
+    ],
+    [
+      "arrow-ipc",
+      "src/gen/mod.rs",
+      "mod",
+      "Schema"
+    ],
+    [
+      "arrow-ipc",
+      "src/gen/mod.rs",
+      "mod",
+      "SparseTensor"
+    ],
+    [
+      "arrow-ipc",
+      "src/gen/mod.rs",
+      "mod",
+      "Tensor"
+    ],
+    [
+      "arrow-ipc",
       "src/lib.rs",
       "mod",
       "convert"
@@ -14867,48 +14867,6 @@
       "src/lib.rs",
       "fn",
       "equals_to_target_endianness"
-    ],
-    [
-      "arrow-ipc",
-      "src/reader/stream.rs",
-      "struct",
-      "StreamDecoder"
-    ],
-    [
-      "arrow-ipc",
-      "src/reader/stream.rs",
-      "fn",
-      "new"
-    ],
-    [
-      "arrow-ipc",
-      "src/reader/stream.rs",
-      "fn",
-      "with_require_alignment"
-    ],
-    [
-      "arrow-ipc",
-      "src/reader/stream.rs",
-      "fn",
-      "schema"
-    ],
-    [
-      "arrow-ipc",
-      "src/reader/stream.rs",
-      "fn",
-      "with_skip_validation"
-    ],
-    [
-      "arrow-ipc",
-      "src/reader/stream.rs",
-      "fn",
-      "decode"
-    ],
-    [
-      "arrow-ipc",
-      "src/reader/stream.rs",
-      "fn",
-      "finish"
     ],
     [
       "arrow-ipc",
@@ -15161,6 +15119,48 @@
       "src/reader.rs",
       "fn",
       "read_meta_len"
+    ],
+    [
+      "arrow-ipc",
+      "src/reader/stream.rs",
+      "struct",
+      "StreamDecoder"
+    ],
+    [
+      "arrow-ipc",
+      "src/reader/stream.rs",
+      "fn",
+      "new"
+    ],
+    [
+      "arrow-ipc",
+      "src/reader/stream.rs",
+      "fn",
+      "with_require_alignment"
+    ],
+    [
+      "arrow-ipc",
+      "src/reader/stream.rs",
+      "fn",
+      "schema"
+    ],
+    [
+      "arrow-ipc",
+      "src/reader/stream.rs",
+      "fn",
+      "with_skip_validation"
+    ],
+    [
+      "arrow-ipc",
+      "src/reader/stream.rs",
+      "fn",
+      "decode"
+    ],
+    [
+      "arrow-ipc",
+      "src/reader/stream.rs",
+      "fn",
+      "finish"
     ],
     [
       "arrow-ipc",
