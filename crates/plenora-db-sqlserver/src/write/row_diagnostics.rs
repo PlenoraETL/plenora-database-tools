@@ -139,12 +139,13 @@ impl<'a> SqlServerRowWriter<'a> {
                 self.batch_start = end;
                 self.batch = None;
             }
-            let batch = self
-                .input
-                .next_batch(self.cancellation)
-                .await
-                .map_err(provider_write_error)?
-                .ok_or_else(short_input_error)?;
+            let batch = plenora_database_core::arrow_validation::validated_batch(
+                self.input.next_batch(self.cancellation),
+                plenora_database_core::ErrorPhase::Write,
+            )
+            .await
+            .map_err(provider_write_error)?
+            .ok_or_else(short_input_error)?;
             if batch.schema().as_ref() != self.plan.input_schema.as_ref() {
                 return Err(diagnostic_error(
                     ErrorCategory::Schema,
@@ -228,7 +229,12 @@ impl RowScopedWriter for SqlServerRowWriter<'_> {
                 self.batch_start = end;
             }
             loop {
-                match self.input.next_batch(self.cancellation).await {
+                match plenora_database_core::arrow_validation::validated_batch(
+                    self.input.next_batch(self.cancellation),
+                    plenora_database_core::ErrorPhase::Write,
+                )
+                .await
+                {
                     Ok(Some(batch)) if batch.num_rows() == 0 => {}
                     Ok(Some(_)) => return Err(extra_input_error()),
                     Ok(None) => return Ok(()),

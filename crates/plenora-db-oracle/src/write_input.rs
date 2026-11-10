@@ -64,7 +64,12 @@ pub async fn reject_empty_input(
         rows: input.declared_input_rows(),
         batches: VecDeque::new(),
     };
-    while let Some(batch) = input.next_batch(cancellation).await? {
+    while let Some(batch) = plenora_database_core::arrow_validation::validated_batch(
+        input.next_batch(cancellation),
+        plenora_database_core::ErrorPhase::Write,
+    )
+    .await?
+    {
         check_cancelled(cancellation)?;
         budget.ensure_active()?;
         if batch.schema() != schema {
@@ -75,6 +80,8 @@ pub async fn reject_empty_input(
                 "schema dello stream diverso dallo schema preparato",
             ));
         }
+        plenora_database_core::store_rewrite::RewriteGuard::validation_only(ProviderKind::Oracle)
+            .check(&batch)?;
         for (index, key) in &columns {
             let array = batch.column(*index);
             if let Some(Some(target)) = targets.get(*index) {

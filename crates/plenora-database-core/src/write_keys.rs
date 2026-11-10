@@ -346,6 +346,7 @@ impl UniqueInputKeys {
     /// basta per ricordarle; `unsupported` per un batch con un tipo diverso
     /// da quello dello schema.
     pub fn admit(&mut self, batch: &RecordBatch, budget: &ResourceBudget) -> Result<()> {
+        crate::arrow_validation::validate_batch(batch, crate::ErrorPhase::Write)?;
         let mut batch_keys = HashSet::with_capacity(batch.num_rows());
         let mut bytes = 0_u64;
         'rows: for row in 0..batch.num_rows() {
@@ -526,7 +527,11 @@ impl BatchStream for UniqueKeyStream {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move {
-            let batch = self.inner.next_batch(cancellation).await?;
+            let batch = crate::arrow_validation::validated_batch(
+                self.inner.next_batch(cancellation),
+                crate::ErrorPhase::Write,
+            )
+            .await?;
             if let Some(batch) = &batch {
                 self.keys.admit(batch, &self.budget)?;
             }

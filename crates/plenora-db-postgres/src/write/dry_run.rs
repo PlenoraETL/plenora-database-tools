@@ -223,7 +223,12 @@ async fn verify(
         if cancellation.is_cancelled() {
             return Err(interrupted(cancellation));
         }
-        let Some(batch) = input.next_batch(cancellation).await? else {
+        let Some(batch) = plenora_database_core::arrow_validation::validated_batch(
+            input.next_batch(cancellation),
+            plenora_database_core::ErrorPhase::Write,
+        )
+        .await?
+        else {
             break;
         };
         validate_batch_schema(&batch, &schema)?;
@@ -290,10 +295,12 @@ async fn verify_row_scoped(
     gate.statement()?;
     let mut verified = VerifiedInput::default();
     loop {
-        let batch = input
-            .next_batch(cancellation)
-            .await
-            .map_err(row_diagnostics::provider_write_error)?;
+        let batch = plenora_database_core::arrow_validation::validated_batch(
+            input.next_batch(cancellation),
+            plenora_database_core::ErrorPhase::Write,
+        )
+        .await
+        .map_err(row_diagnostics::provider_write_error)?;
         let Some(batch) = batch else {
             break;
         };

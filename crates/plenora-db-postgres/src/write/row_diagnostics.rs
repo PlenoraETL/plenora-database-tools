@@ -441,12 +441,13 @@ impl<'transaction, 'input> PostgresRowWriter<'transaction, 'input> {
                 self.batch_start = end;
                 self.batch = None;
             }
-            let batch = self
-                .input
-                .next_batch(self.cancellation)
-                .await
-                .map_err(provider_write_error)?
-                .ok_or_else(short_input_error)?;
+            let batch = plenora_database_core::arrow_validation::validated_batch(
+                self.input.next_batch(self.cancellation),
+                plenora_database_core::ErrorPhase::Write,
+            )
+            .await
+            .map_err(provider_write_error)?
+            .ok_or_else(short_input_error)?;
             validate_batch_schema(&batch, self.schema)?;
             if batch.num_rows() == 0 {
                 continue;
@@ -546,7 +547,12 @@ impl RowScopedWriter for PostgresRowWriter<'_, '_> {
                 self.batch_start = end;
             }
             loop {
-                match self.input.next_batch(self.cancellation).await {
+                match plenora_database_core::arrow_validation::validated_batch(
+                    self.input.next_batch(self.cancellation),
+                    plenora_database_core::ErrorPhase::Write,
+                )
+                .await
+                {
                     Ok(Some(batch)) if batch.num_rows() == 0 => {}
                     Ok(Some(_)) => return Err(input_beyond_declared_error()),
                     Ok(None) => return Ok(()),

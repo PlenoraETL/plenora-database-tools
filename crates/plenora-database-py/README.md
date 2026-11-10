@@ -1023,3 +1023,34 @@ esplicita della semantica server. Su MariaDB, scegliere e verificare il
 predicato server adatto al requisito; non sostituire automaticamente con
 `JSON_EQUALS`. `SELECT ?` permette di controllare separatamente tipo e valore
 ricevuti. La sonda distingue trasporto, rifiuto e risultato del confronto.
+
+### Validazione degli ingressi Arrow
+
+Gli oggetti PyArrow riconoscibili (Table, RecordBatch, RecordBatchReader
+anche lazy, ChunkedArray e Array) sono validati integralmente nella rappresentazione originale:
+ogni batch viene verificato prima di cast, serializzazione o esportazione C.
+Le API sync e async applicano la stessa regola. Un batch malformato produce
+un errore senza payload e non viene consegnato al writer del database.
+
+I produttori che offrono soltanto `__arrow_c_stream__` o `__arrow_c_array__`
+restano accettati (decisione del titolare del 10 novembre 2026). Dopo
+l'import si verifica integralmente quanto rappresentato, ma C Data/Stream
+non trasporta la capacita fisica dei buffer: dimensione delle allocazioni
+e lifetime devono essere garantiti dal produttore secondo il contratto
+Arrow. Una bitmap fisicamente corta puo diventare apparentemente valida
+quando l'importatore ne ricostruisce la lunghezza. Il limite, il rischio e
+la condizione di rientro sono nel [registro](../../contracts/adoption-source.json).
+Passare direttamente un oggetto PyArrow che espone anche il protocollo C
+non lo trasforma in un produttore opaco; una capsule gia separata
+non conserva invece l'identita dell'oggetto originale.
+
+Un wrapper non PyArrow che espone `__arrow_c_stream__` o `__arrow_c_array__`
+ricade nel limite approvato anche quando restituisce la capsule di un batch
+PyArrow: e indistinguibile da un produttore terzo. La formula «anche passati
+tramite la loro capsule» vale solo se l'oggetto passato e esso stesso un
+Table, RecordBatch, RecordBatchReader, ChunkedArray o Array di PyArrow.
+
+L'inventario dichiarativo delle firme e delle prove e in
+[`arrow_ingress_registry.json`](../../scripts/arrow_ingress_registry.json).
+Distingue le prove dinamiche dei confini comuni dalle deleghe verificate
+staticamente; queste ultime non costituiscono una prova live dei provider.

@@ -1445,7 +1445,12 @@ async fn write_input_batches(
     let product = session.profile().product();
     let mut progress = WriteProgress::default();
     loop {
-        let batch = match input.next_batch(cancellation).await {
+        let batch = match plenora_database_core::arrow_validation::validated_batch(
+            input.next_batch(cancellation),
+            plenora_database_core::ErrorPhase::Write,
+        )
+        .await
+        {
             Ok(Some(batch)) => batch,
             Ok(None) => break,
             Err(mut error) => {

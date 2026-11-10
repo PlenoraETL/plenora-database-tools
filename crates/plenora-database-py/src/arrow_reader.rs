@@ -122,7 +122,13 @@ impl BatchReader {
                 return Err(None);
             };
             runtime()
-                .block_on(async { inner.next_batch(&self.cancellation).await })
+                .block_on(async {
+                    plenora_database_core::arrow_validation::validated_batch(
+                        inner.next_batch(&self.cancellation),
+                        plenora_database_core::ErrorPhase::Read,
+                    )
+                    .await
+                })
                 .map_err(Some)
         });
         let batch_opt = outcome.map_err(|error| error.map_or_else(reader_poisoned, to_py_err))?;
@@ -322,7 +328,12 @@ impl AsyncBatchReader {
             let stream = guard
                 .as_mut()
                 .ok_or_else(|| PyRuntimeError::new_err("AsyncBatchReader esaurito"))?;
-            let batch_opt = stream.next_batch(&cancellation).await.map_err(to_py_err)?;
+            let batch_opt = plenora_database_core::arrow_validation::validated_batch(
+                stream.next_batch(&cancellation),
+                plenora_database_core::ErrorPhase::Read,
+            )
+            .await
+            .map_err(to_py_err)?;
             match batch_opt {
                 Some(batch) => {
                     let bytes = batch_to_ipc_bytes(&batch).map_err(to_py_err)?;

@@ -61,7 +61,7 @@ pub mod retry;
 pub mod runtime;
 pub mod runtime_binding;
 pub mod statement;
-pub use arrow_write::{arrow_binary_value, arrow_parameter_value};
+pub use arrow_write::{arrow_binary_value, arrow_parameter_value, ValidatedWriteArray};
 pub use engine::{
     Engine, EngineOptions, EngineStatistics, OwnedSessionTransaction, Session, SessionRowStream,
     SessionTransaction,

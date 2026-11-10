@@ -9,6 +9,54 @@ use plenora_database_core::arrow::schema::{DataType, Field, TimeUnit};
 use plenora_database_core::provider::ParameterValue;
 use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 
+/// Prova di validazione completa conservata durante la conversione delle righe.
+/// Il riferimento impedisce di sostituire l'array fra controllo e lettura.
+pub struct ValidatedWriteArray<'a>(&'a dyn Array);
+
+impl<'a> ValidatedWriteArray<'a> {
+    /// Valida una volta l'array originale, anche per conversioni di molte righe.
+    ///
+    /// # Errors
+    /// `data_mapping/write` per buffer o figli malformati.
+    pub fn new(array: &'a dyn Array) -> Result<Self> {
+        plenora_database_core::arrow_validation::validate_array(array, ErrorPhase::Write)?;
+        Ok(Self(array))
+    }
+
+    /// Converte una riga dell'array validato.
+    ///
+    /// # Errors
+    /// Come [`arrow_parameter_value`], incluso un indice fuori limite.
+    pub fn parameter_value(
+        &self,
+        field: &Field,
+        row: usize,
+        separator: char,
+    ) -> Result<ParameterValue> {
+        self.check_row(row)?;
+        parameter_value(self.0, field, row, separator)
+    }
+
+    /// Legge il frame binario da una riga validata.
+    ///
+    /// # Errors
+    /// Come [`arrow_binary_value`], incluso un indice fuori limite.
+    pub fn binary_value(&self, data_type: &DataType, row: usize) -> Result<&'a [u8]> {
+        self.check_row(row)?;
+        binary_value(self.0, data_type, row)
+    }
+
+    fn check_row(&self, row: usize) -> Result<()> {
+        if row >= self.0.len() {
+            return Err(write_error(
+                ErrorCategory::DataMapping,
+                "indice Arrow fuori limite",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Converte una cella Arrow nel valore portabile usato dai driver.
 ///
 /// `timestamp_separator` preserva la sintassi accettata dal protocollo di
@@ -19,6 +67,15 @@ use plenora_database_core::{DatabaseError, ErrorCategory, ErrorPhase, Result};
 /// `DataMapping` per array incoerenti, valori non finiti o fuori range;
 /// `Unsupported` per tipi Arrow non inclusi nel contratto condiviso.
 pub fn arrow_parameter_value(
+    array: &dyn Array,
+    field: &Field,
+    row: usize,
+    timestamp_separator: char,
+) -> Result<ParameterValue> {
+    ValidatedWriteArray::new(array)?.parameter_value(field, row, timestamp_separator)
+}
+
+fn parameter_value(
     array: &dyn Array,
     field: &Field,
     row: usize,
@@ -56,7 +113,7 @@ pub fn arrow_parameter_value(
             downcast::<StringArray>(array)?.value(row).to_owned(),
         )),
         DataType::Binary | DataType::LargeBinary => Ok(ParameterValue::Bytes(
-            arrow_binary_value(array, field.data_type(), row)?.to_vec(),
+            binary_value(array, field.data_type(), row)?.to_vec(),
         )),
         DataType::Date32 => Ok(ParameterValue::Date(date_text(
             downcast::<Date32Array>(array)?.value(row),
@@ -85,6 +142,10 @@ pub fn arrow_binary_value<'a>(
     data_type: &DataType,
     row: usize,
 ) -> Result<&'a [u8]> {
+    ValidatedWriteArray::new(array)?.binary_value(data_type, row)
+}
+
+fn binary_value<'a>(array: &'a dyn Array, data_type: &DataType, row: usize) -> Result<&'a [u8]> {
     match data_type {
         DataType::Binary => Ok(downcast::<BinaryArray>(array)?.value(row)),
         DataType::LargeBinary => Ok(downcast::<LargeBinaryArray>(array)?.value(row)),

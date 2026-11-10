@@ -49,6 +49,9 @@ if "site-packages" not in origin.parts:
 print(f"offline-suite: package da {origin}")
 PROBE
 
+# L'inventario statico deve coprire anche le firme del wheel realmente importato.
+python "$repository/scripts/check_arrow_ingress.py" --python-runtime
+
 # `-rs` elenca i motivi degli skip: senza, una suite interamente saltata e
 # indistinguibile da una suite passata.
 python -m pytest tests -q -rs --junitxml="$staging/offline-suite.xml"

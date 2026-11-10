@@ -346,7 +346,12 @@ pub async fn summarize_stream(
     let fields = stream_fields(stream);
     let mut batches = 0_u64;
     let mut rows = 0_u64;
-    while let Some(batch) = stream.next_batch(cancellation).await? {
+    while let Some(batch) = plenora_database_core::arrow_validation::validated_batch(
+        stream.next_batch(cancellation),
+        plenora_database_core::ErrorPhase::Read,
+    )
+    .await?
+    {
         batches = batches
             .checked_add(1)
             .ok_or_else(|| DatabaseError::resource_limit("conteggio batch oltre u64"))?;

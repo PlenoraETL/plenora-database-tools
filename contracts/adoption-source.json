@@ -27,6 +27,20 @@
   ],
   "deviations": [
     {
+      "rule": "ARROW-STORE-REWRITE-PREVALIDATED",
+      "surface": "rust",
+      "observed_behavior": "Coordinator decision 2026-11-10: preserve StoreRewrite::rewrites and rewrites_in_unit bool signatures. Rule: callers supply an array already fully validated and an in-range row. Scope: direct Rust calls to these two helpers; operational inputs pass through RewriteGuard::check, enforced by scripts/check_arrow_ingress.py. Hazard: a direct caller violating the precondition can observe invalid data or panic; bool cannot report category and phase. Reentry: fallible signatures in the next major release.",
+      "tracking": "crates/plenora-database-core/src/store_rewrite.rs",
+      "detectable_before_invocation": false
+    },
+    {
+      "rule": "ARROW-C-BUFFER-CAPACITY",
+      "surface": "python_sdk",
+      "observed_behavior": "Owner decision 2026-11-10: accept C-only Arrow producers with a limit. Scope: __arrow_c_stream__/__arrow_c_array__ when the passed object is not itself a recognizable PyArrow Table, RecordBatch, RecordBatchReader, ChunkedArray or Array. A non-PyArrow wrapper returning a PyArrow batch capsule is indistinguishable from a third-party producer and is covered by this accepted limit; capsule origin does not change the rule. Full validation checks the imported representation, including offsets, dictionary indices, child lengths and declared bitmap lengths. Hazard: C Data/Stream carries pointers, not allocation capacities; truncated buffers can become apparently valid after import. Allocation size and lifetime remain the producer's Arrow contract responsibility. Recognizable PyArrow Table/RecordBatch/RecordBatchReader/ChunkedArray/Array objects are validated in their original representation before any C transfer. Reentry: a protocol carrying verifiable buffer capacities or access to original fully validatable arrays.",
+      "tracking": "crates/plenora-database-py/README.md#limitazioni",
+      "detectable_before_invocation": false
+    },
+    {
       "rule": "GEO-000",
       "surface": "python_sdk",
       "observed_behavior": "Oracle/Db2 ORM spatial INSERT/UPDATE and predicates lack qualified catalog SRID proof and fail unsupported before execution, even with declared SRID/index. MariaDB shares the write limit; SQL Server/MariaDB predicates also need catalog proof. Mapping/metadata are not enforcement evidence. Hazard: conforming operations are refused, never silently executed. Reentry: live-qualified server guard or pre-compilation catalog verification (spatial_probe::admit_probe).",
