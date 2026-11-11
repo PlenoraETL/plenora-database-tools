@@ -6,7 +6,7 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
-## Prossima correttiva
+## 9.0.3 — 2026-11-11
 
 - Un wrapper non PyArrow che espone `__arrow_c_stream__` o `__arrow_c_array__`
   ricade nel limite approvato anche quando restituisce la capsule di un batch
