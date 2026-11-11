@@ -79,6 +79,7 @@ dependencies = [
  "chrono",
  "half",
  "hashbrown",
+ "libc",
  "num-complex",
  "num-integer",
  "num-traits",
@@ -135,11 +136,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrow-pyarrow"
+version = "60.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b6dfd82e81f080a076cb8ae5d53ea55b18db98edd4abb3960a6ca9d5d3c8184"
+dependencies = [
+ "arrow-array",
+ "arrow-data",
+ "arrow-schema",
+ "pyo3",
+]
+
+[[package]]
 name = "arrow-schema"
 version = "60.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de2c8e714b466404cdc1189e89f892426efea614d938e16c15518c340cd43ba3"
 dependencies = [
+ "bitflags",
  "serde",
  "serde_core",
 ]
@@ -1475,6 +1489,7 @@ name = "plenora-database-py"
 version = "9.0.2"
 dependencies = [
  "arrow-ipc",
+ "arrow-pyarrow",
  "plenora-database-core",
  "plenora-database-engine",
  "plenora-database-sql",

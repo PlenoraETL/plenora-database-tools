@@ -191,18 +191,20 @@ BENCH_SKIP = (
 # Il contratto di ogni scope, in un posto solo. I numeri si aggiornano quando
 # la suite cambia — ed e il punto: un test aggiunto e visibile qui, mentre
 # "passed" da solo cresce senza dire di cosa.
+# PR #152: +343 offline cases (320 malformed matrix, 8 public copy,
+# 7 valid inputs, 2 reader exports, +6 bitmap input variants).
 SCOPE_CONTRACTS = {
     # Il gate SDK multipiattaforma qualifica il wheel standard, che non
     # incorpora ODBC. I test Db2 e Oracle appartengono ai rispettivi gate live
     # dedicati e qui devono restare skip espliciti, non essere assorbiti dal
     # totale.
     "live": ScopeContract(
-        passed=656,
+        passed=999,
         deselected=0,
         skips={DB2_SKIP: 12, ORACLE_SKIP: 15},
     ),
     "offline": ScopeContract(
-        passed=363,
+        passed=706,
         deselected=0,
         skips={
             POSTGRES_SKIP: 231,
@@ -216,7 +218,7 @@ SCOPE_CONTRACTS = {
         },
     ),
     "stabilization": ScopeContract(passed=30, deselected=0, skips={}),
-    "benchmark": ScopeContract(passed=2, deselected=681, skips={}),
+    "benchmark": ScopeContract(passed=2, deselected=1024, skips={}),
 }
 
 # Righe che i container stampano per il verdetto. Il prefisso le rende

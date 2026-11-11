@@ -96,16 +96,17 @@ impl<'a> MysqlRowWriter<'a> {
                 self.batch = None;
             }
 
-            let batch = self
-                .input
-                .next_batch(self.cancellation)
-                .await
-                .map_err(|mut error| {
-                    error.phase = ErrorPhase::Write;
-                    error.provider = Some(crate::profile::PROVISIONAL_KIND);
-                    error
-                })?
-                .ok_or_else(|| row_error("input esaurito prima delle righe dichiarate"))?;
+            let batch = plenora_database_core::arrow_validation::validated_batch(
+                self.input.next_batch(self.cancellation),
+                plenora_database_core::ErrorPhase::Write,
+            )
+            .await
+            .map_err(|mut error| {
+                error.phase = ErrorPhase::Write;
+                error.provider = Some(crate::profile::PROVISIONAL_KIND);
+                error
+            })?
+            .ok_or_else(|| row_error("input esaurito prima delle righe dichiarate"))?;
             crate::write::validate_batch_schema(&batch, self.schema)?;
             if batch.num_rows() == 0 {
                 continue;
@@ -185,7 +186,12 @@ impl RowScopedWriter for MysqlRowWriter<'_> {
                 self.batch_start = end;
             }
             loop {
-                match self.input.next_batch(self.cancellation).await {
+                match plenora_database_core::arrow_validation::validated_batch(
+                    self.input.next_batch(self.cancellation),
+                    plenora_database_core::ErrorPhase::Write,
+                )
+                .await
+                {
                     Ok(Some(batch)) if batch.num_rows() == 0 => {}
                     Ok(Some(_)) => {
                         return Err(row_error("input oltre il totale dichiarato"));

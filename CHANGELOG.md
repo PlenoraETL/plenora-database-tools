@@ -6,6 +6,41 @@ contratto pubblico (Rust, CLI, SDK Python, runtime) richiede una nuova major
 GitHub Release (tag `py-vX.Y.Z`). Le sezioni dalla 4.0.0 alla 6.0.0
 riassumono le note di quelle release.
 
+## Prossima correttiva
+
+- Un wrapper non PyArrow che espone `__arrow_c_stream__` o `__arrow_c_array__`
+  ricade nel limite approvato anche quando restituisce la capsule di un batch
+  PyArrow: e indistinguibile da un produttore terzo. La formula «anche passati
+  tramite la loro capsule» vale solo se l'oggetto passato e esso stesso un
+  Table, RecordBatch, RecordBatchReader, ChunkedArray o Array di PyArrow.
+
+- `StoreRewrite::rewrites` e `rewrites_in_unit` conservano la firma bool:
+  precondizione documentata di array gia validato e indice entro i limiti.
+  Gli ingressi operativi passano da `RewriteGuard::check`, con enumerazione
+  in CI. Limite registrato; firma fallibile rinviata alla prossima major.
+
+- SDK Python: i `RecordBatchReader` vengono consumati direttamente, validando
+  integralmente ogni batch originale prima dei cast e della serializzazione.
+  Il precedente passaggio C ricostruiva le lunghezze dei buffer: un reader con
+  bitmap Struct corta poteva essere accettato e riserializzato in silenzio,
+  anche nella 9.0.1 e nella 9.0.2. Il percorso C e presente dalla 8.0.0
+  (`7cad8901`); le release precedenti non avevano la validazione completa
+  aggiunta dalla 9.0.1 (`4fb18617`). Le Table vengono ora validate anche prima
+  della suddivisione in batch. Questa correzione non certifica i produttori
+  che espongono soltanto capsule C, prive delle capacita originali dei buffer.
+  L'ispezione Git trova l'helper senza validazione completa nei tag dalla
+  0.1.2 alla 9.0.0; non attribuisce questo percorso alle 0.1.0/0.1.1, dove
+  l'helper non esiste. Questa attribuzione storica e statica, non una
+  ricostruzione dei wheel di tutte le release.
+
+- Decisione del titolare del 10/11: capsule C di terzi ancora accettate;
+  validazione completa della rappresentazione importata. C Data/Stream non
+  espone le capacita fisiche dei buffer: dimensioni e lifetime restano una
+  garanzia del produttore. Limite e rientro nel registro di adozione e nello SDK.
+- Rust: guardia condivisa per i batch di stream esterni, provider e callback
+  runtime prima di lettura/scrittura/serializzazione, e validazione esplicita
+  dopo la decodifica IPC nel binding e nella CLI.
+
 ## 9.0.2 — 2026-11-09
 
 - Allineamento delle dipendenze: serde_json 1.0.154 nei grafi workspace e

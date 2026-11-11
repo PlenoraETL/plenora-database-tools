@@ -25,8 +25,7 @@ use plenora_database_core::{
     RetryDisposition,
 };
 use plenora_database_engine::{
-    arrow_binary_value, arrow_parameter_value, validate_prepared_budget, ContractLeases,
-    WriteResourceReservation,
+    validate_prepared_budget, ContractLeases, ValidatedWriteArray, WriteResourceReservation,
 };
 use plenora_database_sql::{Dialect, DialectCapabilities, Identifier, ObjectName, Renderer};
 use std::collections::{BTreeMap, BTreeSet};
@@ -374,11 +373,13 @@ impl Db2WritePlan {
             let schema = batch.schema();
             let field_contract = FieldContract::parse(schema.field(index))?;
             let value_contract = ValueContract::of(&field_contract);
+            let validated = ValidatedWriteArray::new(array.as_ref())?;
             for row in 0..batch.num_rows() {
                 if array.is_null(row) {
                     continue;
                 }
-                let bytes = arrow_binary_value(array.as_ref(), &column.data_type, row)
+                let bytes = validated
+                    .binary_value(&column.data_type, row)
                     .map_err(db2_write_error)?;
                 if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > budget.limits().cell_bytes {
                     return Err(DatabaseError::resource_limit(
@@ -956,7 +957,12 @@ async fn execute_input(
     }
     let mut received = 0_u64;
     let mut affected = 0_u64;
-    while let Some(batch) = input.next_batch(cancellation).await? {
+    while let Some(batch) = plenora_database_core::arrow_validation::validated_batch(
+        input.next_batch(cancellation),
+        plenora_database_core::ErrorPhase::Write,
+    )
+    .await?
+    {
         validate_batch_schema(&batch, input_schema)?;
         let rows = u64::try_from(batch.num_rows()).unwrap_or(u64::MAX);
         let bytes = u64::try_from(batch.get_array_memory_size()).unwrap_or(u64::MAX);
@@ -1134,14 +1140,19 @@ pub fn validate_batch_schema(batch: &RecordBatch, declared: &SchemaRef) -> Resul
 }
 
 pub fn batch_values(batch: &RecordBatch, plan: &Db2WritePlan) -> Result<Vec<Vec<ParameterValue>>> {
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|array| ValidatedWriteArray::new(array.as_ref()))
+        .collect::<Result<Vec<_>>>()?;
     (0..batch.num_rows())
         .map(|row| {
-            batch
-                .columns()
+            columns
                 .iter()
                 .zip(batch.schema().fields().iter().zip(&plan.columns))
                 .map(|(array, (field, column))| {
-                    let value = arrow_parameter_value(array.as_ref(), field, row, ' ')
+                    let value = array
+                        .parameter_value(field, row, ' ')
                         .map_err(db2_write_error)?;
                     // Il segnaposto spatial e `HEXTORAW(CAST(? AS VARCHAR(32672)))`: riceve il testo
                     // esadecimale del WKB. Ogni altro byte e un binario vero,

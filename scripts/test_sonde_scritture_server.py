@@ -256,6 +256,36 @@ class Coerenza(unittest.TestCase):
 
 
 class Aggiorna(unittest.TestCase):
+    def test_pull_failure_keeps_diagnostic_and_unmeasured_report(self) -> None:
+        import contextlib
+        import io
+        import subprocess
+        import sonde_operandi_server
+        import sonde_srid_server
+        for module, server in ((sonde, 'oracle'), (sonde_operandi_server, 'oracle'),
+                               (sonde_srid_server, 'postgres')):
+            with self.subTest(harness=module.__name__):
+                self.check_pull_failure(module, server, contextlib, io, subprocess)
+
+    def check_pull_failure(self, module, server, contextlib, io, subprocess) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'report.json'
+            diagnostic = 'progress ' * 100 + 'registry download failed'
+            client = mock.Mock()
+            client.run.side_effect = [subprocess.CompletedProcess([], 1, '', ''),
+                                     subprocess.CompletedProcess([], 1, '', diagnostic)]
+            stderr = io.StringIO()
+            with mock.patch.object(sys, 'argv', ['probe', '--server', server,
+                                                '--avvia', 'image', '--referto', str(report)]), \
+                    mock.patch.object(module, 'Docker', return_value=client), \
+                    contextlib.redirect_stderr(stderr):
+                self.assertEqual(module.main(), 2)
+            self.assertIn(diagnostic, stderr.getvalue())
+            document = json.loads(report.read_text(encoding='utf-8'))
+            self.assertEqual(document['status'], 'not_measured')
+            self.assertEqual(document['misure'], [])
+            self.assertEqual(client.run.call_args_list[-1].args[0], ['pull', 'image'])
+
     def test_si_sostituisce_soltanto_la_major_misurata(self) -> None:
         with tempfile.TemporaryDirectory() as cartella:
             percorso = Path(cartella) / "f.json"

@@ -1,6 +1,29 @@
 use super::{check_stream_framing, decode_ipc_stream};
 
 #[test]
+fn malformed_external_arrow_matrix_is_rejected_before_delivery() {
+    for case in [
+        "struct-short-bitmap",
+        "primitive-short",
+        "list-offset-oob",
+        "list-offset-negative",
+        "map-offset-oob",
+        "struct-children-different",
+        "dictionary-oob",
+        "struct-child-short-bitmap",
+        "list-struct-short-bitmap",
+    ] {
+        let path = format!(
+            "{}/python/tests/fixtures/{case}.stream",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let bytes = std::fs::read(path).expect("fixture");
+        let error = decode_ipc_stream(&bytes).expect_err("input malformato");
+        assert!(!error.message.contains("PAYLOAD_MUST_NOT_LEAK"));
+    }
+}
+
+#[test]
 fn short_validity_bitmap_returns_redacted_error_without_panic() {
     let bytes = include_bytes!("../../../tests/fixtures/arrow/short-bitmap.stream");
     check_stream_framing(bytes).expect("framing valido");
@@ -202,3 +225,8 @@ fn struct_short_validity_bitmap_returns_invalid_plan_at_validate() {
     assert_eq!(error.phase, plenora_database_core::ErrorPhase::Validate);
     assert_eq!(error.message, "record batch Arrow IPC non valido: il 1o");
 }
+
+#[cfg(test)]
+#[cfg(windows)]
+#[path = "write_arrow_ingress_tests.rs"]
+mod arrow_ingress;

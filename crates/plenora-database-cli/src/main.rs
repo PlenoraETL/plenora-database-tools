@@ -1681,7 +1681,12 @@ async fn postgres_read_summary(args: &mut impl Iterator<Item = String>) -> CliRe
         .collect::<Vec<_>>();
     let mut batches = 0_u64;
     let mut rows = 0_u64;
-    while let Some(batch) = stream.next_batch(&cancellation).await? {
+    while let Some(batch) = plenora_database_core::arrow_validation::validated_batch(
+        stream.next_batch(&cancellation),
+        plenora_database_core::ErrorPhase::Read,
+    )
+    .await?
+    {
         batches += 1;
         rows +=
             u64::try_from(batch.num_rows()).map_err(|_| "conteggio righe oltre u64".to_owned())?;
@@ -2122,7 +2127,12 @@ async fn write_ipc_batches(
     })?;
     let mut batches = 0_u64;
     let mut rows = 0_u64;
-    while let Some(batch) = stream.next_batch(cancellation).await? {
+    while let Some(batch) = plenora_database_core::arrow_validation::validated_batch(
+        stream.next_batch(cancellation),
+        plenora_database_core::ErrorPhase::Read,
+    )
+    .await?
+    {
         batches = batches.checked_add(1).ok_or_else(|| {
             local_artifact_error(
                 ErrorCategory::ResourceLimit,

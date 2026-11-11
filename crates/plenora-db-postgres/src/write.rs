@@ -458,8 +458,14 @@ pub async fn execute(
     let mut received = 0_u64;
     let mut confirmed = 0_u64;
     loop {
-        let batch = if let Some(result) =
-            select_with_cancellation(input.next_batch(cancellation), cancellation).await
+        let batch = if let Some(result) = select_with_cancellation(
+            plenora_database_core::arrow_validation::validated_batch(
+                input.next_batch(cancellation),
+                plenora_database_core::ErrorPhase::Write,
+            ),
+            cancellation,
+        )
+        .await
         {
             match result {
                 Ok(batch) => batch,
@@ -899,6 +905,8 @@ fn contract_violation(mut error: DatabaseError, execution_id: &str) -> DatabaseE
 }
 
 fn validate_batch_schema(batch: &RecordBatch, declared: &SchemaRef) -> Result<()> {
+    plenora_database_core::store_rewrite::RewriteGuard::validation_only(ProviderKind::Postgres)
+        .check(batch)?;
     if Arc::ptr_eq(batch.schema_ref(), declared) || batch.schema_ref() == declared {
         return Ok(());
     }

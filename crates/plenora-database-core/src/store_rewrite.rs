@@ -274,12 +274,19 @@ impl StoreRewrite {
     }
 
     /// Se il valore non nullo di `array` alla riga `row` sarebbe riscritto.
+    ///
+    /// Precondizione: array gia validato integralmente e `row < array.len()`.
+    /// Gli ingressi operativi passano da `RewriteGuard::check`. La firma
+    /// bool resta compatibile; una firma fallibile richiede la prossima major.
     #[must_use]
     pub fn rewrites(self, array: &dyn Array, row: usize) -> bool {
         self.rewrites_in_unit(array, row, TextLengthUnit::Characters)
     }
 
     /// Valuta il riempimento nell'unita della colonna letta dal catalogo.
+    ///
+    /// Precondizione: array gia validato integralmente e `row < array.len()`.
+    /// Come `rewrites`, non puo segnalare errori strutturali nella firma bool.
     #[must_use]
     pub fn rewrites_in_unit(self, array: &dyn Array, row: usize, unit: TextLengthUnit) -> bool {
         if self == Self::Every {
@@ -429,6 +436,18 @@ pub struct RewriteGuard {
 }
 
 impl RewriteGuard {
+    /// Guardia strutturale per i consumer che applicano le regole per valore.
+    /// Anche senza regole di riscrittura, `check` valida integralmente il batch.
+    #[must_use]
+    pub fn validation_only(provider: ProviderKind) -> Self {
+        Self {
+            provider,
+            columns: Vec::new(),
+            strict: false,
+            text_units: std::collections::HashMap::new(),
+        }
+    }
+
     /// La regola per `operation` sull'ingresso `schema`: le colonne di
     /// `operation.keys` sono chiavi, con ogni mode.
     ///
@@ -501,6 +520,7 @@ impl RewriteGuard {
     /// riscritto in un'altra colonna con `Strict`. Il messaggio non porta il
     /// valore.
     pub fn check(&self, batch: &RecordBatch) -> Result<()> {
+        crate::arrow_validation::validate_batch(batch, crate::ErrorPhase::Write)?;
         for (column, key) in &self.columns {
             if !*key && !self.strict {
                 continue;
@@ -591,7 +611,11 @@ impl BatchStream for RewriteStream {
         cancellation: &'a CancellationToken,
     ) -> ProviderFuture<'a, Option<RecordBatch>> {
         Box::pin(async move {
-            let batch = self.inner.next_batch(cancellation).await?;
+            let batch = crate::arrow_validation::validated_batch(
+                self.inner.next_batch(cancellation),
+                crate::ErrorPhase::Write,
+            )
+            .await?;
             if let Some(batch) = &batch {
                 self.guard.check(batch)?;
             }

@@ -75,11 +75,12 @@ impl<'a> Db2RowWriter<'a> {
                 self.batch = None;
             }
 
-            let batch = self
-                .input
-                .next_batch(self.cancellation)
-                .await?
-                .ok_or_else(|| row_error("input Db2 esaurito prima del totale dichiarato"))?;
+            let batch = plenora_database_core::arrow_validation::validated_batch(
+                self.input.next_batch(self.cancellation),
+                plenora_database_core::ErrorPhase::Write,
+            )
+            .await?
+            .ok_or_else(|| row_error("input Db2 esaurito prima del totale dichiarato"))?;
             validate_batch_schema(&batch, self.schema)?;
             if batch.num_rows() == 0 {
                 continue;
@@ -160,7 +161,12 @@ impl RowScopedWriter for Db2RowWriter<'_> {
                 self.batch_start = end;
             }
             loop {
-                match self.input.next_batch(self.cancellation).await {
+                match plenora_database_core::arrow_validation::validated_batch(
+                    self.input.next_batch(self.cancellation),
+                    plenora_database_core::ErrorPhase::Write,
+                )
+                .await
+                {
                     Ok(Some(batch)) if batch.num_rows() == 0 => {}
                     Ok(Some(_)) => return Err(row_error("input Db2 oltre il totale dichiarato")),
                     Ok(None) => return Ok(()),

@@ -230,6 +230,10 @@ pub(crate) fn decode_ipc_stream(
                 batches.len() + 1
             ))
         })?;
+        plenora_database_core::arrow_validation::validate_batch(
+            &batch,
+            plenora_database_core::ErrorPhase::Prepare,
+        )?;
         total_rows = total_rows.saturating_add(batch.num_rows() as u64);
         batches.push_back(batch);
     }

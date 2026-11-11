@@ -45,3 +45,7 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+# FFI test-only: importa buffer Python mutabili senza unsafe nel workspace.
+arrow-pyarrow = "=60.1.0"

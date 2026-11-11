@@ -663,6 +663,7 @@ impl<'a> RuntimeBinding<'a> {
                     "dati Arrow della scrittura rifiutati dall'applicazione",
                 )
             })?;
+        let input = plenora_database_core::arrow_validation::validated_input(input);
         let budget = connected.budget(ResourceLimits::default())?;
         let session = connected.engine.session()?;
         let token = CancellationToken::linked(&[cancellation, &session.cancellation_token()]);
@@ -991,7 +992,12 @@ async fn write_arrow_stream(
         let mut writer = StreamWriter::try_new(&mut counted, &schema).map_err(|_| {
             artifact_error(ErrorPhase::Write, "writer Arrow IPC non inizializzabile")
         })?;
-        while let Some(batch) = stream.next_batch(cancellation).await? {
+        while let Some(batch) = plenora_database_core::arrow_validation::validated_batch(
+            stream.next_batch(cancellation),
+            plenora_database_core::ErrorPhase::Read,
+        )
+        .await?
+        {
             writer.write(&batch).map_err(|_| {
                 artifact_error(ErrorPhase::Write, "RecordBatch Arrow IPC non scrivibile")
             })?;

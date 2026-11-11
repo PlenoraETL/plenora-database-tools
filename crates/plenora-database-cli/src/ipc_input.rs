@@ -471,7 +471,15 @@ pub(crate) fn open_batches(path: &str, max_message_bytes: u64) -> CliResult<IpcB
     Ok(IpcBatches {
         schema: reader.schema(),
         rows,
-        batches: Box::new(reader),
+        batches: Box::new(reader.map(|batch| {
+            let batch = batch?;
+            plenora_database_core::arrow_validation::validate_batch(
+                &batch,
+                plenora_database_core::ErrorPhase::Read,
+            )
+            .map_err(|_| ArrowError::InvalidArgumentError("dati Arrow non validi".into()))?;
+            Ok(batch)
+        })),
     })
 }
 

@@ -317,6 +317,10 @@ where
 {
     let mut components = 0_u64;
     for (column, array) in arrays {
+        plenora_database_core::arrow_validation::validate_array(
+            array,
+            plenora_database_core::ErrorPhase::Write,
+        )?;
         for row in 0..array.len() {
             if array.is_null(row) {
                 continue;

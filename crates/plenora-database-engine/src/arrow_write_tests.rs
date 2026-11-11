@@ -4,6 +4,29 @@ use plenora_database_core::arrow::schema::{DataType, Field, TimeUnit};
 use plenora_database_core::provider::ParameterValue;
 
 #[test]
+fn public_arrow_helpers_reject_row_bounds_without_panicking() {
+    use crate::arrow_write::{arrow_binary_value, ValidatedWriteArray};
+    use plenora_database_core::arrow::array::BinaryArray;
+    let values = BinaryArray::from(vec![Some(b"PAYLOAD_MUST_NOT_LEAK".as_slice())]);
+    let field = Field::new("v", DataType::Binary, true);
+    let error = arrow_parameter_value(&values, &field, 1, 'T').expect_err("indice");
+    assert_eq!(
+        error.category,
+        plenora_database_core::ErrorCategory::DataMapping
+    );
+    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Write);
+    assert!(!error.message.contains("PAYLOAD"));
+    assert!(arrow_binary_value(&values, &DataType::Binary, 1).is_err());
+    assert_eq!(
+        ValidatedWriteArray::new(&values)
+            .expect("array")
+            .binary_value(&DataType::Binary, 0)
+            .expect("valore"),
+        b"PAYLOAD_MUST_NOT_LEAK"
+    );
+}
+
+#[test]
 fn decimal_and_timestamp_are_canonical_and_payload_free_on_error() {
     let decimal = Decimal128Array::from(vec![12345_i128])
         .with_precision_and_scale(5, 2)

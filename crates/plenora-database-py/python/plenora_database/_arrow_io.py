@@ -236,7 +236,12 @@ def _record_batch_reader(reader: Any) -> Any:
             stream = pa.ipc.open_stream(pa.py_buffer(chunk))
             if not stream.schema.equals(schema, check_metadata=True):
                 raise ValueError("batch con schema diverso da quello del reader")
-            yield from stream
+            for batch in stream:
+                _translated(
+                    "read", "batch Arrow del reader non valido",
+                    lambda: batch.validate(full=True),
+                )
+                yield batch
 
     return pa.RecordBatchReader.from_batches(schema, batches())
 
@@ -342,12 +347,30 @@ def _source_to_ipc(source: Any, pa: Any, ipc: Any) -> bytes:
             lambda: pa.Table.from_pandas(source, preserve_index=False),
         )
 
+    # Anche gli array riconoscibili conservano le capacita originali: prima
+    # dell'import C, validare l'oggetto passato, non la capsule ricostruita.
+    if isinstance(source, (pa.Array, pa.ChunkedArray)):
+        source.validate(full=True)
+
     if isinstance(source, pa.Table):
+        source.validate(full=True)
         schema = source.schema
         batches = source.to_batches()
     elif isinstance(source, pa.RecordBatch):
         schema = source.schema
         batches = [source]
+    elif isinstance(source, pa.RecordBatchReader):
+        # Leggere gli originali: il passaggio C ricostruisce le lunghezze
+        # dei buffer e nasconde bitmap e buffer corti alla validazione.
+        schema = source.schema
+        batches = source
+    elif hasattr(source, "__arrow_c_array__"):
+        # Un produttore C non espone le capacita fisiche dei buffer.
+        # PyArrow riconoscibili sono gia stati intercettati sopra.
+        batch = pa.record_batch(source)
+        batch.validate(full=True)
+        schema = batch.schema
+        batches = [batch]
     elif hasattr(source, "__arrow_c_stream__"):
         # PyCapsule Interface: lo schema e quello dichiarato dal produttore,
         # anche per uno stream vuoto.
