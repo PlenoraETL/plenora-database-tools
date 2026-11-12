@@ -163,6 +163,12 @@ async fn dry_run_reuses_writer_classification_for_every_policy_path_and_consent(
                             assert_eq!(actual.phase, expected.phase);
                             assert_eq!(actual.retry, expected.retry);
                             assert_eq!(actual.remote_effect, RemoteEffect::None);
+                            let Some(plenora_database_core::execution_loss::VersionedLossReport::Execution(report)) = actual.loss_report.as_deref() else {
+                                panic!("rapporto esecutivo assente")
+                            };
+                            assert_eq!(*report, writer.ledger.report());
+                            assert!(report.effective.is_empty());
+                            report.validate().unwrap();
                         }
                         result => panic!(
                             "parita dry run: {policy:?}/{declared:?}/{consent:?}: {result:?}"

@@ -501,7 +501,7 @@
     "overrides": 0,
     "prepare": 3,
     "prepared": 0,
-    "write": 0
+    "write": 1
   },
   "plenora-db-postgres/src/write_r7_live_tests.rs": {
     "consent": 0,

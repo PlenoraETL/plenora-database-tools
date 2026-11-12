@@ -431,6 +431,57 @@ async fn live_p_le_perdite_delle_foglie_si_dichiarano_con_le_politiche_non_stret
                         other.as_ref().map(|prepared| &prepared.loss_report.losses)
                     )),
                 }
+                // La policy non stretta non equivale al consenso: entrambi
+                // i percorsi devono rifiutare e conservare rischio e valutazione.
+                let denied_dry = provider
+                    .dry_run_write(
+                        Some(&secret),
+                        &append,
+                        text_row(1, value),
+                        &budget(),
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .expect_err("dry run senza consenso");
+                let denied_write = Provider::write(
+                    &provider,
+                    &secret,
+                    prepared.expect("preparazione"),
+                    text_row(1, value),
+                    &budget(),
+                    &CancellationToken::new(),
+                    plenora_database_core::loss::LossConsent::Deny,
+                )
+                .await
+                .expect_err("scrittura senza consenso");
+                for error in [&denied_dry, &denied_write] {
+                    assert_eq!(error.category, ErrorCategory::DataMapping);
+                    assert_eq!(error.phase, plenora_database_core::ErrorPhase::Write);
+                    let Some(
+                        plenora_database_core::execution_loss::VersionedLossReport::Execution(
+                            report,
+                        ),
+                    ) = error.loss_report.as_deref()
+                    else {
+                        panic!("rapporto esecutivo assente")
+                    };
+                    assert!(!report.risk.is_empty());
+                    assert!(report.effective.is_empty());
+                    if committed.is_some() {
+                        assert!(report
+                            .evaluation
+                            .entries
+                            .iter()
+                            .any(|entry| entry.would_change > 0));
+                    }
+                }
+                assert_eq!(
+                    denied_dry.remote_effect,
+                    plenora_database_core::RemoteEffect::None
+                );
+                assert!(texts(&admin, "SELECT v::text FROM pln_regola_r.p")
+                    .await
+                    .is_empty());
                 let dry = dry_run_stream(&provider, &secret, &append, text_row(1, value)).await;
                 match &dry {
                     // PostgreSQL non tronca nemmeno un dominio varchar con consenso.

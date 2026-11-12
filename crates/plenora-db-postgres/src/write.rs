@@ -68,8 +68,11 @@ use binary_codec::{
     decimal_string, encode_numeric_binary, interval_text, parse_numeric_components,
     PostgresIntervalBinary,
 };
-pub use dry_run::{verify_input_with_consent, InputLimits, StatementGate};
-pub use effective::profile as dry_run_profile;
+// Visibilita esplicita: questi helper non sono API per i consumer del crate.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) use dry_run::{verify_input_with_consent, InputLimits, StatementGate};
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) use effective::profile as dry_run_profile;
 use plan::WriteColumnPlan;
 use prepared_codec::arrow_value;
 use recovery::{

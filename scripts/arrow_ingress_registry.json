@@ -1159,13 +1159,14 @@
     },
     "crates/plenora-db-postgres/src/lib.rs::dry_run_write#1": {
       "classification": "ingresso guardato",
-      "reason": "Delega al consumer write/dry-run protetto dalla guardia comune per ogni fetch.",
-      "review_sha256": "b3760ccd3e149e7fec08b333d352028427eba5e786eb91422ba9ee28051259ce",
+      "reason": "Delega al dry run con consenso Deny; nessun fetch locale.",
       "required": [
-        "verify_input("
+        "dry_run_write_with_consent(",
+        "LossConsent::Deny"
       ],
-      "proof": "static: corpo e modulo delegato revisionati; dynamic: guardia comune FFI. Dispatch DB non eseguito senza fixture live.",
-      "signature": "pub async fn dry_run_write( &self, secret: Option<&SecretString>, operation: &WriteOperation, input: Box<dyn BatchStream>, budget: &ResourceBudget, cancellation: &CancellationToken, ) -> Result<PostgresWriteDryRun>"
+      "proof": "static: catena verify/bulk/row_scoped revisionata e fissata in support_sources; test dry_run_reuses_writer_classification_for_every_policy_path_and_consent verifica il rapporto. Prove live distinte dai test offline.",
+      "signature": "pub async fn dry_run_write( &self, secret: Option<&SecretString>, operation: &WriteOperation, input: Box<dyn BatchStream>, budget: &ResourceBudget, cancellation: &CancellationToken, ) -> Result<PostgresWriteDryRun>",
+      "review_sha256": "6c5643f775c791380479de97768a677996081402f52bd743c69fdd1d438813fc"
     },
     "crates/plenora-db-postgres/src/preflight.rs::write#1": {
       "classification": "non riceve dati Arrow esterni",
@@ -1211,8 +1212,8 @@
     },
     "crates/plenora-db-postgres/src/write.rs::assign_dry_run_session_rules#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Opera solo su schema/metadati/contratto o sulla cache del catalogo; la firma non riceve buffer di celle.",
-      "review_sha256": "33d23d96b1333968624e54c2f7c1c524ddded3f9ab900703fd98664489a9075b",
+      "reason": "Legge schema e catalogo; offline select_leaf_rules registra solo tipi dichiarati senza attribuire fatti al catalogo. Non riceve buffer di celle.",
+      "review_sha256": "ec3f8ac358f31181da17c37cc2eada26d8860352676285c1eeb05aa10ee28b99",
       "signature": "pub async fn assign_dry_run_session_rules( client: Option<&tokio_postgres::Client>, state: &mut PreparedPostgresWrite, operation: &WriteOperation, schema: &SchemaRef, ) -> Result<()>"
     },
     "crates/plenora-db-postgres/src/write.rs::execute#1": {
@@ -1303,16 +1304,6 @@
       "review_sha256": "025fea19ca218825208d6d74b7ba093c5b4002a68c3076c6559e3e07ccae2210",
       "signature": "pub(super) async fn rules_with_leaves<C: GenericClient + Sync>( client: &C, operation: &WriteOperation, schema: &SchemaRef, phase: ErrorPhase, ) -> Result<( BTreeMap<String, SessionRule>, BTreeMap<String, Vec<LeafType>>, )>"
     },
-    "crates/plenora-db-postgres/src/write/dry_run.rs::verify_input#1": {
-      "classification": "ingresso guardato",
-      "reason": "Delega al consumer protetto del provider; il corpo completo e i consumer privati sono fissati nei support_sources.",
-      "review_sha256": "345a5a1bacb446cbfe35bfd0409c37be36add059e4e0f1b12d32f16b19c7d436",
-      "required": [
-        "verify("
-      ],
-      "proof": "static: catena del provider revisionata; dynamic: validated_batch con buffer FFI malformati. Nessuna prova end-to-end DB senza fixture live.",
-      "signature": "pub async fn verify_input( state: &PreparedPostgresWrite, operation: &WriteOperation, input: &mut dyn BatchStream, budget: &ResourceBudget, cancellation: &CancellationToken, limits: InputLimits, gate: StatementGate, ) -> Result<VerifiedInput>"
-    },
     "crates/plenora-db-postgres/src/write/intermediate.rs::assign#1": {
       "classification": "non riceve dati Arrow esterni",
       "reason": "Opera solo su schema/metadati/contratto o sulla cache del catalogo; la firma non riceve buffer di celle.",
@@ -1363,8 +1354,8 @@
     },
     "crates/plenora-db-postgres/src/write/target.rs::inspect#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Opera solo su schema/metadati/contratto o sulla cache del catalogo; la firma non riceve buffer di celle.",
-      "review_sha256": "c696fc31ee7c5e052a6040d61dcc1611fcd6f12caad1595df3439493b3c3eaed",
+      "reason": "Legge metadati del target e privilegi; il rifiuto del lock precede visibilita e statement come nel writer, senza lock di scrittura. Non riceve celle.",
+      "review_sha256": "1301b694596a80469cd61288e612c720dbf6c6e2c5c8c60305f23c2a6eb1c295",
       "signature": "pub async fn inspect( client: &Client, operation: &WriteOperation, schema: &SchemaRef, path: WritePath, evolution: PostgresSchemaEvolution, ) -> Result<TargetVerdict>"
     },
     "crates/plenora-db-postgres/src/write/value_codec.rs::composite_string#1": {
@@ -1423,8 +1414,8 @@
     },
     "crates/plenora-db-postgres/src/write_visibility_live_tests.rs::dry_run_stream#1": {
       "classification": "non riceve dati Arrow esterni",
-      "reason": "Harness di test o qualifica: fixture e valori delle sonde interni, non ingresso operativo del prodotto.",
-      "review_sha256": "b480a1e68bff6c53bc405164477e8e505c33c985daf2056b8f65c60faf6a8dc5",
+      "reason": "Helper dei test live: delega all ingresso protetto con Accept, come write_stream; i test del rifiuto usano esplicitamente Deny.",
+      "review_sha256": "f5078d638d90dea1a1dc43ab297585a24a5512c7e1f85b9488ae0d2ae32a2f78",
       "signature": "pub async fn dry_run_stream( provider: &PostgresProvider, secret: &SecretString, operation: &WriteOperation, stream: Box<dyn BatchStream>, ) -> Result<PostgresWriteDryRun>"
     },
     "crates/plenora-db-postgres/src/write_visibility_live_tests.rs::owner_rows#1": {
@@ -9581,6 +9572,40 @@
       "reason": "Classificatore pub(super) SQL Server: Evaluation::batch lo chiama su batch gia validati dal consumer; accessi String/Binary/temporali non sono ingressi pubblici autonomi.",
       "signature": "pub(super) fn classify( rule: RuleId, column: &WriteColumnPlan, array: &dyn Array, row: usize, ) -> Result<Classification>",
       "review_sha256": "e032f8b35e972858a551793f4c7d34e41ec24ec1ad77d593cd82a0d6815c2584"
+    },
+    "crates/plenora-db-postgres/src/write/dry_run.rs::verify_input_with_consent#1": {
+      "classification": "ingresso guardato",
+      "reason": "Crea Evaluation con lo stesso registro del writer; verify valida ogni fetch prima di schema, risorse, classificazione e codec, anche row-scoped. Il rapporto del ledger resta sul rifiuto senza inviare valori.",
+      "required": [
+        "verify(",
+        "evaluation.ledger.report()"
+      ],
+      "proof": "static: catena verify/bulk/row_scoped revisionata e fissata in support_sources; test dry_run_reuses_writer_classification_for_every_policy_path_and_consent verifica il rapporto. Prove live distinte dai test offline.",
+      "signature": "pub async fn verify_input_with_consent( state: &PreparedPostgresWrite, operation: &WriteOperation, input: &mut dyn BatchStream, budget: &ResourceBudget, cancellation: &CancellationToken, limits: InputLimits, gate: StatementGate, consent: plenora_database_core::loss::LossConsent, ) -> Result<VerifiedInput>",
+      "review_sha256": "b2e5be37b5cbc2bd8317372a4f0c06fcc3cf0519cee4649a8ed82aa61460ed52"
+    },
+    "crates/plenora-db-postgres/src/lib.rs::dry_run_write_with_consent#1": {
+      "classification": "ingresso guardato",
+      "reason": "Prepara il catalogo e le regole, protegge le chiavi e delega i fetch a verify_input_with_consent. Gli errori dopo la preparazione conservano il rischio; il consumer aggiunge la valutazione senza effetti remoti.",
+      "required": [
+        "guard_input_keys(",
+        "verify_input_with_consent("
+      ],
+      "proof": "static: catena verify/bulk/row_scoped revisionata e fissata in support_sources; test dry_run_reuses_writer_classification_for_every_policy_path_and_consent verifica il rapporto. Prove live distinte dai test offline.",
+      "signature": "pub async fn dry_run_write_with_consent( &self, secret: Option<&SecretString>, operation: &WriteOperation, input: Box<dyn BatchStream>, budget: &ResourceBudget, cancellation: &CancellationToken, consent: plenora_database_core::loss::LossConsent, ) -> Result<PostgresWriteDryRun>",
+      "review_sha256": "f33ff65abc6ae3b9643d6718fa9431d8eee0429cae6d9328329ed693c27c830b"
+    },
+    "crates/plenora-db-postgres/src/write/dry_run_tests.rs::next_batch#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Fixture di test privata: emette solo RecordBatch costruiti nei test, poi validati dal consumer dry run.",
+      "signature": "fn next_batch<'a>( &'a mut self, _: &'a CancellationToken, ) -> ProviderFuture<'a, Option<RecordBatch>>",
+      "review_sha256": "7eb43cf95a00b85aa0ba166dd384505c073c61b130568b76c26ce7518712af03"
+    },
+    "crates/plenora-db-postgres/src/write/dry_run_tests.rs::schema#1": {
+      "classification": "non riceve dati Arrow esterni",
+      "reason": "Fixture di test privata: restituisce lo schema costruito localmente, senza leggere celle.",
+      "signature": "fn schema(&self) -> SchemaRef",
+      "review_sha256": "ef6716a3965d505e28f994395998fe219a96974c27830e6b5d730012bc392e1b"
     }
   },
   "support_sources": {
@@ -9609,12 +9634,12 @@
       "reason": "write applica validated_input allo stream del resolver prima di prepare/write_with_consent; gli output passano da validated_batch."
     },
     "crates/plenora-db-postgres/src/write.rs": {
-      "review_sha256": "67e0f1198027c236d3bd1a85f52fbe0c3894d9b964a4e812ce179753d72faa01",
-      "reason": "execute -> execute_inner: validated_batch prima di evaluation.batch, stamp_declared_srid e codec; percorso diagnostico delegato al writer registrato."
+      "reason": "execute usa validated_batch prima dei codec e della valutazione. Il dry run compila le stesse regole dai soli metadati offline; reexport limitati al crate, nessun consumer alternativo.",
+      "review_sha256": "1db37c36ff94925850527991efa3a1102b3bfed99d7ad793a9d97f2efe543885"
     },
     "crates/plenora-db-postgres/src/write/dry_run.rs": {
-      "review_sha256": "417c02fbc4635189eaaecfbb2a0c77465324ecd2593cdf556d45d777619904cb",
-      "reason": "Corpo e deleghe private della catena operativa revisionati."
+      "reason": "verify e row_scoped usano validated_batch prima del controllo schema, risorse, Evaluation::batch e codec. I rifiuti conservano ledger.report con effective vuoto e remote_effect None; consenso non aggira validazione o limiti.",
+      "review_sha256": "1820b25f84aa23556118aaf3b32b276ef0206b43ba67a7355a3b912f27fb813f"
     },
     "crates/plenora-db-postgres/src/write/row_diagnostics.rs": {
       "review_sha256": "ed21e0bde1540460772d47d84b0d5434d8f0dbea626face900a07455cd9b534e",
@@ -9717,8 +9742,8 @@
       "reason": "copy_from -> copy_from_sync_family -> decoder IPC validante prima del provider."
     },
     "crates/plenora-db-postgres/src/lib.rs": {
-      "review_sha256": "bfa484e280b7af0d55126467accd3f6e3c4a6eb909bdf2b009ef7581f12c2ef8",
-      "reason": "prepare compila metadati; write delega a execute/execute_inner e relativi fetch validanti. Il consenso non cambia i dati."
+      "reason": "Dry run Deny delega alla variante con consenso: preparazione, guardia chiavi e verify_input_with_consent; nessun fetch non validato. Il fallback dopo prepare conserva il rischio senza sovrascrivere la valutazione del consumer.",
+      "review_sha256": "5729b4c0899cfa65420afbb1ecfcc8ad9c1677f951d490cef750d69109bfc486"
     },
     "crates/plenora-database-py/src/async_session_ops.rs": {
       "review_sha256": "0761d53ca477a5cd35f53896c0f3d17830c92864b3e254f420db6637d31b2896",
@@ -9845,8 +9870,8 @@
       "reason": "Pins the standard-library Union re-export together with the reviewed spatial constructors."
     },
     "crates/plenora-db-postgres/src/write/effective.rs": {
-      "reason": "Evaluation e confinato nel modulo write privato PostgreSQL. batch riceve gli originali dopo validated_batch e controllo schema in execute_inner o PostgresRowWriter::locate; nessun ingresso pubblico indipendente. Classificatore pub(super) nel modulo effective privato PostgreSQL: chiamato da Evaluation::batch e canonical::check dopo la validazione del consumer; i richiami nei test usano array costruiti localmente.",
-      "review_sha256": "b7acfedc422f609e22ff240828b8292846e223cb62d9e9d11473168e3aa587a4"
+      "reason": "Evaluation::batch riceve batch validati e schema controllato da writer e dry run, anche row-scoped. profile ora richiamato dal dry run legge solo WriteOperation e consenso; nessun buffer Arrow. bind applica i typmod alle istanze prima della classificazione.",
+      "review_sha256": "65c04ea18ce8c74c0b9b995242076223b324b190c343ac9d2c40c96c74b616df"
     },
     "crates/plenora-db-sqlserver/src/write/effective.rs": {
       "reason": "Evaluation nel modulo write privato SQL Server: consumer ordinario e diagnostico chiamano validated_batch prima di batch e bind_row. Nessuna esportazione pubblica del valutatore. Classificatore pub(super) SQL Server: Evaluation::batch lo chiama su batch gia validati dal consumer; accessi String/Binary/temporali non sono ingressi pubblici autonomi.",
@@ -10108,10 +10133,6 @@
       "reason": "Re-export dichiarato: inoltra API del modulo nominato; il parser non risolve la superficie transitiva. Limite rust-reexports, nessuna nuova prova di validazione attribuita al re-export.",
       "review_sha256": "a52846328c867168d29a8bf2dc21e7d7220024eadf81b3901e207c889b8441b0"
     },
-    "crates/plenora-db-postgres/src/write.rs::reexport::pub use dry_run::{verify_input, InputLimits, StatementGate};#1": {
-      "reason": "Re-export dichiarato: inoltra API del modulo nominato; il parser non risolve la superficie transitiva. Limite rust-reexports, nessuna nuova prova di validazione attribuita al re-export.",
-      "review_sha256": "28745b7f1ac725dc9527ee166c054731e1b5dad04a104e6aee9be164b5f07414"
-    },
     "crates/plenora-db-postgres/src/write/recovery.rs::reexport::pub(super) use crate::error::interruption_category;#1": {
       "reason": "Re-export dichiarato: inoltra API del modulo nominato; il parser non risolve la superficie transitiva. Limite rust-reexports, nessuna nuova prova di validazione attribuita al re-export.",
       "review_sha256": "062eb60774182fdb63ba916dff9ad3533f58c3edd76bb288215740a133476793"
@@ -10279,6 +10300,14 @@
     "crates/plenora-db-postgres/src/read_stream.rs::alias::use std::time::Duration as StdDuration;#1": {
       "reason": "Alias di std::time::Duration, omonimo del tipo upstream nel catalogo; non e un alias Arrow.",
       "review_sha256": "f24f5c1005a328d1ee53e7fe26872a9464f8ae1e852d2bc19820a00478b2251d"
+    },
+    "crates/plenora-db-postgres/src/write.rs::reexport::pub(crate) use effective::profile as dry_run_profile;#1": {
+      "reason": "Alias interno al crate per l orchestratore PostgresProvider: verify_input_with_consent applica la guardia dei fetch; InputLimits e StatementGate contengono configurazione, profile controlla solo piano e consenso. Nessuna API esterna o nuova ammissione Arrow.",
+      "review_sha256": "f62e24953b32fab02f47784ccb969e4b86d6f05294508cbb89d420f832e5dc28"
+    },
+    "crates/plenora-db-postgres/src/write.rs::reexport::pub(crate) use dry_run::{verify_input_with_consent, InputLimits, StatementGate};#1": {
+      "reason": "Alias interno al crate per l orchestratore PostgresProvider: verify_input_with_consent applica la guardia dei fetch; InputLimits e StatementGate contengono configurazione, profile controlla solo piano e consenso. Nessuna API esterna o nuova ammissione Arrow.",
+      "review_sha256": "af38195f190e52132fa27c6c7a52ff2c23133a07d51fd757e60661f740cf4153"
     }
   },
   "limits": {

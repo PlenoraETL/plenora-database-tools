@@ -382,3 +382,53 @@ async fn postgres_write_ipc_vuole_il_valore_dopo_mode() {
         "opzione postgres-write-ipc sconosciuta"
     );
 }
+
+/// Il rifiuto del dry run attraversa CliError e la proiezione pubblica
+/// senza perdere il rischio e i valori valutati, e senza esporre il payload.
+#[tokio::test]
+async fn dry_run_loss_refusal_keeps_execution_report_in_cli() {
+    let field = Field::new("v", DataType::Utf8, true).with_metadata(HashMap::from([(
+        plenora_database_core::protocol::POSTGRES_NATIVE_TYPE.to_owned(),
+        "jsonb".to_owned(),
+    )]));
+    let schema = Arc::new(Schema::new(vec![field]));
+    let payload = r#"{"private_payload":1,"private_payload":2}"#;
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(
+            plenora_database_core::arrow::array::StringArray::from(vec![payload]),
+        )],
+    )
+    .unwrap();
+    let mut plan = operation();
+    plan.mode = WriteMode::Create;
+    plan.mapping_policy = MappingPolicy::Compatible;
+    let error = execute_bulk_write(
+        "UNUSED_DSN",
+        plan,
+        Box::new(Fixed {
+            schema,
+            batches: vec![batch].into_iter(),
+            declared: None,
+        }),
+        DryRun::Offline,
+        false,
+    )
+    .await
+    .unwrap_err();
+    let error = error.database_error();
+    assert_eq!(error.category, ErrorCategory::DataMapping);
+    let value = serde_json::to_value(error.public_projection()).unwrap();
+    assert_eq!(value["remote_effect"], "none");
+    assert!(value["details"]["loss_report"]["risk"]
+        .as_array()
+        .is_some_and(|risk| !risk.is_empty()));
+    assert!(value["details"]["loss_report"]["evaluation"]["entries"]
+        .as_array()
+        .is_some_and(|entries| entries.iter().any(|entry| entry["would_change"] == 1)));
+    assert_eq!(
+        value["details"]["loss_report"]["effective"],
+        serde_json::json!([])
+    );
+    assert!(!value.to_string().contains("private_payload"));
+}

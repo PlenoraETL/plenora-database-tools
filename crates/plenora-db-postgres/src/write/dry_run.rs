@@ -158,22 +158,29 @@ pub async fn verify_input_with_consent(
     let mut evaluation =
         super::effective::Evaluation::new(state.loss_instances.clone(), operation, consent, budget)
             .map_err(without_effect)?;
-    evaluation.profile(operation).map_err(without_effect)?;
-    evaluation
-        .bind(&state.column_plans)
-        .map_err(without_effect)?;
-    verify(
-        state,
-        operation,
-        input,
-        budget,
-        cancellation,
-        limits,
-        gate,
-        &mut evaluation,
-    )
-    .await
-    .map_err(without_effect)
+    let result = async {
+        evaluation.profile(operation)?;
+        evaluation
+            .bind(&state.column_plans)
+            .map_err(without_effect)?;
+        verify(
+            state,
+            operation,
+            input,
+            budget,
+            cancellation,
+            limits,
+            gate,
+            &mut evaluation,
+        )
+        .await
+    }
+    .await;
+    result.map_err(|error| {
+        let mut error = without_effect(error);
+        error.loss_report = Some(Box::new(evaluation.ledger.report().into()));
+        error
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
