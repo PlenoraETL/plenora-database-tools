@@ -125,27 +125,70 @@ provano la semantica del target. Il controllo e le regressioni sono in
 
 ## Scritture Arrow: rapporto e consenso
 
-Decisione PostgreSQL: il consenso non autorizza la troncatura del testo.
-Per la guardia per valore e i casi conservativi annidati, vedere
-`write/canonical.rs` e `write/canonical_tests.rs` del provider PostgreSQL.
-Questa scelta non completa il passaggio al consenso sulle sole perdite
-effettive: il confine comune descritto sotto resta quello del piano.
+La 10.0.0 distingue il rischio del piano dalla perdita effettiva nei writer
+PostgreSQL e SQL Server. Il rischio resta nel rapporto e, nelle policy
+`compatible`, `lossy` e `native`, non richiede consenso: ogni valore consumato
+viene controllato prima dell'invio. Se cambierebbe, serve consenso esplicito,
+anche se la regola ha severità Warning. Il default nega: Rust puro usa
+`LossConsent::Deny` (`LossConsent::Accept` per consentire), CLI `--accept-loss`,
+SDK sync/async `accept_loss=True`, runtime `accept_loss: true`.
+Strict, chiavi e rifiuti di formato, range, ammissione e capacità restano
+vincolanti. Il consenso non apre altri provider. I profili `chunk_committed`
+e `best_effort_ddl` non-strict sono rifiutati senza consenso prima degli effetti;
+il consenso non rende disponibile un profilo non qualificato.
 
-Dalla release 10.0.0 l'esito e WriteOutcome v3, con `loss_report` del piano
-eseguito (LossReport v2). Lo schema e in `contracts/v2/write-outcome-v3.schema.json`:
-la cartella v2 identifica il bundle esistente, la versione dell'esito e esplicita
-nel nome e nel documento. Il reader Rust accetta ancora v2 senza rapporto;
-non equipara quell'assenza a `losses: []` di un piano preparato.
+PostgreSQL non tronca mai testo, neppure spazi finali oltre capacità o con
+consenso. Il bulk TDS di SQL Server rifiuta testo e binario oltre capacità anche
+con consenso. SQL Server Prepared, nei percorsi ammessi e con consenso,
+altera i valori e dichiara le trasformazioni nel rapporto.
 
-CLI `database-write-ipc`, `bulk-write`, `postgres-write-ipc` accettano
-`--accept-loss`; la write canonica e il runtime accettano `accept_loss: true`
-nel documento della richiesta. Senza consenso separato dalla policy, DataLoss
-rifiuta l'esecuzione prima degli effetti. Information/Warning non richiedono
-consenso. Il rapporto resta nei formati JSON, Markdown e JUnit, e negli esiti
-parziali/incerti trasportati dall'errore. Un dry-run e una preparazione distinta,
-non il rapporto della successiva esecuzione. SQL nativo e trasformazioni server
-non osservate non sono coperti da un rapporto Arrow vuoto.
+Nei writer PostgreSQL/SQL Server, WriteOutcome v3 contiene in `loss_report`
+ExecutionLossReport v3:
+`risk` descrive il piano; `evaluation` registra i valori controllati e quelli
+che cambierebbero; `effective` distingue `committed` da `uncertain`.
+Le perdite confermate si pubblicano solo dopo commit confermato. Un rollback
+confermato lascia `effective` vuoto e conserva `evaluation`; un esito ignoto
+non diventa un commit. `basis: conservative` conta valori trattati come perdita,
+non alterazioni provate. Il conteggio è per cella sorgente e regola: sommare
+regole diverse non dà il numero di celle uniche. NULL e input vuoto non
+richiedono consenso per il solo rischio, fatti salvi i rifiuti indipendenti.
+Un dry-run descrive una preparazione distinta, non misura la futura scrittura.
+Il perimetro è il mapping Arrow qualificato, non il confronto universale con
+trigger, default, funzioni o SQL nativo.
 
-Il binding annuncia `database.write@2`, input/result v2; i consumer devono
-negoziare questa versione e validare WriteOutcome v3. Le altre operazioni
-conservano la loro versione. Vedere gli avvisi 8.x e 9.0.0–9.0.3 nel CHANGELOG.
+### Migrazione da 8.x e 9.x
+
+**Utenti 8.x SQL Server:** la misura del 12/11/2026 su 8.0.4 ha trovato
+nel percorso Prepared spazi finali testuali, zeri finali binari oltre capacità
+e padding dei tipi fissi alterati senza dichiarazione, anche con `strict`.
+La misura riguarda Rust diretto/Provider, CLI e SDK; non qualifica async,
+runtime, ORM o portable 8.x. TDS bulk nella misura produce solo rifiuti o
+valori esatti. Verificare i dati già scritti contro la sorgente, soprattutto
+suffissi e lunghezze; il rapporto nuovo non ricostruisce le perdite storiche.
+Aggiornare alla nuova major quando disponibile e riprovare Strict sui propri
+casi prima di riabilitare scritture; non usare il vecchio Strict come prova
+di conservazione. Il difetto Prepared è corretto dalla 9.0.0.
+
+**Utenti 9.0.0–9.0.3:** CLI, SDK e runtime non rendevano visibili le perdite
+ammesse del piano. La misura 9.0.3 rileva 72 casi CLI/SDK SQL Server Prepared
+non-strict; Strict non presenta tali alterazioni nella misura. Verificare i
+dati storici contro la sorgente, aggiornare producer e reader alla 10.0.0,
+leggere `risk` / `evaluation` / `effective` e concedere consenso solo alle
+trasformazioni volute. Non dedurre assenza di perdite da un rapporto mancante.
+Prima di un retry leggere gli assi dell'errore e l'esito: un commit confermato
+non va ripetuto; un esito incerto richiede verifica sul target.
+
+### Qualifica del passo B
+
+Stato comunicato dal titolare il 12/11/2026: B1–B4 implementati; prove live
+su VM PostgreSQL B2 **5/5** e SQL Server B3 **6/6** verdi. La campagna SDK live
+è in corso a cura del titolare. Questi risultati non attestano la chiusura B6
+né la qualifica completa delle superfici SDK/CLI/runtime.
+
+Le [schede CLI](cli-write.md) descrivono le invocazioni; il
+[registro](loss-registry.md) è generato da `loss_registry.rs` con
+`scripts/render_loss_registry.py`, che genera anche il vocabolario dello schema.
+Phase0 e self-test ne controllano l'allineamento nei workflow esistenti.
+`docs/STATO.md` si aggiorna esclusivamente con `scripts/render_state.py`.
+Il binding `database.write@2` richiede adozione lato runtime-tools di catalogo,
+`accept_loss` e WriteOutcome v3: la sola release database non aggiorna il consumer.

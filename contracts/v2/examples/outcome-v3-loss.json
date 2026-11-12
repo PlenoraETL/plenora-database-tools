@@ -1,33 +1,49 @@
 {
   "schema_version": 3,
-  "status": "outcome_unknown",
-  "execution_id": "01J3PHASE0UNKNOWN",
-  "provider": "postgres",
+  "status": "committed",
+  "execution_id": "01J3PHASE0COMMITTED",
+  "provider": "sqlserver",
   "rows": {
-    "received": 500,
-    "confirmed": 0,
-    "inserted": null,
-    "updated": null,
-    "deleted": null,
+    "received": 2,
+    "confirmed": 2,
+    "inserted": 2,
+    "updated": 0,
+    "deleted": 0,
     "failed": 0,
     "skipped": 0
   },
-  "recovery": {
-    "last_certain_phase": "commit_requested",
-    "automatic_retry_allowed": false,
-    "idempotency_key": "batch-2026-08-21-0001",
-    "staging_object": "plenora.public.events__staging_0001",
-    "verification_action": "Contare le righe con la chiave di idempotenza prima di decidere un retry."
-  },
   "loss_report": {
-    "schema_version": 2,
+    "schema_version": 3,
     "policy": "compatible",
-    "losses": [
+    "risk": [
       {
-        "field_id": 1,
+        "field_id": 0,
+        "rule_id": "ss.text_limit",
         "category": "precision",
         "severity": "data_loss",
-        "reason": "precisione ridotta dal piano"
+        "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+      }
+    ],
+    "evaluation": {
+      "complete": true,
+      "entries": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "basis": "exact",
+          "checked": 2,
+          "would_change": 1
+        }
+      ]
+    },
+    "effective": [
+      {
+        "field_id": 0,
+        "rule_id": "ss.text_limit",
+        "category": "precision",
+        "basis": "exact",
+        "committed": 1,
+        "uncertain": 0
       }
     ]
   }

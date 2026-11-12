@@ -2,19 +2,40 @@
   "schema_version": 3,
   "status": "committed",
   "execution_id": "01J3PHASE0COMMITTED",
-  "provider": "postgres",
+  "provider": "sqlserver",
   "rows": {
-    "received": 1000,
-    "confirmed": 1000,
-    "inserted": 1000,
+    "received": 2,
+    "confirmed": 2,
+    "inserted": 2,
     "updated": 0,
     "deleted": 0,
     "failed": 0,
     "skipped": 0
   },
   "loss_report": {
-    "schema_version": 2,
+    "schema_version": 3,
     "policy": "compatible",
-    "losses": []
+    "risk": [
+      {
+        "field_id": 0,
+        "rule_id": "ss.text_limit",
+        "category": "precision",
+        "severity": "data_loss",
+        "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+      }
+    ],
+    "evaluation": {
+      "complete": true,
+      "entries": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "basis": "exact",
+          "checked": 2,
+          "would_change": 0
+        }
+      ]
+    },
+    "effective": []
   }
 }

@@ -56,6 +56,14 @@
     {
       "file": "execution-loss-v3.json",
       "schema": "../execution-loss-report-v3.schema.json"
+    },
+    {
+      "file": "outcome-v3-legacy-report.json",
+      "schema": "../write-outcome-v3.schema.json"
+    },
+    {
+      "file": "outcome-v3-rolled-back.json",
+      "schema": "../write-outcome-v3.schema.json"
     }
   ],
   "rejected": [

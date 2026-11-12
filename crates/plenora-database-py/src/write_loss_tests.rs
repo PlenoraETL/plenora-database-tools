@@ -56,7 +56,7 @@ fn warning_filters_preserve_the_committed_outcome() {
             }
             outcome.loss_report = Some(report.clone().into());
             let mut uncertain: WriteOutcome = serde_json::from_str(include_str!(
-                "../../../contracts/v2/examples/outcome-v3-loss.json"
+                "../../../contracts/v2/examples/outcome-v3-unknown.json"
             ))
             .unwrap();
             let mut pending = report.clone();

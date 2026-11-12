@@ -2,9 +2,9 @@
   "schema_version": 3,
   "status": "outcome_unknown",
   "execution_id": "01J3PHASE0UNKNOWN",
-  "provider": "postgres",
+  "provider": "sqlserver",
   "rows": {
-    "received": 500,
+    "received": 2,
     "confirmed": 0,
     "inserted": null,
     "updated": null,
@@ -20,8 +20,38 @@
     "verification_action": "Contare le righe con la chiave di idempotenza prima di decidere un retry."
   },
   "loss_report": {
-    "schema_version": 2,
+    "schema_version": 3,
     "policy": "compatible",
-    "losses": []
+    "risk": [
+      {
+        "field_id": 0,
+        "rule_id": "ss.text_limit",
+        "category": "precision",
+        "severity": "data_loss",
+        "reason": "il contenuto oltre la lunghezza della colonna si troncherebbe, inclusi caratteri non spazio"
+      }
+    ],
+    "evaluation": {
+      "complete": true,
+      "entries": [
+        {
+          "field_id": 0,
+          "rule_id": "ss.text_limit",
+          "basis": "exact",
+          "checked": 2,
+          "would_change": 1
+        }
+      ]
+    },
+    "effective": [
+      {
+        "field_id": 0,
+        "rule_id": "ss.text_limit",
+        "category": "precision",
+        "basis": "exact",
+        "committed": 0,
+        "uncertain": 1
+      }
+    ]
   }
 }

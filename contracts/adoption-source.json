@@ -29,7 +29,7 @@
     {
       "rule": "SURF-007",
       "surface": "runtime",
-      "observed_behavior": "Release 10.0.0 explicitly migrates database.write from operation 1 to operation 2 with input/result v2 and WriteOutcome v3. The pinned catalog still declares write@1; the local migration is checked explicitly, never presented as pin conformance for write@1. CLI, Python SDK and Rust share the migration.",
+      "observed_behavior": "10.0.0 migrates database.write to operation 2, input/result v2 and WriteOutcome/ExecutionLossReport v3 (risk/evaluation/effective). PG/SS consent defaults to deny and checks values before sending, not plan risk. CLI, sync/async SDK and Rust share this boundary. The pin still declares write@1; the checked local migration is not write@1 conformance. Runtime-tools must adopt the catalog, accept_loss and WriteOutcome v3 separately; consumer adoption is not attested here.",
       "tracking": "contracts/v2/write-outcome-v3.schema.json",
       "detectable_before_invocation": true
     },

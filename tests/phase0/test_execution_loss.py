@@ -4,6 +4,26 @@ from scripts import phase0_validate as gate
 from scripts import execution_loss_semantics, render_loss_registry
 
 class ExecutionLossTests(unittest.TestCase):
+    def test_indexed_execution_examples_preserve_commit_semantics(self):
+        base = gate.REPO_ROOT / 'contracts/v2/examples'
+        index = gate.load_json(base / 'index.json')
+        seen = set()
+        for item in index['examples']:
+            document = gate.load_json(base / item['file'])
+            report = document.get('loss_report')
+            if not report or report.get('schema_version') != 3:
+                continue
+            with self.subTest(example=item['file']):
+                execution_loss_semantics.validate(report)
+                seen.add(document['status'])
+                if document['status'] == 'rolled_back':
+                    self.assertEqual(report['effective'], [])
+                if document['status'] == 'outcome_unknown':
+                    self.assertTrue(report['effective'])
+                    self.assertTrue(all(e['committed'] == 0 for e in report['effective']))
+                    self.assertTrue(any(e['uncertain'] > 0 for e in report['effective']))
+        self.assertEqual(seen, {'committed', 'rolled_back', 'outcome_unknown'})
+
     def test_generated_registry_schema_and_table(self):
         render_loss_registry.check()
 

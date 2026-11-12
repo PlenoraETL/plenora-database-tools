@@ -24,10 +24,7 @@ class LossOutcomeContractTests(unittest.TestCase):
             elif mutation == "unknown_report":
                 value["loss_report"]["extra"] = True
             else:
-                value["loss_report"]["losses"] = [{
-                    "field_id": 1, "category": "precision", "severity": "data_loss",
-                    "reason": "x" * 1025,
-                }]
+                value["loss_report"]["risk"][0]["reason"] = "x" * 1025
             with self.subTest(mutation=mutation):
                 self.assertFalse(validator.is_valid(value))
 

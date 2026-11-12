@@ -8,39 +8,54 @@ riassumono le note di quelle release.
 
 ## 10.0.0 — non pubblicata
 
-- PostgreSQL: scelta di garanzia «mai troncare» per il testo oltre la
-  lunghezza della colonna, anche con consenso e per gli spazi finali.
-  Le foglie testuali limitate senza controllo esatto sono rifiutate.
-  Il rapporto dell'esecutore non viene piu sovrascritto dai confini esterni.
-  La separazione rischio/perdita effettiva resta da implementare.
-- **Cambio incompatibile di contratto:** WriteOutcome v3 porta il LossReport
-  v2 del piano in `loss_report`. I reader v2 chiusi devono essere aggiornati;
-  i risultati legacy v2 restano leggibili da Rust, distinti dai v3. La release
-  richiede 10.0.0, non 9.1.0 (AGENTS.md, regola 2). `database.write` passa alla
-  versione 2, input/result contract v2; le altre operazioni restano invariate.
-- CLI, SDK sync/async e runtime richiedono consenso separato per DataLoss:
-  `--accept-loss`, `accept_loss=True`, `accept_loss: true` nella richiesta.
-  Strict e i rifiuti non-strict dei provider restano invariati. L'API Rust
-  a due fasi conserva le firme e riporta il rapporto nell'esito.
-- Python esporta `MappingLossWarning` (UserWarning) con `write_outcome`.
-  Anche con warnings-as-errors, l'avviso dichiara il commit gia avvenuto;
-  non suggerisce rollback o retry. Vedere il README SDK per esiti incerti.
+- **Cambio incompatibile:** WriteOutcome v3 trasporta ExecutionLossReport v3
+  (`risk` / `evaluation` / `effective`). Reader legacy v2 restano leggibili,
+  senza promuovere rischio o assenza di rapporto a misura. Richiede una nuova
+  major, non 9.1.0. `database.write` passa a operazione 2, input/result v2.
+- Consenso per perdita effettiva: controllo per valore prima dell'invio;
+  default nega, identico in Rust puro (`LossConsent`), CLI (`--accept-loss`),
+  SDK sync/async (`accept_loss=True`) e runtime (`accept_loss: true`).
+  Il rischio del piano resta visibile senza richiedere consenso non-strict;
+  una trasformazione Warning richiede consenso quanto una DataLoss.
+  Strict e chiavi non si indeboliscono. `chunk_committed` e `best_effort_ddl`
+  non-strict senza consenso sono rifiutati prima degli effetti.
+- PostgreSQL non tronca mai testo, inclusi spazi finali oltre capacità.
+  SQL Server bulk TDS rifiuta testo/binario eccedenti anche con consenso;
+  Prepared con consenso altera e dichiara nei percorsi ammessi.
+- Perdite confermate pubblicate solo dopo commit confermato; rollback conserva
+  la valutazione ma non perdite effettive. Esiti ignoti conservano `uncertain`,
+  distinti da `committed`; `conservative` non pretende una misura esatta.
+  Python emette `MappingLossWarning` solo per perdite committate, conserva
+  `write_outcome` anche con filtro error e non suggerisce retry dopo commit.
+- Runtime-tools deve adottare `database.write@2`: catalogo, `accept_loss` e
+  WriteOutcome v3. Il pin contrattuale conserva write@1; la deviazione locale
+  è esplicita. L'adozione del consumer non è dichiarata completata.
 
-**AVVISO utenti 8.x, SQL Server:** la misura del 12/11/2026 su 8.0.4
-ha rilevato, nel percorso Prepared di Rust diretto/Provider, CLI e SDK,
-spazi finali testuali oltre n, zeri finali binari oltre n e padding dei tipi
-fissi alterati e committati senza dichiarazione, con tutte le policy,
-**strict inclusa**. Il rapporto Rust era vuoto. Questo difetto e corretto
-dalla 9.0.0. Il percorso TDS bulk della misura non e affetto: soltanto rifiuti
-o valori esatti. La matrice non misura async, runtime, ORM o portable 8.x.
+### Migrazione da 8.x e 9.x
 
-**AVVISO utenti 9.0.0–9.0.3:** CLI, SDK e runtime scartano il rapporto delle
-perdite ammesse del piano Arrow. Un commit puo quindi modificare valori senza
-renderlo visibile al chiamante; la misura 9.0.3 rileva 72 casi per CLI e SDK
-SQL Server Prepared, nelle policy compatible/lossy/native. Strict 9.0.3
-non presenta queste alterazioni nella misura. L'API Rust consentiva gia di
-leggere il rapporto prima di consumare il piano. Aggiornare anche i consumer
-del contratto per usare rapporto e consenso della nuova major.
+**Utenti 8.x SQL Server:** la misura del 12/11/2026 su 8.0.4 ha trovato
+nel percorso Prepared spazi finali testuali, zeri finali binari oltre capacità
+e padding dei tipi fissi alterati senza dichiarazione, anche con `strict`.
+La misura riguarda Rust diretto/Provider, CLI e SDK; non qualifica async,
+runtime, ORM o portable 8.x. TDS bulk nella misura produce solo rifiuti o
+valori esatti. Verificare i dati già scritti contro la sorgente, soprattutto
+suffissi e lunghezze; il rapporto nuovo non ricostruisce le perdite storiche.
+Aggiornare alla nuova major quando disponibile e riprovare Strict sui propri
+casi prima di riabilitare scritture; non usare il vecchio Strict come prova
+di conservazione. Il difetto Prepared è corretto dalla 9.0.0.
+
+**Utenti 9.0.0–9.0.3:** CLI, SDK e runtime non rendevano visibili le perdite
+ammesse del piano. La misura 9.0.3 rileva 72 casi CLI/SDK SQL Server Prepared
+non-strict; Strict non presenta tali alterazioni nella misura. Verificare i
+dati storici contro la sorgente, aggiornare producer e reader alla 10.0.0,
+leggere `risk` / `evaluation` / `effective` e concedere consenso solo alle
+trasformazioni volute. Non dedurre assenza di perdite da un rapporto mancante.
+Prima di un retry leggere gli assi dell'errore e l'esito: un commit confermato
+non va ripetuto; un esito incerto richiede verifica sul target.
+
+Stato al 12/11/2026 comunicato dal titolare: B1–B4 fatti; live VM PostgreSQL
+B2 5/5 e SQL Server B3 6/6 verdi. Campagna SDK live in corso a cura del titolare;
+nessuna dichiarazione di chiusura B6 o pubblicazione della 10.0.0.
 
 ## 9.0.3 — 2026-11-11
 

@@ -722,27 +722,86 @@ Mode:
 Transaction profile: `single_transaction` (default) / `chunk_committed` /
 `staged_swap` / `best_effort_ddl`.
 Mapping policy obbligatoria: `compatible` / `strict` / `lossy` / `native`.
-`strict` rifiuta DataLoss; Information e Warning restano nel rapporto.
-`compatible`, `lossy` e `native` possono ammettere anche DataLoss: per eseguirle
-serve inoltre `accept_loss=True`. Il default e `False`: il rifiuto avviene
-prima dell'esecuzione del piano, con categoria `data_mapping`, fase `prepare`.
-Questa opzione non apre le policy non strict nei provider che le rifiutano.
-Per PostgreSQL non autorizza la troncatura del testo, inclusi gli spazi
-finali oltre la lunghezza: la scelta e «mai troncare». Il consenso sulle
-sole perdite effettive non e ancora implementato.
+La 10.0.0 distingue il rischio del piano dalla perdita effettiva nei writer
+PostgreSQL e SQL Server. Il rischio resta nel rapporto e, nelle policy
+`compatible`, `lossy` e `native`, non richiede consenso: ogni valore consumato
+viene controllato prima dell'invio. Se cambierebbe, serve consenso esplicito,
+anche se la regola ha severità Warning. Il default nega: Rust puro usa
+`LossConsent::Deny` (`LossConsent::Accept` per consentire), CLI `--accept-loss`,
+SDK sync/async `accept_loss=True`, runtime `accept_loss: true`.
+Strict, chiavi e rifiuti di formato, range, ammissione e capacità restano
+vincolanti. Il consenso non apre altri provider. I profili `chunk_committed`
+e `best_effort_ddl` non-strict sono rifiutati senza consenso prima degli effetti;
+il consenso non rende disponibile un profilo non qualificato.
 
-L'esito e un dict WriteOutcome v3: `loss_report` contiene il LossReport v2 del
-piano eseguito, anche quando `losses` e vuoto. Un errore di preparazione non
-produce un esito e non equivale a un rapporto vuoto. Il rapporto descrive il
-piano, non un confronto generale con i valori salvati da trigger o SQL nativo.
+PostgreSQL non tronca mai testo, neppure spazi finali oltre capacità o con
+consenso. Il bulk TDS di SQL Server rifiuta testo e binario oltre capacità anche
+con consenso. SQL Server Prepared, nei percorsi ammessi e con consenso,
+altera i valori e dichiara le trasformazioni nel rapporto.
+
+Nei writer PostgreSQL/SQL Server, WriteOutcome v3 contiene in `loss_report`
+ExecutionLossReport v3:
+`risk` descrive il piano; `evaluation` registra i valori controllati e quelli
+che cambierebbero; `effective` distingue `committed` da `uncertain`.
+Le perdite confermate si pubblicano solo dopo commit confermato. Un rollback
+confermato lascia `effective` vuoto e conserva `evaluation`; un esito ignoto
+non diventa un commit. `basis: conservative` conta valori trattati come perdita,
+non alterazioni provate. Il conteggio è per cella sorgente e regola: sommare
+regole diverse non dà il numero di celle uniche. NULL e input vuoto non
+richiedono consenso per il solo rischio, fatti salvi i rifiuti indipendenti.
+Un dry-run descrive una preparazione distinta, non misura la futura scrittura.
+Il perimetro è il mapping Arrow qualificato, non il confronto universale con
+trigger, default, funzioni o SQL nativo.
 
 `MappingLossWarning`, esportata dal package e sottoclasse di `UserWarning`,
-segnala Warning e DataLoss presenti nell'esito. Il warning porta
-`write_outcome`: con un filtro warnings-as-errors, l'eccezione conserva lo
-stesso documento e dichiara che il commit e gia avvenuto. Non implica rollback
-ne autorizza un retry. Gli esiti incerti/parziali conservano il rapporto in
-`details["write_outcome"]` dell'errore di scrittura; con filtro error il warning
-e la causa dell'errore primario, senza nascondere lo stato incerto.
+si emette solo per `effective` con `committed > 0`, anche per valori trattati
+conservativamente come perdita. Rischio, `would_change` e sole perdite incerte
+non producono un avviso di perdita avvenuta. Il warning porta `write_outcome`:
+con filtro `error` l'eccezione conserva l'esito e dichiara il commit già avvenuto,
+senza suggerire retry. Se esiste un errore primario con parti committate,
+il warning resta causa/contesto senza mascherare gli assi dell'errore.
+Gli errori conservano il rapporto e, quando disponibile, l'esito in
+`details["write_outcome"]`. Le stesse regole valgono per sync e async.
+
+```python
+outcome = session.copy_from(
+    "public", "events", arrow_table,
+    mapping_policy="compatible", accept_loss=True,
+)
+outcome = await session.acopy_from(
+    "public", "events", arrow_table,
+    mapping_policy="compatible", accept_loss=True,
+)
+```
+
+Omettere `accept_loss` mantiene il default `False`: i valori esatti possono
+passare anche con rischio nel piano. Gli esempi con `True` autorizzano
+esplicitamente le trasformazioni ammesse, non sono un default consigliato.
+Il reader legacy non attribuisce misure a LossReport v2 o esiti senza rapporto.
+Il binding `database.write@2` richiede adozione lato runtime-tools del catalogo,
+di `accept_loss` e di WriteOutcome v3; aggiornare il wheel non aggiorna runtime-tools.
+
+### Migrazione da 8.x e 9.x
+
+**Utenti 8.x SQL Server:** la misura del 12/11/2026 su 8.0.4 ha trovato
+nel percorso Prepared spazi finali testuali, zeri finali binari oltre capacità
+e padding dei tipi fissi alterati senza dichiarazione, anche con `strict`.
+La misura riguarda Rust diretto/Provider, CLI e SDK; non qualifica async,
+runtime, ORM o portable 8.x. TDS bulk nella misura produce solo rifiuti o
+valori esatti. Verificare i dati già scritti contro la sorgente, soprattutto
+suffissi e lunghezze; il rapporto nuovo non ricostruisce le perdite storiche.
+Aggiornare alla nuova major quando disponibile e riprovare Strict sui propri
+casi prima di riabilitare scritture; non usare il vecchio Strict come prova
+di conservazione. Il difetto Prepared è corretto dalla 9.0.0.
+
+**Utenti 9.0.0–9.0.3:** CLI, SDK e runtime non rendevano visibili le perdite
+ammesse del piano. La misura 9.0.3 rileva 72 casi CLI/SDK SQL Server Prepared
+non-strict; Strict non presenta tali alterazioni nella misura. Verificare i
+dati storici contro la sorgente, aggiornare producer e reader alla 10.0.0,
+leggere `risk` / `evaluation` / `effective` e concedere consenso solo alle
+trasformazioni volute. Non dedurre assenza di perdite da un rapporto mancante.
+Prima di un retry leggere gli assi dell'errore e l'esito: un commit confermato
+non va ripetuto; un esito incerto richiede verifica sul target.
 
 Nel binding Python, `copy_from` e `acopy_from` serializzano l'intero input in
 un buffer Arrow IPC in memoria prima di inviarlo al Rust, anche quando la

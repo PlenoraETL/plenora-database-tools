@@ -426,21 +426,41 @@ artefatti sono descritti in [`docs/RELEASE.md`](docs/RELEASE.md).
 
 ## Scritture Arrow: rapporto e consenso
 
-Dalla release 10.0.0 l'esito e WriteOutcome v3, con `loss_report` del piano
-eseguito (LossReport v2). Lo schema e in `contracts/v2/write-outcome-v3.schema.json`:
-la cartella v2 identifica il bundle esistente, la versione dell'esito e esplicita
-nel nome e nel documento. Il reader Rust accetta ancora v2 senza rapporto;
-non equipara quell'assenza a `losses: []` di un piano preparato.
+La 10.0.0 distingue il rischio del piano dalla perdita effettiva nei writer
+PostgreSQL e SQL Server. Il rischio resta nel rapporto e, nelle policy
+`compatible`, `lossy` e `native`, non richiede consenso: ogni valore consumato
+viene controllato prima dell'invio. Se cambierebbe, serve consenso esplicito,
+anche se la regola ha severità Warning. Il default nega: Rust puro usa
+`LossConsent::Deny` (`LossConsent::Accept` per consentire), CLI `--accept-loss`,
+SDK sync/async `accept_loss=True`, runtime `accept_loss: true`.
+Strict, chiavi e rifiuti di formato, range, ammissione e capacità restano
+vincolanti. Il consenso non apre altri provider. I profili `chunk_committed`
+e `best_effort_ddl` non-strict sono rifiutati senza consenso prima degli effetti;
+il consenso non rende disponibile un profilo non qualificato.
 
-CLI `database-write-ipc`, `bulk-write`, `postgres-write-ipc` accettano
-`--accept-loss`; la write canonica e il runtime accettano `accept_loss: true`
-nel documento della richiesta. Senza consenso separato dalla policy, DataLoss
-rifiuta l'esecuzione prima degli effetti. Information/Warning non richiedono
-consenso. Il rapporto resta nei formati JSON, Markdown e JUnit, e negli esiti
-parziali/incerti trasportati dall'errore. Un dry-run e una preparazione distinta,
-non il rapporto della successiva esecuzione. SQL nativo e trasformazioni server
-non osservate non sono coperti da un rapporto Arrow vuoto.
+PostgreSQL non tronca mai testo, neppure spazi finali oltre capacità o con
+consenso. Il bulk TDS di SQL Server rifiuta testo e binario oltre capacità anche
+con consenso. SQL Server Prepared, nei percorsi ammessi e con consenso,
+altera i valori e dichiara le trasformazioni nel rapporto.
 
-Il binding annuncia `database.write@2`, input/result v2; i consumer devono
-negoziare questa versione e validare WriteOutcome v3. Le altre operazioni
-conservano la loro versione. Vedere gli avvisi 8.x e 9.0.0–9.0.3 nel CHANGELOG.
+Nei writer PostgreSQL/SQL Server, WriteOutcome v3 contiene in `loss_report`
+ExecutionLossReport v3:
+`risk` descrive il piano; `evaluation` registra i valori controllati e quelli
+che cambierebbero; `effective` distingue `committed` da `uncertain`.
+Le perdite confermate si pubblicano solo dopo commit confermato. Un rollback
+confermato lascia `effective` vuoto e conserva `evaluation`; un esito ignoto
+non diventa un commit. `basis: conservative` conta valori trattati come perdita,
+non alterazioni provate. Il conteggio è per cella sorgente e regola: sommare
+regole diverse non dà il numero di celle uniche. NULL e input vuoto non
+richiedono consenso per il solo rischio, fatti salvi i rifiuti indipendenti.
+Un dry-run descrive una preparazione distinta, non misura la futura scrittura.
+Il perimetro è il mapping Arrow qualificato, non il confronto universale con
+trigger, default, funzioni o SQL nativo.
+
+Regole e predicati sono nella [tabella generata](docs/loss-registry.md).
+Per schema, compatibilità legacy ed esempi vedere i [contratti](contracts/v2/README.md);
+per invocazioni e migrazione vedere le [schede CLI](docs/cli-write.md),
+il [README Python](crates/plenora-database-py/README.md#bulk-write-arrow)
+e la [guida operativa](docs/operativo.md#scritture-arrow-rapporto-e-consenso).
+Il binding `database.write@2` richiede adozione anche in runtime-tools:
+catalogo, `accept_loss` e WriteOutcome v3; vedere [runtime](docs/runtime.md).
